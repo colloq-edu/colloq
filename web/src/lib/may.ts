@@ -1,15 +1,16 @@
 import { tr } from '@shared/i18n'
 /**
- * Что этому человеку можно в этой комнате — в одном месте.
+ * What this person may do in this room — in one place.
  *
- * Правило, которое останавливает, обязано сказать, что это правило, и сказать
- * там, где нажимают, и до нажатия. Разложить `allows(rules.edit, role)` по
- * двадцати компонентам — верный способ получить комнату, где половина кнопок
- * гаснет, а половина молча ничего не делает; вторые читаются как поломка и
- * приходят обратно баг-репортом.
+ * A rule that stops you must say that it is a rule, and say it where the press
+ * happens, and before the press. Spreading `allows(rules.edit, role)` across
+ * twenty components is a sure way to get a room where half the buttons go dark
+ * and half silently do nothing; the latter read as a breakage and come back as
+ * a bug report.
  *
- * Фразы живут здесь же, рядом с правом: `controls.ts` уже умеет складывать их
- * с «нет связи» и знает, что связь важнее правила.
+ * The phrases live here too, next to the right: `controls.ts` already knows how
+ * to combine them with "no connection" and knows the connection matters more
+ * than the rule.
  */
 import {
   actsAfterClass,
@@ -34,109 +35,117 @@ import type { ParticipantRole } from '@shared/protocol'
 
 export interface Permits {
   /**
-   * Правила, по которым комната живёт сейчас, — с наложенным концом занятия.
+   * The rules the room lives by right now — with the end of class applied.
    *
-   * Не то, что выбрано в настройках: их берут прямо из `session.session.rules`
-   * там, где рисуют сами настройки. Здесь — то, по чему гаснут кнопки.
+   * Not what is chosen in the settings: those are taken straight from
+   * `session.session.rules` where the settings themselves are drawn. Here is
+   * what the buttons go dark by.
    */
   rules: RoomRules
-  /** Занятие закончено: участник читает, действует преподаватель. */
+  /** The class is over: a participant reads, the teacher acts. */
   finished: boolean
   /**
-   * Кто это спрашивает.
+   * Who is asking.
    *
-   * Все поля ниже — уже готовые ответы, и роль в них вплавлена. Она остаётся
-   * здесь ради прав, которые нельзя посчитать заранее, потому что они зависят
-   * ещё и от ячейки: см. `mayEditThisCell` в конце файла.
+   * All the fields below are ready answers, with the role melted into them. It
+   * stays here for rights that cannot be computed in advance, because they
+   * also depend on the cell: see `mayEditThisCell` at the end of the file.
    */
   role: ParticipantRole
   /**
-   * Чем отказывает САМА ТЕТРАДЬ, — или `null`, когда тетрадь ни при чём.
+   * What THE NOTEBOOK ITSELF refuses with — or `null` when the notebook has
+   * nothing to do with it.
    *
-   * Нужно двум местам, где иначе заговорила бы комната вместо тетради: полосе
-   * «Лекция» над тетрадью и строке под запертой ячейкой. Обе написаны про
-   * КОМНАТУ («ячейки редактирует и запускает преподаватель»), и в чужой личной
-   * тетради это неправда: правит её автор, а не преподаватель, и человек,
-   * прочитавший полосу, пойдёт не туда.
+   * Needed in two places where the room would otherwise speak instead of the
+   * notebook: the "Lecture" strip above the notebook and the line under a
+   * locked cell. Both are written about the ROOM ("the teacher edits and runs
+   * the cells"), and in someone else's personal notebook that is untrue: its
+   * author edits it, not the teacher, and a person who read the strip would
+   * go the wrong way.
    */
   bookWhy: string | null
   /**
-   * У этой тетради свой доступ — какой угодно, кроме «как в комнате».
+   * This notebook has access of its own — any, except "as in the room".
    *
-   * Тем, кто рисует полосу «Лекция»: она говорит про КОМНАТУ, и над тетрадью с
-   * собственным доступом её показывать нельзя ни студенту, ни преподавателю —
-   * тетрадь живёт не по этому правилу, и про неё говорит метка на вкладке.
-   * Отдельно от `bookWhy`, потому что тому, кому тетрадь ничего не запрещает
-   * (автору, преподавателю), фразы отказа нет, а полоса всё равно лишняя.
+   * For whoever draws the "Lecture" strip: it speaks about the ROOM, and it
+   * must not be shown above a notebook with its own access to either a student
+   * or the teacher — the notebook does not live by that rule, and the mark on
+   * the tab speaks about it. Separate from `bookWhy`, because for someone the
+   * notebook forbids nothing (the author, the teacher) there is no refusal
+   * phrase, and the strip is superfluous all the same.
    */
   bookRuled: boolean
-  /** Печатать в ячейках. */
+  /** Type in cells. */
   edit: boolean
   editWhy: string
-  /** Запустить: ячейку, файл над редактором, команду в общей оболочке. */
+  /** Run: a cell, a file above the editor, a command in the shared shell. */
   run: boolean
   runWhy: string
-  /** Запустить весь лист: Run All, Run Above, форматирование. */
+  /** Run the whole sheet: Run All, Run Above, formatting. */
   bulk: boolean
   bulkWhy: string
-  /** Добавить ячейку. */
+  /** Add a cell. */
   add: boolean
-  /** Убрать ячейку. */
+  /** Remove a cell. */
   remove: boolean
-  /** Переставить или продублировать. */
+  /** Move or duplicate. */
   move: boolean
   structureWhy: string
-  /** Стереть всё разом: доска, терминал, лента оракула. */
+  /** Wipe everything at once: the board, the terminal, the oracle feed. */
   wipe: boolean
   wipeWhy: string
-  /** Перезапустить ядро. */
+  /** Restart the kernel. */
   restart: boolean
   restartWhy: string
-  /** Видеть ленту версий. */
+  /** See the version feed. */
   history: boolean
-  /** Заводить и править файлы семинара. */
+  /** Create and edit the seminar's files. */
   files: boolean
   filesWhy: string
   /**
-   * Завести в комнате СВОЮ тетрадь — пустую или внеся положенный в папку .ipynb.
+   * Start ONE'S OWN notebook in the room — empty or by bringing in an .ipynb
+   * placed in the folder.
    *
-   * Отдельно от `files`, и это не дублирование: `files` про общую папку
-   * занятия, а своя тетрадь — про собственную работу участника, файл которой
-   * пишет сервер проекцией. Поэтому «файлы преподавательские, свои тетради
-   * разрешены» — обычная пара, и наоборот тоже (shared/rules.ts · ownBooks).
+   * Separate from `files`, and this is no duplication: `files` is about the
+   * class's shared folder, while one's own notebook is about the participant's
+   * own work, whose file the server writes as a projection. So "files are the
+   * teacher's, own notebooks allowed" is an ordinary pair, and the reverse too
+   * (shared/rules.ts · ownBooks).
    */
   ownBook: boolean
   ownBookWhy: string
-  /** Просить оракула не ответить, а сделать: править файлы самому. */
+  /** Ask the oracle not to answer but to act: to edit files itself. */
   agent: boolean
   agentWhy: string
-  /** Ставить документ на общий экран комнаты. Смотреть себе может любой. */
+  /** Put a document on the room's shared screen. Anyone may view one for themselves. */
   board: boolean
   boardWhy: string
   /**
-   * Спрашивать оракула.
+   * Ask the oracle.
    *
-   * Правила такого поля не знают: `oracle` описывает подробность ответа для
-   * всей комнаты, включая преподавателя. Право спрашивать отнимает только конец
-   * занятия — и та же граница стоит на сервере (routes/ai.ts).
+   * The rules have no such field: `oracle` describes the level of detail of
+   * answers for the whole room, the teacher included. Only the end of class
+   * takes the right to ask away — and the same border stands on the server
+   * (routes/ai.ts).
    */
   ask: boolean
   askWhy: string
   /**
-   * Вести консилиум: переключать замок и ручки, листать стопку, показывать
-   * классу, отвечать, отмечать, убирать, спрашивать оракула о решениях.
+   * Lead a council: switch the lock and the knobs, page through the stack,
+   * show to the class, reply, mark, remove, ask the oracle about solutions.
    *
-   * Правила такого поля не знают: консилиум и есть способ дать классу писать
-   * там, где `edit` преподавательский. Ведёт его преподаватель — и после
-   * звонка тоже: сданное остаётся на просмотр (shared/rules.ts · mayLeadCouncil).
+   * The rules have no such field: the council is exactly the way to let the
+   * class write where `edit` belongs to the teacher. The teacher leads it —
+   * after the bell too: submitted work stays for review (shared/rules.ts ·
+   * mayLeadCouncil).
    */
   council: boolean
   councilWhy: string
   /**
-   * Писать свою попытку в консилиуме — своя, а не общая тетрадь, поэтому
-   * `edit` здесь ни при чём. Отнимает только конец занятия; «консилиум на этой
-   * ячейке закрыт» — второй множитель, и он зависит от ячейки: см.
-   * `mayWriteThisCouncil` внизу.
+   * Write one's own attempt in a council — one's own, not the shared
+   * notebook, so `edit` has nothing to do with it. Only the end of class takes
+   * it away; "the council on this cell is closed" is a second factor, and it
+   * depends on the cell: see `mayWriteThisCouncil` below.
    */
   attempt: boolean
   attemptWhy: string
@@ -145,29 +154,31 @@ export interface Permits {
 const HOSTS = "В этом семинаре это делает преподаватель"
 
 /**
- * Какую тетрадь спрашивают — и кто спрашивает.
+ * Which notebook is being asked about — and who is asking.
  *
- * У отдельной тетради бывает свой доступ (shared/rules.ts · RoomRules.books), и
- * тогда `run`, `edit` и `structure` в ней другие. Кто именно спрашивает, здесь
- * нужно ровно одному вопросу: его ли эта личная тетрадь.
+ * A single notebook can have access of its own (shared/rules.ts ·
+ * RoomRules.books), and then `run`, `edit` and `structure` in it are
+ * different. Who exactly is asking matters here for exactly one question:
+ * whether this personal notebook is theirs.
  */
 export interface InBook {
-  /** Корень тетради в документе; `null` — вопрос не про тетрадь. */
+  /** The notebook's root in the document; `null` — the question is not about a notebook. */
   root: string | null
-  /** Свой participantId; `null` — спрашивающий себя не назвал. */
+  /** One's own participantId; `null` — the asker did not identify themselves. */
   participantId: string | null
 }
 
 /**
- * @param finished — закончено ли занятие. Третьим обязательным аргументом, а не
- * полем с умолчанием: забытый аргумент обязан быть ошибкой типов, а не тихо
- * открытой кнопкой в комнате, где пара уже кончилась.
+ * @param finished — whether the class is over. A third required argument, not
+ * a field with a default: a forgotten argument must be a type error, not a
+ * quietly open button in a room where the class has already ended.
  *
- * @param book — тетрадь, про которую спрашивают. Без неё ответ комнатный, и это
- * правильный ответ для всего, что тетради не касается: терминала, доски, файлов,
- * ядра. Тетрадь и ячейка передают свою (Notebook.svelte, CellView.svelte), и
- * тогда `run`, `edit` и `structure` считаются ЕЮ — той же `rulesForBook`,
- * которой отвечает сервер.
+ * @param book — the notebook being asked about. Without it the answer is the
+ * room's, and that is the right answer for everything unrelated to notebooks:
+ * the terminal, the board, files, the kernel. The notebook and the cell pass
+ * their own (Notebook.svelte, CellView.svelte), and then `run`, `edit` and
+ * `structure` are computed BY IT — with the same `rulesForBook` the server
+ * answers with.
  */
 export function permitsIn(
   rules: unknown,
@@ -179,23 +190,24 @@ export function permitsIn(
   const room = finished ? rulesAfterClass(stored) : stored
   const who: Asker = { role, participantId: book?.participantId ?? null }
   /*
-   * Конец занятия — ПЕРВЫМ множителем, и это тот же порядок, что на сервере
-   * (db.ts · getRules): `rulesAfterClass` карту тетрадей не переносит, так что
-   * после звонка `rulesForBook` не находит перекрытий и ничего не открывает.
+   * The end of class is the FIRST factor, the same order as on the server
+   * (db.ts · getRules): `rulesAfterClass` does not carry the notebook map
+   * over, so after the bell `rulesForBook` finds no overrides and opens
+   * nothing.
    */
   const read = rulesForBook(room, book?.root ?? null, who)
   const acts = actsAfterClass(finished, role)
   const refusedByBook = bookRefusal(room, book?.root ?? null, who)
-  // Одна фраза вместо всех остальных: правило, которое остановило, человеку
-  // сейчас неинтересно — ему важно, что занятие кончилось.
+  // One phrase instead of all the others: the rule that stopped the person does
+  // not interest them now — what matters to them is that the class has ended.
   const why = (own: string): string => (acts ? own : tr(CLASS_IS_OVER))
   /*
-   * Когда закрыла ТЕТРАДЬ, говорит она, а не комната.
+   * When the NOTEBOOK closed it, the notebook speaks, not the room.
    *
-   * «В этом семинаре печатает преподаватель», сказанное про чужую личную
-   * тетрадь, отправляет человека искать преподавателя, который ничего не
-   * запрещал: закрылась тетрадь, и закрыл её автор. Те же слова, которыми
-   * отказывает сервер (collab/gate.ts · permits).
+   * "In this seminar the teacher types", said about someone else's personal
+   * notebook, sends the person looking for a teacher who forbade nothing: the
+   * notebook closed, and its author closed it. The same words the server
+   * refuses with (collab/gate.ts · permits).
    */
   const whyHere = (own: string): string =>
     why(refusedByBook ? tr(refusedByBook.key, { p0: refusedByBook.name }) : own)
@@ -210,9 +222,9 @@ export function permitsIn(
     edit: allows(read.edit, role),
     editWhy: whyHere(tr('room.ui.1092')),
     run: allowsRun(read.run, role, 'one'),
-    // Одна фраза на три места — кнопка ячейки, «Запустить» над файлом и строка
-    // ввода в терминале, — и те же слова, которыми отказывает сервер
-    // (control.ts, term:run): правило одно, значит и объяснение одно.
+    // One phrase for three places — the cell button, "Run" above a file and the
+    // terminal input line — and the same words the server refuses with
+    // (control.ts, term:run): one rule, so one explanation.
     runWhy: whyHere(tr('room.ui.1093')),
     bulk: allowsRun(read.run, role, 'bulk'),
     bulkWhy: whyHere(
@@ -234,15 +246,16 @@ export function permitsIn(
     restartWhy: why(tr('room.ui.1099')),
     history: allows(read.history, role),
     files: allows(read.files, role),
-    // Одна фраза на два места — панель файлов и полосу над редактором:
-    // «добавляет» не годится там, где речь про правку, а «правит» — там, где
-    // про перетаскивание.
+    // One phrase for two places — the files panel and the strip above the
+    // editor: "adds" does not fit where the talk is about editing, and "edits"
+    // does not fit where it is about dragging.
     filesWhy: why(tr('room.ui.1100')),
     /*
-     * Правила комнаты, а не тетради: вопрос «можно ли завести ЕЩЁ одну» ни к
-     * какой тетради не относится. Потолок своих тетрадей (MAX_OWN_BOOKS)
-     * считает сервер — по карте, которой у браузера может не быть целиком; его
-     * отказ приезжает строкой и виден там же, где нажали.
+     * The room's rules, not the notebook's: the question "may I start ONE
+     * MORE" belongs to no notebook. The ceiling on own notebooks
+     * (MAX_OWN_BOOKS) is counted by the server — over a map the browser may not
+     * have in full; its refusal arrives as a line and is visible right where
+     * the press happened.
      */
     ownBook: role === 'host' || (acts && room.ownBooks === 'on'),
     ownBookWhy: why(tr('room.ui.ownBooksOff')),
@@ -263,80 +276,85 @@ export function permitsIn(
   }
 }
 
-/* ------------------------------------------------------- замок на ячейке */
+/* ---------------------------------------------------- the lock on a cell */
 
 /**
- * Одна фраза на всё, что говорит закрытая ячейка: строка под кодом, подсказка
- * на погашенной кнопке, отказ на Cmd+Enter.
+ * One phrase for everything a closed cell says: the line under the code, the
+ * hint on a dimmed button, the refusal on Cmd+Enter.
  *
- * Написана про занятие, а не про право: человеку, который только что нажал,
- * важно не какое поле в правилах его остановило, а что тетрадь сейчас ведут.
- * Тот же довод, что у `CLASS_IS_OVER`.
+ * Written about the class, not about the right: for a person who has just
+ * pressed, what matters is not which field in the rules stopped them but that
+ * the notebook is being led right now. The same argument as for
+ * `CLASS_IS_OVER`.
  */
 export const LECTURE_CELL = "Эту ячейку редактирует и запускает только преподаватель"
 /**
- * Общая ячейка консилиума — не своя.
+ * The council's shared cell — not one's own.
  *
- * В ней лежит задание, и правит его преподаватель: переписать её под себя
- * значило бы переписать задание всему классу. Свой лист участника при этом
- * рядом, и он весь его.
+ * It holds the task, and the teacher edits it: rewriting it for oneself would
+ * mean rewriting the task for the whole class. The participant's own sheet is
+ * right next to it meanwhile, and it is entirely theirs.
  */
 export const COUNCIL_SHARED_CELL = 'room.ui.1266'
 
 /**
- * Права, которые нельзя посчитать без ячейки.
+ * Rights that cannot be computed without the cell.
  *
- * Тонкие обёртки над `mayEditCell`/`mayRunCell` из shared/rules.ts — теми
- * самыми, которыми отвечает сервер (gate.ts и control.ts). Компонент не
- * складывает правило с замком сам: сложенное дважды рано или поздно сложится
- * по-разному, и разойдутся не кнопки, а кнопка с сервером.
+ * Thin wrappers over `mayEditCell`/`mayRunCell` from shared/rules.ts — the
+ * very ones the server answers with (gate.ts and control.ts). A component does
+ * not combine the rule with the lock by itself: what is combined twice will
+ * sooner or later come out differently, and it will not be two buttons that
+ * diverge but a button and the server.
  *
- * `may.rules` здесь — уже с наложенным концом занятия, и `finished` передаётся
- * ещё раз намеренно: помощник накладывает то же самое повторно, что ничего не
- * меняет, зато вызов читается одинаково и здесь, и на сервере.
+ * `may.rules` here already has the end of class applied, and `finished` is
+ * passed once more on purpose: the helper applies the same thing again, which
+ * changes nothing, but the call then reads the same here and on the server.
  */
 export function mayEditThisCell(may: Permits, open: boolean): boolean {
   return mayEditCell(may.rules, may.role, open, may.finished)
 }
 
-/** То же для запуска: закрытую ячейку в лекции считает преподаватель. */
+/** The same for running: in a lecture the teacher runs a closed cell. */
 export function mayRunThisCell(may: Permits, open: boolean): boolean {
   return mayRunCell(may.rules, may.role, open, may.finished)
 }
 
 /**
- * Одна фраза на закрытый консилиум: строка под попыткой и подсказка на
- * погашенной «Сдать». Текст у студента остаётся черновиком, и фраза обязана
- * это сказать — иначе она читается как «ваша работа пропала».
+ * One phrase for a closed council: the line under the attempt and the hint on
+ * the dimmed "Submit". The student's text stays as a draft, and the phrase
+ * must say so — otherwise it reads as "your work is gone".
  */
 export const COUNCIL_CLOSED = "Консилиум закрыт. Ваш текст доступен в черновике"
 
 /**
- * Права консилиума, которые нельзя посчитать без ячейки, — тонкие обёртки над
- * shared/rules.ts, теми же, которыми отвечает сервер (control.ts · council:*).
+ * Council rights that cannot be computed without the cell — thin wrappers
+ * over shared/rules.ts, the same ones the server answers with (control.ts ·
+ * council:*).
  *
- * `closed` — консилиум на ЭТОЙ ячейке не идёт (`cellLock(cell) !== 'council'`).
+ * `closed` — no council is running on THIS cell (`cellLock(cell) !== 'council'`).
  */
 export function mayWriteThisCouncil(may: Permits, closed: boolean): boolean {
   return mayWriteCouncil(may.role, may.finished, closed)
 }
 
-/** Запустить попытку: преподаватель — любую, студент — свою и только при ручке. */
+/** Run an attempt: the teacher — any, a student — their own and only with the knob on. */
 export function mayRunThisCouncil(may: Permits, studentRun: boolean | 'request'): boolean {
   return mayRunCouncil(may.role, studentRun, may.finished)
 }
 
 /**
- * Значит ли замок в этой комнате хоть что-нибудь.
+ * Whether the lock means anything at all in this room.
  *
- * Вопрос задаётся про УЧАСТНИКА, а не про того, кто смотрит: преподавателю
- * можно всё при любом замке, и «мне это ничего не меняет» — неверный ответ на
- * «стоит ли рисовать замок», ведь открывает ячейку как раз он.
+ * The question is asked about the PARTICIPANT, not about whoever is looking:
+ * the teacher may do anything under any lock, and "it changes nothing for me"
+ * is the wrong answer to "is the lock worth drawing", since it is the teacher
+ * who opens the cell.
  *
- * Комната, где участник и так печатает и запускает, замка не показывает вовсе:
- * значок, который ничего не решает, — украшение, а украшение рядом с правилом
- * читается как правило. По той же причине замок исчезает после звонка: там уже
- * ничего не открыть, и говорить об этом должен `CLASS_IS_OVER`.
+ * A room where a participant types and runs anyway shows no lock at all: an
+ * icon that decides nothing is decoration, and decoration next to a rule
+ * reads as a rule. For the same reason the lock disappears after the bell:
+ * there is nothing left to open there, and `CLASS_IS_OVER` must be the one to
+ * say so.
  */
 export function cellLockMatters(may: Permits): boolean {
   const swings = (

@@ -16,10 +16,11 @@ test('saved attempts do not imply that their author is connected', () => {
 
 test('unsent work and its count are labelled drafts, never live typing', () => {
   /*
-   * Чипа «черновики» больше нет: несданные стали своей ВКЛАДКОЙ («Пишут»), и
-   * отбор внутри неё отвечает на другой вопрос — кто застрял. Само слово при
-   * этом никуда не делось и по-прежнему называет несданное черновиком: чип
-   * отбора «Без оценки» про сданные, а «Черновик» — плашка состояния работы.
+   * The "drafts" chip is gone: unsubmitted work became a TAB of its own
+   * ("Writing"), and the filter inside it answers a different question — who
+   * is stuck. The word itself has not gone anywhere, though, and still calls
+   * unsubmitted work a draft: the "Ungraded" filter chip is about submitted
+   * work, and "Draft" is the work's state badge.
    */
   assert.equal(tabFilters('submitted').includes('writing' as never), false)
   assert.match(filterLabel('ungraded'), /без оценки/i)

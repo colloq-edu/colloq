@@ -37,13 +37,14 @@
 [data-council-pult] .pult-button[data-tone="positive"][aria-pressed="true"] { background: rgb(var(--positive) / .12); border-color: rgb(var(--positive)); }
 [data-council-pult] .pult-button[data-tone="warning"][aria-pressed="true"] { background: rgb(var(--warning) / .12); border-color: rgb(var(--warning)); }
 /*
- * Значение регламента — слово, по которому нажимают.
+ * A rules value is a word you press.
  *
- * Ни рамки, ни заливки: это часть предложения, и кнопка в нём читалась бы как
- * действие («запустить»), а не как «30 с — это настройка, её можно поменять».
- * Остаётся пунктир под словом — единственный общий знак «здесь нажимают»,
- * который не рвёт строку по высоте. Открытый лист подменяет пунктир сплошной
- * чертой: тогда видно, О ЧЁМ открыт лист, не отрывая глаз от предложения.
+ * No frame, no fill: it is part of a sentence, and a button in it would read
+ * as an action ("run") rather than as "30 s is a setting, it can be changed".
+ * What remains is a dashed underline — the one common sign of "press here"
+ * that does not break the line's height. An open sheet replaces the dashes
+ * with a solid line: then you can see WHAT the sheet is open for without
+ * taking your eyes off the sentence.
  */
 [data-council-pult] .pult-value {
   padding: 0 1px;
@@ -78,12 +79,13 @@
 [data-council-pult] .pult-badge[data-tone="danger"] { color: rgb(var(--danger)); background: rgb(var(--danger) / .1); }
 [data-council-pult] .pult-badge[data-tone="accent"] { color: rgb(var(--accent-text)); background: rgb(var(--accent) / .1); }
 /*
- * Форма плашки — второй признак поверх цвета.
+ * The badge's shape is a second cue on top of colour.
  *
- * Залитая значит «этого от вас ждут»: сдано и не оценено. Контурная — «состояние
- * идёт само»: человек ещё пишет. Тон у них тоже разный, но различать состояния
- * одним цветом нельзя: строка списка читается краем глаза, посреди фразы, и
- * форма ловится раньше оттенка — а кем-то только она и ловится.
+ * Filled means "this is waiting on you": submitted and not graded. Outlined
+ * means "the state moves on by itself": the person is still writing. Their
+ * tones differ too, but states cannot be told apart by colour alone: a list
+ * row is read out of the corner of the eye, mid-sentence, and shape is caught
+ * before hue — and for some people shape is the only thing caught.
  */
 [data-council-pult] .pult-badge[data-shape="fill"] { background: rgb(var(--accent)); color: rgb(var(--accent-ink)); font-weight: 700; }
 [data-council-pult] .pult-badge[data-shape="fill"][data-tone="positive"] { background: rgb(var(--positive)); color: rgb(var(--canvas)); }
@@ -91,13 +93,13 @@
 [data-council-pult] .pult-badge[data-shape="fill"][data-tone="danger"] { background: rgb(var(--danger)); color: rgb(var(--canvas)); }
 [data-council-pult] .pult-badge[data-shape="outline"] { background: transparent; box-shadow: inset 0 0 0 1px rgb(var(--line)); color: rgb(var(--muted)); font-weight: 600; }
 /*
- * Точка слева в плашке состояния — Paper 05d, артборд 12 (B).
+ * The dot on the left of a state badge — Paper 05d, artboard 12 (B).
  *
- * Третий признак поверх цвета и формы, и стоит он дёшево: 6 px круга, который
- * ловится боковым зрением раньше слова. Цвет берётся у самой плашки
- * (`currentColor`), поэтому заводить его ещё раз для каждого тона не надо;
- * контурная плашка получает и точку контурную — иначе «Черновик» выглядел бы
- * залитым состоянием, которого от вас ждут.
+ * A third cue on top of colour and shape, and a cheap one: a 6 px circle that
+ * peripheral vision catches before the word. The colour comes from the badge
+ * itself (`currentColor`), so there is no need to set it again for every
+ * tone; an outlined badge gets an outlined dot too — otherwise "Draft" would
+ * look like a filled state that is waiting on you.
  */
 [data-council-pult] .pult-badge-dot {
   flex-shrink: 0;
@@ -108,16 +110,17 @@
 }
 [data-council-pult] .pult-badge[data-shape="outline"] .pult-badge-dot { background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; }
 /*
- * Присутствие — точкой НА АВАТАРЕ, а не словом в строке.
+ * Presence is a dot ON THE AVATAR, not a word in the line.
  *
- * «не в сети» подписью под каждым вторым именем — это десять одинаковых слов в
- * списке из двадцати, и читаются они как шум, сквозь который ищут то, что
- * отличается. Точка занимает угол картинки, которая и так нарисована.
+ * "offline" as a caption under every other name is ten identical words in a
+ * list of twenty, and they read as noise through which you look for what is
+ * different. The dot takes a corner of a picture that is drawn anyway.
  *
- * Три состояния и три вида: в сети — залитая positive с обводкой цвета холста;
- * не в сети — полая, обводка faint; неизвестно (связи нет, ростер не доехал) —
- * точки нет вовсе. Последнее важнее всего: выключенная лампочка и лампочка,
- * про которую мы ничего не знаем, — разные утверждения.
+ * Three states and three looks: online — filled positive with a ring the
+ * colour of the canvas; offline — hollow, with a faint ring; unknown (no
+ * connection, the roster has not arrived) — no dot at all. The last matters
+ * most: a lamp that is off and a lamp we know nothing about are different
+ * statements.
  */
 [data-council-pult] .pult-face { position: relative; flex-shrink: 0; }
 [data-council-pult] .pult-face-dot {
@@ -143,16 +146,17 @@
 @media (prefers-reduced-motion: reduce) { [data-council-pult] * { transition: none !important; animation: none !important; } }
 
 /*
- * Ссылка «На телефон» в шапке.
+ * The "To phone" link in the header.
  *
- * Правило стоит здесь, а не в PultHeader: класс уезжает пропом внутрь
- * ConsoleLink (lecture/ConsoleLink.svelte), и scoped-стиль шапки до чужой
- * разметки не достаёт — Svelte такое правило просто вычеркнет.
+ * The rule lives here, not in PultHeader: the class travels as a prop into
+ * ConsoleLink (lecture/ConsoleLink.svelte), and the header's scoped style
+ * does not reach someone else's markup — Svelte would simply strike such a
+ * rule out.
  */
 [data-council-pult] .pult-link { flex-shrink: 0; align-items: center; gap: 5px; min-height: 34px; padding: 6px 8px; }
 [data-council-pult] .pult-link[aria-expanded='true'] { background: rgb(var(--raised)); border-color: rgb(var(--primary)); }
-/* 860 — та ширина, на которой в шапке уже не помещается подпись рядом со
-   значком: остаётся значок, и цель нажатия вырастает до пальца. */
+/* 860 is the width at which the caption next to the icon no longer fits in
+   the header: the icon remains, and the tap target grows to finger size. */
 @media (max-width: 860px) {
   [data-council-pult] .pult-link { font-size: 0; gap: 0; min-width: 34px; justify-content: center; }
 }

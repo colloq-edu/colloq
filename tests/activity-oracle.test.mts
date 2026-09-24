@@ -71,13 +71,13 @@ test('Oracle lifecycle records requests, completion, failure and stop without qu
 })
 
 /**
- * Каждый вызов инструмента — своя строка в журнале занятия.
+ * Every tool call is its own row in the class log.
  *
- * Лента шагов живёт в документе комнаты и уходит вместе с ним; журнал остаётся.
- * До сих пор от целого хода в нём было две строки — «начался» и «кончился», —
- * и вопрос «оракул семнадцать раз читал файлы и ни разу не написал» задать было
- * не по чему. Уровень «Подробное», потому что это подробность хода, а не
- * событие занятия.
+ * The step feed lives in the room document and goes away with it; the log
+ * stays. Until now a whole turn had two rows in it, "started" and
+ * "finished", and there was nothing to ask the question "the oracle read
+ * files seventeen times and never wrote" of. The level is "Detailed",
+ * because this is a detail of the turn, not a class event.
  */
 test('each tool call of a work turn is its own detailed row, named and with an outcome', async () => {
   let round = 0
@@ -109,7 +109,7 @@ test('each tool call of a work turn is its own detailed row, named and with an o
     assert.equal(steps.length, 2)
     assert.deepEqual(steps.map(s => [s.details.subjectId, s.details.outcome]), [
       ['list_files', 'completed'],
-      // Инструмента с таким именем нет: шаг потрачен, и в журнале это видно.
+      // There is no tool with that name: the step is spent, and the log shows it.
       ['no_such_tool', 'error'],
     ])
     for (const step of steps) {
@@ -118,7 +118,7 @@ test('each tool call of a work turn is its own detailed row, named and with an o
       assert.equal(step.details.source, 'oracle')
       assert.ok(step.details.durationMs! >= 0)
     }
-    // Обычный уровень подробностей хода не показывает: их две на каждый шаг.
+    // The normal level does not show the turn's details: there are two of them per step.
     assert.ok(!listActivity(id).events.some(event => event.kind === 'oracle.work_step'))
   } finally { stopAll(id); server.closeAllConnections(); server.close() }
 })

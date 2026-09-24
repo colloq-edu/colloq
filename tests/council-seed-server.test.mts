@@ -1,21 +1,25 @@
 /**
- * Задание консилиума: чем сервер сеет пустой лист.
+ * The council task: what the server seeds an empty sheet with.
  *
- * Лист студента засевался общим текстом ячейки «на момент открытия листа», и
- * это разъезжалось с заданием всякий раз, когда общий текст после открытия
- * менялся: опоздавший (или просто перезагрузивший страницу) получал в свой
- * лист не задачу, а то, что лежит в ячейке сейчас. Прежде это делал сам показ
- * — «Показать классу» переписывало ячейку чужим решением, — теперь показ
- * текста не трогает вовсе (protocol · CouncilShown), а править заготовку
- * посреди консилиума преподаватель по-прежнему вправе: ячейка его.
+ * A student's sheet used to be seeded with the cell's shared text "as of the
+ * moment the sheet opened", and that drifted away from the task every time
+ * the shared text changed after opening: a latecomer (or someone who simply
+ * reloaded the page) got in their sheet not the task but whatever lies in
+ * the cell now. It used to be the show itself that did this — "Show to the
+ * class" rewrote the cell with someone else's solution — now showing does
+ * not touch the text at all (protocol · CouncilShown), while the teacher is
+ * still entitled to edit the stub in the middle of a council: the cell is
+ * theirs.
  *
- * Поэтому текст ячейки снимается один раз, на самом переходе замка в консилиум
- * (control.ts · `cell:lock`), и едет каждому в `CouncilMine.seed`. Проверяется
- * здесь серверная половина: что снимок берётся вовремя, что правка общей
- * ячейки его не подменяет и что переключение ручки не переписывает задание.
- * Клиентская половина — tests/notebook-council-seed.test.mts.
+ * So the cell's text is captured once, at the very moment the lock switches
+ * to council (control.ts · `cell:lock`), and travels to everyone in
+ * `CouncilMine.seed`. The server half is checked here: that the snapshot is
+ * taken in time, that an edit of the shared cell does not replace it, and
+ * that toggling a control does not rewrite the task. The client half is
+ * tests/notebook-council-seed.test.mts.
  *
- * Ни сети, ни ядра: сокеты поддельные, комната настоящая, диспетчер тот же.
+ * No network, no kernel: the sockets are fake, the room is real, the
+ * dispatcher is the same.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -39,9 +43,9 @@ function socket(): Fake {
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
-      // (рассылка, дерево, чернила), уходят уже закодированными — см.
-      // control.ts · sendFrame. Настоящий сокет тут разницы не делает.
+      // As a string or as bytes: frames the server builds once per room
+      // (broadcast, tree, ink) go out already encoded — see control.ts ·
+      // sendFrame. A real socket makes no difference here.
       if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
         heard.push(JSON.parse(String(frame)) as ControlServerMessage)
       }
@@ -102,18 +106,18 @@ function lastMine(who: Person, cell: string): CouncilMine | null {
   return null
 }
 
-test('задание снимается на переходе в консилиум и едет каждому', () => {
+test('the task is captured on switching to council and travels to everyone', () => {
   const at = room()
   say(at.id, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council' })
   assert.equal(lastMine(at.petya, at.cell)?.seed, TASK)
   closeControlRoom(at.id)
 })
 
-test('показ не трогает общий текст — и задание тем более', () => {
+test('showing does not touch the shared text — let alone the task', () => {
   /*
-   * Тот самый случай, ради которого всё и написано, — только наизнанку: показ
-   * БОЛЬШЕ не кладёт код Пети в общую ячейку. Проверяются оба конца: текст
-   * ячейки после показа тот же, и опоздавшая Маша получает задание.
+   * The very case all this was written for — only inside out: showing NO
+   * LONGER puts Petya's code into the shared cell. Both ends are checked: the
+   * cell's text after showing is the same, and latecomer Masha gets the task.
    */
   const at = room()
   say(at.id, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council' })
@@ -125,19 +129,20 @@ test('показ не трогает общий текст — и задание
   })
 
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
-  assert.equal(cellSource(found!.cell).toString(), TASK, 'показ переписал общую ячейку')
+  assert.equal(cellSource(found!.cell).toString(), TASK, 'showing rewrote the shared cell')
 
   const masha = join(at.id, `${at.id}_masha`, 'Маша', 'participant')
-  assert.equal(lastMine(masha, at.cell)?.seed, TASK, 'опоздавшей уехало показанное решение')
+  assert.equal(lastMine(masha, at.cell)?.seed, TASK, 'the latecomer got the shown solution')
   closeControlRoom(at.id)
 })
 
-test('заготовку правит преподаватель — задание остаётся тем, с чего начали', () => {
+test('the teacher edits the stub — the task stays what it started with', () => {
   /*
-   * Общий текст в консилиуме менять некому, кроме преподавателя, — и он вправе:
-   * дописал условие, стёр подсказку. Лист опоздавшего сеется тем, с чего
-   * консилиум начинали: иначе полкласса решает одну задачу, а вошедший
-   * последним — другую.
+   * Nobody but the teacher can change the shared text in a council — and they
+   * are entitled to: they added to the problem statement, erased a hint. A
+   * latecomer's sheet is seeded with what the council started with:
+   * otherwise half the class solves one problem and the one who came in last
+   * another.
    */
   const at = room()
   say(at.id, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council' })
@@ -155,11 +160,12 @@ test('заготовку правит преподаватель — задан�
   closeControlRoom(at.id)
 })
 
-test('переключение ручки задание не переписывает', () => {
+test('toggling a control does not rewrite the task', () => {
   /*
-   * Повторный `cell:lock` в то же положение — это меню замка, а не новая
-   * задача. Переписывать им задание значило бы вернуть ту же подмену другой
-   * дорогой: после показа галочка «студенты запускают» стирала бы задание.
+   * A repeated `cell:lock` into the same position is the lock menu, not a new
+   * task. Rewriting the task with it would bring back the same substitution
+   * by another road: after a show, the "students run" tick would wipe the
+   * task.
    */
   const at = room()
   say(at.id, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council' })
@@ -181,11 +187,12 @@ test('переключение ручки задание не переписыв
   closeControlRoom(at.id)
 })
 
-test('пустая ячейка — пустое задание, а не отсутствие задания', () => {
+test('an empty cell is an empty task, not a missing task', () => {
   /*
-   * «Напишите сами» — законный консилиум, и пустая строка здесь ЗНАНИЕ:
-   * отсутствие поля клиент читает как «старый сервер» и сеет общим текстом,
-   * то есть после показа — чужим решением.
+   * "Write it yourself" is a legitimate council, and an empty string here is
+   * KNOWLEDGE: the client reads a missing field as "old server" and seeds
+   * with the shared text, that is, after a show, with someone else's
+   * solution.
    */
   const id = `seed-empty-${++rooms}`
   createSession(id, 'Консилиум', null)
@@ -203,6 +210,6 @@ test('пустая ячейка — пустое задание, а не отс�
   })
   const mine = lastMine(petya, cellId(made))
   assert.equal(mine?.seed, '')
-  assert.ok(mine && 'seed' in mine, 'поле обязано присутствовать, а не отсутствовать')
+  assert.ok(mine && 'seed' in mine, 'the field must be present, not absent')
   closeControlRoom(id)
 })

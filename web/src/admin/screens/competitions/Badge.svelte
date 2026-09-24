@@ -1,27 +1,29 @@
 <script lang="ts" module>
   /**
-   * Плашка состояния — соревнования и посылки.
+   * The state badge — for competitions and submissions.
    *
-   * Одним компонентом на три экрана, потому что тон здесь несёт смысл, а не
-   * настроение: «УПАЛА МЕТРИКА» — единственная насыщенно-красная в продукте, и
-   * красная она потому, что виноват в ней тот, кто на неё смотрит. Разложив
-   * эти правила по трём местам, их развели бы на первой же правке.
+   * One component for three screens, because the tone here carries meaning,
+   * not mood: "METRIC FAILED" is the only saturated red in the product, and
+   * it is red because the person looking at it is the one at fault. Spread
+   * across three places, these rules would drift apart on the very first
+   * edit.
    *
-   * Слова сюда не попадают: их называет `shared/competitions.ts`
-   * (`teacherBadge`, `competitionWord`) — одной копией на сервер и на оба
-   * интерфейса.
+   * No words get in here: `shared/competitions.ts` names them
+   * (`teacherBadge`, `competitionWord`) — one copy for the server and both
+   * interfaces.
    */
   export type BadgeTone = 'accent' | 'positive' | 'danger' | 'warning' | 'neutral' | 'brand'
   export type BadgeForm = 'filled' | 'strong' | 'outline'
 
   /*
-   * Насыщенный accent несёт НЕ белый текст, хотя в макете он белый.
+   * The saturated accent carries text that is NOT white, although it is
+   * white in the mockup.
    *
-   * Белое на `#0FA0D7` — это 2.99:1, то есть ниже любого порога; продукт эту
-   * пару уже мерил и завёл под неё `--accent-ink` (index.css). Плашка
-   * «ВЫПОЛНЯЕТСЯ» стоит на экране студента, который смотрит на неё с телефона
-   * в аудитории со светом в окно, — и это единственное место, где макет
-   * уступает измерению.
+   * White on `#0FA0D7` is 2.99:1, that is, below any threshold; the product
+   * has already measured this pair and set up `--accent-ink` for it
+   * (index.css). The "RUNNING" badge stands on the screen of a student who
+   * looks at it from a phone in a lecture hall with daylight in the window —
+   * and this is the only place where the mockup yields to the measurement.
    */
   const TONES: Record<BadgeTone, Record<BadgeForm, string>> = {
     accent: {
@@ -64,7 +66,7 @@
     word: string
     tone?: BadgeTone
     form?: BadgeForm
-    /** `lower` — строчными: так нарисована пометка «в зачёт». */
+    /** `lower` — in lowercase: that is how the "counted" mark is drawn. */
     case?: 'caps' | 'lower'
     class?: string
   }

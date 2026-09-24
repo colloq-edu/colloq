@@ -1,25 +1,27 @@
 /**
- * Кто в комнате — снимком, который меняется только когда меняется нарисованное.
+ * Who is in the room — as a snapshot that changes only when what is drawn
+ * changes.
  *
- * Присутствие — самый болтливый провод в продукте: y-codemirror публикует
- * курсор на каждое нажатие, сервер рассылает это всем, и на пятистах вкладках
- * кадры идут сотнями в секунду. Каждый такой кадр раньше собирал пятьсот новых
- * объектов, сортировал их `localeCompare` и клал НОВЫЙ массив в `session.peers`
- * — после чего просыпались все его читатели: счётчик в шапке, панель людей,
- * аватары оракула и поиск «кто запускал» в каждой смонтированной ячейке. Сорок
- * ячеек на пятьсот человек — это двадцать тысяч сравнений на один чужой курсор.
+ * Presence is the chattiest wire in the product: y-codemirror publishes the
+ * cursor on every keystroke, the server broadcasts it to everyone, and with
+ * five hundred tabs frames arrive by the hundreds per second. Each such frame
+ * used to build five hundred new objects, sort them with `localeCompare` and
+ * put a NEW array into `session.peers` — after which all its readers woke up:
+ * the counter in the header, the people panel, the oracle avatars and the "who
+ * ran it" lookup in every mounted cell. Forty cells with five hundred people
+ * is twenty thousand comparisons for one other person's cursor.
  *
- * Здесь то же правило, что в шапке yreactive: **снимок отдаётся дальше только
- * если он отличается от прошлого, а неизменившиеся куски сохраняют
- * тождественность**. Курсор, проехавший внутри той же ячейки, не меняет ничего
- * из того, что комната рисует, — и не должен доходить ни до кого.
+ * The same rule applies here as in the yreactive header: **a snapshot is
+ * passed on only if it differs from the previous one, and unchanged pieces
+ * keep their identity**. A cursor moving within the same cell changes nothing
+ * of what the room draws — and must not reach anyone.
  *
- * Без рун и без Yjs, чтобы правило проверялось без браузера: по нему рисуется
- * число, которое человек читает с экрана и которому верит.
+ * No runes and no Yjs, so that the rule can be checked without a browser: it
+ * draws a number that a person reads off the screen and trusts.
  */
 import type { AwarenessUser } from '@shared/protocol'
 
-/** Одна вкладка в комнате: чья она и она ли наша. */
+/** One tab in the room: whose it is and whether it is ours. */
 export interface Peer {
   clientId: number
   user: AwarenessUser
@@ -27,23 +29,23 @@ export interface Peer {
 }
 
 /**
- * Как часто пересобирается список людей, миллисекунды.
+ * How often the list of people is rebuilt, milliseconds.
  *
- * Сотая доля секунды — это ещё «сразу» для метки «правит ячейку 04» и уже не
- * «на каждое нажатие»: сотня печатающих даёт сотни кадров в секунду, а пересчёт
- * при этом идёт десять раз. Ровно тот же тик стоит на индексе ячеек
- * (yreactive · PeerIndex), чтобы оба списка людей на экране обновлялись в один
- * момент, а не по очереди.
+ * A hundred milliseconds is still "at once" for the "editing cell 04" mark and
+ * no longer "on every keystroke": a hundred typists produce hundreds of frames
+ * per second, while the recount runs ten times. Exactly the same tick sits on
+ * the cell index (yreactive · PeerIndex), so that both lists of people on
+ * screen update at the same moment, not one after the other.
  */
 export const PRESENCE_TICK_MS = 100
 
 /**
- * Порядок имён — одним сравнителем на всё приложение.
+ * The order of names — with one comparator for the whole app.
  *
- * `String.prototype.localeCompare` заводит правила сравнения на КАЖДЫЙ вызов, а
- * их тут N·logN: пятьсот человек — это около четырёх с половиной тысяч
- * сравнений на пересборку. Один `Intl.Collator` даёт тот же порядок в разы
- * дешевле.
+ * `String.prototype.localeCompare` sets up comparison rules on EVERY call, and
+ * there are N·logN of them here: five hundred people is about four and a half
+ * thousand comparisons per rebuild. A single `Intl.Collator` gives the same
+ * order several times cheaper.
  */
 const byName = new Intl.Collator()
 
@@ -53,12 +55,12 @@ function sameViewing(a: AwarenessUser['viewing'], b: AwarenessUser['viewing']): 
 }
 
 /**
- * Один ли это человек в одном и том же состоянии — по тому, что РИСУЮТ.
+ * Whether this is the same person in the same state — by what is DRAWN.
  *
- * Состояние присутствия декодируется заново на каждом кадре, так что
- * тождественность объектов не говорит ни о чём: сравнивать приходится поля. Все
- * они здесь перечислены поимённо, и это намеренно — новое поле, которое рисуют,
- * обязано попасть в список, иначе оно тихо перестанет доезжать до экрана.
+ * The presence state is decoded anew on every frame, so object identity says
+ * nothing: the fields have to be compared. All of them are listed here by
+ * name, and on purpose — a new field that is drawn must get into the list,
+ * otherwise it will quietly stop reaching the screen.
  */
 export function samePeerUser(a: AwarenessUser, b: AwarenessUser): boolean {
   if (a === b) return true
@@ -77,16 +79,16 @@ export function samePeerUser(a: AwarenessUser, b: AwarenessUser): boolean {
 }
 
 /**
- * Собрать список людей из состояний присутствия — или вернуть прежний.
+ * Build the list of people from presence states — or return the previous one.
  *
- * Прежний массив ВОЗВРАЩАЕТСЯ ТОТ ЖЕ, когда ничего из нарисованного не
- * изменилось: присвоение того же значения руне не будит ни одного `$derived`, а
- * новый массив с тем же содержимым будит всех. Отдельно сохраняется
- * тождественность каждой не изменившейся вкладки — ради `{#each}` по clientId и
- * ради тех, кто складывает по людям производные списки.
+ * THE SAME previous array IS RETURNED when nothing drawn has changed:
+ * assigning the same value to a rune wakes no `$derived`, while a new array
+ * with the same contents wakes all of them. Separately, the identity of every
+ * unchanged tab is kept — for `{#each}` by clientId and for those who build
+ * derived lists per person.
  *
- * Себя — первым, остальных по имени: этот порядок читает и шапка, и панель
- * людей, и он не должен зависеть от того, в каком порядке приехали кадры.
+ * Oneself first, the rest by name: both the header and the people panel read
+ * this order, and it must not depend on the order the frames arrived in.
  */
 export function nextPeers(
   states: Iterable<readonly [number, { user?: unknown } | undefined]>,
@@ -96,7 +98,7 @@ export function nextPeers(
   const next: Peer[] = []
   for (const [clientId, state] of states) {
     const user = state?.user as AwarenessUser | undefined
-    // Сокет без личности — это страница, которая ещё входит, а не человек.
+    // A socket without an identity is a page still entering, not a person.
     if (!user?.id) continue
     next.push({ clientId, user, isSelf: clientId === self })
   }
@@ -110,22 +112,22 @@ export function nextPeers(
   for (let i = 0; i < next.length; i++) {
     const was = kept.get(next[i].clientId)
     if (was && was.isSelf === next[i].isSelf && samePeerUser(was.user, next[i].user)) next[i] = was
-    // Перестановка — тоже изменение: список рисуется в этом порядке.
+    // A reordering is a change too: the list is drawn in this order.
     if (same && previous[i] !== next[i]) same = false
   }
   return same ? previous : next
 }
 
 /**
- * Люди по участнику, а не по вкладке: `runById` → чьё это лицо.
+ * People by participant, not by tab: `runById` → whose face it is.
  *
- * Карта, а не поиск: «кто запускал» спрашивает КАЖДАЯ ячейка с выводом, и на
- * двухстах ячейках с пятьюстами вкладками поиск перебором — это сто тысяч
- * сравнений на кадр присутствия. Ключ — id участника: имена в комнате не
- * уникальны, две Анны — два человека.
+ * A map, not a search: EVERY cell with output asks "who ran it", and with two
+ * hundred cells and five hundred tabs a linear search is a hundred thousand
+ * comparisons per presence frame. The key is the participant id: names in a
+ * room are not unique, two Annas are two people.
  *
- * Первая вкладка человека и выигрывает: имя, цвет и лицо у всех его вкладок
- * одни и те же, а больше отсюда ничего не читают.
+ * A person's first tab wins: the name, colour and face are the same across
+ * all their tabs, and nothing else is read from here.
  */
 export function peersById(peers: readonly Peer[]): ReadonlyMap<string, AwarenessUser> {
   const byId = new Map<string, AwarenessUser>()

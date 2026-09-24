@@ -12,13 +12,14 @@ test('SIGINT sent to the CLI reaches its delegated process before the wrapper ex
   const fixture = mkdtempSync(join(tmpdir(), 'colloq-signal-'))
   cpSync(join(root, 'cli'), join(fixture, 'cli'), { recursive: true })
   cpSync(join(root, 'shared'), join(fixture, 'shared'), { recursive: true })
-  // Приметы репозитория: с ними и приложение, и состояние — сам стенд, и
-  // `colloq logs` ищет журнал у него, а не в ~/.colloq.
+  // Signs of a repository checkout: with them both the app and the state are
+  // the fixture itself, and `colloq logs` looks for the log there, not in
+  // ~/.colloq.
   writeFileSync(join(fixture, 'package.json'), '{"name":"colloq","type":"module"}')
   writeFileSync(join(fixture, 'Makefile'), '')
   writeFileSync(join(fixture, '.colloq.log'), '')
   mkdirSync(join(fixture, 'bin'))
-  // Подставной tail: печатает свой pid и ждёт, как `tail -f` на живом журнале.
+  // A stand-in tail: prints its pid and waits, like `tail -f` on a live log.
   writeFileSync(join(fixture, 'bin', 'tail'),
     '#!/bin/sh\nexec "$COLLOQ_TEST_NODE" -e \'console.log(process.pid); setInterval(() => {}, 1000)\'\n',
     { mode: 0o755 })

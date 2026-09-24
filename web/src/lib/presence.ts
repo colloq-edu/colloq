@@ -1,21 +1,22 @@
 /**
- * Что эта вкладка объявляет комнате.
+ * What this tab announces to the room.
  *
- * Присутствие — самый болтливый провод в продукте, и врать по нему дешевле
- * всего: кадр уходит на каждое нажатие, а читают его все. Отсюда два решения,
- * которые больше негде принять один раз.
+ * Presence is the chattiest wire in the product, and lying over it is the
+ * cheapest of all: a frame goes out on every keystroke, and everyone reads it.
+ * Hence two decisions that have nowhere else to be made once.
  *
- * Первое — про КОГО вкладка говорит. Про себя, и только про себя: серверу она
- * рассказывает своё состояние, а чужие получает от него же.
+ * The first is about WHOM the tab speaks of. Of itself, and only of itself: it
+ * tells the server its own state and receives other people's from the server.
  *
- * Второе — про ЧТО она говорит. Метка «правит эту ячейку» — утверждение о
- * человеке, и если печатать он там не может, утверждение ложное.
+ * The second is about WHAT it says. The "editing this cell" mark is a
+ * statement about a person, and if they cannot type there, the statement is
+ * false.
  */
 import type * as Y from 'yjs'
 import { findCell, isCellOpen } from '@shared/notebook'
 import { mayEditThisCell, type Permits } from './may'
 
-/** Кадр присутствия, каким его описывает y-protocols: три списка clientID. */
+/** A presence frame as y-protocols describes it: three lists of clientIDs. */
 export interface AwarenessChanges {
   added: number[]
   updated: number[]
@@ -23,20 +24,22 @@ export interface AwarenessChanges {
 }
 
 /**
- * Оставить в кадре только СВОЙ clientID — или null, если своего в нём нет.
+ * Keep only ONE'S OWN clientID in the frame — or null if one's own is not in
+ * it.
  *
- * `y-websocket` шлёт серверу все изменившиеся clientID подряд, включая чужие,
- * только что от него полученные: применение чужого состояния — тоже изменение
- * присутствия, и обработчик провайдера не смотрит, откуда оно пришло. Кадр
- * уезжает обратно тем же сокетом, которым приехал.
+ * `y-websocket` sends the server every changed clientID in a row, including
+ * others' just received from it: applying someone else's state is a presence
+ * change too, and the provider's handler does not look at where it came from.
+ * The frame goes back through the same socket it arrived on.
  *
- * Сервер такое эхо отвергает — `ownAwareness` в server/src/collab/index.ts
- * знает, кого привёл каждый сокет, — но чтобы отвергнуть, он его разбирает. На
- * стенде с 500 вкладками эхо составляло половину из шестнадцати тысяч кадров
- * присутствия в секунду: работа, которой не должно было быть с обеих сторон.
+ * The server rejects such an echo — `ownAwareness` in
+ * server/src/collab/index.ts knows whom each socket brought — but to reject
+ * it, it has to parse it. On a test bench with 500 tabs the echo made up half
+ * of sixteen thousand presence frames per second: work that should not have
+ * existed on either side.
  *
- * null, а не пустой кадр: «нечего сказать» и «сказать, что ничего не
- * изменилось» — разные сообщения, и второе стоит столько же, сколько первое.
+ * null, not an empty frame: "nothing to say" and "saying that nothing has
+ * changed" are different messages, and the second costs as much as the first.
  */
 export function ownChanges(changes: AwarenessChanges, self: number): AwarenessChanges | null {
   const mine = (clients: number[]): number[] => clients.filter((id) => id === self)
@@ -48,22 +51,23 @@ export function ownChanges(changes: AwarenessChanges, self: number): AwarenessCh
 }
 
 /**
- * Ячейка, про которую комнате честно сказать «он её правит», — или null.
+ * The cell about which the room can honestly be told "they are editing it" —
+ * or null.
  *
- * Выделение и правка перестали быть одним и тем же в тот день, когда появился
- * замок: студент щёлкает по закрытой ячейке, чтобы прочитать её или спросить
- * про неё, — и у всей комнаты рядом с ней появлялась его метка «редактирует
- * здесь». Печатать он там не может, и метка была неправдой.
+ * Selecting and editing stopped being the same thing the day the lock
+ * appeared: a student clicks a closed cell to read it or ask about it — and
+ * for the whole room their "editing here" mark appeared next to it. They
+ * cannot type there, and the mark was untrue.
  *
- * Выделение при этом остаётся: оно про то, куда человек смотрит, и живёт в его
- * браузере. В присутствие уходит только то, что он вправе делать, и спрашивает
- * это тот же `mayEditCell`, которым отвечает сервер.
+ * The selection stays, though: it is about where the person is looking, and
+ * it lives in their browser. Only what they are entitled to do goes into
+ * presence, and it is asked of the same `mayEditCell` the server answers with.
  */
 export function cellToAnnounce(doc: Y.Doc, id: string | null, may: Permits): string | null {
   if (!id) return null
   const found = findCell(doc, id)
-  // Ячейку могли удалить у нас под курсором: указывать на то, чего нет, —
-  // такая же неправда, только другого рода.
+  // The cell may have been deleted right under our cursor: pointing at what
+  // does not exist is the same untruth, only of another kind.
   if (!found) return null
   return mayEditThisCell(may, isCellOpen(found.cell)) ? id : null
 }

@@ -1,14 +1,15 @@
 /**
- * Клиент дверей `/api/k` — всё, что спрашивают страницы соревнований.
+ * The client of the `/api/k` doors — everything the competition pages ask.
  *
- * Свой, а не `lib/api.ts` и не `lib/adminApi.ts`, ровно по той же границе, по
- * которой разведены двери на сервере: у комнаты запрос подписан токеном
- * участника занятия, у панели — печеньем преподавателя, а здесь — печеньем
- * участника соревнования, и ни одно из трёх не должно случайно оказаться на
- * чужой двери. Общего у них только разбор отказа, и он в каждом свой потому,
- * что тела отказов разные: здесь это `{error, reason}` с `CompetitionRefusal`,
- * и `reason` — то, на что ветвится экран (поле ключа после `key_disabled`
- * предлагает спросить новый, зона загрузки после `quota` гаснет до завтра).
+ * Its own, not `lib/api.ts` and not `lib/adminApi.ts`, along exactly the same
+ * border along which the doors are separated on the server: a room request is
+ * signed with a class participant's token, a panel one with the teacher's
+ * cookie, and here with a competition entrant's cookie, and none of the three
+ * must accidentally end up at someone else's door. All they share is refusal
+ * parsing, and each has its own because the refusal bodies differ: here it is
+ * `{error, reason}` with `CompetitionRefusal`, and `reason` is what the screen
+ * branches on (after `key_disabled` the key field offers to ask for a new one,
+ * after `quota` the upload zone goes dark until tomorrow).
  */
 import { tr } from '@shared/i18n'
 import type { CompetitionRefusal } from '@shared/competitions'
@@ -29,7 +30,7 @@ export class EntrantApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    /** `network` — сети не было вовсе; остальное называет сервер. */
+    /** `network` — there was no network at all; the server names the rest. */
     readonly reason: CompetitionRefusal | 'network',
   ) {
     super(message)
@@ -48,8 +49,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(`${BASE}${path}`, {
       ...init,
-      // Печенье участника — HttpOnly, и браузер не прикладывает его сам даже
-      // на свой же адрес: без этой строки каждая дверь отвечала бы «войдите».
+      // The entrant's cookie is HttpOnly, and the browser does not attach it by
+      // itself even to its own origin: without this line every door would answer
+      // "sign in".
       credentials: 'include',
       headers: {
         ...(init?.body && !(init.body instanceof FormData)
@@ -59,8 +61,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       },
     })
   } catch (cause: unknown) {
-    // «Failed to fetch» — фраза из отладчика, одинаковая для упавшего сервера,
-    // оборванного вайфая и закрытого туннеля. Ни одного из них она не называет.
+    // "Failed to fetch" is a debugger phrase, the same for a crashed server, a
+    // dropped Wi-Fi and a closed tunnel. It names none of them.
     if (cause instanceof TypeError) {
       throw new EntrantApiError(tr('common.networkError'), 0, 'network')
     }
@@ -74,7 +76,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       if (body?.error) message = body.error
       if (body?.reason) reason = body.reason
     } catch {
-      /* тело отказа не json — остаётся фраза по коду */
+      /* the refusal body is not JSON — the phrase by status code stays */
     }
     throw new EntrantApiError(message, res.status, reason)
   }
@@ -85,13 +87,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const json = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) })
 
 export const entrantApi = {
-  /* ------------------------------------------------------------ личность */
+  /* ------------------------------------------------------------ identity */
 
   me: () => request<EntrantMe>('/me'),
   signIn: (key: string) => request<EntrantMe>('/sign-in', json({ key })),
   signOut: () => request<{ ok: boolean }>('/sign-out', { method: 'POST' }),
 
-  /* -------------------------------------------------------- соревнования */
+  /* -------------------------------------------------------- competitions */
 
   list: () => request<EntrantCompetitionList>('/competitions'),
   competition: (slug: string) =>
@@ -101,17 +103,17 @@ export const entrantApi = {
   leaderboard: (slug: string) =>
     request<EntrantLeaderboard>(`/competitions/${encodeURIComponent(slug)}/leaderboard`),
 
-  /* -------------------------------------------------------------- посылки */
+  /* ---------------------------------------------------------- submissions */
 
   submissions: (slug: string) =>
     request<EntrantSubmissions>(`/competitions/${encodeURIComponent(slug)}/submissions`),
 
   /**
-   * Отправка тетради — многочастным телом, без нашего `content-type`.
+   * Sending a notebook — as a multipart body, without our `content-type`.
    *
-   * Границу многочастного тела знает только браузер, и подписанное нами
-   * `application/json` превратило бы загрузку в запрос, который сервер
-   * разобрать не может (та же причина, что у `sendForm` в adminApi).
+   * Only the browser knows the multipart boundary, and an `application/json`
+   * label from us would turn the upload into a request the server cannot
+   * parse (the same reason as for `sendForm` in adminApi).
    */
   send: (slug: string, file: File, bundleId?: string | null) => {
     const form = new FormData()
@@ -149,16 +151,16 @@ export const entrantApi = {
   dependencyStreamUrl: (slug: string, id: string) => `${BASE}/competitions/${encodeURIComponent(slug)}/dependencies/${encodeURIComponent(id)}/stream`,
   dependencyLockUrl: (slug: string, id: string) => `${BASE}/competitions/${encodeURIComponent(slug)}/dependencies/${encodeURIComponent(id)}/lock`,
 
-  /* ---------------------------------------------------------------- адреса */
+  /* ------------------------------------------------------------- addresses */
 
-  /** Адрес живого потока (`EventSource`), а не сам поток: его открывает экран. */
+  /** The live stream's address (`EventSource`), not the stream: the screen opens it. */
   streamUrl: (slug: string) => `${BASE}/competitions/${encodeURIComponent(slug)}/stream`,
 
-  /** Файл открытых данных — ссылкой, чтобы скачивал браузер, а не мы. */
+  /** A public data file — as a link, so that the browser downloads it, not us. */
   fileUrl: (slug: string, name: string) =>
     `${BASE}/competitions/${encodeURIComponent(slug)}/files/${encodeURIComponent(name)}`,
 
-  /** Своя тетрадь: исполненная, а до конца прогона — присланная. */
+  /** One's own notebook: the executed one, and until the run finishes — the one sent. */
   notebookUrl: (slug: string, id: string) =>
     `${BASE}/competitions/${encodeURIComponent(slug)}/submissions/${encodeURIComponent(id)}/notebook`,
 }

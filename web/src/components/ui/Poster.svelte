@@ -17,11 +17,11 @@
     /** Tailwind width class — join runs wider than sign-in. */
     width?: string
     /**
-     * Организация инстанса, рядом с логотипом. Пусто — её нет.
+     * The instance's organisation, next to the logo. Empty means there is none.
      *
-     * Не читается здесь из чего-нибудь глобального нарочно: у постера входа в
-     * семинар строка приезжает вместе с карточкой комнаты, а у постера входа в
-     * панель карточки комнаты нет вовсе — и не должно быть.
+     * Deliberately not read here from anything global: on the seminar join
+     * poster the line arrives together with the room card, and the panel
+     * sign-in poster has no room card at all — nor should it.
      */
     institution?: string
     /**

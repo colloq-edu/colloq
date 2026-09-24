@@ -1,16 +1,18 @@
 import type { CompetitionCapabilities } from './capabilities.js'
 /**
- * Что страницы `/k` спрашивают у сервера и что он отвечает.
+ * What the `/k` pages ask the server and what it answers.
  *
- * Отдельно от `shared/competitions-api.ts` по той же границе, по которой
- * разведены двери: там ответы `/api/admin` — с кодом метрики, приватными
- * числами и ключами входа, здесь ответы `/api/k` — то, что можно показать
- * кому угодно с адресом соревнования. Один файл на оба набора означал бы, что
- * поле, дописанное в строку панели, уезжает участнику молча.
+ * Kept apart from `shared/competitions-api.ts` along the same border that
+ * separates the doors: there live the `/api/admin` answers — with the metric
+ * code, private numbers and sign-in keys; here the `/api/k` answers — what may
+ * be shown to anyone who has the competition's address. One file for both
+ * sets would mean that a field added to a panel row travels to the
+ * participant silently.
  *
- * Типы общие для сервера и браузера нарочно: экран участника и дверь, которая
- * его кормит, расходятся тихо — ответ становится на поле короче, страница
- * рисует `undefined` там, где было место, и никто ничего не замечает до пары.
+ * The types are shared by the server and the browser on purpose: a
+ * participant's screen and the door that feeds it drift apart quietly — the
+ * answer becomes one field shorter, the page draws `undefined` in the spot
+ * where a value was, and nobody notices anything until the class.
  */
 import type {
   CompetitionPublic,
@@ -19,39 +21,39 @@ import type {
   SubmissionStage,
 } from './competitions.js'
 
-/** Открыт ли приём — то же слово, что возвращает `submissionsOpen`. */
+/** Whether submissions are accepted — the same word `submissionsOpen` returns. */
 export type Accepting = 'open' | 'not_open' | 'closed'
 
-/** Кто я и чем возвращаюсь: карточка «ВАШ КЛЮЧ ВХОДА» (P1). */
+/** Who I am and how I get back in: the "YOUR SIGN-IN KEY" card (P1). */
 export interface EntrantMe {
   entrant: Entrant | null
-  /** `K7Q-M2X-9FD` — только своему хозяину. */
+  /** `K7Q-M2X-9FD` — only to its owner. */
   key: string | null
-  /** Полный адрес ссылки для входа; null, если ключа нет. */
+  /** The full address of the sign-in link; null when there is no key. */
   link: string | null
 }
 
-/** Что человек знает о себе в одном соревновании — блок «ВЫ» карточки P1. */
+/** What a person knows about themselves in one competition — the "YOU" block of the P1 card. */
 export interface EntrantStanding {
   joined: boolean
   place: number | null
   score: number | null
   submissions: number
-  /** Ждут очереди или исполняются прямо сейчас. */
+  /** Waiting in the queue or running right now. */
   inFlight: number
-  /** Сколько посылок осталось сегодня; null — предела нет. */
+  /** How many submissions are left today; null — there is no limit. */
   leftToday: number | null
 }
 
-/** Открытый файл данных на скачивание. */
+/** An open data file for download. */
 export interface EntrantFile {
   name: string
   bytes: number
-  /** Строк в таблице; null — файл не CSV или слишком велик, чтобы считать. */
+  /** Rows in the table; null — the file is not CSV or is too big to count. */
   rows: number | null
 }
 
-/** Строка списка соревнований (P1). */
+/** A row of the list of competitions (P1). */
 export interface EntrantCompetitionRow {
   competition: CompetitionPublic
   entrants: number
@@ -59,7 +61,7 @@ export interface EntrantCompetitionRow {
   bestPublic: number | null
   baselinePublic: number | null
   privateOpen: boolean
-  /** null — человек не вошёл: ключа у него ещё нет. */
+  /** null — the person has not joined: they have no key yet. */
   mine: EntrantStanding | null
 }
 
@@ -68,7 +70,7 @@ export interface EntrantCompetitionList {
   competitions: EntrantCompetitionRow[]
 }
 
-/** Страница одного соревнования: задача, файлы, условия проверки. */
+/** The page of one competition: the task, the files, the checking conditions. */
 export interface EntrantCompetitionView {
   capabilities?: CompetitionCapabilities
   competition: CompetitionPublic
@@ -83,12 +85,13 @@ export interface EntrantCompetitionView {
 }
 
 /**
- * Строка лидерборда.
+ * A leaderboard row.
  *
- * Имя и место — всем; `you` отмечает свою строку (её подсвечивают целиком), а
- * `number` и то, ЧЕМ посылка попала в зачёт, рисуют колонку «ПОСЫЛКА В ЗАЧЁТ»
- * (P3). Приватного числа до открытия итогов здесь нет вовсе: таблица
- * приходит пустой, а не нулевой.
+ * Name and place go to everyone; `you` marks one's own row (it is highlighted
+ * whole), and `number` together with HOW the submission came to count draw
+ * the "SUBMISSION THAT COUNTS" column (P3). Before the final results are
+ * opened there is no private number here at all: that table arrives empty,
+ * not zeroed.
  */
 export interface EntrantBoardLine {
   place: number
@@ -96,54 +99,55 @@ export interface EntrantBoardLine {
   name: string
   score: number
   submissionId: string
-  /** «#12» в колонке «ПОСЫЛКА В ЗАЧЁТ». */
+  /** "#12" in the "SUBMISSION THAT COUNTS" column. */
   number: number
-  /** Автор выбрал её сам — иначе это лучшая по публичной части. */
+  /** The author picked it themselves — otherwise it is the best on the public part. */
   chosen: boolean
-  /** Сколько посылок у человека за всё соревнование. */
+  /** How many submissions the person has over the whole competition. */
   submissions: number
-  /** Строка базового решения: в макете она отбита пунктиром внизу таблицы. */
+  /** The baseline's row: the mockup sets it off with a dashed line at the bottom. */
   baseline: boolean
   you: boolean
 }
 
 export interface EntrantLeaderboard {
   public: EntrantBoardLine[]
-  /** `null` — итоги ещё закрыты. Это не «пусто»: под них нельзя подогнаться. */
+  /** `null` — the final results are still closed. Not "empty": nobody can fit to them. */
   private: EntrantBoardLine[] | null
   privateOpen: boolean
   baselinePublic: number | null
 }
 
 /**
- * Живое состояние посылки, которая ещё идёт.
+ * The live state of a submission that is still in progress.
  *
- * Отдельно от самой посылки, а не полями в ней: строка посылки лежит в базе и
- * меняется на переходах, а это — очередь, которая перестраивается от чужих
- * работ. Держать их вместе значило бы переписывать посылку каждый раз, когда
- * кто-то другой прислал свою.
+ * Separate from the submission itself rather than fields in it: a submission
+ * row lives in the database and changes on transitions, while this is a queue
+ * that rearranges itself because of other people's jobs. Keeping them
+ * together would mean rewriting the submission every time somebody else sent
+ * theirs.
  */
 export interface SubmissionLive {
   submissionId: string
-  /** Место в очереди ВСЕГО инстанса, с единицы; null — уже исполняется. */
+  /** Place in the queue of the WHOLE instance, counting from one; null — already running. */
   place: number | null
-  /** «≈ 6 мин»; null — мерить не по чему, соревнование ещё ничего не считало. */
+  /** "≈ 6 min"; null — nothing to measure by, the competition has not scored anything yet. */
   etaMs: number | null
-  /** Планировщик пока не нашёл ресурсы для запуска Pod; повтор произойдёт автоматически. */
+  /** The scheduler has not found resources to start the Pod yet; it will retry automatically. */
   resourcePending?: boolean
-  /** Когда взяли в работу; null — ещё ждёт. */
+  /** When it was taken up; null — still waiting. */
   startedAt: number | null
-  /** Правая половина «01:12 из 10:00». */
+  /** The right half of "01:12 of 10:00". */
   limitMs: number
-  /** Номер СВОЕЙ посылки прямо перед этой; null — впереди только чужие. */
+  /** Number of one's OWN submission right before this one; null — only other people's are ahead. */
   aheadNumber: number | null
-  /** Докуда дошла — то же, что в посылке, но обновляется потоком. */
+  /** How far it got — the same as in the submission, but updated by the stream. */
   stage: SubmissionStage
   cellsDone: number
   cellsTotal: number
 }
 
-/** «Мои посылки» (P2, P4) — и всё, чем распоряжается зона отправки. */
+/** "My submissions" (P2, P4) — and everything the submit area controls. */
 export interface EntrantSubmissions {
   submissions: EntrantSubmission[]
   leftToday: number | null
@@ -151,13 +155,13 @@ export interface EntrantSubmissions {
   inFlight: number
   accepting: Accepting
   joined: boolean
-  /** Только про те посылки, что ещё идут; у остальных живого нечему быть. */
+  /** Only for submissions still in progress; the rest have nothing live about them. */
   live: SubmissionLive[]
-  /** Очередь инстанса остановлена преподавателем — ждущие стоят не просто так. */
+  /** The teacher has paused the instance queue — the waiting ones are held for a reason. */
   paused: boolean
 }
 
-/** Ответ на отправку тетради. */
+/** The answer to sending a notebook. */
 export interface SubmissionAccepted {
   submission: EntrantSubmission
   leftToday: number | null

@@ -1,25 +1,30 @@
 <!--
-  Ссылка, которой преподаватель отдаёт свой пульт планшету.
+  The link with which a teacher hands their console over to a tablet.
 
-  Лекцию ведут с айпада — страницу листают пальцем, пишут Pencil'ом, — а
-  ноутбук у проектора остаётся показывать. Чтобы планшет стал пультом, он
-  должен войти в комнату ТЕМ ЖЕ человеком: иначе в списке появится второй
-  «Ада», а вести лекцию по правилу `board` будет некому.
+  A lecture is run from an iPad — the page is turned with a finger and
+  written on with the Pencil — while the laptop at the projector stays to
+  show it. For the tablet to become the console, it has to join the room as
+  THE SAME person: otherwise a second "Ada" appears in the list, and there
+  is nobody to run the lecture under the `board` rule.
 
-  Вводить имя и пароль на планшете нечего — их в этом продукте нет вовсе.
-  Поэтому ссылка: короткоживущий ключ на обмен (десять минут, один раз), и о
-  том, что он пускает в комнату ВАМИ, здесь сказано прямо. Не токен: тем же
-  адресом нельзя ни открыть сокет, ни скачать файл.
+  There is no name and password to type on the tablet — this product has
+  none at all. Hence a link: a short-lived exchange key (ten minutes, one
+  use), and the fact that it lets you into the room AS YOU is said plainly
+  here. Not a token: the same address can neither open a socket nor
+  download a file.
 
-  Кнопка «Поделиться» — не украшение: с макбука это ровно тот системный лист,
-  из которого ссылка уезжает на планшет по AirDrop одним касанием. Где листа
-  нет, остаётся буфер обмена, и она молча становится «скопировать».
+  The "Share" button is not decoration: on a MacBook it is exactly the
+  system sheet from which the link goes to the tablet over AirDrop with one
+  tap. Where there is no sheet, the clipboard remains, and the button
+  silently becomes "copy".
 
-  ОДНА НА ДВА ПУЛЬТА. Пульт консилиума отдают телефону тем же движением и с тем
-  же ключом — разного в них ровно три вещи: хвост адреса (ячейка вместо
-  лекции), слово на кнопке и то, ЧЕМ эта ссылка опасна. Поэтому здесь не проп
-  «куда вести», а проп «какой пульт»: слова про чужие работы обязаны стоять
-  рядом со ссылкой, которая их открывает, и оторваться от неё не должны.
+  ONE FOR TWO CONSOLES. The council console is handed to a phone with the
+  same move and the same key — exactly three things differ between them:
+  the address tail (a cell instead of the lecture), the word on the button
+  and WHAT makes this link dangerous. That is why the prop here is not
+  "where to lead" but "which console": the words about other people's work
+  must stand next to the link that opens it and must not come apart from
+  it.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -30,16 +35,16 @@
   import { seminarLink } from '@/lib/seminar-link'
 
   interface Props {
-    /** Как выглядит кнопка в своей полосе — классы у полос разные. */
+    /** How the button looks in its own bar — the bars have different classes. */
     class?: string
     /**
-     * Ячейка пульта консилиума. `null` — пульт лекции, один на комнату.
+     * The council console's cell. `null` — the lecture console, one per room.
      *
-     * Он же решает и слова: за ссылкой консилиума лежат чужие работы целиком, и
-     * сказать об этом обязано то же место, что выдаёт ссылку.
+     * It decides the words too: behind a council link lie other people's work
+     * in full, and the same place that hands out the link has to say so.
      */
     cellId?: string | null
-    /** Подпись у кнопки; значок стоит всегда. `false` — только значок. */
+    /** The button's caption; the icon is always there. `false` — icon only. */
     caption?: boolean
   }
 
@@ -47,19 +52,21 @@
 
   const session = getSessionState()
   const council = $derived(cellId !== null)
-  /** Хвост за `/s/:id` — тот же разбор, что в lib/routes.ts. */
+  /** The tail after `/s/:id` — the same parsing as in lib/routes.ts. */
   const tail = $derived(council ? `/council/${cellId}` : '/pult')
 
   let open = $state(false)
   let anchor = $state<HTMLButtonElement | null>(null)
   /**
-   * Где стоит панель — считается от кнопки и зажимается в окно.
+   * Where the panel stands — computed from the button and clamped to the
+   * window.
    *
-   * Была `absolute right-0`, то есть «правым краем по правому краю кнопки», и
-   * на 390 px это уводило её за ЛЕВУЮ кромку экрана: панель шире 360, а кнопка
-   * стоит в середине полосы. С телефона тогда не прочитать ни предупреждения,
-   * ни самой ссылки — ровно того, ради чего панель и открывают. `fixed` ещё и
-   * не режется прокручиваемой полосой, в которой кнопка живёт.
+   * It used to be `absolute right-0`, that is, "right edge to the button's
+   * right edge", and at 390 px that pushed it past the LEFT edge of the
+   * screen: the panel is wider than 360, and the button sits in the middle of
+   * the bar. On a phone neither the warning nor the link itself could be
+   * read then — exactly what the panel is opened for. `fixed` is also not
+   * clipped by the scrolling bar the button lives in.
    */
   let at = $state<{ left: number; top: number; width: number } | null>(null)
   const GAP = 12
@@ -88,17 +95,19 @@
     failureRender = () => (null)
     try {
       const res = await api.handoff(session.session.id, session.token)
-      // Не от адресной строки: комнату чаще всего ведут с localhost, и такую
-      // ссылку планшет не откроет вовсе. Из двух адресов выбирает то же
-      // правило, что и в панели (seminar-link.ts), а хвост экрана и `/t/<ключ>`
-      // дописываются к готовому `<origin>/s/<id>`.
+      // Not from the address bar: a room is most often run from localhost,
+      // and the tablet cannot open such a link at all. The same rule as in
+      // the panel (seminar-link.ts) picks between the two addresses, and the
+      // screen's tail and `/t/<key>` are appended to the finished
+      // `<origin>/s/<id>`.
       link = `${seminarLink(res.origin, location.origin, session.session.id)}${tail}/t/${res.key}`
       minutes = Math.max(1, Math.round(res.livesMs / 60_000))
       place()
       open = true
     } catch (cause: unknown) {
-      // И прежний ключ с экрана убираем: он уже мог быть потрачен, а отказ над
-      // живой на вид ссылкой — это два противоположных утверждения разом.
+      // The previous key goes off the screen too: it may already have been
+      // spent, and a refusal above a link that looks alive is two opposite
+      // statements at once.
       link = null
       failureRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.142'))
       place()
@@ -115,10 +124,11 @@
       copied = true
       setTimeout(() => (copied = false), 1600)
     } catch {
-      // Буфер обмена может быть закрыт политикой браузера. Ссылка на экране —
-      // и есть запасной ход: её видно целиком и она выделяется одним нажатием.
-      // Поэтому отказ рисуется НАД ссылкой, а не вместо неё (см. разметку):
-      // совет выделить ссылку, которую он же и убрал, — это тупик.
+      // The clipboard may be closed off by browser policy. The link on screen
+      // is the fallback: it is visible in full and is selected with one
+      // press. That is why the refusal is drawn ABOVE the link, not instead
+      // of it (see the markup): advice to select a link that the same advice
+      // removed is a dead end.
       failureRender = () => (tr('room.ui.143'))
     }
   }
@@ -128,7 +138,7 @@
     try {
       await navigator.share({ get title() { return tr(council ? 'room.pult.v3.shareTitle' : 'room.ui.144') }, url: link })
     } catch {
-      // Лист закрыли, ничего не выбрав, — это не ошибка и говорить о ней нечего.
+      // The sheet was closed with nothing chosen — not an error, nothing to say.
     }
   }
 </script>
@@ -147,7 +157,7 @@
     <Icon name={busy ? 'spinner' : 'link'} size={12} class={busy ? 'animate-spin' : ''} />{#if caption} {tr(council ? 'room.pult.v3.toPhone' : 'room.ui.133')} {/if}</button>
 
   {#if open && at}
-    <!-- Под кнопкой и в пределах окна: см. `place`. -->
+    <!-- Under the button and within the window: see `place`. -->
     <div
       class="fixed z-40 border border-line bg-raised p-3 text-left shadow-pop"
       style={`left:${at.left}px; top:${at.top}px; width:${at.width}px`}
@@ -155,29 +165,32 @@
       aria-label={tr(council ? 'room.pult.v3.shareTitle' : 'room.ui.134')}
     >
       <!--
-        Отказ и ссылка — два независимых блока, а не ветки одного. Отказ
-        копирования говорит «ссылка на экране — выделите её», и пока это была
-        ветка `{:else}`, он же эту ссылку с экрана и убирал: оставались две
-        кнопки, одна из которых упадёт снова, и «Обновить», сжигающий ключ.
+        The refusal and the link are two independent blocks, not branches of
+        one. The copy refusal says "the link is on screen — select it", and
+        while this was an `{:else}` branch, the refusal itself removed that
+        link from the screen: what remained were two buttons, one of which
+        would fail again, and "Refresh", which burns the key.
       -->
       {#if failure}
         <p class="pb-2 text-ui leading-snug text-danger">{failure}</p>
       {/if}
       {#if link}
         <!--
-          «До первого открытия» здесь можно обещать: сервер гасит ключ первым же
-          обменом (auth.ts, `spendHandoffToken`), так что десять минут — верхний
-          предел, а не окно, в котором ссылка ждёт всех подряд. Пока сервер ключ
-          не гасил, три места в продукте говорили «годится один раз», и ни одно
-          не было правдой.
+          "Until first opened" can be promised here: the server burns the
+          key on the very first exchange (auth.ts, `spendHandoffToken`), so
+          ten minutes is an upper limit, not a window in which the link waits
+          for anyone at all. While the server did not burn the key, three
+          places in the product said "good for one use", and none of them was
+          true.
         -->
         <p class="pb-2 text-2xs leading-snug text-muted"> {tr('room.ui.135')} {minutes} {tr('room.ui.136')} </p>
         <!--
-          И чем эта ссылка опасна — своими словами, а не общим «не отправляйте
-          другим». Пульт консилиума за одним адресом держит весь класс целиком:
-          имена, черновики, ошибки и отметки. Тот же довод уже стоит на отказе
-          не-преподавателю внутри пульта (PultWindow · room.ui.1358), и говорить
-          его в двух местах по-разному нельзя.
+          And what makes this link dangerous — in its own words, not a
+          generic "do not send it to others". The council console holds the
+          whole class behind one address: names, drafts, errors and grades.
+          The same argument already stands on the refusal to a non-teacher
+          inside the console (PultWindow · room.ui.1358), and it must not be
+          worded differently in two places.
         -->
         {#if council}
           <p class="pb-2 text-2xs leading-snug text-warning" data-console-link-danger>

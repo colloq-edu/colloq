@@ -10,12 +10,14 @@ import { tr } from '@shared/i18n'
  *
  * That single origin is also the whole delivery story: there is no CDN in front
  * of it and no proxy to add compression or cache headers, so the server does
- * both itself — в app.ts, где собрано приложение целиком. Здесь остаётся то,
- * что относится к ПРОЦЕССУ: сокеты, порт, сигналы и остановка.
+ * both itself — in app.ts, where the whole application is assembled. What
+ * stays here is what belongs to the PROCESS: sockets, the port, signals and
+ * shutdown.
  */
-// Первым: он правит console, а импорты поднимаются наверх — всё, что модули
-// печатают при загрузке, должно застать уже исправленную. Имена из него берутся
-// здесь же — это тот самый модуль, а не второй: журнал у процесса один.
+// First: it patches console, and imports are hoisted, so everything modules
+// print while loading must find console already patched. Names from it are
+// imported right here: this is that same module, not a second one, since a
+// process has one journal.
 import { startJournal, stopJournal } from './log.js'
 import { retireDatabaseKernels, stopsLocalKernelsOnExit } from './local/kernel-cleanup.js'
 import { dropLocalRoomKernel, warmRoomPerimeter } from './kernel/pool.js'
@@ -54,12 +56,14 @@ const MAX_WS_PAYLOAD = 16 * 1024 * 1024
 const SHUTDOWN_GRACE_MS = stopsLocalKernelsOnExit() ? 70000 : 8000
 const UPGRADE_PATH = /^\/(collab|control)\/([A-Za-z0-9_-]{1,64})\/?$/
 /*
- * У файла в адресе два отрезка: комната и сам файл, путь в base64url.
+ * A file's address has two segments: the room and the file itself, the path
+ * in base64url.
  *
- * Путь ушёл из строки запроса в адрес не ради красоты: y-websocket заводит
- * BroadcastChannel по адресу без параметров, и два разных файла одной комнаты,
- * открытые в двух вкладках браузера, оказывались в одном канале — правки одного
- * приезжали в документ другого. Имя комнаты обязано быть разным.
+ * The path moved from the query string into the address not for looks:
+ * y-websocket opens a BroadcastChannel keyed by the address without its
+ * parameters, and two different files of one room, open in two browser tabs,
+ * ended up in one channel, so the edits of one arrived in the other's
+ * document. The room name has to differ.
  */
 const FILE_PATH = /^\/file\/([A-Za-z0-9_-]{1,64})\/([A-Za-z0-9_-]{1,2048})\/?$/
 
@@ -76,12 +80,13 @@ const wss = new WebSocketServer({
      * and more latency than the bytes are worth. The frames that matter are the
      * initial sync steps, which are tens of kilobytes and compress well.
      *
-     * Это НИЖНЯЯ граница: мельче — не сжимать. Верхняя нужна тоже (двухмегабайтная
-     * картинка в base64 сжимается на четверть, а стоит пятисот заданий zlib —
-     * сжатие здесь на сокет, а не на кадр), но выразить её этой настройкой
-     * нельзя: она сняла бы сжатие как раз с тех первых шагов, ради которых
-     * заведена. Поэтому потолок стоит на месте отправки, где виден размер
-     * кадра, — `MAX_DEFLATE_BYTES` в collab/index.ts.
+     * This is the LOWER bound: anything smaller is not compressed. An upper
+     * one is needed too (a two-megabyte base64 image compresses by a quarter
+     * but costs as much as five hundred zlib jobs, since compression here is
+     * per socket, not per frame), but this setting cannot express it: it
+     * would take compression away from exactly those first steps it exists
+     * for. So the ceiling sits where the frame is sent and its size is
+     * visible: `MAX_DEFLATE_BYTES` in collab/index.ts.
      */
     threshold: 8 * 1024,
     zlibDeflateOptions: { level: 4, memLevel: 8 },
@@ -97,16 +102,18 @@ const wss = new WebSocketServer({
 })
 
 /**
- * «Был здесь» — не на каждое рукопожатие, а раз в несколько секунд пачкой.
+ * "Was here" is recorded not on every handshake but once every few seconds,
+ * in a batch.
  *
- * Отметка ставилась UPDATE'ом прямо здесь, а сокетов у одной вкладки два:
- * пятьсот вернувшихся вкладок — это тысяча отдельных транзакций в ту самую
- * секунду, когда все ждут возврата комнаты. Читает отметку список людей, и
- * несколько секунд опоздания в ней не значат ничего; момент времени берётся
- * тот, когда человек пришёл, а не тот, когда до него дошла запись.
+ * The mark used to be set with an UPDATE right here, and a tab has two
+ * sockets: five hundred returning tabs are a thousand separate transactions
+ * in the very second when everyone is waiting for the room to come back. The
+ * mark is read by the list of people, and a few seconds of delay in it mean
+ * nothing; the time recorded is when the person arrived, not when the write
+ * got to them.
  *
- * Ключ — множество: та же вкладка своими двумя сокетами (и своим повторным
- * подключением) отмечается один раз.
+ * The key is a set: the same tab with its two sockets (and its reconnect) is
+ * marked once.
  */
 const LAST_SEEN_EVERY_MS = 5_000
 const lastSeenPending = new Set<string>()
@@ -121,9 +128,9 @@ function flushLastSeen(): void {
   const batch = [...lastSeenPending]
   lastSeenPending.clear()
   try {
-    // Время — одно на всю пачку: точность «был здесь» ближе пяти секунд не
-    // нужна никому, а своё время у каждого означало бы транзакцию на каждого,
-    // то есть ровно то, от чего пачка и заводится.
+    // One time for the whole batch: nobody needs "was here" accurate to less
+    // than five seconds, and a time of its own for each would mean a
+    // transaction for each, which is exactly what the batch exists to avoid.
     touchLastSeenAll(batch)
   } catch {
     /* presence bookkeeping must never cost anybody their connection */
@@ -146,12 +153,13 @@ function reject(socket: Duplex): void {
 }
 
 /**
- * Забаненному — отказ до апгрейда, теми же словами, что и на входе.
+ * A banned user is refused before the upgrade, in the same words as at the
+ * entrance.
  *
- * С телом, хотя браузер его и не покажет: WebSocket не отдаёт странице ни
- * кода, ни ответа — только «не открылось». Читать эти строки будет тот, кто
- * полезет разбираться (вкладка «Сеть», curl, журнал прокси), и «403 и почему»
- * там стоит ровно столько, сколько стоит вечер догадок.
+ * With a body, even though the browser will not show it: WebSocket gives the
+ * page neither the code nor the response, only "did not open". These lines
+ * will be read by whoever digs into it (the Network tab, curl, a proxy log),
+ * and "403 and why" there is worth exactly as much as an evening of guessing.
  */
 function refuseBanned(socket: Duplex, ban: BanInForce): void {
   const body = Buffer.from(JSON.stringify(banRefusal(ban)), 'utf8')
@@ -165,13 +173,14 @@ function refuseBanned(socket: Duplex, ban: BanInForce): void {
 }
 
 /**
- * Роль этого соединения — решается сейчас, а не читается из токена.
+ * This connection's role is decided now, not read from the token.
  *
- * Роль, зашитая в токен при входе, — это роль, которую нельзя отобрать:
- * преподаватель, убранный из списка, сохранял Restart во всех комнатах,
- * которые когда-либо открывал. Сокет перепроверяется на каждом переподключении,
- * так что выход из панели снимает права за секунды. Считает `roleFor` —
- * та же самая, что и на HTTP-стороне, чтобы двум входам было негде разойтись.
+ * A role baked into the token at sign-in is a role that cannot be taken away:
+ * a teacher removed from the list kept Restart in every room they had ever
+ * opened. The socket is re-checked on every reconnect, so leaving the panel
+ * takes the rights away within seconds. The decision is made by `roleFor`,
+ * the same one as on the HTTP side, so the two entrances have nowhere to
+ * diverge.
  */
 function effectiveRole(
   req: { headers: { cookie?: string } },
@@ -180,7 +189,7 @@ function effectiveRole(
   return roleFor(req.headers.cookie, payload)
 }
 
-/** Имя комнаты файла обратно в путь. Кривая строка — это просто не путь. */
+/** A file room's name back into a path. A malformed string is just not a path. */
 function decodeRoom(room: string): string {
   try {
     return Buffer.from(room, 'base64url').toString('utf8')
@@ -216,26 +225,28 @@ server.on('upgrade', (req, socket, head) => {
   // a snapshot row for a seminar the owner already destroyed.
   if (!getSession(sessionId) || kernelRetirementInProgress(sessionId)) return reject(socket)
   /*
-   * Бан закрывает все три двери сразу — тетрадь, пульт и файл.
+   * A ban closes all three doors at once: the notebook, the console and the
+   * file.
    *
-   * Здесь, до апгрейда: сокет, открытый забаненному «просто чтобы посмотреть»,
-   * — это его курсор в чужой тетради и его строки в общем терминале, то есть
-   * ровно то, ради чего банили. Проверка та же, что и на входе (bans.ts ·
-   * banFor), поэтому разойтись двум ответам негде.
+   * Here, before the upgrade: a socket opened to a banned user "just to look"
+   * is their cursor in someone else's notebook and their lines in the shared
+   * terminal, which is exactly what they were banned for. The check is the
+   * same as at the entrance (bans.ts · banFor), so the two answers have
+   * nowhere to diverge.
    */
   const ban = banFor(sessionId, payload.participantId, req.headers.cookie)
   if (ban) return refuseBanned(socket, ban)
 
   wss.handleUpgrade(req, socket, head, (ws) => {
     /*
-     * Всё тело — под try, и это не перестраховка.
+     * The whole body is under try, and this is not overcaution.
      *
-     * ws зовёт этот колбэк без своего перехвата, так что синхронное исключение
-     * отсюда уходит в `uncaughtException`, а тот завершает процесс: одна кривая
-     * печенька в заголовке одного участника (её разбирает effectiveRole)
-     * закрывала весь инстанс — все комнаты, все терминалы, все ядра. Цена
-     * ошибки здесь обязана быть равна одному сокету: браузер переподключится
-     * через секунду и придёт сюда снова.
+     * ws calls this callback without catching anything itself, so a
+     * synchronous exception from here goes to `uncaughtException`, and that
+     * ends the process: one malformed cookie in one participant's header (it
+     * is parsed by effectiveRole) took down the whole instance, every room,
+     * every terminal, every kernel. The cost of an error here must be one
+     * socket: the browser reconnects in a second and comes here again.
      */
     try {
       noteLastSeen(payload.participantId)
@@ -245,16 +256,17 @@ server.on('upgrade', (req, socket, head) => {
         handleCollabSocket(ws, sessionId, role, payload.participantId, credentials)
       else if (channel === 'file') {
         /*
-         * Путь приезжает вторым отрезком адреса, в base64url. Проверяет его тот
-         * же `normalizePath`, что и всё остальное в продукте, — и до него сюда не
-         * доходит ничего, кроме уже проверенного токена этой самой комнаты.
+         * The path arrives as the second segment of the address, in base64url.
+         * It is checked by the same `normalizePath` as everything else in the
+         * product, and nothing gets here except an already verified token of
+         * this very room.
          */
         const wanted = normalizePath(decodeRoom(asFile?.[2] ?? ''))
         if (!wanted) {
           try {
             ws.close(4404, tr("server.fileNotFound.f1ab8a"))
           } catch {
-            /* уже закрыт */
+            /* already closed */
           }
           return
         }
@@ -274,7 +286,7 @@ server.on('upgrade', (req, socket, head) => {
       }
     } catch (err) {
       console.error(
-        `[ws] ${channel} ${sessionId}: соединение не открылось —`,
+        `[ws] ${channel} ${sessionId}: connection did not open —`,
         err instanceof Error ? (err.stack ?? err.message) : err,
       )
       try {
@@ -289,12 +301,14 @@ server.on('upgrade', (req, socket, head) => {
 /* --------------------------------------------------------------- lifecycle */
 
 /*
- * Кого слушаем. Умолчание прежнее — все интерфейсы: под `make up` порт
- * публикует compose, и до сервера в контейнере иначе не достучаться.
+ * What we listen on. The default is unchanged, all interfaces: under
+ * `make up` compose publishes the port, and otherwise the server in the
+ * container cannot be reached.
  *
- * На выделенной машине это не нужно и вредно: наружу Colloq выходит исходящим
- * туннелем, а открытый порт на публичном адресе — это вторая, никем не
- * названная дверь в ту же комнату. Служба systemd ставит здесь 127.0.0.1.
+ * On a dedicated machine this is unneeded and harmful: Colloq reaches the
+ * outside through an outgoing tunnel, and an open port on a public address is
+ * a second door into the same room that nobody named. The systemd service
+ * sets 127.0.0.1 here.
  */
 const bindAddr = (process.env.BIND_ADDR ?? '').trim()
 const workerStartup = createWorkerStartup({
@@ -317,79 +331,86 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
   announceBind()
   announceJupyterToken()
   /*
-   * Хвосты от падения — на запуске, а не «когда-нибудь при следующей загрузке».
+   * Leftovers from a crash are removed at startup, not "some day at the next
+   * upload".
    *
-   * Недописанный файл переживает ровно то падение, после которого мы и
-   * стартуем; в комнате, где ничего не загружают, убрать его было больше
-   * некому (см. sweepAllStaleUploads).
+   * A half-written file survives exactly the crash we are now starting after;
+   * in a room where nothing is being uploaded there was nobody else to remove
+   * it (see sweepAllStaleUploads).
    */
   sweepAllStaleUploads()
   /*
-   * Перепись собирается здесь, а не внутри `log.ts`: тот модуль грузится первым
-   * в процессе — раньше collab и kernel, — и импорт их оттуда переставил бы
-   * правку console за всё, что модули печатают при загрузке.
+   * The census is assembled here, not inside `log.ts`: that module loads first
+   * in the process, before collab and kernel, and importing them from there
+   * would put the console patch after everything modules print while loading.
    */
   startJournal(() => ({ ...roomCensus(), kernels: kernelCensus() }))
   /*
-   * Сеть комнат и запрет на локальные адреса — сразу, а не с первым Run:
-   * отказ (нет прав на помощника, чужой файрвол) оператор видит в журнале до
-   * пары, а первая комната не ждёт лишнюю секунду (kernel/perimeter.ts).
+   * The room network and the ban on local addresses come up right away, not
+   * with the first Run: a refusal (no rights for the helper, someone else's
+   * firewall) reaches the operator's journal before class, and the first room
+   * does not wait an extra second (kernel/perimeter.ts).
    */
   void warmRoomPerimeter()
   /*
-   * Очередь соревнований — тоже сразу, и в этом порядке.
+   * The competition queue also starts right away, and in this order.
    *
-   * Сначала поднимается то, что оборвал прошлый выход: строка «исполняется» с
-   * чужой меткой жизни процесса — это посылка, у которой больше нет
-   * контейнера, и без уборки она висела бы «выполняется» до конца
-   * соревнования. Насос включается только после неё: взяв работу раньше, он
-   * занял бы единственное место тем, что сейчас всё равно придётся поднять
-   * заново.
+   * First comes what the previous exit cut short: a "running" row with another
+   * process's liveness mark is a submission that no longer has a container,
+   * and without cleanup it would hang as "running" until the end of the
+   * competition. The pump is switched on only after that: taking work earlier,
+   * it would fill the only slot with something that has to be brought up again
+   * anyway.
    */
   void workerStartup.start()
 })
 
 /**
- * Кому открыта дверь — вслух, потому что .env на машине переживает семестры.
+ * Who the door is open to, said out loud, because a .env on a machine
+ * outlives semesters.
  *
- * Про BIND_ADDR теперь сказано и в таблице настроек README, и в .env.example, и
- * compose ограничивает ею публикацию порта на хосте. Но документацию читают
- * один раз, при установке, а .env живёт на машине годами и переезжает
- * копированием с прошлого ноутбука: строки, которой в нём не оказалось, из
- * README уже не видно. Поэтому открытую дверь называет вслух сам процесс — в
- * журнале, у того, кто запускает, а не у того, кто читает документацию: иначе
- * преподаватель, запустивший `make run` в аудитории, раздаёт комнату ещё и по
- * http://<ip-ноутбука>:3000 — мимо ссылки, мимо туннеля и без своего ведома.
- * Ту же дверь на 8888 docker-compose.dev.yml закрывает публикацией на петлю —
- * там её и закрыли после того, как она открылась в аудитории.
+ * BIND_ADDR is now described in the README settings table and in
+ * .env.example, and compose uses it to restrict port publishing on the host.
+ * But documentation is read once, at install time, while .env lives on the
+ * machine for years and moves by being copied from the previous laptop: a
+ * line missing from it cannot be seen from the README. So the open door is
+ * named out loud by the process itself, in the journal, to whoever starts it
+ * rather than whoever reads the documentation: otherwise a teacher who ran
+ * `make run` in a classroom also hands out the room at
+ * http://<laptop-ip>:3000, bypassing the link, bypassing the tunnel and
+ * without knowing it. The same door on 8888 is closed by
+ * docker-compose.dev.yml publishing it on loopback; that is where it was
+ * closed after it had opened in a classroom.
  *
- * Печатается один раз на запуск и только когда дверь правда открыта: строка,
- * которая появляется всегда, перестаёт читаться на второй неделе.
+ * Printed once per start and only when the door really is open: a line that
+ * always appears stops being read by the second week.
  */
 function announceBind(): void {
   if (bindAddr) return
   console.log(
-    `[net] BIND_ADDR не задан: порт ${config.port} открыт на всех интерфейсах этой машины — ` +
-      `в аудиторной сети комната отвечает и по http://<ip-этой-машины>:${config.port}, ` +
-      'мимо ссылки. На ноутбуке и на выделенной машине поставьте BIND_ADDR=127.0.0.1 ' +
-      '(наружу Colloq выходит туннелем, см. make host); под make up так и нужно — ' +
-      'до сервера в контейнере иначе не достучаться, а публикацию порта решает compose.',
+    `[net] BIND_ADDR is not set: port ${config.port} is open on every interface of this machine — ` +
+      `on a classroom network the room also answers at http://<this-machine-ip>:${config.port}, ` +
+      'bypassing the link. On a laptop or a dedicated machine set BIND_ADDR=127.0.0.1 ' +
+      '(Colloq reaches the outside through a tunnel, see make host); under make up this is as it should be — ' +
+      'otherwise the server in the container cannot be reached, and compose decides the port publishing.',
   )
 }
 
 /**
- * Пароль к ядру — из публичного файла: сказать вслух, пока не заменили.
+ * The kernel password comes from a public file: say so out loud until it is
+ * replaced.
  *
- * `make up` при создании .env выписывает случайный токен, и в норме этой строки
- * никто не увидит. Она про два обычных случая: `cp .env.example .env` руками и
- * .env, лежащий с прошлого семестра. В обоих в контейнер с файлами ВСЕХ
- * семинаров ведёт пароль, напечатанный в публичном репозитории.
+ * `make up` writes out a random token when it creates .env, and normally
+ * nobody will see this line. It is about two ordinary cases: `cp .env.example
+ * .env` by hand and a .env left over from last semester. In both, the way
+ * into the container with the files of ALL seminars is a password printed in
+ * a public repository.
  *
- * Не отказ и не остановка: на ноутбуке за NAT это ровно тот случай, ради
- * которого умолчание и заведено, а сорвать пару предупреждением о конфигурации
- * было бы хуже самой дыры. Изоляция комнат по контейнерам и своя сеть у общего
- * ядра (docker-compose.yml) — первый замок; этот токен — второй, и он должен
- * быть настоящим.
+ * Not a refusal and not a stop: on a laptop behind NAT this is exactly the
+ * case the default exists for, and derailing a class with a configuration
+ * warning would be worse than the hole itself. Room isolation by containers
+ * and a network of its own for the shared kernel (docker-compose.yml) are the
+ * first lock; this token is the second, and it has to be a real one.
  */
 function announceJupyterToken(): void {
   if (config.jupyter.token !== DEV_JUPYTER_TOKEN) return
@@ -436,8 +457,8 @@ async function shutdown(signal: string): Promise<void> {
   if (stopping) return
   stopping = true
   console.log(`\ncolloq shutting down (${signal})`)
-  // Сводка за оборванную минуту ничего не значит, а строка про ноль комнат
-  // между строк выключения — просто шум.
+  // A summary for a cut-short minute means nothing, and a line about zero
+  // rooms among the shutdown lines is just noise.
   stopJournal()
 
   const force = setTimeout(() => {
@@ -454,15 +475,16 @@ async function shutdown(signal: string): Promise<void> {
     }
   }
 
-  // Отметки «был здесь», не успевшие уехать пачкой: их немного, они дешёвые, а
-  // без этой строки перезапуск посреди пары теряет последние пять секунд входов.
+  // "Was here" marks that did not get to leave in a batch: there are few of
+  // them and they are cheap, and without this line a restart in the middle of
+  // a class loses the last five seconds of arrivals.
   flushLastSeen()
 
   /*
-   * Новых посылок больше не берём, а начатую дожидаемся: её контейнер всё
-   * равно переживёт этот процесс, и бросить его на полпути значит оставить
-   * гигабайты на машине и строку «выполняется», которую поднимать будет
-   * следующая жизнь сервера.
+   * No more new submissions are taken, and the one already started is waited
+   * for: its container will outlive this process anyway, and dropping it
+   * halfway means leaving gigabytes on the machine and a "running" row that
+   * the server's next life will have to pick up.
    */
   try {
     await workerStartup.stop()
@@ -486,12 +508,13 @@ async function shutdown(signal: string): Promise<void> {
     console.error('colloq: could not stop kernels:', err instanceof Error ? err.message : err)
   }
   /*
-   * Последним: база закрывается по-настоящему.
+   * Last: the database is closed for real.
    *
-   * Раньше процесс просто уходил через process.exit, и журнал WAL оставался
-   * лежать рядом: `colloq.db` остановленного инстанса был вчерашним, а весь
-   * день — в файле, который никто не копирует. db.close() сводит журнал и
-   * закрывает файл, то есть делает ровно то, чего ждут от «остановлено».
+   * The process used to just leave through process.exit, and the WAL journal
+   * was left lying next to it: a stopped instance's `colloq.db` was
+   * yesterday's, and the whole day sat in a file nobody copies. db.close()
+   * folds the journal in and closes the file, which is exactly what one
+   * expects from "stopped".
    */
   try {
     closeDatabase()
@@ -515,14 +538,14 @@ process.on('unhandledRejection', (err: unknown) => {
 })
 
 /*
- * Необработанное исключение — не то же, что отвергнутое обещание.
+ * An uncaught exception is not the same as a rejected promise.
  *
- * Обещание можно проглотить: где-то не дождались ответа, семинар от этого не
- * ломается. Исключение, дошедшее сюда, оставляет процесс в состоянии, о
- * котором никто ничего не знает, — а по умолчанию node в этом случае просто
- * умирает молча, без единой строки о причине. Пишем причину и уходим с
- * ненулевым кодом: перезапуск честнее, чем сервер, про который неизвестно,
- * работает ли он.
+ * A promise can be swallowed: somewhere an answer was not waited for, and a
+ * seminar does not break over it. An exception that got this far leaves the
+ * process in a state nobody knows anything about, and by default node then
+ * just dies silently, without a single line about the cause. We write the
+ * cause and leave with a non-zero code: a restart is more honest than a
+ * server nobody can tell is working.
  */
 process.on('uncaughtException', (err: unknown) => {
   console.error(
@@ -532,7 +555,7 @@ process.on('uncaughtException', (err: unknown) => {
   try {
     shutdownCollab()
   } catch {
-    // Снимки — последнее, что можно попробовать спасти, и не повод не выйти.
+    // The snapshots are the last thing to try to save, not a reason to stay.
   }
   process.exit(1)
 })

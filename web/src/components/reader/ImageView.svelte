@@ -1,15 +1,16 @@
 <!--
-  Картинка из папки семинара.
+  An image from the seminar folder.
 
-  Отдельный компонент ради одной строки, которой не хватало: у файла в комнате
-  нет открытого адреса. Всё, что лежит в папке, отдаётся либо по заголовку с
-  токеном участника, либо по одноразовому билету в строке запроса, — и `<img>`
-  не умеет ни того ни другого сам. Тег с прямым адресом получал 401 и рисовал
-  то, что рисует всякий сломанный `<img>`: имя файла из `alt`. Выглядело это как
-  «картинки не открываются», и это была правда.
+  A separate component for the sake of one line that was missing: a file in the
+  room has no open address. Everything in the folder is served either with a
+  header carrying the participant's token or with a one-time ticket in the query
+  string — and `<img>` can do neither on its own. A tag with a direct address
+  got a 401 and drew what every broken `<img>` draws: the file name from `alt`.
+  It looked like "images don't open", and that was the truth.
 
-  Билет берётся тем же путём, что и у скачивания: токен уходит заголовком,
-  обратно приходит право на ОДИН файл на пять минут, и уже оно едет в адресе.
+  The ticket is obtained the same way as for a download: the token goes out as a
+  header, what comes back is a right to ONE file for five minutes, and that is
+  what travels in the address.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -55,8 +56,9 @@
     <p class="max-w-sm text-center text-ui text-muted">{failed}</p>
   {:else if src}
     <!--
-      `object-contain` и оба потолка: снимок экрана с ретины — это 3000 пикселей
-      по ширине, и без них он растянул бы колонку и увёл бы страницу вбок.
+      `object-contain` and both ceilings: a screenshot from a retina display is
+      3000 pixels wide, and without them it would stretch the column and push
+      the page sideways.
     -->
     <img
       {src}

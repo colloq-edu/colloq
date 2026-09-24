@@ -19,60 +19,68 @@ type SafeFs = Pick<typeof fs, 'openSync' | 'existsSync' | 'lstatSync' | 'statSyn
   'mkdirSync' | 'renameSync' | 'linkSync' | 'unlinkSync' | 'rmSync' |
   'createWriteStream' | 'createReadStream'> & { close(): void; openRead(file: string): HeldFile }
 
-/** Операции над workspace, привязанные к доверенному открытому корню.
+/** Operations on the workspace, bound to a trusted open root.
  *
- * LINUX — настоящий дескрипторный обход. walk() открывает каждый сегмент с
- * O_DIRECTORY|O_NOFOLLOW и адресует следующий через /proc/self/fd/<fd>/<имя>:
- * ядро идёт от уже открытого каталога, а не от строки, поэтому между проверкой
- * и операцией подменить путь нечем. Держать проверенную строку или защищать
- * только последнее звено — недостаточно.
+ * LINUX — a real descriptor-based walk. walk() opens every segment with
+ * O_DIRECTORY|O_NOFOLLOW and addresses the next one through
+ * /proc/self/fd/<fd>/<name>: the kernel starts from an already open
+ * directory, not from a string, so between the check and the operation there
+ * is nothing to swap the path with. Holding a checked string, or protecting
+ * only the last link, is not enough.
  *
- * НЕ-LINUX (macOS преподавателя) — дескрипторного обхода нет и быть не может.
- * В Node нет openat(), а /dev/fd/<fd>/<имя> на macOS отдаёт ENOENT (проверено
- * замером, это не /proc/self/fd — там нет каталога-заглушки на дескриптор).
- * Поэтому здесь сделан максимум возможного без openat:
- *   • каждый сегмент пути, включая корень workspace, именно ОТКРЫВАЕТСЯ с
- *     O_DIRECTORY|O_NOFOLLOW, а не проверяется lstat-ом: по симлинку никто не
- *     проходит, открытие отказывает (Linux отвечает ELOOP, macOS с O_DIRECTORY
- *     — ENOTDIR; обе ошибки — отказ);
- *   • дескрипторы всех сегментов удерживаются на время операции. Переименовать
- *     каталог это не мешает, зато держит его inode живым — значит сверка dev/ino
- *     честная: номер inode не могли переиспользовать под нами;
- *   • сразу после операции последний каталог открывается ещё раз по полному пути
- *     от корня и его dev/ino сверяется с удержанным (verify). Полный путь ядро
- *     резолвит заново, поэтому подмена ЛЮБОГО сегмента выше приводит в другой
- *     inode и видна. Предотвратить подмену это не может — только не отдать
- *     чужой результат наружу и упасть громко вместо тихого успеха.
+ * NON-LINUX (the teacher's macOS) — there is no descriptor-based walk and
+ * there cannot be one. Node has no openat(), and /dev/fd/<fd>/<name> on macOS
+ * returns ENOENT (checked by measurement; it is not /proc/self/fd — there is
+ * no stand-in directory per descriptor there). So here the most that is
+ * possible without openat is done:
+ *   • every segment of the path, including the workspace root, is actually
+ *     OPENED with O_DIRECTORY|O_NOFOLLOW rather than checked with lstat:
+ *     nobody walks through a symlink, the open refuses (Linux answers ELOOP,
+ *     macOS with O_DIRECTORY — ENOTDIR; both errors are a refusal);
+ *   • the descriptors of all segments are held for the duration of the
+ *     operation. That does not prevent renaming a directory, but it keeps its
+ *     inode alive — so the dev/ino comparison is honest: the inode number
+ *     could not have been reused under us;
+ *   • right after the operation the last directory is opened once more by its
+ *     full path from the root, and its dev/ino is compared with the held one
+ *     (verify). The kernel resolves the full path anew, so swapping ANY
+ *     segment above leads to a different inode and shows. This cannot prevent
+ *     the swap — only keep someone else's result from going out and fail
+ *     loudly instead of succeeding quietly.
  *
- * ЧТО НА macOS ОСТАЁТСЯ ДЫРОЙ, ПРЯМО И БЕЗ УКРАШЕНИЙ: сама операция всё равно
- * идёт по СТРОКЕ, и ядро резолвит её заново. Кто успеет между нашей проверкой
- * сегмента и вызовом fs.* подменить промежуточный каталог на симлинк — уведёт
- * операцию наружу; verify() заметит это после, но запись уже произойдёт.
- * Закрыть окно нечем: адресовать относительно дескриптора в Node на macOS не из
- * чего (нет ни openat, ни магического каталога на fd). На Linux этого окна нет
- * вовсе. Отсюда правило: боевой сервер — только Linux в контейнере, а локальное
- * занятие на macOS живёт в периметре «мой класс на моём компьютере», где машина
- * преподавателя и всё, что на ней запущено, считаются доверенными.
+ * WHAT REMAINS A HOLE ON macOS, PLAINLY AND WITHOUT EMBELLISHMENT: the
+ * operation itself still goes by STRING, and the kernel resolves it anew.
+ * Whoever manages, between our check of a segment and the fs.* call, to swap
+ * an intermediate directory for a symlink will lead the operation outside;
+ * verify() will notice it afterwards, but the write will already have
+ * happened. There is nothing to close the window with: Node on macOS has
+ * nothing to address relative to a descriptor with (neither openat nor a
+ * magic directory per fd). On Linux this window does not exist at all. Hence
+ * the rule: a production server is only Linux in a container, and a local
+ * class on macOS lives inside the "my class on my computer" perimeter, where
+ * the teacher's machine and everything running on it are considered trusted.
  *
- * Ещё две разницы с Linux, обе видны снаружи. Каталог, которому сняли права
- * (mode 000), на macOS рекурсивно не удаляется: починить права, не пойдя по
- * имени, нечем — подробности у removeNative. И жёсткая ссылка с именем-симлинком
- * в источнике на macOS отвергается, потому что там link() идёт по ссылке, а на
- * Linux копирует саму ссылку (оба поведения проверены замером).
+ * Two more differences from Linux, both visible from outside. A directory
+ * whose permissions were removed (mode 000) cannot be deleted recursively on
+ * macOS: there is no way to repair the permissions without going by name —
+ * details at removeNative. And a hard link whose source name is a symlink is
+ * rejected on macOS, because there link() follows the link, while on Linux it
+ * copies the link itself (both behaviors checked by measurement).
  *
- * Флаг COLLOQ_UNSAFE_DEV_FILES (options.allowUnsafeDevelopment) больше НИЧЕГО
- * здесь не решает и оставлен только для совместимости сигнатуры с вызывающими.
- * Раньше он включал путь, который сегменты лишь lstat-ил и отдавал обычную
- * строку — то есть по симлинку, подставленному после проверки, fs.* спокойно
- * проходил. Такого пути больше нет: не-Linux ходит с O_NOFOLLOW, и запуск на
- * macOS не требует ни флага, ни слова UNSAFE в .env преподавателя.
+ * The COLLOQ_UNSAFE_DEV_FILES flag (options.allowUnsafeDevelopment) decides
+ * NOTHING here any more and is kept only for signature compatibility with the
+ * callers. It used to enable a path that merely lstat-ed the segments and
+ * handed out a plain string — that is, fs.* calmly went through a symlink
+ * planted after the check. That path is gone: non-Linux goes with O_NOFOLLOW,
+ * and running on macOS needs neither the flag nor the word UNSAFE in the
+ * teacher's .env.
  *
- * Не закрыто на обеих платформах: разделение уже существующих жёстких ссылок.
- * Продакшен исходит из чистого дерева «каталог на комнату»: миграция с общего
- * рантайма обязана материализовать обычные файлы отдельно, через проверенные
- * backup/restore. Законные жёсткие ссылки внутри комнаты работают; Pod с
- * ограниченным subPath не может назвать соседнюю комнату и создать ссылку
- * между комнатами.
+ * Not closed on either platform: splitting hard links that already exist.
+ * Production assumes a clean "a directory per room" tree: a migration from a
+ * shared runtime must materialize regular files separately, through the
+ * tested backup/restore. Legitimate hard links inside a room work; a Pod with
+ * a restricted subPath cannot name a neighboring room and create a link
+ * between rooms.
  */
 export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsafeDevelopment?: boolean } = {}): SafeFs {
   const root = path.resolve(rootPath)
@@ -91,16 +99,17 @@ export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsa
     return relative ? relative.split(path.sep) : []
   }
   const initialize = (): number => {
-    // Всё обещание держится на двух флагах открытия. Платформа, где их нет
-    // (Windows отдаёт undefined на обоих), молча получила бы флаги без них — то
-    // есть обычный open по строке, по любому симлинку. Такое лучше назвать
-    // вслух и отказать, чем сделать вид, что защита есть.
+    // The whole promise rests on two open flags. A platform that lacks them
+    // (Windows gives undefined for both) would silently get flags without them
+    // — that is, a plain open by string, through any symlink. Better to say so
+    // out loud and refuse than to pretend there is protection.
     if (!fs.constants.O_NOFOLLOW || !fs.constants.O_DIRECTORY)
       fail('Workspace anchoring needs O_NOFOLLOW and O_DIRECTORY; this platform has neither. Run the server on Linux (make up) or on macOS.')
     if (rootFd === undefined) {
       fs.mkdirSync(root, { recursive: true })
-      // Корень доверенный, но открывается он тоже с O_NOFOLLOW: если сам
-      // workspace окажется симлинком, всё дерево под ним — уже чужое место.
+      // The root is trusted, but it too is opened with O_NOFOLLOW: if the
+      // workspace itself turns out to be a symlink, the whole tree under it is
+      // already someone else's place.
       rootFd = fs.openSync(root, directoryFlags)
       if (linux) {
         try { fs.statSync(`/proc/self/fd/${rootFd}/.`) }
@@ -110,47 +119,50 @@ export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsa
     return rootFd!
   }
   const identity = (fd: number): string => { const info = fs.fstatSync(fd); return `${info.dev}:${info.ino}` }
-  /** Открыть каталог по имени, ни в коем случае не пройдя по симлинку.
-   * Это единственный способ «проверить» сегмент на не-Linux: не lstat (он
-   * отвечает про прошлое), а отказ самого открытия. lstat в catch нужен только
-   * чтобы назвать причину человеческими словами — решение уже принято ядром. */
+  /** Open a directory by name without ever walking through a symlink.
+   * This is the only way to "check" a segment on non-Linux: not lstat (it
+   * answers about the past) but the refusal of the open itself. The lstat in
+   * the catch is only there to name the reason in human words — the kernel has
+   * already made the decision. */
   const openDirectory = (absolute: string): number => {
     try { return fs.openSync(absolute, directoryFlags) }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       if (code === 'ELOOP' || code === 'ENOTDIR') {
         let symlink = false
-        try { symlink = fs.lstatSync(absolute).isSymbolicLink() } catch { /* исчез — отдадим исходную ошибку */ }
+        try { symlink = fs.lstatSync(absolute).isSymbolicLink() } catch { /* gone — rethrow the original error */ }
         if (symlink) fail(tr("server.workspaceSymlinksAreForbidden.f2f20a"))
       }
       throw error
     }
   }
   type NativeChain = { dir: string; verify(): void; close(): void }
-  /** Не-Linux: открыть и удержать КАЖДЫЙ сегмент пути с O_NOFOLLOW.
-   * Удержание не мешает переименованию, но пинит inode, поэтому verify() может
-   * честно сверить dev/ino: пока мы держим каталог, его номер не переиспользуют. */
+  /** Non-Linux: open and hold EVERY segment of the path with O_NOFOLLOW.
+   * Holding does not prevent renaming, but it pins the inode, so verify() can
+   * honestly compare dev/ino: while we hold the directory, its number is not
+   * reused. */
   const holdNative = (names: string[], create = false): NativeChain => {
-    const held = [initialize()]  // [0] — корневой дескриптор объекта, он не наш, не закрываем
+    const held = [initialize()]  // [0] is the object's root descriptor: not ours, do not close it
     const close = (): void => { while (held.length > 1) fs.closeSync(held.pop()!) }
     let current = root
     try {
       for (const name of names) {
         current = path.join(current, name)
         if (create) {
-          // mkdir по имени не идёт по симлинку: занятое ссылкой имя даёт EEXIST,
-          // а следующее открытие с O_NOFOLLOW эту ссылку и отвергнет.
+          // mkdir by name does not follow a symlink: a name taken by a link
+          // gives EEXIST, and the next open with O_NOFOLLOW rejects that link.
           try { fs.mkdirSync(current, { mode: 0o2775 }) }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
         }
         held.push(openDirectory(current))
       }
     } catch (error) { close(); throw error }
-    // Сверять хватает ОДИН последний каталог, и это не экономия на безопасности:
-    // повторное открытие идёт по полному пути от корня, то есть ядро заново
-    // проходит всю цепочку. Подменили сегмент выше — тот же путь приведёт в
-    // другой каталог, и dev/ino не совпадут (или открытие просто откажет).
-    // Каталог с тем же inode подсунуть нельзя: жёстких ссылок на каталоги нет.
+    // Checking ONE last directory is enough, and that is not skimping on
+    // security: the repeated open goes by the full path from the root, that is,
+    // the kernel walks the whole chain again. If a segment above was swapped,
+    // the same path leads to a different directory, and dev/ino will not match
+    // (or the open simply refuses). A directory with the same inode cannot be
+    // slipped in: there are no hard links to directories.
     const identifier = identity(held.at(-1)!)
     return {
       dir: current,
@@ -191,9 +203,9 @@ export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsa
       return { fd, close() { if (own) { fs.closeSync(fd); own = false } } }
     } catch (error) { if (own) fs.closeSync(fd); throw error }
   }
-  /** discard нужен тем действиям, что возвращают захваченный ресурс: если
-   * verify() уже после действия скажет «каталог подменили», результат наружу не
-   * уйдёт, а значит его некому будет закрыть — закрываем здесь. */
+  /** discard is for actions that return a captured resource: if verify() says
+   * "the directory was swapped" after the action, the result does not go out,
+   * which means nobody would be left to close it — so it is closed here. */
   const parent = <T>(file: string, action: (anchored: string) => T, create = false, deleting = false, discard?: (value: T) => void): T => {
     const names = parts(file)
     if (linux) {
@@ -202,10 +214,11 @@ export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsa
       try { return action(`/proc/self/fd/${held.fd}/${names.at(-1)}`) }
       finally { held.close() }
     }
-    // Не-Linux: родительские каталоги открыты с O_NOFOLLOW и удержаны, действие
-    // идёт по имени внутри последнего из них, а verify() сразу после действия
-    // проверяет, что цепочку не подменили. deleting здесь не применяется: чинить
-    // права каталогу 000 нечем (см. removeNative).
+    // Non-Linux: the parent directories are opened with O_NOFOLLOW and held,
+    // the action goes by name inside the last of them, and verify() right
+    // after the action checks that the chain was not swapped. deleting does
+    // not apply here: there is nothing to repair a mode-000 directory's
+    // permissions with (see removeNative).
     const held = holdNative(names.slice(0, -1), create)
     try {
       const result = action(names.length ? path.join(held.dir, names.at(-1)!) : held.dir)
@@ -249,30 +262,34 @@ export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsa
   }
   const removeNative = (absolute: string, recursive: boolean): void => {
     const info = fs.lstatSync(absolute)
-    // unlink никогда не идёт по симлинку — снимается сама ссылка, не её цель.
+    // unlink never follows a symlink — the link itself is removed, not its target.
     if (!info.isDirectory()) { fs.unlinkSync(absolute); return }
     if (!recursive) { fs.rmdirSync(absolute); return }
     let fd: number
     try { fd = openDirectory(absolute) }
     catch (error) {
-      // Каталог без прав (mode 000) на macOS не открыть, и починить права
-      // честно нечем: fchmod требует дескриптора, которого нет; lchmod на
-      // каталоге отвечает EISDIR (проверено); а обычный chmod пошёл бы ПО ИМЕНИ
-      // и, если имя успели подменить ссылкой, снял бы права с чужого inode —
-      // ровно то, чего этот модуль не делает. На Linux случай лечится
-      // deletionDirectory: O_PATH пинит inode, и chmod идёт по магической ссылке
-      // /proc/self/fd/<fd>, то есть по самому каталогу, а не по имени. Здесь
-      // остаётся одно безопасное действие: пустой каталог снимет rmdir (права
-      // нужны родителю, не ему), непустой — честный отказ вызывающему.
+      // A directory without permissions (mode 000) cannot be opened on macOS,
+      // and there is no honest way to repair its permissions: fchmod needs a
+      // descriptor we do not have; lchmod on a directory answers EISDIR
+      // (checked); and a plain chmod would go BY NAME and, if the name had
+      // been swapped for a link by then, would change the permissions of
+      // someone else's inode — exactly what this module does not do. On Linux
+      // the case is handled by deletionDirectory: O_PATH pins the inode, and
+      // chmod goes through the magic link /proc/self/fd/<fd>, that is, through
+      // the directory itself rather than its name. Here one safe action is
+      // left: an empty directory is removed by rmdir (the permissions needed
+      // are the parent's, not its own), a non-empty one is an honest refusal
+      // to the caller.
       if ((error as NodeJS.ErrnoException).code !== 'EACCES') throw error
       fs.rmdirSync(absolute)
       return
     }
-    // Дескриптор каталога держим всё время обхода: он доказан как не-симлинк и
-    // его inode никуда не денется, пока мы снимаем содержимое по именам.
+    // The directory's descriptor is held for the whole walk: it is proven not
+    // to be a symlink, and its inode will not go anywhere while we remove the
+    // contents by name.
     try { for (const name of fs.readdirSync(absolute)) removeNative(path.join(absolute, name), true) }
     finally { fs.closeSync(fd) }
-    // rmdir по симлинку не пойдёт: подменённое имя ответит ENOTDIR.
+    // rmdir will not follow a symlink: a swapped name answers ENOTDIR.
     fs.rmdirSync(absolute)
   }
   const safe = {
@@ -282,11 +299,12 @@ export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsa
       const fd = open(file)
       if (!fs.fstatSync(fd).isFile()) { fs.closeSync(fd); fail(tr("server.expectedARegularWorkspaceFile.8a4343")) }
       let live = true
-      // Отдаём имя самого открытого inode, а не путь: Express откроет его
-      // заново, и по пути мог бы поймать подмену. На macOS /dev/fd/<fd> для
-      // обычного файла работает (проверено: чтение, размер и диапазоны байт),
-      // хотя обход /dev/fd/<fd>/<имя> там и невозможен. Переоткрытие заново
-      // проверяет права — файл, у которого их сняли после open, не отдастся.
+      // Hand out the name of the opened inode itself, not the path: Express
+      // opens it again, and by path it could catch a swap. On macOS
+      // /dev/fd/<fd> works for a regular file (checked: reading, size and byte
+      // ranges), although walking /dev/fd/<fd>/<name> is impossible there.
+      // Reopening checks permissions again — a file whose permissions were
+      // removed after open will not be served.
       const held = linux ? `/proc/self/fd/${fd}` : `/dev/fd/${fd}`
       return { fd, path: held, close() { if (live) { live = false; fs.closeSync(fd) } } }
     },
@@ -304,10 +322,11 @@ export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsa
         const held = walk(parts(file))
         try { return fs.readdirSync(`/proc/self/fd/${held.fd}/.`, opts) } finally { held.close() }
       }
-      // readdir не умеет O_NOFOLLOW, поэтому каталог открываем сами: holdNative
-      // берёт с O_NOFOLLOW и сам целевой каталог, значит симлинк вместо него
-      // отвергнут до чтения. Читать приходится по имени — verify() решает, можно
-      // ли отдать прочитанное: подменили цепочку, значит список не наш.
+      // readdir cannot do O_NOFOLLOW, so we open the directory ourselves:
+      // holdNative takes the target directory itself with O_NOFOLLOW too, so a
+      // symlink in its place is rejected before reading. Reading has to go by
+      // name — verify() decides whether what was read may be handed out: if
+      // the chain was swapped, the list is not ours.
       const held = holdNative(parts(file))
       try { const entries = fs.readdirSync(held.dir, opts); held.verify(); return entries } finally { held.close() }
     },
@@ -318,17 +337,20 @@ export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsa
       }
       return parent(file, p => fs.mkdirSync(p, opts))
     },
-    // rename не идёт по симлинкам последних звеньев — переносится сама запись
-    // каталога (проверено на macOS: ссылка переехала ссылкой). Промежуточные
-    // каталоги обоих путей открыты с O_NOFOLLOW цепочками parent().
+    // rename does not follow symlinks at the last links — the directory entry
+    // itself is moved (checked on macOS: a link moved as a link). The
+    // intermediate directories of both paths are opened with O_NOFOLLOW by
+    // the parent() chains.
     renameSync(from: string, to: string) { return parent(from, a => parent(to, b => fs.renameSync(a, b))) },
     linkSync(from: string, to: string) {
       if (linux) return parent(from, a => parent(to, b => fs.linkSync(a, b)))
-      // Проверено на macOS: link() ИДЁТ по симлинку-источнику — жёсткая ссылка
-      // получается на цель ссылки, а не на саму ссылку (на Linux наоборот).
-      // Флага O_NOFOLLOW у link() нет, а открыть источник самим можно не всегда
-      // (права на файл могли снять). Поэтому имя-симлинк отвергаем сразу, а
-      // после link сверяем inode новой ссылки с тем, что видел lstat источника.
+      // Checked on macOS: link() DOES follow a source symlink — the hard link
+      // is made to the link's target, not to the link itself (on Linux it is
+      // the other way round). link() has no O_NOFOLLOW flag, and opening the
+      // source ourselves is not always possible (the file's permissions may
+      // have been removed). So a symlink name is rejected right away, and
+      // after link the new link's inode is compared with what lstat saw for
+      // the source.
       let made: string | undefined
       try {
         return parent(from, a => parent(to, b => {
@@ -341,12 +363,13 @@ export function createAnchoredFilesystem(rootPath: string, _options: { allowUnsa
           return undefined
         }))
       } catch (error) {
-        // Созданную до отказа ссылку убираем: иначе в комнате останется жёсткая
-        // ссылка на inode, который мы только что отказались отдать. Убирать
-        // приходится по имени — другого способа нет; если имя к этой секунде уже
-        // подменили, снимется чужая запись с тем же именем, и это меньшее зло,
-        // чем оставленная ссылка на чужой файл.
-        if (made !== undefined) { try { fs.unlinkSync(made) } catch { /* уже нечего убирать */ } }
+        // A link created before the refusal is removed: otherwise the room
+        // would keep a hard link to an inode we have just refused to hand out.
+        // It has to be removed by name — there is no other way; if the name
+        // has been swapped by that moment, someone else's entry with the same
+        // name is removed, and that is a lesser evil than a link left behind
+        // to someone else's file.
+        if (made !== undefined) { try { fs.unlinkSync(made) } catch { /* nothing left to remove */ } }
         throw error
       }
     },

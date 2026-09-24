@@ -1,35 +1,35 @@
 /**
- * Присутствие ОДНОЙ ячейки — для редактора, который дальше неё не смотрит.
+ * Presence of ONE cell — for an editor that does not look beyond it.
  *
- * `yCollab` получает присутствие целиком, и его плагин чужих кареток устроен
- * так: на ЛЮБОЙ чужой кадр он диспатчит транзакцию в свой редактор, а в
- * `update()` обходит `awareness.getStates()` целиком и для каждого чужого
- * `cursor` резолвит две относительные позиции. В тетради смонтировано десять —
- * двадцать пять редакторов (EAGER плюс запас в 1200 px), и один чужой курсор
- * стоил комнате «редакторы × состояния» резолвов. На пятистах человек это
- * секунды процессора в секунду у каждого — при том что чужая каретка видна
- * ровно в одной ячейке, той, в которой человек стоит.
+ * `yCollab` gets the whole of presence, and its remote-caret plugin works like
+ * this: on ANY remote frame it dispatches a transaction into its editor, and in
+ * `update()` it walks all of `awareness.getStates()` and resolves two relative
+ * positions for every remote `cursor`. A notebook has ten to twenty-five
+ * editors mounted (EAGER plus a 1200 px margin), and a single remote cursor
+ * cost the room "editors × states" resolutions. With five hundred people that
+ * is seconds of CPU per second for everyone — even though a remote caret is
+ * visible in exactly one cell, the one where that person is.
  *
- * Здесь редактору отдаётся не общее присутствие, а вид на него: локальное
- * состояние (курсор по-прежнему пишется в настоящее присутствие, комната его
- * видит) плюс те, у кого `user.activeCellId` — эта ячейка. Тем же признаком
- * группирует аватары `PeerIndex` в lib/yreactive, и объявляет его тот, кто
- * ячейку ПРАВИТ (lib/presence.ts · cellToAnnounce) — то есть ровно тот, у кого
- * есть каретка.
+ * Here the editor is given not the shared presence but a view of it: the local
+ * state (the cursor is still written into the real presence, and the room sees
+ * it) plus those whose `user.activeCellId` is this cell. `PeerIndex` in
+ * lib/yreactive groups avatars by the same field, and it is announced by
+ * whoever is EDITING the cell (lib/presence.ts · cellToAnnounce) — that is,
+ * exactly by whoever has a caret.
  *
- * Обход состояний при этом один на комнату, а не один на редактор: группировкой
- * занят общий `Room` на присутствие, и он же коалесцирует кадры по одному на
- * отрисовку. Разбудит он только те ячейки, у которых правда что-то изменилось —
- * курсор, цвет или имя стоящего в ней. Редактору кадр уходит настоящим диффом,
- * с выбывшими в `removed`: иначе снять чужую каретку было бы нечем — см.
- * `announce`.
+ * The walk over the states is then one per room, not one per editor: the
+ * grouping is done by a shared `Room` per presence, which also coalesces frames
+ * to one per render. It wakes only the cells where something really changed —
+ * the cursor, colour or name of whoever stands in them. The editor gets its
+ * frame as a real diff, with the departed in `removed`: otherwise there would
+ * be nothing to remove a remote caret with — see `announce`.
  */
 import type * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 
 type State = Record<string, unknown>
 
-/** Кадр, каким его ждёт слушатель `change` у настоящего присутствия. */
+/** A frame as the `change` listener of the real presence expects it. */
 export interface AwarenessDiff {
   added: number[]
   updated: number[]
@@ -38,16 +38,16 @@ export interface AwarenessDiff {
 
 type ChangeHandler = (diff: AwarenessDiff, origin: unknown) => void
 
-/** Один человек, стоящий в ячейке. */
+/** One person standing in the cell. */
 interface Standing {
   clientId: number
   state: State
 }
 
 /**
- * Ровно та поверхность присутствия, которой пользуется y-codemirror.next:
- * `doc.clientID`, `on`/`off('change')`, `getLocalState`, `setLocalStateField`,
- * `getStates`. Больше он ничего не спрашивает — проверено по исходнику плагина.
+ * Exactly the presence surface that y-codemirror.next uses: `doc.clientID`,
+ * `on`/`off('change')`, `getLocalState`, `setLocalStateField`, `getStates`. It
+ * asks for nothing else — checked against the plugin's source.
  */
 export interface CellAwareness {
   readonly doc: Y.Doc
@@ -60,7 +60,7 @@ export interface CellAwareness {
   destroy(): void
 }
 
-/** Отложить работу до следующей отрисовки; возвращает отмену. */
+/** Defer work until the next render; returns a cancel function. */
 export type Schedule = (run: () => void) => () => void
 
 const NOBODY: Standing[] = []
@@ -75,16 +75,18 @@ function browserSchedule(run: () => void): () => void {
 }
 
 /**
- * Подпись стоящего: всё, из чего плагин рисует каретку.
+ * The signature of whoever is standing: everything the plugin draws a caret
+ * from.
  *
- * Сравнивать состояния по ссылке нельзя — присутствие раскодирует их заново на
- * каждый тик, и объект всегда новый. Поэтому по значению, и только по тем
- * полям, от которых зависит нарисованное: положение, цвет и имя.
+ * States cannot be compared by reference — presence decodes them anew on every
+ * tick, and the object is always new. So by value, and only by the fields that
+ * the drawing depends on: position, colour and name.
  *
- * Разделители — `\u0000`/`\u0001` эскейпами, а не самими байтами: имя человек
- * задаёт сам, и на пробеле «Пётр Ильич» слиплось бы с соседом. Байтом в
- * исходнике их класть нельзя — файл становится для `grep` двоичным и молча
- * перестаёт находиться по имени.
+ * The separators are `\u0000`/`\u0001` as escapes, not as the bytes themselves:
+ * people choose their names themselves, and with a space "Pyotr Ilyich" would
+ * have merged with the neighbour. The bytes cannot be put into the source as
+ * they are — the file becomes binary to `grep` and silently stops turning up
+ * when searched for a name.
  */
 function markOf(state: State): string {
   const user = state.user as { color?: unknown; name?: unknown } | undefined
@@ -99,7 +101,7 @@ function signatureOf(standing: readonly Standing[]): string {
   return out
 }
 
-/** Тот же снимок, но поимённо: из него считается дифф кадра. */
+/** The same snapshot, but per client: the frame's diff is computed from it. */
 function marksOf(standing: readonly Standing[]): Map<number, string> {
   const out = new Map<number, string>()
   for (const person of standing) out.set(person.clientId, markOf(person.state))
@@ -107,13 +109,13 @@ function marksOf(standing: readonly Standing[]): Map<number, string> {
 }
 
 /**
- * Общая на присутствие бухгалтерия: один обход состояний на кадр, а дальше —
- * только те ячейки, у которых что-то изменилось.
+ * Bookkeeping shared per presence: one walk over the states per frame, and
+ * after that only the cells where something changed.
  */
 class Room {
   readonly #source: Awareness
   readonly #schedule: Schedule
-  /** Ячейка → слушатели её вида. Пустая карта означает «мы отписаны». */
+  /** Cell → listeners of its view. An empty map means "we are unsubscribed". */
   readonly #watchers = new Map<string, Set<() => void>>()
   readonly #standing = new Map<string, Standing[]>()
   readonly #signature = new Map<string, string>()
@@ -135,9 +137,10 @@ class Room {
       this.#watchers.set(cellId, set)
       if (this.#watchers.size === 1) this.#source.on('change', this.#onChange)
       /*
-       * Первый вид считается сразу и молча: редактор строится и спрашивает
-       * состояния в том же кадре, а кадр «изменилось» на пустом месте заставил
-       * бы плагин диспатчить транзакцию на ровном месте при каждом монтаже.
+       * The first view is computed immediately and silently: the editor is
+       * built and asks for the states in the same frame, and a "changed" frame
+       * out of nowhere would make the plugin dispatch a transaction for no
+       * reason on every mount.
        */
       const seeded = this.#group().get(cellId) ?? NOBODY
       this.#standing.set(cellId, seeded)
@@ -160,8 +163,8 @@ class Room {
   }
 
   standing(cellId: string): Standing[] {
-    // Пока на ячейку никто не подписан, снимка нет — считаем на месте: за него
-    // спросят разве что один раз, при постройке редактора.
+    // While nobody is subscribed to the cell there is no snapshot — compute it
+    // on the spot: it will be asked for once at most, when the editor is built.
     return this.#standing.get(cellId) ?? this.#group().get(cellId) ?? NOBODY
   }
 
@@ -173,7 +176,7 @@ class Room {
     })
   }
 
-  /** Один обход всех состояний — и рассылка только тем, у кого что-то стало другим. */
+  /** One pass over all states, notifying only cells where something changed. */
   #regroup(): void {
     const byCell = this.#group()
     for (const [cellId, listeners] of this.#watchers) {
@@ -198,8 +201,9 @@ class Room {
       if (list) list.push({ clientId, state: state as State })
       else byCell.set(at, [{ clientId, state: state as State }])
     })
-    // Порядок прихода кадров не постоянен, а подпись сравнивается строкой:
-    // без сортировки переподключившаяся вкладка «меняла» бы каждую ячейку.
+    // The order in which frames arrive is not stable, and the signature is
+    // compared as a string: without sorting, a reconnected tab would "change"
+    // every cell.
     for (const list of byCell.values()) {
       if (list.length > 1) list.sort((a, b) => a.clientId - b.clientId)
     }
@@ -219,10 +223,11 @@ function roomFor(source: Awareness, schedule: Schedule): Room {
 }
 
 /**
- * Вид на присутствие глазами одной ячейки.
+ * A view of presence through the eyes of one cell.
  *
- * @param schedule — чем откладывать склейку кадров; по умолчанию отрисовка.
- * Параметром, а не константой, ради тестов: рамка кадра в node не наступает.
+ * @param schedule — how to defer the coalescing of frames; a render by default.
+ * A parameter rather than a constant, for the sake of tests: animation frames
+ * never arrive in node.
  */
 export function cellAwareness(
   source: Awareness,
@@ -233,16 +238,18 @@ export function cellAwareness(
   const handlers = new Set<ChangeHandler>()
   let unwatch: (() => void) | null = null
   /**
-   * Кто был нарисован в этой ячейке на прошлом кадре — и чем.
+   * Who was drawn in this cell on the previous frame — and how.
    *
-   * Кадр обязан быть ДИФФОМ, а не списком стоящих сейчас. Плагин чужих кареток
-   * диспатчит транзакцию, только если в `added ∪ updated ∪ removed` есть хоть
-   * один чужой клиент (y-codemirror.next · y-remote-selections), а ушедшего в
-   * списке стоящих уже нет: кадр «кто здесь» на его уход приходил ПУСТЫМ,
-   * транзакции не было, `update()` не пересчитывал украшения — и каретка с
-   * чужим именем оставалась висеть в покинутой ячейке до любой посторонней
-   * правки в этом редакторе. Своего набора там обычно и не случается: в том и
-   * смысл десяти — двадцати пяти смонтированных редакторов.
+   * The frame has to be a DIFF, not a list of those standing there now. The
+   * remote-caret plugin dispatches a transaction only if
+   * `added ∪ updated ∪ removed` contains at least one remote client
+   * (y-codemirror.next · y-remote-selections), and whoever has left is no
+   * longer in the list of those standing: the "who is here" frame arrived EMPTY
+   * on their departure, there was no transaction, `update()` did not recompute
+   * the decorations — and a caret with someone else's name stayed hanging in
+   * the abandoned cell until some unrelated edit in this editor. And one's own
+   * typing usually does not happen there at all: that is the whole point of ten
+   * to twenty-five mounted editors.
    */
   let seen = new Map<number, string>()
 
@@ -259,8 +266,8 @@ export function cellAwareness(
     }
     for (const clientId of seen.keys()) if (!next.has(clientId)) removed.push(clientId)
     seen = next
-    // Ничего не изменилось — нечего и будить: `Room` до сюда с таким кадром
-    // и не доходит, но пустой кадр всё равно не должен выйти наружу.
+    // Nothing changed — nothing to wake: `Room` never gets here with such a
+    // frame, but an empty frame still must not get out.
     if (added.length === 0 && updated.length === 0 && removed.length === 0) return
     const diff: AwarenessDiff = { added, updated, removed }
     for (const handler of [...handlers]) handler(diff, 'cell-awareness')
@@ -287,8 +294,9 @@ export function cellAwareness(
       handlers.add(handler)
       if (unwatch) return
       unwatch = room.watch(cellId, announce)
-      // Плагин строит украшения из `getStates()` сразу после подписки, значит
-      // стоящие сейчас уже нарисованы: дифф считается от них, а не от пустоты.
+      // The plugin builds decorations from `getStates()` right after
+      // subscribing, so those standing now are already drawn: the diff is
+      // computed from them, not from emptiness.
       seen = marksOf(room.standing(cellId))
     },
     off(name, handler) {

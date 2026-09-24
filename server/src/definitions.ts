@@ -1,33 +1,36 @@
 /**
- * «Где это определено» — поиск по документу комнаты и по файлам семинара.
+ * "Where is this defined": a search over the room's document and the seminar's
+ * files.
  *
- * Разбор Python живёт отдельно и ничего не знает ни про комнату, ни про диск
- * (shared/python-defs.ts). Здесь — вторая половина: ПОРЯДОК, в котором смотрят.
- * И порядок этот не оптимизация, а сама фича: ответов на «где определено
- * `helper`» в живой комнате обычно несколько — в своей ячейке, в соседней
- * тетради, в `utils.py`, — и вопрос не в том, чтобы найти хоть один, а в том,
- * чтобы выбрать ТОТ, который человек и имел в виду.
+ * Python parsing lives separately and knows nothing about the room or the disk
+ * (shared/python-defs.ts). Here is the second half: the ORDER in which we look.
+ * And that order is not an optimisation but the feature itself: in a live room
+ * there are usually several answers to "where is `helper` defined" (in your
+ * own cell, in a neighbouring notebook, in `utils.py`), and the point is not
+ * to find at least one but to pick THE one the person meant.
  *
- * Отсюда правила, каждое из которых записано в коде ниже отдельным шагом:
+ * Hence the rules, each written down in the code below as a separate step:
  *
- * - Своё раньше чужого. Щёлкнутый исходник, потом его тетрадь, потом остальные
- *   тетради, потом .py-файлы папки. Ближнее определение и есть то, о котором
- *   спрашивают.
- * - Выше раньше нижнего. Внутри тетради берётся БЛИЖАЙШАЯ ячейка сверху:
- *   тетрадь читают и запускают сверху вниз, и переопределение выше — это то,
- *   что действует в момент клика. Ниже смотрим только когда выше нет вовсе.
- * - Цепочка от данных не ищется НИКОГДА. `df.head` — это `opaque`, и здесь на
- *   него не тратится ни одного чтения: `def head` в тетради почти наверняка
- *   найдётся, переход сработает, и человек уйдёт читать чужой класс, думая,
- *   что читает свой. Из всех промахов этот единственный невидим — см. довод у
- *   `resolveChain`.
+ * - Own before others'. The clicked source, then its notebook, then the other
+ *   notebooks, then the folder's .py files. The nearest definition is the one
+ *   being asked about.
+ * - Above before below. Inside a notebook the NEAREST cell above is taken: a
+ *   notebook is read and run top to bottom, and a redefinition above is what
+ *   is in effect at the moment of the click. We look below only when there is
+ *   nothing above at all.
+ * - A chain from data is NEVER looked up. `df.head` is `opaque`, and not a
+ *   single read is spent on it here: a `def head` will almost certainly turn
+ *   up in the notebook, the jump will work, and the person will go off to read
+ *   someone else's class thinking they are reading their own. Of all the
+ *   misses this one alone is invisible; see the argument at `resolveChain`.
  *
- * Почему сервер, а не браузер, у которого уже есть и грамматика, и текст
- * открытой ячейки: текста ОСТАЛЬНЫХ у него нет. Тетрадь строит редакторы
- * только рядом с экраном (Notebook.svelte · data-cell-deferred), файл семинара
- * читается лишь когда его открыли вкладкой, а чужая тетрадь может быть не
- * загружена вовсе. На сервере же и документ, и папка лежат под рукой — и
- * ровно поэтому здесь нужны потолки: см. MAX_FILES_READ.
+ * Why the server and not the browser, which already has both the grammar and
+ * the text of the open cell: it does not have the text of the OTHER cells. The
+ * notebook builds editors only near the screen (Notebook.svelte ·
+ * data-cell-deferred), a seminar file is read only once it has been opened in
+ * a tab, and another notebook may not be loaded at all. On the server both the
+ * document and the folder are at hand, and that is exactly why ceilings are
+ * needed here: see MAX_FILES_READ.
  */
 import * as Y from 'yjs'
 import {
@@ -52,66 +55,68 @@ import { currentText } from './collab/files.js'
 import { getSessionDoc } from './collab/index.js'
 import { listFiles } from './workspace.js'
 
-/** Куда идти — или почему некуда. Ровно одно из двух. */
+/** Where to go, or why there is nowhere to. Exactly one of the two. */
 export interface DefineAnswer {
   hit?: DefinitionHit
   miss?: DefinitionMiss
 }
 
 /**
- * Сколько .py один клик вправе прочитать.
+ * How many .py files one click may read.
  *
- * Папка семинара — это не десяток учебных модулей: одна строка `pip install` в
- * ячейке заводит в ней тысячи файлов (workspace.ts · MAX_ENTRIES про то же).
- * Сквозной поиск по имени без потолка означал бы тысячи чтений с диска на
- * КАЖДЫЙ Cmd-щелчок — и восемьдесят из них уже больше, чем бывает своих
- * модулей у семинара. Восемьдесят прочитанных файлов — это верх; обычный клик
- * не доходит и до одного, потому что имя находится раньше, в тетради.
+ * A seminar folder is not a dozen course modules: a single `pip install` line
+ * in a cell brings thousands of files into it (workspace.ts · MAX_ENTRIES is
+ * about the same thing). A full search by name without a ceiling would mean
+ * thousands of disk reads on EVERY Cmd-click, and eighty of them are already
+ * more than a seminar ever has modules of its own. Eighty files read is the
+ * top; an ordinary click does not get to even one, because the name is found
+ * earlier, in the notebook.
  */
 const MAX_FILES_READ = 80
 
 /**
- * И насколько крупный файл ещё имеет смысл разбирать.
+ * And how large a file is still worth parsing.
  *
- * Полмегабайта .py — это пятнадцать тысяч строк: чужая сборка, выгрузка
- * данных в виде кода, всё что угодно, кроме того, что писали руками на
- * семинаре. Размер берётся из обхода папки, то есть ДО чтения: крупный файл
- * не читается вовсе, а не читается и отбрасывается.
+ * Half a megabyte of .py is fifteen thousand lines: someone else's build, a
+ * data dump in the form of code, anything but what was written by hand in a
+ * seminar. The size comes from the folder walk, i.e. BEFORE reading: a large
+ * file is not read at all, rather than read and thrown away.
  */
 const MAX_FILE_BYTES = 512 * 1024
 
-/** Тот же потолок подписи, что у `Definition.text`: строка, а не абзац. */
+/** The same signature ceiling as `Definition.text`: a line, not a paragraph. */
 const MAX_TEXT = 160
 
-/** Имя годится в предфильтр только если оно и есть имя. */
+/** A name is fit for the prefilter only if it really is a name. */
 const NAME = /^[A-Za-z_]\w*$/
 
 /**
- * Предфильтр: встречается ли имя в тексте СЛОВОМ.
+ * The prefilter: does the name occur in the text as a WORD.
  *
- * Обязателен, и это измерено: восемьдесят ячеек тетради, разобранных подряд, —
- * десятки миллисекунд на один щелчок; те же восемьдесят с этой проверкой —
- * доли миллисекунды, потому что разбирается из них одна-две. `\b` вместо
- * `includes` не придирка: `helper` встречается внутри `my_helper_util`, и без
- * границ слова фильтр пропускал бы почти всё.
+ * Mandatory, and this is measured: eighty notebook cells parsed in a row cost
+ * tens of milliseconds per click; the same eighty with this check cost
+ * fractions of a millisecond, because only one or two of them get parsed.
+ * `\b` instead of `includes` is not nitpicking: `helper` occurs inside
+ * `my_helper_util`, and without word boundaries the filter would let almost
+ * everything through.
  */
 function wordOf(name: string): RegExp | null {
   if (!NAME.test(name)) return null
   return new RegExp(`\\b${name}\\b`)
 }
 
-/** Папка, в которой лежит этот путь. Корень — пустая строка. */
+/** The folder this path lies in. The root is an empty string. */
 function folderOf(path: string): string {
   const cut = path.lastIndexOf('/')
   return cut === -1 ? '' : path.slice(0, cut)
 }
 
-/** Модуль, названный так, как его написали в коде: с точками относительности. */
+/** A module named the way the code wrote it: with the relative dots. */
 function named(module: string, level: number, fallback: string): string {
   return `${'.'.repeat(level)}${module || fallback}`
 }
 
-/** Первая непустая строка файла — подпись к переходу «в начало модуля». */
+/** A file's first non-empty line: the label of a jump "to the module's top". */
 function firstLine(code: string): string {
   for (const line of code.split('\n')) {
     const text = line.trim()
@@ -122,12 +127,12 @@ function firstLine(code: string): string {
 }
 
 /**
- * Текст ячейки — БЕЗ побочной записи в документ.
+ * A cell's text, WITHOUT a side write into the document.
  *
- * `cellSource` из shared/notebook.ts заводит `Y.Text`, если его нет, и это
- * правильно для того, кто собирается печатать. Здесь же путь читающий: клик по
- * имени не имеет права родить правку документа и разослать её всей комнате —
- * тем более на ячейке, у которой что-то не так со схемой.
+ * `cellSource` from shared/notebook.ts creates a `Y.Text` if there is none,
+ * and that is right for someone about to type. Here the path only reads: a
+ * click on a name has no right to give birth to a document edit and broadcast
+ * it to the whole room, all the more so on a cell whose schema is off somehow.
  */
 function sourceOf(cell: YCell): string {
   const raw: unknown = cell.get('source')
@@ -135,21 +140,21 @@ function sourceOf(cell: YCell): string {
   return typeof raw === 'string' ? raw : ''
 }
 
-/** Лист документа: ячейки и путь тетради, которой они принадлежат. */
+/** A document sheet: the cells and the path of the notebook they belong to. */
 interface Sheet {
-  /** Путь файла тетради — им подписывают переход, когда тетрадей несколько. */
+  /** The notebook file's path; it labels the jump when there are several. */
   path: string | undefined
   cells: Y.Array<YCell>
 }
 
 /**
- * Тетради комнаты по порядку.
+ * The room's notebooks, in order.
  *
- * Запасной путь через `allCellArrays` — для документа, у которого списка
- * тетрадей ещё нет: комната, открытая впервые после появления нескольких
- * тетрадей, и документ теста, собранный из одного корня. Оба обязаны вести
- * себя как комната с одной тетрадью, иначе переход по соседним ячейкам молча
- * перестаёт работать (тот же довод — у самого `allCellArrays`).
+ * The fallback through `allCellArrays` is for a document that has no list of
+ * notebooks yet: a room opened for the first time since multiple notebooks
+ * appeared, and a test document built from a single root. Both must behave
+ * like a room with one notebook, otherwise jumping across neighbouring cells
+ * silently stops working (the same argument sits at `allCellArrays` itself).
  */
 function sheetsOf(doc: Y.Doc): Sheet[] {
   const books = allBooks(doc)
@@ -158,21 +163,21 @@ function sheetsOf(doc: Y.Doc): Sheet[] {
 }
 
 /**
- * Импорты, действующие в этой ячейке, — то есть импорты ВСЕЙ её тетради.
+ * The imports in effect in this cell, i.e. the imports of its WHOLE notebook.
  *
- * Область видимости в тетради — не ячейка, а ядро: `import case_cian as cian`
- * стоит в третьей ячейке и действует до конца занятия. Пока здесь читались
- * импорты только щёлкнутой ячейки, `cian.fig_range_audit(...)` из шестнадцатой
- * отвечал «что такое cian, отсюда не видно» — то есть фича разваливалась ровно
- * на самом частом устройстве учебной тетради: шапка с импортами наверху,
- * работа ниже.
+ * The scope in a notebook is not the cell but the kernel: `import case_cian as
+ * cian` sits in the third cell and is in effect until the end of class. While
+ * only the clicked cell's imports were read here, `cian.fig_range_audit(...)`
+ * in the sixteenth cell answered "what cian is cannot be seen from here", so
+ * the feature fell apart on exactly the most common layout of a course
+ * notebook: a header of imports at the top, the work below.
  *
- * Порядок важен: свои первыми, потом остальные сверху вниз. `resolveChain`
- * берёт ПЕРВОЕ совпадение по имени, и если человек переопределил `np` у себя в
- * ячейке, действует его.
+ * Order matters: the cell's own first, then the others from top to bottom.
+ * `resolveChain` takes the FIRST match by name, and if the person redefined
+ * `np` in their own cell, theirs is in effect.
  *
- * Предфильтр по слову `import` — чтобы не разбирать восемьдесят ячеек ради
- * шапки из трёх строк: у большинства ячеек тетради импортов нет вовсе.
+ * The prefilter on the word `import` avoids parsing eighty cells for the sake
+ * of a three-line header: most cells of a notebook have no imports at all.
  */
 function importsAround(
   own: Scan,
@@ -197,24 +202,24 @@ function importsAround(
   return { imports, stars }
 }
 
-/** Один поиск: что ищем, откуда считаем относительные импорты и сколько ещё можно прочитать. */
+/** One search: what we look for, the base of relative imports, the reads left. */
 interface Hunt {
   sessionId: string
-  /** Папка, от которой считаются относительные импорты: файла или тетради. */
+  /** The folder relative imports are counted from: the file's or the notebook's. */
   dir: string
-  /** Имя, которое ищут, — оно же поедет в ответ. */
+  /** The name being looked for; it also goes into the answer. */
   name: string
-  /** Предфильтр по этому имени; `null` — имя не годится в регулярное выражение. */
+  /** Prefilter on this name; `null` means the name does not fit into a regex. */
   word: RegExp | null
-  /** Имя щёлкнутой ячейки: от него `inSheet` считает, что такое «выше». */
+  /** The clicked cell's name: `inSheet` works out what "above" means from it. */
   from: string | undefined
-  /** Обход папки — один на запрос, и только если до файлов дойдёт дело. */
+  /** The folder walk: one per request, and only if it comes to files. */
   files: Map<string, number> | null
-  /** Сколько файлов ещё позволено прочитать. См. MAX_FILES_READ. */
+  /** How many more files may be read. See MAX_FILES_READ. */
   budget: number
 }
 
-/** Файлы папки семинара: путь — размер. Обход ленивый: тетради дешевле. */
+/** Seminar folder files, path to size. The walk is lazy: notebooks are cheaper. */
 function tree(hunt: Hunt): Map<string, number> {
   if (hunt.files) return hunt.files
   const known = new Map<string, number>()
@@ -224,11 +229,12 @@ function tree(hunt: Hunt): Map<string, number> {
 }
 
 /**
- * Текст файла папки семинара — живой, с несохранёнными правками.
+ * The text of a seminar folder file, live, with unsaved edits.
  *
- * `null` — файла нет, он крупнее потолка, или потолок чтений на этот запрос
- * уже выбран. Через `currentText`, а не с диска: открытый вкладкой файл правят
- * прямо сейчас, и определение, дописанное минуту назад, обязано находиться.
+ * `null`: there is no file, it is larger than the ceiling, or this request's
+ * read ceiling is already used up. Through `currentText`, not from disk: a file
+ * open in a tab is being edited right now, and a definition added a minute ago
+ * must be found.
  */
 function readFile(hunt: Hunt, path: string): string | null {
   const size = tree(hunt).get(path)
@@ -237,16 +243,17 @@ function readFile(hunt: Hunt, path: string): string | null {
 }
 
 /**
- * То же, но БЕЗ обхода папки: путь уже известен точно.
+ * The same, but WITHOUT the folder walk: the path is already known exactly.
  *
- * Обход стоит дорого и на ровном месте. Замерено на комнате курса: переход в
- * свой модуль целиком — 41,9 мс, из них 41,4 мс — `listFiles` на холодную, то
- * есть 99 % цены уходит на перепись всей папки ради двух заранее известных
- * имён (`eda_tools.py` и `eda_tools/__init__.py`). `currentText` сам отвечает
- * `null`, если файла нет, — спрашивать у обхода разрешения незачем.
+ * The walk is expensive, and for nothing. Measured on a course room: a jump
+ * into your own module costs 41.9 ms in total, of which 41.4 ms is a cold
+ * `listFiles`, i.e. 99 % of the price goes on a census of the whole folder for
+ * the sake of two names known in advance (`eda_tools.py` and
+ * `eda_tools/__init__.py`). `currentText` itself answers `null` if there is no
+ * file, so there is no need to ask the walk for permission.
  *
- * Обход остаётся там, где он по делу: в сквозном проходе, которому нужен
- * СПИСОК файлов, и в проверке размера перед чтением чужого крупного файла.
+ * The walk stays where it is warranted: in the full pass, which needs the LIST
+ * of files, and in the size check before reading someone else's large file.
  */
 function readExact(hunt: Hunt, path: string): string | null {
   if (hunt.budget <= 0) return null
@@ -273,15 +280,15 @@ function hitInCell(id: string, book: string | undefined, def: Definition, name: 
   }
 }
 
-/** Начало модуля: туда ведут, когда спросили про сам модуль, а не про имя в нём. */
+/** The module's top: the target when asked about the module, not a name in it. */
 function hitAtTop(hunt: Hunt, path: string, known?: string | null): DefinitionHit {
-  // `known` — текст, который вызывающий уже прочитал: второе чтение того же
-  // файла ради одной первой строки тратило и время, и единицу потолка.
+  // `known` is text the caller has already read: reading the same file a
+  // second time for one first line cost both time and a unit of the ceiling.
   const text = known === undefined ? readExact(hunt, path) : known
   return { where: 'file', path, line: 1, column: 0, text: text === null ? '' : firstLine(text), name: hunt.name }
 }
 
-/** Файл модуля в папке семинара — или `null`, если такого модуля у семинара нет. */
+/** The module's file in the seminar folder, or `null` if the seminar has none. */
 function moduleFile(hunt: Hunt, module: string, level: number): string | null {
   for (const cand of modulePaths(module, level, hunt.dir)) {
     if (currentText(hunt.sessionId, cand) !== null) return cand
@@ -289,7 +296,7 @@ function moduleFile(hunt: Hunt, module: string, level: number): string | null {
   return null
 }
 
-/** Имя ВНУТРИ модуля: `utils.py` или `utils/__init__.py`, верхний уровень. */
+/** A name INSIDE a module: `utils.py` or `utils/__init__.py`, top level. */
 function inModule(hunt: Hunt, module: string, level: number, member: string): DefinitionHit | null {
   for (const cand of modulePaths(module, level, hunt.dir)) {
     const text = readExact(hunt, cand)
@@ -301,22 +308,22 @@ function inModule(hunt: Hunt, module: string, level: number, member: string): De
 }
 
 /**
- * Импорт — в переход.
+ * An import, turned into a jump.
  *
- * Одна дорога на два входа: и на цепочку `utils.helper` (там модуль назвал сам
- * `resolveChain`), и на голое имя, связанное импортом в этой же ячейке. Формы
- * импорта при этом разные, и разница у них ровно одна — спрашивают про МОДУЛЬ
- * или про имя в нём:
+ * One road for two entrances: the chain `utils.helper` (where `resolveChain`
+ * named the module itself) and a bare name bound by an import in this same
+ * cell. The import forms differ, and there is exactly one difference between
+ * them: whether they ask about the MODULE or about a name in it:
  *
- *   import utils            -> модуль; вести в начало файла
- *   from utils import f     -> имя `f` в `utils.py`
- *   from . import util      -> `util` — это ПОДМОДУЛЬ рядом, а не имя в модуле
- *   from pkg import sub     -> и так же, если в `pkg` нет имени `sub`
+ *   import utils            -> the module; lead to the top of the file
+ *   from utils import f     -> the name `f` in `utils.py`
+ *   from . import util      -> `util` is a SUBMODULE alongside, not a name in a module
+ *   from pkg import sub     -> the same, if `pkg` has no name `sub`
  *
- * Последние два и есть тот случай, ради которого здесь второй заход: модуль
- * назван пакетом, а искомое — файл внутри него. Порядок между ними — сперва
- * имя, потом подмодуль: `from pkg import sub`, где в `pkg/__init__.py` есть
- * `sub = ...`, значит именно эту переменную.
+ * The last two are the very case the second pass here exists for: the module
+ * named is a package, and what is sought is a file inside it. The order
+ * between them is name first, then submodule: `from pkg import sub`, where
+ * `pkg/__init__.py` has `sub = ...`, means exactly that variable.
  */
 function throughImport(hunt: Hunt, module: string, level: number, member: string | null): DefineAnswer {
   if (member === null) {
@@ -332,29 +339,31 @@ function throughImport(hunt: Hunt, module: string, level: number, member: string
   if (sub) return { hit: hitAtTop(hunt, sub) }
 
   /*
-   * Ни одного файла-кандидата в папке нет — значит модуль чужой: `numpy`,
-   * `sklearn.metrics`, что угодно из окружения. Это НЕ «не нашлось»: сказать
-   * «numpy не в папке семинара» значит объяснить, а «не нашлось, где
-   * определено» — обвинить человека в опечатке, которой он не делал.
+   * Not a single candidate file in the folder, so the module is someone
+   * else's: `numpy`, `sklearn.metrics`, anything from the environment. This is
+   * NOT "not found": saying "numpy is not in the seminar folder" explains,
+   * while "could not find where it is defined" accuses the person of a typo
+   * they did not make.
    */
   if (moduleFile(hunt, module, level) === null) {
     return { miss: { why: 'outside', name: hunt.name, module: named(module, level, member) } }
   }
-  // Файл модуля наш, а имени в нём нет: опечатка или его ещё не написали.
+  // The module file is ours but the name is not in it: a typo, or not written
+  // yet.
   return { miss: { why: 'unknown', name: hunt.name } }
 }
 
 /**
- * Определение в одном листе — ближайшее СВЕРХУ от щёлкнутой ячейки.
+ * A definition in one sheet: the nearest one ABOVE the clicked cell.
  *
- * `at` — место щёлкнутой ячейки в этом листе; если её здесь нет (чужая
- * тетрадь, клик в файле), весь лист считается лежащим выше, и берётся
- * последнее определение в нём — то же правило, что и внутри одного исходника
- * (`pickDefinition`: побеждает последнее переопределение).
+ * `at` is the clicked cell's place in this sheet; if it is not here (another
+ * notebook, a click in a file), the whole sheet counts as lying above, and its
+ * last definition is taken: the same rule as inside a single source
+ * (`pickDefinition`: the last redefinition wins).
  *
- * Два прохода, а не один с запоминанием: обход вверх от каретки останавливается
- * на первом же попадании, и это не косметика — каждая пройденная ячейка стоит
- * снятия `Y.Text` в строку.
+ * Two passes rather than one with memory: the walk up from the caret stops at
+ * the very first hit, and that is not cosmetics, since every cell passed costs
+ * turning a `Y.Text` into a string.
  */
 function inSheet(hunt: Hunt, sheet: Sheet): DefinitionHit | null {
   const word = hunt.word
@@ -368,17 +377,18 @@ function inSheet(hunt: Hunt, sheet: Sheet): DefinitionHit | null {
     const source = sourceOf(cell)
     if (!word.test(source)) return null
     const scan = scanPython(source)
-    // Ячейка на чужом языке: `def` в `%%bash` определением не является.
+    // A cell in another language: a `def` in `%%bash` is not a definition.
     if (scan.magic) return null
     const def = pickDefinition(scan, hunt.name)
     /*
-     * Строка импорта в ЧУЖОЙ ячейке приземлением не считается.
+     * An import line in SOMEONE ELSE'S cell does not count as a landing.
      *
-     * Клик по `load_dataset` уводил в шапку, на `from eda_tools import
-     * load_dataset`, — то есть на строку, из которой надо прыгать второй раз.
-     * Через импорт этой шапки поиск уже прошёл выше (шаг 4б) и, если модуль
-     * семинарский, туда и привёл; а если нет — честнее сказать «из библиотеки»,
-     * чем показать строку, которую человек и так видел.
+     * A click on `load_dataset` led to the header, to `from eda_tools import
+     * load_dataset`, i.e. to a line you have to jump from a second time. The
+     * search has already gone through this header's import above (step 4b)
+     * and, if the module belongs to the seminar, led there; and if not, it is
+     * more honest to say "from a library" than to show a line the person has
+     * seen anyway.
      */
     if (!def || def.kind === 'import') return null
     return hitInCell(idOfCell(cell), sheet.path, def, hunt.name)
@@ -392,9 +402,9 @@ function inSheet(hunt: Hunt, sheet: Sheet): DefinitionHit | null {
       }
     }
   }
-  // Щёлкнутая ячейка пропущена в обе стороны: её ЖИВОЙ текст уже разобран
-  // отдельно (шаг 4а) — тем самым, что приехал в кадре, а не тем, что успел
-  // доехать до документа.
+  // The clicked cell is skipped in both directions: its LIVE text has already
+  // been parsed separately (step 4a), the text that arrived in the frame, not
+  // whatever had reached the document by then.
   for (let i = at - 1; i >= 0; i--) {
     const hit = look(i)
     if (hit) return hit
@@ -407,11 +417,12 @@ function inSheet(hunt: Hunt, sheet: Sheet): DefinitionHit | null {
 }
 
 /**
- * Голое имя: по своему исходнику, по тетрадям, по файлам.
+ * A bare name: through its own source, the notebooks, the files.
  *
- * Порядок шагов — тот, что описан в шапке модуля, и каждый следующий дороже
- * предыдущего. Обычный клик кончается на первом или втором: имя, по которому
- * щёлкнули, чаще всего определено здесь же или парой ячеек выше.
+ * The order of steps is the one described in the module header, and each step
+ * costs more than the one before. An ordinary click ends at the first or
+ * second: the clicked name is most often defined right here or a couple of
+ * cells above.
  */
 function byName(
   hunt: Hunt,
@@ -424,31 +435,33 @@ function byName(
 ): DefineAnswer {
   const name = hunt.name
 
-  // 4а. Свой исходник — тот, что приехал в кадре.
+  // 4a. The own source, the one that arrived in the frame.
   const mine = pickDefinition(own, name)
   if (mine && mine.kind !== 'import') {
     if (cellId) return { hit: hitInCell(cellId, book, mine, name) }
     if (path) return { hit: hitInFile(path, mine, name) }
-    // Ни ячейки, ни файла: адреса у ответа не будет — ищем дальше, там он есть.
+    // Neither a cell nor a file: the answer would have no address. Search on,
+    // where it does have one.
   }
 
   /*
-   * 4б. Имя связано импортом в этой же ячейке.
+   * 4b. The name is bound by an import in this same cell.
    *
-   * Отказ здесь НЕ окончателен, и это не перестраховка: `from utils import *`
-   * рядом с `import numpy as np` — обычная шапка тетради, и имя, приехавшее из
-   * библиотеки, вполне может быть переопределено ниже своим. Поэтому причина
-   * запоминается, а поиск продолжается; и запоминается только `outside` —
-   * «не нашлось» и так стоит последним ответом.
+   * A refusal here is NOT final, and this is not overcaution: `from utils
+   * import *` next to `import numpy as np` is an ordinary notebook header, and
+   * a name that came from a library may well be redefined below by one of your
+   * own. So the reason is remembered and the search goes on; and only
+   * `outside` is remembered, since "not found" stands as the last answer
+   * anyway.
    */
   /*
-   * Свой импорт раньше чужого, и это не мелочь порядка.
+   * Own import before others', and this is not a small matter of order.
    *
-   * `lastImport` берёт ПОСЛЕДНИЙ по списку, а список теперь идёт по всей
-   * тетради — значит «последний» стал означать «в самой нижней ячейке». В
-   * ячейке своими глазами написано `from case_cian import load`, а переход
-   * уводил в `case_rohlik.py` только потому, что тот импорт стоит ниже по
-   * тетради. Сначала спрашиваем ту ячейку, в которой щёлкнули.
+   * `lastImport` takes the LAST in the list, and the list now runs over the
+   * whole notebook, so "last" came to mean "in the lowest cell". The cell said
+   * `from case_cian import load` in plain sight, yet the jump led into
+   * `case_rohlik.py` only because that import sits lower in the notebook. We
+   * ask the clicked cell first.
    */
   let outside: DefinitionMiss | null = null
   const bound = lastImport(own.imports, name) ?? lastImport(scope.imports, name)
@@ -459,18 +472,21 @@ function byName(
   }
 
   /*
-   * И само НАЗВАНИЕ модуля в строке импорта — `pandas` в `import pandas as pd`.
+   * And the module's very NAME in an import line: `pandas` in `import pandas
+   * as pd`.
    *
-   * Связанного имени здесь нет вовсе: `import pandas as pd` кладёт в область
-   * видимости `pd`, а слово `pandas` не значит ничего. Из-за этого щелчок по
-   * нему падал в конец поиска и отвечал «не нашлось ни в тетрадях, ни в
-   * файлах» — правда, но не та: искали-то модуль, и человеку надо знать, что
-   * он ИЗ БИБЛИОТЕКИ, а не что его нигде нет. Свой модуль семинара тем же
-   * щелчком открывается: `import eda_tools` — слово и есть связанное имя, и
-   * туда дорога уже нашлась выше.
+   * There is no bound name here at all: `import pandas as pd` puts `pd` into
+   * scope, and the word `pandas` means nothing. Because of that a click on it
+   * fell to the end of the search and answered "not found in the notebooks or
+   * in the files": true, but not the truth that matters, since a module was
+   * being looked for, and the person needs to know it is FROM A LIBRARY, not
+   * that it is nowhere. A seminar's own module opens with the same click: in
+   * `import eda_tools` the word is the bound name, and the road there was
+   * already found above.
    *
-   * Берётся первый сегмент пути: у `import os.path` щелчок по `os` — это `os`,
-   * а щелчок по `path` придёт сюда цепочкой и до этой ветки не доберётся.
+   * The first segment of the path is taken: in `import os.path` a click on
+   * `os` is `os`, and a click on `path` comes here as a chain and never reaches
+   * this branch.
    */
   if (!mine) {
     const asModule = scope.imports.find((one) => one.module.split('.')[0] === name)
@@ -481,7 +497,7 @@ function byName(
     }
   }
 
-  // 4в–4г. Своя тетрадь раньше остальных; внутри каждой — ближайшая сверху.
+  // 4c–4d. Own notebook before the others; inside each, the nearest above.
   const mineFirst = book
     ? [...sheets.filter((one) => one.path === book), ...sheets.filter((one) => one.path !== book)]
     : sheets
@@ -491,63 +507,63 @@ function byName(
   }
 
   /*
-   * 4д. `from x import *` — и это НАЗВАННЫЙ модуль, а не догадка.
+   * 4e. `from x import *`, and that is a NAMED module, not a guess.
    *
-   * Раньше этот шаг стоял последним, после сквозного прохода по всем .py, и от
-   * него почти ничего не зависело: проход и так находит `def figure`, где бы
-   * тот ни лежал. Но находит он ПЕРВЫЙ по алфавиту пути, а звёздный импорт
-   * прямо называет, из какого модуля имя пришло. Когда `def figure` есть и в
-   * `plotstyle.py`, и в `case_cian.py`, правильный ответ знает только строка
-   * `from plotstyle import *` — и знает точно.
+   * This step used to come last, after the full pass over all .py files, and
+   * almost nothing depended on it: the pass finds `def figure` wherever it
+   * lies anyway. But it finds the FIRST by alphabetical path, while a star
+   * import names outright which module the name came from. When `def figure`
+   * is in both `plotstyle.py` and `case_cian.py`, only the line `from
+   * plotstyle import *` knows the right answer, and knows it for sure.
    *
-   * Звёзды берутся по всей тетради, как и обычные импорты: шапка стоит в
-   * третьей ячейке и действует до конца занятия.
+   * Stars are taken over the whole notebook, like ordinary imports: the header
+   * sits in the third cell and is in effect until the end of class.
    */
   for (const star of scope.stars) {
     const hit = inModule(hunt, star.module, star.level, name)
     if (hit) return { hit }
   }
 
-  // 4е. И только теперь — сквозной проход по .py-файлам папки: здесь уже догадка.
+  // 4f. Only now a full pass over the folder's .py files: here it is a guess.
   const inFiles = sweepFiles(hunt, path)
   if (inFiles) return { hit: inFiles }
 
   return { miss: outside ?? { why: 'unknown', name } }
 }
 
-/** Последний импорт, связавший это имя: ниже по исходнику — значит он и действует. */
+/** Last import that bound this name: lower in the source, so it is in effect. */
 function lastImport(imports: readonly Import[], local: string): Import | null {
   for (let i = imports.length - 1; i >= 0; i--) if (imports[i].local === local) return imports[i]
   return null
 }
 
 /**
- * Определение верхнего уровня в .py-файлах папки — по алфавиту пути.
+ * A top-level definition in the folder's .py files, by alphabetical path.
  *
- * Здесь кончается знание и начинается догадка: файл, в котором имя нашлось, с
- * щёлкнутой ячейкой может быть не связан ничем — его никто не импортировал.
- * Поэтому шаг стоит последним, и поэтому порядок АЛФАВИТНЫЙ, а не порядок
- * обхода папки: обход меняется от одного `pip install` до другого, и ответ на
- * тот же клик менялся бы вместе с ним. Догадка, если уж она догадка, обязана
- * быть хотя бы одной и той же.
+ * Here knowledge ends and guessing begins: the file where the name turned up
+ * may have nothing to do with the clicked cell; nobody imported it. So the step
+ * comes last, and so the order is ALPHABETICAL rather than the folder walk
+ * order: the walk changes from one `pip install` to the next, and the answer to
+ * the same click would change with it. A guess, if it has to be a guess, must
+ * at least be the same one every time.
  *
- * Только верхний уровень (`owner === null`, так работает `pickDefinition` без
- * владельца): метод чужого класса, случайно названный так же, — это тот самый
- * уверенный переход не туда.
+ * Top level only (`owner === null`, which is how `pickDefinition` works
+ * without an owner): a method of someone else's class that happens to have
+ * the same name is exactly that confident jump to the wrong place.
  *
- * Предфильтр здесь бережёт не чтение, а разбор: чтобы узнать, есть ли в файле
- * имя, файл надо прочитать. Само чтение держат два потолка выше — число файлов
- * и размер каждого.
+ * The prefilter here saves not the reading but the parsing: to learn whether a
+ * file has the name, the file has to be read. The reading itself is held by
+ * the two ceilings above, the number of files and the size of each.
  */
 /**
- * Папки, в которых лежит чужой код, а не материалы занятия.
+ * Folders holding someone else's code rather than class materials.
  *
- * Одна строка `!pip install -t .` в ячейке заводит в папке тысячи .py, и
- * сквозной проход, отсортированный по алфавиту, выбирал потолок чтений на них
- * ещё до первого своего модуля: `use_style` переставал находиться вовсе, а сам
- * щелчок дорожал с 8 до 63 мс. Проход ищет то, что писали на занятии, — а
- * установленное пришло с готовым определением, до которого всё равно не
- * дотянуться.
+ * A single `!pip install -t .` line in a cell brings thousands of .py files
+ * into the folder, and the full pass, sorted alphabetically, used up the read
+ * ceiling on them before reaching the first module of our own: `use_style`
+ * stopped being found at all, and the click itself went from 8 to 63 ms. The
+ * pass looks for what was written in class, and installed code came with a
+ * ready definition that is out of reach anyway.
  */
 const NOT_OURS = new Set([
   'site-packages',
@@ -573,10 +589,10 @@ function ours(path: string): boolean {
 function sweepFiles(hunt: Hunt, clicked: string | undefined): DefinitionHit | null {
   if (hunt.word === null) return null
   /*
-   * Ближе к корню — раньше: свои модули семинара лежат рядом с тетрадью, а
-   * чужие — в глубине. Сортировка по глубине, потом по алфавиту: алфавит один
-   * не годится, он менялся бы от одной установки пакетов до другой, и ответ на
-   * тот же щелчок менялся бы вместе с ним.
+   * Closer to the root comes first: a seminar's own modules lie next to the
+   * notebook, other people's deep inside. Sorted by depth, then alphabetically:
+   * the alphabet alone will not do, it would change from one package install
+   * to the next, and the answer to the same click would change with it.
    */
   const paths = [...tree(hunt).keys()]
     .filter((p) => p.endsWith('.py') && p !== clicked && ours(p))
@@ -587,11 +603,11 @@ function sweepFiles(hunt: Hunt, clicked: string | undefined): DefinitionHit | nu
     if (!hunt.word.test(text)) continue
     const def = pickDefinition(scanPython(text), hunt.name)
     /*
-     * Строка импорта чужим файлом не считается — по тому же доводу, что и в
-     * ячейке: `import numpy as np` в `case_bpm.py` делал вид, что `np`
-     * определён там, и щелчок по `np` в шапке лекции открывал чужой модуль.
-     * Сквозной проход — и так догадка; догадываться ещё и по чужим импортам
-     * значит гадать дважды.
+     * An import line in another file does not count, by the same argument as
+     * in a cell: `import numpy as np` in `case_bpm.py` pretended that `np` was
+     * defined there, and a click on `np` in a lecture's header opened someone
+     * else's module. The full pass is a guess already; guessing by other
+     * files' imports as well means guessing twice.
      */
     if (def && def.kind !== 'import') return hitInFile(path, def, hunt.name)
   }
@@ -599,16 +615,18 @@ function sweepFiles(hunt: Hunt, clicked: string | undefined): DefinitionHit | nu
 }
 
 /**
- * Куда ведёт имя под кареткой — или почему никуда.
+ * Where the name under the caret leads, or why nowhere.
  *
- * `cellId` и `path` — откуда спрашивают: имя ячейки или путь файла. Оба
- * необязательны и оба про одно и то же — про ОТКУДА: от них считается и
- * порядок поиска (своя тетрадь раньше чужих), и папка относительных импортов
- * (`from . import util` — рядом с ЭТИМ файлом, а не с корнем семинара).
+ * `cellId` and `path` say where the question comes from: a cell's name or a
+ * file's path. Both are optional and both are about the same thing, the WHERE
+ * FROM: they set both the search order (own notebook before others) and the
+ * folder of relative imports (`from . import util` is next to THIS file, not
+ * next to the seminar root).
  *
- * Синхронно и без ядра: всё, что нужно ответу, уже лежит в памяти процесса —
- * документ комнаты и папка семинара. Поэтому переход работает и у того, кто
- * только что открыл тетрадь и ничего не запускал.
+ * Synchronous and without a kernel: everything the answer needs already lies
+ * in the process's memory, the room document and the seminar folder. So the
+ * jump works even for someone who has just opened the notebook and has not
+ * run anything.
  */
 export function defineIn(
   sessionId: string,
@@ -619,19 +637,21 @@ export function defineIn(
   cut = 0,
 ): DefineAnswer {
   /*
-   * Присланное окно — это ещё не исходник, и разбирать надо исходник.
+   * The window that was sent is not yet the source, and it is the source that
+   * has to be parsed.
    *
-   * Потолок кадра 24 КБ, а `case_cian.py` живого курса — 886 КБ: клик в
-   * крупном файле приезжает сюда КУСКОМ (session.svelte.ts · windowAroundCursor
-   * сообщает, сколько срезано слева). Считать по куску нельзя дважды: строки в
-   * нём свои, и приземление уходило на сотни строк мимо; а определение,
-   * оставшееся за краем окна, «не находилось» — и поиск шёл дальше, в чужие
-   * файлы, где имя совпало.
+   * The frame ceiling is 24 KB, while a live course's `case_cian.py` is
+   * 886 KB: a click in a large file arrives here as a PIECE (session.svelte.ts
+   * · windowAroundCursor reports how much was cut off on the left). Counting by
+   * the piece is wrong twice over: its lines are its own, and the landing went
+   * hundreds of lines off; and a definition left beyond the edge of the window
+   * was "not found", so the search went on into other files where the name
+   * matched.
    *
-   * Целый текст у сервера есть: файл отдаёт `currentText`, ячейку — документ
-   * комнаты. Сверка по содержимому, а не по одному числу: между отправкой и
-   * ответом человек мог успеть напечатать, и тогда честнее найти окно заново,
-   * чем поверить сдвигу.
+   * The server has the whole text: `currentText` gives the file, the room
+   * document gives the cell. Matching is by content, not by a single number:
+   * between sending and answering the person may have typed something, and
+   * then it is more honest to find the window anew than to trust the offset.
    */
   if (cut > 0) {
     const whole = wholeSource(sessionId, cellId, path)
@@ -641,10 +661,11 @@ export function defineIn(
       cursor += at
     } else {
       /*
-       * Целого текста не нашлось. Тогда по куску ищем ТОЛЬКО за его пределами:
-       * своё приземление из окна дало бы уверенно неверную строку, а это хуже
-       * отказа. `cellId` и `path` не передаются дальше — значит шаг «своя
-       * ячейка/свой файл» пропускается, а имя ищется по соседям.
+       * The whole text was not found. Then with the piece we search ONLY
+       * outside it: a landing of our own from the window would give a
+       * confidently wrong line, and that is worse than a refusal. `cellId` and
+       * `path` are not passed on, so the "own cell/own file" step is skipped,
+       * and the name is looked up among the neighbours.
        */
       cellId = undefined
       path = undefined
@@ -656,21 +677,22 @@ export function defineIn(
 
   const own = scanPython(code)
   /*
-   * Ячейка на чужом языке — и молчание вместо ответа.
+   * A cell in another language, and silence instead of an answer.
    *
-   * `%%bash` с `python train.py` внутри: слово под указателем есть, а имени
-   * Python в нём нет. Ответить «не нашлось» было бы полуправдой, а поискать
-   * `train` по тетради — тем самым уверенным переходом не туда. `nothing`
-   * здесь и значит ровно то, что значит: имени под указателем не было.
+   * `%%bash` with `python train.py` inside: there is a word under the pointer,
+   * but no Python name in it. Answering "not found" would be a half-truth, and
+   * searching for `train` through the notebook would be that very confident
+   * jump to the wrong place. `nothing` here means exactly what it means: there
+   * was no name under the pointer.
    */
   if (own.magic) return { miss: { why: 'nothing' } }
 
   /*
-   * Документ берётся на один вызов и не держится: `holdRoom` нужен тому, кто
-   * работает с `Y.Doc` дольше одного обращения (collab/index.ts), а здесь всё
-   * чтение укладывается в этот синхронный проход. Отпускать тоже нечего —
-   * кадр пришёл по живому сокету, то есть в комнате сидит как минимум тот, кто
-   * щёлкнул.
+   * The document is taken for one call and not held: `holdRoom` is for whoever
+   * works with a `Y.Doc` longer than one access (collab/index.ts), and here all
+   * the reading fits into this synchronous pass. There is nothing to release
+   * either: the frame came over a live socket, so at least the person who
+   * clicked is sitting in the room.
    */
   const doc = getSessionDoc(sessionId).doc
   const sheets = sheetsOf(doc)
@@ -678,11 +700,12 @@ export function defineIn(
   const home = path ?? book
 
   /*
-   * Цепочка разрешается ПОСЛЕ документа, и только поэтому она разрешается.
+   * The chain is resolved AFTER the document, and only because of that does it
+   * resolve.
    *
-   * У файла область видимости — он сам, у ячейки — вся тетрадь: см.
-   * `importsAround`. Разложить это на две ветки нельзя было бы аккуратнее, чем
-   * одним списком, который для файла равен его собственным импортам.
+   * A file's scope is the file itself, a cell's is the whole notebook: see
+   * `importsAround`. Splitting this into two branches could not be done more
+   * neatly than one list, which for a file equals its own imports.
    */
   const scope = cellId ? importsAround(own, sheets, book) : { imports: own.imports, stars: own.stars }
   const target = resolveChain(question, scope.imports)
@@ -705,9 +728,10 @@ export function defineIn(
 }
 
 /**
- * Целый исходник того, где щёлкнули, — файла или ячейки.
+ * The whole source of where the click happened, a file or a cell.
  *
- * `null` — достать неоткуда: файла уже нет, ячейку удалили, имени не дали.
+ * `null`: there is nowhere to get it from; the file is gone, the cell was
+ * deleted, no name was given.
  */
 function wholeSource(
   sessionId: string,
@@ -725,7 +749,7 @@ function wholeSource(
   return null
 }
 
-/** Путь тетради, в которой лежит эта ячейка. */
+/** The path of the notebook this cell lies in. */
 function bookOfCell(sheets: readonly Sheet[], id: string): string | undefined {
   for (const sheet of sheets) {
     for (let i = 0; i < sheet.cells.length; i++) {

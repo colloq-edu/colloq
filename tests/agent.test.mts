@@ -1,9 +1,9 @@
 /**
- * Границы режима «сделать».
+ * The limits of the "do" mode.
  *
- * Модель здесь не участвует: проверяются руки, а не голова. Всё, что ниже,
- * ломается тихо — оракул сообщает об успехе, а в файле не то, что он думает,
- * или отмена возвращает не туда, где были.
+ * The model takes no part here: the hands are checked, not the head.
+ * Everything below breaks quietly: the oracle reports success while the file
+ * holds something other than it thinks, or undo goes back to the wrong place.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -24,12 +24,12 @@ function hands(entryId: string, role: 'host' | 'participant' = 'host'): Hands {
   return { sessionId: ROOM, entryId, by: BY, role }
 }
 
-/** Путь к файлу в папке семинара — тесты ниже ходят туда мимо оракула. */
+/** A path to a file in the seminar folder: the tests below go there bypassing the oracle. */
 function at(name: string): string {
   return path.join(sessionDir(ROOM), name)
 }
 
-/** Завести запись треда, к которой привязывается отмена. */
+/** Create the thread record that undo is bound to. */
 function turn(): string {
   const doc = getSessionDoc(ROOM).doc
   const entry = createChatEntry({
@@ -45,12 +45,12 @@ function turn(): string {
   return id
 }
 
-test('комната заводится', () => {
+test('the room is set up', () => {
   createSession(ROOM, 'Agent', null)
   fs.writeFileSync(path.join(sessionDir(ROOM), 'train.py'), 'x = 1\ny = 2\n')
 })
 
-test('читает то, что есть, и честно отказывает в том, чего нет', async () => {
+test('reads what exists and honestly refuses what does not', async () => {
   const id = turn()
   const read = await useTool(hands(id), 'read_file', JSON.stringify({ path: 'train.py' }))
   assert.equal(read.said, 'x = 1\ny = 2\n')
@@ -61,7 +61,7 @@ test('читает то, что есть, и честно отказывает �
   assert.equal(missing.step.kind, 'note')
 })
 
-test('наружу папки семинара не выходит', async () => {
+test('does not step outside the seminar folder', async () => {
   const id = turn()
   for (const wanted of ['../secret', '/etc/passwd', 'src/../../out']) {
     const tried = await useTool(hands(id), 'read_file', JSON.stringify({ path: wanted }))
@@ -70,7 +70,7 @@ test('наружу папки семинара не выходит', async () =>
   }
 })
 
-test('точечная правка требует однозначного куска', async () => {
+test('a targeted edit requires an unambiguous piece', async () => {
   const id = turn()
   fs.writeFileSync(path.join(sessionDir(ROOM), 'twice.py'), 'a = 1\nb = 1\n')
 
@@ -83,7 +83,7 @@ test('точечная правка требует однозначного ку
   assert.equal(
     readText(ROOM, 'twice.py')?.text,
     'a = 1\nb = 1\n',
-    'неоднозначная правка всё-таки записалась',
+    'the ambiguous edit got written anyway',
   )
 
   const exact = await useTool(
@@ -96,7 +96,7 @@ test('точечная правка требует однозначного ку
   assert.equal(readText(ROOM, 'twice.py')?.text, 'a = 1\nb = 2\n')
 })
 
-test('правка, которой некуда лечь, не выдаёт себя за удачу', async () => {
+test('an edit with nowhere to land does not pass itself off as a success', async () => {
   const id = turn()
   const nowhere = await useTool(
     hands(id),
@@ -107,18 +107,18 @@ test('правка, которой некуда лечь, не выдаёт се
   assert.match(nowhere.said, /нет такого текста/)
 })
 
-test('счёт строк в ленте — про то, что правда изменилось', async () => {
+test('the line count in the feed is about what really changed', async () => {
   const id = turn()
   const wrote = await useTool(
     hands(id),
     'write_file',
     JSON.stringify({ path: 'train.py', content: 'x = 1\ny = 2\nz = 3\n' }),
   )
-  assert.equal(wrote.step.added, 1, 'прибавилась одна строка, а не весь файл')
+  assert.equal(wrote.step.added, 1, 'one line was added, not the whole file')
   assert.equal(wrote.step.removed, 0)
 })
 
-test('отмена возвращает файл к тому, что было до хода', async () => {
+test('undo returns the file to what it was before the turn', async () => {
   const id = turn()
   fs.writeFileSync(path.join(sessionDir(ROOM), 'undo.py'), 'исходное\n')
 
@@ -127,8 +127,8 @@ test('отмена возвращает файл к тому, что было д
   flushAllFiles()
   assert.equal(readText(ROOM, 'undo.py')?.text, 'второе\n')
 
-  // К исходному, а не к предыдущей правке того же хода: отменяют решение
-  // целиком, а не последний шаг.
+  // To the original, not to the previous edit of the same turn: the decision
+  // is undone as a whole, not its last step.
   assert.equal(undoTurn(ROOM, id, 'Ада'), 1)
   flushAllFiles()
   assert.equal(readText(ROOM, 'undo.py')?.text, 'исходное\n')
@@ -138,15 +138,15 @@ test('отмена возвращает файл к тому, что было д
   assert.equal(entry?.get('undoBy'), 'Ада')
 })
 
-test('отменить дважды нельзя', async () => {
+test('undo cannot be done twice', async () => {
   const id = turn()
   fs.writeFileSync(path.join(sessionDir(ROOM), 'once.py'), 'было\n')
   await useTool(hands(id), 'write_file', JSON.stringify({ path: 'once.py', content: 'стало\n' }))
   assert.equal(undoTurn(ROOM, id, 'Ада'), 1)
-  assert.equal(undoTurn(ROOM, id, 'Ада'), null, 'вторая отмена вернула бы файл к «стало»')
+  assert.equal(undoTurn(ROOM, id, 'Ада'), null, 'a second undo would have returned the file to its edited state')
 })
 
-test('правка открытого файла идёт в документ, а не мимо редактора', async () => {
+test('an edit of an open file goes into the document, not around the editor', async () => {
   const id = turn()
   fs.writeFileSync(path.join(sessionDir(ROOM), 'open.py'), 'a = 1\n')
   const doc = getFileDoc(ROOM, 'open.py')
@@ -155,11 +155,11 @@ test('правка открытого файла идёт в документ, �
   assert.equal(
     doc.doc.getText(TEXT_KEY).toString(),
     'a = 2\n',
-    'редактор показывал бы старое, а на диске лежало бы новое',
+    'the editor would show the old text while the new one sat on disk',
   )
 })
 
-test('запускается только то, чем есть что запустить', async () => {
+test('only what can be run gets run', async () => {
   const id = turn()
   fs.writeFileSync(path.join(sessionDir(ROOM), 'data.csv'), 'a,b\n')
   const tried = await useTool(hands(id), 'run_file', JSON.stringify({ path: 'data.csv' }))
@@ -167,23 +167,24 @@ test('запускается только то, чем есть что запу�
   assert.match(tried.said, /не скрипт/)
 })
 
-test('несуществующего инструмента нет', async () => {
+test('a nonexistent tool does not exist', async () => {
   const id = turn()
   const tried = await useTool(hands(id), 'delete_file', JSON.stringify({ path: 'train.py' }))
   assert.equal(tried.step.kind, 'note')
   assert.match(tried.said, /нет/)
-  assert.ok(readText(ROOM, 'train.py'), 'файл всё-таки исчез')
+  assert.ok(readText(ROOM, 'train.py'), 'the file disappeared anyway')
 })
 
-/* --------------------------------------------- чего оракулу не отдают */
+/* --------------------------------------- what the oracle is not given */
 
-test('файл больше потолка не переписывается своим же обрезком', async () => {
+test('a file over the ceiling is not overwritten by its own truncated copy', async () => {
   const id = turn()
-  // Больше MAX_TEXT_BYTES: столько оракул увидеть не может — `currentText`
-  // отдаёт ему только начало, и запись начала поверх целого унесла бы хвост.
+  // Larger than MAX_TEXT_BYTES: the oracle cannot see that much, `currentText`
+  // gives it only the beginning, and writing the beginning over the whole
+  // file would take the tail away.
   fs.writeFileSync(at('big.csv'), 'колонка,значение\n'.repeat(60_000))
   const bytes = fs.statSync(at('big.csv')).size
-  assert.ok(bytes > MAX_TEXT_BYTES, 'файл для теста оказался меньше потолка')
+  assert.ok(bytes > MAX_TEXT_BYTES, 'the test file turned out smaller than the ceiling')
 
   const wrote = await useTool(
     hands(id),
@@ -199,10 +200,10 @@ test('файл больше потолка не переписывается с�
     JSON.stringify({ path: 'big.csv', find: 'колонка,значение\n', replace: 'a,b\n' }),
   )
   assert.equal(edited.step.kind, 'note')
-  assert.equal(fs.statSync(at('big.csv')).size, bytes, 'хвост файла исчез молча')
+  assert.equal(fs.statSync(at('big.csv')).size, bytes, 'the tail of the file disappeared silently')
 })
 
-test('двоичный файл оракул не перетирает текстом', async () => {
+test('the oracle does not overwrite a binary file with text', async () => {
   const id = turn()
   const bytes = Buffer.from([0x89, 0x50, 0x00, 0x1a, 0x00, 0xff])
   fs.writeFileSync(at('model.bin'), bytes)
@@ -219,17 +220,18 @@ test('двоичный файл оракул не перетирает текс�
   assert.match(read.said, /не текстовый файл/)
 })
 
-test('про большой файл сказано, что он большой, а не что его нет', async () => {
+test('a big file is said to be big, not missing', async () => {
   const id = turn()
   fs.writeFileSync(at('huge.csv'), 'колонка,значение\n'.repeat(60_000))
-  assert.ok(fs.statSync(at('huge.csv')).size > MAX_TEXT_BYTES, 'файл оказался меньше потолка')
+  assert.ok(fs.statSync(at('huge.csv')).size > MAX_TEXT_BYTES, 'the file turned out smaller than the ceiling')
 
   const read = await useTool(hands(id), 'read_file', JSON.stringify({ path: 'huge.csv' }))
-  // «Файла нет или он не текст» — приглашение завести его заново поверх
-  // датасета: ровно та потеря хвоста, ради которой потолок и поставлен.
+  // "The file does not exist or is not text" is an invitation to create it
+  // again on top of the dataset: exactly the loss of the tail the ceiling was
+  // set up against.
   assert.doesNotMatch(read.said, /нет или он не текст/)
   assert.match(read.said, /больше полутора мегабайт/)
-  assert.match(read.said, /колонка,значение/, 'начала файла модель не увидела')
+  assert.match(read.said, /колонка,значение/, 'the model did not see the beginning of the file')
   assert.equal(read.step.note, 'только начало')
 
   const edited = await useTool(
@@ -240,7 +242,7 @@ test('про большой файл сказано, что он большой,
   assert.match(edited.said, /больше полутора мегабайт/)
 })
 
-test('файл сверх потолка оракул не заводит и сам', async () => {
+test('the oracle does not create a file over the ceiling itself either', async () => {
   const id = turn()
   const wrote = await useTool(
     hands(id),
@@ -249,19 +251,19 @@ test('файл сверх потолка оракул не заводит и с�
   )
   assert.equal(wrote.step.kind, 'note')
   assert.match(wrote.said, /полутора мегабайт/)
-  // Иначе на диске осталась бы пустышка: файл заводится до записи, а запись
-  // сверх потолка не сохранится ни сейчас, ни потом.
+  // Otherwise an empty stub would stay on disk: the file is created before
+  // the write, and a write over the ceiling is saved neither now nor later.
   assert.equal(fs.existsSync(at('made-big.txt')), false)
 })
 
-/* ------------------------------------------ отмена смотрит, что вернёт */
+/* --------------------------------------- undo looks at what it returns */
 
-test('отмена не трогает файл, который правили после хода', async () => {
+test('undo does not touch a file edited after the turn', async () => {
   const id = turn()
   fs.writeFileSync(at('after.py'), 'было\n')
   await useTool(hands(id), 'write_file', JSON.stringify({ path: 'after.py', content: 'оракул\n' }))
   flushAllFiles()
-  // Сорок минут работы студента поверх правки оракула.
+  // Forty minutes of a student's work on top of the oracle's edit.
   fs.writeFileSync(at('after.py'), 'оракул\nи много ручной работы\n')
 
   assert.equal(undoTurn(ROOM, id, 'Ада'), 0)
@@ -270,21 +272,21 @@ test('отмена не трогает файл, который правили �
   assert.match(
     chatAnswer(entry!).toString(),
     /after\.py/,
-    'в треде не сказано, что файл не вернули',
+    'the thread does not say that the file was not restored',
   )
 })
 
-test('отмена не воскрешает файл, который убрали после хода', async () => {
+test('undo does not resurrect a file removed after the turn', async () => {
   const id = turn()
   await useTool(hands(id), 'write_file', JSON.stringify({ path: 'ghost.py', content: 'x = 1\n' }))
   flushAllFiles()
   fs.rmSync(at('ghost.py'))
 
   assert.equal(undoTurn(ROOM, id, 'Ада'), 0)
-  assert.equal(fs.existsSync(at('ghost.py')), false, 'на месте убранного файла появился призрак')
+  assert.equal(fs.existsSync(at('ghost.py')), false, 'a ghost appeared in place of the removed file')
 })
 
-test('после переименования отмена не пишет поверх нового файла со старым именем', async () => {
+test('after a rename, undo does not write over a new file with the old name', async () => {
   const id = turn()
   fs.writeFileSync(at('renamed.py'), 'исходное\n')
   await useTool(
@@ -301,11 +303,12 @@ test('после переименования отмена не пишет по�
   assert.equal(readText(ROOM, 'moved.py')?.text, 'от оракула\n')
 })
 
-test('отмена старого хода не возвращает правку нового', async () => {
+test('undoing an old turn does not revert the edit of a new one', async () => {
   /*
-   * Два поручения подряд про один файл. Отмена старого вернула бы файл к тому,
-   * что было до него, — то есть стёрла бы весь второй ход, а потом отмена
-   * второго вернула бы правку первого, которую только что отменили.
+   * Two requests in a row about one file. Undoing the older one would return
+   * the file to what it was before it, that is, erase the whole second turn,
+   * and then undoing the second would bring back the edit of the first,
+   * which had just been undone.
    */
   const first = turn()
   const second = turn()
@@ -314,22 +317,22 @@ test('отмена старого хода не возвращает правк�
   await useTool(hands(second), 'write_file', JSON.stringify({ path: 'two.py', content: 'v2\n' }))
   flushAllFiles()
 
-  assert.equal(undoTurn(ROOM, first, 'Ада'), 0, 'старый ход перетёр работу нового')
+  assert.equal(undoTurn(ROOM, first, 'Ада'), 0, 'the old turn overwrote the work of the new one')
   assert.equal(readText(ROOM, 'two.py')?.text, 'v2\n')
   assert.equal(undoTurn(ROOM, second, 'Ада'), 1)
   assert.equal(readText(ROOM, 'two.py')?.text, 'v1\n')
 })
 
-test('дерево файлов уезжает модели с потолком', async () => {
+test('the file tree goes to the model with a ceiling', async () => {
   const id = turn()
-  // Распакованный датасет: одна папка, тысяча имён, и весь список повторялся
-  // бы в каждом следующем запросе хода.
+  // An unpacked dataset: one folder, a thousand names, and the whole list
+  // would repeat in every following request of the turn.
   fs.mkdirSync(at('images'), { recursive: true })
   for (let i = 0; i < 300; i++) fs.writeFileSync(path.join(at('images'), `img_${i}.png`), 'x')
 
   const listed = await useTool(hands(id), 'list_files', '{}')
   const lines = listed.said.split('\n')
-  assert.ok(lines.length < 120, `в кадр уехало ${lines.length} строк`)
-  assert.match(listed.said, /images\/img_0\.png/, 'начала папки не видно')
-  assert.match(listed.said, /ещё \d+ в images\//, 'не сказано, сколько осталось за кадром')
+  assert.ok(lines.length < 120, `${lines.length} lines went into the frame`)
+  assert.match(listed.said, /images\/img_0\.png/, 'the beginning of the folder is not visible')
+  assert.match(listed.said, /ещё \d+ в images\//, 'it does not say how many are left out of the frame')
 })

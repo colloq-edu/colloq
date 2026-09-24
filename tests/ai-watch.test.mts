@@ -1,12 +1,14 @@
 /**
- * Сторож на замолчавший поток — общий для тетради, консилиума и подсказки.
+ * The watchdog on a stream that went silent, shared by the notebook, the
+ * council and the hint.
  *
- * Проверяется то, ради чего он и вынесен в одно место: три исхода, которые
- * снаружи выглядят одной и той же отменой, но означают разное. «Не открыл
- * поток» лечится меньшим contextChars, «замолчал на середине» — повтором, а
- * «нажали Стоп» вообще не отказ. Пока эта логика жила в одной дороге из трёх,
- * у консилиума её не было вовсе — и 20.09 живое занятие смотрело на «читает»
- * до конца пары.
+ * This checks what it was moved into one place for: three outcomes that
+ * look like one and the same abort from the outside but mean different
+ * things. "Did not open the stream" is cured by a smaller contextChars,
+ * "went silent in the middle" by a retry, and "Stop was pressed" is not a
+ * failure at all. While this logic lived in one road out of three, the
+ * council did not have it at all, and on 20 Sep 2026 a live class stared at
+ * "reading" until the end of the class.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -15,23 +17,23 @@ import { COUNCIL_WATCH, NOTEBOOK_WATCH, watchSilence } from '../server/src/ai/wa
 
 const tick = (ms: number) => new Promise((done) => setTimeout(done, ms))
 
-test('до первого кадра — «не открыл поток», и это не «замолчал»', async () => {
+test('before the first frame it is "did not open the stream", not "went silent"', async () => {
   const controller = new AbortController()
   const guard = watchSilence(controller, { openingMs: 30, silenceMs: 500 })
   await tick(80)
   assert.equal(controller.signal.aborted, true)
   assert.equal(guard.why, 'opening')
-  assert.equal(guard.spoke, false, 'ни одного кадра не было — говорить «замолчал» не о чем')
+  assert.equal(guard.spoke, false, 'there was not a single frame, so there is nothing to call "went silent"')
   guard.stop()
 })
 
-test('после первого кадра срок другой, и каждый кадр взводит его заново', async () => {
+test('after the first frame the deadline is different, and every frame rearms it', async () => {
   const controller = new AbortController()
   const guard = watchSilence(controller, { openingMs: 1_000, silenceMs: 60 })
   for (let i = 0; i < 4; i++) {
     guard.heard()
     await tick(30)
-    assert.equal(controller.signal.aborted, false, `оборвался на кадре ${i}`)
+    assert.equal(controller.signal.aborted, false, `aborted at frame ${i}`)
   }
   await tick(120)
   assert.equal(controller.signal.aborted, true)
@@ -40,10 +42,10 @@ test('после первого кадра срок другой, и кажды�
   guard.stop()
 })
 
-test('потолок на весь запрос ловит поток, который сыплет по букве', async () => {
+test('the ceiling for the whole request catches a stream that trickles one letter at a time', async () => {
   const controller = new AbortController()
   const guard = watchSilence(controller, { openingMs: 1_000, silenceMs: 100, capMs: 120 })
-  // Кадры идут исправно — все сроки молчания сбрасываются, а пара кончается.
+  // Frames arrive properly, so every silence deadline resets, but the class time runs out.
   const beat = setInterval(() => guard.heard(), 20)
   await tick(220)
   clearInterval(beat)
@@ -52,17 +54,17 @@ test('потолок на весь запрос ловит поток, кото�
   guard.stop()
 })
 
-test('отмена рукой не считается молчанием: сторож молчит о причине', async () => {
+test('a manual abort does not count as silence: the watchdog gives no reason', async () => {
   const controller = new AbortController()
   const guard = watchSilence(controller, { openingMs: 1_000, silenceMs: 1_000, capMs: 1_000 })
   guard.heard()
   controller.abort()
   await tick(20)
-  assert.equal(guard.why, null, 'нажали Стоп — отказа не было')
+  assert.equal(guard.why, null, 'Stop was pressed, so there was no failure')
   guard.stop()
 })
 
-test('снятый сторож больше не обрывает', async () => {
+test('a stopped watchdog no longer aborts', async () => {
   const controller = new AbortController()
   const guard = watchSilence(controller, { openingMs: 20, silenceMs: 20, capMs: 20 })
   guard.stop()
@@ -71,11 +73,11 @@ test('снятый сторож больше не обрывает', async () =>
   assert.equal(guard.why, null)
 })
 
-test('сроки названы числами, а не догадкой: консилиум короче тетради', () => {
+test('deadlines are stated as numbers, not guesses: the council is shorter than the notebook', () => {
   assert.equal(COUNCIL_WATCH.openingMs, 90_000)
   assert.equal(COUNCIL_WATCH.silenceMs, 45_000)
   assert.equal(COUNCIL_WATCH.capMs, 180_000)
-  // У тетради потолка нет намеренно: ответ читают по мере того, как он пишется.
+  // The notebook has no ceiling on purpose: the answer is read as it is written.
   assert.equal(NOTEBOOK_WATCH.capMs, undefined)
   assert.ok(NOTEBOOK_WATCH.openingMs > (COUNCIL_WATCH.openingMs ?? 0))
 })

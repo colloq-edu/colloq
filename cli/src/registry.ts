@@ -1,13 +1,13 @@
 /**
- * Что такое команда и где их брать.
+ * What a command is and where to get them.
  *
- * Реестр собирается из четырёх файлов, по файлу на группу. Порядок в help —
- * порядок массива внутри файла группы.
+ * The registry is assembled from four files, one file per group. The order in
+ * help is the order of the array inside the group's file.
  *
- * Здесь только то, чем преподаватель ведёт занятие после `pip install colloq`:
- * поднять, выставить наружу, посмотреть, остановить, снять копию. Мастерская —
- * аренда машин, кластер, ретранслятор, DNS, сборка, тесты — живёт в Makefile
- * и scripts/, обёртки над ней здесь нет.
+ * Here is only what the teacher runs a class with after `pip install colloq`:
+ * bring it up, expose it to the outside, look, stop, take a backup. The
+ * workshop (renting machines, the cluster, the relay, DNS, the build, tests)
+ * lives in the Makefile and scripts/, and there is no wrapper over it here.
  */
 import type { Env, Io } from './env.js'
 import type { Sh } from './sh.js'
@@ -20,7 +20,7 @@ import { commands as tools } from './commands/tools.js'
 
 export type Group = 'local' | 'host' | 'env' | 'tools'
 
-/** Флаг команды. arg — имя значения; нет arg — флаг булев. */
+/** A command flag. arg is the name of the value; with no arg the flag is boolean. */
 export type Flag = {
   name: string
   short?: string
@@ -29,13 +29,13 @@ export type Flag = {
   multiple?: boolean
 }
 
-/** Позиционный аргумент — для help. */
+/** A positional argument, for help. */
 export type Arg = { name: string; summary: string; required?: boolean }
 
 export type Ctx = {
-  /** Позиционные аргументы после имени команды. */
+  /** Positional arguments after the command name. */
   positionals: string[]
-  /** Значения флагов из parseArgs. */
+  /** Flag values from parseArgs. */
   values: Record<string, unknown>
   dryRun: boolean
   yes: boolean
@@ -44,20 +44,23 @@ export type Ctx = {
   ui: Ui
   env: Env
   io: Io
-  /** Сколько сейчас идёт комнат (ядра в docker). Не запрещает ничего — только уточняет вопрос. */
+  /** How many rooms are running now (kernels in docker). Forbids nothing, only refines the question. */
   rooms(): Promise<number>
   /**
-   * Приложение приехало готовым (колесо pip), а не запущено из исходников.
+   * The application arrived ready-made (a pip wheel) rather than being run
+   * from the sources.
    *
-   * Решает только одно — чем звать супервизор и откуда читать собранное:
-   * cli/launch.mjs голым node или cli/src/launch.ts через tsx. Поведение
-   * команд от него не зависит. Через ctx, а не своим взглядом на диск: модуль
-   * группы не смотрит на файловую систему мимо ctx.io, иначе его нельзя
-   * проверить, не разложив настоящий дистрибутив. Решает каркас — по признаку
-   * у корня приложения (launch-state.ts · isDistribution).
+   * It decides only one thing: what to call the supervisor with and where to
+   * read the built output from, cli/launch.mjs with bare node or
+   * cli/src/launch.ts through tsx. The behaviour of the commands does not
+   * depend on it. Through ctx, not by looking at the disk on its own: a group
+   * module does not look at the file system bypassing ctx.io, otherwise it
+   * could not be tested without laying out a real distribution. The framework
+   * decides, by a marker at the application root (launch-state.ts ·
+   * isDistribution).
    */
   dist: boolean
-  /** Спросить самому: --yes и --dry-run отвечают «да» молча. */
+  /** Ask on its own: --yes and --dry-run answer "yes" silently. */
   confirm(question: string): Promise<boolean>
 }
 
@@ -65,37 +68,38 @@ export type Command = {
   name: string
   aliases?: string[]
   group: Group
-  /** Одна строка по-английски: что делает. */
+  /** One line in English: what it does. */
   summary: string
-  /** Начинается с 'colloq '. */
+  /** Starts with 'colloq '. */
   usage: string
   args?: Arg[]
   flags: Flag[]
-  /** Меняет состояние машины. */
+  /** Changes the state of the machine. */
   destructive: boolean
   /**
-   * Кто задаёт вопрос: 'cli' — каркас перед run(); 'script' — не спрашиваем
-   * вовсе, спросит скрипт; 'self' — команда зовёт ctx.confirm() там, где ей
-   * нужно.
+   * Who asks the question: 'cli' means the framework before run(); 'script'
+   * means we do not ask at all, the script will ask; 'self' means the command
+   * calls ctx.confirm() where it needs to.
    */
   confirm?: 'cli' | 'script' | 'self'
   confirmWhen?: (ctx: Ctx) => Promise<boolean>
-  /** Вопрос каркаса. Функция — когда цена зависит от аргументов и флагов. */
+  /** The framework's question. A function when the cost depends on the arguments and flags. */
   confirmQuestion?: string | ((ctx: Ctx) => string | Promise<string>)
   /**
-   * Проверка аргументов ДО вопроса. Спрашивать «направить имя на этот адрес?»,
-   * чтобы потом сказать «это не адрес», — значит спросить зря; бросает
-   * UsageError или PreconditionError.
+   * The argument check BEFORE the question. Asking "point the name at this
+   * address?" only to say "this is not an address" afterwards means asking
+   * for nothing; throws UsageError or PreconditionError.
    */
   check?: (ctx: Ctx) => void | Promise<void>
   /**
-   * Дописывать ли к вопросу число идущих комнат. Комнаты считаются на ЭТОЙ
-   * машине: там, где писатели на арендованной, число сбивает с толку.
+   * Whether to append the number of running rooms to the question. Rooms are
+   * counted on THIS machine: where the writers are on a rented one, the number
+   * is misleading.
    */
   rooms?: boolean
-  /** Что выполнится: `scripts/host.sh`, `native: …`. */
+  /** What will be executed: `scripts/host.sh`, `native: …`. */
   delegates: string
-  /** Примеры для --help. {domain} и {env} подставляются из .env. */
+  /** Examples for --help. {domain} and {env} are filled in from .env. */
   examples?: string[]
   notes?: string
   run(ctx: Ctx): Promise<number>

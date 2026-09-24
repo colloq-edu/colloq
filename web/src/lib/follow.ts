@@ -1,25 +1,26 @@
 /**
- * За кем идти и где он.
+ * Whom to follow and where they are.
  *
- * Тут четыре ловушки, и все тихие — экран просто ведёт себя странно, а
- * объяснения нет.
+ * There are four traps here, and all of them are quiet — the screen just
+ * behaves strangely, with no explanation.
  *
- * ДВЕ ВКЛАДКИ ОДНОГО ЧЕЛОВЕКА. `peopleInRoom` сводит вкладки в одного человека
- * и при слиянии предпочитает ту, у которой есть активная ячейка, — то есть
- * запросто ту, где PDF не открыт. Поэтому здесь читается сырой список
- * присутствий, а вкладка выбирается по наличию позиции в НУЖНОМ файле.
+ * TWO TABS OF ONE PERSON. `peopleInRoom` merges tabs into one person and, when
+ * merging, prefers the one that has an active cell — that is, quite possibly
+ * the one where the PDF is not open. So here the raw presence list is read,
+ * and the tab is chosen by having a position in the RIGHT file.
  *
- * ДВА ПРЕПОДАВАТЕЛЯ. `host` — не один человек: преподавательская кука делает
- * хостом любого сотрудника, и сервер честно проставит роль обоим. Двое на
- * разных страницах — дрожание экрана у всей комнаты. Ведущий выбирается
- * устойчиво и залипает, пока не пропал.
+ * TWO TEACHERS. `host` is not one person: the teacher cookie makes any staff
+ * member a host, and the server will honestly assign the role to both. Two of
+ * them on different pages means the whole room's screen jitters. The leader
+ * is chosen stably and sticks until they disappear.
  *
- * ЧУЖОЙ ФАЙЛ. Двенадцатая страница другого документа — не то же место.
- * Позиция несёт имя файла, и следование за чужим файлом не считается.
+ * SOMEONE ELSE'S FILE. Page twelve of another document is not the same place.
+ * The position carries the file name, and following into another file does
+ * not count.
  *
- * УШЁЛ. Присутствие чистится мгновенно, и «идти не за кем» надо отличать от
- * «идёт, но пока молчит»: в первом случае экран остаётся где стоял и говорит
- * почему.
+ * GONE. Presence is cleaned up instantly, and "nobody to follow" must be told
+ * apart from "following, but they are quiet for now": in the first case the
+ * screen stays where it was and says why.
  */
 import { mayBeFollowed } from '@shared/rules'
 import type { Peer } from './session.svelte'
@@ -29,16 +30,16 @@ export interface Lead {
   name: string
   color: string
   page: number
-  /** Доля высоты страницы, а не пиксели: у смотрящего своя ширина и свой зум. */
+  /** Share of page height, not pixels: each viewer has their own width and zoom. */
   y: number
 }
 
 /**
- * Кто ведёт по этому файлу прямо сейчас.
+ * Who is leading through this file right now.
  *
- * `sticky` — тот, за кем шли до сих пор: пока он на месте, менять ведущего
- * нельзя, даже если пришёл другой преподаватель с меньшим clientId. Иначе
- * экран у комнаты начнёт метаться между двумя.
+ * `sticky` — the one followed so far: while they are in place, the leader must
+ * not change, even if another teacher with a smaller clientId has come.
+ * Otherwise the room's screen will start darting between the two.
  */
 export function leaderFor(
   peers: readonly Peer[],
@@ -48,18 +49,18 @@ export function leaderFor(
   if (!file) return null
   const able = peers
     .filter((peer) => !peer.isSelf)
-    // Правило «за кем идут» — одно на обе стороны и лежит в shared: тот же
-    // предикат решает у читалки, публиковать ли своё место вообще. Своя копия
-    // здесь однажды разъехалась бы молча — послабление на той стороне оставило
-    // бы ведущего без публикуемой позиции.
+    // The "who is followed" rule is one for both sides and lives in shared: the
+    // same predicate decides in the reader whether to publish one's position at
+    // all. A copy of our own here would one day drift silently — a relaxation on
+    // that side would leave the leader without a published position.
     .filter((peer) => mayBeFollowed(peer.user.role))
     .filter((peer) => peer.user.viewing?.file === file)
   if (able.length === 0) return null
 
   const chosen =
     able.find((peer) => peer.clientId === sticky) ??
-    // Устойчивый выбор, а не «первый попавшийся»: порядок в списке
-    // присутствий меняется от прихода любого кадра.
+    // A stable choice, not "whichever comes first": the order of the presence
+    // list changes with the arrival of any frame.
     able.reduce((a, b) => (a.clientId <= b.clientId ? a : b))
 
   const viewing = chosen.user.viewing!
@@ -73,12 +74,13 @@ export function leaderFor(
 }
 
 /**
- * Тот же ли это ведущий на том же месте.
+ * Whether this is the same leader at the same place.
  *
- * `leaderFor` каждый раз собирает НОВЫЙ объект, и записывать его в связанное
- * свойство без этой проверки — бесконечный цикл: родитель перерисовывается,
- * свойство приезжает обратно, эффект считает заново. Ловится это только на том,
- * у кого ведущий есть: у самого преподавателя он `null`, а `null` не меняется.
+ * `leaderFor` builds a NEW object every time, and writing it into a bound
+ * property without this check is an infinite loop: the parent redraws, the
+ * property comes back, the effect recomputes. It only shows up for someone who
+ * has a leader: for the teacher themselves it is `null`, and `null` does not
+ * change.
  */
 export function sameLead(a: Lead | null, b: Lead | null): boolean {
   if (a === null || b === null) return a === b
@@ -86,13 +88,13 @@ export function sameLead(a: Lead | null, b: Lead | null): boolean {
 }
 
 /*
- * ПОРОГА ОТСТАВАНИЯ ЗДЕСЬ НЕТ.
+ * THERE IS NO DRIFT THRESHOLD HERE.
  *
- * Была `adrift` — «та же страница, но разъехались больше чем на четверть
- * высоты». Её никто не звал: плашка «смотрите сами» в читалке зажигается по
- * выключенному следованию (`!following`), а следование снимает любой свой
- * жест. Функция с тремя своими тестами охраняла модель, которой в продукте
- * нет, — то есть три зелёных теста, которые не может уронить никакая
- * поломка. Понадобится порог — он вернётся вместе с той моделью следования,
- * которая его применяет.
+ * There used to be `adrift` — "the same page, but drifted apart by more than a
+ * quarter of the height". Nobody called it: the "look for yourself" badge in
+ * the reader lights up on following being off (`!following`), and any gesture
+ * of one's own turns following off. The function with its three tests guarded
+ * a model that does not exist in the product — that is, three green tests that
+ * no breakage can bring down. Should a threshold be needed, it will come back
+ * together with the following model that applies it.
  */

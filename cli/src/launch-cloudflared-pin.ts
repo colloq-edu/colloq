@@ -1,60 +1,63 @@
 /**
- * Какой cloudflared colloq скачивает сам: версия и контрольные суммы.
+ * Which cloudflared colloq downloads on its own: the version and checksums.
  *
- * Файл из интернета, который потом запускается на компьютере преподавателя,
- * допустим только один — ровно тот, чьи байты кто-то уже сверил. Поэтому
- * здесь не «последний выпуск», а один названный, и у каждого файла свой
- * sha256: `latest` означал бы, что у каждого преподавателя запускается то,
- * чего никто не видел, а подменённый ответ по дороге ничем бы себя не выдал.
+ * Only one file from the internet that then runs on the teacher's computer is
+ * acceptable: exactly the one whose bytes somebody has already checked. So
+ * this is not "the latest release" but one named release, and every file has
+ * its own sha256: `latest` would mean that every teacher runs something nobody
+ * has seen, and an answer swapped on the way would not give itself away in any
+ * way.
  *
- * Файлов четыре — ровно те системы, для которых собирается колесо pip
- * (python/pyproject.toml · classifiers: macOS и Linux). Для macOS выпуск
- * кладёт архив .tgz с одним файлом внутри, для Linux — голый исполняемый
- * файл. Поэтому сумм у записи две: sha256 — скачанного файла (сверяется до
- * распаковки), binarySha256 — того, что станет исполняемым; у Linux они
- * совпадают. Вторая нужна ещё и потому, что своя копия в <home>/bin
- * сверяется при каждом запуске: так и подменённый файл, и копия от прежней
- * версии colloq узнаются одинаково — и скачиваются заново.
+ * There are four files, exactly the systems the pip wheel is built for
+ * (python/pyproject.toml · classifiers: macOS and Linux). For macOS the
+ * release ships a .tgz archive with one file inside, for Linux a bare
+ * executable. That is why a record has two sums: sha256 is of the downloaded
+ * file (checked before unpacking), binarySha256 is of what will become the
+ * executable; for Linux they coincide. The second one is needed also because
+ * our own copy in <home>/bin is checked on every start: this way both a
+ * swapped file and a copy from an earlier colloq version are recognized the
+ * same way, and downloaded again.
  *
- * Суммы получены 18.09.2026: четыре файла скачаны curl-ом с GitHub, посчитаны
- * `shasum -a 256`, архивы распакованы и посчитаны ещё раз; все четыре суммы
- * файлов совпали с полем digest в API выпуска.
+ * The sums were obtained on 18 Sep 2026: the four files were downloaded with
+ * curl from GitHub, hashed with `shasum -a 256`, the archives unpacked and
+ * hashed once more; all four file sums matched the digest field in the
+ * release API.
  *
- * Как поднять версию:
- *   1. выбрать выпуск: https://github.com/cloudflare/cloudflared/releases;
- *   2. скачать четыре файла из таблицы ниже:
+ * How to bump the version:
+ *   1. pick a release: https://github.com/cloudflare/cloudflared/releases;
+ *   2. download the four files from the table below:
  *        v=2026.9.1
  *        for a in cloudflared-darwin-arm64.tgz cloudflared-darwin-amd64.tgz \
  *                 cloudflared-linux-amd64 cloudflared-linux-arm64; do
  *          curl -fsSLO "https://github.com/cloudflare/cloudflared/releases/download/$v/$a"
  *        done
- *   3. shasum -a 256 * → sha256; ls -l → size; для .tgz ещё
- *      `tar -xzf <архив> && shasum -a 256 cloudflared` → binarySha256;
- *   4. сверить с GitHub: gh api repos/cloudflare/cloudflared/releases/tags/$v
+ *   3. shasum -a 256 * → sha256; ls -l → size; for .tgz also
+ *      `tar -xzf <archive> && shasum -a 256 cloudflared` → binarySha256;
+ *   4. check against GitHub: gh api repos/cloudflare/cloudflared/releases/tags/$v
  *      --jq '.assets[] | [.name, .digest] | @tsv';
- *   5. поправить CLOUDFLARED_VERSION и таблицу, прогнать
- *      tests/cli-cloudflared.test.mts и `colloq start --share` на живой машине.
+ *   5. update CLOUDFLARED_VERSION and the table, run
+ *      tests/cli-cloudflared.test.mts and `colloq start --share` on a live machine.
  *
- * Имя файла начинается с launch: стенд tests/local-launch-process.test.mts
- * копирует в себя ровно cli/src/launch*.ts, и модуль с другим именем там не
- * нашёлся бы.
+ * The file name starts with launch: the test rig tests/local-launch-process.test.mts
+ * copies into itself exactly cli/src/launch*.ts, and a module with another
+ * name would not be found there.
  */
 export const CLOUDFLARED_VERSION = '2026.9.1'
 
 export interface CloudflaredAsset {
-  /** process.platform, для которого файл собран. */
+  /** The process.platform the file is built for. */
   platform: 'darwin' | 'linux'
-  /** process.arch, для которого файл собран. */
+  /** The process.arch the file is built for. */
   arch: 'arm64' | 'x64'
-  /** Имя файла в выпуске на GitHub. */
+  /** The file name in the GitHub release. */
   name: string
-  /** tgz — архив с одним файлом cloudflared внутри; binary — сам исполняемый файл. */
+  /** tgz is an archive with one cloudflared file inside; binary is the executable itself. */
   archive: 'tgz' | 'binary'
-  /** Размер скачанного файла в байтах: больше не читаем. */
+  /** The size of the downloaded file in bytes: we read no more than that. */
   size: number
-  /** sha256 скачанного файла. */
+  /** sha256 of the downloaded file. */
   sha256: string
-  /** sha256 исполняемого файла (после распаковки). */
+  /** sha256 of the executable (after unpacking). */
   binarySha256: string
 }
 

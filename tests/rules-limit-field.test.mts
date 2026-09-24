@@ -1,16 +1,17 @@
 /**
- * Поле потолка оракула — единственная ручка правил, где значение НАБИРАЮТ.
+ * The oracle ceiling field is the only rules control where the value is TYPED.
  *
- * Всё остальное в списке — переключатели: нажали, и правило либо доехало, либо
- * нет. У числа два лишних состояния, и оба тихие: браузер отдаёт неразбираемый
- * ввод («5e») пустой строкой — то есть «как на инстансе», — а неудачное
- * сохранение оставляет в поле число, которого в комнате нет. Ни то, ни другое
- * не видно глазами: поле выглядит одинаково правильным.
+ * Everything else in the list is a switch: pressed, and the rule either got
+ * through or it did not. A number has two extra states, and both are quiet:
+ * the browser hands over unparsable input ("5e") as an empty string — that is,
+ * "as on the instance" — and a failed save leaves a number in the field that
+ * the room does not have. Neither can be seen by eye: the field looks just as
+ * correct.
  *
- * Читается прямо из компонента, как в `panels-craft`: у разметки на рунах нет
- * ни чистой функции, ни браузера, а тест со своей копией правила проходит
- * вечно, пока файл уезжает. Поэтому здесь проверяется ПОРЯДОК — что стоит
- * раньше чего, — а не пересказ поведения.
+ * It is read straight from the component, as in `panels-craft`: markup on
+ * runes has neither a pure function nor a browser, and a test with its own
+ * copy of the rule passes forever while the file drifts away. So this checks
+ * ORDER — what comes before what — rather than a retelling of behaviour.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -23,7 +24,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Код без комментариев: объяснение — не обещание. */
+/** Code without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -32,47 +33,47 @@ const source = code(read(RULES))
 const commit = source.slice(source.indexOf('function commit('), source.indexOf('</script>'))
 const effect = source.slice(source.indexOf('$effect(() => {'), source.indexOf('function commit('))
 
-test('мусор в числовом поле не читается как «как на инстансе»', () => {
+test('garbage in the number field is not read as "as on the instance"', () => {
   const bad = commit.indexOf('field.validity.badInput')
   const empty = commit.indexOf('if (!text)')
-  assert.ok(bad > 0, 'badInput вообще проверяется')
-  assert.ok(bad < empty, 'и проверяется ДО ветки «пусто → null» — иначе «5e» снимает потолок')
+  assert.ok(bad > 0, 'badInput is checked at all')
+  assert.ok(bad < empty, 'and checked BEFORE the "empty → null" branch, otherwise "5e" removes the ceiling')
 
   const guard = commit.slice(bad, empty)
   assert.match(guard, /field\.value = current === null \? '' : String\(current\)/)
-  assert.doesNotMatch(guard, /onchange/, 'мусор ничего не сохраняет')
+  assert.doesNotMatch(guard, /onchange/, 'garbage saves nothing')
 })
 
-test('клампинг виден до ответа сервера: число ложится в поле раньше запроса', () => {
+test('clamping is visible before the server answers: the number lands in the field before the request', () => {
   const tail = commit.slice(commit.indexOf('const value = Math.min'))
   const put = tail.indexOf('field.value = String(value)')
   const send = tail.indexOf('onchange(')
-  assert.ok(put > 0, 'клампленное число ставится в поле')
-  assert.ok(put < send, '«500» → «200» видно сразу, а не через круг до сервера')
+  assert.ok(put > 0, 'the clamped number is put into the field')
+  assert.ok(put < send, '"500" → "200" shows at once, not after a round trip to the server')
 })
 
-test('поле возвращается к сохранённому только когда сохранение ОТВЕТИЛО', () => {
-  // Вызывающий (`setRule` в SessionScreen и в admin/Seminars) поднимает busy
-  // синхронно, ещё до запроса: эффект, срабатывающий на любое изменение busy,
-  // застаёт на подъёме прежние `rules` и стирает только что набранное число.
-  assert.doesNotMatch(effect, /void busy/, 'эффект не будится подъёмом busy')
-  assert.match(effect, /const answered = saving && !busy/, 'сверка — на спаде busy')
-  assert.match(effect, /saving = busy/, 'и спад запоминается для следующего кадра')
+test('the field goes back to the saved value only once the save has ANSWERED', () => {
+  // The caller (`setRule` in SessionScreen and in admin/Seminars) raises busy
+  // synchronously, before the request: an effect that fires on any change of
+  // busy catches the old `rules` on the rise and wipes the number just typed.
+  assert.doesNotMatch(effect, /void busy/, 'the effect is not woken by busy rising')
+  assert.match(effect, /const answered = saving && !busy/, 'the comparison happens as busy falls')
+  assert.match(effect, /saving = busy/, 'and the fall is remembered for the next frame')
 
   const guard = effect.indexOf('if (!answered) return')
   const write = effect.indexOf('field.value = want')
-  assert.ok(guard > 0, 'без ответа эффект выходит')
-  assert.ok(guard < write, 'запись в поле недостижима, пока сохранение в пути')
+  assert.ok(guard > 0, 'without an answer the effect returns')
+  assert.ok(guard < write, 'the write to the field is unreachable while the save is in flight')
 })
 
-test('оба вызывающих поднимают busy до запроса — на этом стоит спад', () => {
+test('both callers raise busy before the request: the fall rests on that', () => {
   for (const rel of ['web/src/screens/SessionScreen.svelte', 'web/src/admin/screens/Seminars.svelte']) {
     const set = code(read(rel))
     const fn = set.slice(set.indexOf('async function setRule('))
     const raise = fn.indexOf('rulesBusy = true')
     const request = fn.indexOf('await ')
     const drop = fn.indexOf('rulesBusy = false')
-    assert.ok(raise >= 0 && request > raise, `${rel}: busy поднят до запроса`)
-    assert.ok(drop > request, `${rel}: и снят после ответа — и на успехе, и на отказе`)
+    assert.ok(raise >= 0 && request > raise, `${rel}: busy is raised before the request`)
+    assert.ok(drop > request, `${rel}: and dropped after the answer, on success and on refusal alike`)
   }
 })

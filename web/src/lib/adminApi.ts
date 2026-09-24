@@ -63,11 +63,11 @@ export class AdminApiError extends Error {
     readonly status: number,
     readonly reason: AdminErrorReason,
     /**
-     * Тело отказа целиком — не всё в отказе умещается в одну фразу.
+     * The whole refusal body — not everything in a refusal fits in one phrase.
      *
-     * 409 на смену адреса называет держателя имени (`holder`), и без него
-     * панель может только повторить «уже занят»: назвать курс, который его
-     * держит, и тем более отпустить прежнее имя, ей уже нечем.
+     * A 409 on an address change names the holder of the name (`holder`), and
+     * without it the panel can only repeat "already taken": it has nothing to
+     * name the course holding it with, let alone to release the former name.
      */
     readonly body: unknown = null,
   ) {
@@ -76,12 +76,13 @@ export class AdminApiError extends Error {
 }
 
 /**
- * Держатель адреса из отказа 409 — или null, если отказ не о том.
+ * The address holder from a 409 refusal — or null if the refusal is about
+ * something else.
  *
- * Разбор здесь, а не в компоненте: это значение приехало по сети, и верить ему
- * на слово нельзя. Пока сервер держателя не называет (или назвал невнятно),
- * панель ведёт себя ровно как раньше — показывает фразу отказа и не предлагает
- * ничего отпускать.
+ * Parsed here, not in the component: this value came over the network and
+ * cannot be taken at its word. As long as the server does not name the holder
+ * (or names it unclearly), the panel behaves exactly as before — it shows the
+ * refusal's phrase and offers nothing to release.
  */
 export function addressHolderOf(error: unknown): AddressHolder | null {
   if (!(error instanceof AdminApiError) || error.status !== 409) return null
@@ -108,7 +109,7 @@ export interface CreateTeacherRequest {
   email: string
 }
 
-/** Роль, личные данные или и то и другое — сервер принимает любую комбинацию. */
+/** The role, personal details or both — the server accepts any combination. */
 export interface UpdateTeacherRequest {
   role?: AdminRole
   name?: string
@@ -116,11 +117,11 @@ export interface UpdateTeacherRequest {
 }
 
 /**
- * Публичная страница сама по себе, а не как поле семинара.
+ * A public page in its own right, not as a field of a seminar.
  *
- * `orphaned` — страница, у которой комнату удалили: все остальные маршруты
- * публикации ключуются идентификатором комнаты, так что снять её было нечем,
- * хотя сервер её отдаёт, а `make site` выкладывает.
+ * `orphaned` — a page whose room was deleted: every other publication route
+ * is keyed by the room id, so there was nothing to take it down with, even
+ * though the server serves it and `make site` deploys it.
  */
 export interface AdminPublication {
   id: string
@@ -146,12 +147,13 @@ function reasonForStatus(status: number): AdminErrorReason {
 }
 
 /**
- * `base` — не украшение: описание МАШИНЫ живёт не под /api/admin.
+ * `base` is not decoration: the description of the MACHINE does not live
+ * under /api/admin.
  *
- * Ресурсы инстанса — про железо, а не про панель, и дверь у них своя
- * (/api/instance/resources). Разбор отказа, печенье и сеть при этом обязаны
- * быть теми же: вторая копия этого кода разошлась бы с первой на первом же
- * изменении в обработке 401.
+ * Instance resources are about the hardware, not the panel, and they have a
+ * door of their own (/api/instance/resources). Refusal parsing, the cookie and
+ * the network must still be the same: a second copy of this code would drift
+ * from the first on the very first change to 401 handling.
  */
 async function request<T>(path: string, init?: RequestInit, base = BASE): Promise<T> {
   let res: Response
@@ -161,9 +163,9 @@ async function request<T>(path: string, init?: RequestInit, base = BASE): Promis
       credentials: 'include',
       headers: {
         /*
-         * Многочастное тело сюда не попадает: границу знает только браузер, и
-         * подписанное нами `application/json` превратило бы загрузку файла в
-         * запрос, который сервер разобрать не может.
+         * A multipart body never gets here: only the browser knows the
+         * boundary, and an `application/json` label from us would turn a file
+         * upload into a request the server cannot parse.
          */
         ...(init?.body && !(init.body instanceof FormData)
           ? { 'content-type': 'application/json' }
@@ -172,8 +174,8 @@ async function request<T>(path: string, init?: RequestInit, base = BASE): Promis
       },
     })
   } catch (cause: unknown) {
-    // «Failed to fetch» — фраза из отладчика, одинаковая для упавшего сервера,
-    // оборванного вайфая и закрытого туннеля. Ни одного из них она не называет.
+    // "Failed to fetch" is a debugger phrase, the same for a crashed server, a
+    // dropped Wi-Fi and a closed tunnel. It names none of them.
     if (cause instanceof TypeError) {
       throw new AdminApiError(
         tr('common.networkError'),
@@ -185,8 +187,9 @@ async function request<T>(path: string, init?: RequestInit, base = BASE): Promis
   }
 
   if (!res.ok) {
-    // HTTP/2 отменил строку состояния: res.statusText там пустая всегда, и
-    // отказ доезжал до экрана пустой строкой, которую `{#if error}` не рисует.
+    // HTTP/2 dropped the status line: res.statusText is always empty there, and
+    // the refusal reached the screen as an empty string, which `{#if error}`
+    // does not draw.
     let message = tr('common.requestFailed',{status:res.status})
     let reason = reasonForStatus(res.status)
     let said: unknown = null
@@ -209,13 +212,13 @@ async function request<T>(path: string, init?: RequestInit, base = BASE): Promis
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
 /**
- * Загрузка файлов — тем же разбором отказа, что и остальные двери.
+ * File uploads — with the same refusal parsing as the other doors.
  *
- * Своя функция, а не `request` с телом `FormData`: тот ставит
- * `content-type: application/json` на всё, у чего есть тело, и граница
- * многочастного тела уехала бы вместе с ним — сервер ответил бы «ожидалась
- * загрузка файла» на настоящую загрузку файла. Здесь заголовок не ставится
- * вовсе: его пишет браузер, и только он знает границу.
+ * A function of its own rather than `request` with a `FormData` body: that
+ * one sets `content-type: application/json` on everything that has a body,
+ * and the multipart boundary would be lost along with it — the server would
+ * answer "a file upload was expected" to a real file upload. Here the header
+ * is not set at all: the browser writes it, and only it knows the boundary.
  */
 async function sendForm<T>(path: string, form: FormData): Promise<T> {
   return request<T>(path, { method: 'POST', body: form })
@@ -248,9 +251,9 @@ export const adminApi = {
 
   signOut: () => request<void>('/signout', { method: 'POST' }),
 
-  /* ------------------------------------------------------- импорт с GitHub */
+  /* ---------------------------------------------------- import from GitHub */
 
-  /** Что получится из ссылки — до того, как что-то создано. */
+  /** What the link would produce — before anything is created. */
   previewImport: (url: string) =>
     request<ImportPreview>('/import/preview', { method: 'POST', ...json({ url }) }),
 
@@ -259,9 +262,9 @@ export const adminApi = {
     name?: string
     environment?: string | null
     /*
-     * Режим — тот же пресет правил, что и у пустой комнаты (см.
-     * CreateSeminarRequest.mode). Он есть у всех трёх дверей, потому что
-     * лекцию заводят как раз из готовой тетради чаще, чем с чистого листа.
+     * The mode — the same rules preset as for an empty room (see
+     * CreateSeminarRequest.mode). All three doors have it, because a lecture
+     * is started from a ready notebook more often than from a blank page.
      */
     mode?: 'lab' | 'lecture' | 'council'
     rules?: Partial<RoomRules>
@@ -276,13 +279,14 @@ export const adminApi = {
     request<{ name: string; source: string }>(`/environments/${encodeURIComponent(name)}`),
 
   /**
-   * Записать список пакетов; в режиме создания — только если имени ещё нет.
+   * Write a package list; in create mode — only if the name does not exist yet.
    *
-   * PUT один и тот же для «завёл окружение» и «поправил список», а намерения
-   * разные: форма создания на занятом имени затирала чужой список целиком, и
-   * проверка по списку на экране закрывает это только до тех пор, пока рядом
-   * нет второй вкладки. `If-None-Match: *` — это «только если такого ещё нет»:
-   * сервер отвечает 409 с reason 'exists' и файла не трогает.
+   * The PUT is the same for "created an environment" and "fixed the list", but
+   * the intentions differ: the create form on a taken name overwrote someone
+   * else's list entirely, and checking against the list on screen covers that
+   * only as long as no second tab is open. `If-None-Match: *` means "only if
+   * there is no such thing yet": the server answers 409 with reason 'exists'
+   * and leaves the file alone.
    */
   saveEnvironment: (name: string, source: string, opts?: { creating?: boolean }) =>
     request<{ name: string; source: string }>(`/environments/${encodeURIComponent(name)}`, {
@@ -309,19 +313,19 @@ export const adminApi = {
       method: 'POST',
     }),
 
-  /* ------------------------------------------------------ соревнования */
+  /* ------------------------------------------------------ competitions */
 
-  /** Список A1 плюс состояние исполнителя: полоса наверху — про ту же очередь. */
+  /** The A1 list plus the runner's state: the strip on top is about the same queue. */
   listCompetitions: () => request<CompetitionsList>('/competitions'),
 
-  /** Очередь инстанса отдельно — она одна на все соревнования. */
+  /** The instance queue on its own — there is one for all competitions. */
   competitionQueue: () => request<QueueSnapshot>('/competitions/queue'),
 
-  /** «Приостановить очередь» / «Возобновить очередь». Идущий прогон не трогает. */
+  /** "Pause the queue" / "Resume the queue". A run in progress is left alone. */
   pauseCompetitionQueue: (paused: boolean) =>
     request<QueueSnapshot>('/competitions/queue/pause', { method: 'POST', ...json({ paused }) }),
 
-  /** «Убить» — прервать идущий прогон. Отказ значит, что убивать было нечего. */
+  /** "Kill" — interrupt the run in progress. A refusal means nothing was running. */
   killCompetitionRun: (submissionId: string) =>
     request<{ killed: boolean }>('/competitions/queue/kill', {
       method: 'POST',
@@ -338,15 +342,16 @@ export const adminApi = {
 
   competition: (id: string) => request<CompetitionView>(`/competitions/${encodeURIComponent(id)}`),
 
-  /** Новое — всегда черновиком: открывает его отдельное действие с проверкой. */
+  /** A new one is always a draft: a separate action, with a check, opens it. */
   createCompetition: (body: CompetitionInput) =>
     request<CompetitionView>('/competitions', { method: 'POST', ...json(body) }),
 
   /**
-   * Правка — только тем, что послали.
+   * An edit changes only what was sent.
    *
-   * Сервер трогает пришедшие поля и не трогает остальные, поэтому форма может
-   * слать свой кусок: редактор и вкладка «Настройки» показывают разное.
+   * The server touches the fields that arrived and leaves the rest alone, so a
+   * form can send its own slice: the editor and the "Settings" tab show
+   * different things.
    */
   updateCompetition: (id: string, body: CompetitionInput) =>
     request<CompetitionView>(`/competitions/${encodeURIComponent(id)}`, {
@@ -354,11 +359,11 @@ export const adminApi = {
       ...json(body),
     }),
 
-  /** Вместе с каталогом, в котором лежат ответы. Только владелец. */
+  /** Together with the directory that holds the answers. Owner only. */
   deleteCompetition: (id: string) =>
     request<void>(`/competitions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  /** Код метрики своей дверью: редактор кода не видел остальной формы. */
+  /** The metric code has its own door: the code editor never saw the rest of the form. */
   saveCompetitionMetric: (
     id: string,
     metric: { name?: string; direction?: 'lower' | 'higher'; code?: string },
@@ -368,7 +373,7 @@ export const adminApi = {
       ...json(metric),
     }),
 
-  /** Открытые файлы данных: то, что участник увидит в `data/`. */
+  /** Public data files: what an entrant will see in `data/`. */
   uploadCompetitionData: (id: string, files: readonly File[]) => {
     const form = new FormData()
     for (const file of files) form.append('file', file, file.name)
@@ -382,10 +387,12 @@ export const adminApi = {
     ),
 
   /**
-   * Ответы — своей дверью, не параметром у предыдущей.
+   * The answers — through a door of their own, not a parameter of the one
+   * above.
    *
-   * Перепутанный каталог здесь значит «выдал ответы классу», и такая ошибка
-   * обязана выглядеть как другое имя метода, а не как другое значение поля.
+   * A mixed-up directory here means "handed the answers to the class", and
+   * such a mistake must look like a different method name, not a different
+   * field value.
    */
   uploadCompetitionSolution: (id: string, file: File) => {
     const form = new FormData()
@@ -405,33 +412,33 @@ export const adminApi = {
     return sendForm<CompetitionView>(`/competitions/${encodeURIComponent(id)}/baseline`, form)
   },
 
-  /** Проверить сэмпл-тетрадь целиком: она пойдёт в общую очередь как посылка. */
+  /** Check the whole sample notebook: it goes into the shared queue as a submission. */
   checkCompetitionBaseline: (id: string) =>
     request<{ submissionId: string }>(`/competitions/${encodeURIComponent(id)}/baseline/check`, {
       method: 'POST',
     }),
 
-  /** «Проверить на бейзлайне» — только метрика, без повторного запуска тетради. */
+  /** "Check against the baseline" — the metric only, the notebook is not re-run. */
   checkCompetitionMetric: (id: string) =>
     request<{ submissionId: string }>(`/competitions/${encodeURIComponent(id)}/metric/check`, {
       method: 'POST',
     }),
 
-  /** Отказ приезжает с reason 'not_ready' и фразой про недостающую секцию. */
+  /** A refusal arrives with reason 'not_ready' and a phrase about the missing section. */
   openCompetition: (id: string) =>
     request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/open`, { method: 'POST' }),
 
-  /** «Завершить сейчас». Только владелец: приём закрывается у всего класса. */
+  /** "Finish now". Owner only: submissions close for the whole class. */
   finishCompetition: (id: string) =>
     request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/finish`, { method: 'POST' }),
 
-  /** «Открою вручную — на разборе». */
+  /** "I will open it by hand — at the review". */
   openPrivateBoard: (id: string) =>
     request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/private-board`, {
       method: 'POST',
     }),
 
-  /** Один снимок живого состояния A3 — для экрана без потока. */
+  /** One snapshot of the A3 live state — for a screen without the stream. */
   competitionLeaderboard: (id: string) =>
     request<CompetitionLeaderboard>(`/competitions/${encodeURIComponent(id)}/leaderboard`),
 
@@ -439,10 +446,11 @@ export const adminApi = {
     request<CompetitionLive>(`/competitions/${encodeURIComponent(id)}/live`),
 
   /**
-   * Адрес живого потока (`EventSource`), а не сам поток.
+   * The address of the live stream (`EventSource`), not the stream itself.
    *
-   * Подписку держит экран: она живёт столько же, сколько он, и закрывать её
-   * должен тот же, кто открыл. Здесь — только знание о том, где она лежит.
+   * The screen holds the subscription: it lives as long as the screen does,
+   * and whoever opened it must close it. Here is only the knowledge of where
+   * it lives.
    */
   competitionStreamUrl: (id: string) => `${BASE}/competitions/${encodeURIComponent(id)}/stream`,
 
@@ -460,19 +468,19 @@ export const adminApi = {
     )
   },
 
-  /** «Весь вывод»: прогоны, трейс метрики и что осталось на диске. */
+  /** "All output": the runs, the metric trace and what is left on disk. */
   competitionSubmission: (id: string, submissionId: string) =>
     request<SubmissionDetail>(
       `/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(submissionId)}`,
     ),
 
-  /** «Открыть исполненную тетрадь» — ссылка, по которой её отдают. */
+  /** "Open the executed notebook" — the link it is served from. */
   submissionFileUrl: (id: string, submissionId: string, name: string) =>
     `${BASE}/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(
       submissionId,
     )}/file/${encodeURIComponent(name)}`,
 
-  /** «Исполнить заново»: та же тетрадь, новый контейнер, с нуля. */
+  /** "Run again": the same notebook, a new container, from scratch. */
   rerunSubmission: (id: string, submissionId: string) =>
     request<{ submissionId: string }>(
       `/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(
@@ -481,7 +489,7 @@ export const adminApi = {
       { method: 'POST' },
     ),
 
-  /** Пересчитать метрику одной посылки — тетрадь не запускается. */
+  /** Rescore a single submission — the notebook is not run. */
   rescoreSubmission: (id: string, submissionId: string) =>
     request<{ submissionId: string }>(
       `/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(
@@ -490,7 +498,7 @@ export const adminApi = {
       { method: 'POST' },
     ),
 
-  /** «Не засчитывать». Только владелец: это чужой результат. */
+  /** "Do not count it". Owner only: it is someone else's result. */
   dropSubmission: (id: string, submissionId: string) =>
     request<{ submission: unknown }>(
       `/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(
@@ -499,17 +507,17 @@ export const adminApi = {
       { method: 'POST' },
     ),
 
-  /** «Исправить метрику и пересчитать всех» — после правки кода. */
+  /** "Fix the metric and rescore everyone" — after the code is edited. */
   rescoreCompetition: (id: string) =>
     request<{ queued: number }>(`/competitions/${encodeURIComponent(id)}/rescore`, {
       method: 'POST',
     }),
 
-  /** Участники соревнования: место, посылки и ключ входа. */
+  /** The competition's entrants: rank, submissions and sign-in key. */
   competitionEntrants: (id: string) =>
     request<EntrantsList>(`/competitions/${encodeURIComponent(id)}/entrants`),
 
-  /** Все участники инстанса — личность у них общая, а не комнатная. */
+  /** Every entrant on the instance — their identity is shared, not per room. */
   listEntrants: () => request<EntrantsList>('/competitions/entrants'),
 
   createEntrant: (name: string) =>
@@ -524,7 +532,7 @@ export const adminApi = {
       ...json(body),
     }),
 
-  /** Новый ключ. Старый перестаёт действовать в ту же секунду — только владелец. */
+  /** A new key. The old one stops working the same second — owner only. */
   rotateEntrantKey: (id: string) =>
     request<{ entrant: EntrantRow; key: string }>(
       `/competitions/entrants/${encodeURIComponent(id)}/rotate`,
@@ -533,13 +541,15 @@ export const adminApi = {
 
   /* ------------------------------------------------------------ seminars */
 
-  /* ----------------------------------------------------------- ресурсы */
+  /* --------------------------------------------------------- resources */
 
   /**
-   * Чем располагает машина: память, ядра, карты и умолчания ядра по окружениям.
+   * What the machine has: memory, cores, GPUs and kernel defaults per
+   * environment.
    *
-   * Читается формой занятия, чтобы поле «сколько памяти» не было гаданием.
-   * Своя дверь мимо /api/admin: это описание машины, а не панели.
+   * Read by the class form, so that the "how much memory" field is not a
+   * guess. A door of its own, bypassing /api/admin: this describes the
+   * machine, not the panel.
    */
   resources: () => request<InstanceResources>('/resources', undefined, '/api/instance'),
 
@@ -554,7 +564,7 @@ export const adminApi = {
       ...json(body),
     }),
 
-  /* ------------------------------------------------------------ курсы */
+  /* ---------------------------------------------------------- courses */
 
   listCourses: () => request<{ courses: Course[] }>('/courses').then((r) => r.courses),
 
@@ -573,10 +583,10 @@ export const adminApi = {
     }).then((r) => r.course),
 
   /**
-   * Состав и порядок — целиком, со сравнением версии.
+   * Contents and order — as a whole, with a version comparison.
    *
-   * 409 несёт курс таким, какой он сейчас: это не ошибка, а гонка, и экран
-   * должен показать правду, а не спорить с ней.
+   * A 409 carries the course as it is now: this is not an error but a race,
+   * and the screen must show the truth rather than argue with it.
    */
   setCourseItems: (id: string, rev: number, items: CourseItem[]) =>
     request<{ course: Course }>(`/courses/${encodeURIComponent(id)}/items`, {
@@ -585,10 +595,10 @@ export const adminApi = {
     }).then((r) => r.course),
 
   /**
-   * Имя в адресе — курсу или публикации.
+   * The name in the address — for a course or a publication.
    *
-   * Отдельным вызовом, а не полем в PATCH: занятое имя — отказ, о котором надо
-   * сказать словами, а не пропажа среди других полей, сохранившихся успешно.
+   * A separate call, not a field in PATCH: a taken name is a refusal that has
+   * to be put into words, not a loss among other fields that saved fine.
    */
   setSlug: (kind: 'course' | 'publication', id: string, slug: string | null) =>
     request<{ slug: string | null }>(`/slug/${kind}/${encodeURIComponent(id)}`, {
@@ -597,15 +607,17 @@ export const adminApi = {
     }),
 
   /**
-   * Отпустить своё прежнее имя в адресе.
+   * Release one's own former name in the address.
    *
-   * Прежнее имя держится вечно и не зря: ссылку с ним записали в чате группы.
-   * Но курс «ml-2025», переименованный в «ml-2025-fall», держал «ml-2025» и для
-   * курса следующего года — навсегда, и освободить его было нечем, кроме
-   * удаления курса-владельца. `id` здесь — держателя, а не того, кому имя
-   * понадобилось: отпускает только владелец имени и только прежнее.
+   * A former name is held forever, and for a reason: a link with it was
+   * written down in the group chat. But the course "ml-2025", renamed to
+   * "ml-2025-fall", held "ml-2025" against next year's course too — forever,
+   * and nothing could free it except deleting the owning course. `id` here is
+   * the holder's, not that of whoever needs the name: only the name's owner
+   * releases it, and only a former one.
    *
-   * Цена необратима и названа вслух на экране: старая ссылка станет 404.
+   * The cost is irreversible and said out loud on screen: the old link will
+   * become a 404.
    */
   releaseFormerSlug: (kind: AddressHolder['kind'], id: string, slug: string) =>
     request<void>(
@@ -616,12 +628,13 @@ export const adminApi = {
   deleteCourse: (id: string) =>
     request<void>(`/courses/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  /* ------------------------------------------------------- публикация */
+  /* ------------------------------------------------------ publication */
 
   /**
-   * `slug` описан здесь намеренно: сервер отдавал его с самого начала, а тип
-   * его отбрасывал — и экран публикации, не зная о действующем адресе,
-   * предлагал новый из названия и ломал тот, что уже продиктовали классу.
+   * `slug` is declared here on purpose: the server sent it from the start, but
+   * the type dropped it — and the publish screen, unaware of the current
+   * address, proposed a new one from the title and broke the one already
+   * dictated to the class.
    */
   publishInfo: (id: string) =>
     request<{
@@ -632,24 +645,25 @@ export const adminApi = {
         slug: string | null
         steps: { seq: number; label: string; at: number }[]
         /**
-         * Прежние имена этой страницы в адресе (`Course.former` в shared).
+         * This page's former names in the address (`Course.former` in shared).
          *
-         * Сервер везёт их вместе с самой публикацией (routes/courses.ts ·
-         * `formerSlugs`), а тип их отбрасывал — и экран публикации держал
-         * своё объявление поля, чтобы отпустить прежнее имя было чем.
-         * Необязательное: сервер постарее его не присылает вовсе.
+         * The server carries them along with the publication itself
+         * (routes/courses.ts · `formerSlugs`), but the type dropped them — and
+         * the publish screen kept its own declaration of the field so that it
+         * had something to release a former name with. Optional: an older
+         * server does not send it at all.
          */
         former?: string[]
       } | null
     }>(`/seminars/${encodeURIComponent(id)}/publish`),
 
   /**
-   * `skipped` — моменты, которые шагами не стали, и почему.
+   * `skipped` — the moments that did not become steps, and why.
    *
-   * Молчание здесь стоило страницы: преподаватель отмечал семь моментов,
-   * получал шесть шагов и не знал, какой пропал. Сервер называет их поимённо
-   * (shared/publish.ts · SkippedStep), и экран обязан их показать — иначе поле
-   * снова уедет в никуда.
+   * Silence here cost a page: the teacher marked seven moments, got six steps
+   * and did not know which one went missing. The server names them one by one
+   * (shared/publish.ts · SkippedStep), and the screen must show them —
+   * otherwise the field will once again drift off into nowhere.
    */
   publish: (id: string, steps: { seq: number; label: string; at: number }[], finalLabel?: string) =>
     request<{
@@ -667,25 +681,26 @@ export const adminApi = {
     request<void>(`/seminars/${encodeURIComponent(id)}/publish/restore`, { method: 'POST' }),
 
   /**
-   * Комната — и, если так решили, её публичная страница.
+   * The room — and, if so decided, its public page.
    *
-   * Умолчание сервера — страницу оставить: розданную классу ссылку не отозвать.
-   * Но выбор он объявляет («судьба страницы спрашивается отдельно»), а задать
-   * вопрос может только панель — иначе осиротевшую страницу уже ничем не снять.
+   * The server's default is to keep the page: a link handed out to the class
+   * cannot be recalled. But it declares the choice ("the page's fate is asked
+   * separately"), and only the panel can ask the question — otherwise an
+   * orphaned page could no longer be taken down by anything.
    */
   deleteSeminar: (id: string, dropReading = false) =>
     request<void>(`/seminars/${encodeURIComponent(id)}${dropReading ? '?reading=drop' : ''}`, {
       method: 'DELETE',
     }),
 
-  /* ------------------------------------------- страницы без комнаты */
+  /* ------------------------------------------- pages without a room */
 
   /**
-   * Публикации, ключом которым служит их собственный адрес.
+   * Publications keyed by their own address.
    *
-   * Всё остальное здесь спрашивает публикацию по семинару, а у осиротевшей
-   * семинара уже нет: `withdraw`/`republish` отвечают ей 404, и снять её можно
-   * было только правкой SQLite.
+   * Everything else here asks for a publication by seminar, and an orphaned
+   * one has no seminar any more: `withdraw`/`republish` answer it with 404,
+   * and the only way to take it down was editing SQLite.
    */
   listPublications: () =>
     request<{ publications: AdminPublication[] }>('/publications').then((r) => r.publications),
@@ -696,7 +711,7 @@ export const adminApi = {
   restorePublication: (id: string) =>
     request<void>(`/publications/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
 
-  /** Совсем: строки страницы стираются, надгробие в курсе теряет ссылку. */
+  /** For good: the page's rows are erased, the tombstone in the course loses its link. */
   erasePublication: (id: string) =>
     request<void>(`/publications/${encodeURIComponent(id)}/forever`, { method: 'DELETE' }),
 
@@ -727,14 +742,15 @@ export const adminApi = {
     request<TeacherWithLink>('/teachers', { method: 'POST', ...json(body) }),
 
   /**
-   * Третья дверь: тетрадь с диска.
+   * The third door: a notebook from disk.
    *
-   * Тело JSON, а не multipart: .ipynb — это и есть JSON, и читать его в
-   * браузере дешевле, чем поднимать разбор многочастного тела ради одного поля.
+   * A JSON body, not multipart: an .ipynb is JSON already, and reading it in
+   * the browser is cheaper than bringing up multipart parsing for one field.
    *
-   * Едут только ячейки — `cell_type` и `source`, — а не файл целиком. Предел на
-   * тело общий, 1 МБ, и сохранённая тетрадь с парой графиков его пробивала:
-   * выводы в ней — мегабайты base64, которые сервер всё равно выбрасывает.
+   * Only the cells travel — `cell_type` and `source` — not the whole file. The
+   * body limit is shared, 1 MB, and a saved notebook with a couple of plots
+   * broke through it: its outputs are megabytes of base64, which the server
+   * throws away anyway.
    */
   importNotebook: (body: {
     cells: unknown[]
@@ -746,11 +762,11 @@ export const adminApi = {
   }) => request<ImportResult>('/import/notebook', { method: 'POST', ...json(body) }),
 
   /**
-   * Материал в комнату, от имени преподавателя.
+   * Material into the room, on the teacher's behalf.
    *
-   * Идёт мимо `${BASE}`: это маршрут семинара, а не панели, и принимает он
-   * печенье преподавателя наравне с токеном участника. `credentials: 'include'`
-   * здесь и есть вся авторизация.
+   * Goes around `${BASE}`: this is a seminar route, not a panel one, and it
+   * accepts the teacher's cookie on a par with a participant's token.
+   * `credentials: 'include'` here is the whole of the authorization.
    */
   uploadMaterial: async (sessionId: string, file: File): Promise<void> => {
     const form = new FormData()
@@ -790,11 +806,12 @@ export const adminApi = {
   teacherLink: (id: string) => request<TeacherWithLink>(`/teachers/${encodeURIComponent(id)}/link`),
 
   /**
-   * Отозвать токен установки и получить новый.
+   * Revoke the setup token and get a new one.
    *
-   * Токен подписывает вошедшего как самого старого владельца и печатается
-   * `make host` при каждом запуске: он есть в истории терминала, на снимках
-   * проектора и в чатах, куда его пересылали. Отозвать его было нечем.
+   * The token signs whoever enters in as the oldest owner and is printed by
+   * `make host` on every start: it is in terminal history, in photos of the
+   * projector and in the chats it was forwarded to. There was no way to
+   * revoke it.
    */
   rotateSetupToken: () => request<{ token: string }>('/setup-token/rotate', { method: 'POST' }),
 }

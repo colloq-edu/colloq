@@ -1,23 +1,26 @@
 /**
- * Очередь исполнения посылок — одна на инстанс, и насос над ней.
+ * The submission execution queue — one per instance, and the pump over it.
  *
- * УСТРОЙСТВО В ПЯТИ ФРАЗАХ. Очередь живёт в базе (store.ts), а не в памяти:
- * пара идёт полтора часа, посылки копятся всё это время, и перезапуск сервера
- * не должен означать «тридцать человек прислали в пустоту». Насос — это один
- * таймер, который берёт работу транзакцией `takeNext` и запускает её, не
- * дожидаясь; мест по умолчанию одно, потому что на машине преподавателя рядом
- * идёт занятие, и вторая посылка отнимает у него память, а не ускоряет
- * очередь. Работа идёт двумя шагами в двух одноразовых контейнерах — тетрадь,
- * потом метрика, — и между ними переезжает ровно один файл. Всё, что знает о
- * docker, лежит за дверью `runner-port.ts`: здесь решают, ЧЬЯ работа идёт
- * следующей и что записать в строку посылки. И на старте процесса очередь
- * поднимает осиротевшее: строка «исполняется», помеченная чужой жизнью
- * процесса, — это прогон, у которого больше нет контейнера.
+ * THE DESIGN IN FIVE SENTENCES. The queue lives in the database (store.ts),
+ * not in memory: a class period lasts an hour and a half, submissions pile up
+ * all that time, and a server restart must not mean "thirty people submitted
+ * into the void". The pump is one timer that takes work with the `takeNext`
+ * transaction and starts it without waiting; there is one slot by default,
+ * because a class is running next to it on the teacher's machine, and a
+ * second submission takes memory away from the class rather than speeding up
+ * the queue. Work goes in two steps in two disposable containers — the
+ * notebook, then the metric — and exactly one file moves between them.
+ * Everything that knows about docker lives behind the `runner-port.ts` door:
+ * here we decide WHOSE work goes next and what to write into the submission
+ * row. And at process startup the queue picks up the orphans: a "running" row
+ * marked with another life of the process is a run that no longer has a
+ * container.
  *
- * ЧЕГО ЗДЕСЬ НЕТ. Ни одного `docker`, ни одного пути на диске, собранного
- * руками, ни одной копии правил соревнования. Пути — `storage.ts`, правила —
- * `@shared/competitions`, строки — `store.ts`. Этот модуль их связывает, и
- * поэтому он читается сверху вниз, а не вширь.
+ * WHAT IS NOT HERE. Not a single `docker`, not a single disk path assembled
+ * by hand, not a single copy of the competition rules. Paths are
+ * `storage.ts`, rules are `@shared/competitions`, rows are `store.ts`. This
+ * module ties them together, and so it reads top to bottom rather than
+ * sideways.
  */
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
@@ -93,23 +96,25 @@ import {
 } from '@shared/competitions'
 
 /*
- * Оба прогонщика грузятся здесь и только здесь.
+ * Both runners are loaded here and only here.
  *
- * Модуль-порт знает лишь то, что они существуют: импортировать их оттуда
- * значило бы затянуть сборку аргументов docker в процесс, который её никогда
- * не позовёт. Регистрация происходит при загрузке модуля (registerCompetitionRunner).
+ * The port module only knows that they exist: importing them from there would
+ * mean dragging docker argument assembly into a process that will never call
+ * it. Registration happens when the module loads (registerCompetitionRunner).
  */
 import './docker-runner.js'
 import './fake-runner.js'
 import './broker-runner.js'
 
 /**
- * Имя контейнера — по нему его убивают и по нему же ищут в журнале docker.
+ * The container name — it is what the container is killed by and what it is
+ * looked up by in the docker log.
  *
- * Префикс общий с комнатами (`colloq-`), чтобы всё хозяйство инстанса
- * находилось одним `docker ps`. Случайный хвост, а не номер захода: контейнер
- * прошлой посылки может ещё доживать свои миллисекунды, когда начинается
- * повтор, и `docker run` с занятым именем отказывает целиком.
+ * The prefix is shared with rooms (`colloq-`), so that all of the instance's
+ * belongings are found with one `docker ps`. A random tail rather than an
+ * attempt number: the previous submission's container may still be living
+ * out its last milliseconds when a retry starts, and `docker run` with a
+ * taken name refuses outright.
  */
 export function containerName(submissionId: string, kind: RunKind, token: string): string {
   return `colloq-comp-${submissionId}-${token}-${kind === 'metric' ? 'score' : 'run'}`
@@ -117,27 +122,28 @@ export function containerName(submissionId: string, kind: RunKind, token: string
 
 const newToken = (): string => randomBytes(4).toString('hex')
 
-/* --------------------------------------------------------------- настройка */
+/* ---------------------------------------------------------------- settings */
 
 /**
- * Сколько посылок исполнять разом.
+ * How many submissions to execute at once.
  *
- * Ключ в общем ящике инстанса (instance_settings), а не столбец в таблице
- * очереди: это настройка МАШИНЫ, соседняя с настройками оракула, а не
- * состояние очереди вроде паузы. Умолчание — одно место: при четырёх
- * гигабайтах на посылку в виртуалку докера их помещается две, и это ещё до
- * ядер живых комнат.
+ * A key in the instance's shared box (instance_settings), not a column in the
+ * queue table: this is a setting of the MACHINE, next to the Oracle's
+ * settings, not queue state like the pause. The default is one slot: at four
+ * gigabytes per submission, two fit into docker's virtual machine, and that
+ * is before the kernels of live rooms.
  */
 const SLOTS_KEY = 'competitions.slots'
 export const DEFAULT_SLOTS = 1
 export const MAX_SLOTS = 8
 
 /*
- * Ящик заводит `admin/settings`, и импорт здесь — не украшение: без него
- * таблицы к моменту подготовки запросов ниже может ещё не быть, и очередь
- * падала бы на старте у всякого, кто поднял её раньше панели. Тот же импорт
- * ставит на место переводчик, читающий язык инстанса, — а строки, которые
- * прогонщик пишет участнику, идут через `tr`.
+ * The box is created by `admin/settings`, and the import here is not
+ * decoration: without it the table might not exist yet when the statements
+ * below are prepared, and the queue would crash at startup for anyone who
+ * brought it up before the panel. The same import puts in place the
+ * translator that reads the instance language — and the strings the runner
+ * writes to the participant go through `tr`.
  */
 const readSetting = db.prepare('SELECT value FROM instance_settings WHERE key = ?')
 const writeSetting = db.prepare(`
@@ -159,22 +165,24 @@ export function setQueueSlots(slots: number): number {
 }
 
 /**
- * Запас памяти сверх того, что просит посылка.
+ * Memory headroom on top of what a submission asks for.
  *
- * Контейнер стоит не только своим `--memory`: сверх него есть слой docker, сам
- * процесс python до первой строки тетради и tmpfs, который в лимит входит, но
- * занимается не сразу. Двести пятьдесят шесть мегабайт — та подушка, при
- * которой `docker run` не отказывает на границе.
+ * A container costs more than its `--memory`: on top of it there is the
+ * docker layer, the python process itself before the notebook's first line,
+ * and the tmpfs, which counts toward the limit but is not taken up at once.
+ * Two hundred and fifty-six megabytes is the cushion at which `docker run`
+ * does not refuse at the boundary.
  */
 const RUN_RESERVE_MB = 256
 
 /**
- * Хватает ли машины на новую работу.
+ * Whether the machine has enough for new work.
  *
- * `null` — «честно не знаем» (нет /proc, не отвечает демон), и это НЕ повод
- * отказать: очередь, вставшая из-за того, что не прочитался файл, хуже
- * посылки, которой отказал docker. Отказ здесь — только когда мы точно знаем,
- * что памяти нет.
+ * `null` means "we honestly do not know" (no /proc, the daemon is not
+ * answering), and that is NOT a reason to refuse: a queue that stalled
+ * because a file could not be read is worse than a submission refused by
+ * docker. A refusal here happens only when we know for sure there is no
+ * memory.
  */
 export function enoughMemory(availableMb: number | null, needMb: number): boolean {
   if (availableMb === null) return true
@@ -182,17 +190,18 @@ export function enoughMemory(availableMb: number | null, needMb: number): boolea
 }
 
 /**
- * Дать контейнеру прочитать то, что мы ему смонтировали.
+ * Let the container read what we mounted for it.
  *
- * Файлы соревнования пишутся режимом 0600 — правильно для каталога внутри
- * DATA_DIR (0700), но контейнер ходит от uid 1000, и это не обязательно uid
- * сервера. Под `make up` они совпадают (в образе `USER node` — тот же 1000), а
- * на хозяйской машине — как повезёт: посылка молча не прочитает ни данных, ни
- * своей тетради, и в журнале это будет выглядеть как «тетрадь не нашла
- * train.csv».
+ * Competition files are written with mode 0600 — right for a directory inside
+ * DATA_DIR (0700), but the container runs as uid 1000, and that is not
+ * necessarily the server's uid. Under `make up` they match (the image has
+ * `USER node` — the same 1000), while on the host machine it is the luck of
+ * the draw: the submission silently reads neither the data nor its notebook,
+ * and in the log this looks like "the notebook did not find train.csv".
  *
- * Отсюда, а не из storage.ts: режим меняется для изолированного исполнителя
- * (Docker локально или Pod в k3s). Каталог остаётся внутри DATA_DIR.
+ * From here, not from storage.ts: the mode is changed for the isolated
+ * executor (Docker locally or a Pod in k3s). The directory stays inside
+ * DATA_DIR.
  */
 function letContainerRead(dir: string): void {
   try {
@@ -203,14 +212,14 @@ function letContainerRead(dir: string): void {
       else competitionsFs.chmodSync(file, 0o644)
     }
   } catch {
-    // Не вышло — пусть решает docker: отказ по правам он называет вслух, а
-    // ронять из-за этого посылку нечестно.
+    // It did not work — let docker decide: it names a permission refusal out
+    // loud, and failing the submission over this would be unfair.
   }
 }
 
-/* ------------------------------------------------------------------ насос */
+/* ------------------------------------------------------------------- pump */
 
-/** Идущие в ЭТОМ процессе работы: по ним видно, кого ещё ждать при остановке. */
+/** Work running in THIS process: it shows whom we still have to wait for on shutdown. */
 const inFlight = new Map<string, Promise<void>>()
 const aborters = new Map<string, AbortController>()
 const diagnostics = { started: 0, completed: 0, cancelled: 0, recovered: 0, cleanupFailures: 0 }
@@ -224,7 +233,7 @@ export function competitionExecutionDiagnostics() {
     activeAttemptIds: [...inFlight.keys()].slice(0, MAX_SLOTS) }
 }
 
-/** Посылки, которые велели снять. Читается прогоном в конце, а не в начале. */
+/** Submissions ordered to be taken down. Read by the run at the end, not at the start. */
 const cancelled = new Map<string, 'entrant' | 'teacher'>()
 
 let timer: NodeJS.Timeout | null = null
@@ -232,11 +241,12 @@ let pumping = false
 let stopped = false
 
 /**
- * Взять столько работ, сколько машина и настройка позволяют, и НЕ ждать их.
+ * Take as much work as the machine and the setting allow, and do NOT wait for
+ * it.
  *
- * Не ждать — принципиально: при двух местах вторая посылка должна начаться,
- * пока идёт первая, а не после неё. Возвращается число начатых — по нему
- * `drainCompetitionQueue` понимает, что брать больше нечего.
+ * Not waiting is essential: with two slots the second submission must start
+ * while the first is running, not after it. Returns the number started —
+ * `drainCompetitionQueue` uses it to tell that there is nothing more to take.
  */
 export async function pumpOnce(): Promise<number> {
   if (pumping || stopped) return 0
@@ -286,29 +296,30 @@ export async function pumpOnce(): Promise<number> {
   return started
 }
 
-/** Дождаться всего, что идёт в этом процессе. */
+/** Wait for everything running in this process. */
 export function settleCompetitionWork(): Promise<void> {
   return Promise.all([...inFlight.values()]).then(() => undefined)
 }
 
 /**
- * Прогнать очередь до конца и дождаться её.
+ * Run the queue to the end and wait for it.
  *
- * Тестам и стенду: там нет секунды, которую можно подождать таймер, а
- * проверять надо ровно то, что очередь доходит до конца сама.
+ * For tests and the test stand: there is no second there to wait for the
+ * timer, and what needs checking is exactly that the queue gets to the end by
+ * itself.
  */
 export async function drainCompetitionQueue(rounds = 50): Promise<void> {
   for (let i = 0; i < rounds; i++) {
     const started = await pumpOnce()
     await settleCompetitionWork()
     if (started === 0 && inFlight.size === 0) {
-      // Работа могла появиться, пока шла предыдущая (пересчёт, повтор).
+      // Work may have appeared while the previous work ran (rescoring, a retry).
       if (waitingCount() === 0 || queuePaused()) return
     }
   }
 }
 
-/** Разбудить насос — после принятой посылки, снятой паузы, пересчёта. */
+/** Wake the pump — after an accepted submission, a lifted pause, a rescore. */
 export function wakeCompetitionPump(): void {
   if (stopped || timer === null) return
   void pumpOnce()
@@ -317,24 +328,24 @@ export function wakeCompetitionPump(): void {
 const TICK_MS = 1_000
 
 /**
- * Поднять насос.
+ * Start the pump.
  *
- * Зовётся один раз при старте процесса, после `reclaimCompetitionQueue`.
- * Таймер, а не «будить только на событие»: разбудить очередь должно и
- * освобождение памяти, и снятая пауза в соседней вкладке, и конец чужой
- * работы, — а секунда задержки для посылки, которая идёт минуты, не значит
- * ничего.
+ * Called once at process startup, after `reclaimCompetitionQueue`. A timer
+ * rather than "wake only on an event": the queue has to be woken by freed
+ * memory, by a pause lifted in a neighbouring tab, and by the end of someone
+ * else's work — and a second of delay for a submission that runs for minutes
+ * means nothing.
  */
 export function startCompetitionPump(): void {
   if (timer) return
   stopped = false
   timer = setInterval(() => void pumpOnce(), TICK_MS)
-  // Таймер очереди не должен держать процесс живым: он уходит вместе с ним.
+  // The queue timer must not keep the process alive: it goes away with it.
   timer.unref?.()
   void pumpOnce()
 }
 
-/** Остановить насос и дождаться идущего. Новых работ после этого не берут. */
+/** Stop the pump and wait for what is running. No new work is taken after that. */
 export async function stopCompetitionPump(): Promise<void> {
   stopped = true
   if (timer) clearInterval(timer)
@@ -352,16 +363,16 @@ function forgetWarning(): void {
   warned = ''
 }
 
-/* -------------------------------------------------------------- при старте */
+/* -------------------------------------------------------------- at startup */
 
 /**
- * Поднять то, что осталось от прошлой жизни процесса.
+ * Pick up what is left from the process's previous life.
  *
- * Строка «исполняется» с чужим `boot` означает ровно одно: сервер
- * перезапустили, пока посылка шла. Контейнера, скорее всего, уже нет, но если
- * есть — его имя лежит рядом, и снять его должен тот, кто это прочитал.
- * Зовётся ОДИН раз, до насоса: две такие уборки подряд подняли бы одну работу
- * дважды.
+ * A "running" row with someone else's `boot` means exactly one thing: the
+ * server was restarted while the submission was running. The container is
+ * most likely gone already, but if it is there, its name lies next to it, and
+ * whoever read it must take it down. Called ONCE, before the pump: two such
+ * cleanups in a row would pick up the same work twice.
  */
 export async function reclaimCompetitionQueue(): Promise<{
   requeued: number
@@ -379,9 +390,10 @@ export async function reclaimCompetitionQueue(): Promise<{
   for (const row of requeued) {
     count('recovered')
     /*
-     * Строка посылки осталась «выполняется» — она о перезапуске не знает. Без
-     * этой правки участник до следующего подъёма работы смотрел бы на таймер,
-     * который не движется, и на полосу этапов, застрявшую на «ЗАПУСК ТЕТРАДИ».
+     * The submission row is still "running" — it knows nothing about the
+     * restart. Without this edit the participant would, until the work is
+     * picked up again, watch a timer that does not move and a stage bar stuck
+     * on "RUNNING NOTEBOOK".
      */
     updateSubmission(row.submissionId, { state: 'queued', stage: 'queue' })
   }
@@ -392,20 +404,20 @@ export async function reclaimCompetitionQueue(): Promise<{
   }
   if (requeued.length || abandoned.length || swept) {
     console.log(
-      `[competitions] после перезапуска: поднято ${requeued.length}, брошено ${abandoned.length}, снято контейнеров ${swept}`,
+      `[competitions] after restart: requeued ${requeued.length}, abandoned ${abandoned.length}, containers removed ${swept}`,
     )
   }
   return { requeued: requeued.length, abandoned: abandoned.length, swept }
 }
 
-/* ------------------------------------------------------------------ работа */
+/* -------------------------------------------------------------------- work */
 
 async function runJob(row: QueueRow): Promise<void> {
   const submission = getSubmission(row.submissionId)
   const competition = submission ? getCompetition(submission.competitionId) : null
   if (!submission || !competition) {
-    // Соревнование удалили, пока посылка ждала: снимать нечего, и держать
-    // строку в очереди незачем.
+    // The competition was deleted while the submission was waiting: there is
+    // nothing to take down, and no reason to keep the row in the queue.
     finishQueueAttempt(row)
     return
   }
@@ -427,10 +439,11 @@ async function runJob(row: QueueRow): Promise<void> {
       }
     }
     /*
-     * Сюда попадает только наша собственная поломка — не падение тетради и не
-     * падение метрики, у тех есть свои исходы. Участник в ней не виноват, и
-     * слово `metricFailed` выбрано именно поэтому: он прочтёт «проверяющий код
-     * упал, посылка будет пересчитана», а не обвинение своей тетради.
+     * Only our own breakage ends up here — not a notebook crash and not a
+     * metric crash, those have outcomes of their own. The participant is not
+     * to blame for it, and the word `metricFailed` was chosen precisely for
+     * that reason: they will read "the checking code crashed, the submission
+     * will be rescored", not an accusation against their notebook.
      */
     console.error('[competitions] attempt failed', { attemptId: row.attemptId, submissionId: submission.id, inputRevision: competition.inputRevision }, err)
     if (ownsQueueAttempt(row)) updateSubmission(submission.id, {
@@ -443,15 +456,16 @@ async function runJob(row: QueueRow): Promise<void> {
   }
 }
 
-/** Шаг первый и, если он удался, шаг второй. */
+/** Step one and, if it succeeded, step two. */
 async function runNotebookThenScore(competition: Competition, submission: Submission, row: QueueRow, provenance: AttemptProvenance): Promise<void> {
   const runner = competitionRunner()
   const binding = getBinding(submission.id)
   const limits = limitsFor(competition, 'notebook')
   const container = containerName(submission.id, 'notebook', newToken())
   const run = startRun({ submissionId: submission.id, kind: 'notebook', container, attemptId: row.attemptId!, inputRevision: provenance.inputRevision ?? undefined })
-  // Имя ложится и в строку очереди: контейнер переживает процесс, который его
-  // запустил, и снимать его после перезапуска будет уже другая жизнь сервера.
+  // The name also goes into the queue row: the container outlives the process
+  // that started it, and taking it down after a restart will be the job of
+  // another life of the server.
   noteQueueContainer(submission.id, container, row.attemptId!)
   updateSubmission(submission.id, {
     state: 'running',
@@ -543,10 +557,10 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
   }
 
   /*
-   * Этап «ПРОВЕРКА CSV» — не украшение полосы. Между «тетрадь исполнилась» и
-   * «метрика посчитала» лежит единственная вещь, которую участник забывает
-   * чаще всего: записать ответ. Отдельным этапом он видит, где именно
-   * оборвалось.
+   * The "CHECKING CSV" stage is not decoration of the bar. Between "the
+   * notebook ran" and "the metric scored" lies the one thing participants
+   * forget most often: writing the answer. As a separate stage they see where
+   * exactly it broke off.
    */
   updateSubmission(submission.id, {
     stage: 'check',
@@ -569,11 +583,13 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
 }
 
 /**
- * Забранный ответ — или строка, объясняющая участнику, почему его нет.
+ * The collected answer — or a string explaining to the participant why there
+ * is none.
  *
- * Пусто и слишком велико разведены нарочно: «файл не записан» и «файл на 80
- * мегабайт» — это два разных разговора, и участник, прочитавший первое вместо
- * второго, пойдёт искать ошибку не там.
+ * Empty and too big are kept apart on purpose: "file not written" and "an
+ * 80-megabyte file" are two different conversations, and a participant who
+ * read the first instead of the second will look for the mistake in the wrong
+ * place.
  */
 function readAnswer(competitionId: string, submissionId: string, directory = resultDir(competitionId, submissionId)): Buffer | string {
   const file = path.join(directory, SUBMISSION_FILE)
@@ -594,15 +610,16 @@ function readAnswer(competitionId: string, submissionId: string, directory = res
   return body ?? tr('competitions.answer.unreadable', { file: SUBMISSION_FILE })
 }
 
-/** Пересчёт: метрика по сохранённому ответу, без повторного исполнения тетради. */
+/** Rescoring: the metric over the stored answer, without executing the notebook again. */
 async function scoreOnly(competition: Competition, submission: Submission, row: QueueRow, provenance: AttemptProvenance): Promise<void> {
   const answer = readAnswer(competition.id, submission.id)
   if (typeof answer === 'string') {
     /*
-     * Пересчитать нечего: ответ с диска ушёл (уборка старых посылок) или его и
-     * не было. Тетрадь второй раз не запускаем — это отдельное действие с
-     * отдельной кнопкой; здесь честнее сказать преподавателю, что посылка
-     * выпала из пересчёта.
+     * There is nothing to rescore: the answer left the disk (cleanup of old
+     * submissions) or never existed. We do not run the notebook a second time
+     * — that is a separate action with a separate button; here it is more
+     * honest to tell the teacher that the submission dropped out of the
+     * rescoring.
      */
     updateSubmission(submission.id, {
       state: 'metricFailed',
@@ -620,7 +637,7 @@ async function scoreOnly(competition: Competition, submission: Submission, row: 
   await scoreStep(competition, submission, answer, submission.durationMs ?? 0, null, row, provenance)
 }
 
-/** Шаг второй: метрика преподавателя во втором одноразовом контейнере. */
+/** Step two: the teacher's metric in the second disposable container. */
 async function scoreStep(
   competition: Competition,
   submission: Submission,
@@ -659,10 +676,11 @@ async function scoreStep(
   const run = startRun({ submissionId: submission.id, kind: 'metric', container, attemptId: row.attemptId!, inputRevision: provenance.inputRevision ?? undefined })
   noteQueueContainer(submission.id, container, row.attemptId!)
 
-  // Ответ переезжает в свой, НОВЫЙ каталог: контейнер метрики не должен видеть
-  // ни исполненную тетрадь участника, ни её вывод. Каталог для ответа метрики
-  // — отдельный, СОСЕДНИЙ: один и тот же путь, смонтированный и на чтение, и
-  // на запись, отдал бы сторожу размер ответа как «метрика пишет на диск».
+  // The answer moves into its own, NEW directory: the metric container must
+  // see neither the participant's executed notebook nor its output. The
+  // directory for the metric's answer is a separate, NEIGHBOURING one: one and
+  // the same path mounted both read-only and writable would hand the answer's
+  // size to the watchdog as "the metric writes to disk".
   const scoreInput = attemptDir(competition.id, submission.id, row.attemptId!, 'score')
   competitionsFs.writeFileSync(path.join(scoreInput, SUBMISSION_FILE), answer, { mode: 0o600 })
   const outDir = attemptDir(competition.id, submission.id, row.attemptId!, 'score-out')
@@ -690,10 +708,11 @@ async function scoreStep(
     throw error
   } finally {
     /*
-     * Вторая копия ответа и json метрики живут ровно на время подсчёта. Держать
-     * их дальше значит хранить каждый ответ дважды: на соревновании в триста
-     * посылок это гигабайты, которых никто не читает. Пересчёт заводит каталог
-     * заново — он и обязан быть новым.
+     * The second copy of the answer and the metric's json live exactly for
+     * the duration of scoring. Keeping them longer means storing every answer
+     * twice: in a competition of three hundred submissions that is gigabytes
+     * nobody reads. Rescoring creates the directory anew — and it has to be a
+     * new one.
      */
     try {
       competitionsFs.rmSync(scoreInput, { recursive: true, force: true })
@@ -728,14 +747,15 @@ async function scoreStep(
 }
 
 /**
- * Ответы и код метрики на месте? Строка — чего не хватает, `null` — всё есть.
+ * Are the answers and the metric code in place? A string says what is
+ * missing, `null` means everything is there.
  *
- * Код метрики кладётся на диск КАЖДЫЙ раз, и это дешевле любой попытки
- * угадать, поменялся ли он: преподаватель правит метрику ровно тогда, когда
- * она упала, и посылка, пересчитанная старым кодом, выглядела бы как
- * неисправленная ошибка. Мы пишем файл ВНУТРИ смонтированного каталога, а не
- * монтируем сам файл, — именно поэтому перезапись безопасна (см. шапку
- * storage.ts про virtiofs).
+ * The metric code is put on disk EVERY time, and that is cheaper than any
+ * attempt to guess whether it changed: the teacher edits the metric exactly
+ * when it has failed, and a submission rescored with the old code would look
+ * like an unfixed error. We write the file INSIDE the mounted directory
+ * rather than mounting the file itself — that is exactly why overwriting is
+ * safe (see the header of storage.ts about virtiofs).
  */
 function snapshotSecrets(competition: Competition, submission: Submission, row: QueueRow): void {
   const directory = attemptDir(competition.id, submission.id, row.attemptId!, 'secret')
@@ -745,11 +765,11 @@ function snapshotSecrets(competition: Competition, submission: Submission, row: 
 }
 
 /**
- * Посылку велели снять — записать это и уйти.
+ * The submission was ordered to be taken down — record that and leave.
  *
- * Проверяется ПОСЛЕ шага, а не до: контейнер уже убит, работа кончилась, и
- * единственное, что осталось, — не записать участнику «вышло время» за то, что
- * он сам нажал «Отменить».
+ * Checked AFTER the step, not before: the container is already killed, the
+ * work is over, and the only thing left is not to write "time ran out" to the
+ * participant for having pressed "Cancel" themselves.
  */
 function takeCancellation(submissionId: string, durationMs: number): boolean {
   const by = cancelled.get(submissionId)
@@ -764,17 +784,17 @@ function takeCancellation(submissionId: string, durationMs: number): boolean {
   return true
 }
 
-/* ------------------------------------------------------------------ слова */
+/* ------------------------------------------------------------------ words */
 
 const MB = 1024 * 1024
 
 /**
- * Что читает УЧАСТНИК про упавшую тетрадь.
+ * What the PARTICIPANT reads about a failed notebook.
  *
- * Трассировка упавшей ячейки уезжает ему дословно: он её и писал, и «ошибка в
- * тетради» без единой строки причины — это отказ, за которым он придёт к
- * преподавателю. Всё остальное — наши слова, и они называют число: «не
- * уложилась в 10 минут» полезнее, чем «лимит времени».
+ * The traceback of the failed cell goes to them verbatim: they wrote it, and
+ * "error in the notebook" without a single line of cause is a refusal that
+ * sends them to the teacher. Everything else is our words, and they name a
+ * number: "did not fit into 10 minutes" is more useful than "time limit".
  */
 export function notebookNote(outcome: RunOutcome, competition: Competition): string | null {
   const at = outcome.cell + 1
@@ -821,13 +841,14 @@ export function notebookNote(outcome: RunOutcome, competition: Competition): str
     case 'no-submission':
       return tr('competitions.answer.noFile', { file: SUBMISSION_FILE })
     default:
-      // harness_error и unknown: виновата обвязка, а не участник. Он увидит
-      // фразу про упавший проверяющий код, а разбираться будет преподаватель.
+      // harness_error and unknown: the harness is to blame, not the
+      // participant. They will see the sentence about the crashed checking
+      // code, and the teacher will do the investigating.
       return null
   }
 }
 
-/** Что читает ПРЕПОДАВАТЕЛЬ: код выхода, OOM и хвост журнала контейнера. */
+/** What the TEACHER reads: the exit code, OOM and the tail of the container log. */
 export function teacherNote(outcome: RunOutcome): string | null {
   if (outcome.status === 'ok') return null
   const head = `${outcome.status} · exit ${outcome.diagnostics.exit ?? '—'}${
@@ -838,11 +859,12 @@ export function teacherNote(outcome: RunOutcome): string | null {
 }
 
 /**
- * Что читает участник про метрику.
+ * What the participant reads about the metric.
  *
- * `ParticipantVisibleError` — дословно, и это весь договор. Наши собственные
- * проверки приезжают из контейнера КОДОМ (harness.ts · align): страница
- * участника бывает на двух языках, а контейнер о языке инстанса не знает.
+ * `ParticipantVisibleError` — verbatim, and that is the whole contract. Our
+ * own checks arrive from the container as a CODE (harness.ts · align): the
+ * participant's page comes in two languages, and the container does not know
+ * the instance's language.
  */
 export function metricNote(outcome: ScoreOutcome): string | null {
   if (outcome.status !== 'participant_error') return null
@@ -855,20 +877,22 @@ export function metricNote(outcome: ScoreOutcome): string | null {
     const params = ((asked as { params?: unknown })?.params ?? {}) as Record<string, string | number>
     return tr(`competitions.answer.${code}`, params)
   } catch {
-    // Метрика вернула что-то своё, начинающееся с фигурной скобки. Текст
-    // участника он и есть — отдаём как написано.
+    // The metric returned something of its own that starts with a curly
+    // brace. That is the participant's text — hand it over as written.
     return raw
   }
 }
 
-/* ------------------------------------------------------------- вмешательство */
+/* -------------------------------------------------------------- intervention */
 
 /**
- * Снять посылку: участник нажал «Отменить», преподаватель — «Убить».
+ * Take a submission down: the participant pressed "Cancel", the teacher
+ * "Kill".
  *
- * `false` — снимать нечего: работа уже кончилась. Это не ошибка, а ровно тот
- * случай, который в макете не нарисован («отмена не успела»), и разговаривать
- * с человеком о нём надо честно, а не притворяться, что получилось.
+ * `false` means there is nothing to take down: the work has already ended.
+ * This is not an error but exactly the case the mockup does not draw ("the
+ * cancel was too late"), and the person has to be told about it honestly
+ * rather than pretending it worked.
  */
 export async function cancelSubmission(
   submissionId: string,
@@ -895,13 +919,17 @@ export async function cancelSubmission(
   return true
 }
 
-/** Исполнить тетрадь заново — то же самое, что прислать её ещё раз, но без номера. */
+/**
+ * Execute the notebook again — the same as submitting it once more, but
+ * without a number.
+ */
 export function rerunSubmission(submissionId: string): boolean {
   const submission = getSubmission(submissionId)
   if (!submission) return false
   if (!isTerminal(submission.state)) return false
-  // Присланная тетрадь могла уйти с диска уборкой старых посылок — тогда
-  // исполнять нечего, и врать кнопкой «Исполнить заново» не стоит.
+  // The submitted notebook may have left the disk in a cleanup of old
+  // submissions — then there is nothing to execute, and lying with a "Run
+  // again" button is not worth it.
   if (!competitionsFs.existsSync(path.join(inputDir(submission.competitionId, submission.id), NOTEBOOK_FILE))) {
     return false
   }
@@ -924,12 +952,12 @@ export function rerunSubmission(submissionId: string): boolean {
 }
 
 /**
- * Пересчитать метрику всем посылкам соревнования.
+ * Rescore the metric for all submissions of a competition.
  *
- * Тетради НЕ запускаются заново — ради этого прогоны и хранятся строкой на
- * заход: исполнение сотни тетрадей заняло бы час и дало бы ровно те же
- * ответы, которые уже лежат на диске. Берутся те, у кого ответ сохранился;
- * упавшая тетрадь пересчитывать нечего.
+ * The notebooks are NOT run again — that is why runs are stored as one row
+ * per attempt: executing a hundred notebooks would take an hour and give
+ * exactly the same answers that already lie on disk. Those whose answer has
+ * been kept are taken; a crashed notebook has nothing to rescore.
  */
 export function rescoreCompetition(competitionId: string): number {
   let queued = 0
@@ -968,15 +996,18 @@ function hasStoredAnswer(competitionId: string, submissionId: string): boolean {
   }
 }
 
-/** Приостановить очередь или пустить её снова. Идущее не трогается — на то «Убить». */
+/**
+ * Pause the queue or let it go again. Running work is not touched — that is
+ * what "Kill" is for.
+ */
 export function pauseCompetitionQueue(paused: boolean, by: string | null = null): void {
   setQueuePaused(paused, by)
   if (!paused) wakeCompetitionPump()
 }
 
-/* ------------------------------------------------------------------ сводка */
+/* ----------------------------------------------------------------- summary */
 
-/** Полоса исполнителя в A1 и блок очереди в A3 — одним ответом. */
+/** The executor bar in A1 and the queue block in A3 — in one answer. */
 export interface RunnerStatus {
   backend: CompetitionBackend
   slots: number

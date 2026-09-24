@@ -16,23 +16,24 @@ function fixture() {
 }
 const linux = process.platform === 'linux'
 /*
- * Прежде эта клятва звучала наоборот: «вне Linux отказываем, а не подменяем
- * тихо запасным путём», и на macOS панель файлов не работала вовсе без
- * `COLLOQ_UNSAFE_DEV_FILES=1` в .env.
+ * This vow used to say the opposite: "outside Linux we refuse rather than
+ * quietly substitute a fallback path", and on macOS the files panel did not
+ * work at all without `COLLOQ_UNSAFE_DEV_FILES=1` in .env.
  *
- * Слово UNSAFE ушло с пути преподавателя: занятие на ноутбуке ставится через
- * pip и запускается одной командой, а первое, что видел человек с макбуком, —
- * требование вписать руками флаг, обещающий небезопасность. Вместо флага
- * секьюр-слой получил рабочий путь: каждый сегмент открывается с O_NOFOLLOW,
- * так что симлинк НЕ ПРОЙТИ ни последним звеном, ни в середине, — а что
- * именно на macOS остаётся (гонка подмены каталога: адресовать относительно
- * дескриптора нечем, openat в Node нет), сказано в шапке secure-files.ts и
- * проверяется в secure-files-macos.test.mts.
+ * The word UNSAFE is gone from the teacher's path: a class on a laptop is
+ * installed via pip and started with one command, and the first thing a
+ * person with a MacBook saw was a demand to type in by hand a flag that
+ * promises insecurity. Instead of the flag the secure layer got a working
+ * path: every segment is opened with O_NOFOLLOW, so a symlink CANNOT GET
+ * THROUGH either as the last link or in the middle — and what exactly remains
+ * on macOS (a directory-swap race: there is nothing to address relative to a
+ * descriptor with, Node has no openat) is stated in the header of
+ * secure-files.ts and checked in secure-files-macos.test.mts.
  *
- * Здесь остаётся половина, которая проверяется одной строкой: работает без
- * всякого флага.
+ * What remains here is the half that is checked with one line: it works
+ * without any flag.
  */
-test('вне Linux обход работает и без флага', { skip: linux }, () => {
+test('outside Linux the walk works without the flag too', { skip: linux }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-fd-')); roots.push(root)
   assert.deepEqual(createAnchoredFilesystem(root, { allowUnsafeDevelopment: false }).readdirSync(root), [])
 })

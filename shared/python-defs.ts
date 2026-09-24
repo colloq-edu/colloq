@@ -1,96 +1,102 @@
 /**
- * «Где это определено» — разбор Python ровно настолько, насколько нужен переход.
+ * "Where is this defined": parsing Python exactly as far as a jump needs.
  *
- * Нарочно крошечное подмножество, и по тому же доводу, что у разметки
- * опубликованной страницы (server/src/publish/render.ts): полноценная грамматика
- * здесь уже есть — @codemirror/lang-python с деревом lezer, — но живёт она в
- * браузере и в редакторе. Искать определение приходится не в той ячейке, где
- * щёлкнули, а во ВСЕХ ячейках тетради и в .py-файлах папки семинара, и делает
- * это сервер: у него на руках и документ, и файлы. Тащить в сервер CodeMirror
- * ради этого — тот же вес и вторая копия грамматики; замерено на живой тетради:
- * восемьдесят ячеек через lezer — 17 мс, построчным разбором — доли миллисекунды.
+ * A deliberately tiny subset, for the same reason as the markup of the
+ * published page (server/src/publish/render.ts): a full grammar already
+ * exists here (@codemirror/lang-python with its lezer tree), but it lives in
+ * the browser and in the editor. The definition has to be searched for not in
+ * the cell that was clicked but in ALL cells of the notebook and in the .py
+ * files of the seminar folder, and the server does that: it has both the
+ * document and the files at hand. Dragging CodeMirror into the server for
+ * this means the same weight and a second copy of the grammar; measured on a
+ * live notebook: eighty cells through lezer take 17 ms, line-by-line parsing
+ * takes a fraction of a millisecond.
  *
- * Что подмножество знает: `def`, `async def`, `class`, присваивание на верхнем
- * уровне и в теле класса, `import` во всех формах. Чего НЕ знает — и это честнее
- * назвать, чем обойти:
+ * What the subset knows: `def`, `async def`, `class`, assignment at the top
+ * level and in a class body, `import` in all its forms. What it does NOT
+ * know (and it is more honest to name this than to work around it):
  *
- * - Тип переменной. `df.head` сюда приходит цепочкой из двух имён, и разобрать
- *   его нечем: `df` — это данные, а не модуль. См. `resolveChain` — там про то,
- *   почему в таком случае лучше НЕ найти ничего, чем увести в чужой `def head`.
- * - Динамику: `globals()[name] = ...`, `exec`, декораторы, подменяющие имя.
- * - Условные определения: `def f` в обеих ветках `if` даст два определения, и
- *   выбирать между ними будет порядок, а не условие.
+ * - The type of a variable. `df.head` arrives here as a chain of two names,
+ *   and there is nothing to resolve it with: `df` is data, not a module. See
+ *   `resolveChain` for why in that case it is better to find NOTHING than to
+ *   lead into someone else's `def head`.
+ * - Dynamics: `globals()[name] = ...`, `exec`, decorators that replace a name.
+ * - Conditional definitions: `def f` in both branches of an `if` gives two
+ *   definitions, and the choice between them is made by order, not by the
+ *   condition.
  *
- * Всё это — промахи в сторону «не нашёл», и такой промах виден человеку сразу.
- * Единственный промах, которого здесь быть не должно, — уверенный переход не
- * туда: жест сработал, и человек читает чужой код, думая, что читает свой.
+ * All of these are misses on the "not found" side, and such a miss is
+ * visible to a person at once. The only miss that must not happen here is a
+ * confident jump to the wrong place: the gesture worked, and the person reads
+ * someone else's code thinking it is their own.
  */
 
-/** Имя и точка — из чего состоит цепочка `utils.helper`. */
+/** A name and a dot: what a chain like `utils.helper` is made of. */
 const WORD = /[A-Za-z0-9_]/
 
-/** Что искали: цепочка имён через точку и границы последнего звена. */
+/** What was asked: a chain of dotted names and the bounds of the last link. */
 export interface Question {
-  /** Слева направо: `['utils', 'helper']` для `utils.helper`. */
+  /** Left to right: `['utils', 'helper']` for `utils.helper`. */
   chain: string[]
-  /** Границы ЩЁЛКНУТОГО звена в исходнике — по нему рисуют подчёркивание. */
+  /** Bounds of the CLICKED link in the source; the underline is drawn by them. */
   from: number
   to: number
   /**
-   * Слева от цепочки стоит не имя, а ВЫРАЖЕНИЕ: `df[["a"]].head`, `f(x).head`.
+   * To the left of the chain stands not a name but an EXPRESSION:
+   * `df[["a"]].head`, `f(x).head`.
    *
-   * Цепочка обрывается на скобке, и `head` выглядит голым именем — а он метод
-   * чего-то, чего отсюда не видно. Без этой пометки щелчок по `.head(4)`
-   * находил первый попавшийся `def head` в папке и уверенно уводил в него:
-   * тот самый промах, которого человек не замечает.
+   * The chain breaks at the bracket, and `head` looks like a bare name, while
+   * it is a method of something not visible from here. Without this flag a
+   * click on `.head(4)` found the first `def head` in the folder and
+   * confidently led into it: the very miss a person does not notice.
    */
   viaExpression: boolean
 }
 
-/** Чем имя стало в исходнике. */
+/** What the name became in the source. */
 export type DefKind = 'def' | 'class' | 'assign' | 'import'
 
-/** Найденное определение — одно имя в одном исходнике. */
+/** A found definition: one name in one source. */
 export interface Definition {
   name: string
   kind: DefKind
-  /** Строка, считая с единицы: так их показывают человеку. */
+  /** Line, counting from one: that is how lines are shown to a person. */
   line: number
-  /** Колонка начала ИМЕНИ, считая с нуля. */
+  /** Column where the NAME starts, counting from zero. */
   column: number
-  /** Класс, в чьём теле оно объявлено, — или `null` на верхнем уровне. */
+  /** The class in whose body it is declared, or `null` at the top level. */
   owner: string | null
-  /** Сама строка, обрезанная: ею подписывают, куда прыгнули. */
+  /** The line itself, trimmed: it is the caption of where the jump landed. */
   text: string
 }
 
-/** Что связало это имя с чужим модулем. */
+/** What bound this name to another module. */
 export interface Import {
-  /** Имя, которым это зовут в коде: после `as`, если он был. */
+  /** The name it goes by in the code: after `as`, if there was one. */
   local: string
-  /** Модуль как написан: `numpy`, `pkg.sub`; пусто у `from . import x`. */
+  /** The module as written: `numpy`, `pkg.sub`; empty for `from . import x`. */
   module: string
-  /** Имя ВНУТРИ модуля — или `null` у `import mod`. */
+  /** The name INSIDE the module, or `null` for `import mod`. */
   member: string | null
-  /** Сколько точек в начале: 0 — абсолютный импорт, 1 — рядом, 2 — выше. */
+  /** How many leading dots: 0 is an absolute import, 1 is next door, 2 is one up. */
   level: number
   line: number
   text: string
 }
 
-/** Разобранный исходник. */
+/** A parsed source. */
 export interface Scan {
   defs: Definition[]
   imports: Import[]
-  /** `from x import *` — модули, из которых сюда приехало неизвестно что. */
+  /** `from x import *`: modules from which who knows what arrived here. */
   stars: { module: string; level: number }[]
   /**
-   * Ячейка целиком не Python: `%%bash`, `%%sql`, `%%writefile`.
+   * The whole cell is not Python: `%%bash`, `%%sql`, `%%writefile`.
    *
-   * Такую надо пропускать, а не разбирать: её содержимое — чужой язык, и `def`
-   * в шелл-скрипте определением не является. Пока этой проверки не было,
-   * `%%writefile utils.py` с целым модулем внутри давал определения, к которым
-   * переход вёл в ячейку, где их нет.
+   * Such a cell must be skipped, not parsed: its content is another language,
+   * and a `def` in a shell script is not a definition. Before this check
+   * existed, `%%writefile utils.py` with a whole module inside produced
+   * definitions whose jump led into a cell where they are not.
    */
   magic: boolean
 }
@@ -98,11 +104,12 @@ export interface Scan {
 const MAX_TEXT = 160
 
 /**
- * Ключевые слова: под указателем они есть, а определения у них нет и быть не может.
+ * Keywords: they occur under the pointer, but they have no definition and
+ * cannot have one.
  *
- * Без этого списка `if`, `None`, `for` подчёркивались наравне с именами и на
- * щелчок отвечали «не нашлось» — обещание, которого фича никогда не сдержит, и
- * заметная доля всех щелчков в живой тетради.
+ * Without this list `if`, `None`, `for` were underlined like names and
+ * answered a click with "not found": a promise the feature will never keep,
+ * and a noticeable share of all clicks in a live notebook.
  */
 const KEYWORDS: ReadonlySet<string> = new Set(
   `False None True and as assert async await break class continue def del elif
@@ -112,28 +119,29 @@ const KEYWORDS: ReadonlySet<string> = new Set(
     .split(/\s+/),
 )
 
-/** Буквы, которыми Python помечает литерал: r, b, u, f и их сочетания. */
+/** Letters with which Python marks a literal: r, b, u, f and their combinations. */
 const PREFIX = /[A-Za-z]{1,3}$/
 
 /**
- * Код строки за вычетом литералов и комментария.
+ * The code of a line minus literals and comment.
  *
- * Литералы не вырезаются, а ЗАМАЗЫВАЮТСЯ пробелами: смещения внутри строки
- * обязаны остаться прежними, иначе колонка определения уедет, а `questionAt`
- * ответит про имя, стоящее левее. Тройная кавычка переносится между строками
- * состоянием — `def` внутри docstring определением не является, и это не
- * редкость, а нормальная учебная тетрадь.
+ * Literals are not cut out but PAINTED OVER with spaces: offsets inside the
+ * line must stay the same, otherwise the definition's column drifts and
+ * `questionAt` answers about a name standing further left. A triple quote is
+ * carried between lines as state: a `def` inside a docstring is not a
+ * definition, and this is not a rarity but an ordinary teaching notebook.
  *
- * Два исключения, и оба стоили ошибок на живой лекции.
+ * Two exceptions, and both cost errors at a live lecture.
  *
- * БУКВА ПЕРЕД КАВЫЧКОЙ замазывается вместе с литералом. `f"{x}"` оставлял
- * висеть одинокое `f`, и щелчок по нему уводил в `def f(x)` из соседней ячейки
- * — жест срабатывал и уверенно врал про место, где имени нет вовсе.
+ * THE LETTER BEFORE THE QUOTE is painted over together with the literal.
+ * `f"{x}"` left a lone `f` hanging, and a click on it led into `def f(x)`
+ * from a neighbouring cell: the gesture worked and confidently lied about a
+ * place where there is no name at all.
  *
- * ВНУТРИ f-СТРОКИ содержимое `{…}` — это КОД, и замазывать его нельзя:
- * `f"{cian_summary} строк"` в тетради обычнее, чем вызов, и половина имён
- * живёт именно там. Скобки-удвоения `{{` и `}}` — литеральные, они остаются
- * замазанными.
+ * INSIDE AN f-STRING the content of `{…}` is CODE, and it must not be
+ * painted over: `f"{cian_summary} rows"` is more common in a notebook than a
+ * call, and half the names live exactly there. The doubled braces `{{` and
+ * `}}` are literal, they stay painted over.
  */
 function bareLine(line: string, triple: string | null): { code: string; triple: string | null } {
   let out = ''
@@ -157,7 +165,7 @@ function bareLine(line: string, triple: string | null): { code: string; triple: 
       break
     }
     if (ch === '"' || ch === "'") {
-      // Буква литерала стоит слева и уже записана — стираем её задним числом.
+      // The literal's letter is on the left and already written: erase it retroactively.
       const mark = PREFIX.exec(out)
       const formatted = mark !== null && /f/i.test(mark[0])
       if (mark) out = out.slice(0, out.length - mark[0].length) + ' '.repeat(mark[0].length)
@@ -178,8 +186,8 @@ function bareLine(line: string, triple: string | null): { code: string; triple: 
         }
         if (line[j] === ch) break
         /*
-         * Внутри f-строки `{…}` остаётся кодом. Глубина считается, потому что
-         * в подстановке бывают и словари: `f"{ {'a': 1}['a'] }"`.
+         * Inside an f-string `{…}` stays code. Depth is counted because the
+         * substitution can contain dictionaries too: `f"{ {'a': 1}['a'] }"`.
          */
         if (formatted && line[j] === '{' && line[j + 1] !== '{') {
           let depth = 0
@@ -202,12 +210,13 @@ function bareLine(line: string, triple: string | null): { code: string; triple: 
         j++
       }
       /*
-       * Литерал, не закрытый до конца строки, переносится обратным слешем.
+       * A literal not closed by the end of the line is continued by a
+       * backslash.
        *
-       * `sql = "select \\` продолжается следующей строкой, и `def` в ней —
-       * часть текста запроса, а не определение. Пока состояние не переносилось,
-       * разбор выдумывал `def fake` из середины SQL и уверенно вёл в строку,
-       * где никакой функции нет.
+       * `sql = "select \\` continues on the next line, and a `def` in it is
+       * part of the query text, not a definition. While the state was not
+       * carried over, the parser invented `def fake` from the middle of the
+       * SQL and confidently led to a line where there is no function.
        */
       if (j >= line.length && /\\$/.test(line)) {
         out += ' '.repeat(line.length - i)
@@ -215,10 +224,11 @@ function bareLine(line: string, triple: string | null): { code: string; triple: 
       }
       const end = Math.min(j + 1, line.length)
       /*
-       * Длина обязана совпасть со съеденным куском — иначе поедут ВСЕ смещения
-       * правее, и колонка определения вместе с ними. Закрывающая кавычка в
-       * `body` не попадает, поэтому добивка пробелами; длиннее нужного `body`
-       * быть не может, но если вдруг — честнее замазать целиком, чем сдвинуть.
+       * The length must match the consumed piece, otherwise ALL offsets to
+       * the right drift, and the definition's column with them. The closing
+       * quote does not get into `body`, hence the padding with spaces; `body`
+       * cannot be longer than needed, but if it ever is, it is more honest to
+       * paint over the whole piece than to shift.
        */
       while (body.length < end - i) body += ' '
       out += body.length === end - i ? body : ' '.repeat(end - i)
@@ -234,28 +244,29 @@ function bareLine(line: string, triple: string | null): { code: string; triple: 
 const DEF = /^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)/
 const CLASS = /^\s*class\s+([A-Za-z_]\w*)/
 const ASSIGN = /^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*(?::[^=]+)?=(?!=)/
-/** Поле с одной аннотацией и без значения: так объявлены поля dataclass. */
+/** A field with an annotation and no value: that is how dataclass fields are declared. */
 const FIELD = /^\s*([A-Za-z_]\w*)\s*:\s*[^=]+$/
 /**
- * Имена, которые связывает не присваивание, а сам оператор.
+ * Names bound not by an assignment but by the statement itself.
  *
- * `for column in columns:` и `with open(path) as handle:` — это половина
- * настоящего семинара, и `column` с `handle` определены в них так же
- * по-настоящему, как в `x = 1`. Пока их тут не было, клик по имени переменной
- * цикла отвечал «не нашлось», хотя она объявлена строкой выше на глазах.
+ * `for column in columns:` and `with open(path) as handle:` make up half of a
+ * real seminar, and `column` and `handle` are defined in them just as truly as
+ * in `x = 1`. Before they were here, a click on a loop variable's name
+ * answered "not found", although it is declared one line above, in plain
+ * sight.
  */
 const FOR = /^\s*(?:async\s+)?for\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s+in\b/
 const AS = /\bas\s+([A-Za-z_]\w*)/g
 const IMPORT = /^\s*import\s+(.+)$/
 const FROM = /^\s*from\s+(\.*)([\w.]*)\s+import\s+(.+)$/
 
-/** Обрезанная строка для подписи «куда прыгнули». */
+/** A trimmed line for the "where we jumped" caption. */
 const shorten = (line: string): string => {
   const text = line.trim().replace(/\s+/g, ' ')
   return text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT - 1)}…` : text
 }
 
-/** `a.b.c as x, d` — имена, которые этот `import` связывает. */
+/** `a.b.c as x, d`: the names this `import` binds. */
 function importClause(clause: string): { local: string; module: string }[] {
   const out: { local: string; module: string }[] = []
   for (const piece of clause.split(',')) {
@@ -263,10 +274,10 @@ function importClause(clause: string): { local: string; module: string }[] {
     if (!named) continue
     const module = named[1]
     /*
-     * Без `as` связывается ВЕРХНИЙ пакет, а не весь путь: `import os.path`
-     * кладёт в область видимости имя `os`. Модулем при этом остаётся `os` —
-     * «os.path» доберётся цепочкой (см. `resolveChain`), которая приклеит
-     * к нему `path` сама.
+     * Without `as` the TOP package is bound, not the whole path: `import
+     * os.path` puts the name `os` into scope. The module then stays `os`:
+     * "os.path" is reached by the chain (see `resolveChain`), which glues
+     * `path` onto it by itself.
      */
     const local = named[2] ?? module.split('.')[0]
     out.push({ local, module: named[2] ? module : local })
@@ -274,7 +285,7 @@ function importClause(clause: string): { local: string; module: string }[] {
   return out
 }
 
-/** `from pkg import a as b, c` — то же для второй формы. */
+/** `from pkg import a as b, c`: the same for the second form. */
 function fromClause(clause: string): { names: { local: string; member: string }[]; star: boolean } {
   const names: { local: string; member: string }[] = []
   let star = false
@@ -292,13 +303,14 @@ function fromClause(clause: string): { names: { local: string; member: string }[
 }
 
 /**
- * Где в исходнике стоит это имя — строка и колонка.
+ * Where in the source this name stands: line and column.
  *
- * Ищется по СЫРЫМ строкам инструкции, целым словом и не раньше её отступа.
- * Пока колонка бралась как `raw.indexOf(name)`, псевдоним `import case_bpm as
- * bpm` указывал внутрь `case_bpm` — шесть промахов из восьми в настоящей
- * шапке; а у импорта, перенесённого скобками, имени на первой строке нет
- * вовсе, и колонка выходила −1.
+ * It is searched for in the RAW lines of the statement, as a whole word and
+ * not before its indentation. While the column was taken as
+ * `raw.indexOf(name)`, the alias `import case_bpm as bpm` pointed inside
+ * `case_bpm`: six misses out of eight in a real header; and an import wrapped
+ * in parentheses has no name on its first line at all, and the column came
+ * out as −1.
  */
 function locate(
   lines: readonly string[],
@@ -314,20 +326,20 @@ function locate(
   return { line: from + 1, column: 0 }
 }
 
-/** Ячейки, у которых `%%` — обёртка вокруг обычного Python, а не другой язык. */
+/** Cells whose `%%` is a wrapper around ordinary Python, not another language. */
 const PYTHON_MAGICS = /^%%(time|timeit|capture|prun|debug|snakeviz|memit)\b/
 
 /**
- * Разобрать исходник: что он определяет и что притаскивает извне.
+ * Parse a source: what it defines and what it brings in from outside.
  *
- * Работа идёт ЛОГИЧЕСКИМИ инструкциями, а не строками, и это не аккуратность,
- * а исправление двух живых промахов. Подпись, перенесённая скобками —
- * `def loss(\n a,\n) -> X:` или `class Tables(\n Base,\n):` — даёт строку `):`
- * на нулевом отступе, и построчный разбор считал, что тело класса кончилось:
- * методы становились функциями МОДУЛЯ и находились по голому имени. А `;`
- * посреди строки прятал от разбора всё, что стоит за ним, включая импорты
- * шапки — то есть ломал не только свои определения, но и разрешение цепочек во
- * всей тетради.
+ * The work goes by LOGICAL statements, not lines, and this is not tidiness
+ * but a fix for two live misses. A signature wrapped in parentheses,
+ * `def loss(\n a,\n) -> X:` or `class Tables(\n Base,\n):`, gives a line `):`
+ * at zero indentation, and line-by-line parsing decided the class body had
+ * ended: methods became MODULE functions and were found by a bare name. And
+ * a `;` in the middle of a line hid from parsing everything after it,
+ * including the header's imports, that is, it broke not only its own
+ * definitions but also chain resolution in the whole notebook.
  */
 export function scanPython(code: string): Scan {
   const defs: Definition[] = []
@@ -337,16 +349,16 @@ export function scanPython(code: string): Scan {
 
   const firstCode = raw.find((line) => line.trim() !== '')
   /*
-   * `%%bash` — другой язык, и разбирать его как Python значит выдумывать
-   * определения. А `%%time` и `%%capture` — обёртки вокруг обычной ячейки, и
-   * пропускать их целиком значило терять всё, что в них написано: в настоящей
-   * тетради под `%%time` лежит обучение модели вместе со всеми её именами.
+   * `%%bash` is another language, and parsing it as Python means inventing
+   * definitions. But `%%time` and `%%capture` are wrappers around an ordinary
+   * cell, and skipping them entirely meant losing everything written in them:
+   * in a real notebook, under `%%time` sits model training with all its names.
    */
   if (firstCode !== undefined && firstCode.trimStart().startsWith('%%')) {
     if (!PYTHON_MAGICS.test(firstCode.trimStart())) return { defs, imports, stars, magic: true }
   }
 
-  /** Бесстрочные версии строк: литералы замазаны, комментарии сняты. */
+  /** String-free versions of the lines: literals painted over, comments removed. */
   const bare: string[] = []
   let triple: string | null = null
   for (const line of raw) {
@@ -355,7 +367,7 @@ export function scanPython(code: string): Scan {
     triple = done.triple
   }
 
-  /** Открытые области: класс даёт владельца, функция прячет всё внутри себя. */
+  /** Open scopes: a class gives an owner, a function hides everything inside it. */
   const scopes: { kind: 'class' | 'def'; name: string; indent: number }[] = []
 
   const depthOf = (line: string): number => {
@@ -370,7 +382,7 @@ export function scanPython(code: string): Scan {
   for (let n = 0; n < bare.length; n++) {
     if (bare[n].trim() === '') continue
 
-    // Логическая инструкция: скобки и обратный слеш переносят её на строки ниже.
+    // A logical statement: brackets and a backslash carry it onto the lines below.
     const start = n
     let depth = depthOf(bare[n])
     let joined = bare[n]
@@ -384,9 +396,9 @@ export function scanPython(code: string): Scan {
     const indent = /^\s*/.exec(bare[start])![0].length
     while (scopes.length > 0 && indent <= scopes[scopes.length - 1].indent) scopes.pop()
     /*
-     * Внутри функции определений модуля нет. `helper = 1` в чужой функции не
-     * должно отвечать на клик по `helper` в другой ячейке: это локальное имя,
-     * и живёт оно ровно до `return`.
+     * There are no module definitions inside a function. `helper = 1` in
+     * someone else's function must not answer a click on `helper` in another
+     * cell: it is a local name, and it lives exactly until `return`.
      */
     const inside = scopes.some((one) => one.kind === 'def')
     const owner = scopes.length > 0 && scopes[scopes.length - 1].kind === 'class'
@@ -416,9 +428,10 @@ export function scanPython(code: string): Scan {
     if (inside) continue
 
     /*
-     * Простые инструкции, разделённые `;`. Их пишут в шапке (`import os; import
-     * sys`) и в разборах на одну строку, и пока разреза здесь не было, всё,
-     * что стоит за точкой с запятой, пропадало вместе с первой половиной.
+     * Simple statements separated by `;`. They are written in the header
+     * (`import os; import sys`) and in one-line worked examples, and until
+     * this split existed, everything after the semicolon vanished together
+     * with the first half.
      */
     for (const piece of splitSimple(joined)) {
       const from = FROM.exec(piece)
@@ -451,18 +464,19 @@ export function scanPython(code: string): Scan {
       }
 
       /*
-       * Присваивание — на ЛЮБОЙ глубине, лишь бы не внутри функции.
+       * Assignment at ANY depth, as long as it is not inside a function.
        *
-       * Прежнее правило «только нулевой отступ или тело класса» теряло всё, что
-       * лежит в `if`, `for`, `with` и `try` на верхнем уровне, — а именно так
-       * написана половина настоящего семинара: `with open(...) as f:` и
-       * `for column in columns:` идут сплошь, и `column` отвечал «не нашлось»,
-       * хотя определён строкой выше на глазах у человека. Тела функций сюда не
-       * доходят: они отсечены выше.
+       * The former rule "only zero indentation or a class body" lost
+       * everything inside top-level `if`, `for`, `with` and `try`, and that is
+       * exactly how half of a real seminar is written: `with open(...) as f:`
+       * and `for column in columns:` are everywhere, and `column` answered
+       * "not found" although it is defined one line above, before the
+       * person's eyes. Function bodies do not reach here: they are cut off
+       * above.
        */
       /*
-       * `for x in …` и `… as x` — до присваивания: в такой строке знака `=`
-       * может и не быть вовсе, а имя в ней связывается.
+       * `for x in …` and `… as x` come before assignment: such a line may
+       * have no `=` sign at all, yet a name is bound in it.
        */
       const loop = FOR.exec(piece)
       if (loop) {
@@ -495,9 +509,9 @@ export function scanPython(code: string): Scan {
       }
 
       /*
-       * И поле с одной аннотацией: `train: pd.DataFrame` без значения. Так
-       * объявлены поля `@dataclass`, а их в учебных модулях курса шестнадцать
-       * штук — и ни одно не находилось.
+       * And a field with just an annotation: `train: pd.DataFrame` without a
+       * value. That is how `@dataclass` fields are declared, and the course's
+       * teaching modules have sixteen of them, and not one was found.
        */
       const field = FIELD.exec(piece)
       if (field && !KEYWORDS.has(field[1])) {
@@ -510,7 +524,7 @@ export function scanPython(code: string): Scan {
   return { defs, imports, stars, magic: false }
 }
 
-/** Разрез по `;` вне скобок: `import os; import sys` — две инструкции. */
+/** Split on `;` outside brackets: `import os; import sys` is two statements. */
 function splitSimple(line: string): string[] {
   if (!line.includes(';')) return [line]
   const out: string[] = []
@@ -530,29 +544,31 @@ function splitSimple(line: string): string[] {
 }
 
 /**
- * Сколько строк назад смотреть, чтобы узнать про открытую тройную кавычку.
+ * How many lines back to look to learn about an open triple quote.
  *
- * Состояние кавычек честно считается от начала исходника, и на ячейке это
- * ничего не стоит. Но тот же разбор зовётся на КАЖДОЕ движение мыши с зажатым
- * модификатором, а редактор файлов открывает до полутора мегабайт: полный
- * проход там — десятки миллисекунд на пиксель пути указателя.
+ * The quote state is honestly counted from the start of the source, and on a
+ * cell this costs nothing. But the same parsing is called on EVERY mouse
+ * move with the modifier held, and the file editor opens up to one and a half
+ * megabytes: a full pass there is tens of milliseconds per pixel of pointer
+ * travel.
  *
- * Двести строк — это заведомо больше любого docstring, который пишут руками, и
- * заведомо дёшево. Цена ошибки при промахе мелкая и односторонняя: имя внутри
- * гигантского литерала подчеркнётся и ответит «не нашлось».
+ * Two hundred lines is certainly more than any hand-written docstring, and
+ * certainly cheap. The cost of a miss is small and one-sided: a name inside a
+ * giant literal gets underlined and answers "not found".
  */
 const LOOKBACK = 200
 
 /**
- * Имя под кареткой — целиком, вместе с тем, чьё оно.
+ * The name under the caret, whole, together with whose it is.
  *
- * Цепочка тянется ВЛЕВО и включает щёлкнутое звено: щёлкнув `head` в
- * `df.head.values`, спрашивают про `df.head`, а не про всю цепочку — так же
- * ведут себя IDE, и так же читается намерение.
+ * The chain stretches to the LEFT and includes the clicked link: clicking
+ * `head` in `df.head.values` asks about `df.head`, not about the whole chain;
+ * IDEs behave the same way, and that is how the intent reads.
  *
- * Внутри строки и комментария ответа нет: `# def helper` — это текст, и
- * подчёркивать в нём нечего. Внутри f-строки — наоборот есть: `{cian_summary}`
- * это код, и имён там живёт не меньше, чем снаружи.
+ * Inside a string or a comment there is no answer: `# def helper` is text,
+ * and there is nothing to underline in it. Inside an f-string, on the
+ * contrary, there is: `{cian_summary}` is code, and no fewer names live there
+ * than outside.
  */
 export function questionAt(code: string, cursor: number): Question | null {
   if (cursor < 0 || cursor > code.length) return null
@@ -563,12 +579,13 @@ export function questionAt(code: string, cursor: number): Question | null {
   const here = code.slice(start, end)
 
   /*
-   * Назад отсчитывается ровно `LOOKBACK` строк — и режется тоже только они.
+   * Exactly `LOOKBACK` lines are counted back, and only they are split.
    *
-   * Раньше здесь стояло `code.slice(0, start).split('\n')`, то есть весь текст
-   * до каретки резался на строки ради последних двухсот. На ячейке это ничего
-   * не стоит, а на файле стоило дорого и не там: замерено, полтора мегабайта —
-   * 12 мс, и платятся они на КАЖДОЕ движение мыши с зажатым модификатором.
+   * This used to be `code.slice(0, start).split('\n')`, that is, all the text
+   * before the caret was split into lines for the sake of the last two
+   * hundred. On a cell that costs nothing, but on a file it cost a lot and in
+   * the wrong place: measured, one and a half megabytes took 12 ms, and they
+   * are paid on EVERY mouse move with the modifier held.
    */
   let window = start
   for (let n = 0; n < LOOKBACK && window > 0; n++) {
@@ -592,8 +609,8 @@ export function questionAt(code: string, cursor: number): Question | null {
   let from = at
   while (from > 0 && WORD.test(bare[from - 1])) from--
   if (from === to) return null
-  // Имя, начинающееся цифрой, — это число: `2x` не бывает, а `df.iloc[0]` даёт
-  // `0` под указателем, и спрашивать о нём нечего.
+  // A name starting with a digit is a number: `2x` does not exist, and
+  // `df.iloc[0]` puts `0` under the pointer, with nothing to ask about it.
   if (/^\d/.test(bare.slice(from, to))) return null
 
   const reach = /[A-Za-z_][A-Za-z0-9_.]*$/.exec(bare.slice(0, to))
@@ -601,17 +618,19 @@ export function questionAt(code: string, cursor: number): Question | null {
   const chain = reach[0].split('.').filter(Boolean)
   if (chain.length === 0) return null
   /*
-   * Скобка или кавычка перед точкой — значит слева ВЫРАЖЕНИЕ, а не имя.
+   * A bracket or a quote before the dot means an EXPRESSION on the left, not
+   * a name.
    *
-   * Смотрим в сырую строку, а не в замазанную: `"abc".upper` иначе выглядел бы
-   * голым `upper`, потому что литерал к этому моменту уже стёрт.
+   * We look at the raw line, not the painted one: `"abc".upper` would
+   * otherwise look like a bare `upper`, because the literal has been erased
+   * by this point.
    */
   const viaExpression = /[)\]}'"]\s*\.\s*$/.test(here.slice(0, reach.index))
   /*
-   * Ключевое слово именем не считается — ни первым звеном, ни последним.
-   * `if`, `None`, `for` подчёркивались наравне с именами и отвечали «не
-   * нашлось»: обещание перехода там, где переходить некуда по устройству
-   * языка.
+   * A keyword does not count as a name, neither as the first link nor as the
+   * last. `if`, `None`, `for` were underlined like names and answered "not
+   * found": a promise of a jump where, by the design of the language, there
+   * is nowhere to jump.
    */
   if (KEYWORDS.has(chain[chain.length - 1]) || KEYWORDS.has(chain[0])) return null
   return { chain, from: start + from, to: start + to, viaExpression }
@@ -627,35 +646,35 @@ export function modulePaths(module: string, level: number, dir: string): string[
   return [`${joined}.py`, `${joined}/__init__.py`]
 }
 
-/** К чему свести цепочку, чтобы знать, где искать. */
+/** What to reduce the chain to, so as to know where to look. */
 export type Target =
   | { kind: 'name'; name: string }
   | { kind: 'member'; module: string; level: number; name: string }
-  /** Цепочка от данных, а не от модуля: `df.head`. Искать нечего. */
+  /** A chain from data, not from a module: `df.head`. Nothing to look for. */
   | { kind: 'opaque'; owner: string; name: string }
 
 /**
- * Цепочка — в то, что можно найти.
+ * A chain turned into something that can be found.
  *
- * Здесь проходит вся граница честности этой фичи, и стоит она на одном правиле:
- * у `utils.helper` и у `df.head` дерево разбора ОДИНАКОВОЕ, а смысл
- * противоположный. Различает их единственная вещь — чем связано имя слева.
- * Импорт — значит модуль, и в модуле есть что искать. Всё остальное —
- * присваивание, параметр, результат вызова — значит ДАННЫЕ, и никакого
- * `def head` у них в папке семинара нет.
+ * The whole honesty boundary of this feature runs here, and it rests on one
+ * rule: `utils.helper` and `df.head` have the SAME parse tree but opposite
+ * meanings. Only one thing tells them apart: what the name on the left is
+ * bound by. An import means a module, and a module has something to look
+ * for. Anything else (an assignment, a parameter, the result of a call)
+ * means DATA, and there is no `def head` for it in the seminar folder.
  *
- * Поэтому непонятная цепочка отвечает `opaque`, а не «поищем имя `head`
- * где-нибудь». Соблазн велик: в тетради почти наверняка найдётся какой-нибудь
- * `def head`, переход сработает и уведёт читать чужой класс — тот единственный
- * промах, который человек не заметит.
+ * So an unclear chain answers `opaque`, not "let's look for the name `head`
+ * somewhere". The temptation is great: a notebook almost certainly has some
+ * `def head`, the jump would work and lead off to read someone else's class:
+ * the one miss a person will not notice.
  */
 export function resolveChain(question: Question, imports: readonly Import[]): Target {
   const chain = question.chain
   const name = chain[chain.length - 1]
   /*
-   * Слева выражение — значит это чей-то метод, и чей, отсюда не видно.
-   * Пустой `owner` — «сказать нечего»: имени, о котором можно говорить, в
-   * `df[["a"]].head` действительно нет.
+   * An expression on the left means this is somebody's method, and whose
+   * cannot be seen from here. An empty `owner` means "nothing to say": there
+   * really is no name to talk about in `df[["a"]].head`.
    */
   if (question.viaExpression) return { kind: 'opaque', owner: '', name }
   if (chain.length === 1) return { kind: 'name', name }
@@ -665,9 +684,10 @@ export function resolveChain(question: Question, imports: readonly Import[]): Ta
   if (!bound) return { kind: 'opaque', owner: root, name }
 
   /*
-   * Середина цепочки приклеивается к модулю: `import pkg` плюс `pkg.mod.f`
-   * значит `pkg/mod.py` и в нём `f`. У формы `from pkg import mod` модуль уже
-   * назван целиком, и к нему приклеивается то же самое.
+   * The middle of the chain is glued onto the module: `import pkg` plus
+   * `pkg.mod.f` means `pkg/mod.py` and `f` in it. In the form
+   * `from pkg import mod` the module is already named in full, and the same
+   * is glued onto it.
    */
   const head = bound.member ? `${bound.module}.${bound.member}` : bound.module
   const middle = chain.slice(1, -1)
@@ -676,14 +696,16 @@ export function resolveChain(question: Question, imports: readonly Import[]): Ta
 }
 
 /**
- * Определение имени в разобранном исходнике — то, которое стоит показать.
+ * The definition of a name in a parsed source: the one worth showing.
  *
- * Верхний уровень раньше тела класса: клик по голому `fit` спрашивает про
- * функцию модуля, а не про метод чужого класса, случайно названный так же.
- * Метод отдаётся только когда его спросили — то есть когда известен владелец.
+ * The top level comes before a class body: a click on a bare `fit` asks
+ * about the module function, not about a method of another class that
+ * happens to have the same name. A method is returned only when it was asked
+ * for, that is, when the owner is known.
  *
- * Среди одинаковых — ПОСЛЕДНЕЕ: тетрадь читают сверху вниз, и переопределение
- * ниже отменяет то, что было выше. Ровно так же считает и сам Python.
+ * Among equal ones, the LAST: a notebook is read top to bottom, and a
+ * redefinition below cancels what was above. That is exactly how Python
+ * itself counts.
  */
 export function pickDefinition(
   scan: Scan,
@@ -696,10 +718,10 @@ export function pickDefinition(
   const pool = wanted.length > 0 ? wanted : owner === null ? [] : all
   if (pool.length === 0) return null
   /*
-   * Импорт — определение только за неимением лучшего: `from utils import f` в
-   * этой же ячейке отвечает на клик по `f`, но если рядом есть настоящий
-   * `def f`, показать надо его. Иначе переход уводил бы на строку импорта,
-   * из которой всё равно надо прыгать дальше.
+   * An import is a definition only for want of a better one:
+   * `from utils import f` in this same cell answers a click on `f`, but if a
+   * real `def f` is nearby, that is what must be shown. Otherwise the jump
+   * would lead to the import line, from which one has to jump further anyway.
    */
   const real = pool.filter((one) => one.kind !== 'import')
   const from = real.length > 0 ? real : pool

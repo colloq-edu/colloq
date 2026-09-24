@@ -1,17 +1,19 @@
 /**
- * Место комнаты и занятое имя — на комнату, а не на запрос.
+ * The room's space and a taken name are per room, not per request.
  *
- * Обе величины считались один раз в начале запроса, и обе из-за этого
- * обходились одновременными загрузками. Пятьсот студентов сдают CSV в одну
- * минуту: каждый запрос видел старую сумму и вместе они клали в комнату
- * сколько угодно; двое с одинаковым именем файла оба видели «такого нет», и
- * второй ложился поверх первого молча — без отказа и без пометки «заменил».
+ * Both quantities were computed once at the start of a request, and both were
+ * therefore bypassed by concurrent uploads. Five hundred students hand in a
+ * CSV in the same minute: each request saw the old total and together they
+ * put as much as they liked into the room; two people with the same file name
+ * both saw "no such file", and the second one silently landed on top of the
+ * first — with no refusal and no "replaced" mark.
  *
- * И третье, из той же семьи: оборванная загрузка. Клиент ушёл посреди тела —
- * busboy не получает 'end', поток файла не закрывается, обещание записи не
- * разрешается никогда. Недописанный `.uploading-*` лежал в папке до ближайшей
- * уборки (порог — час), всё это время занимал место комнаты и отнимал его у
- * следующих загрузок.
+ * And a third one, from the same family: an interrupted upload. The client
+ * left in the middle of the body — busboy does not get 'end', the file stream
+ * does not close, the write promise never resolves. A half-written
+ * `.uploading-*` lay in the folder until the next cleanup (the threshold is an
+ * hour), all that time taking up the room's space and taking it away from the
+ * next uploads.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -28,13 +30,14 @@ let base = ''
 let server: http.Server
 const rooms: string[] = []
 
-/** `config` объявлен `as const`; подвинуть потолок на один тест — вот так. */
+/** `config` is declared `as const`; this is how to move a cap for one test. */
 const tunable: { maxSessionBytes: number; maxUploadBytes: number } = config
 
 before(async () => {
   /*
-   * Приложение целиком (server/src/app.ts), а не свой express рядом: копия
-   * порядка middleware расхождений с продуктом не ловит, она их повторяет.
+   * The whole application (server/src/app.ts), not our own express next to
+   * it: a copy of the middleware order does not catch divergence from the
+   * product, it repeats it.
    */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -78,7 +81,7 @@ async function upload(
 
 const temps = (id: string) => fs.readdirSync(sessionDir(id)).filter((n) => n.includes('.uploading-'))
 
-test('две загрузки в одну секунду делят потолок комнаты, а не берут его каждая', async () => {
+test('two uploads in the same second share the room cap instead of each taking all of it', async () => {
   const id = room('budget-parallel')
   const wasRoom = tunable.maxSessionBytes
   tunable.maxSessionBytes = 4096
@@ -88,15 +91,15 @@ test('две загрузки в одну секунду делят потоло
       upload(id, 'b.csv', 3000, 'p_2'),
     ])
     const codes = [first, second].sort()
-    assert.deepEqual(codes, [200, 413], `обе загрузки прошли мимо потолка: ${codes.join(', ')}`)
-    // И лишнего на диске не осталось: отказ не платит местом.
+    assert.deepEqual(codes, [200, 413], `both uploads got past the cap: ${codes.join(', ')}`)
+    // And nothing extra was left on disk: a refusal does not cost space.
     assert.deepEqual(temps(id), [])
   } finally {
     tunable.maxSessionBytes = wasRoom
   }
 })
 
-test('двое с одинаковым именем: один кладёт, второй получает отказ', async () => {
+test('two people with the same name: one puts the file, the other is refused', async () => {
   const id = room('budget-samename')
   const [first, second] = await Promise.all([
     upload(id, 'data.csv', 64, 'p_1'),
@@ -104,20 +107,21 @@ test('двое с одинаковым именем: один кладёт, вт
   ])
   const codes = [first, second].sort()
   /*
-   * Второй — не «загружено» молча поверх первого: заменить чужой файл значит
-   * удалить его, а удаление преподавательское. Проверка занятости теперь стоит
-   * за строку до переименования, а не на событии начала файла.
+   * The second one is not silently "uploaded" on top of the first: replacing
+   * someone else's file means deleting it, and deleting belongs to the
+   * teacher. The taken check now stands one line before the rename, not at
+   * the file-start event.
    */
-  assert.deepEqual(codes, [200, 403], `имя досталось обоим: ${codes.join(', ')}`)
+  assert.deepEqual(codes, [200, 403], `both got the name: ${codes.join(', ')}`)
   assert.deepEqual(temps(id), [])
 })
 
-test('межсайтовый POST в папку семинара не проходит', async () => {
+test('a cross-site POST into the seminar folder does not go through', async () => {
   /*
-   * Единственная запись вне /api/admin, которую авторизует одно печенье
-   * преподавателя, — и проверка `sameOrigin` висела только на префиксе
-   * /api/admin. То есть чужая страница могла положить файл в папку семинара, и
-   * держал это только SameSite=Lax браузера.
+   * The only write outside /api/admin that the teacher's cookie alone
+   * authorizes — and the `sameOrigin` check hung only on the /api/admin
+   * prefix. So a foreign page could put a file into the seminar folder, and
+   * only the browser's SameSite=Lax held that back.
    */
   const id = room('budget-origin')
   const form = new FormData()
@@ -130,7 +134,7 @@ test('межсайтовый POST в папку семинара не прохо
   assert.equal(res.status, 403)
   assert.equal(fs.existsSync(`${sessionDir(id)}/from-elsewhere.txt`), false)
 
-  // А со своей страницы — как и раньше.
+  // And from our own page — as before.
   const ok = await fetch(`${base}/api/sessions/${id}/files`, {
     method: 'POST',
     headers: { ...bearer(id), origin: base },
@@ -143,7 +147,7 @@ test('межсайтовый POST в папку семинара не прохо
   assert.equal(ok.status, 200)
 })
 
-/** Оборвать загрузку посреди тела: заголовки ушли, файл — наполовину. */
+/** Cut off an upload in the middle of the body: the headers went out, the file is half sent. */
 function cutOff(id: string): Promise<void> {
   return new Promise((resolve) => {
     const boundary = '----colloqcut'
@@ -165,7 +169,8 @@ function cutOff(id: string): Promise<void> {
         'Content-Type: text/csv\r\n\r\n',
     )
     req.write('x'.repeat(50_000))
-    // Дать серверу принять начало тела и завести временный файл.
+    // Let the server accept the start of the body and create the temporary
+    // file.
     setTimeout(() => {
       req.destroy()
       resolve()
@@ -173,18 +178,18 @@ function cutOff(id: string): Promise<void> {
   })
 }
 
-test('оборванная загрузка не оставляет недописанного и возвращает комнате место', async () => {
+test('an interrupted upload leaves nothing half written and gives the room its space back', async () => {
   const id = room('budget-abort')
   const wasRoom = tunable.maxSessionBytes
-  // Потолка ровно на один нормальный файл: если брошенные 50 КБ останутся
-  // числиться за комнатой, следующая загрузка получит отказ.
+  // A cap for exactly one normal file: if the abandoned 50 KB stay counted
+  // against the room, the next upload will be refused.
   tunable.maxSessionBytes = 120_000
   try {
     await cutOff(id)
     await new Promise<void>((resolve) => setTimeout(resolve, 300))
-    assert.deepEqual(temps(id), [], 'недописанный файл остался лежать в комнате')
+    assert.deepEqual(temps(id), [], 'the half-written file was left lying in the room')
 
-    assert.equal(await upload(id, 'whole.csv', 100_000), 200, 'место комнаты не вернулось')
+    assert.equal(await upload(id, 'whole.csv', 100_000), 200, 'the room space did not come back')
     assert.equal(fs.readFileSync(`${sessionDir(id)}/whole.csv`, 'utf8').length, 100_000)
   } finally {
     tunable.maxSessionBytes = wasRoom

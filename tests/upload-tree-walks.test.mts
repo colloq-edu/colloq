@@ -1,22 +1,24 @@
 /**
- * Один обход папки на одну загрузку — и он свежий.
+ * One folder walk per upload — and a fresh one.
  *
- * Обход комнаты — `readdir` плюс `lstat` на каждую из двух тысяч записей,
- * синхронно, в том же цикле событий, где идёт занятие. Загрузка просила его
- * дважды: сначала рассылка комнате строила дерево сама (`broadcastFiles`), а
- * следом маршрут строил его заново на ответ тому, кто нажал.
+ * A room walk is a `readdir` plus an `lstat` on each of two thousand entries,
+ * synchronously, in the same event loop where the class is going on. An
+ * upload asked for it twice: first the broadcast to the room built the tree
+ * itself (`broadcastFiles`), and right after it the route built it again for
+ * the reply to whoever pressed the button.
  *
- * Вторая половина той же истории — короткая память обхода (workspace.ts ·
- * TREE_MEMO_MS): загрузка пишет своими потоками, мимо workspace.ts, и памяти об
- * этом не говорил никто. Две загрузки подряд в одну комнату — и вторая
- * отвечала деревом БЕЗ только что положенного файла: он лежит на диске, а в
- * панели его нет до следующего изменения папки.
+ * The second half of the same story is the walk's short memory (workspace.ts ·
+ * TREE_MEMO_MS): an upload writes with its own streams, bypassing
+ * workspace.ts, and nobody told the memory about it. Two uploads in a row to
+ * one room — and the second answered with a tree WITHOUT the file that had
+ * just been put there: it lies on disk, but the panel does not have it until
+ * the next change to the folder.
  *
- * Эта же память сегодня чаще всего гасит и второй обход — но правило «одно
- * дерево на запрос» не должно держаться на кэше с окном в триста миллисекунд,
- * поэтому обходы считаются по-настоящему, подменённым `fs.readdirSync`, а
- * рядом проверяется, что комнате и тому, кто нажал, достаётся одно и то же
- * дерево и что оно не вчерашнее.
+ * The same memory is today what most often puts out the second walk too — but
+ * the "one tree per request" rule must not rest on a cache with a
+ * three-hundred-millisecond window, so walks are counted for real, with a
+ * swapped `fs.readdirSync`, and next to it we check that the room and whoever
+ * pressed the button get the same tree and that it is not yesterday's.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -44,7 +46,7 @@ const QUIET_HOST: TokenPayload = { sessionId: QUIET, participantId: 'p_quiet', r
 let base = ''
 let server: http.Server
 
-/** Ровно то, что читает `send` управляющего сокета. */
+/** Exactly what `send` of the control socket reads. */
 function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
   const heard: ControlServerMessage[] = []
   const handlers = new Map<string, ((...args: unknown[]) => void)[]>()
@@ -65,37 +67,40 @@ function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
 }
 
 /**
- * Сколько раз обошли корень комнаты.
+ * How many times the room root was walked.
  *
- * Обход всегда начинается с `readdir` самого корня (workspace.ts · walkTree), и
- * другого способа посчитать обходы снаружи нет: `listTree` зовут четыре разных
- * места, и меряется здесь именно работа с диском, а не число вызовов.
+ * A walk always starts with a `readdir` of the root itself (workspace.ts ·
+ * walkTree), and there is no other way to count walks from outside:
+ * `listTree` is called from four different places, and what is measured here
+ * is precisely the disk work, not the number of calls.
  */
 const real = fs.readdirSync
 const walks = new Map<string, number>()
 function countingReaddir(target: fs.PathLike, options?: unknown): unknown {
   /*
-   * На Linux обход идёт не по имени, а по дескриптору: secure-files.ts открывает
-   * корень и читает `/proc/self/fd/N`, чтобы подменённый симлинк не увёл обход
-   * наружу. Такой путь переводится обратно в имя — иначе на Linux обходов
-   * насчитывалось ноль, и тест проверял бы пустоту.
+   * On Linux the walk goes not by name but by descriptor: secure-files.ts
+   * opens the root and reads `/proc/self/fd/N`, so that a swapped symlink
+   * cannot lead the walk outside. Such a path is translated back into a name —
+   * otherwise on Linux zero walks were counted, and the test would check
+   * emptiness.
    */
   let at = String(target)
-  // secure-files.ts читает `/proc/self/fd/N/.` — с точкой на конце, а readlink
-  // понимает только сам `/proc/self/fd/N`.
+  // secure-files.ts reads `/proc/self/fd/N/.` — with a dot at the end, while
+  // readlink understands only `/proc/self/fd/N` itself.
   const fd = /^\/proc\/self\/fd\/(\d+)(?:\/\.)?$/.exec(at)
   if (fd) {
     try {
       at = fs.readlinkSync(`/proc/self/fd/${fd[1]}`)
     } catch {
-      // Дескриптор уже закрыт — такой вызов к корню комнаты отношения не имеет.
+      // The descriptor is already closed — such a call has nothing to do with
+      // the room root.
     }
   }
   if (walks.has(at)) walks.set(at, (walks.get(at) ?? 0) + 1)
   return (real as (p: fs.PathLike, o?: unknown) => unknown)(target, options)
 }
 
-/** Обходы корня комнаты за одно действие. */
+/** Walks of the room root during one action. */
 async function walksDuring(room: string, act: () => Promise<void>): Promise<number> {
   const root = sessionDir(room)
   walks.set(root, 0)
@@ -159,11 +164,11 @@ async function upload(room: string, who: TokenPayload, name: string): Promise<An
 }
 
 /**
- * Список файлов, каким его собрала комната из всего, что ей рассказали.
+ * The file list as the room assembled it from everything it was told.
  *
- * Перемена в дереве едет дельтой (`files:delta`), а не списком целиком: один
- * заведённый файл стоил комнате в пятьсот человек 3.0 МБ. Поэтому здесь не
- * последний кадр, а сборка — ровно та же, что делает вкладка.
+ * A change in the tree travels as a delta (`files:delta`), not as the whole
+ * list: one created file cost a room of five hundred people 3.0 MB. So here it
+ * is not the last frame but the assembly — exactly the same one the tab does.
  */
 const lastFiles = (heard: ControlServerMessage[]): string[] | null => {
   let files: FileEntry[] | null = null
@@ -174,32 +179,34 @@ const lastFiles = (heard: ControlServerMessage[]): string[] | null => {
   return files ? files.map((f) => f.path) : null
 }
 
-test('загрузка обходит папку один раз — и на комнату, и на ответ', async () => {
+test('an upload walks the folder once — for both the room and the reply', async () => {
   const seat = socket()
   handleControlSocket(seat.ws, ROOM, HOST)
-  // Первая загрузка греет то, что считается раз на комнату (уборка хвостов,
-  // занятое место): мерить надо обход дерева, а не их.
+  // The first upload warms up what is computed once per room (cleaning up
+  // leftovers, used space): it is the tree walk that must be measured, not
+  // those.
   await upload(ROOM, HOST, 'warm.csv')
 
-  // Кадры НЕ забываются: перемена едет дельтой, и собрать из неё дерево можно
-  // только поверх полного списка, который комната получила приветственной пачкой.
+  // Frames are NOT forgotten: the change travels as a delta, and the tree can
+  // be assembled from it only on top of the full list the room got in the
+  // welcome batch.
   let answer: Answer = { status: 0, files: [] }
   const walked = await walksDuring(ROOM, async () => {
     answer = await upload(ROOM, HOST, 'handout.csv')
   })
 
   assert.equal(answer.status, 200)
-  assert.equal(walked, 1, `папку обошли ${walked} раза вместо одного`)
-  // Одно дерево на обоих — и в нём есть только что положенный файл.
-  assert.ok(answer.files.includes('handout.csv'), 'в ответе нет только что положенного файла')
+  assert.equal(walked, 1, `the folder was walked ${walked} times instead of once`)
+  // One tree for both — and it has the file that was just put there.
+  assert.ok(answer.files.includes('handout.csv'), 'the reply does not have the file that was just put there')
   assert.deepEqual(
     lastFiles(seat.heard)?.sort(),
     [...answer.files].sort(),
-    'комната и тот, кто нажал, увидели разные списки файлов',
+    'the room and whoever pressed the button saw different file lists',
   )
 })
 
-test('удаление обходит папку один раз — и комната узнаёт о нём тем же деревом', async () => {
+test('a deletion walks the folder once — and the room learns about it from the same tree', async () => {
   const seat = socket()
   handleControlSocket(seat.ws, ROOM, HOST)
 
@@ -213,26 +220,27 @@ test('удаление обходит папку один раз — и комн
     files = ((await res.json()) as { files: { path: string }[] }).files.map((f) => f.path)
   })
 
-  assert.equal(walked, 1, `папку обошли ${walked} раза вместо одного`)
-  assert.ok(!files.includes('handout.csv'), 'удалённый файл остался в ответе')
+  assert.equal(walked, 1, `the folder was walked ${walked} times instead of once`)
+  assert.ok(!files.includes('handout.csv'), 'the deleted file stayed in the reply')
   assert.deepEqual(
     lastFiles(seat.heard)?.sort(),
     [...files].sort(),
-    'комната и тот, кто нажал, увидели разные списки файлов',
+    'the room and whoever pressed the button saw different file lists',
   )
 })
 
-test('вторая загрузка подряд видит файл первой, даже если в комнате никого', async () => {
+test('a second upload in a row sees the file of the first, even if nobody is in the room', async () => {
   /*
-   * Комната без единого сокета — это не «ничего не изменилось»: так файлы и
-   * кладут, до входа класса. Рассылка выходила на пустой комнате первой же
-   * строкой, память обхода не сбрасывал никто, и дерево в ответе отставало на
-   * целое окно памяти.
+   * A room without a single socket is not "nothing changed": that is how
+   * files are put in, before the class enters. The broadcast exited on an
+   * empty room at its very first line, nobody reset the walk memory, and the
+   * tree in the reply lagged a whole memory window behind.
    */
   const first = await upload(QUIET, QUIET_HOST, 'handout.csv')
   assert.equal(first.status, 200)
-  // Память обхода заполнена и в ней только первый файл — ровно то состояние,
-  // в котором вторая загрузка отвечала списком из одного handout.csv.
+  // The walk memory is filled and holds only the first file — exactly the
+  // state in which the second upload answered with a list of just
+  // handout.csv.
   assert.deepEqual(
     listTree(QUIET).files.map((f) => f.path),
     ['handout.csv'],
@@ -243,7 +251,7 @@ test('вторая загрузка подряд видит файл перво�
   assert.deepEqual(
     [...second.files].sort(),
     ['handout.csv', 'model.py'],
-    'ответ на вторую загрузку отстал от папки',
+    'the reply to the second upload lagged behind the folder',
   )
   assert.ok(fs.existsSync(path.join(sessionDir(QUIET), 'model.py')))
 })

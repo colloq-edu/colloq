@@ -1,23 +1,25 @@
-# Проверка каждого pull request и каждого пуша в main.
+# Checks every pull request and every push to main.
 #
-# До этого файла дерево не проверял никто: тесты и typecheck шли только внутри
-# ручного release.yml, то есть впервые — в день выпуска, когда тег уже в origin.
-# Здесь те же проверки, что у выпуска (publish.yml), только ничего не
-# публикуется: права — чтение, секретов нет, поэтому workflow безопасно
-# запускать и на PR из форков.
+# Before this file nobody checked the tree: tests and typecheck ran only inside
+# the manual release.yml, that is, for the first time on release day, when the
+# tag is already in origin. Here are the same checks the release runs
+# (publish.yml), only nothing is published: permissions are read-only, there
+# are no secrets, so the workflow is safe to run on PRs from forks too.
 #
-# Три задачи параллельно, потому что они про разное и падают по разным причинам:
-#   test     — версии сходятся, типы, вся сюита `npm test`;
-#   package  — колесо pip собирается, ставится в чистый venv и называет ту же
-#              версию, а сборка не пачкает отслеживаемые файлы;
-#   docker   — Dockerfile приложения, брокера, базового ядра и образа vast.ai
-#              (deploy/vast) собираются без push. Иначе поломку первых трёх
-#              находил бы только release.yml, а образа vast — только выпуск с
-#              PUBLISH_IMAGES, то есть уже после тега.
+# Three jobs in parallel, because they are about different things and fail for
+# different reasons:
+#   test     — the versions agree, types, the whole `npm test` suite;
+#   package  — the pip wheel builds, installs into a clean venv and names the
+#              same version, and the build does not dirty tracked files;
+#   docker   — the Dockerfiles of the app, the broker, the base kernel and the
+#              vast.ai image (deploy/vast) build without push. Otherwise a
+#              breakage in the first three would be found only by release.yml,
+#              and in the vast image only by a release with PUBLISH_IMAGES,
+#              that is, after the tag.
 #
-# Сюита НЕ требует демона Docker: тесты, которым нужен docker, подкладывают
-# свой поддельный бинарник в PATH (см. tests/README.md), а python3 есть на
-# ubuntu-раннере. Если однажды это изменится, упадёт здесь, а не у выпуска.
+# The suite does NOT need a Docker daemon: tests that need docker put their
+# own fake binary into PATH (see tests/README.md), and python3 is present on
+# the ubuntu runner. If this ever changes, it will fail here, not at release.
 name: CI
 
 on:
@@ -29,13 +31,15 @@ on:
 permissions:
   contents: read
 
-# persist-credentials: false у каждого checkout: иначе токен лежит в .git/config
-# всё время, пока `npm ci` исполняет чужие install-скрипты и `npm test` — код
-# из PR. Токен здесь только на чтение, но git после checkout в сеть не ходит,
-# и держать его на диске незачем.
+# persist-credentials: false on every checkout: otherwise the token sits in
+# .git/config the whole time `npm ci` runs other people's install scripts and
+# `npm test` runs code from the PR. The token here is read-only, but git does
+# not go to the network after checkout, and there is no reason to keep it on
+# disk.
 
-# Новый пуш в ту же ветку отменяет прошлый прогон: результат старого коммита
-# уже никому не нужен. В main — тоже: там важен последний коммит.
+# A new push to the same branch cancels the previous run: nobody needs the
+# result for the old commit any more. In main too: there the latest commit is
+# what matters.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -54,11 +58,11 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --no-audit --no-fund
-      # Первым — самое дешёвое: копии версии, манифест release-please, журнал
-      # и пробная правка release-please — новый воркспейс без строки в
-      # extra-files падает здесь, а не в PR выпуска. На самом PR выпуска (его
-      # открывает личный токен владельца, поэтому CI на нём идёт) это проверка
-      # подъёма, который он сделал.
+      # The cheapest first: the version copies, the release-please manifest,
+      # the changelog and a trial release-please edit, so a new workspace
+      # without a line in extra-files fails here, not in the release PR. On
+      # the release PR itself (the owner's personal token opens it, so CI does
+      # run on it) this checks the bump that PR made.
       - name: Version copies agree
         run: node --import tsx scripts/version.mts check
       - run: npm run typecheck
@@ -82,7 +86,7 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Build the wheel (make wheel)
         run: |
-          # Дата сборки — дата коммита: два прогона одного коммита дают одно колесо.
+          # Build date = commit date: two runs of one commit give the same wheel.
           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
           export SOURCE_DATE_EPOCH
           make wheel
@@ -91,7 +95,7 @@ jobs:
           want="$(node --import tsx scripts/version.mts current)"
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet python/dist/*.whl
-          # --version отвечает без npm install (python/colloq/__main__.py · TELLING).
+          # --version answers without npm install (python/colloq/__main__.py · TELLING).
           got="$(COLLOQ_HOME="$RUNNER_TEMP/colloq-home" NO_COLOR=1 "$RUNNER_TEMP/venv/bin/colloq" --version)"
           echo "package.json: $want · colloq --version: $got"
           test "$got" = "$want"
@@ -110,9 +114,9 @@ jobs:
         run: python3 scripts/platform-wheels.py smoke --wheel python/dist/*-manylinux_2_28_x86_64.whl
       - name: Python sources compile
         run: python3 -m py_compile python/colloq/*.py scripts/*.py
-      # Сборка переписывает два отслеживаемых файла — _version.py и воркер
-      # pdf.js. Если они разошлись с тем, что в дереве, выпуск сделал бы
-      # коммит «грязным» уже после тега.
+      # The build rewrites two tracked files: _version.py and the pdf.js
+      # worker. If they diverged from what is in the tree, the release would
+      # make the commit "dirty" after the tag.
       - name: Building leaves tracked files unchanged
         run: git diff --exit-code
       - uses: actions/upload-artifact@v4
@@ -180,7 +184,7 @@ jobs:
           push: false
           cache-from: type=gha,scope=kernel
           cache-to: type=gha,mode=max,scope=kernel
-      # Та же платформа, что у publish.yml: машины vast — amd64.
+      # The same platform as in publish.yml: vast machines are amd64.
       - name: vast.ai image (deploy/vast)
         uses: docker/build-push-action@v6
         with:

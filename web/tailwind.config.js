@@ -2,19 +2,20 @@
 export default {
   content: ['./index.html', './src/**/*.{ts,svelte}'],
   /*
-   * `hover:*` — только там, где есть настоящий курсор: флаг заворачивает КАЖДУЮ
-   * такую утилиту в `@media (hover: hover) and (pointer: fine)`.
+   * `hover:*` — only where there is a real pointer: the flag wraps EVERY such
+   * utility in `@media (hover: hover) and (pointer: fine)`.
    *
-   * Пульт и тетрадь открывают с iPad, а тап на сенсорном экране оставляет
-   * hover висеть до следующего касания в другом месте: подсветка залипала на
-   * Interrupt/Restart/Clear в полосе запуска, на тулбаре ячейки и на строках
-   * дерева файлов — палец убран, кнопка «под курсором». Флагом, а не проходом
-   * по файлам, потому что правило одно на весь проект и следующая написанная
-   * `hover:` утилита должна получить его сама.
+   * The console and the notebook are opened on an iPad, and a tap on a touch
+   * screen leaves hover hanging until the next touch somewhere else: the
+   * highlight stuck on Interrupt/Restart/Clear in the run bar, on the cell
+   * toolbar and on the file tree rows — the finger lifted, the button still
+   * "under the cursor". A flag rather than a pass over the files, because the
+   * rule is one for the whole project and the next `hover:` utility anyone
+   * writes must get it by itself.
    *
-   * Цена флага: hover перестаёт быть входом на сенсорном экране, поэтому у
-   * всего, что открывается ТОЛЬКО по hover, обязан быть второй путь —
-   * `focus-within`, выбранная ячейка, открытое меню.
+   * The flag's price: hover stops being an input on a touch screen, so
+   * everything that opens ONLY on hover must have a second path —
+   * `focus-within`, the selected cell, an open menu.
    */
   future: { hoverOnlyWhenSupported: true },
   // Mirrors the token cascade in index.css: an explicit [data-theme] wins over
@@ -78,11 +79,12 @@ export default {
         // hoping the machine has them. Inter stays as the name to fall back to
         // if those files ever fail to arrive; nothing downloads it any more.
         sans: ["'HSE Sans'", 'Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
-        // Стека здесь нет намеренно: он один на весь продукт и лежит в
-        // index.css (--font-mono) — вместе с подменными семействами, у которых
-        // правки метрик под JetBrains Mono (index.html), чтобы swap не двигал
-        // строки. Ящик терминала и html-вывод ядра набраны той же переменной;
-        // список в четырёх местах уже однажды разошёлся.
+        // There is deliberately no stack here: there is one for the whole
+        // product, and it lives in index.css (--font-mono) — together with the
+        // fallback families that carry metric overrides for JetBrains Mono
+        // (index.html), so that swap does not move lines. The terminal drawer
+        // and the kernel's html output use the same variable; a list in four
+        // places has already drifted apart once.
         mono: ['var(--font-mono)'],
       },
       // Readable workspace scale. Words and actions start at 13px; the smaller
@@ -99,38 +101,43 @@ export default {
         title: ['18px', '24px'],
         head: ['22px', '28px'],
         /*
-         * Суфлёрский текст: заметка спикера, и больше ничей. Читают её, ПОДНЯВ
-         * голову, урывками между взглядами в зал, — то есть с той же дистанции,
-         * что и часы, и теми же полусекундами. Тринадцать пикселей рабочей
-         * строки здесь означают «наклониться к планшету», а наклоняться посреди
-         * фразы некогда. Интерлиньяж щедрый: глаз возвращается на строку не
-         * подряд, а заново каждый раз.
+         * Prompter text: the speaker's note, and nobody else's. It is read
+         * with the head RAISED, in snatches between glances at the hall — that
+         * is, from the same distance as the clock, and in the same half
+         * seconds. The thirteen pixels of a working line here mean "lean
+         * towards the tablet", and there is no time to lean in the middle of a
+         * sentence. The leading is generous: the eye returns to the line not
+         * continuously but anew every time.
          *
-         * Ступеней ТРИ, и это лестница, а не два размера с довеском. Стояли
-         * здесь 19/29 и 25/36, набранные наспех: 19 умолчанием — это ровно то
-         * самое «наклониться», а вторая ступень выбиралась не «читаю не глядя»,
-         * а «чуть крупнее». Теперь 18 — пол (в узкой колонке ведущего на
-         * ноутбуке место дороже кегля), 22 — УМОЛЧАНИЕ (на ленте пульта это
-         * ровно 60 знаков в строке при мере 658 px, то есть настоящий абзац
-         * речи), 28 — «читаю через весь зал, не наводя глаз». Средняя ступень
-         * носит голое имя `prompt` нарочно: умолчание — она, и в разметке это
-         * должно быть видно без сравнения чисел.
+         * There are THREE steps, and it is a ladder, not two sizes plus an
+         * extra. There used to be 19/29 and 25/36 here, set in a hurry: 19 as
+         * the default is exactly that "lean in", and the second step was
+         * chosen not as "reading without looking" but as "a bit bigger". Now
+         * 18 is the floor (in the presenter's narrow column on a laptop, room
+         * is worth more than point size), 22 is the DEFAULT (on the console
+         * strip that is exactly 60 characters per line at a 658 px measure,
+         * that is, a real paragraph of speech), 28 is "reading across the
+         * whole hall without focusing". The middle step carries the bare name
+         * `prompt` on purpose: it is the default, and the markup should show
+         * that without comparing numbers.
          *
-         * Трекинг −0.01em един для всех трёх: на светлом тексте по ночному
-         * грунту буквы и так расплываются вширь, и лишний воздух между ними
-         * добавляет строке длины, а читаемости — нет.
+         * Tracking −0.01em is the same for all three: light text on a night
+         * ground already spreads the letters wider, and extra air between them
+         * adds length to the line but not readability.
          */
         'prompt-sm': ['18px', { lineHeight: '26px', letterSpacing: '-0.01em' }],
         prompt: ['22px', { lineHeight: '32px', letterSpacing: '-0.01em' }],
         'prompt-lg': ['28px', { lineHeight: '40px', letterSpacing: '-0.01em' }],
         /*
-         * Две ступени для ПУЛЬТА, и они здесь не от жадности к размерам.
+         * Two steps for the CONSOLE, and they are not here out of greed for
+         * size.
          *
-         * Всё остальное в этом продукте читают с полуметра, сидя; пульт держат
-         * на вытянутой руке и смотрят в него по полсекунды, стоя перед
-         * аудиторией и не отводя глаз от зала. На такой дистанции 20px — это
-         * «щуриться», а часы лекции и номер страницы обязаны читаться боковым
-         * зрением. Имена — по назначению, как у всей шкалы: показание прибора.
+         * Everything else in this product is read from half a metre, sitting;
+         * the console is held at arm's length and glanced at for half a second,
+         * standing in front of the audience without taking one's eyes off the
+         * hall. At that distance 20px means "squinting", and the lecture clock
+         * and the page number have to be readable with peripheral vision. The
+         * names are by purpose, like the whole scale: a gauge reading.
          */
         gauge: ['30px', { lineHeight: '32px', letterSpacing: '-0.02em' }],
         'gauge-lg': ['40px', { lineHeight: '40px', letterSpacing: '-0.03em' }],

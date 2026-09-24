@@ -1,19 +1,21 @@
 /**
- * Каким выходом уходит гость тетради.
+ * Which exit a notebook guest leaves by.
  *
- * `visitSessionDoc` (server/src/routes/doc-visit.ts) поднимает документ пустой
- * комнаты ради одной строки — переименования в панели, чтения ленты,
- * публикации — и обязан отпустить его выселением без закрытий
- * (`releaseSessionDoc`), а не дверью сноса семинара (`dropSessionDoc`). Разница
- * видна ровно в одном месте: файловые сокеты живут в своей карте
- * (collab/files.ts), документ комнаты не поднимают и уборку простаивающих
- * переживают — так что открытый в редакторе `.py` доживает до конца пары. Дверь
- * сноса хлопнула бы ему кодом 1001 «комната закрыта», и человек, набирающий
- * функцию, увидел бы обрыв связи из-за того, что кто-то в панели переименовал
- * соседний семинар.
+ * `visitSessionDoc` (server/src/routes/doc-visit.ts) brings up the document
+ * of an empty room for the sake of one line — a rename in the panel, reading
+ * the feed, publishing — and must let it go by eviction without closing
+ * anything (`releaseSessionDoc`), not by the seminar-deletion door
+ * (`dropSessionDoc`). The difference shows in exactly one place: file
+ * sockets live in their own map (collab/files.ts), do not bring up the room
+ * document and survive the idle clean-up — so a `.py` open in the editor
+ * lives on until the end of the class. The deletion door would slam it with
+ * code 1001 "room closed", and a person typing a function would see the
+ * connection drop because someone in the panel renamed the neighbouring
+ * seminar.
  *
- * Тест сторожит именно выбор двери: `tests/collab-release.test.mts` прибивает
- * сами двери, а здесь — что визит ходит в правильную.
+ * The test guards exactly the choice of door: `tests/collab-release.test.mts`
+ * pins the doors themselves, and here — that the visit goes through the
+ * right one.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -30,7 +32,7 @@ import { cellSource, createCell, getCells, getMeta } from '../shared/notebook.js
 
 after(() => shutdownCollab())
 
-/** Сокет с записанными кадрами вместо настоящего: важно только, закрыли ли его. */
+/** A socket recording frames instead of a real one: all that matters is whether it was closed. */
 function fakeSocket() {
   const sent: Uint8Array[] = []
   let closed: { code: number; reason: string } | null = null
@@ -60,12 +62,13 @@ function fakeSocket() {
   }
 }
 
-test('визит в пустую комнату не хлопает открытым файловым сокетом', () => {
+test('a visit to an empty room does not slam an open file socket', () => {
   const id = 'visit-release'
   createSession(id, 'Прошлогодний семинар', null)
 
-  // Работа класса в тетради, и — холодный путь: в памяти документа нет, на
-  // диске всё. Ровно то состояние, в котором комнату застаёт переименование.
+  // The class's work in the notebook, and the cold path: nothing of the
+  // document in memory, everything on disk. Exactly the state a rename
+  // finds the room in.
   {
     const { doc } = getSessionDoc(id)
     const cells = getCells(doc)
@@ -75,28 +78,29 @@ test('визит в пустую комнату не хлопает открыт
     cellSource(cell).insert(0, 'x = 1')
     shutdownCollab()
   }
-  assert.equal(peekSessionDoc(id), null, 'комната осталась в памяти — тест ничего не проверяет')
+  assert.equal(peekSessionDoc(id), null, 'the room stayed in memory — the test checks nothing')
 
-  // А рядом идёт пара: кто-то правит файл комнаты в редакторе.
+  // And next door a class is going on: someone is editing a room file in the
+  // editor.
   const file = 'utils.py'
   fs.writeFileSync(path.join(sessionDir(id), file), 'def f():\n    return 1\n')
-  assert.ok(getFileDoc(id, file), 'файл комнаты не открылся — тест ничего не проверяет')
+  assert.ok(getFileDoc(id, file), 'the room file did not open — the test checks nothing')
   const editor = fakeSocket()
   handleFileSocket(editor.ws, id, file, 'host', 'p_host')
-  assert.equal(editor.closed, null, 'файловый сокет закрылся ещё на рукопожатии')
-  assert.equal(peekSessionDoc(id), null, 'открытый файл поднял документ комнаты')
+  assert.equal(editor.closed, null, 'the file socket closed already at the handshake')
+  assert.equal(peekSessionDoc(id), null, 'an open file brought up the room document')
 
-  // То же, что делает переименование в панели (routes/admin-instance.ts).
+  // The same thing a rename in the panel does (routes/admin-instance.ts).
   visitSessionDoc(id, (doc) => getMeta(doc).set('title', 'Семинар 3'))
 
-  assert.equal(editor.closed, null, 'визит ушёл дверью сноса и закрыл чужой редактор')
-  assert.equal(peekSessionDoc(id), null, 'визит поселил тетрадь в памяти')
-  assert.ok(getSession(id), 'визит снёс сам семинар')
+  assert.equal(editor.closed, null, 'the visit went through the deletion door and closed someone else\'s editor')
+  assert.equal(peekSessionDoc(id), null, 'the visit settled the notebook in memory')
+  assert.ok(getSession(id), 'the visit deleted the seminar itself')
 
-  // И записанное доехало до диска — выселение уходит молча.
+  // And what was written reached the disk — the eviction leaves silently.
   const { doc } = getSessionDoc(id)
   assert.equal(getMeta(doc).get('title'), 'Семинар 3')
   const cells = getCells(doc)
-  assert.equal(cells.length, 1, 'тетрадь поднялась не из своего снимка')
+  assert.equal(cells.length, 1, 'the notebook came up not from its own snapshot')
   assert.equal(cellSource(cells.get(0)).toString(), 'x = 1')
 })

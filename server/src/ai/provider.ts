@@ -26,21 +26,21 @@ import {
 export interface ChatTurn {
   role: 'system' | 'user' | 'assistant'
   content: string
-  /** Инструменты, которые модель попросила выполнить этим ходом. */
+  /** Tools the model asked to run in this turn. */
   calls?: ToolCall[]
-  /** Ответ инструмента: у него есть адресат — тот вызов, на который он отвечает. */
+  /** A tool's reply: it has an addressee — the call it answers. */
   callId?: string
 }
 
-/** Один вызов инструмента: имя и аргументы, как их прислала модель. */
+/** One tool call: the name and the arguments as the model sent them. */
 export interface ToolCall {
   id: string
   name: string
-  /** JSON строкой — ровно как пришло. Разбирает вызывающий, он же и отвечает за кривое. */
+  /** JSON as a string, exactly as received; the caller parses it and owns bad input. */
   args: string
 }
 
-/** Описание инструмента в том виде, в каком его понимает OpenAI-совместимый эндпоинт. */
+/** A tool description in the form an OpenAI-compatible endpoint understands. */
 export interface ToolSpec {
   name: string
   description: string
@@ -51,13 +51,13 @@ export interface ToolSpec {
 const TEST_TIMEOUT_MS = 20_000
 
 /**
- * Проба идёт ровно один раз, и в этом весь смысл срока.
+ * The probe runs exactly once, and that is the whole point of the deadline.
  *
- * Клиент заведён с `maxRetries: 1`, а SDK повторяет и таймауты соединения: под
- * «чёрной дырой» проба ждала два раза по двадцать секунд и отвечала «did not
- * answer within 20 seconds». Преподаватель смотрел на спиннер сорок секунд и
- * читал про двадцать. Повтор здесь и не нужен: кнопку жмут руками, и повторить
- * её — тоже.
+ * The client is set up with `maxRetries: 1`, and the SDK retries connection
+ * timeouts too: under a "black hole" the probe waited twice for twenty seconds
+ * and answered "did not answer within 20 seconds". The teacher watched the
+ * spinner for forty seconds and read about twenty. A retry is not needed here
+ * anyway: the button is pressed by hand, and so is pressing it again.
  */
 const ONE_TRY = { timeout: TEST_TIMEOUT_MS, maxRetries: 0 }
 
@@ -96,9 +96,10 @@ export function providerReady(): boolean {
   // Ollama on the lecturer's own machine is a complete configuration, and
   // reporting it as unconfigured would be the panel's first lie.
   //
-  // Правило живёт в shared и только там: панель считает потолок комнаты той же
-  // функцией (web/src/admin/panel.ts), и когда у сервера была своя копия, они
-  // разошлись — на настроенной Ollama экран гасил режимы, а оракул отвечал.
+  // The rule lives in shared and only there: the panel computes the room's
+  // ceiling with the same function (web/src/admin/panel.ts), and when the
+  // server had its own copy, the two drifted apart — with Ollama configured the
+  // screen disabled the modes while the oracle answered.
   return providerConfigured({
     provider: ai.provider,
     baseUrl: ai.baseUrl,
@@ -132,18 +133,18 @@ export async function streamChat(
   onDelta: (text: string, kind: DeltaKind) => void,
   signal?: AbortSignal,
   /**
-   * Сколько токенов ушло, если провайдер сказал.
+   * How many tokens were spent, if the provider said.
    *
-   * Просить об этом надо явно — `stream_options.include_usage`, — и раньше
-   * никто не просил: столбец в таблице оставался пустым, а панель писала
-   * «tokens — not reported by this endpoint», хотя не рассказывал не он.
-   * Приходит одним последним кадром, уже без выбора.
+   * This has to be asked for explicitly — `stream_options.include_usage` — and
+   * before, nobody asked: the column in the table stayed empty, and the panel
+   * said "tokens — not reported by this endpoint", although it was not the
+   * endpoint that kept quiet. Arrives as one last frame, with no choices.
    */
   onUsage?: (totalTokens: number) => void,
   /**
-   * Сколько думать вслух. `undefined`/`normal` — не слать провайдеру ничего
-   * нового: инстанс, у которого эту ручку никто не трогал, должен уйти к
-   * модели тем же запросом, что и до неё.
+   * How much to think out loud. `undefined`/`normal` means sending the provider
+   * nothing new: an instance where nobody touched this knob must go to the
+   * model with the same request as before the knob existed.
    */
   effort?: ReasoningEffort,
 ): Promise<string> {
@@ -167,12 +168,13 @@ export async function streamChat(
      * every OpenAI-compatible endpoint honours, which is the whole premise of
      * this module.
      *
-     * «Голая» здесь значит голая. Она однажды не была: `stream_options` ехало в
-     * обе попытки, так что шлюз, отвергающий именно его, получал 400 дважды и
-     * оракул на нём не работал вовсе — при том, что комментарий над `usage`
-     * обещал ровно этот случай вылечить. Цена голой попытки — расход в токенах
-     * по ней не приедет; в панели такая строка останется без числа, и это лучше,
-     * чем красная ошибка вместо ответа.
+     * "Bare" here means bare. Once it was not: `stream_options` went into both
+     * attempts, so a gateway rejecting exactly that field got a 400 twice and
+     * the oracle did not work on it at all — while the comment above `usage`
+     * promised to cure precisely this case. The price of the bare attempt is
+     * that its token usage will not arrive; in the panel such a row stays
+     * without a number, and that is better than a red error instead of an
+     * answer.
      */
     if (isBadRequest(err)) {
       try {
@@ -189,8 +191,8 @@ export async function streamChat(
   let full = ''
   try {
     for await (const chunk of stream) {
-      // Кадр с расходом приходит последним и без choices — его надо забрать до
-      // того, как код ниже полезет в delta, которой в нём нет.
+      // The usage frame comes last and without choices — it has to be picked up
+      // before the code below reaches for a delta that is not in it.
       const spent = (chunk as { usage?: { total_tokens?: number } | null }).usage
       if (spent && typeof spent.total_tokens === 'number') onUsage?.(spent.total_tokens)
       const delta = chunk.choices?.[0]?.delta as Delta | undefined
@@ -254,35 +256,38 @@ function toPayload(messages: ChatTurn[]): PayloadTurn[] {
  */
 function askForReasoning(): boolean {
   /*
-   * Выключено, пока не попросят.
+   * Off until asked for.
    *
-   * Было «всегда на OpenRouter», и это тихо удваивало счёт: у рассуждающих
-   * моделей след стоит как ответ, а иногда дороже, и его просили на каждый
-   * вопрос — включая «объясни эту ошибку», где думать нечего. След остаётся
-   * виден, когда провайдер отдаёт его сам; здесь только про то, доплачивать ли
-   * за него отдельно.
+   * It used to be "always on OpenRouter", and that quietly doubled the bill:
+   * for reasoning models the trace costs as much as the answer, sometimes more,
+   * and it was requested on every question — including "explain this error",
+   * where there is nothing to think about. The trace stays visible when the
+   * provider hands it over on its own; this is only about whether to pay extra
+   * for it.
    */
   return resolveAiConfig().provider === 'openrouter' && config.ai.reasoning
 }
 
 /**
- * Уровень размышлений — на язык конкретного провайдера.
+ * The reasoning level, in the language of a specific provider.
  *
- * У каждого он свой и ни у кого не общий: OpenRouter понимает поле `reasoning`
- * (`enabled`, `effort`, `exclude`), OpenAI — `reasoning_effort`, остальные — не
- * понимают ничего, и им НЕ ШЛЁТСЯ НИЧЕГО. Это не лень: незнакомое поле на
- * строгом шлюзе — это 400 посреди пары, а «сразу» и без поля работает, потому
- * что рядом с ним в системном кадре стоит та же просьба словами
- * (ai/text.ts · effortNote).
+ * Each has its own and none is shared: OpenRouter understands the `reasoning`
+ * field (`enabled`, `effort`, `exclude`), OpenAI `reasoning_effort`, the rest
+ * understand nothing, and they are sent NOTHING. This is not laziness: an
+ * unfamiliar field on a strict gateway is a 400 in the middle of a class,
+ * while "instant" works even without a field, because next to it in the
+ * system frame stands the same request in words (ai/text.ts · effortNote).
  *
- * `normal` не шлёт ничего ТОЖЕ — и это главное свойство ручки: инстанс, где её
- * не трогали, уходит к модели тем же самым запросом, что и до неё.
+ * `normal` sends nothing EITHER — and that is the knob's main property: an
+ * instance where it was not touched goes to the model with exactly the same
+ * request as before it.
  *
- * Важная оговорка про модели, у которых рассуждение неотключаемо (DeepSeek R1
- * и родня): `reasoning: { enabled: false }` они принимают, а думать всё равно
- * будут — у них это не режим, а устройство. «Сразу» на такой модели даёт
- * короткий ответ (просьбой в кадре), но не быстрый; быстрый — это другая
- * модель, и выбирается она в панели, а не здесь.
+ * An important caveat about models whose reasoning cannot be switched off
+ * (DeepSeek R1 and its kin): they accept `reasoning: { enabled: false }`, but
+ * they will think anyway — for them it is not a mode but how they are built.
+ * "Instant" on such a model gives a short answer (through the request in the
+ * frame) but not a fast one; a fast one is a different model, and that is
+ * chosen in the panel, not here.
  */
 function thinkingFields(reasoning: boolean, effort?: ReasoningEffort): Record<string, unknown> {
   const provider: AiProviderId = resolveAiConfig().provider
@@ -292,8 +297,8 @@ function thinkingFields(reasoning: boolean, effort?: ReasoningEffort): Record<st
     return reasoning ? { reasoning: { enabled: true } } : {}
   }
   if (provider === 'openai') {
-    // 'minimal' — самая низкая ступень у моделей, которые её знают; те, что не
-    // знают, ответят 400, и сработает голая повторная попытка (см. streamChat).
+    // 'minimal' is the lowest step for models that know it; those that do not
+    // will answer 400, and the bare retry kicks in (see streamChat).
     if (effort === 'instant') return { reasoning_effort: 'minimal' }
     if (effort === 'deep') return { reasoning_effort: 'high' }
     return {}
@@ -306,7 +311,7 @@ function openStream(
   temperature: number | undefined,
   signal: AbortSignal | undefined,
   reasoning: boolean,
-  /** Голая повторная попытка: ничего сверх списка сообщений — см. streamChat. */
+  /** The bare retry: nothing beyond the message list — see streamChat. */
   bare = false,
   effort?: ReasoningEffort,
 ) {
@@ -317,11 +322,12 @@ function openStream(
   // Two call sites rather than one params object: `stream: true` has to be a
   // literal for the SDK to pick its streaming overload.
   /*
-   * Расход — отдельной просьбой.
+   * Usage as a separate request.
    *
-   * Поле из спецификации OpenAI, и его понимают все, кто ей следует; кто не
-   * понимает — ответит 400, и тогда сработает голая попытка (streamChat), в
-   * которой этого поля уже нет. Плата за попытку — один лишний кадр в потоке.
+   * A field from the OpenAI spec, understood by everyone who follows it; those
+   * who do not will answer 400, and then the bare attempt kicks in
+   * (streamChat), which no longer has this field. The cost of asking is one
+   * extra frame in the stream.
    */
   const usage = bare ? {} : { stream_options: { include_usage: true } }
   return temperature === undefined
@@ -336,28 +342,29 @@ function openStream(
 }
 
 /**
- * Потолок ответа на пути инструментов.
+ * The answer ceiling on the tools path.
  *
- * Назван, а не оставлен на усмотрение эндпоинта: умолчания у них разные и
- * иногда крошечные, а обрезанный ответ на этом пути — это недописанный JSON
- * вызова, который разбирается в «аргументы пришли не как JSON», то есть в шаг
- * хода, потраченный на чужое умолчание. Восемь тысяч — с запасом на самый
- * длинный вызов (`write_file` с целым файлом).
+ * Named rather than left to the endpoint's discretion: their defaults differ
+ * and are sometimes tiny, and a truncated answer on this path is an unfinished
+ * call JSON, which parses into "the arguments did not come as JSON", that is,
+ * a turn step spent on someone else's default. Eight thousand leaves room for
+ * the longest call (`write_file` with a whole file).
  */
 const MAX_TOOL_TOKENS = 8_000
 
 /**
- * Один ход с инструментами — без потока.
+ * One turn with tools — without streaming.
  *
- * Поток здесь не нужен и был бы вреден: аргументы инструмента приезжают в
- * потоке по кускам незавершённого JSON, и собирать его обратно приходится
- * по-разному у разных провайдеров — ровно та зависимость от конкретного
- * эндпоинта, которой этот модуль избегает. Видимый прогресс у режима «сделать»
- * даёт лента шагов, а не набегающие буквы: «прочитал src/model.py» полезнее
- * половины предложения.
+ * Streaming is not needed here and would do harm: tool arguments arrive in the
+ * stream as pieces of incomplete JSON, and reassembling them has to be done
+ * differently for different providers — exactly the dependence on a specific
+ * endpoint that this module avoids. Visible progress in the "Act" mode comes
+ * from the feed of steps, not from letters trickling in: "read src/model.py"
+ * is more useful than half a sentence.
  *
- * `tools` пустой — обычный ход без инструментов; так же зовётся последний шаг,
- * когда агент уже всё сделал и осталось только сказать словами.
+ * Empty `tools` is an ordinary turn without tools; the last step is called the
+ * same way, when the agent has already done everything and all that is left is
+ * to say it in words.
  */
 export async function completeWithTools(
   messages: ChatTurn[],
@@ -373,11 +380,11 @@ export async function completeWithTools(
     model,
     messages: toToolPayload(messages),
     max_tokens: MAX_TOOL_TOKENS,
-    // Та же температура, что и у ответа на вопрос: ход — это та же модель и
-    // та же работа, и расходиться этим двум путям незачем.
+    // The same temperature as for answering a question: a turn is the same
+    // model and the same work, and there is no reason for the two paths to differ.
     temperature: 0.3,
-    // Уровень размышлений — тот же, что у вопроса: «сделать» отличается от
-    // «спросить» инструментами, а не тем, сколько модели думать.
+    // The reasoning level is the same as for a question: "Act" differs from
+    // "Ask" by its tools, not by how much the model thinks.
     ...thinkingFields(false, effort),
     ...(tools.length > 0
       ? {
@@ -399,21 +406,23 @@ export async function completeWithTools(
   } catch (err) {
     if (isAbort(err, signal)) return nothing
     /*
-     * Голая попытка — та же, что у потока, и по той же причине.
+     * The bare attempt — the same as the stream's, and for the same reason.
      *
-     * Рассуждающая модель отвергает любую температуру, кроме своей, а строгий
-     * шлюз — незнакомое поле; оба отвечают 400. Пока её здесь не было, ход на
-     * таком эндпоинте не начинался вовсе — а вопросы на нём шли прекрасно, и
-     * объяснялось это фразой «модель не умеет инструменты», которая была
-     * неправдой. Инструменты в голой попытке остаются: без них это не тот
-     * запрос, который просили.
+     * A reasoning model rejects any temperature but its own, and a strict
+     * gateway rejects an unfamiliar field; both answer 400. While this was
+     * missing here, a turn on such an endpoint never started at all — while
+     * questions on it went perfectly, and this was explained by the phrase
+     * "the model cannot do tools", which was untrue. The tools stay in the bare
+     * attempt: without them it is not the request that was asked for.
      *
-     * Про размер не повторяем: переполненное окно вторая попытка переполнит
-     * ровно так же, а лишний запрос — это лишние деньги и лишние полминуты.
+     * We do not retry over size: an overflowing window will overflow on the
+     * second attempt in exactly the same way, and an extra request is extra
+     * money and an extra half-minute.
      */
     if (!isBadRequest(err) || aboutSize(err)) throw friendly(err)
-    // Голая попытка голая и в этом: поле уровня размышлений уходит вместе с
-    // температурой и потолком — незнакомое поле и есть самая частая причина 400.
+    // The bare attempt is bare in this too: the reasoning level field goes
+    // along with the temperature and the ceiling — an unfamiliar field is the
+    // most common cause of a 400.
     const {
       max_tokens: _tokens,
       temperature: _heat,
@@ -426,16 +435,17 @@ export async function completeWithTools(
     } catch (retryErr) {
       if (isAbort(retryErr, signal)) return nothing
       /*
-       * Эндпоинт, который не умеет инструменты, отвечает 400 — и это не поломка,
-       * а свойство того, куда указали. Отдельная фраза, потому что «сделать» на
-       * такой модели не заработает никогда, сколько ни повторяй, а «спросить»
-       * работает прекрасно.
+       * An endpoint that cannot do tools answers 400 — and that is not a
+       * breakage but a property of where it was pointed. A separate phrase,
+       * because "Act" will never work on such a model, however often you
+       * retry, while "Ask" works perfectly.
        *
-       * Но 400 у агента бывает и по другой причине: переписка растёт на каждый
-       * прочитанный файл, и небольшое окно переполняется на третьем шаге. Тогда
-       * эта фраза — враньё: инструментами только что пользовались. Отличаем по
-       * самой переписке (в ней уже есть ответы инструментов) и по словам
-       * эндпоинта, а в остальных случаях 400 показывается как есть, с деталью.
+       * But an agent's 400 also happens for another reason: the conversation
+       * grows with every file read, and a small window overflows on the third
+       * step. Then this phrase is a lie: the tools were just being used. We
+       * tell the cases apart by the conversation itself (it already has tool
+       * replies) and by the endpoint's words, and in other cases the 400 is
+       * shown as is, with the detail.
        */
       if (
         isBadRequest(retryErr) &&
@@ -465,13 +475,13 @@ export async function completeWithTools(
   }
   const text = typeof choice?.content === 'string' ? choice.content : ''
   /*
-   * След рассуждения — тем же двумя написаниями, что и в потоке.
+   * The reasoning trace — in the same two spellings as in the stream.
    *
-   * Читался он только в потоке, а здесь терялся целиком, и это стоило дороже
-   * красоты: у рассуждающих моделей весь ответ уходит в `reasoning`, а
-   * `content` приходит пустым — и ход, спросивший только `content`, видел
-   * пустоту и заканчивался пустой подписью под лентой шагов. Вызывающий решает
-   * сам, что с этим делать; здесь — только не потерять.
+   * It was read only in the stream and lost here entirely, and that cost more
+   * than looks: for reasoning models the whole answer goes into `reasoning`
+   * while `content` comes back empty — and a turn that asked only for `content`
+   * saw emptiness and ended with an empty caption under the feed of steps. The
+   * caller decides what to do with it; the job here is only not to lose it.
    */
   const reasoning =
     typeof choice?.reasoning === 'string'
@@ -483,18 +493,18 @@ export async function completeWithTools(
 }
 
 /**
- * Вызов, написанный в тексте вместо поля `tool_calls`.
+ * A call written in the text instead of the `tool_calls` field.
  *
- * Небольшие модели — и любая модель на шлюзе, который потерял `tools` по
- * дороге, — отвечают на просьбу позвать инструмент JSON-объектом в тексте:
- * `{"name": "read_file", "arguments": {"path": "train.py"}}`, иногда в
- * ограде ```json. Вызовом это не становится, и ход заканчивался ответом, в
- * котором модель описывает, что она сейчас сделает, — с той же лентой из двух
- * шагов, ради которой всё это и чинится.
+ * Small models — and any model on a gateway that lost `tools` along the way —
+ * answer a request to call a tool with a JSON object in the text:
+ * `{"name": "read_file", "arguments": {"path": "train.py"}}`, sometimes inside
+ * a ```json fence. That does not become a call, and the turn ended with an
+ * answer in which the model describes what it is about to do — with the same
+ * two-step feed that all of this is being fixed for.
  *
- * Разбирается только когда настоящих вызовов НЕТ и только под известное имя
- * инструмента: JSON в ответе бывает и просто данными, и принять кусок данных
- * за вызов значит сделать что-то, чего никто не просил.
+ * Parsed only when there are NO real calls and only for a known tool name:
+ * JSON in an answer can be plain data, and taking a piece of data for a call
+ * means doing something nobody asked for.
  */
 function callsInText(text: string, tools: ToolSpec[]): ToolCall[] {
   const trimmed = text.trim()
@@ -534,20 +544,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** Инструментами в этом ходе уже пользовались — значит, эндпоинт их умеет. */
+/** Tools were already used in this turn — so the endpoint can do them. */
 function usedTools(messages: ChatTurn[]): boolean {
   return messages.some((turn) => turn.callId !== undefined || (turn.calls?.length ?? 0) > 0)
 }
 
-/** Похоже ли, что эндпоинт жалуется на размер запроса, а не на его форму. */
+/** Does it look like the endpoint complains about the request's size, not its shape. */
 function aboutSize(err: unknown): boolean {
   return /context|too long|maximum|token/i.test(detailOf(err))
 }
 
-/** Сообщение, как его правда присылают: `tool_calls` нет в типах SDK для этой формы. */
+/** The message as it is really sent: the SDK types lack `tool_calls` for this shape. */
 interface RawMessage {
   content?: string | null
-  /** OpenRouter кладёт след сюда, DeepSeek и повторившие его — в `reasoning_content`. */
+  /** OpenRouter puts the trace here; DeepSeek and its imitators use `reasoning_content`. */
   reasoning?: string | null
   reasoning_content?: string | null
   tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
@@ -635,11 +645,11 @@ async function diagnose(err: unknown, model: string, baseUrl: string): Promise<O
     return fail(tr("server.refusedTheRequest.85f159", { p0: baseUrl, p1: status, p2: detail }).trim())
   }
   /*
-   * Отказ фильтра бывает и здесь — и лечится он не адресом.
+   * A filter refusal happens here too — and it is not cured by the address.
    *
-   * Пробная просьба короткая («ping»), так что до этой ветки доходит редко; но
-   * если дошло, «не смог достучаться до <адрес>» — это ровно та ложь, из-за
-   * которой преподаватель идёт чинить сеть при исправной сети.
+   * The test request is short ("ping"), so this branch is rarely reached; but
+   * if it is, "could not reach <address>" is exactly the lie that sends a
+   * teacher to fix the network while the network is fine.
    */
   if (isRefusal(err)) {
     return fail(
@@ -742,18 +752,21 @@ function isBadRequest(err: unknown): boolean {
 }
 
 /**
- * Модель отказалась отвечать — сработал её фильтр, а не сеть и не ключ.
+ * The model refused to answer — its filter fired, not the network and not the
+ * key.
  *
- * Так это приезжает на самом деле. Отказ по безопасности у Gemini через
- * OpenAI-совместимый шлюз приходит НЕ статусом: кадр потока несёт поле `error`,
- * и SDK на нём бросает `new APIError(undefined, data.error, …)` (openai
- * streaming.mjs) — то есть ошибку БЕЗ status, с одним лишь текстом. В журнале
- * это выглядело как `no response — SAFETY`, а `friendly` не находил ни одной
- * подходящей ветки и отвечал последней, про адрес и ключ.
+ * This is how it really arrives. A safety refusal from Gemini through an
+ * OpenAI-compatible gateway does NOT come as a status: a stream frame carries
+ * an `error` field, and the SDK throws `new APIError(undefined, data.error, …)`
+ * on it (openai streaming.mjs) — that is, an error WITHOUT a status, with
+ * nothing but text. In the log it looked like `no response — SAFETY`, and
+ * `friendly` found no matching branch and answered with the last one, about
+ * the address and the key.
  *
- * Смотрим на всё, чем разные шлюзы это называют: собственный класс SDK
- * (`ContentFilterFinishReasonError`), `code`/`type` ответа, причина остановки в
- * теле и, последним, слова в самом сообщении — «SAFETY» приезжает именно так.
+ * We look at everything the different gateways call it: the SDK's own class
+ * (`ContentFilterFinishReasonError`), the response's `code`/`type`, the stop
+ * reason in the body and, last, words in the message itself — "SAFETY"
+ * arrives exactly that way.
  */
 function isRefusal(err: unknown): boolean {
   const failed = err as
@@ -764,9 +777,9 @@ function isRefusal(err: unknown): boolean {
       }
     | null
     | undefined
-  // По классу, а не по `name`: у ошибок этого SDK `name` всегда «Error» —
-  // проверено на openai@4.104, — и `isTimeout` рядом ловит свой случай только
-  // вторым условием, про код причины.
+  // By class, not by `name`: this SDK's errors always have `name` "Error" —
+  // checked on openai@4.104 — and `isTimeout` next door catches its case only
+  // with its second condition, about the cause code.
   if (className(err) === 'ContentFilterFinishReasonError') return true
   const words = [
     failed?.code,
@@ -780,35 +793,39 @@ function isRefusal(err: unknown): boolean {
     if (typeof word !== 'string') continue
     if (/^(safety|blocked|content[_-]?filter|prohibited|recitation)/i.test(word)) return true
   }
-  // Слова эндпоинта — последними: у 400 «bad request» их тоже хватает, и
-  // выхватывать «safety» из середины чужого предложения было бы гаданием.
+  // The endpoint's words go last: a 400 "bad request" has plenty of them too,
+  // and snatching "safety" out of the middle of someone else's sentence would
+  // be guesswork.
   return REFUSAL_WORDS.test(detailOf(err))
 }
 
 /**
- * Слова, которыми это называют вслух. Границы слова обязательны: «safety» —
- * отказ, а «safety_settings» в жалобе на параметр запроса — не он.
+ * The words it is called out loud. Word boundaries are mandatory: "safety" is
+ * a refusal, while "safety_settings" in a complaint about a request parameter
+ * is not.
  */
 const REFUSAL_WORDS =
   /\b(safety|content[ _-]?filter|content[ _-]?policy|blocked by|recitation|prohibited[ _-]?content)\b/i
 
 /**
- * Эндпоинт ответил, а потом оборвался — но это не «до него не достучались».
+ * The endpoint answered and then broke off — but that is not "could not reach
+ * it".
  *
- * У ошибки, родившейся ВНУТРИ потока, статуса нет: SDK строит её напрямую,
- * минуя `APIError.generate`, — и по одному отсутствию статуса такая ошибка
- * неотличима от `APIConnectionError`, которую тот же SDK выдаёт, когда до хоста
- * не доехал ни один байт. Различает их имя класса: соединение, которое не
- * состоялось, зовётся APIConnection*, всё остальное — уже разговор.
+ * An error born INSIDE the stream has no status: the SDK builds it directly,
+ * bypassing `APIError.generate` — and by the absence of a status alone such an
+ * error is indistinguishable from `APIConnectionError`, which the same SDK
+ * gives when not a single byte reached the host. The class name tells them
+ * apart: a connection that never happened is called APIConnection*, anything
+ * else is already a conversation.
  */
 function answeredThenBroke(err: unknown): boolean {
   if (!(err instanceof OpenAI.APIError)) return false
-  // APIConnectionError наследует APIError, и вот она-то и есть «не достучались».
+  // APIConnectionError extends APIError, and that one is exactly "could not reach".
   if (err instanceof OpenAI.APIConnectionError) return false
   return typeof err.status !== 'number'
 }
 
-/** Класс ошибки по имени конструктора: `name` у этого SDK не отличает ничего. */
+/** The error class by constructor name: in this SDK `name` tells nothing apart. */
 function className(err: unknown): string {
   const ctor = (err as { constructor?: { name?: unknown } } | null)?.constructor
   return typeof ctor?.name === 'string' ? ctor.name : ''
@@ -832,13 +849,15 @@ function friendly(err: unknown): Error {
   )
 
   /*
-   * Отказ фильтра — первым, потому что он приходит и со статусом, и без.
+   * A filter refusal comes first, because it arrives both with a status and
+   * without one.
    *
-   * Это тот случай, который стоил живой паре получаса: шлюз с Gemini пять раз
-   * подряд ответил «SAFETY» без HTTP-статуса, а комната прочитала «не удалось
-   * достучаться, проверьте адрес и ключ» — и преподаватель пошёл чинить сеть и
-   * ключ, оба совершенно здоровые. Адрес и ключ здесь не называются вовсе: они
-   * ни при чём, а человеку в комнате их всё равно не видно.
+   * This is the case that cost a live class half an hour: a gateway with Gemini
+   * answered "SAFETY" five times in a row without an HTTP status, and the room
+   * read "could not reach it, check the address and the key" — and the teacher
+   * went to fix the network and the key, both perfectly healthy. The address
+   * and the key are not named here at all: they have nothing to do with it,
+   * and the person in the room cannot see them anyway.
    */
   if (refused) {
     return new Error(
@@ -884,12 +903,12 @@ function friendly(err: unknown): Error {
     return new Error(tr("server.theAiEndpointReturnedAServerError.c7d0c1"))
   }
   /*
-   * Ответил и оборвался — тоже не «не достучались».
+   * Answered and broke off — also not "could not reach".
    *
-   * Статуса у такой ошибки нет, и до этой правки она попадала в последнюю
-   * ветку, то есть отправляла человека проверять адрес и ключ, к которым
-   * только что успешно сходили. Слова эндпоинта здесь показываются: это
-   * единственное, что вообще известно о происшедшем.
+   * Such an error has no status, and before this fix it fell into the last
+   * branch, that is, it sent a person to check the address and the key, which
+   * had just been used successfully. The endpoint's words are shown here: they
+   * are the only thing known about what happened at all.
    */
   if (answeredThenBroke(err)) {
     const detail = detailOf(err)

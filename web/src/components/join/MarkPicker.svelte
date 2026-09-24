@@ -18,7 +18,7 @@
   /* Eight across is what makes the grid land exactly on the column: eight 49px
      cells and seven 8px gaps is the 448px the form is drawn at. The cells are
      square and flexible, so a narrower window shrinks them instead of pushing
-     the last column out — the bug that made the old picker "кривой". */
+     the last column out — the bug that made the old picker "crooked". */
   const COLS = 8
 
   let query = $state('')
@@ -172,12 +172,13 @@
            (the tile is the roster, not a thing to have), and a press is a
            promise that something happened.
 
-           Своя метка остаётся своей, даже когда её успели занять: ростер
-           перечитывается при открытии подборщика (JoinScreen · `openPicker`),
-           и выбранный руками зверь может приехать сюда уже занятым. Серым он
-           тогда становиться не должен — «где мой» на сорока плитках без рамки
-           не читается, — но точка носителя остаётся: рядом с вами его носит
-           кто-то ещё, и это ровно то, что советует сделать карточка входа. -->
+           Your own mark stays yours even when someone has taken it in the
+           meantime: the roster is re-read when the picker opens (JoinScreen ·
+           `openPicker`), and an animal picked by hand may arrive here
+           already taken. It must not turn grey then — "which one is mine"
+           cannot be read across forty tiles without a border — but the
+           wearer's dot stays: someone else near you wears it, and changing
+           it is exactly what the join card suggests. -->
       <button
         bind:this={cells[i]}
         type="button"

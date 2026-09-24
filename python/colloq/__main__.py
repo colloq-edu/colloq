@@ -39,7 +39,8 @@ import time
 from pathlib import Path
 from typing import Iterator, NoReturn, Optional, Tuple
 
-#: Приложение лежит внутри пакета: так его кладёт в колесо scripts/pack.mts.
+#: The application lies inside the package: that is how scripts/pack.mts puts
+#: it into the wheel.
 APP = Path(__file__).resolve().parent / "_app"
 ENTRY = APP / "cli" / "colloq.mjs"
 MARK = APP / ".colloq-dist.json"
@@ -48,49 +49,52 @@ STAMP = APP / ".node-modules.json"
 BUNDLED_NODE = APP / "bin" / ("node.exe" if os.name == "nt" else "node")
 LOCK = APP / ".node-modules.lock"
 
-#: Ниже 22 не бывает: better-sqlite3 13 заявляет node >=22 (server/package.json),
-#: и это же версия образа в Dockerfile. С 13-й он на N-API: один готовый бинарь
-#: на все версии Node выше, и пересборка под «свой» Node преподавателю не грозит.
+#: Nothing below 22: better-sqlite3 13 declares node >=22 (server/package.json),
+#: and that is also the image version in the Dockerfile. Since 13 it is on
+#: N-API: one prebuilt binary for every Node version above, so the teacher never
+#: faces a rebuild for "their own" Node.
 MIN_NODE = 22
-#: Сколько ждать чужую установку, прежде чем считать замок брошенным.
+#: How long to wait for another install before treating the lock as abandoned.
 LOCK_WAIT_SEC = 900
-#: Слова, ради которых незачем ставить окружение: они только рассказывают.
-#: `colloq --help` сразу после установки — самое частое первое действие, и
-#: минута npm в ответ на просьбу показать список команд была бы издевательством.
-#: Сам CLI собран без единой внешней зависимости (это стережёт scripts/pack.mts),
-#: так что ответить ему есть чем и без node_modules.
+#: Words for which there is no point installing the environment: they only
+#: tell. `colloq --help` right after installation is the most common first
+#: action, and a minute of npm in reply to a request to list the commands would
+#: be a mockery. The CLI itself is built without a single external dependency
+#: (scripts/pack.mts guards that), so it has something to answer with even
+#: without node_modules.
 #:
-#: Голый `colloq` в этот список НЕ входит, хотя тоже только рассказывает. Он —
-#: первое, что набирают после `pip install colloq`, и это лучший момент для
-#: разовой минуты: занятие начинается словом `colloq start`, и вот тогда ждать
-#: уже нечего — до пары остаются минуты, а не вечер.
+#: A bare `colloq` is NOT in this list, even though it also only tells. It is
+#: the first thing people type after `pip install colloq`, and that is the best
+#: moment for the one-time minute: a class starts with `colloq start`, and by
+#: then there is no time left to wait: minutes remain before the class, not an
+#: evening.
 TELLING = frozenset(["--help", "-h", "help", "--version", "-V"])
 
 
 def fail(*lines: str) -> NoReturn:
-    """Отказ словами, без трассировки: её здесь некому читать."""
+    """Refuse in words, without a traceback: nobody here would read it."""
     for line in lines:
         print(line, file=sys.stderr, flush=True)
     raise SystemExit(3)
 
 
 def _version_key(path: Path) -> Tuple[int, ...]:
-    """Ключ сортировки для каталогов вида node-20.11.1: числами, а не строкой."""
+    """Sort key for directories like node-20.11.1: by numbers, not as a string."""
     numbers = re.findall(r"\d+", str(path))
     return tuple(int(number) for number in numbers[-3:]) or (0,)
 
 
 def _candidates() -> Iterator[str]:
-    """Где бывает node, в порядке убывания доверия.
+    """Where node tends to be, in order of decreasing trust.
 
-    PATH — первым: если преподаватель поставил себе Node сам, он ожидает именно
-    свой. Дальше обычные места установщиков: тот же Homebrew кладёт node в
-    /opt/homebrew/bin, которого нет в PATH у процессов, запущенных не из
-    оболочки, — а pip-скрипт вполне может быть запущен из чего угодно.
-    Менеджеры версий (nvm, fnm, volta, asdf) перебираются последними и сверху
-    вниз по версии: у них node в PATH появляется только после `source`, и без
-    этого списка `colloq` в свежем терминале говорил бы «поставьте Node»
-    человеку, у которого он стоит.
+    PATH first: if the teacher installed Node themselves, they expect exactly
+    their own. Then the usual installer locations: Homebrew, for one, puts node
+    into /opt/homebrew/bin, which is not in PATH for processes started outside
+    a shell, and a pip script may well be started from anything. Version
+    managers (nvm, fnm, volta, asdf) are tried last and from the highest
+    version down: with them node appears in PATH only after `source`, and
+    without this list `colloq` in a fresh terminal would say "install Node" to
+    someone who has it installed.
     """
     found = shutil.which("node")
     if found:
@@ -151,9 +155,9 @@ def _bundled_node() -> Optional[str]:
 def find_node() -> str:
     """The Node from the wheel, or else the first working node not older than MIN_NODE.
 
-    Отдельно разбирается случай «node есть, но старый»: сказать такому человеку
-    «Node не найден» — значит отправить его ставить второй раз то, что у него
-    стоит, и удивляться, почему не помогает.
+    The case "node is there, but old" is handled separately: telling such a
+    person "Node not found" means sending them to install for the second time
+    what they already have, and to wonder why it does not help.
     """
     bundled = _bundled_node()
     if bundled:
@@ -188,11 +192,12 @@ def find_node() -> str:
 
 
 def find_npm(node: str) -> Optional[str]:
-    """npm рядом с node или в PATH.
+    """npm next to node or in PATH.
 
-    Рядом — первым: у менеджеров версий (nvm, fnm) в PATH может лежать npm от
-    совсем другой версии Node, и ставить нативные модули той версией, которой
-    их потом не запускать, — это тихая поломка better-sqlite3 на ровном месте.
+    Next to it first: with version managers (nvm, fnm) PATH may hold an npm
+    from a completely different Node version, and installing native modules
+    with a version they will never run under is a quiet breakage of
+    better-sqlite3 out of nowhere.
     """
     names = ["npm.cmd", "npm"] if os.name == "nt" else ["npm"]
     for name in names:
@@ -207,11 +212,11 @@ def find_npm(node: str) -> Optional[str]:
 
 
 def _wanted() -> dict:
-    """Чего ждут node_modules: версия приложения и список зависимостей.
+    """What node_modules must match: the app version and the dependency list.
 
-    Сравнивается целиком, а не «каталог существует»: после обновления колеса
-    приложение новое, а node_modules рядом — от прошлой версии, и они молча
-    подходят по именам, но не по содержимому.
+    Compared in full, not as "the directory exists": after a wheel upgrade the
+    application is new while the node_modules next to it are from the previous
+    version, and they silently match by names but not by contents.
     """
     data = json.loads((APP / "package.json").read_text(encoding="utf-8"))
     return {
@@ -230,14 +235,15 @@ def _ready(wanted: dict) -> bool:
 
 
 def _install(npm: str, wanted: dict) -> None:
-    # flush у каждой строки — не суеверие. Дальше идёт чужой процесс (npm), а
-    # в конце os.execve, который выбрасывает буфер стандартного вывода не
-    # напечатав: при выводе в файл или в конвейер обе эти строки пропадали
-    # целиком, и разовая минута ожидания выглядела зависанием без объяснений.
+    # flush on every line is not superstition. Next comes someone else's
+    # process (npm), and at the end os.execve, which throws away the stdout
+    # buffer without printing it: with output going to a file or a pipe both
+    # of these lines vanished entirely, and the one-time minute of waiting
+    # looked like a hang with no explanation.
     print("Installing Colloq's Node environment — once, a minute or two.", flush=True)
-    # Вывод npm — только при сбое. Его прогресс-крутилка и предупреждения
-    # (install-scripts, устаревшие пакеты) преподавателю ничего не говорят, а
-    # первым экраном после `pip install` оказывались именно они.
+    # npm output only on failure. Its progress spinner and warnings
+    # (install-scripts, deprecated packages) tell the teacher nothing, yet
+    # they were exactly what the first screen after `pip install` showed.
     done = subprocess.run(
         [npm, "install", "--omit=dev", "--no-audit", "--no-fund", "--no-progress", "--loglevel=error"],
         cwd=str(APP),
@@ -260,7 +266,7 @@ def _install(npm: str, wanted: dict) -> None:
 
 
 def ensure_modules(node: str) -> None:
-    """node_modules рядом с приложением — ставятся один раз, на этой машине.
+    """node_modules next to the application: installed once, on this machine.
 
     A platform wheel (macOS, Linux x64/arm64) ships them with the STAMP, and
     nothing happens here. The universal wheel has none: better-sqlite3 and
@@ -285,8 +291,8 @@ def ensure_modules(node: str) -> None:
             "Install Colloq into an environment of your own (python3 -m venv ~/colloq && ~/colloq/bin/pip install colloq),",
             "or pip install --user colloq — and run it as yourself.",
         )
-    # Замок на случай двух терминалов сразу: npm в одном каталоге двумя
-    # процессами — это половина дерева от одного и половина от другого.
+    # A lock in case of two terminals at once: npm in one directory from two
+    # processes means half the tree from one and half from the other.
     deadline = time.time() + LOCK_WAIT_SEC
     while True:
         try:
@@ -331,26 +337,27 @@ def main() -> int:
         ensure_modules(node)
 
     environment = dict(os.environ)
-    # Где лежит приложение. Всё остальное — состояние занятия — CLI ищет сам:
-    # у него для этого COLLOQ_HOME.
+    # Where the application lies. Everything else, the class state, the CLI
+    # finds by itself: it has COLLOQ_HOME for that.
     environment["COLLOQ_APP_DIR"] = str(APP)
     # The chosen node goes first in PATH: host.sh and the port probe
     # (cli/src/sh.ts) call `node` by name and would otherwise find another
     # one, or none.
     environment["PATH"] = os.path.dirname(node) + os.pathsep + environment.get("PATH", "")
-    # Каталог, из которого позвали: относительные пути в аргументах
-    # (`colloq restore --db backups/…`) должны считаться от него, а не от
-    # приложения.
+    # The directory it was called from: relative paths in the arguments
+    # (`colloq restore --db backups/…`) must be resolved against it, not
+    # against the application.
     environment.setdefault("COLLOQ_CWD", os.getcwd())
 
     argv = [str(node), str(ENTRY)] + arguments
-    # Перед подменой процесса — вытолкнуть всё своё: execve не возвращается и
-    # ничего не дописывает.
+    # Before replacing the process, flush everything of our own: execve does
+    # not return and writes nothing more.
     sys.stdout.flush()
     sys.stderr.flush()
     if os.name == "nt":
-        # На Windows execve не заменяет процесс, а порождает второй, и родитель
-        # возвращается немедленно: там приходится ждать ребёнка руками.
+        # On Windows execve does not replace the process but spawns a second
+        # one, and the parent returns immediately: there we have to wait for
+        # the child by hand.
         return subprocess.call(argv, env=environment)
     os.execve(str(node), argv, environment)
 

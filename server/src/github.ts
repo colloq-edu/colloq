@@ -112,14 +112,14 @@ export function seminarNameFor(target: GithubTarget): string {
 /* ------------------------------------------------------------ the notebook */
 
 /*
- * Разбор .ipynb здесь больше не живёт.
+ * The .ipynb parser no longer lives here.
  *
- * Он был написан тут первым, потом переехал в shared/ipynb.ts — и копия
- * осталась строка в строку. Две функции, читающие один формат, расходятся
- * молча: правка «не выбрасывать пустую ячейку из середины» попадала бы в одну
- * из них, и тетрадь, открытая из комнаты, отличалась бы от той же тетради,
- * привезённой импортом. Имена ниже — переходник для тех, кто звал старое;
- * разбор один, и он в shared.
+ * It was written here first, then moved to shared/ipynb.ts, and the copy
+ * stayed behind line for line. Two functions reading one format drift apart
+ * silently: a fix like "do not drop an empty cell from the middle" would land
+ * in one of them, and a notebook opened from a room would differ from the same
+ * notebook brought in by an import. The names below are an adapter for callers
+ * of the old code; there is one parser, and it lives in shared.
  */
 export type ImportedCell = FlatCell
 export const notebookCells = readIpynb
@@ -143,12 +143,12 @@ export interface RepoEntry {
  * walked — a recursive import of somebody's course repository is a surprise,
  * not a feature.
  *
- * `py` в этом списке не по недосмотру: `utils.py`, `helpers.py`, `plotting.py`
- * рядом с тетрадью — то же самое, что и данные. Первая ячейка учебной тетради
- * — `from utils import show`, и без модуля она не запускается: без него импорт
- * молчит (файла просто нет в предпросмотре), а на паре у всей комнаты разом
- * выходит ModuleNotFoundError. Подкаталог `solutions/` при этом по-прежнему не
- * едет — он подкаталог.
+ * `py` is in this list on purpose: `utils.py`, `helpers.py`, `plotting.py`
+ * next to a notebook are the same thing as data. The first cell of a course
+ * notebook is `from utils import show`, and without the module it does not
+ * run: the import says nothing (the file is simply missing from the preview),
+ * and in class the whole room gets ModuleNotFoundError at once. The
+ * `solutions/` subfolder still does not come along: it is a subfolder.
  */
 const DATA_EXTENSIONS = new Set([
   'csv', 'tsv', 'json', 'jsonl', 'txt', 'npy', 'npz', 'parquet', 'pkl',
@@ -179,11 +179,11 @@ export function pickNotebook(entries: RepoEntry[]): RepoEntry | null {
 const API = 'https://api.github.com'
 
 /**
- * «Нет такого» отдельным типом — по нему решают, стоит ли переспросить.
+ * "No such thing" as a separate type: it decides whether to ask again.
  *
- * 404 у GitHub — единственный ответ, за которым может стоять не отсутствие, а
- * неверно разобранная ссылка (см. `resolveRef`). Все остальные отказы — лимит,
- * пятисотка, оборванная сеть — переспрашивать бессмысленно.
+ * GitHub's 404 is the only answer that may stand not for absence but for a
+ * wrongly parsed link (see `resolveRef`). Every other refusal (the rate limit,
+ * a 500, a dropped network) is pointless to ask again.
  */
 class GithubMissing extends Error {}
 
@@ -199,13 +199,13 @@ async function ghJson(path: string): Promise<unknown> {
     signal: AbortSignal.timeout(20_000),
   })
   /*
-   * 404 здесь значит и «нет такого», и «есть, но не для вас».
+   * A 404 here means both "no such thing" and "it exists, but not for you".
    *
-   * Приватному репозиторию GitHub отвечает анонимному запросу именно 404, а не
-   * 403: иначе по коду ответа можно было бы перебирать чужие названия. Для
-   * преподавателя, который скопировал ссылку из адресной строки браузера, где
-   * он в свой репозиторий залогинен, «GitHub has nothing at that address» —
-   * это неправда, и он идёт искать опечатку там, где её нет.
+   * To an anonymous request for a private repository GitHub answers 404, not
+   * 403: otherwise the response code would let anyone enumerate other people's
+   * repository names. For a teacher who copied the link from the address bar
+   * of a browser logged into their own repository, "GitHub has nothing at that
+   * address" is untrue, and they go hunting for a typo where there is none.
    */
   if (res.status === 404) {
     throw new GithubMissing(
@@ -224,24 +224,25 @@ async function ghJson(path: string): Promise<unknown> {
 }
 
 /**
- * Ветка со слэшем: `release/2024`, `feature/x`, `students/2026-fall`.
+ * A branch with a slash: `release/2024`, `feature/x`, `students/2026-fall`.
  *
- * Адрес такой ветки в браузере выглядит ровно как адрес обычной —
- * `/o/r/tree/release/2024/week1`, — и по нему не видно, где кончается имя ветки
- * и начинается путь. Разбор берёт первый сегмент, GitHub отвечает 404 на
- * `week1?ref=release`, а `ghJson` переводит это в «нет такого или репозиторий
- * приватный»: преподаватель идёт искать опечатку в ссылке, с которой всё в
- * порядке, или делать публичным репозиторий, который и так публичный.
+ * In the browser the address of such a branch looks exactly like that of an
+ * ordinary one (`/o/r/tree/release/2024/week1`), and nothing in it shows where
+ * the branch name ends and the path begins. The parser takes the first
+ * segment, GitHub answers 404 to `week1?ref=release`, and `ghJson` turns that
+ * into "no such thing, or the repository is private": the teacher goes hunting
+ * for a typo in a link that is perfectly fine, or makes public a repository
+ * that is public already.
  *
- * Догадка стоит одного запроса и делается только после 404 — анонимных
- * запросов к GitHub шестьдесят в час, тратить их на догадку при живом ответе
- * незачем. Берётся самая длинная ветка, которой начинается «ref/path»:
- * `release/2024` бьёт `release`, а `release/2024/hotfix` — обоих. Дальше сотни
- * веток список не идёт: сотая ветка в курсовом репозитории — это уже не тот
- * случай, ради которого стоит платить второй страницей.
+ * The guess costs one request and is made only after a 404: anonymous requests
+ * to GitHub are sixty an hour, and there is no point spending them on a guess
+ * when the answer was a real one. The longest branch that "ref/path" starts
+ * with wins: `release/2024` beats `release`, and `release/2024/hotfix` beats
+ * both. The list does not go past a hundred branches: the hundredth branch in
+ * a course repository is no longer the case worth paying for a second page.
  *
- * Возвращает исходную цель, когда догадываться не о чем, — тогда наверх уходит
- * первоначальный отказ, а не выдуманный.
+ * Returns the original target when there is nothing to guess; then the
+ * original refusal goes up, not an invented one.
  */
 export async function resolveRef(target: GithubTarget): Promise<GithubTarget> {
   if (!target.ref || !target.path) return target
@@ -257,7 +258,8 @@ export async function resolveRef(target: GithubTarget): Promise<GithubTarget> {
       .map((b) => String(b.name ?? ''))
       .filter((name) => name.includes('/'))
   } catch {
-    // Догадка — не обязанность: приватный репозиторий, лимит, оборванная сеть.
+    // Guessing is best effort: a private repository, the rate limit, a dropped
+    // network.
     return target
   }
 
@@ -297,12 +299,14 @@ async function listAt(target: GithubTarget): Promise<RepoEntry[]> {
 }
 
 /**
- * Тетрадь по ссылке на файл — с той же поправкой на ветку со слэшем.
+ * A notebook from a link to a file, with the same allowance for a branch with
+ * a slash.
  *
- * `raw.githubusercontent.com` разбирает `<ref>/<path>` своими правилами и на
- * ветке со слэшем отвечает 404 так же, как API; разница только в том, что
- * ошибка звучит «Could not download … (404)». Второй заход — после запроса
- * веток, и только если ветка правда нашлась.
+ * `raw.githubusercontent.com` parses `<ref>/<path>` by its own rules and
+ * answers 404 on a branch with a slash just as the API does; the only
+ * difference is that the error reads "Could not download … (404)". The second
+ * attempt comes after the branches request, and only if the branch was really
+ * found.
  */
 export async function fetchNotebook(target: GithubTarget, maxBytes: number): Promise<Buffer> {
   try {

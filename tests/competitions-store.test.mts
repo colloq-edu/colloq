@@ -1,12 +1,12 @@
 /**
- * Хранилище соревнований: строки, очередь и файлы на диске.
+ * The competition store: rows, the queue and files on disk.
  *
- * Проверяется то, что ломается тихо. Номер посылки, выданный дважды. Норма
- * дня, посчитанная в чужом поясе. Две отметки «в зачёт» у одного человека.
- * Очередь, которая после перезапуска сервера держит посылку «выполняется» до
- * конца соревнования. И ответы, оставшиеся на диске от удалённого
- * соревнования, — единственная ошибка из этого списка, которую вообще некому
- * заметить.
+ * What is checked is what breaks quietly. A submission number handed out
+ * twice. A daily quota counted in the wrong time zone. Two "counted" marks on
+ * one person. A queue that after a server restart keeps a submission
+ * "running" until the end of the competition. And answer files left on disk
+ * by a deleted competition — the one mistake on this list that nobody would
+ * ever notice.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -75,9 +75,10 @@ const MSK = 180
 const bytes = (text: string) => new TextEncoder().encode(text)
 
 /**
- * Очередь — одна на инстанс, и это не обстоятельство теста, а устройство
- * продукта: исполнитель у машины один на все соревнования. Поэтому проверки
- * очереди начинают с чистого листа, иначе в ней лежат посылки предыдущих.
+ * There is one queue per instance, and that is not a circumstance of the test
+ * but the design of the product: the machine has one executor for all
+ * competitions. So queue checks start from a clean slate, otherwise the
+ * previous tests' submissions are sitting in it.
  */
 function drainQueue(): void {
   for (const row of queueRows()) leaveQueue(row.submissionId)
@@ -90,23 +91,23 @@ function freshCompetition(slug: string) {
     title: `Соревнование ${slug}`,
     metric: { name: 'MAPE', direction: 'lower', code: 'def score(): ...' },
   })
-  assert.ok(made, `не удалось завести ${slug}`)
+  assert.ok(made, `could not create ${slug}`)
   return made
 }
 
-/* ---------------------------------------------------------- соревнования */
+/* ---------------------------------------------------------- competitions */
 
-test('соревнование рождается черновиком, и адрес у него один на всех', () => {
+test('a competition is born as a draft, and its address is unique across all of them', () => {
   const made = freshCompetition('rohlik')
   assert.equal(made.state, 'draft')
   assert.equal(made.metric.direction, 'lower')
   assert.equal(made.limits.perDay, 5)
-  // Зерно деления выдаётся при рождении: без него нечем воспроизвести, какие
-  // строки были публичными.
+  // The split seed is issued at birth: without it there is no way to
+  // reproduce which rows were public.
   assert.ok(made.splitSeed.length > 0)
 
-  // Единственность держит база, а не проверка перед вставкой: два
-  // преподавателя, сохранившие черновик в одну секунду, прошли бы её оба.
+  // Uniqueness is held by the database, not by a check before the insert: two
+  // teachers saving a draft in the same second would both pass such a check.
   assert.equal(createCompetition({ slug: 'rohlik', title: 'Другое' }), null)
 
   assert.equal(findCompetition('rohlik')?.id, made.id)
@@ -115,7 +116,7 @@ test('соревнование рождается черновиком, и ад�
   assert.ok(listCompetitions().some((c) => c.id === made.id))
 })
 
-test('правка трогает только те поля, что пришли, а занятый адрес говорит об этом словом', () => {
+test('an edit touches only the fields that came in, and a taken address says so in a word', () => {
   const one = freshCompetition('s5e12')
   freshCompetition('bpm')
   const patched = updateCompetition(one.id, {
@@ -126,7 +127,7 @@ test('правка трогает только те поля, что пришл�
   assert.ok(patched && patched !== 'taken')
   assert.equal(patched.title, 'Диабет S5E12')
   assert.equal(patched.metric.direction, 'higher')
-  // Код метрики в патч не приходил — и остался прежним.
+  // The metric code was not in the patch, and it stayed as it was.
   assert.equal(patched.metric.code, 'def score(): ...')
   assert.equal(patched.limits.perDay, 3)
   assert.equal(patched.limits.memoryMb, 4096)
@@ -143,9 +144,9 @@ test('правка трогает только те поля, что пришл�
   assert.equal(getCompetition(one.id)?.privateOpenedAt, at)
 })
 
-/* ------------------------------------------------------------------ файлы */
+/* ------------------------------------------------------------------ files */
 
-test('файлы соревнования знают, кто их видит, и открытые считаются отдельно', () => {
+test('competition files know who sees them, and open ones are counted separately', () => {
   const c = freshCompetition('files')
   putFile({ competitionId: c.id, name: 'train.csv', bytes: 4_100_000, rows: 7340, visibility: 'open' })
   putFile({ competitionId: c.id, name: 'test.csv', bytes: 212_000, rows: 397, visibility: 'open' })
@@ -165,10 +166,10 @@ test('файлы соревнования знают, кто их видит, и
     listFiles(c.id, 'hidden').map((f) => f.name),
     ['solution.csv'],
   )
-  // Потолок «до 200 МБ на соревнование» считается по открытым: ответы в него
-  // не входят, их кладёт преподаватель и не он же качает.
+  // The "up to 200 MB per competition" ceiling counts open files: the answers
+  // do not count, since the teacher uploads them and nobody downloads them.
   assert.equal(openFileBytes(c.id), 4_312_000)
-  // Повторная загрузка того же имени — замена, а не второй файл.
+  // Uploading the same name again is a replacement, not a second file.
   putFile({ competitionId: c.id, name: 'train.csv', bytes: 10, rows: 1, visibility: 'open' })
   assert.equal(listFiles(c.id, 'open').length, 2)
   assert.equal(openFileBytes(c.id), 212_010)
@@ -176,9 +177,9 @@ test('файлы соревнования знают, кто их видит, и
   assert.equal(dropFile(c.id, 'train.csv'), false)
 })
 
-/* --------------------------------------------------------------- участники */
+/* ---------------------------------------------------------------- entrants */
 
-test('ключ входа возвращает человека, а новый ключ отбирает силу у старого', () => {
+test('a sign-in key brings a person back, and a new key takes the power from the old one', () => {
   const minted = createEntrant('Тимур Ахметов')
   const person = minted.entrant
   assert.match(minted.key, /^[A-Z0-9]{3}-[A-Z0-9]{3}-[A-Z0-9]{3}$/)
@@ -188,21 +189,22 @@ test('ключ входа возвращает человека, а новый �
   const rotated = rotateEntrantKey(person.id)
   assert.ok(rotated)
   assert.notEqual(rotated.key, minted.key)
-  // Розданную строку иначе не отобрать: старый ключ перестаёт быть входом.
+  // There is no other way to take back a string that has been handed out: the
+  // old key stops being a way in.
   assert.equal(entrantByKey(minted.key), null)
   assert.equal(entrantByKey(rotated.key)?.id, person.id)
   assert.equal(getEntrant(person.id)?.name, 'Тимур Ахметов')
   assert.equal(rotateEntrantKey('нет такого'), null)
 
-  // Ключи разных людей не совпадают — за этим следит уникальный индекс.
+  // Different people's keys never coincide — a unique index sees to that.
   const keys = new Set([rotated.key])
   for (let i = 0; i < 20; i++) keys.add(createEntrant(`Участник ${i}`).key)
   assert.equal(keys.size, 21)
 })
 
-/* ---------------------------------------------------------------- посылки */
+/* ------------------------------------------------------------ submissions */
 
-test('номер посылки свой в каждом соревновании и не выдаётся дважды', () => {
+test('a submission number is per competition and is never handed out twice', () => {
   const one = freshCompetition('numbers-one')
   const two = freshCompetition('numbers-two')
   const anna = createEntrant('Анна Ким').entrant
@@ -228,7 +230,8 @@ test('номер посылки свой в каждом соревновани�
   })
   assert.equal(first.number, 1)
   assert.equal(second.number, 2)
-  // «#12» — номер в пределах соревнования, а не сквозной по инстансу.
+  // "#12" is a number within the competition, not one running across the
+  // instance.
   assert.equal(other.number, 1)
   assert.equal(first.state, 'queued')
   assert.equal(first.stage, 'accepted')
@@ -243,20 +246,21 @@ test('номер посылки свой в каждом соревновани�
       .sort(),
     [anna.id, timur.id].sort(),
   )
-  // В соседнем соревновании Тимура нет вовсе.
+  // Timur is not in the neighbouring competition at all.
   assert.deepEqual(
     listCompetitionEntrants(two.id).map((e) => e.id),
     [anna.id],
   )
 })
 
-test('норма дня считается в поясе занятия и не трогает вчерашние посылки', () => {
+test("the daily quota is counted in the class's time zone and leaves yesterday's submissions alone", () => {
   const c = freshCompetition('quota')
   const person = createEntrant('Марфа').entrant
   const now = Date.UTC(2026, 8, 20, 12)
   const startOfDay = dayStart(now, MSK)
 
-  // Ровно на границе суток по МСК — уже сегодня; секундой раньше — вчера.
+  // Exactly on the MSK day boundary is already today; a second earlier is
+  // yesterday.
   acceptSubmission({
     competitionId: c.id,
     entrantId: person.id,
@@ -274,7 +278,8 @@ test('норма дня считается в поясе занятия и не 
   assert.equal(usedToday(c.id, person.id, now, MSK), 1)
   assert.equal(leftToday(c, person.id, now, MSK), 4)
 
-  // Упавшая ДО первой ячейки нормы не тратит — так обещано в макете.
+  // One that failed BEFORE the first cell does not use the quota — the mockup
+  // promises that.
   const dead = acceptSubmission({
     competitionId: c.id,
     entrantId: person.id,
@@ -287,13 +292,13 @@ test('норма дня считается в поясе занятия и не 
   updateSubmission(dead.id, { state: 'notebookFailed', cellsDone: 7 })
   assert.equal(leftToday(c, person.id, now, MSK), 3)
 
-  // Ноль — «без предела», и это не то же самое, что «нисколько».
+  // Zero means "no limit", which is not the same as "none at all".
   const open = updateCompetition(c.id, { limits: { perDay: 0 } })
   assert.ok(open && open !== 'taken')
   assert.equal(leftToday(open, person.id, now, MSK), null)
 })
 
-test('в зачёт идёт ровно одна посылка человека, и только дошедшая до числа', () => {
+test("exactly one of a person's submissions is counted, and only one that reached a score", () => {
   const c = freshCompetition('counted')
   const person = createEntrant('Анна').entrant
   const other = createEntrant('Платон').entrant
@@ -317,18 +322,19 @@ test('в зачёт идёт ровно одна посылка человека
 
   assert.equal(chooseSubmission(c.id, person.id, good.id), true)
   assert.equal(getSubmission(good.id)?.chosen, true)
-  // Вторая отметка снимает первую: две отметки «в зачёт» — это лидерборд,
-  // который не сходится сам с собой.
+  // The second mark removes the first: two "counted" marks make a leaderboard
+  // that disagrees with itself.
   assert.equal(chooseSubmission(c.id, person.id, better.id), true)
   assert.equal(getSubmission(good.id)?.chosen, false)
   assert.equal(getSubmission(better.id)?.chosen, true)
-  // У упавшей нет числа, которое можно поставить в таблицу.
+  // A failed one has no score to put in the table.
   assert.equal(chooseSubmission(c.id, person.id, failed.id), false)
-  // Чужую выбрать нельзя — и это проверяет хранилище, а не экран.
+  // Someone else's cannot be chosen — and it is the store that checks this,
+  // not the screen.
   assert.equal(chooseSubmission(c.id, other.id, better.id), false)
 })
 
-test('лидерборд берёт по одной посылке на человека и знает направление метрики', () => {
+test("the leaderboard takes one submission per person and knows the metric's direction", () => {
   const c = freshCompetition('board')
   const marfa = createEntrant('Марфа Соколова').entrant
   const anna = createEntrant('Анна Ким').entrant
@@ -354,7 +360,7 @@ test('лидерборд берёт по одной посылке на чело
   const annaSecond = score(anna.id, 300, 0.0460, 0.0430, true)
 
   const pub = leaderboard(c.id, 'public')
-  // У Анны две посылки, в таблице одна — выбранная ею самой.
+  // Anna has two submissions; the table has one, the one she chose herself.
   assert.deepEqual(
     pub.map((r) => r.entrantId),
     [marfa.id, anna.id],
@@ -372,15 +378,15 @@ test('лидерборд берёт по одной посылке на чело
   assert.equal(summary.entrants, 2)
   assert.equal(summary.bestPublic, 0.0412)
 
-  // Метрика «больше — лучше» переворачивает и таблицу, и «лучший публичный».
+  // A "higher is better" metric flips both the table and the "best public".
   assert.ok(updateCompetition(c.id, { metric: { direction: 'higher' } }))
   assert.equal(leaderboard(c.id, 'public')[0].entrantId, anna.id)
   assert.equal(competitionSummary(c.id).bestPublic, 0.0460)
 })
 
-/* ---------------------------------------------------------------- прогоны */
+/* ------------------------------------------------------------------- runs */
 
-test('прогоны копятся по одному на заход, и пересчёт метрики не трогает тетрадь', () => {
+test('runs accumulate one per attempt, and a metric rescore does not touch the notebook', () => {
   const c = freshCompetition('runs')
   const person = createEntrant('Платон').entrant
   const s = acceptSubmission({
@@ -395,8 +401,8 @@ test('прогоны копятся по одному на заход, и пер
   const metric = startRun({ submissionId: s.id, kind: 'metric' })
   assert.equal(metric.seq, 2)
   finishRun(metric.id, { verdict: 'metric_error', teacherError: 'ZeroDivisionError', oom: false })
-  // Пересчёт после правки метрики — ещё один прогон вида metric, а тетрадь
-  // второй раз не запускается.
+  // A rescore after a metric fix is one more run of kind metric, and the
+  // notebook is not run a second time.
   const again = startRun({ submissionId: s.id, kind: 'metric' })
   assert.equal(again.seq, 3)
   finishRun(again.id, { verdict: 'ok', publicScore: 0.041, privateScore: 0.044 })
@@ -412,9 +418,9 @@ test('прогоны копятся по одному на заход, и пер
   assert.equal(finishRun('нет такого', { verdict: 'ok' }), null)
 })
 
-/* ---------------------------------------------------------------- очередь */
+/* ------------------------------------------------------------------ queue */
 
-test('очередь честная по людям: своя вторая посылка ждёт за чужой первой', () => {
+test("the queue is fair per person: one's own second submission waits behind someone else's first", () => {
   drainQueue()
   const c = freshCompetition('queue-fair')
   const timur = createEntrant('Тимур').entrant
@@ -437,17 +443,18 @@ test('очередь честная по людям: своя вторая по�
   })
   assert.equal(waitingCount(), 3)
 
-  // Первым — тот, кто пришёл раньше.
+  // Whoever came earlier goes first.
   const first = takeNext()
   assert.equal(first?.submissionId, t1.id)
   assert.equal(first?.state, 'running')
   assert.equal(first?.boot, BOOT)
-  // Одна посылка за раз: второй заход ничего не отдаёт, пока первая идёт.
+  // One submission at a time: a second take returns nothing while the first
+  // is running.
   assert.equal(takeNext(), null)
   leaveQueue(t1.id)
 
-  // Вторая посылка Тимура стоит ЗА первой посылкой Анны, хотя пришла раньше:
-  // иначе один человек занимает исполнителя на полчаса.
+  // Timur's second submission stands BEHIND Anna's first although it came
+  // earlier: otherwise one person occupies the executor for half an hour.
   const second = takeNext()
   assert.equal(second?.submissionId, a1.id)
   leaveQueue(a1.id)
@@ -456,7 +463,7 @@ test('очередь честная по людям: своя вторая по�
   assert.equal(takeNext(), null)
 })
 
-test('у кого уже что-то исполняется, тот пропускает остальных вперёд', () => {
+test('whoever already has something running lets the others go first', () => {
   drainQueue()
   const c = freshCompetition('queue-busy')
   const busy = createEntrant('Занятый').entrant
@@ -470,7 +477,8 @@ test('у кого уже что-то исполняется, тот пропус
     at,
   })
   assert.equal(takeNext()?.submissionId, running.id)
-  // Его же вторая пришла раньше чужой, но исполнитель отдан не ему.
+  // His own second one came before the other person's, but the executor is
+  // not given to him.
   acceptSubmission({ competitionId: c.id, entrantId: busy.id, fileName: '2', bytes: 1, at: at + 1 })
   const theirs = acceptSubmission({
     competitionId: c.id,
@@ -482,7 +490,7 @@ test('у кого уже что-то исполняется, тот пропус
   assert.equal(takeNext({ slots: 2 })?.submissionId, theirs.id)
 })
 
-test('приостановленная очередь не начинает новых прогонов', () => {
+test('a paused queue starts no new runs', () => {
   drainQueue()
   const c = freshCompetition('queue-pause')
   const person = createEntrant('Кто-то').entrant
@@ -496,12 +504,13 @@ test('приостановленная очередь не начинает но
   leaveQueue(s.id)
 })
 
-test('перезапуск сервера: чужая жизнь процесса видна, работа поднимается заново', () => {
+test("server restart: another process lifetime's work is visible and gets picked up again", () => {
   drainQueue()
   const c = freshCompetition('queue-restart')
   const person = createEntrant('Переживший').entrant
   const s = acceptSubmission({ competitionId: c.id, entrantId: person.id, fileName: '1', bytes: 1 })
-  // Прогон начала ПРОШЛАЯ жизнь процесса — ровно то, что видно после `make stop`.
+  // The run was started by a PREVIOUS process lifetime — exactly what is seen
+  // after `make stop`.
   const taken = takeNext({ boot: 'жизнь-прошлая' })
   assert.equal(taken?.submissionId, s.id)
   assert.equal(taken?.attempts, 1)
@@ -510,7 +519,7 @@ test('перезапуск сервера: чужая жизнь процесс�
     orphanedRuns(BOOT).map((r) => r.submissionId),
     [s.id],
   )
-  // Своя работа осиротевшей не считается.
+  // One's own work does not count as orphaned.
   assert.equal(orphanedRuns('жизнь-прошлая').length, 0)
 
   const first = reclaimQueue(BOOT)
@@ -518,8 +527,8 @@ test('перезапуск сервера: чужая жизнь процесс�
   assert.equal(first.abandoned.length, 0)
   assert.equal(queueRows().find((r) => r.submissionId === s.id)?.state, 'waiting')
 
-  // Второй перезапуск на той же посылке: дальше её крутить значит занимать
-  // исполнителя тем, что не считается.
+  // A second restart on the same submission: spinning it further would occupy
+  // the executor with something that does not count.
   takeNext({ boot: 'жизнь-прошлая-2' })
   const second = reclaimQueue(BOOT)
   assert.equal(second.requeued.length, 0)
@@ -527,13 +536,14 @@ test('перезапуск сервера: чужая жизнь процесс�
     second.abandoned.map((r) => r.submissionId),
     [s.id],
   )
-  // Помечена как беда преподавателя, а не как ошибка участника: он тут ни при чём.
+  // Marked as the teacher's trouble, not as the entrant's error: the entrant
+  // has nothing to do with it.
   assert.equal(getSubmission(s.id)?.state, 'metricFailed')
   assert.match(getSubmission(s.id)?.teacherError ?? '', /перезапуском сервера/)
   assert.equal(queueRows().find((r) => r.submissionId === s.id), undefined)
 })
 
-test('пересчёт возвращает посылку в очередь, а не заводит новую', () => {
+test('a rescore puts the submission back into the queue instead of creating a new one', () => {
   drainQueue()
   const c = freshCompetition('queue-requeue')
   const person = createEntrant('Пересчитываемый').entrant
@@ -550,51 +560,53 @@ test('пересчёт возвращает посылку в очередь, а
   assert.equal(row?.kind, 'metric')
   assert.equal(row?.state, 'waiting')
   assert.equal(row?.attempts, 0)
-  // Та же посылка, а не вторая: номер «#1» не должен появляться дважды.
+  // The same submission, not a second one: the number "#1" must not appear
+  // twice.
   assert.equal(listEntrantSubmissions(c.id, person.id).length, 1)
   leaveQueue(s.id)
 })
 
-/* ------------------------------------------------------------------ диск */
+/* ------------------------------------------------------------------ disk */
 
-test('ответы лежат в DATA_DIR и никогда в WORKSPACE_DIR', () => {
+test('answer files live in DATA_DIR and never in WORKSPACE_DIR', () => {
   const c = freshCompetition('disk-secret')
   putSecretFile(c.id, 'solution.csv', bytes('id,orders\n1,5\n'))
   putOpenFile(c.id, 'train.csv', bytes('id,orders\n1,5\n'))
 
   const secret = path.join(secretDir(c.id), 'solution.csv')
   assert.ok(fs.existsSync(secret))
-  // Единственная проверка этого файла, ради которой он написан: рабочая папка
-  // занятий монтируется в контейнеры комнат, и всё, что там лежит, читает
-  // любой студент из Python (SECURITY.md).
+  // The one check this file was written for: the classes' workspace folder is
+  // mounted into the room containers, and anything lying there can be read by
+  // any student from Python (SECURITY.md).
   assert.ok(secret.startsWith(config.dataDir))
   assert.ok(!secret.startsWith(config.workspaceDir))
   assert.ok(openDir(c.id).startsWith(config.dataDir))
-  // Ответы лежат РЯДОМ с открытыми файлами, а не внутри них: открытый каталог
-  // уезжает в контейнер участника целиком.
+  // The answers lie NEXT TO the open files, not inside them: the open
+  // directory goes into the entrant's container whole.
   assert.ok(!secretDir(c.id).startsWith(openDir(c.id)))
   assert.equal(readSecretFile(c.id, 'solution.csv')?.toString(), 'id,orders\n1,5\n')
 
-  // Имя файла едет в путь, и строка «../../colloq.db» путём не становится.
+  // The file name goes into a path, and the string "../../colloq.db" does not
+  // become a path.
   assert.throws(() => putOpenFile(c.id, '../escape.csv', bytes('x')))
   assert.throws(() => putSecretFile(c.id, '/etc/passwd', bytes('x')))
 })
 
-test('каталог посылки не переиспользуется: тот же идентификатор второй раз — отказ', () => {
+test('a submission directory is not reused: the same id a second time is refused', () => {
   const c = freshCompetition('disk-submission')
   const person = createEntrant('Присылающий').entrant
   const s = acceptSubmission({ competitionId: c.id, entrantId: person.id, fileName: 'n.ipynb', bytes: 3 })
   const dirs = putSubmissionNotebook(c.id, s.id, bytes('{"cells":[]}'))
   assert.ok(fs.existsSync(path.join(dirs.input, 'notebook.ipynb')))
   assert.ok(fs.existsSync(dirs.result))
-  // На colima путь, у которого сменился inode, продолжает отдаваться
-  // контейнеру старым — и посылка молча не видит своей тетради.
+  // On colima a path whose inode changed keeps being served to the container
+  // as the old one — and the submission silently does not see its notebook.
   assert.throws(() => putSubmissionNotebook(c.id, s.id, bytes('{}')))
   assert.equal(removeSubmission(c.id, s.id), true)
   assert.equal(fs.existsSync(dirs.input), false)
 })
 
-test('удаление соревнования уносит строки и файлы, включая ответы', () => {
+test('deleting a competition removes its rows and files, answers included', () => {
   const c = freshCompetition('disk-delete')
   const person = createEntrant('Уходящий').entrant
   const s = acceptSubmission({ competitionId: c.id, entrantId: person.id, fileName: 'x.ipynb', bytes: 1 })
@@ -612,27 +624,28 @@ test('удаление соревнования уносит строки и ф�
   assert.equal(listRuns(s.id).length, 0)
   assert.equal(listFiles(c.id).length, 0)
   assert.equal(queueRows().find((r) => r.submissionId === s.id), undefined)
-  // Ответы, оставшиеся на диске от удалённого соревнования, — единственная
-  // ошибка из этой проверки, которую вообще некому заметить.
+  // Answers left on disk by a deleted competition are the one mistake in this
+  // check that nobody would ever notice.
   assert.equal(fs.existsSync(root), false)
   assert.equal(run.seq, 1)
   assert.equal(deleteCompetition(c.id), false)
 })
 
-test('уборка снимает каталоги соревнований, которых больше нет в базе', () => {
+test('the sweep removes directories of competitions that are no longer in the database', () => {
   const c = freshCompetition('disk-sweep')
   putOpenFile(c.id, 'train.csv', bytes('id\n1\n'))
-  // Каталог без строки — след пути удаления, который про это хранилище не знал.
+  // A directory without a row is the trace of a deletion path that did not
+  // know about this store.
   putOpenFile('zz-orphan', 'train.csv', bytes('id\n1\n'))
   assert.ok(fs.existsSync(path.join(competitionsDir, 'zz-orphan')))
   const dropped = sweepOrphans(liveCompetitionIds())
   assert.ok(dropped >= 1)
   assert.equal(fs.existsSync(path.join(competitionsDir, 'zz-orphan')), false)
-  // Живое соревнование уборка не трогает.
+  // The sweep leaves a live competition alone.
   assert.ok(fs.existsSync(path.join(competitionsDir, c.id)))
 })
 
-test('тяжёлое от старых посылок уходит, а числа остаются в базе', () => {
+test('the heavy parts of old submissions go away, while the scores stay in the database', () => {
   const c = freshCompetition('disk-prune')
   const person = createEntrant('Настойчивый').entrant
   const made = []
@@ -650,22 +663,23 @@ test('тяжёлое от старых посылок уходит, а числ�
   }
   const dropped = pruneCompetitionFiles(c.id, 2)
   assert.equal(dropped, 2)
-  // Две свежие остались на диске, две старые ушли…
+  // Two fresh ones stayed on disk, two old ones went away…
   assert.ok(fs.existsSync(path.join(competitionsDir, c.id, 's', made[3].id)))
   assert.equal(fs.existsSync(path.join(competitionsDir, c.id, 's', made[0].id)), false)
-  // …а лидерборд обязан сойтись и через год, поэтому числа на месте.
+  // …and the leaderboard must add up even a year later, so the scores stay.
   assert.equal(listEntrantSubmissions(c.id, person.id).length, 4)
   assert.equal(getSubmission(made[0].id)?.publicScore, 0)
 })
 
-test('путь для docker переводится через DATA_HOST_DIR и только при нём', () => {
+test('the path for docker is translated through DATA_HOST_DIR, and only when it is set', () => {
   const inside = path.join(competitionsDir, 'abc', 'data')
   assert.equal(hostPathOf(inside), inside)
   const was = process.env.DATA_HOST_DIR
   process.env.DATA_HOST_DIR = '/host/data'
   try {
-    // Под `make up` сервер сам в контейнере: путь, по которому файл видит он,
-    // демону docker неизвестен, и посылка молча получила бы пустой каталог.
+    // Under `make up` the server is itself in a container: the path by which it
+    // sees a file is unknown to the docker daemon, and the submission would
+    // silently get an empty directory.
     assert.equal(hostPathOf(inside), path.join('/host/data', 'competitions', 'abc', 'data'))
   } finally {
     if (was === undefined) delete process.env.DATA_HOST_DIR

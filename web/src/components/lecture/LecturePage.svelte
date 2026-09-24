@@ -1,18 +1,18 @@
 <!--
-  Одна страница, вписанная в отведённое место.
+  One page, fitted into the space it is given.
 
-  Читалка кладёт страницы в столбик и прокручивает их; лекция показывает ровно
-  одну и целиком — это разные задачи, и вторая проще: нет прокрутки, нет
-  масштаба, есть прямоугольник и лист, который в него вписан.
+  The reader stacks pages in a column and scrolls them; the lecture shows
+  exactly one, whole. These are different tasks, and the second is simpler:
+  no scrolling, no zoom, just a rectangle and a sheet fitted into it.
 
-  Вписан ПО ОБЕИМ сторонам, а не по ширине: на проекторе 16:9, а слайд бывает
-  4:3 и A4, и страница, вписанная по ширине, уезжает низом за край экрана — то
-  есть последняя строка слайда не видна залу. Незаметно для того, кто ведёт: у
-  него на планшете другая пропорция.
+  Fitted on BOTH sides, not by width: the projector is 16:9, while a slide
+  can be 4:3 or A4, and a page fitted by width runs off the bottom of the
+  screen, that is, the last line of the slide is invisible to the audience.
+  The presenter does not notice: their tablet has a different aspect ratio.
 
-  Своё место компонент отдаёт наружу: чернила обязаны лечь ровно на лист, а не
-  на контейнер вокруг него, иначе они разъедутся с текстом на любом экране,
-  пропорция которого отличается от страницы.
+  The component hands its own space outward: the ink must lie exactly on the
+  sheet, not on the container around it, or it drifts off the text on any
+  screen whose proportions differ from the page.
 -->
 <script lang="ts">
   import type { PDFDocumentProxy } from 'pdfjs-dist'
@@ -22,47 +22,50 @@
     doc: PDFDocumentProxy | null
     page: number
     /**
-     * Что положить поверх листа — ровно по его границам.
+     * What to lay over the sheet, exactly within its bounds.
      *
-     * Размер листа передаётся внутрь, а не меряется там заново: слой чернил
-     * обязан совпадать с листом пиксель в пиксель, а два измерения одного и того
-     * же расходятся — сначала на кадр, а на планшете, где кадры приходят по
-     * мере видимости вкладки, и навсегда.
+     * The sheet's size is passed inside rather than measured again there: the
+     * ink layer must match the sheet pixel for pixel, and two measurements of
+     * the same thing diverge, first by a frame, and on a tablet, where frames
+     * come only as the tab happens to be visible, for good.
      */
     over?: Snippet<[{ w: number; h: number }]>
-    /** Тише и мельче: следующая страница на пульте. */
+    /** Quieter and smaller: the next page on the console. */
     dim?: boolean
     /**
-     * Без тени: лист рисует пульт, и растушёвку вокруг бумаги он делает сам.
+     * No shadow: the console draws the sheet and does the feathering around
+     * the paper itself.
      *
-     * `shadow-pop` — тень цвета #0F2D69 плюс кольцо `line`. В комнате она
-     * нужна: там лист лежит на светлом `surface`, и без кольца белая бумага
-     * сливается с фоном. На ночном грунте пульта она не рисует ничего —
-     * четыре ступени растушёвки поверх неё всё равно перекрывают кольцо, — а
-     * платить за неё приходится полной перерисовкой листа каждый кадр, пока
-     * по нему ведут пером.
+     * `shadow-pop` is a #0F2D69 shadow plus a `line` ring. In the room it is
+     * needed: there the sheet lies on a light `surface`, and without the ring
+     * white paper merges with the background. On the console's night ground
+     * it draws nothing (the four feathering steps on top of it cover the ring
+     * anyway), and the price is a full repaint of the sheet every frame while
+     * a pen moves across it.
      */
     bare?: boolean
     /**
-     * Куда прижать лист, если он ниже отведённого места.
+     * Where to pin the sheet when it is shorter than the space it is given.
      *
-     * Умолчание — по центру: так живут читалка, проекция и колонка ведущего,
-     * и их не трогаем. Пульт просит `top`: коробка листа там — весь остаток
-     * экрана, а 16:9 в ней ниже, чем коробка; лист, висящий по центру,
-     * оставлял бы над собой пустой колодец, и рука, тянущаяся писать на
-     * верхнюю строку слайда, ложилась бы на середину планшета. Остаток
-     * уходит ВНИЗ — под полосу заметок и эскиз «дальше» (см. `onfit`).
+     * The default is centred: the reader, the projection and the presenter's
+     * column live that way, and we leave them alone. The console asks for
+     * `top`: there the sheet's box is the whole rest of the screen, and 16:9
+     * in it is shorter than the box; a sheet hanging in the centre would leave
+     * an empty well above itself, and a hand reaching to write on the top line
+     * of a slide would land in the middle of the tablet. The remainder goes
+     * DOWN, under the notes strip and the "next" thumbnail (see `onfit`).
      */
     align?: 'center' | 'top'
     /**
-     * Сколько лист занял и сколько осталось.
+     * How much the sheet took and how much is left.
      *
-     * `rest` — высота колодца под листом внутри отведённой коробки. Пульт по
-     * ней решает, влезает ли туда peek-полоса заметок: это ЗНАНИЕ ЛИСТА, а
-     * вторичный замер снаружи расходился бы с ним на кадр, и полоса мигала бы
-     * при каждом повороте. Зовётся только когда лист есть (w > 0): до прихода
-     * пропорции остаток равен всей коробке, и это не «место под заметки», а
-     * «ещё ничего не знаем».
+     * `rest` is the height of the well under the sheet inside the given box.
+     * The console uses it to decide whether the notes peek strip fits there:
+     * this is KNOWLEDGE OF THE SHEET, and a second measurement from outside
+     * would disagree with it by a frame, making the strip flicker on every
+     * rotation. Called only once there is a sheet (w > 0): before the aspect
+     * ratio arrives the remainder equals the whole box, and that is not "room
+     * for notes" but "we know nothing yet".
      */
     onfit?: (size: { w: number; h: number; rest: number }) => void
   }
@@ -73,23 +76,25 @@
   let canvas = $state<HTMLCanvasElement | null>(null)
   let room = $state({ w: 0, h: 0 })
   /**
-   * Пропорция страницы — из самой страницы, а не из предположения.
+   * The page's aspect ratio, from the page itself rather than from a guess.
    *
-   * Умолчанием тут стоял A4, и это была ошибка: лекции читают по слайдам, а
-   * слайд ГОРИЗОНТАЛЬНЫЙ. Лист, нарисованный вертикальным до прихода настоящих
-   * размеров, прыгал на первом же кадре, а на проекторе прыжок во весь экран
-   * видит вся аудитория. Пока не знаем — не рисуем ничего: полкадра пустоты
-   * честнее полкадра неправды.
+   * The default here used to be A4, and that was a mistake: lectures are read
+   * from slides, and a slide is LANDSCAPE. A sheet drawn portrait before the
+   * real dimensions arrived jumped on the very first frame, and on a projector
+   * a full-screen jump is seen by the whole audience. Until we know, we draw
+   * nothing: half a frame of emptiness is more honest than half a frame of
+   * untruth.
    */
   let aspect = $state<number | null>(null)
 
   /**
-   * Сколько места отведено. Меряется сразу и потом по наблюдателю.
+   * How much space is given. Measured right away and then by the observer.
    *
-   * Сразу — потому что ResizeObserver сообщает о размере в такте отрисовки, а
-   * его у вкладки может не быть: браузер не рисует фоновые вкладки вовсе.
-   * Проекция, открытая вторым окном и не получившая фокуса, оставалась в этом
-   * случае пустой — размер приходил только после того, как в неё щёлкнут.
+   * Right away because ResizeObserver reports sizes in the rendering step,
+   * and a tab may not have one: the browser does not render background tabs
+   * at all. A projection opened as a second window that never got focus
+   * stayed empty in that case: the size came only after someone clicked in
+   * it.
    */
   function measure(node: HTMLElement): void {
     const rect = node.getBoundingClientRect()
@@ -100,24 +105,25 @@
   $effect(() => {
     const node = box
     /*
-     * Пропорция читается НАРОЧНО: она приезжает вместе с документом, то есть
-     * через сотни миллисекунд после появления компонента и заведомо после того,
-     * как дерево вставлено в страницу. Это единственный момент, про который
-     * точно известно, что мерить уже есть что, — и он же единственный, который
-     * работает во вкладке без отрисовки: там ни наблюдатель за размером, ни
-     * кадры не приходят вовсе, а проекция чаще всего именно такая — второе окно,
-     * которому не давали фокуса.
+     * The aspect ratio is read ON PURPOSE: it arrives together with the
+     * document, that is, hundreds of milliseconds after the component appears
+     * and certainly after the tree is inserted into the page. It is the only
+     * moment known for sure to have something to measure, and it is also the
+     * only one that works in a tab without rendering: there neither the size
+     * observer nor frames come at all, and the projection is most often
+     * exactly that, a second window that was never given focus.
      */
     void aspect
     if (!node) return
     /*
-     * Три измерения на одно место, и каждое закрывает свой случай.
+     * Three measurements of one space, and each covers its own case.
      *
-     * Сразу — для обычной перерисовки. Микрозадачей — для первого кадра: эффект
-     * дочернего компонента выполняется ДО того, как родитель вставит своё
-     * дерево в документ, а у элемента вне документа размер нулевой, и первый
-     * замер честно возвращает ноль. Наблюдателем — для поворота планшета и
-     * Split View, где размер меняется без всякой перерисовки.
+     * Right away, for an ordinary re-render. In a microtask, for the first
+     * frame: a child component's effect runs BEFORE the parent inserts its
+     * tree into the document, an element outside the document has zero size,
+     * and the first measurement honestly returns zero. By the observer, for
+     * tablet rotation and Split View, where the size changes without any
+     * re-render.
      */
     let alive = true
     measure(node)
@@ -133,23 +139,26 @@
   })
 
   /**
-   * СТРАНИЦА БЕРЁТСЯ С ПОВТОРАМИ, И ОДНОЙ ФУНКЦИЕЙ НА ОБА ЭФФЕКТА.
+   * THE PAGE IS FETCHED WITH RETRIES, AND BY ONE FUNCTION FOR BOTH EFFECTS.
    *
-   * `getPage` — это не «достать из массива», а «дождаться, пока приедут данные
-   * этой страницы»: документ качается по кускам, и на девятой странице
-   * тридцатимегабайтной колоды кусок вполне может ещё не доехать. Отказ
-   * молчалив и окончателен: эффект больше не позовут, звать его нечему — все
-   * зависимости на месте. На стенде это видно буквально: «страницы нет» на
-   * 256-й миллисекунде и следующая попытка только на 1066-й, и то лишь потому,
-   * что приехала пропорция и пересчиталась раскладка.
+   * `getPage` is not "take it from an array" but "wait until this page's data
+   * arrives": the document downloads in chunks, and on the ninth page of a
+   * thirty-megabyte deck the chunk may well not be there yet. The refusal is
+   * silent and final: the effect will not be called again, there is nothing
+   * to call it, all its dependencies are in place. On the test bench this is
+   * visible literally: "no page" at 256 ms and the next attempt only at
+   * 1066 ms, and only because the aspect ratio arrived and the layout was
+   * recomputed.
    *
-   * Повторы были у одного эффекта из двух, и пропорция — та, что без них, —
-   * держала всю раскладку: не приехала первая страница, `aspect` остался null,
-   * `fit` — ноль на ноль, отрисовка не запускалась вовсе (`w === 0`), ошибка
-   * не ставилась, и проекция стояла пустой без единого слова.
+   * Only one of the two effects had retries, and the aspect ratio, the one
+   * without them, held the whole layout: the first page did not arrive,
+   * `aspect` stayed null, `fit` was zero by zero, rendering never started
+   * (`w === 0`), no error was set, and the projection stood empty without a
+   * single word.
    *
-   * Пять попыток за секунду с небольшим — это про сеть, а не про терпение.
-   * `alive` спрашивается у вызвавшего: страницу могли сменить, пока мы ждали.
+   * Five attempts in a little over a second is about the network, not about
+   * patience. `alive` is asked of the caller: the page may have changed
+   * while we waited.
    */
   async function sheetOf(
     source: PDFDocumentProxy,
@@ -166,16 +175,17 @@
   }
 
   /*
-   * Пропорция узнаётся отдельно от отрисовки: размер листа нужен раньше, чем
-   * появится, во что рисовать, а отрисовка ждёт размера. Одним эффектом это
-   * замыкается само на себя.
+   * The aspect ratio is learned separately from rendering: the sheet's size
+   * is needed before there is anything to draw into, and rendering waits for
+   * the size. In one effect this closes in on itself.
    */
   $effect(() => {
     const source = doc
     /*
-     * У чистого листа своей страницы в документе нет (см. shared/lecture.ts):
-     * пропорцию он берёт у первой — чтобы белое поле было той же формы, что и
-     * слайды, и лекция не меняла бы формат посреди себя.
+     * A blank sheet has no page of its own in the document (see
+     * shared/lecture.ts): it takes its aspect ratio from the first page, so
+     * that the white field has the same shape as the slides and the lecture
+     * does not change format midway.
      */
     const index = page < 0 ? 1 : page
     if (!source) return
@@ -183,14 +193,16 @@
     void (async () => {
       let sheet = await sheetOf(source, index, () => !dropped)
       /*
-       * Своей страницы не дождались — берём форму ПЕРВОЙ, как чистый лист.
+       * Our own page never came: take the shape of the FIRST one, like a
+       * blank sheet.
        *
-       * Пропорция держит всю раскладку: без неё `fit` — ноль на ноль, а
-       * отрисовка не запускается вовсе. Форма соседней страницы — это в худшем
-       * случае неверная коробка на долю секунды (отрисовка поправит её, как
-       * только достанет настоящий лист), а её отсутствие — это пустая проекция
-       * без слова объяснения до конца пары. Первая страница едет в первом же
-       * куске документа, так что этот запасной ход почти всегда срабатывает.
+       * The aspect ratio holds the whole layout: without it `fit` is zero by
+       * zero, and rendering never starts at all. A neighbouring page's shape is
+       * at worst a wrong box for a fraction of a second (rendering corrects it
+       * as soon as it gets the real sheet), while its absence is an empty
+       * projection with not a word of explanation until the end of class. The
+       * first page travels in the document's very first chunk, so this
+       * fallback almost always works.
        */
       if (!sheet && index !== 1 && !dropped) sheet = await sheetOf(source, 1, () => !dropped)
       if (!sheet || dropped) return
@@ -202,7 +214,7 @@
     }
   })
 
-  /** Место листа внутри отведённого прямоугольника: вписываем по обеим сторонам. */
+  /** The sheet's place inside the given rectangle: fitted on both sides. */
   const fit = $derived.by(() => {
     const { w, h } = room
     if (w === 0 || h === 0 || aspect === null) return { w: 0, h: 0 }
@@ -211,10 +223,11 @@
   })
 
   /*
-   * Отдать место наружу. Через `untrack`: родитель в ответ переставляет свою
-   * раскладку, и если бы его руны читались отсюда отслеживаемо, эффект
-   * подписался бы на то, что сам же и вызывает, — круг до
-   * effect_update_depth_exceeded, на котором в этом продукте уже обжигались.
+   * Hand the space outward. Through `untrack`: the parent rearranges its
+   * layout in response, and if its runes were read here as tracked, the
+   * effect would subscribe to what it triggers itself, a loop ending in
+   * effect_update_depth_exceeded, which this product has been burned by
+   * before.
    */
   $effect(() => {
     const size = fit
@@ -224,30 +237,31 @@
   })
 
   /**
-   * Отрисовка. Отменяет предыдущую: страницу листают быстрее, чем считается
-   * A4, и pdf.js отказывается рисовать в занятый холст — «Cannot use the same
-   * canvas during multiple render() operations».
+   * Rendering. Cancels the previous one: pages are flipped faster than an A4
+   * page renders, and pdf.js refuses to draw into a busy canvas: "Cannot use
+   * the same canvas during multiple render() operations".
    */
   let running: { cancel(): void; promise: Promise<unknown> } | null = null
 
   /**
-   * ЗАПАСНОЙ ХОЛСТ — ПРОТИВ МОРГАНИЯ.
+   * A SPARE CANVAS, AGAINST BLINKING.
    *
-   * pdf.js заливает холст белым ПЕРЕД тем, как рисовать страницу. Пока
-   * страница считается, на экране стоит эта заливка, и переключение слайда
-   * читается как вспышка: на планшете, где считается медленнее, — как моргание
-   * на каждое нажатие. Никакой отменой это не лечится: заливка не ошибка, она
-   * часть отрисовки.
+   * pdf.js fills the canvas with white BEFORE drawing the page. While the page
+   * renders, that fill is on screen, and switching slides reads as a flash;
+   * on a tablet, where rendering is slower, as a blink on every press. No
+   * cancellation cures this: the fill is not a bug, it is part of rendering.
    *
-   * Поэтому рисуем в сторону, а на экран переносим готовое — одним
-   * `drawImage`, за который зритель не успевает увидеть промежуточного
-   * состояния. Видимый холст всё это время держит ПРОШЛУЮ страницу: лучше
-   * секунду смотреть на предыдущий слайд, чем полсекунды на белое поле.
+   * So we draw off to the side and move the finished result to the screen
+   * with a single `drawImage`, too quick for the viewer to catch any
+   * intermediate state. All that time the visible canvas holds the PREVIOUS
+   * page: better to look at the previous slide for a second than at a white
+   * field for half a second.
    *
-   * Холст один на компонент, а не на отрисовку: бюджет холстов на iPad один
-   * на процесс, и при переполнении WebKit начинает отдавать холсты
-   * прозрачными — в том числе не те, что его переполнили (см. ленту эскизов).
-   * Уезжая, отдаём буфер: `width = height = 1`.
+   * One canvas per component, not per render: on iPad the canvas budget is
+   * one per process, and when it overflows WebKit starts handing out
+   * canvases transparent, including ones that did not overflow it (see the
+   * thumbnail strip). On the way out we give the buffer back:
+   * `width = height = 1`.
    */
   let buffer: HTMLCanvasElement | null = null
 
@@ -259,9 +273,10 @@
     if (!node || w === 0) return
     if (index < 0) {
       /*
-       * Чистый лист. Холст гасится, а белым его делает подложка: рисовать
-       * пустоту незачем, но и оставлять на холсте прошлый слайд нельзя — под
-       * чернилами проступил бы текст страницы, с которой на него ушли.
+       * A blank sheet. The canvas is cleared, and the backing makes it white:
+       * there is no point drawing emptiness, but the previous slide cannot be
+       * left on the canvas either: the text of the page we came from would
+       * show through under the ink.
        */
       const paint = node.getContext('2d')
       if (paint) paint.clearRect(0, 0, node.width, node.height)
@@ -277,26 +292,28 @@
         await previous.promise.catch(() => {})
       }
       if (dropped) return
-      // Страница — с повторами, той же `sheetOf`, что и у пропорции.
+      // The page, with retries: the same `sheetOf` as for the aspect ratio.
       const sheet = await sheetOf(source, index, () => !dropped)
       if (!sheet || dropped) return
       const base = sheet.getViewport({ scale: 1 })
       /*
-       * ПРОПОРЦИЯ — ОТСЮДА ЖЕ, а не только из эффекта выше.
+       * THE ASPECT RATIO COMES FROM HERE TOO, not only from the effect above.
        *
-       * Тот эффект отвечает на вопрос «какой формы лист» ДО того, как есть во
-       * что рисовать, — и на смене страницы он отвечает с опозданием или не
-       * отвечает вовсе. Пока лист держал пропорцию ПРОШЛОЙ страницы, а этот
-       * код считал масштаб от настоящей ширины новой, холст `h-full w-full`
-       * растягивал готовую картинку в чужую коробку: на смешанной колоде
-       * (16:9 плюс вклейка A4) зал видел искажённый слайд — и видел до тех пор,
-       * пока что-нибудь постороннее не пересчитает раскладку.
+       * That effect answers the question "what shape is the sheet" BEFORE
+       * there is anything to draw into, and on a page change it answers late
+       * or not at all. While the sheet kept the PREVIOUS page's ratio and this
+       * code computed the scale from the new page's real width, the
+       * `h-full w-full` canvas stretched the finished picture into someone
+       * else's box: on a mixed deck (16:9 plus an inserted A4) the audience
+       * saw a distorted slide, and kept seeing it until something unrelated
+       * recomputed the layout.
        *
-       * Здесь лист настоящий и уже в руках, так что вопрос закрывается фактом.
-       * Расходится — записываем и УХОДИМ: `aspect` кормит `fit`, `fit` кормит
-       * этот эффект, и он тут же вернётся сюда с настоящим размером коробки.
-       * Рисовать в старую было бы кадром искажённой картинки на проекторе, а
-       * писать безусловно — кругом до effect_update_depth_exceeded.
+       * Here the sheet is real and already in hand, so the question is
+       * settled by fact. If it differs, we record it and LEAVE: `aspect` feeds
+       * `fit`, `fit` feeds this effect, and it comes right back here with the
+       * box's real size. Drawing into the old one would be a frame of a
+       * distorted picture on the projector, and writing unconditionally would
+       * be a loop ending in effect_update_depth_exceeded.
        */
       const real = base.width / base.height
       if (untrack(() => aspect) !== real) {
@@ -306,18 +323,18 @@
       const ratio = Math.min(window.devicePixelRatio || 1, 2)
       const viewport = sheet.getViewport({ scale: (w / base.width) * ratio })
       /*
-       * Присвоение width/height стирает и пиксели, и состояние контекста — и
-       * делает это даже когда значение то же самое. Поэтому только при
-       * настоящей смене размера: поворот планшета иначе гасил бы страницу на
-       * ровном месте.
+       * Assigning width/height wipes both the pixels and the context state,
+       * and does so even when the value is the same. So only on a real size
+       * change: otherwise rotating the tablet would blank the page out of
+       * nowhere.
        */
       const W = Math.round(viewport.width)
       const H = Math.round(viewport.height)
       const paint = node.getContext('2d')
       if (!paint) return
       buffer ??= document.createElement('canvas')
-      // Присвоение размера стирает холст и состояние контекста — но буфер и
-      // так рисуется с нуля, так что здесь это бесплатно.
+      // Assigning a size wipes the canvas and the context state, but the
+      // buffer is drawn from scratch anyway, so here it costs nothing.
       if (buffer.width !== W || buffer.height !== H) {
         buffer.width = W
         buffer.height = H
@@ -327,23 +344,25 @@
       spare.clearRect(0, 0, W, H)
       const task = sheet.render({ canvas: buffer, canvasContext: spare, viewport })
       /*
-       * КТО ДВИГАЕТ ОТРИСОВКУ.
+       * WHO DRIVES THE RENDERING.
        *
-       * pdf.js рисует страницу не одним куском, а порциями, и следующую порцию
-       * по умолчанию просит у `requestAnimationFrame`. Для читалки это верно:
-       * кадр отдаёт время прокрутке. Для ПРОЕКЦИИ это отказ работать. Окно
-       * проекции живёт на втором экране или отдано в Zoom, преподаватель
-       * переключается на другое приложение — и браузер, заметив, что окно ничем
-       * не видно, перестаёт выдавать кадры. `document.hidden` при этом ложь:
-       * окно не скрыто, оно закрыто другим. Отрисовка встаёт после первой
-       * порции — то есть после белой заливки фона, — и зал остаётся на прошлом
-       * слайде, пока ведущий листает дальше. Ровно это и приносили с пары:
-       * «догоняет секунд пять или не догоняет вообще».
+       * pdf.js draws a page not in one piece but in portions, and by default
+       * it asks `requestAnimationFrame` for the next portion. For the reader
+       * that is right: the frame leaves time for scrolling. For the PROJECTION
+       * it is a refusal to work. The projection window lives on a second
+       * screen or is shared into Zoom, the teacher switches to another app,
+       * and the browser, noticing that the window is not visible at all,
+       * stops handing out frames. `document.hidden` is false meanwhile: the
+       * window is not hidden, it is covered by another one. Rendering stalls
+       * after the first portion, that is, after the white background fill,
+       * and the audience stays on the previous slide while the presenter
+       * flips on. Exactly this is what came back from class: "catches up in
+       * about five seconds, or never".
        *
-       * Поэтому кадр здесь не начальник, а один из двух гонцов: чей придёт
-       * первым, тот и продолжает. Сто миллисекунд — это шесть пропущенных
-       * кадров: столько не набегает ни на одной живой странице, а на мёртвой
-       * они не придут никогда.
+       * So the frame here is not the boss but one of two messengers: whichever
+       * arrives first carries on. A hundred milliseconds is six missed frames:
+       * no live page ever accumulates that many, and on a dead one they will
+       * never come.
        */
       task.onContinue = (next: () => void) => {
         let went = false
@@ -365,10 +384,10 @@
         await task.promise
         if (dropped) return
         /*
-         * Готовое — на экран. Размер видимого холста меняем ТОЛЬКО здесь и
-         * только при настоящей смене: присвоение стирает пиксели даже когда
-         * значение то же самое, и поворот планшета иначе гасил бы страницу на
-         * ровном месте.
+         * The finished result goes to the screen. The visible canvas is
+         * resized ONLY here, and only on a real change: assignment wipes the
+         * pixels even when the value is the same, and rotating the tablet
+         * would otherwise blank the page out of nowhere.
          */
         if (node.width !== W || node.height !== H) {
           node.width = W
@@ -376,7 +395,7 @@
         }
         paint.drawImage(buffer, 0, 0)
       } catch {
-        // Отменили ради следующей страницы — обычный ход дела.
+        // Cancelled for the sake of the next page: business as usual.
       } finally {
         if (running === task) running = null
       }
@@ -388,9 +407,9 @@
   })
 
   /*
-   * Уезжая, отдаём буфер. Холст, оставленный в памяти, на iPad не бесплатен:
-   * бюджет один на процесс, а лист лекции живёт рядом с лентой эскизов, где
-   * холстов ещё десяток.
+   * On the way out, give the buffer back. A canvas left in memory is not free
+   * on iPad: the budget is one per process, and the lecture sheet lives next
+   * to the thumbnail strip, which holds another dozen canvases.
    */
   onDestroy(() => {
     if (!buffer) return
@@ -404,14 +423,15 @@
   bind:this={box}
   class="relative flex min-h-0 min-w-0 flex-1 justify-center {align === 'top' ? 'items-start' : 'items-center'}"
 >
-  <!-- Лист и всё, что на нём, — одним блоком: слой чернил обязан совпадать с
-       листом пиксель в пиксель, а не с контейнером вокруг.
+  <!-- The sheet and everything on it, as one block: the ink layer must match
+       the sheet pixel for pixel, not the container around it.
 
-       Бумага чистого листа (страница с отрицательным номером) чуть темнее
-       белой. Сплошной белый прямоугольник 928×522 — самый яркий кадр всего
-       продукта, и держат его в тёмной аудитории на вытянутой руке; гамма
-       проектора эти пять процентов съедает, зал разницы не увидит, а с пульта
-       они уходят даром. -->
+       The paper of a blank sheet (a page with a negative number) is slightly
+       darker than white. A solid white 928×522 rectangle is the brightest
+       frame in the whole product, and it is held at arm's length in a dark
+       lecture hall; the projector's gamma eats those five percent, so the
+       audience will not see the difference, and on the console they are shed
+       for free. -->
   <div
     class="relative {bare ? '' : 'shadow-pop'} {dim ? 'opacity-70' : ''}"
     style={`width:${fit.w}px;height:${fit.h}px;background:${page < 0 ? '#F4F6FA' : '#fff'}`}

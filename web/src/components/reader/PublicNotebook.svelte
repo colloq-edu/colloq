@@ -1,10 +1,11 @@
 <!--
-  Тетрадь на опубликованной странице.
+  A notebook on a published page.
 
-  Те же ячейки и те же выводы, что в комнате, — и ни одной кнопки, которая
-  что-нибудь меняет. Редактора здесь нет вовсе: код показывается подсвеченным
-  текстом. Это не «редактор только для чтения», а другой предмет — за страницей
-  нет ни документа, ни ядра, и менять в ней нечего.
+  The same cells and the same outputs as in the room — and not a single button
+  that changes anything. There is no editor here at all: code is shown as
+  highlighted text. This is not a "read-only editor" but a different object —
+  behind the page there is neither a document nor a kernel, and there is nothing
+  in it to change.
 -->
 <script lang="ts">
   import { tr, formatNumber } from '@shared/i18n'
@@ -19,7 +20,7 @@
 
   interface Props {
     cells: PublicCell[]
-    /** Публикация, чьи картинки раздаются по адресу — см. `blobbed`. */
+    /** The publication whose images are served by address — see `blobbed`. */
     publication: string
   }
 
@@ -30,21 +31,23 @@
   const render = $derived(renderers())
 
   /**
-   * Крупные картинки лежат отдельными записями и здесь превращаются в адрес.
+   * Large images are stored as separate records and are turned into an address
+   * here.
    *
-   * В странице стоит `blob:<хэш>` — то есть содержимое, вынесенное из JSON,
-   * чтобы шесть шагов не несли шесть копий одного графика. Хэш и есть версия,
-   * поэтому адрес раздаётся с вечным кэшем.
+   * The page holds `blob:<hash>` — that is, content moved out of the JSON so
+   * that six steps do not carry six copies of the same plot. The hash is the
+   * version, which is why the address is served with an eternal cache.
    *
-   * Адрес получают только те mime, которые сервер и выносит (`SPILL_MIMES`):
-   * растровые картинки и фигура plotly — первые рисуются `<img>`, вторая
-   * уезжает в рамку, которая забирает её этим же адресом. Ставить адрес всем
-   * ключам подряд значило отдать путь в ветку SVG, а
-   * та санитайзит его как разметку и печатает строкой: на месте графика
-   * graphviz читатель видел «/api/p/x9tb4kwm/blob/6f1c…». Ссылка на запись,
-   * которую нечем показать, из набора убирается совсем: тогда выбор дойдёт до
-   * text/plain — репр вместо строки адреса. Публикации, собранные до того, как
-   * сервер перестал выносить нерастровое, тем и лечатся.
+   * Only the mimes that the server actually moves out (`SPILL_MIMES`) get an
+   * address: raster images and the plotly figure — the former are drawn by
+   * `<img>`, the latter goes off into a frame that fetches it by this same
+   * address. Giving an address to every key in a row meant handing the path to
+   * the SVG branch, and that branch sanitizes it as markup and prints it as a
+   * line of text: in place of a graphviz plot the reader saw
+   * "/api/p/x9tb4kwm/blob/6f1c…". A link to a record that has nothing to show
+   * it is dropped from the bundle altogether: then the choice gets down to
+   * text/plain — a repr instead of an address line. Publications built before
+   * the server stopped moving out non-raster content are cured by exactly this.
    */
   function blobbed(output: CellOutput): CellOutput {
     if (output.kind !== 'data') return output
@@ -58,20 +61,21 @@
   }
 
   /**
-   * Заметка со ссылками на записи публикации — адресами.
+   * A note with links to the publication's records — as addresses.
    *
-   * Картинка условия лежит в комнате на полке, а при сборке страницы
-   * копируется в записи публикации и получает в тексте вид
-   * `![схема](blob:<хэш>.<ext>)` (server/src/publish/build.ts · projectNote).
-   * Читалка раздаёт записи тем же маршрутом, что и картинки вывода строкой
-   * выше; расширение в адрес не входит — оно там ради выгрузки каталога, где
-   * запись становится файлом.
+   * An image from a task statement lives on the room's shelf, and when the page
+   * is built it is copied into the publication's records and takes the form
+   * `![diagram](blob:<hash>.<ext>)` in the text (server/src/publish/build.ts ·
+   * projectNote). The reader serves records by the same route as the output
+   * images a line above; the extension is not part of the address — it is there
+   * for the catalogue export, where a record becomes a file.
    */
   function noted(source: string): string {
     /*
-     * Обе записи картинки: `![схема](blob:…)` из markdown и `<img src="blob:…">`
-     * из разметки, которую заметка теперь рисует. Закрывающая скобка и кавычка
-     * не трогаются — заменяется только адрес между ними.
+     * Both ways of writing an image: `![diagram](blob:…)` from markdown and
+     * `<img src="blob:…">` from markup, which a note now renders. The closing
+     * bracket and the quote are left alone — only the address between them is
+     * replaced.
      */
     return source.replace(
       /(\]\(|src\s*=\s*["'])blob:([0-9a-f]{8,64})\.[a-z0-9]+/gi,
@@ -81,15 +85,16 @@
 
   let copied = $state<string | null>(null)
   /**
-   * Ячейка, у которой буфер обмена ОТКАЗАЛ.
+   * The cell whose clipboard REFUSED.
    *
-   * `copyText` бросает: асинхронного буфера нет вне защищённого контекста, а
-   * запасной `execCommand` браузер вправе не дать (строгие настройки сайта,
-   * свежий Firefox с выключенным `dom.events.testing.asyncClipboard`). Вызов
-   * стоял без `catch`, и отказ выглядел ничем: галочка не появлялась, ни слова
-   * не менялось, отклонение уходило в unhandledrejection. Человек с
-   * http-инстанса кафедры жал ещё раз и решал, что кнопка сломана, — а выход у
-   * него был, и о нём никто не сказал.
+   * `copyText` throws: there is no async clipboard outside a secure context,
+   * and the browser is entitled to refuse the fallback `execCommand` (strict
+   * site settings, a recent Firefox with `dom.events.testing.asyncClipboard`
+   * turned off). The call had no `catch`, and the refusal looked like nothing:
+   * the check mark did not appear, not a word changed, and the rejection went
+   * to unhandledrejection. Someone on a department's http instance pressed
+   * again and decided the button was broken — while there was a way out for
+   * them, and nobody told them about it.
    */
   let refused = $state<string | null>(null)
 
@@ -111,9 +116,10 @@
 <div class="flex flex-col gap-6">
   {#each cells as cell (cell.id)}
     {#if cell.type === 'markdown'}
-      <!-- Проза семинара — без рамки: она и есть текст страницы. Набор правил
-           тот же, что у заметки в комнате (`.prose-note`), — обещание «те же
-           ячейки» держится ими, а не вторым описанием того же. -->
+      <!-- The seminar's prose — without a frame: it is the text of the page.
+           The rule set is the same as for a note in the room (`.prose-note`) —
+           the promise of "the same cells" is kept by those rules, not by a
+           second description of the same thing. -->
       <div class="prose-note prose-cell leading-relaxed">
         {#if render}
           <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/render -->
@@ -133,16 +139,17 @@
         <div class="flex items-start gap-3 bg-surface/60 px-4 py-3">
           <Code code={cell.source} lang="python" class="min-w-0 flex-1 text-code-lg leading-relaxed" />
           <!--
-            «Скопировать» у каждой ячейки — десять строк и вся разница между
-            страницей, которую читают, и страницей, которой пользуются: в самой
-            комнате ячейки — отдельные редакторы CodeMirror, и выделить код
-            мышью через несколько штук нельзя.
+            "Copy" on every cell — ten lines, and the whole difference between a
+            page that is read and a page that is used: in the room itself the
+            cells are separate CodeMirror editors, and code cannot be selected
+            with the mouse across several of them.
           -->
           <!--
-            Отказ буфера обмена — тоже ответ. Крестик и подпись «выделите код
-            мышью» на те же 1.6 с: на http-инстансе кафедры и в строгом браузере
-            кнопка не работает, и человек должен узнать это от неё, а не решить,
-            что страница сломана.
+            A clipboard refusal is an answer too. A cross and the caption
+            "select the code" for the same 1.6 s: on a department's http
+            instance and in a strict browser the button does not work, and the
+            person should learn that from the button itself, not conclude that
+            the page is broken.
           -->
           <button
             class="press mt-0.5 flex h-[24px] w-[24px] shrink-0 items-center justify-center border
@@ -170,8 +177,9 @@
         >
           {#if cell.execCount === null && cell.outputs.length > 0}
             <!--
-              Вывод есть, а выполнения за ним уже нет: перезапускали ядро или
-              возвращали версию. Промолчать здесь честнее, чем подставить номер.
+              There is an output, but no execution behind it any more: the
+              kernel was restarted or a version was restored. Staying silent
+              here is more honest than making up a number.
             -->
             <span class="font-mono text-2xs text-warning">Out [—]</span>
           {:else if cell.execCount !== null}

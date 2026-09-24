@@ -1,14 +1,17 @@
 /**
- * Третья дверь бана: открытый в редакторе файл.
+ * The third door of a ban: a file open in the editor.
  *
- * Тетрадь и пульт `evictBanned` закрывает своими руками — их сокеты он держит
- * сам. Файловый сокет держит другой модуль (collab/files.ts), и до этой правки
- * его не закрывал никто: забаненный студент продолжал принимать и рассылать
- * правки общего `utils.py` всей комнате, пока сам не перезагрузит страницу.
- * Ровно тот спам, за который банят, — по общему файлу, а не по тетради.
+ * `evictBanned` closes the notebook and the control socket with its own
+ * hands: it holds their sockets itself. The file socket is held by another
+ * module (collab/files.ts), and before this change nobody closed it: a
+ * banned student kept receiving and broadcasting edits of the shared
+ * `utils.py` to the whole room until they reloaded the page themselves.
+ * Exactly the spam people get banned for, through a shared file rather than
+ * the notebook.
  *
- * Сосед `ban-evict.test.mts` проверяет объявление (bans.ts · onEviction); здесь
- * — что провод по нему правда закрывается и что закрывается ровно он.
+ * The neighbour `ban-evict.test.mts` checks the announcement (bans.ts ·
+ * onEviction); here we check that the wire it names really closes, and that
+ * exactly that wire closes.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -33,7 +36,7 @@ function seed(name: string, text: string): void {
   fs.writeFileSync(full, text)
 }
 
-/** Сокет с записанным закрытием вместо настоящего. */
+/** A socket with a recorded close instead of a real one. */
 function fakeSocket() {
   let closed: { code: number; reason: string } | null = null
   const ws = {
@@ -62,7 +65,7 @@ function fakeSocket() {
   }
 }
 
-test('бан закрывает файловый сокет забаненного и только его', () => {
+test('a ban closes the file socket of the banned person, and only that one', () => {
   createSession(ROOM, 'Бан и файлы', null)
   upsertParticipant({
     id: 'p_petya',
@@ -81,24 +84,24 @@ test('бан закрывает файловый сокет забаненног
 
   const entry = getFileDoc(ROOM, 'utils.py')
   assert.ok(entry)
-  assert.equal(entry.conns.size, 2, 'сокеты не встали в документ файла')
+  assert.equal(entry.conns.size, 2, 'the sockets did not join the file document')
 
   evictBanned(ROOM, 'p_petya', Date.now() + 60_000)
 
   assert.equal(
     petya.closed?.code,
     1008,
-    'вкладка забаненного с открытым файлом осталась править вместе со всеми',
+    'the tab of the banned person with the file open kept editing along with everyone',
   )
-  assert.equal(ada.closed, null, 'закрыли не того')
+  assert.equal(ada.closed, null, 'the wrong socket was closed')
   assert.deepEqual(
     [...entry.conns.values()].map((state) => state.participantId),
     ['p_ada'],
-    'в документе файла остался кто-то лишний',
+    'someone extra stayed in the file document',
   )
 })
 
-test('второе выселение того же человека ничего не ломает и не трогает чужие комнаты', () => {
+test('a second eviction of the same person breaks nothing and leaves other rooms alone', () => {
   const other = 'ban-files-other'
   createSession(other, 'Соседняя комната', null)
   const full = path.join(sessionDir(other), 'utils.py')
@@ -108,12 +111,13 @@ test('второе выселение того же человека ничег�
   const elsewhere = fakeSocket()
   handleFileSocket(elsewhere.ws, other, 'utils.py', 'participant', 'p_petya')
 
-  // Тот же человек, та же комната, что и в первой проверке: повтор не должен
-  // ни бросать, ни доставать одноимённого участника из соседнего семинара —
-  // `participantId` уникален, но искать по нему без комнаты было бы неверно.
+  // The same person, the same room as in the first check: a repeat must
+  // neither throw nor reach a namesake participant in a neighbouring seminar;
+  // `participantId` is unique, but looking it up without the room would be
+  // wrong.
   dropFileParticipant(ROOM, 'p_petya')
 
-  assert.equal(elsewhere.closed, null, 'закрыли файл человека в чужой комнате')
+  assert.equal(elsewhere.closed, null, 'a file of this person in another room was closed')
   const entry = getFileDoc(other, 'utils.py')
   assert.equal(entry?.conns.size, 1)
 })

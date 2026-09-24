@@ -14,11 +14,11 @@ let rounds = 0
 let toolsWanted = 16
 let batchSize = 1
 let stopAt = 0
-/** Все вызовы с одними и теми же аргументами: так проверяют защиту от круга. */
+/** Every call with the same arguments: that is how the loop guard is tested. */
 let sameArgs = false
-/** На этом круге модель отвечает словами без вызова — проверка толчка. */
+/** On this round the model answers with words and no call: the nudge check. */
 let talkAt = 0
-/** На этом круге модель не отвечает ничем: ни текста, ни вызова. */
+/** On this round the model answers with nothing: no text, no call. */
 let emptyAt = 0
 let activeRoom = ''
 before(async () => {
@@ -29,14 +29,15 @@ before(async () => {
       if (stopAt && rounds === stopAt) queueMicrotask(() => stopAll(activeRoom))
       response.setHeader('content-type', 'application/json')
       /*
-       * Аргументы у каждого вызова свои — и это не украшение.
+       * Every call has its own arguments, and this is not decoration.
        *
-       * Здесь меряют ПОТОЛОК ДЕЙСТВИЙ, а у хода есть вторая граница, которая
-       * ловит другое: тот же вызов с теми же аргументами останавливает ход на
-       * третьем повторе (`fingerprint` в agent.ts). С `arguments: '{}'` двадцать
-       * вызовов подряд считались бы кругом и обрывались на третьем — то есть
-       * этот файл проверял бы защиту от круга вместо потолка. `list_files`
-       * лишние поля не читает.
+       * What is measured here is the ACTION CEILING, and a turn has a second
+       * limit that catches something else: the same call with the same
+       * arguments stops the turn on the third repeat (`fingerprint` in
+       * agent.ts). With `arguments: '{}'` twenty calls in a row would count
+       * as a loop and be cut off on the third, that is, this file would be
+       * testing the loop guard instead of the ceiling. `list_files` does not
+       * read extra fields.
        */
       response.end(JSON.stringify({ choices: [{ message: call
         ? { role: 'assistant', content: null, tool_calls: Array.from({ length: batchSize }, (_, index) => ({ id: `call-${rounds}-${index}`, type: 'function', function: { name: 'list_files', arguments: sameArgs ? '{}' : JSON.stringify({ nth: `${rounds}-${index}` }) } })) }
@@ -66,19 +67,20 @@ async function run(id: string, roomLimit?: number) {
 }
 
 test('default agent work completes beyond the old twelve-tool ceiling', async () => {
-  // Умолчание перестало быть нулём: ход без потолка, упёршийся в модель,
-  // которая описывает вызов прозой, ходит к провайдеру, пока кто-нибудь не
-  // нажмёт «Стоп». Ноль по-прежнему доступен оператору — проверка ниже.
+  // The default is no longer zero: a turn without a ceiling, stuck on a model
+  // that describes a call in prose, keeps going to the provider until someone
+  // presses "Stop". Zero is still available to the operator: see the check
+  // below.
   assert.equal(getOracleSettings().agentSteps, 24)
   updateOracleSettings({ agentSteps: 0 })
   const result = await run('no-step-limit')
   assert.equal(result.answer, 'Задача завершена')
   /*
-   * Восемнадцать, а не семнадцать: шестнадцать вызовов, ответ словами,
-   * толчок («вызовите инструмент или закончите итогом») и второй ответ
-   * словами, на котором ход и заканчивается. Толчок стоит один запрос и
-   * спасает ходы, где модель ОПИСЫВАЕТ следующий вызов вместо того, чтобы его
-   * сделать; второй молчаливый ответ подряд — уже правда итог.
+   * Eighteen, not seventeen: sixteen calls, an answer in words, the nudge
+   * ("call a tool or finish with a summary") and a second answer in words,
+   * on which the turn ends. The nudge costs one request and saves turns
+   * where the model DESCRIBES the next call instead of making it; a second
+   * answer without a call in a row really is the summary.
    */
   assert.equal(rounds, 18)
 })
@@ -88,10 +90,10 @@ test('a reply without a tool call is nudged once, and a call after the nudge car
   talkAt = 3
   try {
     const result = await run('nudge-once')
-    // Третий круг — слова без вызова; после толчка ход продолжился и дошёл до
-    // конца списка вызовов, а не оборвался на середине.
+    // The third round is words without a call; after the nudge the turn went
+    // on and reached the end of the call list instead of breaking off midway.
     assert.equal(result.answer, 'Задача завершена')
-    assert.equal(chatSteps(result.entry).length, 15, 'толчок оборвал ход вместо того, чтобы его продолжить')
+    assert.equal(chatSteps(result.entry).length, 15, 'the nudge cut the turn off instead of continuing it')
   } finally { talkAt = 0 }
 })
 
@@ -170,7 +172,7 @@ test('the same call with the same arguments answers from memory once and then en
   sameArgs = true
   try {
     const result = await run('loop-guard')
-    // Первый вызов — настоящий, второй — из памяти, третий обрывает ход.
+    // The first call is real, the second comes from memory, the third ends the turn.
     assert.equal(rounds, 3)
     const notes = chatSteps(result.entry).map(step => String(step.get('note')))
     assert.equal(notes.length, 3)
@@ -187,7 +189,7 @@ test('every step carries the moment it was recorded', async () => {
     for (const step of chatSteps(result.entry)) {
       const at = step.get('at')
       assert.equal(typeof at, 'number')
-      assert.ok(at >= began && at <= Date.now(), `шаг записан вне хода: ${at}`)
+      assert.ok(at >= began && at <= Date.now(), `step recorded outside the turn: ${at}`)
     }
   } finally { updateOracleSettings({ agentSteps: 0 }) }
 })

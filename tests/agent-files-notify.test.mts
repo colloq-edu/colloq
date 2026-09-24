@@ -32,9 +32,10 @@ test('agent file creation and updates reach every file panel before the tool rep
   const hands: Hands = { sessionId: id, entryId: entry.get('id'), by: { name: 'Teacher', color: '#123456', participantId: 'teacher' }, role: 'host' }
   const teacher = seat(id, 'teacher'), student = seat(id, 'student')
   /*
-   * Обычный файл, а не .ipynb: тетрадь `write_file` больше не пишет вовсе
-   * (её заводит create_notebook), и проверка про рассылку дерева проверяла бы
-   * тогда отказ. Рассылке всё равно, что за файл.
+   * A plain file, not an .ipynb: `write_file` no longer writes notebooks at
+   * all (create_notebook creates them), and the check about broadcasting the
+   * tree would then be checking a refusal. The broadcast does not care what
+   * kind of file it is.
    */
   const name = '02_Mini_proekt_recommender.py'
   const content = JSON.stringify({ cells: [{ cell_type: 'markdown', source: ['# Рекомендатель'] }], nbformat: 4 })

@@ -1,10 +1,11 @@
 /**
- * Самое опасное в этом наборе правок — история версий: снимки теперь пишутся
- * по накопленным байтам, всплеск может принадлежать двоим, а «до» берётся из
- * памяти. Если хоть что-то из этого рвёт цепочку повтора, старые версии
- * пересоберутся с пропусками, и Restore затрёт живой текст — ровно та беда,
- * ради которой всё это чинили. Проверка простая: собрать каждую версию из
- * базы и сверить с тем, что было на самом деле.
+ * The most dangerous part of this set of changes is the version history:
+ * snapshots are now written by accumulated bytes, a burst may belong to two
+ * people, and the "before" is taken from memory. If any of this breaks the
+ * replay chain, old versions will be rebuilt with gaps, and Restore will
+ * overwrite live text — exactly the trouble all of this was fixed for. The
+ * check is simple: rebuild every version from the database and compare it
+ * with what really was there.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -14,7 +15,7 @@ import { createSession, listVersions } from '../server/src/db.js'
 import { flushHistory, record, cellsAt } from '../server/src/collab/history.js'
 import { createCell, getCells } from '../shared/notebook.js'
 
-test('каждая версия пересобирается ровно в то, чем была', () => {
+test('every version rebuilds into exactly what it was', () => {
   const id = 'replay-check'
   createSession(id, 'Replay', null)
   const doc = new Y.Doc()
@@ -26,7 +27,7 @@ test('каждая версия пересобирается ровно в то,
 
   const expected: string[] = []
   for (let i = 1; i <= 60; i++) {
-    // Автор чередуется: всплеск, в который писали двое, теперь один.
+    // The author alternates: a burst that two people wrote into is now one.
     who = i % 3 === 0 ? 'p_two' : 'p_one'
     const cell = getCells(doc).get(0)
     const src = cell.get('source') as Y.Text
@@ -35,8 +36,8 @@ test('каждая версия пересобирается ровно в то,
     expected.push(src.toString())
   }
 
-  // И крупная правка — чтобы снимок сработал по байтам, а не по потолку строк:
-  // именно на нём стоит вся сборка старых версий, и порвись он — молча.
+  // And one large edit, so that the snapshot fires by bytes rather than by the
+  // line ceiling: the whole rebuild of old versions rests on it, and it would break silently.
   for (let i = 0; i < 4; i++) {
     who = 'p_one'
     const src = getCells(doc).get(0).get('source') as Y.Text
@@ -45,27 +46,27 @@ test('каждая версия пересобирается ровно в то,
   }
 
   const versions = listVersions(id, 500)
-  assert.ok(versions.length > 5, `версий всего ${versions.length}`)
+  assert.ok(versions.length > 5, `only ${versions.length} versions`)
   assert.ok(
     versions.some((v) => v.kind === 'keyframe'),
-    'ни одного полного снимка — правило по байтам не сработало',
+    'not a single full snapshot: the byte rule did not fire',
   )
 
-  // Последняя настоящая версия должна совпасть с живым документом — если
-  // цепочка где-то порвалась, здесь будет обрубок.
+  // The last real version has to match the live document: if the chain broke
+  // somewhere, there will be a stump here.
   const live = (getCells(doc).get(0).get('source') as Y.Text).toString()
   const newest = versions.find((v) => v.kind === 'edit' || v.kind === 'quiet')!
   const rebuilt = cellsAt(id, newest.seq)
-  assert.equal(rebuilt[0]?.source, live, 'последняя версия пересобралась не тем')
+  assert.equal(rebuilt[0]?.source, live, 'the last version rebuilt into something else')
 
-  // И каждая версия по отдельности — не пустая и не короче предыдущей.
+  // And every version on its own: not empty and not shorter than the one before.
   let previous = 0
   for (const v of [...versions].reverse()) {
     if (v.kind === 'opened') continue
     const cells = cellsAt(id, v.seq)
-    assert.ok(cells.length > 0, `версия ${v.seq} (${v.kind}) пересобралась пустой`)
+    assert.ok(cells.length > 0, `version ${v.seq} (${v.kind}) rebuilt empty`)
     const length = cells[0].source.length
-    assert.ok(length >= previous, `версия ${v.seq} (${v.kind}) короче предыдущей: ${length} < ${previous}`)
+    assert.ok(length >= previous, `version ${v.seq} (${v.kind}) is shorter than the one before: ${length} < ${previous}`)
     previous = length
   }
 })

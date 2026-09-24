@@ -49,16 +49,17 @@ export function peopleInRoom(peers: readonly RoomPeer[]): Person[] {
   return [...byId.values()]
 }
 
-/* ------------------------------------------------------- где человек сейчас */
+/* -------------------------------------------------- where the person is now */
 
 /**
- * Место в комнате, к которому можно отвести.
+ * A place in the room one can be taken to.
  *
- * `file` появился вместе с переходом к определению и отличается от остальных:
- * это не «покажи панель», а «открой вкладку». Строки в нём нет намеренно —
- * куда смотреть внутри файла, помнит lib/goto.svelte.ts, и помнит СОСТОЯНИЕМ:
- * редактор файла строится не в тот же кадр, в который открывается вкладка, и
- * число, посланное событием, к его постройке уже не существовало бы.
+ * `file` appeared together with go-to-definition and differs from the rest:
+ * it is not "show the panel" but "open a tab". It deliberately has no line —
+ * where to look inside the file is remembered by lib/goto.svelte.ts, and
+ * remembered as STATE: the file editor is not built in the same frame the tab
+ * opens in, and a number sent in an event would no longer exist by the time
+ * it is built.
  */
 export type RevealTarget =
   | { where: 'cell'; cellId: string }
@@ -66,31 +67,31 @@ export type RevealTarget =
   | { where: 'terminal' }
   | { where: 'oracle' }
 
-/** Что видно про человека: фраза для строки и место, к которому она ведёт. */
+/** What is visible about a person: a phrase for the row and the place it leads to. */
 export interface Whereabouts {
-  /** Одно предложение, или null — про этого человека сказать нечего. */
+  /** One sentence, or null — there is nothing to say about this person. */
   line: string | null
-  /** Куда отвести по нажатию, или null — вести некуда. */
+  /** Where a press takes you, or null — there is nowhere to go. */
   place: RevealTarget | null
 }
 
-/** Состояние комнаты, из которого считается «где кто». */
+/** The room state that "who is where" is computed from. */
 export interface RoomView {
   /**
-   * Номер каждой ячейки — тот же, что нарисован у неё в поле слева.
+   * The number of each cell — the same one drawn in its left gutter.
    *
-   * Карта, а не список в порядке документа: тетрадей в комнате несколько, счёт
-   * в каждой свой, и «ячейка 04» должна означать ту самую четвёртую, которую
-   * человек видит, — в какой бы тетради она ни лежала. Заодно отсюда же видно,
-   * что ячейка ещё существует.
+   * A map, not a list in document order: a room has several notebooks, each
+   * with its own count, and "cell 04" must mean that very fourth one the
+   * person sees — whichever notebook it lies in. It also shows that the cell
+   * still exists.
    */
   numbers: ReadonlyMap<string, number>
   runningCellId: string | null
-  /** Отображаемое имя того, кто нажал Run. */
+  /** The display name of whoever pressed Run. */
   runBy: string | null
 }
 
-/** Номера ячеек читаются так же, как в поле у края: 01, 02, 03. */
+/** Cell numbers read the same as in the gutter at the edge: 01, 02, 03. */
 function cellNumber(view: RoomView, id: string | null | undefined): string | null {
   if (!id) return null
   const number = view.numbers.get(id)
@@ -98,30 +99,31 @@ function cellNumber(view: RoomView, id: string | null | undefined): string | nul
 }
 
 /**
- * Одна фраза про человека и одно место, к которому она ведёт.
+ * One phrase about a person and one place it leads to.
  *
- * Считаются вместе намеренно. Это были две одинаковые лестницы условий — одна
- * складывала предложение, другая выбирала место, — и разойтись им достаточно
- * было в одном шаге: строка сказала бы «правит ячейку 04», а привела бы в
- * терминал. Строка, которая врёт про то, куда ведёт, хуже строки, которая
- * никуда не ведёт.
+ * Computed together on purpose. These used to be two identical ladders of
+ * conditions — one assembled the sentence, the other chose the place — and it
+ * was enough for them to diverge in one step: the row would say "editing cell
+ * 04" and lead to the terminal. A row that lies about where it leads is worse
+ * than a row that leads nowhere.
  *
- * Порядок — по тому, что что перебивает. Запуск важнее места курсора: пока
- * ячейка считается, человек занят именно ею. «N вкладок» стоит говорить только
- * когда ни в одной из них ничего не происходит, и вести туда, понятно, некуда.
+ * The order follows what overrides what. A run matters more than the cursor's
+ * position: while a cell is computing, the person is busy with exactly that
+ * cell. "N tabs" is worth saying only when nothing is happening in any of
+ * them, and there is, of course, nowhere to lead to.
  *
- * Фразы по-русски, потому что рисуются они второй строкой человека в панели —
- * рядом с «Преподаватель · вы» и подсказкой «К Нине в терминал». Панель
- * переведена целиком, и одна английская строка посреди неё читается как чужая
- * заплатка, а не как выбор.
+ * The phrases are in Russian because they are drawn as the person's second
+ * line in the panel — next to "Teacher · you" and the hint "To Nina in the
+ * terminal". The panel is translated in full, and a single English line in
+ * the middle of it reads as a foreign patch rather than a choice.
  */
 export function whereabouts(person: Person, view: RoomView): Whereabouts {
   const runningNo = cellNumber(view, view.runningCellId)
   /*
-   * И нажавший Run, и стоящий в ячейке, пока она считается, одинаково честно
-   * её запускают. runBy — отображаемое имя, поэтому два студента с одинаковым
-   * именем оба заявили бы права на запуск; обычно спор решает курсор, а
-   * неверная догадка здесь стоит слова, а не состояния.
+   * Both the one who pressed Run and the one standing in the cell while it
+   * computes are equally honestly running it. runBy is a display name, so two
+   * students with the same name would both claim the run; usually the cursor
+   * settles it, and a wrong guess here costs a word, not state.
    */
   const runs =
     runningNo !== null &&
@@ -138,8 +140,9 @@ export function whereabouts(person: Person, view: RoomView): Whereabouts {
 
   const at = person.user.activeCellId
   const atNo = cellNumber(view, at)
-  // Ячейку могли удалить с тех пор, как человек в ней стоял: вести к тому,
-  // чего нет, хуже, чем не вести никуда — и говорить про это тоже нечего.
+  // The cell may have been deleted since the person stood in it: leading to
+  // what does not exist is worse than leading nowhere — and there is nothing to
+  // say about it either.
   if (at && atNo) return { get line() { return tr('room.ui.1115', { p0: atNo }) }, place: { where: 'cell', cellId: at } }
 
   if (person.tabs > 1) {

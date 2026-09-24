@@ -28,27 +28,29 @@ const dataDir = path.resolve(env('DATA_DIR', path.join(repoRoot, 'data')))
 const workspaceDir = path.resolve(env('WORKSPACE_DIR', path.join(repoRoot, 'workspace')))
 
 /**
- * Каталог данных — 0700, и это единственное место, где так сказано.
+ * The data directory is 0700, and this is the only place that says so.
  *
- * Внутри лежат ключи входа преподавателей, ключ модели инстанса и токен
- * установки. Заводили каталог трое — этот модуль, db.ts и admin/auth.ts, — и
- * `mode` стоял только у одного из них; а `mkdirSync(mode)` на уже
- * существующем каталоге не делает НИЧЕГО. Побеждал тот, кто позвал первым,
- * и это всегда config.ts (он грузится раньше db.ts): каталог выходил 0755 при
- * комментарии в db.ts, обещающем «0700, закрытый для всех». Сами файлы 0600,
- * так что утечки не было, — но обещание в коде должно быть правдой, иначе
- * следующий класть сюда что-то менее осторожное будет верить ему.
+ * Inside lie the teachers' sign-in keys, the instance's model key and the
+ * setup token. Three parties used to create the directory — this module,
+ * db.ts and admin/auth.ts — and only one of them set `mode`; and
+ * `mkdirSync(mode)` on an already existing directory does NOTHING. Whoever
+ * called first won, and that was always config.ts (it loads before db.ts):
+ * the directory came out 0755 while a comment in db.ts promised "0700, closed
+ * to everyone". The files themselves are 0600, so nothing leaked — but a
+ * promise in code must be true, otherwise the next person to put something
+ * less careful here will trust it.
  *
- * chmod отдельно от mkdir: он-то и чинит каталог, заведённый прошлой версией
- * (и `make dirs`, который заводит его до нас). В try — на общей папке, чужой
- * по владельцу, chmod откажет, и это не повод не запуститься.
+ * chmod separately from mkdir: that is what fixes a directory created by a
+ * previous version (and by `make dirs`, which creates it before us). In a try
+ * — on a shared folder owned by someone else chmod will refuse, and that is no
+ * reason not to start.
  */
 export function ensureDataDir(): string {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 })
   try {
     fs.chmodSync(dataDir, 0o700)
   } catch {
-    /* не наш каталог — работаем как есть, файлы всё равно 0600 */
+    /* not our directory — carry on as is, the files are 0600 anyway */
   }
   return dataDir
 }
@@ -85,16 +87,17 @@ function persistedSecret(): string {
 }
 
 /*
- * Адрес, по которому комнату видно снаружи, — перечитываемый.
+ * The address at which the room is visible from outside — reread.
  *
- * Он был константой, прочитанной один раз при запуске, и `make host` этим
- * пользовался наоборот: при Ctrl+C скрипт возвращает PUBLIC_URL в .env на
- * localhost, а живой сервер продолжает раздавать https-ссылку на туннель,
- * которого уже нет. Преподаватель копирует адрес из панели и рассылает его
- * группе — адрес не открывается ни у кого, включая его самого.
+ * It used to be a constant read once at startup, and `make host` used it the
+ * other way round: on Ctrl+C the script puts PUBLIC_URL in .env back to
+ * localhost, while the live server keeps handing out an https link to a
+ * tunnel that no longer exists. The teacher copies the address from the panel
+ * and sends it to the group — the address opens for nobody, the teacher
+ * included.
  *
- * Файл перечитывается не чаще раза в две секунды: спрашивают его на каждой
- * ссылке в списке семинаров, а меняется он дважды за жизнь процесса.
+ * The file is reread at most once every two seconds: it is asked for on every
+ * link in the seminar list, and it changes twice in the life of the process.
  */
 const envFile = path.join(repoRoot, '.env')
 let publicUrlCache: { at: number; value: string } | null = null
@@ -111,16 +114,17 @@ function readPublicUrl(): string {
   if (publicUrlCache && now - publicUrlCache.at < 2000) return publicUrlCache.value
 
   /*
-   * Файл главнее переменной окружения — и это не описка.
+   * The file outranks the environment variable — and that is not a typo.
    *
-   * Сначала было наоборот, «как обычно», и от этого не работало ровно то, ради
-   * чего всё затевалось: `make run` и `scripts/host.sh` перед запуском node
-   * делают `set -a; . ./.env`, так что PUBLIC_URL всегда уже в process.env — и
-   * файл, который host.sh правит при Ctrl+C, не перечитывался никогда.
+   * It used to be the other way round, "as usual", and that broke exactly what
+   * the whole thing was for: `make run` and `scripts/host.sh` do
+   * `set -a; . ./.env` before starting node, so PUBLIC_URL is always already in
+   * process.env — and the file that host.sh edits on Ctrl+C was never reread.
    *
-   * В контейнере .env рядом нет (образ его не копирует), а PUBLIC_URL приходит
-   * через compose — там читается переменная, как и раньше. То есть правило
-   * простое: где файл есть, он и главный; где нет — окружение.
+   * In the container there is no .env alongside (the image does not copy it),
+   * and PUBLIC_URL comes through compose — there the variable is read, as
+   * before. So the rule is simple: where the file exists, it wins; where it
+   * does not, the environment does.
    */
   let value = ''
   try {
@@ -131,7 +135,7 @@ function readPublicUrl(): string {
       .find((l) => /^\s*PUBLIC_URL\s*=/.test(l))
     if (line) value = line.slice(line.indexOf('=') + 1).trim().replace(/^['"]|['"]$/g, '')
   } catch {
-    /* .env нет — это норма */
+    /* no .env — that is normal */
   }
   if (!value) value = process.env.PUBLIC_URL ?? ''
   const resolved = (value || fallback).replace(/\/+$/, '')
@@ -140,14 +144,16 @@ function readPublicUrl(): string {
 }
 
 /**
- * Токен Jupyter из .env.example — то есть известный всем, кто видел репозиторий.
+ * The Jupyter token from .env.example — that is, known to everyone who has
+ * seen the repository.
  *
- * Умолчание нужно: без него `make run` на ноутбуке не поднялся бы вовсе. Но оно
- * же — пароль к контейнеру с файлами всех семинаров: `make up` при создании
- * .env выписывает случайный, а `cp .env.example .env` руками или .env, лежащий
- * с прошлой весны, оставляют этот. Ради одной строки предупреждения при старте
- * (`server/src/index.ts` · announceJupyterToken) значение названо здесь, а не
- * повторено вторым литералом на другом конце процесса.
+ * A default is needed: without it `make run` on a laptop would not come up at
+ * all. But it is also the password to the container with the files of all
+ * seminars: `make up` writes out a random one when it creates .env, while
+ * `cp .env.example .env` by hand or a .env left over from last spring keep
+ * this one. For the sake of one warning line at startup
+ * (`server/src/index.ts` · announceJupyterToken) the value is named here
+ * rather than repeated as a second literal at the other end of the process.
  */
 export const DEV_JUPYTER_TOKEN = 'colloq-dev-token'
 
@@ -174,20 +180,20 @@ export const config = {
   },
 
   /**
-   * Организация, развернувшая инстанс: строка рядом с логотипом на каждом
-   * экране. На одном адресе это университет, на другом банк, на третьем не
-   * нужно ничего — поэтому умолчание пусто, и тогда логотип остаётся одним
-   * словом, без разделительной линейки.
+   * The organisation that deployed the instance: the line next to the logo on
+   * every screen. At one address it is a university, at another a bank, at a
+   * third nothing is needed — so the default is empty, and then the logo
+   * stays a single word, without the dividing rule.
    *
-   * Восемьдесят символов — тот же потолок, что у названия модели в правилах
-   * комнаты (shared/rules.ts). Обрезается здесь, а не в вёрстке, потому что
-   * цена длинной строки не только в шапке: она едет в каждом ответе про
-   * семинар и ложится в localStorage каждого браузера как часть карточки
-   * комнаты. В шапке она к тому же стоит в одну линию с логотипом и забирает
-   * себе всю оставшуюся ширину — многоточие спасает вёрстку, но название
-   * семинара рядом с абзацем всё равно остаётся ни с чем. Прежняя зашитая
-   * строка была в сорок четыре символа; восемьдесят — вдвое больше любого
-   * настоящего имени и всё ещё строка, а не абзац.
+   * Eighty characters — the same ceiling as the model name in the room rules
+   * (shared/rules.ts). Trimmed here, not in the layout, because the cost of a
+   * long string is not only in the header: it travels in every response about
+   * a seminar and lands in every browser's localStorage as part of the room
+   * card. In the header it also sits in one line with the logo and takes all
+   * the remaining width — an ellipsis saves the layout, but the seminar name
+   * next to a paragraph is still left with nothing. The old hard-coded string
+   * was forty-four characters; eighty is twice any real name and still a
+   * line, not a paragraph.
    */
   institution: env('INSTITUTION', '').trim().slice(0, 80),
 
@@ -217,13 +223,14 @@ export const config = {
     baseUrl: env('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
     model: env('OPENAI_MODEL', 'gpt-4o-mini'),
     /**
-     * Просить ли у модели её рассуждение отдельным полем.
+     * Whether to ask the model for its reasoning as a separate field.
      *
-     * Выключено. Было «всегда на OpenRouter», и это тихо удваивало счёт: у
-     * рассуждающих моделей след стоит как ответ, а иногда дороже, и его
-     * просили на каждый вопрос — включая «объясни эту ошибку», где думать не о
-     * чем. След всё равно виден, когда провайдер отдаёт его сам; здесь только
-     * про то, доплачивать ли за него.
+     * Off. It used to be "always on OpenRouter", and that quietly doubled the
+     * bill: for reasoning models the trace costs as much as the answer, and
+     * sometimes more, and it was requested for every question — including
+     * "explain this error", where there is nothing to think about. The trace
+     * is still visible when the provider returns it on its own; this is only
+     * about whether to pay extra for it.
      */
     reasoning: env('AI_REASONING', 'false') === 'true',
   },
@@ -231,43 +238,48 @@ export const config = {
   maxUploadBytes: Number(env('MAX_UPLOAD_MB', '50')) * 1024 * 1024,
 
   /**
-   * Потолок на всю комнату, а не на один файл.
+   * A ceiling for the whole room, not for one file.
    *
-   * Ограничение было только на файл: пятьдесят мегабайт за раз и сто заходов
-   * дают пять гигабайт на одном семинаре. Диск здесь общий с базой, снимками
-   * тетрадей и образами окружений, и кончается он молча и сразу для всех.
-   * Гигабайт — это двадцать предельных файлов; настоящему семинару столько не
-   * нужно, а промахнувшемуся ногой по клавише хватит, чтобы остановиться.
+   * The limit used to be per file only: fifty megabytes at a time and a
+   * hundred uploads make five gigabytes in one seminar. The disk here is
+   * shared with the database, notebook snapshots and environment images, and
+   * it runs out silently and for everyone at once. A gigabyte is twenty
+   * maximum-size files; a real seminar does not need that much, and it is
+   * enough to stop someone whose foot slipped on the key.
    */
   maxSessionBytes: Number(env('MAX_SESSION_MB', '1024')) * 1024 * 1024,
 
   /**
-   * Сколько памяти одна попытка консилиума может потратить на личные копии
-   * данных (kernel/council-isolation.ts).
+   * How much memory one council attempt may spend on personal copies of data
+   * (kernel/council-isolation.ts).
    *
-   * Потолок нужен потому, что ядро в комнате одно и память у него общая: без
-   * него `arr = np.zeros(2_000_000_000)` преподавателя превращал бы каждую
-   * попытку в копию на 16 ГБ и убивал ядро посреди пары у всех сразу. Самый
-   * частый и самый тяжёлый случай семинара — большая таблица pandas — в этот
-   * счёт не идёт вовсе: при Copy-on-Write копия стоит O(1).
+   * The ceiling is needed because a room has one kernel and its memory is
+   * shared: without it the teacher's `arr = np.zeros(2_000_000_000)` would
+   * turn every attempt into a 16 GB copy and kill the kernel in the middle of
+   * the class period for everyone at once. The most frequent and the heaviest
+   * case in a seminar — a big pandas table — does not count toward this at
+   * all: with Copy-on-Write the copy costs O(1).
    *
-   * Что в потолок не влезло, остаётся общим, и попытке об этом говорят строкой
-   * в выводе: тихая половинчатая изоляция хуже честно названной.
+   * Whatever did not fit under the ceiling stays shared, and the attempt is
+   * told so with a line in its output: quiet half-way isolation is worse than
+   * honestly named isolation.
    */
   councilCopyBytes: Number(env('COUNCIL_COPY_MB', '512')) * 1024 * 1024,
 
   /**
-   * Ставить ли попытке консилиума потолок адресного пространства.
+   * Whether to put an address-space ceiling on a council attempt.
    *
-   * Без него `np.ones((40000, 40000))` или неудачное декартово соединение
-   * зовут OOM-killer, а тот убивает ядро ВСЕЙ комнаты: разбор преподавателя,
-   * данные каждого, кто уже сдал, и очередь заодно. Под потолком то же самое
-   * кончается `MemoryError` в одной попытке, и занятие продолжается.
+   * Without it `np.ones((40000, 40000))` or an unlucky Cartesian join calls
+   * the OOM killer, and that kills the kernel of the WHOLE room: the teacher's
+   * review, the data of everyone who has already submitted, and the queue
+   * along with them. Under the ceiling the same thing ends with a
+   * `MemoryError` in one attempt, and the class goes on.
    *
-   * Потолок считается от предела контейнера за вычетом уже занятого и запаса
-   * ядру; ни Linux, ни cgroup, ни рядом CUDA — потолка нет вовсе (драйвер
-   * резервирует терабайты виртуальных адресов и под RLIMIT_AS не поднимается).
-   * Выключатель здесь на случай окружения, где этот расчёт врёт.
+   * The ceiling is computed from the container's limit minus what is already
+   * used and a reserve for the kernel; without Linux, without a cgroup, or
+   * with CUDA nearby there is no ceiling at all (the driver reserves terabytes
+   * of virtual addresses and does not come up under RLIMIT_AS). The switch
+   * here is for an environment where this calculation lies.
    */
   councilMemoryGuard: env('COUNCIL_MEMORY_GUARD', '1') !== '0',
 

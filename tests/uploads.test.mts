@@ -11,9 +11,9 @@
  * removes its own temp file; the one that cannot is the process dying mid-write,
  * and what that leaves is swept here.
  *
- * Ниже — сам маршрут: до этого ни один тест не отправлял multipart, и триста
- * строк с временными файлами и синхронными вызовами fs внутри обработчиков
- * потока жили без страховки. Одна из них роняла процесс.
+ * Below is the route itself: until now no test sent multipart, and three
+ * hundred lines with temporary files and synchronous fs calls inside stream
+ * handlers lived without a safety net. One of them crashed the process.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -73,14 +73,15 @@ test('the room\u2019s own files are never touched', () => {
   assert.deepEqual(listing(id), ['.gitkeep', 'data.csv', 'notes.uploading-nope.md'])
 })
 
-test('хвост автосохранения подметается так же, как хвост загрузки', () => {
+test('an autosave leftover is swept just like an upload leftover', () => {
   /*
-   * Уборщик знал только `.имя.uploading-<hex>` — шаблон загрузки, — хотя
-   * обещал убрать всё, что оставило падение посреди записи. Редактор пишет по
-   * своему шаблону, `.имя.saving-<pid>-<время>`, и сохраняется сам каждые
-   * несколько секунд: после падения процесса такой файл лежал невидимо (имя с
-   * точки), удалить его из панели было нечем, а `sessionBytes` считал его в
-   * потолке комнаты.
+   * The sweeper knew only `.name.uploading-<hex>` — the upload pattern —
+   * although it promised to remove everything a crash in the middle of a write
+   * left behind. The editor writes with its own pattern,
+   * `.name.saving-<pid>-<time>`, and saves by itself every few seconds: after
+   * a process crash such a file lay invisible (the name starts with a dot),
+   * there was nothing to delete it with from the panel, and `sessionBytes`
+   * counted it against the room cap.
    */
   const id = room()
   write(id, `.train.py.saving-${process.pid}-m9x2k1`, 'половина', 2 * 60 * 60 * 1000)
@@ -89,18 +90,18 @@ test('хвост автосохранения подметается так же
   assert.deepEqual(listing(id), ['train.py'])
 })
 
-test('свежее автосохранение не подметают из-под живого редактора', () => {
+test('a fresh autosave is not swept out from under a live editor', () => {
   const id = room()
   write(id, `.train.py.saving-${process.pid}-m9x2k1`, 'ещё пишется')
   sweepStaleUploads(id)
   assert.equal(listing(id).length, 1)
 })
 
-test('уборка на запуске проходит по всем комнатам, а не по той, куда грузят', () => {
+test('the startup sweep goes through all rooms, not just the one being uploaded to', () => {
   /*
-   * Уборка висела на следующей загрузке файла в ту же комнату. В комнате, куда
-   * ничего не загружают, хвост автосохранения лежал бы до ручной чистки —
-   * поэтому запуск обходит весь том.
+   * The sweep hung on the next file upload into the same room. In a room
+   * where nothing gets uploaded, an autosave leftover would lie there until a
+   * manual cleanup — so startup walks the whole volume.
    */
   const one = room()
   const two = room()
@@ -125,7 +126,7 @@ test('the temp name is hidden from the room', async () => {
   assert.deepEqual(listFiles(id).map((f) => f.name), ['data.csv'])
 })
 
-/* ------------------------------------------------------------- маршрут */
+/* --------------------------------------------------------------- route */
 
 const UP = 'upload-room'
 let base = ''
@@ -133,8 +134,9 @@ let server: http.Server
 
 before(async () => {
   createSession(UP, 'Uploads', null)
-  // Роль решается на каждом запросе и из токена не читается: преподаватель —
-  // тот, чей участник заведён хост-токеном (см. roleFor в routes/sessions.ts).
+  // The role is decided on every request and is not read from the token: the
+  // teacher is the one whose participant was created with a host token (see
+  // roleFor in routes/sessions.ts).
   upsertParticipant({
     id: 'p_host',
     sessionId: UP,
@@ -144,8 +146,9 @@ before(async () => {
     tokenHost: true,
   })
   /*
-   * Приложение целиком (server/src/app.ts), а не свой express рядом: копия
-   * порядка middleware расхождений с продуктом не ловит, она их повторяет.
+   * The whole application (server/src/app.ts), not our own express next to
+   * it: a copy of the middleware order does not catch divergence from the
+   * product, it repeats it.
    */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -171,7 +174,7 @@ async function upload(
   opts: { dir?: string; role?: 'host' | 'participant' } = {},
 ): Promise<UploadAnswer> {
   const form = new FormData()
-  // Поле раньше файлов — как его кладёт панель.
+  // The field goes before the files — the way the panel puts it.
   if (opts.dir !== undefined) form.append('dir', opts.dir)
   for (const one of named) {
     form.append('file', new Blob([one.body ?? 'a,b\n1,2\n']), one.name)
@@ -196,81 +199,84 @@ async function upload(
 
 const onDisk = (rel: string) => path.join(sessionDir(UP), rel)
 
-test('файл, уроненный в комнату, ложится в её папку', async () => {
+test('a file dropped into the room lands in its folder', async () => {
   const answer = await upload([{ name: 'handout.csv' }])
   assert.equal(answer.status, 200)
   assert.ok(answer.files.includes('handout.csv'))
   assert.equal(fs.readFileSync(onDisk('handout.csv'), 'utf8'), 'a,b\n1,2\n')
 })
 
-test('поле dir кладёт файл в папку, которой ещё не было', async () => {
+test('the dir field puts the file into a folder that did not exist yet', async () => {
   const answer = await upload([{ name: 'model.py', body: 'x = 1\n' }], { dir: 'src/nested' })
   assert.equal(answer.status, 200)
   assert.ok(answer.files.includes('src/nested/model.py'))
 })
 
-test('dir, называющий файл, отвечает отказом, а не роняет сервер', async () => {
+test('a dir that names a file is refused instead of crashing the server', async () => {
   /*
-   * `mkdirSync` без try/catch в обработчике busboy бросал EEXIST прямо из
-   * события потока — мимо express, в `uncaughtException`, а тот делает
-   * `process.exit(1)`: один запрос любого участника гасил инстанс со всеми его
-   * семинарами. Вариант `data.csv/sub` — то же самое, только ENOTDIR.
+   * `mkdirSync` without try/catch in the busboy handler threw EEXIST straight
+   * out of the stream event — past express, into `uncaughtException`, and
+   * that does `process.exit(1)`: one request from any participant took down
+   * the instance with all its seminars. The `data.csv/sub` variant is the same
+   * thing, only ENOTDIR.
    */
   for (const dir of ['handout.csv', 'handout.csv/sub']) {
     const answer = await upload([{ name: 'more.csv' }], { dir })
     assert.equal(answer.status, 400, `dir=${dir}`)
-    assert.ok(answer.error && answer.error.length > 20, `нечего сказать про dir=${dir}`)
+    assert.ok(answer.error && answer.error.length > 20, `nothing to say about dir=${dir}`)
   }
-  // Сервер жив, и файл, чьё имя взяли за папку, цел.
+  // The server is alive, and the file whose name was taken for a folder is
+  // intact.
   assert.equal(fs.readFileSync(onDisk('handout.csv'), 'utf8'), 'a,b\n1,2\n')
   const after = await upload([{ name: 'after.csv' }])
   assert.equal(after.status, 200)
 })
 
-test('слишком длинное имя объясняется тем же потолком, что и в дереве', async () => {
-  // Сто пятьдесят символов — обычная выгрузка из LMS. Раньше загрузка меряла
-  // именем в двести, а путь дальше — сотней двадцатью, и человек получал
-  // «cannot be used as a file name here» без единой причины.
+test('a name that is too long is explained with the same cap as in the tree', async () => {
+  // A hundred and fifty characters is an ordinary export from an LMS.
+  // Previously the upload measured the name against two hundred, and the path
+  // further on against a hundred and twenty, and the person got "cannot be
+  // used as a file name here" without a single reason.
   const answer = await upload([{ name: 'a'.repeat(146) + '.csv' }])
   assert.equal(answer.status, 400)
   assert.match(answer.error ?? '', /120/)
   assert.match(answer.error ?? '', /150/)
 })
 
-test('участник не кладёт файл поверх уже лежащего', async () => {
+test('a participant does not put a file on top of an existing one', async () => {
   const answer = await upload([{ name: 'handout.csv', body: 'подмена\n' }])
   assert.equal(answer.status, 403)
   assert.equal(fs.readFileSync(onDisk('handout.csv'), 'utf8'), 'a,b\n1,2\n')
-  // А преподаватель — кладёт, и об этом сказано вслух.
+  // But the teacher does, and it is said out loud.
   const asHost = await upload([{ name: 'handout.csv', body: 'a,b\n3,4\n' }], { role: 'host' })
   assert.equal(asHost.status, 200)
   assert.deepEqual(asHost.replaced, ['handout.csv'])
 })
 
-test('больше восьми файлов за раз — отказ с числом', async () => {
+test('more than eight files at once is refused with the number', async () => {
   const many = Array.from({ length: 9 }, (_, i) => ({ name: `many${i}.txt`, body: 'x' }))
   const answer = await upload(many)
   assert.equal(answer.status, 400)
   assert.match(answer.error ?? '', /8/)
 })
 
-test('файл крупнее потолка не ложится поверх целого и не оставляет мусора', async () => {
+test('a file larger than the cap does not land on top of a whole one and leaves no garbage', async () => {
   /*
-   * Потолок трогается прямо здесь: гонять пятьдесят мегабайт через сокет ради
-   * одной ветки — минута теста на пустом месте, а читает его маршрут на каждом
-   * запросе.
+   * The cap is touched right here: pushing fifty megabytes through a socket
+   * for the sake of one branch is a minute of test time for nothing, and the
+   * route reads it on every request.
    */
-  // `config` объявлен `as const`; подвинуть потолок на один тест — вот так.
+  // `config` is declared `as const`; this is how to move a cap for one test.
   const tunable: { maxUploadBytes: number } = config
   const was = tunable.maxUploadBytes
   tunable.maxUploadBytes = 32
   try {
     const answer = await upload([{ name: 'handout.csv', body: 'x'.repeat(4096) }], { role: 'host' })
     assert.equal(answer.status, 413)
-    assert.equal(fs.readFileSync(onDisk('handout.csv'), 'utf8'), 'a,b\n3,4\n', 'обрезок лёг поверх')
+    assert.equal(fs.readFileSync(onDisk('handout.csv'), 'utf8'), 'a,b\n3,4\n', 'a truncated piece landed on top')
   } finally {
     tunable.maxUploadBytes = was
   }
   const leftovers = fs.readdirSync(sessionDir(UP)).filter((name) => name.startsWith('.'))
-  assert.deepEqual(leftovers, [], 'недописанный файл остался лежать в папке комнаты')
+  assert.deepEqual(leftovers, [], 'the half-written file was left lying in the room folder')
 })

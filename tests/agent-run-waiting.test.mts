@@ -1,18 +1,21 @@
 /**
- * Ход оракула: команда, не дождавшаяся оболочки, СНЯТА — и так и сказано.
+ * The oracle's turn: a command that never got the shell is REMOVED, and it
+ * says exactly that.
  *
- * Слово здесь дороже обычного: этот абзац читает не человек, а модель, и она
- * пересказывает его комнате своими словами. Дело сделано (`stopRun` в ветке
- * ожидания зовёт `dropPendingOf`, и что тот действительно вырезает запись из
- * очереди, отвечает ждущему и не трогает чужую команду, закреплено в
- * tests/terminal.test.mts · «ход оракула кончился — его ждущая команда не
- * начнётся потом сама»), а слово успело разойтись с ним: в ответе стояло
- * «команда осталась в очереди и может начаться позже — второй раз её ставить не
- * надо». Модель, поверив, объявляла классу запуск, которого уже не будет, и не
- * запускала заново.
+ * The word matters more than usual here: this paragraph is read not by a
+ * person but by the model, and it retells it to the room in its own words.
+ * The deed is done (`stopRun` in the waiting branch calls `dropPendingOf`,
+ * and that it really cuts the entry out of the queue, answers the waiter and
+ * does not touch someone else's command is pinned down in
+ * tests/terminal.test.mts · "the Oracle turn is over — its waiting command
+ * will not start later on its own"), but the word managed to drift from it:
+ * the answer said "the command stayed in the queue and may start later; do
+ * not queue it a second time". The model, believing it, announced to the
+ * class a run that would never happen and did not run it again.
  *
- * Поэтому проверяется пара: снятие в коде хода и фраза, которая про него
- * говорит. Ни сети, ни ядра здесь нет — сверяются два места одного файла.
+ * So a pair is checked: the removal in the turn's code and the phrase that
+ * talks about it. There is no network or kernel here: two places of one file
+ * are compared.
  */
 import { test } from 'node:test'
 import { translate } from '../shared/i18n.js'
@@ -25,37 +28,37 @@ const agent = readFileSync(
   'utf8',
 )
 
-/** Кусок файла от строки-приметы до конца ветки — грубо, но по делу. */
+/** A piece of the file from a marker line to the end of the branch: crude, but to the point. */
 function from(mark: string, chars: number): string {
   const at = agent.indexOf(mark)
-  assert.notEqual(at, -1, `в agent.ts нет ${mark}`)
+  assert.notEqual(at, -1, `agent.ts has no ${mark}`)
   return agent.slice(at, at + chars)
 }
 
-test('срок ожидания снимает свою команду из очереди, а не оставляет её там', () => {
+test('the waiting deadline removes its own command from the queue instead of leaving it there', () => {
   const branch = from("if (!typedRunningCommand(hands.sessionId, hands.by.participantId)) {", 400)
   assert.match(branch, /cut = 'waiting'/)
   assert.match(branch, /dropPendingOf\(hands\.sessionId, hands\.by\.participantId\)/)
-  // Ctrl+C — только в свою команду: в этой ветке его нет вовсе.
+  // Ctrl+C goes only into one's own command: this branch has none at all.
   assert.doesNotMatch(branch, /interruptTerminal/)
 })
 
-test('и модели про это сказано теми же словами: команда снята', () => {
+test('and the model is told about it in the same words: the command is removed', () => {
   const branch = from("if (result.cut === 'waiting') {", 500)
   const said = translatedBranch(branch, 'ru')
   assert.match(translatedBranch(branch, 'en'), /removed my command from the queue/)
   assert.match(said, /сн(ял|ята) из очереди/)
   /*
-   * Три обещания, которых код не выполняет. Каждое проверяется отдельно:
-   * вернуться может любое, а стоят они одинаково — модель говорит комнате, что
-   * запуск ещё впереди, и ждёт его вместо того, чтобы запустить.
+   * Three promises the code does not keep. Each is checked separately: any
+   * of them may come back, and they cost the same: the model tells the room
+   * the run is still ahead and waits for it instead of running it.
    */
   assert.doesNotMatch(said, /осталась в очереди/)
   assert.doesNotMatch(said, /может начаться/)
   assert.doesNotMatch(said, /второй раз её ставить не надо/)
 })
 
-test('строка шага в ленте преподавателя говорит то же самое', () => {
+test('the step line in the teacher feed says the same', () => {
   const branch = from("result.cut === 'waiting'", 200)
   const step = translatedBranch(branch, 'ru')
   assert.match(translatedBranch(branch, 'en'), /did not start.*removed from the queue/)

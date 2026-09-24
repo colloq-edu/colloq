@@ -1,18 +1,19 @@
 /**
- * Прогонщик посылок: очередь, два шага, исходы.
+ * The submission runner: the queue, two steps, outcomes.
  *
- * Проверяется то, что ломается тихо и дорого. Команда контейнера, из которой
- * пропал один флаг: посылка с интернетом или с правом писать в корень видна
- * только тому, кто ею воспользуется. Ответы, попавшие в контейнер участника, —
- * это соревнование, решённое чтением файла. Очередь, которая после
- * перезапуска сервера держит посылку «выполняется» до конца соревнования.
- * Трассировка метрики, уехавшая участнику вместо преподавателя. И деление
- * строк, посчитанное браузером иначе, чем контейнером, — единственная ошибка
- * из этого списка, которую вообще некому заметить.
+ * What is checked is what breaks quietly and expensively. A container command
+ * that lost one flag: a submission with internet access or with the right to
+ * write to the root is visible only to whoever takes advantage of it. Answers
+ * that got into the entrant's container mean a competition solved by reading
+ * a file. A queue that after a server restart keeps a submission "running"
+ * until the end of the competition. A metric traceback sent to the entrant
+ * instead of the teacher. And a row split computed by the browser differently
+ * than by the container — the one mistake on this list that nobody would ever
+ * notice.
  *
- * Настоящего docker здесь нет и быть не должно: команды проверяются чистыми
- * функциями, а всё остальное — подставным прогонщиком, который не исполняет ни
- * строки чужого кода.
+ * There is no real docker here, and there must not be: the commands are
+ * checked as pure functions, and everything else with a stand-in runner that
+ * does not execute a single line of anyone's code.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -89,15 +90,15 @@ import {
 } from '../server/src/competitions/runner.js'
 import type { Competition } from '../shared/competitions.js'
 
-/* ------------------------------------------------------------- обстановка */
+/* ------------------------------------------------------------------ setup */
 
 const runner = new FakeCompetitionRunner()
 useCompetitionRunner(runner)
 
 /**
- * Очередь одна на инстанс, и это не обстоятельство теста, а устройство
- * продукта: исполнитель у машины один на все соревнования. Поэтому каждая
- * проверка начинает с чистого листа.
+ * There is one queue per instance, and that is not a circumstance of the test
+ * but the design of the product: the machine has one executor for all
+ * competitions. So every check starts from a clean slate.
  */
 function reset(): void {
   for (const row of queueRows()) leaveQueue(row.submissionId)
@@ -108,7 +109,7 @@ function reset(): void {
 
 let seq = 0
 
-/** Ключ участника возвращается один раз, при заведении; прогонщику он не нужен. */
+/** The entrant key is returned once, on creation; the runner does not need it. */
 const mint = (name: string) => createEntrant(name).entrant
 
 function makeCompetition(over: Partial<Parameters<typeof createCompetition>[0]> = {}): Competition {
@@ -124,8 +125,9 @@ function makeCompetition(over: Partial<Parameters<typeof createCompetition>[0]> 
     environment: 'base',
     ...over,
   })
-  assert.ok(made, 'соревнование должно завестись')
-  // Всё, без чего посылку считать нечем: открытый образец ответа и ответы.
+  assert.ok(made, 'the competition must be created')
+  // Everything a submission cannot be scored without: the open sample answer
+  // and the answers.
   putOpenFile(made.id, 'sample_submission.csv', enc('id,target\n1,0\n2,0\n'))
   putSecretFile(made.id, SOLUTION_NAME, enc('id,target\n1,1\n2,2\n'))
   putFile({ competitionId: made.id, name: 'sample_submission.csv', bytes: 24, visibility: 'open' })
@@ -134,7 +136,7 @@ function makeCompetition(over: Partial<Parameters<typeof createCompetition>[0]> 
 
 const enc = (text: string): Uint8Array => new TextEncoder().encode(text)
 
-/** Тетрадь из настоящего .ipynb: подставной прогонщик читает её как json. */
+/** A notebook as a real .ipynb: the stand-in runner reads it as json. */
 function notebook(sources: string[]): Uint8Array {
   return enc(
     JSON.stringify({
@@ -158,14 +160,14 @@ function send(competition: Competition, entrantId: string, sources: string[], at
   return submission
 }
 
-/* --------------------------------------------------- команды контейнеров */
+/* ---------------------------------------------------- container commands */
 
 const LIMITS_SAMPLE = limitsFor(
   { limits: { wallSeconds: 600, memoryMb: 4096, cpus: 2, perDay: 5 } } as Competition,
   'notebook',
 )
 
-test('команда тетради: без сети, только на чтение, с потолками', () => {
+test('the notebook command: no network, read-only, with ceilings', () => {
   const args = runArgs({
     container: 'colloq-comp-abc-run',
     image: 'colloq-kernel:base',
@@ -176,28 +178,30 @@ test('команда тетради: без сети, только на чтен
     target: SUBMISSION_FILE,
   })
   const line = args.join(' ')
-  assert.ok(line.includes('--network none'), 'сети у посылки нет вовсе')
+  assert.ok(line.includes('--network none'), 'the submission has no network at all')
   assert.ok(args.includes('--read-only'))
   assert.ok(args.includes('--user=1000:1000'))
   assert.ok(args.includes('--cap-drop=ALL'))
   assert.ok(args.includes('--security-opt=no-new-privileges'))
   assert.ok(args.includes('--pids-limit=256'))
   assert.ok(args.includes('--memory=4096m'))
-  // Swap ровно по памяти: иначе упёршийся контейнер не умирает, а уходит на диск.
+  // Swap exactly equal to memory: otherwise a container at its limit does not
+  // die but goes to disk.
   assert.ok(args.includes('--memory-swap=4096m'))
   assert.ok(args.includes('--cpus=2'))
   assert.ok(args.includes(`--ulimit=fsize=${64 * 1024 * 1024 * 4}:${64 * 1024 * 1024 * 4}`))
-  // /out — tmpfs: диск контейнера не ограничен ничем, и это главная дыра шага.
+  // /out is tmpfs: the container's disk is not limited by anything, and that
+  // is the step's main hole.
   assert.ok(line.includes('--tmpfs=/out:rw,exec,nosuid,nodev,size=512m,mode=1777'))
   assert.ok(line.includes('--tmpfs=/tmp:rw,nosuid,nodev,size=512m'))
-  // `--rm` нет намеренно: контейнер нужен мёртвым — прочитать OOMKilled.
+  // No `--rm` on purpose: the container is needed dead, to read OOMKilled.
   assert.ok(!args.includes('--rm'))
   assert.ok(args.includes('--restart=no'))
   assert.ok(line.includes('colloq.kind=competition-run'))
   assert.equal(args[args.length - 1], '/harness/run_notebook.py')
 })
 
-test('в контейнер участника не попадает ни ответов, ни кода метрики', () => {
+test("neither the answers nor the metric code get into the entrant's container", () => {
   const args = runArgs({
     container: 'c',
     image: 'colloq-kernel:base',
@@ -213,18 +217,19 @@ test('в контейнер участника не попадает ни отв
     ['/data', '/submission', '/harness'],
   )
   for (const mount of mounts) {
-    assert.ok(!mount.includes('/secret'), `закрытая половина не монтируется: ${mount}`)
-    assert.ok(!mount.includes(SOLUTION_NAME), `ответы не монтируются: ${mount}`)
-    assert.ok(!mount.includes(METRIC_NAME), `код метрики не монтируется: ${mount}`)
+    assert.ok(!mount.includes('/secret'), `the closed half is not mounted: ${mount}`)
+    assert.ok(!mount.includes(SOLUTION_NAME), `the answers are not mounted: ${mount}`)
+    assert.ok(!mount.includes(METRIC_NAME), `the metric code is not mounted: ${mount}`)
   }
-  // Данные и тетрадь — только на чтение; пишет посылка в один каталог.
+  // The data and the notebook are read-only; the submission writes into one
+  // directory.
   assert.ok(mounts[0].endsWith(':ro'))
   assert.ok(mounts[1].endsWith(':ro'))
   assert.ok(mounts[2].endsWith(':ro'))
   assert.ok(mounts.every((mount) => mount.endsWith(':ro')))
 })
 
-test('команда метрики: секреты внутри, открытые данные и тетрадь — нет', () => {
+test('the metric command: the secrets inside, the open data and the notebook not', () => {
   const limits = limitsFor(
     { limits: { wallSeconds: 600, memoryMb: 4096, cpus: 2, perDay: 5 } } as Competition,
     'metric',
@@ -248,8 +253,8 @@ test('команда метрики: секреты внутри, открыты
     ['/secret', '/submission', '/harness'],
   )
   for (const mount of mounts) {
-    assert.ok(!mount.includes('/data/competitions/c1/data'), 'открытых данных метрика не видит')
-    assert.ok(!mount.includes('/s/s1/out'), 'исполненной тетради участника метрика не видит')
+    assert.ok(!mount.includes('/data/competitions/c1/data'), 'the metric does not see the open data')
+    assert.ok(!mount.includes('/s/s1/out'), "the metric does not see the entrant's executed notebook")
   }
   assert.ok(args.includes('--network none') || args.join(' ').includes('--network none'))
   assert.ok(args.includes('--pids-limit=64'))
@@ -259,7 +264,7 @@ test('команда метрики: секреты внутри, открыты
   assert.equal(limits.wallSeconds, METRIC_WALL_SECONDS)
 })
 
-test('каждый -v переводится в путь хоста', () => {
+test('every -v is translated into a host path', () => {
   const before = process.env.DATA_HOST_DIR
   process.env.DATA_HOST_DIR = '/srv/colloq-data'
   try {
@@ -273,8 +278,9 @@ test('каждый -v переводится в путь хоста', () => {
       target: SUBMISSION_FILE,
     })
     const mounts = args.filter((arg, i) => args[i - 1] === '-v')
-    // Без перевода `make up` отдал бы посылке пустой каталог, заведённый
-    // демоном на лету, — молча, без единой строки в журнале.
+    // Without translation `make up` would give the submission an empty
+    // directory created by the daemon on the fly — silently, without a single
+    // line in the log.
     for (const mount of mounts) {
       assert.ok(mount.startsWith('/srv/colloq-data/'), mount)
     }
@@ -284,16 +290,16 @@ test('каждый -v переводится в путь хоста', () => {
   }
 })
 
-test('обвязка раскладывается по хэшу содержимого и не переписывается', () => {
+test('the harness is laid out by content hash and is not rewritten', () => {
   const dir = harnessDir()
-  assert.ok(dir.includes('.harness'), 'каталог обвязки прячется от уборки соревнований')
+  assert.ok(dir.includes('.harness'), 'the harness directory hides from the competition sweep')
   for (const name of ['run_notebook.py', 'score_metric.py', 'colloq_metric.py', 'colloq_split.py']) {
     assert.ok(fs.existsSync(path.join(dir, name)), name)
   }
-  assert.equal(harnessDir(), dir, 'второй вызов не заводит новый каталог')
+  assert.equal(harnessDir(), dir, 'a second call does not create a new directory')
 })
 
-test('рабочая папка тетради открывает данные по относительному пути data/', () => {
+test("the notebook's working folder opens the data via the relative path data/", () => {
   const script = `
 import ast, os, tempfile
 from pathlib import Path
@@ -320,7 +326,7 @@ with tempfile.TemporaryDirectory() as root:
   assert.equal(result.status, 0, result.stderr)
 })
 
-test('прогресс считает кодовые ячейки, а ошибка сохраняет причину без ANSI', () => {
+test('progress counts code cells, and an error keeps its cause without ANSI', () => {
   const script = `
 import ast, re, time
 from pathlib import Path
@@ -356,9 +362,9 @@ assert detail.endswith('ValueError: missing column')
   assert.equal(result.status, 0, result.stderr)
 })
 
-/* ------------------------------------------------------------ разбор следов */
+/* ------------------------------------------------------- reading the traces */
 
-test('порядок разбора: память старше срока, срок старше слова обвязки', () => {
+test("parsing order: memory outranks the time limit, the time limit outranks the harness's word", () => {
   assert.equal(
     verdictOfRun({ oom: true, killedBy: 'wall', status: 'cell_error', produced: true }),
     'out-of-memory',
@@ -371,16 +377,19 @@ test('порядок разбора: память старше срока, ср�
     verdictOfRun({ oom: false, killedBy: null, status: 'cell_error', produced: true }),
     'cell_error',
   )
-  // Тетрадь дошла до конца, а файла нет: это отказ, а не успех.
+  // The notebook reached the end but there is no file: that is a rejection,
+  // not a success.
   assert.equal(verdictOfRun({ oom: false, killedBy: null, status: 'ok', produced: false }), 'no-submission')
   assert.equal(verdictOfRun({ oom: false, killedBy: null, status: 'ok', produced: true }), 'ok')
-  // Убитый за печать — падение тетради; убитый за запись на диск — отказ ответу.
+  // Killed for printing is a notebook failure; killed for writing to disk is a
+  // rejection of the answer.
   assert.equal(verdictOfRun({ oom: false, killedBy: 'output', status: 'ok', produced: true }), 'cell_error')
   assert.equal(
     verdictOfRun({ oom: false, killedBy: 'disk', status: 'ok', produced: true }),
     'target_too_large',
   )
-  // Чужое слово не пролезает в базу состоянием, которого нет ни в одной плашке.
+  // An unknown word does not slip into the database as a state that no badge
+  // has.
   assert.equal(verdictOfRun({ oom: false, killedBy: null, status: 'что-то', produced: true }), 'unknown')
   assert.equal(
     verdictOfRun({ oom: false, killedBy: null, status: 'notebook_unreadable', produced: false }),
@@ -388,25 +397,25 @@ test('порядок разбора: память старше срока, ср�
   )
 })
 
-test('пределы шага считаются от памяти, а не из воздуха', () => {
+test("a step's limits are derived from memory, not out of thin air", () => {
   const small = limitsFor({ limits: { wallSeconds: 60, memoryMb: 512, cpus: 1, perDay: 0 } } as Competition, 'notebook')
-  assert.equal(small.tmpfsMb, 128, 'ниже 128 МБ не опускаемся: туда не влезет ни один ответ')
+  assert.equal(small.tmpfsMb, 128, 'we do not go below 128 MB: no answer would fit there')
   const big = limitsFor({ limits: { wallSeconds: 60, memoryMb: 65_536, cpus: 8, perDay: 0 } } as Competition, 'notebook')
-  assert.equal(big.tmpfsMb, 2048, 'выше двух гигабайт tmpfs не растёт: он считается в память посылки')
+  assert.equal(big.tmpfsMb, 2048, "tmpfs does not grow above two gigabytes: it counts towards the submission's memory")
   const metric = limitsFor({ limits: { wallSeconds: 3600, memoryMb: 16_384, cpus: 4, perDay: 0 } } as Competition, 'metric')
-  assert.equal(metric.wallSeconds, METRIC_WALL_SECONDS, 'у метрики свой срок, а не срок тетради')
+  assert.equal(metric.wallSeconds, METRIC_WALL_SECONDS, "the metric has its own time limit, not the notebook's")
   assert.equal(metric.memoryMb, 2048)
   assert.equal(metric.pids, 64)
 })
 
-test('память: не знаем — не мешаем, знаем что нет — не берём', () => {
+test('memory: if we do not know, we do not interfere; if we know there is none, we do not take the job', () => {
   assert.equal(enoughMemory(null, 4096), true)
   assert.equal(enoughMemory(8192, 4096), true)
-  assert.equal(enoughMemory(4096, 4096), false, 'подушка сверх лимита обязательна')
+  assert.equal(enoughMemory(4096, 4096), false, 'a cushion above the limit is required')
   assert.equal(enoughMemory(4352, 4096), true)
 })
 
-test('имя контейнера не повторяется у повтора той же посылки', () => {
+test('the container name does not repeat on a rerun of the same submission', () => {
   const first = containerName('s1', 'notebook', 'aaaa')
   const again = containerName('s1', 'notebook', 'bbbb')
   assert.notEqual(first, again)
@@ -414,7 +423,7 @@ test('имя контейнера не повторяется у повтора 
   assert.ok(containerName('s1', 'metric', 'cccc').endsWith('-score'))
 })
 
-test('путь исполнения выбирается переменной, как у ядер', () => {
+test('the execution path is chosen by a variable, as for kernels', () => {
   assert.equal(competitionBackend({ NODE_ENV: 'test' } as NodeJS.ProcessEnv), 'test')
   assert.equal(competitionBackend({ NODE_ENV: 'development' } as NodeJS.ProcessEnv), 'docker')
   assert.equal(competitionBackend({ NODE_ENV: 'production' } as NodeJS.ProcessEnv), 'broker')
@@ -423,28 +432,29 @@ test('путь исполнения выбирается переменной, �
   assert.equal(competitionBackend({ NODE_ENV: 'test', COMPETITION_BACKEND: 'broker' } as NodeJS.ProcessEnv), 'broker')
 })
 
-/* ------------------------------------------------- подставной прогонщик */
+/* ------------------------------------------------------ stand-in runner */
 
-test('директива разбирается как данные и только как данные', () => {
+test('a directive is parsed as data and only as data', () => {
   const asked = directiveOf(Buffer.from(notebook(['# colloq-test: {"status": "timeout", "cell": 3}\nprint(1)'])))
   assert.deepEqual(asked, { status: 'timeout', cell: 3 })
-  // Мусор в директиве не роняет очередь: посылка пойдёт обычным путём.
+  // Garbage in a directive does not crash the queue: the submission takes the
+  // ordinary path.
   assert.deepEqual(directiveOf(Buffer.from(notebook(['# colloq-test: {сломано}']))), {})
   assert.deepEqual(directiveOf(Buffer.from('не json')), {})
   assert.deepEqual(directiveOf(Buffer.from(notebook(['print(1)']))), {})
   assert.equal(cellsOf(Buffer.from(notebook(['a', 'b', 'c']))), 3)
 })
 
-test('число подставной метрики устойчиво: одно и то же содержимое — одно число', () => {
+test("the stand-in metric's score is stable: the same content gives the same score", () => {
   assert.equal(stableScore('x:public', 0.5, 1), stableScore('x:public', 0.5, 1))
   assert.notEqual(stableScore('x:public', 0.5, 1), stableScore('y:public', 0.5, 1))
   const value = stableScore('z', 0.5, 1)
   assert.ok(value >= 0.5 && value <= 1, String(value))
 })
 
-/* --------------------------------------------------------- путь посылки */
+/* -------------------------------------------------- a submission's path */
 
-test('добросовестная посылка доходит до двух чисел', async () => {
+test('an honest submission gets to two scores', async () => {
   reset()
   const competition = makeCompetition()
   const entrant = mint('Аня')
@@ -455,10 +465,10 @@ test('добросовестная посылка доходит до двух �
   const done = getSubmission(submission.id)
   assert.equal(done?.state, 'scored')
   assert.equal(done?.stage, 'score')
-  assert.ok(done?.publicScore !== null && done.privateScore !== null, 'оба числа на месте')
+  assert.ok(done?.publicScore !== null && done.privateScore !== null, 'both scores are in place')
   assert.ok((done?.durationMs ?? 0) >= 0)
   assert.equal(done?.participantError, null)
-  assert.equal(queueRow(submission.id), null, 'строка ушла из очереди')
+  assert.equal(queueRow(submission.id), null, 'the row left the queue')
 
   const runs = listRuns(submission.id)
   assert.deepEqual(runs.map((run) => run.kind), ['notebook', 'metric'])
@@ -467,15 +477,16 @@ test('добросовестная посылка доходит до двух �
   assert.ok(runs[0].container?.endsWith('-run'))
   assert.ok(runs[1].container?.endsWith('-score'))
 
-  // Ответ сохранён — по нему потом пересчитывают метрику, не запуская тетрадь.
+  // The answer is saved — later the metric is rescored from it without
+  // running the notebook.
   assert.ok(fs.existsSync(path.join(resultDir(competition.id, submission.id), SUBMISSION_FILE)))
-  // А вторая копия ответа, которая жила на время подсчёта, убрана: держать
-  // каждый ответ дважды — это гигабайты, которых никто не читает.
+  // And the second copy of the answer, which lived during scoring, is removed:
+  // keeping every answer twice means gigabytes nobody reads.
   assert.equal(fs.existsSync(scoreDir(competition.id, submission.id)), false)
   assert.equal(fs.existsSync(scoreOutDir(competition.id, submission.id)), false)
 })
 
-test('каждый исход называет виноватого правильно', async () => {
+test('every outcome names the culprit correctly', async () => {
   reset()
   const competition = makeCompetition()
   const entrant = mint('Боря')
@@ -490,21 +501,21 @@ test('каждый исход называет виноватого правил
       directive: '{"status": "cell_error", "cell": 4, "detail": "ZeroDivisionError: division by zero"}',
       state: 'notebookFailed',
       participant: (text) => {
-        assert.ok(text?.includes('5'), 'номер ячейки назван')
-        assert.ok(text?.includes('ZeroDivisionError'), 'своя трассировка уезжает участнику дословно')
+        assert.ok(text?.includes('5'), 'the cell number is named')
+        assert.ok(text?.includes('ZeroDivisionError'), "the entrant's own traceback goes to them verbatim")
       },
       teacher: (text) => assert.ok(text?.includes('cell_error')),
     },
     {
       directive: '{"status": "timeout", "cell": 6}',
       state: 'timedOut',
-      participant: (text) => assert.ok(text?.includes('10'), 'срок назван числом минут'),
+      participant: (text) => assert.ok(text?.includes('10'), 'the time limit is named in minutes'),
       teacher: (text) => assert.ok(text?.includes('exit 137')),
     },
     {
       directive: '{"status": "out_of_memory", "cell": 2}',
       state: 'outOfMemory',
-      participant: (text) => assert.ok(text?.includes('4'), 'предел назван в гигабайтах'),
+      participant: (text) => assert.ok(text?.includes('4'), 'the limit is named in gigabytes'),
       teacher: (text) => assert.ok(text?.includes('OOMKilled')),
     },
     {
@@ -524,14 +535,14 @@ test('каждый исход называет виноватого правил
       state: 'rejected',
       participant: (text) => {
         assert.ok(text?.includes('100') && text?.includes('398692'), text ?? '')
-        assert.ok(!text?.includes('{'), 'код заменён фразой на языке инстанса')
+        assert.ok(!text?.includes('{'), "the code is replaced by a sentence in the instance's language")
       },
       teacher: (text) => assert.equal(text, null),
     },
     {
       directive: '{"metric": "metric_error"}',
       state: 'metricFailed',
-      participant: (text) => assert.equal(text, null, 'участник не читает трассировку метрики'),
+      participant: (text) => assert.equal(text, null, "the entrant does not read the metric's traceback"),
       teacher: (text) => assert.ok(text?.includes('ZeroDivisionError')),
     },
   ]
@@ -547,7 +558,7 @@ test('каждый исход называет виноватого правил
   }
 })
 
-test('упавшая до первой ячейки посылка не тратит норму дня', async () => {
+test("a submission that failed before the first cell does not use the day's quota", async () => {
   reset()
   const competition = makeCompetition({ limits: { wallSeconds: 600, memoryMb: 4096, cpus: 2, perDay: 3 } })
   const entrant = mint('Варя')
@@ -555,12 +566,12 @@ test('упавшая до первой ячейки посылка не трат
   await drainCompetitionQueue()
   const done = getSubmission(submission.id)
   assert.equal(done?.state, 'notebookFailed')
-  assert.equal(done?.cellsDone, 0, 'ни одной ячейки не начато — норма цела')
+  assert.equal(done?.cellsDone, 0, 'not a single cell started, so the quota is intact')
 })
 
-/* ------------------------------------------------------------- очередь */
+/* --------------------------------------------------------------- queue */
 
-test('очередь честна по людям, а не по времени прихода', async () => {
+test('the queue is fair per person, not by arrival time', async () => {
   reset()
   const competition = makeCompetition()
   const greedy = mint('Жадный')
@@ -573,22 +584,23 @@ test('очередь честна по людям, а не по времени �
   const order: string[] = []
   for (let i = 0; i < 4; i++) {
     const row = takeNext({ boot: 'test-boot' }) as QueueRow | null
-    assert.ok(row, 'работа должна найтись')
+    assert.ok(row, 'a job must be found')
     order.push(row.submissionId)
     leaveQueue(row.submissionId)
   }
-  // Первая своя — первой; вторая своя встаёт ЗА чужой первой.
+  // One's own first goes first; one's own second goes BEHIND someone else's
+  // first.
   assert.deepEqual(order, [first.id, late.id, second.id, third.id])
 })
 
-test('пауза не берёт новых работ и не трогает уже взятую', async () => {
+test('a pause takes no new jobs and leaves the one already taken alone', async () => {
   reset()
   const competition = makeCompetition()
   const entrant = mint('Гена')
   const submission = send(competition, entrant.id, ['a'])
   setQueuePaused(true, 'owner')
 
-  assert.equal(await pumpOnce(), 0, 'на паузе насос не берёт ничего')
+  assert.equal(await pumpOnce(), 0, 'while paused the pump takes nothing')
   assert.equal(getSubmission(submission.id)?.state, 'queued')
   assert.equal(waitingCount(), 1)
   assert.equal(runnerStatus().paused, true)
@@ -598,18 +610,18 @@ test('пауза не берёт новых работ и не трогает у
   assert.equal(getSubmission(submission.id)?.state, 'scored')
 })
 
-test('нет памяти — очередь ждёт и ничего не теряет', async () => {
+test('no memory: the queue waits and loses nothing', async () => {
   reset()
   const competition = makeCompetition()
   const entrant = mint('Дима')
   const submission = send(competition, entrant.id, ['a'])
   runner.availableMb = 512
 
-  assert.equal(await pumpOnce(), 0, 'посылке нужно 4 ГБ, на машине 512 МБ')
+  assert.equal(await pumpOnce(), 0, 'the submission needs 4 GB, the machine has 512 MB')
   const waiting = queueRow(submission.id)
   assert.equal(waiting?.state, 'waiting')
-  // Попытка не считается: иначе две нехватки памяти объявили бы посылку
-  // оборванной, и она пропала бы после перезапуска сервера.
+  // The attempt does not count: otherwise two memory shortages would declare
+  // the submission interrupted, and it would be lost after a server restart.
   assert.equal(waiting?.attempts, 0)
 
   runner.availableMb = 65_536
@@ -617,7 +629,7 @@ test('нет памяти — очередь ждёт и ничего не те�
   assert.equal(getSubmission(submission.id)?.state, 'scored')
 })
 
-test('снять можно и ждущую, и идущую; опоздавшая отмена говорит об этом', async () => {
+test('both a waiting and a running one can be cancelled; a late cancellation says so', async () => {
   reset()
   const competition = makeCompetition()
   const entrant = mint('Егор')
@@ -627,28 +639,29 @@ test('снять можно и ждущую, и идущую; опоздавша
   assert.equal(getSubmission(waiting.id)?.state, 'cancelled')
   assert.equal(queueRow(waiting.id), null)
 
-  // Идущую убивает преподаватель: контейнер снимается, посылка не получает
-  // «вышло время» за чужое нажатие.
+  // The teacher kills a running one: the container is removed, and the
+  // submission does not get "time is up" for someone else's press.
   const running = send(competition, entrant.id, ['# colloq-test: {"hold": 5000}'])
   assert.equal(await pumpOnce(), 1)
-  assert.ok(queueRow(running.id)?.container, 'имя контейнера записано до первого ожидания')
+  assert.ok(queueRow(running.id)?.container, 'the container name is recorded before the first wait')
   assert.equal(await cancelSubmission(running.id, 'teacher'), true)
   await settleCompetitionWork()
   const killed = getSubmission(running.id)
   assert.equal(killed?.state, 'cancelled')
   assert.ok(killed?.teacherError?.length)
 
-  // Отмена не успела: работы уже нет.
+  // The cancellation was too late: the job is already gone.
   assert.equal(await cancelSubmission(running.id, 'entrant'), false)
 })
 
-test('перезапуск сервера поднимает оборванное, а не хоронит его', async () => {
+test('a server restart revives what was interrupted instead of burying it', async () => {
   reset()
   const competition = makeCompetition()
   const entrant = mint('Жора')
   const submission = send(competition, entrant.id, ['a'])
 
-  // Прошлая жизнь процесса взяла работу и умерла вместе с контейнером.
+  // A previous process lifetime took the job and died together with the
+  // container.
   const row = takeNext({ boot: 'boot-of-a-dead-process' })
   assert.equal(row?.submissionId, submission.id)
   updateSubmission(submission.id, { state: 'running', stage: 'notebook' })
@@ -656,8 +669,8 @@ test('перезапуск сервера поднимает оборванно�
   const first = await reclaimCompetitionQueue()
   assert.equal(first.requeued, 1)
   assert.equal(first.abandoned, 0)
-  // Строка посылки тоже вернулась в очередь: иначе участник до конца
-  // соревнования смотрел бы на таймер, который не движется.
+  // The submission row went back into the queue too: otherwise the entrant
+  // would watch a timer that does not move until the end of the competition.
   assert.equal(getSubmission(submission.id)?.state, 'queued')
   assert.equal(getSubmission(submission.id)?.stage, 'queue')
 
@@ -665,7 +678,7 @@ test('перезапуск сервера поднимает оборванно�
   assert.equal(getSubmission(submission.id)?.state, 'scored')
 })
 
-test('второй обрыв подряд помечает посылку, а не крутит её вечно', async () => {
+test('a second interruption in a row marks the submission instead of spinning it forever', async () => {
   reset()
   const competition = makeCompetition()
   const entrant = mint('Зина')
@@ -678,14 +691,14 @@ test('второй обрыв подряд помечает посылку, а �
 
   assert.equal(second.abandoned, 1)
   const done = getSubmission(submission.id)
-  assert.equal(done?.state, 'metricFailed', 'виноват не участник, и слово называет это')
+  assert.equal(done?.state, 'metricFailed', 'the entrant is not to blame, and the word says so')
   assert.ok(done?.teacherError?.includes('перезапуск'))
   assert.equal(queueRow(submission.id), null)
 })
 
-/* ------------------------------------------------------------- пересчёт */
+/* ------------------------------------------------------------ rescoring */
 
-test('пересчёт метрики не запускает тетради заново', async () => {
+test('a metric rescore does not run notebooks again', async () => {
   reset()
   const competition = makeCompetition()
   const anya = mint('Аня-2')
@@ -696,7 +709,8 @@ test('пересчёт метрики не запускает тетради з�
 
   const before = [getSubmission(first.id), getSubmission(second.id)]
   assert.ok(before.every((s) => s?.state === 'scored'))
-  // Разные тетради — разные числа: иначе лидерборд нечем проверять.
+  // Different notebooks, different scores: otherwise there is nothing to check
+  // the leaderboard with.
   assert.notEqual(before[0]?.publicScore, before[1]?.publicScore)
 
   const notebookRunsBefore = listRuns(first.id).filter((run) => run.kind === 'notebook').length
@@ -708,10 +722,11 @@ test('пересчёт метрики не запускает тетради з�
   assert.equal(
     listRuns(first.id).filter((run) => run.kind === 'notebook').length,
     notebookRunsBefore,
-    'тетрадь второй раз не запускалась',
+    'the notebook was not run a second time',
   )
   assert.equal(listRuns(first.id).filter((run) => run.kind === 'metric').length, 2)
-  // Число то же: ответ на диске не менялся, и пересчёт обязан это показать.
+  // The score is the same: the answer on disk did not change, and the rescore
+  // must show that.
   assert.equal(after[0]?.publicScore, before[0]?.publicScore)
 
   const board = leaderboard(competition.id, 'public')
@@ -719,7 +734,7 @@ test('пересчёт метрики не запускает тетради з�
   assert.deepEqual(board.map((row) => row.place), [1, 2])
 })
 
-test('повтор исполняет тетрадь заново и снимает прежние числа', async () => {
+test('a rerun executes the notebook again and clears the previous scores', async () => {
   reset()
   const competition = makeCompetition()
   const entrant = mint('Игорь')
@@ -735,19 +750,19 @@ test('повтор исполняет тетрадь заново и снима�
   assert.equal(getSubmission(submission.id)?.state, 'scored')
 })
 
-test('пересчитывать нечего у посылки без ответа', async () => {
+test('there is nothing to rescore for a submission without an answer', async () => {
   reset()
   const competition = makeCompetition()
   const entrant = mint('Клава')
   const submission = send(competition, entrant.id, ['# colloq-test: {"status": "cell_error"}'])
   await drainCompetitionQueue()
   assert.equal(getSubmission(submission.id)?.state, 'notebookFailed')
-  assert.equal(rescoreCompetition(competition.id), 0, 'упавшую тетрадь пересчитывать нечем')
+  assert.equal(rescoreCompetition(competition.id), 0, 'there is nothing to rescore a failed notebook with')
 })
 
-/* ------------------------------------------------------- места исполнения */
+/* -------------------------------------------------------- execution slots */
 
-test('мест столько, сколько задано, и не больше', async () => {
+test('there are as many slots as configured, and no more', async () => {
   reset()
   const competition = makeCompetition()
   const one = mint('Люда')
@@ -756,7 +771,7 @@ test('мест столько, сколько задано, и не больше
   send(competition, two.id, ['# colloq-test: {"hold": 300}'])
 
   assert.equal(queueSlots(), 1)
-  assert.equal(await pumpOnce(), 1, 'одно место — одна работа')
+  assert.equal(await pumpOnce(), 1, 'one slot, one job')
   await settleCompetitionWork()
 
   setQueueSlots(2)
@@ -766,12 +781,12 @@ test('мест столько, сколько задано, и не больше
   setQueueSlots(1)
 })
 
-/* ---------------------------------------------------- деление строк ответов */
+/* ---------------------------------------------------- splitting answer rows */
 
-test('контейнер делит строки ровно так же, как это показывает страница', (t) => {
+test('the container splits rows exactly the way the page shows it', (t) => {
   const python = spawnSync('python3', ['--version'], { encoding: 'utf8' })
   if (python.status !== 0) {
-    t.skip('на машине нет python3: деление сверяется только там, где он есть')
+    t.skip('no python3 on this machine: the split is compared only where it exists')
     return
   }
   const dir = fs.mkdtempSync(path.join(process.env.DATA_DIR as string, 'split-'))
@@ -780,9 +795,10 @@ test('контейнер делит строки ровно так же, как 
   const cases = [
     { ids: Array.from({ length: 397 }, (_, i) => String(i + 1)), percent: 30, seed: 'rohlik-2026' },
     { ids: Array.from({ length: 9 }, (_, i) => `row-${i}`), percent: 50, seed: '' },
-    // Не латиница и символ вне BMP: JS считает хэш по кодовым единицам UTF-16.
+    // Non-Latin text and a character outside the BMP: JS computes the hash over
+    // UTF-16 code units.
     { ids: ['ёлка', 'мир', '日本', '👋x', 'a', 'b', 'c'], percent: 40, seed: 'семь' },
-    // Пробел внутри идентификатора: разделитель зерна обязан быть не пробелом.
+    // A space inside an identifier: the seed separator must not be a space.
     { ids: ['a b', 'c'], percent: 50, seed: 'z' },
     { ids: ['only'], percent: 30, seed: 's' },
   ]
@@ -806,16 +822,16 @@ test('контейнер делит строки ровно так же, как 
     assert.deepEqual(
       fromPython[index],
       splitRows(item.ids, item.percent, item.seed),
-      `деление разошлось на случае ${index}`,
+      `the split diverged on case ${index}`,
     )
   })
   assert.equal(fromPython[0].filter((part) => part === 'public').length, 119)
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-/* ------------------------------------------------------------------ сводка */
+/* ----------------------------------------------------------------- summary */
 
-test('сводка исполнителя отвечает тем, что видит панель', async () => {
+test("the executor's summary answers with what the panel sees", async () => {
   reset()
   const status = runnerStatus()
   assert.equal(status.backend, 'test')

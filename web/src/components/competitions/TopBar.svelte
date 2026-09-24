@@ -1,15 +1,17 @@
 <script lang="ts">
   /**
-   * Верхняя полоса страниц `/k` — 56 px, и ничего в ней, кроме «где я» и «кто я».
+   * The top bar of the `/k` pages — 56 px, and nothing in it but "where am I"
+   * and "who am I".
    *
-   * Это не шапка комнаты и не панель преподавателя: ни ядра, ни присутствия, ни
-   * настроек здесь нет вовсе, а человек приходит сюда со ссылки в чате курса и
-   * должен за секунду понять, тот ли это сайт и он ли это.
+   * This is not the room header and not the teacher panel: there is no
+   * kernel, no presence and no settings here at all, and a person arrives
+   * here from a link in the course chat and must understand within a second
+   * whether this is the right site and whether it is them.
    *
-   * Марка — продуктовая (`Icon name="logo"`, девять клеток), а не та, что
-   * нарисована в макете четырьмя квадратами: логотип у Colloq один на все
-   * экраны, и вторая его версия на публичной странице читалась бы как чужой
-   * сайт.
+   * The mark is the product's (`Icon name="logo"`, nine cells), not the one
+   * drawn in the mockup as four squares: Colloq has one logo for all screens,
+   * and a second version of it on a public page would read as someone else's
+   * site.
    */
   import { tr } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'

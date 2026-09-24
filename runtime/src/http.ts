@@ -128,7 +128,8 @@ export function createRuntimeServer(options: Options) {
             return
           }
           if (req.method === 'PATCH') {
-            // Только память и ядра живой комнаты — Pod этим входом не создать.
+            // Only the memory and cores of a live room: this entry cannot
+            // create a Pod.
             let intent
             try {
               intent = parseRuntimeResizeRequest(await body(req))
@@ -156,8 +157,9 @@ export function createRuntimeServer(options: Options) {
           err instanceof RuntimeError || err instanceof KubernetesError
             ? err.message.slice(0, 300)
             : 'Runtime service is unavailable'
-        // Рядом с текстом — слово и числа отказа, если они есть: веб переводит
-        // их человеку сам, а текст остаётся для журнала (shared/runtime.ts).
+        // Next to the text, the word and the numbers of the refusal, if any: the
+        // web translates them for the person itself, and the text stays for the
+        // log (shared/runtime.ts).
         const failure = err instanceof RuntimeError ? err.failure : undefined
         reply(res, status, { error, ...failure })
         req.resume()

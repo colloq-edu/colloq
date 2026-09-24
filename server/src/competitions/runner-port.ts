@@ -1,58 +1,66 @@
 /**
- * Договор прогонщика — всё, что очередь знает об исполнении посылки.
+ * The runner contract — everything the queue knows about executing a
+ * submission.
  *
- * Узко нарочно. Очередь (runner.ts) не должна знать ни одного слова про
- * docker: она решает, чья работа идёт следующей, что записать в строку посылки
- * и когда убить контейнер, — а «как именно исполнить тетрадь» за этой дверью
- * бывает трёх видов. Локальный прогонщик (docker-runner.ts) поднимает два
- * одноразовых контейнера, production broker поднимает Pod; подставной
- * (fake-runner.ts) не исполняет ни строки
- * чужого кода и нужен не тестам ради тестов: стенд и вся сюита живут без
- * docker, а соревнование без прогонщика — страница, где нельзя нажать ни одной
- * кнопки.
+ * Narrow on purpose. The queue (runner.ts) must not know a single word about
+ * docker: it decides whose work goes next, what to write into the submission
+ * row and when to kill the container, while "how exactly to execute the
+ * notebook" comes in three kinds behind this door. The local runner
+ * (docker-runner.ts) starts two disposable containers, the production broker
+ * starts a Pod; the stand-in (fake-runner.ts) does not execute a single line
+ * of someone else's code and is not there for the tests' own sake: the test
+ * stand and the whole suite live without docker, and a competition without a
+ * runner is a page where no button can be pressed.
  *
- * ФОРМА ОТВЕТА ОДНА НА ВСЕХ, иначе подмена ничего не доказывает: тест, который
- * зелен на подставном и падает на настоящем, — это не тест, а украшение.
+ * THE SHAPE OF THE ANSWER IS ONE FOR ALL, otherwise the swap proves nothing: a
+ * test that is green on the stand-in and fails on the real one is not a test
+ * but decoration.
  *
- * И главное, ради чего здесь два отдельных поля вместо одного: `message`
- * участнику и `teacherOnly` преподавателю разведены НА УРОВНЕ ТИПА. Перепутать
- * их нельзя даже тогда, когда очень хочется показать человеку побольше, — а
- * хочется всегда, потому что в трассировке метрики и лежит ответ на его
- * вопрос. Вместе с ответом там лежат строки чужого solution.csv.
+ * And the main reason there are two separate fields here instead of one:
+ * `message` for the participant and `teacherOnly` for the teacher are kept
+ * apart AT THE TYPE LEVEL. They cannot be mixed up even when you badly want to
+ * show the person more — and you always do, because the metric's traceback
+ * holds the answer to their question. Along with the answer it holds lines of
+ * someone else's solution.csv.
  */
 import type { Competition, RunVerdict } from '@shared/competitions'
 
-/** Каким путём исполняется посылка. Читается из окружения, как KERNEL_BACKEND. */
+/** Which path executes a submission. Read from the environment, like KERNEL_BACKEND. */
 export type CompetitionBackend = 'docker' | 'broker' | 'test'
 
 /**
- * Пределы ОДНОГО захода в контейнер — уже в тех числах, которыми говорит docker.
+ * The limits of ONE trip into a container — already in the numbers docker
+ * speaks.
  *
- * Соревнование хранит свои (`CompetitionLimits`), но шага два, и у метрики они
- * другие: ей не нужно четыре гигабайта и десять минут, зато ей нельзя писать
- * ничего, кроме одного json. Поэтому здесь не «лимиты соревнования», а лимиты
- * шага — их считает `limitsFor` ниже, и считает в одном месте.
+ * A competition stores its own (`CompetitionLimits`), but there are two steps,
+ * and the metric's limits are different: it does not need four gigabytes and
+ * ten minutes, but it must not write anything except one json. So these are
+ * not "the competition's limits" but the step's limits — computed by
+ * `limitsFor` below, and computed in one place.
  */
 export interface StepLimits {
-  /** Общий срок шага. Вышел — контейнер убит снаружи, без уговоров. */
+  /**
+   * The step's overall time limit. Once it is up, the container is killed from
+   * outside, no negotiation.
+   */
   wallSeconds: number
   memoryMb: number
   cpus: number
-  /** Потолок процессов: посылке 256, метрике 64. */
+  /** Process cap: 256 for a submission, 64 for the metric. */
   pids: number
-  /** Потолок ОДНОГО файла, байтами, — жёсткий, ядром (SIGXFSZ). */
+  /** The cap on ONE file, in bytes — hard, by the kernel (SIGXFSZ). */
   fsizeBytes: number
-  /** Сколько памяти отдать /tmp и рабочей папке. Считается в `memoryMb`. */
+  /** How much memory to give /tmp and the working folder. Counted in `memoryMb`. */
   tmpfsMb: number
-  /** Потолок ответа, который обвязка забирает из контейнера. */
+  /** The cap on the answer the harness takes out of the container. */
   targetBytes: number
-  /** Мягкий потолок печати: выводы за ним считаются, но не копятся. */
+  /** Soft print cap: outputs beyond it are counted but not accumulated. */
   outputBytes: number
-  /** Жёсткий потолок печати: за ним контейнер убивают снаружи. */
+  /** Hard print cap: beyond it the container is killed from outside. */
   outputKillBytes: number
 }
 
-/** Докуда дошла идущая тетрадь — то, из чего складывается «ячейка 9 из 14». */
+/** How far a running notebook has got — what "cell 9 of 14" is made of. */
 export interface RunProgress {
   phase?: 'dependencies' | 'notebook'
   cell: number
@@ -60,7 +68,7 @@ export interface RunProgress {
   outputBytes: number
 }
 
-/** Заказ на исполнение тетради. Пути — уже разложенные каталоги (storage.ts). */
+/** An order to run a notebook. Paths are directories already laid out (storage.ts). */
 export interface RunRequest {
   attemptId?: string
   signal?: AbortSignal
@@ -70,38 +78,45 @@ export interface RunRequest {
   dependenciesDir?: string
   competition: Competition
   submissionId: string
-  /** Имя контейнера; по нему же его убивают. Даётся снаружи, до запуска. */
+  /**
+   * The container name; it is also what the container is killed by. Given from
+   * outside, before the start.
+   */
   container: string
-  /** Открытая половина данных. `:ro`, и только она. */
+  /** The open half of the data. `:ro`, and only it. */
   dataDir: string
-  /** Каталог с одной тетрадью. Каталог, а не файл, — см. шапку storage.ts. */
+  /**
+   * A directory with one notebook. A directory, not a file — see the header of
+   * storage.ts.
+   */
   inputDir: string
   /** Host-only destination for bounded artifacts exported from the attempt. */
   resultDir: string
   limits: StepLimits
-  /** Зовётся по ходу прогона; очередь кладёт это в строку посылки. */
+  /** Called as the run goes; the queue puts this into the submission row. */
   onProgress?: (progress: RunProgress) => void
 }
 
-/** Что стало с тетрадью. То же самое на обоих прогонщиках. */
+/** What became of the notebook. The same on both runners. */
 export interface RunOutcome {
-  /** Слово обвязки, не переведённое и не приукрашенное (`RunVerdict`). */
+  /** The harness's word, untranslated and unembellished (`RunVerdict`). */
   status: RunVerdict
-  /** На какой ячейке кончилось и сколько их было; `-1` — не начиналась. */
+  /** Which cell it ended on and how many there were; `-1` means it did not start. */
   cell: number
   cells: number
-  /** Сколько шёл шаг, миллисекундами. */
+  /** How long the step ran, in milliseconds. */
   wall: number
-  /** Путь к забранному ответу; `null` — посылка его не записала. */
+  /** Path to the collected answer; `null` means the submission did not write it. */
   submission: string | null
   /**
-   * Текст, который участник читает дословно.
+   * Text the participant reads verbatim.
    *
-   * У упавшей ячейки это его собственная трассировка: он её и писал, и прятать
-   * её от него значит отвечать «ошибка в тетради» на вопрос «какая».
+   * For a failed cell this is their own traceback: they wrote it, and hiding
+   * it from them means answering "error in the notebook" to the question
+   * "which one".
    */
   detail: string
-  /** Код выхода, OOM, хвост журнала контейнера — только преподавателю. */
+  /** Exit code, OOM, the tail of the container log — for the teacher only. */
   log: string
   diagnostics: RunDiagnostics
 }
@@ -110,13 +125,13 @@ export interface RunDiagnostics {
   exit: number | null
   oomKilled: boolean
   backend: CompetitionBackend
-  /** Кто оборвал контейнер снаружи: срок, печать, запись на диск. */
+  /** Who cut the container off from outside: time limit, printing, disk writes. */
   killedBy?: 'wall' | 'output' | 'disk'
-  /** Пик памяти, снятый обвязкой изнутри, — по нему видно «ровно в лимит». */
+  /** Memory peak read by the harness from inside — it shows "right at the limit". */
   peakBytes?: number | null
 }
 
-/** Заказ на подсчёт метрики. Участника в этом контейнере нет. */
+/** An order to compute the metric. The participant is not in this container. */
 export interface ScoreRequest {
   attemptId?: string
   signal?: AbortSignal
@@ -125,29 +140,35 @@ export interface ScoreRequest {
   competition: Competition
   submissionId: string
   container: string
-  /** Закрытая половина: solution.csv и код метрики. Только сюда и только `:ro`. */
+  /** The closed half: solution.csv and the metric code. Only here, and only `:ro`. */
   secretDir: string
-  /** Каталог с одной копией ответа. Ни тетради участника, ни её вывода. */
+  /**
+   * A directory with one copy of the answer. Neither the participant's notebook
+   * nor its output.
+   */
   submissionDir: string
-  /** Куда метрика пишет свой единственный json. */
+  /** Where the metric writes its single json. */
   outDir: string
   limits: StepLimits
 }
 
-/** Что сказала метрика. */
+/** What the metric said. */
 export interface ScoreOutcome {
   status: RunVerdict
   public: number | null
   private: number | null
-  /** ParticipantVisibleError — участник читает это дословно. */
+  /** ParticipantVisibleError — the participant reads this verbatim. */
   message: string | null
-  /** Трассировка и всё прочее — только преподавателю. */
+  /** The traceback and everything else — for the teacher only. */
   teacherOnly: string | null
   wall: number
   diagnostics: RunDiagnostics
 }
 
-/** Сколько памяти на машине ещё можно раздать; `null` — честно не знаем. */
+/**
+ * How much memory on the machine can still be handed out; `null` means we
+ * honestly do not know.
+ */
 export interface Capacity {
   availableMb: number | null
 }
@@ -156,9 +177,9 @@ export interface CompetitionRunner {
   readonly backend: CompetitionBackend
   run(request: RunRequest): Promise<RunOutcome>
   score(request: ScoreRequest): Promise<ScoreOutcome>
-  /** Убить идущий контейнер по имени. Молча, если его уже нет. */
+  /** Kill a running container by name. Silently if it is already gone. */
   kill(container: string): Promise<void>
-  /** Убрать за собой всё, что осталось от прошлой жизни процесса. */
+  /** Clean up everything left over from the process's previous life. */
   sweep(legacyContainers?: readonly string[]): Promise<number>
   capacity(): Promise<Capacity>
 }
@@ -167,28 +188,28 @@ let injected: CompetitionRunner | null = null
 let chosen: CompetitionRunner | null = null
 
 /**
- * Подменить прогонщик — тестам.
+ * Swap out the runner — for tests.
  *
- * Тот же приём и по той же причине, что `useDockerForLimits` в pool.ts: тесту,
- * которому нужен OOM на третьей ячейке, надо сказать это прямо, а не
- * подстраивать под него настоящий docker. Впрыск старше умолчания; `null`
- * возвращает как было.
+ * The same trick, and for the same reason, as `useDockerForLimits` in pool.ts:
+ * a test that needs an OOM on the third cell should say so directly rather
+ * than bend real docker to it. The injection outranks the default; `null`
+ * restores things as they were.
  */
 export function useCompetitionRunner(fake: CompetitionRunner | null): void {
   injected = fake
 }
 
-/** Забыть выбранный прогонщик — после смены COMPETITION_BACKEND в тесте. */
+/** Forget the chosen runner — after a test changes COMPETITION_BACKEND. */
 export function forgetCompetitionRunner(): void {
   chosen = null
 }
 
 /**
- * Каким путём идут посылки.
+ * Which path submissions take.
  *
- * Явный COMPETITION_BACKEND нужен тестам и локальной разработке. Без него
- * сервер выбирает тот же частный брокер, что и комнаты; в production Docker
- * для посылок не допускается. Тестовое умолчание остаётся подставным.
+ * An explicit COMPETITION_BACKEND is for tests and local development. Without
+ * it the server picks the same private broker as rooms do; in production
+ * Docker is not allowed for submissions. The test default stays the stand-in.
  */
 export function competitionBackend(env: NodeJS.ProcessEnv = process.env): CompetitionBackend {
   const asked = (env.COMPETITION_BACKEND ?? '').trim()
@@ -208,12 +229,13 @@ export function competitionBackend(env: NodeJS.ProcessEnv = process.env): Compet
 }
 
 /**
- * Прогонщик этого процесса.
+ * This process's runner.
  *
- * Импорты ленивые: подставному незачем тянуть за собой сборку аргументов
- * docker, а настоящему — разбор директив из тетради. Но главное, зачем они
- * ленивые, — порядок загрузки модулей: `runner.ts` грузится с сервером, а
- * выбор пути зависит от окружения, которое тест правит перед вызовом.
+ * The imports are lazy: the stand-in has no reason to drag along the docker
+ * argument assembly, nor the real one the notebook directive parsing. But the
+ * main reason they are lazy is module load order: `runner.ts` loads with the
+ * server, while the choice of path depends on the environment, which a test
+ * edits before the call.
  */
 export function competitionRunner(): CompetitionRunner {
   if (injected) return injected
@@ -223,12 +245,12 @@ export function competitionRunner(): CompetitionRunner {
   return chosen
 }
 
-/* Разорвать круг импорта: оба прогонщика импортируют типы отсюда. */
+/* Break the import cycle: both runners import their types from here. */
 let dockerFactory: (() => CompetitionRunner) | null = null
 let fakeFactory: (() => CompetitionRunner) | null = null
 let brokerFactory: (() => CompetitionRunner) | null = null
 
-/** Зарегистрировать себя — зовётся из самих прогонщиков при загрузке модуля. */
+/** Register oneself — called from the runners themselves when the module loads. */
 export function registerCompetitionRunner(
   kind: CompetitionBackend,
   factory: () => CompetitionRunner,
@@ -252,33 +274,37 @@ function brokerRunner(): CompetitionRunner {
   return brokerFactory()
 }
 
-/* ------------------------------------------------------------------ числа */
+/* ---------------------------------------------------------------- numbers */
 
 /**
- * Сколько секунд терпеть метрику.
+ * How many seconds to put up with the metric.
  *
- * Метрика на двадцати тысячах строк считается за долю секунды; сто двадцать
- * секунд — это не запас на большие данные, а срок, за которым висящий код
- * преподавателя перестаёт занимать исполнителя всего инстанса. Своё число, а
- * не срок соревнования: десять минут на тетрадь участника разумны, десять
- * минут на `score()` не бывают.
+ * A metric over twenty thousand rows is computed in a fraction of a second; a
+ * hundred and twenty seconds is not headroom for big data but the deadline
+ * after which the teacher's hung code stops occupying the executor of the
+ * whole instance. Its own number rather than the competition's time limit:
+ * ten minutes for a participant's notebook are reasonable, ten minutes for
+ * `score()` do not happen.
  */
 export const METRIC_WALL_SECONDS = 120
 
-/** Памяти метрике — не больше двух гигабайт: в ней один pandas и два вызова. */
+/**
+ * Memory for the metric — no more than two gigabytes: it holds one pandas and
+ * two calls.
+ */
 export const METRIC_MEMORY_MB = 2048
 
-/** Метрика пишет один json; большего ей не нужно. */
+/** The metric writes one json; it needs nothing more. */
 export const METRIC_FSIZE_BYTES = 1024 * 1024
 
 /**
- * Пределы шага — из пределов соревнования.
+ * Step limits — from the competition's limits.
  *
- * Одним местом на оба прогонщика и на оба шага. Числа не круглые, а выведенные
- * из памяти шага: `/out` и `/tmp` считаются в `--memory`, и отдать им половину
- * значит отнять её у обучения. Восьмая доля — то, на чём стоял прототип
- * (512 МБ при четырёх гигабайтах), с полом в 128 МБ, ниже которого не
- * поместится ни один разумный ответ.
+ * One place for both runners and both steps. The numbers are not round but
+ * derived from the step's memory: `/out` and `/tmp` count toward `--memory`,
+ * and giving them half would mean taking it away from training. An eighth is
+ * what the prototype stood on (512 MB out of four gigabytes), with a floor of
+ * 128 MB, below which no reasonable answer will fit.
  */
 export function limitsFor(competition: Competition, step: 'notebook' | 'metric'): StepLimits {
   const { limits } = competition
@@ -302,10 +328,10 @@ export function limitsFor(competition: Competition, step: 'notebook' | 'metric')
     cpus: limits.cpus,
     pids: 256,
     /*
-     * Вчетверо от потолка ответа: `--ulimit fsize` сторожит не ответ (его
-     * сторожит обвязка), а того, кто пишет прямо в смонтированный каталог
-     * хоста. Впритык поставить нельзя — у участника бывают законные временные
-     * файлы крупнее ответа.
+     * Four times the answer cap: `--ulimit fsize` guards not the answer (the
+     * harness guards that) but whoever writes straight into a mounted host
+     * directory. It cannot be set tight — a participant may have legitimate
+     * temporary files bigger than the answer.
      */
     fsizeBytes: TARGET_BYTES * 4,
     tmpfsMb,
@@ -316,22 +342,22 @@ export function limitsFor(competition: Competition, step: 'notebook' | 'metric')
 }
 
 /**
- * Потолок ответа — тот же, что объявлен продуктом (`LIMITS.submissionBytes`).
+ * The answer cap — the same one the product declares (`LIMITS.submissionBytes`).
  *
- * Не импортируется отсюда константой окружения нарочно: число обязано быть
- * одним и тем же в трёх местах — в проверке обвязки внутри контейнера, в
- * `--ulimit` снаружи и в подписи на странице соревнования.
+ * Deliberately not imported from here as an environment constant: the number
+ * must be one and the same in three places — in the harness check inside the
+ * container, in `--ulimit` outside and in the caption on the competition page.
  */
 const TARGET_BYTES = 64 * 1024 * 1024
 
 /**
- * Два потолка печати, и оба нужны.
+ * Two print caps, and both are needed.
  *
- * Мягкий (в обвязке) не даёт выводам копиться в памяти: без него тетрадь,
- * печатающая гигабайты, умирает по OOM, и в журнале это выглядит как нехватка
- * памяти на обучении. Но печать и после него жжёт процессор — прототип
- * намерил тридцать три секунды на восьми гигабайтах. Жёсткий (снаружи, по
- * маячку) обрывает такое за две.
+ * The soft one (in the harness) keeps outputs from accumulating in memory:
+ * without it a notebook printing gigabytes dies of OOM, and in the log that
+ * looks like running out of memory during training. But printing burns CPU
+ * even past it — the prototype measured thirty-three seconds on eight
+ * gigabytes. The hard one (outside, by the beacon) cuts that off in two.
  */
 const SOFT_OUTPUT_BYTES = 2_000_000
 const HARD_OUTPUT_BYTES = 64 * 1024 * 1024

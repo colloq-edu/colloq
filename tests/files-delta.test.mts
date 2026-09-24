@@ -1,16 +1,17 @@
 /**
- * Перемена в дереве вместо всего дерева — оба конца одного правила.
+ * A change in the tree instead of the whole tree — both ends of one rule.
  *
- * Список файлов рассылался целиком на КАЖДУЮ правку папки, а правит её всё
- * подряд: автосохранение редактора, `df.to_csv` в ячейке, `pip install` в
- * терминале. Замер: один заведённый файл стоил комнате в пятьсот человек
- * 3.0 МБ — при том что изменилась одна строка из двух тысяч.
+ * The file list was broadcast whole on EVERY edit of the folder, and it gets
+ * edited by everything in a row: the editor's autosave, `df.to_csv` in a
+ * cell, `pip install` in the terminal. Measured: one created file cost a
+ * room of five hundred people 3.0 MB — while one row out of two thousand
+ * changed.
  *
- * Считает перемену сервер (workspace.ts · treeDelta), применяет вкладка
- * (web/src/lib/files-delta.ts), и разойтись им нельзя: разошедшись, они не
- * ломаются, а тихо показывают комнате чужую папку. Поэтому проверяется не
- * форма кадра, а тождество — дерево, собранное из перемен, равно дереву,
- * посчитанному обходом.
+ * The server computes the change (workspace.ts · treeDelta), the tab applies
+ * it (web/src/lib/files-delta.ts), and they must not diverge: once diverged,
+ * they do not break but quietly show the room someone else's folder. So
+ * what is checked is not the shape of the frame but identity — the tree
+ * assembled from changes equals the tree computed by a walk.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -33,14 +34,15 @@ import type { FileEntry } from '../shared/protocol.js'
 
 const paths = (files: readonly FileEntry[]) => files.map((entry) => entry.path)
 
-/** Одна перемена в настоящей папке: два обхода и склейка между ними. */
+/** One change in a real folder: two walks and a splice between them. */
 function walkAround(id: string, change: () => void): { before: FileEntry[]; after: FileEntry[] } {
   const before = listTree(id).files
   change()
   /*
-   * Короткая память обхода забывается ровно так же, как это делает рассылка
-   * (control.ts · broadcastFiles): правка СОДЕРЖИМОГО файла не двигает время
-   * папки, и без этого второй обход вернул бы прежние размеры.
+   * The walk's short memory is forgotten exactly the way the broadcast does
+   * it (control.ts · broadcastFiles): an edit of a file's CONTENT does not
+   * move the folder's time, and without this the second walk would return
+   * the old sizes.
    */
   forgetTree(id)
   const after = listTree(id).files
@@ -48,15 +50,15 @@ function walkAround(id: string, change: () => void): { before: FileEntry[]; afte
   assert.deepEqual(
     paths(applyFilesDelta(before, delta)),
     paths(after),
-    'дерево, собранное из перемены, разошлось с обходом',
+    'the tree assembled from the change diverged from the walk',
   )
-  // И не только пути: размер с временем правки — то, по чему панель рисует
-  // строку, и отстать им нельзя.
+  // And not only the paths: the size and modification time are what the
+  // panel draws the row by, and they must not lag behind.
   assert.deepEqual(applyFilesDelta(before, delta), after)
   return { before, after }
 }
 
-test('заведённый файл — это одна запись в перемене, а не всё дерево', () => {
+test('a created file is one entry in the change, not the whole tree', () => {
   const id = 'delta-add'
   createSession(id, 'Дельта', null)
   makeDir(id, 'src')
@@ -70,13 +72,13 @@ test('заведённый файл — это одна запись в пере
   assert.deepEqual(paths(delta.added.map((one) => one.entry)), ['data.csv'])
   assert.deepEqual(delta.removed, [])
   assert.deepEqual(delta.changed, [])
-  // И место у новой записи — в ГОТОВОМ списке: папки идут перед файлами, а
-  // `data.csv` — перед `notes.md` по имени.
+  // And the new entry's place is in the FINISHED list: folders come before
+  // files, and `data.csv` comes before `notes.md` by name.
   assert.deepEqual(paths(after), ['src', 'src/model.py', 'data.csv', 'notes.md'])
   assert.equal(delta.added[0].at, 2)
 })
 
-test('удаление папки уносит всё, что в ней лежало, — одним списком путей', () => {
+test('deleting a folder takes everything in it away — as one list of paths', () => {
   const id = 'delta-remove'
   createSession(id, 'Дельта', null)
   makeDir(id, 'build')
@@ -93,7 +95,7 @@ test('удаление папки уносит всё, что в ней лежа
   assert.deepEqual(paths(after), ['model.py'])
 })
 
-test('переименование — это ушедшая запись и пришедшая, и порядок сходится', () => {
+test('a rename is an entry that left and one that came, and the order matches', () => {
   const id = 'delta-move'
   createSession(id, 'Дельта', null)
   makeFile(id, 'alpha.py', 'x = 1')
@@ -105,12 +107,13 @@ test('переименование — это ушедшая запись и п�
   const delta = treeDelta(before, after)
   assert.deepEqual(delta.removed, ['alpha.py'])
   assert.deepEqual(paths(delta.added.map((one) => one.entry)), ['zulu.py'])
-  // Переехавшая запись встала в конец — и вставка по месту в ГОТОВОМ списке
-  // это воспроизвела, хотя удаление сдвинуло всё, что было после неё.
+  // The moved entry went to the end — and inserting in place in the FINISHED
+  // list reproduced that, even though the deletion shifted everything after
+  // it.
   assert.deepEqual(paths(after), ['omega.py', 'zulu.py'])
 })
 
-test('переписанный файл едет размером и временем, а не заново всей папкой', () => {
+test('a rewritten file travels as size and time, not as the whole folder again', () => {
   const id = 'delta-write'
   createSession(id, 'Дельта', null)
   makeFile(id, 'model.py', 'x = 1')
@@ -126,7 +129,7 @@ test('переписанный файл едет размером и време�
   assert.equal(delta.changed[0].size, after[0].size)
 })
 
-test('пустая перемена — пустая: совпавший обход не рассказывает ничего', () => {
+test('an empty change is empty: a matching walk tells nothing', () => {
   const id = 'delta-same'
   createSession(id, 'Дельта', null)
   makeFile(id, 'model.py', 'x = 1')
@@ -135,7 +138,7 @@ test('пустая перемена — пустая: совпавший обх�
   assert.deepEqual(applyFilesDelta(tree, treeDelta(tree, tree)), tree)
 })
 
-/* ----------------------------------------------------- склейка без папки */
+/* --------------------------------------------- splicing without a folder */
 
 const entry = (path: string, size = 1): FileEntry => ({
   name: path.split('/').at(-1) ?? path,
@@ -145,12 +148,12 @@ const entry = (path: string, size = 1): FileEntry => ({
   modifiedAt: 1,
 })
 
-test('любая пара списков склеивается обратно в себя', () => {
+test('any pair of lists splices back into itself', () => {
   /*
-   * Порядок дерева однозначно определён его составом, поэтому уцелевшие записи
-   * стоят друг относительно друга одинаково в обоих списках, — на этом и стоит
-   * вставка по месту. Здесь это проверяется не рассуждением, а перебором: все
-   * подмножества десяти имён, попарно.
+   * The tree's order is uniquely determined by its contents, so the entries
+   * that survive stand relative to each other the same way in both lists —
+   * inserting in place rests on that. Here this is checked not by reasoning
+   * but by enumeration: all subsets of ten names, pairwise.
    */
   const all = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
   const pick = (mask: number) => all.filter((_, i) => (mask >> i) & 1).map((name) => entry(name))
@@ -161,15 +164,16 @@ test('любая пара списков склеивается обратно �
       assert.deepEqual(
         applyFilesDelta(before, treeDelta(before, after)),
         after,
-        `${from} → ${to}: склейка разошлась со списком`,
+        `${from} → ${to}: the splice diverged from the list`,
       )
     }
   }
 })
 
-test('перемена, разошедшаяся со списком, не роняет панель', () => {
-  // Последняя черта: разрыв номеров ловится раньше (session.svelte.ts), но
-  // упасть на кадре из сети вкладка не вправе ни при каком его содержимом.
+test('a change that diverged from the list does not bring the panel down', () => {
+  // The last line of defence: a gap in the numbers is caught earlier
+  // (session.svelte.ts), but the tab has no right to fail on a frame from the
+  // network whatever its contents.
   const files = [entry('a'), entry('b')]
   const wild = applyFilesDelta(files, {
     removed: ['нет такого'],
@@ -179,9 +183,9 @@ test('перемена, разошедшаяся со списком, не ро�
   assert.deepEqual(paths(wild), ['a', 'b', 'c'])
 })
 
-/* ------------------------------------------------- разбор во вкладке */
+/* ------------------------------------------------ parsing in the tab */
 
-/** Исходник без комментариев: объяснение — не обещание. */
+/** Source without comments: an explanation is not a promise. */
 function code(rel: string): string {
   return fs
     .readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
@@ -189,25 +193,27 @@ function code(rel: string): string {
     .replace(/\/\/[^\n]*/g, '')
 }
 
-test('вкладка склеивает перемену только со своим номером, иначе спрашивает дерево', () => {
+test('the tab splices a change only with its own number, otherwise it asks for the tree', () => {
   /*
-   * Разбор живёт в рунном классе, и без браузера его не позвать — обещания
-   * сняты с исходника, ровно как в weblib-reconnect-storm. Проверяется не
-   * форма кода, а три вещи, без которых панель тихо покажет чужую папку:
-   * номер запоминается с полным списком, перемена не той родословной не
-   * применяется вовсе, и вместо догадки задаётся вопрос.
+   * The parsing lives in a rune class, and it cannot be called without a
+   * browser — the promises are taken from the source, just as in
+   * weblib-reconnect-storm. What is checked is not the shape of the code but
+   * three things without which the panel quietly shows someone else's
+   * folder: the number is remembered with the full list, a change of the
+   * wrong lineage is not applied at all, and instead of a guess a question
+   * is asked.
    */
   const session = code('web/src/lib/session.svelte.ts')
   const from = session.indexOf("message.t === 'files:delta'")
-  assert.notEqual(from, -1, 'кадр перемены вкладка не разбирает вовсе')
+  assert.notEqual(from, -1, 'the tab does not parse the change frame at all')
   const branch = session.slice(from, session.indexOf('} else if (message.t', from + 1))
 
-  assert.match(branch, /this\.#filesRev !== message\.from/, 'перемена ложится на любой список')
-  assert.match(branch, /this\.send\(\{ t: 'files:ask' \}\)/, 'разрыв номеров лечится молчанием')
-  assert.match(branch, /applyFilesDelta\(this\.files, message\)/, 'склейка своя, а не общая')
-  assert.match(branch, /this\.#filesRev = message\.rev/, 'номер после склейки не сдвинулся')
-  // И полный список по-прежнему запоминает свой номер: без этого первая же
-  // перемена не подойдёт ни к чему.
+  assert.match(branch, /this\.#filesRev !== message\.from/, 'a change lands on any list')
+  assert.match(branch, /this\.send\(\{ t: 'files:ask' \}\)/, 'a gap in the numbers is treated with silence')
+  assert.match(branch, /applyFilesDelta\(this\.files, message\)/, 'the splice is its own, not the shared one')
+  assert.match(branch, /this\.#filesRev = message\.rev/, 'the number did not move after the splice')
+  // And the full list still remembers its number: without it the very first
+  // change fits nothing.
   const full = session.slice(session.indexOf("message.t === 'files'"))
   assert.match(full.slice(0, 400), /this\.#filesRev = message\.rev \?\? 0/)
 })

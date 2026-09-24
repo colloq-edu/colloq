@@ -160,20 +160,21 @@ def read_env(file):
     return settings
 
 
-# Настройки брокера из того же файла оператора, что и настройки приложения.
-# Раньше их не было в Deployment вовсе: единственный способ задать память
-# комнаты по умолчанию и потолок был править Deployment руками, а следующий
-# update рендерил его заново и молча стирал правку. Теперь они живут в
-# config.env рядом с PUBLIC_URL и переживают update так же, как он.
+# Broker settings come from the same operator file as the app settings. They
+# used to be missing from the Deployment entirely: the only way to set a room's
+# default memory and its ceiling was to edit the Deployment by hand, and the
+# next update rendered it anew and silently wiped the edit. Now they live in
+# config.env next to PUBLIC_URL and survive an update just as it does.
 RUNTIME_SETTINGS = ('RUNTIME_KERNEL_MEMORY', 'RUNTIME_KERNEL_MEMORY_MAX')
-# Умолчание брокера (runtime/src/config.ts): с ним сравнивается заданный потолок.
+# The broker's default (runtime/src/config.ts): a configured ceiling is compared with it.
 RUNTIME_DEFAULT_MEMORY = '2Gi'
 
 
 def memory_mi(value):
-    # Та же грамматика и те же границы, что у брокера: целые Mi/Gi от 64Mi до
-    # 256Gi. Проверка здесь — чтобы плохое число остановило установку до того,
-    # как остановлены комнаты, а не уронило брокер в CrashLoop после.
+    # The same grammar and the same bounds as the broker's: whole Mi/Gi from
+    # 64Mi to 256Gi. The check is here so that a bad number stops the install
+    # before the rooms are stopped, instead of throwing the broker into
+    # CrashLoop afterwards.
     match = re.fullmatch(r'([1-9][0-9]*)(Mi|Gi)', value)
     mi = int(match.group(1)) * (1024 if match.group(2) == 'Gi' else 1) if match else 0
     return mi if 64 <= mi <= 262144 else None
@@ -182,14 +183,15 @@ def memory_mi(value):
 def runtime_settings(file):
     settings = {}
     if file:
-        # Пустое значение — «как по умолчанию»: пустая переменная окружения
-        # брокеру не умолчание, а неразборчивое число.
+        # An empty value means "as by default": to the broker an empty
+        # environment variable is not the default but an unparseable number.
         settings = {key: val for key, val in read_env(file).items() if key in RUNTIME_SETTINGS and val}
     for key, val in settings.items():
         require(memory_mi(val), f'{key} must be a Kubernetes quantity in whole Mi or Gi from 64Mi to 256Gi, e.g. 4Gi')
     if 'RUNTIME_KERNEL_MEMORY_MAX' in settings:
-        # Без потолка брокер сам берёт память узла минус гигабайт и умолчание под
-        # него подгоняет; заданный потолок ниже умолчания он отвергает при старте.
+        # Without a ceiling the broker itself takes the node's memory minus a
+        # gigabyte and fits the default under it; a configured ceiling below the
+        # default it rejects at startup.
         default = settings.get('RUNTIME_KERNEL_MEMORY', RUNTIME_DEFAULT_MEMORY)
         require(memory_mi(default) <= memory_mi(settings['RUNTIME_KERNEL_MEMORY_MAX']),
                 f'RUNTIME_KERNEL_MEMORY ({default}) exceeds RUNTIME_KERNEL_MEMORY_MAX')

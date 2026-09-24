@@ -1,19 +1,21 @@
-# colloq.ru — лендинг и опубликованные семинары.
+# colloq.ru: the landing page and the published seminars.
 #
-# Сайт лежит в `site/` этого же репозитория, а не в отдельном. Отдельный
-# заводился с оговоркой «Pages не умеет приватные репозитории», и это было
-# неправдой: Pages отдаёт публичный сайт из репозитория любой видимости, так
-# что второй клон рядом не нужен ни пока исходник закрыт, ни после.
+# The site lives in `site/` of this same repository, not in a separate one. The
+# separate one was set up with the caveat "Pages cannot do private
+# repositories", and that was untrue: Pages serves a public site from a
+# repository of any visibility, so a second clone alongside is not needed,
+# neither while the source is closed nor after.
 #
-# Каталог произвольный именно потому, что публикуется workflow, а не ветка:
-# сборка «из ветки» умеет только корень и /docs, а корень тут занят продуктом.
+# The directory can be arbitrary precisely because a workflow publishes it, not
+# a branch: a build "from a branch" can only do the root and /docs, and the
+# root here is taken by the product.
 name: Deploy site to GitHub Pages
 
 on:
   push:
     branches: [main]
-    # Только когда меняется сам сайт. Иначе каждая правка ядра или тетради
-    # перевыкладывала бы страницы, к которым не имеет отношения.
+    # Only when the site itself changes. Otherwise every kernel or notebook
+    # edit would redeploy pages it has nothing to do with.
     paths:
       - "site/**"
       - ".github/workflows/pages.yml"
@@ -24,7 +26,7 @@ permissions:
   pages: write
   id-token: write
 
-# Одна выкладка за раз: две одновременные разложили бы вперемешку.
+# One deployment at a time: two at once would lay the files out jumbled.
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -38,25 +40,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Токен в .git/config дальше не нужен: только find и выкладка site/.
+          # The token in .git/config is not needed further on: only find and
+          # the upload of site/.
           persist-credentials: false
-      - name: Ничего лишнего в артефакт
-        # Страницы семинаров собираются `make site` и проверяются на своей
-        # стороне; здесь — последняя застава: в site/ не должно оказаться ни
-        # базы, ни рабочих папок комнат, ни ключей.
+      - name: Nothing extra in the artifact
+        # Seminar pages are built by `make site` and checked on that side;
+        # this is the last checkpoint: site/ must contain no database, no room
+        # working folders, no keys.
         #
-        # Без -maxdepth, и это не мелочь: публикация пишет глубже, чем застава
-        # смотрела. `site/p/<handle>/index.html`, `site/p/<handle>/<seq>/` и
-        # картинки — это глубина 3–4, а проверка доходила до 2, то есть
-        # осматривала ровно тот уровень, куда публикация ничего не кладёт.
-        # Каталог маленький, полный обход бесплатный.
+        # No -maxdepth, and that is not a detail: publishing writes deeper than
+        # the checkpoint used to look. `site/p/<handle>/index.html`,
+        # `site/p/<handle>/<seq>/` and the images are depth 3–4, while the check
+        # went down to 2, that is, it inspected exactly the level where
+        # publishing puts nothing. The directory is small, a full walk costs
+        # nothing.
         run: |
           set -e
           bad=$(find site \( -name '*.db' -o -name '*.sqlite*' -o -name '.env*' \
                 -o -name 'setup-token' -o -name 'id_*' -o -name '*.pem' \
                 -o -name '.ipynb_checkpoints' \) -print)
           if [ -n "$bad" ]; then
-            echo "в site/ попало то, чего там быть не должно:"; echo "$bad"; exit 1
+            echo "site/ contains what must not be there:"; echo "$bad"; exit 1
           fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

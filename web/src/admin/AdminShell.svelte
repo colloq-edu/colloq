@@ -24,27 +24,28 @@
     environments = $state<number | null>(null)
 
     /**
-     * Списки, которые уже отказали.
+     * Lists that have already refused.
      *
-     * 403 на «кто может учить» у обычного преподавателя — не разовая неудача, а
-     * ответ, и он не меняется от того, что его переспросят при каждом переходе
-     * по вкладкам. Отличать «не знаю» от «нет» приходится и здесь: `null` в
-     * счётчике значит «ещё не спрашивали», отметка тут — «спросили, и не дали».
+     * A 403 on "who can teach" for an ordinary teacher is not a one-off failure
+     * but an answer, and it does not change by being asked again on every tab
+     * switch. Here too "don't know" has to be told apart from "no": `null` in a
+     * counter means "not asked yet", a mark here means "asked, and refused".
      */
     #refused = new Set<AdminTab>()
 
     /**
-     * Только то, чего ещё никто не сказал, — и не то, за чем прямо сейчас идёт
-     * открытый экран.
+     * Only what nobody has told us yet — and not what the open screen is
+     * fetching right now.
      *
-     * Раньше здесь спрашивались все четыре списка на каждый переход по вкладкам,
-     * а экран, на который переходили, тут же спрашивал то же самое второй раз.
-     * Списки не дешёвые: `/seminars` на каждую строку разбирает снимок тетради
-     * в Y.Doc, `/environments` — это `docker version` плюс `docker image
-     * inspect` на каждое окружение, и всё это в том же цикле событий, который
-     * в эту секунду ведёт чужую пару. Экраны знают свои числа и кладут их сюда
-     * сами — поэтому список активной вкладки пропускается целиком: он приедет
-     * от неё, и вторая копия того же запроса не приносит ничего, кроме docker.
+     * This used to ask for all four lists on every tab switch, and the screen
+     * being switched to immediately asked for the same thing a second time.
+     * The lists are not cheap: `/seminars` parses a notebook snapshot into a
+     * Y.Doc for every row, `/environments` is `docker version` plus `docker
+     * image inspect` for every environment, and all of it runs in the same
+     * event loop that is serving someone else's class at that very second.
+     * Screens know their own numbers and put them here themselves — so the
+     * active tab's list is skipped entirely: it will arrive from that tab, and
+     * a second copy of the same request brings nothing but docker.
      */
     async load(active?: AdminTab): Promise<void> {
       const ask = async (
@@ -61,8 +62,9 @@
           else if (tab === 'teachers') this.teachers = n
           else if (tab === 'environments') this.environments = n
         } catch {
-          // Число не приехало и не приедет само: строка остаётся без цифры, а
-          // не с выдуманной. Экран этой вкладки поставит её, когда его откроют.
+          // The number did not arrive and will not arrive on its own: the row
+          // stays without a figure rather than with an invented one. That
+          // tab's screen will set it when it is opened.
           this.#refused.add(tab)
         }
       }
@@ -134,15 +136,16 @@
       count: navCounts.courses,
     },
     /*
-     * Соревнование стоит в ПРЕПОДАВАНИИ, а не в ИНСТАНСЕ, хотя очередь и
-     * участники у него общие на весь сервер.
+     * Competitions sit under TEACHING, not under INSTANCE, even though their
+     * queue and entrants are shared across the whole server.
      *
-     * Потому что вкладка отвечает не за хозяйство, а за задачу, которую
-     * преподаватель ставит классу, — как занятие и как курс. В ИНСТАНСЕ лежит
-     * то, что настраивают раз и для всех (оракул, кто может учить), а
-     * соревнование заводят к паре, ведут неделю и закрывают разбором. Общая
-     * очередь показана внутри раздела полосой исполнителя — там, где на неё
-     * смотрят, — и отдельной строки в рельсе не просит.
+     * Because the tab is not about housekeeping but about a task the teacher
+     * sets the class — like a class and like a course. INSTANCE holds what is
+     * configured once and for everyone (the oracle, who can teach), whereas a
+     * competition is set up for a class, runs for a week and is closed with a
+     * review. The shared queue is shown inside the section as the runner strip
+     * — where people look at it — and does not ask for a row of its own in the
+     * rail.
      */
     {
       id: 'competitions',
@@ -172,9 +175,9 @@
 
   const teacher = $derived(adminAuth.me?.teacher ?? null)
 
-  // Досчитывается на навигации, а не опрашивается: спрашивается при этом только
-  // ещё неизвестное, а изменившееся число кладёт сюда сам экран, который его
-  // изменил.
+  // Counted on navigation, not polled: only what is still unknown gets asked
+  // for, and a number that changed is put here by the very screen that
+  // changed it.
   $effect(() => {
     void navCounts.load(tab)
   })
@@ -247,19 +250,21 @@
       class="flex h-16 shrink-0 items-center justify-center border-b border-white/10
              md:justify-start md:px-5"
     >
-      <!-- Без строки организации, и не по забывчивости: рельс шириной 236px,
-           его единственную строку уже делят логотип и версия, а надпись «кто
-           мы» адресована пришедшим по ссылке, а не тем, кто здесь работает. -->
+      <!-- No organisation line, and not by oversight: the rail is 236px wide,
+           its only line is already shared by the logo and the version, and a
+           "who we are" caption is addressed to people arriving via a link, not
+           to those who work here. -->
       <!--
-        Логотип — ссылка на список занятий, как на любом сайте.
+        The logo links to the list of classes, as on any website.
 
-        Из формы «Новое занятие» выходят именно сюда: рука идёт в левый верхний
-        угол раньше, чем глаз находит «Отмена» внизу формы, и некликабельный
-        логотип в этом месте читался как зависшая страница. Ссылка, а не кнопка:
-        средний щелчок и ⌘-щелчок открывают список в новой вкладке — тем же
-        `open`, что у строк навигации, и с тем же маршрутом, что у «Занятий».
-        Ссылка занимает всю высоту шапки рельса: цель в 16 пикселей значка —
-        промах, а шапка пуста и так.
+        This is exactly where people leave the "New class" form: the hand goes
+        to the top left corner before the eye finds "Cancel" at the bottom of
+        the form, and an unclickable logo in that spot read as a frozen page. A
+        link, not a button: a middle click and a ⌘-click open the list in a new
+        tab — through the same `open` as the nav rows, and with the same route
+        as "Classes". The link takes the full height of the rail header: a
+        target the size of a 16-pixel icon is a miss, and the header is empty
+        anyway.
       -->
       <a
         href="/admin"

@@ -1,5 +1,5 @@
 /**
- * Итог запуска: одна ссылка, и в ней токен входа, как у Jupyter.
+ * The launch summary: one link, and it carries the sign-in token, like Jupyter.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -18,7 +18,8 @@ test('the link carries the setup token, and falls back to the panel without one'
     assert.equal(teacherLink('http://localhost:3000', dir), 'http://localhost:3000/admin')
     fs.writeFileSync(path.join(dir, 'setup-token'), 'QVeZ98Oo_x-z\n')
     assert.equal(teacherLink('http://localhost:3000', dir), 'http://localhost:3000/admin/t/QVeZ98Oo_x-z')
-    // Не тот алфавит — ссылка вела бы на пустую панель с мусором в адресе.
+    // Wrong alphabet — the link would lead to an empty panel with junk in the
+    // address.
     fs.writeFileSync(path.join(dir, 'setup-token'), 'a b/c\n')
     assert.equal(teacherLink('http://localhost:3000', dir), 'http://localhost:3000/admin')
   } finally {

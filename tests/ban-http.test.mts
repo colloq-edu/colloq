@@ -1,16 +1,17 @@
 /**
- * Бан закрывает и HTTP, а не только дверь и сокет.
+ * A ban closes HTTP too, not only the door and the socket.
  *
- * `banFor` спрашивали в двух местах: `/join` и рукопожатие сокета. А токен
- * участника подписан и живёт до тридцати суток, отобрать его нечем — поэтому
- * закрытый доступ закрывал комнату и не закрывал ничего из того, за что человека
- * обычно и закрывают: раздатку, загрузку файлов (тот самый спам), ленту версий,
- * вопросы оракулу за ключ инстанса. Забаненный со старым Bearer-токеном
- * продолжал как ни в чём не бывало.
+ * `banFor` was asked in two places: `/join` and the socket handshake. But a
+ * participant token is signed and lives up to thirty days, and there is no
+ * way to take it back, so a closed access closed the room and none of what
+ * people usually get closed off for: the handouts, file uploads (that very
+ * spam), the version feed, questions to the oracle on the instance's key. A
+ * banned person with an old Bearer token carried on as if nothing had
+ * happened.
  *
- * Дверь одна на все маршруты комнаты (routes/sessions.ts · banDoor), и отвечает
- * она словами про бан, а не «войдите в семинар»: человек должен понять, что это
- * решение преподавателя.
+ * There is one door for all of the room's routes (routes/sessions.ts ·
+ * banDoor), and it answers with words about the ban, not "join the
+ * seminar": the person must understand that this is the teacher's decision.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -46,9 +47,10 @@ before(async () => {
   }
 
   /*
-   * Двери монтируются приложением (server/src/app.ts), а не тремя роутерами
-   * рядом: дверь бана стоит в продукте за разбором json и проверкой
-   * происхождения, и «остался открыт» должно значить открыт ТАМ, а не здесь.
+   * The doors are mounted by the app (server/src/app.ts), not by three
+   * routers side by side: in the product the ban door stands behind json
+   * parsing and the origin check, and "stayed open" must mean open THERE,
+   * not here.
    */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -74,52 +76,52 @@ async function upload(id: string, name = `drop-${id}.txt`): Promise<number> {
   return res.status
 }
 
-test('до бана участник читает и пишет, как и положено', async () => {
+test('before the ban a participant reads and writes, as they should', async () => {
   const files = await fetch(`${base}/api/sessions/${ROOM}/files`, { headers: bearer('p_rude') })
   assert.equal(files.status, 200)
   assert.equal(await upload('p_rude'), 200)
 })
 
-test('после бана те же двери отвечают отказом, и отказ называет причину', async () => {
+test('after the ban the same doors refuse, and the refusal names the reason', async () => {
   const ban = banParticipant({
     sessionId: ROOM,
     participantId: 'p_rude',
     ip: null,
     byTeacher: 'Преподаватель',
   })
-  assert.ok(ban, 'бан не завёлся')
+  assert.ok(ban, 'the ban was not created')
 
   for (const door of ['files', 'history']) {
     const res = await fetch(`${base}/api/sessions/${ROOM}/${door}`, { headers: bearer('p_rude') })
-    assert.equal(res.status, 403, `${door} остался открыт`)
+    assert.equal(res.status, 403, `${door} stayed open`)
     const body = (await res.json()) as { error?: string; until?: number }
-    // Слова про бан, а не «join the session first»: человек должен понять, что
-    // это решение преподавателя, а не поломка комнаты.
-    assert.match(body.error ?? '', /доступ/i, `${door}: отказ не про бан`)
-    assert.equal(typeof body.until, 'number', `${door}: некогда ждать конца`)
+    // Words about the ban, not "join the session first": the person must
+    // understand this is the teacher's decision, not a broken room.
+    assert.match(body.error ?? '', /доступ/i, `${door}: the refusal is not about the ban`)
+    assert.equal(typeof body.until, 'number', `${door}: there is no end to wait for`)
   }
 
-  // И главное — загрузка: именно за неё чаще всего и закрывают доступ.
+  // And the main thing is the upload: that is what access is most often closed for.
   assert.equal(await upload('p_rude', 'after-ban.txt'), 403)
   assert.equal(
     fs.existsSync(path.join(sessionDir(ROOM), 'after-ban.txt')),
     false,
-    'файл забаненного всё-таки лёг в комнату',
+    'the file of the banned person still landed in the room',
   )
 })
 
-test('соседа по комнате бан не касается', async () => {
+test('the ban does not affect a roommate', async () => {
   const res = await fetch(`${base}/api/sessions/${ROOM}/files`, { headers: bearer('p_quiet') })
   assert.equal(res.status, 200)
   assert.equal(await upload('p_quiet'), 200)
 })
 
-test('преподаватель проходит любой бан — в том числе свой собственный', async () => {
+test('the teacher passes any ban, including their own', async () => {
   /*
-   * Промах — забанить себя со второй вкладки — не должен запирать
-   * преподавателя снаружи его собственной комнаты посреди пары. Это правило
-   * живёт в `banFor` (штат проходит по куке), и дверь обязана спрашивать
-   * именно его, а не заводить своё.
+   * A slip (banning oneself from a second tab) must not lock the teacher out
+   * of their own room in the middle of a class. This rule lives in `banFor`
+   * (staff pass by cookie), and the door must ask exactly it rather than
+   * start its own.
    */
   const teacher = createTeacher({ name: 'Ада', email: 'ada.banhttp@test.local', role: 'owner' })
   assert.ok(teacher)
@@ -131,14 +133,15 @@ test('преподаватель проходит любой бан — в то�
   const res = await fetch(`${base}/api/sessions/${ROOM}/files`, {
     headers: { ...bearer('p_rude'), cookie },
   })
-  assert.equal(res.status, 200, 'кука штата не открыла дверь')
+  assert.equal(res.status, 200, 'the staff cookie did not open the door')
 })
 
-test('вход в комнату забаненный по-прежнему получает своим отказом', async () => {
+test('room entry still refuses a banned person with its own refusal', async () => {
   /*
-   * `/join` проверяет бан сам и своими словами — токен у него в теле запроса, а
-   * не в заголовке, и общая дверь его намеренно пропускает. Иначе пришедший
-   * увидел бы «семинар не найден» вместо объяснения.
+   * `/join` checks the ban itself and in its own words: its token is in the
+   * request body, not in a header, and the shared door deliberately lets it
+   * through. Otherwise the newcomer would see "seminar not found" instead of
+   * an explanation.
    */
   const res = await fetch(`${base}/api/sessions/${ROOM}/join`, {
     method: 'POST',

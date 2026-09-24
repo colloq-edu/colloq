@@ -1,77 +1,82 @@
 #!/usr/bin/env python3
-"""Таблица рекордов для игры на странице ожидания ретранслятора.
+"""The high-score table for the game on the relay's waiting page.
 
-Страница «комната ещё не открыта» (scripts/relay-offline.html) занимает
-студента пиксельной капибарой, пока преподаватель не открыл комнату, и
-предлагает вписать очки в общую таблицу. Таблица — это и есть весь сервис:
-одна JSON-коллекция на диске и три запроса.
+The "room is not open yet" page (scripts/relay-offline.html) keeps a student
+busy with a pixel capybara until the teacher opens the room, and offers to put
+the score into a shared table. The table is the whole service: one JSON
+collection on disk and three requests.
 
-    GET  /.relay/capy/start    → {"run": жетон}   — выдаётся в начале забега
+    GET  /.relay/capy/start    → {"run": token}   — issued at the start of a run
     GET  /.relay/capy/scores   → {"top": [{"id", "name", "score"}...],
-                                  "total": попыток, "names": разных имён}
-    POST /.relay/capy/scores   ← {"name", "score", "run": жетон, "owner": ключ}
+                                  "total": attempts, "names": distinct names}
+    POST /.relay/capy/scores   ← {"name", "score", "run": token, "owner": key}
                                → {"id", "name", "rank", "best", "improved",
                                   "renamed", "total", "names", "top": [...]}
-                                 id, name и best — строки этого имени в таблице
-                                 (лучшей попытки); rank: null — очков не
-                                 хватило даже на хвост хранилища.
-                                 409 — имя закреплено за другим владельцем.
+                                 id, name and best are this name's row in the
+                                 table (its best attempt); rank: null means the
+                                 score did not make even the tail of the store.
+                                 409: the name is held by another owner.
 
-Живёт на петле (127.0.0.1:9181) за caddy: тот отдаёт ему путь /.relay/capy/*
-для любого имени под *.colloq.ru — путь начинается с точки, чтобы не пересечься
-ни с одним адресом инстанса. Ставится и обновляется scripts/relay-setup.sh как
-systemd-служба colloq-capy от отдельного пользователя; данные в
-/var/lib/colloq-capy/ — scores.json и secret.
+Lives on the loopback (127.0.0.1:9181) behind caddy, which hands it the
+/.relay/capy/* path for any name under *.colloq.ru; the path starts with a dot
+so as not to collide with any instance address. Installed and updated by
+scripts/relay-setup.sh as the colloq-capy systemd service under a separate
+user; data in /var/lib/colloq-capy/: scores.json and secret.
 
-Почему стандартная библиотека, а не что-то удобнее: на ретрансляторе нет ни
-node, ни pip, ни желания их туда тащить — это машина с двумя демонами и
-секретом, и каждая лишняя зависимость на ней лишняя. python3 в Ubuntu есть
-всегда.
+Why the standard library and not something more convenient: the relay has
+neither node nor pip, nor any wish to drag them there. It is a machine with
+two daemons and a secret, and every extra dependency on it is one too many.
+Ubuntu always has python3.
 
-Кто чей. Браузер один раз заводит себе случайный ключ владельца и шлёт его с
-каждой записью; сервис хранит только его хэш. Имя — подпись владельца, а не
-сама личность: вписал другое — все строки этого владельца переезжают под
-новое имя вместе с рекордом (так «test» становится «sleep3r», а не вторым
-игроком). Имя, за которым уже стоит другой владелец, занять нельзя — 409;
-ничьи строки (записанные до этого правила) забирает первый, кто под ними
-запишется со своим ключом. Оборотная сторона: тот же человек с другого
-устройства — другой владелец, и своё имя он там не получит; это цена того,
-что никто не впишет 99 999 под чужим именем.
+Who owns what. The browser creates a random owner key for itself once and
+sends it with every entry; the service stores only its hash. The name is the
+owner's signature, not the identity itself: type another one, and all of that
+owner's rows move under the new name together with the record (that is how
+"test" becomes "sleep3r" instead of a second player). A name already held by
+another owner cannot be taken: 409; nobody's rows (written before this rule)
+go to the first one who writes under them with their own key. The flip side:
+the same person on another device is another owner and will not get their
+name there; that is the price of nobody being able to put 99 999 under
+someone else's name.
 
-Записи БЕЗ ключа не принимаются вовсе — 400. Раньше проверка владельца стояла
-внутри «если ключ прислали», и `curl` без ключа писал что угодно под любым
-чужим именем: правило про 409 обходилось тем, что его просто не спрашивали.
+Entries WITHOUT a key are not accepted at all: 400. The owner check used to
+sit inside "if a key was sent", and `curl` without a key wrote anything under
+any other person's name: the 409 rule was bypassed by simply never being
+asked.
 
-Честность очков. В начале забега страница берёт жетон — подписанное время
-старта. Запись без жетона или с чужим не принимается; очки сверяются со
-временем, прошедшим по часам сервиса: игра честно набирает до ~37 в секунду,
-принимается до 40·с + 50. Жетон одноразовый на имя (переименование той же
-попытки — законно, повтор под тем же именем — нет). Это не защита от того,
-кто перепишет игру, а защита от curl за минуту до звонка.
+Score honesty. At the start of a run the page takes a token: a signed start
+time. An entry without a token or with a foreign one is not accepted; the
+score is checked against the time that has passed on the service's clock: the
+game honestly scores up to ~37 per second, and up to 40·s + 50 is accepted.
+The token is single-use per name (renaming the same attempt is legitimate,
+repeating under the same name is not). This is no protection against someone
+who rewrites the game, but protection against curl a minute before the bell.
 
-Таблица — одна строка на имя: лучший результат человека, а не все его попытки
-подряд. Имена сравниваются без учёта регистра. Попытки считаются все — это
-число над таблицей.
+The table is one row per name: a person's best result, not all their attempts
+in a row. Names are compared case-insensitively. All attempts are counted:
+that is the number above the table.
 
-Безымянных строк в таблице нет. Раньше пустое имя становилось «Анонимом», и
-каждая такая попытка занимала СВОЮ вечную строку: к восьми строкам таблицы
-пять были «Анонимами» — таблица про людей превращалась в ленту попыток.
-Играть без имени по-прежнему можно сколько угодно, а строка в таблице
-начинается с имени. Прежние безымянные строки остались в файле и считаются
-в попытках, но не показываются.
+The table has no nameless rows. An empty name used to become "Аноним"
+(Anonymous), and every such attempt took ITS OWN permanent row: of eight rows
+in the table, five were "Аноним", and a table about people turned into a feed
+of attempts. You can still play without a name as much as you like, but a row
+in the table starts with a name. The old nameless rows stayed in the file and
+count towards attempts, but are not shown.
 
-Что ещё проверяется: имя — до 16 знаков, без управляющих и невидимых
-символов, хотя бы с одним видимым; «Аноним» — прежняя метка безымянных строк,
-а не имя, и его не занять. Очки — целое от 0 до 99 999. Лимит на адрес — корзина: пять записей сразу, дальше по одной
-в три секунды (класс за одним NAT помещается, поток curl — нет). Адрес берётся
-из ПОСЛЕДНЕГО элемента X-Forwarded-For: его дописывает caddy, первый присылает
-клиент. Таблица хранит пятьсот лучших; ответ считается по сохранённому.
+What else is checked: a name is up to 16 characters, without control or
+invisible characters, with at least one visible one; "Аноним" is the old label
+of nameless rows, not a name, and cannot be taken. The score is an integer
+from 0 to 99 999. The limit per address is a bucket: five entries at once,
+then one every three seconds (a class behind one NAT fits, a stream of curl
+does not). The address is taken from the LAST element of X-Forwarded-For:
+caddy appends it, the first one is sent by the client. The table keeps the
+five hundred best; the reply is computed from what is stored.
 
-Проверка руками, без ретранслятора:
+Checking by hand, without the relay:
     CAPY_STATE=/tmp/capy CAPY_PORT=9181 CAPY_PAGE=scripts/relay-offline.html \
         python3 scripts/relay-capy.py
-и открыть http://127.0.0.1:9181/ — с CAPY_PAGE сервис отдаёт страницу на любой
-путь, чтобы игру и таблицу можно было погонять с одного адреса.
+and open http://127.0.0.1:9181/: with CAPY_PAGE the service serves the page on
+any path, so the game and the table can be tried from one address.
 """
 
 import hashlib
@@ -90,7 +95,7 @@ STATE_DIR = os.environ.get("CAPY_STATE", "/var/lib/colloq-capy")
 STORE = os.path.join(STATE_DIR, "scores.json")
 SECRET_FILE = os.path.join(STATE_DIR, "secret")
 PORT = int(os.environ.get("CAPY_PORT", "9181"))
-PAGE = os.environ.get("CAPY_PAGE")  # только для проверки руками
+PAGE = os.environ.get("CAPY_PAGE")  # only for checking by hand
 
 PATH = "/.relay/capy/scores"
 START = "/.relay/capy/start"
@@ -99,19 +104,19 @@ TOP = 10
 NAME_MAX = 16
 SCORE_MAX = 99_999
 BODY_MAX = 2048
-# Имя прежних безымянных строк: в таблице им места нет, но в файле они лежат.
+# The name of the old nameless rows: they have no place in the table, but they stay in the file.
 ANON = "Аноним"
-# Корзина на адрес: BURST записей сразу, дальше одна в REFILL_SECONDS.
+# A bucket per address: BURST entries at once, then one every REFILL_SECONDS.
 BURST = 5
 REFILL_SECONDS = 3.0
-# Честность: очков в секунду сверх которых игра не набирает, и запас.
+# Honesty: the points per second beyond which the game does not score, and a margin.
 POINTS_PER_SECOND = 40
 POINTS_SLACK = 50
-RUN_MAX_AGE = 6 * 3600  # жетон старше — просрочен
+RUN_MAX_AGE = 6 * 3600  # a token older than this has expired
 
 _lock = threading.Lock()
-_buckets = {}  # адрес → (токенов, когда считали)
-_used = {}  # (жетон, ключ имени) → когда использован
+_buckets = {}  # address → (tokens, when counted)
+_used = {}  # (token, name key) → when used
 
 
 def load_secret():
@@ -141,7 +146,7 @@ def make_run(now):
 
 
 def run_started(token):
-    # Возвращает время старта (с) или None, если жетон не наш.
+    # Returns the start time (s), or None if the token is not ours.
     if not isinstance(token, str) or token.count(".") != 2 or len(token) > 80:
         return None
     start, nonce, sig = token.split(".")
@@ -168,9 +173,9 @@ def load():
         return []
     if not isinstance(rows, list):
         return []
-    # Форму строк не принимать на веру: файл правят руками на машине, и схема
-    # может поменяться в следующей версии — мусорная строка должна исчезнуть
-    # из таблицы, а не убить оба запроса KeyError'ом навсегда.
+    # Do not take the shape of the rows on faith: the file is edited by hand on
+    # the machine, and the schema may change in the next version; a garbage row
+    # must drop out of the table, not kill both requests with a KeyError forever.
     return [
         r for r in rows
         if isinstance(r, dict)
@@ -183,8 +188,8 @@ def load():
 
 
 def save(rows):
-    # Через временный файл и переименование: обрыв на середине записи не
-    # оставит полупустой JSON, из которого потом не прочитается ничего.
+    # Through a temporary file and a rename: a break in the middle of writing
+    # will not leave a half-written JSON from which nothing can be read later.
     os.makedirs(STATE_DIR, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=STATE_DIR, prefix=".scores-", suffix=".json")
     try:
@@ -200,18 +205,18 @@ def save(rows):
 
 
 def ordered(rows):
-    # Больше очков — выше; при равенстве раньше записанный выше.
+    # More points ranks higher; on a tie, the one written earlier ranks higher.
     return sorted(rows, key=lambda r: (-r["score"], r["at"]))
 
 
 def key_of(row):
-    # Ключ склейки: имя без регистра.
+    # The merge key: the name, ignoring case.
     return row["name"].casefold()
 
 
 def board(rows):
-    # Упорядоченные строки без повторов имени: первая встреча — лучшая.
-    # Прежние безымянные строки пропускаются: таблица — про имена.
+    # Ordered rows without repeated names: the first occurrence is the best.
+    # The old nameless rows are skipped: the table is about names.
     seen = set()
     out = []
     for r in ordered(rows):
@@ -230,18 +235,19 @@ def public(row):
 
 
 def summary(rows):
-    # Сколько всего попыток и сколько разных имён — для строки над таблицей.
-    # Считается по хранимым пятистам: точнее и не нужно. Попытки — все, включая
-    # прежние безымянные; имена — только те, что в таблице и есть.
+    # How many attempts in total and how many distinct names, for the line above
+    # the table. Counted over the five hundred stored: more precision is not
+    # needed. Attempts are all of them, including the old nameless ones; names
+    # are only those actually in the table.
     return {
         "total": len(rows),
         "names": len({key_of(r) for r in rows if r["name"] != ANON}),
     }
 
 
-# Управляющие и невидимые: нулевой ширины, направление письма, изоляты,
-# соединители, филлеры хангыля, BOM — всё, чем можно сделать имя пустым на
-# вид или перевернуть соседей в таблице.
+# Control and invisible characters: zero-width, writing direction, isolates,
+# joiners, Hangul fillers, BOM: everything that can make a name look empty or
+# flip its neighbours in the table.
 _CONTROL = re.compile(
     "[\\x00-\\x1f\\x7f-\\x9f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u2028-\\u202e"
     "\\u2060-\\u2064\\u206a-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\u115f\\u1160]"
@@ -249,22 +255,23 @@ _CONTROL = re.compile(
 
 
 def clean_name(value):
-    """Имя — или None, если имени нет.
+    """The name, or None if there is no name.
 
-    None, а не «Аноним»: безымянная запись теперь не принимается вовсе, и
-    отличать «не вписал» от «вписал» должен тот, кто отвечает клиенту.
+    None, not "Аноним": a nameless entry is not accepted at all now, and telling
+    "typed nothing" from "typed a name" is the job of whoever answers the client.
     """
     if not isinstance(value, str):
         return None
     value = _CONTROL.sub("", value)
     value = " ".join(value.split())[:NAME_MAX].strip()
-    # Хотя бы один видимый знак — буква, цифра, знак препинания или символ.
-    # Всё новое невидимое из будущих версий Unicode отсекается категорией,
-    # а не списком выше.
+    # At least one visible character: a letter, a digit, punctuation or a
+    # symbol. Anything new and invisible in future Unicode versions is cut off
+    # by category, not by the list above.
     if not any(unicodedata.category(c)[0] in "LNPS" for c in value):
         return None
-    # «Аноним» — метка прежних безымянных строк, а не имя: заняв его, человек
-    # получил бы вместе с ним чужие строки, которых в таблице и быть не должно.
+    # "Аноним" is the label of the old nameless rows, not a name: by taking it,
+    # a person would get other people's rows along with it, rows that should not
+    # be in the table at all.
     if value.casefold() == ANON.casefold():
         return None
     return value
@@ -279,8 +286,9 @@ def clean_score(value):
 
 
 def allow(ip, now):
-    # Корзина с запасом: класс, разбившийся по звонку разом, проходит; поток
-    # из curl всё равно упирается в одну запись за три секунды.
+    # A bucket with headroom: a class that crashes out all at once at the bell
+    # gets through; a stream from curl still runs into one entry per three
+    # seconds.
     tokens, at = _buckets.get(ip, (BURST, now))
     tokens = min(BURST, tokens + (now - at) / REFILL_SECONDS)
     if tokens < 1:
@@ -288,7 +296,7 @@ def allow(ip, now):
         return False
     _buckets[ip] = (tokens - 1, now)
     if len(_buckets) > 10_000:
-        # Не держать в памяти каждого, кто когда-либо заходил.
+        # Do not keep in memory everyone who has ever come by.
         for k in [k for k, (t, a) in _buckets.items() if now - a > BURST * REFILL_SECONDS]:
             del _buckets[k]
     return True
@@ -303,18 +311,18 @@ def prune_used(now):
 class Handler(BaseHTTPRequestHandler):
     server_version = "colloq-capy/4"
     protocol_version = "HTTP/1.1"
-    # Недосказанное тело не должно держать поток вечно.
+    # A body that is never finished must not hold a thread forever.
     timeout = 15
 
     def handle(self):
-        # Студент закрыл вкладку посреди ответа — это не событие для журнала.
+        # A student closed the tab in the middle of a reply: not an event for the log.
         try:
             super().handle()
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass
 
     def log_message(self, fmt, *args):
-        # В журнал systemd — только отказы; каждый GET таблицы туда не нужен.
+        # Only refusals go to the systemd journal; it does not need every GET of the table.
         code = str(args[1]) if len(args) > 1 else ""
         if code[:1] in ("4", "5"):
             sys.stderr.write("%s - %s\n" % (self.client_ip(), fmt % args))
@@ -324,8 +332,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def client_ip(self):
         fwd = self.headers.get("X-Forwarded-For", "") if getattr(self, "headers", None) else ""
-        # Последний элемент дописал caddy; первый прислал клиент, и он может
-        # быть каким угодно.
+        # The last element was appended by caddy; the first was sent by the
+        # client, and it can be anything at all.
         last = fwd.split(",")[-1].strip() if fwd else ""
         return last or (self.client_address[0] if self.client_address else "") or "?"
 
@@ -360,8 +368,9 @@ class Handler(BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
     def refuse(self, code, body):
-        # Тело запроса не прочитано — остаток лёг бы в сокет и разобрался как
-        # следующий запрос. Соединение закрывается, keep-alive тут не нужен.
+        # The request body has not been read: the rest would stay in the socket
+        # and be parsed as the next request. The connection is closed; keep-alive
+        # is not needed here.
         self.close_connection = True
         self.reply(code, body)
 
@@ -387,20 +396,20 @@ class Handler(BaseHTTPRequestHandler):
         name = clean_name(body.get("name"))
         if name is None:
             return self.reply(400, {"error": "name"})
-        # Ключ владельца обязателен: без него имя не за кем закрепить, и
-        # проверка «имя занято» ниже становится проверкой ни о чём — раньше она
-        # стояла внутри «если ключ прислали», и запись без ключа проходила под
-        # любым чужим именем.
+        # The owner key is required: without it there is nobody to pin the name
+        # to, and the "name taken" check below becomes a check about nothing; it
+        # used to sit inside "if a key was sent", and an entry without a key went
+        # through under any other person's name.
         owner = owner_hash(body.get("owner"))
         if owner is None:
             return self.reply(400, {"error": "owner"})
         now = time.time()
 
-        # Жетон начала забега: без него, с чужим или просроченным — не запись.
+        # The run start token: without one, or with a foreign or expired one, there is no entry.
         started = run_started(body.get("run"))
         if started is None or started > now + 60 or now - started > RUN_MAX_AGE:
             return self.reply(400, {"error": "run"})
-        # Столько очков за столько секунд игра не набирает.
+        # The game does not score this many points in this many seconds.
         if score > POINTS_PER_SECOND * max(0.0, now - started) + POINTS_SLACK:
             return self.reply(400, {"error": "implausible"})
 
@@ -409,8 +418,8 @@ class Handler(BaseHTTPRequestHandler):
             if not allow(ip, now):
                 return self.reply(429, {"error": "too fast"})
             row = {
-                # Миллисекунда плюс случайность: две записи в одну миллисекунду
-                # (звонок — весь класс разбивается разом) не должны делить id.
+                # A millisecond plus randomness: two entries in one millisecond
+                # (the bell: the whole class crashes at once) must not share an id.
                 "id": "%x%s" % (int(now * 1000), os.urandom(4).hex()),
                 "name": name,
                 "score": score,
@@ -424,15 +433,15 @@ class Handler(BaseHTTPRequestHandler):
             rows = load()
             renamed = False
             row["owner"] = owner
-            # Имя за другим владельцем — занято.
+            # A name held by another owner is taken.
             if any(key_of(r) == key and r.get("owner") not in (None, owner) for r in rows):
                 return self.reply(409, {"error": "name taken"})
-            # Свои строки под прежним именем переезжают под новое.
+            # The owner's own rows under the previous name move under the new one.
             for r in rows:
                 if r.get("owner") == owner and key_of(r) != key:
                     r["name"] = name
                     renamed = True
-            # Ничьи строки под этим именем становятся своими.
+            # Nobody's rows under this name become the owner's own.
             for r in rows:
                 if key_of(r) == key and r.get("owner") is None:
                     r["owner"] = owner
@@ -441,13 +450,13 @@ class Handler(BaseHTTPRequestHandler):
             rows = ordered(rows + [row])[:KEEP]
             save(rows)
             table = board(rows)
-            # Место считается среди имён, и отвечает за него лучшая попытка этого
-            # имени — возможно, не та, что пришла сейчас. Клиент подсвечивает её.
+            # The place is counted among names, and it belongs to this name's best
+            # attempt, possibly not the one that came in now. The client highlights it.
             mine = next((r for r in table if key_of(r) == key), None)
             top = [public(r) for r in table[:TOP]]
             counts = summary(rows)
         if mine is None:
-            # Хранилище полно, и попытка хуже всех пятисот: ничего не сохранено.
+            # The store is full, and the attempt is worse than all five hundred: nothing is saved.
             return self.reply(200, {"id": row["id"], "name": name, "rank": None, "best": None,
                                     "improved": False, "renamed": renamed, "top": top, **counts})
         self.reply(200, {

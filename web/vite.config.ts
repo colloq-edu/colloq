@@ -15,9 +15,10 @@ import { collectEntryMessages, collectClientKeys } from './scripts/entry-message
 
 const API_TARGET = process.env.VITE_API_TARGET ?? 'http://localhost:3000'
 /*
- * Версия — из корневого package.json, единственного её источника (см.
- * scripts/version.mts). Панель рисует её у логотипа; раньше там была зашитая
- * строка «v0.1», которая не менялась бы ни с одним выпуском.
+ * The version comes from the root package.json, its only source (see
+ * scripts/version.mts). The panel draws it next to the logo; there used to be
+ * a hard-coded string "v0.1" there, which would not have changed with any
+ * release.
  */
 const COLLOQ_VERSION = (JSON.parse(
   fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
@@ -49,17 +50,19 @@ function entryLanguage(): Plugin {
 }
 
 /**
- * Словарь экрана: одна область, один язык.
+ * A screen's dictionary: one area, one language.
  *
- * Он был один на всех — `full-language`, 351 КБ исходника и 74 КБ по проводу,
- * и приезжал ПЕРЕД любым экраном. В нём лежали оба языка, весь каталог панели
- * преподавателя и весь серверный, из которых браузер умеет искать три десятка
- * ключей. Комнате на одном языке нужно 80 КБ.
+ * There used to be one for everybody — `full-language`, 351 KB of source and
+ * 74 KB over the wire, and it arrived BEFORE any screen. It held both
+ * languages, the whole teacher panel catalog and the whole server one, of
+ * which the browser can look up about thirty keys. A room in one language
+ * needs 80 KB.
  *
- * Настоящие файлы lib/messages/<область>-<язык>.ts остаются на диске: их
- * грузят node и тесты, и они же — единственное место, где записан СОСТАВ
- * области. Здесь их содержимое подменяется на сборочное: те же каталоги,
- * прочитанные из их собственных импортов, но один язык и урезанный `server`.
+ * The real files lib/messages/<area>-<language>.ts stay on disk: node and
+ * the tests load them, and they are the only place where an area's
+ * COMPOSITION is written down. Here their content is replaced with the
+ * build-time one: the same catalogs, read from their own imports, but one
+ * language and a trimmed `server`.
  */
 function screenLanguage(): Plugin {
   const root = fileURLToPath(new URL('../', import.meta.url))
@@ -73,13 +76,14 @@ function screenLanguage(): Plugin {
     competitions: competitionsMessages,
   }
   /*
-   * Серверный каталог — единственный, который режется по ключам, а не целиком.
+   * The server catalog is the only one cut by keys rather than taken whole.
    *
-   * Почти весь он никогда не доезжает до браузера: это страницы публикации,
-   * письма и журнал. Клиент переводит серверные СЛОВА состояния («ядро занято»)
-   * и несколько имён по умолчанию, и все они записаны в его исходниках
-   * буквально — отсюда и считаются. Ошибки приходят уже переведёнными
-   * сервером и проходят через tr() нетронутыми, словаря им не нужно.
+   * Almost all of it never reaches the browser: it is publication pages,
+   * emails and the log. The client translates the server's state WORDS
+   * ("kernel busy") and a few default names, and all of them are written
+   * literally in its sources — that is where they are counted from. Errors
+   * arrive already translated by the server and pass through tr() untouched;
+   * they need no dictionary.
    */
   let client: Set<string> | null = null
   return {
@@ -90,16 +94,16 @@ function screenLanguage(): Plugin {
       if (path.dirname(file) !== folder || !file.endsWith('.ts')) return
       const [area, locale] = path.basename(file, '.ts').split('-')
       if (!area || !LOCALES.includes(locale as Locale)) {
-        throw new Error(`colloq-screen-language: ${file} — имя вида <область>-<ru|en>.ts`)
+        throw new Error(`colloq-screen-language: ${file} — the name must be <area>-<ru|en>.ts`)
       }
       const source = fs.readFileSync(file, 'utf8')
       const wanted = [...source.matchAll(/@shared\/locales\/([a-z]+)/g)].map((match) => match[1])
-      if (wanted.length === 0) throw new Error(`colloq-screen-language: в ${file} нет каталогов`)
+      if (wanted.length === 0) throw new Error(`colloq-screen-language: ${file} has no catalogs`)
       client ??= collectClientKeys(root, messages, 'server')
       const out: Record<string, Record<string, unknown>> = {}
       for (const name of wanted) {
         const catalog = catalogs[name]
-        if (!catalog) throw new Error(`colloq-screen-language: неизвестный каталог ${name}`)
+        if (!catalog) throw new Error(`colloq-screen-language: unknown catalog ${name}`)
         this.addWatchFile(path.join(root, 'shared/locales', `${name}.ts`))
         for (const [key, pair] of Object.entries(catalog)) {
           if (name === 'server' && !client.has(key)) continue
@@ -128,8 +132,8 @@ const YJS = /^(yjs|y-websocket|y-protocols|y-indexeddb|lib0)$/
 /* marked, DOMPurify and ansi_up are loaded together by lib/render.svelte.ts and
    are useless apart, so they ship as one chunk rather than three requests. */
 const RENDER = /^(marked|dompurify|ansi_up)$/
-/* pdf.js приезжает только когда в комнате открыли документ; воркер к нему идёт
-   мимо сборщика, отдельным файлом из public/ — см. lib/pdf.svelte.ts. */
+/* pdf.js arrives only when a document is opened in the room; its worker goes
+   around the bundler, as a separate file from public/ — see lib/pdf.svelte.ts. */
 const PDF = /^pdfjs-dist$/
 
 const NODE_MODULES = 'node_modules/'
@@ -143,27 +147,29 @@ function packageOf(id: string): string | null {
 }
 
 /**
- * Имя куска комнаты — то, которым его называет Rollup: базовое имя модуля.
+ * The name of the room chunk — the one Rollup calls it by: the module's base
+ * name.
  *
- * Своего куска SessionScreen не просит и не должен: он и так уезжает в
- * отдельный, потому что грузится динамическим `import()`. Просить его через
- * `manualChunks` пробовали — и это ХУЖЕ: назначенный вручную кусок утаскивает
- * за собой то, что нужно и входу тоже, и в собранном index.js появляется
- * СТАТИЧЕСКИЙ импорт из него. То есть 457 КБ комнаты начинают качаться на
- * экране входа — ровно то, ради чего экран и разделяли.
+ * SessionScreen does not ask for a chunk of its own and must not: it ends up
+ * in a separate one anyway, because it is loaded with a dynamic `import()`.
+ * Asking for it through `manualChunks` was tried — and it is WORSE: a
+ * manually assigned chunk drags along what the entry needs too, and the built
+ * index.js gets a STATIC import from it. That is, the room's 457 KB start
+ * downloading on the join screen — exactly what the screens were split for.
  *
- * Имя нужно здесь одному: `firstPaint` ниже кладёт этот кусок в modulepreload
- * на /s/:id. Оно завязано на имя файла, поэтому переименование экрана обязано
- * доехать и сюда — за этим следит проверка в самом `firstPaint`, которая роняет
- * сборку, а не молчит.
+ * The name is needed here for one thing: `firstPaint` below puts this chunk
+ * into modulepreload on /s/:id. It is tied to the file name, so renaming the
+ * screen must reach here too — a check in `firstPaint` itself watches for
+ * that, and it fails the build instead of keeping quiet.
  */
 const ROOM_CHUNK = 'SessionScreen'
 /*
- * И два куска, которые комната просит динамически, но просит ВСЕГДА: редактор
- * ячейки и рендерер вывода. Статическим графом (`reach` в firstPaint) их не
- * достать — тем графом и считается всё остальное, чтобы список не отставал от
- * сборки, — а греть их вместе с экраном надо, иначе тетрадь рисуется в две
- * волны сети вместо одной.
+ * And two chunks the room asks for dynamically, but ALWAYS asks for: the cell
+ * editor and the output renderer. The static graph (`reach` in firstPaint)
+ * cannot reach them — that graph is what everything else is computed from, so
+ * the list does not lag behind the build — yet they have to be warmed along
+ * with the screen, otherwise the notebook paints in two network waves instead
+ * of one.
  */
 const ROOM_ALSO = ['codemirror', 'render'] as const
 
@@ -183,16 +189,17 @@ function manualChunks(id: string): string | undefined {
 /* ------------------------------------------------------- first-paint plugin */
 
 /**
- * Комментарии — в исходник, а не в ответ браузеру.
+ * Comments belong in the source, not in the answer to the browser.
  *
- * Vite не минифицирует HTML, и собранный index.html уезжал с десятью
- * килобайтами объяснений: и своих `<!-- -->`, и блочных внутри встроенного
- * `<style>`. Это 8.9 КБ brotli против 3.0 без них — на КАЖДУЮ навигацию, то
- * есть на каждый вход в комнату, впереди всего остального.
+ * Vite does not minify HTML, and the built index.html went out with ten
+ * kilobytes of explanations: its own `<!-- -->` ones and the block ones inside
+ * the inline `<style>`. That is 8.9 KB of brotli versus 3.0 without them — on
+ * EVERY navigation, that is, on every entry into a room, ahead of everything
+ * else.
  *
- * Исходник при этом остаётся как есть: объяснения в index.html написаны для
- * того, кто будет его править, а не для того, кто открывает ссылку на семинар.
- * Скрипты не трогаются вовсе — там блочный комментарий это код, а не оформление.
+ * The source stays as it is: the explanations in index.html are written for
+ * whoever will edit it, not for whoever opens a seminar link. Scripts are not
+ * touched at all — there a block comment is code, not decoration.
  */
 const SCRIPTS = /<script\b[^>]*>[\s\S]*?<\/script>/gi
 const STYLES = /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi
@@ -209,10 +216,11 @@ function withoutComments(html: string): string {
 }
 
 /*
- * Одна и та же пара помощников для обоих скриптов в голове: `add` кладёт ссылку
- * предзагрузки, разбираясь, модуль это или стиль, а `lang` читает язык из
- * `<html lang>`, который сервер уже переписал под инстанс (frontend-html.ts).
- * Мета с языком лежит ПОСЛЕ этих скриптов и им ещё не видна.
+ * The same pair of helpers for both scripts in the head: `add` inserts a
+ * preload link, working out whether it is a module or a stylesheet, and
+ * `lang` reads the language from `<html lang>`, which the server has already
+ * rewritten for the instance (frontend-html.ts). The language meta comes
+ * AFTER these scripts and is not visible to them yet.
  */
 const PRELOAD_HELPERS =
   `const add=(f,w)=>{const l=document.createElement("link");const css=f.endsWith(".css");` +
@@ -221,17 +229,19 @@ const PRELOAD_HELPERS =
   `const lang=document.documentElement.lang==="en"?"en":"ru";`
 
 /**
- * Правки к HTML, который отдаёт Vite, — все ради первого кадра:
+ * Edits to the HTML Vite serves — all for the sake of the first frame:
  *
- *  - комментарии уходят (см. выше);
- *  - таблица стилей перестаёт блокировать отрисовку, но едет с ВЫСОКИМ
- *    приоритетом: `rel=preload as=style` вместо `media=print`, который в Chrome
- *    получал Low и приезжал позже шрифтов. main.ts держит оболочку до тех пор,
- *    пока лист не применился, так что раздетым приложение не видно;
- *  - код формы просится первым в документе, раньше кусков комнаты, и вместе со
- *    своим CSS, которого помощник предзагрузки Vite всё равно дождётся;
- *  - куски комнаты греются с fetchpriority=low: они нужны после формы, а не
- *    вместо неё. Их состав считается по сборке, а не перечисляется руками.
+ *  - comments go away (see above);
+ *  - the stylesheet stops blocking rendering but travels at HIGH priority:
+ *    `rel=preload as=style` instead of `media=print`, which in Chrome got Low
+ *    and arrived after the fonts. main.ts keeps the shell up until the sheet
+ *    has applied, so the app is never seen undressed;
+ *  - the form's code is requested first in the document, before the room
+ *    chunks, together with its CSS, which Vite's preload helper waits for
+ *    anyway;
+ *  - the room chunks are warmed with fetchpriority=low: they are needed after
+ *    the form, not instead of it. Their composition is computed from the
+ *    build, not listed by hand.
  */
 function firstPaint(): Plugin {
   let base = '/'
@@ -249,8 +259,9 @@ function firstPaint(): Plugin {
         // fallback until normal font discovery. Do not put 31 KB of code font
         // ahead of its JS. Returning rooms still preload before editors paint.
         //
-        // `/` и `/admin` — это форма входа штата, и кода на ней нет вовсе:
-        // моноширинный там грелся просто потому, что «не комната».
+        // `/` and `/admin` are the staff sign-in form, and there is no code on
+        // it at all: the monospace font was warmed there just because "it is
+        // not the room".
         out = out.replace(/<link\b[^>]*href="\/fonts\/jetbrains-mono-latin\.woff2"[^>]*>/g,
           `<script data-colloq-mono-preload>(()=>{const p=location.pathname;` +
           `const room=/^\\/s\\/([A-Za-z0-9_-]{1,64})(?:\\/|$)/.exec(p);` +
@@ -279,24 +290,24 @@ function firstPaint(): Plugin {
         const byName = new Map(chunks.map((chunk) => [chunk.name, chunk]))
         const byFile = new Map(chunks.map((chunk) => [chunk.fileName, chunk]))
         /*
-         * И вслух, если имя разошлось со сборкой.
+         * And out loud, if a name has drifted from the build.
          *
-         * Имена кусков — это строки, а модули переименовывают: молча выпавший
-         * отсюда `SessionScreen` не сломал бы ничего заметного, просто вернул бы
-         * тот самый лишний круг сети, который здесь и убирают. Такое не
-         * замечают годами, поэтому сборка падает.
+         * Chunk names are strings, and modules get renamed: a `SessionScreen`
+         * silently dropped from here would break nothing noticeable, it would
+         * just bring back the very extra network round trip that is removed
+         * here. Such things go unnoticed for years, so the build fails.
          */
         const need = (name: string): Chunk => {
           const chunk = byName.get(name)
           if (!chunk) {
             throw new Error(
-              `colloq-first-paint: в сборке нет куска ${name} — его переименовали, ` +
-                'а предзагрузка в голове осталась со старым именем',
+              `colloq-first-paint: the build has no chunk ${name} — it was renamed, ` +
+                'but the preload in the head kept the old name',
             )
           }
           return chunk
         }
-        /** Кусок и всё, что он тянет статически: это и есть одна волна сети. */
+        /** A chunk and everything it pulls in statically: that is one network wave. */
         const reach = (start: Chunk[]): Chunk[] => {
           const seen = new Map<string, Chunk>()
           const pending = [...start]
@@ -311,24 +322,24 @@ function firstPaint(): Plugin {
           }
           return [...seen.values()]
         }
-        /** Листы стилей этих кусков, кроме тех, что страница уже называет. */
+        /** The stylesheets of these chunks, except those the page already names. */
         const styles = (list: Chunk[]): string[] => [
           ...new Set(list.flatMap((chunk) => [...(chunk.viteMetadata?.importedCss ?? [])])),
         ].filter((file) => !out.includes(`href="${base}${file}"`))
-        /** Словарь области на каждом языке: выбор делает скрипт в голове. */
+        /** The area's dictionary in each language: the script in the head picks one. */
         const speaks = (area: string, files: string[]): Record<string, string[]> =>
           Object.fromEntries(LOCALES.map((locale) =>
             [locale, [...files, base + need(`${area}-${locale}`).fileName]]))
 
         /*
-         * Вход — ПЕРВЫМ в документе. Раньше скрипт комнаты стоял выше этих
-         * ссылок, и 394 КБ тетради успевали занять очередь перед App.js: форма
-         * имени ждала кода, который ей не нужен.
+         * The entry goes FIRST in the document. The room script used to stand
+         * above these links, and the notebook's 394 KB managed to take the
+         * queue before App.js: the name form waited for code it does not need.
          *
-         * Вместе с ним — его собственный CSS. Помощник предзагрузки Vite ждёт
-         * `App-*.css` перед тем, как выполнить App, а в голове его не было: о
-         * нём узнавали из index.js, то есть волной позже, и 852 байта стояли
-         * между входным куском и экраном.
+         * Together with it — its own CSS. Vite's preload helper waits for
+         * `App-*.css` before running App, and it was not in the head: it was
+         * discovered from index.js, that is, one wave later, and 852 bytes
+         * stood between the entry chunk and the screen.
          */
         const entry = reach([need('App')])
         out = out.replace('</head>', [
@@ -338,11 +349,12 @@ function firstPaint(): Plugin {
         ].join('') + '</head>')
 
         /*
-         * Комната. Состав считается по сборке: экран и всё, что он тянет
-         * статически, — перечисленные руками четыре имени отставали на волну,
-         * потому что SessionScreen статически тянет ещё yjs, CellOutputs,
-         * буфер обмена, хранилище и ссылку на семинар. Редактор и рендерер он
-         * просит динамически, но просит всегда, поэтому названы отдельно.
+         * The room. Its composition is computed from the build: the screen and
+         * everything it pulls in statically — the four names listed by hand
+         * lagged a wave behind, because SessionScreen also statically pulls in
+         * yjs, CellOutputs, the clipboard, storage and the seminar link. The
+         * editor and the renderer it asks for dynamically, but always, so they
+         * are named separately.
          *
          * Only returning identities need these before the form. Cold visitors
          * warm them after paint, while typing, instead of waiting for /join
@@ -398,8 +410,8 @@ export default defineConfig({
       '/api': { target: API_TARGET, changeOrigin: true },
       '/collab': { target: API_TARGET, ws: true },
       '/control': { target: API_TARGET, ws: true },
-      // Документ открытого файла — четвёртый сокет сервера, и забыть его здесь
-      // значит редактор, который на стенде «подключается» до конца дня.
+      // The open file's document is the server's fourth socket, and forgetting
+      // it here means an editor that "connects" on the test bench all day long.
       '/file': { target: API_TARGET, ws: true },
     },
   },

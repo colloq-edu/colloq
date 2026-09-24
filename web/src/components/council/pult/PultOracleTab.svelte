@@ -1,30 +1,34 @@
 <script lang="ts">
   /**
-   * Оракул о классе: мессенджер, в котором преподаватель спрашивает о задаче.
+   * The oracle about the class: a messenger in which the teacher asks about
+   * the task.
    *
-   * Вкладка была экраном одной кнопки: «Подготовить сводку» — и три абзаца про
-   * сданный код, разложенные по шести безымянным группам. Ни группы, ни сводки
-   * здесь больше нет, и это просьба владельца: он думает о классе не стопками
-   * одинакового текста, а людьми — «у Ани работает, у Пети падает». Осталась
-   * одна лента «вопрос → ответ», и спросить можно ВСЕГДА: ещё до того, как
-   * кто-нибудь написал хоть строку, — «что это вообще за задание и как им
-   * лучше действовать» модель прочитает по тексту общей ячейки.
+   * The tab used to be a one-button screen: "Prepare a summary" — and three
+   * paragraphs about the submitted code, laid out across six nameless
+   * groups. Neither the groups nor the summary are here any more, and that
+   * was the owner's request: he thinks of the class not as piles of
+   * identical text but as people — "it works for Anya, it fails for Petya".
+   * What remains is one "question → answer" feed, and you can ALWAYS ask:
+   * even before anyone has written a single line, the model will read "what
+   * kind of task is this anyway and how should they best go about it" from
+   * the text of the shared cell.
    *
-   * Три вещи держатся нарочно.
+   * Three things are held on purpose.
    *
-   * Панель ввода не уезжает. Она вне области прокрутки: на телефоне и в окне
-   * 900×650 поле «спросить» должно быть под рукой, а не в конце ленты, которую
-   * сперва надо промотать.
+   * The input panel does not scroll away. It is outside the scroll area: on
+   * a phone and in a 900×650 window the "ask" field has to be at hand, not
+   * at the end of a feed that first has to be scrolled.
    *
-   * Имена в ответе — живые. Модель называет людей по имени (или меткой `S7`,
-   * если имена на этом Colloq к ней не едут), а словарь «подпись → человек»
-   * приезжает вместе с ответом; здесь подпись превращается в чип, по которому
-   * открывается работа. Разбор текста — чистой функцией в
-   * lib/council-oracle-answer.ts: наивная замена подстроки съела бы «Анна»
-   * внутри «Анна Белова».
+   * Names in an answer are live. The model calls people by name (or by an
+   * `S7` label if names on this Colloq are not sent to it), and a "label →
+   * person" dictionary arrives with the answer; here the label turns into a
+   * chip that opens the work. The text is parsed by a pure function in
+   * lib/council-oracle-answer.ts: a naive substring replacement would eat
+   * "Anna" inside "Anna Belova".
    *
-   * Отказ остаётся В ЛЕНТЕ. Вопрос, на который не ответили, не исчезает:
-   * иначе повторить нечего, и даже понять, на чём повисло, невозможно.
+   * A refusal stays IN THE FEED. A question that was not answered does not
+   * disappear: otherwise there is nothing to repeat, and it is not even
+   * possible to understand where it got stuck.
    */
   import { tr } from '@shared/i18n'
   import { MAX_ORACLE_QUESTION, type CouncilAttempt, type CouncilOracle } from '@shared/protocol'
@@ -39,13 +43,16 @@
     attempts: readonly CouncilAttempt[]
     submitted: number
     names: boolean
-    /** Номера вариантов ячейки (council-pult.ts · variantNumbers) — подпись чипа при выключенных именах. */
+    /**
+     * The cell's answer numbers (council-pult.ts · variantNumbers) — the chip
+     * label when names are off.
+     */
     variants: ReadonlyMap<string, number>
     askWhy: string | null
-    /** Вопрос и уровень размышлений на него; без уровня — умолчание инстанса. */
+    /** The question and the reasoning level for it; no level — the instance default. */
     onask: (question: string, effort?: ReasoningEffort) => void
     onstop: () => void
-    /** Открыть работу этого человека — нажатие на чип в ответе. */
+    /** Open this person's work — a press on a chip in the answer. */
     onopen: (participantId: string) => void
   }
 
@@ -55,14 +62,15 @@
   let draft = $state('')
   let bodyEl = $state<HTMLElement | null>(null)
   let field = $state<HTMLTextAreaElement | null>(null)
-  /** `null` — «как на инстансе»: в запрос не уходит ничего нового. */
+  /** `null` means "as on the instance": nothing new goes into the request. */
   let effort = $state<ReasoningEffort | null>(rememberedEffort())
 
   /**
-   * Высота поля — по тексту, до четырёх строк (как у письма автору,
-   * PultReply.svelte). Тем же способом, а не `field-sizing: content`: пульт
-   * открывают и в Safari, где этого свойства ещё нет, и поле в одну строку
-   * молча прятало бы конец длинного вопроса.
+   * The field's height follows the text, up to four lines (as for the letter
+   * to the author, PultReply.svelte). The same way, not `field-sizing:
+   * content`: the console is opened in Safari too, which does not have this
+   * property yet, and a one-line field would silently hide the end of a
+   * long question.
    */
   const MAX_FIELD = 92
   $effect(() => {
@@ -77,9 +85,10 @@
   const view = $derived(oracleState(oracle, submitted))
   const reading = $derived(view === 'reading')
   /*
-   * `?? []` и `?? null` на обязательных полях — не перестраховка: кадр мог
-   * приехать от сервера, который ленты ещё не знает (`CouncilOracle.answers`),
-   * и вкладка в этом случае обязана нарисоваться пустой, а не упасть.
+   * `?? []` and `?? null` on required fields are not over-caution: a frame
+   * may have come from a server that does not know the feed yet
+   * (`CouncilOracle.answers`), and in that case the tab has to render empty
+   * rather than crash.
    */
   const answers = $derived(oracle?.answers ?? [])
   const pending = $derived(oracle?.pending ?? null)
@@ -90,7 +99,7 @@
   const byId = $derived(new Map(attempts.map((one) => [one.participantId, one] as const)))
   const empty = $derived(answers.length === 0 && pending === null)
 
-  /** Быстрые вопросы: на кнопке — два слова, модели уезжает целое предложение. */
+  /** Quick questions: two words on the button, a whole sentence goes to the model. */
   const quick = $derived([
     { label: tr('room.pult.v2.oracle.ask.status'), question: tr('room.pult.v2.oracle.ask.qStatus') },
     { label: tr('room.pult.v2.oracle.ask.stuck'), question: tr('room.pult.v2.oracle.ask.qStuck') },
@@ -99,9 +108,9 @@
       question: tr('room.pult.v2.oracle.ask.qMistakes'),
     },
     {
-      // Бывшая «Сводка по решениям» — теперь такой же вопрос, как остальные, и
-      // гаснуть без сдач ему незачем: разбирать «что писать дальше» полезно и
-      // по черновикам.
+      // The former "Summary of solutions" — now a question like the others,
+      // and there is no reason for it to grey out without submissions: going
+      // over "what to write next" is useful on drafts too.
       label: tr('room.pult.v2.oracle.ask.review'),
       question: tr('room.pult.v2.oracle.ask.qReview'),
     },
@@ -130,13 +139,13 @@
     ask(text)
   }
 
-  /** Тот же уровень второй раз — «как на инстансе»: выбор снимается нажатием. */
+  /** Picking the same level again means "as on the instance": the press clears it. */
   function pickEffort(next: ReasoningEffort): void {
     effort = effort === next ? null : next
     rememberEffort(effort)
   }
 
-  /** Подпись чипа: имя, «Вариант N» или сама подпись из кадра, если человека уже нет. */
+  /** Chip label: the name, "Answer N", or the frame's label if the person is gone. */
   function chipText(piece: Extract<AnswerPiece, { kind: 'person' }>): string {
     const attempt = byId.get(piece.participantId)
     if (!attempt) return piece.label
@@ -146,9 +155,9 @@
   }
 
   /*
-   * Лента всегда показывает последнее: вопрос уходит вниз, и ответ приезжает
-   * туда же. Кадром позже, потому что высота считается уже после отрисовки
-   * нового куска.
+   * The feed always shows the latest: a question goes to the bottom, and the
+   * answer arrives there too. A frame later, because the height is computed
+   * only after the new piece has been drawn.
    */
   $effect(() => {
     void answers.length
@@ -203,8 +212,8 @@
             <div class="turn-answer" class:turn-failed={!!answer.failed}
               aria-label={tr('room.pult.v2.oracle.ask.answer')}>
               {#if answer.failed}
-                <!-- Отказ стоит там же, где стоял бы ответ: вопрос остаётся на
-                     месте, и его видно, чем повторить. -->
+                <!-- The refusal stands where the answer would have: the
+                     question stays in place, and it is clear what to repeat. -->
                 <p class="turn-failed-text" role="status">{answer.failed}</p>
                 <button type="button" class="pult-button retry"
                   disabled={!canSend} onclick={() => ask(answer.question)}>
@@ -284,7 +293,7 @@
 <style>
   .oracle-view { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; color: rgb(var(--ink)); }
 
-  /* Шапка — одна строка: числа нужны глазом, а не размером. */
+  /* The header is one line: the numbers are needed at a glance, not in size. */
   .oracle-bar { display: flex; flex-shrink: 0; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 12px var(--pult-pad); border-bottom: 1px solid rgb(var(--line)); }
   .oracle-symbol { color: rgb(var(--accent-text)); font-size: 18px; line-height: 22px; }
   h2 { font-size: 16px; line-height: 22px; font-weight: 700; }
@@ -301,19 +310,19 @@
   .oracle-error strong { color: rgb(var(--danger)); }
   .oracle-error p { margin-top: 4px; overflow-wrap: anywhere; }
 
-  /* Лента: вопрос справа и выделен, ответ слева — как в переписке. */
+  /* Feed: the question right and highlighted, the answer left — as in a chat. */
   .thread { display: flex; flex-direction: column; gap: 16px; }
   .turn { display: flex; flex-direction: column; gap: 8px; }
   .turn-question { align-self: flex-end; max-width: min(100%, 560px); padding: 8px 12px; border: 1px solid rgb(var(--accent)); background: rgb(var(--accent) / 0.1); color: rgb(var(--ink)); font-size: 14px; line-height: 21px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .turn-answer { align-self: flex-start; max-width: min(100%, 640px); padding: 10px 14px; border: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
-  /* Неудачный ход — такой же ход, только рамка другая: вопрос над ним остаётся. */
+  /* A failed turn is the same turn with a different frame: the question above stays. */
   .turn-failed { border-left: 3px solid rgb(var(--danger)); background: rgb(var(--danger) / 0.05); }
   .turn-failed-text { font-size: 14px; line-height: 21px; overflow-wrap: anywhere; }
   .turn-answer .retry { margin-top: 8px; min-height: 30px; padding: 5px 10px; font-size: 13px; line-height: 18px; }
   .answer-text { font-size: 14px; line-height: 22px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .turn-meta { margin-top: 8px; color: rgb(var(--muted)); font-size: 12px; line-height: 17px; }
 
-  /* Чип человека — часть предложения, по которой нажимают (как .pult-value). */
+  /* A person chip is a part of the sentence that is pressed (like .pult-value). */
   .answer-person { display: inline; padding: 0 1px; border: 0; border-bottom: 1px dashed rgb(var(--primary) / 0.5); background: transparent; color: rgb(var(--primary)); font: inherit; font-weight: 700; cursor: pointer; }
   .answer-person:hover { background: rgb(var(--raised)); }
 
@@ -323,7 +332,7 @@
   .skeleton span:nth-child(2) { width: 85%; }
   .skeleton span:nth-child(3) { width: 60%; }
 
-  /* Панель ввода прибита: она вне прокрутки и видна всегда. */
+  /* The input panel is pinned: it is outside the scroll and always visible. */
   .oracle-ask { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 10px var(--pult-pad) 12px; border-top: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
   .quick-row { display: flex; flex-wrap: wrap; gap: 6px; }
   .oracle-ask :global(.quick-chip) { min-height: 32px; padding: 5px 10px; font-size: 13px; font-weight: 600; line-height: 18px; }
@@ -333,7 +342,7 @@
   .ask-text::placeholder { color: rgb(var(--muted)); }
   .oracle-ask :global(.ask-send) { min-height: 36px; padding: 7px 12px; font-size: 14px; line-height: 20px; }
 
-  /* Уровень размышлений — мелкая строка под полем: выбирают редко, видят всегда. */
+  /* The reasoning level is a small line under the field: rarely chosen, always seen. */
   .effort-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
   .effort-title { color: rgb(var(--muted)); font-size: 12px; line-height: 17px; }
   .effort-chip { min-height: 24px; padding: 2px 8px; border: 1px solid rgb(var(--line)); background: transparent; color: rgb(var(--muted)); font: inherit; font-size: 12px; line-height: 17px; cursor: pointer; }
@@ -343,15 +352,16 @@
   .ask-note { margin: 0; }
   .ask-reason { color: rgb(var(--warning)); font-size: 13px; line-height: 18px; }
 
-  /* Телефон: палец, а не мышь — цель нажатия не меньше 44 px. */
+  /* Phone: a finger, not a mouse — touch targets of at least 44 px. */
   @media (max-width: 650px) {
     .oracle-bar { padding: 10px var(--pult-pad); }
     .oracle-metrics { margin-left: 0; width: 100%; }
     .turn-question, .turn-answer { max-width: 100%; }
     /*
-     * Быстрые вопросы — одним рядом, который листается вбок. В два ряда они
-     * съедали у ленты ответов ещё 50 px там, где их и так мало, — тот же довод,
-     * что у чипов отбора над списком работ (PultFilters).
+     * Quick questions in one row that scrolls sideways. In two rows they took
+     * another 50 px from the answer feed where there are few to begin with —
+     * the same argument as for the filter chips above the work list
+     * (PultFilters).
      */
     .quick-row { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
     .quick-row::-webkit-scrollbar { display: none; }

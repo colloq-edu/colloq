@@ -1,21 +1,23 @@
 /**
- * Приветственная пачка управляющего сокета — и её кэши.
+ * The control socket's welcome batch — and its caches.
  *
- * Дерево файлов и чернила лекции собирались заново на КАЖДОЕ подключение:
- * обход папки с lstat на каждую запись и плоский список всех штрихов всех
- * страниц плюс `JSON.stringify` — до мегабайта. Пока входят по одному, цена
- * незаметна; после перезапуска сервера пятьсот вкладок возвращаются в одну
- * секунду, и пятьсот одинаковых сборок ложатся в цикл событий ровно там, где
- * все ждут возврата. Теперь кадр собирается один на комнату.
+ * The file tree and the lecture ink were rebuilt for EVERY connection: a walk
+ * of the folder with an lstat per entry, and a flat list of every stroke on
+ * every page plus `JSON.stringify` — up to a megabyte. While people come in one
+ * at a time, the cost goes unnoticed; after a server restart five hundred tabs
+ * come back within one second, and five hundred identical builds land on the
+ * event loop exactly where everyone is waiting to get back in. Now the frame is
+ * built once per room.
  *
- * Здесь проверяется не скорость (её нечем мерить утверждением), а то, ради
- * чего кэш и опасен: он обязан устаревать. Комната, в которой завели файл или
- * дорисовали штрих, отдаёт следующему вошедшему новое, а не вчерашнее.
+ * What is checked here is not speed (an assertion has nothing to measure it
+ * with) but the very thing that makes a cache dangerous: it must go stale. A
+ * room where a file was created or a stroke added gives the next person to
+ * join the new state, not yesterday's.
  *
- * С тех пор чернила в пачке обрезаны до показываемой страницы, а про остальные
- * едет опись, — и кэш стал ключом на пару «перемена + страница». Сама
- * постраничная выдача проверяется отдельно (lecture-ink-server); здесь —
- * только устаревание.
+ * Since then the ink in the batch is cut down to the page being shown, while an
+ * inventory travels for the rest — and the cache became keyed on the pair
+ * "change + page". The per-page delivery itself is checked separately
+ * (lecture-ink-server); here, only going stale.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -38,9 +40,10 @@ function socket(): Fake {
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
-      // (дерево, чернила), уходят уже закодированными — см. control.ts ·
-      // sendFrame. Настоящий сокет тут разницы не делает, и подделка не делает.
+      // As a string or as bytes: the frames the server builds once per room
+      // (the tree, the ink) go out already encoded — see control.ts ·
+      // sendFrame. A real socket makes no difference here, and neither does
+      // the fake.
       if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
         heard.push(JSON.parse(String(frame)) as ControlServerMessage)
       }
@@ -70,12 +73,12 @@ function who(sessionId: string, participantId: string): TokenPayload {
   return { sessionId, participantId, role: 'host' }
 }
 
-/** Ещё один вошедший в ту же комнату. */
+/** One more person joining the same room. */
 function enter(sock: Fake, sessionId: string, participantId: string): void {
   handleControlSocket(sock.ws, sessionId, who(sessionId, participantId))
 }
 
-/** Список файлов, который получил этот сокет; `null` — не получил вовсе. */
+/** The file list this socket received; `null` if it received none at all. */
 function files(sock: Fake): string[] | null {
   for (let i = sock.heard.length - 1; i >= 0; i--) {
     const m = sock.heard[i]
@@ -84,7 +87,7 @@ function files(sock: Fake): string[] | null {
   return null
 }
 
-/** Чернила, которые получил этот сокет. */
+/** The ink this socket received. */
 function ink(sock: Fake): number {
   for (let i = sock.heard.length - 1; i >= 0; i--) {
     const m = sock.heard[i]
@@ -93,28 +96,29 @@ function ink(sock: Fake): number {
   return -1
 }
 
-test('дерево из кэша — но новый файл видит следующий вошедший', () => {
+test('the tree comes from the cache, yet the next person to join sees a new file', () => {
   const id = room()
   const first = socket()
   enter(first, id, 'p_1')
-  assert.deepEqual(files(first), [], 'пустая комната — пустой список, а не молчание')
+  assert.deepEqual(files(first), [], 'an empty room means an empty list, not silence')
 
-  // Второй сокет в том же окне: тот же кадр, собранный один раз.
+  // A second socket in the same window: the same frame, built once.
   const second = socket()
   enter(second, id, 'p_2')
   assert.deepEqual(files(second), [])
 
-  // Файл завели через пульт — рассылка считает дерево заново и кладёт свежее.
+  // A file is created through the control channel: the broadcast recomputes
+  // the tree and stores the fresh one.
   dispatch(first.ws, id, who(id, 'p_1'), { t: 'tree:new', path: 'разбор.py' })
   const third = socket()
   enter(third, id, 'p_3')
-  assert.deepEqual(files(third), ['разбор.py'], 'вошедший получил дерево до правки')
-  // И всей комнате — тем же кадром рассылки.
+  assert.deepEqual(files(third), ['разбор.py'], 'the newcomer received the tree from before the edit')
+  // And to the whole room, with the same broadcast frame.
   assert.deepEqual(files(second), ['разбор.py'])
   closeControlRoom(id)
 })
 
-test('чернила из кэша — но дорисованный штрих видит следующий вошедший', () => {
+test('the ink comes from the cache, yet the next person to join sees an added stroke', () => {
   const id = room()
   startLecture(id, { file: 'лекция.pdf', by: 'p_1', byName: 'Ада', color: '#c273e6' })
   addInk(id, { id: 's1', page: 1, color: '#000', width: 2, points: [1, 1, 2, 2] })
@@ -125,15 +129,16 @@ test('чернила из кэша — но дорисованный штрих 
 
   const second = socket()
   enter(second, id, 'p_2')
-  assert.equal(ink(second), 1, 'опоздавший не увидел того, что уже нарисовано')
+  assert.equal(ink(second), 1, 'the latecomer did not see what had already been drawn')
 
-  // Штрих на ТОЙ ЖЕ странице — тот, ради которого кэш и обязан устаревать.
-  // Соседняя страница в этом кадре больше не едет вовсе: про неё говорит опись
-  // (`ink:pages`), и вкладка спрашивает её отдельно — см. lecture-ink-server.
+  // A stroke on the SAME page is the one the cache has to go stale for. A
+  // neighbouring page no longer travels in this frame at all: the inventory
+  // (`ink:pages`) speaks for it, and the tab asks for it separately — see
+  // lecture-ink-server.
   addInk(id, { id: 's2', page: 1, color: '#000', width: 2, points: [3, 3, 4, 4] })
   const third = socket()
   enter(third, id, 'p_3')
-  assert.equal(ink(third), 2, 'вошедшему уехали вчерашние чернила')
+  assert.equal(ink(third), 2, "the newcomer was sent yesterday's ink")
 
   stopLecture(id)
   closeControlRoom(id)

@@ -1,16 +1,18 @@
 /**
- * Память комнаты на k3s — от формы до Pod.
+ * A room's memory on k3s — from the form to the Pod.
  *
- * 18.09 выяснилось, что под брокером (прод, KERNEL_BACKEND=broker) поле памяти
- * в форме занятия не делало ничего: брокер принимал только окружение, ревизию
- * и ядра, каждый Pod комнаты получал RUNTIME_KERNEL_MEMORY (2Gi), `docker
- * update` под брокером молча возвращал «ждёт пуска», а форма подписывала поле
- * умолчаниями docker-пути — 4 ГБ, на GPU 16, — которых Pod не видел никогда.
+ * On 18 Sep 2026 it turned out that under the broker (production,
+ * KERNEL_BACKEND=broker) the memory field in the class form did nothing: the
+ * broker accepted only the environment, the revision and the cores, every
+ * room Pod got RUNTIME_KERNEL_MEMORY (2Gi), `docker update` under the broker
+ * silently returned "waiting for start", and the form labelled the field with
+ * the docker path's defaults — 4 GB, 16 on GPU — which the Pod never saw.
  *
- * Здесь закреплён весь путь веб-стороны против подделки брокера: число едет в
- * ensure, изменение живой комнате — PATCH брокеру, сброс — `null`, а форма
- * подписана умолчанием и потолком самого брокера. Сам брокер против настоящего
- * Kubernetes проверяется в runtime-lifecycle (подделка API) и вживую на k3s.
+ * This pins down the whole web-side path against a fake broker: the number
+ * rides in ensure, a change to a live room is a PATCH to the broker, a reset
+ * is `null`, and the form is labelled with the broker's own default and
+ * ceiling. The broker itself is checked against real Kubernetes in
+ * runtime-lifecycle (a fake API) and live on k3s.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -40,7 +42,7 @@ const catalog = {
   ],
 }
 
-/** Что брокер услышал — метод, путь и тело. */
+/** What the broker heard — method, path and body. */
 const heard: Array<{ method: string; url: string; body: any }> = []
 let census: Array<Record<string, unknown>> = []
 let broker: http.Server
@@ -95,7 +97,8 @@ before(async () => {
     KERNEL_RUNTIME_URL: `http://127.0.0.1:${(broker.address() as { port: number }).port}`,
     KERNEL_RUNTIME_TOKEN_FILE: token,
     KERNEL_CATALOG_FILE: catalogFile,
-    // Умолчания docker-пути нарочно другие: если форма покажет их, тест это увидит.
+    // The docker path's defaults are different on purpose: if the form shows
+    // them, the test will see it.
     KERNEL_MEM: '4g',
   })
   server = http.createServer(app)
@@ -130,7 +133,7 @@ async function createRoom(body: Record<string, unknown>): Promise<string> {
   return ((await res.json()) as { id: string }).id
 }
 
-/** PATCH брокеру уходит без ожидания ответа панели — подождать его. */
+/** The panel answers without waiting for the PATCH to the broker — so wait for it here. */
 async function heardPatch(id: string): Promise<{ body: any } | undefined> {
   for (let i = 0; i < 100; i++) {
     const found = heard.find((h) => h.method === 'PATCH' && h.url === `/v1/rooms/${id}`)
@@ -140,39 +143,43 @@ async function heardPatch(id: string): Promise<{ body: any } | undefined> {
   return undefined
 }
 
-test('форма под брокером подписана умолчанием и потолком брокера, а не docker-пути', async () => {
+test("under the broker the form shows the broker's default and ceiling, not the docker path's", async () => {
   forgetResources()
   const res = await call('GET', '/api/instance/resources')
   assert.equal(res.status, 200)
   const body = (await res.json()) as InstanceResources
-  // Pod получает RUNTIME_KERNEL_MEMORY брокера — одно число на все окружения.
+  // The Pod gets the broker's RUNTIME_KERNEL_MEMORY — one number for all
+  // environments.
   assert.equal(body.kernel.defaultMemoryMb, 2048)
-  assert.equal(body.kernel.gpuDefaultMemoryMb, 2048, 'на GPU брокер не даёт больше, и форма не должна обещать 16')
+  assert.equal(body.kernel.gpuDefaultMemoryMb, 2048, 'on GPU the broker gives no more, and the form must not promise 16')
   assert.equal(body.kernel.perEnvironment.base?.memoryMb, 2048)
   assert.equal(body.kernel.perEnvironment.gpu?.memoryMb, 2048)
-  // Потолок брокера строже памяти машины — граница поля его и называет.
+  // The broker's ceiling is stricter than the machine's memory — and that is
+  // what the field's bound names.
   assert.equal(body.limits.max, Math.min(8192, body.memory.totalMb - 1024))
   assert.equal(memoryBounds().max, body.limits.max)
 })
 
-test('живая комната на k3s показана той памятью, что у Pod есть, а «свободно» — необещанным', async () => {
+test('a live room on k3s is shown with the memory its Pod has, and "free" as what is not yet promised', async () => {
   const id = await createRoom({ memoryMb: 6144 })
   census = [{ sessionId: id, instanceId: 'pod', phase: 'ready', environment: 'base', revision, cpus: 2, memoryMb: 3072 }]
   forgetResources()
   const body = await machineResources()
   const listed = body.rooms.find((r) => r.id === id)
   assert.equal(listed?.alive, true)
-  // Записано 6 ГБ, а kubelet выставил 3 (изменение отложено): правда — три.
+  // 6 GB is recorded, but kubelet set 3 (the change is deferred): the truth is
+  // three.
   assert.equal(listed?.memoryMb, 3072)
-  // requests = limits: обещанное Pod планировщик считает занятым, сколько бы
-  // Python ни трогал. Свободно не больше, чем ещё не обещано.
+  // requests = limits: the scheduler counts what was promised to a Pod as
+  // taken, however much Python actually touches. Free is no more than what is
+  // not yet promised.
   assert.ok(body.memory.availableMb !== null)
   assert.ok(body.memory.availableMb! <= body.memory.totalMb - 1024 - 3072)
   census = []
   forgetResources()
 })
 
-test('изменение памяти в панели доезжает до брокера PATCH-ем, сброс — null, выше потолка — отказ', async () => {
+test('a memory change in the panel reaches the broker as a PATCH, a reset as null, above the ceiling a refusal', async () => {
   const id = await createRoom({})
   heard.length = 0
   const raised = await call('PATCH', `/api/admin/seminars/${id}`, { memoryMb: 4096 })
@@ -183,23 +190,23 @@ test('изменение памяти в панели доезжает до бр
   heard.length = 0
   const reset = await call('PATCH', `/api/admin/seminars/${id}`, { memoryMb: null })
   assert.equal(reset.status, 200)
-  // Раньше сброс не уезжал никуда: живой Pod оставался на старом числе.
+  // A reset used to go nowhere: the live Pod stayed on the old number.
   assert.deepEqual((await heardPatch(id))?.body, { memoryMb: null })
 
   heard.length = 0
   await call('GET', '/api/instance/resources')
   const refused = await call('PATCH', `/api/admin/seminars/${id}`, { memoryMb: 16384 })
-  assert.equal(refused.status, 400, 'число выше потолка брокера принято в строку семинара')
+  assert.equal(refused.status, 400, 'a number above the broker ceiling was accepted into the seminar row')
   assert.equal(await heardPatch(id), undefined)
   assert.equal(sessionMemoryMb(id), null)
 })
 
-test('подъём ядра под брокером несёт число комнаты, а без числа — умолчание брокера', async () => {
+test('a kernel start under the broker carries the room memory, and without it the broker default', async () => {
   const id = await createRoom({ memoryMb: 6144 })
   heard.length = 0
   await endpointForSession(id, 'base')
   const ensure = heard.find((h) => h.method === 'POST' && h.url === `/v1/rooms/${id}`)
-  assert.equal(ensure?.body.memoryMb, 6144, 'Pod получил бы 2Gi при 6 ГБ в форме')
+  assert.equal(ensure?.body.memoryMb, 6144, 'the Pod would have got 2Gi with 6 GB in the form')
 
   const plain = await createRoom({})
   heard.length = 0

@@ -10,28 +10,32 @@
   import PultReply from './PultReply.svelte'
 
   /**
-   * Открытая работа — три зоны, и прокручивается ровно одна.
+   * The open work — three zones, and exactly one scrolls.
    *
-   * [шапка автора] · [код и вывод] · [док общения]
+   * [author header] · [code and output] · [communication dock]
    *
-   * Так она устроена после пары 19.09. Раньше панель была одной колонкой с
-   * прокруткой кода внутри прокрутки панели, и в окне 900×650 всё, чем
-   * пользуются, — письма, поле ответа, четыре действия — лежало под сгибом:
-   * «типа надо листать куда-то что-то, нет фиксированной области общения».
+   * This is how it has been built since the 19 Sep 2026 class. Before, the
+   * panel was one column with the code scrolling inside the panel's scroll,
+   * and in a 900×650 window everything that gets used — letters, the reply
+   * field, four actions — lay below the fold: "like, you have to scroll
+   * somewhere for something, there is no fixed area for communication".
    *
-   * Док прибит к низу и виден всегда: переписка с автором, строка письма и ряд
-   * действий. Прокручивается только середина — код и вывод, — и внутри неё нет
-   * вложенных прокруток: длинный код показывается первыми сорока строками с
-   * кнопкой «показать весь», а не окошком на 240 px, в котором ищут, за что
-   * тянуть.
+   * The dock is pinned to the bottom and always visible: the correspondence
+   * with the author, the letter line and the row of actions. Only the middle
+   * scrolls — code and output — and inside it there are no nested scrolls:
+   * long code is shown as its first forty lines with a "show all" button,
+   * not as a 240 px window where you hunt for something to drag.
    */
   interface Props {
     attempt: CouncilAttempt | null
     presence: PultPresence
-    /** Место работы в видимом списке: «1 из 13». Считается по текущей вкладке и отбору. */
+    /**
+     * The work's place in the visible list: "1 of 13". Counted by the current
+     * tab and filter.
+     */
     index: number
     total: number
-    /** Листалка шапки: тот же ход, что у j / k и стрелок. */
+    /** The header's pager: the same move as j / k and the arrows. */
     onstep: (delta: 1 | -1) => void
     variant: number
     names: boolean
@@ -39,13 +43,13 @@
     onScreen: boolean
     shownAt: number | null
     disabled: boolean
-    /** Предел запуска из регламента ячейки; `null` — без предела. */
+    /** The run limit from the cell's rules; `null` — no limit. */
     limit: number | null
-    /** Узкое окно: имя автора стоит в верхней планке экрана работы. */
+    /** A narrow window: the author's name stands in the work screen's top bar. */
     phone: boolean
     onrules: (rule: PultRule, from: HTMLElement) => void
     reply: string
-    /** В поле ответа стоит черновик оракула. */
+    /** The reply field holds an oracle draft. */
     replyFromOracle: boolean
     onshow: () => void
     onclear: () => void
@@ -56,7 +60,7 @@
     onreplysend: () => void
     onreplyfocus: () => void
     onreplyblur: () => void
-    /** Удалить автора с занятия — подтверждает общее меню бана. */
+    /** Remove the author from the class — the shared ban menu confirms it. */
     onremove: (attempt: CouncilAttempt, event: MouseEvent) => void
   }
 
@@ -95,17 +99,18 @@
   const lines = $derived(attempt ? attempt.text.split('\n').length : 0)
   const review = $derived(attempt ? attemptReview(attempt) : null)
   const execution = $derived(attempt ? attemptExecution(attempt) : null)
-  /** Предел, оборвавший ИМЕННО этот запуск: регламент с тех пор могли поменять. */
+  /** The limit that cut off THIS run: the rules may have changed since. */
   const stoppedAt = $derived(attempt ? timedOutLimit(attempt) : null)
 
   /**
-   * Длинный код — первыми сорока строками.
+   * Long code — as its first forty lines.
    *
-   * Плита с собственной прокруткой на 240 px была вложенной прокруткой внутри
-   * прокрутки панели: колесо над кодом двигало код, над выводом — панель, и
-   * попасть в нужную было делом наугад. Сорок строк — это весь код почти любой
-   * попытки; остальным нужна одна кнопка, и по ней код раскрывается целиком в
-   * ту же ленту, без второй полосы прокрутки.
+   * A 240 px slab with its own scroll was a nested scroll inside the panel's
+   * scroll: the wheel over the code moved the code, over the output the
+   * panel, and hitting the right one was a matter of luck. Forty lines are
+   * the whole code of almost any attempt; the rest need one button, and it
+   * unfolds the code in full into the same feed, without a second
+   * scrollbar.
    */
   const CODE_LINES = 40
   let openCode = $state<string | null>(null)
@@ -117,15 +122,18 @@
       : attempt.text.split('\n').slice(0, CODE_LINES).join('\n'),
   )
 
-  /** Кто запускал: у автора в тетради «запускали вы», здесь смотрит преподаватель. */
+  /**
+   * Who ran it: the author's notebook says "run by you"; here the teacher is
+   * the one looking.
+   */
   const ranBy = $derived(run === null ? '' : run.by === 'host' ? tr('room.ui.61') : tr('room.pult.v2.ranByAuthor'))
 
   /**
-   * Строка запуска: что случилось, сколько считалось, когда и с чьей руки.
+   * The run line: what happened, how long it ran, when and by whose hand.
    *
-   * Секунды в моменте запуска — по просьбе с пары: когда за минуту запусков
-   * три, «17:24» у всех трёх не отличает их друг от друга, а по ним
-   * сопоставляют вывод на экране с тем, что нажимали.
+   * Seconds in the run's time are a request from the class: when there are
+   * three runs in a minute, "17:24" on all three does not tell them apart,
+   * and they are used to match the output on screen with what was pressed.
    */
   const runLine = $derived.by(() => {
     if (!execution) return ''
@@ -138,24 +146,29 @@
   })
 
   /**
-   * Одна тихая строка под именем вместо трёх разнородных кусков в ряд.
+   * One quiet line under the name instead of three mismatched pieces in a
+   * row.
    *
-   * В ряд стояли: залитая плашка «СДАНО 15:19», голый текст «не в сети», плашка
-   * оценки и «2 / 13» — четыре разных веса, четыре разных смысла и слово
-   * «сдано», сказанное дважды (в плашке и в оценке «Сдано · ждёт оценки»).
-   * Теперь ролей три: КТО (аватар с точкой, имя, эта строка), ЧТО С РАБОТОЙ
-   * (одна плашка, четыре значения) и ГДЕ Я В СТОПКЕ (листалка).
+   * The row used to hold: a filled "SUBMITTED 15:19" badge, bare "offline"
+   * text, the grade badge and "2 / 13" — four different weights, four
+   * different meanings and the word "submitted" said twice (in the badge and
+   * in the grade "Submitted · awaiting review"). Now there are three roles:
+   * WHO (the avatar with a dot, the name, this line), WHAT IS UP WITH THE
+   * WORK (one badge, four values) and WHERE I AM IN THE PILE (the pager).
    *
-   * Пол по имени не выводится нигде в продукте, поэтому здесь «сдано в 15:19»,
-   * а не «сдал(а)»: безличная форма верна для всех и не требует знать о
-   * человеке того, чего он не говорил.
+   * Grammatical gender is never derived from a name anywhere in the product,
+   * so the Russian here says an impersonal "submitted at 15:19" rather than
+   * a gendered form: the impersonal form is right for everyone and does not
+   * require knowing about the person what they have not said.
    *
-   * «не в сети С 15:24» здесь НЕТ и быть не может. Присутствие приезжает
-   * пульту живым набором Yjs (session.peersById) — это снимок «кто сейчас», без
-   * единого времени ухода. `participants.last_seen` живёт в базе сервера и
-   * клиенту не едет, `presence.left` — запись журнала активности, тоже
-   * серверная. Выдумать час ухода нечем, а выдуманный час в строке, по которой
-   * решают «ждать ли ответа», хуже пустого места.
+   * "offline SINCE 15:24" is NOT here and cannot be. Presence arrives at the
+   * console as a live Yjs set (session.peersById) — a snapshot of "who is
+   * here now", without a single departure time. `participants.last_seen`
+   * lives in the server's database and does not go to the client,
+   * `presence.left` is an activity log entry, also on the server. There is
+   * nothing to invent a departure hour from, and an invented hour in a line
+   * used to decide "should I wait for an answer" is worse than an empty
+   * spot.
    */
   const headLine = $derived.by(() => {
     if (!attempt) return ''
@@ -177,12 +190,14 @@
   })
 
   /**
-   * «Удалить с занятия» — в меню «⋯», а не кнопкой на самом видном месте.
+   * "Remove from class" — in the "⋯" menu, not as a button in the most
+   * visible spot.
    *
-   * Красная рамка стояла рядом с именем и была крупнее всего остального в
-   * шапке: самое разрушительное действие в окне занимало место, которым
-   * пользуются раз в семестр, и соседствовало с «Верно», которое нажимают
-   * двести раз за пару. Подтверждение (общее меню бана) осталось прежним.
+   * A red frame stood next to the name and was bigger than anything else in
+   * the header: the most destructive action in the window, used once a
+   * semester, took up that spot and sat next to "Correct", which is pressed
+   * two hundred times per class. The confirmation (the shared ban menu) is
+   * unchanged.
    */
   let menuOpen = $state(false)
   let menu = $state<HTMLElement | null>(null)
@@ -191,7 +206,7 @@
     const away = (event: MouseEvent): void => {
       if (menu && !menu.contains(event.target as Node)) menuOpen = false
     }
-    // capture: меню закрывается раньше, чем нажатие дойдёт до того, что под ним.
+    // capture: the menu closes before the press reaches whatever is under it.
     window.addEventListener('mousedown', away, true)
     return () => window.removeEventListener('mousedown', away, true)
   })
@@ -202,7 +217,7 @@
 {:else}
   <div class="work" data-pult-work={attempt.participantId}>
     <header class="work-header">
-      <!-- Кто: аватар с точкой присутствия, имя и одна тихая строка под ним. -->
+      <!-- Who: the avatar with a presence dot, the name and one quiet line under it. -->
       <span class="pult-face work-avatar" data-presence={presence} aria-hidden="true">
         <span class="work-avatar-face" style:background-color={names ? attempt.color : 'rgb(var(--line))'}>
           {#if names}
@@ -218,18 +233,20 @@
         <p class="work-sub" data-pult-headline>{headLine}</p>
       </div>
       <!--
-        Что с работой — ОДНА плашка и ровно четыре значения: «Ждёт оценки»
-        (залитая акцентом — единственное, что требует руки), «Верно», «На
-        доработку», «Черновик». Прежние две («СДАНО 15:19» и оценка) сливаются
-        в неё: они говорили об одном и том же, и «сдано» звучало дважды.
+        What is up with the work — ONE badge and exactly four values:
+        "Awaiting review" (filled with the accent — the only one that needs a
+        hand), "Correct", "Needs revision", "Draft". The former two
+        ("SUBMITTED 15:19" and the grade) merge into it: they said the same
+        thing, and "submitted" was said twice.
       -->
       <span class="pult-badge work-state" data-tone={review?.tone} data-shape={review?.shape} data-pult-state
         title={tr('room.pult.v3.head.state')}><span class="pult-badge-dot" aria-hidden="true"></span>{review?.label}</span>
       <!--
-        Где я в стопке. Было «2 / 13» подписью, по которой нельзя нажать, — при
-        том что переход к соседней работе это самое частое движение в окне.
-        Кнопки ходят тем же `step`, что клавиши j / k и стрелки, то есть по
-        текущей вкладке и текущему отбору; на краях гаснут.
+        Where I am in the pile. It used to be a "2 / 13" caption that could
+        not be pressed — even though moving to the neighbouring work is the
+        most frequent move in the window. The buttons go by the same `step` as
+        the j / k keys and the arrows, that is, through the current tab and
+        the current filter; at the edges they grey out.
       -->
       {#if !phone}
         <div class="work-pager" role="group" aria-label={tr('room.pult.v3.head.place')}>
@@ -243,8 +260,9 @@
       <!-- svelte-ignore a11y_no_static_element_interactions (Escape closes the menu; the trigger and the item are buttons.) -->
       <div class="work-menu" bind:this={menu} onkeydown={(event) => {
         if (event.key !== 'Escape' || !menuOpen) return
-        // Клавиша не доходит до окна: открытое меню забирает Escape себе, иначе
-        // он закрывал бы заодно поиск, а меню осталось бы висеть.
+        // The key does not reach the window: an open menu takes Escape for
+        // itself, otherwise it would also close the search while the menu
+        // stayed hanging.
         event.stopPropagation()
         menuOpen = false
         menu?.querySelector<HTMLButtonElement>('.work-more')?.focus()
@@ -279,10 +297,11 @@
 
       <section class="work-execution" data-tone={execution?.tone} aria-label={tr('room.pult.v2.workExecution')}>
         <!--
-          Остановленный пределом объясняется здесь целиком, а не словом «ошибка».
-          Рядом — действующий предел: его меняют ровно в эту секунду, глядя на
-          чужой код, который не досчитал, и уходить за ним во вкладку значит
-          потерять работу из виду.
+          A run stopped by the limit is explained here in full, not with the
+          word "error". Next to it is the limit in force: it gets changed at
+          exactly this second, while looking at someone's code that did not
+          finish, and going to a tab for it would mean losing sight of the
+          work.
         -->
         <div class="work-execution-head">
           <span class="work-execution-title" role="status">
@@ -302,9 +321,10 @@
         {#if run}
           {#if run.outputs.length > 0}
             <!--
-              Вывод стоит сразу под кодом и своей прокрутки не имеет: вертикально
-              он едет вместе с кодом в единственной прокрутке панели. Вбок
-              остаётся — широкую таблицу иначе не прочитать вовсе.
+              The output stands right under the code and has no scroll of its
+              own: vertically it moves with the code in the panel's only
+              scroll. The sideways scroll stays — a wide table could not be
+              read at all otherwise.
             -->
             <div class="work-output">
               <CellOutputs outputs={run.outputs} />
@@ -317,8 +337,9 @@
     </div>
 
     <!--
-      Док общения: то, ради чего окно открыто рядом с тетрадью. Письма, строка
-      ответа и четыре действия — всегда на экране, что бы ни творилось выше.
+      The communication dock: what the window is open next to the notebook
+      for. Letters, the reply line and four actions — always on screen,
+      whatever is going on above.
     -->
     <div class="work-dock" data-pult-dock>
       <PultLetters {letters} />
@@ -338,23 +359,24 @@
   .work { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; background: rgb(var(--canvas)); }
   .work-empty { display: grid; flex: 1; place-items: center; padding: 32px; text-align: center; font-size: 16px; color: rgb(var(--muted)); }
   /*
-   * Шапка автора — три роли в одну строку: кто · что с работой · где я в стопке.
+   * The author header — three roles in one line: who · what is up with the
+   * work · where I am in the pile.
    *
-   * Пропорции взяты у макета (Paper 05d, артборд 11: аватар 44, имя 20/26,
-   * подпись 13/18, плашка и листалка по 30, зазор 14) и уменьшены на шаг:
-   * окно 900×650 — законный размер пульта, и в нём каждая лишняя строчка
-   * шапки — это строчка кода, ушедшая под сгиб. На большом окне размеры
-   * макета возвращаются целиком, ниже.
+   * The proportions are taken from the mockup (Paper 05d, artboard 11:
+   * avatar 44, name 20/26, caption 13/18, badge and pager 30 each, gap 14)
+   * and reduced by a step: a 900×650 window is a legitimate console size,
+   * and in it every extra header line is a line of code gone below the
+   * fold. In a large window the mockup's sizes come back in full, below.
    */
   .work-header { display: flex; align-items: center; flex-shrink: 0; flex-wrap: nowrap; gap: 12px; min-height: 62px; padding: 9px 16px; border-bottom: 1px solid rgb(var(--line)); }
   .work-avatar { --face-dot: 12px; width: 38px; height: 38px; }
   .work-avatar-face { display: block; width: 100%; height: 100%; overflow: hidden; border-radius: 50%; }
-  /* Имя и подпись — одна колонка: они про одного человека и двигаются вместе. */
+  /* Name and caption are one column: about one person, they move together. */
   .work-id { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
   .work-name { min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 18px; line-height: 23px; font-weight: 700; }
   .work-sub { min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--muted)); font-size: 13px; line-height: 17px; }
   .work-state { flex-shrink: 0; min-height: 28px; padding: 4px 10px; white-space: nowrap; font-size: 13px; }
-  /* Листалка одной коробкой: три цели в общей рамке читаются как один прибор. */
+  /* The pager as one box: three targets in a shared frame read as one instrument. */
   .work-pager { display: flex; align-items: center; flex-shrink: 0; height: 28px; border: 1px solid rgb(var(--line)); }
   .work-page { display: flex; align-items: center; justify-content: center; width: 28px; align-self: stretch; color: rgb(var(--ink)); font-size: 15px; line-height: 1; cursor: pointer; }
   .work-page:first-child { border-right: 1px solid rgb(var(--line)); }
@@ -369,7 +391,7 @@
   .work-remove { display: block; width: 100%; padding: 10px 12px; text-align: left; color: rgb(var(--danger)); font-size: 14px; line-height: 20px; cursor: pointer; }
   .work-remove:hover:not(:disabled) { background: rgb(var(--danger) / .1); }
   .work-remove:disabled { opacity: .48; cursor: default; }
-  /* Единственная прокрутка панели. Ни над кодом, ни над выводом второй нет. */
+  /* The panel's only scroll. There is no second one over the code or the output. */
   .work-content { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 10px 16px 14px; display: flex; flex-direction: column; gap: 12px; }
   .work-content > * { flex-shrink: 0; }
   .work-content:focus-visible { outline: 2px solid rgb(var(--accent-text)); outline-offset: -2px; }
@@ -390,9 +412,9 @@
   .work-output :global(.output-stream), .work-output :global(.text-code) { font-size: 13px; line-height: 20px; }
   .work-output :global(button) { min-height: 36px; font-size: 13px; }
   .work-dock { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 8px 16px 10px; border-top: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
-  /* Большое окно: те же три зоны, только просторнее. */
+  /* A large window: the same three zones, only roomier. */
   @media (min-width: 1200px) and (min-height: 800px) {
-    /* Размеры макета целиком: там, где места хватает, тесно быть не обязано. */
+    /* The mockup's full sizes: with room enough, there is no need to be cramped. */
     .work-header { min-height: 72px; padding: 12px 20px; gap: 14px; }
     .work-avatar { --face-dot: 14px; width: 44px; height: 44px; }
     .work-name { font-size: 20px; line-height: 26px; }
@@ -406,18 +428,21 @@
     .work-content { padding-inline: 12px; }
     .work-dock { padding-inline: 12px; }
   }
-  /* Пара с окном ниже 480 px (PultWindow · .pult-work-pane): панель там снова
-     страница, и работа получает высоту, при которой док не раздавлен. */
+  /* The pair to the under-480 px window (PultWindow · .pult-work-pane): the
+     panel is a page again there, and the work gets a height at which the
+     dock is not crushed. */
   @media (max-height: 479px) {
     .work { min-height: 420px; flex-shrink: 0; }
     .work-content { min-height: 120px; }
   }
   /*
-   * Телефон: аватар с точкой, строка состояния, плашка — и всё.
+   * Phone: the avatar with a dot, the state line, the badge — and that is
+   * all.
    *
-   * Имя стоит в планке экрана работы (PultWindow · .phone-bar), и второе имя
-   * подряд на 390 px — это строка, отнятая у кода. Листалки здесь тоже нет:
-   * по ленте ходят стрелками той же планки, а возврат к списку — жестом.
+   * The name stands in the work screen's bar (PultWindow · .phone-bar), and
+   * a second name in a row at 390 px is a line taken away from the code.
+   * There is no pager here either: the feed is walked with that bar's
+   * arrows, and the way back to the list is a gesture.
    */
   @media (max-width: 650px) {
     .work-header { min-height: 48px; gap: 10px; padding: 6px 12px; }

@@ -1,14 +1,16 @@
 /**
- * Задание консилиума — то, чем засевается пустой лист.
+ * The council task — what an empty sheet is seeded with.
  *
- * Лист сеялся общим текстом ячейки, а после «Показать классу» общий текст —
- * уже чьё-то решение: опоздавший получал его стартовым текстом своего листа и
- * одним нажатием сдавал как своё. Поэтому текст ячейки снимается один раз, на
- * переходе замка в консилиум (control.ts · cell:lock зовёт `rememberSeed`), и
- * едет каждому в `CouncilMine.seed`.
+ * The sheet used to be seeded with the cell's shared text, and after "Show to
+ * the class" the shared text is already somebody's solution: a latecomer got
+ * it as the starting text of their sheet and submitted it as their own with
+ * one press. So the cell's text is captured once, when the lock switches to
+ * council (control.ts · cell:lock calls `rememberSeed`), and travels to
+ * everyone in `CouncilMine.seed`.
  *
- * Здесь — половина сервера: хранение, обе ветки `mineFor`, перезапуск и снос
- * комнаты. Что с этим полем делает лист, проверяет tests/notebook-council-seed.
+ * Here is the server half: storage, both branches of `mineFor`, a restart and
+ * the deletion of a room. What the sheet does with this field is checked by
+ * tests/notebook-council-seed.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -28,7 +30,7 @@ const SHOWN = 'df.groupby("group")["mark"].mean()'
 
 let n = 0
 
-/** Своя комната на тест: попытки живут в общей таблице по ключу семинара. */
+/** A room of its own per test: attempts live in a shared table keyed by the seminar. */
 function room(): { id: string; cell: string } {
   n += 1
   const id = `seed-${n}`
@@ -36,18 +38,18 @@ function room(): { id: string; cell: string } {
   return { id, cell: `cell-${n}` }
 }
 
-test('пустой лист приезжает с заданием, а не с тем, что в ячейке сейчас', () => {
+test('an empty sheet arrives with the task, not with what is in the cell now', () => {
   const at = room()
   rememberSeed(at.id, at.cell, TASK)
-  // «Показать классу» переписало общий текст — задание от этого не меняется:
-  // его снимали один раз, на открытии консилиума.
+  // "Show to the class" rewrote the shared text — the task does not change
+  // because of that: it was captured once, when the council opened.
   const mine = mineFor(at.id, at.cell, 'late', false)
   assert.equal(mine?.text, '')
   assert.equal(mine?.seed, TASK)
   assert.notEqual(mine?.seed, SHOWN)
 })
 
-test('задание едет и тому, у кого попытка уже есть', () => {
+test('the task also travels to someone who already has an attempt', () => {
   const at = room()
   rememberSeed(at.id, at.cell, TASK)
   saveDraft(at.id, at.cell, 'ada', 'df.head()', 1000)
@@ -56,16 +58,17 @@ test('задание едет и тому, у кого попытка уже е�
   assert.equal(mine?.seed, TASK)
 })
 
-test('задания не помнят — поля нет вовсе, и клиент сеет по-старому', () => {
+test('no task remembered — no field at all, and the client seeds the old way', () => {
   const at = room()
   const mine = mineFor(at.id, at.cell, 'ada', false)
   assert.equal(mine?.text, '')
-  // Не `undefined` в поле, а отсутствие поля: пустая строка здесь значит
-  // «консилиум открыли на пустой ячейке», и спутать их нельзя.
+  // Not `undefined` in the field but the absence of the field: an empty
+  // string here means "the council was opened on an empty cell", and the two
+  // must not be confused.
   assert.equal('seed' in (mine as object), false)
 })
 
-test('пустая ячейка — законное задание: пустой лист у всех', () => {
+test('an empty cell is a legitimate task: an empty sheet for everyone', () => {
   const at = room()
   rememberSeed(at.id, at.cell, '')
   const mine = mineFor(at.id, at.cell, 'ada', false)
@@ -73,16 +76,17 @@ test('пустая ячейка — законное задание: пусто�
   assert.equal(mine?.seed, '')
 })
 
-test('задание переживает перезапуск сервера', () => {
+test('the task survives a server restart', () => {
   const at = room()
   rememberSeed(at.id, at.cell, TASK)
-  // То же, что перезапуск: кэш комнаты забыт, правда осталась в SQLite.
+  // The same as a restart: the room cache is forgotten, the truth stays in
+  // SQLite.
   resetCouncilCache(at.id)
   assert.equal(seedOf(at.id, at.cell), TASK)
   assert.equal(mineFor(at.id, at.cell, 'late', false)?.seed, TASK)
 })
 
-test('семинар снесли — задание ушло с ним', () => {
+test('the seminar was deleted — the task went with it', () => {
   const at = room()
   rememberSeed(at.id, at.cell, TASK)
   discardCouncil(at.id)
@@ -90,10 +94,11 @@ test('семинар снесли — задание ушло с ним', () => 
   assert.equal(seedOf(at.id, at.cell), null)
 })
 
-test('второе открытие консилиума на той же ячейке ставит новое задание', () => {
+test('a second opening of the council on the same cell sets a new task', () => {
   const at = room()
   rememberSeed(at.id, at.cell, TASK)
-  // Замок закрыли и открыли снова — в ячейке другое задание, и снимается оно.
+  // The lock was closed and opened again — the cell holds another task, and
+  // that is what gets captured.
   rememberSeed(at.id, at.cell, SHOWN)
   assert.equal(seedOf(at.id, at.cell), SHOWN)
 })

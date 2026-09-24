@@ -1,29 +1,33 @@
 /**
- * Чего стоит возврат зала: step2 каждого вернувшегося и ответ сервера ему.
+ * What it costs when the hall comes back: every returning tab's step2 and the
+ * server's answer to it.
  *
- * После перезапуска сервера или моргания ретранслятора пятьсот вкладок
- * переподключаются за одну-две секунды, по два сокета каждая, и на общем
- * документе это не «дельта на пару десятков байт»: step2 несёт ВЕСЬ набор
- * удалений комнаты, а ответ сервера — `encodeStateAsUpdate(doc, sv)` — тот же
- * набор обратно. Обе цифры росли всю пару и в жалобах не участвуют: их никто
- * никогда не мерил, а в находке аудита они стояли догадкой.
+ * After a server restart or a relay blink, five hundred tabs reconnect within
+ * one or two seconds, two sockets each, and on a shared document this is not
+ * "a delta of a couple dozen bytes": step2 carries the room's ENTIRE delete
+ * set, and the server's answer — `encodeStateAsUpdate(doc, sv)` — carries the
+ * same set back. Both numbers grew all through the class and do not figure in
+ * the complaints: nobody had ever measured them, and in the audit finding they
+ * stood as a guess.
  *
- * Замер (эта машина, комната в 400 ячеек, 160 тысяч набранных символов и 22.8
- * тысячи удалений — семестр одного курса):
+ * Measurement (this machine, a room of 400 cells, 160 thousand typed
+ * characters and 22.8 thousand deletions — one course's semester):
  *
- *   весь документ ................................. 750 КБ
- *   step2 вернувшегося клиента .................... 87 КБ
- *   encodeStateAsUpdate(doc, sv) синхронному ...... 87 КБ, 1.3 мс
- *   classify(step2) — разбор кадра гейтом ......... 5.6 мс
+ *   the whole document ............................ 750 KB
+ *   step2 of a returning client ................... 87 KB
+ *   encodeStateAsUpdate(doc, sv), in-sync tab ..... 87 KB, 1.3 ms
+ *   classify(step2) — the gate parses a frame ..... 5.6 ms
  *
- * То есть возврат зала — это ≈2.8 с занятого цикла событий на одном только
- * разборе (5.6 мс × 500) и ≈44 МБ исходящего сверх всего остального. Ни одно из
- * этого не чинится здесь; здесь это ЗАПИСАНО числом и закреплено потолками,
- * которые ловят настоящую беду: квадратичный разбор и кадр, упирающийся в
- * `MAX_SYNC_STEP2_BYTES` (после него вернувшегося не пускают вовсе).
+ * That is, the hall coming back means ≈2.8 s of busy event loop on parsing
+ * alone (5.6 ms × 500) and ≈44 MB of outgoing traffic on top of everything
+ * else. None of this is fixed here; here it is RECORDED as a number and
+ * pinned by caps that catch real trouble: quadratic parsing and a frame that
+ * runs into `MAX_SYNC_STEP2_BYTES` (past it, a returning tab is not let in at
+ * all).
  *
- * Потолки — с запасом на порядок: под нагруженной машиной время плавает, и
- * тест, падающий от соседнего процесса, хуже отсутствующего.
+ * The caps have an order of magnitude of headroom: on a loaded machine timing
+ * drifts, and a test that fails because of a neighbouring process is worse
+ * than no test at all.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -32,9 +36,9 @@ import * as Y from 'yjs'
 import { classify, MAX_SYNC_STEP2_BYTES } from '../server/src/collab/gate.js'
 import { createCell, getCells } from '../shared/notebook.js'
 
-/** Ячеек в комнате за семестр: шесть тетрадей курса, разобранных на паре. */
+/** Cells in a room over a semester: six course notebooks worked through in class. */
 const CELLS = 400
-/** Символов в ячейке — и каждый седьмой стёрт: правки и есть набор удалений. */
+/** Characters per cell — and every seventh is erased: the edits are the delete set. */
 const CHARS = 400
 
 function semester(): Y.Doc {
@@ -55,7 +59,7 @@ function semester(): Y.Doc {
   return doc
 }
 
-/** Сколько миллисекунд заняло — по лучшему из прогонов, а не по первому. */
+/** How many milliseconds it took — by the best of the runs, not the first. */
 function fastest(times: number, run: () => void): number {
   let best = Infinity
   for (let i = 0; i < times; i++) {
@@ -66,11 +70,12 @@ function fastest(times: number, run: () => void): number {
   return best
 }
 
-test('step2 семестровой комнаты не упирается в потолок кадра', () => {
+test('the step2 of a semester-long room does not hit the frame cap', () => {
   const doc = semester()
   const server = Y.encodeStateVector(doc)
 
-  // Вернувшийся клиент: у него всё, кроме последней минуты чужого набора.
+  // A returning client: it has everything except the last minute of someone
+  // else's typing.
   const client = new Y.Doc()
   Y.applyUpdate(client, Y.encodeStateAsUpdate(doc))
   client.transact(() => {
@@ -80,38 +85,40 @@ test('step2 семестровой комнаты не упирается в п�
   const step2 = Y.encodeStateAsUpdate(client, server)
 
   /*
-   * Кадр толще потолка — это отказ на входе: вернувшийся не синхронизируется
-   * вовсе и остаётся с «нет связи» до конца пары. Семестровая комната от этой
-   * границы всё ещё далеко (87 КБ против 8 МБ), и знать, насколько далеко, надо
-   * до того, как в комнату лягут тетради вдвое больше.
+   * A frame thicker than the cap is a refusal at the entrance: the returning
+   * tab does not sync at all and stays with "no connection" until the end of
+   * class. A semester room is still far from this boundary (87 KB versus
+   * 8 MB), and one needs to know how far before notebooks twice as big land
+   * in the room.
    */
   assert.ok(
     step2.byteLength < MAX_SYNC_STEP2_BYTES / 8,
-    `step2 семестра — ${(step2.byteLength / 1024).toFixed(0)} КБ, потолок ${(
+    `the semester's step2 is ${(step2.byteLength / 1024).toFixed(0)} KB, the cap is ${(
       MAX_SYNC_STEP2_BYTES / 1024
-    ).toFixed(0)} КБ: запас кончается`,
+    ).toFixed(0)} KB: the headroom is running out`,
   )
 
   const judged = classify(doc, step2, MAX_SYNC_STEP2_BYTES)
-  assert.equal(judged.ok, true, 'гейт не разобрал обычный кадр возврата')
+  assert.equal(judged.ok, true, 'the gate could not parse an ordinary return frame')
   const took = fastest(5, () => classify(doc, step2, MAX_SYNC_STEP2_BYTES))
-  assert.ok(took < 60, `разбор step2 занял ${took.toFixed(1)} мс — это уже не линейно`)
+  assert.ok(took < 60, `parsing step2 took ${took.toFixed(1)} ms — this is no longer linear`)
 })
 
-test('ответ синхронному клиенту — не пустой кадр, а весь набор удалений', () => {
+test('the answer to an in-sync client is not an empty frame but the whole delete set', () => {
   const doc = semester()
   const sv = Y.encodeStateVector(doc)
   const answer = Y.encodeStateAsUpdate(doc, sv)
 
   /*
-   * «Клиенту, у которого всё есть, сервер отвечает почти ничем» — так это
-   * читается и так это НЕ работает: структур в ответе нет, а набор удалений
-   * едет целиком, и на возврате зала он уходит пятистам вкладкам.
+   * "The server answers a client that has everything with next to nothing" —
+   * that is how it reads and that is how it does NOT work: there are no
+   * structs in the answer, but the delete set travels whole, and when the
+   * hall comes back it goes out to five hundred tabs.
    */
   assert.ok(
     answer.byteLength > 1024,
-    'ответ синхронному клиенту стал пустым — проверьте, тот ли это Yjs',
+    'the answer to an in-sync client became empty — check that this is the right Yjs',
   )
   const took = fastest(5, () => Y.encodeStateAsUpdate(doc, sv))
-  assert.ok(took < 20, `сборка ответа заняла ${took.toFixed(1)} мс на комнату в ${CELLS} ячеек`)
+  assert.ok(took < 20, `building the answer took ${took.toFixed(1)} ms for a room of ${CELLS} cells`)
 })

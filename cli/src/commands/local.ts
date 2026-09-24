@@ -1,27 +1,28 @@
 /**
- * Локально — занятие на этой машине: начать, закончить, перезапустить,
- * посмотреть журнал и адрес, снять и развернуть копию.
+ * Locally: the class on this machine: start, end, restart, look at the log
+ * and the address, take and restore a backup.
  *
- * Команды: run (он же start), stop, restart, logs, link, backup, restore.
- * Порядок здесь — порядок в help. Это всё, чем преподаватель ведёт занятие на
- * своём ноутбуке после `pip install colloq`; мастерской — docker-стека,
- * сборки, тестов, оболочки в ядре — здесь нет. Она живёт в Makefile и
- * scripts/, и её зовут там напрямую: обёртка над ней из колеса только
- * печатала `make …`, которого в пакете нет.
+ * Commands: run (also start), stop, restart, logs, link, backup, restore. The
+ * order here is the order in help. This is everything a teacher runs a class
+ * with on their laptop after `pip install colloq`; the workshop (the docker
+ * stack, the build, tests, a shell in the kernel) is not here. It lives in the
+ * Makefile and scripts/, and is called there directly: a wrapper over it from
+ * the wheel only printed `make …`, which the package does not have.
  *
- * Команда ведёт себя одинаково, откуда бы CLI ни запустили — из колеса или
- * из исходников. ctx.dist решает ровно одно: чем звать супервизор (launcher
- * ниже). Стоит развилке заползти в поведение, и проверенное в клоне окажется
- * у преподавателя другой командой — так уже было с backup и stop.
+ * A command behaves the same wherever the CLI was started from, the wheel or
+ * the sources. ctx.dist decides exactly one thing: what to call the supervisor
+ * with (launcher below). Let the fork creep into behaviour, and what was
+ * tested in a clone turns out to be a different command for the teacher: that
+ * already happened with backup and stop.
  *
- * node:child_process и node:fs импортировать нельзя: только ctx.sh и ctx.io.
- * Иначе тест перестаёт быть герметичным, и это стережёт cli-core.
+ * node:child_process and node:fs must not be imported: only ctx.sh and ctx.io.
+ * Otherwise the test stops being hermetic, and cli-core guards that.
  *
- * Работа отдаётся тому, кто её знает: занятие — супервизору, копии —
- * scripts/backup-local.sh, scripts/backup.sh и scripts/restore.sh. Проверки,
- * которые уже стоят там (живой сервер под restore, нет релиза под переносимой
- * копией, замок состояния), здесь не повторяются: там они сказаны точнее, и
- * их stderr уходит наружу как есть.
+ * The work goes to whoever knows it: the class to the supervisor, backups to
+ * scripts/backup-local.sh, scripts/backup.sh and scripts/restore.sh. Checks
+ * that already stand there (a live server under restore, no release under a
+ * portable backup, the state lock) are not repeated here: they are put more
+ * precisely there, and their stderr goes out as is.
  */
 import type { Command, Ctx } from '../registry.js'
 import { cancelled, heading as head, UsageError } from '../ui.js'
@@ -30,49 +31,54 @@ import { readSession, type Session } from '../session.js'
 import { hostNameOk } from './host.js'
 import { leaseUrl } from '../../../shared/local-public-url-lease.js'
 
-/** Свой вопрос: «нет» — это DIM «отменено» и код 4. --yes и --dry-run отвечают «да». */
+/** Our own question: "no" is a DIM "cancelled" and code 4. --yes and --dry-run answer "yes". */
 async function ask(ctx: Ctx, question: string): Promise<boolean> {
   if (await ctx.confirm(question)) return true
   cancelled(ctx.ui)
   return false
 }
 
-/** Значение строкового флага; пустая строка — всё равно что не сказали. */
+/** The value of a string flag; an empty string is as good as not said. */
 function flag(ctx: Ctx, name: string): string | undefined {
   const raw = ctx.values[name]
   return typeof raw === 'string' && raw !== '' ? raw : undefined
 }
 
 /**
- * Где лежат данные занятия — явной переменной окружения для скриптов.
+ * Where the class data lies, as an explicit environment variable for the
+ * scripts.
  *
- * scripts/backup.sh и scripts/restore.sh делают cd к себе и без подсказки
- * берут data/ с workspace/ от каталога ПРИЛОЖЕНИЯ, складывая архив в
- * <app>/backups. У установленного colloq там нет ни базы, ни файлов занятий —
- * копия снялась бы с пустого места, а восстановление легло бы мимо настоящей
- * базы, и обе беды тихие.
+ * scripts/backup.sh and scripts/restore.sh cd to themselves and, without a
+ * hint, take data/ and workspace/ from the APPLICATION directory, putting the
+ * archive into <app>/backups. For an installed colloq there is neither the
+ * database nor the class files there: a backup would be taken from an empty
+ * place, and a restore would land beside the real database, and both
+ * troubles are silent.
  *
- * Поэтому корень состояния называем сами и всегда: в клоне home и есть
- * корень, и строка ничего не меняет — зато нет развилки, которую надо не
- * забыть повторить в следующей команде.
+ * So we name the state root ourselves, and always: in a clone home is the
+ * root, and the line changes nothing, but then there is no fork that one must
+ * remember to repeat in the next command.
  */
 function stateEnv(ctx: Ctx): Record<string, string> {
   return { COLLOQ_HOME: ctx.env.paths.home }
 }
 
 /**
- * Снять или развернуть копию — самим скриптом, не целью Makefile.
+ * Take or restore a backup with the script itself, not with a Makefile
+ * target.
  *
- * Цели backup, backup-legacy, restore и restore-legacy — обёртки в одну-две
- * строки над этими же скриптами, но Makefile в колесо не едет и не поедет:
- * `colloq backup --dry-run` из колеса печатал `make backup MODE=live` —
- * команду, которая там умирает кодом 127, и это единственный способ унести
- * занятие с машины. Проверено живьём. Скрипты едут (scripts/pack.mts ·
- * SCRIPTS), поэтому зовём их напрямую и так же, как их позвала бы цель: что
- * цель отдаёт аргументом — аргументом, что переменной — окружением.
+ * The targets backup, backup-legacy, restore and restore-legacy are one- or
+ * two-line wrappers over these same scripts, but the Makefile does not travel
+ * into the wheel and never will: `colloq backup --dry-run` from the wheel
+ * printed `make backup MODE=live`, a command that dies there with code 127,
+ * and this is the only way to carry a class off the machine. Checked live.
+ * The scripts do travel (scripts/pack.mts · SCRIPTS), so we call them directly
+ * and the same way the target would: what the target passes as an argument
+ * goes as an argument, what it passes as a variable goes in the environment.
  *
- * Пустые значения в окружение не идут: скрипт отличает «не сказали» от
- * пустой строки не везде, и лишнее `NAME=` в строке --dry-run только путает.
+ * Empty values do not go into the environment: the script does not
+ * everywhere tell "not said" from an empty string, and an extra `NAME=` in
+ * the --dry-run line only confuses.
  */
 function copyCall(
   ctx: Ctx,
@@ -87,7 +93,7 @@ function copyCall(
   return ctx.sh.script(script, args, { env })
 }
 
-/** Имя среды: тем же ситом, что в scripts/backup.sh и scripts/restore.sh (env.envNameOk). */
+/** An environment name: the same sieve as scripts/backup.sh and scripts/restore.sh (env.envNameOk). */
 function checkName(name: string | undefined): void {
   if (name === undefined) return
   if (!envNameOk(name)) {
@@ -98,7 +104,7 @@ function checkName(name: string | undefined): void {
   }
 }
 
-/** Число строк хвоста: только целое и положительное. */
+/** The number of tail lines: only a positive whole number. */
 function checkLines(lines: string | undefined): void {
   if (lines === undefined) return
   if (!/^[0-9]+$/.test(lines) || lines === '0') {
@@ -110,21 +116,24 @@ function checkLines(lines: string | undefined): void {
 }
 
 /**
- * Расписка идущего занятия — или null, если занятия нет.
+ * The receipt of the running class, or null if there is no class.
  *
- * Путь один: ctx.env.paths.sessionFile, посчитанный от каталога СОСТОЯНИЯ.
- * Здесь стояло ctx.env.path('.colloq/local-session.json') — то есть от каталога
- * ПРИЛОЖЕНИЯ, — и у установленного colloq это расходилось молча: супервизор
- * пишет расписку в ~/.colloq, а stop, restart и link искали её в site-packages
- * и не находили. Проверено живьём: под работающим сервером `colloq stop`
- * отвечал «занятие не идёт — останавливать нечего».
+ * There is one path: ctx.env.paths.sessionFile, resolved from the STATE
+ * directory. This used to say ctx.env.path('.colloq/local-session.json'), that
+ * is, from the APPLICATION directory, and for an installed colloq that
+ * diverged silently: the supervisor writes the receipt into ~/.colloq, while
+ * stop, restart and link looked for it in site-packages and did not find it.
+ * Checked live: with the server running, `colloq stop` answered "no class is
+ * running — nothing to stop".
  *
- * Разбор тоже не свой: readSession один на всех читателей расписки (link,
- * status, doctor). Вторая копия проверок разошлась бы с ними на первой же
- * правке формата — ровно так и разъехались когда-то пути.
+ * The parsing is not our own either: readSession is one for all readers of
+ * the receipt (link, status, doctor). A second copy of the checks would drift
+ * apart from them on the very first edit of the format, exactly the way the
+ * paths once drifted apart.
  *
- * Чего здесь нет — живости pid: session.ts к процессам намеренно не ходит, и
- * спрашивает о ней тот, кому она нужна (sessionAddress ниже, через ctx.sh).
+ * What is not here is pid liveness: session.ts deliberately does not go to
+ * processes, and whoever needs it asks about it (sessionAddress below,
+ * through ctx.sh).
  */
 function localSession(ctx: Ctx): Session | null {
   return readSession(ctx.io, ctx.env.paths.sessionFile)
@@ -135,9 +144,9 @@ async function sessionAddress(
 ): Promise<{ local: string; public: string | undefined } | undefined> {
   const session = localSession(ctx)
   if (session === null) return undefined
-  // Публичный адрес показываем только у живого занятия: расписка на временный
-  // адрес переживает падение супервизора, и мёртвая сессия называла бы ссылку,
-  // по которой уже никто не ответит.
+  // We show the public address only for a live class: the receipt for a
+  // temporary address survives a crash of the supervisor, and a dead session
+  // would name a link nobody will answer at any more.
   const alive = await ctx.sh.capture('kill', ['-0', String(session.pid)], { timeoutMs: 4000 })
   const publicUrl =
     alive.code === 0 && session.leaseFile !== ''
@@ -147,11 +156,11 @@ async function sessionAddress(
 }
 
 /**
- * Порт и имя туннеля проверяются до запуска супервизора.
+ * The port and the tunnel name are checked before the supervisor starts.
  *
- * Пустое значение — тоже ошибка, а не «умолчание»: `--port ''` чаще всего
- * значит пустую переменную в чьём-то скрипте, и молча взять 3000 значило бы
- * поднять занятие не там, где его ждут.
+ * An empty value is an error too, not "the default": `--port ''` most often
+ * means an empty variable in someone's script, and silently taking 3000 would
+ * mean bringing the class up somewhere other than where it is expected.
  */
 function checkLaunch(ctx: Ctx): void {
   const port = ctx.values.port
@@ -168,9 +177,9 @@ function checkLaunch(ctx: Ctx): void {
   if (typeof host === 'string' && !hostNameOk(host)) {
     throw new UsageError('the tunnel name is not valid', 'colloq run --host class.example.org')
   }
-  // Два выхода наружу разом — это два туннеля на одну расписку адреса. Тот
-  // же отказ стоит и в супервизоре (launch-config.ts · parseLaunchArgs), но
-  // здесь он приходит кодом 2 и до всякого запуска.
+  // Two ways out at once mean two tunnels on one address receipt. The same
+  // refusal stands in the supervisor too (launch-config.ts · parseLaunchArgs),
+  // but here it comes with code 2 and before any start.
   if (ctx.values.share === true && host !== undefined) {
     throw new UsageError(
       '--share and --host do not work together',
@@ -180,16 +189,17 @@ function checkLaunch(ctx: Ctx): void {
 }
 
 /**
- * Чем звать супервизор занятия — исходником или бандлом.
+ * What to call the class supervisor with: the source or the bundle.
  *
- * Из исходников это `cli/src/launch.ts` через tsx: исходник правят, и гонять
- * его через сборку на каждый запуск значило бы вставить сборку между правкой и
- * проверкой. В дистрибутиве ни исходника, ни tsx нет вовсе — там лежит один
- * собранный `cli/launch.mjs`, и звать его надо голым node.
+ * From the sources it is `cli/src/launch.ts` through tsx: the source gets
+ * edited, and running it through a build on every start would put a build
+ * between the edit and the check. A distribution has neither the source nor
+ * tsx at all: there lies a single built `cli/launch.mjs`, and it must be
+ * called with bare node.
  *
- * Пока этой развилки не было, `colloq start` из колеса печатал путь
- * `…/_app/cli/src/launch.ts` и падал: файла нет, tsx нет. Проверено
- * `colloq start --dry-run` из поставленного колеса.
+ * While this fork did not exist, `colloq start` from the wheel printed the
+ * path `…/_app/cli/src/launch.ts` and fell over: no file, no tsx. Checked with
+ * `colloq start --dry-run` from an installed wheel.
  */
 function launcher(ctx: Ctx): string[] {
   return ctx.dist
@@ -254,8 +264,8 @@ export const commands: Command[] = [
     flags: [],
     destructive: true,
     confirm: 'cli',
-    // Спрашивать «остановить сервер?», чтобы следом сказать «останавливать
-    // нечего», — значит спросить зря: вопрос есть только у идущего занятия.
+    // Asking "stop the server?" only to say "nothing to stop" right after means
+    // asking for nothing: only a running class gets the question.
     confirmWhen: async (ctx) => localSession(ctx) !== null,
     confirmQuestion: 'stop the server?',
     delegates: 'native: the same supervisor with the stop command',
@@ -268,13 +278,14 @@ export const commands: Command[] = [
         return await launch(ctx, 'stop')
       }
       /*
-       * Расписки нет — значит, и занятия нет.
+       * No receipt means no class either.
        *
-       * Занятие, которое начал colloq, бывает ровно одно — своё, с распиской,
-       * — и её отсутствие и значит, что останавливать нечего. Сервер, поднятый
-       * мимо colloq (make run, docker compose), — забота мастерской, и
-       * гасить его тем же словом значило бы угадывать чужое. Код 0: просьба
-       * «пусть ничего не идёт» уже исполнена.
+       * A class started by colloq is exactly one, its own, with a receipt, and
+       * the absence of the receipt means there is nothing to stop. A server
+       * brought up bypassing colloq (make run, docker compose) is the
+       * workshop's concern, and shutting it down with the same word would mean
+       * guessing at someone else's. Code 0: the request "let nothing be
+       * running" is already fulfilled.
        */
       ctx.ui.line('no class is running — nothing to stop')
       ctx.ui.hint('start one: colloq start')
@@ -299,13 +310,14 @@ export const commands: Command[] = [
     async run(ctx) {
       if (localSession(ctx) === null) {
         /*
-         * Расписки нет — перезапускать нечего, и отвечаем словами.
+         * No receipt means nothing to restart, and we answer in words.
          *
-         * Когда-то здесь начинался разбор старых форм — docker, служба,
-         * pid-файл — и вызовы make. У преподавателя ничего из этого нет, а
-         * человек получал «make: *** No rule to make target `stop`» при живом
-         * pid-файле рядом, и перезапуск выглядел осмысленным. Отказ — код 3 и
-         * под --dry-run тоже: выполнить было бы нечего.
+         * Once, parsing of the old forms started here (docker, the service,
+         * the pid file) along with calls of make. A teacher has none of that,
+         * and a person got "make: *** No rule to make target `stop`" with a
+         * live pid file right there, and the restart looked meaningful. The
+         * refusal is code 3, under --dry-run too: there would be nothing to
+         * execute.
          */
         ctx.ui.refuse(
           'no class is running — nothing to restart',
@@ -348,11 +360,12 @@ export const commands: Command[] = [
       const log = ctx.env.paths.logFile
       if (!ctx.dryRun && !ctx.io.exists(log)) {
         /*
-         * Журнал заводит супервизор при каждом `colloq start` — и в
-         * терминале, и в фоне (launch.ts · runSession и detached). Нет файла
-         * — значит, занятие на этой машине ещё не начинали, и совет ровно
-         * один: начать. Путь называем целиком: у установленного colloq он в
-         * каталоге состояния, а не в рабочей папке человека.
+         * The supervisor creates the log on every `colloq start`, both in the
+         * terminal and in the background (launch.ts · runSession and
+         * detached). No file means no class has been started on this machine
+         * yet, and there is exactly one piece of advice: start one. We name
+         * the path in full: for an installed colloq it is in the state
+         * directory, not in the person's working folder.
          */
         ctx.ui.refuse(
           'no log at ' + log,
@@ -363,13 +376,13 @@ export const commands: Command[] = [
       }
       head(ctx, 'the log of the class')
       /*
-       * Тейлим свой файл, а не отдаём работу make logs-run.
+       * We tail our own file rather than hand the job to make logs-run.
        *
-       * Цель Makefile — это `tail -f $(LOG)` от каталога ПРИЛОЖЕНИЯ, и у
-       * установленного colloq её нет вовсе. Верный путь известен строкой выше
-       * — по нему же только что проверили, что журнал вообще есть, — а в
-       * журнале лежит ссылка входа, к которой отсылает colloq link:
-       * промахнуться тут дороже всего.
+       * The Makefile target is `tail -f $(LOG)` from the APPLICATION
+       * directory, and an installed colloq does not have it at all. The right
+       * path is known from the line above (by it we have just checked that
+       * the log exists at all), and the log holds the sign-in link that
+       * colloq link refers to: missing here costs the most.
        */
       const args: string[] = []
       if (follow) args.push('-f')
@@ -421,12 +434,13 @@ export const commands: Command[] = [
       if (domain !== '') ctx.ui.kv('domain', domain)
       ctx.ui.kv('sign-in', 'printed once at startup')
       /*
-       * Пути называем целиком, а не «.colloq.log» и «data/setup-token».
+       * We name the paths in full, not ".colloq.log" and "data/setup-token".
        *
-       * Относительное имя подразумевает, что корень один. У установленного
-       * colloq журнал и токен лежат в каталоге состояния (~/.colloq), а человек
-       * ищет их в своей рабочей папке, не находит и решает, что вход не
-       * сохранился, — хотя ссылка на месте.
+       * A relative name implies that there is one root. For an installed
+       * colloq the log and the token lie in the state directory (~/.colloq),
+       * while the person looks for them in their working folder, does not find
+       * them and decides the sign-in was not saved, although the link is in
+       * place.
        */
       ctx.ui.hint(
         'it is in ' +
@@ -470,7 +484,7 @@ export const commands: Command[] = [
       const name = flag(ctx, 'name')
       const out = flag(ctx, 'out')
       const release = flag(ctx, 'release')
-      // Переносимую копию назвали вслух: любой её флаг — это просьба о ней.
+      // The portable backup was named out loud: any of its flags is a request for it.
       const portable =
         given !== undefined ||
         resume ||
@@ -478,20 +492,22 @@ export const commands: Command[] = [
         out !== undefined ||
         release !== undefined
       /*
-       * Умолчание — локальная копия.
+       * The default is a local backup.
        *
-       * Переносимая имеет смысл там, где стоит k3s: scripts/backup.sh первым
-       * делом требует установленный релиз и без него отказывает. У
-       * преподавателя, который поставил colloq через pip и ведёт занятие на
-       * своём ноутбуке, релиза нет и не будет — `colloq backup` без флагов
-       * отвечал бы ему про кластер, которого он не заводил, хотя нужна ему
-       * ровно та копия, что делает scripts/backup-local.sh: база и файлы
-       * занятия. Обещание команды («снять копию») и отказ про чужой мир
-       * несовместимы, и разрешается это в пользу обещания — как у env list.
+       * A portable one makes sense where k3s is installed: scripts/backup.sh
+       * first of all demands an installed release and refuses without one. A
+       * teacher who installed colloq through pip and runs a class on their
+       * laptop has no release and never will: `colloq backup` without flags
+       * would answer them about a cluster they never set up, while what they
+       * need is exactly the backup scripts/backup-local.sh makes: the database
+       * and the class files. The command's promise ("take a backup") and a
+       * refusal about someone else's world are incompatible, and this is
+       * resolved in favour of the promise, as with env list.
        *
-       * Второй путь не закрыт: кластер обслуживают тем же колесом
-       * (scripts/cluster.sh едет туда же), и названный флаг уводит в него.
-       * --legacy остаётся словом для тех, кто хочет сказать это вслух.
+       * The second path is not closed: a cluster is maintained with the same
+       * wheel (scripts/cluster.sh travels there as well), and a named flag
+       * leads into it. --legacy stays a word for those who want to say it out
+       * loud.
        */
       const legacy = ctx.values.legacy === true || !portable
 
@@ -533,8 +549,8 @@ export const commands: Command[] = [
         if (!(await ask(ctx, 'stop every writer?' + tail))) return 4
       }
       head(ctx, mode === 'consistent' ? 'taking a consistent backup' : 'taking a backup on the fly')
-      // backup.sh читает всё окружением (MODE, RESUME, NAME, OUT, RELEASE):
-      // аргументов у него нет вовсе.
+      // backup.sh reads everything from the environment (MODE, RESUME, NAME,
+      // OUT, RELEASE): it has no arguments at all.
       return await copyCall(ctx, './scripts/backup.sh', {
         MODE: mode,
         RESUME: resume ? '1' : undefined,
@@ -585,9 +601,9 @@ export const commands: Command[] = [
       const files = flag(ctx, 'files')
       const name = flag(ctx, 'name')
       const recover = ctx.values.recover === true
-      // --yes снимает наш вопрос, и только его. Положить копию поверх живой
-      // базы и поверх workspace/ — отдельное разрешение, и называют его
-      // отдельно: --replace.
+      // --yes removes our question, and only it. Laying a backup over the live
+      // database and over workspace/ is a separate permission, and it is named
+      // separately: --replace.
       const replace = ctx.values.replace === true
       checkName(name)
 
@@ -628,11 +644,13 @@ export const commands: Command[] = [
             return missing(filesPath, 'the archive holds the class files and the instance keys')
           }
         }
-        // Второй вопрос подряд перестают читать: здесь спрашивает сам скрипт.
+        // People stop reading a second question in a row: here the script
+        // itself asks.
         head(ctx, 'restoring an old-format backup')
-        // Как у цели restore-legacy: пути — аргументами, имя среды и
-        // разрешение — окружением. Пустого аргумента быть не должно: скрипт
-        // разбирает их по расширению и на пустой строке умирает «не понимаю «»».
+        // As in the restore-legacy target: the paths as arguments, the
+        // environment name and the permission in the environment. There must be
+        // no empty argument: the script sorts them by extension and on an empty
+        // string dies with "I do not understand """.
         return await copyCall(
           ctx,
           './scripts/restore.sh',
@@ -668,8 +686,8 @@ export const commands: Command[] = [
         }
       }
       head(ctx, 'restoring a portable backup')
-      // Как у цели restore: --archive, --release и два ключа-переключателя —
-      // аргументами, имя среды — переменной.
+      // As in the restore target: --archive, --release and the two switches as
+      // arguments, the environment name as a variable.
       return await copyCall(ctx, './scripts/restore.sh', { NAME: name }, [
         '--archive',
         archivePath,

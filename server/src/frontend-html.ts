@@ -9,12 +9,13 @@ const brotliCompress = promisify(zlib.brotliCompress)
 const gzipCompress = promisify(zlib.gzip)
 
 /**
- * Что в странице зависит от адреса: заголовок вкладки и теги карточки ссылки.
+ * What in the page depends on the address: the tab title and the link card
+ * tags.
  *
- * Собранный index.html один на все адреса, а мессенджеру, который разворачивает
- * ссылку на комнату, нужно имя занятия — его знает только сервер
- * (link-preview.ts). `head` вставляется перед `</head>` как есть: экранирует
- * тот, кто его собрал.
+ * The built index.html is the same for every address, but a messenger that
+ * unfurls a link to a room needs the class name, and only the server knows it
+ * (link-preview.ts). `head` is inserted before `</head>` as is: escaping is
+ * the job of whoever built it.
  */
 export interface PageExtras {
   readonly title?: string
@@ -30,9 +31,9 @@ export function withInitialLanguage(html: string, language: Locale, extras: Page
     html = html.replace(/<title>[^<]*<\/title>/i, () => `<title>${title}</title>`)
   }
   /*
-   * Карточка ссылки — в самое начало head, сразу за кодировкой: у собранной
-   * страницы до `</head>` двенадцать килобайт стилей и скриптов, а сколько
-   * читает разворачиватель ссылок в чате, нигде не написано.
+   * The link card goes at the very start of head, right after the charset:
+   * the built page has twelve kilobytes of styles and scripts before
+   * `</head>`, and how much a chat's link unfurler reads is written nowhere.
    */
   if (extras.head) {
     html = /<meta\s+charset=[^>]*>/i.test(html)
@@ -53,23 +54,25 @@ export function withInitialLanguage(html: string, language: Locale, extras: Page
 }
 
 /**
- * Готовая страница: байты, сильный ETag и обе кодировки.
+ * A ready page: the bytes, a strong ETag and both encodings.
  *
- * Раньше каждая навигация — а это КАЖДЫЙ вход в комнату — читала index.html с
- * диска, склеивала в него язык, считала по нему ETag и уходила в потоковый
- * brotli качества 5. На собранном index.html в 26 КБ это 1.74 мс
- * процессорного времени на запрос, и почти всё оно — сжатие одного и того же
- * файла заново. Двести человек по звонку — двести таких пересжатий подряд, на
- * той же машине, где в этот момент поднимаются ядра комнат.
+ * Previously every navigation (and that is EVERY entry into a room) read
+ * index.html from disk, spliced the language into it, computed an ETag over it
+ * and went into streaming brotli at quality 5. On the built 26 KB index.html
+ * that is 1.74 ms of CPU time per request, and almost all of it is compressing
+ * the same file over again. Two hundred people at the bell means two hundred
+ * such recompressions in a row, on the same machine where the rooms' kernels
+ * are starting up at that moment.
  *
- * Между двумя запросами файл меняет только выкладка, а язык инстанса — только
- * админ. Значит вариантов ровно два на язык, и считаются они по разу: brotli
- * здесь качества 11 (офлайн-настройка, за неё платят единожды), gzip девятого
- * уровня. Дальше ответ — это копия буфера в сокет.
+ * Between two requests the file is changed only by a deploy, and the instance
+ * language only by an admin. So there are exactly two variants per language,
+ * and each is computed once: brotli here runs at quality 11 (an offline
+ * setting, paid for once), gzip at level nine. After that a response is a
+ * copy of a buffer into the socket.
  *
- * Ключ — mtime и размер файла, а не его содержимое: хэшировать значило бы
- * читать файл на каждый запрос, то есть ровно то, от чего уходим. Выкладка
- * меняет и то, и другое, а stat стоит микросекунды.
+ * The key is the file's mtime and size, not its content: hashing would mean
+ * reading the file on every request, which is exactly what we are getting away
+ * from. A deploy changes both, and stat costs microseconds.
  */
 export interface FrontendPage {
   readonly body: Buffer
@@ -79,16 +82,16 @@ export interface FrontendPage {
 
 const pages = new Map<string, { stamp: string; page: Promise<FrontendPage> }>()
 /*
- * Потолок кэша. Вариантов страницы стало не два на язык, а по одному на
- * комнату (заголовок и карточка ссылки — свои у каждой), и без потолка
- * инстанс с тысячей семинаров за семестр держал бы тысячу сжатых копий
- * одного файла. Вытесняется самая давняя; на курсе в десяток текущих комнат
- * до вытеснения дело не доходит.
+ * The cache ceiling. Page variants are no longer two per language but one per
+ * room (each has its own title and link card), and without a ceiling an
+ * instance with a thousand seminars a semester would hold a thousand
+ * compressed copies of one file. The oldest one is evicted; a course with a
+ * dozen current rooms never gets as far as eviction.
  */
 const MAX_PAGES = 256
 let builds = 0
 
-/** Сколько раз страницу действительно собирали: этим тест и ловит пересжатие. */
+/** Times the page was actually built: the test catches recompression by it. */
 export function frontendPageBuilds(): number {
   return builds
 }
@@ -110,7 +113,7 @@ export async function frontendPage(
     if (oldest !== undefined) pages.delete(oldest)
   }
   pages.set(key, { stamp, page })
-  // Отказ чтения не должен запомниться навсегда: следующий запрос спросит снова.
+  // A failed read must not be remembered forever: the next request asks again.
   page.catch(() => {
     if (pages.get(key)?.page === page) pages.delete(key)
   })
@@ -133,19 +136,19 @@ async function buildPage(file: string, locale: Locale, extras: PageExtras): Prom
   if (br.length < body.length) encoded.br = br
   if (gzip.length < body.length) encoded.gzip = gzip
   builds += 1
-  // Сильный тег, а не слабый: байты этого ответа лежат здесь целиком, и
-  // «примерно те же» тут не бывает. Express ставил слабый (W/...), потому что
-  // считал его на лету и не знал, что отдаст.
+  // A strong tag, not a weak one: the bytes of this response are all here, and
+  // "roughly the same" does not happen here. Express set a weak one (W/...)
+  // because it computed it on the fly and did not know what it would send.
   const etag = `"${body.length.toString(16)}-${createHash('sha1').update(body).digest('base64url')}"`
   return { body, etag, encoded }
 }
 
-/** Держит ли браузер уже эти самые байты (If-None-Match). */
+/** Whether the browser already holds these very bytes (If-None-Match). */
 export function etagMatches(header: string | undefined, etag: string): boolean {
   if (!header) return false
   for (const part of header.split(',')) {
-    // Слабый префикс снимается: для 304 хватает слабого сравнения, а прокси по
-    // дороге вправе ослабить сильный тег.
+    // The weak prefix is stripped: weak comparison is enough for a 304, and a
+    // proxy along the way is allowed to weaken a strong tag.
     const tag = part.trim().replace(/^W\//, '')
     if (tag === '*' || tag === etag) return true
   }

@@ -1,11 +1,11 @@
 /**
- * Статическая страница: пути внутри неё.
+ * The static page: the paths inside it.
  *
- * Второй отрисовщик тетради, рядом со Svelte-компонентами комнаты, — и он
- * работает без сервера, без API и без единого скрипта. Ломается это тихо:
- * страница откроется, а картинка не найдётся, потому что путь поднялся на один
- * каталог выше, чем надо. Тут проверяется ровно это — относительные адреса на
- * обеих глубинах.
+ * A second notebook renderer, next to the room's Svelte components — and it
+ * works without a server, without an API and without a single script. This
+ * breaks quietly: the page opens, but an image is not found because the path
+ * climbed one directory higher than it should. Exactly this is checked here —
+ * relative addresses at both depths.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -41,60 +41,60 @@ function page(depth: 1 | 2, seq: number): string {
   })
 }
 
-test('картинка находится с первой страницы публикации', () => {
-  // Первый шаг — сам корень публикации: подниматься некуда, и лишний «../»
-  // увёл бы к соседней публикации.
+test('an image is found from the first page of a publication', () => {
+  // The first step is the publication root itself: there is nowhere to climb,
+  // and an extra "../" would lead to a neighbouring publication.
   assert.match(page(1, 3), /src="blob\/deadbeef\.png"/)
 })
 
-test('и с любой другой страницы шага', () => {
+test('and from any other step page', () => {
   assert.match(page(2, 5), /src="\.\.\/blob\/deadbeef\.png"/)
 })
 
-test('первый шаг в рельсе — «./», а не пустая ссылка', () => {
-  // Пустой href значит «текущий адрес целиком», вместе с querystring: в архиве
-  // и при открытии файла с диска такая ссылка ведёт себя непредсказуемо.
+test('the first step in the rail is "./", not an empty link', () => {
+  // An empty href means "the whole current address", querystring included: in an
+  // archive and when a file is opened from disk, such a link behaves unpredictably.
   assert.ok(!page(1, 3).includes('href=""'))
   assert.match(page(1, 3), /href="\.\/"/)
 })
 
-test('тетрадь на странице шага — своя, а не одна на публикацию', () => {
+test('the notebook on a step page is its own, not one per publication', () => {
   /*
-   * Ссылка была одна на все шаги, а файл под ней собирался из ПОСЛЕДНЕГО шага:
-   * читатель, сравнивающий «до» и «после» на шаге 2 из 5, уносил состояние шага
-   * 5 и узнавал об этом, только открыв файл. Теперь тетрадь лежит рядом со
-   * страницей своего шага (export.ts), а `p/<handle>/notebook.ipynb` остаётся
-   * последним шагом — на него скопированы розданные раньше ссылки.
+   * The link was one for all steps, and the file behind it was built from the
+   * LAST step: a reader comparing "before" and "after" at step 2 of 5 took away
+   * the state of step 5 and learned of it only on opening the file. Now the
+   * notebook lies next to the page of its step (export.ts), and
+   * `p/<handle>/notebook.ipynb` stays the last step — the links handed out earlier point to it.
    */
-  // Первый шаг стоит в корне публикации, где тетрадь уже занята последним
-  // шагом, — значит, ссылка спускается в каталог шага.
+  // The first step sits at the publication root, where the notebook is already
+  // taken by the last step — so the link goes down into the step's directory.
   assert.match(page(1, 3), /href="3\/notebook\.ipynb"/)
   assert.match(page(2, 5), /href="notebook\.ipynb"/)
   assert.ok(
     !page(2, 5).includes('href="../notebook.ipynb"'),
-    'страница шага снова отдаёт тетрадь всей публикации',
+    'a step page serves the notebook of the whole publication again',
   )
-  // Подписи разобраны в tests/publish-step-notebook.test.mts — здесь пути.
+  // The captions are covered in tests/publish-step-notebook.test.mts; here it is the paths.
 })
 
-test('страница не тянет ни одного внешнего файла', () => {
+test('the page pulls in not a single external file', () => {
   /*
-   * Ни скриптов, ни отдельного CSS: страница обязана открываться сама по себе
-   * — из архива, с флешки, через десять лет. Отдельный .css — это второй
-   * запрос, который однажды не доедет, и текст поедет.
+   * No scripts, no separate CSS: the page has to open on its own — from an
+   * archive, from a USB stick, ten years from now. A separate .css is a second
+   * request that one day will not arrive, and the text will fall apart.
    */
   const html = page(1, 3)
-  assert.ok(!/<script/i.test(html), 'на странице появился скрипт')
-  assert.ok(!/<link[^>]+stylesheet/i.test(html), 'на странице появился внешний стиль')
+  assert.ok(!/<script/i.test(html), 'a script appeared on the page')
+  assert.ok(!/<link[^>]+stylesheet/i.test(html), 'an external stylesheet appeared on the page')
   assert.match(html, /<style>/)
 })
 
-test('страницу не отдают поисковику', () => {
-  // Ссылку дают классу, а не индексу: страница открыта тому, кто её получил.
+test('the page is not handed to search engines', () => {
+  // The link is given to the class, not to an index: the page is open to whoever received it.
   assert.match(page(1, 3), /name="robots" content="noindex"/)
 })
 
-test('в курсе ссылка на семинар идёт по имени, если имя дали', () => {
+test('in a course the link to a seminar goes by name, if a name was given', () => {
   const course: PublicCourseView = {
     id: 'abcd1234',
     slug: 'ml-strong',
@@ -113,14 +113,14 @@ test('в курсе ссылка на семинар идёт по имени, �
   }
   const html = renderCourse(course, 'https://colloq.ru')
   assert.match(html, /href="https:\/\/colloq\.ru\/p\/derevya\/"/)
-  assert.ok(!html.includes('zzzz1111'), 'в ссылку попал идентификатор вместо имени')
-  // Три состояния строки: ссылка, план и надгробие — все на странице.
+  assert.ok(!html.includes('zzzz1111'), 'the id got into the link instead of the name')
+  // Three row states: a link, a plan and a tombstone — all on the page.
   assert.match(html, /1–7 мар/)
   assert.match(html, /занятие удалено/)
 })
 
-test('на публичной странице не появляется идентификатор комнаты', () => {
-  // Восемь символов комнаты — это всё право писать в неё.
+test('the room id never appears on a public page', () => {
+  // The eight characters of the room are the whole right to write to it.
   const course: PublicCourseView = {
     id: 'abcd1234',
     slug: null,
@@ -138,8 +138,8 @@ test('на публичной странице не появляется иде�
   assert.ok(!renderCourse(course, 'https://colloq.ru').includes('k7m2xq4b'))
 })
 
-test('разметка заметки пропускает теги, но не рычаги', () => {
-  // Текст ячейки пишет кто угодно из комнаты, а страница уходит классу.
+test('note markup lets tags through, but not levers', () => {
+  // Anyone in the room writes the cell text, and the page goes out to the class.
   const html = renderStep({
     title: 'x',
     publishedAt: 1,
@@ -157,11 +157,11 @@ test('разметка заметки пропускает теги, но не �
     base: 'https://colloq.ru',
   })
   /*
-   * Раньше здесь проверялось, что тега нет вовсе: вся заметка уходила в `esc()`.
-   * Теперь HTML в заметке рисуется (см. note-html.test.mts) — но белым списком,
-   * по тегу и по атрибуту, так что от этой строки остаётся `<img>` без единого
-   * атрибута: `onerror` не назван нигде, а `src=x` — не запись публикации, не
-   * `https://` и не `data:image`.
+   * This used to check that the tag was absent altogether: the whole note went
+   * through `esc()`. Now HTML in a note is rendered (see note-html.test.mts) —
+   * but by an allowlist, per tag and per attribute, so what remains of this line
+   * is an `<img>` without a single attribute: `onerror` is not listed anywhere,
+   * and `src=x` is not a publication entry, not `https://` and not `data:image`.
    */
   assert.doesNotMatch(html, /onerror/i)
   assert.doesNotMatch(html, /alert/i)
@@ -169,11 +169,11 @@ test('разметка заметки пропускает теги, но не �
   assert.match(html, /<h2>Заголовок<\/h2>/)
 })
 
-test('цвет ядра не доезжает до страницы мусором', () => {
+test('kernel colours do not reach the page as garbage', () => {
   /*
-   * Ядро печатает escape-последовательности как есть, комната красит их на
-   * лету, а здесь скриптов нет вовсе: сам escape невидим, и студент читает
-   * «[0;31m» посреди трейсбека. Трейсбеки IPython красит всегда.
+   * The kernel prints escape sequences as they are, the room colours them on the
+   * fly, but here there are no scripts at all: the escape itself is invisible,
+   * and a student reads "[0;31m" in the middle of a traceback. IPython always colours tracebacks.
    */
   const html = renderStep({
     title: 'x',
@@ -211,17 +211,17 @@ test('цвет ядра не доезжает до страницы мусоро
     depth: 1,
     base: 'https://colloq.ru',
   })
-  assert.ok(!html.includes('[0;31m'), 'escape-коды доехали до страницы')
-  assert.ok(!html.includes('\x1b'), 'сам escape остался в тексте')
+  assert.ok(!html.includes('[0;31m'), 'escape codes reached the page')
+  assert.ok(!html.includes('\x1b'), 'the escape itself stayed in the text')
   assert.match(html, /собрано/)
   assert.match(html, /Cell In\[1\], line 1/)
-  // Заголовок ошибки стоит один раз, а не трижды: рамку, баннер и эхо снимает
-  // и комната (web/src/lib/traceback.ts).
+  // The error heading appears once, not three times: the room strips the frame,
+  // the banner and the echo too (web/src/lib/traceback.ts).
   assert.equal(html.split('ZeroDivisionError').length - 1, 1)
 })
 
-test('SVG-вывод рисуется, а не превращается в пустую рамку', () => {
-  // Ядро отдаёт SVG XML-текстом: `data:…;base64,<xml>` — битая картинка.
+test('SVG output is drawn instead of turning into an empty frame', () => {
+  // The kernel gives SVG as XML text: `data:…;base64,<xml>` is a broken image.
   const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="2" height="2"/></svg>'
   const html = renderStep({
     title: 'x',
@@ -247,15 +247,15 @@ test('SVG-вывод рисуется, а не превращается в пу�
     base: 'https://colloq.ru',
   })
   assert.match(html, /src="data:image\/svg\+xml;charset=utf-8,/)
-  assert.ok(!html.includes(';base64,'), 'XML отдали как base64')
-  // Картинкой, а не разметкой: скрипт из чужого вывода в `<img>` не исполнится.
-  assert.ok(!/<svg/i.test(html), 'разметка вывода попала в страницу')
+  assert.ok(!html.includes(';base64,'), 'the XML was served as base64')
+  // As an image, not markup: a script from someone else's output does not run inside an `<img>`.
+  assert.ok(!/<svg/i.test(html), 'the output markup got into the page')
 })
 
-test('надгробие с оставшимся чтением — ссылка, а не тупик', () => {
+test('a tombstone with a remaining reading is a link, not a dead end', () => {
   /*
-   * «Удалить семинар, чтение оставить» — умолчание. Страница жива, а курс —
-   * единственный адрес, который дают классу.
+   * "Delete the seminar, keep the reading" is the default. The page is alive,
+   * and the course is the only address the class is given.
    */
   const course: PublicCourseView = {
     id: 'abcd1234',
@@ -270,16 +270,16 @@ test('надгробие с оставшимся чтением — ссылка
   const html = renderCourse(course, 'https://colloq.ru')
   assert.match(html, /href="https:\/\/colloq\.ru\/p\/nedelya\/"/)
   assert.match(html, /занятие удалено, материалы доступны/)
-  // А там, где страницы не осталось, строка остаётся строкой.
+  // And where no page is left, the row stays a plain row.
   assert.match(html, /занятие удалено/)
 })
 
-test('время на странице — в поясе инстанса, а не в поясе процесса', () => {
+test('times on the page are in the instance time zone, not the process one', () => {
   /*
-   * Выгрузку запускают на сервере, где пояс обычно UTC, а занятие шло в
-   * аудитории: без явного пояса страница подписывала пару на три часа назад, и
-   * проверить подпись на статике нечем — браузера, который считает время сам,
-   * здесь нет.
+   * The export is run on a server, where the zone is usually UTC, while the class
+   * took place in a classroom: without an explicit zone the page labelled the
+   * class three hours earlier, and nothing on a static page can check the label
+   * — there is no browser here computing the time itself.
    */
   const noon = Date.UTC(2026, 8, 2, 12, 0)
   const at = (zone: string): string => {
@@ -301,7 +301,7 @@ test('время на странице — в поясе инстанса, а н
   try {
     assert.match(at('UTC'), /12:00/)
     assert.match(at('Europe/Moscow'), /15:00/)
-    // Опечатка в TZ не роняет выгрузку целиком — страница собирается по Москве.
+    // A typo in TZ does not bring the whole export down: the page is built on Moscow time.
     assert.match(at('МСК'), /15:00/)
   } finally {
     if (was === undefined) delete process.env.TZ
@@ -309,10 +309,10 @@ test('время на странице — в поясе инстанса, а н
   }
 })
 
-test('старый адрес перекладывает на нынешний', () => {
-  // На живом сервере это `WHERE id = ? OR slug = ?`; на Pages маршрутизации нет.
+test('an old address redirects to the current one', () => {
+  // On a live server this is `WHERE id = ? OR slug = ?`; Pages has no routing.
   const html = renderRedirect('https://colloq.ru/c/ml-strong/', 'Прикладной ML')
   assert.match(html, /http-equiv="refresh" content="0; url=https:\/\/colloq\.ru\/c\/ml-strong\/"/)
   assert.match(html, /href="https:\/\/colloq\.ru\/c\/ml-strong\/"/)
-  assert.ok(!/<script/i.test(html), 'на странице появился скрипт')
+  assert.ok(!/<script/i.test(html), 'a script appeared on the page')
 })

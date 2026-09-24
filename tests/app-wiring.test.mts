@@ -1,14 +1,16 @@
 /**
- * Сборка приложения: то, что раньше проверить было нечем.
+ * The app assembly: what there used to be nothing to check with.
  *
- * Порядок middleware жил в index.ts вперемешку с сокетами и `listen`, поэтому
- * тесты собирали свой express и КОПИРОВАЛИ в него порядок — «тот же порядок,
- * что в index.ts», говорил комментарий над копией. Копия порядка не ловит
- * расхождения с оригиналом, она их повторяет: переставь `sameOrigin` в
- * index.ts относительно роутеров — юнит-тесты останутся зелёными. Приложение
- * вынесено в server/src/app.ts, и здесь монтируется ОНО, а не его подобие.
+ * The middleware order lived in index.ts mixed with sockets and `listen`, so
+ * tests built their own express and COPIED the order into it ("the same
+ * order as in index.ts", said the comment above the copy). A copy of the
+ * order does not catch divergences from the original, it repeats them: move
+ * `sameOrigin` in index.ts relative to the routers, and the unit tests stay
+ * green. The app has been moved out to server/src/app.ts, and IT is mounted
+ * here, not a lookalike.
  *
- * Ядра, docker и сети тут нет — проверяются двери, а не то, что за ними.
+ * There is no kernel, docker or network here: the doors are checked, not
+ * what is behind them.
  */
 import './_env.mts'
 import { tr } from '../shared/i18n.js'
@@ -54,12 +56,12 @@ function call(
 
 const teacher = (() => {
   const made = createTeacher({ name: 'Пётр', email: 'petr.wiring@example.edu', role: 'teacher' })
-  assert.ok(made, 'не завёлся преподаватель для теста')
+  assert.ok(made, 'the teacher for the test was not created')
   rotateLinkKey(made.id)
   return made
 })()
 
-/** Печенье штата возраста `ageMs` — подписанное так же, как настоящее. */
+/** A staff cookie of age `ageMs`, signed the same way as a real one. */
 function cookieAged(ageMs: number): string {
   const key = linkKeyOf(teacher.id)
   assert.ok(key)
@@ -79,85 +81,86 @@ function freshCookie(): string {
   return `${STAFF_COOKIE}=${value}`
 }
 
-/* --------------------------------------------------- своё происхождение */
+/* ---------------------------------------------------------- same origin */
 
-test('чужая страница не пишет НИГДЕ, а не только в панель', async () => {
+test('a foreign page writes NOWHERE, not only into the panel', async () => {
   /*
-   * Проверка стояла под `/api/admin`, хотя тем же печеньем авторизуются
-   * создание семинара, загрузка файлов в комнату, перезапуск ядра и выдача
-   * пульта. Там держал один SameSite — правило браузера, ради недоверия к
-   * которому проверка и заведена.
+   * The check sat under `/api/admin`, although the same cookie authorizes
+   * creating a seminar, uploading files into a room, restarting the kernel
+   * and handing out the console. There only SameSite held, a browser rule
+   * that the check was introduced precisely out of distrust for.
    */
   const made = await call('POST', '/api/sessions', {
     cookie: freshCookie(),
     origin: 'https://evil.example',
     body: { name: 'С чужой страницы' },
   })
-  assert.equal(made.status, 403, 'семинар завёлся по запросу с чужого сайта')
+  assert.equal(made.status, 403, 'a seminar was created by a request from a foreign site')
   const said = (await made.json()) as { error?: string }
   assert.equal(said.error, tr('server.requestBlockedThisPageUsesADifferent.dd9b4b'))
 })
 
-test('свой запрос и запрос без Origin проходят', async () => {
-  // Без Origin — это curl и сам сервер: `make host` ходит в собственный API.
+test('a same-origin request and a request without Origin get through', async () => {
+  // Without Origin means curl and the server itself: `make host` calls its own API.
   const made = await call('POST', '/api/sessions', {
     cookie: freshCookie(),
     body: { name: 'Обычный семинар' },
   })
   assert.notEqual(made.status, 403)
-  assert.ok(made.status < 500, `сервер сломался вместо ответа: ${made.status}`)
+  assert.ok(made.status < 500, `the server broke instead of answering: ${made.status}`)
 })
 
-test('чтение с чужой страницы не отказывают — читать там всё равно нечего', async () => {
-  // CORS-заголовков сервер не ставит, ответ на чужую страницу не попадёт, а
-  // отказ на GET сломал бы предпросмотр ссылок и зонды.
+test('reads from a foreign page are not refused: there is nothing to read there anyway', async () => {
+  // The server sets no CORS headers, so the response will not reach a
+  // foreign page, and refusing a GET would break link previews and probes.
   const seen = await call('GET', '/api/health', { origin: 'https://evil.example' })
   assert.notEqual(seen.status, 403)
 })
 
-/* ------------------------------------------------- печенье продлевается */
+/* --------------------------------------------- the cookie gets extended */
 
-test('печенье старше суток переиздаётся на любом запросе к API', async () => {
+test('a cookie older than a day is reissued on any API request', async () => {
   /*
-   * `iat` ставился один раз при входе и не двигался ни одним маршрутом, так что
-   * на тридцать первый день преподаватель посреди пары становился участником
-   * своей комнаты — без объяснения и без запасного пути.
+   * `iat` was set once at sign-in and was not moved by any route, so on the
+   * thirty-first day the teacher became a participant of their own room in
+   * the middle of a class, with no explanation and no fallback.
    */
   const seen = await call('GET', '/api/nope', { cookie: cookieAged(8 * 24 * 3_600_000) })
   const set = seen.headers.get('set-cookie') ?? ''
-  assert.match(set, new RegExp(`${STAFF_COOKIE}=`), 'печенье не продлилось — месяц идёт от входа')
+  assert.match(set, new RegExp(`${STAFF_COOKIE}=`), 'the cookie was not extended: the month runs from sign-in')
   assert.match(set, /HttpOnly/i)
 })
 
-test('свежее печенье не переиздаётся на каждом запросе', async () => {
+test('a fresh cookie is not reissued on every request', async () => {
   const seen = await call('GET', '/api/nope', { cookie: cookieAged(60_000) })
-  assert.equal(seen.headers.get('set-cookie'), null, 'Set-Cookie на каждом запросе подряд')
+  assert.equal(seen.headers.get('set-cookie'), null, 'Set-Cookie on every request in a row')
 })
 
-test('выход из панели старое печенье не воскрешает', async () => {
+test('signing out of the panel does not resurrect the old cookie', async () => {
   /*
-   * Продление стоит ПЕРЕД маршрутами, а выход печенье снимает. Два `Set-Cookie`
-   * подряд — обычное дело, но выигрывать обязан последний: «выкинутый из панели
-   * посреди семинара преподаватель — это комната без хозяина», и обратное так
-   * же верно — не выкинутый, когда просил.
+   * The extension stands BEFORE the routes, and signing out removes the
+   * cookie. Two `Set-Cookie` headers in a row are normal, but the last one
+   * must win: "a teacher thrown out of the panel in the middle of a seminar
+   * is a room without its owner", and the reverse is just as true: not
+   * thrown out when they asked to be.
    */
   const seen = await call('POST', '/api/admin/signout', {
     cookie: cookieAged(8 * 24 * 3_600_000),
   })
-  assert.ok(seen.status < 400, `выход отказал: ${seen.status}`)
+  assert.ok(seen.status < 400, `signing out refused: ${seen.status}`)
   const set = seen.headers.getSetCookie().filter((one) => one.startsWith(`${STAFF_COOKIE}=`))
-  assert.ok(set.length > 0, 'выход ничего не сказал про печенье')
+  assert.ok(set.length > 0, 'signing out said nothing about the cookie')
   const last = set[set.length - 1] ?? ''
   assert.match(
     last,
     new RegExp(`^${STAFF_COOKIE}=;`),
-    `последним пришло не снятие: ${set.join(' | ')}`,
+    `the last one to arrive was not the removal: ${set.join(' | ')}`,
   )
 })
 
-test('чужая страница печенье не продлевает', async () => {
-  // Продлевать по запросу, который мы только что решили не выполнять, — значит
-  // держать подпись живой чужим сайтом.
+test('a foreign page does not extend the cookie', async () => {
+  // Extending on a request we have just decided not to carry out would mean
+  // keeping the signature alive through a foreign site.
   const seen = await call('POST', '/api/sessions', {
     cookie: cookieAged(8 * 24 * 3_600_000),
     origin: 'https://evil.example',
@@ -167,62 +170,64 @@ test('чужая страница печенье не продлевает', asy
   assert.equal(seen.headers.get('set-cookie'), null)
 })
 
-/* ------------------------------------------------------ прочая проводка */
+/* --------------------------------------------------------- other wiring */
 
-test('заголовки безопасности стоят на ответах, а не только в константе', async () => {
+test('security headers are set on responses, not only in a constant', async () => {
   const seen = await call('GET', '/api/nope')
   assert.equal(seen.headers.get('x-content-type-options'), 'nosniff')
-  assert.equal(seen.headers.get('x-powered-by'), null, 'сервер представился express')
+  assert.equal(seen.headers.get('x-powered-by'), null, 'the server introduced itself as express')
 })
 
-test('несуществующая дверь API — это JSON, а не страница express', async () => {
+test('a nonexistent API door is JSON, not an express page', async () => {
   const seen = await call('GET', '/api/nope')
   assert.equal(seen.status, 404)
   assert.deepEqual(await seen.json(), { error: tr('common.notFound') })
 })
 
-test('кривое тело — 400 словами, а не HTML-страница на 500', async () => {
+test('a malformed body is a 400 in words, not an HTML page with a 500', async () => {
   const seen = await call('POST', '/api/sessions', { raw: '{не json' })
   assert.equal(seen.status, 400)
   const said = (await seen.json()) as { error?: string }
   assert.equal(said.error, tr('common.badJson'))
 })
 
-test('robots.txt и X-Robots-Tag говорят про публикации одно и то же', async () => {
+test('robots.txt and X-Robots-Tag say the same thing about publications', async () => {
   /*
-   * Одна и та же страница вела себя по-разному в зависимости от того, каким
-   * адресом её открыли: выгрузка на Pages ставила `noindex`, а robots.txt
-   * инстанса закрывал только комнаты и панель, объясняя, что публикации «для
-   * того и публикуют». Решение теперь одно на оба носителя и лежит в
-   * shared/publish.ts — здесь проверяется, что живая сторона за ним идёт.
+   * The same page behaved differently depending on which address it was
+   * opened at: the Pages export set `noindex`, while the instance's
+   * robots.txt closed only the rooms and the panel, explaining that
+   * publications are "published for exactly that". The decision is now one
+   * for both carriers and lives in shared/publish.ts; here we check that the
+   * live side follows it.
    */
   const text = await (await call('GET', '/robots.txt')).text()
   const closed = ['/s/', '/admin', ...(PUBLIC_PAGES_INDEXED ? [] : ['/p/', '/c/'])]
   for (const path of closed) {
-    assert.ok(text.includes(`Disallow: ${path}`), `${path} не закрыт в robots.txt:\n${text}`)
+    assert.ok(text.includes(`Disallow: ${path}`), `${path} is not closed in robots.txt:\n${text}`)
   }
   if (PUBLIC_PAGES_INDEXED) assert.ok(!text.includes('Disallow: /p/'))
 
-  // `Disallow` — просьба не заходить; поисковик вправе показать закрытый адрес
-  // по чужой ссылке. Отвечает на это только заголовок.
+  // `Disallow` is a request not to come in; a search engine may still show
+  // a closed address from someone else's link. Only the header answers that.
   const wanted = PUBLIC_PAGES_INDEXED ? null : 'noindex, nofollow'
   assert.equal((await call('GET', '/p/whatever')).headers.get('x-robots-tag'), wanted)
   assert.equal((await call('GET', '/c/whatever')).headers.get('x-robots-tag'), wanted)
-  // Комната и панель закрыты всегда, лендинг — открыт всегда.
+  // The room and the panel are always closed, the landing is always open.
   assert.equal((await call('GET', '/s/abc')).headers.get('x-robots-tag'), 'noindex, nofollow')
   assert.equal((await call('GET', '/')).headers.get('x-robots-tag'), null)
-  // Разворачивателю ссылок комната открыта: и в robots.txt, и заголовком.
+  // A link unfurler has the room open: both in robots.txt and by header.
   assert.match(text, /User-agent: TelegramBot\n(?:User-agent: [^\n]+\n)*Allow: \//)
   const telegram = await fetch(`${base}/s/abc`, { headers: { 'user-agent': 'TelegramBot (like TwitterBot)' } })
   assert.equal(telegram.headers.get('x-robots-tag'), null)
 })
 
-test('здоровье называет адрес, который сервер сейчас пишет в ссылки', async () => {
+test('health names the address the server currently writes into links', async () => {
   /*
-   * `config.publicUrl` перечитывает .env не чаще раза в две секунды, и до
-   * этого поля узнать, доехал ли новый адрес, было нечем: `scripts/host.sh`
-   * ставил на это место `sleep 3` — единственный сон в скрипте, поставленный
-   * не потому, что чего-то ждут, а потому, что спросить было некого.
+   * `config.publicUrl` rereads .env no more than once every two seconds, and
+   * before this field there was no way to learn whether the new address had
+   * arrived: `scripts/host.sh` put a `sleep 3` in this place, the only sleep
+   * in the script put there not because something is awaited but because
+   * there was nobody to ask.
    */
   const said = (await (await call('GET', '/api/health')).json()) as { publicUrl?: string }
   assert.equal(said.publicUrl, config.publicUrl)

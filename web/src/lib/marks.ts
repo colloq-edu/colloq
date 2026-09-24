@@ -1,15 +1,18 @@
 /**
- * Метки комнаты — список и правило выдачи — переехали в shared/marks.ts.
+ * The room's marks — the list and the assignment rule — moved to
+ * shared/marks.ts.
  *
- * Не по вкусу к общим папкам: судьёй уникальности стал сервер (он подменяет
- * занятую метку свободной на входе, routes/sessions.ts · `/join`), а выбирать
- * ему не из чего, кроме этого самого списка. Пока список был только здесь,
- * второй копии было взяться неоткуда — кроме как написать её на сервере, и
- * тогда две сорокастрочные таблицы эмодзи разъезжались бы молча: сервер выдал
- * бы зверя, которого браузер не рисует вовсе (см. `isMark`).
+ * Not out of a taste for shared folders: the server became the judge of
+ * uniqueness (it swaps a taken mark for a free one on entry,
+ * routes/sessions.ts · `/join`), and it has nothing to choose from except this
+ * very list. While the list lived only here, a second copy could come from
+ * nowhere but being written on the server, and then two forty-line emoji
+ * tables would drift apart silently: the server would hand out an animal the
+ * browser does not draw at all (see `isMark`).
  *
- * Имена остаются прежними, чтобы экран входа, картинка человека и подборщик
- * метки продолжали спрашивать их у своего соседа, а не у общей папки.
+ * The names stay the same, so that the sign-in screen, the person's picture
+ * and the mark picker keep asking their neighbour for them, not the shared
+ * folder.
  */
 import { tr } from '@shared/i18n'
 import { MARKS as sourceMarks, markName as sourceMarkName } from '@shared/marks'

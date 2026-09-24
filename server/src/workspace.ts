@@ -22,24 +22,26 @@ export function sessionDir(sessionId: string): string {
   const made = !workspaceFs.existsSync(dir)
   workspaceFs.mkdirSync(dir, { recursive: true })
   /*
-   * Права выставляются явно, а не оставляются на umask процесса.
+   * Permissions are set explicitly rather than left to the process umask.
    *
-   * В папку пишут двое: сервер и ядро комнаты — а это разные пользователи,
-   * когда сервер работает на хосте от root, а ядро внутри контейнера от
-   * runner. При umask 0022 папка выходит 0755, и первая же `open('a.txt','w')`
-   * в ячейке падает PermissionError — на зелёном экране, без единого слова о
-   * причине. 2775: пишут оба, а setgid держит группу на всём, что заведут
-   * внутри, чтобы право не терялось на первой же вложенной папке.
+   * Two parties write to the folder: the server and the room's kernel — and
+   * those are different users when the server runs on the host as root and
+   * the kernel runs inside a container as runner. With umask 0022 the folder
+   * comes out 0755, and the very first `open('a.txt','w')` in a cell fails
+   * with PermissionError — on a green screen, without a single word about the
+   * reason. 2775: both can write, and setgid keeps the group on everything
+   * created inside, so the permission is not lost at the first nested folder.
    *
-   * Только на своём создании: чужие права у уже существующей папки не наши,
-   * а на Windows режим всё равно ничего не значит.
+   * Only when we create it: the permissions of a folder that already exists
+   * are not ours, and on Windows the mode means nothing anyway.
    */
   if (made && process.platform !== 'win32') {
     try {
       workspaceFs.chmodSync(dir, 0o2775)
     } catch {
-      // Не наша папка — значит и права не наши. Работа комнаты от этого не
-      // зависит: если писать нельзя, об этом скажет первая же запись.
+      // Not our folder — so the permissions are not ours either. The room's
+      // work does not depend on it: if writing is impossible, the first write
+      // will say so.
     }
   }
   return dir
@@ -51,20 +53,21 @@ export function kernelCwd(sessionId: string): string {
 }
 
 /**
- * Все временные имена, какие в комнате бывают, — одним правилом.
+ * Every temporary name a room ever has — under one rule.
  *
- * Пишут рядом и переименовывают двое: загрузка (`routes/files.ts`,
- * `.имя.uploading-<hex>`) и автосохранение редактора (`writeText` ниже,
- * `.имя.saving-<pid>-<время>`). Уборщик знал только первое имя, хотя обещал
- * убрать всё, что оставило падение посреди записи. Второе при этом копится
- * само собой: редактор сохраняется каждые несколько секунд, и падение процесса
- * оставляет полтора мегабайта, которых нет в дереве (имя с точки), нельзя
- * удалить из панели — и которые считает `sessionBytes`, то есть они отъедают
- * потолок комнаты до ручной чистки.
+ * Two things write alongside and rename: the upload (`routes/files.ts`,
+ * `.<name>.uploading-<hex>`) and the editor's autosave (`writeText` below,
+ * `.<name>.saving-<pid>-<time>`). The sweeper knew only the first name,
+ * although it promised to remove everything a crash in the middle of a write
+ * left behind. Meanwhile the second one piles up by itself: the editor saves
+ * every few seconds, and a process crash leaves a megabyte and a half that is
+ * not in the tree (the name starts with a dot), cannot be deleted from the
+ * panel — and is counted by `sessionBytes`, that is, it eats into the room's
+ * ceiling until someone cleans it up by hand.
  *
- * Хвост после «что делаем» — неповторимая часть, шестнадцатеричная или
- * `<pid>-<время>`; шесть знаков минимум, чтобы под правило не попал файл,
- * который человек назвал `.заметки.saving-1`.
+ * The tail after "what we are doing" is the unique part, hexadecimal or
+ * `<pid>-<time>`; six characters at least, so that the rule does not catch a
+ * file a person named `.notes.saving-1`.
  */
 const TEMP_FILE = /^\..+\.(?:uploading|saving)-[0-9a-z][0-9a-z-]{5,}$/i
 
@@ -95,8 +98,8 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
         try {
           if (workspaceFs.statSync(full).mtimeMs < cutoff) {
             workspaceFs.rmSync(full, { force: true })
-            // Временных имён в дереве и так нет, но обход их считал в потолок
-            // записей: убрали — значит, посчитанное устарело.
+            // Temporary names are not in the tree anyway, but the walk counted
+            // them towards the entry ceiling: once removed, the count is stale.
             forgetTree(sessionId)
           }
         } catch {
@@ -104,14 +107,14 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
         }
         continue
       }
-      // Папки тоже: загрузка теперь ложится в ту, на которую её принесли, и
-      // недописанный файл остаётся там же. Скрытые пропускаются — кроме тех
-      // самых временных, которые разобраны выше.
+      // Folders too: an upload now lands in the folder it was brought to, and
+      // an unfinished file stays there as well. Hidden ones are skipped —
+      // except the very temporary ones handled above.
       if (name.startsWith('.') || depth + 1 >= MAX_DEPTH) continue
       try {
         if (workspaceFs.lstatSync(full).isDirectory()) walk(here, depth + 1)
       } catch {
-        /* исчезла */
+        /* gone */
       }
     }
   }
@@ -119,25 +122,25 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
 }
 
 /**
- * То же самое по всем комнатам — один раз на запуске.
+ * The same across all rooms — once at startup.
  *
- * Уборка висела на следующей загрузке файла в ту же комнату, и для загрузок
- * этого хватало: недописанная появляется там, где кто-то как раз возится с
- * папкой. Автосохранение редактора устроено иначе — оно идёт само, каждые
- * несколько секунд, в комнате, куда могут вообще ничего не загружать. Хвост от
- * упавшего процесса лежал бы там до ручной чистки, невидимый в дереве и
- * посчитанный в потолке комнаты.
+ * The sweep hung on the next file upload into the same room, and for uploads
+ * that was enough: an unfinished one appears where someone is busy with the
+ * folder anyway. The editor's autosave works differently — it runs by itself,
+ * every few seconds, in a room where nothing may ever be uploaded. The
+ * leftover from a crashed process would lie there until cleaned by hand,
+ * invisible in the tree and counted against the room's ceiling.
  *
- * Запуск — правильный момент: временный файл переживает ровно то падение,
- * после которого мы и стартуем. Час выдержки остаётся: комнаты на общем
- * томе — редкость, но недописанный файл соседа убирать не нам.
+ * Startup is the right moment: a temporary file survives exactly the crash
+ * after which we start. The hour of grace stays: rooms on a shared volume are
+ * rare, but a neighbor's unfinished file is not ours to remove.
  */
 export function sweepAllStaleUploads(olderThanMs?: number): void {
   let rooms: string[]
   try {
     rooms = workspaceFs.readdirSync(config.workspaceDir)
   } catch {
-    return // тома ещё нет — значит и мести нечего
+    return // no volume yet — so nothing to sweep
   }
   for (const room of rooms) {
     try {
@@ -173,15 +176,16 @@ export function resolveInSession(sessionId: string, name: string): string | null
 }
 
 /**
- * Лежит ли путь внутри папки семинара — с учётом того, что его может ещё не
- * быть.
+ * Whether a path lies inside the seminar folder — allowing for the fact that
+ * it may not exist yet.
  *
- * Раньше несуществующий путь пропускался как есть, и на плоской папке это было
- * верно: единственный сегмент подделать нечем. С папками — уже нет: ссылка
- * могла оказаться на промежуточной папке, а `realpath` на несуществующем файле
- * бросает, ничего про его родителей не сказав. Поэтому поднимаемся до
- * ближайшего существующего предка: если ОН внутри, то и всё, чего ещё нет под
- * ним, будет внутри — ссылке взяться неоткуда там, где ничего нет.
+ * A nonexistent path used to be let through as is, and on a flat folder that
+ * was right: a single segment has nothing to forge. With folders it no longer
+ * is: a link could sit on an intermediate folder, and `realpath` on a
+ * nonexistent file throws without saying anything about its parents. So we
+ * climb to the nearest existing ancestor: if IT is inside, then everything
+ * that does not exist yet under it will be inside too — a link has nowhere to
+ * come from where there is nothing.
  */
 function contained(full: string, realDir: string): boolean {
   let probe = full
@@ -200,43 +204,44 @@ function contained(full: string, realDir: string): boolean {
 }
 
 /**
- * Сколько строк дерева отдаётся комнате.
+ * How many tree rows are given to the room.
  *
- * Потолок, а не страница: панель рисует дерево целиком, а `pip install` в
- * ячейке заводит в папке семинара тысячи файлов за один заход. Две тысячи строк
- * — это уже больше, чем кто-нибудь прочитает, и меньше, чем то, на чём
- * подавится отрисовка.
+ * A ceiling, not a page: the panel draws the tree whole, and `pip install` in
+ * a cell creates thousands of files in the seminar folder in one go. Two
+ * thousand rows is already more than anyone will read, and less than what
+ * rendering would choke on.
  */
 const MAX_ENTRIES = 2000
 
-/** Дерево комнаты — и признак того, что оно упёрлось в потолок. */
+/** The room's tree — and a flag saying it hit the ceiling. */
 export interface FileTree {
   files: FileEntry[]
   /**
-   * Список неполон: часть папок в потолок не поместилась и осталась
-   * нераскрытой.
+   * The list is incomplete: some folders did not fit under the ceiling and
+   * stayed unexpanded.
    *
-   * Признак, а не молчание: обрезанный список — это не «в комнате столько
-   * файлов», и всё, что считает по нему пропажу (тетради, доска, вкладки),
-   * обязано знать разницу, иначе оно удалит живое.
+   * A flag, not silence: a truncated list is not "the room has this many
+   * files", and everything that detects losses by it (notebooks, the board,
+   * tabs) must know the difference, otherwise it will delete something alive.
    */
   truncated: boolean
 }
 
 /**
- * Чем новое дерево отличается от прошлого.
+ * How the new tree differs from the previous one.
  *
- * Считается по двум обходам — тому, что комната уже видела, и свежему, — и
- * едет вместо всего списка (shared/protocol.ts · FilesDelta). Цена перемены
- * перестаёт зависеть от размера папки: заведённый файл — это одна запись в
- * кадре, а не две тысячи.
+ * Computed from two walks — the one the room has already seen and a fresh
+ * one — and it travels instead of the whole list (shared/protocol.ts ·
+ * FilesDelta). The cost of a change stops depending on the size of the
+ * folder: a created file is one entry in the frame, not two thousand.
  *
- * `at` у новой записи — её место в ГОТОВОМ списке. Это работает потому, что
- * порядок дерева однозначно определён его составом (обход в глубину, папки
- * перед файлами, по имени): уцелевшие записи стоят друг относительно друга в
- * новом списке ровно так же, как в старом, и вставка по возрастанию `at` после
- * удалений даёт в точности новый список. Правило применения — одно, и живёт
- * оно на вкладке (web/src/lib/files-delta.ts), а проверено на обеих.
+ * `at` on a new entry is its place in the FINISHED list. This works because
+ * the tree's order is uniquely determined by its contents (depth-first walk,
+ * folders before files, by name): the surviving entries stand relative to
+ * each other in the new list exactly as they did in the old one, and
+ * inserting in ascending `at` after the removals gives exactly the new list.
+ * There is one rule for applying it, it lives in the tab
+ * (web/src/lib/files-delta.ts), and it is tested on both.
  */
 export function treeDelta(before: readonly FileEntry[], after: readonly FileEntry[]): FilesDelta {
   const was = new Map<string, FileEntry>()
@@ -251,8 +256,9 @@ export function treeDelta(before: readonly FileEntry[], after: readonly FileEntr
       return
     }
     kept.add(entry.path)
-    // Имя — тоже: переименование внутри папки меняет путь целиком, но файл,
-    // переехавший на диске мимо нас, может прийти с тем же путём и другим всем.
+    // The name too: a rename inside a folder changes the whole path, but a
+    // file moved on disk behind our back may come with the same path and
+    // everything else different.
     if (
       old.dir !== entry.dir ||
       old.size !== entry.size ||
@@ -267,64 +273,68 @@ export function treeDelta(before: readonly FileEntry[], after: readonly FileEntr
 }
 
 /**
- * Папка семинара деревом — в том порядке, в каком её рисуют.
+ * The seminar folder as a tree — in the order it is drawn.
  *
- * Плоский список, а не вложенный: по нему одинаково просто и построить дерево в
- * панели, и пройти его целиком на сервере, и он влезает в то же сообщение
- * `files`, которое комната уже получает. Порядок — обход в глубину, папки перед
- * файлами на каждом уровне; клиенту остаётся отрисовать его как есть.
+ * A flat list, not a nested one: from it it is equally simple to build the
+ * tree in the panel and to walk it whole on the server, and it fits into the
+ * same `files` message the room already receives. The order is a depth-first
+ * walk, folders before files at every level; the client just draws it as is.
  *
- * Читается при этом не в глубину, а уровень за уровнем, и это не мелочь.
- * Раньше первая же разросшаяся подпапка (`!unzip` датасета, `pip install -t .`)
- * выедала потолок целиком, и файлы КОРНЯ — вместе с тетрадью комнаты — в
- * список не попадали вовсе; тетрадь, которой нет в списке, считалась удалённой
- * и стиралась у всех со всеми ячейками. Обрезаться должно самое глубокое, а не
- * самое верхнее, и об обрезке надо сказать вслух.
+ * It is read, though, not depth-first but level by level, and that is no
+ * small thing. The first overgrown subfolder (`!unzip` of a dataset,
+ * `pip install -t .`) used to eat the whole ceiling, and the ROOT's files —
+ * the room's notebook among them — did not make it into the list at all; a
+ * notebook missing from the list was considered deleted and was erased for
+ * everyone with all its cells. What gets cut must be the deepest, not the
+ * topmost, and the cut must be announced out loud.
  */
 /**
- * Короткая память обхода — на комнату.
+ * A short memory of the walk — per room.
  *
- * Обход стоит `readdir` плюс `lstat` на каждую из двух тысяч записей и делается
- * синхронно, в том же цикле, где сервер отвечает всем остальным. Дважды подряд
- * одно и то же спрашивают постоянно: рассылка комнате и ответ тому, кто нажал,
- * идут одним тиком (`routes/files.ts`), а после перезапуска сервера пятьсот
- * вкладок возвращаются в одну-две секунды и каждая спрашивает дерево сама.
+ * A walk costs a `readdir` plus an `lstat` for each of two thousand entries,
+ * and it runs synchronously, in the same loop where the server answers
+ * everyone else. The same thing gets asked twice in a row all the time: the
+ * broadcast to the room and the answer to whoever pressed go in one tick
+ * (`routes/files.ts`), and after a server restart five hundred tabs come back
+ * within a second or two and each asks for the tree itself.
  *
- * Окно маленькое нарочно: это память на пачку вызовов подряд, а не кэш. Всё,
- * что меняет дерево через этот модуль, память сбрасывает само (см. `forgetTree`
- * ниже по файлу).
+ * The window is small on purpose: this is memory for a burst of calls in a
+ * row, not a cache. Everything that changes the tree through this module
+ * resets the memory by itself (see `forgetTree` further down the file).
  *
- * Но «через этот модуль» проходит не всякая запись, и на слово этому полагаться
- * нельзя. Загрузка кладёт файл `rename`'ом (`routes/files.ts`), ячейка пишет из
- * контейнера, редактор сохраняет открытый файл, проекция тетради — сбросить
- * память там некому, а спрашивают дерево сразу после записи и в том же тике.
- * Так память отвечала списком БЕЗ только что загруженного файла — тому самому,
- * кто его загрузил, и в ответе на его же запрос. Поэтому на попадании память
- * не верят на слово, а сверяют с диском: у каждой прочитанной папки записано
- * время её правки, и появление, исчезновение или переименование любой записи
- * его двигает — по одному `lstat` на папку против `readdir` плюс `lstat` на
- * каждую из двух тысяч записей.
+ * But not every write goes "through this module", and that cannot be taken
+ * on trust. An upload puts the file in place with `rename` (`routes/files.ts`),
+ * a cell writes from the container, the editor saves an open file, and so
+ * does the notebook projection — nobody there resets the memory, and the tree
+ * is asked for right after the write and in the same tick. So the memory
+ * answered with a list WITHOUT the file just uploaded — to the very person
+ * who uploaded it, and in the answer to their own request. That is why on a
+ * hit the memory is not taken at its word but checked against the disk:
+ * every folder read has its modification time recorded, and the appearance,
+ * disappearance or rename of any entry moves it — one `lstat` per folder
+ * against a `readdir` plus an `lstat` for each of two thousand entries.
  *
- * Что сверкой не ловится — правка СОДЕРЖИМОГО существующего файла: время
- * папки от неё не двигается, и размер с датой в списке могут отстать на окно.
- * Это и есть весь оставшийся предел опоздания: состав дерева всегда верен, а
- * цифра рядом с именем — не старше трёхсот миллисекунд.
+ * What the check does not catch is an edit of the CONTENTS of an existing
+ * file: the folder's time does not move because of it, and the size and date
+ * in the list may lag by one window. That is the whole remaining limit on
+ * staleness: the tree's composition is always right, and the number next to
+ * a name is no older than three hundred milliseconds.
  */
 const TREE_MEMO_MS = 300
 
-/** Время правки каждой папки, прочитанной обходом, — абсолютными путями. */
+/** The modification time of every folder the walk read — by absolute path. */
 type TreeStamp = { path: string; mtimeMs: number }[]
 
 const treeMemo = new Map<string, { at: number; tree: FileTree; stamp: TreeStamp }>()
 
-/** Не поменялась ли ни одна из папок с тех пор, как их обошли. */
+/** Whether none of the folders has changed since they were walked. */
 function stampHolds(stamp: TreeStamp): boolean {
   for (const dir of stamp) {
     let now: fs.Stats
     try {
       now = workspaceFs.lstatSync(dir.path)
     } catch {
-      // Папку унесли — дерево точно не то. Пересчитать.
+      // The folder was taken away — the tree is certainly not the same. Recompute.
       return false
     }
     if (now.mtimeMs !== dir.mtimeMs) return false
@@ -332,7 +342,7 @@ function stampHolds(stamp: TreeStamp): boolean {
   return true
 }
 
-/** Дерево этой комнаты (или всех) посчитать заново, не дожидаясь окна. */
+/** Recompute the tree of this room (or of every room) without waiting out the window. */
 export function forgetTree(sessionId?: string): void {
   if (sessionId === undefined) treeMemo.clear()
   else treeMemo.delete(sessionId)
@@ -340,21 +350,22 @@ export function forgetTree(sessionId?: string): void {
 
 export function listTree(sessionId: string): FileTree {
   const known = treeMemo.get(sessionId)
-  // Копия обёртки, а не самого списка: `files` читают, но не правят, и
-  // копировать две тысячи записей ради этого значило бы вернуть половину цены
-  // обхода обратно.
+  // A copy of the wrapper, not of the list itself: `files` is read but not
+  // modified, and copying two thousand entries for that would bring half the
+  // cost of the walk back.
   if (known && Date.now() - known.at < TREE_MEMO_MS && stampHolds(known.stamp)) {
     return { files: known.tree.files, truncated: known.tree.truncated }
   }
   const { tree, stamp } = walkTree(sessionId)
   const now = Date.now()
   /*
-   * Просроченное убирается здесь же, на промахе.
+   * Expired entries are removed right here, on a miss.
    *
-   * Иначе карта росла бы записью на каждую комнату, которую инстанс когда-либо
-   * показывал, — а в записи до двух тысяч строк дерева. Уборки по таймеру для
-   * этого заводить незачем: промах и есть тот момент, когда о комнатах вообще
-   * вспоминают, и стоит он рядом с обходом папки ничего.
+   * Otherwise the map would grow by an entry for every room the instance has
+   * ever shown — and an entry holds up to two thousand tree rows. There is no
+   * reason to set up a timer sweep for this: a miss is exactly the moment
+   * when rooms get thought of at all, and next to a folder walk it costs
+   * nothing.
    */
   for (const [id, entry] of treeMemo) if (now - entry.at >= TREE_MEMO_MS) treeMemo.delete(id)
   treeMemo.set(sessionId, { at: now, tree, stamp })
@@ -363,7 +374,7 @@ export function listTree(sessionId: string): FileTree {
 
 function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
   const root = sessionDir(sessionId)
-  /** Содержимое каждой прочитанной папки — в порядке отрисовки. */
+  /** The contents of every folder read — in drawing order. */
   const children = new Map<string, FileEntry[]>()
   const stamp: TreeStamp = []
   let total = 0
@@ -372,18 +383,20 @@ function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
   const read = (rel: string): FileEntry[] => {
     const dir = rel ? path.join(root, rel) : root
     /*
-     * Время правки папки снимается ДО чтения, и порядок тут существенный.
+     * The folder's modification time is taken BEFORE reading, and the order
+     * matters here.
      *
-     * Запись, успевшая между `lstat` и `readdir`, попадёт в список с прежним
-     * отпечатком — сверка увидит расхождение и лишний раз пересчитает.
-     * Обратный порядок ошибается в другую сторону: список без новой записи с
-     * уже новым временем сверку проходит, то есть врёт всё окно целиком.
+     * An entry that slips in between `lstat` and `readdir` gets into the list
+     * with the old fingerprint — the check will see the mismatch and
+     * recompute once more than needed. The reverse order errs the other way:
+     * a list without the new entry but with the new time passes the check,
+     * that is, it lies for the whole window.
      */
     let mtimeMs: number | null = null
     try {
       mtimeMs = workspaceFs.lstatSync(dir).mtimeMs
     } catch {
-      /* исчезла — ниже это увидит и readdir */
+      /* gone — readdir below will see that too */
     }
     let names: string[]
     try {
@@ -391,8 +404,8 @@ function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
     } catch {
       return []
     }
-    // Только прочитанные папки: непрочитанную сверять не по чему, а её
-    // появление и пропажу видно по времени родителя.
+    // Only folders that were read: an unread one has nothing to be checked
+    // against, and its appearance and disappearance show in the parent's time.
     if (mtimeMs !== null) stamp.push({ path: dir, mtimeMs })
     const dirs: FileEntry[] = []
     const files: FileEntry[] = []
@@ -440,8 +453,8 @@ function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
     level = next
   }
 
-  // Порядок отрисовки собирается уже из прочитанного: папка, следом её
-  // содержимое, и так до самого низа.
+  // The drawing order is assembled from what was read: a folder, then its
+  // contents, and so on all the way down.
   const out: FileEntry[] = []
   const emit = (dir: string): void => {
     for (const entry of children.get(dir) ?? []) {
@@ -453,20 +466,20 @@ function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
   return { tree: { files: out, truncated }, stamp }
 }
 
-/** То же дерево тем, кому нужен только список. */
+/** The same tree, for those who need only the list. */
 export function listFiles(sessionId: string): FileEntry[] {
   return listTree(sessionId).files
 }
 
 /**
- * Сколько места занимает комната.
+ * How much space the room takes.
  *
- * Ограничение на один файл было всегда, на комнату целиком — нет: пятьдесят
- * мегабайт за раз и сто заходов дают пять гигабайт, а диск на этом сервере
- * общий с базой, снимками тетрадей и образами окружений. Кончится он молча и
- * сразу для всех.
+ * There was always a limit per file, but not for the room as a whole: fifty
+ * megabytes at a time and a hundred rounds give five gigabytes, and the disk
+ * on this server is shared with the database, notebook snapshots and
+ * environment images. It will run out silently and for everyone at once.
  *
- * Считаются и недописанные загрузки: место они занимают ровно так же.
+ * Unfinished uploads are counted too: they take up space just the same.
  */
 export function sessionBytes(sessionId: string): number {
   const root = sessionDir(sessionId)
@@ -481,13 +494,13 @@ export function sessionBytes(sessionId: string): number {
     for (const name of names) {
       const here = rel ? `${rel}/${name}` : name
       try {
-        // lstat: символическая ссылка занимает свой размер, а не размер цели —
-        // и уж точно не даёт списать на комнату чужой гигабайт.
+        // lstat: a symbolic link takes its own size, not its target's — and it
+        // certainly does not get to charge someone else's gigabyte to the room.
         const stat = workspaceFs.lstatSync(path.join(root, here))
         if (stat.isFile()) total += stat.size
         else if (stat.isDirectory() && depth + 1 < MAX_DEPTH) walk(here, depth + 1)
       } catch {
-        /* исчез между readdir и stat */
+        /* vanished between readdir and stat */
       }
     }
   }
@@ -495,19 +508,20 @@ export function sessionBytes(sessionId: string): number {
   return total
 }
 
-/* ------------------------------------------------------- правка дерева */
+/* ---------------------------------------------------------- tree edits */
 
 /**
- * Чем кончилась попытка что-то поменять в дереве.
+ * How an attempt to change something in the tree ended.
  *
- * Строка, а не исключение: у каждого исхода своя фраза в интерфейсе, и все они
- * — обычный ход дела, а не поломка. `busy` — про то, чего никакая проверка
- * заранее не увидит: файл, который в этот момент пишет ядро.
+ * A string, not an exception: every outcome has its own phrase in the
+ * interface, and all of them are the ordinary course of things, not a
+ * breakage. `busy` is about what no check can see in advance: a file the
+ * kernel is writing at this very moment.
  *
- * `too-deep` и `not-a-folder` появились вместе с перетаскиванием: до него в
- * дереве только переименовывали на месте, и оба случая были недостижимы. Оба
- * раньше отвечали `busy`, то есть «попробуйте ещё раз через секунду», — совет,
- * от которого файл на месте папки папкой не становится.
+ * `too-deep` and `not-a-folder` appeared together with drag and drop: before
+ * it the tree only renamed in place, and both cases were unreachable. Both
+ * used to answer `busy`, that is, "try again in a second" — advice that does
+ * not turn a file lying where a folder should be into a folder.
  */
 export type TreeResult =
   | 'ok'
@@ -515,20 +529,21 @@ export type TreeResult =
   | 'exists'
   | 'missing'
   | 'busy'
-  /** Содержимое переезжающей папки ушло бы за глубину, которую можно назвать. */
+  /** The moving folder's contents would go beyond the depth that can be addressed. */
   | 'too-deep'
-  /** Оно же — за длину пути: адресовать его после переезда будет нечем. */
+  /** The same, past the path length: after the move there would be no way to address it. */
   | 'too-long'
-  /** Класть некуда: на месте папки, в которую целятся, лежит файл. */
+  /** Nowhere to put it: where the target folder should be, there is a file. */
   | 'not-a-folder'
 
 /**
- * Отказ файловой системы — словом, за которым стоит правда.
+ * A file system refusal — as a word with the truth behind it.
  *
- * Раньше всякая ошибка становилась `busy`, а `busy` обещает «через секунду».
- * Ждать секунду человек будет и от файла на месте папки, и от непустого
- * каталога на месте цели: ни то ни другое от ожидания не проходит, и совет
- * тратит время ровно на то, чтобы убедиться, что совет был плохой.
+ * Every error used to become `busy`, and `busy` promises "in a second". A
+ * person will wait a second both for a file lying where a folder should be
+ * and for a non-empty directory where the target should be: neither goes away
+ * by waiting, and the advice spends time only on proving that the advice was
+ * bad.
  */
 function whyFailed(err: unknown): TreeResult {
   const code = (err as NodeJS.ErrnoException | null)?.code
@@ -539,7 +554,7 @@ function whyFailed(err: unknown): TreeResult {
   return 'busy'
 }
 
-/** Завести папку. Промежуточные папки заводятся вместе с ней. */
+/** Create a folder. Intermediate folders are created along with it. */
 export function makeDir(sessionId: string, rel: string): TreeResult {
   const full = resolveInSession(sessionId, rel)
   if (!full) return 'bad-name'
@@ -554,8 +569,8 @@ export function makeDir(sessionId: string, rel: string): TreeResult {
 }
 
 /**
- * Завести файл. Только новый: перезапись пустотой — это стирание, и у него своя
- * кнопка со своим правилом.
+ * Create a file. Only a new one: overwriting with emptiness is erasing, and
+ * that has its own button with its own rule.
  */
 export function makeFile(sessionId: string, rel: string, text = ''): TreeResult {
   const full = resolveInSession(sessionId, rel)
@@ -563,36 +578,40 @@ export function makeFile(sessionId: string, rel: string, text = ''): TreeResult 
   if (workspaceFs.existsSync(full)) return 'exists'
   try {
     workspaceFs.mkdirSync(path.dirname(full), { recursive: true })
-    // 'wx' — отказ, а не перезапись, если файл появился между проверкой и
-    // записью. Две вкладки, нажавшие «новый файл» одновременно, — не выдумка.
+    // 'wx' — refuse rather than overwrite if the file appeared between the check
+    // and the write. Two tabs pressing "new file" at once is not made up.
     workspaceFs.writeFileSync(full, text, { flag: 'wx' })
     forgetTree(sessionId)
     return 'ok'
   } catch (err) {
-    // По коду ошибки, а не «раз не вышло, значит занято»: «„a.py“ уже есть» про
-    // файл, которого нет, посылает человека искать его в дереве.
+    // By the error code, not "it failed, so the name is taken": "a.py already
+    // exists" about a file that is not there sends a person searching the tree
+    // for it.
     return whyFailed(err)
   }
 }
 
 /**
- * Одна и та же запись под другим написанием — то есть смена регистра имени.
+ * The same entry under a different spelling — that is, a change of the
+ * name's case.
  *
- * На регистронезависимой файловой системе (macOS у половины машин) «Data» и
- * «data» одна папка, и `existsSync(цели)` отвечал «занято» самим источником:
- * сменить регистр имени было нельзя вовсе, а фраза объясняла это столкновением
- * файла с самим собой. На Linux то же переименование проходило всегда — одна
- * операция вела себя по-разному на машине разработчика и на сервере.
+ * On a case-insensitive file system (macOS on half of the machines) "Data"
+ * and "data" are one folder, and `existsSync(target)` answered "taken" with
+ * the source itself: changing the case of a name was impossible altogether,
+ * and the phrase explained it as the file colliding with itself. On Linux the
+ * same rename always went through — one operation behaved differently on the
+ * developer's machine and on the server.
  *
- * Три условия, и каждое отсекает своё. Одна папка и имена, различающиеся только
- * регистром, — это про написание, а не про переезд. Совпадение inode и
- * устройства — про то, что запись действительно одна: на файловой системе, где
- * регистр различается, «Data» и «data» лежат рядом, и принять их за одну
- * значило бы переехать поверх живого файла. `ino === 0` не бывает на POSIX и
- * бывает на Windows, где сравнивать нечем, — там ответ «разные».
+ * Three conditions, and each cuts off its own case. One folder and names that
+ * differ only in case — that is about spelling, not a move. Matching inode
+ * and device — about the entry really being one: on a file system where case
+ * matters, "Data" and "data" lie side by side, and taking them for one would
+ * mean moving on top of a live file. `ino === 0` never happens on POSIX and
+ * does happen on Windows, where there is nothing to compare — there the
+ * answer is "different".
  *
- * Жёсткая ссылка (`os.link` из ячейки) под это не подходит намеренно: имена у
- * неё разные, и «b.txt уже есть» — правда.
+ * A hard link (`os.link` from a cell) deliberately does not qualify: its
+ * names are different, and "b.txt already exists" is the truth.
  */
 function spelledSame(source: string, target: string): boolean {
   if (path.dirname(source) !== path.dirname(target)) return false
@@ -609,37 +628,38 @@ function spelledSame(source: string, target: string): boolean {
 }
 
 /**
- * Уйдёт ли содержимое за адресуемое, если положить его сюда.
+ * Whether the contents would go beyond what can be addressed if put here.
  *
- * `normalizePath` проверяет только тот путь, который ему прислали: папку с
- * седьмого уровня можно было положить на шестой, а папку с длинными именами
- * внутри — в папку с длинным именем. Всё, что оказывалось глубже восьмого
- * уровня, `listTree` уже не обходит — и об этом не говорит: `truncated`
- * ставится только по числу строк. Что оказалось длиннее четырёхсот символов,
- * в список попадает, но `resolveInSession` такой путь не пропускает. Оба конца
- * одинаковы на вид: комната получает список, который объявляет себя полным, а
- * файл в нём нельзя ни открыть, ни скачать, ни убрать поштучно — место он при
- * этом занимает по-прежнему.
+ * `normalizePath` checks only the path it was sent: a folder from the seventh
+ * level could be put on the sixth, and a folder with long names inside into a
+ * folder with a long name. Whatever ended up deeper than the eighth level,
+ * `listTree` no longer walks — and does not say so: `truncated` is set only by
+ * the number of rows. Whatever ended up longer than four hundred characters
+ * gets into the list, but `resolveInSession` does not let such a path
+ * through. Both ends look the same: the room gets a list that declares itself
+ * complete, while a file in it can be neither opened, nor downloaded, nor
+ * removed on its own — and it still takes up space.
  *
- * `levels` — сколько уровней остаётся под этой записью на новом месте,
- * `chars` — сколько символов. Обход идёт вглубь ровно до первого нарушения,
- * так что проверка стоит не больше, чем сам ответ.
+ * `levels` is how many levels remain under this entry at the new place,
+ * `chars` how many characters. The walk goes deeper exactly until the first
+ * violation, so the check costs no more than the answer itself.
  */
 function outgrows(full: string, levels: number, chars: number): 'ok' | 'too-deep' | 'too-long' {
   let entries: fs.Dirent[]
   try {
     entries = workspaceFs.readdirSync(full, { withFileTypes: true })
   } catch {
-    // Не папка — обычный случай, переезжает файл, — или её не прочитать.
+    // Not a folder — the usual case, a file is moving — or it cannot be read.
     return 'ok'
   }
   for (const entry of entries) {
-    // Считается то же, что показывает дерево: скрытое, `__pycache__` и
-    // символические ссылки в него не попадают, и адресовать их нечем и сейчас.
+    // Count the same as the tree shows: hidden entries, `__pycache__` and
+    // symbolic links do not get into it, and there is no way to address them
+    // even now.
     if (entry.name.startsWith('.') || entry.name === '__pycache__') continue
     if (!entry.isDirectory() && !entry.isFile()) continue
     if (levels <= 0) return 'too-deep'
-    // Разделитель и имя: ровно то, чем путь прирастёт на этом уровне.
+    // The separator and the name: exactly what the path grows by at this level.
     const left = chars - 1 - entry.name.length
     if (left < 0) return 'too-long'
     if (entry.isDirectory()) {
@@ -651,16 +671,19 @@ function outgrows(full: string, levels: number, chars: number): 'ok' | 'too-deep
 }
 
 /**
- * Переложить файл, не имея права заменить то, что уже лежит по новому имени.
+ * Move a file without the right to replace what already lies under the new
+ * name.
  *
- * `rename(2)` молча заменяет цель, а проверка занятости случилась раньше него:
- * в окно между ними ячейка успевает дописать `out.csv` — и переезд стирает
- * свежий файл без единого слова. `link` в это окно не лезет: занятое имя он
- * отвергает сам, ровно как флаг `'wx'` у `makeFile` выше.
+ * `rename(2)` silently replaces the target, and the "is it taken" check
+ * happened before it: in the window between them a cell manages to finish
+ * writing `out.csv` — and the move erases the fresh file without a single
+ * word. `link` does not fit into that window: it rejects a taken name by
+ * itself, just like the `'wx'` flag in `makeFile` above.
  *
- * `false` — жёстких ссылок на этой файловой системе нет; зовущий делает
- * по-старому. Занятое имя из этого ответа исключено: оно улетает исключением,
- * потому что это ответ человеку, а не свойство диска.
+ * `false` means there are no hard links on this file system; the caller does
+ * it the old way. A taken name is excluded from this answer: it flies out as
+ * an exception, because that is an answer to a person, not a property of the
+ * disk.
  */
 function linked(source: string, target: string): boolean {
   try {
@@ -674,14 +697,15 @@ function linked(source: string, target: string): boolean {
 }
 
 /**
- * Переименовать или переложить. Одна операция, потому что на диске это одно и
- * то же, а в дереве переименование — это перетаскивание на месте.
+ * Rename or move. One operation, because on disk they are one and the same,
+ * and in the tree a rename is a drag in place.
  *
- * Порядок проверок несущий, и он не тот, что был. Сначала «тот же ли это путь»,
- * «не внутрь ли себя» и «не одна ли это запись под другим написанием», и только
- * потом «занято ли имя»: `existsSync`, стоявший первым, отвечал `exists` на
- * переезд в никуда — то есть объяснял человеку, что файл столкнулся сам с
- * собой, — и он же запрещал сменить регистр имени.
+ * The order of the checks is load-bearing, and it is not the one it used to
+ * be. First "is it the same path", "not into itself" and "not the same entry
+ * under a different spelling", and only then "is the name taken":
+ * `existsSync`, which stood first, answered `exists` to a move to nowhere —
+ * that is, explained to a person that the file collided with itself — and it
+ * also forbade changing the case of a name.
  */
 export function movePath(sessionId: string, from: string, to: string): TreeResult {
   const landing = normalizePath(to)
@@ -689,19 +713,20 @@ export function movePath(sessionId: string, from: string, to: string): TreeResul
   const target = resolveInSession(sessionId, to)
   if (!source || !target || !landing) return 'bad-name'
   if (!workspaceFs.existsSync(source)) return 'missing'
-  // Переезд в никуда: оно уже лежит там, куда просят его положить. Отказывать
-  // не в чем — а `existsSync` ниже отвечал на это «уже есть», то есть находил
-  // столкновение файла с самим собой. Комната до сюда и не доходит: `tree:move`
-  // отвечает на такой жест молчанием, потому что ничего не произошло.
+  // A move to nowhere: it already lies where it is asked to be put. There is
+  // nothing to refuse — while `existsSync` below answered this with "already
+  // exists", that is, found a collision of the file with itself. The room does
+  // not even get here: `tree:move` answers such a gesture with silence,
+  // because nothing happened.
   if (target === source) return 'ok'
   /*
-   * Папку нельзя положить внутрь себя же. `rename` на такой паре отвечает
-   * EINVAL, и это был бы понятный отказ, — но на файловых системах, где он
-   * отвечает успехом, поддерево уезжает из дерева навсегда.
+   * A folder cannot be put inside itself. `rename` answers EINVAL on such a
+   * pair, and that would be a clear refusal — but on file systems where it
+   * answers with success, the subtree leaves the tree forever.
    *
-   * Слова про это говорит `control.ts`: `bad-name` здесь — граница, а не
-   * объяснение, и `whySegmentRefused` пожаловалось бы на имя, которое ни при
-   * чём.
+   * The words for this are said by `control.ts`: `bad-name` here is a
+   * boundary, not an explanation, and `whySegmentRefused` would complain
+   * about a name that has nothing to do with it.
    */
   if (target.startsWith(source + path.sep)) return 'bad-name'
   const same = spelledSame(source, target)
@@ -711,10 +736,11 @@ export function movePath(sessionId: string, from: string, to: string): TreeResul
   try {
     workspaceFs.mkdirSync(path.dirname(target), { recursive: true })
     /*
-     * Смена написания и папка едут `rename`: на первой `link` ответил бы
-     * «занято» самой записью, а жёстких ссылок на каталоги не бывает вовсе.
-     * Непустой каталог `rename` не заменит — ответит ENOTEMPTY; пустой
-     * заменит, и терять в нём нечего.
+     * A change of spelling and a folder go by `rename`: for the first, `link`
+     * would answer "taken" with the entry itself, and there are no hard links
+     * to directories at all. `rename` will not replace a non-empty directory
+     * — it answers ENOTEMPTY; it will replace an empty one, and there is
+     * nothing to lose in it.
      */
     if (same || workspaceFs.lstatSync(source).isDirectory()) workspaceFs.renameSync(source, target)
     else if (!linked(source, target)) workspaceFs.renameSync(source, target)
@@ -726,12 +752,12 @@ export function movePath(sessionId: string, from: string, to: string): TreeResul
 }
 
 /**
- * Убрать файл или папку.
+ * Remove a file or a folder.
  *
- * Папка убирается со всем, что в ней, и это осознанно: пустая папка, которую
- * нельзя убрать, пока не убрал всё внутри поштучно, — это работа, которую
- * панель перекладывает на человека вместо одного вопроса «точно?». Спрашивает
- * тот, кто рисует кнопку; здесь уже делают.
+ * A folder is removed with everything in it, and that is deliberate: an empty
+ * folder that cannot be removed until everything inside is removed one by one
+ * is work the panel shifts onto a person instead of a single "are you sure?".
+ * Whoever draws the button asks; here it is already being done.
  */
 export function deleteFile(sessionId: string, name: string): boolean {
   const full = resolveInSession(sessionId, name)
@@ -748,34 +774,35 @@ export function deleteFile(sessionId: string, name: string): boolean {
 }
 
 /**
- * Сколько байт за раз переносит копирование.
+ * How many bytes a copy moves at a time.
  *
- * Не «прочитать файл целиком»: потолок на один файл — пятьдесят мегабайт
- * (config.maxUploadBytes), и буфер такого размера в синхронном обработчике
- * комнаты — это полсекунды паузы всему инстансу и пик памяти, который заметит
- * соседний семинар. Четверть мегабайта — обычный размер, на котором ядро и так
- * работает страницами.
+ * Not "read the whole file": the ceiling for one file is fifty megabytes
+ * (config.maxUploadBytes), and a buffer of that size in the room's
+ * synchronous handler is half a second of pause for the whole instance and a
+ * memory peak the neighboring seminar will notice. A quarter of a megabyte is
+ * the usual size at which the kernel works in pages anyway.
  */
 const COPY_CHUNK = 256 * 1024
 
 /**
- * Скопировать файл рядом, не тронув исходный.
+ * Copy a file alongside, without touching the original.
  *
- * Пишется во временное имя и переносится на место — ровно как `writeText` выше
- * и как загрузка (routes/files.ts), и по той же причине: копия появляется в
- * дереве целой или не появляется вовсе. Наполовину скопированный CSV читается
- * pandas без ошибки, и о потере узнают по числам.
+ * It is written under a temporary name and moved into place — just like
+ * `writeText` above and the upload (routes/files.ts), and for the same
+ * reason: the copy appears in the tree whole or not at all. A half-copied CSV
+ * is read by pandas without an error, and the loss is discovered from the
+ * numbers.
  *
- * Занятое имя не заменяется: сначала `link`, который занятость отвергает сам
- * (тот же приём, что у `movePath`), и только на файловой системе без жёстких
- * ссылок — `rename`, перед которым занятость проверена отдельно. Имя копии
- * выбирает `freeCopyName`, так что попасть сюда занятым оно может только в
- * гонке — но гонка эта настоящая: две вкладки дублируют один файл в одну
- * секунду.
+ * A taken name is not replaced: first `link`, which rejects a taken name by
+ * itself (the same trick as in `movePath`), and only on a file system without
+ * hard links `rename`, before which the name is checked separately. The
+ * copy's name is chosen by `freeCopyName`, so it can arrive here taken only
+ * in a race — but that race is real: two tabs duplicate one file in the same
+ * second.
  *
- * Папки здесь нет намеренно: `openRead` отвергает и её, и символическую ссылку,
- * и это правильный ответ — рекурсивную копию с потолком комнаты на каждом шаге
- * панель обещать не должна.
+ * Folders are deliberately not handled here: `openRead` rejects both a folder
+ * and a symbolic link, and that is the right answer — the panel must not
+ * promise a recursive copy with the room's ceiling at every step.
  */
 export function copyFile(sessionId: string, from: string, to: string): TreeResult {
   const source = resolveInSession(sessionId, from)
@@ -787,8 +814,9 @@ export function copyFile(sessionId: string, from: string, to: string): TreeResul
   try {
     held = workspaceFs.openRead(source)
   } catch {
-    // Решение принял не этот код, а ядро (secure-files.ts · openRead): папка,
-    // символическая ссылка и исчезнувший путь — всё это «копировать нечего».
+    // The decision was made not by this code but by the OS kernel
+    // (secure-files.ts · openRead): a folder, a symbolic link and a vanished
+    // path all mean "nothing to copy".
     return 'missing'
   }
   const tmp = path.join(path.dirname(target), `.colloq.saving-${randomUUID()}`)
@@ -796,15 +824,15 @@ export function copyFile(sessionId: string, from: string, to: string): TreeResul
   try {
     out = workspaceFs.openSync(tmp, 'wx')
     const chunk = Buffer.allocUnsafe(COPY_CHUNK)
-    // Смещением, а не потоком: дескриптор источника удерживается всё время
-    // копирования, и позиция в нём наша — чужая запись в тот же файл не
-    // сдвинет её под нами.
+    // By offset, not as a stream: the source descriptor is held for the whole
+    // copy, and the position in it is ours — someone else writing to the same
+    // file will not shift it under us.
     let at = 0
     for (;;) {
       const read = fs.readSync(held.fd, chunk, 0, chunk.length, at)
       if (read === 0) break
-      // writeSync вправе записать меньше, чем просили: остаток дописывается
-      // здесь же, иначе копия молча выйдет короче оригинала.
+      // writeSync may write less than asked: the rest is written right here,
+      // otherwise the copy silently comes out shorter than the original.
       let written = 0
       while (written < read) {
         written += fs.writeSync(out, chunk, written, read - written, at + written)
@@ -820,7 +848,7 @@ export function copyFile(sessionId: string, from: string, to: string): TreeResul
     try {
       workspaceFs.rmSync(tmp, { force: true })
     } catch {
-      /* родителя подменили — убирать нечего и нечем */
+      /* the parent was swapped — nothing to remove and no way to remove it */
     }
     return whyFailed(err)
   } finally {
@@ -829,48 +857,50 @@ export function copyFile(sessionId: string, from: string, to: string): TreeResul
       try {
         fs.closeSync(out)
       } catch {
-        /* уже закрыт */
+        /* already closed */
       }
     }
   }
 }
 
-/* ------------------------------------------------------------- содержимое */
+/* --------------------------------------------------------------- contents */
 
 /**
- * Потолок на текст, который открывается в редакторе.
+ * The ceiling for text that opens in the editor.
  *
- * Полтора мегабайта — это примерно тридцать тысяч строк: больше, чем бывает у
- * файла, который правят на семинаре, и меньше, чем то, на чём CodeMirror
- * начинает думать над каждым нажатием. Файл крупнее в редакторе не открывается
- * вовсе — ни целиком, ни началом: сохранить обрезок поверх целого значит
- * потерять хвост молча, а показать начало, которое нельзя ни править, ни
- * сохранить, значит обещать редактор там, где его нет. Скачать такой файл и
- * прочитать его из ячейки можно по-прежнему.
+ * A megabyte and a half is about thirty thousand lines: more than a file
+ * edited at a seminar ever has, and less than what makes CodeMirror stop and
+ * think over every keystroke. A larger file does not open in the editor at
+ * all — neither whole nor its beginning: saving a fragment over the whole
+ * means losing the tail silently, and showing a beginning that can be neither
+ * edited nor saved means promising an editor where there is none. Such a file
+ * can still be downloaded and read from a cell.
  *
- * Цена названа вслух — и сказана вслух же: по нажатию на трёхмегабайтный CSV
- * вкладка не закрывается молча, а объясняет, что файл велик для редактора.
- * Для этого у сокета файла есть третий код закрытия, 4413, рядом с «правку не
- * приняли» и «файла нет» (см. `TOO_BIG` в collab/files.ts).
+ * The price is named out loud — and said out loud too: when someone clicks a
+ * three-megabyte CSV, the tab does not close silently but explains that the
+ * file is too big for the editor. For that the file socket has a third close
+ * code, 4413, next to "edit not accepted" and "no such file" (see `TOO_BIG`
+ * in collab/files.ts).
  */
 export const MAX_TEXT_BYTES = 1_500_000
 
 export interface TextFile {
   text: string
-  /** Файл больше потолка: в `text` только его начало, целиком он не прочитан. */
+  /** The file is over the ceiling: `text` holds only its beginning, it was not read whole. */
   truncated: boolean
-  /** Не текст вовсе — в нём нулевые байты. */
+  /** Not text at all — there are zero bytes in it. */
   binary: boolean
   modifiedAt: number
   size: number
 }
 
 /**
- * Прочитать файл как текст.
+ * Read a file as text.
  *
- * Нулевой байт в первых восьми килобайтах — признак, по которому это делают
- * все: расширение врёт (студент назвал архив `data.csv`), а содержимое нет.
- * Открыть архив в редакторе — это показать мусор и предложить его сохранить.
+ * A zero byte in the first eight kilobytes is the sign everybody goes by: the
+ * extension lies (a student named an archive `data.csv`), the contents do
+ * not. Opening an archive in the editor means showing garbage and offering to
+ * save it.
  */
 export function readText(sessionId: string, rel: string, maxBytes = MAX_TEXT_BYTES): TextFile | null {
   const full = resolveInSession(sessionId, rel)
@@ -905,18 +935,19 @@ export function readText(sessionId: string, rel: string, maxBytes = MAX_TEXT_BYT
 }
 
 /**
- * Прочитать файл байтами.
+ * Read a file as bytes.
  *
- * Двойник `readText` для того, что текстом не является: картинка условия,
- * лежащая в папке семинара рядом с тетрадью. Понадобилось это публикации —
- * `![схема](assets/fig01.png)` в заметке указывает на файл, а на выгруженной
- * странице никакой папки семинара уже нет, так что картинку надо забрать с
- * собой (publish/build.ts · projectNote).
+ * The twin of `readText` for what is not text: a picture from a problem
+ * statement lying in the seminar folder next to the notebook. Publishing
+ * needed it — `![diagram](assets/fig01.png)` in a note points to a file, and
+ * on the exported page there is no seminar folder any more, so the picture
+ * has to be taken along (publish/build.ts · projectNote).
  *
- * Потолок — обязательный довод, а не предосторожность: файл читается ЦЕЛИКОМ в
- * память, и `![](data/train.csv.gz)` на полтора гигабайта уронил бы сборку
- * публикации вместе с сервером. Больше потолка — `null`, то есть «не смогли»,
- * и вызывающий сам решает, что показать вместо.
+ * The ceiling is a mandatory argument, not a precaution: the file is read
+ * WHOLE into memory, and a one-and-a-half-gigabyte `![](data/train.csv.gz)`
+ * would bring down the publication build together with the server. Over the
+ * ceiling means `null`, that is, "could not", and the caller decides what to
+ * show instead.
  */
 export function readBytes(sessionId: string, rel: string, maxBytes: number): Buffer | null {
   const full = resolveInSession(sessionId, rel)
@@ -941,13 +972,13 @@ export function readBytes(sessionId: string, rel: string, maxBytes: number): Buf
 }
 
 /**
- * Записать файл целиком.
+ * Write a whole file.
  *
- * Рядом и переименованием, не поверх: `writeFileSync` сначала обрезает файл до
- * нуля и наполняет его потом, так что ячейка, читающая этот CSV прямо сейчас,
- * успевает прочитать половину и закончить без ошибки. Тот же довод записан над
- * загрузкой в routes/files.ts, и он одинаково верен для редактора, который
- * сохраняется сам каждые несколько секунд.
+ * Alongside and by rename, not on top: `writeFileSync` first truncates the
+ * file to zero and fills it afterwards, so a cell reading this CSV right now
+ * manages to read half of it and finish without an error. The same argument
+ * is written above the upload in routes/files.ts, and it is equally true for
+ * an editor that saves by itself every few seconds.
  */
 export function writeText(sessionId: string, rel: string, text: string): boolean {
   const full = resolveInSession(sessionId, rel)
@@ -968,7 +999,7 @@ export function writeText(sessionId: string, rel: string, text: string): boolean
   }
 }
 
-/** Существует ли путь, и что это. `null` — ничего нет. */
+/** Whether the path exists, and what it is. `null` — there is nothing. */
 export function statPath(
   sessionId: string,
   rel: string,
@@ -985,11 +1016,12 @@ export function statPath(
 }
 
 /**
- * Свободное имя рядом с занятым: `train.py` -> `train 2.py`.
+ * A free name next to a taken one: `train.py` -> `train 2.py`.
  *
- * Нужно ровно там, где отказ был бы хуже: оракул создаёт файл, который уже
- * есть, и отменить весь ход из-за имени — потерять работу. Человеку, который
- * набрал имя руками, по-прежнему отвечают «занято»: он имел в виду именно его.
+ * Needed exactly where a refusal would be worse: the oracle creates a file
+ * that already exists, and cancelling its whole turn because of a name means
+ * losing work. A person who typed the name by hand still gets "taken": they
+ * meant exactly that name.
  */
 export function freeName(sessionId: string, rel: string): string {
   if (!statPath(sessionId, rel)) return rel
@@ -1006,16 +1038,18 @@ export function freeName(sessionId: string, rel: string): string {
 }
 
 /**
- * Как назвать копию: `train.py` → `train (копия).py` → `train (копия 2).py`.
+ * What to name a copy: `train.py` → `train (копия).py` → `train (копия 2).py`
+ * ("копия" is "copy").
  *
- * Не `freeName`, и разница существенная. Та приписывает к имени номер и нужна
- * там, где отказ был бы хуже занятого имени (оракул заводит файл посреди хода);
- * здесь же имя видит человек, и `train 2.py` рядом с `train.py` не говорит,
- * который из них копия. Слово берётся из словаря, потому что комната бывает
- * английской, а имя файла — то, что студент потом печатает в ячейке.
+ * Not `freeName`, and the difference matters. That one appends a number to
+ * the name and is needed where a refusal would be worse than a taken name
+ * (the oracle creates a file in the middle of a turn); here a person sees the
+ * name, and `train 2.py` next to `train.py` does not say which of them is the
+ * copy. The word comes from the dictionary, because a room can be English,
+ * and the file name is what the student later types in a cell.
  *
- * Расширение остаётся на своём месте: `train (копия).py` открывается
- * редактором, а `train.py (копия)` — уже нет.
+ * The extension stays in its place: `train (копия).py` opens in the editor,
+ * `train.py (копия)` no longer does.
  */
 export function freeCopyName(sessionId: string, rel: string): string {
   const dir = parentOf(rel)
@@ -1024,18 +1058,18 @@ export function freeCopyName(sessionId: string, rel: string): string {
   const stem = dot > 0 ? base.slice(0, dot) : base
   const ext = dot > 0 ? base.slice(dot) : ''
   /*
-   * Длинное имя подрезается, и только здесь — не в чужом имени, а в том, которое
-   * сочиняем мы сами. `safeSegment` отвергает сегмент длиннее MAX_SEGMENT
-   * целиком, и без подрезки дублирование файла со стосемнадцатибуквенным именем
-   * (обычная выгрузка из LMS) отвечало бы «имя не годится» про имя, которого
-   * человек не набирал.
+   * A long name is trimmed, and only here — not someone else's name, but the
+   * one we compose ourselves. `safeSegment` rejects a segment longer than
+   * MAX_SEGMENT outright, and without trimming, duplicating a file with a
+   * hundred-and-seventeen-letter name (an ordinary export from an LMS) would
+   * answer "the name will not do" about a name the person never typed.
    */
   const room = (suffix: string): string => {
     const left = MAX_SEGMENT - suffix.length - 1 - ext.length
     let head = left > 0 ? stem.slice(0, left).trimEnd() : ''
     while(head && segmentBytes(`${head} ${suffix}${ext}`)>MAX_SEGMENT_BYTES) head=Array.from(head).slice(0,-1).join('').trimEnd()
-    // Головы не осталось вовсе — значит имя состоит из одного расширения;
-    // тогда копия зовётся просто словом.
+    // No head left at all — so the name consists of the extension alone;
+    // then the copy is called just by the word.
     const name = head ? `${head} ${suffix}${ext}` : `${suffix}${ext}`
     return dir ? `${dir}/${name}` : name
   }
@@ -1045,12 +1079,12 @@ export function freeCopyName(sessionId: string, rel: string): string {
     const candidate = room(tr('server.files.copySuffixN', { p0: n }))
     if (!statPath(sessionId, candidate)) return candidate
   }
-  // Сто копий одного файла — не та задача, ради которой стоит выдумывать сотый
-  // способ назвать имя: пусть отвечает «занято» тот, кто копирует.
+  // A hundred copies of one file is not a task worth inventing a hundredth way
+  // to name a file for: let whoever is copying get "taken".
   return first
 }
 
-/** Текстовый ли это файл по имени и по содержимому разом. */
+/** Whether this is a text file, by name and by contents at once. */
 export function isEditable(sessionId: string, rel: string): boolean {
   if (kindOf(rel) !== 'text') return false
   const read = readText(sessionId, rel)

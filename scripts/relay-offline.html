@@ -6,64 +6,71 @@
     <title>Комната ещё не открыта — Colloq</title>
 
     <!--
-      Страницы ошибок ретранслятора (*.colloq.ru). Один файл на все случаи —
-      и это не экономия байтов: опрос комнаты, игра и таблица рекордов у них
-      общие, расходится только текст. Ставится на машину скриптом
-      scripts/relay-setup.sh (или make relay-page — только страница, без
-      перезапуска служб). Макет — Paper, страница «06 · Страница ожидания»;
-      состояний в макете одно, остальные три собраны из того же набора
-      (см. REPORT рядом с правкой).
+      The relay's error pages (*.colloq.ru). One file for every case, and
+      that is not about saving bytes: the room polling, the game and the
+      high-score table are shared by all of them, only the text differs. It is
+      installed on the machine by scripts/relay-setup.sh (or make relay-page:
+      only the page, without restarting services). The mockup is in Paper, the
+      page "06 · Страница ожидания" (waiting page); the mockup has one state,
+      the other three are assembled from the same set (see REPORT next to the
+      change).
 
-      Случаев четыре, и раньше все они показывали один и тот же текст «комната
-      ещё не открыта» с советом проверить адрес — даже когда комнаты с таким
-      именем не бывало вовсе, а иногда и тогда, когда ломался сам
-      ретранслятор:
+      There are four cases, and they all used to show the same text "the room
+      is not open yet" with advice to check the address, even when a room with
+      that name had never existed, and sometimes even when the relay itself
+      was broken:
 
-        ещё не открыта — имя знакомо, туннеля сейчас нет (обычный случай:
-                         преподаватель ещё не начал);
-        такой нет      — имя ретранслятор не видел ни разу, то есть опечатка
-                         в ссылке;
-        не отвечает    — связь есть, а Colloq по ту сторону молчит (машина
-                         преподавателя) или ретранслятор не может дозвониться
-                         до своей же службы туннелей;
-        сломалось      — любой другой ответ: код и номер запроса в журнале.
+        not open yet   — the name is known, there is no tunnel right now (the
+                         usual case: the teacher has not started yet);
+        no such room   — the relay has never seen the name, that is, a typo
+                         in the link;
+        not answering  — there is a connection, but Colloq on the other side
+                         is silent (the teacher's machine) or the relay cannot
+                         reach its own tunnel service;
+        broken         — any other answer: the code and the request number in
+                         the log.
 
-      Кто именно отдал страницу и с каким кодом, страница узнаёт из подстановки
-      ниже и из /.relay/state; разбор — в скрипте, раздел «что случилось».
+      Who exactly served the page and with what code, the page learns from the
+      substitution below and from /.relay/state; the analysis is in the script,
+      the "what happened" section.
 
-      Метка ниже — то, по чему страница отличает «всё ещё ждём» от «комната
-      открылась»: раз в двадцать секунд она запрашивает свой адрес заново и, не
-      найдя метки в ответе, перезагружает вкладку прямо в комнату. Содержимое
-      метки не трогать: на ретрансляторе может лежать страница прошлой версии,
-      и опрос у обеих должен искать одно и то же слово. Раньше это делала
-      <meta http-equiv="refresh">, но она убивала бы игру ниже на самом
-      интересном месте; без JS она остаётся запасным ходом внутри <noscript>.
+      The mark below is how the page tells "still waiting" from "the room has
+      opened": every twenty seconds it requests its own address again and, not
+      finding the mark in the answer, reloads the tab straight into the room.
+      Do not touch the mark's content: the relay may hold a page of a previous
+      version, and the polling in both must look for one and the same word.
+      This used to be done by <meta http-equiv="refresh">, but it would kill
+      the game below at the most exciting moment; without JS it remains the
+      fallback inside <noscript>.
     -->
     <meta name="colloq-page" content="offline" />
     <noscript><meta http-equiv="refresh" content="20" /><style>.game { display: none; }</style></noscript>
 
     <!--
-      Что именно случилось, знает только caddy — и говорит это подстановкой:
-      директива templates в handle_errors заменяет три выражения ниже на
-      настоящий код ответа, его название и номер записи в журнале. frps своей
-      404-й отдаёт ТОТ ЖЕ файл как есть, ничего не подставляя, — и по тому, что
-      вместо трёх цифр здесь осталась угловая скобка, страница понимает, кто её
-      отдал. Второй файл для этого не нужен.
+      What exactly happened only caddy knows, and it says so by substitution:
+      the templates directive in handle_errors replaces the three expressions
+      below with the real response code, its name and the number of the log
+      entry. frps serves THE SAME file as is for its 404, substituting
+      nothing, and by the fact that an angle bracket remained here instead of
+      three digits, the page understands who served it. A second file is not
+      needed for this.
 
-      Скобки не те, что у шаблонов Go по умолчанию, и это выстраданное:
-      templates разбирает как шаблон ВЕСЬ файл, а пара фигурных скобок подряд
-      встречается в JS и в тексте сама собой (первая же попытка упала на
-      комментарии ниже, где такая пара стояла в объяснении). Ошибка разбора —
-      это пустой ответ вместо страницы ошибки, то есть белый экран ровно в ту
-      минуту, когда человеку нужно объяснение. Пара «угловая скобка с
-      процентом» в HTML, CSS и JS не встречается никогда. Задаётся она у
-      директивы templates настройкой between — сами скобки написать здесь
-      нельзя, их тут же разобрало бы как подстановку; смотреть в
-      scripts/relay-setup.sh, раздел handle_errors.
+      The brackets are not the Go template defaults, and that was learned the
+      hard way: templates parses the WHOLE file as a template, and a pair of
+      curly braces in a row turns up in JS and in text by itself (the very
+      first attempt failed on a comment below, where such a pair stood in an
+      explanation). A parse error means an empty answer instead of the error
+      page, that is, a white screen at exactly the minute a person needs an
+      explanation. The pair "angle bracket with a percent sign" never occurs
+      in HTML, CSS or JS. It is set in the templates directive by the between
+      setting; the brackets themselves cannot be written here, they would be
+      parsed as a substitution at once; look in scripts/relay-setup.sh, the
+      handle_errors section.
 
-      Отсюда же правило: во всём файле этих скобок ровно три, и все три —
-      ниже. Четвёртая, где угодно — хоть в комментарии, — и страницы ошибки
-      не станет. За этим следит tests/relay-errors.test.mts.
+      Hence the rule: in the whole file there are exactly three of these
+      brackets, and all three are below. A fourth one, anywhere, even in a
+      comment, and there will be no error page. tests/relay-errors.test.mts
+      watches over this.
     -->
     <script>
       window.__relay = {
@@ -74,20 +81,22 @@
     </script>
 
     <!--
-      Ни одного внешнего запроса: ни шрифтов, ни картинок, ни библиотек. Эту
-      страницу отдаёт ретранслятор в тот момент, когда у него и так что-то не
-      так, а открывают её с телефона по сотовой связи в аудитории, где может
-      не грузиться вообще ничего. Всё, что ей нужно, — в этом файле. Единственный
-      запрос наружу — очки в таблицу рекордов, и без него страница живёт.
+      Not a single external request: no fonts, no images, no libraries. This
+      page is served by the relay at a moment when something is already wrong
+      with it, and people open it from a phone over a cellular connection in a
+      classroom where nothing at all may load. Everything it needs is in this
+      file. The only outgoing request is the score for the high-score table,
+      and the page lives without it.
     -->
     <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex" />
 
     <style>
       /*
-       * Палитра ВШЭ, та же, что у продукта и у лендинга (web/src/index.css,
-       * site/styles.css). Светлый набор стоит на голом :root, тёмный приходит
-       * из системной настройки: выбирать тему тут негде и незачем.
+       * The HSE palette, the same as the product's and the landing page's
+       * (web/src/index.css, site/styles.css). The light set sits on bare
+       * :root, the dark one comes from the system setting: there is nowhere to
+       * choose a theme here and no reason to.
        */
       :root {
         --canvas: #ffffff;
@@ -96,14 +105,14 @@
         --line: #dce3ef;
         --ink: #101a33;
         --muted: #5d6b8a;
-        /* Яркий голубой не проходит по контрасту как текст на белом — для
-           набора берётся его тёмный вариант, для точки и меток сам голубой. */
+        /* The bright blue does not pass contrast as text on white: text takes
+           its dark variant, the dot and the labels take the blue itself. */
         --accent: #0fa0d7;
         --accent-text: #0a6e96;
         --mark: #0f2d69;
         --warm-bg: #fde7cf;
         --warm-text: #9b5a08;
-        /* Мир игры: берег реки днём. Ночь — в JS, она приходит с очками. */
+        /* The game world: a river bank by day. Night is in JS, it comes with the score. */
         --sky: #f3f6fb;
         --hill: #e7eef9;
         --hill-far: #eef2f9;
@@ -121,9 +130,9 @@
           --line: #16244b;
           --ink: #e6e7e8;
           --muted: #9ba6be;
-          /* На тёмной земле голубой даёт 6.5:1 — здесь он и есть текст. */
+          /* On dark ground the blue gives 6.5:1: here it is the text itself. */
           --accent-text: #0fa0d7;
-          /* Синь бренда на почти чёрном не видна; знак берёт светлый её тон. */
+          /* The brand navy is invisible on near-black; the mark takes its light tone. */
           --mark: #7b93c9;
           --warm-bg: #3a2a12;
           --warm-text: #f2a33c;
@@ -138,13 +147,14 @@
       }
 
       * { box-sizing: border-box; }
-      /* Свои display: flex у панелей иначе перебивают атрибут hidden. */
+      /* The panels' own display: flex would otherwise override the hidden attribute. */
       [hidden] { display: none !important; }
 
       /*
-       * Шрифт только тот, что уже есть у читателя. HSE Sans стоит первым — у
-       * половины ФКН он установлен, и тогда страница набрана тем же, чем весь
-       * продукт; у остальных её наберёт системный: ни одного байта из сети.
+       * Only a font the reader already has. HSE Sans comes first: half of the
+       * Faculty of Computer Science has it installed, and then the page is set
+       * in the same type as the whole product; for the rest the system font
+       * sets it: not a single byte from the network.
        */
       body {
         margin: 0;
@@ -231,7 +241,7 @@
         cursor: pointer;
       }
 
-      /* Что делать — единственный блок с землёй под ним: это и есть ответ. */
+      /* What to do is the only block with ground under it: that is the answer. */
       .wait {
         display: flex;
         gap: 14px;
@@ -278,10 +288,10 @@
       }
 
       /*
-       * Точка дышит ровно там, где есть чего ждать. На «такой комнаты нет» и
-       * на поломке ждать нечего — и мигающий огонёк врал бы, что вот-вот
-       * откроется. Цвет тоже разный: серый — ничего не происходит, тёплый —
-       * сломалось.
+       * The dot breathes exactly where there is something to wait for. On "no
+       * such room" and on a breakage there is nothing to wait for, and a
+       * blinking light would lie that it is about to open. The color differs
+       * too: grey means nothing is happening, warm means something broke.
        */
       [data-state='missing'] .dot { background: var(--muted); animation: none; }
       [data-state='fault'] .dot { background: var(--warm-text); animation: none; }
@@ -291,13 +301,13 @@
         50%      { opacity: 1;    transform: scale(1); }
       }
 
-      /* ------------------------------------------------------------ игра */
+      /* ------------------------------------------------------------ game */
 
       /*
-       * Игра живёт ниже ответа, а не вместо него: сначала человек узнаёт, что
-       * происходит и что делать, и только потом — чем занять минуты до пары.
-       * Экран — тот же контейнер, что и блок «ждать здесь»: та же линия, тот
-       * же радиус; ничего кричащего.
+       * The game lives below the answer, not instead of it: first a person
+       * learns what is going on and what to do, and only then what to fill the
+       * minutes before class with. The screen is the same container as the
+       * "wait here" block: the same line, the same radius; nothing loud.
        */
       .game { display: flex; flex-direction: column; gap: 12px; }
 
@@ -318,9 +328,10 @@
       }
 
       /*
-       * Холст рисуется в три раза крупнее своей сетки (960×384 при поле
-       * 320×128) и растягивается на ширину колонки без сглаживания — так пиксель
-       * остаётся квадратным пикселем и на ретине, и на телефоне.
+       * The canvas is drawn three times larger than its grid (960×384 for a
+       * 320×128 field) and stretched to the column width without smoothing:
+       * that way a pixel stays a square pixel on a retina screen and on a phone
+       * alike.
        */
       canvas {
         display: block;
@@ -328,15 +339,15 @@
         height: auto;
         image-rendering: pixelated;
         image-rendering: crisp-edges;
-        /* Пока игра не идёт, палец листает страницу; на время забега экран
-           забирает касания себе (JS ставит none). */
+        /* While the game is not running, a finger scrolls the page; during a run
+           the screen takes the touches for itself (JS sets none). */
         touch-action: pan-y;
         user-select: none;
         -webkit-user-select: none;
         -webkit-tap-highlight-color: transparent;
       }
 
-      /* Подсказка — кнопка, чтобы игра запускалась и с клавиатуры. */
+      /* The hint is a button, so that the game can also be started from the keyboard. */
       .hint {
         position: absolute;
         left: 50%;
@@ -457,7 +468,7 @@
         cursor: pointer;
       }
 
-      /* Основное действие одно — записать очки; «ещё раз» стоит рядом тише. */
+      /* There is one main action, saving the score; "again" stands next to it, quieter. */
       .submit .primary {
         padding: 0 16px;
         border-color: transparent;
@@ -468,14 +479,14 @@
 
       .submit button[disabled] { cursor: default; }
       .submit button[disabled]:not([data-done]) { opacity: 0.55; }
-      /* «Записано» — не выцветшая кнопка, а спокойное подтверждение. */
+      /* "Saved" is not a faded button but a calm confirmation. */
       .submit .primary[data-done] {
         border-color: var(--line);
         background: transparent;
         color: var(--accent-text);
       }
 
-      /* Отклик на нажатие и наведение — только там, где есть мышь. */
+      /* Feedback on press and hover only where there is a mouse. */
       button { transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
       button:not([disabled]):active { transform: scale(0.97); }
       @media (hover: hover) and (pointer: fine) {
@@ -559,7 +570,7 @@
     <main id="page" data-state="waiting">
       <header>
         <div class="top">
-          <!-- Знак Colloq: та же сетка, что и в фавиконе продукта. -->
+          <!-- The Colloq mark: the same grid as in the product favicon. -->
           <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
             <rect x="2" y="2" width="6" height="6" rx="1.6" />
             <rect x="9" y="2" width="6" height="6" rx="1.6" />
@@ -572,13 +583,14 @@
             <rect x="16" y="16" width="6" height="6" rx="1.6" />
           </svg>
           <p class="label" id="where">Colloq</p>
-          <!-- Язык страницы: русский по умолчанию, английский — по браузеру. -->
+          <!-- The page language: Russian by default, English by the browser. -->
           <button class="lang" id="lang" type="button" aria-label="Switch to English">EN</button>
         </div>
         <!--
-          В разметке лежит самый частый случай — «комната ещё не открыта»: без
-          JS страница честна ровно для него, а он и случается каждый день.
-          Остальные три собирает скрипт, когда узнаёт, что именно произошло.
+          The markup holds the most common case, "the room is not open yet":
+          without JS the page is truthful exactly for it, and it is the one that
+          happens every day. The other three are assembled by the script once it
+          learns what exactly happened.
         -->
         <h1 id="head">Комната ещё не открыта</h1>
         <p class="lede" id="lede">
@@ -676,7 +688,7 @@
           if (b === 1) return forms[0];
           return forms[2];
         }
-        // 1 point, 2 points — и никаких падежей.
+        // 1 point, 2 points, and no grammatical cases.
         function many(n, forms) { return Math.abs(n) === 1 ? forms[0] : forms[1]; }
         // 1st, 2nd, 3rd, 11th, 21st.
         function ord(n) {
@@ -689,14 +701,15 @@
           set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} },
         };
 
-        /* ------------------------------------------------ язык
+        /* ------------------------------------------------ language
          *
-         * Языков здесь ровно столько же, сколько у самого продукта: занятие
-         * ведут и по-английски, и студент на этой странице — тот же, что через
-         * минуту войдёт в комнату. Accept-Language странице недоступен: её
-         * отдаёт file_server (а то и вовсе frps) как файл, ничего не разбирая,
-         * — поэтому язык берётся из того же списка, который видит браузер, и
-         * может быть переключён кнопкой. Выбор помнится на этом устройстве.
+         * There are exactly as many languages here as in the product itself:
+         * classes are held in English too, and the student on this page is the
+         * same one who will enter the room a minute later. Accept-Language is
+         * not available to the page: it is served by file_server (or even by
+         * frps) as a file, without parsing anything, so the language is taken
+         * from the same list the browser sees, and can be switched with a
+         * button. The choice is remembered on this device.
          */
         function pickLang() {
           const saved = store.get('colloq.lang');
@@ -713,11 +726,12 @@
         }
 
         /*
-         * Весь текст страницы — здесь, и ничего кроме текста. Строки, в которые
-         * подставляются числа и имена, — функции: так падежи и множественное
-         * число остаются внутри своего языка, а не собираются склейкой снаружи.
-         * f — то, что известно о случившемся: адрес, код ответа, его название,
-         * номер записи в журнале и причина молчания.
+         * All the text of the page is here, and nothing but text. Strings into
+         * which numbers and names are substituted are functions: that way cases
+         * and plurals stay inside their own language instead of being glued
+         * together outside. f is what is known about what happened: the
+         * address, the response code, its name, the log entry number and the
+         * reason for the silence.
          */
         const TEXT = {
           ru: {
@@ -935,10 +949,11 @@
         let T = TEXT[lang];
 
         /*
-         * Язык переключают в любую минуту — в том числе поверх разобранной
-         * карточки и таблицы на экране. Поэтому показанное помнит не строку, а
-         * то, как её сложить: при смене языка страница складывает заново.
-         * Элемент в словаре один — последняя сказанная фраза и есть текущая.
+         * The language can be switched at any minute, including over a card
+         * already laid out and a table on the screen. So what is shown
+         * remembers not the string but how to put it together: on a language
+         * switch the page puts it together again. There is one element per
+         * entry in the dictionary: the last phrase said is the current one.
          */
         const live = new Map();
         function say(el, make) { live.set(el, make); el.textContent = make(); }
@@ -951,7 +966,7 @@
           redress.forEach((f) => f());
         }
 
-        /* ------------------------------------------------ где мы */
+        /* ------------------------------------------------ where we are */
         const coarse = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
         const whereEl = document.getElementById('where');
         const headEl = document.getElementById('head');
@@ -965,31 +980,34 @@
         const pageEl = document.getElementById('page');
         const langBtn = document.getElementById('lang');
 
-        /* ------------------------------------------------ что случилось
+        /* ------------------------------------------------ what happened
          *
-         * Четыре разных случая приезжали на одну и ту же страницу «комната ещё
-         * не открыта» — и трём из четырёх она врала, а совет «проверьте адрес»
-         * давала даже тогда, когда адрес был ни при чём. Отличить их можно так:
+         * Four different cases arrived at one and the same "the room is not
+         * open yet" page, and it lied to three of the four, giving the advice
+         * "check the address" even when the address had nothing to do with it.
+         * They can be told apart like this:
          *
-         *  • страницу отдал CADDY — значит, до frps он не достучался, и в
-         *    разметке подставлен настоящий код ответа (см. window.__relay в
-         *    голове). 502/503/504 — «не отвечает» по вине ретранслятора, любой
-         *    другой код — «что-то пошло не так» с кодом и номером в журнале;
-         *  • страницу отдал FRPS своей 404-й — кода нет, зато можно спросить
-         *    сам ретранслятор о судьбе имени (/.relay/state): туннель жив, а
-         *    комната молчит — «не отвечает» по вине машины преподавателя; имя
-         *    знакомо, туннеля нет — «ещё не открыта»; имя не видели ни разу —
-         *    «такой комнаты нет».
+         *  • CADDY served the page: then it could not reach frps, and the
+         *    markup has the real response code substituted (see window.__relay
+         *    in the head). 502/503/504 mean "not answering" through the
+         *    relay's fault, any other code means "something went wrong" with
+         *    the code and the log number;
+         *  • FRPS served the page as its 404: there is no code, but the relay
+         *    itself can be asked about the fate of the name (/.relay/state):
+         *    the tunnel is alive but the room is silent, "not answering"
+         *    through the fault of the teacher's machine; the name is known but
+         *    there is no tunnel, "not open yet"; the name has never been seen,
+         *    "no such room".
          *
-         * Спросить некого (маршрута на ретрансляторе ещё нет, сеть молчит) —
-         * говорим то, что вернее всего: «ещё не открыта». Это единственный из
-         * четырёх случаев, который случается каждый день, и он же лежит в
-         * разметке — на случай выключенного JS.
+         * If there is nobody to ask (the relay has no such route yet, the
+         * network is silent), we say what is most likely true: "not open yet".
+         * It is the only one of the four cases that happens every day, and it
+         * is also what lies in the markup, in case JS is off.
          *
-         * Подстановка приезжает строкой, и проверяется она как чужая: пока в
-         * ней не ровно три цифры, кода нет вовсе. Незаполненный шаблон (тот,
-         * что отдаёт frps) на эту проверку не проходит, и название с номером
-         * берутся только вместе с кодом.
+         * The substitution arrives as a string and is checked as foreign
+         * input: until it is exactly three digits, there is no code at all. An
+         * unfilled template (the one frps serves) does not pass this check,
+         * and the name and the number are taken only together with the code.
          */
         const fact = (() => {
           const raw = window.__relay || {};
@@ -999,7 +1017,7 @@
           return { host: location.hostname || 'colloq.ru', code, text, id, reason: '' };
         })();
 
-        /** Состояние по коду ответа caddy: 502–504 — молчит, прочее — сломалось. */
+        /** The state by caddy's response code: 502–504 is silence, the rest is a breakage. */
         function byCode(code) {
           return code >= 502 && code <= 504
             ? { state: 'down', reason: 'relay' }
@@ -1007,7 +1025,7 @@
         }
 
         let page = fact.code ? byCode(fact.code) : { state: 'waiting', reason: '' };
-        /** Ждать имеет смысл, только когда есть чему вернуться. */
+        /** Waiting makes sense only when there is something to come back to. */
         function polls() { return page.state === 'waiting' || page.state === 'down'; }
 
         function show(next) {
@@ -1025,26 +1043,26 @@
           say(waitText, () => T.states[page.state].wait(fact));
           say(footEl, () => T.states[page.state].foot(fact));
           say(retryBtn, () => T.retry);
-          // Строка под текстом: у ждущих — счётчик проверок (его ведёт tick),
-          // у остальных — то, что ответил ретранслятор, слово в слово.
+          // The line under the text: for the waiting ones, the check counter (tick
+          // keeps it), for the rest, what the relay answered, word for word.
           if (!polls()) say(waitLine, () => (fact.code ? T.fact(fact) : ''));
         }
         if (location.hostname && location.hostname !== 'localhost') {
           say(whereEl, () => 'Colloq · ' + fact.host);
         }
         show();
-        // При смене языка заново собирается и само состояние: заголовок вкладки,
-        // язык документа и подписи для читалки — это не textContent, и словарь
-        // сказанного их не касается.
+        // On a language switch the state itself is assembled again: the tab
+        // title, the document language and the screen reader labels are not
+        // textContent, and the dictionary of what was said does not cover them.
         redress.push(() => show());
         langBtn.addEventListener('click', switchLang);
 
         /*
-         * Спрашиваем ретранслятор, что он знает об этом имени. Маршрута может
-         * не быть вовсе — на машине, куда новый конфиг ещё не доехал, сюда
-         * приедет 404 от frps или сама эта страница от службы очков. Поэтому
-         * ответ принимается, только если он json и в нём ровно то, что мы
-         * спрашивали; во всех прочих случаях остаёмся при «ещё не открыта».
+         * Ask the relay what it knows about this name. The route may not exist
+         * at all: on a machine the new config has not reached yet, this gets a
+         * 404 from frps or this very page from the score service. So the
+         * answer is accepted only if it is json and holds exactly what we
+         * asked; in every other case we stay with "not open yet".
          */
         async function askRelay() {
           if (fact.code) return;
@@ -1060,29 +1078,30 @@
                 ? { state: 'waiting', reason: '' }
                 : { state: 'missing', reason: '' });
           } catch (_) {
-            /* не ответил — пусть остаётся то, что показано */
+            /* no answer: let what is shown stay */
           }
         }
         askRelay();
 
-        /* ------------------------------------------------ ждём комнату
+        /* ------------------------------------------------ waiting for the room
          *
-         * Раз в двадцать секунд — тот же адрес заново, без кэша. Пока в ответе
-         * есть метка этой страницы (или ответ не 200 — frps отдаёт её как
-         * 404, caddy как 502), ждём дальше. Как только пришло что-то другое,
-         * это и есть комната: перезагружаемся в неё. Строка под текстом честно
-         * показывает, когда следующая проверка и сколько их уже было.
+         * Every twenty seconds, the same address again, without cache. While
+         * the answer holds this page's mark (or the answer is not 200: frps
+         * serves it as 404, caddy as 502), we keep waiting. As soon as
+         * something else arrives, that is the room: we reload into it. The line
+         * under the text honestly shows when the next check is and how many
+         * there have been.
          *
-         * Тот же ответ мог принести другую новость: комнату закрыли совсем,
-         * ноутбук вернулся на связь, ретранслятор починили. Код каждой проверки
-         * перечитывается — состояние на странице меняется, не дожидаясь, пока
-         * человек нажмёт обновление.
+         * The same answer could bring other news: the room was closed for
+         * good, the laptop came back online, the relay was fixed. The code of
+         * every check is reread, and the state on the page changes without
+         * waiting for the person to press reload.
          */
         const MARK = 'name="colloq-page" content="offline"';
         const EVERY = 20;
-        // Срок — по часам, а не по тикам: в фоновой вкладке таймеры душатся до
-        // раза в минуту и замирают вовсе, а обещание «раз в двадцать секунд»
-        // должно держаться и там.
+        // The deadline goes by the clock, not by ticks: in a background tab
+        // timers are throttled to once a minute or freeze entirely, and the
+        // promise "every twenty seconds" must hold there too.
         let nextAt = Date.now() + EVERY * 1000;
         let checks = 0;
         let opening = false;
@@ -1095,32 +1114,34 @@
         function tick() {
           if (opening) return;
           due();
-          // «Такой комнаты нет» и поломка ничего не ждут — и счётчик проверок
-          // на них не идёт: строка занята кодом ответа.
+          // "No such room" and a breakage wait for nothing, and the check
+          // counter does not run on them: the line is taken by the response code.
           if (!polls()) return;
           const left = Math.max(0, Math.ceil((nextAt - Date.now()) / 1000));
           say(waitLine, () => (checks ? T.next(left, checks) : T.first(left)));
         }
         setInterval(tick, 1000);
-        // Первый тик — сразу: в разметке строка лежит по-русски, а страницу
-        // могли открыть по-английски, и секунда чужого языка была бы видна.
+        // The first tick right away: the markup holds the line in Russian, and
+        // the page may have been opened in English, and a second of the other
+        // language would be visible.
         tick();
 
-        /** Комната ответила: уводим вкладку в неё. */
+        /** The room answered: take the tab into it. */
         function enterRoom() {
           opening = true;
           say(waitText, () => T.opening);
           waitLine.textContent = '';
           retryLine.textContent = '';
-          // Перезагрузка, а не переход по тому же адресу: она перезапрашивает
-          // страницу у сервера, а переход мог бы взять 404 из кэша браузера.
+          // A reload, not navigation to the same address: it re-requests the
+          // page from the server, while navigation could take the 404 from the
+          // browser cache.
           setTimeout(() => location.reload(), 700);
         }
 
-        /** Перечитать, что случилось, по коду ответа на тот же адрес. */
+        /** Reread what happened, by the response code of the same address. */
         function reread(status) {
           if (status === 404) {
-            // Отвечает frps — значит, дело снова в имени, а не в caddy.
+            // frps answers: so it is about the name again, not about caddy.
             if (fact.code) {
               fact.code = 0;
               fact.text = '';
@@ -1143,7 +1164,7 @@
           try {
             r = await fetch(location.href, { cache: 'no-store' });
           } catch (_) {
-            return 'net'; /* сеть моргнула — просто попробуем ещё раз */
+            return 'net'; /* the network blinked: just try again */
           }
           let text = '';
           try { text = await r.text(); } catch (_) {}
@@ -1156,13 +1177,13 @@
         }
 
         /*
-         * «Попробовать снова» — это именно новый запрос того же адреса, по
-         * которому пришёл человек. И frps, и caddy подменяют только внутренний
-         * путь (rewrite), строка в адресе остаётся исходной — так что
-         * location.href и есть тот адрес; страницу видно на нём же, а не на
-         * /offline.html. Комната ответила — уходим в неё; нет — честно говорим,
-         * что ничего не изменилось, и не трогаем игру: перезагрузка ради
-         * проверки стоила бы человеку начатого забега.
+         * "Try again" is exactly a new request of the same address the person
+         * came by. Both frps and caddy substitute only the internal path
+         * (rewrite), the string in the address bar stays the original one, so
+         * location.href is that address; the page is visible at it, not at
+         * /offline.html. The room answered: we go into it; it did not: we say
+         * honestly that nothing has changed and leave the game alone: a reload
+         * for the sake of a check would cost the person the run they started.
          */
         retryBtn.addEventListener('click', async () => {
           if (opening || retryBtn.disabled) return;
@@ -1177,12 +1198,13 @@
           say(retryLine, what === 'net' ? () => T.retryFail : () => T.retrySame);
         });
 
-        /* -------------------------------------------------------- игра
+        /* -------------------------------------------------------- game
          *
-         * Поле 320×128 игровых пикселей, земля на 100, ниже — река. Всё
-         * рисуется прямоугольниками по сетке: спрайты — строки символов, каждый
-         * символ — цвет из палитры или «.» (пусто). «k» — цвет текста страницы,
-         * так цапли и земля сами перекрашиваются под тему и под ночь.
+         * A field of 320×128 game pixels, the ground at 100, below it the river.
+         * Everything is drawn with rectangles on a grid: sprites are strings of
+         * characters, each character is a palette color or "." (empty). "k" is
+         * the page text color, so the herons and the ground recolor themselves
+         * for the theme and for the night.
          */
         const S = 3;
         const W = 320;
@@ -1194,7 +1216,7 @@
         ctx.imageSmoothingEnabled = false;
         ctx.scale(S, S);
 
-        // Цвета страницы читаются из CSS, чтобы тема была одна на всё.
+        // The page colors are read from CSS, so that there is one theme for everything.
         const theme = {};
         function readTheme() {
           const c = getComputedStyle(document.documentElement);
@@ -1206,8 +1228,9 @@
         const darkMedia = matchMedia('(prefers-color-scheme: dark)');
         darkMedia.addEventListener('change', readTheme);
 
-        // Ночь: небо уходит в синь бренда, земля и цапли светлеют, появляются
-        // звёзды. Приходит с очками и уходит с ними же — как у динозавра.
+        // Night: the sky goes to the brand navy, the ground and the herons get
+        // lighter, stars appear. It comes with the score and leaves with it, as
+        // with the dinosaur.
         const NIGHT = { sky: '#0f2d69', hill: '#16346f', 'hill-far': '#123070', water: '#0d2a5a', ripple: '#2b5a9a', reed: '#2c4a3a', cloud: '#2a4a86', ink: '#e6e7e8', muted: '#9ba6be' };
         function hex(c) {
           const m = /^#([0-9a-f]{6})$/i.exec(c);
@@ -1221,14 +1244,15 @@
           const c = x.map((v, i) => Math.round(v + (y[i] - v) * t));
           return '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
         }
-        // Закат — тёплая середина между днём и ночью (только в светлой теме:
-        // в тёмной день и так тёмный, и вспышка оранжевого была бы странной).
+        // Sunset is the warm middle between day and night (only in the light
+        // theme: in the dark one the day is dark anyway, and a flash of orange
+        // would be odd).
         const DUSK = { sky: '#e6b58c', hill: '#d7a37e', 'hill-far': '#e0b090', water: '#9fb7c9', ripple: '#c9d9e6', reed: '#5c6f45', cloud: '#f0cfae' };
         function luma(c) {
           const x = hex(c);
           return x ? (0.2126 * x[0] + 0.7152 * x[1] + 0.0722 * x[2]) / 255 : 0.5;
         }
-        // Текущая палитра мира с учётом ночи (0 — день, 1 — ночь).
+        // The current world palette, accounting for the night (0 is day, 1 is night).
         function world(night) {
           const out = {};
           const dusk = darkMedia.matches ? null : DUSK;
@@ -1237,8 +1261,8 @@
             const mid = (dusk && dusk[k]) || mix(theme[k], NIGHT[k], 0.5);
             out[k] = night < 0.5 ? mix(theme[k], mid, night * 2) : mix(mid, NIGHT[k], (night - 0.5) * 2);
           }
-          // Текст, земля и цапли не размазываются между тёмным и светлым (на
-          // полпути они сливались бы с небом), а переключаются по его яркости.
+          // Text, ground and herons are not blended between dark and light (half
+          // way they would merge with the sky) but switch by its brightness.
           const dark = luma(out.sky) < 0.45;
           out.ink = dark ? NIGHT.ink : theme.ink;
           out.muted = dark ? NIGHT.muted : theme.muted;
@@ -1246,20 +1270,20 @@
         }
 
         const PAL = {
-          b: '#8b5a2b', // шерсть
-          d: '#4a2c12', // уши, нос, копытца
-          n: '#a8703a', // морда светлее шерсти
-          o: '#f28c28', // мандарин на голове — без него это просто бобёр
-          g: '#3f9142', // листик мандарина
-          w: '#ffffff', // белок глаза
-          s: '#8a94a8', // камень
-          t: '#5d6b8a', // тень камня
-          l: '#b8c0d0', // блик камня
-          r: '#6b4a2a', // бревно
-          q: '#4a3018', // кора
-          c: '#4d7c5a', // кайман
-          e: '#2f5a3c', // спина каймана
-          y: '#f0c419', // глаз каймана
+          b: '#8b5a2b', // fur
+          d: '#4a2c12', // ears, nose, hooves
+          n: '#a8703a', // muzzle, lighter than the fur
+          o: '#f28c28', // the tangerine on the head: without it this is just a beaver
+          g: '#3f9142', // the tangerine leaf
+          w: '#ffffff', // the white of the eye
+          s: '#8a94a8', // rock
+          t: '#5d6b8a', // rock shadow
+          l: '#b8c0d0', // rock highlight
+          r: '#6b4a2a', // log
+          q: '#4a3018', // bark
+          c: '#4d7c5a', // caiman
+          e: '#2f5a3c', // caiman back
+          y: '#f0c419', // caiman eye
         };
 
         const CAPY_RUN_A = [
@@ -1288,7 +1312,7 @@
           '.......dd.......dd........',
           '..........................',
         ]);
-        // Присела: та же капибара, сложенная вдвое; мандарин держится.
+        // Crouching: the same capybara folded in two; the tangerine holds on.
         const CAPY_DUCK = [
           '.......gg.................',
           '......oooo........dd..dd..',
@@ -1299,7 +1323,7 @@
           '...bbbbbbbbbbbbbbbbbbbbnn.',
           '....dddd.........dddd.....',
         ];
-        // Споткнулась: глаз закрыт, мандарин слетел.
+        // Tripped: the eye is closed, the tangerine flew off.
         const CAPY_DOWN = [
           '..........................',
           '..........................',
@@ -1361,8 +1385,8 @@
           '..cccccccccccccccccccccccccc',
           '.....ccc.....ccc.....ccc....',
         ];
-        // Цапля: две позы крыльев. Силуэт цветом текста, чтобы читаться на
-        // любом небе — дневном, ночном и тёмной темы.
+        // The heron: two wing poses. The silhouette is in the text color, to
+        // read on any sky: day, night and the dark theme.
         const HERON_A = [
           '......kk........',
           '.....kkkk.......',
@@ -1404,7 +1428,7 @@
           ' ': ['000', '000', '000', '000', '000'],
         };
 
-        // Цвет символа с учётом мира: k — текст, C — облако, остальное — палитра.
+        // A character's color given the world: k is text, C is cloud, the rest is the palette.
         function drawSprite(rows, x, y, w) {
           x = Math.round(x);
           y = Math.round(y);
@@ -1437,19 +1461,19 @@
         }
         const textWidth = (text, px) => text.length * 4 * px - px;
 
-        /* Физика в пикселях и миллисекундах: прыжок на 34 пикселя за ~0,55 с,
-         * скорость от 0,11 до 0,30 пикселя за миллисекунду. */
+        /* Physics in pixels and milliseconds: a jump of 34 pixels in ~0.55 s,
+         * speed from 0.11 to 0.30 pixels per millisecond. */
         const GRAVITY = 0.0009;
         const JUMP_V = -0.2475;
         const SPEED0 = 0.11;
         const SPEED_MAX = 0.3;
         const ACCEL = 0.0000045;
-        const NIGHT_EVERY = 500; // очков на полный круг день–ночь
+        const NIGHT_EVERY = 500; // points for a full day–night cycle
         const TANGERINE_POINTS = 5;
 
-        // Препятствия. from — со скорости какой появляются; y — верх спрайта.
-        // Цапли трёх высот: низкую перепрыгнуть, под высокой пробежать, среднюю
-        // — присесть (или перепрыгнуть с точным моментом).
+        // Obstacles. from: the speed they appear from; y: the top of the sprite.
+        // Herons at three heights: jump over the low one, run under the high
+        // one, crouch under the middle one (or jump over it with exact timing).
         const KINDS = [
           { name: 'rock', rows: ROCK_S, w: 12, h: 6, y: GROUND - 6, weight: 4, from: 0, hit: 'rock' },
           { name: 'rock', rows: ROCK_L, w: 16, h: 10, y: GROUND - 10, weight: 3, from: 0, hit: 'rock' },
@@ -1561,11 +1585,11 @@
           sound.play('jump');
         }
         function duck(on) {
-          // Намерение помнится и в воздухе: ↓, зажатая над камнем, присаживает
-          // капибару сразу после приземления — под среднюю цаплю.
+          // The intention is remembered in the air too: ↓ held over a rock makes
+          // the capybara crouch right after landing, under the middle heron.
           state.duckHeld = on;
           if (state.air) {
-            // В воздухе ↓ прижимает к земле — как у динозавра.
+            // In the air ↓ presses it to the ground, as with the dinosaur.
             if (on) state.vy = Math.max(state.vy, 0.18);
             return;
           }
@@ -1575,18 +1599,18 @@
         function spawnObstacle() {
           const kind = pickKind(state.speed);
           state.obs.push({ kind, x: W + 8 });
-          // Парные камни — на скорости: два маленьких через шаг капибары.
+          // Paired rocks at speed: two small ones one capybara step apart.
           if (kind.rows === ROCK_S && state.speed > 0.17 && Math.random() < 0.4) {
             state.obs.push({ kind, x: W + 8 + 22 });
           }
-          // Минимальный разбег растёт со скоростью: прыжок занимает время, и
-          // при быстром беге препятствия должны стоять реже.
+          // The minimum run-up grows with speed: a jump takes time, and at a
+          // fast run obstacles must stand farther apart.
           const minGap = 95 + state.speed * 720;
           state.nextObsAt = state.dist + minGap + Math.random() * 110;
         }
 
         function spawnItem() {
-          // Мандарин висит там, куда достаёт прыжок; не над самым препятствием.
+          // A tangerine hangs where a jump reaches; not right above an obstacle.
           const lastObs = state.obs[state.obs.length - 1];
           const x = W + 8;
           if (lastObs && Math.abs(lastObs.x - x) < 40) {
@@ -1676,7 +1700,7 @@
 
         function render() {
           const cycle = (state.score % NIGHT_EVERY) / NIGHT_EVERY;
-          // Ночь занимает вторую половину круга, с мягкими краями.
+          // Night takes the second half of the cycle, with soft edges.
           const night = cycle < 0.5 ? 0 : cycle < 0.6 ? (cycle - 0.5) * 10 : cycle < 0.9 ? 1 : 1 - (cycle - 0.9) * 10;
           const w = world(night);
 
@@ -1696,7 +1720,7 @@
 
           for (const c of state.clouds) drawSprite(c.rows, c.x, c.y, w);
 
-          // Холмы — два ряда мягких горбов, дальние светлее и медленнее.
+          // Hills: two rows of soft humps, the far ones lighter and slower.
           for (const far of [true, false]) {
             ctx.fillStyle = far ? w['hill-far'] : w.hill;
             for (const h of state.hills) {
@@ -1712,7 +1736,7 @@
             ctx.fillRect(0, GROUND - (far ? 26 : 18), W, far ? 8 : 18);
           }
 
-          // Берег и река.
+          // The bank and the river.
           ctx.fillStyle = w.water;
           ctx.fillRect(0, GROUND + 5, W, H - GROUND - 5);
           ctx.fillStyle = w.ripple;
@@ -1763,10 +1787,11 @@
           if (state.mode === 'run') requestAnimationFrame(frame);
         }
 
-        /* ------------------------------------------------------ звук
+        /* ------------------------------------------------------ sound
          *
-         * Пищалки на WebAudio, выключены по умолчанию: страницу открывают в
-         * аудитории. Включение — кнопкой в углу экрана, выбор запоминается.
+         * Beepers on WebAudio, off by default: the page is opened in a
+         * classroom. It is turned on with the button in the corner of the
+         * screen, and the choice is remembered.
          */
         const soundBtn = document.getElementById('sound');
         const sound = {
@@ -1777,8 +1802,8 @@
             try {
               this.ctx = this.ctx || new (window.AudioContext || window.webkitAudioContext)();
               const c = this.ctx;
-              // После сна телефона или ухода из вкладки контекст засыпает;
-              // вызов идёт из жеста, так что разбудить его можно.
+              // After the phone sleeps or the tab is left, the context goes to
+              // sleep; the call comes from a gesture, so it can be woken up.
               if (c.state !== 'running') c.resume();
               const now = c.currentTime;
               const beep = (freq, at, len, type, gain) => {
@@ -1796,7 +1821,7 @@
               else if (kind === 'coin') { beep(880, 0, 0.07); beep(1320, 0.07, 0.1); }
               else if (kind === 'tick') { beep(1200, 0, 0.05, 'square', 0.03); }
               else if (kind === 'hit') { beep(160, 0, 0.25, 'sawtooth', 0.05); beep(110, 0.08, 0.3, 'sawtooth', 0.05); }
-            } catch (_) { /* без звука — не беда */ }
+            } catch (_) { /* no sound is no disaster */ }
           },
         };
         function showSound() { soundBtn.setAttribute('aria-pressed', sound.on ? 'true' : 'false'); soundBtn.setAttribute('aria-label', sound.on ? T.soundOn : T.soundOff); }
@@ -1807,13 +1832,14 @@
           store.set('capy.sound', sound.on ? '1' : '0');
           showSound();
           if (sound.on) sound.play('coin');
-          // Клик мышью оставил бы фокус на кнопке, и пробел дальше щёлкал бы
-          // звуком вместо прыжка. С клавиатуры (Tab) фокус остаётся.
+          // A mouse click would leave focus on the button, and space would then
+          // click the sound instead of jumping. From the keyboard (Tab) focus
+          // stays.
           if (e.detail) soundBtn.blur();
         });
         soundBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
 
-        /* ------------------------------------------------ экран и панели */
+        /* ------------------------------------------------ screen and panels */
         const hint = document.getElementById('hint');
         const over = document.getElementById('over');
         const overTitle = document.getElementById('over-title');
@@ -1830,10 +1856,11 @@
         const topEl = document.getElementById('top');
 
         /*
-         * Всё, что уже написано на экране, произносится через say: при смене
-         * языка страница складывает те же фразы заново, не теряя ни разобранной
-         * карточки, ни таблицы. Свойства (подписи для читалки, placeholder)
-         * текстом не являются — их переодевает dressGame.
+         * Everything already written on the screen is spoken through say: on a
+         * language switch the page puts the same phrases together again,
+         * losing neither the card laid out nor the table. Properties (screen
+         * reader labels, placeholder) are not text: dressGame dresses them
+         * anew.
          */
         say(document.getElementById('game-label'), () => T.gameLabel);
         say(document.getElementById('controls'), () => (coarse ? T.touch : T.keys));
@@ -1852,9 +1879,10 @@
         }
         redress.push(dressGame);
         dressGame();
-        // Ключ владельца: браузер один раз придумывает случайную строку и дальше
-        // подписывает ею записи. Сервис по нему знает, чьи строки, — так имя
-        // можно сменить, не потеряв рекорд, а под чужое имя записаться нельзя.
+        // The owner key: the browser makes up a random string once and then
+        // signs entries with it. By it the service knows whose rows are whose,
+        // so the name can be changed without losing the record, and one cannot
+        // sign up under someone else's name.
         function ownerKey() {
           let k = store.get('capy.owner');
           if (!k || !/^[0-9a-f]{32}$/.test(k)) {
@@ -1866,8 +1894,9 @@
           return k;
         }
         const OWNER = ownerKey();
-        // Жетон забега: подписанное сервисом время старта. С ним очки сверяются с
-        // часами, и curl за минуту до звонка не впишет 99 999.
+        // The run token: the start time signed by the service. With it the score
+        // is checked against the clock, and curl a minute before the bell will
+        // not put in 99 999.
         let runToken = null;
         async function fetchRun(run) {
           try {
@@ -1875,7 +1904,7 @@
             if (!r.ok) return;
             const d = await r.json();
             if (state.run === run && typeof d.run === 'string') runToken = d.run;
-          } catch (_) { /* таблица недоступна — запись потом честно об этом скажет */ }
+          } catch (_) { /* the table is unavailable: saving will say so honestly later */ }
         }
 
         function start() {
@@ -1934,10 +1963,11 @@
           const known = store.get('capy.name') || '';
           nameInput.value = known;
           over.hidden = false;
-          // Имя уже вписывали — очки уходят в таблицу сами, и ничего не
-          // потеряется, если тут же нажать пробел. Без имени пробел сначала
-          // ставит курсор в поле: рекорд без записи — обидно. Результат ниже
-          // уже записанного рекорда таблицу не изменит — его и не шлём.
+          // The name has been typed before: the score goes to the table by
+          // itself, and nothing is lost if space is pressed right away. Without
+          // a name, space first puts the cursor into the field: a record without
+          // an entry would be a pity. A result below the record already saved
+          // will not change the table, so it is not sent at all.
           if (known && state.score > 0) {
             if (state.everSent && state.score <= prevBest) {
               state.sent = true;
@@ -1949,7 +1979,7 @@
             } else submitScore(known, true);
           }
           showOverHint();
-          // Карточка разворачивается ниже экрана; на телефоне она за сгибом.
+          // The card unfolds below the screen; on a phone it is below the fold.
           over.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
         }
 
@@ -1961,15 +1991,16 @@
           hint.hidden = false;
         }
 
-        // Одно нажатие на всё: из покоя — старт и прыжок, в игре — прыжок,
-        // на паузе — продолжить, после падения — новая игра.
+        // One press for everything: from rest, start and jump; in the game,
+        // jump; on pause, continue; after a fall, a new game.
         function press() {
           if (state.mode === 'run') jump();
           else if (state.mode === 'pause') resume();
           else if (state.mode === 'over' && !state.sent && state.score > 0 && !state.armed) {
             state.armed = true;
-            // Имя в поле уже есть (таблица могла молчать при автозаписи) —
-            // одно нажатие отправляет; пустое поле получает курсор.
+            // There is already a name in the field (the table may have been
+            // silent at the auto-save): one press sends; an empty field gets the
+            // cursor.
             if (nameInput.value.trim()) submitScore(nameInput.value, true);
             else nameInput.focus();
             showOverHint();
@@ -1978,8 +2009,8 @@
 
         window.addEventListener('keydown', (e) => {
           const tag = e.target && e.target.tagName;
-          // Курсор в пустом поле имени: пробел или ↑ — «играть без записи»,
-          // как и обещает подсказка. Имя с пробела не начинается.
+          // The cursor in an empty name field: space or ↑ means "play without
+          // saving", as the hint promises. A name does not start with a space.
           if (e.target === nameInput && (e.code === 'Space' || e.code === 'ArrowUp') && state.mode === 'over' && !nameInput.value.trim()) {
             e.preventDefault();
             nameInput.blur();
@@ -1988,8 +2019,9 @@
             return;
           }
           if (tag === 'INPUT' || (tag === 'BUTTON' && e.target !== hint)) return;
-          // Пока игра не идёт, клавиши — страницы: пробел листает, стрелки
-          // крутят. Экран забирает их себе, только когда он на виду.
+          // While the game is not running, the keys belong to the page: space
+          // scrolls, the arrows scroll. The screen takes them only when it is in
+          // view.
           const active = state.mode === 'run' || state.mode === 'pause';
           if (e.code === 'Space' || e.code === 'ArrowUp') {
             if (!active && !screenInView()) return;
@@ -2008,8 +2040,8 @@
           if (e.code === 'ArrowDown') duck(false);
         });
 
-        // Палец: тап — прыжок, палец вниз на два десятка пикселей — присесть,
-        // пока держите. Мышь — просто клик.
+        // A finger: a tap is a jump, a finger moved down a couple dozen pixels
+        // is a crouch, while held. A mouse is just a click.
         const screen = document.getElementById('screen');
         function screenInView() {
           const r = screen.getBoundingClientRect();
@@ -2018,9 +2050,9 @@
         let touch = null;
         screen.addEventListener('pointerdown', (e) => {
           touch = { x: e.clientX, y: e.clientY, ducked: false, jumped: false, moved: false, t: performance.now() };
-          if (state.mode !== 'run') return; // старт — на отрыве пальца, если это был тап, а не свайп
+          if (state.mode !== 'run') return; // the start comes on lifting the finger, if it was a tap and not a swipe
           e.preventDefault();
-          // Прыжок откладывается на мгновение: вдруг это свайп вниз.
+          // The jump is delayed for an instant: it might be a swipe down.
           setTimeout(() => { if (touch && !touch.ducked && !touch.moved && state.mode === 'run') { jump(); touch.jumped = true; } }, 70);
         });
         screen.addEventListener('pointermove', (e) => {
@@ -2037,22 +2069,22 @@
         });
         screen.addEventListener('pointercancel', release);
         screen.addEventListener('pointerleave', release);
-        // Тап уже пойман на экране; кнопке остаётся клавиатура — и она не
-        // должна удерживать фокус после клика мышью.
+        // The tap is already caught on the screen; the button is left with the
+        // keyboard, and it must not hold focus after a mouse click.
         hint.addEventListener('click', (e) => { if (e.detail === 0) press(); else hint.blur(); });
         document.getElementById('again').addEventListener('click', () => { start(); jump(); });
 
         document.addEventListener('visibilitychange', () => {
           if (document.hidden) pause();
-          else due(); // вернулись во вкладку — заглянуть в комнату сразу, не через двадцать секунд
+          else due(); // back in the tab: look into the room right away, not in twenty seconds
         });
 
-        /* ------------------------------------------------ таблица рекордов
+        /* ------------------------------------------------ high-score table
          *
-         * Очки ходят в крошечный сервис на самом ретрансляторе за путём
-         * /.relay/capy/scores (scripts/relay-capy.py). Если его нет или он
-         * молчит — таблицы просто не видно, игра от этого не зависит. Таблица
-         * держит одну строку на имя — лучшую попытку.
+         * The score goes to a tiny service on the relay itself, behind the path
+         * /.relay/capy/scores (scripts/relay-capy.py). If it is missing or
+         * silent, the table is simply not shown, and the game does not depend
+         * on it. The table keeps one row per name: the best attempt.
          */
         const API = '/.relay/capy/scores';
 
@@ -2066,9 +2098,10 @@
           return li;
         }
 
-        // Последняя таблица помнится целиком: строки в ней — имена и числа, но
-        // «ещё N имён» и счётчик попыток на своём языке, и при переключении
-        // таблицу складывают заново из того же ответа, а не запрашивают снова.
+        // The last table is remembered whole: its rows are names and numbers,
+        // but "N more names" and the attempt counter are in their own language,
+        // and on a switch the table is put together again from the same
+        // answer, not requested again.
         let lastBoard = null;
         function renderBoard(d, mine) {
           lastBoard = { d, mine };
@@ -2107,9 +2140,9 @@
           submitScore(nameInput.value, false);
         });
 
-        // Имя записано, а в поле теперь другое — значит, хотят переписать под
-        // ним: кнопка оживает и говорит, что именно сделает. Вернули прежнее —
-        // снова «Записано».
+        // The name is saved, but the field now holds another one: so they want
+        // to rewrite under it: the button comes alive and says what exactly it
+        // will do. They put the previous one back: "Saved" again.
         nameInput.addEventListener('input', () => {
           if (state.mode !== 'over' || state.sentAs == null || state.sending) return;
           const v = nameInput.value.trim().slice(0, 16);
@@ -2130,18 +2163,18 @@
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         async function submitScore(raw, auto) {
           if (state.sent || state.sending) return;
-          // Ответ может догнать уже следующий забег — тогда он ничей.
+          // The answer may catch up with the next run already: then it belongs to nobody.
           const run = state.run;
           const score = state.score;
           const name = raw.trim().slice(0, 16);
           /*
-           * Без имени записи нет.
+           * No name, no entry.
            *
-           * Раньше пустое поле уходило на сервис и становилось «Анонимом» —
-           * своей вечной строкой на каждую попытку, и таблица про людей
-           * превращалась в ленту безымянных заездов (пять строк из восьми).
-           * Играть без имени по-прежнему можно сколько угодно: не пишется
-           * только строка в таблице.
+           * An empty field used to go to the service and become "Аноним"
+           * (Anonymous), its own permanent row for every attempt, and a table
+           * about people turned into a feed of nameless runs (five rows out of
+           * eight). You can still play without a name as much as you like: only
+           * the row in the table is not written.
            */
           if (!name) {
             sendBtn.disabled = false;
@@ -2182,8 +2215,8 @@
             sendBtn.dataset.done = '1';
             nameInput.blur();
             showOverHint();
-            // Рекорд этого имени в таблице может быть выше местного — с другого
-            // устройства или после переезда строк; HI подтягивается к нему.
+            // This name's record in the table may be higher than the local one,
+            // from another device or after rows moved; HI is pulled up to it.
             if (typeof d.best === 'number' && d.best > state.best) {
               state.best = d.best;
               store.set('capy.best', String(state.best));
@@ -2197,7 +2230,7 @@
               renderBoard(d, null);
               return;
             }
-            // Чип про рекорд считался по этому устройству; таблица знает лучше.
+            // The record chip was computed for this device; the table knows better.
             if (d.improved === false) recordChip.hidden = true;
             say(statusEl, () => who() + (d.rank === 1
               ? T.firstPlace
@@ -2211,8 +2244,8 @@
             say(sendBtn, () => T.send);
             showOverHint();
             const why = err && err.message;
-            // Ключ владельца заводит сама страница; в ответ owner попадают
-            // только запросы мимо неё.
+            // The page creates the owner key itself; the owner answer is reached
+            // only by requests that bypass it.
             say(statusEl, () => (why === 'taken'
               ? T.errors.taken(name)
               : T.errors[why] || T.errors.other));
@@ -2222,15 +2255,16 @@
           }
         }
 
-        /* ------------------------------------------------------- первый кадр */
+        /* ------------------------------------------------------- first frame */
         reset();
         render();
 
-        // Для проверок вживую (headless Chrome), не для игры.
+        // For live checks (headless Chrome), not for the game.
         window.capy = { state, press, jump, duck, gameOver, start, pause, resume, render };
-        // То же для страниц ошибок: чем страница себя считает и на каком языке
-        // говорит. Состояние отсюда меняется только в проверках — по ссылке
-        // его не подделать, иначе чужая ссылка врала бы «такой комнаты нет».
+        // The same for the error pages: what the page thinks it is and which
+        // language it speaks. The state is changed from here only in checks: it
+        // cannot be forged by a link, otherwise someone else's link would lie
+        // "no such room".
         window.colloqPage = {
           fact,
           get state() { return page.state; },

@@ -1,16 +1,16 @@
 /**
- * Что можно кэшировать на год, а что нельзя.
+ * What may be cached for a year and what may not.
  *
- * Vite штампует хэш в имя всего, что собирает, и складывает это в `assets/`;
- * всё остальное в dist приезжает из `web/public` как есть, под именем, которое
- * выбрал человек. Рядом с проверкой каталога стоял регэксп «дефис и восемь
- * знаков» — и `hse-sans-400.woff2` попадал под него («-sans-400»), хотя никакого
- * хэша там нет. Шрифт института уходил с `immutable` на год: заменить
- * начертание под тем же именем и дождаться этого у вернувшихся браузеров было
- * нельзя.
+ * Vite stamps a hash into the name of everything it builds and puts it in
+ * `assets/`; everything else in dist comes from `web/public` as is, under the
+ * name a person chose. Next to the directory check stood the regex "a hyphen
+ * and eight characters" — and `hse-sans-400.woff2` fell under it
+ * ("-sans-400"), although there is no hash there at all. The institute's font
+ * went out with `immutable` for a year: replacing a face under the same name
+ * and having returning browsers pick it up was impossible.
  *
- * STATIC_DIR ставится ДО импорта приложения: config читает переменные при
- * загрузке модуля, поэтому приложение здесь подтягивается динамически.
+ * STATIC_DIR is set BEFORE the app is imported: config reads the variables
+ * when the module loads, which is why the app is pulled in dynamically here.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -25,14 +25,14 @@ const staticDir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-static-'))
 fs.mkdirSync(path.join(staticDir, 'assets'), { recursive: true })
 fs.mkdirSync(path.join(staticDir, 'fonts'), { recursive: true })
 fs.writeFileSync(path.join(staticDir, 'assets', 'index-UnEQhcxl.js'), 'export default 1\n')
-// Настоящее имя из web/public: дефис, «sans», дефис, «400» — восемь знаков,
-// и ни одного из них не выбирал сборщик.
+// A real name from web/public: a hyphen, "sans", a hyphen, "400" — eight
+// characters, and the bundler chose none of them.
 fs.writeFileSync(path.join(staticDir, 'fonts', 'hse-sans-400.woff2'), 'not really a font')
 /*
- * Страница размером с настоящую, а не в две строки: собранный index.html —
- * это 26 КБ (входной модуль Vite внутри), и на двух строках ни gzip, ни brotli
- * не выигрывают у исходника ни байта — проверка «отдаём сжатое» на такой
- * странице проверяла бы только арифметику zlib.
+ * A page the size of a real one, not two lines: the built index.html is 26 KB
+ * (the Vite entry module inside), and on two lines neither gzip nor brotli
+ * beats the source by a single byte — a "we serve it compressed" check on such
+ * a page would check only zlib's arithmetic.
  */
 fs.writeFileSync(
   path.join(staticDir, 'index.html'),
@@ -63,7 +63,7 @@ after(() => {
 const cacheOf = async (p: string): Promise<string> =>
   (await fetch(`${base}${p}`)).headers.get('cache-control') ?? ''
 
-/** fetch распаковывает Content-Encoding сам, а здесь важны именно те байты. */
+/** fetch unpacks Content-Encoding by itself, and here exactly those bytes matter. */
 const raw = (p: string, headers: Record<string, string> = {}) =>
   new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }>((resolve, reject) => {
     const request = http.request(`${base}${p}`, { headers }, (response) => {
@@ -77,21 +77,21 @@ const raw = (p: string, headers: Record<string, string> = {}) =>
     request.end()
   })
 
-test('собранное с хэшем в имени кэшируется на год', async () => {
+test('built files with a hash in the name are cached for a year', async () => {
   assert.equal(await cacheOf('/assets/index-UnEQhcxl.js'), 'public, max-age=31536000, immutable')
 })
 
-test('шрифт из public — не версионный файл, сколько бы дефисов ни было в имени', async () => {
+test('a font from public is not a versioned file, however many hyphens its name has', async () => {
   const said = await cacheOf('/fonts/hse-sans-400.woff2')
   assert.equal(said, 'public, max-age=3600')
   assert.equal(
     /immutable/.test(said),
     false,
-    'шрифт под тем же именем не заменить у вернувшихся браузеров целый год',
+    'a font under the same name could not be replaced in returning browsers for a whole year',
   )
 })
 
-test('страница не кэшируется вовсе: за ней вся навигация', async () => {
+test('the page is not cached at all: all navigation stands behind it', async () => {
   const seen = await fetch(`${base}/s/abc`)
   assert.equal(seen.headers.get('cache-control'), 'no-cache')
 })
@@ -111,26 +111,26 @@ test('navigation HTML supplies the saved language and revalidates when it change
 })
 
 /*
- * Страница собирается один раз на выкладку и язык, а не на каждый вход.
+ * The page is built once per deploy and language, not on every visit.
  *
- * Раньше каждая навигация читала index.html, склеивала в него язык и уходила в
- * потоковый brotli: 1.74 мс процессорного времени на запрос там, где в момент
- * звонка приходит вся группа разом. Теперь байты, ETag и обе кодировки лежат
- * готовыми (server/src/frontend-html.ts), и проверяется здесь именно это —
- * счётчик сборок, а не «стало быстрее».
+ * Previously every navigation read index.html, spliced the language into it
+ * and went into streaming brotli: 1.74 ms of CPU time per request at the
+ * moment of the bell, when the whole group arrives at once. Now the bytes, the
+ * ETag and both encodings lie ready (server/src/frontend-html.ts), and exactly
+ * that is checked here — the build counter, not "it got faster".
  */
-test('одна и та же страница собирается однажды, а не на каждый запрос', async () => {
+test('the same page is built once, not on every request', async () => {
   const { frontendPageBuilds } = await import('../server/src/frontend-html.js')
   const before = frontendPageBuilds()
   const first = await fetch(`${base}/s/abc`, { headers: { 'accept-encoding': 'br' } })
   const firstBody = Buffer.from(await first.arrayBuffer())
   const second = await fetch(`${base}/s/xyz`, { headers: { 'accept-encoding': 'br' } })
-  assert.equal(frontendPageBuilds() - before, 0, 'страницу пересобрали на втором входе')
+  assert.equal(frontendPageBuilds() - before, 0, 'the page was rebuilt on the second visit')
   assert.equal(first.headers.get('etag'), second.headers.get('etag'))
   assert.deepEqual(firstBody, Buffer.from(await second.arrayBuffer()))
 })
 
-test('готовые байты уходят в сокет как есть, а не через сжатие на лету', async () => {
+test('ready bytes go to the socket as is, not through on-the-fly compression', async () => {
   const plain = await raw('/s/abc', { 'accept-encoding': 'identity' })
   assert.equal(plain.headers['content-encoding'], undefined)
   const html = plain.body.toString('utf8')
@@ -141,19 +141,20 @@ test('готовые байты уходят в сокет как есть, а �
     const response = await raw('/s/abc', { 'accept-encoding': encoding })
     assert.equal(response.headers['content-encoding'], encoding)
     assert.equal(response.headers.vary, 'Accept-Encoding')
-    // Длина объявлена: ответ целиком известен заранее, а не течёт из zlib.
+    // The length is declared: the whole response is known in advance, not
+    // streamed out of zlib.
     assert.equal(response.headers['content-length'], String(response.body.length))
     assert.equal(decode(response.body).toString('utf8'), html)
-    assert.ok(response.body.length < plain.body.length, `${encoding}: тело не сжато`)
+    assert.ok(response.body.length < plain.body.length, `${encoding}: the body is not compressed`)
   }
 })
 
-test('вернувшемуся студенту отдаётся 304, а не страница заново', async () => {
+test('a returning student gets a 304, not the page again', async () => {
   const { frontendPageBuilds } = await import('../server/src/frontend-html.js')
   const etag = (await fetch(`${base}/s/abc`)).headers.get('etag')!
-  // Сильный тег: слабым его делал express, потому что считал на лету и не знал,
-  // что отдаст.
-  assert.ok(!etag.startsWith('W/'), `ожидался сильный ETag, а не ${etag}`)
+  // A strong tag: express made it weak because it computed it on the fly and
+  // did not know what it would send.
+  assert.ok(!etag.startsWith('W/'), `expected a strong ETag, not ${etag}`)
   const before = frontendPageBuilds()
   for (const sent of [etag, `W/${etag}`, `"other-build", ${etag}`, '*']) {
     const again = await raw('/s/abc', { 'if-none-match': sent })
@@ -167,12 +168,12 @@ test('вернувшемуся студенту отдаётся 304, а не с
   assert.equal(other.status, 200)
 })
 
-test('выкладка отменяет готовые байты: файл изменился — страница собирается заново', async () => {
+test('a deploy invalidates the ready bytes: the file changed — the page is built again', async () => {
   const { frontendPageBuilds } = await import('../server/src/frontend-html.js')
   const was = (await fetch(`${base}/s/abc`)).headers.get('etag')
   const before = frontendPageBuilds()
-  // Ровно то, что делает выкладка: новый index.html на том же месте. Ключ —
-  // mtime и размер, поэтому меняется и содержимое, и длина.
+  // Exactly what a deploy does: a new index.html in the same place. The key is
+  // mtime and size, so both the contents and the length change.
   fs.writeFileSync(path.join(staticDir, 'index.html'), '<!doctype html><title>Colloq снова</title>')
   const now = await fetch(`${base}/s/abc`)
   assert.equal(frontendPageBuilds() - before, 1)

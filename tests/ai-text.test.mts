@@ -1,15 +1,16 @@
 /**
- * Слова и обрезка оракула — и цена сборки кадра.
+ * The oracle's words and cutting, and the cost of building a frame.
  *
- * Русский плюрал был написан в этом модуле четырьмя разными способами, а
- * `clip` — двумя, и они уже разошлись: одна копия считала маркер в бюджет,
- * другая клала его сверх — то есть отдавала модели больше, чем ей отвели.
- * Правило одно, значит и копия одна; здесь она закреплена.
+ * The Russian plural was written in this module in four different ways, and
+ * `clip` in two, and they had already diverged: one copy counted the marker
+ * within the budget, the other put it on top, that is, gave the model more
+ * than it was allotted. One rule means one copy; it is pinned down here.
  *
- * Рядом — то, чего кадр делать не должен: читать выводы всех ячеек всех
- * тетрадей и заводить в документе то, чего в нём не было. Разбор вывода —
- * `JSON.parse` каждой записи, включая base64 картинки на сотни килобайт, и
- * делался он на каждый вопрос для ячеек, которые до кадра и не доезжают.
+ * Next to it is what a frame must not do: read the outputs of every cell of
+ * every notebook and create in the document what was not there. Parsing an
+ * output is `JSON.parse` of every record, including base64 images of
+ * hundreds of kilobytes, and it was done on every question for cells that
+ * never even reach the frame.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -30,11 +31,11 @@ import { createSession } from '../server/src/db.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
 import { cellOutputs, createCell, getCells, writeOutput } from '@shared/notebook'
 
-test('плурал по одному правилу — включая 11–14 и 111', () => {
+test('plurals by one rule, including 11–14 and 111', () => {
   assert.equal(seconds(1), '1 секунду')
   assert.equal(seconds(2), '2 секунды')
   assert.equal(seconds(5), '5 секунд')
-  assert.equal(seconds(11), '11 секунд', 'одиннадцать — не «одну»')
+  assert.equal(seconds(11), '11 секунд', 'eleven does not take the singular form')
   assert.equal(seconds(21), '21 секунду')
   assert.equal(seconds(22), '22 секунды')
   assert.equal(seconds(111), '111 секунд')
@@ -54,40 +55,40 @@ test('плурал по одному правилу — включая 11–14 �
   assert.equal(pad(3), '03')
 })
 
-test('обрезка укладывается в потолок вместе со своим маркером', () => {
+test('a cut fits within the ceiling together with its marker', () => {
   const long = 'a'.repeat(5_000)
   for (const limit of [100, 400, 1_500, 4_999]) {
     const cut = clip(long, limit)
-    assert.ok(cut.length <= limit, `обрезка на ${limit} вышла длиной ${cut.length}`)
+    assert.ok(cut.length <= limit, `a cut at ${limit} came out ${cut.length} long`)
     assert.match(cut, /truncated \d+ chars/)
   }
-  // Число в маркере — то, что правда выброшено, а не разница с потолком.
+  // The number in the marker is what was really dropped, not the difference from the ceiling.
   const cut = clip(long, 1_000)
   const dropped = Number(/truncated (\d+) chars/.exec(cut)![1])
   assert.equal(dropped, 5_000 - (cut.length - `\n… truncated ${dropped} chars …\n`.length))
-  // Короткое не трогается вовсе.
+  // Something short is not touched at all.
   assert.equal(clip('коротко', 100), 'коротко')
 })
 
-test('маркер обрезки говорит на языке своего кадра', () => {
+test('the cut marker speaks the language of its frame', () => {
   const russian = clip('б'.repeat(2_000), 300, (n) => `\n… пропущено ${n} знаков …\n`)
   assert.ok(russian.length <= 300)
   assert.match(russian, /пропущено \d+ знаков/)
 })
 
-test('однострочная обрезка и распрямление многострочного', () => {
+test('one-line cut and flattening of multi-line text', () => {
   assert.equal(clipLine('коротко', 20), 'коротко')
   assert.equal(clipLine('a'.repeat(30), 10).length, 10)
   assert.ok(clipLine('a'.repeat(30), 10).endsWith('…'))
   assert.equal(flatten('первая\n  вторая\tтретья  '), 'первая вторая третья')
 })
 
-test('кадр для модели не разбирает выводы дальних ячеек и не правит документ', () => {
+test('the frame for the model does not parse outputs of distant cells and does not edit the document', () => {
   const id = 'ai-text-context'
   createSession(id, 'Кадр', null)
   const { doc } = getSessionDoc(id)
-  // Картинка на четверть мегабайта — ровно то, что стоило дорого: base64 в
-  // модель не едет никогда, а `JSON.parse` по нему шёл на каждый вопрос.
+  // An image of a quarter of a megabyte is exactly what was expensive: base64
+  // never goes to the model, yet `JSON.parse` ran over it on every question.
   const heavy = 'A'.repeat(250_000)
   doc.transact(() => {
     const cells = getCells(doc)
@@ -100,24 +101,26 @@ test('кадр для модели не разбирает выводы даль
     }
     cells.push([createCell('code', 'последняя = 1', 'c_ctx_bare')])
   })
-  // Ячейка старой комнаты — без списка выводов вовсе: такие в базе есть, и
-  // именно их чтение и заводило.
+  // A cell of an old room, with no output list at all: such cells exist in the
+  // database, and it was exactly reading them that created one.
   const bare = getCells(doc).get(getCells(doc).length - 1)
   doc.transact(() => bare.delete('outputs'))
-  assert.ok(bare.get('outputs') === undefined, 'подготовка теста не удалась')
+  assert.ok(bare.get('outputs') === undefined, 'test setup failed')
 
   const text = buildContext(id, ['c_ctx_0'], null)
-  assert.match(text, /step_0 = 0/, 'о чём спросили, того в кадре нет')
-  // Дальние ячейки свёрнуты — вместе со своими картинками.
-  assert.ok(!text.includes('AAAAAAAA'), 'base64 картинки уехал модели')
+  assert.match(text, /step_0 = 0/, 'what was asked about is not in the frame')
+  // Distant cells are collapsed, together with their images.
+  assert.ok(!text.includes('AAAAAAAA'), 'the image base64 went to the model')
 
   /*
-   * И главное: чтение не пишет. `readCell` заводил в ячейке пустой список
-   * выводов через `cellOutputs`, то есть каждый вопрос про тетрадь со старыми
-   * ячейками был правкой документа — с рассылкой всем сокетам комнаты.
+   * And the main thing: reading does not write. `readCell` created an empty
+   * output list in a cell through `cellOutputs`, that is, every question
+   * about a notebook with old cells was an edit of the document, broadcast
+   * to every socket of the room.
    *
-   * Сравнение — булевым: в ячейке лежит Y-структура, привязанная к документу на
-   * пять мегабайт, и печать её в тексте несошедшегося утверждения кладёт узел.
+   * The comparison is boolean: the cell holds a Y structure bound to a
+   * five-megabyte document, and printing it in the text of a failed
+   * assertion brings the node down.
    */
-  assert.ok(bare.get('outputs') === undefined, 'чтение завело ячейке список выводов')
+  assert.ok(bare.get('outputs') === undefined, 'reading created an output list in the cell')
 })

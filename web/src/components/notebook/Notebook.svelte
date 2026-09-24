@@ -33,21 +33,24 @@
 
   interface Props {
     /**
-     * Путь тетради: она такой же файл, как всё остальное в папке семинара.
+     * The notebook's path: it is a file just like everything else in the
+     * seminar folder.
      *
-     * Корень в документе выводится из пути, а не приходит сюда: путь — это то,
-     * что видит человек в дереве и во вкладке, а корень — внутреннее имя,
-     * которое у первой тетради осталось прежним ради истории и кеша.
+     * The root in the document is derived from the path rather than passed
+     * here: the path is what a person sees in the tree and on the tab, and the
+     * root is an internal name that the first notebook kept unchanged for the
+     * sake of history and the cache.
      */
     book: string
     /**
-     * Эта тетрадь показана, а не спрятана за другой вкладкой.
+     * This notebook is shown, not hidden behind another tab.
      *
-     * Клавиатура комнаты — одна на всё окно (`<svelte:window onkeydown>`), а
-     * тетрадей смонтировано столько, сколько открыто вкладок: скрытые прячутся
-     * классом, а не размонтируются, чтобы не терять курсор. Без этой проверки
-     * нажатие «a» вставляло ячейку в КАЖДУЮ открытую тетрадь, а Shift+Enter
-     * отправлял два запуска — и оба в разные листы.
+     * The room's keyboard is one for the whole window
+     * (`<svelte:window onkeydown>`), and as many notebooks are mounted as there
+     * are open tabs: hidden ones are hidden by a class, not unmounted, so as
+     * not to lose the cursor. Without this check pressing "a" inserted a cell
+     * into EVERY open notebook, and Shift+Enter sent two runs — both into
+     * different sheets.
      */
     active: boolean
   }
@@ -59,12 +62,14 @@
   const root = $derived(books.current.find((entry) => entry.path === book)?.root ?? '')
   const ids = watchCellIds(session.doc, () => root)
   /*
-   * Ядро — ЭТОЙ тетради, а не комнаты.
+   * The kernel of THIS notebook, not of the room.
    *
-   * У каждой тетради свой Python и своя очередь (server/src/kernel/index.ts),
-   * и полоса говорит про ту, что открыта: лекция может считать полторы минуты,
-   * пока семинар свободен, и одна плашка на двоих врала бы обоим. Корень
-   * функцией: список тетрадей приезжает документом, и до его приезда он пуст.
+   * Every notebook has its own Python and its own queue
+   * (server/src/kernel/index.ts), and the bar talks about the one that is open:
+   * a lecture may be computing for a minute and a half while the seminar is
+   * idle, and one pill for the two would lie to both. The root is a function:
+   * the list of notebooks arrives with the document, and until it arrives the
+   * list is empty.
    */
   const notebook = watchBookKernel(session.doc, () => root)
 
@@ -89,12 +94,13 @@
     if (!running) return false
     const found = findCell(session.doc, running)
     /*
-     * Ячейку могли удалить, пока она считалась: удаление работающей ячейки
-     * клиент разрешает, meta продолжает называть исчезнувший id, а «стоп» на
-     * самой ячейке ушёл вместе с ней. Сервер помнит, кто её запустил, документ
-     * — уже нет; гасить единственную оставшуюся кнопку по незнанию значит
-     * оставить комнату без преподавателя с бесконечным циклом и без выхода.
-     * Право проверит сервер, здесь мы только не мешаем нажать.
+     * The cell may have been deleted while it was running: the client allows
+     * deleting a running cell, meta keeps naming the vanished id, and the
+     * "stop" on the cell itself went away with it. The server remembers who
+     * started it, the document no longer does; dimming the only remaining
+     * button out of ignorance would leave a room without a teacher with an
+     * infinite loop and no way out. The server will check the permission; here
+     * we only do not stand in the way of pressing.
      */
     if (!found) return true
     return (found.cell.get('runById') as string | null) === session.me.id
@@ -102,20 +108,21 @@
   const canInterrupt = $derived(isHost || runningIsMine)
 
   /**
-   * Что шлёт «Interrupt» из полосы.
+   * What "Interrupt" from the bar sends.
    *
-   * Безымянное нажатие сервер понимает как «разобрать очередь целиком» и
-   * отказывает участнику, пока в ней стоят чужие ячейки, — а кнопка при этом
-   * горит и обещает остановить выполняющуюся. Не-хост называет цель, и тогда
-   * ветка про чужую очередь не срабатывает вовсе: он останавливает ровно свою
-   * ячейку. У преподавателя нажатие остаётся безымянным — тем и отличается
-   * комнатная кнопка от кнопки на ячейке.
+   * The server understands an unnamed press as "clear the whole queue" and
+   * refuses a participant while other people's cells are in it — while the
+   * button is lit and promises to stop the running one. A non-host names the
+   * target, and then the branch about other people's queue does not fire at
+   * all: they stop exactly their own cell. For the teacher the press stays
+   * unnamed — that is what distinguishes the room button from the button on a
+   * cell.
    */
   function interruptMessage(): { t: 'interrupt'; cellId?: string; book?: string } {
     const running = notebook.current.runningCellId
-    // Лист называется всегда: без него сервер понял бы нажатие как «тетрадь
-    // комнаты» и разобрал бы чужую очередь — соседнюю, до которой этой кнопке
-    // дела нет.
+    // The sheet is always named: without it the server would take the press as
+    // "the room's notebook" and clear someone else's queue — the neighbouring
+    // one, which this button has nothing to do with.
     if (isHost || !running) return { t: 'interrupt', book }
     return { t: 'interrupt', cellId: running, book }
   }
@@ -123,12 +130,13 @@
   /* --------------------------------------------------------- navigation */
 
   /**
-   * Колонка тетради — и через неё контейнер прокрутки.
+   * The notebook's column — and through it the scroll container.
    *
-   * Прокручивает не окно и не сама тетрадь, а `<main>` над ней (одна на
-   * вкладку, см. SessionScreen): тетрадей смонтировано столько, сколько
-   * открыто вкладок, и у каждой свой прокручиваемый предок. Поэтому его
-   * ищут от своего узла вверх, а не берут `document.scrollingElement`.
+   * What scrolls is not the window and not the notebook itself but the `<main>`
+   * above it (one per tab, see SessionScreen): as many notebooks are mounted as
+   * there are open tabs, and each has its own scrolling ancestor. So it is
+   * looked for upward from our own node, rather than taking
+   * `document.scrollingElement`.
    */
   let column = $state<HTMLDivElement | null>(null)
   let scrollBox: HTMLElement | null = null
@@ -148,48 +156,51 @@
   }
 
   /*
-   * Куда мы ведём экран прямо сейчас — и к какой ячейке.
+   * Where we are steering the screen right now — and to which cell.
    *
-   * Ход занимает кадры, и ровно в эти кадры что-нибудь выше цели ещё меняет
-   * высоту: отложенная ячейка распрямляется, картинка сообщает свой размер.
-   * Цель, посчитанная в начале, к концу хода устаревает ровно на этот прирост,
-   * — и якорь (см. settle) её на него же и поправляет.
+   * A move takes frames, and in exactly those frames something above the target
+   * is still changing height: a deferred cell straightens out, an image reports
+   * its size. A target computed at the start is stale by exactly that growth by
+   * the end of the move — and the anchor (see settle) corrects it by exactly
+   * that amount.
    *
-   * Имя ячейки хранится не ради пересчёта (цель у перехода одна и считается
-   * один раз), а ради проверки «эта ячейка ещё жива»: её могли удалить, пока
-   * экран ехал.
+   * The cell's name is kept not for recomputing (a jump has one target and it
+   * is computed once) but for the "is this cell still alive" check: it may have
+   * been deleted while the screen was moving.
    */
   let steering: { id: string; top: number } | null = null
 
   /**
-   * Сколько держим цель.
+   * How long we hold the target.
    *
-   * Ровно на ход, не дольше. Пока цель жива, любое изменение высоты выше неё
-   * ПЕРЕНАЦЕЛИВАЕТ экран; когда она снята, то же изменение экран просто
-   * придерживает (якорь ниже). Для хода верно первое, для уже приехавшего
-   * человека — второе: вывод, пришедший через секунду, не должен тянуть лист
-   * из-под глаз. Семьсот миллисекунд — плавная прокрутка с запасом.
+   * Exactly for the move, no longer. While the target is alive, any height
+   * change above it RETARGETS the screen; once it is cleared, the same change
+   * merely holds the screen in place (the anchor below). The first is right for
+   * a move, the second for a person who has already arrived: output that comes
+   * a second later must not pull the sheet from under their eyes. Seven hundred
+   * milliseconds is a smooth scroll with room to spare.
    */
   const STEER_MS = 700
 
   function steerTo(box: HTMLElement, id: string, top: number): void {
     steering = { id, top }
     box.scrollTo({ top, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
-    // Своего события у конца плавной прокрутки нет везде, где нам нужно
-    // (`scrollend` молод). Человек обрывает ход раньше — колесом или нажатием,
-    // см. обработчики на колонке: его прокрутка главнее нашей всегда.
+    // The end of a smooth scroll has no event of its own everywhere we need it
+    // (`scrollend` is young). A person cuts the move short earlier — with the
+    // wheel or a press, see the handlers on the column: their scrolling always
+    // outranks ours.
     window.setTimeout(() => {
       if (steering?.id === id && steering.top === top) steering = null
     }, STEER_MS)
   }
 
   /**
-   * Окно за вычетом липкой полосы.
+   * The window minus the sticky bar.
    *
-   * Полоса режима прибита к верху контейнера и закрывает его первые 40 px.
-   * Ячейка, подведённая к «верху экрана» буквально, приезжала тулбаром ПОД
-   * полосу — то есть ровно туда, где его не видно, и всё вычисленное место
-   * доставалось не ему.
+   * The mode bar is pinned to the top of the container and covers its first 40
+   * px. A cell brought to the "top of the screen" literally arrived with its
+   * toolbar UNDER the bar — that is, exactly where it cannot be seen, and all
+   * the computed space went to something else.
    */
   function frameOf(box: HTMLElement): Frame {
     const rect = box.getBoundingClientRect()
@@ -198,7 +209,7 @@
     return { top: rect.top + under, bottom: rect.bottom, scrollTop: box.scrollTop }
   }
 
-  /** Геометрия ячейки и её тулбара в том виде, в каком её считает cell-scroll. */
+  /** Geometry of a cell and its toolbar, in the form cell-scroll expects. */
   function boxOf(cell: HTMLElement) {
     const rect = cell.getBoundingClientRect()
     const bar = cell.querySelector<HTMLElement>('[data-cell-toolbar]')
@@ -210,24 +221,25 @@
   }
 
   /**
-   * Показать ячейку, если её не видно, — и ни пикселем больше.
+   * Show a cell if it is not visible — and not a pixel more.
    *
-   * Зовут отсюда ТОЛЬКО переходы: стрелка, `j`/`k`, растягивание выделения,
-   * шаг из последней строки редактора. Запуск не зовёт вовсе — см. `select` и
-   * lib/cell-scroll.ts: вывод появляется под кодом, а человек в этот момент
-   * смотрит на код.
+   * ONLY jumps call this: the arrow, `j`/`k`, extending the selection, a step
+   * out of the editor's last line. A run does not call it at all — see `select`
+   * and lib/cell-scroll.ts: the output appears under the code, and at that
+   * moment the person is looking at the code.
    *
-   * Считаем, а не просим браузер: см. разбор в lib/cell-scroll.ts. Тулбар
-   * меряется по месту, потому что он есть не всегда (у припаркованной и у
-   * отложенной ячейки его в DOM нет вовсе) и потому что число в CSS и число в
-   * коде разъезжаются молча.
+   * We compute rather than ask the browser: see the analysis in
+   * lib/cell-scroll.ts. The toolbar is measured in place, because it is not
+   * always there (a parked and a deferred cell have none in the DOM at all) and
+   * because a number in CSS and a number in code drift apart silently.
    */
   function reveal(id: string) {
     const cell = document.querySelector<HTMLElement>(`[data-cell-id="${id}"]`)
     const box = scroller()
     if (!cell) return
     if (!box) {
-      // Тетрадь без прокручиваемого предка бывает только в тесте и в печати.
+      // A notebook without a scrolling ancestor happens only in a test and in
+      // print.
       cell.scrollIntoView({ block: 'nearest' })
       return
     }
@@ -237,21 +249,22 @@
   }
 
   /**
-   * Человек увёл лист сам — дальше не ведём.
+   * The person moved the sheet themselves — we stop steering.
    *
-   * Просьба с занятия и она справедливая: посреди «Запустить всё» уходят
-   * посмотреть на ячейку выше, и лист, который тянет обратно к очереди, спорит
-   * с человеком. Спор этот он всегда проигрывает — но выигрывает каждый второй
-   * кадр, и именно это читается как «дёргает».
+   * A request from a class, and a fair one: in the middle of "Run all" people
+   * go to look at a cell above, and a sheet that pulls back to the queue argues
+   * with the person. The person always loses that argument — but wins every
+   * other frame, and exactly that reads as "twitching".
    *
-   * Считается увозом ТОЛЬКО прокрутка: колесо и палец. Нажатие — не увоз:
-   * выделить ячейку по ходу прогона можно, не отказываясь от того, чтобы
-   * дальше показывали. Поэтому у `onpointerdowncapture` ниже по-прежнему одна
-   * забота — оборвать текущий ход, и флага он не ставит.
+   * ONLY scrolling counts as moving away: the wheel and the finger. A press is
+   * not moving away: one can select a cell during a run without giving up on
+   * being shown the rest. That is why `onpointerdowncapture` below still has a
+   * single concern — cutting the current move short — and it does not set the
+   * flag.
    *
-   * Снимается на конце работы, а не на начале: «Запустить всё» идёт одним
-   * куском, и внутри него намерение человека не меняется. Отработала очередь —
-   * следующий запуск снова ведёт.
+   * It is cleared at the end of the work, not at the start: "Run all" goes as
+   * one piece, and within it the person's intention does not change. Once the
+   * queue is done, the next run steers again.
    */
   let handedOver = false
 
@@ -261,31 +274,34 @@
   })
 
   /**
-   * Ячейка отработала — показать её вывод, если его не видно.
+   * A cell has finished — show its output if it is not visible.
    *
-   * Куда именно и почему не всегда — в cell-scroll.ts · afterRun: там сведены
-   * две противоположные жалобы с занятий, и условие «двигаем, только если низа
-   * не видно» родилось из них обеих.
+   * Where exactly, and why not always, is in cell-scroll.ts · afterRun: two
+   * opposite complaints from classes are reconciled there, and the condition
+   * "move only if the bottom is not visible" was born from both of them.
    *
-   * Здесь — третья: «Запустить всё дёргает». Чинилось это сперва аккуратной
-   * ездой — складывали просьбы за кадр, вели мгновенно, смягчали последний
-   * ход, — и всё равно выходило не то. Решение оказалось не в том, КАК вести,
-   * а в том, что за прогоном вести не надо вовсе.
+   * Here is the third: "Run all twitches". It was first fixed with careful
+   * steering — requests were merged per frame, moves were made instant, the
+   * last move was softened — and it still came out wrong. The solution turned
+   * out to be not in HOW to steer but in not steering behind a batch run at
+   * all.
    *
-   * Довод простой. Одиночный запуск — это вопрос: человек нажал и смотрит на
-   * ответ; показать ответ, если его не видно, — услуга. «Запустить всё» — это
-   * не вопрос, а работа: сорок ячеек, минуты времени, и человек в это время
-   * занят своим — читает выше, правит ниже, просто ждёт. Лист, который в эти
-   * минуты ходит сам, спорит с ним даже когда угадывает.
+   * The argument is simple. A single run is a question: the person pressed and
+   * is looking at the answer; showing the answer if it is not visible is a
+   * service. "Run all" is not a question but work: forty cells, minutes of
+   * time, and meanwhile the person is busy with their own thing — reading
+   * above, editing below, simply waiting. A sheet that moves by itself during
+   * those minutes argues with them even when it guesses right.
    *
-   * Отличаем по высоте очереди за прогон: одиночный запуск кладёт в неё одну
-   * ячейку, «Запустить всё» — много. Считается ПИК, а не текущая длина:
-   * к концу прогона очередь пуста, и по ней последняя ячейка неотличима от
-   * одиночной. Решение принимается в тот же миг, что и переход, — до того,
-   * как пик сбросится.
+   * We tell them apart by the height of the queue during the run: a single run
+   * puts one cell into it, "Run all" many. What counts is the PEAK, not the
+   * current length: by the end of the run the queue is empty, and by it the
+   * last cell is indistinguishable from a single one. The decision is made at
+   * the same instant as the transition — before the peak is reset.
    *
-   * Складывание просьб за кадр осталось: одиночные запуски бывают частыми
-   * (Shift+Enter подряд), и два хода в одном кадре так же спотыкались бы.
+   * Merging requests per frame has stayed: single runs can come often
+   * (Shift+Enter in a row), and two moves in one frame would stumble just the
+   * same.
    */
   let pending: string | null = null
   let pendingFrame = 0
@@ -308,28 +324,31 @@
     if (!cell || !box) return
     const target = afterRun(frameOf(box), boxOf(cell))
     if (target === null) return
-    // Уже едем ровно туда: второй `scrollTo` только сбил бы разгон.
+    // Already heading exactly there: a second `scrollTo` would only break the
+    // acceleration.
     if (steering && Math.abs(steering.top - target) < 2) return
     steerTo(box, id, target)
   }
 
   /*
-   * Кто отработал последним. Обычное поле, а не `$state`: его читает и пишет
-   * один и тот же эффект, и реактивным оно завело бы себя само.
+   * Who finished last. A plain field, not `$state`: it is read and written by
+   * one and the same effect, and as a reactive value it would trigger itself.
    */
   let ranLast: string | null = null
 
   /*
-   * Ход делается на СМЕНЕ работающей ячейки, а не на её конце.
+   * The move is made on the CHANGE of the running cell, not at its end.
    *
-   * Конца у ячейки нет отдельным событием — есть `runningCellId`, который
-   * перестаёт быть ею: уходит в null (отработала одна) или в соседнюю (идёт
-   * «Запустить всё»). Второй случай и есть то самое «по мере выполнения»:
-   * экран спускается за очередью сам, ячейка за ячейкой.
+   * A cell's end is not a separate event — there is `runningCellId`, which
+   * stops being that cell: it goes to null (one cell finished) or to the
+   * neighbouring one ("Run all" is in progress). The second case is exactly
+   * that "as it runs": the screen goes down after the queue by itself, cell by
+   * cell.
    *
-   * `tick()` — чтобы мерить уже дорисованный вывод, а не тот, что был до него.
+   * `tick()` — to measure the output that has already been drawn, not what was
+   * there before it.
    */
-  /** Самая длинная очередь за этот прогон: по ней и отличаем «Запустить всё». */
+  /** The longest queue during this run: that is how "Run all" is told apart. */
   let peak = 0
 
   $effect(() => {
@@ -339,10 +358,11 @@
     if (queued > peak) peak = queued
     if (!was || was === now) return
     /*
-     * Решаем ЗДЕСЬ, синхронно, и только потом забываем пик: ход отложен на
-     * tick и кадр, а к тому времени очередь давно пуста — по ней последняя
-     * ячейка прогона выглядела бы одиночной, и «Запустить всё» тянуло бы лист
-     * ровно один раз, напоследок. Это и есть тот случай, который просили убрать.
+     * We decide HERE, synchronously, and only then forget the peak: the move is
+     * deferred to a tick and a frame, and by that time the queue is long
+     * empty — by it the last cell of a run would look like a single one, and
+     * "Run all" would pull the sheet exactly once, at the very end. That is
+     * exactly the case that people asked to remove.
      */
     const batch = peak >= 2
     if (now === null) peak = 0
@@ -351,15 +371,17 @@
   })
 
   /*
-   * Заметка «выполнилась» — то есть отрисовалась (CellView · run). У неё нет
-   * ядра и нет `runningCellId`, так что эффект выше о ней не узнаёт; она
-   * говорит сама. Ход тот же и по тем же правилам: после `tick` — чтобы мерить
-   * уже отрисованный текст, а не исходник, который был на его месте.
+   * A note has "run" — that is, it has been rendered (CellView · run). It has
+   * no kernel and no `runningCellId`, so the effect above does not learn about
+   * it; it speaks for itself. The move is the same and by the same rules: after
+   * `tick`, to measure the already rendered text rather than the source that
+   * stood in its place.
    */
   $effect(() => {
     const onSettled = (event: Event): void => {
       const cellId = (event as CustomEvent<{ cellId?: string }>).detail?.cellId
-      // Событие оконное, а тетрадей на экране бывает две (вкладки): своя ли?
+      // The event is window-wide, and there can be two notebooks on screen
+      // (tabs): is it ours?
       if (!cellId || !ids.current.includes(cellId)) return
       void tick().then(() => follow(cellId))
     }
@@ -371,62 +393,69 @@
     if (pendingFrame) cancelAnimationFrame(pendingFrame)
   })
 
-  /* ------------------------------------------------------------- якорь */
+  /* ------------------------------------------------------------ anchor */
 
   /**
-   * Свой scroll anchoring: ячейка выше экрана меняет высоту — экран стоит.
+   * Our own scroll anchoring: a cell above the screen changes height — the
+   * screen stays put.
    *
-   * Вниз тетрадь листалась гладко, вверх — дёргалась «к началу предыдущей
-   * ячейки». Причина мерена на стенде и она наша собственная: отложенная
-   * ячейка стоит заглушкой в 240 px, а построенная бывает 809, и подмена
-   * случается ровно тогда, когда ячейка подходит к краю экрана. Вниз этого не
-   * видно — прирост уходит НИЖЕ экрана. Вверх ячейка приходит верхом уже за
-   * краем, распрямляется вниз, и всё видимое уезжает на 569 px разом; за один
-   * подъём по тетради таких рывков набиралось два десятка.
+   * Scrolling down through the notebook was smooth, scrolling up twitched "to
+   * the start of the previous cell". The cause was measured on the test bench,
+   * and it is our own: a deferred cell stands as a 240 px placeholder, while a
+   * built one can be 809, and the swap happens exactly when the cell approaches
+   * the edge of the screen. Going down this is not visible — the growth goes
+   * BELOW the screen. Going up, the cell arrives with its top already past the
+   * edge, straightens downwards, and everything visible shifts by 569 px at
+   * once; a single climb up the notebook collected two dozen such jerks.
    *
-   * Браузерный scroll anchoring это чинить обязан и не чинит: замерено —
-   * ячейка выше экрана растёт на 569 px, `scrollTop` не меняется ни на пиксель.
-   * Поэтому якорь свой, а браузерный выключен явно (см. разметку колонки).
+   * The browser's scroll anchoring is supposed to fix this and does not:
+   * measured — a cell above the screen grows by 569 px, `scrollTop` does not
+   * change by a single pixel. So the anchor is our own, and the browser's is
+   * explicitly switched off (see the column's markup).
    *
-   * Заодно он закрывает всё, что меряется поздно и само: картинку без
-   * размеров, формулу KaTeX, таблицу DataFrame, — потому что смотрит не на
-   * причину, а на высоту.
+   * It also covers everything that is measured late and by itself: an image
+   * without dimensions, a KaTeX formula, a DataFrame table — because it looks
+   * not at the cause but at the height.
    */
   const slotHeights = new Map<string, number>()
 
   /**
-   * Свести высоты и вернуть экран на место.
+   * Reconcile the heights and put the screen back in place.
    *
-   * Считается по всем слотам сразу, а не по одному: за один кадр меняются
-   * несколько соседей, и сдвиг у них общий.
+   * Computed over all slots at once, not one at a time: several neighbours
+   * change within a single frame, and their shift is shared.
    */
   function settle(): void {
     const box = scroller()
     if (!box || !column) return
     /*
-     * Тетрадь спрятана соседней вкладкой — уходим, НЕ тронув slotHeights.
+     * The notebook is hidden by a neighbouring tab — leave WITHOUT touching
+     * slotHeights.
      *
-     * Разбор — в cell-scroll.ts · measurable, там же и жалоба, из которой это
-     * выросло. Коротко: у `display: none` все высоты читаются нулями, а
-     * наблюдатель видимости как раз в этот момент объявляет ячейки невидимыми
-     * и будит якорь. Записать нули значит при возврате увидеть «весь лист
-     * вырос» и увезти экран вниз на сумму всех ячеек.
+     * The analysis is in cell-scroll.ts · measurable, together with the
+     * complaint it grew out of. In short: under `display: none` all heights
+     * read as zeros, and the visibility observer declares the cells invisible
+     * at exactly that moment and wakes the anchor. Writing zeros would mean
+     * seeing "the whole sheet grew" on return and carrying the screen down by
+     * the sum of all cells.
      *
-     * Именно `return` до первого измерения, а не «посчитать и не применять»:
-     * отравляет не поправка, а память высот.
+     * Precisely a `return` before the first measurement, not "compute and do
+     * not apply": what poisons things is not the correction but the memory of
+     * heights.
      */
     if (!measurable(frameOf(box))) return
     const frameTop = box.getBoundingClientRect().top
     const at = box.scrollTop
     /*
-     * Идёт ход к ячейке — двигают ЦЕЛЬ, а не экран.
+     * A move to a cell is under way — shift the TARGET, not the screen.
      *
-     * Поправить `scrollTop` посреди плавной прокрутки нельзя: браузер считает
-     * это чужим вмешательством и ход обрывает. А прирост высоты выше цели
-     * устаревает саму цель ровно на свою величину — значит его и надо ей
-     * прибавить, оставив ход идти. Считается прирост относительно ЦЕЛИ, а не
-     * относительно текущего `scrollTop`: где экран окажется в этот кадр,
-     * зависит от кадра, а куда он едет — нет.
+     * `scrollTop` cannot be corrected in the middle of a smooth scroll: the
+     * browser treats that as outside interference and cuts the move short. And
+     * height growth above the target makes the target itself stale by exactly
+     * its size — so that is what has to be added to it, leaving the move to go
+     * on. The growth is computed relative to the TARGET, not to the current
+     * `scrollTop`: where the screen will be in this frame depends on the frame,
+     * and where it is heading does not.
      */
     if (steering) {
       const aim = steering.top
@@ -440,7 +469,8 @@
         if (was === undefined || Math.abs(rect.height - was) < 0.5) continue
         moved.push({ top: rect.top - frameTop + at, delta: rect.height - was })
       }
-      // Ячейку могли удалить, пока экран ехал: везти уже некуда.
+      // The cell may have been deleted while the screen was moving: there is
+      // nowhere to go any more.
       if (!document.querySelector(`[data-cell-id="${steering.id}"]`)) {
         steering = null
         return
@@ -460,24 +490,25 @@
       if (was === undefined || Math.abs(rect.height - was) < 0.5) continue
       changes.push({ top: rect.top - frameTop + at, delta: rect.height - was })
     }
-    // Первый ВИДИМЫЙ пиксель, а не первый пиксель контейнера: то, что стоит
-    // под липкой полосой, для глаза тоже «выше экрана».
+    // The first VISIBLE pixel, not the first pixel of the container: whatever
+    // stands under the sticky bar is also "above the screen" to the eye.
     const shift = anchorShift(changes, frameOf(box).top - frameTop + at)
     if (Math.abs(shift) < 1) return
     box.scrollTop = at + shift
   }
 
   /*
-   * Свою подмену ловим ДО кадра, чужую — после.
+   * Our own swap is caught BEFORE the frame, anyone else's — after.
    *
-   * Почти весь рывок — наша же работа: заглушка в 240 px превращается в ячейку
-   * в 809, и происходит это в обычном обновлении DOM. Эффект Svelte идёт сразу
-   * за этим обновлением и ЗАДОЛГО до того, как браузер начнёт раскладывать
-   * кадр, — поправка отсюда попадает в тот же кадр, и на экране не дёргается
-   * ничего. Поправка из ResizeObserver в тот же кадр НЕ попадает (проверено на
-   * стенде: один кадр экран стоит смещённым и возвращается на следующем), и
-   * поэтому наблюдатель здесь только запасной — на то, что меряется само и
-   * позже: картинку без размеров, формулу, таблицу.
+   * Almost the whole jerk is our own work: a 240 px placeholder turns into an
+   * 809 px cell, and that happens in an ordinary DOM update. A Svelte effect
+   * runs right after that update and LONG before the browser starts laying out
+   * the frame — a correction from here lands in the same frame, and nothing on
+   * screen twitches. A correction from ResizeObserver does NOT land in the same
+   * frame (checked on the test bench: for one frame the screen stands shifted
+   * and comes back on the next), and that is why the observer here is only a
+   * fallback — for what gets measured by itself and later: an image without
+   * dimensions, a formula, a table.
    */
   $effect(() => {
     void built
@@ -491,13 +522,13 @@
   $effect(() => () => anchoring?.disconnect())
 
   /**
-   * Выделить ячейку — и показать её, если сюда пришли переходом.
+   * Select a cell — and show it if we got here by a jump.
    *
-   * `show: false` — это запуск. Shift+Enter выделяет следующую ячейку, и
-   * выделение на этом кончается: экран остаётся там, где он был, потому что
-   * смотреть после запуска надо на вывод запущенной, а он растёт под ней же.
-   * Раньше выделение и прокрутка были одним действием, и отделить второе от
-   * первого было нельзя — отсюда и «перекидывает вниз».
+   * `show: false` means a run. Shift+Enter selects the next cell, and the
+   * selection ends there: the screen stays where it was, because after a run
+   * one should look at the output of the cell that ran, and it grows right
+   * under it. Selection and scrolling used to be one action, and the second
+   * could not be separated from the first — hence the "throws me down".
    */
   function select(id: string, show = true) {
     session.selectCell(id)
@@ -517,10 +548,10 @@
 
   async function addAt(index: number, type: CellType, show = true) {
     /*
-     * Вслух, а не молча — и на клавише тоже. Отказ, о котором не сказали,
-     * читается как поломка, а не как решение преподавателя; а без этой
-     * проверки нажатие «a» уходило в общий документ, сервер отказывал кадру, и
-     * человек оставался с курсором в ячейке, которой нет ни у кого.
+     * Out loud, not silently — on the key too. A refusal nobody mentioned reads
+     * as a breakage, not as the teacher's decision; and without this check
+     * pressing "a" went into the shared document, the server refused the frame,
+     * and the person was left with the cursor in a cell nobody has.
      */
     if (!may.add) {
       session.showError(may.structureWhy + '.')
@@ -534,37 +565,39 @@
   }
 
   /**
-   * Нажали по ячейке — одной, или добавили к выделенным.
+   * A cell was clicked — alone, or added to the selected ones.
    *
-   * Cmd на маке и Ctrl на остальном — тот же модификатор, которым выделяют
-   * вразбивку везде; Shift — диапазон, включая поле кода другой ячейки.
-   * В уже активном редакторе Shift продолжает выделять текст. Обработчик тела
-   * вызывается в capture-фазе: редактор не должен перехватить этот жест или
-   * получить фокус и сбросить выделение своим onfocus.
+   * Cmd on a Mac and Ctrl elsewhere — the same modifier used for scattered
+   * selection everywhere; Shift is a range, including from another cell's code
+   * field. In an already active editor, Shift keeps selecting text. The body
+   * handler is called in the capture phase: the editor must not intercept this
+   * gesture or take focus and reset the selection in its onfocus.
    */
   function pick(id: string, event?: MouseEvent | PointerEvent): void {
     if (event && event.button !== 0) return
     /*
-     * Модификатор перехода внутри поля кода — чужой жест: пропустить насквозь.
+     * The jump modifier inside a code field is someone else's gesture: let it
+     * through.
      *
-     * Там им ходят к определению (CodeEditor.svelte · jump), а перехват в
-     * capture-фазе — ровно то, из-за чего до редактора не доходило НИЧЕГО:
-     * preventDefault, stopPropagation и blur срабатывали раньше, чем
-     * CodeMirror узнавал о нажатии. Поэтому здесь не «не выделять», а именно
-     * вернуться, не тронув событие.
+     * There it is used to go to a definition (CodeEditor.svelte · jump), and
+     * intercepting it in the capture phase is exactly why NOTHING reached the
+     * editor: preventDefault, stopPropagation and blur fired before CodeMirror
+     * learned about the press. So here it is not "do not select" but precisely
+     * return without touching the event.
      *
-     * Это размен, а не недосмотр, и отдано ровно одно из четырёх мест.
-     * Выделение вразбивку по КОДУ на маке осталось за вторым модификатором —
-     * Ctrl+клик; ради этого lib/utils · isJumpClick и разводит платформы, а не
-     * читает «любой из двух». Мимо кода не изменилось ничего: номер ячейки,
-     * поля и вывод набирают её как раньше, и номер стал мишенью недавно и
-     * нарочно — он помечен `data-cell-pick` (CellView.svelte), потому что
-     * именно в него целятся, когда хотят ячейку.
+     * This is a trade-off, not an oversight, and exactly one of four places is
+     * given up. Scattered selection across CODE on a Mac is left to the second
+     * modifier — Ctrl+click; that is why lib/utils · isJumpClick tells the
+     * platforms apart instead of reading "either of the two". Nothing changed
+     * outside the code: the cell number, the margins and the output select the
+     * cell as before, and the number became a target recently and on purpose —
+     * it is marked with `data-cell-pick` (CellView.svelte), because that is
+     * exactly what people aim at when they want the cell.
      *
-     * Отдаётся жест только в ячейке с КОДОМ: в текстовой ходить некуда, там
-     * пишут прозой, и молча съеденный клик был бы чистой потерей. Обход
-     * списка ячеек ради одного нажатия стоит ровно столько же, сколько
-     * `convertCell` ниже платит за то же знание.
+     * The gesture is given up only in a cell with CODE: in a text cell there is
+     * nowhere to go, people write prose there, and a silently swallowed click
+     * would be a pure loss. Walking the list of cells for the sake of one press
+     * costs exactly as much as `convertCell` below pays for the same knowledge.
      */
     if (event && isJumpClick(event) && (event.target as Element | null)?.closest('.cm-editor')) {
       const found = findCell(session.doc, id)
@@ -603,7 +636,7 @@
           fallback?: boolean
           /** Make a cell when there is none to step to; Shift+Enter only. */
           grow?: boolean
-          /** Запуск передаёт `false`: выделение переходит, экран стоит. */
+          /** A run passes `false`: the selection moves, the screen stays. */
           scroll?: boolean
         }>
       ).detail
@@ -611,8 +644,8 @@
       const list = ids.current
       // Shift+Enter on the last cell has nowhere to go, so it makes somewhere:
       // that is how a notebook grows while somebody types down the page, and
-      // it is what the same key does in the tool this room already knows. Без
-      // права добавлять — просто остаётся на месте: см. stepPlan.
+      // it is what the same key does in the tool this room already knows.
+      // Without the right to add, it simply stays in place: see stepPlan.
       const plan = stepPlan(list, detail.cellId, detail.direction, {
         fallback: detail.fallback,
         grow: detail.grow,
@@ -630,48 +663,53 @@
     return () => window.removeEventListener('colloq:step-cell', onStep)
   })
 
-  /* ------------------------------------------------------ холодный кадр */
+  /* --------------------------------------------------------- cold frame */
 
   /**
-   * Тетрадь ещё не прочитана — ни с диска, ни из сети.
+   * The notebook has not been read yet — neither from disk nor from the
+   * network.
    *
-   * `hydrated` говорит только про переигранную копию из IndexedDB, а у
-   * студента, открывшего ссылку впервые, её нет вовсе: тетрадь рисовалась
-   * пустой, с живыми «+ Code / + Text» и счётчиком «0 cells», пока не придёт
-   * первый кадр по сокету. При пятистах одновременных заходах это секунды — и
-   * нажатие в эти секунды вставляло ячейку в пустой документ, которая после
-   * слияния появлялась у всей комнаты рядом с настоящими.
+   * `hydrated` speaks only about the replayed copy from IndexedDB, and a
+   * student who opened the link for the first time has none at all: the
+   * notebook was drawn empty, with live "+ Code / + Text" and a "0 cells"
+   * counter, until the first frame arrived over the socket. With five hundred
+   * simultaneous entries that is seconds — and a press in those seconds
+   * inserted a cell into an empty document, which after the merge appeared for
+   * the whole room next to the real ones.
    *
-   * «Не прочитано» и «пусто» — разные вещи, и различает их `synced` провайдера:
-   * сервер сказал, что документ у нас полный. Пустая тетрадь после `synced` —
-   * настоящая пустая тетрадь, и она рисуется как раньше.
+   * "Not read" and "empty" are different things, and the provider's `synced`
+   * tells them apart: the server has said that our document is complete. An
+   * empty notebook after `synced` is a genuinely empty notebook, and it is
+   * drawn as before.
    */
   let collabSynced = $state(session.provider.synced)
   $effect(() => {
     const onSync = (isSynced: boolean) => (collabSynced = isSynced)
     session.provider.on('sync', onSync)
-    // Могло синхронизироваться до того, как эта тетрадь смонтировалась.
+    // It may have synced before this notebook mounted.
     collabSynced = session.provider.synced
     return () => session.provider.off('sync', onSync)
   })
   /*
-   * Пустая тетрадь без ответа сервера — но только пока ответа ЖДУТ. Оборванная
-   * связь — это уже всё, что мы узнаем: там человек работает офлайн, и скелет
-   * вместо тетради был бы вторым враньём вместо первого.
+   * An empty notebook with no answer from the server — but only while an answer
+   * is being AWAITED. A dropped connection is all we are going to learn: the
+   * person is working offline there, and a skeleton instead of the notebook
+   * would be a second lie in place of the first.
    */
   const cold = $derived(
     ids.current.length === 0 && !collabSynced && (!session.hydrated || session.connected),
   )
 
   /*
-   * Комнате есть что показать, когда тетрадь перестала быть непрочитанной.
+   * The room has something to show once the notebook is no longer unread.
    *
-   * Это последнее, чего ждёт заставка из index.html: шапка, рельсы и вкладки
-   * рисуются из того, что браузер знает и так, а центр экрана до первого кадра
-   * сокета пуст. Докладывает любая тетрадь, включая вторую, открытую вкладкой:
-   * заставку снимают один раз (lib/boot.ts), и первый доклад — от той, что
-   * человек и ждёт. Оборванная связь тоже гасит `cold`: там показывать нечего,
-   * но и ждать больше нечего.
+   * This is the last thing the splash from index.html waits for: the header,
+   * the rails and the tabs are drawn from what the browser knows anyway, and
+   * the centre of the screen is empty until the first socket frame. Any
+   * notebook reports, including a second one opened in a tab: the splash is
+   * removed once (lib/boot.ts), and the first report comes from the one the
+   * person is waiting for. A dropped connection also clears `cold`: there is
+   * nothing to show there, but nothing more to wait for either.
    */
   $effect(() => {
     if (!cold) firstScreenReady()
@@ -700,19 +738,22 @@
   const watching = typeof IntersectionObserver !== 'undefined'
 
   /*
-   * Наблюдатель заводится от первого же слота — и вот почему это важно.
+   * The observer is created from the very first slot — and here is why that
+   * matters.
    *
-   * `rootMargin` без `root` меряется от ОКНА, а тетрадь прокручивает не окно, а
-   * `<main>` над ней. Окно ячейку за краем `<main>` не видит вовсе — её обрезал
-   * предок, — и никакой запас в 1200 px этого не отменяет: обещанного задела
-   * не было ни пикселя, ячейка строилась ровно в тот миг, когда касалась края
-   * экрана. Вниз это проходило незаметно (растёт то, что ниже), вверх — ячейка
-   * приходила верхом уже ЗА краем и распрямлялась с 240 px до своих 809, унося
-   * весь экран вниз на 570. Это и есть «прыжок к началу предыдущей ячейки».
+   * `rootMargin` without `root` is measured from the WINDOW, and what scrolls
+   * the notebook is not the window but the `<main>` above it. The window does
+   * not see a cell past the edge of `<main>` at all — an ancestor clipped it —
+   * and no 1200 px margin cancels that: the promised lead-in was not there by a
+   * single pixel, and a cell was built exactly at the moment it touched the
+   * edge of the screen. Going down this went unnoticed (what grows is below),
+   * going up the cell arrived with its top already PAST the edge and
+   * straightened from 240 px to its 809, carrying the whole screen down by 570.
+   * That is the "jump to the start of the previous cell".
    *
-   * `root` узнаётся от узла, а не от `column`: порядок, в котором Svelte
-   * присваивает `bind:this` предку и запускает действие на потомке, — не то, на
-   * что стоит опираться.
+   * `root` is learned from the node, not from `column`: the order in which
+   * Svelte assigns `bind:this` to an ancestor and runs an action on a
+   * descendant is not something worth relying on.
    */
   let viewport: IntersectionObserver | null = null
 
@@ -784,18 +825,22 @@
   }
 
   /**
-   * Запустить ячейку её собственными правилами.
+   * Run a cell by its own rules.
    *
-   * Ни одной проверки здесь нет намеренно: их все делает `CellView.run` — та же
-   * функция, что стоит за кнопкой на ячейке и за Cmd+Enter в редакторе, — и она
-   * же говорит слова отказа. Копия проверок в этом файле уже однажды разошлась
-   * с оригиналом и врала про открытую ячейку в лекции.
+   * There are deliberately no checks here: all of them are done by
+   * `CellView.run` — the same function that stands behind the button on the
+   * cell and behind Cmd+Enter in the editor — and it also says the words of
+   * refusal. A copy of the checks in this file already drifted from the
+   * original once and lied about an open cell in a lecture.
    */
   function runCell(cellId: string, step: boolean): void {
     window.dispatchEvent(new CustomEvent('colloq:run-cell', { detail: { cellId, step } }))
   }
 
-  /** Сменить вид ячейки — по правам НА НЕЁ, с замком, как у тулбара и сервера. */
+  /**
+   * Change a cell's type — by the rights ON IT, lock included, as the toolbar
+   * and the server do.
+   */
   function convertCell(cellId: string, to: CellType): void {
     const found = findCell(session.doc, cellId)
     if (!found) return
@@ -804,8 +849,8 @@
       setCellType(session.doc, cellId, to)
       return
     }
-    // Те же слова, что у самой ячейки: запертая говорит про занятие, а не про
-    // поле в правилах (см. CellView · editWhy).
+    // The same words as the cell itself uses: a locked cell talks about the
+    // class, not about a field in the rules (see CellView · editWhy).
     const shut = cellLockMatters(may) && !mayRunThisCell(may, open)
     session.showError((shut ? tr(LECTURE_CELL) : may.editWhy) + '.')
   }
@@ -835,20 +880,21 @@
       return
     }
     /*
-     * Запуск из командного режима — через саму ячейку, а не своими проверками.
+     * A run from command mode — through the cell itself, not with checks of our
+     * own.
      *
-     * Здесь лежала копия проверок `CellView.run` — и она уже разошлась с
-     * оригиналом: тут спрашивали `may.run` (правило КОМНАТЫ), а ячейка и сервер
-     * — `mayRunThisCell` (правило ПЛЮС замок). На лекции преподаватель
-     * открывает ячейку: кнопка на ней живая, Cmd+Enter в редакторе работает, а
-     * Shift+Enter отсюда отвечал тостом про правило — про ячейку, которая
-     * открыта. И второе: на заметке отсюда уходил `run`, который сервер молча
-     * выбрасывает.
+     * A copy of the `CellView.run` checks used to live here — and it had
+     * already drifted from the original: here `may.run` was asked (the ROOM's
+     * rule), while the cell and the server ask `mayRunThisCell` (the rule PLUS
+     * the lock). In a lecture the teacher opens a cell: the button on it is
+     * live, Cmd+Enter in the editor works, while Shift+Enter from here answered
+     * with a toast about the rule — about a cell that is open. And second: from
+     * a note, a `run` went out from here that the server silently throws away.
      *
-     * Теперь решает ячейка: все проверки, все слова отказа и шаг — в одном
-     * месте (CellView · colloq:run-cell). Заодно отсюда работает и Cmd+Enter,
-     * который подвал тетради обещает в строке подсказки, а модификаторный
-     * гард ниже съедал целиком.
+     * Now the cell decides: all the checks, all the refusal words and the step
+     * are in one place (CellView · colloq:run-cell). As a bonus, Cmd+Enter
+     * works from here too — the notebook footer promises it in its hint line,
+     * and the modifier guard below used to swallow it whole.
      */
     if (
       event.key === 'Enter' &&
@@ -867,9 +913,9 @@
     const list = ids.current
     if (list.length === 0) return
     /*
-     * Выделение общее на все тетради и при смене вкладки не сбрасывается:
-     * чужое считается пустым, иначе `d d` удаляла бы ячейку из другой
-     * тетради. См. command-mode.ts · selectionHere.
+     * The selection is shared by all notebooks and is not reset when the tab
+     * changes: a selection elsewhere counts as empty, otherwise `d d` would
+     * delete a cell from another notebook. See command-mode.ts · selectionHere.
      */
     const { id: current, at } = selectionHere(session.selectedCellId, list)
 
@@ -880,24 +926,27 @@
       return
     }
     /*
-     * Shift со стрелкой растягивает выделение — до общего запрета на Shift ниже.
+     * Shift with an arrow extends the selection — before the general ban on
+     * Shift below.
      *
-     * Растягивают ОТ ЯКОРЯ: он не двигается, пока Shift держат, и это то же
-     * поведение, что у списка файлов в любой системе. Обычная стрелка ниже
-     * выделение схлопывает — тоже как везде.
+     * The selection is extended FROM THE ANCHOR: it does not move while Shift
+     * is held, and that is the same behaviour as in a file list in any system.
+     * A plain arrow below collapses the selection — also as everywhere.
      */
     if (event.shiftKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
       event.preventDefault()
       const edge = session.selection.length > 0 ? session.selection : current ? [current] : []
       const step = event.key === 'ArrowUp' ? -1 : 1
       /*
-       * Кончик — это край, которым выделение ушло ОТ якоря, а не тот, что
-       * совпал с направлением стрелки. Иначе Shift+↑ после двух Shift+↓ не
-       * сжимал диапазон снизу, а тянул новый вверх от якоря: 3,4,5 → 2,3, и
-       * вопрос оракулу уходил не про те ячейки.
+       * The tip is the edge by which the selection moved AWAY from the anchor,
+       * not the one that matches the arrow's direction. Otherwise Shift+↑ after
+       * two Shift+↓ did not shrink the range from the bottom but pulled a new
+       * one upward from the anchor: 3,4,5 → 2,3, and the question to the oracle
+       * went out about the wrong cells.
        *
-       * Края берём как минимум и максимум, а не как первый и последний
-       * элемент: Cmd-кликом выделение собирается в порядке нажатий.
+       * The edges are taken as the minimum and the maximum, not as the first
+       * and last element: with Cmd-click the selection is collected in the
+       * order of the clicks.
        */
       let low = list.length
       let high = -1
@@ -941,9 +990,10 @@
         break
       case 'Escape':
         /*
-         * Выйти из состояния «выбрано» было нельзя вообще: `selectCell(null)`
-         * не звался нигде во всём приложении, и выделение жило до перезагрузки
-         * страницы. Escape в командном режиме проваливался в `default`.
+         * There was no way at all to leave the "selected" state:
+         * `selectCell(null)` was not called anywhere in the whole app, and the
+         * selection lived until the page was reloaded. Escape in command mode
+         * fell through to `default`.
          */
         if (session.selection.length === 0) return
         event.preventDefault()
@@ -958,11 +1008,11 @@
         void addAt(at < 0 ? list.length : at + 1, 'code')
         break
       /*
-       * M и Y спрашивали `may.edit` — правило КОМНАТЫ, — а тулбар ячейки и
-       * сервер спрашивают `mayEditThisCell`, то есть правило плюс замок. На
-       * открытой ячейке лекции кнопка «Convert» была включена, а клавиша
-       * отвечала «Тетрадь принадлежит преподавателю». Слова отказа — оттуда же,
-       * откуда их берёт ячейка.
+       * M and Y asked `may.edit` — the ROOM's rule — while the cell toolbar and
+       * the server ask `mayEditThisCell`, that is, the rule plus the lock. On
+       * an open lecture cell the "Convert" button was enabled, while the key
+       * answered "The notebook belongs to the teacher". The refusal words come
+       * from the same place the cell takes them from.
        */
       case 'm':
         if (!current) return
@@ -1042,13 +1092,14 @@
   }
 
   /*
-   * Права — по ЭТОЙ тетради, а не по комнате.
+   * Permissions — by THIS notebook, not by the room.
    *
-   * У отдельной тетради бывает свой доступ (shared/rules.ts · RoomRules.books):
-   * своя личная тетрадь работает посреди лекции, чужая не работает и в открытой
-   * комнате. Считает это та же функция, которой отвечает сервер, — иначе в
-   * продукте было бы два ответа на «можно ли здесь печатать», и разошлись бы не
-   * кнопки, а кнопка с гейтом.
+   * A single notebook can have access of its own (shared/rules.ts ·
+   * RoomRules.books): one's own personal notebook works in the middle of a
+   * lecture, someone else's does not work even in an open room. This is
+   * computed by the same function the server answers with — otherwise the
+   * product would have two answers to "may I type here", and what would drift
+   * apart would not be buttons but a button and the gate.
    */
   const may = $derived(
     permitsIn(session.session.rules, session.me.role, session.finished, {
@@ -1058,46 +1109,50 @@
   )
   const rules = $derived(may.rules)
   /*
-   * Комната идёт по лекционному пресету.
+   * The room follows the lecture preset.
    *
-   * Не «мне тут ничего нельзя», а свойство комнаты: полоса нужна и
-   * преподавателю — она объясняет, почему у него одного всё живо, и почему
-   * двадцать человек рядом смотрят на серую тетрадь.
+   * Not "I am not allowed anything here" but a property of the room: the bar is
+   * needed by the teacher too — it explains why everything is live for them
+   * alone, and why twenty people next to them are looking at a grey notebook.
    *
-   * Консилиум сюда входит: по правам это та же лекция, а «как открывается
-   * ячейка» — не право, и `isLectureRoom` его не сравнивает. Поток на пятьсот
-   * человек без этой полосы видел бы серую тетрадь без единого объяснения.
+   * A council counts here: by permissions it is the same lecture, and "how a
+   * cell opens" is not a permission, and `isLectureRoom` does not compare it. A
+   * stream of five hundred people without this bar would see a grey notebook
+   * without a single explanation.
    *
-   * `may.rules` — уже с наложенным концом занятия, и закончившееся занятие
-   * читается отсюда как лекция (об этом сказано у самой `isLectureRoom`). Это
-   * не ошибка, но и не то, о чём стоит говорить дважды: после звонка о комнате
-   * рассказывает свой признак, поэтому полоса уступает ему место.
+   * `may.rules` already has the end of class applied, and a finished class
+   * reads from here as a lecture (this is said at `isLectureRoom` itself). That
+   * is not a mistake, but also not something worth saying twice: after the bell
+   * the room is described by its own indicator, so the bar gives way to it.
    */
   /*
-   * И только там, где серую тетрадь объясняет КОМНАТА.
+   * And only where the grey notebook is explained by the ROOM.
    *
-   * У тетради бывает свой доступ, и тогда серая она не потому, что идёт лекция:
-   * «личная тетрадь Акима» полоса объяснить не может, а сказанное ею
-   * «редактирует и запускает преподаватель» отправляет читателя искать
-   * преподавателя, который ничего не запрещал. В этом случае говорит метка на
-   * вкладке и строка под самой ячейкой (`may.bookWhy`), а полоса молчит.
+   * A notebook can have access of its own, and then it is grey not because a
+   * lecture is on: the bar cannot explain "Akim's personal notebook", and what
+   * it says — "the teacher edits and runs" — sends the reader looking for a
+   * teacher who forbade nothing. In that case the mark on the tab and the line
+   * under the cell itself (`may.bookWhy`) speak, and the bar is silent.
    *
-   * Спрашивается `bookRuled`, а не «мне тут нельзя»: полосу видит и
-   * преподаватель — она объясняет ему, почему серая тетрадь у класса, — и над
-   * чужой личной тетрадью она неверна для него ровно так же.
+   * What is asked is `bookRuled`, not "I am not allowed here": the teacher sees
+   * the bar too — it explains to them why the class has a grey notebook — and
+   * above someone else's personal notebook it is wrong for them in exactly the
+   * same way.
    */
   const lecture = $derived(!may.finished && !may.bookRuled && isLectureRoom(rules))
   /*
-   * В комнате с замком поле слева от ячейки шире — там стоит сам замок, — и на
-   * ту же величину съезжают две вещи, подводимые под ячейки: черта, по которой
-   * вставляют, и нижний ряд «Code / Text». Свойство комнаты, а не ячейки, так
-   * что считается здесь один раз на тетрадь; ширину держит CellView.svelte.
+   * In a room with a lock the margin to the left of a cell is wider — the lock
+   * itself stands there — and two things lined up under the cells shift by the
+   * same amount: the line to insert at and the bottom row of "Code / Text". It
+   * is a property of the room, not of a cell, so it is computed here once per
+   * notebook; CellView.svelte holds the width.
    */
   const gutter = $derived(cellLockMatters(may) ? '4.5rem' : '3rem')
   const mayRun = $derived(may.run)
-  /* Run All и Run Above — отдельное право: при «по одной» ядро одно, и разница
-     между «двадцать человек считают» и «двадцать человек забили очередь на
-     восемьсот ячеек» ровно в этом. */
+  /* Run All and Run Above are a separate right: with "one at a time" there is
+     one kernel, and that is exactly the difference between "twenty people are
+     computing" and "twenty people have clogged the queue with eight hundred
+     cells". */
   const mayRunAll = $derived(may.bulk)
   const restartDisabled = $derived(controlDisabled(session.connected, may.restart))
   /*
@@ -1189,7 +1244,8 @@
 
   function fireRestart(el: HTMLElement): void {
     holdAnim = null
-    // Перезапуск уносит переменные ТОЙ тетради, в чьей полосе нажали.
+    // A restart takes away the variables of THE notebook in whose bar it was
+    // pressed.
     session.send({ t: 'restart', book })
     // The send is the one moment in this interaction that must read, and a bar
     // that simply sits full until the finger lifts hides it. The overlay
@@ -1262,9 +1318,10 @@
     `inline-flex h-6 items-center gap-1.5 border border-line bg-canvas px-2.5 ${ADD_LABEL} ` +
     'text-muted transition-colors duration-[var(--speed-quick)] enabled:hover:text-ink ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ' +
-    // Состав тетради закрыт — и кнопка это показывает, как показывают соседние
-    // кнопки тулбара ячейки («вверх», «вниз», «убрать»). Нажимающаяся кнопка,
-    // отвечающая тостом, читается как поломка, а не как решение преподавателя.
+    // The notebook's make-up is closed — and the button shows it, as the
+    // neighbouring buttons of the cell toolbar ("up", "down", "remove") do. A
+    // button that can be pressed but answers with a toast reads as a breakage,
+    // not as the teacher's decision.
     'disabled:pointer-events-none disabled:opacity-40'
 
   /*
@@ -1311,36 +1368,39 @@
   })
 
   /*
-   * Ширина полосы, а не ширина окна.
+   * The bar's width, not the window's width.
    *
-   * Счётчик ячеек прятался по `xl:` — медиазапросу про окно. Но полосу сужает
-   * не только узкий экран: панели по бокам тетради отнимают у неё место, а зум
-   * браузера (Cmd-+) сужает CSS-пиксель, не трогая окно вовсе. Оттого счётчик
-   * пропадал на широком экране с открытым терминалом и держался на узком, где
-   * панели закрыты. Меряем то место, которое есть на самом деле.
+   * The cell counter used to hide on `xl:` — a media query about the window.
+   * But the bar is narrowed not only by a narrow screen: the panels on the
+   * sides of the notebook take space from it, and browser zoom (Cmd-+) narrows
+   * the CSS pixel without touching the window at all. As a result the counter
+   * disappeared on a wide screen with the terminal open and stayed on a narrow
+   * one where the panels were closed. We measure the space that is actually
+   * there.
    */
   let barWidth = $state(0)
 
-  /** Сколько плашек висит справа: ядро не в порядке, очередь не пуста, или и то и другое. */
+  /** Number of pills on the right: kernel unwell, queue non-empty, or both. */
   const chipCount = $derived(
     (kernel === 'dead' || kernel === 'off' || kernel === 'starting' || kernel === 'restarting' ? 1 : 0) +
       (queued > 0 ? 1 : 0),
   )
 
   /*
-   * Порядок отступления в правом углу — решённый, а не «что не влезло, то
-   * срезано».
+   * The order of retreat in the right corner — decided, not "whatever did not
+   * fit gets cut off".
    *
-   * Плашка состояния важнее счётчика: она про то, что с ядром происходит
-   * сейчас, а сколько в тетради ячеек — видно прокруткой. Поэтому уступает
-   * счётчик, и уступает ступенями: полная строка → одно число с подсказкой →
-   * ничего. Плашка не уступает никогда — она вынесена из прокручиваемой части
-   * полосы и стоит у правого края.
+   * The state pill matters more than the counter: it is about what is happening
+   * to the kernel right now, while how many cells the notebook has can be seen
+   * by scrolling. So the counter gives way, and it does so in steps: the full
+   * line → a single number with a hint → nothing. The pill never gives way — it
+   * is taken out of the scrolling part of the bar and stands at the right edge.
    *
-   * Пороги — ширина полосы в CSS-пикселях, посчитанная по содержимому: пять
-   * кнопок слева занимают около 650, плашка — до 160, счётчик — около 70.
-   * Каждая плашка поднимает порог на свою ширину: место под неё счётчик
-   * освобождает заранее, а не отдаёт постфактум, когда её уже режет.
+   * The thresholds are the bar's width in CSS pixels, computed from the
+   * content: five buttons on the left take about 650, a pill up to 160, the
+   * counter about 70. Each pill raises the threshold by its own width: the
+   * counter frees the space for it in advance, rather than giving it up after
+   * the fact, when the pill is already being cut.
    */
   const countMode = $derived.by(() => {
     if (barWidth >= 560 + 160 * chipCount) return 'full'
@@ -1384,11 +1444,12 @@
   /**
    * Bordered, square, mono: the voice every status readout in the sheet uses.
    *
-   * Гнётся, а не держится: `shrink-0` уместен там, где рядом есть чему
-   * уступить, а в правом углу полосы уступать некому — негнущаяся плашка
-   * вылезала за край, где её срезал `contain: paint`. Сжимается коробка,
-   * слово внутри уходит в многоточие и целиком остаётся в `title`:
-   * обрезанного состояния ядра не бывает.
+   * It bends rather than holds firm: `shrink-0` is appropriate where there is
+   * something next to it that can give way, and in the right corner of the bar
+   * there is nothing to give way — a pill that would not bend poked out past
+   * the edge, where `contain: paint` clipped it. The box shrinks, the word
+   * inside goes into an ellipsis and remains whole in `title`: there is no such
+   * thing as a truncated kernel state.
    */
   const PILL = 'inline-flex h-6 min-w-0 items-center gap-2 border px-2.5 font-mono text-2xs'
 
@@ -1400,13 +1461,13 @@
     'disabled:pointer-events-none disabled:opacity-40'
 
   /**
-   * Почему добавить ячейку нельзя — или что будет, если можно.
+   * Why a cell cannot be added — or what happens if it can.
    *
-   * Причина берётся из того же места, что и отказ на клавишу `a` (`addAt`) и
-   * серые кнопки тулбара ячейки: `may.structureWhy` знает и про правила
-   * тетради, и про правила комнаты, и про конец занятия. Второй копии этого
-   * вопроса здесь заводить нельзя — разойдясь, она даст серую кнопку там, где
-   * право есть.
+   * The reason comes from the same place as the refusal on the `a` key
+   * (`addAt`) and the grey buttons of the cell toolbar: `may.structureWhy`
+   * knows about the notebook's rules, the room's rules and the end of class. A
+   * second copy of this question must not be set up here — once it drifted, it
+   * would produce a grey button where the right exists.
    */
   const addTitle = (can: string): string => (may.add ? can : may.structureWhy)
 </script>
@@ -1421,16 +1482,16 @@
              transition-opacity duration-[var(--speed-quick)] group-hover/add:opacity-100"
     ></div>
     <!--
-      Прозрачное — значит не нажимается.
+      Transparent means unclickable.
 
-      `opacity-0` убирает кнопки с глаз, но не из hit-testing: на планшете
-      наведения и нажатия приходят одним касанием, так что тап ровно по стыку
-      двух ячеек «проявлял» кнопку и тут же жал её — ячейка вставлялась всей
-      комнате (или, в лекции, прилетал тост-отказ) без единого видимого
-      предвестника. `pointer-events` снимается тем же условием, каким
-      возвращается видимость, так что нажать можно ровно то, что видно;
-      клавиатуре это не мешает — фокус ходит и по элементу без указателя, а
-      `focus-within` возвращает и то, и другое.
+      `opacity-0` removes the buttons from sight, but not from hit-testing: on a
+      tablet hover and press arrive in a single touch, so a tap right on the
+      seam between two cells "revealed" the button and pressed it at once — a
+      cell was inserted for the whole room (or, in a lecture, a refusal toast
+      flew in) without a single visible warning. `pointer-events` is removed by
+      the same condition that brings visibility back, so exactly what can be
+      seen can be pressed; this does not get in the keyboard's way — focus moves
+      to an element without a pointer too, and `focus-within` brings both back.
     -->
     <div
       class="pointer-events-none relative flex items-center gap-1 opacity-0 transition-opacity
@@ -1465,13 +1526,15 @@
   are what bound the measure; this element should not bound it a second time.
 -->
 <!--
-  `overflow-anchor: none` — не отключение якоря, а отказ от ВТОРОГО.
+  `overflow-anchor: none` is not switching anchoring off but declining a SECOND
+  one.
 
-  Свой якорь у тетради теперь есть (см. `settle` выше), и он точный: знает,
-  какая ячейка выросла и на сколько. Браузерный в этом контейнере и так не
-  срабатывал — замерено: ячейка выше экрана росла на 569 px, `scrollTop` не
-  менялся, — но полагаться на то, что он и дальше промолчит, нельзя: стоит ему
-  однажды сработать, и поправят оба, а уедет вдвое.
+  The notebook now has its own anchor (see `settle` above), and it is precise:
+  it knows which cell grew and by how much. The browser's did not fire in this
+  container anyway — measured: a cell above the screen grew by 569 px,
+  `scrollTop` did not change — but one cannot rely on it staying silent in the
+  future: should it fire once, both would correct, and the screen would move
+  twice as far.
 -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
@@ -1488,16 +1551,18 @@
   onpointerdowncapture={() => (steering = null)}
 >
   <!--
-    Полоса режима — над тетрадью и НЕ липкая, в отличие от ряда кнопок под ней.
+    The mode bar is above the notebook and NOT sticky, unlike the row of buttons
+    under it.
 
-    Это не состояние, за которым следят, а условие, в котором работают: его
-    читают один раз, входя в комнату. Прибитая к верху, она отняла бы строку
-    экрана у каждой ячейки до конца пары; уехавшая вверх — оставляет вместо себя
-    замки на самих ячейках, которые говорят то же самое там, где нажимают.
+    It is not a state that is watched but a condition people work under: it is
+    read once, on entering the room. Pinned to the top, it would take a line of
+    the screen from every cell until the end of class; scrolled away, it leaves
+    in its place the locks on the cells themselves, which say the same thing
+    right where people press.
 
-    Тёплая, а не тревожная: в лекции ничего не сломалось. Тем и отличается от
-    жёлтых предупреждений в этом продукте, что у неё нет ни значка «внимание»,
-    ни кнопки, — только замок, слово и объяснение.
+    Warm, not alarming: nothing has broken in a lecture. That is what sets it
+    apart from the yellow warnings in this product: it has neither an
+    "attention" icon nor a button — only a lock, a word and an explanation.
   -->
   {#if lecture}
     <div
@@ -1510,17 +1575,17 @@
     </div>
   {/if}
   <!--
-    Полоса — два слота, а не один прокручиваемый ряд.
+    The bar is two slots, not one scrolling row.
 
-    Кнопки и состояние лежали в одном `overflow-x-auto`, и правый край полосы
-    принадлежал ему же: на узком экране — или при зуме, который сужает
-    CSS-пиксель так же, как сужает окно, — состояние ядра уезжало за край
-    вместе с «Форматировать», а затухание, поставленное намекнуть на
-    прокрутку, гасило ровно то место, где это состояние написано. Теперь
-    прокручиваются действия; состояние стоит и не гаснет.
+    The buttons and the state lay in one `overflow-x-auto`, and the right edge
+    of the bar belonged to it too: on a narrow screen — or with zoom, which
+    narrows the CSS pixel just as narrowing the window does — the kernel state
+    slid off the edge together with "Format", and the fade placed there to hint
+    at scrolling dimmed exactly the spot where that state is written. Now the
+    actions scroll; the state stays put and does not fade.
   -->
-  <!-- Признак для расчёта прокрутки: полоса липкая и закрывает собой верх
-       экрана, поэтому «верх экрана» для ячейки начинается под ней. -->
+  <!-- A marker for the scroll computation: the bar is sticky and covers the top
+       of the screen, so the "top of the screen" for a cell starts below it. -->
   <div
     data-notebook-bar
     bind:clientWidth={barWidth}
@@ -1528,14 +1593,14 @@
            [contain:paint] min-[651px]:h-10"
   >
     <!--
-      Непрозрачная подложка, а не размытая.
+      An opaque backdrop, not a blurred one.
 
-      Полоса липкая и висит над тетрадью на две сотни ячеек, а `backdrop-blur`
-      заставляет браузер пересчитывать размытие подложки на КАЖДЫЙ кадр
-      прокрутки — на встроенной графике студенческого ноутбука это дорогой
-      слой на весь сеанс. Смотрят на полосу ради кнопок, а не ради того, что
-      под ней; `contain: paint` на полосе отрезает её рисование от остальной
-      страницы.
+      The bar is sticky and hangs over a notebook of two hundred cells, and
+      `backdrop-blur` makes the browser recompute the backdrop blur on EVERY
+      scroll frame — on the integrated graphics of a student's laptop that is an
+      expensive layer for the whole session. People look at the bar for the
+      buttons, not for what is under it; `contain: paint` on the bar cuts its
+      painting off from the rest of the page.
     -->
     <div
       bind:this={runBar}
@@ -1546,8 +1611,8 @@
         // A phone fits Run all, Interrupt, Restart and Clear and no more, and the
         // bar cut off flush with the screen edge: the terminal was still there,
         // one swipe away, with nothing on screen to say so. The fade is the only
-        // thing that says the row continues. Оно накрывает только действия:
-        // состояние стоит правее и в прокрутке не участвует.
+        // thing that says the row continues. It covers only the actions: the
+        // state stands further to the right and takes no part in the scrolling.
         runBarMore && '[mask-image:linear-gradient(to_right,#000_calc(100%-40px),transparent)]',
       )}
     >
@@ -1630,10 +1695,11 @@
         onclick={() => session.send({ t: 'clearOutputs', book })}
       > {tr('room.ui.449')} </button>
       <!--
-        Форматирование стоит здесь, а не в меню ячейки: оно про весь ноутбук.
-        Ячейку, которую black прочитать не может — магию, строку с ! или код,
-        который сейчас дописывают, — оно оставляет как есть и идёт дальше, и
-        именно поэтому кнопка одна на всю панель, а не по одной на ячейку.
+        Formatting sits here, not in the cell menu: it is about the whole
+        notebook. A cell that black cannot read — magic, a line with !, or code
+        that is being written right now — it leaves as is and moves on, and that
+        is exactly why there is one button for the whole panel rather than one
+        per cell.
       -->
       <button
         type="button"
@@ -1656,33 +1722,34 @@
       else — a healthy kernel is reported in the masthead. An unhealthy one is
       not reported anywhere else yet, so it keeps its pill here.
 
-      Угол не прокручивается и прибит вправо: плашка приходит и уходит, но
-      растёт она влево, в сторону прокручиваемых кнопок, — счётчик у правого
-      края не сдвигается ни на пиксель, и в полосе ничего не прыгает. 70 % —
-      потолок: на телефоне двум плашкам разом нужно около 240 px, и это ровно
-      столько, чтобы обе читались целиком, а кнопкам осталось за что тянуть
-      полосу.
+      The corner does not scroll and is pinned to the right: a pill comes and
+      goes, but it grows to the left, towards the scrolling buttons — the
+      counter at the right edge does not move by a pixel, and nothing in the bar
+      jumps. 70% is the ceiling: on a phone two pills at once need about 240 px,
+      and that is exactly enough for both to read in full while the buttons
+      still have something to pull the bar by.
     -->
     <div class="flex max-w-[70%] shrink-0 items-center gap-2.5 pl-2.5 pr-5">
       {#if kernel === 'dead'}
-        <!-- animate-fade-up — продуктовое «появилось»; под
-             prefers-reduced-motion index.css оставляет от него одно
-             проявление без сдвига. -->
+        <!-- animate-fade-up is the product's "appeared"; under
+             prefers-reduced-motion index.css leaves only a fade-in without
+             movement from it. -->
         <span
           class={cn(PILL, 'animate-fade-up border-danger/40 bg-danger/[0.05] text-danger')}
           title={tr('room.ui.451')}
         >
           <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-danger"></span>
           <span class="truncate">{tr('room.ui.451')}</span>
-          <!-- По правилу, а не по роли: кнопка в полосе слушается may.restart,
-               и в открытой лаборатории без преподавателя плашка без кнопки
-               оставляла студентов гадать, что Restart есть где-то выше.
+          <!-- By the rule, not by the role: the button in the bar listens to
+               may.restart, and in an open lab without a teacher a pill without
+               a button left students guessing that Restart was somewhere up
+               there.
 
-               На самой узкой ступени её тут нет: она стоит 110 px рядом со
-               словом, ради которого плашку и читают, и там же, в двух пальцах
-               левее, её близнец в самой полосе. Уступает дубль, а не
-               состояние; shrink-0 — чтобы там, где она есть, сжималось слово,
-               а не выход из положения. -->
+               At the narrowest step it is not here: it stands 110 px next to
+               the word the pill is read for, and right there, two fingers to
+               the left, is its twin in the bar itself. The duplicate gives way,
+               not the state; shrink-0 is so that where the button is present,
+               the word shrinks rather than the way out. -->
           {#if may.restart && countMode !== 'none'}
             <button
               type="button"
@@ -1697,17 +1764,19 @@
           {/if}
         </span>
       {:else if kernel === 'off'}
-        <!-- Ядро поднимается лениво, и «не запущено» — это не беда, а факт:
-             ни пульса, ни цвета тревоги. Подсказка говорит, чем его поднять. -->
+        <!-- The kernel is started lazily, and "not started" is not a trouble
+             but a fact: no pulse, no alarm colour. The hint says how to start
+             it. -->
         <span class={cn(PILL, 'border-line text-faint')} title={tr('room.kernel.state.offWhy')}>
           <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-faint/60"></span>
           <span class="truncate">{tr('room.kernel.state.off')}</span>
         </span>
       {:else if kernel === 'starting' || kernel === 'restarting'}
         <!-- Opacity, not a background sweep: the same information for one
-             composited property instead of a repaint every frame. Пульс здесь
-             вместо появления: две анимации на одном элементе спорят за
-             animation, а дышащая плашка и так говорит «происходит». -->
+             composited property instead of a repaint every frame. A pulse here
+             instead of an entrance: two animations on one element fight over
+             animation, and a breathing pill already says "something is
+             happening". -->
         {@const label =
           kernel === 'starting' ? tr('room.kernel.starting') : tr('room.kernel.restarting')}
         <span class={cn(PILL, 'animate-pulse border-line text-muted')} title={label}>
@@ -1727,11 +1796,11 @@
       {/if}
       <!-- The least load-bearing thing in the strip, and the first to go when
            there is not room for all of it: how many cells there are is visible
-           by scrolling the notebook. Ступени — у countMode: сначала строка
-           сжимается до одного числа, и слово уходит в подсказку, и только
-           потом число исчезает совсем. -->
-      <!-- Пока тетрадь не прочитана, счётчика нет вовсе: «0 cells» на холодном
-           кадре — это не число, это неправда. -->
+           by scrolling the notebook. The steps belong to countMode: first the
+           line shrinks to a single number and the word goes into the hint, and
+           only then does the number disappear altogether. -->
+      <!-- Until the notebook has been read there is no counter at all: "0
+           cells" on a cold frame is not a number, it is a lie. -->
       {#if !cold && countMode !== 'none'}
         {@const count = ids.current.length}
         <span
@@ -1751,12 +1820,13 @@
 
   {#if cold}
     <!--
-      Заставка, а не скелет ячеек: серые «ячейки» обещали тетрадь, которой ещё
-      никто не видел, — сколько их, какие они и есть ли они вообще. Заставка
-      обещает только ожидание, и это единственное, что здесь известно. Холодный
-      вход её обычно не показывает вовсе: оболочка из index.html висит, пока
-      тетрадь не прочитана (lib/boot.ts), — эта остаётся для смены вкладки и
-      второй тетради, открытой на живом экране.
+      A splash, not a skeleton of cells: grey "cells" promised a notebook nobody
+      had seen yet — how many there are, what they are like, and whether there
+      are any at all. A splash promises only waiting, and that is the only thing
+      known here. A cold entry usually does not show it at all: the shell from
+      index.html hangs until the notebook has been read (lib/boot.ts) — this one
+      remains for switching tabs and for a second notebook opened on a live
+      screen.
     -->
     <Splash size="pane" label={tr('room.ui.454')} />
   {:else}

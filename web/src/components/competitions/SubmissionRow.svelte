@@ -1,14 +1,14 @@
 <script lang="ts">
   /**
-   * Одна строка «Моих посылок» на десктопе (P2).
+   * One row of "My submissions" on a desktop (P2).
    *
-   * Пять колонок одной ширины во всех строках: номер, плашка, описание,
-   * число или таймер, действие. Колонки фиксированы нарочно — по ним глаз
-   * проверяет тринадцать строк сверху вниз, и «ГОТОВО», съехавшее на двадцать
-   * пикселей из-за длинного имени файла, ломает это чтение полностью.
+   * Five columns of the same width in every row: number, badge, description,
+   * number or timer, action. The columns are fixed on purpose — the eye
+   * checks thirteen rows top to bottom by them, and a "DONE" shifted twenty
+   * pixels by a long file name breaks that reading completely.
    *
-   * Ошибка раскрывается ЗДЕСЬ же, а не на отдельной странице: трейс — это две
-   * строки, ради которых человек не должен терять список из виду.
+   * An error unfolds RIGHT HERE, not on a separate page: a traceback is two
+   * lines, and for their sake a person should not lose sight of the list.
    */
   import { tr } from '@shared/i18n'
   import { entrantBadge, isTerminal, type EntrantSubmission } from '@shared/competitions'
@@ -33,11 +33,11 @@
     paused: boolean
     now: number
     busy: boolean
-    /** Потолок прогона соревнования — правая половина «01:12 из 10:00». */
+    /** The competition's run ceiling — the right half of "01:12 of 10:00". */
     limitMs: number
     dependenciesSlug?: string
     notebookUrl: string
-    /** Приём закрыт: зачётную посылку больше не переставить. */
+    /** Submissions are closed: the counted submission can no longer be changed. */
     frozen: boolean
     oncancel: (id: string) => void
     onchoose: (id: string) => void
@@ -58,7 +58,7 @@
       submission.state === 'timedOut' ||
       submission.state === 'outOfMemory',
   )
-  /** Что стоит в колонке числа: результат, секундомер, оценка ожидания, прочерк. */
+  /** What goes in the number column: the score, a stopwatch, a wait estimate, a dash. */
   const rightSide = $derived.by(() => {
     if (submission.state === 'scored') return { kind: 'score' as const }
     if (running && live?.startedAt) {
@@ -80,8 +80,9 @@
         tone: 'text-ink',
       }
     }
-    // Вышедшее время рисуется потолком с обеих сторон: «10:00 из 10:00» — это
-    // и есть то, что случилось, а длительность прогона тут меньше на доли.
+    // Time that ran out is drawn as the ceiling on both sides: "10:00 of
+    // 10:00" is exactly what happened, while the run's duration here is a
+    // fraction shorter.
     if (submission.state === 'timedOut') {
       return {
         kind: 'clock' as const,
@@ -184,8 +185,8 @@
   {/if}
 
   {#if open && (failed || submission.state === 'metricFailed')}
-    <!-- Подсветка блока — своя, бледно-красная: он лежит ВНУТРИ строки, и
-         обычная рамка читалась бы как ещё одна посылка. -->
+    <!-- The block has its own pale red highlight: it lies INSIDE the row, and
+         an ordinary border would read as one more submission. -->
     <div class="ml-12 flex flex-col border border-[#F3C6CC] bg-[#FEF6F7] dark:border-danger/40 dark:bg-danger/10">
       {#if submission.participantError}
         <pre class="overflow-x-auto whitespace-pre-wrap px-3.5 py-2.5 font-mono text-micro leading-[19px] text-ink">{submission.participantError}</pre>

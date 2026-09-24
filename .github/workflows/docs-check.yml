@@ -1,16 +1,17 @@
-# Опубликованная документация совпадает со своими исходниками.
+# The published documentation matches its sources.
 #
-# site/docs/** — выход docs/build.py из docs/pages/**, и в дереве лежат оба.
-# pages.yml выкладывает site/ как есть и ничего не собирает, поэтому исходник,
-# поправленный без пересборки, до colloq.ru/docs не доезжает вовсе: в PR видно
-# новую статью, на сайте — старую, и расхождение никто не замечает, пока его
-# не найдёт читатель. Ровно так же молча пропадает правка сгенерированного HTML
-# руками: следующий, кто пересоберёт, её сотрёт. Здесь сборка повторяется на
-# чистом checkout, и любой след в site/docs — изменённый или новый файл —
-# роняет проверку со списком того, что разошлось.
+# site/docs/** is the output of docs/build.py from docs/pages/**, and both are
+# in the tree. pages.yml publishes site/ as is and builds nothing, so a source
+# edited without a rebuild never reaches colloq.ru/docs at all: the PR shows
+# the new article, the site shows the old one, and nobody notices the
+# divergence until a reader finds it. A hand edit of the generated HTML is lost
+# just as silently: the next person to rebuild wipes it. Here the build is
+# repeated on a clean checkout, and any trace in site/docs, a changed or a new
+# file, fails the check with a list of what diverged.
 #
-# Только стандартная библиотека Python (см. шапку docs/build.py): ни npm, ни
-# pip, поэтому проверка дешёвая, без секретов и безопасна для PR из форков.
+# Only the Python standard library (see the header of docs/build.py): neither
+# npm nor pip, so the check is cheap, has no secrets and is safe for PRs from
+# forks.
 name: Docs up to date
 
 on:
@@ -30,8 +31,8 @@ on:
 permissions:
   contents: read
 
-# Новый пуш в ту же ветку отменяет прошлый прогон — итог старого коммита уже
-# никому не нужен.
+# A new push to the same branch cancels the previous run: nobody needs the
+# outcome for the old commit any more.
 concurrency:
   group: docs-check-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -44,26 +45,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Токен в .git/config сборке не нужен: git после checkout в сеть не ходит.
+          # The build has no use for the token in .git/config: after checkout
+          # git does not go to the network.
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
       - name: Build the docs
-        # build.py читает и пишет текст кодировкой локали (read_text() без
-        # encoding), а статьи — кириллица. Сейчас у раннера C.UTF-8 и всё
-        # сходится, но это свойство образа, а не сборки: образ с другой локалью
-        # уронил бы её на первом русском символе или записал бы файлы не в той
-        # кодировке — и проверка обвинила бы ни в чём не повинный PR.
+        # build.py reads and writes text in the locale encoding (read_text()
+        # without encoding), and the articles are Cyrillic. The runner has
+        # C.UTF-8 now and everything works, but that is a property of the
+        # image, not of the build: an image with another locale would crash
+        # the build on the first Russian character or write the files in the
+        # wrong encoding, and the check would blame an innocent PR.
         env:
           PYTHONUTF8: '1'
         run: python3 docs/build.py
       - name: Generated docs are committed
-        # --porcelain, а не git diff: новая статья — это НЕотслеживаемый файл
-        # в site/docs/en/, и git diff его не видит.
+        # --porcelain, not git diff: a new article is an UNtracked file in
+        # site/docs/en/, and git diff does not see it.
         run: |
-          # sitemap.xml пишет та же сборка: новая статья без строки в карте сайта —
-          # это страница, которую поисковик найдёт только по ссылке из соседней.
+          # sitemap.xml is written by the same build: a new article without a
+          # line in the sitemap is a page a search engine finds only through a
+          # link from the page next to it.
           changed="$(git status --porcelain -- site/docs site/sitemap.xml)"
           if [ -n "$changed" ]; then
             echo "::error::site/docs or site/sitemap.xml is out of date with docs/pages. Run 'python3 docs/build.py' and commit the regenerated files together with the sources."
@@ -73,13 +77,15 @@ jobs:
           fi
           echo "site/docs matches docs/pages."
       - name: No Russian page without a source
-        # Статью убрали из docs/pages/ru — а её site/docs/<slug>.html остался
-        # в дереве и дальше отдаётся на colloq.ru/docs по старому адресу, из
-        # поиска и чужих ссылок. Шаг выше этого не видит: build.py подчищает
-        # осиротевшие страницы только в en/ (корень site/docs делят с ручными
-        # docs.css и docs.js, и сборка там ничего не удаляет), так что после
-        # пересборки файл просто не тронут и git status чист. Английскую
-        # сироту сборка удаляет сама, и её ловит проверка выше.
+        # An article was removed from docs/pages/ru, but its
+        # site/docs/<slug>.html stayed in the tree and is still served on
+        # colloq.ru/docs at the old address, from search and from other
+        # people's links. The step above does not see this: build.py cleans up
+        # orphaned pages only in en/ (the root of site/docs is shared with the
+        # hand-written docs.css and docs.js, and the build deletes nothing
+        # there), so after the rebuild the file is simply untouched and git
+        # status is clean. An English orphan the build deletes itself, and the
+        # check above catches it.
         run: |
           orphans=""
           for f in site/docs/*.html; do

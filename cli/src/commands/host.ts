@@ -1,79 +1,86 @@
 /**
- * Занятие в сети — как аудитория попадает на эту машину.
+ * The class on the network: how the audience gets to this machine.
  *
- * Команда одна — host: выставить уже идущее занятие наружу и получить ссылку.
- * Ретранслятор, зона DNS, именованный туннель Cloudflare и нагрузочный стенд
- * сюда не входят: они ставят и правят чужие машины и зону, это мастерская, и
- * живёт она в Makefile и scripts/. Преподавателю после `pip install colloq`
- * из всего этого нужна только ссылка.
+ * There is one command, host: expose the class that is already running and
+ * get a link. The relay, the DNS zone, the named Cloudflare tunnel and the
+ * load test rig are not part of it: they install and edit other machines and
+ * the zone, that is the workshop, and it lives in the Makefile and scripts/.
+ * Of all that, a teacher after `pip install colloq` needs only the link.
  *
- * host идёт прямо в scripts/host.sh — одинаково из колеса и из исходников;
- * разбор у publishCall ниже. Каталог состояния скрипту называем сами: stateEnv.
+ * host goes straight to scripts/host.sh, the same way from the wheel and from
+ * the sources; the reasoning is at publishCall below. We name the state
+ * directory to the script ourselves: stateEnv.
  *
- * Три вещи, которые здесь не делаются намеренно.
+ * Three things that are deliberately not done here.
  *
- * Инстанс не поднимается. host.sh публикует то, что уже работает: молчит
- * /api/health — он умирает с инструкцией. Второй инстанс — это вторая база,
- * и заводить её вместо человека нельзя.
+ * No instance is brought up. host.sh publishes what is already running: if
+ * /api/health is silent, it dies with an instruction. A second instance is a
+ * second database, and creating one instead of the person is not allowed.
  *
- * Короткое имя не достраивается. До RELAY_DOMAIN его доводит только
- * ретранслятор, и решает это host.sh: CLI, угадав зону, увёл бы пару в
- * Cloudflare, а он из России не открывается.
+ * A short name is not completed. Only the relay extends it to RELAY_DOMAIN,
+ * and host.sh decides that: the CLI, guessing the zone, would send the class
+ * off to Cloudflare, and Cloudflare does not open from Russia.
  *
- * Отказы скрипта не переписываются. Свои проверки — только до первого
- * действия и только о том, что видно отсюда: есть ли имя, похоже ли оно на
- * имя, есть ли .env.
+ * The script's refusals are not rewritten. Our own checks run only before the
+ * first action and only about what is visible from here: whether there is a
+ * name, whether it looks like a name, whether there is a .env.
  *
- * Порядок: проверить имя (check — каркас зовёт его раньше вопроса) → вопрос
- * каркаса → --dry-run → .env → шапка в одну строку → скрипт. Проверка стоит
- * до вопроса: спросить «поставить caddy для этого имени?», чтобы потом
- * сказать «это не имя», — значит спросить зря.
+ * The order: check the name (check, the framework calls it before the
+ * question) → the framework's question → --dry-run → .env → a one-line header
+ * → the script. The check comes before the question: asking "install caddy for
+ * this name?" only to say "this is not a name" afterwards means asking for
+ * nothing.
  *
- * node:child_process и node:fs импортировать нельзя: только ctx.sh и ctx.io.
+ * node:child_process and node:fs must not be imported: only ctx.sh and ctx.io.
  */
 import type { Command, Ctx } from '../registry.js'
 import { PreconditionError, UsageError } from '../ui.js'
 
 /**
- * Периметр локального занятия — вслух, теми же словами в двух местах.
+ * The perimeter of a local class, said out loud, in the same words in two
+ * places.
  *
- * Сказать их надо там, где человек и решает, кого пускать: в `colloq host`
- * (сейчас он открывает занятие наружу) и в `colloq doctor` (перед парой).
+ * They have to be said where the person decides whom to let in: in `colloq
+ * host` (right now they are opening the class to the outside) and in `colloq
+ * doctor` (before class).
  *
- * Что тут правда и почему именно так. Прежде здесь стояло «без ограничений
- * прода: сеть наружу открыта, привилегии не сняты» — и это было правдой, пока
- * контейнер комнаты был голым. Теперь публикация наружу вообще возможна
- * только при изоляции ядер (решение автора: замок в host.sh и в супервизоре,
- * cli/src/launch-share.ts), а сами контейнеры комнат укреплены: привилегии
- * сняты, число процессов ограничено, до домашней сети и до самой машины из
- * комнаты не достучаться (server/src/kernel/perimeter.ts). Что остаётся правдой и
- * после этого: ссылка — это дверь. Кто её получил, тот запускает код в
- * песочнице на этом компьютере, — поэтому ссылка для своего класса, а Ctrl+C
- * её закрывает.
+ * What is true here and why exactly so. This used to say "no production
+ * limits: the network to the outside is open, privileges are not dropped",
+ * and that was true while the room container was bare. Now publishing to the
+ * outside is possible at all only with kernel isolation (the author's
+ * decision: a lock in host.sh and in the supervisor,
+ * cli/src/launch-share.ts), and the room containers themselves are hardened:
+ * privileges are dropped, the number of processes is limited, the home
+ * network and the machine itself cannot be reached from a room
+ * (server/src/kernel/perimeter.ts). What stays true even after that: the link
+ * is a door. Whoever got it runs code in a sandbox on this computer, so the
+ * link is for your own class, and Ctrl+C closes it.
  *
- * Строк ровно две, и обе короткие: имя периметра — и цена вместе с выходом.
- * Одна длинная фраза не читается (у доктора она ещё и не влезает в строку
- * рядом с подписью), а третья превращает предупреждение в абзац, который
- * пролистывают. Слова одни и те же нарочно: doctor и host говорят об одном.
+ * There are exactly two lines, both short: the name of the perimeter, and the
+ * price together with the way out. One long sentence does not get read (in
+ * doctor it also does not fit on the line next to the label), and a third
+ * line turns the warning into a paragraph that gets scrolled past. The words
+ * are the same on purpose: doctor and host speak about one thing.
  *
- * Каталога shared/locales CLI не знает: tr() живёт в server и web и сюда не
- * дотягивается — строки CLI пишутся прямо там, где печатаются. Поэтому слова
- * про периметр лежат обычной константой здесь, а doctor импортирует её
- * отсюда: разойтись двум местам нельзя.
+ * The CLI does not know the shared/locales directory: tr() lives in server and
+ * web and does not reach here, so CLI strings are written right where they are
+ * printed. That is why the words about the perimeter lie in an ordinary
+ * constant here, and doctor imports it from here: the two places must not
+ * drift apart.
  */
 export const PERIMETER = {
   what: 'student code runs in a hardened container per room, cut off from your home network',
   fix: 'the link is a door: anyone who has it runs code in a sandbox on this computer — keep it for your class; Ctrl+C closes it',
 } as const
 
-/** Имя в DNS: латиница, цифры, точки и дефисы — на него выпишут сертификат. */
+/** A name in DNS: latin letters, digits, dots and hyphens; a certificate will be issued for it. */
 const NAME = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/
 
 export function hostNameOk(host: string): boolean {
   return NAME.test(host)
 }
 
-/** Имя занятия как его написали; пустое — быстрый туннель со случайным именем. */
+/** The class name as written; an empty one means a quick tunnel with a random name. */
 function nameOf(ctx: Ctx): string {
   return (ctx.positionals[0] ?? '').trim()
 }
@@ -83,9 +90,10 @@ function directOf(ctx: Ctx): boolean {
 }
 
 /**
- * Проверка до вопроса: у прямого режима имя обязательно, и любое имя должно
- * годиться в DNS. Отказ об употреблении — код 2, как во всех группах; печатает
- * его каркас тремя строками: что случилось, чем вызвано, что сделать.
+ * The check before the question: direct mode requires a name, and any name
+ * must be fit for DNS. A usage refusal is code 2, as in all groups; the
+ * framework prints it in three lines: what happened, what caused it, what to
+ * do.
  */
 function checkName(ctx: Ctx): void {
   const host = nameOf(ctx)
@@ -106,13 +114,15 @@ function checkName(ctx: Ctx): void {
 }
 
 /**
- * Без .env не узнать ни порта, ни ретранслятора, ни токена зоны.
+ * Without .env there is no way to learn the port, the relay or the zone token.
  *
- * Совет здесь стоял невыполнимый: «cp .env.example .env» — путь относительный,
- * то есть в том каталоге, где человек стоит, а .env.example у поставленного
- * пакета нет вовсе. Заводит .env первый `colloq start` и кладёт его в каталог
- * состояния, туда, где мы его и ищем (cli/src/launch-config.ts · localClassEnv),
- * — и из колеса, и из исходников одинаково; туда и посылаем, одним советом.
+ * The advice here used to be impossible to follow: "cp .env.example .env",
+ * a relative path, that is, in whatever directory the person is standing in,
+ * and an installed package has no .env.example at all. The first `colloq
+ * start` creates .env and puts it into the state directory, right where we
+ * look for it (cli/src/launch-config.ts · localClassEnv), the same way from
+ * the wheel and from the sources; that is where we send people, with one
+ * piece of advice.
  */
 function needEnv(ctx: Ctx): void {
   if (ctx.io.exists(ctx.env.paths.envFile)) return
@@ -123,38 +133,40 @@ function needEnv(ctx: Ctx): void {
 }
 
 /**
- * Каталог состояния — ребёнку, явной переменной.
+ * The state directory goes to the child as an explicit variable.
  *
- * Скрипты считали своим корнем каталог над scripts/ и искали там .env,
- * расписку занятия и .colloq.pid. У поставленного colloq там только
- * приложение: публикация «удавалась», PUBLIC_URL уезжал в файл, которого никто
- * не читает, а `colloq link` смотрел в <home>/.env и говорил, что наружу
- * ничего не выставлено. Теперь корень состояния скриптам называют вслух
- * (scripts/lib.sh · COLLOQ_STATE_ROOT).
+ * The scripts took the directory above scripts/ as their root and looked there
+ * for .env, the class receipt and .colloq.pid. For an installed colloq there
+ * is only the application there: publishing "succeeded", PUBLIC_URL went off
+ * into a file nobody reads, and `colloq link` looked into <home>/.env and said
+ * that nothing was exposed. Now the state root is named to the scripts out
+ * loud (scripts/lib.sh · COLLOQ_STATE_ROOT).
  *
- * Называем всегда, а не только в пакете. В исходниках home и есть корень, и
- * переменная там ничего не меняет — зато нет развилки «когда совпадают, не
- * посылаем», которую надо не забыть повторить в следующей команде. Тем же
- * правилом живут copies и link — cli/src/commands/local.ts · stateEnv.
+ * We always name it, not only in the package. In the sources home is the
+ * root, and the variable changes nothing there, but then there is no fork
+ * "when they coincide, do not send it" that one must remember to repeat in
+ * the next command. copies and link live by the same rule:
+ * cli/src/commands/local.ts · stateEnv.
  */
 function stateEnv(ctx: Ctx): Record<string, string> {
   return { COLLOQ_HOME: ctx.env.paths.home }
 }
 
 /**
- * Вызов публикации: сам scripts/host.sh, всегда.
+ * The publishing call: scripts/host.sh itself, always.
  *
- * Цели Makefile host и host-direct — это две строки над тем же скриптом, но
- * Makefile в колесо не едет, и `colloq host` умирал «make: command not found»
- * на единственной команде, которой класс получает ссылку. Скрипт при этом
- * лежит рядом (scripts/pack.mts довозит scripts/), поэтому зовём его прямо и
- * теми же переменными, что подставила бы цель. Из исходников — так же: CLI,
- * который ведёт себя по-разному в зависимости от того, откуда он приехал,
- * проверяется вдвое хуже, а Makefile мастерской и так зовут руками.
+ * The Makefile targets host and host-direct are two lines over the same
+ * script, but the Makefile does not travel into the wheel, and `colloq host`
+ * died with "make: command not found" on the one command the class gets its
+ * link from. The script meanwhile lies right there (scripts/pack.mts ships
+ * scripts/), so we call it directly and with the same variables the target
+ * would have set. From the sources, the same: a CLI that behaves differently
+ * depending on where it came from is tested half as well, and the workshop
+ * Makefile is called by hand anyway.
  *
- * Порядок переменных — как в цели host-direct: COLLOQ_DIRECT перед
- * COLLOQ_HOSTNAME. Строку --dry-run копируют, и она должна совпадать с той,
- * что описана в шапке host.sh.
+ * The order of the variables is as in the host-direct target: COLLOQ_DIRECT
+ * before COLLOQ_HOSTNAME. People copy the --dry-run line, and it must match
+ * the one described in the header of host.sh.
  */
 function publishCall(ctx: Ctx, host: string, direct: boolean): Promise<number> {
   const env: Record<string, string> = { ...stateEnv(ctx) }
@@ -164,17 +176,19 @@ function publishCall(ctx: Ctx, host: string, direct: boolean): Promise<number> {
 }
 
 /**
- * Вопрос каркаса: прямой режим — всегда, туннель — только посреди занятия.
+ * The framework's question: for direct mode always, for a tunnel only in the
+ * middle of a class.
  *
- * У прямого режима своя цена (caddy на 80 и 443, A-запись переписана), и её
- * называют вслух при каждом вызове. Туннель ничего на машине не меняет, и
- * спрашивать о нём стоит лишь тогда, когда ссылку ждут уже идущие комнаты.
+ * Direct mode has its own price (caddy on 80 and 443, the A record
+ * rewritten), and it is named out loud on every call. A tunnel changes
+ * nothing on the machine, and it is worth asking about only when rooms that
+ * are already running are waiting for the link.
  */
 async function publishWhen(ctx: Ctx): Promise<boolean> {
   return directOf(ctx) || (await ctx.rooms()) > 0
 }
 
-/** Вопрос называет цену, а она зависит от транспорта и от имени. */
+/** The question names the price, and it depends on the transport and on the name. */
 function publishQuestion(ctx: Ctx): string {
   const host = nameOf(ctx)
   return directOf(ctx)
@@ -182,7 +196,7 @@ function publishQuestion(ctx: Ctx): string {
     : 'publish ' + (host || 'the class') + '?'
 }
 
-/** Шапка в одну строку: куда пойдёт пара и чем за это платят. */
+/** A one-line header: where the class will go and what it costs. */
 function headline(ctx: Ctx, host: string, direct: boolean): string {
   if (direct) return 'installing caddy on this machine: it holds 80 and 443 for ' + host
   const domain = ctx.env.relay().domain
@@ -234,8 +248,9 @@ export const commands: Command[] = [
 
       needEnv(ctx)
       ctx.ui.header(headline(ctx, host, direct))
-      // Сразу под шапкой, ДО того как побежит вывод скрипта: ссылку раздают
-      // после этой команды, и цена у неё не только в туннеле.
+      // Right under the header, BEFORE the script's output starts running: the
+      // link is handed out after this command, and its price is not only in
+      // the tunnel.
       ctx.ui.hint(PERIMETER.what)
       ctx.ui.hint(PERIMETER.fix)
       return await publishCall(ctx, host, direct)

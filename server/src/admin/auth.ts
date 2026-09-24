@@ -16,13 +16,17 @@ import { STAFF_COOKIE, type AdminErrorBody, type Teacher } from '@shared/admin'
 
 const SETUP_TOKEN_FILE = path.join(config.dataDir, 'setup-token')
 /**
- * Месяц — но месяц БЕЗ РАБОТЫ, а не месяц от входа: см. `slideStaffCookie`.
+ * A month — but a month of INACTIVITY, not a month since sign-in: see
+ * `slideStaffCookie`.
  *
- * Столько живёт подпись, скопированная из браузера куда-нибудь ещё; активная
- * вкладка продлевает себя сама.
+ * That is how long a signature copied out of the browser somewhere else lives;
+ * an active tab extends itself.
  */
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
-/** Раз в сутки — шаг продления: чаще незачем, реже уже не спасает семестр. */
+/**
+ * Once a day is the extension step: more often is pointless, less often no
+ * longer saves the semester.
+ */
 const COOKIE_SLIDE_AFTER_MS = 24 * 60 * 60 * 1000
 
 /* ------------------------------------------------------------ setup token */
@@ -49,18 +53,18 @@ export function readSetupToken(): string {
 }
 
 /**
- * Выписать новый токен установки и выбросить старый.
+ * Issue a new setup token and throw the old one away.
  *
- * Токен подписывает вошедшего как самого старого владельца и печатается
- * `make host` при каждом запуске — то есть живёт в истории терминала, в
- * скриншотах проектора и в чатах, куда его пересылали. Отозвать его было
- * нечем: файл можно было удалить руками, но об этом не сказано нигде, а
- * инструкция «rotate it when someone leaves» относилась к ссылкам
- * преподавателей и про этот токен молчала.
+ * The token signs in whoever uses it as the oldest owner and is printed by
+ * `make host` on every start — so it lives in terminal history, in projector
+ * screenshots and in the chats it was forwarded to. There was nothing to
+ * revoke it with: the file could be deleted by hand, but that was written
+ * nowhere, and the instruction "rotate it when someone leaves" was about
+ * teachers' links and said nothing about this token.
  *
- * Записывается через временный файл и rename: иначе между открытием и записью
- * есть мгновение, когда токена нет ни старого, ни нового, и запуск в этот
- * момент завёл бы третий.
+ * Written through a temporary file and a rename: otherwise, between opening
+ * and writing there is an instant when neither the old token nor the new one
+ * exists, and a start at that moment would create a third one.
  */
 export function rotateSetupToken(): string {
   const token = crypto.randomBytes(24).toString('base64url')
@@ -126,13 +130,14 @@ function readCookieHeader(header: string | undefined, name: string): string | nu
     if (part.slice(0, eq).trim() !== name) continue
     const raw = part.slice(eq + 1).trim()
     /*
-     * Кривая печенька — это не печенька, а не повод бросить исключение.
+     * A broken cookie is simply not a cookie, not a reason to throw.
      *
-     * `decodeURIComponent('%')` бросает URIError, и здесь это стоило процесса:
-     * ту же функцию зовёт разбор роли на рукопожатии сокета, где никакого
-     * try/catch над колбэком нет, — так что `Cookie: colloq_staff=%` от любого
-     * участника доходил до uncaughtException и клал весь инстанс со всеми
-     * комнатами. Значение всё равно обязано быть подписью, которая не сойдётся.
+     * `decodeURIComponent('%')` throws URIError, and here that cost the
+     * process: the same function is called by the role parsing in the socket
+     * handshake, where there is no try/catch around the callback — so
+     * `Cookie: colloq_staff=%` from any participant reached uncaughtException
+     * and took down the whole instance with all its rooms. The value still has
+     * to be a signature, and this one will not verify.
      */
     try {
       return decodeURIComponent(raw)
@@ -146,27 +151,30 @@ function readCookieHeader(header: string | undefined, name: string): string | nu
 /**
  * Secure would make the cookie undeliverable on a self-hosted http instance.
  *
- * По схеме ЭТОГО запроса, а не по PUBLIC_URL. Считалось по PUBLIC_URL, и пока
- * `make host` держит туннель, вход с айпада по адресу вида http://192.168.1.5
- * выдавал печенье с Secure: браузер его молча не сохранял, панель мелькала и
- * тут же отвечала 401 — экран входа без единого слова о причине. Тот же
- * неверный признак попадал и в clearCookie, то есть в обратном случае выход из
- * панели её не удалял. PUBLIC_URL остаётся тем, чем и был, — адресом для ссылок.
+ * Decided by the scheme of THIS request, not by PUBLIC_URL. It used to be
+ * decided by PUBLIC_URL, and while `make host` held the tunnel, signing in from
+ * an iPad at an address like http://192.168.1.5 issued the cookie with Secure:
+ * the browser silently did not store it, the panel flashed and immediately
+ * answered 401 — a sign-in screen without a single word about the reason. The
+ * same wrong flag also went into clearCookie, so in the opposite case signing
+ * out of the panel did not remove the cookie. PUBLIC_URL stays what it was —
+ * the address for links.
  *
- * `res.req`, а не отдельный параметр: печенье выдают шесть маршрутов и три
- * стенда, а express кладёт запрос на ответ сам. Подделка без него (тесты,
- * скрипты) читается как http — там его и нет.
+ * `res.req` rather than a separate parameter: six routes and three test
+ * harnesses issue the cookie, and express puts the request on the response
+ * itself. A fake without it (tests, scripts) reads as http — there is no
+ * request there to begin with.
  *
- * Вынесено наружу ради печенья участника соревнований (competitions/identity.ts):
- * правило одно, и вторая его копия разошлась бы с этой молча — ровно так, как
- * когда-то разошлись выдача и удаление.
+ * Exported for the competition participant cookie (competitions/identity.ts):
+ * there is one rule, and a second copy of it would silently drift from this
+ * one — exactly the way issuing and clearing once drifted apart.
  */
 export function secureCookie(res: Response): boolean {
   const req = res.req as Request | undefined
   if (!req) return false
   if (req.secure) return true
-  // За ретранслятором сервер видит http всегда — https знает только caddy, и
-  // говорит об этом единственным способом, который у него есть.
+  // Behind the relay the server always sees http — only caddy knows about
+  // https, and it says so in the only way it has.
   const forwarded = req.get?.('x-forwarded-proto') ?? ''
   return forwarded.split(',')[0].trim().toLowerCase() === 'https'
 }
@@ -207,7 +215,7 @@ export function staffFromCookieHeader(header: string | undefined): Teacher | nul
   return readStaffCookie(header)?.teacher ?? null
 }
 
-/** То же самое, но с датой выпуска: её читает продление. */
+/** The same, but with the issue date: the extension reads it. */
 function readStaffCookie(header: string | undefined): { teacher: Teacher; iat: number } | null {
   const raw = readCookieHeader(header, STAFF_COOKIE)
   if (!raw) return null
@@ -234,22 +242,23 @@ function readStaffCookie(header: string | undefined): { teacher: Teacher; iat: n
 }
 
 /**
- * Печенье продлевается работой — иначе месяц отсчитывался от ВХОДА.
+ * The cookie is extended by activity — otherwise the month counted from SIGN-IN.
  *
- * `iat` ставился один раз и не двигался, а переиздания не было ни в одном
- * маршруте. Для вошедшего первого сентября это значит первое октября: середина
- * семестра, пара идёт, и на первом же переподключении сокета `roleFor` не
- * находит подписи — преподаватель становится участником собственной комнаты.
- * Замки, перезапуск ядра, пульт исчезают без единого слова, панель отвечает
- * 401, а семинары, заведённые из панели, хост-токена никому не выдавали:
- * запасного пути нет, нужна личная ссылка, которая у половины «где-то в чате».
+ * `iat` was set once and never moved, and no route reissued the cookie. For
+ * someone who signed in on the first of September that meant the first of
+ * October: mid-semester, a class in progress, and on the very next socket
+ * reconnect `roleFor` finds no signature — the teacher becomes a participant in
+ * their own room. Locks, kernel restart and the console disappear without a
+ * word, the panel answers 401, and seminars created from the panel never gave
+ * anyone a host token: there is no fallback, you need the personal link, which
+ * half of them have "somewhere in a chat".
  *
- * Продление — не удлинение: месяц остаётся месяцем, но месяцем без работы.
- * Скопированное куда-то значение стареет ровно так же, потому что стареет оно
- * там, где им не пользуются.
+ * Extending is not lengthening: a month stays a month, but a month without
+ * activity. A value copied somewhere ages exactly the same way, because it ages
+ * where nobody uses it.
  *
- * Ставится один раз на весь `/api` (см. app.ts), а не в `requireStaff`:
- * половина работы преподавателя идёт мимо панели — комната, файлы, ядро.
+ * Installed once for all of `/api` (see app.ts), not in `requireStaff`: half of
+ * a teacher's work bypasses the panel — the room, files, the kernel.
  */
 export function slideStaffCookie(req: Request, res: Response): void {
   const seen = readStaffCookie(req.headers.cookie)
@@ -266,22 +275,25 @@ function deny(res: Response, status: number, reason: AdminErrorBody['reason'], e
 }
 
 /**
- * Своё происхождение, а не чужое.
+ * Our own origin, not someone else's.
  *
- * Печенье выдаётся с `sameSite: 'lax'`, и этого уже почти хватает: браузер не
- * приложит его к межсайтовому POST. «Почти» — потому что это правило браузера,
- * а не сервера, и держится оно ровно до первой машины со старым браузером или
- * расширением, которое решает за него.
+ * The cookie is issued with `sameSite: 'lax'`, and that is already almost
+ * enough: the browser will not attach it to a cross-site POST. "Almost" —
+ * because that is the browser's rule, not the server's, and it holds exactly
+ * until the first machine with an old browser or with an extension that
+ * decides for it.
  *
- * Заголовок Origin в межсайтовом запросе обязателен, в своём — совпадает с
- * хостом. Запрос без него — это curl или сам сервер, и отказывать им нельзя:
- * `make host` ходит в собственный API. Проверяется поэтому только присланный.
+ * The Origin header is mandatory in a cross-site request, and in a same-site
+ * one it matches the host. A request without it is curl or the server itself,
+ * and those must not be refused: `make host` calls its own API. That is why
+ * only an Origin that was sent is checked.
  *
- * Ставится на всё, что пишет, включая выход: выкинутый из панели посреди
- * семинара преподаватель — это не «всего лишь logout», а комната без хозяина.
- * «Всё» здесь буквально — весь `/api`, а не одна панель (см. app.ts): тем же
- * печеньем авторизуются загрузка файлов в комнату, перезапуск ядра и выдача
- * пульта, и до этой строки их прикрывал только SameSite.
+ * Installed on everything that writes, including sign-out: a teacher thrown
+ * out of the panel in the middle of a seminar is not "just a logout" but a
+ * room without its host. "Everything" here is literal — all of `/api`, not just
+ * the panel (see app.ts): the same cookie authorizes uploading files to a room,
+ * restarting the kernel and handing out the console, and until this line only
+ * SameSite protected them.
  */
 export function sameOrigin(req: Request, res: Response, next: NextFunction): void {
   const origin = req.get('origin')
@@ -292,7 +304,7 @@ export function sameOrigin(req: Request, res: Response, next: NextFunction): voi
   } catch {
     return deny(res, 403, 'forbidden', tr("server.requestBlockedThisPageUsesADifferent.dd9b4b"))
   }
-  // req.host отбрасывает порт, а он здесь значимый: 5173 и 8080 — разные сайты.
+  // req.host drops the port, and here it matters: 5173 and 8080 are different sites.
   const reqHost = req.get('host') ?? ''
   if (host !== reqHost && !(thisMachine(reqHost) && (thisMachine(host) || host === tunnelHost()))) {
     return deny(res, 403, 'forbidden', tr("server.requestBlockedThisPageUsesADifferent.dd9b4b"))
@@ -301,14 +313,15 @@ export function sameOrigin(req: Request, res: Response, next: NextFunction): voi
 }
 
 /**
- * Публичный адрес локального занятия, если туннель его сейчас держит.
+ * The public address of a local class, if the tunnel holds one right now.
  *
- * Туннель `colloq start --share` приходит к серверу с Host 127.0.0.1:<порт>
- * (scripts/host.sh · --http-host-header), а страница шлёт Origin своего
- * адреса *.trycloudflare.com. Без этой строки каждый POST с публичного адреса
- * получал «другой адрес сервера» — и ссылка входа с токеном не входила.
- * Чужой сайт этим не пройдёт: Origin должен совпасть с тем адресом, который
- * сервер сам раздаёт как свой (config.publicUrl — аренда туннеля).
+ * The `colloq start --share` tunnel reaches the server with Host
+ * 127.0.0.1:<port> (scripts/host.sh · --http-host-header), while the page sends
+ * the Origin of its *.trycloudflare.com address. Without this line every POST
+ * from the public address got "a different server address" — and the sign-in
+ * link with a token did not sign in. A foreign site will not get through this
+ * way: Origin must match the address the server itself hands out as its own
+ * (config.publicUrl — the tunnel lease).
  */
 function tunnelHost(): string | null {
   try {
@@ -320,17 +333,19 @@ function tunnelHost(): string | null {
 }
 
 /**
- * Два адреса на этой же машине — это `npm run dev`, а не чужой сайт.
+ * Two addresses on this same machine are `npm run dev`, not a foreign site.
  *
- * Страницу в разработке отдаёт Vite со своего порта, а его прокси переписывает
- * Host на адрес сервера (changeOrigin) — сравнивать после этого нечего, и
- * панель отвечала 403 на КАЖДУЮ запись, включая сам вход: в dev-сборке в неё
- * нельзя было попасть вовсе, хотя README обещает работу через прокси.
+ * In development the page is served by Vite from its own port, and its proxy
+ * rewrites Host to the server's address (changeOrigin) — after that there is
+ * nothing to compare, and the panel answered 403 to EVERY write, including the
+ * sign-in itself: in a dev build it could not be entered at all, although the
+ * README promises that it works through the proxy.
  *
- * Уступка тут ровно нулевая: для браузера localhost:5173 и localhost:3000 —
- * один сайт (SameSite смотрит на имя, а не на порт), так что печенье с `lax`
- * и без этой строки поехало бы с таким запросом. Настоящий инстанс живёт на
- * имени или на адресе в сети, и для него правило прежнее.
+ * The concession here is exactly zero: to the browser localhost:5173 and
+ * localhost:3000 are one site (SameSite looks at the name, not the port), so a
+ * `lax` cookie would travel with such a request even without this line. A real
+ * instance lives on a name or on a network address, and for it the rule is
+ * unchanged.
  */
 const LOOPBACK = /^(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\])$/i
 

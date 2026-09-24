@@ -32,32 +32,36 @@
   let arrived = $state<string | null>(null)
 
   /*
-   * Обмен идёт прямо сейчас.
+   * The exchange is happening right now.
    *
-   * Состояние, а не «в адресе ещё ключ»: не доехавший ключ намеренно не
-   * тратится (ниже), адрес остаётся прежним — и экран, ждавший исчезновения
-   * ключа из адреса, оставался пустым навсегда. Пустая страница без слов —
-   * ровно то, ради чего у экрана входа есть ветка «Could not reach the panel».
+   * A state, not "the key is still in the address": a key that did not get
+   * through is deliberately not spent (below), the address stays the same —
+   * and a screen that waited for the key to vanish from the address stayed
+   * empty forever. A blank page without words is exactly what the sign-in
+   * screen's "Could not reach the panel" branch exists for.
    */
   let exchanging = $state(readEntryCredential(location.pathname) !== null)
   /**
-   * Ключ, который не доехал.
+   * A key that did not get through.
    *
-   * Сервер его не видел, поэтому он цел и всё ещё в адресе. «Try again» на
-   * экране входа перечитывает состояние инстанса — и, если сервер вернулся,
-   * попытку надо повторить: иначе преподавателя с рабочей ссылкой встречает
-   * форма, просящая токен установки, которого у него нет.
+   * The server never saw it, so it is intact and still in the address. "Try
+   * again" on the sign-in screen re-reads the instance state — and if the
+   * server is back, the attempt has to be repeated: otherwise a teacher with a
+   * working link is greeted by a form asking for a setup token they do not
+   * have.
    */
   let pendingKey = $state<string | null>(null)
   /**
-   * Токен установки, который не доехал, — по тому же поводу и с тем же правом.
+   * A setup token that did not get through — for the same reason and with
+   * the same right.
    *
-   * Ключ научили не тратиться на обрыве связи, а токен продолжал тратиться
-   * безусловно: `.finally(spend)`. Разницы для человека никакой — обе ссылки
-   * одноразовые на вид и обе исчезают из адресной строки, — а токен вдобавок
-   * подставляется в форму первого запуска только при явном `unclaimed`. То
-   * есть после «Try again» преподаватель с рабочей ссылкой получал пустое поле
-   * и тридцать два символа, которые надо было откуда-то переписать.
+   * The key was taught not to be spent on a dropped connection, but the token
+   * kept being spent unconditionally: `.finally(spend)`. To a person there is
+   * no difference — both links look single-use and both vanish from the
+   * address bar — and on top of that the token is put into the first-run form
+   * only on an explicit `unclaimed`. So after "Try again" a teacher with a
+   * working link got an empty field and thirty-two characters to copy from
+   * somewhere.
    */
   let pendingToken = $state<string | null>(null)
   let retriedEntry = false
@@ -76,16 +80,17 @@
   )
 
   /*
-   * Открытый курс — в адресе, в отличие от формы создания семинара: сюда
-   * возвращаются, этой ссылкой делятся с коллегой, и «назад» обязана уводить в
-   * список курсов, а не из панели.
+   * The open course is in the address, unlike the seminar creation form:
+   * people come back here, share this link with a colleague, and "Back" must
+   * lead to the course list, not out of the panel.
    */
   const openCourse = $derived(/^\/admin\/courses\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
   /*
-   * Соревнование и вкладка его пульта — тоже адрес, и по той же причине: на
-   * «Лидерборд · оба» ссылаются коллеге, а «Настройки» открывают посреди пары
-   * и возвращаются в них. `new` — не соревнование, а форма заведения: она
-   * открывается на списке и адреса после себя не оставляет.
+   * A competition and the tab of its console are an address too, for the
+   * same reason: people send a colleague a link to "Leaderboard · both", and
+   * open "Settings" in the middle of a class and come back to them. `new` is
+   * not a competition but the creation form: it opens over the list and
+   * leaves no address behind.
    */
   const competitionRoute = $derived(
     /^\/admin\/competitions\/([A-Za-z0-9_-]{1,64})(?:\/(board|entrants|settings))?/.exec(path),
@@ -94,7 +99,7 @@
   const competitionTab = $derived(
     (competitionRoute?.[2] ?? 'submissions') as 'submissions' | 'board' | 'entrants' | 'settings',
   )
-  /* Публикация — тоже адрес: это экран, на котором принимают решение. */
+  /* Publishing is an address too: it is the screen where a decision is made. */
   const publishing = $derived(/^\/admin\/publish\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
 
   // replaceState, never push: a spent credential must not sit in the address
@@ -105,13 +110,14 @@
   }
 
   /*
-   * Ключ тратится, только если сервер его увидел.
+   * The key is spent only if the server saw it.
    *
-   * Раньше здесь стоял безусловный `.finally(spend)`: адресная строка
-   * переписывалась и при обычном обрыве связи — вайфай моргнул, поезд въехал в
-   * туннель, — и ссылка, которая была единственной дорогой в панель, исчезала
-   * навсегда за один неудачный запрос. Отозванный ключ тратить правильно (он
-   * всё равно мёртв), а не доехавший — нет.
+   * There used to be an unconditional `.finally(spend)` here: the address bar
+   * was rewritten on an ordinary dropped connection too — the Wi-Fi blinked,
+   * the train went into a tunnel — and the link that was the only way into
+   * the panel vanished forever after one failed request. Spending a revoked
+   * key is right (it is dead anyway), but one that did not get through is
+   * not.
    */
   async function useKey(key: string): Promise<void> {
     exchanging = true
@@ -119,7 +125,7 @@
     try {
       const signedIn = await adminAuth.signInWithKey(key)
       if (signedIn || adminAuth.state) spend()
-      // Сервера не было слышно вовсе: ключ цел, и попробовать его стоит ещё раз.
+      // The server was not heard at all: the key is intact and worth trying again.
       else pendingKey = key
     } finally {
       exchanging = false
@@ -127,11 +133,11 @@
   }
 
   /**
-   * Токен установки — по правилу ключа выше.
+   * The setup token — by the key's rule above.
    *
-   * `adminAuth.state` здесь и есть «сервер ответил»: `#authenticate` дочитывает
-   * состояние инстанса даже на отказе (см. auth.svelte.ts), так что пусто оно
-   * ровно тогда, когда сервера не было слышно вовсе.
+   * `adminAuth.state` here is exactly "the server answered": `#authenticate`
+   * reads the instance state even on a refusal (see auth.svelte.ts), so it is
+   * empty exactly when the server was not heard at all.
    */
   async function useToken(setupToken: string): Promise<void> {
     exchanging = true
@@ -146,9 +152,10 @@
       // below is for. Leaving it as an error would tell a person following the
       // printed link that they did something wrong.
       //
-      // Всё остальное — отозванный токен, опечатка в ссылке — надо сказать
-      // словами. Раньше гасилась любая ошибка, и мёртвый токен молча
-      // подставлялся в форму, где выяснялся только после нажатия «Sign in».
+      // Everything else — a revoked token, a typo in the link — has to be put
+      // into words. Any error used to be swallowed, and a dead token was
+      // silently put into the form, where it came to light only after
+      // pressing "Sign in".
       const unclaimed = adminAuth.errorReason === 'unclaimed'
       const said = adminAuth.error
       const reason = adminAuth.errorReason
@@ -167,13 +174,14 @@
         // also transcribing thirty-two characters.
         adminAuth.offerSetupToken(setupToken)
       } else if (adminAuth.error === null) {
-        // Успешный refresh гасит ошибку внутри себя, поэтому её возвращают
-        // сюда руками. Своя жалоба у refresh новее — она и остаётся.
+        // A successful refresh clears the error internally, so it is put back
+        // here by hand. If refresh has a complaint of its own, it is newer —
+        // and that one stays.
         adminAuth.error = said
         adminAuth.errorReason = reason
       }
 
-      // Сервера не было слышно вовсе: токен цел и адрес не тратим.
+      // The server was not heard at all: the token is intact, and the address is not spent.
       if (!adminAuth.state) {
         pendingToken = setupToken
         return
@@ -188,8 +196,9 @@
     const reachable = adminAuth.state !== null
     const signedIn = adminAuth.me !== null
     if (retriedEntry || exchanging || !reachable || signedIn) return
-    // Один раз: вторая неудача — это уже не «сервер не поднялся», и крутить
-    // запросы под экраном с кнопкой «Try again» незачем.
+    // Once: a second failure is no longer "the server has not come up", and
+    // there is no point spinning requests under a screen with a "Try again"
+    // button.
     if (pendingKey) {
       retriedEntry = true
       void useKey(pendingKey)
@@ -202,10 +211,10 @@
   })
 
   /*
-   * Панели есть что показать, когда она знает, что показывать: состояние
-   * инстанса приехало и ключ из адреса обменян. До этого мгновения на экране
-   * стоит заставка из index.html, и снимать её раньше значит открыть под ней
-   * пустоту (lib/boot.ts).
+   * The panel has something to show when it knows what to show: the instance
+   * state has arrived and the key from the address has been exchanged. Until
+   * that moment the splash from index.html is on screen, and removing it
+   * earlier means uncovering emptiness under it (lib/boot.ts).
    */
   $effect(() => {
     if (adminAuth.ready && !exchanging) firstScreenReady()
@@ -234,12 +243,13 @@
     if (next !== location.pathname) history.pushState({}, '', next)
     path = next
     /*
-     * Любой переход — это уход из формы «Новое занятие».
+     * Any navigation means leaving the "New class" form.
      *
-     * Форма не маршрут (см. `makingSeminar`), и переход на тот же `/admin` —
-     * с логотипа или со строки «Занятия» — адреса не меняет. Без этой строки
-     * щелчок по ним на открытой форме не делал ничего, а уход на «Курсы» и
-     * обратно возвращал в ту же форму: флаг переживал смену вкладки.
+     * The form is not a route (see `makingSeminar`), and navigating to the
+     * same `/admin` — from the logo or from the "Classes" row — does not
+     * change the address. Without this line a click on them with the form
+     * open did nothing, and going to "Courses" and back returned to the same
+     * form: the flag survived the tab change.
      */
     makingSeminar = false
   }
@@ -247,10 +257,11 @@
 
 {#if !adminAuth.ready || exchanging}
   <!--
-    Заставка, а не скелет панели: до ответа сервера неизвестно даже, что здесь
-    будет — панель или форма входа, — а скелет рисовал шапку и строки той,
-    которой может не оказаться. Та же заставка, что в index.html, и в тех же
-    координатах: оболочка уходит ровно на неё (lib/boot.ts).
+    A splash, not a panel skeleton: until the server answers it is not even
+    known what will be here — the panel or the sign-in form — and the skeleton
+    drew the header and rows of one that might not turn up. The same splash as
+    in index.html, at the same coordinates: the shell leaves right onto it
+    (lib/boot.ts).
   -->
   <Splash />
 {:else if !adminAuth.me}
@@ -285,9 +296,9 @@
           }}
         />
     {:else}
-      <!-- Приземление одноразовое: `arrived`, оставшийся висеть, снова сбрасывал
-           поиск и подсвечивал ту же комнату как новую при каждом возврате на
-           вкладку — и каждые двадцать секунд отбирал фокус в её пользу. -->
+      <!-- The landing is one-shot: an `arrived` left hanging reset the search
+           again and highlighted the same room as new on every return to the
+           tab — and every twenty seconds stole focus in its favor. -->
       <Seminars
         onfull={() => (makingSeminar = true)}
         {arrived}

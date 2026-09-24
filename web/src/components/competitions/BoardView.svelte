@@ -1,15 +1,16 @@
 <script lang="ts">
   /**
-   * Лидерборд — P3.
+   * The leaderboard — P3.
    *
-   * Две таблицы за одним переключателем, а не две страницы: вопрос, ради
-   * которого сюда приходят после дедлайна, звучит «как я съехал», и ответ на
-   * него — разница мест, то есть обе таблицы сразу. Пока итоги закрыты,
-   * переключателя нет вовсе: показывать выключенную кнопку «Итоговый» значит
-   * обещать число, которого ещё не существует.
+   * Two tables behind one switch, not two pages: the question people come
+   * here with after the deadline is "how far did I slide", and its answer is
+   * the difference in places, that is, both tables at once. While the final
+   * results are closed, there is no switch at all: showing a disabled
+   * "Final" button would promise a number that does not exist yet.
    *
-   * Базовое решение стоит внизу и отбито пунктиром: это не участник, но и не
-   * сноска — по нему меряют, имеет ли смысл вообще сдавать.
+   * The baseline solution stands at the bottom, set off by a dashed line: it
+   * is not an entrant, but not a footnote either — it is what people measure
+   * against to see whether submitting makes sense at all.
    */
   import { tr } from '@shared/i18n'
   import { placeShift } from '@shared/competitions'
@@ -21,7 +22,7 @@
     competition: CompetitionPublic
     board: EntrantLeaderboard
     phone: boolean
-    /** Итоговая таблица выбрана; пока итоги закрыты — всегда false. */
+    /** The final table is selected; always false while the results are closed. */
     final: boolean
     onfinal: (value: boolean) => void
   }
@@ -35,7 +36,7 @@
   const lines = $derived(boardPlaces(final && board.private ? board.private : board.public))
   const people = $derived(lines.filter((line) => !line.baseline))
   const baseline = $derived(lines.find((line) => line.baseline) ?? null)
-  /** Место в публичной таблице — вторая колонка и то, из чего считается сдвиг. */
+  /** The place in the public table — the second column and the shift's base. */
   const publicPlace = $derived(
     new Map(boardPlaces(board.public).map((line) => [line.entrantId, line] as const)),
   )
@@ -84,8 +85,8 @@
   {#if people.length === 0 && baseline === null}
     <p class="border-t border-line py-6 text-ui text-muted">{tr('competitions.p.boardEmpty')}</p>
   {:else if phone}
-    <!-- Телефон: те же строки без колонок «сдвиг» и «в зачёт» — в 390 px они
-         вытесняют имя, ради которого таблицу и открывают. -->
+    <!-- Phone: the same rows without the "shift" and "counted" columns — at
+         390 px they push out the name the table is opened for. -->
     <div class="flex flex-col border-t-2 border-ink">
       {#each people.slice(0, shown) as line (line.entrantId)}
         <div

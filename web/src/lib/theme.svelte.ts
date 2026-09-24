@@ -58,15 +58,17 @@ function onSystemChange(event: MediaQueryListEvent): void {
 }
 
 /**
- * Соседнее окно той же комнаты — пульт консилиума — следует за переключателем.
+ * The neighbouring window of the same room — the council console — follows
+ * the switch.
  *
- * Выбор темы хранится на браузер (`colloq.theme.v1`), а не на вкладку, и
- * второе окно обязано слушаться того же тумблера: переключили тему в тетради,
- * и пульт рядом на втором мониторе обязан перекраситься вместе с ней, а не
- * ждать перезагрузки. `storage` приходит только в ДРУГИЕ документы — тот, кто
- * писал, уже перекрасился сам.
+ * The theme choice is stored per browser (`colloq.theme.v1`), not per tab,
+ * and the second window must obey the same toggle: switch the theme in the
+ * notebook, and the console next to it on a second monitor must repaint
+ * along with it rather than wait for a reload. `storage` arrives only in
+ * OTHER documents — the one that wrote has already repainted itself.
  *
- * `key === null` — хранилище очистили целиком: возвращаемся к системной.
+ * `key === null` — storage was cleared entirely: we go back to the system
+ * theme.
  */
 function onStorage(event: StorageEvent): void {
   if (event.key !== null && event.key !== STORAGE_KEY) return
@@ -74,8 +76,9 @@ function onStorage(event: StorageEvent): void {
   const next = chosen ?? systemTheme()
   if (next === current) return
   current = next
-  // Экран, одолживший тему (лекционный пульт), чужого выбора не слушается: он
-  // тёмный по физике аудитории, а не по вкусу.
+  // A screen that borrowed the theme (the lecture console) ignores a choice
+  // made elsewhere: it is dark because of the physics of the lecture hall,
+  // not by taste.
   if (!borrowed) apply(next)
 }
 
@@ -100,24 +103,26 @@ function setTheme(next: ThemeName): void {
   apply(next)
 }
 
-/** Экран одолжил тему: чужой выбор его не перекрашивает. */
+/** A screen borrowed the theme: a choice made elsewhere does not repaint it. */
 let borrowed = false
 
 /**
- * Одолжить тему на время одного экрана.
+ * Borrow a theme for the lifetime of one screen.
  *
- * Пульт держат в тёмной аудитории, где светит только проектор: белая плита
- * 1180×820 в руках преподавателя светит ему в лицо, видна первому ряду и
- * сажает зрачок, которому через секунду смотреть на слайд. Поэтому пульт
- * всегда тёмный — не по вкусу владельца планшета, а по физике помещения.
+ * The console is held in a dark lecture hall where only the projector shines:
+ * a white 1180×820 slab in the teacher's hands shines in their face, is
+ * visible to the front row and constricts the pupil that has to look at a
+ * slide a second later. So the console is always dark — not by the tablet
+ * owner's taste but by the physics of the room.
  *
- * Именно ОДОЛЖИТЬ, а не выбрать: сохранённый выбор человека не трогается
- * вовсе, и, выйдя из пульта в комнату, он получает ту тему, с которой пришёл.
- * Возвращаемая функция ставит всё на место.
+ * Exactly BORROW, not choose: the person's saved choice is not touched at
+ * all, and on leaving the console for the room they get the theme they came
+ * with. The returned function puts everything back.
  *
- * Одалживает только лекционный пульт. Пульт консилиума — НЕТ: его держат не в
- * тёмном зале, а рядом с тетрадью, вторым окном на том же мониторе, и светлая
- * комната со тёмным окном рядом — это две разные программы на одном экране.
+ * Only the lecture console borrows. The council console does NOT: it is kept
+ * not in a dark hall but next to the notebook, as a second window on the same
+ * monitor, and a light room with a dark window beside it looks like two
+ * different programs on one screen.
  */
 export function borrowTheme(next: ThemeName): () => void {
   const was = borrowed
@@ -125,8 +130,9 @@ export function borrowTheme(next: ThemeName): () => void {
   apply(next)
   return () => {
     borrowed = was
-    // Не к запомненной теме, а к нынешней: пока экран был открыт, тему могли
-    // переключить в соседнем окне, и вернуть надо ТУ, что выбрана сейчас.
+    // Not to the remembered theme but to the current one: while the screen was
+    // open, the theme may have been switched in another window, and what must
+    // come back is the one chosen NOW.
     apply(current)
   }
 }

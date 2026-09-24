@@ -86,19 +86,20 @@ export function collectEntryMessages(root: string, catalog: MessageCatalog): { m
 }
 
 /*
- * Ключи, которые БРАУЗЕР умеет искать в чужом каталоге.
+ * Keys that the BROWSER can look up in someone else's catalog.
  *
- * Нужен ровно для серверного словаря: в нём 732 ключа, а до вкладки доезжают
- * три десятка — слова состояния ядра и оболочки, причины пропуска, пара имён
- * по умолчанию. Остальное — страницы публикации, письма и журнал, которые
- * рисует сам сервер. Ошибки приходят уже переведёнными и проходят через tr()
- * нетронутыми (см. комментарий выше), так что словаря им не нужно.
+ * Needed exactly for the server dictionary: it has 732 keys, and about thirty
+ * of them reach the tab — the kernel and shell state words, skip reasons, a
+ * couple of default names. The rest is publication pages, emails and the log,
+ * which the server draws itself. Errors arrive already translated and pass
+ * through tr() untouched (see the comment above), so they need no dictionary.
  *
- * Считается по сырому тексту, а не по разбору: здесь нужен не граф импортов, а
- * «встречается ли такая строка в клиентских исходниках вообще». Лишний ключ из
- * комментария стоит десятки байт, пропущенный — надпись `server.x` на экране,
- * поэтому сторона ошибки выбрана намеренно. Склейка вида `'server.kernel_word.'
- * + status` ловится тем же префиксным правилом, что и в collectEntryMessages.
+ * Counted over the raw text, not a parse: what is needed here is not an
+ * import graph but "does such a string occur in the client sources at all".
+ * An extra key from a comment costs tens of bytes, a missed one means a
+ * `server.x` label on the screen, so the side of the error is chosen on
+ * purpose. A concatenation like `'server.kernel_word.' + status` is caught by
+ * the same prefix rule as in collectEntryMessages.
  */
 export function collectClientKeys(root: string, catalog: MessageCatalog, prefix: string): Set<string> {
   const words = new Set<string>()

@@ -1,14 +1,16 @@
 /**
- * Тетрадь на статической странице: чей это шаг и что в файле.
+ * The notebook on a static page: whose step it is and what is in the file.
  *
- * Ссылка «Скачать тетрадь» была одна на все шаги, а файл под ней — один на
- * публикацию, собранный из ПОСЛЕДНЕГО шага. Читатель, сравнивающий «до» и
- * «после» на шаге 2 из 5 — ровно тот, ради кого шаг живёт в адресе, — уносил
- * состояние шага 5 и узнавал об этом, только открыв файл.
+ * The "Download notebook" link was one for all steps, and the file behind it
+ * was one per publication, built from the LAST step. A reader comparing
+ * "before" and "after" at step 2 of 5 — exactly the reader for whom the step
+ * lives in the address — took away the state of step 5 and learned of it only
+ * on opening the file.
  *
- * В комнате это чинит `?step=` (routes/courses.ts), а здесь маршрутов нет
- * вовсе — значит, файл на каждый шаг. И подпись рядом: та же, что в читалке,
- * слово в слово, потому что расходиться этим двум страницам нельзя.
+ * In the room `?step=` fixes this (routes/courses.ts), but here there are no
+ * routes at all — so there is a file for every step. And a caption next to it:
+ * the same as in the reader, word for word, because these two pages must not
+ * drift apart.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -31,7 +33,7 @@ const cell = (id: string, source: string): PublicCell => ({
   ranMs: null,
 })
 
-/* ------------------------------------------------------------- страница */
+/* ------------------------------------------------------------- the page */
 
 const RAIL = [
   { seq: 3, label: 'перед упражнением', at: 1, cellCount: 1 },
@@ -39,7 +41,7 @@ const RAIL = [
   { seq: 0, label: 'сейчас', at: 3, cellCount: 1 },
 ]
 
-/** Страница шага под номером `i` в рельсе. Первый шаг — корень публикации. */
+/** The page of step number `i` in the rail. The first step is the publication root. */
 function page(i: number, rail = RAIL): string {
   return renderStep({
     title: 'Деревья и леса',
@@ -52,24 +54,24 @@ function page(i: number, rail = RAIL): string {
   })
 }
 
-test('страница шага ведёт в свою тетрадь, а не в общую', () => {
-  // Первый шаг лежит в корне публикации, а корневая тетрадь занята последним
-  // шагом — значит, ссылка спускается в каталог шага.
+test('a step page links to its own notebook, not to the shared one', () => {
+  // The first step lives at the publication root, and the root notebook is taken
+  // by the last step — so the link goes down into the step's directory.
   assert.match(page(0), /href="3\/notebook\.ipynb"/)
-  // Остальные шаги — рядом со своей страницей.
+  // The other steps sit next to their own page.
   assert.match(page(1), /href="notebook\.ipynb"/)
   assert.ok(
     !/href="\.\.\/notebook\.ipynb"/.test(page(1)),
-    'страница шага снова отдаёт тетрадь всей публикации',
+    'a step page serves the notebook of the whole publication again',
   )
   assert.match(page(2), /href="notebook\.ipynb"/)
 })
 
-test('подпись под ссылкой называет шаг и молчание выводов', () => {
+test('the caption under the link names the step and the missing outputs', () => {
   /*
-   * Те же три формулировки, что в читалке (web/src/screens/ReaderScreen.svelte):
-   * второй отрисовщик тетради на то и второй, что расходится молча, — а
-   * расходиться здесь нечему, обещание одно.
+   * The same three wordings as in the reader (web/src/screens/ReaderScreen.svelte):
+   * a second notebook renderer is second precisely in that it drifts silently —
+   * and there is nothing to drift apart here, the promise is one.
    */
   assert.match(page(0), /Код этого шага, без выводов — чтобы запустить у себя\./)
   assert.match(page(1), /Код этого шага, без выводов — чтобы запустить у себя\./)
@@ -77,12 +79,12 @@ test('подпись под ссылкой называет шаг и молча
 
   const alone = page(0, [{ seq: 0, label: 'сейчас', at: 1, cellCount: 1 }])
   assert.match(alone, /Код без выводов — чтобы запустить у себя\./)
-  assert.ok(!/этого шага|последнего шага/.test(alone), 'у единственного шага подпись про шаги')
+  assert.ok(!/этого шага|последнего шага/.test(alone), 'a lone step has a caption about steps')
 })
 
-/* ------------------------------------------------------------- выгрузка */
+/* ----------------------------------------------------------- the export */
 
-test('в выгрузке у каждого шага своя тетрадь, а корневая — прежняя', (t) => {
+test('in the export every step has its own notebook, and the root one stays as it was', (t) => {
   const id = 'pub-step-notebook'
   createSession(id, 'Шаги и тетради', null)
   const pub = writePublication({
@@ -109,8 +111,8 @@ test('в выгрузке у каждого шага своя тетрадь, а
 
   assert.equal(code('p', 'shagi', '4', 'notebook.ipynb'), 'before = 1')
   assert.equal(code('p', 'shagi', '0', 'notebook.ipynb'), 'after = 2')
-  // Корневой адрес не меняет содержимого: на него скопированы розданные ранее
-  // ссылки, и под прежним именем публикации он тоже остаётся.
+  // The root address does not change its content: links handed out earlier point
+  // to it, and it also stays under the publication's former name.
   assert.equal(code('p', 'shagi', 'notebook.ipynb'), 'after = 2')
   assert.equal(code('p', pub.id, 'notebook.ipynb'), 'after = 2')
 

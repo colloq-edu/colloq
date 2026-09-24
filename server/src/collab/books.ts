@@ -1,24 +1,27 @@
 import { tr } from '@shared/i18n'
 /**
- * Тетради и папка семинара: как одно становится видно в другом.
+ * Notebooks and the seminar folder: how one becomes visible in the other.
  *
- * Тетрадь живёт в документе комнаты — со снимком в базе, историей версий и
- * кешем в браузерах. Файл на диске — её ПРОЕКЦИЯ: он пишется из документа и
- * никогда не читается обратно, пока тетрадь открыта. Направление одно, и это
- * решение, а не недоделка.
+ * A notebook lives in the room's document — with a snapshot in the database,
+ * version history and a cache in the browsers. The file on disk is its
+ * PROJECTION: it is written from the document and never read back while the
+ * notebook is open. There is one direction, and that is a decision, not
+ * unfinished work.
  *
- * Почему не в обе стороны, как у текстовых файлов. У текста слияние двух правок
- * — это склейка по общей голове и хвосту, и она безобидна. У тетради «слить»
- * значило бы разобраться, какая ячейка какой соответствует, при том что ячейка
- * несёт имя, вывод, номер выполнения и чужие курсоры внутри. Неправильно
- * угаданное соответствие стирает работу молча — а правильно угадать нечем:
- * .ipynb на диске имён ячеек не хранит.
+ * Why not both ways, as with text files. For text, merging two edits is gluing
+ * by the common head and tail, and it is harmless. For a notebook, "merging"
+ * would mean working out which cell corresponds to which, while a cell carries
+ * a name, output, an execution number and other people's cursors inside. A
+ * wrongly guessed correspondence erases work silently — and there is nothing to
+ * guess right with: an .ipynb on disk does not store cell names.
  *
- * Отсюда два следствия, названные вслух в интерфейсе:
- * — записать поверх файла тетради нельзя ни загрузкой, ни оракулом: проекция
- *   всё равно вернёт своё через секунду, и это выглядело бы как пропажа;
- * — открыть .ipynb, который положили в папку, — значит ВНЕСТИ его в комнату:
- *   ячейки переезжают в документ, и дальше правда там.
+ * Hence two consequences, named out loud in the interface:
+ * — writing over a notebook file is impossible, either by upload or by the
+ *   oracle: the projection would bring its own back within a second anyway,
+ *   and that would look like a loss;
+ * — opening an .ipynb that was put into the folder means BRINGING it into the
+ *   room: the cells move into the document, and from then on the truth is
+ *   there.
  */
 import * as Y from 'yjs'
 import {
@@ -49,43 +52,44 @@ import { makeFile, readText, statPath, writeText } from '../workspace.js'
 const ORIGIN = 'server'
 
 /**
- * Сколько ждать после последней правки, прежде чем переписать файл.
+ * How long to wait after the last edit before rewriting the file.
  *
- * Полторы секунды, а не семьсот миллисекунд, как у текста: тетрадь
- * сериализуется целиком, и на паре, где двадцать человек печатают в разные
- * ячейки, это заметная работа на каждое нажатие. Файл нужен не тому, кто
- * печатает, а тому, кто потом его скачает или прочитает из ячейки.
+ * A second and a half, not seven hundred milliseconds as for text: a notebook
+ * is serialized whole, and in a class where twenty people type into different
+ * cells, that is noticeable work on every keystroke. The file is needed not by
+ * whoever types but by whoever later downloads it or reads it from a cell.
  */
 const WRITE_AFTER_MS = 1_500
 
-/** Ячеек в тетради, которую соглашаемся внести в комнату. */
+/** Cells in a notebook we agree to bring into the room. */
 const MAX_IMPORT_CELLS = 500
 
 /**
- * Байтов в файле тетради, который соглашаемся разобрать.
+ * Bytes in a notebook file we agree to parse.
  *
- * Своя мера, крупнее редакторской (`MAX_TEXT_BYTES`, полтора мегабайта). Та
- * стоит там, где файл правят посимвольно, и полтора мегабайта — это уже предел
- * для CodeMirror. Тетрадь никто посимвольно не правит: её разбирают ОДИН раз,
- * из неё берут только тип и текст ячеек, а выводы — то есть почти весь её вес —
- * при внесении отбрасываются. Тетрадь с десятком картинок matplotlib весит
- * несколько мегабайт и является совершенно обычной преподавательской тетрадью;
- * потолок редактора отказывал ей словами «не похоже на .ipynb».
+ * A measure of its own, larger than the editor's (`MAX_TEXT_BYTES`, a megabyte
+ * and a half). That one applies where a file is edited character by character,
+ * and a megabyte and a half is already the limit for CodeMirror. Nobody edits a
+ * notebook character by character: it is parsed ONCE, only the type and text of
+ * cells are taken from it, and the outputs — that is, almost all of its weight
+ * — are dropped on import. A notebook with a dozen matplotlib images weighs a
+ * few megabytes and is a perfectly ordinary teacher's notebook; the editor's
+ * ceiling refused it with the words "does not look like an .ipynb".
  *
- * Цена названа: тридцать два мегабайта — это около полусекунды `JSON.parse`,
- * заблокировавшего цикл событий один раз на нажатие в дереве. Больше — уже не
- * тетрадь для занятия, и об этом говорится вслух.
+ * The price is named: thirty-two megabytes is about half a second of
+ * `JSON.parse` blocking the event loop, once per click in the tree. More than
+ * that is no longer a notebook for a class, and that is said out loud.
  */
 const MAX_BOOK_BYTES = 32 * 1024 * 1024
 
 const pending = new Map<string, NodeJS.Timeout>()
 
 /**
- * Плоские ячейки тетради — то, что уходит в файл.
+ * The notebook's flat cells — what goes into the file.
  *
- * Идентификатор несётся вместе с ними: схема 4.5 требует его у каждой ячейки, а
- * без него `writeIpynb` подставляет порядковый номер — и файл, переписанный
- * после перестановки двух ячеек, поменял бы имена всем, кто стоит ниже.
+ * The id travels with them: schema 4.5 requires it for every cell, and without
+ * it `writeIpynb` substitutes a sequence number — and a file rewritten after
+ * two cells were swapped would change the names of everyone below them.
  */
 function flatten(cells: Y.Array<any>): FlatCell[] {
   return cells.map((cell) => {
@@ -95,32 +99,33 @@ function flatten(cells: Y.Array<any>): FlatCell[] {
 }
 
 /**
- * То же самое, но для ФАЙЛА: картинки заметок возвращаются вложениями.
+ * The same, but for the FILE: note images come back as attachments.
  *
- * В документе они лежат ссылкой на полку комнаты (shared/images.ts) — ради
- * этого ссылка и заведена, — а файл несут к себе и открывают чем угодно. Без
- * этого тетрадь с условиями-картинками доезжала бы до студента пустыми
- * рамками.
+ * In the document they are a link to the room's shelf (shared/images.ts) — that
+ * is what the link is for — while a file is taken away and opened with
+ * anything. Without this, a notebook with picture problem statements would
+ * reach the student as empty frames.
  *
- * Отдельной функцией, а не флагом у `flatten`, потому что второй читатель
- * тетради — оракул (`bookText`), и ему в запрос модели раскодированный
- * мегабайт картинки не нужен и никогда не отправлялся.
+ * A separate function, not a flag on `flatten`, because the second reader of a
+ * notebook is the oracle (`bookText`), and a model request does not need a
+ * decoded megabyte of image; one was never sent.
  */
 function flattenForFile(sessionId: string, cells: Y.Array<any>): FlatCell[] {
   return withInlinedImages(sessionId, flatten(cells))
 }
 
 /**
- * Переписать файлы всех тетрадей комнаты.
+ * Rewrite the files of all the room's notebooks.
  *
- * Все, а не одну изменившуюся: сравнение с тем, что уже на диске, стоит дешевле
- * разбора события, а тетрадей в комнате единицы. Файл, который не поменялся, не
- * переписывается — иначе время изменения дёргалось бы на каждое нажатие и
- * панель файлов моргала бы всю пару.
+ * All of them, not the one that changed: comparing with what is already on disk
+ * is cheaper than parsing the event, and a room has a handful of notebooks. A
+ * file that did not change is not rewritten — otherwise its modification time
+ * would twitch on every keystroke and the file panel would blink all class
+ * long.
  */
 export function projectBooks(sessionId: string): boolean {
-  // Заглянуть, а не завести: комнату могли закрыть, пока таймер ждал, и
-  // строить её заново ради записи файла — значит воскрешать удалённое.
+  // Peek, do not create: the room may have been closed while the timer waited,
+  // and rebuilding it to write a file would mean resurrecting what was deleted.
   const open = peekSessionDoc(sessionId)
   if (!open) return false
   const { doc } = open
@@ -140,17 +145,18 @@ function schedule(sessionId: string): void {
     pending.delete(sessionId)
     try {
       /*
-       * Комнате говорят только о том, что правда легло на диск.
+       * The room is told only about what really landed on disk.
        *
-       * `filesChanged` — это обход всей папки (readdir + lstat на каждую
-       * запись) и полное дерево файлов в КАЖДЫЙ сокет комнаты. Слать его после
-       * проекции, которая сравнила текст и ничего не переписала, значит платить
-       * этим за каждое нажатие в тетради: на паре из пятисот человек дерево
-       * уезжало всем каждые полторы секунды при неизменном диске.
+       * `filesChanged` is a walk over the whole folder (readdir + lstat per
+       * entry) and the full file tree into EVERY socket of the room. Sending
+       * it after a projection that compared the text and rewrote nothing
+       * means paying that for every keystroke in the notebook: in a class of
+       * five hundred the tree went out to everyone every second and a half
+       * while the disk did not change.
        */
       if (projectBooks(sessionId)) filesChanged?.(sessionId)
     } catch (err) {
-      console.error(`[books] не удалось записать тетрадь ${sessionId}:`, err)
+      console.error(`[books] could not write the notebook for ${sessionId}:`, err)
     }
   }, WRITE_AFTER_MS)
   timer.unref?.()
@@ -159,18 +165,17 @@ function schedule(sessionId: string): void {
 
 let filesChanged: ((sessionId: string) => void) | null = null
 
-/** Кому сказать, что файлы поменялись. Регистрирует control.ts. */
+/** Whom to tell that the files changed. Registered by control.ts. */
 export function onBooksWritten(listener: (sessionId: string) => void): void {
   filesChanged = listener
 }
 
 /**
- * Следить за тетрадями этой комнаты и держать их файлы в порядке.
+ * Watch this room's notebooks and keep their files in order.
  *
- * Зовётся один раз на комнату, из `getSessionDoc`. Наблюдатель на весь
- * документ, а не на каждый корень: тетради появляются и исчезают, и
- * переподписываться на каждое появление — это ещё одно место, где можно
- * забыть отписаться.
+ * Called once per room, from `getSessionDoc`. One observer on the whole
+ * document, not one per root: notebooks come and go, and resubscribing on every
+ * appearance is one more place where one can forget to unsubscribe.
  */
 export function watchBooks(sessionId: string, doc: Y.Doc): () => void {
   const onUpdate = (
@@ -183,8 +188,9 @@ export function watchBooks(sessionId: string, doc: Y.Doc): () => void {
     schedule(sessionId)
   }
   doc.on('update', onUpdate)
-  // Первая запись — сразу: комната, открытая после перезапуска сервера, должна
-  // показать файл тетради в дереве, не дожидаясь, пока в ней что-то напечатают.
+  // The first write happens right away: a room opened after a server restart
+  // must show the notebook's file in the tree without waiting for someone to
+  // type something in it.
   schedule(sessionId)
   return () => {
     doc.off('update', onUpdate)
@@ -195,22 +201,24 @@ export function watchBooks(sessionId: string, doc: Y.Doc): () => void {
 }
 
 /**
- * Изменилось ли этим обновлением то, ЧТО ЛЕЖИТ В ФАЙЛЕ тетради.
+ * Whether this update changed WHAT IS IN THE notebook's FILE.
  *
- * В файле — только состав тетрадей, тип ячейки и её текст (`writeIpynb`).
- * Всё остальное, что живёт в том же документе, туда не попадает: вывод ячейки,
- * состояние запуска, номер `In[]`, строки терминала, ответ оракула, присутствие.
+ * The file holds only the set of notebooks, the cell type and its text
+ * (`writeIpynb`). Everything else that lives in the same document does not get
+ * there: a cell's output, the run state, the `In[]` number, terminal lines, the
+ * oracle's answer, presence.
  *
- * Раньше вместо этого стояло `if (origin === PROJECTION) return` с обещанием
- * «своя проекция себя не будит» — ветка недостижимая (проекция пишет на диск, а
- * не в документ, и транзакций с этим происхождением не заводит никто), так что
- * не отсекалось НИЧЕГО. Ячейка, печатающая в цикле, взводила запись тетради
- * каждые полторы секунды, а с ней — обход папки и дерево файлов всей комнате,
- * хотя на диске от вывода не меняется ни байта.
+ * Before, there was `if (origin === PROJECTION) return` here with the promise
+ * "our own projection does not wake itself" — an unreachable branch (the
+ * projection writes to disk, not to the document, and nobody creates
+ * transactions with that origin), so NOTHING was filtered out. A cell printing
+ * in a loop triggered a notebook write every second and a half, and with it a
+ * folder walk and the file tree for the whole room, although output does not
+ * change a byte on disk.
  *
- * Проверка структурная, а не по происхождению: список чужих origin'ов
- * разошёлся бы с кодом при первой же новой записи в документ, и разошёлся бы
- * молча — в сторону «файл не обновился».
+ * The check is structural, not by origin: a list of other origins would drift
+ * from the code at the very first new write into the document, and drift
+ * silently — towards "the file did not update".
  */
 function touchesBooks(doc: Y.Doc, transaction: Y.Transaction): boolean {
   const meta: unknown = getMeta(doc)
@@ -219,24 +227,25 @@ function touchesBooks(doc: Y.Doc, transaction: Y.Transaction): boolean {
   let hit = false
   transaction.changed.forEach((keys, type) => {
     if (hit) return
-    // Ячейку добавили, убрали или переставили; тетрадь открыли или закрыли.
+    // A cell was added, removed or moved; a notebook was opened or closed.
     if (sheets.has(type) || type === books) hit = true
     else if (type === meta) hit = keys.has(BOOKS_KEY)
-    // Тип ячейки — ключ в её же карте; текст — `Y.Text` внутри неё.
+    // The cell type is a key in its own map; the text is a `Y.Text` inside it.
     else if (type instanceof Y.Map) hit = sheets.has(type.parent) && keys.has('type')
     else if (type instanceof Y.Text) hit = sheets.has(type.parent?.parent)
   })
   return hit
 }
 
-/* ------------------------------------------------- кто завёл эту тетрадь */
+/* ------------------------------------------------- who created this notebook */
 
 /**
- * Кто заводит тетрадь — на случай, если это не преподаватель.
+ * Who creates a notebook — in case it is not the teacher.
  *
- * Не `TokenPayload` и не участник из базы: сюда доезжает ровно столько, сколько
- * нужно записи об авторе, и ни строкой больше. Имя берётся НА ЭТОТ МОМЕНТ —
- * см. `BookRule.ownerName`, там объяснено, почему его не ищут потом.
+ * Not `TokenPayload` and not a participant from the database: exactly as much
+ * arrives here as the author record needs, and not a line more. The name is
+ * taken AS OF THIS MOMENT — see `BookRule.ownerName`, which explains why it is
+ * not looked up later.
  */
 export interface BookAuthor {
   participantId: string
@@ -247,37 +256,40 @@ export interface BookAuthor {
 let rulesChanged: ((sessionId: string) => void) | null = null
 
 /**
- * Кому сказать, что правила комнаты поменялись сами.
+ * Whom to tell that the room's rules changed by themselves.
  *
- * Регистрирует control.ts — тем же способом, что и `onBooksWritten` выше, и по
- * той же причине: рассылка живёт в control.ts, а control.ts импортирует этот
- * модуль. Прямой вызов замкнул бы круг импортов.
+ * Registered by control.ts — the same way as `onBooksWritten` above, and for
+ * the same reason: broadcasting lives in control.ts, and control.ts imports
+ * this module. A direct call would close an import loop.
  */
 export function onBookRulesChanged(listener: (sessionId: string) => void): void {
   rulesChanged = listener
 }
 
 /**
- * Одна дверь на все способы завести в комнате тетрадь.
+ * One door for all the ways to create a notebook in a room.
  *
- * Способов четыре — пустая тетрадь из дерева, внесение положенного в папку
- * .ipynb, то же самое руками оракула и импорт, — и правило у них одно: свои
- * тетради студентам либо разрешены, либо нет (shared/rules.ts · ownBooks).
- * Проверка живёт здесь, а не у каждой двери, ровно поэтому: четыре копии
- * одного вопроса — это три места, где однажды забудут спросить.
+ * There are four ways — an empty notebook from the tree, bringing in an .ipynb
+ * put into the folder, the same by the oracle's hands, and import — and they
+ * have one rule: students' own notebooks are either allowed or not
+ * (shared/rules.ts · ownBooks). The check lives here, not at each door, for
+ * exactly that reason: four copies of one question are three places where
+ * someone will one day forget to ask.
  *
- * Возвращает ПРИЧИНУ отказа или `null`, если можно. Причина человеческая:
- * кнопка, молча ничего не делающая, читается как поломка.
+ * Returns the REASON for a refusal, or `null` if allowed. The reason is human:
+ * a button that silently does nothing reads as a breakage.
  *
- * Преподаватель проходит насквозь: правила про то, что можно КЛАССУ.
+ * The teacher passes straight through: the rules are about what the CLASS may
+ * do.
  */
 function whyNotAddBook(sessionId: string, doc: Y.Doc, by: BookAuthor): string | null {
   if (by.role === 'host') return null
   /*
-   * Действующие правила, а не хранимые: после звонка `ownBooks` приезжает
-   * выключенным (shared/rules.ts · rulesAfterClass), и отдельной проверки на
-   * конец занятия здесь нет намеренно — она была бы второй копией той же
-   * границы. Слова при этом свои: человеку важно, что пара кончилась.
+   * Effective rules, not stored ones: after the bell `ownBooks` arrives
+   * switched off (shared/rules.ts · rulesAfterClass), and there is no separate
+   * end-of-class check here on purpose — it would be a second copy of the same
+   * boundary. The words are its own, though: it matters to the person that the
+   * class is over.
    */
   if (isFinished(sessionId)) return tr('server.classOverPeriod')
   if (getRules(sessionId).ownBooks !== 'on') return tr('server.ownBooksAreOff')
@@ -289,11 +301,12 @@ function whyNotAddBook(sessionId: string, doc: Y.Doc, by: BookAuthor): string | 
 }
 
 /**
- * Сколько СВОИХ тетрадей у этого человека сейчас в комнате.
+ * How many of their OWN notebooks this person has in the room right now.
  *
- * По живым записям: тетрадь, которую убрали, потолка не занимает — иначе три
- * черновика за семестр запирали бы студента навсегда. Считается по карте
- * правил, а не по файлам: автор живёт там (`BookRule.owner`), и только там.
+ * By live entries: a notebook that was removed does not take up the ceiling —
+ * otherwise three drafts a semester would lock a student out forever. Counted
+ * by the rules map, not by files: the author lives there (`BookRule.owner`),
+ * and only there.
  */
 export function ownBooksOf(sessionId: string, doc: Y.Doc, participantId: string): number {
   const books = liveBookRules(doc, storedRules(sessionId).books)
@@ -301,24 +314,26 @@ export function ownBooksOf(sessionId: string, doc: Y.Doc, participantId: string)
 }
 
 /**
- * Записать автора только что ЗАВЕДЁННОЙ тетради (createBook), а не любой
- * внесённой в комнату.
+ * Record the author of a notebook just CREATED (createBook), not of any
+ * notebook brought into the room.
  *
- * Пишет СЕРВЕР и только для не-преподавателя: тетрадь, заведённую
- * преподавателем, автором не подписывают — он и так может в ней всё, а строка
- * «личная тетрадь: Иван Петрович» в меню была бы предложением отнять тетрадь у
- * самого себя. Такая тетрадь остаётся «как в комнате», и это же достаётся
- * тетрадям, заведённым студентами до появления этой записи.
+ * The SERVER writes it, and only for a non-teacher: a notebook created by the
+ * teacher is not signed with an author — they can do everything in it anyway,
+ * and a "personal notebook: Ivan Petrovich" line in the menu would be an offer
+ * to take the notebook away from themselves. Such a notebook stays "as in the
+ * room", and the same goes for notebooks students created before this record
+ * appeared.
  *
- * Доступ у своей тетради студента — сразу `owner`, и другого значения у неё
- * нет: «своя тетрадь» и «личная» — это одно и то же право, разрешает его
- * `ownBooks`, а сюда мы доходим уже разрешёнными (`whyNotAddBook`).
- * Преподаватель потом меняет доступ любой тетради из меню.
+ * The access of a student's own notebook is `owner` right away, and it has no
+ * other value: "own notebook" and "personal" are one and the same right,
+ * `ownBooks` allows it, and we get here already allowed (`whyNotAddBook`). The
+ * teacher later changes the access of any notebook from the menu.
  *
- * Заодно карта чистится от корней, которых в документе больше нет: тетрадь
- * убирают из комнаты щелчком по файлу, а правила лежат в базе и сами об этом не
- * узнают. Чистка ровно здесь и в `dropBook` — то есть в обоих местах, где карта
- * и список тетрадей расходятся.
+ * Along the way the map is cleaned of roots that are no longer in the
+ * document: a notebook is removed from the room by a click on the file, while
+ * the rules live in the database and will not learn about it by themselves.
+ * The cleaning is exactly here and in `dropBook` — that is, in both places
+ * where the map and the list of notebooks drift apart.
  */
 function rememberAuthor(sessionId: string, doc: Y.Doc, root: string, by: BookAuthor): void {
   if (by.role === 'host') return
@@ -333,12 +348,13 @@ function rememberAuthor(sessionId: string, doc: Y.Doc, root: string, by: BookAut
 }
 
 /**
- * Своя ли это личная тетрадь — и вправе ли этот человек её убрать.
+ * Whether this is one's own personal notebook — and whether this person may
+ * remove it.
  *
- * Убирать тетради из комнаты — право преподавателя, и оно остаётся; здесь одно
- * исключение, без которого «своя тетрадь» была бы полуправдой: черновик,
- * который завёл ты сам и который считается против твоего же потолка, обязан
- * убираться тобой. Чужую личную — нет, тетрадь комнаты — нет.
+ * Removing notebooks from the room is the teacher's right, and it stays so;
+ * here is one exception, without which "own notebook" would be a half-truth: a
+ * draft you created yourself, which counts against your own ceiling, must be
+ * removable by you. Someone else's personal one — no; the room's notebook — no.
  */
 export function ownsBookAt(sessionId: string, path: string, participantId: string): boolean {
   const doc = peekSessionDoc(sessionId)?.doc
@@ -349,7 +365,7 @@ export function ownsBookAt(sessionId: string, path: string, participantId: strin
   return rule?.access === 'owner' && rule.owner === participantId
 }
 
-/** Записи карты, у которых в документе ещё есть тетрадь. */
+/** Map entries whose notebook still exists in the document. */
 function liveBookRules(
   doc: Y.Doc,
   books: Record<string, BookRule> | undefined,
@@ -361,41 +377,42 @@ function liveBookRules(
   return out
 }
 
-/* ------------------------------------------------------- внести в комнату */
+/* ------------------------------------------------------- bring into the room */
 
 export type OpenBookResult =
   | { ok: true; book: Book; imported: boolean }
   | { ok: false; why: string }
 
 /**
- * Открыть .ipynb как тетрадь комнаты.
+ * Open an .ipynb as a room notebook.
  *
- * Уже внесённая возвращается как есть. Ещё не внесённая читается с диска,
- * переезжает в документ и с этого момента живёт там: файл становится её
- * проекцией. Это односторонняя дверь, и в интерфейсе она названа открытием — то
- * есть тем, чем и является для человека.
+ * One already brought in is returned as is. One not yet brought in is read
+ * from disk, moves into the document and from then on lives there: the file
+ * becomes its projection. This is a one-way door, and in the interface it is
+ * called opening — which is what it is for the person.
  */
 export function openBook(
   sessionId: string,
   path: string,
   by?: BookAuthor,
   /**
-   * Тетрадь ЗАВЕДЕНА этим человеком прямо сейчас (`createBook`), а не внесена
-   * из файла, который уже лежал в папке.
+   * The notebook was CREATED by this person just now (`createBook`), not
+   * brought in from a file that was already in the folder.
    *
-   * Разница решает, чьей станет тетрадь. «Свои тетради студентов» — про
-   * черновик, который студент завёл себе сам; про раздатку преподавателя,
-   * лежащую в общей папке, это правило не говорит ничего. 20.09.2026 на живом
-   * занятии студент щёлкнул по `seminar.ipynb` из папки — и семинар всей
-   * группы стал его личной тетрадью: править и запускать в нём мог он один.
-   * Внесение чужого файла теперь оставляет тетрадь комнатной.
+   * The difference decides whose the notebook becomes. "Students' own
+   * notebooks" is about a draft a student created for themselves; about a
+   * teacher's handout lying in the shared folder this rule says nothing. On
+   * 20 Sep 2026, in a live class, a student clicked `seminar.ipynb` in the
+   * folder — and the whole group's seminar became their personal notebook:
+   * only they could edit and run it. Bringing in someone else's file now leaves
+   * the notebook as the room's.
    */
   fresh = false,
 ): OpenBookResult {
   const { doc } = getSessionDoc(sessionId)
   const known = bookAt(doc, path)
-  // Уже внесённая — просто открывается: право спрашивают у того, кто ДОБАВЛЯЕТ
-  // тетрадь в комнату, а не у того, кто смотрит уже добавленную.
+  // One already brought in simply opens: the right is asked of whoever ADDS a
+  // notebook to the room, not of whoever looks at one already added.
   if (known) return { ok: true, book: known, imported: false }
   if (by) {
     const why = whyNotAddBook(sessionId, doc, by)
@@ -406,11 +423,11 @@ export function openBook(
   const source = readBookText(sessionId, path)
   if ('why' in source) return { ok: false, why: source.why }
   /*
-   * Пустой файл — это НОВАЯ тетрадь, а не сломанная.
+   * An empty file is a NEW notebook, not a broken one.
    *
-   * «Новый файл» в дереве заводит пустой файл; назвав его `.ipynb`, человек
-   * просит тетрадь. Разбирать пустоту как JSON и отказывать было бы формально
-   * верно и практически бесполезно.
+   * "New file" in the tree creates an empty file; by naming it `.ipynb`, the
+   * person asks for a notebook. Parsing emptiness as JSON and refusing would be
+   * formally correct and practically useless.
    */
   const flat = source.text.trim().length === 0 ? [] : parseIpynb(source.text)
   if (flat === null) return { ok: false, why: tr("server.containsInvalidIpynbData.6292e4", { p0: baseOf(path) }) }
@@ -423,21 +440,22 @@ export function openBook(
 
   let made: Book | null = null
   /*
-   * Корень — отдельной переменной, а не через `made`: проверка типов не верит,
-   * что обратный вызов транзакции уже отработал, и сужает `made` до `never`
-   * сразу после `if (!made) return`. Это видно и на строке ниже, где `made`
-   * уезжает в ответ как есть.
+   * The root as a separate variable, not through `made`: the type checker does
+   * not believe the transaction callback has already run, and narrows `made` to
+   * `never` right after `if (!made) return`. This shows on the line below too,
+   * where `made` goes into the response as is.
    */
   let root = ''
   doc.transact(() => {
     /*
-     * Корень у новой тетради свой, и из пути он больше не выводится: путь
-     * освобождается — переименовали разбор, положили под тем же именем новый, —
-     * и на освободившемся корне сидела чужая тетрадь.
+     * A new notebook gets its own root, and it is no longer derived from the
+     * path: a path gets freed — someone renamed the walkthrough, put a new one
+     * under the same name — and someone else's notebook sat on the freed root.
      *
-     * Проверка на пустоту осталась и осталась нужной: на занятый корень ячейки
-     * файла не дописываются. Иначе одна тетрадь в комнате перестаёт быть одним
-     * файлом на диске, а это единственное, на чём держится проекция.
+     * The emptiness check stayed and is still needed: a file's cells are not
+     * appended onto an occupied root. Otherwise one notebook in the room stops
+     * being one file on disk, and that is the only thing the projection rests
+     * on.
      */
     const book = addBook(doc, path, rootForNewBook(doc))
     made = book
@@ -445,11 +463,13 @@ export function openBook(
     const cells = bookCells(doc, book.root)
     if (cells.length === 0) {
       /*
-       * Картинки — на полку комнаты, а в текст ячейки ссылка на них.
+       * Images go to the room's shelf, and a link to them into the cell's
+       * text.
        *
-       * Тетрадь лекции с условиями-картинками весит мегабайты, и до этой
-       * строки весь этот base64 переезжал в документ комнаты, то есть каждому
-       * вошедшему и в каждый снимок (server/src/notebook-images.ts).
+       * A lecture notebook with picture problem statements weighs megabytes,
+       * and before this line all that base64 moved into the room's document,
+       * that is, to everyone who joined and into every snapshot
+       * (server/src/notebook-images.ts).
        */
       const shelved = flat.map((cell) => shelveCellImages(sessionId, cell))
       cells.push(
@@ -461,10 +481,11 @@ export function openBook(
   }, ORIGIN)
   if (!made) return { ok: false, why: tr("server.couldNotOpenTheNotebook.be7a27") }
   /*
-   * Автор записывается ЗДЕСЬ, а не в дереве файлов, потому что здесь известен
-   * корень: доступ к тетради живёт по корню, и другого места, где он рождается,
-   * в продукте нет. Уже внесённая тетрадь сюда не доходит (возврат выше), так
-   * что второй человек, открывший тот же файл, автора не переписывает.
+   * The author is recorded HERE, not in the file tree, because the root is
+   * known here: access to a notebook lives by root, and there is no other place
+   * in the product where it is born. A notebook already brought in does not get
+   * here (the return above), so a second person who opens the same file does
+   * not overwrite the author.
    */
   if (by && fresh) rememberAuthor(sessionId, doc, root, by)
   schedule(sessionId)
@@ -472,17 +493,18 @@ export function openBook(
 }
 
 /**
- * Прочитать файл тетради ЦЕЛИКОМ — или сказать, почему нельзя.
+ * Read a notebook file WHOLE — or say why it cannot be done.
  *
- * `readText` бережёт редактор: файл больше полутора мегабайт он отдаёт началом
- * и ставит `truncated`. Здесь этот признак смотрели мимо, и обрезанный посреди
- * base64 JSON уходил в `parseIpynb`, тот честно возвращал `null`, а комната
- * получала «<имя> — не похоже на .ipynb» — про совершенно нормальную тетрадь с
- * картинками. Экран называл не ту причину, и обойти это изнутри комнаты было
- * нечем.
+ * `readText` protects the editor: a file larger than a megabyte and a half it
+ * returns as its beginning and sets `truncated`. Here that flag used to be
+ * overlooked, and JSON cut off in the middle of base64 went into `parseIpynb`,
+ * which honestly returned `null`, and the room got "<name> does not look like
+ * an .ipynb" — about a perfectly normal notebook with images. The screen named
+ * the wrong reason, and there was no way to get around it from inside the
+ * room.
  *
- * Поэтому тетрадь читается своей мерой (`MAX_BOOK_BYTES`), а отказ по размеру
- * говорит про размер.
+ * So a notebook is read with its own measure (`MAX_BOOK_BYTES`), and a refusal
+ * by size talks about size.
  */
 function readBookText(sessionId: string, path: string): { text: string } | { why: string } {
   const file = readText(sessionId, path, MAX_BOOK_BYTES)
@@ -499,12 +521,12 @@ function readBookText(sessionId: string, path: string): { text: string } | { why
   return { why: tr("server.couldNotBeReadAsANotebook.03f997", { p0: baseOf(path) }) }
 }
 
-/** Завести пустую тетрадь по этому пути: файл и запись в комнате. */
+/** Create an empty notebook at this path: the file and the entry in the room. */
 export function createBook(sessionId: string, path: string, by?: BookAuthor): OpenBookResult {
   /*
-   * Право — ДО файла, а не после. `openBook` ниже спросит то же самое, но к
-   * тому времени пустой .ipynb уже лежал бы на диске: отказ, оставляющий за
-   * собой файл, хуже отказа.
+   * The right is checked BEFORE the file, not after. `openBook` below will ask
+   * the same thing, but by then an empty .ipynb would already be on disk: a
+   * refusal that leaves a file behind is worse than a refusal.
    */
   if (by) {
     const why = whyNotAddBook(sessionId, getSessionDoc(sessionId).doc, by)
@@ -513,17 +535,18 @@ export function createBook(sessionId: string, path: string, by?: BookAuthor): Op
   if (statPath(sessionId, path)) return { ok: false, why: tr("server.alreadyExists.e348cc", { p0: baseOf(path) }) }
   const made = makeFile(sessionId, path, writeIpynb([]))
   if (made !== 'ok') return { ok: false, why: tr("server.couldNotCreate.0cfbaa", { p0: baseOf(path) }) }
-  // Заведённая здесь и сейчас — своя: отсюда и приходит личная тетрадь студента.
+  // Created here and now, so it is theirs: this is where personal notebooks come from.
   return openBook(sessionId, path, by, true)
 }
 
 /**
- * Что переехало вместе с этим путём: сам файл и всё, что лежало под ним.
+ * What moved together with this path: the file itself and everything under it.
  *
- * Переименовывают и убирают не только файлы, но и ПАПКИ, а тетрадь внутри
- * папки сверялась по точному пути и оставалась в комнате со старым: проекция
- * через полторы секунды писала её обратно — вместе с папкой, которую только что
- * убрали, — а вкладка правила призрак по адресу, которого на диске нет.
+ * Not only files are renamed and removed but also FOLDERS, and a notebook
+ * inside a folder was matched by exact path and stayed in the room with the old
+ * one: a second and a half later the projection wrote it back — together with
+ * the folder that had just been removed — and the tab edited a ghost at an
+ * address that does not exist on disk.
  */
 function booksUnder(doc: Y.Doc, path: string): string[] {
   return allBooks(doc)
@@ -531,7 +554,7 @@ function booksUnder(doc: Y.Doc, path: string): string[] {
     .filter((known) => isInside(known, path))
 }
 
-/** Тетрадь переехала вместе с файлом — или с папкой, в которой лежала. */
+/** The notebook moved together with its file — or with the folder it was in. */
 export function moveBook(sessionId: string, from: string, to: string): void {
   const doc = peekSessionDoc(sessionId)?.doc
   if (!doc) return
@@ -543,7 +566,7 @@ export function moveBook(sessionId: string, from: string, to: string): void {
   schedule(sessionId)
 }
 
-/** Файла больше нет — и тетради тоже. Папки — со всеми тетрадями внутри. */
+/** The file is gone — and so is the notebook. Folders go with all notebooks inside. */
 export function dropBook(sessionId: string, path: string): void {
   const doc = peekSessionDoc(sessionId)?.doc
   if (!doc) return
@@ -556,10 +579,10 @@ export function dropBook(sessionId: string, path: string): void {
 }
 
 /**
- * Тетрадь ли это в этой комнате.
+ * Whether this is a notebook in this room.
  *
- * По списку комнаты, а не по расширению: .ipynb, который просто лежит в папке и
- * ещё не открывали, — обычный файл, и записывать поверх него можно.
+ * By the room's list, not by extension: an .ipynb that just lies in the folder
+ * and has not been opened yet is an ordinary file, and it may be written over.
  */
 export function isBookFile(sessionId: string, path: string): boolean {
   const doc = peekSessionDoc(sessionId)?.doc
@@ -567,21 +590,24 @@ export function isBookFile(sessionId: string, path: string): boolean {
 }
 
 /**
- * Тетради, чьи файлы кто-то убрал мимо дерева, — например `os.remove` в ячейке.
+ * Notebooks whose files someone removed past the tree — for example `os.remove`
+ * in a cell.
  *
- * Возвращает пути, которых не стало. Комната узнаёт об этом одним сообщением о
- * списке файлов; вкладки закрываются сами, потому что файла в списке нет.
+ * Returns the paths that are gone. The room learns about it from one message
+ * about the file list; tabs close by themselves, because the file is not in the
+ * list.
  */
 export function forgetMissingBooks(sessionId: string): string[] {
   const doc = peekSessionDoc(sessionId)?.doc
   if (!doc) return []
   /*
-   * Каждый путь проверяется отдельно, а не ищется в дереве.
+   * Each path is checked separately, not looked up in the tree.
    *
-   * `listFiles` — это то, что рисует панель: обход в глубину с потолком в две
-   * тысячи записей и ограничением по глубине. Тетрадь, не влезшая в потолок,
-   * из списка выпадает, а файл на диске лежит — и комната убирала бы живую
-   * тетрадь у всех. Один `lstat` на тетрадь, а их в комнате единицы.
+   * `listFiles` is what the panel draws: a depth-first walk with a ceiling of
+   * two thousand entries and a depth limit. A notebook that did not fit under
+   * the ceiling drops out of the list while the file is on disk — and the room
+   * would remove a live notebook for everyone. One `lstat` per notebook, and a
+   * room has a handful of them.
    */
   const missing = allBooks(doc)
     .map(({ book }) => book)
@@ -589,16 +615,18 @@ export function forgetMissingBooks(sessionId: string): string[] {
   if (missing.length === 0) return []
 
   /*
-   * Тетрадь КОМНАТЫ из списка не убирается — её файл пишется заново.
+   * The ROOM's notebook is not removed from the list — its file is written
+   * again.
    *
-   * Эта проверка идёт после каждого прогона ячейки, а убрать тетрадь комнаты
-   * значит стереть её ячейки (`removeBook` делает это только у её корня —
-   * единственного, который умеет вернуть история). `os.remove('Тетрадь.ipynb')`
-   * в чьей-нибудь ячейке — не согласие комнаты расстаться с тем, что она весь
-   * час пишет: файл здесь проекция, и проекция восстанавливается.
+   * This check runs after every cell run, and removing the room's notebook
+   * means erasing its cells (`removeBook` does that only for its root — the
+   * only one history can bring back). `os.remove('Notebook.ipynb')` in
+   * somebody's cell is not the room agreeing to part with what it has been
+   * writing all hour: the file here is a projection, and the projection is
+   * restored.
    *
-   * Убрать тетрадь комнаты по-прежнему можно — щелчком по файлу в дереве, и
-   * это `dropBook`, то есть сказанное вслух.
+   * The room's notebook can still be removed — by a click on the file in the
+   * tree, and that is `dropBook`, that is, something said out loud.
    */
   const gone = missing.filter((book) => book.root !== CELLS_KEY).map((book) => book.path)
   if (gone.length > 0) {
@@ -612,15 +640,16 @@ export function forgetMissingBooks(sessionId: string): string[] {
 }
 
 /**
- * Снять записи о доступе с тетрадей, которых в комнате больше нет.
+ * Remove access entries for notebooks that are no longer in the room.
  *
- * Тетрадь убрали — вместе с ней уходит и «личная тетрадь Акима»: корень `nb:`
- * второй раз не выдаётся (shared/notebook.ts · rootForNewBook), так что
- * оставленная запись не досталась бы никому, а просто лежала бы в базе и ехала
- * бы в каждый сокет комнаты до конца семестра.
+ * A notebook was removed — "Akim's personal notebook" goes with it: an `nb:`
+ * root is never issued a second time (shared/notebook.ts · rootForNewBook), so
+ * a left-over entry would go to nobody but would just lie in the database and
+ * travel into every socket of the room until the end of the semester.
  *
- * Молча, когда снимать нечего: `setRules` — это запись в SQLite и сброс кэша
- * правил, а `dropBook` зовут и с обычного файла, и с папки.
+ * Silent when there is nothing to remove: `setRules` is a write to SQLite and a
+ * rules cache reset, and `dropBook` is called both for an ordinary file and for
+ * a folder.
  */
 function forgetBookRules(sessionId: string, doc: Y.Doc): void {
   const stored = storedRules(sessionId)
@@ -631,7 +660,7 @@ function forgetBookRules(sessionId: string, doc: Y.Doc): void {
   rulesChanged?.(sessionId)
 }
 
-/** Текст ячеек тетради — для оракула и для всего, что читает её как текст. */
+/** The text of a notebook's cells — for the oracle and anything that reads it as text. */
 export function bookText(sessionId: string, path: string): string | null {
   const doc = peekSessionDoc(sessionId)?.doc
   if (!doc) return null

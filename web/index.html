@@ -3,38 +3,40 @@
   <head>
     <meta charset="UTF-8" />
     <!--
-      viewport-fit=cover — ради пульта, и он здесь не косметика.
+      viewport-fit=cover — for the console's sake, and here it is not cosmetic.
 
-      Без него `env(safe-area-inset-*)` возвращает НОЛЬ везде, даже там, где
-      вырез и домашний индикатор есть на самом деле: страница просто не
-      претендует на площадь под ними, и системе нечего сообщать. Пульт прижимает
-      рейлы к самым кромкам планшета — с нулями все его отступы под вырезом
-      молча не работали бы, и «Указка» оказалась бы под домашним индикатором,
-      который перехватывает свайп.
+      Without it `env(safe-area-inset-*)` returns ZERO everywhere, even where
+      the notch and the home indicator really are: the page simply does not
+      claim the area under them, and the system has nothing to report. The
+      console presses its rails against the very edges of the tablet — with
+      zeros all its insets under the notch would silently not work, and the
+      "Pointer" would end up under the home indicator, which intercepts the
+      swipe.
 
-      `user-scalable=no` и `maximum-scale` НЕ добавлены намеренно: iOS Safari
-      игнорирует их с iOS 10 (то есть починить ими ничего нельзя), а
-      доступности остального приложения они вредят по-настоящему. Зум на пульте
-      гасится там, где это работает, — `touch-action` и вебкитовскими
-      `gesture*`, на время лекции.
+      `user-scalable=no` and `maximum-scale` are NOT added on purpose: iOS
+      Safari has ignored them since iOS 10 (so they cannot fix anything), while
+      they do real harm to the accessibility of the rest of the app. Zoom on the
+      console is suppressed where that works — with `touch-action` and WebKit's
+      `gesture*` events, for the duration of the lecture.
 
-      Ни `apple-mobile-web-app-capable`, ни манифеста со `standalone` — тоже
-      намеренно: у веб-приложения с домашнего экрана на iOS СВОЁ хранилище, не
-      общее с Safari, а личность и токен лежат в localStorage. Иконка
-      открывалась бы новым участником без прав ведущего — то есть пультом,
-      который ничем не управляет.
+      Neither `apple-mobile-web-app-capable` nor a manifest with `standalone` —
+      also on purpose: a home-screen web app on iOS has ITS OWN storage, not
+      shared with Safari, while the identity and the token live in
+      localStorage. The icon would open as a new participant without presenter
+      rights — that is, as a console that controls nothing.
 
-      И полный экран пульта — НЕ довод в пользу standalone, хотя кажется им.
-      Полосу Safari прячет `Element.requestFullscreen` (iPadOS с 16.4),
-      который пульт просит из живого касания — экран-ложе «Коснитесь, чтобы
-      взять пульт» и полоса «Во весь экран ▸» существуют ровно ради этого
-      жеста, без него браузер отказывает молча. А то, чего полный экран не
-      прячет — домашний индикатор, уведомления, свайп от кромки, — standalone
-      не спрятал бы тоже: это умеет только Гид-доступ (тройное нажатие на
-      верхнюю кнопку), и справка про него лежит в листе «Ещё». Standalone дал
-      бы, таким образом, ничего, а отнял бы права. Площадь под вырезом и
-      индикатором пульт учитывает сам — `env(safe-area-inset-*)` из
-      `viewport-fit=cover` выше.
+      And the console's full screen is NOT an argument for standalone, although
+      it seems to be one. The Safari bar is hidden by
+      `Element.requestFullscreen` (iPadOS since 16.4), which the console
+      requests from a live touch — the cradle screen "Tap to take the console"
+      and the "Fullscreen ▸" bar exist exactly for this gesture; without it the
+      browser refuses silently. And what full screen does not hide — the home
+      indicator, notifications, the swipe from the edge — standalone would not
+      hide either: only Guided Access can do that (a triple press of the top
+      button), and the help about it lives in the "More" sheet. Standalone would
+      thus give nothing and take away rights. The console accounts for the area
+      under the notch and the indicator itself — `env(safe-area-inset-*)` from
+      `viewport-fit=cover` above.
     -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
@@ -67,36 +69,39 @@
     </script>
 
     <!--
-      Пульт всегда ночной, и знать об этом надо ДО первого кадра.
+      The console is always dark, and this must be known BEFORE the first frame.
 
-      Тема выше выбрана по человеку — сохранённой или системной, — и для комнаты
-      это верно. Но пульт открывают в тёмной аудитории, а умолчание ОС у
-      большинства светлое: первый кадр /s/:id/pult — белая плита 1180×820 в
-      руках у преподавателя, вспышка ему в лицо и первому ряду, и посаженный
-      зрачок, которому через секунду смотреть на слайд. Тёмный пульт — решение
-      о зале, а не предпочтение владельца планшета.
+      The theme above is chosen per person — saved or system — and for the room
+      that is right. But the console is opened in a dark lecture hall, and most
+      people's OS default is light: the first frame of /s/:id/pult is a white
+      1180×820 slab in the teacher's hands, a flash in their face and in the
+      front row's, and constricted pupils that a second later must look at a
+      slide. A dark console is a decision about the hall, not a preference of
+      the tablet's owner.
 
-      Тема человека при этом не трогается вовсе: сохранённый выбор не
-      переписывается, а ConsoleView одалживает тёмную на время экрана
-      (borrowTheme) и возвращает как было. Здесь ставится ПРИЗНАК АДРЕСА, а не
-      тема, и по трём причинам:
-        · `data-theme`, выставленный отсюда, всё равно не живёт — initTheme() в
-          lib/theme.svelte.ts применит сохранённый выбор, как только приедет
-          модуль;
-        · белым мигает не только первый кадр: оболочка уходит по приходу стилей,
-          а экран комнаты — отдельный кусок, и секунды между ними рисуются
-          светлыми токенами;
-        · признак перекрывает и грунт оболочки ниже, и палитру в index.css одним
-          селектором.
+      The person's theme is not touched at all: the saved choice is not
+      rewritten, and ConsoleView borrows the dark one for the time of the screen
+      (borrowTheme) and gives it back as it was. What is set here is an ADDRESS
+      MARKER, not a theme, and for three reasons:
+        · a `data-theme` set from here would not live anyway — initTheme() in
+          lib/theme.svelte.ts applies the saved choice as soon as the module
+          arrives;
+        · it is not only the first frame that flashes white: the shell leaves
+          when the styles arrive, while the room screen is a separate chunk, and
+          the seconds between them are drawn with light tokens;
+        · the marker overrides both the shell ground below and the palette in
+          index.css with one selector.
 
-      Снимается он на выходе с пульта («В комнату» в листе «Ещё») — иначе
-      светлая комната осталась бы тёмной до перезагрузки. Другого способа узнать
-      про переход нет: маршрутизатор ходит `history.pushState`, а своего события
-      у неё нет — отсюда обёртка. Она зовёт исходную и отдаёт её же ответ, так
-      что для всех остальных экранов её как будто и нет.
+      It is removed on leaving the console ("Go to room" in the "More" sheet) —
+      otherwise a light room would stay dark until a reload. There is no other
+      way to learn about the transition: the router goes through
+      `history.pushState`, and history has no event of its own for it — hence
+      the wrapper. It calls the original and returns its own result, so for all
+      the other screens it is as if it were not there.
 
-      Ссылка-ключ /s/:id/t/<key> — тот же адрес: планшет открывают ей, а на
-      /pult он попадает уже сам, вторым кадром, и мигнуть успеет на первом.
+      The key link /s/:id/t/<key> is the same address: the tablet is opened
+      with it, and it reaches /pult by itself, on the second frame, so it would
+      have time to flash on the first.
     -->
     <script>
       ;(function () {
@@ -144,37 +149,40 @@
       bundle arrives swaps under the reader's eyes.
     -->
     <!--
-      Предзагружаются два начертания из четырёх, и это не половинчатость.
+      Two of the four weights are preloaded, and that is not half-heartedness.
 
-      900 — марка и заголовок первого экрана, 400 — весь остальной текст на нём:
-      без него первый кадр набирался подменным шрифтом и переверстывался, когда
-      настоящий доезжал. Замерено на петле: 400 запрашивался на 500 мс позже
-      входного скрипта, потому что браузер узнавал о нём только из вёрстки.
+      900 is the mark and the heading of the first screen, 400 is all the rest
+      of the text on it: without it the first frame was set in a fallback font
+      and reflowed when the real one arrived. Measured on loopback: 400 was
+      requested 500 ms later than the entry script, because the browser learned
+      about it only from the layout.
 
-      600 и 700 оставлены обычному обнаружению намеренно. На экране входа их
-      носят две надписи, их подмена не двигает строки, а две лишние стройки по
-      20 КБ в первой волне — это те же 40 КБ, отнятые у кода формы.
+      600 and 700 are left to ordinary discovery on purpose. On the entry
+      screen two labels use them, their swap does not move lines, and two extra
+      20 KB downloads in the first wave are the same 40 KB taken away from the
+      form's code.
     -->
     <link rel="preload" href="/fonts/hse-sans-400.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/hse-sans-900.woff2" as="font" type="font/woff2" crossorigin />
 
     <!--
-      И моноширинный — тоже наш, с этого же сервера.
+      And the monospace is ours too, from this same server.
 
-      JetBrains Mono — лицо тетради, терминала и каждого вывода, и до сих пор
-      оно приезжало с fonts.googleapis.com: единственная внешняя зависимость во
-      всём продукте, стоящая на пути к первому кадру пары. В университетской
-      сети без выхода наружу и при недоступности Google (а Cloudflare и внешние
-      CDN из РФ уже блокировались) тетрадь рисовалась в Menlo, и это ещё не
-      худшее: font-display заменяет шрифт на лету, метрики у Menlo другие, и
-      переносы в ячейках перескакивают под чтение.
+      JetBrains Mono is the face of the notebook, the terminal and every output,
+      and until now it came from fonts.googleapis.com: the only external
+      dependency in the whole product standing on the way to the first frame of
+      a class. On a university network with no way out, and when Google is
+      unavailable (Cloudflare and external CDNs have already been blocked from
+      Russia), the notebook was drawn in Menlo, and that is not even the worst:
+      font-display swaps the font on the fly, Menlo's metrics are different, and
+      line breaks in cells jump while people read.
 
-      Довод «не наш, чтобы сабсетить» был просто неверен: JetBrains Mono лежит
-      под SIL OFL 1.1 (текст рядом, JetBrainsMono-OFL.txt), и хостить и резать
-      его можно. Один файл на подмножество, вариативный по начертанию: 400, 500
-      и 700 берутся из одного и того же woff2, потому что у него ось веса.
-      Латиница предзагружается — на ней набран весь код; кириллица и остальное
-      подтягиваются по unicode-range, только если такие буквы правда рисуют.
+      The argument "not ours to subset" was simply wrong: JetBrains Mono is
+      under SIL OFL 1.1 (the text is next to it, JetBrainsMono-OFL.txt), and it
+      may be hosted and subset. One file per subset, variable in weight: 400,
+      500 and 700 come from the same woff2, because it has a weight axis. Latin
+      is preloaded — all code is set in it; Cyrillic and the rest are pulled in
+      by unicode-range only if such letters are actually drawn.
     -->
     <link
       rel="preload"
@@ -214,13 +222,14 @@
         color-scheme: dark;
       }
       /*
-       * Пульт — ночной независимо от темы (см. скрипт выше). Стоит последним,
-       * потому что спорит с обеими ветками разом и обязан выиграть у любой.
+       * The console is dark regardless of the theme (see the script above). It
+       * comes last because it argues with both branches at once and must win
+       * over either.
        *
-       * Значения — те же, что у тёмной ветки, а не отдельный корпусный #0B1120
-       * из чертежа: третьей палитры в продукте нет, а грунт оболочки и грунт
-       * приложения обязаны совпадать — иначе на месте исчезающей оболочки
-       * видно ступеньку светлоты там, где ничего не происходило.
+       * The values are the same as the dark branch's, not the separate case
+       * colour #0B1120 from the mockup: the product has no third palette, and
+       * the shell ground and the app ground must match — otherwise, where the
+       * shell disappears, a step in lightness shows where nothing happened.
        */
       :root[data-pult] {
         --boot-canvas: #060c1c;
@@ -269,12 +278,14 @@
       }
 
       /*
-       * JetBrains Mono, вариативная: одна и та же гарнитура на 400, 500 и 700.
+       * JetBrains Mono, variable: one and the same typeface at 400, 500 and
+       * 700.
        *
-       * Подмножества — те же, что режет Google, и по той же причине: браузер
-       * скачивает файл, только если на странице правда есть буквы из его
-       * unicode-range. Кириллица в моноширинном нужна не в коде, а в тексте
-       * ячеек и выводов, и ждать её на входе незачем.
+       * The subsets are the same ones Google cuts, and for the same reason: the
+       * browser downloads a file only if the page really has letters from its
+       * unicode-range. Cyrillic in the monospace is needed not in code but in
+       * the text of cells and outputs, and there is no reason to wait for it at
+       * the entrance.
        */
       @font-face {
         font-family: 'JetBrains Mono';
@@ -314,36 +325,39 @@
       }
 
       /*
-       * Подменный моноширинный — тот, что стоит, пока настоящий в пути.
+       * The fallback monospace — the one that stands in while the real one is
+       * on its way.
        *
-       * `font-display: swap` меняет шрифт на лету, и без этой пары строки
-       * подпрыгивали: у JetBrains Mono строка занимает 1.32em и знак 0.6em, у
-       * Menlo — 1.164em и 0.602em, у Consolas — 0.55em. Правки метрик приводят
-       * системный шрифт к нашему: строка встаёт на то же место, колонка кода —
-       * на ту же ширину, и подмена перестаёт быть видимой.
+       * `font-display: swap` changes the font on the fly, and without this pair
+       * lines jumped: in JetBrains Mono a line takes 1.32em and a glyph 0.6em,
+       * in Menlo 1.164em and 0.602em, in Consolas 0.55em. The metric overrides
+       * bring the system font to ours: a line lands in the same place, a code
+       * column at the same width, and the swap stops being visible.
        *
-       * Семейств два, и имена у них РАЗНЫЕ. Правка ширины у Consolas своя, и
-       * одной цифрой их не накрыть, — а два правила под одним именем держались
-       * бы на том, чего спецификация не обещает: что делает браузер, когда у
-       * выбранного лица не нашлось ни одного local(), — переберёт ли остальные
-       * лица той же семьи или бросит семью целиком — его дело. Проиграй эта
-       * лотерея на Windows, и подмены там не было бы вовсе — ровно на той
-       * машине, ради которой писано первое правило.
+       * There are two families, and their names are DIFFERENT. Consolas has its
+       * own width override, and one number cannot cover both — and two rules
+       * under one name would rest on something the spec does not promise: what
+       * the browser does when the chosen face has none of its local() —
+       * whether it tries the other faces of the same family or drops the
+       * family entirely — is up to it. Lose this lottery on Windows, and there
+       * would be no fallback there at all — on exactly the machine the first
+       * rule was written for.
        *
-       * Разные имена — обычный перебор семейств, который обещан: Consolas не
-       * нашёлся (мак, Linux) — берём следующее; не нашлось ни одного —
-       * остаётся ровно то, что было до этой правки. Порядок и полный стек — в
-       * web/src/index.css, --font-mono; здесь только сами лица.
+       * Different names are the ordinary family fallback, which is promised:
+       * Consolas was not found (Mac, Linux) — take the next one; none was found
+       * — what remains is exactly what there was before this fix. The order and
+       * the full stack are in web/src/index.css, --font-mono; here are only the
+       * faces themselves.
        *
-       * `local()` берёт ЛИЦО, а не семью, и по имени лица — полному или
-       * постскриптовому. Замерено в Chrome на маке (ширина строки из 80 «M»):
-       * 'Menlo' не находится вообще — у семьи Menlo нет лица с таким именем,
-       * есть «Menlo Regular» и «Menlo-Regular»; 'Monaco' и 'Courier New'
-       * находятся, потому что там имя семьи и имя регулярного лица совпали.
-       * Пока здесь стояло одно 'Menlo', на маке подмены не было вовсе — ровно
-       * та поломка, ради которой эти правила и заводили. Поэтому у каждого
-       * шрифта перечислены все написания: лишнее local() ничего не стоит,
-       * ненайденное просто пропускается.
+       * `local()` takes a FACE, not a family, and by the face name — full or
+       * PostScript. Measured in Chrome on a Mac (the width of a line of 80
+       * "M"s): 'Menlo' is not found at all — the Menlo family has no face with
+       * that name, there are "Menlo Regular" and "Menlo-Regular"; 'Monaco' and
+       * 'Courier New' are found, because there the family name and the name of
+       * the regular face coincide. While there was only 'Menlo' here, on a Mac
+       * there was no fallback at all — exactly the breakage these rules were
+       * set up for. So every font lists all its spellings: an extra local()
+       * costs nothing, one that is not found is simply skipped.
        */
       @font-face {
         font-family: 'JetBrains Mono Fallback Consolas';
@@ -379,13 +393,14 @@
       }
 
       /*
-       * ЗАСТАВКА. Её двойник в приложении — web/src/components/ui/Splash.svelte
-       * (size="screen"), и он встаёт ровно на её место, когда оболочка уходит:
-       * тот же центр окна, та же марка 28, та же полоска 88×2, тот же зазор 16
-       * и те же тайминги. Числа здесь и там — копия друг друга, потому что CSS
-       * приложения к этому мгновению ещё не приехал (лист грузится
-       * неблокирующе, vite.config.ts) и общего источника у них быть не может.
-       * Правятся парой: тронули здесь — правьте Splash.svelte, и наоборот.
+       * THE SPLASH. Its twin in the app is web/src/components/ui/Splash.svelte
+       * (size="screen"), and it lands exactly in its place when the shell
+       * leaves: the same centre of the window, the same mark 28, the same bar
+       * 88×2, the same gap 16 and the same timings. The numbers here and there
+       * are a copy of each other, because the app's CSS has not arrived yet at
+       * this moment (the sheet loads without blocking, vite.config.ts) and they
+       * cannot have a common source. They are edited as a pair: touched here —
+       * edit Splash.svelte, and vice versa.
        */
       #boot {
         position: fixed;
@@ -419,10 +434,10 @@
         }
       }
 
-      /* The same mark the first screen draws, at the same weights — девять
-         клеток из набора значков (web/src/components/ui/Icon.svelte · logo),
-         повторённые здесь руками: набор приезжает с приложением, а эта марка
-         рисуется до него. */
+      /* The same mark the first screen draws, at the same weights — the nine
+         squares from the icon set (web/src/components/ui/Icon.svelte · logo),
+         repeated here by hand: the set arrives with the app, while this mark
+         is drawn before it. */
       #boot svg {
         display: block;
         width: 28px;

@@ -1,10 +1,10 @@
 /**
- * Подписи публичных страниц.
+ * Captions of the public pages.
  *
- * Числительное здесь — не украшение: страница курса и шапка семинара это первое,
- * что видит класс по ссылке, которую ему дали, и «6 шага» в ней читается как
- * недоделанная страница. Считалось тернарником «=== 1 ? то : это» в четырёх
- * местах, и каждое врало по-своему.
+ * The numeral here is not decoration: the course page and the seminar header
+ * are the first thing a class sees at the link it was given, and "6 шага" there
+ * reads as an unfinished page. It used to be a ternary "=== 1 ? this : that"
+ * in four places, and each one lied in its own way.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -21,8 +21,8 @@ test('one, a few, and many', () => {
 })
 
 test('the teens are all many', () => {
-  // Ровно то, на чём ломались обе прежние формулы: 11 давало «шага», а
-  // «n < 5 ? шага : шагов» — «11 шагов» верно, но «21 шагов» уже нет.
+  // Exactly where both earlier formulas broke: 11 gave "шага", and with
+  // "n < 5 ? шага : шагов", "11 шагов" is right but "21 шагов" is not.
   for (const n of [11, 12, 13, 14]) assert.equal(step(n), `${n} шагов`)
 })
 

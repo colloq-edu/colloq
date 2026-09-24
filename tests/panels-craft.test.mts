@@ -1,14 +1,15 @@
 /**
- * Мелочи панелей, которые видно только глазами — и поэтому они тихо ломаются.
+ * Small things in the panels that can only be seen by eye — and so they break
+ * quietly.
  *
- * Всё здесь — про разметку и стили, у которых нет ни чистой функции, ни
- * сокета: размер цели под палец, гарнитура ящика, отклик на нажатие, второй
- * щелчок по имени файла. Проверять это в браузере на каждой правке никто не
- * будет, а откатывается оно одной строкой — ровно так каждая из этих находок и
- * появилась. Читается прямо из компонентов: тест со своей копией правила
- * проходит вечно, пока файл уезжает.
+ * Everything here is about markup and styles that have neither a pure function
+ * nor a socket: the size of a finger target, the drawer typeface, the response
+ * to a press, a second click on a file name. Nobody is going to check this in a
+ * browser on every change, and it reverts with one line — which is exactly how
+ * each of these findings turned up. It is read straight from the components: a
+ * test with its own copy of the rule passes forever while the file drifts away.
  *
- * Тот же приём, что и в `terminal-palette.test.mts`, и по той же причине.
+ * The same technique as in `terminal-palette.test.mts`, and for the same reason.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -20,7 +21,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка и стили без комментариев: объяснение — не обещание. */
+/** Markup and styles without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -37,224 +38,224 @@ const CODE = 'web/src/components/ui/Code.svelte'
 const CSS = 'web/src/index.css'
 const RENDER = 'web/src/lib/render.svelte.ts'
 
-/* ------------------------------------------------------------- гарнитуры */
+/* ------------------------------------------------------------- typefaces */
 
-test('ящик набран гарнитурами продукта, а не теми, которых в нём нет', () => {
+test('the drawer is set in the product typefaces, not in ones it does not have', () => {
   const term = read(TERMINAL)
-  // Inter никто не грузит: @font-face в index.html объявлены для 'HSE Sans' и
-  // для шрифта кода, и ни одного — для Inter. Вкладки ящика падали в системный
-  // шрифт рядом с той же надписью в панели.
-  assert.match(term, /--tm-sans:\s*'HSE Sans'/, "--tm-sans начинается с 'HSE Sans'")
+  // Nobody loads Inter: the @font-face rules in index.html are declared for
+  // 'HSE Sans' and for the code font, and none for Inter. The drawer tabs fell
+  // back to the system font next to the same label in the panel.
+  assert.match(term, /--tm-sans:\s*'HSE Sans'/, "--tm-sans starts with 'HSE Sans'")
 
   const hist = code(read(HISTORY))
   /*
-   * Моношрифт истории — общий с расшифровкой над ней, иначе время уезжает в
-   * системный SF Mono рядом с JetBrains Mono. Имя переменной здесь не важно и
-   * не проверяется: раньше общим был --tm-mono самого ящика, дальше им станет
-   * --font-mono продукта (web/src/index.css), где к настоящему шрифту
-   * дописаны подменные семейства с правками метрик. Важно одно — что
-   * переменная одна на обе поверхности.
+   * The history monospace font is shared with the transcript above it, otherwise
+   * the times drift into the system SF Mono next to JetBrains Mono. The variable
+   * name does not matter here and is not checked: it used to be the drawer's own
+   * --tm-mono, next it will be the product's --font-mono (web/src/index.css),
+   * where fallback families with metric overrides are added to the real font.
+   * One thing matters — that there is one variable for both surfaces.
    */
   const mono = /font-family:\s*var\((--tm-mono|--font-mono)\)/.exec(hist)
-  assert.ok(mono, 'моношрифт истории объявлен не переменной')
+  assert.ok(mono, 'the history monospace font is not declared through a variable')
   assert.match(
     code(term),
     new RegExp(`var\\(${mono![1]}\\)`),
-    'моношрифт истории — общий с ящиком',
+    'the history monospace font is shared with the drawer',
   )
 })
 
-/* ------------------------------------------------------------- пол кегля */
+/* ------------------------------------------------------- font-size floor */
 
-test('всё, что в ящике нажимают, набрано не мельче 11px', () => {
+test('everything pressable in the drawer is set no smaller than 11px', () => {
   const term = code(read(TERMINAL))
   const hist = code(read(HISTORY))
-  // 10px — для того, что читают один раз и не нажимают (tailwind.config.js).
-  // Вкладки, действия и две кнопки истории — самые нажимаемые контролы ящика.
+  // 10px is for what is read once and never pressed (tailwind.config.js). The
+  // tabs, the actions and the two history buttons are the drawer's most pressed controls.
   for (const [name, source, cls] of [
-    ['вкладка', term, '.term-tab'],
-    ['действие', term, '.term-act'],
-    ['«завести оболочку»', term, '.term-revive'],
-    ['кнопки истории', hist, '.hist-go,\n  .hist-mini'],
+    ['tab', term, '.term-tab'],
+    ['action', term, '.term-act'],
+    ['"start a shell"', term, '.term-revive'],
+    ['history buttons', hist, '.hist-go,\n  .hist-mini'],
   ] as const) {
     const block = source.slice(source.indexOf(cls))
     const size = /font-size:\s*([\d.]+)px/.exec(block)
-    assert.ok(size, `${name}: не нашли кегль`)
-    assert.ok(Number(size[1]) >= 11, `${name} набрано ${size[1]}px — ниже пола для нажимаемого`)
+    assert.ok(size, `${name}: font size not found`)
+    assert.ok(Number(size[1]) >= 11, `${name} is set at ${size[1]}px, below the floor for pressable things`)
   }
 })
 
-/* --------------------------------------------------------------- цели */
+/* ------------------------------------------------------------ targets */
 
-test('ручка ящика и его действия — не тоньше пальца', () => {
+test('the drawer grip and its actions are no thinner than a finger', () => {
   const term = code(read(TERMINAL))
   const grip = /\.term-grip\s*{[^}]*height:\s*(\d+)px/.exec(term)
-  assert.ok(grip, 'у ручки есть высота')
-  assert.ok(Number(grip[1]) >= 12, `ручка ${grip[1]}px: тянут за неё мышью и пером`)
+  assert.ok(grip, 'the grip has a height')
+  assert.ok(Number(grip[1]) >= 12, `the grip is ${grip[1]}px: it is dragged with a mouse and a pen`)
 
   const act = /\.term-act\s*{[^}]*min-height:\s*(\d+)px/.exec(term)
-  assert.ok(act, '«Очистить» и крестик получили минимальную высоту')
-  assert.ok(Number(act[1]) >= 24, 'пол 24px — тот же, что цитирует тетрадь')
+  assert.ok(act, '"Clear" and the cross got a minimum height')
+  assert.ok(Number(act[1]) >= 24, 'the 24px floor is the same one the notebook cites')
 })
 
-test('«как на инстансе» — кнопка, а не строчка текста высотой в буквы', () => {
+test('"as on the instance" is a button, not a line of text as tall as its letters', () => {
   const rules = code(read(RULES))
   const clear = rules.slice(rules.indexOf('.rule-clear'))
-  assert.ok(Number(clear.match(/min-height:\s*(\d+)px/)?.[1]) >= 24, 'у ссылки-кнопки есть цель не меньше 24px')
+  assert.ok(Number(clear.match(/min-height:\s*(\d+)px/)?.[1]) >= 24, 'the link-button has a target of at least 24px')
 })
 
-/* ------------------------------------------------------------- движение */
+/* --------------------------------------------------------------- motion */
 
-test('правила комнаты берут скорость и кривую из лестницы, а не из литералов', () => {
+test('the room rules take speed and curve from the scale, not from literals', () => {
   const rules = code(read(RULES))
-  assert.doesNotMatch(rules, /100ms ease-out/, 'литеральных «100ms ease-out» не осталось')
-  assert.match(rules, /var\(--speed-quick\)/, 'цвет — по --speed-quick')
-  assert.match(rules, /var\(--speed-press\) var\(--ease-out\)/, 'форма — по --speed-press')
+  assert.doesNotMatch(rules, /100ms ease-out/, 'no literal "100ms ease-out" is left')
+  assert.match(rules, /var\(--speed-quick\)/, 'colour follows --speed-quick')
+  assert.match(rules, /var\(--speed-press\) var\(--ease-out\)/, 'shape follows --speed-press')
 })
 
-test('история не рвёт нажатие под reduced-motion', () => {
+test('the history does not break the press under reduced motion', () => {
   const hist = code(read(HISTORY))
-  // Прежний блок снимал transform из списка переходов и оставлял сам
-  // scale(0.97): щелчок туда и обратно без перехода — рывок вместо движения.
-  assert.doesNotMatch(hist, /prefers-reduced-motion/, 'своего блока у истории нет')
+  // The old block took transform out of the transition list and left
+  // scale(0.97) itself: a snap there and back without a transition — a jerk instead of motion.
+  assert.doesNotMatch(hist, /prefers-reduced-motion/, 'the history has no block of its own')
 })
 
-/* ------------------------------------------------- лента оракула и ширина */
+/* ---------------------------------------------- the oracle feed and width */
 
 /**
- * Правило одно: лента оракула вбок не ездит.
+ * One rule: the oracle feed does not scroll sideways.
  *
- * Оракул отвечает кодом внутри предложения, и `data['GarageYrBlt'] =
- * data['GarageYrBlt'].fillna(data['GarageYrBlt'].median())` — одно слово для
- * переносчика строк. При `overflow-wrap: normal` оно вылезало за край колонки
- * на 78 px, а окно прокрутки ленты предлагало эти 78 px пролистать: панель
- * качалась влево-вправо на каждом касании трекпада. Горизонтально едут ровно
- * две вещи, и обе внутри себя, — блок кода и широкая таблица.
+ * The oracle answers with code inside a sentence, and `data['GarageYrBlt'] =
+ * data['GarageYrBlt'].fillna(data['GarageYrBlt'].median())` is one word to the
+ * line breaker. With `overflow-wrap: normal` it stuck out 78 px past the column
+ * edge, and the feed's scroll box offered to scroll those 78 px: the panel
+ * swayed left and right at every touch of the trackpad. Exactly two things
+ * scroll horizontally, and both within themselves — a code block and a wide table.
  */
-test('проза переносит длинное слово, а не растягивает колонку', () => {
+test('prose wraps a long word instead of stretching the column', () => {
   const css = code(read(CSS))
   const prose = css.slice(css.indexOf('.prose-note {'), css.indexOf('.prose-answer {'))
-  assert.match(prose, /overflow-wrap:\s*anywhere/, 'у .prose-note перенос «где угодно»')
+  assert.match(prose, /overflow-wrap:\s*anywhere/, '.prose-note wraps "anywhere"')
 
-  // `anywhere`, а не `break-word`: только он входит в расчёт минимальной
-  // ширины содержимого, то есть строка не распирает ни колонку, ни flex-предка.
+  // `anywhere`, not `break-word`: only it takes part in the min-content width,
+  // so the line stretches neither the column nor a flex ancestor.
   const inline = css.slice(css.indexOf('.prose-note code {'))
   assert.match(
     inline.slice(0, inline.indexOf('}')),
     /box-decoration-break:\s*clone/,
-    'фон инлайнового кода не разваливается на переносе',
+    'the inline code background does not fall apart at a wrap',
   )
 
-  // Вопрос человека — там же: строка пути или адреса без единого пробела.
-  assert.match(code(read(TURN)), /\[overflow-wrap:anywhere\]/, 'вопрос переносится «где угодно»')
+  // The person's question is in the same place: a path or address line without a single space.
+  assert.match(code(read(TURN)), /\[overflow-wrap:anywhere\]/, 'the question wraps "anywhere"')
 })
 
-test('вбок едут только блок кода и таблица — каждый внутри себя', () => {
+test('only a code block and a table scroll sideways, each within itself', () => {
   const css = code(read(CSS))
   for (const rule of ['.prose-note pre {', '.prose-note .table-scroll {']) {
     const block = css.slice(css.indexOf(rule)).slice(0, 200)
-    assert.match(block, /overflow-x-auto/, `${rule} прокручивается сам`)
-    assert.match(block, /max-w-full/, `${rule} не шире колонки`)
-    // Иначе жест, доехавший до конца строки, продолжается лентой и страницей.
-    assert.match(block, /overscroll-x-contain/, `${rule} не раскачивает ленту`)
+    assert.match(block, /overflow-x-auto/, `${rule} scrolls by itself`)
+    assert.match(block, /max-w-full/, `${rule} is no wider than the column`)
+    // Otherwise a gesture that reached the end of the line carries on into the feed and the page.
+    assert.match(block, /overscroll-x-contain/, `${rule} does not rock the feed`)
   }
-  // Обёртку таблице markdown не даёт — её ставит рендерер, после санитайзера.
-  assert.match(code(read(RENDER)), /className = 'table-scroll'/, 'таблица едет в обёртке')
+  // markdown gives a table no wrapper: the renderer adds it, after the sanitizer.
+  assert.match(code(read(RENDER)), /className = 'table-scroll'/, 'the table travels in a wrapper')
 
   const block = code(read(CODE))
   assert.match(
     block,
     /max-w-full overflow-x-auto overscroll-x-contain whitespace-pre/,
-    'блок кода в ответе прокручивается сам и не шире хода',
+    'a code block in an answer scrolls by itself and is no wider than the turn',
   )
 })
 
-test('у ленты оракула нет горизонтальной прокрутки', () => {
+test('the oracle feed has no horizontal scrolling', () => {
   const ai = code(read(AI))
-  // `overflow-y: auto` в одиночку означает `overflow-x: auto` — так написано в
-  // спецификации, и именно так лента получала прокрутку вбок от любого слова,
-  // вылезшего за край. Страховка поверх лечения, а не вместо него.
+  // `overflow-y: auto` on its own means `overflow-x: auto` — so the spec says,
+  // and that is exactly how the feed got sideways scrolling from any word sticking
+  // out past the edge. A safety net on top of the cure, not instead of it.
   assert.match(
     ai,
     /bind:this=\{scroller\}[\s\S]{0,120}overflow-y-auto overflow-x-hidden/,
-    'окно прокрутки ленты закрыто по горизонтали',
+    'the feed scroll box is closed horizontally',
   )
-  // И то же самое у двух коробок со своей вертикальной прокруткой внутри хода.
+  // And the same for the two boxes with their own vertical scrolling inside a turn.
   const turn = code(read(TURN))
   assert.doesNotMatch(
     turn,
     /overflow-y-auto(?! overflow-x-hidden)/,
-    'у каждой прокручиваемой коробки хода закрыта горизонталь',
+    'every scrollable box in a turn has its horizontal closed',
   )
 
-  // Обёртка ответа — flex-колонка: без min-width: 0 её минимум равен ширине
-  // содержимого, и один широкий блок растянул бы весь ход вместе с лентой.
-  assert.match(code(read(ANSWER)), /cn\('flex min-w-0 flex-col gap-2\.5'/, 'ответ не распирается')
+  // The answer wrapper is a flex column: without min-width: 0 its minimum equals
+  // the content width, and one wide block would stretch the whole turn along with the feed.
+  assert.match(code(read(ANSWER)), /cn\('flex min-w-0 flex-col gap-2\.5'/, 'the answer does not bulge')
 })
 
-/* ---------------------------------------------------------------- жесты */
+/* ------------------------------------------------------------- gestures */
 
-test('второй щелчок по имени файла не открывает и не скачивает второй раз', () => {
+test('a second click on a file name does not open or download a second time', () => {
   const files = code(read(FILES))
-  // На имени висит и `pick`, и переименование по двойному щелчку: два нажатия
-  // давали два билета и два a.click() — датасет на гигабайт двумя копиями.
+  // The name carries both `pick` and rename on double click: two presses gave
+  // two tickets and two a.click() calls — a gigabyte dataset in two copies.
   assert.match(files, /function pick\(entry: FileEntry, detail = 1\)/)
   assert.match(files, /if \(detail > 1\) return/)
   assert.match(files, /onclick=\{\(event\) => pick\(entry, event\.detail\)\}/)
 })
 
-test('пока бан уходит на сервер, окно не закрывается ни Escape, ни подложкой', () => {
+test('while a ban goes to the server, the dialog closes neither on Escape nor on the backdrop', () => {
   const ban = code(read(BAN))
-  // «Отмена» была погашена, а Escape уносил окно: человек видел, что передумал,
-  // и через мгновение участник оказывался удалён.
+  // "Cancel" was disabled, yet Escape took the dialog away: the person saw that
+  // they had changed their mind, and a moment later the participant was removed anyway.
   assert.match(ban, /function close\(\): void \{\s*if \(busy\) return/)
-  // Успешный бан закрывает окно мимо жестового выхода: busy снимается позже.
+  // A successful ban closes the dialog bypassing the gesture exit: busy is cleared later.
   assert.match(ban, /dismiss\(\)/)
 })
 
-test('повтор вопроса несёт все ячейки, о которых спрашивали', () => {
+test('a retried question carries all the cells it asked about', () => {
   const ai = code(read(AI))
   const retry = ai.slice(ai.indexOf('function retry('), ai.indexOf('async function stop('))
-  assert.match(retry, /cellIds: \[\.\.\.entry\.cellIds\]/, 'иначе повтор теряет всё, кроме первой')
+  assert.match(retry, /cellIds: \[\.\.\.entry\.cellIds\]/, 'otherwise a retry loses all but the first')
 })
 
-test('отказ сервера возвращает текст вопроса в поле, а не только слоу-мод', () => {
+test('a server refusal returns the question text to the field, not only in slow mode', () => {
   const ai = code(read(AI))
   const ask = ai.slice(ai.indexOf('async function ask('), ai.indexOf('let doing ='))
   const back = ask.indexOf('composing.question = body.message')
   const slow = ask.indexOf('err.retryAfter !== null')
-  assert.ok(back > 0, 'возврат текста в поле есть')
-  assert.ok(back < slow, 'и стоит ДО разбора причины: причина на это не влияет')
+  assert.ok(back > 0, 'the text is returned to the field')
+  assert.ok(back < slow, 'and it comes BEFORE the reason is parsed: the reason does not affect it')
 })
 
-test('неудачная выборка состояния оракула не выдаётся за решение админа', () => {
+test('a failed fetch of the oracle status does not pass for a decision of the admin', () => {
   const ai = code(read(AI))
   const fetchBlock = ai.slice(ai.indexOf('api\n      .aiStatus()'), ai.indexOf('// The notebook asks'))
-  assert.doesNotMatch(fetchBlock, /mode: 'off'/, "'off' говорит только сервер")
-  assert.match(fetchBlock, /status = null/, 'на ошибке — «ещё не знаем»')
+  assert.doesNotMatch(fetchBlock, /mode: 'off'/, "only the server says 'off'")
+  assert.match(fetchBlock, /status = null/, 'on an error: "we do not know yet"')
   assert.match(fetchBlock, /statusFailed = true/)
 })
 
-test('цель для файлов живёт, пока папка открыта: свернул — вернулась к родителю', () => {
+test('the files target lives while its folder is open: collapse it and the target returns to the parent', () => {
   const files = code(read(FILES))
   const toggle = files.slice(files.indexOf('function toggle(path: string)'), files.indexOf('function pick('))
-  // Открытая папка — цель, закрытая — нет; закрыть папку над целью значит
-  // поднять цель к её родителю. Иначе снять «Файлы — в папку …» было нечем,
-  // кроме как открыть файл рядом.
-  assert.match(toggle, /next\.add\(path\)\s*target = path/, 'раскрытие делает папку целью')
+  // An open folder is the target, a closed one is not; closing a folder above the
+  // target moves the target up to its parent. Otherwise there was no way to clear
+  // "Files — into folder …" except by opening a file next to it.
+  assert.match(toggle, /next\.add\(path\)\s*target = path/, 'expanding makes the folder the target')
   assert.match(
     toggle,
     /target\.startsWith\(`\$\{path\}\/`\)\) target = parentOf\(path\)/,
-    'сворачивание поднимает цель к родителю',
+    'collapsing moves the target up to the parent',
   )
   const pick = files.slice(files.indexOf('function pick(entry: FileEntry'), files.indexOf('function startDraft('))
-  assert.doesNotMatch(pick, /if \(entry\.dir\) \{\s*target = entry\.path/, 'папке цель ставит только toggle')
-  // Подпись внизу в обоих состояниях называет место, а не правило комнаты:
-  // «доступны всей группе» рядом с «в папку data» читалось как второй режим.
+  assert.doesNotMatch(pick, /if \(entry\.dir\) \{\s*target = entry\.path/, 'only toggle sets a folder as the target')
+  // The caption at the bottom names the place in both states, not the room rule:
+  // "available to the whole group" next to "into folder data" read as a second mode.
   const catalog = roomMessages as Record<string, { ru: string; en: string }>
   for (const key of ['room.ui.607', 'room.ui.608']) {
     assert.ok(catalog[key].ru.startsWith('Файлы — '), key)
     assert.ok(catalog[key].en.startsWith('Files — '), key)
   }
-  assert.match(files, /title=\{may\.files \? tr\('room\.extra\.461'\) : undefined\}/, 'правило — подсказкой')
+  assert.match(files, /title=\{may\.files \? tr\('room\.extra\.461'\) : undefined\}/, 'the rule goes into a tooltip')
 })

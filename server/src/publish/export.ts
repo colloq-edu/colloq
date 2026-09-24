@@ -1,13 +1,14 @@
 /**
- * Выгрузка публикаций в статический сайт.
+ * Exporting publications to a static site.
  *
- * Каталог на курс и каталог на шаг, в каждом обычный `index.html`. Ни API, ни
- * маршрутизации, ни скриптов: страница, которую студент открывает в среду
- * вечером, не должна зависеть от того, включён ли ноутбук преподавателя.
+ * A directory per course and a directory per step, each with a plain
+ * `index.html`. No API, no routing, no scripts: a page a student opens on
+ * Wednesday evening must not depend on whether the teacher's laptop is on.
  *
- * Пишется только в свои подкаталоги — `c/` и `p/`. Всё остальное в целевом
- * репозитории (лендинг, CNAME, workflow) не трогается: это чужие файлы, и
- * выгрузка, которая их подчищает, однажды подчистит нужное.
+ * Only our own subdirectories are written, `c/` and `p/`. Everything else in
+ * the target repository (the landing page, CNAME, workflows) is left alone:
+ * those are someone else's files, and an export that cleans them up will one
+ * day clean up something needed.
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -23,13 +24,14 @@ import {
   type Publication,
 } from './store.js'
 /*
- * Курс, каким его видят снаружи, собирается в одном месте — и зовётся отсюда, а
- * не переписывается заново. Пока копий было две, сервер и сайт показывали
- * РАЗНЫЕ курсы: выгрузка брала живое имя комнаты, маршрут оставлял записанное
- * вместе с устаревшей ссылкой на чтение. Направление импорта непривычное —
- * обычно маршруты зовут публикацию, а не наоборот, — но модуль там ни одного
- * маршрута не тянет: только `db.js` и `publish/store.js`, а вторая копия
- * правила стоит дороже направления стрелки.
+ * The course as the outside world sees it is assembled in one place, and is
+ * called from here rather than rewritten. While there were two copies, the
+ * server and the site showed DIFFERENT courses: the export took the room's
+ * live name, while the route kept the recorded one together with a stale read
+ * link. The import direction is unusual (routes usually call the publication,
+ * not the other way round), but that module pulls in no route: only `db.js`
+ * and `publish/store.js`, and a second copy of the rule costs more than the
+ * direction of the arrow.
  */
 import { courseOfPublication, publicCourseView } from '../routes/course-view.js'
 import { notebookFrom } from './notebook.js'
@@ -37,12 +39,12 @@ import { notebookFrom } from './notebook.js'
 export interface ExportReport {
   courses: { handle: string; name: string; rows: number }[]
   seminars: { handle: string; title: string; steps: number; blobs: number }[]
-  /** Страницы, на месте которых лежит надгробие: их сняли, а адрес остался. */
+  /** Pages replaced by a tombstone: they were withdrawn, but the address stayed. */
   withdrawn: { handle: string; title: string }[]
   root: string
 }
 
-/** Адрес, по которому это будет лежать: имя, если его дали, иначе id. */
+/** The address this will live at: the name if one was given, otherwise the id. */
 const handleOf = (thing: { id: string; slug: string | null }): string => thing.slug ?? thing.id
 
 function write(file: string, body: string | Buffer): void {
@@ -51,19 +53,19 @@ function write(file: string, body: string | Buffer): void {
 }
 
 /**
- * Выгрузить всё опубликованное.
+ * Export everything published.
  *
- * `base` — адрес сайта, он нужен для ссылок между курсом и семинаром: на Pages
- * они лежат в одном домене, но на разной глубине, и относительные пути между
- * ними читаются хуже, чем один явный корень.
+ * `base` is the site's address, needed for links between a course and a
+ * seminar: on Pages they live in one domain but at different depths, and
+ * relative paths between them read worse than one explicit root.
  */
 export function exportSite(root: string, base: string): ExportReport {
   const report: ExportReport = { courses: [], seminars: [], withdrawn: [], root }
 
   /*
-   * Свои подкаталоги стираются целиком перед записью: снятая публикация должна
-   * исчезнуть со страницы, а не остаться лежать файлом, на который никто не
-   * ссылается, но который открывается по прямой ссылке.
+   * Our own subdirectories are wiped entirely before writing: a withdrawn
+   * publication must disappear from the page, not stay behind as a file that
+   * nothing links to but that opens by a direct link.
    */
   for (const dir of ['c', 'p']) {
     rmSync(path.join(root, dir), { recursive: true, force: true })
@@ -71,17 +73,17 @@ export function exportSite(root: string, base: string): ExportReport {
 
   const courses = listCourses()
   for (const course of courses) {
-    // Имена комнат, ссылки на чтение и надгробия спрашиваются заново — тем же
-    // кодом, которым отвечает живой сервер (routes/course-view.ts).
+    // Room names, read links and tombstones are asked for afresh, by the same
+    // code the live server answers with (routes/course-view.ts).
     const view = publicCourseView(course)
     const handle = handleOf(course)
     write(path.join(root, 'c', handle, 'index.html'), renderCourse(view, base))
     /*
-     * Адрес по идентификатору обещан буквами (store.ts): ссылку, розданную до
-     * того, как курсу дали имя, ломать нельзя. На живом сервере это делает
-     * `WHERE id = ? OR slug = ?`, а на Pages маршрутизации нет — значит файл.
-     * Прежние имена — тот же долг: курс переименовали, а ссылка со старым
-     * именем уже у класса.
+     * The address by id is promised in writing (store.ts): a link handed out
+     * before the course got a name must not break. On the live server
+     * `WHERE id = ? OR slug = ?` does it, and Pages has no routing, so it is a
+     * file. Former names are the same debt: the course was renamed, and the
+     * class already has the link with the old name.
      */
     for (const was of [course.id, ...formerSlugs('course', course.id)]) {
       if (was === handle) continue
@@ -94,11 +96,12 @@ export function exportSite(root: string, base: string): ExportReport {
   }
 
   /**
-   * Курс, в котором состоит семинар, — для пути наверх со страницы шага.
+   * The course the seminar belongs to, for the way up from a step page.
    *
-   * Список курсов уже на руках, и он передаётся: выгрузка идёт одним проходом,
-   * а без него тот же поиск шёл бы через индекс с временем жизни, заново читая
-   * базу (routes/course-view.ts · courseOfPublication).
+   * The course list is already at hand, and it is passed on: the export runs
+   * in one pass, and without it the same lookup would go through an index
+   * with a time to live, reading the database again
+   * (routes/course-view.ts · courseOfPublication).
    */
   const courseOf = (pub: Publication): { name: string; handle: string } | null => {
     const found = courseOfPublication(pub, courses)
@@ -106,26 +109,27 @@ export function exportSite(root: string, base: string): ExportReport {
   }
 
   /*
-   * Все страницы разом, а не только те, что нашлись в курсах: публикация —
-   * самостоятельный предмет, и ссылку на неё могли дать до того, как завели
-   * курс. Отдельный обход курсов, который здесь стоял, собирал ровно то же
-   * подмножество, что и этот список, двумя строками выше него.
+   * All pages at once, not only those found in courses: a publication is an
+   * object of its own, and a link to it may have been given before the course
+   * was created. The separate walk over courses that used to stand here
+   * collected exactly the same subset as this list, two lines above it.
    */
   for (const pub of listPublications()) {
     const handle = handleOf(pub)
     const dir = path.join(root, 'p', handle)
-    /** Адреса, по которым эту страницу уже давали: идентификатор и прежние имена. */
+    /** Addresses this page has already been given under: the id and former names. */
     const also = [pub.id, ...formerSlugs('publication', pub.id)].filter((a) => a !== handle)
 
     /*
-     * Снятая страница — надгробие, а не отсутствие файла.
+     * A withdrawn page is a tombstone, not a missing file.
      *
-     * Обещание записано в store.ts: снятие адрес не отменяет, ссылка обязана
-     * сказать «её сняли». Живой сервер так и отвечает, а здесь каталог просто
-     * стирался — и та же ссылка на Pages давала стандартный 404 GitHub, по
-     * которому студент не отличает снятую страницу от опечатки в адресе.
-     * Шагов и картинок в надгробии нет: читать снятое в обход решения
-     * преподавателя нельзя.
+     * The promise is written in store.ts: withdrawal does not cancel the
+     * address, and the link must say "it was withdrawn". The live server
+     * answers exactly so, while here the directory was simply wiped, and the
+     * same link on Pages gave GitHub's standard 404, from which a student
+     * cannot tell a withdrawn page from a typo in the address. The tombstone
+     * has no steps and no images: reading what was withdrawn around the
+     * teacher's decision is not allowed.
      */
     if (pub.state !== 'published') {
       const stone = renderWithdrawn(pub.title, courseOf(pub), base)
@@ -138,10 +142,10 @@ export function exportSite(root: string, base: string): ExportReport {
     const headings = stepHeadings(pub.id)
     if (headings.length === 0) continue
     /*
-     * Шаги читаются ОДИН раз на всю выгрузку. `page` — это все текстовые выводы
-     * шага целиком: лог обучения, трейсбеки, таблицы; при сорока шагах по
-     * мегабайту три прохода (страницы, картинки, тетрадь) стоили лишних
-     * восьмидесяти мегабайт JSON.parse на каждую выкладку.
+     * Steps are read ONCE for the whole export. `page` is all of a step's text
+     * outputs in full: the training log, tracebacks, tables; with forty steps
+     * of a megabyte each, three passes (pages, images, notebook) cost an extra
+     * eighty megabytes of JSON.parse on every deploy.
      */
     const steps = headings.map((heading) => readStep(pub.id, heading.seq))
 
@@ -154,7 +158,7 @@ export function exportSite(root: string, base: string): ExportReport {
         course: courseOf(pub),
         steps: headings,
         step,
-        // Первый шаг — корень публикации, остальные лежат на шаг глубже.
+        // The first step is the publication's root; the others live one level deeper.
         depth: index === 0 ? 1 : 2,
         base,
       })
@@ -165,18 +169,19 @@ export function exportSite(root: string, base: string): ExportReport {
         html,
       )
       /*
-       * Тетрадь шага — рядом с его страницей, и ссылка на странице ведёт
-       * именно в неё (render.ts). Пока файл был один на публикацию, страница
-       * шага 2 из 5 отдавала состояние шага 5 и молчала об этом: в комнате это
-       * уже чинил `?step=`, а здесь маршрутов нет — значит, файл.
+       * The step's notebook sits next to its page, and the link on the page
+       * leads exactly to it (render.ts). While there was one file per
+       * publication, the page of step 2 of 5 served the state of step 5 and
+       * said nothing about it: in the room `?step=` already fixed that, and
+       * here there are no routes, so it is a file.
        *
-       * Первый шаг тоже пишется в каталог, хотя страница у него в корне:
-       * корневой `notebook.ipynb` занят последним шагом, на него скопированы
-       * розданные раньше ссылки. Без выводов тетрадь весит килобайты, так что
-       * копия на шаг ничего не стоит.
+       * The first step is also written to a directory, even though its page
+       * is at the root: the root `notebook.ipynb` is taken by the last step,
+       * and links handed out earlier point to it. Without outputs a notebook
+       * weighs kilobytes, so a copy per step costs nothing.
        */
       write(path.join(dir, String(heading.seq), 'notebook.ipynb'), notebookFrom(step.cells))
-      // Тот же долг, что и у курса: и идентификатор, и прежнее имя переживают новое.
+      // The same debt as for the course: both the id and the former name outlive the new one.
       for (const was of also) {
         const to = index === 0 ? `${base}/p/${handle}/` : `${base}/p/${handle}/${heading.seq}/`
         write(
@@ -189,27 +194,29 @@ export function exportSite(root: string, base: string): ExportReport {
     })
 
     /*
-     * Картинки — один раз на публикацию, по хэшу: он же и есть их версия.
+     * Images, once per publication, by hash: the hash is also their version.
      *
-     * Под прежними адресами их нет, и это решение, а не забывчивость: там
-     * лежит страница-указатель (`renderRedirect`), а в ней нет ни одного
-     * `<img>` — читателя перекладывает на нынешний адрес, где картинки уже
-     * свежие. Копия стоила бы сотни килобайт на публикацию × число прежних
-     * имён, и стояла бы ради ссылки, которую никто не раздаёт: адрес картинки
-     * студент видит, только вытащив его из разметки. Тетрадь ниже — другой
-     * случай, и потому дублируется: её адрес открывают напрямую, ссылкой из
-     * чата, минуя страницу целиком.
+     * They are not under the former addresses, and that is a decision, not
+     * forgetfulness: a pointer page lives there (`renderRedirect`), and it has
+     * not a single `<img>`; the reader is moved to the current address, where
+     * the images are fresh. A copy would cost hundreds of kilobytes per
+     * publication × the number of former names, for the sake of a link nobody
+     * hands out: a student sees an image's address only by pulling it out of
+     * the markup. The notebook below is a different case and is therefore
+     * duplicated: its address is opened directly, by a link from the chat,
+     * bypassing the page entirely.
      */
     let blobs = 0
     for (const step of steps) {
       for (const cell of step?.cells ?? []) {
         /*
-         * Картинки ЗАМЕТОК — такие же записи, и в каталог они обязаны попасть.
+         * NOTE images are the same kind of record, and they must get into the
+         * directory.
          *
-         * Ссылку на них страница несёт не в наборе вывода, а прямо в тексте
-         * (`![схема](blob:<хэш>.<ext>)`, см. publish/build.ts · projectNote);
-         * обход, смотревший только `cell.outputs`, выгружал страницу с
-         * условиями задач, которых на ней нет.
+         * The page carries the link to them not in an output bundle but right
+         * in the text (`![diagram](blob:<hash>.<ext>)`, see publish/build.ts ·
+         * projectNote); a walk that looked only at `cell.outputs` exported a
+         * page whose problem statements were missing their images.
          */
         if (cell.type === 'markdown') {
           for (const found of cell.source.matchAll(/blob:([0-9a-f]{8,64})\.([a-z0-9]+)/gi)) {
@@ -224,13 +231,13 @@ export function exportSite(root: string, base: string): ExportReport {
           for (const [mime, value] of Object.entries(output.data)) {
             if (!value.startsWith(BLOB_PREFIX)) continue
             /*
-             * Только то, что выгруженная страница умеет показать, — картинки.
+             * Only what the exported page can show: images.
              *
-             * Фигура plotly в записях тоже лежит (её рисует читалка живого
-             * инстанса), но статический каталог рисует на её месте заглушку:
-             * рамки там нет, потому что нет и сервера, который отдал бы её с
-             * нужным заголовком. Выгружать ради заглушки мегабайт JSON — это
-             * мегабайт, который никто никогда не запросит.
+             * The plotly figure is in the records too (the live instance's
+             * reader draws it), but the static directory draws a placeholder
+             * in its place: there is no frame there, because there is no
+             * server to serve it with the right header. Exporting a megabyte
+             * of JSON for a placeholder is a megabyte nobody will ever request.
              */
             if (!BLOB_MIMES.has(mime)) continue
             const blob = readBlob(pub.id, value.slice(BLOB_PREFIX.length))
@@ -243,12 +250,12 @@ export function exportSite(root: string, base: string): ExportReport {
     }
 
     /*
-     * Тетрадь публикации — последний шаг, и под прежними адресами тоже.
-     * Страница-указатель перекладывает только HTML, а «Скачать тетрадь»
-     * студент копирует ссылкой: после переименования публикации она вела в
-     * 404, хотя сама страница по тому же старому адресу открывалась. Страницы
-     * шагов ссылаются каждая на свою тетрадь выше; этот адрес остаётся ради
-     * ссылок, розданных до того, как тетради развели по шагам.
+     * The publication's notebook is the last step, under the former addresses
+     * too. A pointer page moves only the HTML, and a student copies "Download
+     * notebook" as a link: after the publication was renamed it led to a 404,
+     * even though the page itself opened at the same old address. Step pages
+     * each link to their own notebook above; this address stays for links
+     * handed out before notebooks were split by step.
      */
     const notebook = notebookFrom(steps.at(-1)?.cells ?? [])
     write(path.join(dir, 'notebook.ipynb'), notebook)

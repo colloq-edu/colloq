@@ -1,15 +1,16 @@
 /**
- * Кадр присутствия с НЕСКОЛЬКИМИ лицами.
+ * A presence frame with SEVERAL faces.
  *
- * Проверка принадлежности (`ownAwareness`) идёт по проводу руками: читает
- * clientID, такт и проходит мимо состояния. Пока в кадре одно лицо, любая
- * ошибка в шаге незаметна — после цикла больше никто ничего не читает, и все
- * прежние тесты присутствия односоставные. Со второго лица сдвиг на пару байт
- * превращает clientID в случайный байт чужого JSON, и проверка начинает
- * пропускать в комнату чужое присутствие — ровно то, ради чего написана.
+ * The ownership check (`ownAwareness`) walks the wire by hand: it reads the
+ * clientID and the clock and skips over the state. While a frame has one
+ * face, any mistake in the step is invisible: nobody reads anything after
+ * the loop, and all the earlier presence tests have a single face. From the
+ * second face on, an offset of a couple of bytes turns the clientID into a
+ * random byte of someone else's JSON, and the check starts letting someone
+ * else's presence into the room, exactly what it was written against.
  *
- * Поэтому здесь кадры настоящие и всегда многоличные: `encodeAwarenessUpdate`
- * по мешку состояний, а не по одному.
+ * So the frames here are real and always multi-face:
+ * `encodeAwarenessUpdate` over a bag of states, not over one.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -19,7 +20,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import type { WebSocket } from 'ws'
 import { ownAwareness } from '../server/src/collab/index.js'
 
-/** Лицо со своим clientID и состоянием заданной величины. */
+/** A face with its own clientID and a state of a given size. */
 function face(name: string): Awareness {
   const it = new Awareness(new Y.Doc())
   it.setLocalStateField('user', { name, color: '#8b5cf6' })
@@ -27,11 +28,12 @@ function face(name: string): Awareness {
 }
 
 /**
- * Мешок состояний, из которого лепится кадр на несколько лиц.
+ * A bag of states from which a frame for several faces is built.
  *
- * Так их и шлёт настоящий клиент: `y-websocket` возвращает серверу каждое
- * применённое обновление присутствия, а applyAwarenessUpdate успевает собрать
- * в одном такте и своё лицо, и приехавшее от сервера чужое.
+ * That is how a real client sends them: `y-websocket` returns every applied
+ * presence update to the server, and applyAwarenessUpdate manages to gather
+ * in one tick both its own face and someone else's that arrived from the
+ * server.
  */
 function bagOf(...faces: Awareness[]): Awareness {
   const bag = new Awareness(new Y.Doc())
@@ -46,12 +48,13 @@ function frame(bag: Awareness, faces: Awareness[]): Uint8Array {
   )
 }
 
-test('два своих лица в одном кадре ложатся в сокет как есть', () => {
+test('two own faces in one frame land in the socket as they are', () => {
   /*
-   * Имя длиной больше сотни знаков — не выпендрёж: длина состояния лежит на
-   * проводе варинтом, и до 127 байт он однобайтовый. На коротком состоянии
-   * сдвиг в один байт совпадает с началом следующей записи и может пройти
-   * незамеченным; на длинном варинт двухбайтовый, и разъезд виден сразу.
+   * A name longer than a hundred characters is not showing off: the state
+   * length is on the wire as a varint, and up to 127 bytes it is one byte.
+   * On a short state an offset of one byte coincides with the start of the
+   * next record and may go unnoticed; on a long one the varint is two bytes,
+   * and the misalignment shows at once.
    */
   const room = new Awareness(new Y.Doc())
   const first = face(`Анна Каренина, ${'очень длинное имя '.repeat(8)}`)
@@ -65,12 +68,12 @@ test('два своих лица в одном кадре ложатся в со
   assert.equal(
     ownAwareness(entry, socket, frame(bag, [first, second])),
     true,
-    'кадр с двумя своими лицами отвергнут',
+    'a frame with two own faces was rejected',
   )
   assert.deepEqual(
     [...state.clientIds].sort((a, b) => a - b),
     [first.clientID, second.clientID].sort((a, b) => a - b),
-    'сокет запомнил не те лица — декодер разъехался на втором',
+    'the socket remembered the wrong faces: the decoder drifted on the second',
   )
 
   first.destroy()
@@ -79,12 +82,13 @@ test('два своих лица в одном кадре ложатся в со
   room.destroy()
 })
 
-test('чужое лицо вторым в кадре не проходит мимо проверки принадлежности', () => {
+test('a foreign face second in the frame does not slip past the ownership check', () => {
   /*
-   * Тот самый обход: своё лицо первым, чужое — вторым. Если разбор
-   * разъезжается, вторым читается мусор, мусор проверку проходит (в комнате
-   * такого clientID нет), кадр объявляется своим и применяется ЦЕЛИКОМ — то
-   * есть чужой курсор, имя и роль переписываются с чужого сокета.
+   * That very bypass: one's own face first, a foreign one second. If parsing
+   * drifts, garbage is read second, the garbage passes the check (there is
+   * no such clientID in the room), the frame is declared one's own and
+   * applied WHOLE, that is, someone else's cursor, name and role are
+   * rewritten from a foreign socket.
    */
   const room = new Awareness(new Y.Doc())
   const mine = face('Аня')
@@ -101,12 +105,12 @@ test('чужое лицо вторым в кадре не проходит ми�
   assert.equal(
     ownAwareness(entry, socket, frame(bag, [mine, theirs])),
     false,
-    'сокет переписал чужое присутствие вторым лицом в кадре',
+    'the socket rewrote the presence of another person with the second face in the frame',
   )
   assert.deepEqual(
     [...state.clientIds],
     [mine.clientID],
-    'в сокет попало лицо, которого он не приводил',
+    'the socket got a face it did not bring',
   )
 
   mine.destroy()
@@ -115,17 +119,17 @@ test('чужое лицо вторым в кадре не проходит ми�
   room.destroy()
 })
 
-test('сокету записывают ровно те лица, которые кадр потом и применит', () => {
+test('the socket is credited with exactly the faces the frame will then apply', () => {
   /*
-   * Главная сверка: `ownAwareness` читает кадр СВОИМИ руками, а применяет его
-   * потом `applyAwarenessUpdate` по протоколу. Списки обязаны совпадать —
-   * иначе всё, что стоит на `state.clientIds`, считает не тех: потолок лиц
-   * (:981) отмеряет от мусора, а `closeConn` на уходе снимает присутствие по
-   * этому же списку и уносит из панели людей постороннего, чей clientID
-   * случайно совпал.
+   * The main cross-check: `ownAwareness` reads the frame WITH ITS OWN HANDS,
+   * and `applyAwarenessUpdate` then applies it by the protocol. The lists
+   * must match, otherwise everything that relies on `state.clientIds` counts
+   * the wrong ones: the face ceiling (:981) measures from garbage, and
+   * `closeConn` on the way out removes presence by this same list and takes
+   * out of the people panel an outsider whose clientID happened to match.
    *
-   * Три лица в кадре, а не два: разъезд декодера накапливается, и на третьем
-   * записи расходятся уже далеко.
+   * Three faces in the frame, not two: decoder drift accumulates, and by the
+   * third the records have diverged far.
    */
   const room = new Awareness(new Y.Doc())
   const faces = [face('Аня'), face('Аня с планшета'), face('Аня с проектора')]
@@ -135,15 +139,15 @@ test('сокету записывают ровно те лица, которые
   const state = { clientIds: new Set<number>() }
   const entry = { awareness: room, conns: new Map([[socket, state]]) }
 
-  assert.equal(ownAwareness(entry, socket, frame(bag, faces)), true, 'кадр отвергнут')
+  assert.equal(ownAwareness(entry, socket, frame(bag, faces)), true, 'the frame was rejected')
   applyAwarenessUpdate(room, frame(bag, faces), socket)
 
-  // Своё лицо комнаты (`Awareness` заводит его сама) в кадр не приезжало.
+  // The room's own face (`Awareness` creates it itself) did not come in the frame.
   const applied = [...room.getStates().keys()].filter((id) => id !== room.clientID)
   assert.deepEqual(
     [...state.clientIds].sort((a, b) => a - b),
     applied.sort((a, b) => a - b),
-    'сокету записали не тех, кого кадр поставил в комнату',
+    'the socket was credited with faces other than the ones the frame put into the room',
   )
 
   for (const it of faces) it.destroy()

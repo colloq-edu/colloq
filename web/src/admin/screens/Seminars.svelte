@@ -48,31 +48,31 @@
      */
     arrived?: string | null
     /**
-     * Приземление состоялось — можно забыть про него.
+     * The landing has happened — it can be forgotten.
      *
-     * Без этого `arrived` живёт до перезагрузки страницы: возврат на вкладку
-     * семинаров через месяц снова сбрасывал поиск и подсвечивал ту комнату как
-     * только что созданную.
+     * Without this `arrived` lives until the page is reloaded: coming back to
+     * the seminars tab a month later cleared the search again and highlighted
+     * that room as just created.
      */
     onarrived?: () => void
-    /** Уводит на экран публикации: это решение, а не пункт меню с эффектом. */
+    /** Leads to the publishing screen: a decision, not a menu item with an effect. */
     onpublish?: (sessionId: string) => void
   }
 
   let { onfull, arrived = null, onarrived, onpublish }: Props = $props()
 
   /**
-   * Снять или вернуть публичную страницу.
+   * Withdraw or restore the public page.
    *
-   * Снятая страница отвечает «преподаватель её снял», а не 404: ссылку у
-   * студентов не отозвать, и упереться в ошибку там, где вчера был семинар, —
-   * худшее из двух.
+   * A withdrawn page answers "the teacher withdrew it", not 404: the link
+   * cannot be recalled from the students, and running into an error where
+   * yesterday there was a seminar is the worse of the two.
    */
   async function withdraw(seminar: AdminSeminar, hide: boolean): Promise<void> {
     try {
       if (hide) await adminApi.withdraw(seminar.id)
       else await adminApi.republish(seminar.id)
-      // Перечитываем список: у строки поменялось состояние публикации.
+      // Re-read the list: the row's publication state has changed.
       local(await adminApi.listSeminars())
     } catch (cause: unknown) {
       noteDeadCookie(cause)
@@ -80,7 +80,7 @@
     }
   }
 
-  /** Адрес, который диктуют вслух: имя, если его дали, иначе идентификатор. */
+  /** The address read out loud: the name if one was given, otherwise the id. */
   const addressOf = (item: { id: string; slug: string | null }): string => item.slug ?? item.id
 
   async function copyPublished(seminar: AdminSeminar): Promise<void> {
@@ -89,9 +89,10 @@
     try {
       await copyText(link)
     } catch {
-      // Как и у ссылки на комнату: буфер закрыт на незащищённом источнике —
-      // обычный способ держать инстанс кафедры. Ссылка и есть смысл нажатия,
-      // поэтому она уходит на экран, а не в необработанный промис.
+      // As with the room link: the clipboard is closed on an insecure origin
+      // — the usual way to run a department's instance. The link is the
+      // whole point of the press, so it goes to the screen, not into an
+      // unhandled promise.
       rowError = { id: seminar.id, message: () => (tr("admin.could.not.copy.the.link.copy.it.manually", { p0: link })) }
       return
     }
@@ -117,21 +118,21 @@
 
   let creating = $state(false)
   /**
-   * Окружения для выпадающего списка. Грузятся один раз и только когда форма
-   * открылась: на экране со списком семинаров они не нужны, а запрос ходит в
-   * docker и стоит заметно дороже, чем чтение таблицы.
+   * Environments for the dropdown. Loaded once and only when the form opens:
+   * the seminar list screen does not need them, and the request goes to
+   * docker and costs noticeably more than reading the table.
    */
   let environments = $state<AdminEnvironment[] | null>(null)
   let newEnvironment = $state('')
 
   /*
-   * Импорт с GitHub. Материал преподавателя почти никогда не лежит в этом
-   * продукте — он лежит в репозитории курса, по ноутбуку на неделю, и рядом
-   * лежит csv, который этот ноутбук читает. Просить перенести всё руками —
-   * значит просить не пользоваться инструментом.
+   * Import from GitHub. A teacher's material almost never lives in this
+   * product — it lives in the course repository, a notebook per week, with
+   * the csv that notebook reads lying next to it. Asking to move everything
+   * by hand means asking people not to use the tool.
    *
-   * Предпросмотр отдельным шагом нарочно: «сто десять ячеек и train.csv» надо
-   * увидеть ДО того, как появится комната, а не после.
+   * The preview is a separate step on purpose: "a hundred and ten cells and
+   * train.csv" has to be seen BEFORE the room appears, not after.
    */
   let fromGithub = $state(false)
   let githubUrl = $state('')
@@ -147,8 +148,8 @@
     preview = null
     previewErrorText = null
     if (!fromGithub || url.length < 20) return
-    // Пауза, а не запрос на каждый символ: ссылку вставляют целиком, но её же
-    // и дописывают руками, а каждый запрос уходит наружу к GitHub.
+    // A pause, not a request per keystroke: the link is pasted whole, but it
+    // also gets finished by hand, and every request goes out to GitHub.
     previewTimer = window.setTimeout(() => {
       previewing = true
       void adminApi
@@ -208,16 +209,17 @@
   let rowError = $state<{ id: string; message: () => string } | null>(null)
   let openMenuId = $state<string | null>(null)
   /**
-   * Куда поставить открытое меню, в координатах окна.
+   * Where to put the open menu, in window coordinates.
    *
-   * Меню нельзя оставить absolute внутри строки: таблица лежит в контейнере с
-   * `overflow-x: auto`, а по спецификации ось, объявленная `visible`, рядом с
-   * не-`visible` сама становится `auto`. Измерено в этой панели — контейнер
-   * отдаёт `overflowY: "auto"`, хотя в разметке про Y нет ни слова. Из-за этого
-   * меню обрезается нижним краем таблицы, а сам список обзаводится собственной
-   * полосой прокрутки и на глаз становится ниже.
+   * The menu cannot stay absolute inside the row: the table sits in a
+   * container with `overflow-x: auto`, and per the spec an axis declared
+   * `visible` next to a non-`visible` one becomes `auto` itself. Measured in
+   * this panel — the container reports `overflowY: "auto"`, although the
+   * markup says nothing about Y. Because of this the menu is clipped by the
+   * table's bottom edge, and the list itself grows its own scrollbar and
+   * looks shorter.
    *
-   * `position: fixed` от прямоугольника кнопки не знает ни о какой обрезке.
+   * `position: fixed` from the button's rectangle knows nothing of clipping.
    */
   let menuStyle = $state('')
 
@@ -228,23 +230,24 @@
       return
     }
     const box = button.getBoundingClientRect()
-    // right, а не left: меню выравнивается по правому краю кнопки, как и было.
+    // right, not left: the menu aligns to the button's right edge, as before.
     const right = Math.round(window.innerWidth - box.right)
     const below = window.innerHeight - box.bottom - 8
     const above = box.top - 8
     /*
-     * Прикрепляемся к той стороне, где больше места, и ограничиваем высоту ею
-     * же. Высоту меню знать не нужно: снизу задаём top, сверху — bottom, и в
-     * обоих случаях оно растёт в свободную сторону. Измерено на окне 560px:
-     * жёсткое «всегда вниз» уводило меню на 191 пиксель за край экрана, откуда
-     * до пункта «удалить» уже не добраться.
+     * Attach to the side with more room, and cap the height by that side too.
+     * The menu's height does not need to be known: below we set top, above
+     * we set bottom, and in both cases it grows into the free side. Measured
+     * on a 560px window: a hard "always down" pushed the menu 191 pixels past
+     * the screen edge, from where the "delete" item can no longer be reached.
      */
     /*
-     * transform-origin едет здесь же, а не в классе .row-menu: меню растёт из
-     * своей кнопки, а на какой она стороне — уже решено двумя строками выше.
-     * Отдельная переменная только повторила бы этот выбор и однажды разошлась
-     * бы с ним; при перевороте вниз якорем становится нижний правый угол, и
-     * меню разворачивается вверх, а не вниз от невидимой точки.
+     * transform-origin travels here too, not in the .row-menu class: the menu
+     * grows out of its button, and which side that is has already been
+     * decided two lines above. A separate variable would only repeat this
+     * choice and one day diverge from it; when flipped, the anchor becomes
+     * the bottom right corner, and the menu unfolds upwards rather than
+     * downwards from an invisible point.
      */
     menuStyle =
       below >= above
@@ -277,7 +280,7 @@
       .filter((s) => (needle ? s.name.toLowerCase().includes(needle) : true)),
   )
   const canDelete = $derived(adminAuth.isOwner)
-  /** Чей это семинар — сверяется с createdBy, который пишется тем же именем. */
+  /** Whose seminar this is — checked against createdBy, written with the same name. */
   const me = $derived(adminAuth.me?.teacher ?? null)
 
   const TABBTN =
@@ -324,12 +327,13 @@
    * Nobody can act on a dead cookie. Hand it to the shell, which swaps the
    * whole panel for the sign-in screen rather than arguing in a red line.
    *
-   * И с причиной: печенье сюда доехало — его отвергли. Без неё экран входа
-   * рассказывал про настройки печенья тому, кому ротировали ссылку.
+   * And with a reason: the cookie did arrive here — it was rejected. Without
+   * it the sign-in screen told someone whose link was rotated about cookie
+   * settings.
    *
-   * Живёт отдельно от `explain()`, потому что зовут это оба перевода отказа —
-   * английский для строк таблицы и русский для окна правил, — а смена экрана
-   * от языка не зависит.
+   * Lives apart from `explain()` because both translations of a refusal call
+   * it — the English one for table rows and the Russian one for the rules
+   * window — and switching the screen does not depend on the language.
    */
   function noteDeadCookie(cause: unknown): void {
     if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') {
@@ -345,14 +349,14 @@
   /* ---------------------------------------------------------------- data */
 
   /**
-   * Список, за который отвечаем мы, а не отставший опрос.
+   * The list we answer for, not a lagging poll.
    *
-   * Ответ, ушедший до правки, приезжает после неё и возвращает на экран старое
-   * имя или архивированную строку — до следующего тика, то есть на двадцать
-   * секунд, за которые преподаватель успевает нажать «Архивировать» второй раз.
-   * Каждая местная правка двигает счётчик, и ответ, начатый раньше, молча
-   * отбрасывается: сервер её уже принял, и показывать вместо неё вчерашнюю
-   * правду незачем.
+   * A response that left before an edit arrives after it and brings back the
+   * old name or an archived row — until the next tick, that is, for twenty
+   * seconds, in which the teacher manages to press "Archive" a second time.
+   * Every local edit moves the counter, and a response started earlier is
+   * silently discarded: the server has already accepted the edit, and there
+   * is no reason to show yesterday's truth instead.
    */
   let generation = 0
 
@@ -383,7 +387,8 @@
     const started = generation
     try {
       const list = await adminApi.listSeminars()
-      // Пока ответ ехал, на экране что-то изменили. Их правка новее.
+      // Something changed on screen while the response was on its way. That
+      // edit is newer.
       if (started !== generation) return
       seminars = list
       loadErrorText = null
@@ -420,15 +425,15 @@
       openMenuId = null
       menuStyle = ''
     }
-    // Меню стоит в координатах окна, поэтому при прокрутке оно уехало бы от
-    // своей кнопки. Закрыть — честнее, чем тащить его следом: прокрутка это и
-    // есть «я передумал».
+    // The menu sits in window coordinates, so on scroll it would drift away
+    // from its button. Closing it is more honest than dragging it along: a
+    // scroll is exactly "I changed my mind".
     //
-    // Кроме прокрутки внутри самого меню: в коротком окне оно обрезано по
-    // свободному месту, и колёсико над ним — единственный способ дойти до
-    // «Delete…». Слушатель стоит в фазе захвата, поэтому такие события сюда
-    // тоже приходят, и первый же тик закрывал меню, до которого только что
-    // добрались.
+    // Except for scrolling inside the menu itself: in a short window it is
+    // cut to the free space, and the wheel over it is the only way to reach
+    // "Delete…". The listener is in the capture phase, so such events arrive
+    // here too, and the very first tick closed the menu that had just been
+    // reached.
     const onScroll = (event: Event) => {
       const target = event.target
       if (target instanceof Element && target.closest('[role=menu]')) return
@@ -470,16 +475,16 @@
         .then((r) => {
           environments = r.environments
           /*
-           * Предвыбираем то, что стоит умолчанием на инстансе. Пустого варианта
-           * «как на инстансе» здесь нет намеренно: он был третьим состоянием и
-           * противоречил обещанию, что окружение комнаты выбирается один раз и
-           * дальше под ней не меняется. Незаполненный список — это просто
-           * пустое поле, из которого непонятно, что получит семинар.
+           * Preselect the instance's default. There is deliberately no empty
+           * "as on the instance" option here: it was a third state and
+           * contradicted the promise that a room's environment is chosen once
+           * and does not change under it afterwards. An unfilled list is just
+           * an empty field that does not tell what the seminar will get.
            */
           if (!newEnvironment) newEnvironment = r.environments.find((e) => e.active)?.name ?? ''
         })
-        // Не беда: без списка форма просто не покажет выбор, и семинар
-        // получит окружение по умолчанию — то же, что было всегда.
+        // No harm: without the list the form simply shows no choice, and the
+        // seminar gets the default environment — the same as it always has.
         .catch(() => (environments = []))
     }
     createErrorText = null
@@ -497,8 +502,9 @@
   })
 
   /**
-   * Строка, на Copy которой курсор уже ставили. Не $state: это память эффекта о
-   * самом себе, и перерисовывать из-за неё нечего.
+   * The row whose Copy the cursor has already been put on. Not $state: this
+   * is the effect's memory of itself, and there is nothing to redraw because
+   * of it.
    */
   let focused: string | null = null
 
@@ -522,11 +528,12 @@
     const button = document.querySelector<HTMLButtonElement>(`[data-copy="${id}"]`)
     if (!button) return
     /*
-     * И ровно один раз. Опрос списка присваивает `seminars` каждые двадцать
-     * секунд, а `justCreatedId` не гаснет — фокус возвращался на Copy снова и
-     * снова: из поля поиска, из открытого переименования, которое коммитится по
-     * blur и уносило в шапку всем в комнате полслова. Отмечаем строку только
-     * когда кнопка нашлась: до этого приземляться некуда.
+     * And exactly once. The list poll assigns `seminars` every twenty
+     * seconds, and `justCreatedId` does not go away — focus kept returning to
+     * Copy again and again: from the search field, from an open rename, which
+     * commits on blur and sent half a word into the header for everyone in
+     * the room. The row is marked only once the button has been found: before
+     * that there is nowhere to land.
      */
     focused = id
     button.focus()
@@ -583,18 +590,19 @@
   }
 
   /**
-   * Чужая комната, и в ней прямо сейчас люди.
+   * Someone else's room, with people in it right now.
    *
-   * Один вопрос на три места: переименование, звонок и диалог правил меняют
-   * для одной и той же чужой аудитории то, что видно ей мгновенно. Спрашиваем
-   * только когда сходятся оба условия — правку своей опечатки это не трогает.
+   * One question for three places: renaming, the end-of-class bell and the
+   * rules dialog all change, for the same audience in someone else's room,
+   * what that audience sees instantly. We ask only when both conditions hold
+   * — fixing your own typo is not affected.
    */
   function othersLive(seminar: AdminSeminar): boolean {
     const mine = !seminar.createdBy || seminar.createdBy === me?.name
     return !mine && seminar.liveCount > 0
   }
 
-  /** «There are 12 people in “ML week 3” right now, and Мария set it up». */
+  /** "There are 12 people in “ML week 3” right now, and Maria set it up". */
   function crowdIn(seminar: AdminSeminar): string {
     const crowd = seminar.liveCount === 1 ? tr("admin.is.1.person") : tr("admin.are.people", { p0: seminar.liveCount })
     return tr("admin.there.in.right.now.and.set.it.up", { p0: crowd, p1: seminar.name, p2: seminar.createdBy ?? tr("admin.unknown.teacher") })
@@ -606,12 +614,13 @@
     if (!name || name === seminar.name) return
 
     /*
-     * Чужую живую комнату не трогают молча.
+     * Someone else's live room is not touched silently.
      *
-     * Имя семинара стоит в шапке у всех, кто сейчас внутри, и меняется у них
-     * мгновенно: посреди пары заголовок над тетрадью вдруг становится другим.
-     * Для своей комнаты это ожидаемо — ты и переименовываешь. Для чужой, где
-     * идёт занятие, стоит спросить.
+     * The seminar's name is in the header for everyone inside right now, and
+     * it changes for them instantly: in the middle of a class the heading
+     * above the notebook suddenly becomes different. For your own room that
+     * is expected — you are the one renaming it. For someone else's, where a
+     * class is going on, it is worth asking.
      */
     if (othersLive(seminar)) {
       const ok = window.confirm(
@@ -637,45 +646,48 @@
   /* --------------------------------------------------------------- rules */
 
   /**
-   * Правила существующего семинара.
+   * The rules of an existing seminar.
    *
-   * Раньше они задавались один раз, при создании: `updateSeminar` звали только с
-   * `{name}` или `{archived}`, и преподаватель, решивший закрыть тетрадь в
-   * прошлонедельной комнате, не мог ничего — только завести вторую.
+   * They used to be set once, at creation: `updateSeminar` was only called
+   * with `{name}` or `{archived}`, and a teacher who decided to lock the
+   * notebook in last week's room could do nothing — only create a second
+   * one.
    *
-   * Один переключатель — один запрос, как и в самой комнате: маршрут
-   * накладывает присланное на текущее и сам рассылает `{t:'rules'}`, так что
-   * открытая комната узнаёт сразу.
+   * One switch — one request, as in the room itself: the route lays what was
+   * sent over the current rules and broadcasts `{t:'rules'}` itself, so an
+   * open room learns about it at once.
    */
   let ruling = $state<AdminSeminar | null>(null)
   let rulesBusy = $state(false)
   /**
-   * Отказ — в самом диалоге, а не в строке таблицы под затемнением.
+   * The refusal goes in the dialog itself, not in a table row under the veil.
    *
-   * Переключатель не красится наперёд, так что при отказе на экране не меняется
-   * ничего: истёкшее печенье выглядело как «щелчок не сработал», и щёлкали ещё
-   * и ещё, а сообщение ждало в строке, закрытой веялью.
+   * The switch is not painted ahead of time, so on a refusal nothing changes
+   * on the screen: an expired cookie looked like "the click did not work",
+   * and people clicked again and again while the message waited in a row
+   * covered by the veil.
    */
   let rulesErrorText = $state<(() => string | null) | null>(null)
   const rulesError = $derived(rulesErrorText?.() ?? null)
 
-  /* ------------------------------------------------------------- ресурсы */
+  /* ----------------------------------------------------------- resources */
 
   /**
-   * Чем располагает машина — то же чтение, что и в форме нового занятия.
+   * What the machine has — the same read as in the new class form.
    *
-   * Спрашивается при открытии окна настроек, а не при загрузке списка: список
-   * открывают на каждой смене вкладки, а свободная память нужна ровно тому,
-   * кто пришёл её менять.
+   * Asked for when the settings window opens, not when the list loads: the
+   * list is opened on every tab switch, while free memory is needed exactly
+   * by whoever came to change it.
    */
   let resources = $state<InstanceResources | null>(null)
   /**
-   * Ответ ещё в пути.
+   * The answer is still on its way.
    *
-   * Окно настроек открывают с чистого листа каждый раз, и первые кадры в нём —
-   * это кадры без чисел: `null` тут значил и «ещё не знаем», и «спросили и не
-   * узнали», а раздел на оба случая показывал пустое включённое поле памяти.
-   * Пока флаг поднят, на месте полей стоят заглушки их размера.
+   * The settings window opens from a clean slate every time, and its first
+   * frames are frames without numbers: `null` here meant both "don't know
+   * yet" and "asked and did not find out", and for both cases the section
+   * showed an empty, enabled memory field. While the flag is up,
+   * placeholders of the fields' size stand in their place.
    */
   let resourcesLoading = $state(true)
   let memoryBusy = $state(false)
@@ -683,9 +695,9 @@
   const memoryError = $derived(memoryErrorText?.() ?? null)
 
   function readResources(): void {
-    // Флаг поднимается только на ПЕРВОМ чтении: перечитывание после
-    // сохранения идёт под уже нарисованными числами, и подменять их заглушками
-    // значило бы мигать разделом на каждое изменение памяти.
+    // The flag goes up only on the FIRST read: a re-read after saving
+    // happens under numbers already drawn, and swapping them for
+    // placeholders would make the section blink on every memory change.
     resourcesLoading = resources === null
     void adminApi
       .resources()
@@ -695,13 +707,14 @@
   }
 
   /**
-   * Поменять память комнате — и она поменяется прямо сейчас.
+   * Change a room's memory — and it changes right now.
    *
-   * Сервер применяет число к живому контейнеру через `docker update`, без
-   * перезапуска ядра: преподаватель, чьё ядро только что убили по памяти,
-   * добавляет гигабайты и запускает ту же ячейку заново, не потеряв ни
-   * переменных семинара, ни открытого терминала. Здесь поэтому нет ни
-   * подтверждения, ни предупреждения о потере состояния — терять нечего.
+   * The server applies the number to the live container via `docker
+   * update`, without restarting the kernel: a teacher whose kernel was just
+   * killed for memory adds gigabytes and runs the same cell again, without
+   * losing either the seminar's variables or the open terminal. So there is
+   * neither a confirmation nor a state-loss warning here — there is nothing
+   * to lose.
    */
   async function setMemory(seminar: AdminSeminar, mb: number | null): Promise<void> {
     memoryBusy = true
@@ -710,8 +723,8 @@
       const updated = await adminApi.updateSeminar(seminar.id, { memoryMb: mb })
       replace(updated)
       ruling = updated
-      // Полоска «сколько машины занято» после этого другая: свободная память
-      // изменилась ровно на то, что комната только что взяла или отдала.
+      // The "how much of the machine is taken" bar is different after this:
+      // free memory changed by exactly what the room just took or gave back.
       readResources()
     } catch (cause: unknown) {
       noteDeadCookie(cause)
@@ -723,11 +736,12 @@
   }
 
   /**
-   * Ядра — той же дверью и тем же окном, что и память.
+   * Cores — through the same door and the same window as memory.
    *
-   * Оговорка про потоки живёт в подсказке под полем, а не здесь: сервер
-   * применяет число к контейнеру сразу, а numpy с торчем внутри уже
-   * запущенного ядра считают прежним их числом до перезапуска.
+   * The caveat about threads lives in the hint under the field, not here:
+   * the server applies the number to the container right away, but numpy
+   * and torch inside an already running kernel keep computing with the old
+   * number until a restart.
    */
   async function setCpus(seminar: AdminSeminar, cores: number | null): Promise<void> {
     memoryBusy = true
@@ -755,13 +769,15 @@
       ruling = updated
     } catch (cause: unknown) {
       /*
-       * Причина — на языке инстанса и без непереведённого хвоста сервера.
+       * The reason — in the instance's language and without the server's
+       * untranslated tail.
        *
-       * Здесь стоял общий `explain()`, а он английский на всю панель: в русском
-       * подвале этого окна выходило «Правило не сохранилось — The server did
-       * not respond» — половина фразы на языке, которого в окне больше нигде
-       * нет (admin-17). Слова — в panel.ts, одним списком и без браузера;
-       * отвергнутое печенье при этом по-прежнему уводит на экран входа.
+       * This used to be the shared `explain()`, which is English across the
+       * whole panel: the Russian footer of this window came out as "The rule
+       * was not saved" in Russian followed by "— The server did not respond"
+       * — half a phrase in a language found nowhere else in the window
+       * (admin-17). The words are in panel.ts, in one list and without the
+       * browser; a rejected cookie still leads to the sign-in screen.
        */
       noteDeadCookie(cause)
       rulesErrorText = () => (ruleRefusal(cause instanceof AdminApiError ? cause : null))
@@ -771,25 +787,26 @@
   }
 
   /**
-   * Закончить занятие — и открыть его обратно.
+   * End the class — and reopen it.
    *
-   * Та же дверь, что кнопка в самой комнате: преподаватель, закрывший вкладку и
-   * вспомнивший про это в метро, не должен возвращаться в неё ради одного
-   * нажатия. Правила при этом не переписываются — сервер накладывает конец
-   * занятия поверх них и отступает, не тронув настройку, — поэтому обратное
-   * движение здесь же и стоит ровно одного нажатия.
+   * The same door as the button in the room itself: a teacher who closed the
+   * tab and remembered this on the metro should not have to go back into it
+   * for a single press. The rules are not rewritten — the server lays the
+   * end of class over them and steps back without touching the setting — so
+   * the reverse move is right here too and costs exactly one press.
    *
-   * Красится наперёд, как «Архивировать»: это одно поле, и вернуть его на место
-   * стоит того же нажатия, которое человек и собирался сделать.
+   * Painted ahead of time, like "Archive": it is one field, and putting it
+   * back costs the same press the person was about to make anyway.
    */
   async function finish(seminar: AdminSeminar, finished: boolean): Promise<void> {
     /*
-     * И звонок — тем более.
+     * And the bell — all the more so.
      *
-     * Переименование чужой живой комнаты спрашивает, а конец занятия — один
-     * клик в том же меню, соседний с ним, — не спрашивал ничего, хотя меняет
-     * для тех же людей несравнимо больше: правила становятся преподавательскими
-     * у всех сразу, класс посреди пары теряет правку и запуск.
+     * Renaming someone else's live room asks, while ending the class — one
+     * click in the same menu, right next to it — asked nothing, even though
+     * for the same people it changes incomparably more: the rules become
+     * teacher-only for everyone at once, and the class loses editing and
+     * running in the middle of the session.
      */
     if (othersLive(seminar)) {
       const ok = window.confirm(
@@ -802,8 +819,8 @@
       if (!ok) return
     }
     const before = seminar.finishedAt
-    // Прошлый отказ этой строки — про прошлое нажатие. Оставить его под
-    // перекрашенной пометкой значит показать рядом две противоположные правды.
+    // This row's previous refusal is about the previous press. Leaving it
+    // under a repainted mark would show two opposite truths side by side.
     if (rowError?.id === seminar.id) rowError = null
     patch(seminar.id, { finishedAt: finished ? Date.now() : null })
     try {
@@ -835,14 +852,15 @@
   /* -------------------------------------------------------------- delete */
 
   /**
-   * Судьба публичной страницы, если она у комнаты есть.
+   * The fate of the public page, if the room has one.
    *
-   * Умолчание сервера — оставить: розданную классу ссылку не отозвать, и 404
-   * там, где вчера был семинар, хуже страницы без комнаты. Но вопрос сервер
-   * объявляет отдельным, а панель его никогда не задавала — и «удалить, чтобы
-   * убрать выложенное», ровно тот случай, ради которого сюда и приходят,
-   * оставлял копию тетради открытой всем. Снять её потом можно на вкладке
-   * курсов, в списке страниц без комнаты.
+   * The server's default is to keep it: a link handed out to the class
+   * cannot be recalled, and a 404 where yesterday there was a seminar is
+   * worse than a page without a room. But the server declares the question
+   * separately, and the panel never asked it — so "delete to take down what
+   * was published", exactly the case people come here for, left a copy of
+   * the notebook open to everyone. It can be withdrawn later on the courses
+   * tab, in the list of pages without a room.
    */
   let dropReading = $state(false)
 
@@ -892,14 +910,14 @@
     -->
     {#if seminars.length > 0}
     <!--
-      Шапка на телефоне — столбик во всю ширину.
+      On a phone the header is a full-width column.
 
-      220px поиска и кнопка рядом с ним укладываются в строку, которой на
-      390px-экране нет: рельс забирает 56, поля страницы ещё 56, и на всё про
-      всё остаётся 278. Поиск и «Новое занятие» вставали друг под друга и так,
-      но каждый шириной по содержимому — два коротких огрызка у левого края.
-      Высота там же вырастает до 44px: 34 — это размер для мыши, а сюда тычут
-      пальцем.
+      The 220px search and the button next to it fit in a line that a 390px
+      screen does not have: the rail takes 56, the page margins another 56,
+      and 278 is left for everything. The search and "New class" stacked
+      under each other anyway, but each at its content width — two short
+      stubs at the left edge. The height grows to 44px there too: 34 is a
+      size for a mouse, and here people poke with a finger.
     -->
     <div
       class="flex h-[34px] w-[220px] max-w-full items-center gap-2 border border-line bg-canvas px-3
@@ -949,20 +967,20 @@
       overlap, so it is a floor now rather than a lid.
     -->
     <!--
-      И столбик на телефоне.
+      And a column on a phone.
 
-      Ряд из трёх частей умеет переноситься, но не умеет ужиматься: группа
-      кнопок справа стоит `shrink-0`, внутри неё моноширинный адрес во всю
-      длину хоста, и на 390px она уезжала за правый край — «Открыть» было видно
-      наполовину, а нажать его было нечем. Измерено на стенде: группа занимала
-      84…430px при экране в 390. Ниже 640 ряд становится столбиком, каждая
-      часть — во всю ширину, а адрес ужимается до `/s/…`, потому что хост здесь
-      и так известен: панель открыта на нём.
+      A row of three parts can wrap but cannot shrink: the button group on
+      the right is `shrink-0`, with a monospace address the full length of the
+      host inside it, and at 390px it slid past the right edge — "Open" was
+      half visible and could not be pressed. Measured on the test bench: the
+      group took 84…430px on a 390 screen. Below 640 the row becomes a column,
+      each part full width, and the address shrinks to `/s/…`, because the
+      host is known here anyway: the panel is open on it.
 
-      Отрицательные поля остаются `-mx-7` при любой ширине — ровно потому, что
-      поля страницы (AdminPage · px-7) тоже одни на все ширины. Разъехавшись,
-      эти два числа дают плашку, вылезающую за край на телефоне и не достающую
-      до него на столе.
+      The negative margins stay `-mx-7` at any width — precisely because the
+      page margins (AdminPage · px-7) are also the same at all widths. If
+      these two numbers drift apart, the plate sticks out past the edge on a
+      phone and falls short of it on a desktop.
     -->
     <section
       class="-mx-7 flex min-h-[74px] flex-wrap items-center gap-x-[22px] gap-y-3 border-b
@@ -978,9 +996,9 @@
           <span class="h-[7px] w-[7px] shrink-0 rounded-full bg-accent"></span>
           {tr("admin.running.now")}
         </p>
-        <!-- Две строки с обрезкой, а не одна: на телефоне в одну строку
-             помещается треть названия семинара, и «Машинное обучение и анализ
-             данн…» не отличить от такого же соседнего. -->
+        <!-- Two clamped lines, not one: on a phone a single line holds a
+             third of a seminar's title, and "Machine learning and data
+             anal…" cannot be told from a neighbour that starts the same. -->
         <h2
           class="truncate text-title font-bold tracking-tight text-ink
                  max-[640px]:line-clamp-2 max-[640px]:whitespace-normal"
@@ -998,11 +1016,11 @@
         until the contract carries the people — see AvatarStack.
       -->
       <!--
-        Двое часов, и называются они разными словами (admin/panel.ts ·
-        runningLine): «started» — только когда сервер сказал, с какого момента
-        в комнате кто-то есть. Комнату заводят за неделю до пары, и «started 6
-        days ago» под надписью «Running now» было неправдой в самом заметном
-        месте панели.
+        Two clocks, and they go by different words (admin/panel.ts ·
+        runningLine): "started" only when the server has said since when
+        someone has been in the room. A room is set up a week before the
+        class, and "started 6 days ago" under "Running now" was untrue in the
+        most visible spot of the panel.
       -->
       <p
         class="shrink-0 text-ui text-muted"
@@ -1011,9 +1029,9 @@
         {runningLine(seminar, now)}
       </p>
 
-      <!-- `ml-0` в столбике обязателен: `margin-left: auto` на элементе
-           колоночного flex'а отменяет растяжение и прижимает ряд к правому
-           краю — ровно то, чего здесь быть не должно. -->
+      <!-- `ml-0` is required in the column: `margin-left: auto` on an item of
+           a column flex cancels stretching and pushes the row to the right
+           edge — exactly what must not happen here. -->
       <div class="ml-auto flex shrink-0 items-center gap-2.5 max-[640px]:ml-0 max-[640px]:gap-2">
         <button
           type="button"
@@ -1022,7 +1040,7 @@
           class={cn(
             'flex h-8 items-center gap-2 border border-line bg-canvas px-3 font-mono text-code',
             'transition-colors duration-100 hover:border-faint hover:text-ink',
-            // Палец, а не курсор: 44px высоты и вся оставшаяся ширина строки.
+            // A finger, not a cursor: 44px of height and all the remaining row width.
             'max-[640px]:h-11 max-[640px]:min-w-0 max-[640px]:flex-1 max-[640px]:justify-between',
             copiedId === seminar.id ? 'text-positive' : 'text-muted',
           )}
@@ -1063,19 +1081,19 @@
     scrolls inside this box, so the page itself still never moves sideways.
   -->
   <!--
-    Ниже 640 таблицы нет — есть карточки-строки.
+    Below 640 there is no table — there are row cards.
 
-    Шесть колонок держат 600px минимума и уезжают вбок в собственной прокрутке:
-    на 390px за краем оставались «Дата», «Входили», «Статус» и — самое дорогое —
-    кнопка действий, до которой надо было догадаться доскроллить вбок коробку,
-    которая ничем не показывает, что она скроллится.
+    Six columns hold a 600px minimum and slide sideways in their own scroll:
+    at 390px "Date", "Joined", "Status" and — most costly of all — the
+    actions button stayed past the edge, and you had to guess to scroll
+    sideways in a box that gives no sign that it scrolls.
 
-    Карточки сделаны не второй разметкой, а разблокировкой этой же: `table`,
-    `tbody` и `tr` становятся блоками и flex'ом, `thead` уходит, ячейки
-    раскладываются `order`'ом — название и меню в первую строку, окружение,
-    дата, входили и состояние во вторую. Вторая разметка означала бы два списка
-    действий, и однажды один из них отстал бы от другого — а в меню строки
-    лежит «Удалить».
+    The cards are not a second markup but this same one unlocked: `table`,
+    `tbody` and `tr` become blocks and flex, `thead` goes away, the cells are
+    laid out with `order` — title and menu on the first line, environment,
+    date, joined and state on the second. A second markup would mean two
+    lists of actions, and one day one of them would fall behind the other —
+    and the row menu holds "Delete".
   -->
   <div class="-mx-1 overflow-x-auto px-1">
   <table class="w-full min-w-[600px] table-fixed max-[640px]:block max-[640px]:min-w-0">
@@ -1113,9 +1131,9 @@
       {#if creating}
         <tr class="border-b border-line-soft bg-surface max-[640px]:block">
           <td colspan="6" class="py-3 max-[640px]:block">
-            <!-- Две двери в одну комнату: пустой семинар и семинар из готового
-                 материала. Переключатель, а не вторая кнопка в шапке: это одно
-                 действие «создать», у которого два источника. -->
+            <!-- Two doors into one room: a blank seminar and a seminar from
+                 ready material. A switch, not a second button in the header:
+                 this is one "create" action with two sources. -->
             <div class="mb-2.5 flex items-center gap-1">
               <button
                 type="button"
@@ -1161,11 +1179,11 @@
                 </div>
 
                 <!--
-                  Имя и окружение стоят ЗДЕСЬ, а не внутри предпросмотра: они
-                  относятся к создаваемой комнате, а не к прочитанной ссылке.
-                  Спрятанные за предпросмотром, они появлялись только после
-                  удачного чтения репозитория — и выглядели так, будто выбора
-                  окружения при импорте нет вовсе.
+                  The name and environment stand HERE, not inside the preview:
+                  they belong to the room being created, not to the link that
+                  was read. Hidden behind the preview, they appeared only
+                  after a successful read of the repository — and it looked as
+                  if there were no choice of environment on import at all.
                 -->
                 <div class="flex flex-wrap items-center gap-2">
                   <input
@@ -1198,7 +1216,7 @@
                 {:else if previewError}
                   <p class="text-2xs text-danger">{previewError}</p>
                 {:else if preview}
-                  <!-- Что именно приедет. Показано до создания, а не после. -->
+                  <!-- What exactly will arrive. Shown before creation, not after. -->
                   <div class="flex flex-wrap items-center gap-2 text-2xs text-muted">
                     <span class="font-mono text-ink">{preview.notebook}</span>
                     <span>·</span>
@@ -1215,12 +1233,14 @@
                     <span>{tr("admin.outputs.not.imported")}</span>
                   </div>
                   <!--
-                    И то, что не приедет. Отдельной строкой, а не ещё одной
-                    плашкой в общем ряду: перечисленные рядом с привезёнными,
-                    эти имена читались бы как «тоже едут». Сумма ограничена так
-                    же, как у загрузки через панель (server/src/routes/admin-import.ts
-                    · withinRoomBudget), и узнать об остатке после импорта поздно
-                    — файлы к тому моменту уже не приехали в созданную комнату.
+                    And what will not arrive. On a separate line, not as one
+                    more chip in the shared row: listed next to what is
+                    brought, these names would read as "also coming". The
+                    total is capped the same way as for an upload through the
+                    panel (server/src/routes/admin-import.ts ·
+                    withinRoomBudget), and learning about the rest after the
+                    import is too late — by then the files have already failed
+                    to arrive in the new room.
                   -->
                   {#if preview.skipped.length > 0}
                     <div class="flex flex-wrap items-center gap-2 text-2xs text-warning">
@@ -1251,9 +1271,10 @@
               />
 
               <!--
-                Окружение выбирается ОДИН раз, здесь. Дальше это Python этой
-                комнаты навсегда: семинар, у которого пакеты поменялись посреди
-                пары, хуже семинара без самых новых пакетов.
+                The environment is chosen ONCE, here. After that it is this
+                room's Python forever: a seminar whose packages changed in the
+                middle of a class is worse than a seminar without the newest
+                packages.
               -->
               {#if environments && environments.length > 1}
                 <select
@@ -1290,9 +1311,10 @@
       {#each shown as seminar (seminar.id)}
         {@const fresh = seminar.id === justCreatedId}
         <!--
-          Ниже 640 строка — карточка: `order` собирает её в две строки, а
-          `basis` первой из них раздаёт ровно 100% (название + 44px под меню),
-          чтобы остальные ячейки перенеслись, а не ужались до буквы.
+          Below 640 a row is a card: `order` gathers it into two lines, and
+          the `basis` of the first hands out exactly 100% (the title + 44px
+          for the menu), so the other cells wrap instead of shrinking to a
+          single letter.
         -->
         <tr
           class={cn(
@@ -1321,10 +1343,10 @@
                 }}
               />
             {:else}
-              <!-- Единственное место, где порог назван с обеих сторон:
-                   `truncate` держит `white-space: nowrap`, и зажим в две строки
-                   под ним молча остаётся одной строкой. Два непохожих правила
-                   проще развести по ширинам, чем спорить внутри одного класса. -->
+              <!-- The only place where the threshold is named on both sides:
+                   `truncate` holds `white-space: nowrap`, and a two-line clamp
+                   under it silently stays one line. Two unlike rules are
+                   easier to split by width than to argue inside one class. -->
               <a
                 href={linkOf(seminar)}
                 target="_blank"
@@ -1350,26 +1372,26 @@
                   // a thing to aim at. The target grows to 24 and the row does not.
                   'flex -my-1 items-center gap-1.5 py-1 font-mono text-2xs transition-colors duration-100',
                   'hover:text-ink focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/30',
-                  // 24 — это цель для мыши. Пальцу нужно 44, и они берутся
-                  // высотой самой цели, а не ростом строки: отрицательное поле
-                  // выше возвращает карточке прежний рост.
+                  // 24 is a target for a mouse. A finger needs 44, and they
+                  // come from the target's own height, not the row's: the
+                  // negative margin above gives the card back its old height.
                   'max-[640px]:min-h-[44px]',
                   copiedId === seminar.id ? 'text-positive' : 'text-muted',
                 )}
               >
                 {pathOf(seminar)}
                 <!--
-                  Три входа, и ни один не лишний.
+                  Three ways in, and none of them is redundant.
 
-                  `hover:` теперь действует только там, где есть настоящий
-                  курсор (tailwind.config.js · hoverOnlyWhenSupported), — а
-                  значок «скопировать» был у этой строки ЕДИНСТВЕННОЙ подсказкой
-                  о том, что она нажимается. На iPad, откуда панель и открывают
-                  чаще всего, он перестал появляться вовсе: тап копировал, но
-                  узнать об этом было неоткуда. Поэтому там, где наведения не
-                  бывает, значок стоит всегда; клавиатуре его показывает фокус
-                  внутри строки — тот же приём, что в дереве файлов
-                  (FilesPanel.svelte · group-focus-within).
+                  `hover:` now works only where there is a real cursor
+                  (tailwind.config.js · hoverOnlyWhenSupported) — and the
+                  "copy" icon was this row's ONLY hint that it can be pressed.
+                  On an iPad, where the panel is opened most often, it stopped
+                  appearing at all: a tap copied, but there was no way to
+                  know. So where there is no hover, the icon is always shown;
+                  for the keyboard, focus inside the row shows it — the same
+                  trick as in the file tree (FilesPanel.svelte ·
+                  group-focus-within).
                 -->
                 <Icon
                   name={copiedId === seminar.id ? 'check' : 'copy'}
@@ -1390,21 +1412,23 @@
                 <span class="whitespace-nowrap text-2xs text-muted"> {tr("admin.archived")}</span>
               {/if}
               <!--
-                Кто завёл комнату. Хранилось с самого начала и не показывалось
-                нигде: на общем инстансе кафедры список — это чужие семинары
-                вперемешку со своими, и «удалить» стоит рядом с каждым. Правит
-                по-прежнему любой преподаватель — это одна кафедра, а не
-                арендаторы, — но чьё это, теперь видно до нажатия.
+                Who set up the room. It was stored from the very start and
+                shown nowhere: on a department's shared instance the list is
+                other people's seminars mixed with your own, and "delete"
+                stands next to each. Any teacher can still edit — this is one
+                department, not tenants — but whose it is is now visible
+                before the press.
               -->
               {#if seminar.createdBy}
                 <span class="whitespace-nowrap text-2xs text-faint">{tr("admin.by")} {seminar.createdBy}</span>
               {/if}
-              <!-- Курс и публикация — в той же строке, что и ссылка: это факты
-                   об этом семинаре, а не второй столбец в таблице, где их уже
-                   шесть. -->
+              <!-- Course and publication go in the same line as the link: they
+                   are facts about this seminar, not another column in a table
+                   that already has six. -->
               {#each seminar.courses as course (course.id)}
-                <!-- `max-w-full truncate`: имя курса — чужая строка любой
-                     длины, и на 360px одна такая распирала карточку за край. -->
+                <!-- `max-w-full truncate`: a course name is someone else's
+                     string of any length, and at 360px one of them pushed the
+                     card past the edge. -->
                 <a
                   class="max-w-full truncate whitespace-nowrap text-2xs text-accent-text"
                   href={`/admin/courses/${course.id}`}
@@ -1466,9 +1490,10 @@
                    max-[640px]:pb-2.5 max-[640px]:pr-3 max-[640px]:pt-0"
           >
             <span title="{people(seminar.totalParticipants)} {tr("admin.joined.in.total")}">
-              <!-- Заголовка колонки на телефоне нет, а голое число рядом с
-                   «base · 19.09» читается как что угодно. Слово то же, что в
-                   шапке таблицы, — колонка и подпись не расходятся. -->
+              <!-- On a phone there is no column header, and a bare number
+                   next to "base · 19.09" reads as anything at all. The word is
+                   the same as in the table header — the column and the
+                   caption do not diverge. -->
               <span class="hidden text-2xs font-bold uppercase tracking-caps text-faint max-[640px]:inline">
                 {tr("admin.joined")}
               </span>
@@ -1480,11 +1505,12 @@
             <div class="flex items-center justify-end gap-2">
               {#if seminar.status === 'finished'}
                 <!--
-                  Решение преподавателя стоит там же, где остальные три слова, и
-                  сильнее их: раньше «сейчас никого» и «занятие закончено»
-                  показывались одним словом Ended, так что звонок ничего в
-                  списке не менял. Точка слева — если в законченной комнате
-                  всё-таки кто-то есть: перечитывают разбор, и это видно.
+                  The teacher's decision stands where the other three words
+                  are, and outranks them: "nobody right now" and "class ended"
+                  used to be shown with the one word Ended, so the bell
+                  changed nothing in the list. The dot on the left — if
+                  someone is in the finished room after all: they are
+                  re-reading the review, and that is visible.
                 -->
                 <span
                   class="chip h-6 gap-1.5 bg-warning/[0.14] px-2 text-2xs font-bold uppercase tracking-caps text-warning"
@@ -1506,11 +1532,12 @@
                 >
                   <span class="h-[5px] w-[5px] rounded-full bg-accent"></span>
                   {tr("admin.live.990")}
-                  <!-- Сколько человек — только на телефоне: там колонки
-                       «Входили» рядом нет, а «идёт» без числа не отличает
-                       комнату с одним заглянувшим от комнаты с потоком. На
-                       столе число стоит в своей колонке, и второй его копии
-                       в значке быть не должно. -->
+                  <!-- The head-count only on a phone: there is no "Joined"
+                       column next to it there, and "live" without a number
+                       does not tell a room with one visitor from a room with
+                       a whole cohort. On a desktop the number stands in its
+                       own column, and the badge must not carry a second copy
+                       of it. -->
                   <span
                     class="hidden tabular-nums max-[640px]:inline"
                     title="{people(seminar.liveCount)} {tr("admin.in.the.room.right.now")}"
@@ -1526,22 +1553,24 @@
                 </span>
               {:else}
                 <!-- Bare, so the four states share one right-hand lane: an empty
-                     room is a fact, not a badge. Слово честное: заходили, а
-                     сейчас никого — «закончено» это не значит. -->
+                     room is a fact, not a badge. The word is honest: people
+                     came in, and now nobody is there — that does not mean
+                     "finished". -->
                 <span class="text-2xs font-bold uppercase tracking-caps text-muted">{tr("admin.empty")}</span>
               {/if}
             </div>
           </td>
 
           <!--
-            Меню — рядом с названием, в первой строке карточки, и ровно 44px
-            шириной: `basis` названия выше отмерен под эту цифру.
+            The menu sits next to the title, on the card's first line, and is
+            exactly 44px wide: the title's `basis` above is measured for this
+            number.
 
-            `px-0` здесь обязателен. У ячейки таблицы есть `padding: 1px` из
-            стилей браузера, и его никто не снимает: `min-width: auto` у
-            элемента flex'а считает по содержимому, выходило 46 вместо 44, а
-            234 + 46 > 278 — и кнопка меню съезжала на третью строку карточки,
-            под дату. Измерено на стенде при экране 390px.
+            `px-0` is required here. A table cell has `padding: 1px` from the
+            browser's styles, and nobody removes it: `min-width: auto` on a
+            flex item counts by content, which came to 46 instead of 44, and
+            234 + 46 > 278 — so the menu button slid onto the card's third
+            line, under the date. Measured on the test bench on a 390px screen.
           -->
           <td
             class="py-2 align-middle max-[640px]:order-2 max-[640px]:basis-11 max-[640px]:self-start
@@ -1591,9 +1620,10 @@
                     onclick={() => {
                       ruling = seminar
                       memoryErrorText = null
-                      // Числа прошлого открытия — числа прошлой минуты: с тех
-                      // пор чужую комнату закрыли, память освободилась. Окно
-                      // открывается с заглушками и ждёт свежего ответа.
+                      // Numbers from the last opening are numbers from the
+                      // last minute: since then someone else's room has been
+                      // closed and memory freed. The window opens with
+                      // placeholders and waits for a fresh answer.
                       resources = null
                       readResources()
                     }}
@@ -1712,18 +1742,20 @@
 
 {#if ruling}
   <!--
-    Тот же список и теми же словами, что в самой комнате: настройка, которую в
-    двух местах называют по-разному, — это две настройки.
+    The same list, in the same words, as in the room itself: a setting that is
+    named differently in two places is two settings.
 
-    И потому это окно РУССКОЕ ЦЕЛИКОМ — заголовок, предупреждение, причина
-    отказа в подвале (panel.ts · ruleRefusal) и «Готово» вокруг строк, — хотя
-    меню, из которого его открывают, английское, как и весь экран. Решение
-    записано один раз, в шапке компонента этих строк
-    (components/RoomRulesRows.svelte): подписи правил живут в языке КОМНАТЫ,
-    потому что тот же компонент рисует пульт правил внутри неё, а комната
-    русская вся. Перевод одной рамки вокруг русских строк сделал бы двуязычным
-    само окно — ровно то, что находка admin-17 и называет дефектом в меню.
-    Двуязычие меню чинилось там, где оно было: в самом меню строки.
+    And that is why this window is ENTIRELY RUSSIAN — the heading, the
+    warning, the refusal reason in the footer (panel.ts · ruleRefusal) and
+    "Done" around the rows — even though the menu it is opened from is
+    English, like the whole screen. The decision is written down once, in the
+    header of the component for these rows (components/RoomRulesRows.svelte):
+    the rule labels live in the ROOM's language, because the same component
+    draws the rules console inside the room, and the room is Russian
+    throughout. Translating just the frame around Russian rows would make the
+    window itself bilingual — exactly what finding admin-17 calls a defect in
+    the menu. The menu's bilingualism was fixed where it was: in the row menu
+    itself.
   -->
   <div
     role="dialog"
@@ -1740,10 +1772,11 @@
           <span class="shrink-0 text-2xs text-muted">{tr('admin.seminar.settingsSubtitle')}</span>
         </div>
         <!--
-          Чужая комната, и в ней идёт пара. Подтверждения здесь нет намеренно:
-          переключателей девять, и спрашивать на каждый — значит научить
-          прощёлкивать вопрос. Но знать, что каждое переключение прилетает
-          двумстам людям посреди чужого занятия, надо ДО первого щелчка.
+          Someone else's room, with a class going on. There is deliberately no
+          confirmation here: there are nine switches, and asking on each one
+          would teach people to click through the question. But knowing that
+          every switch lands on two hundred people in the middle of someone
+          else's class has to come BEFORE the first click.
         -->
         {#if othersLive(ruling)}
           <p class="text-2xs leading-snug text-warning">
@@ -1754,9 +1787,9 @@
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5">
         <!--
-          Числа занятия и потолок машины — в строку правила «Личные тетради»:
-          «как у занятия» обязано называть, СКОЛЬКО это, а список — не
-          предлагать того, чего машина не даст.
+          The class's numbers and the machine's ceiling go into the "Personal
+          notebooks" rule row: "as for the class" has to say HOW MUCH that is,
+          and the list must not offer what the machine will not give.
         -->
         <RoomRulesRows
           rules={ruling.rules}
@@ -1771,12 +1804,13 @@
         />
 
         <!--
-          Тот же раздел и тот же компонент, что в форме нового занятия.
+          The same section and the same component as in the new class form.
 
-          Настройка, которую в двух местах называют по-разному и считают
-          по-разному, — это две настройки; здесь она вдобавок применяется к
-          ЖИВОЙ комнате, и ровно за этим сюда и приходят: ядро убили по памяти,
-          пара идёт, добавить гигабайты надо сейчас.
+          A setting that is named differently and computed differently in two
+          places is two settings; here, on top of that, it applies to a LIVE
+          room, and that is exactly why people come here: the kernel was
+          killed for memory, the class is going on, and gigabytes have to be
+          added now.
         -->
         <div class="border-t border-line-soft py-4">
           <h3 class="text-ui font-semibold text-ink">{tr('admin.resources.title')}</h3>
@@ -1801,11 +1835,11 @@
             {rulesError}
           {:else}
             {tr("admin.changes.apply.immediately.participants.do.not.need.to.sign.in.aga")}
-            <!-- Пока занятие закончено, выбранное здесь не действует: конец занятия
-                 накладывается поверх правил и настройку не трогает (shared/rules.ts ·
-                 rulesAfterClass). Без этой строки список читается как неправда — в комнате
-                 всё преподавательское, а здесь написано другое, — и преподаватель идёт
-                 чинить то, что не сломано. -->
+            <!-- While the class is over, what is chosen here has no effect: the end of
+                 class is laid over the rules and does not touch the setting
+                 (shared/rules.ts · rulesAfterClass). Without this line the list reads
+                 as untrue — in the room everything is teacher-only, while it says
+                 otherwise here — and the teacher goes to fix what is not broken. -->
             {#if ruling.finishedAt}
               <span class="text-ink">
                 {tr("admin.the.class.has.ended.the.selected.student.permissions.will.take.ef")}
@@ -1852,9 +1886,10 @@
       </p>
 
       <!--
-        Публикация — это и есть вторая копия тетради: ячейки и выводы, отданные
-        всем по прямой ссылке. Обещать рядом с ней «второй копии нет» — врать в
-        том самом случае, ради которого чаще всего и удаляют: убрать выложенное.
+        The publication is the second copy of the notebook: cells and outputs
+        given to everyone by a direct link. Promising "there is no second copy"
+        next to it would be lying in exactly the case people delete for most
+        often: taking down what was published.
       -->
       {#if doomed.publication}
         <label class="mt-3 flex cursor-pointer items-start gap-2.5 border border-line p-3">

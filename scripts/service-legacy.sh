@@ -1,42 +1,47 @@
 #!/usr/bin/env bash
 #
-# Colloq на выделенной машине: сервер службой systemd, ядра комнат — в docker.
+# Colloq on a dedicated machine: the server as a systemd service, room kernels in docker.
 #
-#   scripts/service.sh install   поставить и запустить (идемпотентно)
-#   scripts/service.sh restart   перезапустить — после git pull и сборки
-#   scripts/service.sh stop      остановить (ядра комнат остаются жить)
-#   scripts/service.sh status    жива ли служба и готова ли вести семинар
-#   scripts/service.sh logs      журнал, Ctrl+C — выйти
+#   scripts/service.sh install   install and start (idempotent)
+#   scripts/service.sh restart   restart — after git pull and a build
+#   scripts/service.sh stop      stop (room kernels stay alive)
+#   scripts/service.sh status    is the service alive and ready to run a seminar
+#   scripts/service.sh logs      the journal, Ctrl+C to quit
 #
-# ЗАЧЕМ ЭТО, КОГДА ЕСТЬ `make up`. Способов запуска три, и они не
-# взаимозаменяемы:
+# WHY THIS, WHEN THERE IS `make up`. There are three ways to run, and they are
+# not interchangeable:
 #
-#   make up   весь стек в docker. Ноутбук, разовая демонстрация, «посмотреть».
-#   make run  сервер руками, ядро в docker. Разработка: пересборка — секунды.
-#   служба    сервер на хосте под systemd, в docker только ядра. Выделенная
-#             машина — своя или арендованная, — на которой идут занятия.
+#   make up   the whole stack in docker. A laptop, a one-off demo, "a look".
+#   make run  the server by hand, the kernel in docker. Development: a rebuild
+#             takes seconds.
+#   service   the server on the host under systemd, only the kernels in docker.
+#             A dedicated machine — your own or rented — where classes are held.
 #
-# Форму меняли не от красоты. Под `make up` на выделенной машине ломалось
-# дважды, и оба раза одинаково — сервер в контейнере не видит того, что вокруг:
+# The form was not changed for looks. Under `make up` on a dedicated machine
+# things broke twice, and both times the same way — the server in a container
+# does not see what is around it:
 #
-#   1. Каталоги data/ и workspace/ заводились от root (их создаёт демон docker
-#      под bind-монт), а сервер внутри работает от uid 1000: база не
-#      открывалась вовсе, контейнер уходил в цикл перезапусков.
-#   2. Панель не могла собрать окружение: внутри контейнера нет ни
-#      docker-compose.yml, ни kernel/Dockerfile, ни .env — а сборка окружения
-#      это они и есть. Кнопка Build была, толку не было.
+#   1. The data/ and workspace/ directories were created as root (the docker
+#      daemon creates them for the bind mount), while the server inside runs
+#      as uid 1000: the database did not open at all, and the container went
+#      into a restart loop.
+#   2. The panel could not build an environment: inside the container there
+#      is no docker-compose.yml, no kernel/Dockerfile and no .env — and
+#      building an environment is exactly those. The Build button was there,
+#      and it did nothing.
 #
-# Сервер на хосте отменяет оба: репозиторий, .env и docker лежат с ним рядом,
-# панель всесильна, и расхождения пользователей нет — см. deploy/colloq.service,
-# где названа и цена (служба работает от root).
+# A server on the host removes both: the repository, .env and docker are right
+# next to it, the panel can do everything, and there is no user mismatch — see
+# deploy/colloq.service, which also names the price (the service runs as root).
 #
-# ЧТО ДЕЛАЕТ install, по шагам: проверяет машину, заводит .env, ставит docker
-# (если его нет) и Node, собирает проект, собирает образ ядра, чинит владельцев
-# каталогов и, наконец, кладёт юнит и ждёт, пока инстанс скажет о готовности.
-# Образ раньше каталогов не для порядка: у него и спрашивают, какой группе
-# отдавать workspace/.
-# Каждый шаг переживает повторный запуск: `install` — это и первая установка, и
-# обновление кода.
+# WHAT install DOES, step by step: checks the machine, creates .env, installs
+# docker (if it is missing) and Node, builds the project, builds the kernel
+# image, fixes the owners of directories and, finally, puts the unit in place
+# and waits until the instance reports that it is ready. The image comes
+# before the directories not for tidiness: it is the one asked which group to
+# give workspace/ to.
+# Every step survives a repeated run: `install` is both the first installation
+# and a code update.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -48,22 +53,24 @@ die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 SERVICE=colloq
 UNIT=/etc/systemd/system/$SERVICE.service
 TEMPLATE=deploy/colloq-legacy.service
-# Путь-умолчание, записанный в шаблоне. Заменяется на настоящий каталог
-# репозитория; вынесен в переменную, чтобы замена и шаблон не разъехались.
+# The default path written in the template. It is replaced with the real
+# repository directory; kept in a variable so the replacement and the template
+# do not drift apart.
 TEMPLATE_ROOT=/opt/colloq
-# Node ставится мажорной веткой. 20 — та, на которой проект собирается и
-# проверяется; машина, где уже стоит 20 или новее, не трогается вовсе.
+# Node is installed by major line. 20 is the one the project is built and
+# tested on; a machine that already has 20 or newer is not touched at all.
 NODE_MAJOR="${NODE_MAJOR:-22}"
 
-# Дождаться, пока apt отпустят. Свежая арендованная машина первые минуты
-# крутит unattended-upgrades, и любой свой apt-get падает с «Could not get
-# lock /var/lib/dpkg/lock-frontend» (13.09.2026, за два часа до лекции). Ждём
-# до десяти минут, дальше пусть падает с настоящей ошибкой.
+# Wait until apt is released. A freshly rented machine spends its first minutes
+# running unattended-upgrades, and any apt-get of our own fails with "Could not
+# get lock /var/lib/dpkg/lock-frontend" (13 Sep 2026, two hours before a
+# lecture). We wait up to ten minutes; after that let it fail with the real
+# error.
 apt_wait() {
   local waited=0
   while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1 \
     || pgrep -x unattended-upgr >/dev/null 2>&1; do
-    [ "$waited" -eq 0 ] && say "${DIM}    apt занят (unattended-upgrades) — жду${OFF}"
+    [ "$waited" -eq 0 ] && say "${DIM}    apt is busy (unattended-upgrades) — waiting${OFF}"
     sleep 3; waited=$((waited + 3))
     [ "$waited" -ge 600 ] && break
   done
@@ -71,40 +78,40 @@ apt_wait() {
 
 REPO="$PWD"
 
-# read_env — общий для всех скриптов, scripts/lib.sh: своя копия жила в трёх
-# файлах и всюду вырезала пробелы внутри значений.
+# read_env is shared by all scripts, scripts/lib.sh: a private copy lived in
+# three files and everywhere cut out the spaces inside values.
 . ./scripts/lib.sh
 PORT="$(read_env PORT)"; PORT="${PORT:-3000}"
 
 CMD="${1:-}"
 
-# ---------------------------------------------------------------- проверки
+# ---------------------------------------------------------------- checks
 
-# Служба — это Linux с systemd и права root. Отказ здесь короткий и до того,
-# как что-нибудь установлено: на macOS ставить systemd-юнит некуда, а под
-# обычным пользователем всё равно нечем.
+# A service means Linux with systemd, and root. The refusal here is short and
+# comes before anything is installed: on macOS there is nowhere to put a
+# systemd unit, and as an ordinary user there is nothing to do it with anyway.
 need_systemd() {
-  [ "$(uname -s)" = Linux ] || die "служба systemd бывает только на Linux.
-  На ноутбуке два других способа: make up (всё в docker) или make run."
-  command -v systemctl >/dev/null 2>&1 || die "на этой машине нет systemd (systemctl не найден).
-  Способ рассчитан на Ubuntu/Debian. Без systemd остаются make up и make run."
+  [ "$(uname -s)" = Linux ] || die "a systemd service exists only on Linux.
+  On a laptop there are two other ways: make up (everything in docker) or make run."
+  command -v systemctl >/dev/null 2>&1 || die "this machine has no systemd (systemctl not found).
+  This way is meant for Ubuntu/Debian. Without systemd there are make up and make run."
 }
 
 need_root() {
-  [ "$(id -u)" = 0 ] || die "нужны права root: sudo $0 $CMD
-  Служба ставится в /etc/systemd/system и работает от root — почему именно так,
-  сказано в шапке deploy/colloq.service."
+  [ "$(id -u)" = 0 ] || die "root is needed: sudo $0 $CMD
+  The service is installed into /etc/systemd/system and runs as root — why exactly so
+  is explained in the header of deploy/colloq.service."
 }
 
-# Служба установлена — не «работает», а «есть файл юнита». Ею отвечают на
-# вопрос «эта машина уже переведена на новую форму».
+# The service is installed — not "running" but "the unit file exists". It
+# answers the question "has this machine already moved to the new form".
 installed() { [ -f "$UNIT" ]; }
 active() { systemctl is-active --quiet "$SERVICE" 2>/dev/null; }
 
-# Ждём не «systemctl вернул управление», а ответа /api/health: он отвечает 200
-# только когда и база читается, и Python комнаты готов запуститься. Ссылка,
-# напечатанная над инстансом, который ещё поднимается, — это ссылка, розданная
-# аудитории за минуту до того, как она заработает.
+# We wait not for "systemctl returned" but for an answer from /api/health: it
+# answers 200 only when the database reads and the room's Python is ready to
+# start. A link printed over an instance that is still coming up is a link
+# handed to the audience a minute before it starts working.
 wait_health() {
   local tries="${1:-60}" i
   for ((i = 0; i < tries; i++)); do
@@ -115,47 +122,48 @@ wait_health() {
   return 1
 }
 
-# Что сказать, когда готовности не дождались. Две разные беды с одинаковым
-# экраном: служба упала (смотреть журнал) и служба жива, но семинар вести
-# нельзя (обычно несобранное окружение или выключенный docker).
+# What to say when readiness never came. Two different troubles with the same
+# screen: the service crashed (look at the journal), and the service is alive
+# but cannot run a seminar (usually an unbuilt environment or docker being off).
 explain_unhealthy() {
   printf '\n'
   if active; then
-    say "${RED}служба работает, но не готова вести семинар${OFF}"
-    say "${DIM}что говорит она сама:${OFF}"
+    say "${RED}the service is running but not ready to run a seminar${OFF}"
+    say "${DIM}what it says itself:${OFF}"
     curl -fsS -m 3 "http://localhost:$PORT/api/health" 2>/dev/null | head -c 400 | sed 's/^/    /' || true
     printf '\n'
-    say "${DIM}чаще всего это несобранное окружение ядра (make env-build NAME=…)${OFF}"
-    say "${DIM}или недоступный docker (systemctl status docker)${OFF}"
+    say "${DIM}most often this is an unbuilt kernel environment (make env-build NAME=…)${OFF}"
+    say "${DIM}or docker being unreachable (systemctl status docker)${OFF}"
   else
-    say "${RED}служба не поднялась${OFF}"
+    say "${RED}the service did not come up${OFF}"
   fi
-  say "${DIM}журнал: journalctl -u $SERVICE -n 40 --no-pager${OFF}"
+  say "${DIM}journal: journalctl -u $SERVICE -n 40 --no-pager${OFF}"
   journalctl -u "$SERVICE" -n 20 --no-pager 2>/dev/null | sed 's/^/    /' || true
 }
 
-# Рецепт ядра изменился после того, как собрали образ?
+# Did the kernel recipe change after the image was built?
 #
-# «Образ есть — значит готово» верно ровно до правки самого рецепта, и цена
-# ошибки тут молчаливая: комнаты идут на прежнем образе, панель говорит
-# «Ready», а правка не работает. Так уехала правка matplotlib: `MPLBACKEND=Agg`
-# в Dockerfile убирал у ядра всякую врисованную картинку, а после раскатки
-# образ остался прежним, потому что он «уже собран».
+# "The image exists, so it is ready" holds exactly until the recipe itself is
+# edited, and the price of the mistake here is silent: rooms run on the old
+# image, the panel says "Ready", and the fix does not work. That is what
+# happened to the matplotlib fix: `MPLBACKEND=Agg` in the Dockerfile took every
+# inline picture away from the kernel, and after the rollout the image stayed
+# the old one, because it was "already built".
 #
-# Список пакетов окружения сюда не входит: за ним следит сам сервер, по своей
-# отметке о сборке (server/src/environments.ts · editedSinceBuild), и он умеет
-# сравнивать содержимое, а не время. Здесь — только общая для всех окружений
-# основа, у которой отметки нет.
+# The environment's package list is not part of this: the server itself
+# watches it, by its own build mark (server/src/environments.ts ·
+# editedSinceBuild), and it can compare contents rather than times. Here it is
+# only the base shared by all environments, which has no mark.
 kernel_recipe_newer() {
   local image="colloq-kernel:$1" created built file
   created="$(docker image inspect -f '{{.Created}}' "$image" 2>/dev/null || true)"
   [ -n "$created" ] || return 0
   built="$(date -d "$created" +%s 2>/dev/null || true)"
-  # Дату не разобрали — пересобирать наугад дороже, чем довериться образу:
-  # сборка базы это минуты простоя на каждой раскатке.
+  # The date did not parse — rebuilding blindly costs more than trusting the
+  # image: building the base means minutes of downtime on every rollout.
   [ -n "$built" ] || return 1
-  # Через `if`, а не `[ … ] && return 0`: при `set -e` неудачная проверка на
-  # последнем файле уронила бы весь скрипт вместо «нет, не новее».
+  # Through `if`, not `[ … ] && return 0`: under `set -e` a failed check on the
+  # last file would bring down the whole script instead of "no, not newer".
   for file in kernel/Dockerfile kernel/requirements.txt; do
     [ -f "$file" ] || continue
     if [ "$(stat -c %Y "$file" 2>/dev/null || echo 0)" -gt "$built" ]; then return 0; fi
@@ -171,108 +179,114 @@ cmd_install() {
 
   local steps=8
 
-  say "${BOLD}1/$steps${OFF} проверяю машину"
-  [ -f package.json ] && [ -d server/src ] || die "это не репозиторий Colloq: $REPO
-  Запускать надо из клона: cd /opt/colloq && make service-install"
-  [ -f "$TEMPLATE" ] || die "нет $TEMPLATE — шаблона юнита. Клон неполный?"
-  # Путь репозитория уезжает и в юнит, и в sed, которым его туда подставляют.
-  # Юнит — не оболочка: путь с пробелом там нужно брать в кавычки, а '#' в
-  # пути сломал бы саму подстановку. Отказ дешевле молчаливо кривого юнита.
+  say "${BOLD}1/$steps${OFF} checking the machine"
+  [ -f package.json ] && [ -d server/src ] || die "this is not a Colloq repository: $REPO
+  Run it from a clone: cd /opt/colloq && make service-install"
+  [ -f "$TEMPLATE" ] || die "no $TEMPLATE — the unit template. Is the clone incomplete?"
+  # The repository path goes both into the unit and into the sed that puts it
+  # there. A unit is not a shell: a path with a space would have to be quoted
+  # there, and a '#' in the path would break the substitution itself. A refusal
+  # is cheaper than a silently crooked unit.
   case "$REPO" in
-    *[!A-Za-z0-9._/-]*) die "в пути «$REPO» есть знаки, которых не понимает юнит systemd.
-  Перенесите репозиторий туда, где в пути только буквы, цифры, точка, дефис,
-  подчёркивание и слэш: /opt/colloq — то, что использует scripts/vast.sh." ;;
+    *[!A-Za-z0-9._/-]*) die "the path \"$REPO\" has characters a systemd unit does not understand.
+  Move the repository to where the path has only letters, digits, dot, hyphen,
+  underscore and slash: /opt/colloq is what scripts/vast.sh uses." ;;
   esac
-  # Кто держит порт. Второй Colloq на том же порту — это две базы, два
-  # setup-token и ссылки, ведущие то туда, то сюда; поймать это по экрану
-  # невозможно. Своя же служба (переустановка) — не помеха.
+  # Who holds the port. A second Colloq on the same port means two databases,
+  # two setup-tokens and links leading now here, now there; there is no
+  # catching that from the screen. Our own service (a reinstall) is no obstacle.
   if active; then
-    say "${DIM}    служба уже стоит и работает — это обновление${OFF}"
+    say "${DIM}    the service is already installed and running — this is an update${OFF}"
   elif docker compose ps --status running --services 2>/dev/null | grep -qx app; then
-    die "в docker работает app — это Colloq прежней формы, и он держит порт $PORT.
-  Остановите его и повторите: make down"
+    die "app is running in docker — that is Colloq in the old form, and it holds port $PORT.
+  Stop it and try again: make down"
   elif [ -f .colloq.pid ] && kill -0 "$(cat .colloq.pid 2>/dev/null)" 2>/dev/null; then
-    die "на хосте работает сервер, запущенный через make run.
-  Остановите его и повторите: make stop"
+    die "a server started with make run is running on the host.
+  Stop it and try again: make stop"
   elif command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -qE "[:.]$PORT[[:space:]]"; then
-    die "порт $PORT занят кем-то ещё — служба на него не встанет.
-  Посмотреть кем: ss -ltnp | grep :$PORT"
+    die "port $PORT is taken by someone else — the service cannot take it.
+  To see by whom: ss -ltnp | grep :$PORT"
   fi
 
-  say "${BOLD}2/$steps${OFF} настройки"
-  # .env заводится тем же кодом, что и для остальных способов запуска: там же
-  # выписывается свой JUPYTER_TOKEN вместо общеизвестного из примера. Зовём
-  # только когда файла нет: у make на существующий файл ответ «is up to date»,
-  # и в выводе установки это лишняя строка, которая выглядит как ошибка.
+  say "${BOLD}2/$steps${OFF} settings"
+  # .env is created by the same code as for the other ways of running: that is
+  # also where it gets a JUPYTER_TOKEN of its own instead of the well-known one
+  # from the example. Called only when the file is missing: for an existing
+  # file make answers "is up to date", and in the install output that is an
+  # extra line that looks like an error.
   [ -f .env ] || make --no-print-directory .env
-  # Порт перечитываем: до этой строки его могло не быть вовсе, а дальше по нему
-  # проверяют занятость и готовность.
+  # Re-read the port: before this line it may not have existed at all, and
+  # further on it is what occupancy and readiness are checked by.
   PORT="$(read_env PORT)"; PORT="${PORT:-3000}"
-  # Три строки, которые ломают эту форму молча.
+  # Three lines that break this form silently.
   #
-  # WORKSPACE_HOST_DIR для сервера в контейнере называет ./workspace глазами
-  # хоста. Здесь сервер САМ на хосте — путь и так верный, — но сервер читает
-  # эту переменную ещё и как признак «я в контейнере»: увидев её, он поставит
-  # ядро комнаты в сеть compose и позовёт его по имени контейнера, до которого
-  # с хоста дороги нет. Каждый Run кончался бы ошибкой.
+  # For a server in a container, WORKSPACE_HOST_DIR names ./workspace as the
+  # host sees it. Here the server ITSELF is on the host — the path is right
+  # anyway — but the server also reads this variable as a sign of "I am in a
+  # container": seeing it, it puts the room's kernel into the compose network
+  # and calls it by the container's name, which there is no route to from the
+  # host. Every Run would end in an error.
   if [ -n "$(read_env WORKSPACE_HOST_DIR)" ]; then
-    die "в .env задан WORKSPACE_HOST_DIR — уберите строку.
-  Она нужна только серверу, который сам живёт в контейнере (make up). Здесь
-  сервер на хосте, и по этой переменной он решит, что он в контейнере: ядро
-  комнаты уедет в сеть compose, а звать его будут по имени, которого с хоста
-  не видно. Комната ответит ошибкой на первом же Run."
+    die "WORKSPACE_HOST_DIR is set in .env — remove the line.
+  Only a server that itself lives in a container (make up) needs it. Here the
+  server is on the host, and from this variable it will decide it is in a
+  container: the room's kernel will go into the compose network and be called by
+  a name that cannot be seen from the host. The room will answer the very first
+  Run with an error."
   fi
-  # KERNEL_NETWORK без WORKSPACE_HOST_DIR сервер не читает вовсе — но строка,
-  # оставшаяся от прежней формы, обещает то, чего здесь нет. Говорим и идём.
+  # Without WORKSPACE_HOST_DIR the server does not read KERNEL_NETWORK at all —
+  # but a line left over from the old form promises what is not here. We say
+  # so and move on.
   if [ -n "$(read_env KERNEL_NETWORK)" ]; then
-    say "${DIM}    KERNEL_NETWORK в .env не нужен: сеть compose здесь ни при чём,${OFF}"
-    say "${DIM}    ядро комнаты слушает порт на петле. Строка просто не читается.${OFF}"
+    say "${DIM}    KERNEL_NETWORK in .env is not needed: the compose network plays no part here,${OFF}"
+    say "${DIM}    the room's kernel listens on a loopback port. The line is simply not read.${OFF}"
   fi
-  # Изоляция выключена — значит комнаты делят одно ядро. Под `make up` им
-  # служило ядро compose; здесь его никто не поднимает, и общего Python на
-  # машине нет вовсе.
+  # Isolation is off — so the rooms share one kernel. Under `make up` the
+  # compose kernel served them; here nobody brings it up, and there is no
+  # shared Python on the machine at all.
   if [ "$(read_env KERNEL_ISOLATION)" = off ]; then
-    say "${RED}    KERNEL_ISOLATION=off — у комнат не будет своих ядер${OFF}"
-    say "${DIM}    А общее ядро compose здесь не поднимается: подняли бы его вы сами${OFF}"
-    say "${DIM}    (docker compose с docker-compose.dev.yml публикует 8888 на петлю).${OFF}"
-    say "${DIM}    Иначе Python не будет ни у кого.${OFF}"
+    say "${RED}    KERNEL_ISOLATION=off — rooms will not have kernels of their own${OFF}"
+    say "${DIM}    And the shared compose kernel is not brought up here: you would have to${OFF}"
+    say "${DIM}    bring it up yourself (docker compose with docker-compose.dev.yml publishes${OFF}"
+    say "${DIM}    8888 on loopback). Otherwise nobody will have Python.${OFF}"
   fi
-  say "${DIM}    .env на месте${OFF}"
+  say "${DIM}    .env is in place${OFF}"
 
-  say "${BOLD}3/$steps${OFF} docker — ядрам комнат"
+  say "${BOLD}3/$steps${OFF} docker — for room kernels"
   export DEBIAN_FRONTEND=noninteractive
   if ! command -v docker >/dev/null 2>&1; then
-    say "${DIM}    ставлю (get.docker.com)${OFF}"
+    say "${DIM}    installing (get.docker.com)${OFF}"
     curl -fsSL https://get.docker.com | sh >/dev/null
   fi
   systemctl enable --now docker >/dev/null 2>&1 || true
   docker version --format '{{.Server.Version}}' >/dev/null 2>&1 \
-    || die "docker есть, но демон не отвечает: systemctl status docker
-  Без него у комнаты нет своего ядра, а на этой машине — и никакого."
+    || die "docker is here, but the daemon does not answer: systemctl status docker
+  Without it a room has no kernel of its own, and on this machine none at all."
   say "${DIM}    docker $(docker version --format '{{.Server.Version}}' 2>/dev/null)${OFF}"
-  # Сборка окружений идёт двумя дорогами: `make env-build` зовёт docker compose,
-  # панель — прямой `docker build`, а он с 23-го клиента требует buildx. Нет
-  # плагина — кнопка Build отвечает «buildx component is missing», и понять это
-  # по экрану нельзя. Не отказ: семинар с уже собранным образом идёт и так.
+  # Environments are built along two roads: `make env-build` calls docker
+  # compose, the panel a plain `docker build`, and since client 23 that
+  # requires buildx. Without the plugin the Build button answers "buildx
+  # component is missing", and there is no telling why from the screen. Not a
+  # refusal: a seminar with an already built image runs anyway.
   docker buildx version >/dev/null 2>&1 \
-    || say "${RED}    нет docker-buildx-plugin — панель не соберёт окружение${OFF}"
+    || say "${RED}    no docker-buildx-plugin — the panel will not build an environment${OFF}"
   docker compose version >/dev/null 2>&1 \
-    || say "${RED}    нет docker-compose-plugin — make env-build не соберёт окружение${OFF}"
+    || say "${RED}    no docker-compose-plugin — make env-build will not build an environment${OFF}"
 
   say "${BOLD}4/$steps${OFF} Node $NODE_MAJOR"
-  # Почему nodesource, а не пакет дистрибутива и не nvm.
+  # Why nodesource, and not the distribution's package or nvm.
   #
-  # В Debian 12 node это 18, в Ubuntu 22.04 — 12: обе ветки старше того, на чём
-  # проект собирается. nvm ставится в оболочку пользователя, а служба systemd
-  # ничьей оболочки не видит — юнит просто не нашёл бы node. Остаётся
-  # официальный репозиторий nodesource: обычный apt-источник, обновления
-  # приезжают вместе с остальной машиной.
+  # In Debian 12 node is 18, in Ubuntu 22.04 it is 12: both lines are older
+  # than what the project is built on. nvm installs into a user's shell, and a
+  # systemd service sees nobody's shell — the unit simply would not find node.
+  # What remains is the official nodesource repository: an ordinary apt
+  # source, whose updates arrive along with the rest of the machine.
   local have=0
   if command -v node >/dev/null 2>&1; then
     have="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
   fi
   if [ "$have" -ge "$NODE_MAJOR" ] 2>/dev/null; then
-    say "${DIM}    уже стоит node $(node -v)${OFF}"
+    say "${DIM}    node $(node -v) is already installed${OFF}"
   else
     apt_wait
     apt-get update -qq
@@ -283,138 +297,144 @@ cmd_install() {
     apt-get install -y -qq nodejs >/dev/null
     say "${DIM}    node $(node -v)${OFF}"
   fi
-  # Инструменты сборки — ради better-sqlite3: готовая сборка есть не под всякую
-  # связку версии node и архитектуры, и тогда npm собирает её из исходников. Без
-  # компилятора это отказ на `npm ci` с трёхэтажным стеком, из которого причина
-  # не следует. Те же три пакета стоят в Dockerfile и по той же причине.
+  # Build tools — for the sake of better-sqlite3: a prebuilt binary does not
+  # exist for every combination of node version and architecture, and then npm
+  # builds it from source. Without a compiler that is a failure in `npm ci`
+  # with a three-storey stack trace from which the cause does not follow. The
+  # same three packages are in the Dockerfile, for the same reason.
   if ! command -v g++ >/dev/null 2>&1 || ! command -v make >/dev/null 2>&1; then
     apt_wait
     apt-get update -qq
     apt-get install -y -qq python3 make g++ >/dev/null
   fi
 
-  say "${BOLD}5/$steps${OFF} собираю"
-  say "${DIM}    первый раз это несколько минут${OFF}"
-  # `npm ci`, а не install: замок в репозитории, и собирать надо ровно те
-  # версии, на которых проект проверяли. --include=dev названо вслух, потому что
-  # сборке нужны devDependencies (vite, tsc), а NODE_ENV=production в окружении
-  # машины молча выбросил бы их.
+  say "${BOLD}5/$steps${OFF} building"
+  say "${DIM}    the first time this takes a few minutes${OFF}"
+  # `npm ci`, not install: the lock file is in the repository, and exactly the
+  # versions the project was tested with must be built. --include=dev is
+  # spelled out because the build needs devDependencies (vite, tsc), and
+  # NODE_ENV=production in the machine's environment would silently drop them.
   npm ci --no-audit --no-fund --include=dev
 
-  # Клиент собирается РЯДОМ и переезжает на место переименованием.
+  # The client is built NEXT TO its place and moves in by a rename.
   #
-  # `vite build` первым делом опустошает свой outDir, а web/dist прямо сейчас
-  # отдаёт с диска работающая служба (express.static, server/src/index.ts).
-  # Пока шла сборка — на арендованной машине это минуты, — любая перезагрузка
-  # вкладки в идущей комнате получала 404 на /assets/*.js: белый экран посреди
-  # пары ровно потому, что кто-то обновляет код. Эта же команда — единственный
-  # штатный способ обновления («git pull && make service-install»), так что
-  # случай не редкий.
+  # `vite build` first of all empties its outDir, and web/dist is being served
+  # from disk right now by the running service (express.static,
+  # server/src/index.ts). While the build ran — on a rented machine that is
+  # minutes — any tab reload in a running room got a 404 on /assets/*.js: a
+  # white screen in the middle of a class just because someone is updating the
+  # code. This same command is the only regular way to update ("git pull &&
+  # make service-install"), so the case is not rare.
   #
-  # Переименование каталога — одна операция файловой системы, и окна, в котором
-  # статики нет, не существует.
+  # Renaming a directory is one filesystem operation, and there is no window in
+  # which the static files are missing.
   rm -rf web/dist.next web/dist.prev
   npm run build -w @colloq/web -- --outDir dist.next --emptyOutDir
-  [ -f web/dist.next/index.html ] || die "сборка прошла, а web/dist.next/index.html нет — комната открылась бы пустой."
+  [ -f web/dist.next/index.html ] || die "the build passed, but there is no web/dist.next/index.html — the room would open empty."
   if [ -d web/dist ]; then mv web/dist web/dist.prev; fi
   mv web/dist.next web/dist
   rm -rf web/dist.prev
 
-  # Сервер — один файл, и подмена его работающему процессу не видна вовсе: node
-  # прочитал его при старте. Новый возьмётся перезапуском службы восьмым шагом.
+  # The server is one file, and swapping it is not visible to the running
+  # process at all: node read it at startup. The new one is picked up by the
+  # service restart in step eight.
   npm run build -w @colloq/server
-  [ -f server/dist/server.js ] || die "сборка прошла, а server/dist/server.js нет — смотрите вывод выше."
+  [ -f server/dist/server.js ] || die "the build passed, but there is no server/dist/server.js — see the output above."
 
-  say "${BOLD}6/$steps${OFF} образ ядра"
-  # Без собранного образа окружения инстанс поднимется, но семинар вести не
-  # сможет: комната просит `colloq-kernel:<окружение>`, и его нет. Раньше это
-  # делал `make up` заодно со сборкой всего стека; здесь стека нет, и шаг стал
-  # виден. Уже собранный образ не пересобирается — это и есть идемпотентность.
+  say "${BOLD}6/$steps${OFF} kernel image"
+  # Without a built environment image the instance comes up but cannot run a
+  # seminar: a room asks for `colloq-kernel:<environment>`, and it is not
+  # there. `make up` used to do this along with building the whole stack; here
+  # there is no stack, and the step became visible. An image that is already
+  # built is not rebuilt — that is the idempotence.
   local env_name; env_name="$(read_env KERNEL_ENV)"; env_name="${env_name:-base}"
   if docker image inspect "colloq-kernel:$env_name" >/dev/null 2>&1 && ! kernel_recipe_newer "$env_name"; then
-    say "${DIM}    colloq-kernel:$env_name уже собран${OFF}"
+    say "${DIM}    colloq-kernel:$env_name is already built${OFF}"
   else
-    say "${DIM}    собираю colloq-kernel:$env_name — это долго, минуты${OFF}"
+    say "${DIM}    building colloq-kernel:$env_name — this is slow, minutes${OFF}"
     make --no-print-directory env-build NAME="$env_name"
   fi
 
-  say "${BOLD}7/$steps${OFF} каталоги и владельцы"
+  say "${BOLD}7/$steps${OFF} directories and owners"
   mkdir -p data workspace
-  # data/ — только сервера. Он root, поэтому владельца здесь не меняем вовсе:
-  # база, ключ подписи и токен установки остаются за тем, кто их пишет.
-  # (Каталог мог достаться от прежней формы с владельцем 1000 — root пишет туда
-  # и так, ломать ничего не нужно.)
+  # data/ belongs to the server alone. It is root, so the owner is not changed
+  # here at all: the database, the signing key and the setup token stay with
+  # whoever writes them. (The directory may have come from the old form with
+  # owner 1000 — root writes there anyway, nothing needs breaking.)
   #
-  # workspace/ — общий с ядром: сервер кладёт туда загрузки, ядро комнаты пишет
-  # результаты ячеек от uid 1000. Группа ядра и бит setgid делают то, что при
-  # прежних формах получалось само собой (там обе стороны были uid 1000): всё
-  # новое внутри достаётся этой группе, а UMask=0002 из юнита даёт ей право
-  # писать. Без этой пары первая же ячейка с open(...,'w') падает
-  # PermissionError на зелёном экране.
+  # workspace/ is shared with the kernel: the server puts uploads there, the
+  # room's kernel writes cell results as uid 1000. The kernel's group and the
+  # setgid bit do what happened by itself in the old forms (both sides were
+  # uid 1000 there): everything new inside goes to that group, and UMask=0002
+  # from the unit gives it the right to write. Without this pair the very
+  # first cell with open(...,'w') fails with PermissionError on a green screen.
   #
-  # Группа рекурсивно, права — только каталогам. Владельца файлов внутри не
-  # трогаем вовсе: то, что писало ядро, принадлежит ему же и им правится, а
-  # став root:<группа> с прежними 0644 стало бы для него нередактируемым.
+  # The group recursively, the permissions only on directories. The owner of
+  # the files inside is not touched at all: what the kernel wrote belongs to
+  # it and is edited by it, and as root:<group> with the old 0644 it would
+  # become uneditable for it.
   #
-  # Номер группы не прибит, а спрошен у самого образа: `runner` в
-  # kernel/Dockerfile заводится с uid 1000, но группу ему выдаёт useradd — и
-  # если в родительском образе (окружение может строиться поверх CUDA-базы)
-  # gid 1000 уже занят, она окажется другой. Прибитая тысяча тогда молча не
-  # совпала бы, и первая ячейка с записью в файл упала бы PermissionError.
+  # The group number is not hard-coded but asked from the image itself:
+  # `runner` in kernel/Dockerfile is created with uid 1000, but its group comes
+  # from useradd — and if gid 1000 is already taken in the parent image (an
+  # environment can be built on top of a CUDA base), it will be different. A
+  # hard-coded thousand would then silently not match, and the first cell that
+  # writes to a file would fail with PermissionError.
   local kgid
   kgid="$(docker run --rm "colloq-kernel:$env_name" id -g 2>/dev/null | tr -dc '0-9' || true)"
   if [ -z "$kgid" ]; then
     kgid=1000
-    say "${DIM}    у образа группу не спросил — беру 1000, как в kernel/Dockerfile${OFF}"
+    say "${DIM}    could not ask the image for its group — taking 1000, as in kernel/Dockerfile${OFF}"
   fi
-  chgrp -R "$kgid" workspace 2>/dev/null || say "${DIM}    группу $kgid поставить не вышло${OFF}"
+  chgrp -R "$kgid" workspace 2>/dev/null || say "${DIM}    could not set group $kgid${OFF}"
   find workspace -type d -exec chmod 2775 {} + 2>/dev/null || true
-  say "${DIM}    workspace/ — группа $kgid и setgid: ядро комнаты пишет туда же, куда сервер${OFF}"
+  say "${DIM}    workspace/ — group $kgid and setgid: the room's kernel writes where the server does${OFF}"
 
-  say "${BOLD}8/$steps${OFF} служба"
-  # Юнит кладётся из шаблона с подстановкой пути. Сравнение с тем, что уже
-  # лежит, — не бережливость: лишний daemon-reload на каждой переустановке
-  # прячет в журнале настоящие изменения, а тут видно, менялось ли что-то.
+  say "${BOLD}8/$steps${OFF} service"
+  # The unit is laid down from the template with the path substituted.
+  # Comparing with what is already there is not thrift: an extra daemon-reload
+  # on every reinstall hides the real changes in the journal, while here one
+  # can see whether anything changed.
   local tmp; tmp="$(mktemp)"
   sed "s#$TEMPLATE_ROOT#$REPO#g" "$TEMPLATE" > "$tmp"
   if [ -f "$UNIT" ] && cmp -s "$tmp" "$UNIT"; then
-    say "${DIM}    $UNIT не изменился${OFF}"
+    say "${DIM}    $UNIT has not changed${OFF}"
     rm -f "$tmp"
   else
     install -m 0644 "$tmp" "$UNIT"
     rm -f "$tmp"
-    say "${DIM}    $UNIT записан${OFF}"
+    say "${DIM}    $UNIT written${OFF}"
     systemctl daemon-reload
   fi
-  # enable — это «подниматься после перезагрузки». Молчаливый отказ здесь стоил
-  # бы машины, которая после планового ребута не поднимает семинар вовсе.
+  # enable means "come up after a reboot". A silent failure here would cost a
+  # machine that does not bring the seminar up at all after a planned reboot.
   systemctl enable "$SERVICE" >/dev/null 2>&1 \
-    || say "${RED}    systemctl enable не прошёл — после перезагрузки служба сама не встанет${OFF}"
-  # restart, а не start: команда одна и для первой установки, и для обновления
-  # кода, и повторный запуск не должен спотыкаться о «уже работает».
+    || say "${RED}    systemctl enable failed — after a reboot the service will not come up by itself${OFF}"
+  # restart, not start: one command serves both the first install and a code
+  # update, and a repeated run must not trip over "already running".
   systemctl restart "$SERVICE"
 
   if wait_health 90; then
     printf '\n'
-    say "${BOLD}Colloq работает службой${OFF} ${DIM}(systemd, от root)${OFF}"
+    say "${BOLD}Colloq runs as a service${OFF} ${DIM}(systemd, as root)${OFF}"
     say "  ${CYAN}$(read_env PUBLIC_URL)${OFF}"
-    say "${DIM}журнал: make service-logs · перезапуск: make service-restart${OFF}"
-    say "${DIM}наружу: make host HOST=<имя>${OFF}"
+    say "${DIM}journal: make service-logs · restart: make service-restart${OFF}"
+    say "${DIM}to the outside: make host HOST=<name>${OFF}"
   else
     explain_unhealthy
     exit 1
   fi
 }
 
-# ---------------------------------------------------------------- прочее
+# ---------------------------------------------------------------- the rest
 
 cmd_restart() {
   need_systemd
   need_root
-  installed || die "служба не установлена. Поставить: make service-install"
+  installed || die "the service is not installed. Install it: make service-install"
   systemctl restart "$SERVICE"
   if wait_health 60; then
-    say "${DIM}служба перезапущена и отвечает${OFF}"
+    say "${DIM}the service restarted and answers${OFF}"
   else
     explain_unhealthy
     exit 1
@@ -424,36 +444,37 @@ cmd_restart() {
 cmd_stop() {
   need_systemd
   need_root
-  installed || die "служба не установлена — останавливать нечего."
-  # Только сервер. Контейнеры комнат остаются жить: это ядра с переменными
-  # семинара, и убивать их ради перезапуска сервера незачем — при следующем
-  # открытии комнаты сервер найдёт их по метке и подхватит. Убрать все разом —
-  # make down.
+  installed || die "the service is not installed — nothing to stop."
+  # Only the server. Room containers stay alive: they are kernels holding the
+  # seminar's variables, and there is no reason to kill them for a server
+  # restart — the next time a room opens, the server finds them by label and
+  # picks them up. To remove them all at once: make down.
   systemctl stop "$SERVICE"
-  say "${DIM}служба остановлена. Ядра комнат остались — снять их: make down${OFF}"
+  say "${DIM}the service is stopped. Room kernels are still there — to remove them: make down${OFF}"
 }
 
 cmd_logs() {
   need_systemd
-  installed || die "служба не установлена. Поставить: make service-install"
+  installed || die "the service is not installed. Install it: make service-install"
   journalctl -u "$SERVICE" -n 80 -f
 }
 
 cmd_status() {
   need_systemd
   if ! installed; then
-    say "${DIM}служба не установлена${OFF} ${DIM}($UNIT)${OFF}"
-    say "${DIM}поставить: make service-install · другие способы: make up, make run${OFF}"
+    say "${DIM}the service is not installed${OFF} ${DIM}($UNIT)${OFF}"
+    say "${DIM}install: make service-install · other ways: make up, make run${OFF}"
     return 0
   fi
   systemctl status "$SERVICE" --no-pager -n 5 || true
   printf '\n'
-  # «active (running)» — это про процесс, а не про семинар. Отдельным вопросом
-  # спрашиваем, готов ли инстанс вести пару: база и Python комнаты.
+  # "active (running)" is about the process, not the seminar. A separate
+  # question asks whether the instance is ready to run a class: the database
+  # and the room's Python.
   if curl -fsS -m 3 "http://localhost:$PORT/api/health" >/dev/null 2>&1; then
-    say "${CYAN}готов вести семинар${OFF} ${DIM}(localhost:$PORT/api/health)${OFF}"
+    say "${CYAN}ready to run a seminar${OFF} ${DIM}(localhost:$PORT/api/health)${OFF}"
   else
-    say "${RED}семинар вести не готов${OFF}"
+    say "${RED}not ready to run a seminar${OFF}"
     curl -fsS -m 3 "http://localhost:$PORT/api/health" 2>/dev/null | head -c 400 | sed 's/^/  /' || true
     printf '\n'
   fi
@@ -467,16 +488,16 @@ case "$CMD" in
   logs)    cmd_logs ;;
   status)  cmd_status ;;
   *)
-    say "${BOLD}Colloq службой systemd${OFF} ${DIM}— сервер на хосте, ядра комнат в docker${OFF}"
-    say "  scripts/service.sh install  ${DIM}поставить и запустить (он же — обновить)${OFF}"
-    say "  scripts/service.sh restart  ${DIM}перезапустить${OFF}"
-    say "  scripts/service.sh stop     ${DIM}остановить (ядра комнат остаются)${OFF}"
-    say "  scripts/service.sh status   ${DIM}жива ли и готова ли вести семинар${OFF}"
-    say "  scripts/service.sh logs     ${DIM}журнал${OFF}"
+    say "${BOLD}Colloq as a systemd service${OFF} ${DIM}— the server on the host, room kernels in docker${OFF}"
+    say "  scripts/service.sh install  ${DIM}install and start (also: update)${OFF}"
+    say "  scripts/service.sh restart  ${DIM}restart${OFF}"
+    say "  scripts/service.sh stop     ${DIM}stop (room kernels stay)${OFF}"
+    say "  scripts/service.sh status   ${DIM}is it alive and ready to run a seminar${OFF}"
+    say "  scripts/service.sh logs     ${DIM}journal${OFF}"
     say ""
-    say "${DIM}то же через make: make service-install · service-restart · service-stop${OFF}"
-    say "${DIM}                  make service-status · service-logs${OFF}"
-    say "${DIM}Для ноутбука это не нужно: make up (всё в docker) или make run.${OFF}"
-    if [ -n "$CMD" ]; then die "не знаю команды «${CMD}»."; fi
+    say "${DIM}the same via make: make service-install · service-restart · service-stop${OFF}"
+    say "${DIM}                   make service-status · service-logs${OFF}"
+    say "${DIM}A laptop does not need this: make up (everything in docker) or make run.${OFF}"
+    if [ -n "$CMD" ]; then die "unknown command \"${CMD}\"."; fi
     ;;
 esac

@@ -1,26 +1,30 @@
 /**
- * Публичные двери соревнований — всё, что открыто по адресу `/k`.
+ * The public doors of competitions: everything open at the `/k` address.
  *
- * Здесь нет ни одной двери преподавателя: те живут в `/api/admin/competitions`
- * и спрашивают `requireStaff`. Разделение не косметическое — это граница, по
- * которой проходит ВСЁ право соревнования. Ниже не отдаётся ни код метрики, ни
- * зерно деления строк, ни скрытые ответы, ни приватный результат до открытия
- * лидерборда, ни чужая посылка, ни чужой трейс. Каждое из этих «не» стоит
- * своего теста (tests/competitions-entrants.test.mts), потому что каждое
- * ломается молча: ответ становится чуть шире, экран выглядит так же, а
- * соревнование можно выиграть, не решая задачу.
+ * There is not a single teacher door here: those live in
+ * `/api/admin/competitions` and ask for `requireStaff`. The split is not
+ * cosmetic: it is the boundary along which ALL of a competition's rights run.
+ * Nothing below serves the metric code, the row split seed, the hidden
+ * answers, the private score before the leaderboard opens, someone else's
+ * submission or someone else's trace. Each of these "nots" has its own test
+ * (tests/competitions-entrants.test.mts), because each breaks silently: the
+ * response gets a little wider, the screen looks the same, and the
+ * competition can be won without solving the task.
  *
- * ЧТО ЗДЕСЬ ЕСТЬ. Личность участника (ключ входа, вход, выход), список
- * соревнований со сводкой, страница одного, вступление, мои посылки, отправка
- * тетради файлом, отмена своей посылки, выбор зачётной, лидерборды, живой поток
- * и скачивание — открытых файлов данных и своей собственной тетради.
+ * WHAT IS HERE. The entrant's identity (sign-in key, sign-in, sign-out), the
+ * list of competitions with a summary, the page of one, joining, my
+ * submissions, sending a notebook as a file, cancelling one's own submission,
+ * choosing the scored one, leaderboards, the live stream and downloads: of
+ * the open data files and of one's own notebook.
  *
- * Отмена не убивает контейнер сама: она зовёт `cancelSubmission(id, 'entrant')`
- * прогонщика, потому что знать, что и как убивать, — его дело, а проверить, что
- * посылка ТВОЯ и ещё идёт, — здешнее.
+ * Cancelling does not kill the container itself: it calls the runner's
+ * `cancelSubmission(id, 'entrant')`, because knowing what to kill and how is
+ * the runner's business, while checking that the submission is YOURS and
+ * still running is the business here.
  *
- * ЧЕГО НЕТ НАРОЧНО. Загрузки «из тетради в занятии»: владелец убрал её из
- * макета, единственный способ прислать решение — файл.
+ * WHAT IS DELIBERATELY MISSING. Uploading "from a notebook in a class": the
+ * owner removed it from the mockup, and the only way to send a solution is a
+ * file.
  */
 import busboy from 'busboy'
 import path from 'node:path'
@@ -107,12 +111,12 @@ import type {
 } from '@shared/competitions-entrant'
 
 /*
- * Ответы собираются через `reply<T>`, а не голым `res.json({…})`.
+ * Responses are assembled through `reply<T>`, not a bare `res.json({…})`.
  *
- * `res.json` принимает `any`: поле, переименованное в `competitions-entrant.ts`,
- * не роняет ни сборку сервера, ни сборку браузера — страница просто рисует
- * пустое место там, где было число, и узнают об этом на паре. Одна аннотация
- * на дверь превращает такое расхождение в ошибку компиляции.
+ * `res.json` takes `any`: a field renamed in `competitions-entrant.ts` breaks
+ * neither the server build nor the browser build; the page simply draws an
+ * empty space where a number used to be, and people find out during the
+ * lesson. One annotation per door turns such a mismatch into a compile error.
  */
 function reply<T>(res: Response, body: T): void {
   res.json(body)
@@ -122,15 +126,16 @@ function refuse(res: Response, status: number, reason: CompetitionRefusal, error
   res.status(status).json({ error, reason })
 }
 
-/* ------------------------------------------------------------- частота */
+/* --------------------------------------------------------- rate limits */
 
 /**
- * Сколько раз с одного адреса — тем же способом, что у входа в комнату и у
- * оракула (routes/sessions.ts, routes/ai.ts).
+ * How many times from one address, the same way as for entering a room and
+ * for the Oracle (routes/sessions.ts, routes/ai.ts).
  *
- * Считается по адресу, а не по человеку, и это весь смысл: у скрипта нет
- * человека, он его заводит. Класс за одним NAT входит разом, поэтому окна
- * длинные, а числа — с запасом на поток; цикл упирается сюда в первые секунды.
+ * Counted by address, not by person, and that is the whole point: a script
+ * has no person, it creates one. A class behind one NAT comes in all at once,
+ * so the windows are long and the numbers leave room for a cohort; a loop
+ * hits this in the first seconds.
  */
 function tooOften(bucket: Map<string, number[]>, address: string | null, windowMs: number, max: number): boolean {
   if (!address) return false
@@ -142,7 +147,7 @@ function tooOften(bucket: Map<string, number[]>, address: string | null, windowM
   }
   recent.push(now)
   bucket.set(address, recent)
-  // Карта иначе растёт весь семестр: адресов за пару больше, чем людей.
+  // Otherwise the map grows all semester: a lesson brings more addresses than people.
   if (bucket.size > 5000) {
     for (const [key, hits] of bucket) if (hits.every((at) => now - at >= windowMs)) bucket.delete(key)
   }
@@ -150,27 +155,27 @@ function tooOften(bucket: Map<string, number[]>, address: string | null, windowM
 }
 
 const MINUTE = 60_000
-/** Подбор ключа: 31⁹ вариантов, так что это защита от шума, а не от перебора. */
+/** Key guessing: 31⁹ combinations, so this protects against noise, not brute force. */
 const signIns = new Map<string, number[]>()
 const SIGN_IN_WINDOW = 10 * MINUTE
 const MAX_SIGN_INS = 40
-/** Вступление заводит СТРОКУ УЧАСТНИКА — ровно то, чем скрипт раздувает базу. */
+/** Joining creates an ENTRANT ROW, exactly what a script bloats the database with. */
 const joins = new Map<string, number[]>()
 const JOIN_WINDOW = 10 * MINUTE
 const MAX_JOINS = 60
-/** Отправка: настоящий предел — дневная норма, этот стоит за разбор тетради. */
+/** Sending: the real limit is the daily quota; this one pays for parsing the notebook. */
 const uploads = new Map<string, number[]>()
 const UPLOAD_WINDOW = MINUTE
 const MAX_UPLOADS = 12
 
-/* --------------------------------------------------------------- помощники */
+/* ----------------------------------------------------------------- helpers */
 
 /**
- * Соревнование, каким его видит участник, — или `null`.
+ * The competition as an entrant sees it, or `null`.
  *
- * Черновик не существует на `/k` вовсе: у него ещё нет ни данных, ни
- * проверенного бейзлайна, а адрес уже есть, и открытый заранее он раздал бы
- * классу задачу, которую преподаватель ещё пишет.
+ * A draft does not exist on `/k` at all: it has no data and no verified
+ * baseline yet, but it already has an address, and opened early it would
+ * hand the class a task the teacher is still writing.
  */
 function visible(slugOrId: string): Competition | null {
   const competition = findCompetition(slugOrId)
@@ -178,26 +183,28 @@ function visible(slugOrId: string): Competition | null {
   return competition
 }
 
-/** Публичное число бейзлайна — строка «бейзлайн 0.0587» в карточке (P1). */
+/** The baseline's public number: the "baseline 0.0587" line in the card (P1). */
 function baselineScore(competition: Competition): number | null {
   if (!competition.baselineSubmissionId) return null
   return getSubmission(competition.baselineSubmissionId)?.publicScore ?? null
 }
 
-/** Кому записана сэмпл-тетрадь: её строку таблица отбивает пунктиром внизу. */
+/** Who the sample notebook is recorded under: the table sets its row off with a dashed line at the bottom. */
 function baselineEntrantOf(competition: Competition): string | null {
   return competition.baselineEntrantId ?? null
 }
 
 /**
- * Сводка соревнования БЕЗ базового решения — теми же числами, что у панели.
+ * The competition summary WITHOUT the baseline solution, with the same
+ * numbers as the panel.
  *
- * Сэмпл-тетрадь записана обычной посылкой служебного участника, иначе её
- * незачем было бы гонять тем же путём. Но «2 участника» на соревновании, где
- * человек один, и «лидер 0.5023», где лидер — это бейзлайн, — ровно та мелочь,
- * по которой перестают верить всему экрану. Панель убирает её через
- * `withoutBaseline` (competitions/panel.ts), и здесь то же самое: два разных
- * ответа на один вопрос хуже одного неверного.
+ * The sample notebook is recorded as an ordinary submission of a service
+ * entrant; otherwise there would be no point running it the same way. But "2
+ * entrants" in a competition with one person, and "leader 0.5023" where the
+ * leader is the baseline, are exactly the small things that make people stop
+ * trusting the whole screen. The panel removes it through `withoutBaseline`
+ * (competitions/panel.ts), and it is the same here: two different answers to
+ * one question are worse than one wrong one.
  */
 function summaryOf(competition: Competition): CompetitionCounts {
   const baseline = baselineEntrantOf(competition)
@@ -209,11 +216,11 @@ function summaryOf(competition: Competition): CompetitionCounts {
 }
 
 /**
- * Строка лидерборда с именем: место без имени не показать.
+ * A leaderboard row with a name: a place cannot be shown without a name.
  *
- * Номер посылки и то, выбрал ли её автор, едут сюда ради колонки «ПОСЫЛКА В
- * ЗАЧЁТ» (P3): «#12 · выбор участника» и «#19 · лучший публичный результат» —
- * разные вещи, и по одному идентификатору их не различить.
+ * The submission number and whether its author chose it come here for the
+ * "SCORED SUBMISSION" column (P3): "#12 · entrant's choice" and "#19 · best
+ * public score" are different things, and one id cannot tell them apart.
  */
 function withNames(
   rows: readonly RankedRow[],
@@ -238,18 +245,18 @@ function withNames(
   })
 }
 
-/* ----------------------------------------------------------- живая очередь */
+/* -------------------------------------------------------------- live queue */
 
 /**
- * Сколько в среднем идёт посылка ЭТОГО соревнования, мс.
+ * How long a submission of THIS competition runs on average, in ms.
  *
- * Своё число, а не общее по инстансу: рядом может идти соревнование, где
- * тетрадь учит бустинг десять минут, и «≈ 6 мин» под простой задачей — это
- * обещание, из-за которого человек уходит с экрана.
+ * Its own number, not the instance-wide one: next door there may be a
+ * competition where a notebook trains boosting for ten minutes, and "≈ 6 min"
+ * under a simple task is a promise that makes a person leave the screen.
  *
- * По последним двадцати заходам, а не по всем: соревнование живёт неделями, и
- * первые посылки — это чужая задача, решённая в три строки до того, как класс
- * взялся за настоящую.
+ * Over the last twenty runs, not all of them: a competition lives for weeks,
+ * and the first submissions are a different task, solved in three lines
+ * before the class took on the real one.
  */
 function averageRunMs(competition: Competition): number | null {
   const spans = listSubmissions(competition.id)
@@ -261,12 +268,12 @@ function averageRunMs(competition: Competition): number | null {
 }
 
 /**
- * Очередь глазами одного человека — то, что движется на экране само.
+ * The queue through one person's eyes: what moves on the screen by itself.
  *
- * Место считается по ВСЕЙ очереди инстанса и тем же порядком, каким берёт
- * работу исполнитель (`fairOrder`): «третья в очереди» должно означать то же
- * самое, что означает оно у преподавателя, иначе два экрана спорят о числе,
- * которое человек проверяет секундомером.
+ * The place is counted over the WHOLE instance queue and in the same order
+ * the runner takes work (`fairOrder`): "third in the queue" must mean the
+ * same thing it means for the teacher, otherwise two screens argue about a
+ * number the person checks with a stopwatch.
  */
 function liveOf(competition: Competition, me: Entrant, now = Date.now()): SubmissionLive[] {
   const mine = listEntrantSubmissions(competition.id, me.id).filter(
@@ -294,9 +301,9 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
     const at = ordered.findIndex((row) => row.submissionId === submission.id)
     const waiting = rows.find((row) => row.submissionId === submission.id && row.state === 'waiting')
     /*
-     * Чья посылка идёт прямо передо мной — и только МОЯ: «запуск после
-     * завершения посылки #12» про чужой номер не говорит ничего, а сам номер
-     * это чужая строка в чужом списке.
+     * Whose submission runs right before mine, and only MINE: "starts after
+     * submission #12 finishes" says nothing about someone else's number, and
+     * the number itself is someone else's row in someone else's list.
      */
     const ahead = at < 0
       ? null
@@ -318,7 +325,7 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
   })
 }
 
-/** «Мои посылки» одним куском — его же отдаёт живой поток. */
+/** "My submissions" in one piece; the live stream serves the same piece. */
 function submissionsView(competition: Competition, me: Entrant): EntrantSubmissions {
   const now = Date.now()
   const open = privateBoardOpen(competition, now)
@@ -335,12 +342,13 @@ function submissionsView(competition: Competition, me: Entrant): EntrantSubmissi
 }
 
 /**
- * Что человек знает о себе в этом соревновании — блок «ВЫ» карточки P1.
+ * What a person knows about themselves in this competition: the "YOU" block
+ * of the P1 card.
  *
- * Место считается СРЕДИ ЛЮДЕЙ: базовое решение стоит в таблице обычной
- * строкой (так в макете P3), но в знаменателе везде участники, и место из
- * общей таблицы однажды даёт «2 из 1» — на соревновании, где бейзлайн ещё
- * никто не обошёл.
+ * The place is counted AMONG PEOPLE: the baseline solution sits in the table
+ * as an ordinary row (as in the P3 mockup), but the denominator is entrants
+ * everywhere, and a place from the combined table would one day give "2 of
+ * 1" in a competition where nobody has beaten the baseline yet.
  */
 function mineIn(competition: Competition, me: Entrant) {
   const baseline = baselineEntrantOf(competition)
@@ -357,7 +365,7 @@ function mineIn(competition: Competition, me: Entrant) {
   }
 }
 
-/** Ключ и ссылка — только своему хозяину, и только этими двумя полями. */
+/** The key and the link go only to their owner, and only in these two fields. */
 function keyCard(entrant: Entrant): { key: string | null; link: string | null } {
   const key = entrantKeyOf(entrant.id)
   return { key, link: key ? `${config.publicUrl}${ENTRANT_SIGN_IN_PATH}${key}` : null }
@@ -373,24 +381,24 @@ function sendHeld(res: Response, hold: () => HeldFile, name: string): void {
   downloadHeldFile(res, file, name)
 }
 
-/* ------------------------------------------------------------------ двери */
+/* ------------------------------------------------------------------ doors */
 
 export function competitionRoutes(inventory = readEnvironmentInventory): Router {
   const router = Router()
 
   /*
-   * Печенье продлевается работой на ВСЕХ страницах `/k`, а не только там, где
-   * спрашивают право: человек неделю читает задачу и лидерборд, ничего не
-   * отправляя, и выйти из-за этого не должен.
+   * The cookie is extended by activity on ALL `/k` pages, not only where a
+   * right is asked for: a person may read the task and the leaderboard for a
+   * week without sending anything, and must not be signed out because of it.
    */
   router.use('/api/k', (req, res, next) => {
     slideEntrantCookie(req, res)
     next()
   })
 
-  /* ------------------------------------------------------------ личность */
+  /* ------------------------------------------------------------ identity */
 
-  /** Кто я, мой ключ и ссылка для входа — карточка «ВАШ КЛЮЧ ВХОДА» (P1). */
+  /** Who I am, my key and sign-in link: the "YOUR SIGN-IN KEY" card (P1). */
   router.get('/api/k/me', (req, res) => {
     const entrant = currentEntrant(req)
     if (!entrant) return reply<EntrantMe>(res, { entrant: null, key: null, link: null })
@@ -398,12 +406,14 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
   })
 
   /**
-   * Вход по ключу — и по полю «Введите ключ», и по ссылке `/k/t/<ключ>`.
+   * Sign-in by key, both from the "Enter your key" field and from the
+   * `/k/t/<key>` link.
    *
-   * Ключ едет телом POST, а не в адресе двери: адрес попадает в журнал сервера
-   * и в заголовок `Referer` любой картинки на странице. То, что он всё-таки
-   * виден в строке браузера у ссылки для входа, — плата за саму ссылку, и
-   * страница стирает его оттуда сразу после обмена.
+   * The key travels in the POST body, not in the door's address: the address
+   * ends up in the server log and in the `Referer` header of any image on the
+   * page. That it is still visible in the browser's address bar for the
+   * sign-in link is the price of the link itself, and the page erases it from
+   * there right after the exchange.
    */
   router.post('/api/k/sign-in', (req, res) => {
     if (tooOften(signIns, addressOf(req), SIGN_IN_WINDOW, MAX_SIGN_INS)) {
@@ -415,10 +425,11 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     const entrant = entrantByKey(key)
     if (!entrant) return refuse(res, 404, 'key_unknown', tr('competitions.refusal.keyUnknown'))
     /*
-     * «Отключён» и «нет такого» — разные отказы нарочно (см. store · entrantByKey):
-     * в первом случае человеку уже выдали новый ключ и идти надо за ним, во
-     * втором он ошибся буквой. Одно слово на оба случая отправило бы половину
-     * класса к преподавателю за ключом, который у них и так есть.
+     * "Disabled" and "no such key" are different refusals on purpose (see
+     * store · entrantByKey): in the first case the person was already issued a
+     * new key and has to go get it, in the second they mistyped a letter. One
+     * word for both cases would send half the class to the teacher for a key
+     * they already have.
      */
     if (entrant.disabled) return refuse(res, 403, 'key_disabled', tr('competitions.refusal.keyDisabled'))
     issueEntrantCookie(res, entrant)
@@ -430,9 +441,9 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     res.json({ ok: true })
   })
 
-  /* ------------------------------------------------------- соревнования */
+  /* ------------------------------------------------------- competitions */
 
-  /** Список для P1: идущие и завершённые, с тем, что человек знает о себе. */
+  /** The list for P1: running and finished ones, with what the person knows about themselves. */
   router.get('/api/k/competitions', (req, res) => {
     const me = currentEntrant(req)
     const mine = me ? myCompetitionIds(me.id) : new Set<string>()
@@ -454,15 +465,16 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     reply<EntrantCompetitionList>(res, { entrant: me, competitions: rows })
   })
 
-  /** Страница одного соревнования: задача, файлы на скачивание, условия проверки. */
+  /** The page of one competition: the task, the files to download, the checking conditions. */
   router.get('/api/k/competitions/:slug', async (req, res) => {
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const me = currentEntrant(req)
     const summary = summaryOf(competition)
     reply<EntrantCompetitionView>(res, {
-      // publicCompetition — не украшение ответа, а единственное место, где с
-      // соревнования снимают код метрики и зерно деления строк.
+      // publicCompetition is not decoration of the response but the only place
+      // where the metric code and the row split seed are stripped from the
+      // competition.
       competition: publicCompetition(competition),
       capabilities: await competitionCapabilities(competition.environment, competitionRevision(competition.id)?.imageDigest),
       files: listFiles(competition.id, 'open').map((file) => ({
@@ -496,20 +508,20 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
   })
 
   /**
-   * «УЧАСТВОВАТЬ»: назваться и получить ключ.
+   * "JOIN": give a name and get a key.
    *
-   * Одна дверь на два случая — новичок и вернувшийся, — потому что на экране
-   * это одна кнопка. Новичку заводится личность инстанса и выдаётся ключ,
-   * который он увидит один раз крупно; вошедший просто вступает, и ключа в
-   * ответе нет: он у него уже есть.
+   * One door for two cases, a newcomer and a returning person, because on the
+   * screen it is one button. A newcomer gets an instance identity and a key,
+   * which they will see once in large print; a signed-in person simply joins,
+   * and there is no key in the response: they already have it.
    */
   router.post('/api/k/competitions/:slug/join', (req, res) => {
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     /*
-     * Вступают только в идущее. У завершённого на P1 нет кнопки «УЧАСТВОВАТЬ»
-     * вовсе — одна ссылка «Итоги и разбор», — и заводить в нём новых людей
-     * значит добавлять имена в таблицу, которая уже посчитана.
+     * One can join only a running one. A finished one has no "JOIN" button on
+     * P1 at all, just a "Results and review" link, and adding new people to it
+     * would mean adding names to a table that has already been counted.
      */
     const accepting = submissionsOpen(competition, Date.now())
     if (accepting === 'not_open') return refuse(res, 403, 'not_open', tr('competitions.refusal.notOpen'))
@@ -525,9 +537,9 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     }
 
     /*
-     * Тёзка проверяется ДО того, как заводится новая личность: иначе отказ
-     * «такое имя занято» оставлял бы за собой участника без соревнования и без
-     * ключа, которого человек не видел, — строку, которую некому убрать.
+     * A namesake is checked BEFORE a new identity is created: otherwise a
+     * "this name is taken" refusal would leave behind an entrant with no
+     * competition and a key the person never saw, a row nobody can remove.
      */
     if (known) {
       if (joinCompetition(competition.id, known.id, name) === 'taken') {
@@ -537,8 +549,8 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     }
     const minted = createEntrant(name)
     if (joinCompetition(competition.id, minted.entrant.id, name) === 'taken') {
-      // Личность остаётся: она уровня инстанса, и человек вступит под другим
-      // именем тем же ключом. Печенье поэтому выдаётся и здесь.
+      // The identity stays: it is instance-level, and the person will join
+      // under another name with the same key. So the cookie is issued here too.
       issueEntrantCookie(res, minted.entrant)
       return refuse(res, 409, 'name_taken', tr('competitions.refusal.nameTaken'))
     }
@@ -551,14 +563,16 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
   })
 
   /**
-   * Лидерборды — оба сразу, но приватный только когда он открыт.
+   * Both leaderboards at once, but the private one only when it is open.
    *
-   * Одной дверью, потому что экран P3 показывает их рядом: «ИТОГОВЫЙ MAPE» и
-   * «ПУБЛИЧНЫЙ MAPE · место» в соседних колонках, а стрелка сдвига считается из
-   * разницы мест. Два запроса за этим дали бы две картины разных секунд.
+   * One door, because the P3 screen shows them side by side: "FINAL MAPE" and
+   * "PUBLIC MAPE · place" in neighboring columns, and the shift arrow is
+   * computed from the difference in places. Two requests for this would give
+   * two pictures of different seconds.
    *
-   * `private: null` — не «пусто», а «ещё закрыт», и это ровно то, ради чего
-   * приватная часть существует: под неё нельзя подогнаться, обновляя страницу.
+   * `private: null` means not "empty" but "still closed", and that is exactly
+   * what the private part exists for: it cannot be fitted by refreshing the
+   * page.
    */
   router.get('/api/k/competitions/:slug/leaderboard', (req, res) => {
     const competition = visible(req.params.slug)
@@ -577,16 +591,17 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     })
   })
 
-  /** Открытые файлы данных. Скрытых ответов здесь нет — и другой двери тоже. */
+  /** Open data files. There are no hidden answers here, and no other door either. */
   router.get('/api/k/competitions/:slug/files/:name', (req, res) => {
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const name = req.params.name
     /*
-     * Имя сверяется со СПИСКОМ открытых файлов, а не только с буквами пути.
-     * `storage.checkName` не пускает `..` и слэши, но имя `solution.csv` он
-     * пропустит — и если такой файл когда-нибудь окажется в `data/`, дверь
-     * отдаст его. Список — единственный источник правды о том, что открыто.
+     * The name is checked against the LIST of open files, not only against the
+     * letters of the path. `storage.checkName` rejects `..` and slashes, but it
+     * lets the name `solution.csv` through, and if such a file ever ends up in
+     * `data/`, the door would serve it. The list is the only source of truth
+     * about what is open.
      */
     if (!listFiles(competition.id, 'open').some((file) => file.name === name)) {
       return refuse(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
@@ -594,9 +609,9 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     sendHeld(res, () => holdOpenFile(competition.id, name), name)
   })
 
-  /* ------------------------------------------------------------- посылки */
+  /* --------------------------------------------------------- submissions */
 
-  /** «Мои посылки»: приватного числа и трейса здесь нет — см. entrantSubmission. */
+  /** "My submissions": no private score and no trace here; see entrantSubmission. */
   router.get('/api/k/competitions/:slug/submissions', requireEntrant, (req, res) => {
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
@@ -604,17 +619,17 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
   })
 
   /**
-   * То же самое, но само, — пока у человека что-то идёт.
+   * The same, but pushed by itself, while the person has something running.
    *
-   * Server-sent events, как у живого журнала сборки окружений и как у экрана
-   * преподавателя (`/api/admin/competitions/:id/stream`): поток в одну сторону,
-   * браузер переподключается сам, и никакого второго протокола ради трёх чисел.
-   * Сокет комнаты сюда не годится вовсе — это страница вне занятия, у неё нет
-   * ни комнаты, ни документа, ни присутствия.
+   * Server-sent events, like the live environment build log and the teacher's
+   * screen (`/api/admin/competitions/:id/stream`): a one-way stream, the
+   * browser reconnects by itself, and no second protocol for the sake of
+   * three numbers. The room socket does not fit here at all: this page lives
+   * outside a class and has no room, no document and no presence.
    *
-   * Отдаётся не по таймеру, а по изменению: страница, на которой ничего не
-   * происходит, не должна перерисовываться раз в секунду — а происходит здесь
-   * ровно две вещи, смена этапа и смена места в очереди.
+   * It is sent on change, not on a timer: a page where nothing happens must
+   * not redraw every second, and exactly two things happen here: a stage
+   * change and a change of place in the queue.
    */
   router.get('/api/k/competitions/:slug/stream', requireEntrant, (req, res) => {
     const competition = visible(req.params.slug)
@@ -624,8 +639,8 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-store',
       Connection: 'keep-alive',
-      // Ретранслятор по умолчанию копит ответ — то есть превращает живой
-      // экран в один пакет в конце пары.
+      // By default the relay buffers the response, that is, turns a live
+      // screen into one packet at the end of the lesson.
       'X-Accel-Buffering': 'no',
     })
     let last = ''
@@ -647,13 +662,14 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
   })
 
   /**
-   * Отправка тетради файлом.
+   * Sending a notebook as a file.
    *
-   * Отказы стоят в том порядке, в каком человек их понимает: сначала «приём
-   * закрыт», потом «вы не вступили», потом «прошлая ещё идёт», потом «на
-   * сегодня хватит», и только после этого разбирается файл. Наоборот было бы
-   * жестоко: двадцать мегабайт по телефонному интернету ради ответа «дедлайн
-   * прошёл ещё вчера».
+   * The refusals come in the order a person understands them: first
+   * "submissions are closed", then "you have not joined", then "the previous
+   * one is still running", then "that is enough for today", and only after
+   * that is the file parsed. The other way round would be cruel: twenty
+   * megabytes over mobile internet for the answer "the deadline passed
+   * yesterday".
    */
   router.post('/api/k/competitions/:slug/submissions', requireEntrant, async (req, res) => {
     const competition = visible(req.params.slug)
@@ -664,20 +680,20 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (accepting === 'not_open') return refuse(res, 403, 'not_open', tr('competitions.refusal.notOpen'))
     if (accepting === 'closed') return refuse(res, 403, 'closed', tr('competitions.refusal.closed'))
     /*
-     * «Вступил» — это строка в таблице ИЛИ хоть одна прежняя посылка. Второе
-     * условие держит на плаву соревнования, заведённые до того, как вступление
-     * стало отдельным шагом: человек с двенадцатью посылками не должен на
-     * тринадцатой услышать «сначала вступите».
+     * "Joined" means a row in the table OR at least one earlier submission.
+     * The second condition keeps afloat competitions created before joining
+     * became a separate step: a person with twelve submissions must not hear
+     * "join first" on the thirteenth.
      */
     const joined = joinedAt(competition.id, me.id) !== null
       || listEntrantSubmissions(competition.id, me.id).length > 0
     if (!joined) return refuse(res, 403, 'not_joined', tr('competitions.refusal.notJoined'))
     /*
-     * Одна посылка в полёте на человека — не из вежливости к очереди, а из
-     * честности: исполнитель один на весь инстанс, и десять тетрадей одного
-     * человека, поставленные разом, это пара, в которой больше никто ничего не
-     * отправит. Очередь и так пропускает его вперёд по разу (store · turn), но
-     * это про порядок, а не про число.
+     * One submission in flight per person, not out of politeness to the queue
+     * but out of fairness: there is one runner for the whole instance, and ten
+     * notebooks from one person queued at once make a lesson in which nobody
+     * else sends anything. The queue already takes one at a time from each
+     * person (store · turn), but that is about order, not about count.
      */
     if (inFlightCount(competition.id, me.id) > 0) {
       return refuse(res, 409, 'in_flight', tr('competitions.refusal.inFlight'))
@@ -705,23 +721,24 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
         putSubmissionNotebook(competition.id, submission.id, body)
       } catch (error) {
         /*
-         * Тетрадь не легла на диск — значит исполнять нечего. Строка снимается
-         * с очереди и помечается снятой: оставить её ждущей значило бы отдать
-         * исполнителю посылку, которая в первую же секунду скажет «нет
-         * тетради», и потратить на это дневную норму человека.
+         * The notebook did not make it to disk, so there is nothing to run.
+         * The row is taken off the queue and marked cancelled: leaving it
+         * waiting would hand the runner a submission that says "no notebook"
+         * in the very first second, and spend the person's daily quota on it.
          */
         leaveQueue(submission.id)
         updateSubmission(submission.id, { state: 'cancelled', stage: 'accepted' })
         throw error
       }
       /*
-       * Будим исполнителя сразу, а не ждём его секундного такта.
+       * Wake the runner at once instead of waiting for its one-second tick.
        *
-       * Тетрадь уже на диске, место в очереди может быть свободно — и всё же
-       * посылка до секунды стояла бы в «В ОЧЕРЕДИ» просто потому, что таймер
-       * ещё не тикнул. Студент в эту секунду смотрит на экран телефона и
-       * ничего другого не делает. Все двери преподавателя будят насос тем же
-       * вызовом; эта осталась единственной, которая молчала.
+       * The notebook is already on disk, a queue slot may be free, and still
+       * the submission would sit in "QUEUED" for up to a second simply because
+       * the timer has not ticked yet. The student is looking at the phone
+       * screen in that second and doing nothing else. All the teacher doors
+       * wake the pump with the same call; this one was the only one that
+       * stayed silent.
        */
       wakeCompetitionPump()
       reply<SubmissionAccepted>(res, {
@@ -734,7 +751,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     })
   })
 
-  /** «Выбрать в зачёт». Чужую посылку выбрать нельзя — это проверяет store. */
+  /** "Choose for scoring". Someone else's submission cannot be chosen; the store checks that. */
   router.post('/api/k/competitions/:slug/submissions/:id/choose', requireEntrant, (req, res) => {
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
@@ -744,19 +761,21 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     }
     if (submission.entrantId !== me.id) {
-      // 404 сказал бы «такой посылки нет», и это было бы неправдой; 403 с этим
-      // словом честнее и ничего не выдаёт: номер посылки человек и так видел.
+      // A 404 would say "no such submission", and that would be untrue; a 403
+      // with these words is more honest and gives nothing away: the person has
+      // already seen the submission number.
       return refuse(res, 403, 'forbidden', tr('competitions.refusal.notYours'))
     }
     /*
-     * Выбор замерзает на дедлайне — вместе с приёмом.
+     * The choice freezes at the deadline, together with submissions.
      *
-     * Иначе приватная часть перестаёт быть скрытой для всех, кто прислал больше
-     * одной посылки: итоги открываются, человек видит приватное число КАЖДОЙ
-     * своей посылки в «моих посылках» и ставит в зачёт лучшую. Это не обход
-     * правила, а прямая подгонка под скрытую часть — ровно то, ради чего она и
-     * заведена. Свободы это не отнимает: до дедлайна выбор меняют сколько
-     * угодно раз.
+     * Otherwise the private part stops being hidden for everyone who sent more
+     * than one submission: the results open, a person sees the private score
+     * of EACH of their submissions in "my submissions" and picks the best one
+     * for scoring. That is not getting around the rule but outright fitting to
+     * the hidden part, exactly what it was introduced to prevent. This takes
+     * away no freedom: before the deadline the choice can be changed any
+     * number of times.
      */
     if (submissionsOpen(competition, Date.now()) !== 'open') {
       return refuse(res, 403, 'closed', tr('competitions.refusal.chooseClosed'))
@@ -767,21 +786,24 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (!chooseSubmission(competition.id, me.id, submission.id)) {
       return refuse(res, 409, 'invalid', tr('competitions.refusal.notScored'))
     }
-    // Весь список целиком, а не одна строка: выбор снимает пометку с прежней
-    // посылки, и экран, дорисовавший только нажатую, показал бы две «в зачёт».
+    // The whole list, not one row: the choice removes the mark from the
+    // previous submission, and a screen that redrew only the pressed one would
+    // show two "scored".
     reply<EntrantSubmissions>(res, submissionsView(competition, me))
   })
 
   /**
-   * «Отменить» — снять свою посылку с очереди или оборвать её прогон.
+   * "Cancel": take one's submission off the queue or cut its run short.
    *
-   * Ждущая уходит из очереди строкой в базе; идущую снимает прогонщик, убивая
-   * контейнер (runner · cancelSubmission). Отдельной двери «убить» у участника
-   * нет и быть не может: он называет посылку, а что с ней делать — решает тот,
-   * кто знает, чем она сейчас занята.
+   * A waiting one leaves the queue as a database row; a running one is taken
+   * down by the runner, which kills the container (runner ·
+   * cancelSubmission). An entrant has no separate "kill" door and cannot have
+   * one: they name the submission, and what to do with it is decided by
+   * whoever knows what it is busy with right now.
    *
-   * `false` от прогонщика — не ошибка, а «не успели»: пока запрос ехал, прогон
-   * кончился сам. Этот случай в макете не нарисован, и врать про него нельзя.
+   * `false` from the runner is not an error but "too late": while the request
+   * was travelling, the run ended by itself. This case is not drawn in the
+   * mockup, and lying about it is not allowed.
    */
   router.post('/api/k/competitions/:slug/submissions/:id/cancel', requireEntrant, async (req, res) => {
     const competition = visible(req.params.slug)
@@ -801,11 +823,13 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
   })
 
   /**
-   * Своя тетрадь: исполненная, а до конца прогона — присланная.
+   * One's own notebook: the executed one, and the sent one until the run
+   * ends.
    *
-   * «Скачать тетрадь с выводом» (P2) — это то, ради чего человек вообще
-   * смотрит на упавшую посылку: трейс в списке короткий, а причина бывает
-   * видна только в выводе соседней ячейки.
+   * "Download the notebook with output" (P2) is what a person looks at a
+   * failed submission for in the first place: the trace in the list is short,
+   * and the cause is sometimes visible only in the output of a neighboring
+   * cell.
    */
   router.get('/api/k/competitions/:slug/submissions/:id/notebook', requireEntrant, (req, res) => {
     const competition = visible(req.params.slug)
@@ -834,28 +858,28 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
   return router
 }
 
-/* ------------------------------------------------------- разбор тетради */
+/* ----------------------------------------------------- notebook parsing */
 
 /**
- * Прочитать одну тетрадь из multipart и отдать её байты.
+ * Read one notebook from multipart and hand over its bytes.
  *
- * В память, а не во временный файл, и это решение про число: потолок здесь
- * свой — `LIMITS.notebookBytes`, двадцать мегабайт, — потому что `nbformat.read`
- * в контейнере всё равно разберёт файл целиком. Настоящие тетради на два
- * порядка меньше; те, что больше, — это забытый вывод ячеек с картинками, и
- * честный ответ на них «очистите вывод», а не «не хватило памяти» через десять
- * минут исполнения.
+ * Into memory, not into a temp file, and that is a decision about the
+ * number: the cap here is its own, `LIMITS.notebookBytes`, twenty megabytes,
+ * because `nbformat.read` in the container will parse the whole file anyway.
+ * Real notebooks are two orders of magnitude smaller; bigger ones carry
+ * forgotten cell output with images, and the honest answer to them is "clear
+ * the output", not "out of memory" after ten minutes of execution.
  *
- * `config.maxUploadBytes` (файлы комнаты) здесь не годится ни как потолок, ни
- * как ориентир: он про датасет, который студент приносит на пару.
+ * `config.maxUploadBytes` (room files) is no good here either as a cap or as
+ * a guide: it is about the dataset a student brings to the lesson.
  */
 function readNotebook(req: Request, res: Response, done: (fileName: string, body: Buffer, bundleId: string | null) => void | Promise<void>): void {
   let bb: ReturnType<typeof busboy>
   try {
     bb = busboy({
       headers: req.headers,
-      // Иначе busboy читает имя файла как latin-1, и `модель.ipynb` приезжает
-      // крокозябрами — ровно та же правка, что в routes/files.ts.
+      // Otherwise busboy reads the file name as latin-1, and `модель.ipynb`
+      // arrives as mojibake: exactly the same fix as in routes/files.ts.
       defParamCharset: 'utf8',
       limits: { fileSize: LIMITS.notebookBytes, files: 1, fields: 2, fieldSize: 4096 },
     })
@@ -915,9 +939,10 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
     }
     const body = Buffer.concat(chunks)
     /*
-     * Разбор ДО очереди. Битый JSON в одноразовом контейнере становится «упала
-     * тетрадь» — приговором коду, которого человек не писал, да ещё и потраченной
-     * посылкой из пяти дневных (@shared/competitions · whyNotebookRefused).
+     * Parsing BEFORE the queue. Broken JSON in a one-off container becomes
+     * "the notebook failed": a verdict on code the person never wrote, and a
+     * spent submission out of the five per day on top of that
+     * (@shared/competitions · whyNotebookRefused).
      */
     const refusal = whyNotebookRefused(body.toString('utf8'))
     if (refusal) return say(400, 'invalid', refusal)

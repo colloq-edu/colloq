@@ -1,25 +1,27 @@
 /**
- * README и .env.example — тоже контракт, и здесь он сверяется с кодом.
+ * README and .env.example are a contract too, and here it is checked against
+ * the code.
  *
- * Две вещи, о которых преподавателю не говорили нигде, а стоили они пары.
+ * Two things a teacher was told nowhere, and they cost a class.
  *
- * BIND_ADDR знали только код (server/src/index.ts) и юнит systemd. Ни таблица
- * настроек README, ни .env.example про него не говорили, поэтому `make run` на
- * ноутбуке в аудитории раздавал комнату ещё и по http://<ip-ноутбука>:3000 —
- * мимо выданной ссылки и мимо туннеля. Под `make up` та же дверь была открыта
- * публикацией порта без адреса, хотя docker-compose.dev.yml ровно это для 8888
- * закрывает и объясняет.
+ * BIND_ADDR was known only to the code (server/src/index.ts) and the systemd
+ * unit. Neither the README settings table nor .env.example mentioned it, so
+ * `make run` on a laptop in a classroom also served the room at
+ * http://<laptop-ip>:3000 — bypassing the issued link and the tunnel. Under
+ * `make up` the same door was open through publishing the port without an
+ * address, even though docker-compose.dev.yml closes exactly that for 8888
+ * and explains it.
  *
- * Консилиум считает попытки в ОДНОМ ядре комнаты: попытка видит `df`, который
- * преподаватель приготовил в общей ячейке, и это нарочно, — но данные она
- * получает свои, а пространство имён после неё возвращается к прежнему. Общими
- * при этом остаются файлы и состояние модулей. Об этом сказано в комнате
- * (COUNCIL_SHARED_KERNEL_NOTE), и README про режимы обязан говорить то же
- * самое: преподаватель ставит «верно» по выводу.
+ * The council runs attempts in the room's ONE kernel: an attempt sees the
+ * `df` the teacher prepared in the shared cell, and that is on purpose — but
+ * it gets its own data, and the namespace returns to what it was after it.
+ * What stays shared meanwhile is files and module state. The room says so
+ * (COUNCIL_SHARED_KERNEL_NOTE), and the README about the modes must say the
+ * same: the teacher marks "correct" based on the output.
  *
- * Проверяется здесь только «слово», потому что «дело» проверено соседями:
- * ban/gate/kernel — своими сюитами, а эти два файла не собирает и не
- * типизирует никто.
+ * Only the "word" is checked here, because the "deed" is checked by the
+ * neighbours: ban/gate/kernel by their own suites, while nobody builds or
+ * type-checks these two files.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -34,40 +36,42 @@ const readme = read('README.md')
 const example = read('.env.example')
 const compose = read('docker-compose.yml')
 
-test('BIND_ADDR назван и в .env.example, и в таблице настроек README', () => {
+test('BIND_ADDR is named both in .env.example and in the README settings table', () => {
   // Explain the host bind address and keep the shipped example on loopback.
   const at = example.indexOf('BIND_ADDR')
-  assert.notEqual(at, -1, 'BIND_ADDR не назван в .env.example')
+  assert.notEqual(at, -1, 'BIND_ADDR is not named in .env.example')
   const about = example.slice(Math.max(0, at - 900), at + 200)
   assert.match(about, /127\.0\.0\.1/)
   assert.match(about, /make up/)
-  assert.match(about, /make host/, 'не сказано, чем комната выходит наружу вместо открытого порта')
+  assert.match(about, /make host/, 'it is not said how the room goes outside instead of an open port')
 
   const row = readme.split('\n').find((l) => l.startsWith('| `BIND_ADDR`'))
-  assert.ok(row, 'в таблице настроек README нет строки BIND_ADDR')
+  assert.ok(row, 'the README settings table has no BIND_ADDR row')
   assert.match(row, /every interface/i)
   assert.match(row, /127\.0\.0\.1/)
 
   assert.match(example, /^BIND_ADDR=127\.0\.0\.1$/m)
 })
 
-test('переменная сервера и адрес публикации порта — одно слово, а не два', () => {
-  // Внутрь контейнера BIND_ADDR передавать нельзя: там сервер обязан слушать
-  // все интерфейсы, иначе не достучаться и до опубликованного порта. Поэтому
-  // compose ограничивает ею ХОЗЯЙСКУЮ сторону порта — и только её.
+test('the server variable and the port publishing address are one word, not two', () => {
+  // BIND_ADDR must not be passed into the container: there the server must
+  // listen on all interfaces, otherwise even the published port cannot be
+  // reached. So compose limits the HOST side of the port with it — and only
+  // that side.
   const app = compose.slice(compose.indexOf('\n  app:'), compose.indexOf('\n  kernel:'))
   assert.match(app, /- "\$\{BIND_ADDR:-0\.0\.0\.0\}:\$\{PORT:-3000\}:3000"/)
   assert.ok(
     !/\n {6}BIND_ADDR: /.test(app),
-    'BIND_ADDR уехал в environment контейнера — сервер внутри будет слушать петлю контейнера, то есть никого',
+    'BIND_ADDR went into the container environment — the server inside will listen on the container loopback, that is, to nobody',
   )
 
   // Production ingress is a loopback NodePort, with no root systemd web process.
   assert.match(read('scripts/cluster.sh'), /nodeport-addresses=127\.0\.0\.0\/8/)
   assert.doesNotMatch(read('deploy/colloq.service'), /^User=root$/m)
 
-  // Умолчание кода — пусто, то есть все интерфейсы: таблица README описывает
-  // именно его, и переименование переменной в сервере уронит эту строку.
+  // The code's default is empty, that is, all interfaces: the README table
+  // describes exactly that, and renaming the variable in the server will
+  // break this line.
   assert.match(read('server/src/index.ts'), /process\.env\.BIND_ADDR/)
 })
 
@@ -84,22 +88,25 @@ test('deployment documentation describes mandatory broker isolation and explicit
   assert.match(readme, /MODE=consistent/)
   assert.match(readme, /live.*not an atomic snapshot/is)
   assert.match(readme, /sourceCommit/)
-  // COLLOQ_UNSAFE_DEV_FILES больше ничего не решает (server/src/secure-files.ts),
-  // и README не зовёт его ставить; предел разработки, который остался, — Linux
-  // в проде требует /proc/self/fd.
+  // COLLOQ_UNSAFE_DEV_FILES no longer decides anything
+  // (server/src/secure-files.ts), and the README does not tell anyone to set
+  // it; the development limit that remains is that Linux in production
+  // requires /proc/self/fd.
   assert.doesNotMatch(readme, /COLLOQ_UNSAFE_DEV_FILES=1/)
   assert.match(readme, /\/proc\/self\/fd/)
 })
 
-test('README про консилиум говорит то же, что комната: ядро одно', () => {
+test('the README about the council says the same as the room: one kernel', () => {
   const bullet = readme.slice(readme.indexOf('* **council** —'))
   const said = bullet.slice(0, bullet.indexOf('\n\n'))
-  assert.match(said, /one kernel/i, 'README не говорит, что попытки считаются в общем ядре комнаты')
-  assert.match(said, /one after another|in turn|queue/i, 'не сказано, что по очереди')
-  // Три половины правды: личные копии, снятые имена, общий остаток.
-  assert.match(said, /personal cop/i, 'README не говорит про личные копии данных')
+  assert.match(said, /one kernel/i, 'the README does not say that attempts run in the room\'s shared kernel')
+  assert.match(said, /one after another|in turn|queue/i, 'it is not said that it goes in turn')
+  // Three halves of the truth: personal copies, removed names, the shared
+  // remainder.
+  assert.match(said, /personal cop/i, 'the README does not mention personal copies of data')
   assert.match(said, /takes away|removes/i)
   assert.match(said, /stays shared/i)
-  // И бюджет копий назван там же, где его цена: что сверх него — общее.
+  // And the copy budget is named in the same place as its cost: what exceeds
+  // it is shared.
   assert.match(said, /COUNCIL_COPY_MB/)
 })

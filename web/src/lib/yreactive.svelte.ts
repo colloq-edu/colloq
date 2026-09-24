@@ -161,15 +161,16 @@ const EMPTY_IDS: string[] = []
  * to move it and leaves every other cell's map alone.
  */
 /**
- * Ячейки всех тетрадей комнаты, в одном месте.
+ * The cells of all the room's notebooks, in one place.
  *
- * Реестр один на документ, а не на тетрадь, и это то же решение, что и у
- * `findCell` на сервере: ячейку ищут по имени, не зная, в какой она тетради.
- * Поэтому `get(id)` не спрашивает про тетрадь, а порядок — спрашивает: «выше» и
- * «ниже» имеет смысл только внутри одного листа.
+ * There is one registry per document, not per notebook, and it is the same
+ * decision as `findCell` on the server: a cell is looked up by name without
+ * knowing which notebook it is in. So `get(id)` does not ask about the
+ * notebook, but the order does: "above" and "below" only make sense within
+ * one sheet.
  *
- * Тетради появляются и исчезают на ходу — их список сам лежит в документе, — и
- * подписки пересобираются, когда он меняется.
+ * Notebooks appear and disappear on the fly — their list itself lives in the
+ * document — and the subscriptions are rebuilt when it changes.
  */
 class CellRegistry {
   readonly #doc: Y.Doc
@@ -178,32 +179,31 @@ class CellRegistry {
   readonly #byId = new Map<string, YCell>()
   readonly #watchers = new Map<string, Set<(cell: YCell | null) => void>>()
   /**
-   * Номер ячейки — тот же, что нарисован у неё в поле слева.
+   * A cell's number — the same one drawn in its left margin.
    *
-   * Счёт идёт внутри своей тетради и начинается заново в каждой: панель людей и
-   * лента оракула называют ячейку тем же числом, которое человек видит рядом с
-   * ней. Собирается здесь, потому что здесь и так есть все списки.
+   * The count runs within its own notebook and starts over in each: the people
+   * panel and the Oracle feed call a cell by the same number the person sees
+   * next to it. It is built here because all the lists are here anyway.
    */
   readonly numbering = box<Map<string, number>>(new Map())
 
-  /** Корни, на которые реестр подписан сейчас, — по ним и видно, что список сменился. */
+  /** The roots the registry is subscribed to now — they are how a changed list is noticed. */
   #bound: string[] = []
 
   constructor(doc: Y.Doc) {
     this.#doc = doc
     this.#rebind(false)
     /*
-     * Список тетрадей живёт в meta: он меняется, когда в комнате открывают или
-     * убирают тетрадь, и подписки должны за ним поспевать.
+     * The notebook list lives in meta: it changes when a notebook is opened or
+     * removed in the room, and the subscriptions have to keep up with it.
      *
-     * Глубоко, а не мелко. Вторая и следующие тетради дописываются push'ем во
-     * вложенный `meta.books`, а мелкий observe на Y.Map вложенного изменения
-     * не видит вовсе: вкладка открывалась (её рисует watchBooks, у него
-     * observeDeep), а ячеек в ней не было — реестр просыпался только когда
-     * кто-нибудь трогал верхнеуровневый ключ, то есть на первом же запуске
-     * ячейки. Работы при этом не прибавилось, а убавилось: раньше пересборка
-     * шла на любую запись в meta, теперь — только когда список корней правда
-     * стал другим.
+     * Deep, not shallow. The second and later notebooks are appended with a
+     * push into the nested `meta.books`, and a shallow observe on a Y.Map does
+     * not see a nested change at all: the tab opened (watchBooks draws it, and
+     * it has observeDeep), but there were no cells in it — the registry woke
+     * up only when someone touched a top-level key, that is, on the first cell
+     * run. The work did not grow but shrank: before, the rebuild ran on any
+     * write to meta, now only when the list of roots has really changed.
      */
     getMeta(doc).observeDeep(() => {
       if (sameIds(this.#rootKeys(), this.#bound)) return
@@ -215,7 +215,7 @@ class CellRegistry {
     return allCellArrays(this.#doc).map((cells) => Y.findRootTypeKey(cells))
   }
 
-  /** Подписаться на те массивы, которые сейчас числятся тетрадями. */
+  /** Subscribe to the arrays currently listed as notebooks. */
   #rebind(notify: boolean): void {
     const wanted = new Map<string, Y.Array<YCell>>()
     for (const cells of allCellArrays(this.#doc)) {
@@ -275,8 +275,8 @@ class CellRegistry {
       target.value.forEach((id, at) => numbers.set(id, at + 1))
     }
     if (!sameNumbers(numbers, this.numbering.value)) this.numbering.value = numbers
-    // Тетрадь, которую убрали из комнаты: её список опустошается, иначе экран
-    // держал бы ячейки, которых в документе больше нет.
+    // A notebook removed from the room: its list is emptied, otherwise the
+    // screen would keep cells that are no longer in the document.
     for (const [root, target] of this.#ids) {
       if (this.#arrays.has(root) || target.value.length === 0) continue
       target.value = EMPTY_IDS
@@ -340,15 +340,16 @@ export function watchCellIds(doc: Y.Doc, root: () => string): Reactive<string[]>
 }
 
 /**
- * Тетради комнаты по порядку.
+ * The room's notebooks in order.
  *
- * Список живёт в `meta`, потому что он часть документа: открытая тетрадь — это
- * состояние комнаты, а не вкладки, и опоздавший видит те же тетради, что и все.
+ * The list lives in `meta` because it is part of the document: an open
+ * notebook is the room's state, not a tab's, and a latecomer sees the same
+ * notebooks as everyone else.
  */
 export function watchBooks(doc: Y.Doc): Reactive<Book[]> {
   const meta = getMeta(doc)
-  // Простой снимок, не руна: сравнивать через `value` значило бы зависеть от
-  // того, что этот же наблюдатель и пишет.
+  // A plain snapshot, not a rune: comparing through `value` would mean
+  // depending on what this very observer writes.
   let previous = bookList(doc)
   const value = box<Book[]>(previous)
   const read = () => {
@@ -359,12 +360,13 @@ export function watchBooks(doc: Y.Doc): Reactive<Book[]> {
   }
 
   /*
-   * Подписка живёт ровно столько, сколько её читатель.
+   * The subscription lives exactly as long as its reader.
    *
-   * Вкладки ящика терминала (история, файлы, оракул) монтируются и исчезают на
-   * каждом переключении, а `observeDeep` без ответной отписки оставлял бы от
-   * каждого монтажа вечного наблюдателя на meta — к концу пары их там десятки,
-   * и каждый пересобирает список тетрадей на любую запись в документе.
+   * The terminal drawer's tabs (history, files, Oracle) mount and vanish on
+   * every switch, and an `observeDeep` without a matching unsubscribe would
+   * leave an eternal observer on meta from every mount — by the end of a
+   * class there are dozens of them, and each rebuilds the notebook list on
+   * any write to the document.
    */
   $effect(() => {
     read()
@@ -384,10 +386,10 @@ function sameBooks(a: Book[], b: Book[]): boolean {
 }
 
 /**
- * Номера ячеек: имя → число, которое нарисовано у неё слева.
+ * Cell numbers: name → the number drawn on its left.
  *
- * Панелям, которые называют ячейку по номеру, тетрадь знать не нужно и вредно:
- * ячейка могла прийти из любой, а число у неё одно.
+ * Panels that call a cell by number do not need to know the notebook, and it
+ * would hurt: the cell could come from any of them, and it has one number.
  */
 export function watchCellNumbers(doc: Y.Doc): Reactive<Map<string, number>> {
   const registry = cellRegistry(doc)
@@ -438,19 +440,21 @@ export interface CellMeta {
    */
   stdin: { prompt: string; password: boolean } | null
   /**
-   * Серверные часы в момент, когда это выполнение началось. Читается только
-   * при state === 'running': в любом другом состоянии значение — мусор от
-   * прошлого раза, который никто не смотрит.
+   * The server clock at the moment this run started. Read only while
+   * state === 'running': in any other state the value is garbage from last
+   * time that nobody looks at.
    */
   startedAt: number | null
-  /** Сколько длилось последнее ЗАВЕРШЁННОЕ выполнение. У прерванного — null. */
+  /** How long the last COMPLETED run took. null for an interrupted one. */
   ranMs: number | null
   /**
-   * Ячейку открыли комнате — в тетради, которая иначе преподавательская.
+   * The cell was opened to the room — in a notebook that is otherwise the
+   * teacher's.
    *
-   * Поле ячейки, а не свойство комнаты: в лекции открытых ячеек бывает
-   * сколько угодно, и каждая — своё решение. Пишет его сервер (`cell:open`), а
-   * сюда оно приезжает обычным кадром CRDT, как состояние и номер выполнения.
+   * A field of the cell, not a property of the room: a lecture can have any
+   * number of open cells, and each is its own decision. The server writes it
+   * (`cell:open`), and it arrives here as an ordinary CRDT frame, like the
+   * state and the execution count.
    */
   open: boolean
 }
@@ -467,19 +471,19 @@ const EMPTY_META: CellMeta = {
   open: false,
 }
 /*
- * Ключи, изменение которых будит читателей ячейки.
+ * The keys whose change wakes a cell's readers.
  *
- * Добавить сюда два новых бесплатно: оба пишутся в той же транзакции, что
- * меняет `state`, а `state` в списке и так. Ни одна ячейка не проснётся сверх
- * того, что просыпалась раньше.
+ * Adding the two new ones here costs nothing: both are written in the same
+ * transaction that changes `state`, and `state` is in the list anyway. Not a
+ * single cell wakes up more than it did before.
  *
- * И следствие, ради которого это написано: поле, меняющееся по таймеру, сюда
- * добавлять нельзя. Оно будило бы каждый кадр каждого читателя ячейки — а
- * весь этот модуль существует ровно затем, чтобы сорок ячеек не просыпались
- * по восемьдесят раз на один Run All.
+ * And the consequence this is written for: a field that changes on a timer
+ * must not be added here. It would wake every reader of the cell every frame
+ * — and this whole module exists precisely so that forty cells do not wake
+ * up eighty times over for one Run All.
  *
- * `open` этой мерке отвечает: его пишет преподаватель нажатием, то есть
- * считаные разы за пару, и будит оно ровно ту ячейку, которую открыли.
+ * `open` meets this measure: the teacher writes it with a click, that is, a
+ * handful of times per class, and it wakes exactly the cell that was opened.
  */
 const META_KEYS = [
   'type',
@@ -514,13 +518,14 @@ function sameMeta(a: CellMeta, b: CellMeta): boolean {
     a.execCount === b.execCount &&
     a.runBy === b.runBy &&
     a.runById === b.runById &&
-    // Плоское сравнение: объект приходит из документа заново на каждое
-    // изменение, поэтому сравнивать по ссылке бессмысленно.
+    // A flat comparison: the object comes from the document anew on every
+    // change, so comparing by reference is pointless.
     a.stdin?.prompt === b.stdin?.prompt &&
     a.stdin?.password === b.stdin?.password &&
     (a.stdin === null) === (b.stdin === null) &&
-    // Поле, забытое здесь, означает, что руна отдаст равный объект и часы на
-    // ячейке не пойдут вовсе: сравнение поимённое, и молчит оно тихо.
+    // A field forgotten here means the rune hands back an equal object and
+    // the clock on the cell never starts: the comparison is field by field,
+    // and it fails quietly.
     a.startedAt === b.startedAt &&
     a.ranMs === b.ranMs &&
     a.open === b.open
@@ -561,14 +566,14 @@ export function watchCellMeta(cell: () => YCell | null): Reactive<CellMeta> {
 const EMPTY_OUTPUTS: CellOutput[] = []
 
 /**
- * Разобранный вывод, пока запись не менялась.
+ * A parsed output, as long as the entry has not changed.
  *
- * `readOutput` для data и error разбирает JSON целиком, а читателя будит
- * КАЖДАЯ склейка stdout — до двадцати раз в секунду у стримящей ячейки.
- * Картинка, которая с прошлого раза не двигалась, разбиралась заново вместе с
- * каждым кадром прогресс-бара; потолок ячейки в 400 КБ говорит, сколько это
- * стоило. Ключ — сама запись Y.Map: WeakMap отпускает её вместе с документом,
- * а хранимая строка `json` отвечает на «а не переписали ли её».
+ * `readOutput` parses the whole JSON for data and error, and the reader is
+ * woken by EVERY stdout append — up to twenty times a second for a streaming
+ * cell. An image that had not moved since last time was parsed again with
+ * every frame of a progress bar; the cell's 400 KB cap tells how much that
+ * cost. The key is the Y.Map entry itself: the WeakMap lets go of it together
+ * with the document, and the stored `json` string answers "was it rewritten?".
  */
 const parsedOutputs = new WeakMap<YOutput, { json: string; value: CellOutput }>()
 
@@ -588,7 +593,7 @@ function readOutputSnapshot(cell: YCell): CellOutput[] {
       out.push(parsed)
       return
     }
-    // Поток: текст лежит в Y.Text, разбирать нечего.
+    // A stream: the text lives in a Y.Text, there is nothing to parse.
     const parsed = readOutput(entry)
     if (parsed) out.push(parsed)
   })
@@ -596,7 +601,7 @@ function readOutputSnapshot(cell: YCell): CellOutput[] {
 }
 
 function sameOutput(a: CellOutput, b: CellOutput): boolean {
-  // Та же запись, не тронутая с прошлого раза, — см. parsedOutputs.
+  // The same entry, untouched since last time — see parsedOutputs.
   if (a === b) return true
   if (a.kind !== b.kind) return false
   if (a.kind === 'stream' && b.kind === 'stream') {
@@ -672,27 +677,29 @@ export function watchText(cell: () => YCell | null): Reactive<string> {
 export interface NotebookMeta {
   title: string
   /**
-   * Состояние ядра тетради КОМНАТЫ — прежнее поле и прежний смысл.
+   * The kernel state of the ROOM's notebook — the old field with the old
+   * meaning.
    *
-   * Ядро теперь у каждой тетради своё (`watchBookKernel` ниже), и всё, что
-   * рисует одну открытую тетрадь, спрашивает её. Здесь остаётся комнатное — для
-   * тех мест, у которых тетради нет вовсе: журнал ядра в ящике и список людей.
+   * Every notebook now has its own kernel (`watchBookKernel` below), and
+   * everything that draws one open notebook asks that notebook. What stays
+   * here is the room's — for the places that have no notebook at all: the
+   * kernel log in the drawer and the people list.
    */
   kernelStatus: KernelStatus
-  /** Почему последний подъём ядра не вышел, если это можно объяснить (shared/kernel-problem.ts). */
+  /** Why the last kernel start failed, if it can be explained (shared/kernel-problem.ts). */
   kernelProblem: KernelProblem | null
   queue: string[]
   runningCellId: string | null
 }
 
 /**
- * Состояние ядра ОДНОЙ тетради — то, что рисует её полоса.
+ * The kernel state of ONE notebook — what its bar draws.
  *
- * Те же четыре поля, что и у комнаты, и это не совпадение: до появления
- * нескольких ядер они и были комнатными. Теперь «ГОТОВО», счётчик очереди,
- * «Прервать» и «Перезапустить» относятся к тетради, которую человек открыл, —
- * лекция может считать, пока семинар свободен, и одна плашка на двоих врала бы
- * обоим.
+ * The same four fields as the room's, and that is no coincidence: before
+ * there were several kernels, they were the room's. Now "IDLE", the queue
+ * counter, "Interrupt" and "Restart" belong to the notebook the person has
+ * open — a lecture may be computing while the seminar is free, and one chip
+ * for both would lie to both.
  */
 export interface BookKernelView {
   kernelStatus: KernelStatus
@@ -718,9 +725,9 @@ class MetaRegistry {
   readonly queue = box<string[]>(EMPTY_IDS)
   readonly runningCellId = box<string | null>(null)
   /*
-   * Состояние ядер по тетрадям — четыре карты «корень → значение», и все
-   * четыре коробки заведены ЗДЕСЬ, в конструкторе. Почему не по коробке на
-   * тетрадь — довод целиком у `bookView`.
+   * Kernel state per notebook — four "root → value" maps, and all four boxes
+   * are created HERE, in the constructor. Why not one box per notebook — the
+   * full argument is at `bookView`.
    */
   readonly bookStatus = box<Record<string, KernelStatus>>({})
   readonly bookProblem = box<Record<string, KernelProblem | null>>({})
@@ -730,7 +737,7 @@ class MetaRegistry {
 
   readonly #meta: Y.Map<any>
   readonly #doc: Y.Doc
-  /** Готовые наборы геттеров по корням — без собственного состояния. */
+  /** Ready-made getter sets per root — with no state of their own. */
   readonly #views = new Map<string, BookKernelView>()
 
   constructor(doc: Y.Doc) {
@@ -762,27 +769,29 @@ class MetaRegistry {
   }
 
   /**
-   * Состояние ядра одной тетради — готовым набором геттеров.
+   * The kernel state of one notebook — as a ready-made set of getters.
    *
-   * Сами ЗНАЧЕНИЯ лежат не здесь, а в четырёх коробках реестра (по коробке на
-   * поле, внутри — карта «корень → значение»). Здесь заводится только объект
-   * с геттерами, и в нём нет ни одного рунического состояния — это и есть
-   * правка 20.09.
+   * The VALUES themselves do not live here but in the registry's four boxes
+   * (one box per field, holding a "root → value" map). Only the object with
+   * getters is created here, and it holds no rune state at all — that is the
+   * fix of 20 Sep 2026.
    *
-   * Почему так, а не коробка на тетрадь. Коробки заводились ПО ПЕРВОМУ СПРОСУ,
-   * а первый спрос приходит из `$derived` в шапке комнаты. Состояние, созданное
-   * внутри реакции, этой реакцией и владеет: последующие записи в него извне
-   * реакцию НЕ будят. Плашка ядра поэтому показывала первое прочитанное
-   * значение вечно — «ЗАПУСК» у поднявшегося ядра, — хотя коробка исправно
-   * получала правду (замерено на стенде 20.09: `box= idle`, на экране
-   * «ЗАПУСК»). `untrack` вокруг создания не помогает: владение ставится не по
-   * активной зависимости. Те же грабли лежали под очередью, «Прервать» и
-   * советом о неподнявшемся ядре — это одни и те же коробки.
+   * Why this way rather than a box per notebook. The boxes used to be created
+   * ON FIRST REQUEST, and the first request comes from a `$derived` in the
+   * room header. State created inside a reaction is owned by that reaction:
+   * later writes to it from outside do NOT wake the reaction. So the kernel
+   * chip showed the first value it read forever — "STARTING" for a kernel that
+   * was up — although the box dutifully received the truth (measured on the
+   * test bench on 20 Sep 2026: `box= idle`, "STARTING" on screen). `untrack`
+   * around the creation does not help: ownership is not assigned by active
+   * dependency. The same trap lay under the queue, "Interrupt" and the advice
+   * about a kernel that failed to start — they are the same boxes.
    *
-   * Цена: правка очереди ОДНОЙ тетради будит читателей очереди всех открытых.
-   * Их единицы (открытых тетрадей 1–3), значение при этом не меняется, а
-   * `sameIds` сохраняет тождество массива — то есть производные дальше не
-   * идут. Поля разные коробки: счёт очереди не будит плашку состояния.
+   * The cost: a change to the queue of ONE notebook wakes the queue readers of
+   * all open ones. There are only a few of them (1–3 open notebooks), the
+   * value does not change, and `sameIds` keeps the array's identity — so the
+   * derived values go no further. The fields are separate boxes: the queue
+   * count does not wake the state chip.
    */
   bookView(root: string): BookKernelView {
     let view = this.#views.get(root)
@@ -804,25 +813,28 @@ class MetaRegistry {
     }
     this.#views.set(root, view)
     /*
-     * Прочитать тетрадь надо, но не ОТСЮДА.
+     * The notebook has to be read, but not FROM HERE.
      *
-     * Первый спрос приходит из `$derived` в шапке, а запись в состояние во
-     * время счёта производной Svelte запрещает (`state_unsafe_mutation`) — и
-     * правильно делает. Микрозадача успевает до отрисовки: значение приезжает
-     * тем же кадром, просто следующим проходом планировщика. Того, кто может
-     * прочитать заранее, мы и просим об этом заранее — см. `prime` ниже.
+     * The first request comes from a `$derived` in the header, and Svelte
+     * forbids writing to state while a derived value is being computed
+     * (`state_unsafe_mutation`) — rightly so. A microtask makes it before the
+     * paint: the value arrives in the same frame, just on the scheduler's next
+     * pass. Whoever can read in advance is asked to do so in advance — see
+     * `prime` below.
      */
     if (!(root in this.bookStatus.value)) queueMicrotask(() => this.#readBooks(root))
     return view
   }
 
   /**
-   * Завести тетради место в картах ЗАРАНЕЕ — из инициализации компонента.
+   * Reserve the notebook's place in the maps IN ADVANCE — from component
+   * initialisation.
    *
-   * Зовётся из `watchBookKernel`, то есть из тела компонента, где реакции нет
-   * и писать в состояние можно. Благодаря этому плашка открытой тетради верна
-   * с первого же кадра, а микрозадача выше остаётся страховкой для тетрадей,
-   * о которых спросили позже (переключение вкладок).
+   * Called from `watchBookKernel`, that is, from the component body, where
+   * there is no reaction and writing to state is allowed. Thanks to this the
+   * open notebook's chip is right from the very first frame, and the
+   * microtask above stays as a safety net for notebooks asked about later
+   * (switching tabs).
    */
   prime(root: string): void {
     this.bookView(root)
@@ -830,12 +842,13 @@ class MetaRegistry {
   }
 
   /**
-   * Перечитать состояние тетрадей в четыре карты — и заменить только то, что
-   * изменилось.
+   * Re-read the notebooks' state into the four maps — and replace only what
+   * changed.
    *
-   * Читаются все корни, о которых кто-то спрашивал, плюс названный. Меньше
-   * нельзя: карта ядер появляется в документе позже вкладки, и тетрадь, чьей
-   * записи при первом чтении не было, иначе осталась бы с умолчанием навсегда.
+   * All roots anyone has asked about are read, plus the named one. Fewer is
+   * not an option: the kernel map appears in the document later than the tab,
+   * and a notebook whose entry was missing at the first read would otherwise
+   * keep the default forever.
    */
   #readBooks(extra?: string): void {
     const roots = new Set(this.#views.keys())
@@ -860,9 +873,9 @@ class MetaRegistry {
       running[root] = state.runningCell
       if (wasRunning[root] !== state.runningCell) sameRunning = false
       /*
-       * Тождество массива сохраняется, пока список тот же: производные ниже
-       * сравнивают по ссылке, и новый массив с тем же содержимым перерисовал
-       * бы счётчик очереди у каждой ячейки.
+       * The array's identity is kept while the list is the same: the derived
+       * values downstream compare by reference, and a new array with the same
+       * contents would redraw the queue counter on every cell.
        */
       const before = wasQueue[root]
       if (before && sameIds(before, state.queue)) queue[root] = before
@@ -878,7 +891,7 @@ class MetaRegistry {
         sameProblem = false
       }
     }
-    // Исчезнувший корень — тоже перемена: тетрадь закрыли, запись ушла.
+    // A vanished root is a change too: the notebook was closed, its entry went away.
     if (Object.keys(wasStatus).length !== roots.size) sameStatus = false
     if (Object.keys(wasQueue).length !== roots.size) sameQueue = false
     if (Object.keys(wasRunning).length !== roots.size) sameRunning = false
@@ -889,7 +902,7 @@ class MetaRegistry {
     if (!sameRunning) this.bookRunning.value = running
   }
 
-  /** Совет про неподнявшееся ядро лежит там же, где состояние. */
+  /** The advice about a kernel that failed to start lives next to the state. */
   #problemOf(root: string): KernelProblem | null {
     const entry = kernelsMap(this.#doc)?.get(root)
     const raw =
@@ -911,24 +924,26 @@ class MetaRegistry {
         continue
       }
       /*
-       * Вложенных типов под meta ДВА, а не один: очередь запуска и список
-       * тетрадей (`meta.books`, куда дописывается каждая открытая). Пока
-       * считалось, что вложенная — только очередь, `#readQueue` дёргался на
-       * каждое открытие тетради: безвредно, но это ровно та неправда в
-       * комментарии, из-за которой следующая правка кладётся мимо.
+       * There are TWO nested types under meta, not one: the run queue and the
+       * notebook list (`meta.books`, to which every opened notebook is
+       * appended). While the assumption was that only the queue is nested,
+       * `#readQueue` fired on every notebook opening: harmless, but it is
+       * exactly the kind of untruth in a comment that makes the next change
+       * land in the wrong place.
        */
       if (event.target === this.#meta.get('queue')) queue = true
     }
     if (scalars) this.#readScalars()
     if (queue) this.#readQueue()
     /*
-     * Карта ядер перечитывается на ЛЮБОЕ событие под `meta`, и это дешевле,
-     * чем кажется: коробок столько, сколько открытых тетрадей, а каждая из них
-     * — одно чтение записи и одного короткого списка. Разбирать, какая именно
-     * запись изменилась, пришлось бы по трём разным целям события (сама карта,
-     * запись тетради, её Y.Array), и первая же забытая цель означала бы плашку,
-     * которая молча не обновляется. Читатели будятся только на настоящей смене
-     * значения — это делают коробки.
+     * The kernel map is re-read on ANY event under `meta`, and that is cheaper
+     * than it looks: there are as many boxes as open notebooks, and each of
+     * them is one read of an entry and of one short list. Working out which
+     * entry exactly changed would mean going through three different event
+     * targets (the map itself, the notebook's entry, its Y.Array), and the
+     * first forgotten target would mean a chip that silently stops updating.
+     * Readers wake only on a real change of value — the boxes take care of
+     * that.
      */
     if (this.#views.size > 0) this.#readBooks()
   }
@@ -938,16 +953,18 @@ class MetaRegistry {
     if (title !== this.title.value) this.title.value = title
 
     /*
-     * Прежнее поле комнаты читается по КАРТЕ тетради `cells`, а не по прежнему
-     * ключу: в ключе с 20.09 лежит слово для старых вкладок, где `off`
-     * заменено на `idle` (shared/notebook.ts · legacyKernelStatus). Читателю в
-     * этой вкладке нужна правда — «ядро не запущено», а не «свободно».
+     * The room's old field is read from the MAP entry of the `cells` notebook,
+     * not from the old key: since 20 Sep 2026 the key holds a word for old
+     * tabs, with `off` replaced by `idle` (shared/notebook.ts ·
+     * legacyKernelStatus). A reader in this tab needs the truth — "the kernel
+     * is not running", not "free".
      */
     const status = bookKernel(this.#doc, CELLS_KEY).status
     if (status !== this.kernelStatus.value) this.kernelStatus.value = status
 
-    // Значение — обычный объект, и каждое чтение даёт новый: сравниваем по
-    // содержимому, иначе любая правка meta будила бы всех, кто смотрит на совет.
+    // The value is a plain object, and every read gives a new one: compare by
+    // content, otherwise any edit to meta would wake everyone watching the
+    // advice.
     const problem = readKernelProblem(this.#meta.get(KERNEL_PROBLEM_KEY))
     if (JSON.stringify(problem) !== JSON.stringify(this.kernelProblem.value))
       this.kernelProblem.value = problem
@@ -984,12 +1001,12 @@ export function watchNotebookMeta(doc: Y.Doc): Reactive<NotebookMeta> {
 }
 
 /**
- * Занято ли ядро тетради — одним вопросом на все вкладки сразу.
+ * Whether a notebook's kernel is busy — one question for all tabs at once.
  *
- * Отдельно от `watchBookKernel`, потому что спрашивают здесь про ЧУЖУЮ
- * вкладку: строка вкладок рисует точку у каждой тетради, а не только у
- * открытой. Читается лениво, внутри того `$derived`, который строит ряд, —
- * значит, подписка встаёт ровно на те тетради, что сейчас на экране.
+ * Separate from `watchBookKernel`, because here the question is about ANOTHER
+ * tab: the tab row draws a dot on every notebook, not only on the open one.
+ * It is read lazily, inside the `$derived` that builds the row — so the
+ * subscription lands exactly on the notebooks currently on screen.
  */
 export function watchBookBusy(doc: Y.Doc): { busy: (root: string) => boolean } {
   const fields = registryFor(doc)
@@ -1004,16 +1021,16 @@ export function watchBookBusy(doc: Y.Doc): { busy: (root: string) => boolean } {
 }
 
 /**
- * Состояние ядра ОТКРЫТОЙ тетради.
+ * The kernel state of the OPEN notebook.
  *
- * `root` — функцией, а не значением: вкладка знает свой корень не сразу
- * (список тетрадей приезжает документом), и передать его один раз значило бы
- * навсегда запомнить пустую строку. Пустой корень отвечает тем же, чем пустая
- * тетрадь, — «ядро ещё не поднимали».
+ * `root` is a function, not a value: a tab does not know its root right away
+ * (the notebook list arrives with the document), and passing it once would
+ * mean remembering an empty string forever. An empty root answers the same
+ * as an empty notebook — "the kernel has not been started yet".
  */
 export function watchBookKernel(doc: Y.Doc, root: () => string): Reactive<BookKernelView> {
   const fields = registryFor(doc)
-  // Из тела компонента, до всякой производной: см. `MetaRegistry.prime`.
+  // From the component body, before any derived value: see `MetaRegistry.prime`.
   fields.prime(root())
   return {
     get current() {
@@ -1062,7 +1079,7 @@ class PeerIndex {
   readonly #watchers = new Map<string, Set<(peers: CellPeer[]) => void>>()
   readonly #current = new Map<string, CellPeer[]>()
 
-  /** Пересчёт отложен до конца тика присутствия. См. `#onChange`. */
+  /** The recount is deferred until the end of the presence tick. See `#onChange`. */
   #timer: number | undefined
 
   constructor(awareness: Awareness) {
@@ -1071,13 +1088,14 @@ class PeerIndex {
   }
 
   /**
-   * Кадр присутствия приехал — пересчитать, но не чаще раза в тик.
+   * A presence frame arrived — recount, but no more than once per tick.
    *
-   * Группировка обходит ВСЕ состояния, а кадры идут на каждое нажатие каждого
-   * из пятисот: без склейки этот обход шёл сотни раз в секунду в каждой вкладке,
-   * даже когда ни одна метка «правит здесь» не двигалась. Тик тот же, что у
-   * списка людей (lib/peers.ts · PRESENCE_TICK_MS), — чтобы аватары в ячейке и
-   * в панели людей обновлялись в один момент, а не по очереди.
+   * Grouping walks ALL states, and frames come on every keystroke of each of
+   * five hundred people: without batching, this walk ran hundreds of times a
+   * second in every tab, even when not a single "editing here" marker moved.
+   * The tick is the same as the people list's (lib/peers.ts ·
+   * PRESENCE_TICK_MS) — so that avatars in a cell and in the people panel
+   * update at the same moment, not one after another.
    */
   #onChange = () => {
     if (this.#watchers.size === 0 || this.#timer !== undefined) return
@@ -1174,50 +1192,52 @@ export function watchCellPeers(awareness: Awareness, id: () => string): Reactive
   }
 }
 
-/* --------------------------------------------- предложения оракула к ячейкам */
+/* ------------------------------------------------ Oracle proposals for cells */
 
 /**
- * Поля хода, от которых зависит «есть ли открытое предложение к этой ячейке».
+ * The turn fields that decide "is there an open proposal for this cell".
  *
- * Всё остальное в ходе меняется куда чаще и к делу не относится: ответ
- * дописывается кусками двадцать раз в секунду, рассуждение — тоже, шаги агента
- * складываются во вложенный массив. Ни одно из этих событий не может ни
- * завести предложение, ни закрыть его.
+ * Everything else in a turn changes far more often and is beside the point:
+ * the answer is appended in chunks twenty times a second, so is the
+ * reasoning, and the agent's steps pile up in a nested array. None of these
+ * events can either create a proposal or close it.
  */
 /*
- * Ключи хода, ради которых стоит будить ячейки: предложение, его судьба, адрес
- * и СОСТОЯНИЕ. Последний добавился вместе с признаком «оракул занят этой
- * ячейкой»: `state` меняется с `streaming` на `done` один раз за ход, а куски
- * ответа идут по `answer` — то есть отсев по ключам продолжает отбрасывать
- * поток, ради которого он и заведён.
+ * The turn keys worth waking cells for: the proposal, its fate, the address
+ * and the STATE. The last one came with the "the Oracle is busy with this
+ * cell" flag: `state` changes from `streaming` to `done` once per turn, while
+ * the answer chunks go through `answer` — so filtering by keys still drops
+ * the stream it was introduced for.
  */
 const PATCH_KEYS = ['patch', 'patchState', 'cellId', 'cellIds', 'state'] as const
 
 /**
- * Открытые предложения оракула — по ячейке, одним наблюдателем на документ.
+ * The Oracle's open proposals — per cell, with one observer per document.
  *
- * Правило 1 из шапки этого файла, которое здесь было нарушено громче всего:
- * каждый CellView заводил свой `chat.observeDeep`, и каждый такой наблюдатель на
- * КАЖДЫЙ кусок стрима шёл по всей ленте с конца, ища запись со своим cellId (а
- * для ячейки без предложения — всю ленту до начала). Сорок смонтированных ячеек
- * на ленте в триста ходов при двадцати кусках в секунду — это сотни тысяч
- * сравнений в секунду на ровном месте, и вся эта работа делалась во время
- * ответа оракула, то есть ровно тогда, когда комната смотрит на экран.
+ * Rule 1 from this file's header, which was broken here the loudest: every
+ * CellView set up its own `chat.observeDeep`, and every such observer walked
+ * the whole feed from the end on EVERY stream chunk, looking for the entry
+ * with its cellId (and for a cell without a proposal — the whole feed back to
+ * the start). Forty mounted cells over a feed of three hundred turns at
+ * twenty chunks a second make hundreds of thousands of comparisons a second
+ * out of nothing, and all this work happened while the Oracle was answering,
+ * that is, exactly when the room is looking at the screen.
  *
- * Здесь наблюдатель один, кусок стрима отсеивается по ключам (`PATCH_KEYS`), а
- * лента обходится один раз на событие — и будит только те ячейки, у которых
- * предложение правда сменилось.
+ * Here there is one observer, a stream chunk is filtered out by keys
+ * (`PATCH_KEYS`), and the feed is walked once per event — waking only the
+ * cells whose proposal really changed.
  */
 class PatchRegistry {
   readonly #chat: Y.Array<YChatEntry>
   readonly #watchers = new Map<string, Set<(entry: YChatEntry | null) => void>>()
   readonly #current = new Map<string, YChatEntry | null>()
   /*
-   * Второй канал того же реестра: «оракул сейчас работает над этой ячейкой».
+   * A second channel of the same registry: "the Oracle is working on this
+   * cell right now".
    *
-   * Отдельным наблюдателем это было бы вторым обходом ленты на каждое событие —
-   * ровно та цена, от которой этот класс и заведён. Один проход считает обе
-   * карты: предложение и занятость.
+   * As a separate observer this would be a second walk over the feed on every
+   * event — exactly the cost this class was introduced to avoid. One pass
+   * computes both maps: proposal and busyness.
    */
   readonly #busyWatchers = new Map<string, Set<(busy: boolean) => void>>()
   readonly #busy = new Map<string, boolean>()
@@ -1231,7 +1251,7 @@ class PatchRegistry {
     if (this.#watchers.size === 0) return
     let matters = false
     for (const event of events) {
-      // Лента изменилась сама: ход добавили, убрали или ленту очистили.
+      // The feed itself changed: a turn was added or removed, or the feed was cleared.
       if (event.target === this.#chat) {
         matters = true
         break
@@ -1263,11 +1283,12 @@ class PatchRegistry {
   }
 
   /**
-   * Ячейки, над которыми оракул работает прямо сейчас.
+   * The cells the Oracle is working on right now.
    *
-   * `cellIds` наравне с `cellId`: агент берёт несколько ячеек одним ходом, и
-   * занята каждая из них. Проход по всей ленте, а не с конца до первого
-   * попадания: ходов может идти несколько сразу — свой и чужой.
+   * `cellIds` on a par with `cellId`: the agent takes several cells in one
+   * turn, and each of them is busy. A pass over the whole feed, not from the
+   * end to the first hit: several turns can run at once — one's own and
+   * someone else's.
    */
   #working(): Set<string> {
     const busy = new Set<string>()
@@ -1304,11 +1325,11 @@ class PatchRegistry {
   }
 
   /**
-   * Один проход по ленте: ячейка → её открытое предложение.
+   * One pass over the feed: cell → its open proposal.
    *
-   * С конца, потому что побеждает последнее, — то же правило, что у
-   * `openPatchFor`, из которого это и выросло. Проход один на все ячейки, а не
-   * по проходу на каждую.
+   * From the end, because the last one wins — the same rule as in
+   * `openPatchFor`, which this grew out of. One pass for all cells, not a pass
+   * per cell.
    */
   #open(): Map<string, YChatEntry> {
     const byCell = new Map<string, YChatEntry>()
@@ -1368,12 +1389,13 @@ function patchRegistry(doc: Y.Doc): PatchRegistry {
  * applied.
  */
 /**
- * Занят ли оракул этой ячейкой прямо сейчас.
+ * Whether the Oracle is busy with this cell right now.
  *
- * Нужно там, где панель оракула свёрнута: жест сделан кнопкой над ячейкой, а
- * ответ приходит в другое место экрана, и без этого признака непонятно, взял
- * ли он задачу вообще. Заканчивается сменой `state` на `done` или `error` —
- * то есть признак снимается сам, чем бы ход ни кончился.
+ * Needed where the Oracle panel is collapsed: the gesture is made with a
+ * button above the cell, while the answer arrives in another part of the
+ * screen, and without this flag it is unclear whether it took the task at
+ * all. It ends when `state` changes to `done` or `error` — so the flag clears
+ * itself however the turn ended.
  */
 export function watchOracleBusy(doc: Y.Doc, id: () => string): Reactive<boolean> {
   const registry = patchRegistry(doc)
@@ -1413,8 +1435,9 @@ export function watchPatchFor(doc: Y.Doc, id: () => string): Reactive<YChatEntry
   return {
     get current() {
       const key = id()
-      // Ячейка сменилась под наблюдателем, а эффект ещё не перепривязался:
-      // читаем сквозь реестр, иначе кадр показал бы предложение к прошлой.
+      // The cell changed under the watcher and the effect has not rebound yet:
+      // read through the registry, otherwise a frame would show the previous
+      // cell's proposal.
       if (key !== bound.value) return registry.patch(key)
       return value.value
     },

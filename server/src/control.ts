@@ -22,11 +22,11 @@ import { tr, formatNumber } from '@shared/i18n'
  * Clearing and closing are host-only, because both destroy something the whole
  * room can see: shared history, and the shell itself.
  *
- * А набранная в нём команда идёт под тем же правилом, что и ячейка: `python
- * train.py` в оболочке — это тот же контейнер и то же процессорное время, что и
- * Run над файлом, и комната, где кнопка «Запустить» погашена словами «Запускает
- * преподаватель», не может разрешать то же самое строкой ниже. При умолчании
- * (`run: 'room'`) это по-прежнему открыто всем.
+ * And a command typed in it goes under the same rule as a cell: `python
+ * train.py` in the shell is the same container and the same CPU time as Run
+ * over a file, and a room where the "Run" button is greyed out with the words
+ * "the teacher runs this one" cannot allow the same thing one line below. By
+ * default (`run: 'room'`) it is still open to everyone.
  */
 import type * as Y from 'yjs'
 import { WebSocket, type RawData } from 'ws'
@@ -260,77 +260,84 @@ const PING_INTERVAL_MS = 25_000
 /** A socket that ignores this many consecutive pings is a closed laptop lid. */
 const MAX_MISSED_PONGS = 2
 /**
- * Кадры управляющего сокета маленькие по устройству — кроме одного.
+ * Control socket frames are small by design — except one.
  *
- * Снимок попытки консилиума (`council:draft`) везёт код целиком, и восьми
- * килобайт ему мало: сотня строк с комментариями по-русски — это уже два
- * байта на букву. Потолок кадра поднят до того, что вмещает `MAX_ATTEMPT_CHARS`
- * кириллицей вместе с обвязкой; всё прочее по-прежнему в разы меньше.
+ * A council attempt snapshot (`council:draft`) carries the code whole, and
+ * eight kilobytes are not enough for it: a hundred lines with comments in
+ * Russian are already two bytes per letter. The frame ceiling is raised to
+ * what fits `MAX_ATTEMPT_CHARS` in Cyrillic together with the wrapping;
+ * everything else is still many times smaller.
  */
 const MAX_FRAME_BYTES = 32 * 1024
 /*
- * Потолок самой попытки (`MAX_ATTEMPT_CHARS`) лежит в shared/notebook.ts, и это
- * не переезд ради порядка: клиент, не знающий числа, шлёт снимок на каждую
- * паузу в наборе и получает отказ на каждую. Отказ вслух, как у заметки:
- * обрезанный молча код на экране выглядит целым.
+ * The ceiling of the attempt itself (`MAX_ATTEMPT_CHARS`) lies in
+ * shared/notebook.ts, and that is not a move for tidiness: a client that does
+ * not know the number sends a snapshot on every pause in typing and gets a
+ * refusal on every one. A refusal out loud, as with a note: code silently cut
+ * off looks whole on screen.
  */
-/** Ответ студенту — абзац, как заметка к странице. */
+/** An answer to a student — a paragraph, like a page note. */
 const MAX_REPLY_CHARS = 3000
 /** A shell command, not a shell script: anything longer is a paste accident. */
 const MAX_COMMAND_BYTES = 4096
 /*
- * Потолок речи к странице (`MAX_NOTE_CHARS`) лежит в shared/lecture.ts рядом с
- * потолками чернил — по той же причине, по какой там же лежат они: поле в
- * пульте обязано резать ровно там, где режет сервер, иначе набранное пропадает
- * молча. Копия здесь один раз уже разошлась с делом — комментарий выводил три
- * тысячи знаков из кадра в 8192 байта, хотя `MAX_FRAME_BYTES` выше давно 32 КБ.
+ * The ceiling on a page's speaker notes (`MAX_NOTE_CHARS`) lies in
+ * shared/lecture.ts next to the ink ceilings — for the same reason they lie
+ * there: the field in the console must cut exactly where the server cuts,
+ * otherwise what was typed disappears silently. The copy here once already
+ * drifted from reality — the comment derived three thousand characters from
+ * an 8192-byte frame, although `MAX_FRAME_BYTES` above had long been 32 KB.
  */
 
 /**
- * Происхождение записи, которую сервер делает от своего имени.
+ * The origin of a write the server makes in its own name.
  *
- * Та же строка, что в collab/index.ts, и это не совпадение: наблюдатели за
- * документом пропускают собственные записи сервера по ней. Серверные поля
- * ячейки (`state`, `outputs`, а теперь и `open`) пишутся так же — у них нет
- * автора, потому что их никто не набирал.
+ * The same string as in collab/index.ts, and that is no coincidence: document
+ * observers skip the server's own writes by it. The server-side cell fields
+ * (`state`, `outputs`, and now `open`) are written the same way — they have
+ * no author, because nobody typed them.
  */
 const ORIGIN = 'server'
 
 interface Room {
   sockets: Set<WebSocket>
   /**
-   * Сокеты по участнику и сокеты преподавателей — рядом с общим набором.
+   * Sockets per participant and the teachers' sockets — next to the common
+   * set.
    *
-   * `tell` и `toTeachers` адресуют одному человеку и пульту, а искали адресата
-   * обходом всех сокетов комнаты. На двадцати это никто не замечал; на пятистах
-   * `tellQueued` (по человеку на каждый сдвиг очереди) — это четверть миллиона
-   * итераций на одно нажатие, а стопка на каждый снимок в наборе перебирает те
-   * же пятьсот трижды в секунду. Наборы правятся ровно там же, где `sockets`.
+   * `tell` and `toTeachers` address one person and the console, and they used
+   * to find the recipient by walking all the room's sockets. With twenty
+   * nobody noticed; with five hundred `tellQueued` (per person on every queue
+   * shift) is a quarter of a million iterations per click, and the pile on
+   * every typing snapshot walks the same five hundred three times a second.
+   * The sets are edited exactly where `sockets` is.
    */
   byParticipant: Map<string, Set<WebSocket>>
   hosts: Set<WebSocket>
   unwatch: () => void
   /**
-   * Один такт пинга на комнату, а не на сокет.
+   * One ping tick per room, not per socket.
    *
-   * Пинг — это два счётчика и `ws.ping()`; на одном сокете таймер вокруг него
-   * не виден. На пятистах это пятьсот таймеров в куче node, каждый со своим
-   * замыканием, и просыпаются они вразнобой по всей минуте — то есть цикл
-   * событий будят пятьсот раз там, где хватает одного обхода набора, который
-   * и так лежит рядом. Сроки те же: PING_INTERVAL_MS и MAX_MISSED_PONGS не
-   * менялись, сдвинулась только фаза — сокеты комнаты пингуются вместе.
+   * A ping is two counters and `ws.ping()`; on one socket the timer around it
+   * is invisible. With five hundred it is five hundred timers in node's heap,
+   * each with its own closure, and they wake up at random across the whole
+   * minute — that is, the event loop is woken five hundred times where one
+   * pass over the set that is lying right there would do. The deadlines are
+   * the same: PING_INTERVAL_MS and MAX_MISSED_PONGS did not change, only the
+   * phase moved — a room's sockets are pinged together.
    */
   pingTimer: NodeJS.Timeout | null
 }
 
-/** Сколько пингов подряд этот сокет пропустил. Ноль ставит его же `pong`. */
+/** How many pings in a row this socket has missed. Its own `pong` resets it to zero. */
 const missedPongs = new WeakMap<WebSocket, number>()
 
 /**
- * Обойти комнату и спросить каждый сокет, жив ли он.
+ * Walk the room and ask every socket whether it is alive.
  *
- * Молчащий второй раз — это закрытая крышка ноутбука, а не медленная сеть:
- * такой сокет рвётся, и вкладка, если она всё-таки есть, возвращается сама.
+ * One silent for the second time is a closed laptop lid, not a slow network:
+ * such a socket is dropped, and the tab, if there is one after all, comes
+ * back by itself.
  */
 function pingRoom(sessionId: string): void {
   const room = rooms.get(sessionId)
@@ -341,7 +348,7 @@ function pingRoom(sessionId: string): void {
       try {
         ws.terminate()
       } catch {
-        /* уже мёртв */
+        /* already dead */
       }
       continue
     }
@@ -352,7 +359,7 @@ function pingRoom(sessionId: string): void {
       try {
         ws.terminate()
       } catch {
-        /* уже мёртв */
+        /* already dead */
       }
     }
   }
@@ -366,62 +373,67 @@ onInstanceLanguage((language) => {
 /* ----------------------------------------------------------------- send */
 
 /**
- * Кадр строкой — и ни одного исключения наружу.
+ * A frame as a string — and not a single exception escaping.
  *
- * `JSON.stringify` не бесконечен: строка свыше ~512 МБ — это RangeError
- * «Invalid string length», и бросается он ДО всякой отправки. Пока сборка
- * кадра стояла голой, такой бросок из таймера (стопка консилиума, список
- * файлов) уходил в `uncaughtException`, а тот уводит процесс со всеми
- * комнатами инстанса. Один кадр не стоит семинара — тем более чужого:
- * пишем причину и молчим в этот сокет.
+ * `JSON.stringify` is not infinite: a string over ~512 MB is a RangeError
+ * "Invalid string length", and it is thrown BEFORE any sending. While frame
+ * assembly stood bare, such a throw from a timer (the council pile, the file
+ * list) went to `uncaughtException`, and that takes down the process with
+ * every room of the instance. One frame is not worth a seminar — least of all
+ * someone else's: we write down the reason and stay silent on this socket.
  */
 function frameOf(message: ControlServerMessage): string | null {
   try {
     return JSON.stringify(message)
   } catch (err) {
-    console.error(`[control] кадр ${message.t} не собрался:`, reason(err, 'unknown error'))
+    console.error(`[control] frame ${message.t} could not be built:`, reason(err, 'unknown error'))
     return null
   }
 }
 
 /**
- * Чем кадр важен — и что с ним делать, когда сокет не успевает.
+ * How important a frame is — and what to do with it when the socket cannot
+ * keep up.
  *
- * `stream` — то, что имеет смысл ровно сейчас: точка указки и кусок штриха.
- * Отставшему они не нужны вовсе: пока его очередь разгребается, рука ведущего
- * уже в другом месте, а следующий кадр всё равно везёт положение целиком.
- * `essential` — всё остальное: приветственная пачка, правила, конец занятия,
- * результат запуска, отказ. Такой кадр не повторится, и потерять его значит
- * оставить человека с комнатой, которой нет.
+ * `stream` is what makes sense right now only: a pointer position and a piece
+ * of a stroke. A socket that has fallen behind does not need them at all:
+ * while its queue is being cleared, the presenter's hand is already
+ * elsewhere, and the next frame carries the whole position anyway.
+ * `essential` is everything else: the welcome batch, the rules, the end of
+ * class, a run result, a refusal. Such a frame will not be repeated, and
+ * losing it means leaving a person with a room that does not exist.
  */
 type FrameClass = 'essential' | 'stream'
 
 /**
- * Кадры, которые можно не досылать отставшему. Список, а не признак в каждом
- * месте отправки: «можно потерять» — свойство самого кадра, и решаться оно
- * должно один раз.
+ * Frames that may be left undelivered to a socket that has fallen behind. A
+ * list rather than a flag at every sending site: "may be lost" is a property
+ * of the frame itself, and it should be decided once.
  */
 /*
- * Ответы на дополнение и справку — тоже сюда.
+ * Answers to completion and help — here too.
  *
- * Подсказка имеет смысл ровно в ту секунду, когда её просили. Отставшему на
- * мегабайт сокету она не нужна вовсе: пока его очередь разгребается, человек
- * дописал слово сам, а следующая буква спросит заново. Досылать её значило бы
- * складывать в память процесса списки имён, которые никто не прочтёт, —
- * ровно та беда, ради которой этот класс кадров и заведён.
+ * A hint makes sense exactly at the second it was asked for. A socket that is
+ * a megabyte behind does not need it at all: while its queue is being
+ * cleared, the person has finished the word themselves, and the next letter
+ * will ask again. Delivering it would mean piling up in process memory lists
+ * of names nobody will read — exactly the trouble this class of frames
+ * exists for.
  */
 /*
- * И ответ о том, где определено имя, — сюда же, хотя довод у него свой.
+ * And the answer about where a name is defined goes here too, though its
+ * argument is different.
  *
- * Он приезжает не на букву, а на ОСОЗНАННЫЙ щелчок, и потерять его было бы
- * жалко — если бы было что терять. Но у этого ответа есть срок годности, и он
- * записан на той стороне: три секунды (session.svelte.ts · ASK_TIMEOUT_MS),
- * после чего обещание закрывается пустым, а опоздавший кадр отбрасывается по
- * неизвестному номеру. Сокет, отставший на мегабайт, доставит его заведомо
- * позже — то есть кадр не «теряется», он уже ничего не стоил. А доехав всё-таки
- * вовремя-но-поздно, он утащил бы экран из того места, где человек к тому
- * времени работает: ровно поэтому `define` не досылается и после обрыва
- * (session.svelte.ts · DISCARDED_OFFLINE).
+ * It arrives not on a letter but on a DELIBERATE click, and losing it would
+ * be a pity — if there were anything to lose. But this answer has a shelf
+ * life, and it is written down on the other side: three seconds
+ * (session.svelte.ts · ASK_TIMEOUT_MS), after which the promise is closed
+ * empty and a late frame is discarded as an unknown number. A socket that is
+ * a megabyte behind will certainly deliver it later — that is, the frame is
+ * not "lost", it was already worth nothing. And if it did arrive
+ * in-time-but-late, it would drag the screen away from where the person is
+ * working by then: that is exactly why `define` is not delivered after a
+ * disconnect either (session.svelte.ts · DISCARDED_OFFLINE).
  */
 const STREAM_FRAMES = new Set<ControlServerMessage['t']>([
   'laser',
@@ -447,24 +459,27 @@ function send(
 }
 
 /**
- * Уже собранный кадр — в один сокет.
+ * An already assembled frame — into one socket.
  *
- * `Buffer`, а не только строка, и это не про удобство. `ws.send(строка)` каждый
- * раз кодирует её в UTF-8 заново — около миллисекунды на мегабайт (замерено), —
- * а кадры, которые едут ВСЕМ одинаковыми (дерево файлов, чернила лекции),
- * отправляются пятистам сокетам подряд: полмегабайта чернил превращались в
- * полсекунды блокировки цикла событий ровно на возврате зала. Кто собирает
- * такой кадр раз на комнату, тот и кодирует его раз на комнату; `binary: false`
- * держит кадр текстовым, каким его ждёт браузер.
+ * A `Buffer`, not only a string, and this is not about convenience.
+ * `ws.send(string)` encodes it into UTF-8 anew every time — about a
+ * millisecond per megabyte (measured) — and frames that go to EVERYONE
+ * identical (the file tree, the lecture ink) are sent to five hundred sockets
+ * in a row: half a megabyte of ink turned into half a second of event loop
+ * blocking exactly as the hall came back. Whoever assembles such a frame once
+ * per room also encodes it once per room; `binary: false` keeps the frame
+ * textual, the way the browser expects it.
  *
- * И две черты обратного давления — те же, что у общего документа (collab/index.ts
- * · AWARENESS_STALL_BYTES, HOPELESS_BYTES), и по той же причине. Провод не
- * бесконечен: ноутбук с закрытой крышкой, телефон в лифте, мобильная сеть на
- * краю аудитории принимают медленнее, чем комната говорит. Пока здесь стоял
- * один `readyState`, сервер складывал В ПАМЯТЬ ПРОЦЕССА всё, что не влезло в
- * провод: дерево файлов, стопку консилиума (до четырёх мегабайт) и чернила
- * тридцать раз в секунду — по копии на каждый отставший сокет. Одна забытая
- * вкладка выедала гигабайты и уводила инстанс со всеми чужими комнатами.
+ * And two backpressure lines — the same as the shared document's
+ * (collab/index.ts · AWARENESS_STALL_BYTES, HOPELESS_BYTES), and for the same
+ * reason. The wire is not infinite: a laptop with its lid closed, a phone in
+ * a lift, a mobile network at the edge of the lecture hall receive more
+ * slowly than the room talks. While only a `readyState` check stood here, the
+ * server piled INTO PROCESS MEMORY everything that did not fit into the wire:
+ * the file tree, the council pile (up to four megabytes) and the ink thirty
+ * times a second — a copy for every socket that had fallen behind. One
+ * forgotten tab ate gigabytes and took the instance down with everyone
+ * else's rooms.
  */
 const STREAM_STALL_BYTES = 1024 * 1024
 const HOPELESS_BYTES = 8 * 1024 * 1024
@@ -475,19 +490,19 @@ function sendFrame(ws: WebSocket, frame: string | Buffer, kind: FrameClass = 'es
   if (waiting > HOPELESS_BYTES) {
     if (seldom('control-backpressure')) {
       console.warn(
-        `[control] сокет отстал на ${Math.round(waiting / 1024)} КБ — закрыт, ` +
-          'вкладка вернётся сама и соберёт комнату заново',
+        `[control] socket fell ${Math.round(waiting / 1024)} KB behind — closed, ` +
+          'the tab will come back by itself and rebuild the room',
       )
     }
     try {
       ws.terminate()
     } catch {
-      /* уже мёртв */
+      /* already dead */
     }
     return
   }
-  // Отстал, но не безнадёжно: точку указки и кусок штриха он не увидит, а
-  // всё, что случается один раз, — увидит.
+  // Behind, but not hopelessly: it will not see a pointer position or a
+  // piece of a stroke, but it will see everything that happens once.
   if (kind === 'stream' && waiting > STREAM_STALL_BYTES) return
   try {
     ws.send(frame, { binary: false })
@@ -504,26 +519,27 @@ export function broadcast(
   const room = rooms.get(sessionId)
   if (!room) return
   /*
-   * Придержанные чернила — вперёд всего остального.
+   * Held-back ink goes ahead of everything else.
    *
-   * Куски штриха склеиваются на такт (`inkTo`), и всё, что говорит о чернилах
-   * что-то ещё, обязано приехать ПОСЛЕ них: «сотрите штрих», к которому в
-   * очереди лежат точки, стёр бы его до того, как они дописались, а «вот вся
-   * страница целиком» получила бы их дважды. Здесь, а не в каждом из десятка
-   * мест, где это сказано: забыть одно из них — значит нарисовать залу не то,
-   * что рисовали, и узнать об этом от преподавателя.
+   * Stroke pieces are glued together per tick (`inkTo`), and everything that
+   * says something else about the ink must arrive AFTER them: "erase the
+   * stroke", with points for it lying in the queue, would erase it before
+   * they were written, and "here is the whole page" would get them twice.
+   * Here, not in each of the dozen places where this is said: forgetting one
+   * of them means drawing for the hall something other than what was drawn,
+   * and finding out about it from the teacher.
    */
   if (message.t !== 'ink:add') flushInk(sessionId)
   const text = frameOf(message)
   if (text === null) return
   /*
-   * Байтами, а не строкой, и ровно один раз на комнату.
+   * As bytes, not a string, and exactly once per room.
    *
-   * `ws.send(строка)` кодирует её в UTF-8 заново на КАЖДЫЙ сокет. Кадр пера в
-   * лекции — 89.6 КБ на комнату в пятьсот человек (замерено), тридцать раз в
-   * секунду: это 4.9 МБ/с одного только кодирования, которое можно сделать
-   * один раз. Дерево и чернила это давно делали сами (`filesFrame`, `inkFrame`)
-   * — здесь то же самое для всех остальных рассылок.
+   * `ws.send(string)` encodes it into UTF-8 anew for EVERY socket. A pen frame
+   * in a lecture is 89.6 KB per room of five hundred people (measured), thirty
+   * times a second: that is 4.9 MB/s of encoding alone, which can be done
+   * once. The tree and the ink have long done this themselves (`filesFrame`,
+   * `inkFrame`) — here the same is done for all the other broadcasts.
    */
   const frame = Buffer.from(text, 'utf8')
   for (const ws of room.sockets) sendFrame(ws, frame, kind)
@@ -542,16 +558,18 @@ export function broadcast(
  */
 export function closeControlRoom(sessionId: string): void {
   /*
-   * Доска и лекция — до всякой проверки на сокеты, и это не порядок ради
-   * порядка: `rooms` чистится, как только уходит последний человек, а доска и
-   * чернила намеренно переживают его уход. Преподаватель закрыл ноутбук, не
-   * нажав «Закончить», а вечером удалил семинар — ниже возвращаться уже нечему,
-   * и двести исписанных страниц остались бы в памяти процесса до перезапуска.
+   * The board and the lecture go before any check for sockets, and this is
+   * not order for its own sake: `rooms` is cleaned up as soon as the last
+   * person leaves, while the board and the ink deliberately survive their
+   * leaving. The teacher closed the laptop without pressing "End", and in the
+   * evening deleted the seminar — there is nothing below to come back to, and
+   * two hundred scribbled pages would stay in process memory until a restart.
    */
   boards.delete(sessionId)
   forgetLecture(sessionId)
-  // И попытки консилиума: они в базе, а не в документе, и снос документа их
-  // не заденет — а лежать под ключом снесённой комнаты им незачем.
+  // And the council attempts: they are in the database, not in the document,
+  // and tearing down the document will not touch them — and there is no
+  // reason for them to lie under the key of a torn-down room.
   discardCouncil(sessionId)
   forgetBoards(sessionId)
   forgetQueue(sessionId)
@@ -559,7 +577,8 @@ export function closeControlRoom(sessionId: string): void {
   inkFrames.delete(sessionId)
   laserHeld.delete(sessionId)
   inkHeld.delete(sessionId)
-  // И все открытые окна склейки: их хвосты искали бы комнату, которой нет.
+  // And all open coalescing windows: their tails would look for a room that
+  // is gone.
   forgetTicks(sessionId)
   const room = rooms.get(sessionId)
   if (!room) return
@@ -578,35 +597,37 @@ export function closeControlRoom(sessionId: string): void {
 }
 
 /**
- * Выставить забаненного — сейчас, а не при следующем заходе.
+ * Put a banned person out — now, not on their next visit.
  *
- * Проверка на рукопожатии закрывает дверь тому, кто стучится; забанили обычно
- * того, кто уже сидит внутри, и без этой строки он спокойно дописывает в
- * тетради до конца пары — его сокеты открылись раньше бана и ничего о нём не
- * знают.
+ * The check at the handshake closes the door to whoever is knocking; the one
+ * banned is usually someone already sitting inside, and without this line
+ * they calmly keep writing in the notebook until the end of the class period
+ * — their sockets opened before the ban and know nothing about it.
  *
- * Кадр уходит ДО закрытия. Иначе вкладка видит обрыв связи и молча уходит
- * переподключаться, показывая «нет соединения» там, где надо показать причину
- * и срок; после кадра она знает, что произошло, и не стучится обратно.
+ * The frame goes BEFORE the close. Otherwise the tab sees a dropped
+ * connection and silently goes off to reconnect, showing "no connection"
+ * where the reason and the term should be shown; after the frame it knows
+ * what happened and does not knock back.
  *
- * Точечно, а не `closeControlRoom`: комната продолжает занятие. И все три
- * провода сразу — управляющий держит нажатия, общий документ держит текст,
- * файловый держит открытый в редакторе `.py`, — закрыть один, оставив
- * остальные, значит выгнать наполовину: забаненный дописывает в общий файл
- * комнаты до тех пор, пока сам не перезагрузит страницу.
+ * Targeted, not `closeControlRoom`: the room carries on with the class. And
+ * all three wires at once — the control one carries the clicks, the shared
+ * document carries the text, the file one carries the `.py` open in the
+ * editor — closing one while leaving the others means throwing someone out
+ * halfway: the banned person keeps writing into the room's shared file until
+ * they reload the page themselves.
  *
- * Третий провод закрывается через событие бана (bans.ts · onEviction). Позвать
- * collab/files.ts отсюда напрямую было бы можно — этот модуль его и так
- * импортирует, — но тогда список проводов жил бы здесь, в модуле нажатий, и
- * каждый следующий провод пришлось бы вспоминать. Объявление живёт там, где
- * живёт само понятие «этому человеку сюда больше нельзя», а держащий провод
- * подписывается на него у себя.
+ * The third wire is closed through the ban event (bans.ts · onEviction).
+ * Calling collab/files.ts directly from here would be possible — this module
+ * imports it anyway — but then the list of wires would live here, in the
+ * clicks module, and every next wire would have to be remembered. The
+ * announcement lives where the notion "this person may no longer be here"
+ * itself lives, and whoever holds a wire subscribes to it on their side.
  */
 export function evictBanned(sessionId: string, participantId: string, until: number): void {
   tell(sessionId, participantId, { t: 'banned', until })
   const room = rooms.get(sessionId)
   if (room) {
-    // Копия набора: обработчик закрытия правит его же.
+    // A copy of the set: the close handler edits the same one.
     for (const ws of [...(room.byParticipant.get(participantId) ?? [])]) {
       try {
         ws.close(1008, tr("server.bannedFromThisSeminar.234bce"))
@@ -620,38 +641,42 @@ export function evictBanned(sessionId: string, participantId: string, until: num
 }
 
 /**
- * Последний собранный кадр дерева — один на комнату, а не на сокет.
+ * The last assembled tree frame — one per room, not per socket.
  *
- * Обход папки стоит readdir и lstat на каждую запись (до двух тысяч), а кадр —
- * до сотни килобайт строки. Одному подключению это незаметно; после перезапуска
- * сервера пятьсот вкладок возвращаются в одну-две секунды, и каждая получала
- * СВОЙ обход и СВОЮ сборку одного и того же списка — секунды блокировки цикла
- * ровно там, где все ждут возврата.
+ * Walking the folder costs a readdir and an lstat per entry (up to two
+ * thousand), and the frame is up to a hundred kilobytes of string. For one
+ * connection this is unnoticeable; after a server restart five hundred tabs
+ * come back within a second or two, and each got ITS OWN walk and ITS OWN
+ * assembly of the same list — seconds of loop blocking exactly where everyone
+ * is waiting for the comeback.
  *
- * Кэш недолгий и не заменяет рассылку: любая перемена в дереве и так проходит
- * через `broadcastFiles`, который считает список заново и кладёт сюда свежий.
- * Окно нужно только на пачку подключений подряд; за ним обход делается честно.
+ * The cache is short-lived and does not replace the broadcast: any change in
+ * the tree goes through `broadcastFiles` anyway, which computes the list anew
+ * and puts a fresh one here. The window is only needed for a batch of
+ * connections in a row; past it the walk is done honestly.
  */
 const TREE_FRESH_MS = 1000
 
 /**
- * Дерево, которое комната держит на руках, — одно на комнату и с номером.
+ * The tree the room is holding — one per room, and numbered.
  *
- * Тут сошлись две памяти, которые раньше стояли порознь: кадр на пачку
- * подключений и расписка «этот список уже разослан». Развести их больше нельзя,
- * потому что появился номер: перемена едет ДЕЛЬТОЙ (`files:delta`), а дельта
- * ложится только на тот список, из которого её посчитали. Значит запись обязана
- * быть одна — и список, и его номер, и собранный кадр.
+ * Two memories that used to stand apart met here: a frame for a batch of
+ * connections and the receipt "this list has already been sent". They can no
+ * longer be kept apart, because a number appeared: a change travels as a
+ * DELTA (`files:delta`), and a delta only applies to the list it was computed
+ * from. So the record has to be one — the list, its number and the assembled
+ * frame.
  *
- * Номер растёт на единицу на каждую перемену состава. Вкладка, у которой на
- * руках не `from` дельты, склеивать её не пытается, а спрашивает дерево целиком
- * (`files:ask`) — так лечится и вошедший, пересчитавший дерево за пустую
- * комнату, и любое расхождение, о котором мы не знаем.
+ * The number grows by one on every change of the contents. A tab that does
+ * not hold the delta's `from` does not try to glue it on, but asks for the
+ * whole tree (`files:ask`) — this cures both a newcomer who recomputed the
+ * tree for an empty room and any divergence we do not know about.
  *
- * Тик рассылки взводится от всего, что ТРОГАЕТ папку: автосохранение
- * редактора, проекция тетради, запись из ячейки. Дерево при этом чаще всего то
- * же самое — текст файла поменялся, список файлов нет. Совпавший обход поэтому
- * номера не двигает и не уезжает вовсе.
+ * The broadcast tick is armed by everything that TOUCHES the folder: the
+ * editor's autosave, the notebook projection, a write from a cell. The tree
+ * is most often the same — the file's text changed, the list of files did
+ * not. A walk that matched therefore does not move the number and does not go
+ * out at all.
  */
 interface TreeRecord {
   at: number
@@ -663,7 +688,7 @@ interface TreeRecord {
 
 const treeSent = new Map<string, TreeRecord>()
 
-/** Тот же состав, та же цифра рядом с именем — говорить нечего. */
+/** The same contents, the same number next to the name — nothing to say. */
 function sameTree(before: readonly FileEntry[], after: readonly FileEntry[]): boolean {
   if (before.length !== after.length) return false
   for (let i = 0; i < before.length; i++) {
@@ -682,29 +707,32 @@ function sameTree(before: readonly FileEntry[], after: readonly FileEntry[]): bo
 }
 
 /**
- * Дерево комнаты с номером — из памяти, если она моложе `reuseMs`, иначе обходом.
+ * The room's tree with its number — from memory if it is younger than
+ * `reuseMs`, otherwise by a walk.
  *
- * Обход папки стоит readdir и lstat на каждую запись (до двух тысяч), а кадр —
- * до сотни килобайт строки. Одному подключению это незаметно; после перезапуска
- * сервера пятьсот вкладок возвращаются в одну-две секунды, и каждая получала
- * СВОЙ обход и СВОЮ сборку одного и того же списка — секунды блокировки цикла
- * ровно там, где все ждут возврата. Поэтому приветственная пачка берёт запись
- * моложе окна как есть, а рассылка (`reuseMs = 0`) считает честно: её зовут
- * ровно потому, что дерево изменилось.
+ * Walking the folder costs a readdir and an lstat per entry (up to two
+ * thousand), and the frame is up to a hundred kilobytes of string. For one
+ * connection this is unnoticeable; after a server restart five hundred tabs
+ * come back within a second or two, and each got ITS OWN walk and ITS OWN
+ * assembly of the same list — seconds of loop blocking exactly where everyone
+ * is waiting for the comeback. So the welcome batch takes a record younger
+ * than the window as is, while the broadcast (`reuseMs = 0`) computes
+ * honestly: it is called precisely because the tree has changed.
  *
- * `ready` — дерево, которое вызывающий уже построил (загрузка файлов строит его
- * на ответ). Обход папки не дешевле подсчёта байтов, и делать его дважды на
- * одну загрузку незачем.
+ * `ready` is a tree the caller has already built (an upload builds it for
+ * the response). Walking the folder is no cheaper than counting bytes, and
+ * there is no reason to do it twice per upload.
  */
 function treeRecord(sessionId: string, ready?: FileTree, reuseMs = 0): TreeRecord | null {
   const known = treeSent.get(sessionId)
   if (!ready && known && Date.now() - known.at < reuseMs) return known
   /*
-   * Дерево едет вместе с признаком обрезки: список, упёршийся в потолок обхода,
-   * — это не «в комнате столько файлов». Панель говорит это вслух, иначе
-   * человек ищет глазами файл, который на диске лежит. Признак шлётся всегда, и
-   * `false` в нём такой же ответ, как `true`: иначе комната, один раз увидевшая
-   * обрезку, так и осталась бы с предупреждением после уборки папки.
+   * The tree travels together with the truncation flag: a list that hit the
+   * walk ceiling is not "the room has this many files". The panel says so out
+   * loud, otherwise a person searches with their eyes for a file that is
+   * lying on disk. The flag is always sent, and `false` in it is as much an
+   * answer as `true`: otherwise a room that once saw truncation would be left
+   * with the warning after the folder was cleaned up.
    */
   let tree: FileTree
   if (ready) tree = ready
@@ -722,8 +750,8 @@ function treeRecord(sessionId: string, ready?: FileTree, reuseMs = 0): TreeRecor
   const rev = (known?.rev ?? 0) + 1
   const text = frameOf({ t: 'files', files: tree.files, truncated: tree.truncated, rev })
   if (text === null) return null
-  // Байтами, а не строкой: этот кадр уходит всем сокетам комнаты подряд, и
-  // кодировать его на каждый из них — работа впустую (см. sendFrame).
+  // As bytes, not a string: this frame goes to all of the room's sockets in a
+  // row, and encoding it for each of them is wasted work (see sendFrame).
   const record: TreeRecord = {
     at: Date.now(),
     rev,
@@ -735,25 +763,30 @@ function treeRecord(sessionId: string, ready?: FileTree, reuseMs = 0): TreeRecor
   return record
 }
 
-/** Кадр дерева для того, кто только что вошёл, — общий на всю пачку возврата. */
+/**
+ * The tree frame for someone who has just come in — shared by the whole
+ * comeback batch.
+ */
 function filesFrame(sessionId: string): Buffer | null {
   return treeRecord(sessionId, undefined, TREE_FRESH_MS)?.frame ?? null
 }
 
 export function broadcastFiles(sessionId: string, tree?: FileTree): void {
   /*
-   * Короткая память обхода забывается ДО проверки на пустую комнату.
+   * The walk's short memory is forgotten BEFORE the empty-room check.
    *
-   * Рассылка — всегда по свежему обходу: её зовут ровно потому, что дерево
-   * изменилось, и отдать на это вчерашний список значило бы не сказать ничего.
-   * Память самого обхода живёт в workspace.ts (`forgetTree`), и сбросить её
-   * надо отсюда: в папку пишут и мимо workspace.ts (загрузка своими потоками,
-   * ядро изнутри контейнера), так что обход своей памяти сам не забудет.
+   * A broadcast always uses a fresh walk: it is called precisely because the
+   * tree has changed, and handing it yesterday's list would mean saying
+   * nothing. The walk's own memory lives in workspace.ts (`forgetTree`), and
+   * it has to be reset from here: the folder is written to bypassing
+   * workspace.ts too (an upload with its own streams, the kernel from inside
+   * the container), so the walk will not forget its memory by itself.
    *
-   * Выше возврата — потому что комната без единого сокета не значит «ничего не
-   * изменилось». Это ровно тот случай, когда файлы кладут до входа: рассылать
-   * некому, а тот же запрос следом отдаёт `listTree` в ответе, и по старой
-   * памяти он отдавал дерево БЕЗ только что положенного файла.
+   * Above the return — because a room without a single socket does not mean
+   * "nothing changed". This is exactly the case when files are put in before
+   * anyone enters: there is nobody to broadcast to, while the same request
+   * returns `listTree` in its response right after, and with the old memory
+   * it returned a tree WITHOUT the file just put there.
    */
   forgetTree(sessionId)
   const room = rooms.get(sessionId)
@@ -762,10 +795,11 @@ export function broadcastFiles(sessionId: string, tree?: FileTree): void {
   const record = treeRecord(sessionId, tree)
   if (record === null) return
   /*
-   * И только если оно ДЕЙСТВИТЕЛЬНО изменилось. Тот же список второй раз не
-   * рассказывает панели ничего — а стоит пятисот отправок и пятисот отдельных
-   * сжатий. Подключившемуся список приезжает своим путём (приветственная
-   * пачка), так что молчание здесь его не касается.
+   * And only if it REALLY changed. The same list a second time tells the
+   * panel nothing — while costing five hundred sends and five hundred
+   * separate compressions. For someone who has just connected the list
+   * arrives by its own path (the welcome batch), so silence here does not
+   * concern them.
    */
   if (before && before.rev === record.rev) return
   const frame = deltaFrame(before, record) ?? record.frame
@@ -773,12 +807,14 @@ export function broadcastFiles(sessionId: string, tree?: FileTree): void {
 }
 
 /**
- * Кадр перемены — или `null`, если дешевле и честнее послать список целиком.
+ * A change frame — or `null` if it is cheaper and more honest to send the
+ * whole list.
  *
- * Целиком отправляется в трёх случаях: комната и так ничего не держала,
- * обрезанное дерево (в нём «записи нет» и «не поместилась» неразличимы, а
- * разница эта стоит удалённой у всех тетради) и перемена крупнее самого списка
- * — так бывает на `pip install`, когда меняется вся папка разом.
+ * The whole list is sent in three cases: the room held nothing anyway, the
+ * tree is truncated (in it "the entry is absent" and "did not fit" are
+ * indistinguishable, and that difference costs a notebook deleted for
+ * everyone), and a change bigger than the list itself — which happens on
+ * `pip install`, when the whole folder changes at once.
  */
 function deltaFrame(before: TreeRecord | undefined, now: TreeRecord): Buffer | null {
   if (!before || before.truncated || now.truncated) return null
@@ -789,25 +825,28 @@ function deltaFrame(before: TreeRecord | undefined, now: TreeRecord): Buffer | n
   return frame.length < now.frame.length ? frame : null
 }
 
-/* ---------------------------------------------------------- тик склейки */
+/* ------------------------------------------------------ coalescing tick */
 
 /**
- * Одно окно на все рассылки «всем на каждое событие».
+ * One window for all the "everyone, on every event" broadcasts.
  *
- * Список файлов, номера очереди и указка приходят пачками — от автосохранения,
- * от каждого начала и конца работы ядра, от каждого движения руки, — а уходят
- * циклом `ws.send` по всем сокетам комнаты. У каждой из трёх был свой таймер с
- * тем же телом: карта ожидающих, `unref`, перехват броска. Три копии одного
- * правила расходятся на первой правке, поэтому окно здесь одно, а разное у них
- * только длина окна и то, что уезжает в конце.
+ * The file list, the queue numbers and the pointer come in bursts — from
+ * autosave, from every start and end of kernel work, from every hand
+ * movement — and leave as a `ws.send` loop over all of the room's sockets.
+ * Each of the three had its own timer with the same body: a map of pending
+ * ones, `unref`, catching a throw. Three copies of one rule diverge on the
+ * first edit, so there is one window here, and all that differs between them
+ * is the window length and what goes out at the end.
  *
- * Первый вызов ЖДЁТ окно, а не проходит сразу: список файлов и номера очереди
- * от этого только выигрывают (перемены идут пачкой, и первая из них ничем не
- * важнее последней). Там, где ждать нельзя, ведущий кадр отправляется до
- * `onTick` руками — так сделана указка ниже.
+ * The first call WAITS for the window rather than going through at once: the
+ * file list and the queue numbers only gain from this (changes come in a
+ * burst, and the first of them is no more important than the last). Where
+ * waiting is not allowed, the leading frame is sent by hand before `onTick`
+ * — that is how the pointer below does it.
  *
- * Ключ — «что» и комната: окна разных рассылок не мешают друг другу, а уборка
- * комнаты снимает все её окна разом (`forgetTicks`).
+ * The key is "what" and the room: windows of different broadcasts do not get
+ * in each other's way, and cleaning up a room removes all its windows at once
+ * (`forgetTicks`).
  */
 const ticks = new Map<string, NodeJS.Timeout>()
 
@@ -821,26 +860,27 @@ function onTick(sessionId: string, what: string, everyMs: number, run: () => voi
   const timer = setTimeout(() => {
     ticks.delete(key)
     /*
-     * Под перехватом — как и всё, что делает таймер: бросок отсюда некому
-     * поймать, он уходит в `uncaughtException` и уводит процесс со всеми
-     * комнатами инстанса. Ни один из этих кадров не стоит чужого семинара.
+     * Under a catch — like everything a timer does: a throw from here has
+     * nobody to catch it, it goes to `uncaughtException` and takes the process
+     * down with every room of the instance. None of these frames is worth
+     * someone else's seminar.
      */
     try {
       run()
     } catch (err) {
-      console.error(`[control ${sessionId}] тик «${what}» не уехал:`, reason(err, 'unknown error'))
+      console.error(`[control ${sessionId}] tick "${what}" did not go out:`, reason(err, 'unknown error'))
     }
   }, everyMs)
   timer.unref?.()
   ticks.set(key, timer)
 }
 
-/** Окно ещё открыто: перемена приедет его хвостом, слать сейчас не надо. */
+/** The window is still open: the change will ride its tail, no need to send now. */
 function ticking(sessionId: string, what: string): boolean {
   return ticks.has(tickKey(sessionId, what))
 }
 
-/** Все окна комнаты — снять. Комната опустела или её больше нет. */
+/** Remove all of the room's windows. The room has emptied or no longer exists. */
 function forgetTicks(sessionId: string): void {
   const tail = `\n${sessionId}`
   for (const [key, timer] of ticks) {
@@ -851,134 +891,140 @@ function forgetTicks(sessionId: string): void {
 }
 
 /**
- * Столько ждём, прежде чем пересчитывать дерево само по себе.
+ * How long to wait before recomputing the tree on its own.
  *
- * Один список стоит обхода всей папки (readdir и lstat на каждую запись) и
- * кадра каждому сокету. Двадцать человек, правящих по файлу, сохраняются
- * каждые семьсот миллисекунд НЕ ВМЕСТЕ — это до тридцати обходов в секунду и
- * панель файлов, перерисовывающаяся всю пару.
+ * One list costs a walk of the whole folder (a readdir and an lstat per
+ * entry) and a frame to every socket. Twenty people editing a file each save
+ * every seven hundred milliseconds NOT TOGETHER — that is up to thirty walks
+ * a second and a files panel redrawing for the whole class period.
  *
- * Задержка видна только тому, кто ждёт своего же нажатия, — поэтому прямые
- * правки дерева (завели, убрали, переименовали, загрузили) рассылаются сразу,
- * а откладывается лишь то, что случается само: автосохранение, проекция
- * тетради, запись из ячейки.
+ * The delay is only visible to someone waiting for their own click — so
+ * direct edits of the tree (created, removed, renamed, uploaded) are
+ * broadcast at once, and only what happens by itself is postponed: autosave,
+ * the notebook projection, a write from a cell.
  */
 const FILES_EVERY_MS = 400
 
 function scheduleFiles(sessionId: string): void {
-  onTick(sessionId, 'список файлов', FILES_EVERY_MS, () => broadcastFiles(sessionId))
+  onTick(sessionId, 'file list', FILES_EVERY_MS, () => broadcastFiles(sessionId))
 }
 
-/* ------------------------------------------------------- общий экран */
+/* ----------------------------------------------------- shared screen */
 
 /**
- * Документ, который комната смотрит вместе.
+ * The document the room is watching together.
  *
- * В памяти процесса, рядом с комнатой, а не в общем документе и не в
- * присутствии. Присутствие исчезает вместе с вкладкой — закрытый ноутбук
- * преподавателя убрал бы материал у всех. Общий документ Yjs пишет каждую
- * запись в ленту версий, и «открыл PDF» стало бы строкой истории, а Ctrl+Z в
- * ячейке — способом закрыть его всей комнате.
+ * In process memory, next to the room, not in the shared document and not in
+ * presence. Presence disappears along with the tab — the teacher's closed
+ * laptop would take the material away from everyone. The shared Yjs document
+ * writes every write into the version feed, and "opened a PDF" would become a
+ * history row, and Ctrl+Z in a cell a way to close it for the whole room.
  *
- * Цена названа вслух: перезапуск сервера закрывает доску у всех. Так же уходит
- * и очередь запуска, и это то же самое обещание — комната переживает обрыв
- * связи, но не перезапуск процесса.
+ * The price is named out loud: a server restart closes the board for
+ * everyone. The run queue goes the same way, and it is the same promise — the
+ * room survives a dropped connection, but not a process restart.
  */
 const boards = new Map<string, string>()
 
-/** Что комната смотрит сейчас. */
+/** What the room is watching now. */
 export function boardOf(sessionId: string): string | null {
   return boards.get(sessionId) ?? null
 }
 
-/** Куда указка приехала за окно склейки; уедет её последнее положение. */
+/** Where the pointer got to within the coalescing window; its last position goes out. */
 type LaserAt = { page: number; x: number; y: number; shape: 'dot' | 'line' }
 const laserHeld = new Map<string, LaserAt>()
 
 /**
- * Погасить указку у всей комнаты.
+ * Turn off the pointer for the whole room.
  *
- * Указка нигде не хранится: где она была секунду назад — не факт о лекции, а
- * положение руки, и держится она ровно тем, что кадры идут. Поэтому всякий раз,
- * когда рука пропала, не сказав «off», — лекцию закончили, пульт передали,
- * планшет выгрузили из памяти, — гасить приходится за неё. Иначе красное пятно
- * висит на слайде до конца лекции и показывает туда, где ведущий был минуту
- * назад. Таймаутом это не лечится: неподвижная указка кадров не шлёт вовсе, и
- * таймаут погасил бы штатный показ.
+ * The pointer is not stored anywhere: where it was a second ago is not a fact
+ * about the lecture but the position of a hand, and it is held only by the
+ * frames coming. So every time the hand disappears without saying "off" —
+ * the lecture ended, the console was handed over, the tablet unloaded from
+ * memory — it has to be turned off on the hand's behalf. Otherwise a red spot
+ * hangs on the slide until the end of the lecture and points to where the
+ * presenter was a minute ago. A timeout does not cure this: a still pointer
+ * sends no frames at all, and a timeout would turn off a normal showing.
  */
 function laserOff(sessionId: string): void {
-  // Придержанная точка — вперёд гашения: иначе хвост окна зажёг бы пятно
-  // обратно через шестьдесят миллисекунд после того, как руку убрали.
+  // The held point goes ahead of the turning off: otherwise the window's tail
+  // would light the spot back up sixty milliseconds after the hand was
+  // removed.
   laserHeld.delete(sessionId)
   broadcast(sessionId, { t: 'laser', at: null })
 }
 
 /**
- * Указка — комнате, но не чаще такта: за окно побеждает последняя точка.
+ * The pointer — to the room, but no more often than the tick: within a
+ * window the last point wins.
  *
- * Такт указки — общий, из `@shared/lecture`: тем же окном режет кадры пульт.
+ * The pointer tick is shared, from `@shared/lecture`: the console cuts frames
+ * with the same window.
  *
- * Кадр указки — не событие, а положение руки, и промежуточные положения никому
- * не нужны: зал всё равно ведёт её пружиной между редкими сэмплами. Сервер же
- * платил за каждое полным кругом — `JSON.stringify` и цикл `ws.send` по всем
- * сокетам комнаты; на пятистах слушателях рука ведущего стоила десятков тысяч
- * отправок в секунду. Пульт свой такт уже сбавил, но верить на слово вкладке,
- * которая может быть и старой, и чужой, нечего.
+ * A pointer frame is not an event but the position of a hand, and nobody
+ * needs the intermediate positions: the hall moves it with a spring between
+ * sparse samples anyway. The server, however, paid a full round for each —
+ * `JSON.stringify` and a `ws.send` loop over all of the room's sockets; with
+ * five hundred listeners the presenter's hand cost tens of thousands of sends
+ * a second. The console has already lowered its tick, but there is no reason
+ * to take the word of a tab that may be old or someone else's.
  *
- * Первый кадр уходит СРАЗУ, до окна: указка обязана появиться там, куда
- * показали, а не через такт после этого.
+ * The first frame goes out AT ONCE, before the window: the pointer must
+ * appear where it was pointed, not one tick later.
  */
 function laserTo(sessionId: string, at: LaserAt): void {
-  if (ticking(sessionId, 'указка')) {
+  if (ticking(sessionId, 'pointer')) {
     laserHeld.set(sessionId, at)
     return
   }
   broadcast(sessionId, { t: 'laser', at })
-  onTick(sessionId, 'указка', LASER_EVERY_MS, () => {
+  onTick(sessionId, 'pointer', LASER_EVERY_MS, () => {
     const held = laserHeld.get(sessionId)
     if (!held) return
     laserHeld.delete(sessionId)
-    // Рука ещё идёт — отправить и открыть следующее окно.
+    // The hand is still moving — send and open the next window.
     laserTo(sessionId, held)
   })
 }
 
-/* --------------------------------------------------------------- чернила */
+/* ------------------------------------------------------------------- ink */
 
 /**
- * Такт склейки чернил. Чуть меньше трёх кадров экрана — рука этого не замечает.
+ * The ink coalescing tick. A little less than three screen frames — the hand
+ * does not notice.
  *
- * Перо шлёт точки пачками по мере рисования — двадцать-тридцать кусков штриха
- * в секунду, — и каждый кусок уезжал своим кадром всей комнате. На пятистах
- * слушателях это 89.6 КБ на кадр и 4.9 МБ/с (замерено) на ОДНУ проведённую
- * линию: сорок восемь байт полезных точек, остальное — обвязка кадра,
- * умноженная на зал.
+ * The pen sends points in batches as it draws — twenty to thirty stroke
+ * pieces a second — and each piece went out as its own frame to the whole
+ * room. With five hundred listeners that is 89.6 KB per frame and 4.9 MB/s
+ * (measured) for ONE line drawn: forty-eight bytes of useful points, the rest
+ * is frame wrapping multiplied by the hall.
  *
- * Куски одного штриха складываются в один кадр, и это ровно то же, что зал
- * увидел бы и так: разбор `ink:add` на вкладке дописывает точки к штриху с тем
- * же именем (session.svelte.ts), а склеенная пачка — это те же точки, в том же
- * порядке, одной записью.
+ * Pieces of one stroke are folded into one frame, and that is exactly what
+ * the hall would have seen anyway: the tab's `ink:add` parsing appends points
+ * to the stroke with the same name (session.svelte.ts), and a glued batch is
+ * the same points, in the same order, as one entry.
  *
- * Первый кадр уходит СРАЗУ, до окна, как у указки: линия обязана появиться
- * там, где её начали, а не через такт.
+ * The first frame goes out AT ONCE, before the window, as with the pointer:
+ * the line must appear where it was started, not one tick later.
  */
 const INK_EVERY_MS = 45
 
-/** Куски штрихов, придержанные на такт, — в порядке прихода. */
+/** Stroke pieces held back for a tick — in order of arrival. */
 const inkHeld = new Map<string, InkStroke[]>()
 
 function inkTo(sessionId: string, stroke: InkStroke): void {
-  if (ticking(sessionId, 'чернила')) {
+  if (ticking(sessionId, 'ink')) {
     const held = inkHeld.get(sessionId) ?? []
     const last = held.at(-1)
     /*
-     * Только ПОДРЯД идущие куски одного штриха: между двумя кусками пера может
-     * оказаться штрих второго преподавателя с планшета, и переставить их
-     * местами значило бы нарисовать залу не то, что рисовали.
+     * Only CONSECUTIVE pieces of one stroke: between two pen pieces there may
+     * be a stroke of a second teacher from a tablet, and swapping them would
+     * mean drawing for the hall something other than what was drawn.
      *
-     * Копия точек, а не память комнаты: `addInk` на новый штрих возвращает тот
-     * самый массив, который лежит в комнате, и дописывать в него склейку
-     * значило бы дважды разослать одни и те же точки.
+     * A copy of the points, not the room's memory: `addInk` for a new stroke
+     * returns the very array that lies in the room, and appending the glued
+     * batch to it would mean sending the same points out twice.
      */
     if (last && last.id === stroke.id && last.page === stroke.page) {
       last.points = [...last.points, ...stroke.points]
@@ -993,21 +1039,23 @@ function inkTo(sessionId: string, stroke: InkStroke): void {
 }
 
 function openInkWindow(sessionId: string): void {
-  onTick(sessionId, 'чернила', INK_EVERY_MS, () => {
-    // Рука ещё идёт — отправить придержанное и открыть следующее окно.
+  onTick(sessionId, 'ink', INK_EVERY_MS, () => {
+    // The hand is still moving — send what was held and open the next window.
     if (flushInk(sessionId)) openInkWindow(sessionId)
   })
 }
 
 /**
- * Придержанные куски — в провод сейчас. Возвращает, было ли что отправлять.
+ * Held pieces — into the wire now. Returns whether there was anything to
+ * send.
  *
- * Зовётся не только хвостом окна: всё, что говорит о чернилах ЧТО-ТО ЕЩЁ —
- * «сотрите штрих», «страница чистая», «вот вся страница целиком», — обязано
- * уехать ПОСЛЕ придержанного, иначе зал получает точки, дописанные к штриху,
- * который у него уже стёрт, или страницу, к которой тут же дописывается то,
- * что в ней и так есть. Место этого правила — `broadcast` ниже: там видно
- * всякую рассылку комнате, а не только те, про которые не забыли.
+ * Called not only by the window's tail: everything that says SOMETHING ELSE
+ * about the ink — "erase the stroke", "the page is clean", "here is the whole
+ * page" — must go out AFTER what was held, otherwise the hall gets points
+ * appended to a stroke it has already erased, or a page to which what it
+ * already has gets appended right away. The place for this rule is
+ * `broadcast` below: every broadcast to the room is visible there, not only
+ * the ones nobody forgot about.
  */
 function flushInk(sessionId: string): boolean {
   const held = inkHeld.get(sessionId)
@@ -1022,9 +1070,10 @@ function setBoard(sessionId: string, name: string | null): void {
   else boards.set(sessionId, name)
   broadcast(sessionId, { t: 'board', open: name })
   /*
-   * Лекция идёт по документу на общем экране, и убрать документ — значит
-   * закончить лекцию. Иначе комната получает пульт, листающий то, чего никто
-   * не видит, и чернила на файле, закрытом у всех.
+   * A lecture runs over the document on the shared screen, and removing the
+   * document means ending the lecture. Otherwise the room gets a console
+   * flipping through something nobody sees, and ink on a file closed for
+   * everyone.
    */
   const lecture = lectureOf(sessionId)
   if (lecture && lecture.file !== name) {
@@ -1035,36 +1084,37 @@ function setBoard(sessionId: string, name: string | null): void {
 }
 
 /**
- * Файл пропал или его переписали — доску надо закрыть.
+ * The file is gone or was rewritten — the board has to be closed.
  *
- * Удалить файл может преподаватель, а переписать — любая ячейка: `df.to_csv`
- * идёт в ту же папку. Читалка, продолжающая показывать документ, которого нет,
- * — это пустая область без объяснения.
+ * The teacher may delete a file, and any cell may rewrite it: `df.to_csv`
+ * goes to the same folder. A reader that keeps showing a document that does
+ * not exist is an empty area with no explanation.
  *
- * Экспортируется ради второй двери удаления: файл убирают и сокетом
- * (`tree:remove` ниже), и REST'ом (routes/files.ts), а гасить доску обязаны
- * обе — иначе удалённый документ остаётся на общем экране всей комнаты до
- * перезагрузки.
+ * Exported for the sake of the second deletion door: a file is removed both
+ * by the socket (`tree:remove` below) and by REST (routes/files.ts), and both
+ * must turn off the board — otherwise a deleted document stays on the shared
+ * screen of the whole room until a reload.
  */
 export function forgetMissingBoard(sessionId: string): void {
   const open = boards.get(sessionId)
   if (!open) return
   /*
-   * Один `lstat` по самому пути, а не поиск в дереве: у обхода есть потолок
-   * (см. `truncated` в workspace.ts), и документ, не влезший в список, никуда
-   * не пропал. По обрезанному списку доска гасла бы посреди лекции — ровно там,
-   * где студент распаковал датасет на две тысячи файлов.
+   * One `lstat` on the path itself, not a search in the tree: the walk has a
+   * ceiling (see `truncated` in workspace.ts), and a document that did not
+   * fit into the list has not gone anywhere. With a truncated list the board
+   * would go dark in the middle of a lecture — exactly where a student
+   * unpacked a two-thousand-file dataset.
    */
   if (statPath(sessionId, open)?.dir === false) return
   setBoard(sessionId, null)
 }
 
 /*
- * Файл лёг на диск — комната узнаёт новый размер и время.
+ * A file landed on disk — the room learns its new size and time.
  *
- * Редактор сохраняется сам каждые несколько секунд, и без этой строки панель
- * файлов показывала бы размер, каким он был при открытии вкладки: «0 B» у
- * файла, в котором уже сорок строк.
+ * The editor saves itself every few seconds, and without this line the files
+ * panel would show the size as it was when the tab was opened: "0 B" for a
+ * file that already has forty lines.
  */
 onFileSaved((sessionId, _path, origin) => {
   // Explicit agent writes (including new, unopened files) are complete now.
@@ -1074,59 +1124,64 @@ onFileSaved((sessionId, _path, origin) => {
 })
 
 /*
- * Тетрадь легла на диск — комната узнаёт про файл.
+ * A notebook landed on disk — the room learns about the file.
  *
- * Без этого файл тетради появлялся бы в дереве только после чьей-нибудь
- * загрузки: проекция пишется сама, а сказать об этом некому.
+ * Without this the notebook's file would appear in the tree only after
+ * somebody's upload: the projection writes itself, and there is nobody to
+ * tell about it.
  */
 onBooksWritten((sessionId) => {
   scheduleFiles(sessionId)
   /*
-   * Тетрадь убрали из комнаты — её ядро больше ничьё.
+   * A notebook was removed from the room — its kernel is nobody's any more.
    *
-   * Тот же повод, что у смены доступа: место ядра перестало существовать.
-   * Оставить его значило бы держать процесс, который пишет вывод в лист,
-   * которого в комнате нет, — и занимать им очередь и память до конца пары.
+   * The same reason as with an access change: the kernel's place has ceased
+   * to exist. Keeping it would mean holding a process that writes output into
+   * a sheet that is not in the room — and occupying the queue and memory with
+   * it until the end of the class period.
    */
   syncBookKernels(sessionId)
 })
 
 /*
- * Сервер поменял правила сам — комната узнаёт об этом сейчас же.
+ * The server changed the rules itself — the room learns about it right away.
  *
- * Это случается ровно дважды: студент завёл себе тетрадь (сервер записал её
- * автора) и тетрадь убрали из комнаты (запись о ней снялась). Без рассылки
- * меню «Доступ» у преподавателя не увидело бы имени автора до перезагрузки
- * вкладки — то есть ровно в ту минуту, когда он собирается сделать тетрадь
- * личной. Едут ВЫБРАННЫЕ правила, как и во всех остальных рассылках: конец
- * занятия браузер накладывает сам (web/src/lib/may.ts).
+ * This happens exactly twice: a student created a notebook for themselves
+ * (the server recorded its author) and a notebook was removed from the room
+ * (the record about it was cleared). Without the broadcast the teacher's
+ * "Access" menu would not see the author's name until the tab was reloaded —
+ * that is, exactly at the minute when they are about to make the notebook
+ * personal. The CHOSEN rules travel, as in all the other broadcasts: the
+ * browser lays the end of class over them itself (web/src/lib/may.ts).
  */
 onBookRulesChanged((sessionId) => broadcast(sessionId, { t: 'rules', rules: storedRules(sessionId) }))
 
 /*
- * Очередь ядра сдвинулась — пультам про это знать.
+ * The kernel queue moved — the consoles need to know.
  *
- * Отдельной подпиской, а не из наблюдателя документа: зеркало очереди в
- * документе знает только про ЯЧЕЙКИ (попытки консилиума в него не едут
- * нарочно), так что целая очередь из попыток двигалась бы, не разбудив никого.
+ * A separate subscription rather than from the document observer: the
+ * queue's mirror in the document knows only about CELLS (council attempts do
+ * not go into it on purpose), so a whole queue of attempts would move
+ * without waking anyone.
  */
 onKernelQueueChanged((sessionId) => nudgeKernel(sessionId))
 
 // Registered once, at import: the kernel runtime has no idea who is listening.
 onWorkspaceChanged((sessionId) => {
-  // Файл тетради могли убрать мимо дерева — `os.remove` в ячейке. Тетрадь без
-  // файла — это вкладка, которую нечем закрыть и незачем показывать.
+  // The notebook's file may have been removed bypassing the tree — `os.remove`
+  // in a cell. A notebook without a file is a tab there is nothing to close
+  // with and no reason to show.
   forgetMissingBooks(sessionId)
   forgetMissingBoard(sessionId)
   scheduleFiles(sessionId)
 })
 
 /**
- * Кому принадлежит управляющий сокет.
+ * Whom a control socket belongs to.
  *
- * Отказ в правке адресован одному человеку, а не комнате: рассказывать всем
- * двадцати, что кто-то попробовал написать в чужую тетрадь, — не то, что нужно
- * ни автору правки, ни остальным.
+ * A refusal of an edit is addressed to one person, not the room: telling all
+ * twenty that someone tried to write in someone else's notebook is not what
+ * either the author of the edit or the others need.
  */
 const owner = new WeakMap<WebSocket, string>()
 
@@ -1137,37 +1192,40 @@ function tell(sessionId: string, participantId: string, message: ControlServerMe
   const text = frameOf(message)
   if (text === null) return
   const kind = frameClass(message)
-  // Байтами — по той же причине, что и в `broadcast`: у одного человека обычно
-  // два сокета (ноутбук и планшет), и кодировать лист консилиума дважды незачем.
+  // As bytes — for the same reason as in `broadcast`: one person usually has
+  // two sockets (a laptop and a tablet), and there is no reason to encode the
+  // council sheet twice.
   const frame = mine.size > 1 ? Buffer.from(text, 'utf8') : text
   for (const ws of mine) sendFrame(ws, frame, kind)
 }
 
 /*
- * С какой ролью сокет подключился — набором `hosts` у комнаты, рядом с
- * `byParticipant` и по той же причине: адресат известен, а искали его обходом
- * всех сокетов.
+ * Which role a socket connected with — the room's `hosts` set, next to
+ * `byParticipant` and for the same reason: the recipient is known, yet it
+ * used to be found by walking all sockets.
  *
- * Не `getParticipant(...).role`: в таблице лежит роль, с которой человек вошёл
- * в комнату, а сокет живёт с ЭФФЕКТИВНОЙ (см. `effectiveRole` в index.ts).
- * Преподаватель, вошедший студентом по ссылке в чате и уже залогиненный в
- * панель, в таблице до сих пор участник — спросить её значило бы отказать ему в
- * его собственных заметках на его собственной лекции.
+ * Not `getParticipant(...).role`: the table holds the role the person entered
+ * the room with, while the socket lives with the EFFECTIVE one (see
+ * `effectiveRole` in index.ts). A teacher who came in as a student through a
+ * link in the chat and is already signed in to the panel is still a
+ * participant in the table — asking it would mean refusing them their own
+ * notes at their own lecture.
  */
 
 /**
- * Сказать всем преподавателям комнаты — и никому больше.
+ * Tell all the room's teachers — and nobody else.
  *
- * Единственная рассылка в этом файле, у которой адресат уже комнаты, и это не
- * осторожность, а суть заметок: «здесь спросить, кто помнит формулу Байеса;
- * если молчат — вывести на доске» — это речь преподавателя самому себе, и
- * `broadcast` раздал бы её двадцати студентам вместе с ответом на вопрос,
- * который ещё не задан.
+ * The only broadcast in this file whose audience is narrower than the room,
+ * and this is not caution but the essence of notes: "ask here who remembers
+ * Bayes' formula; if they are silent, derive it on the board" is the
+ * teacher's words to themselves, and `broadcast` would hand them out to
+ * twenty students along with the answer to a question not yet asked.
  *
- * И не `tell`: у семинара бывает двое ведущих, и правку, сделанную на ноутбуке
- * первого, обязан увидеть планшет второго. Один и тот же преподаватель с двух
- * устройств — тоже сюда: планшет входит по ключу ТЕМ ЖЕ участником, так что
- * `tell` покрыл бы только его, а второго преподавателя — нет.
+ * And not `tell`: a seminar may have two presenters, and an edit made on the
+ * first one's laptop must be seen by the second one's tablet. One and the
+ * same teacher on two devices goes here too: the tablet signs in with a key
+ * as THE SAME participant, so `tell` would cover only them, and not the
+ * second teacher.
  */
 function toHosts(sessionId: string, file: string, message: ControlServerMessage): void {
   const room = rooms.get(sessionId)
@@ -1175,7 +1233,7 @@ function toHosts(sessionId: string, file: string, message: ControlServerMessage)
   let frame: Buffer | null = null
   for (const ws of room.hosts) {
     if (ws.readyState !== WebSocket.OPEN) continue
-    // И только тем, кто спрашивал про ЭТОТ документ.
+    // And only to those who asked about THIS document.
     if (notesOpen.get(ws) !== file) continue
     if (frame === null) {
       const text = frameOf(message)
@@ -1187,30 +1245,32 @@ function toHosts(sessionId: string, file: string, message: ControlServerMessage)
 }
 
 /**
- * Какой документ этот сокет спрашивал заметками.
+ * Which document this socket asked about with notes.
  *
- * Роли мало. Ведущий входит на планшет по ключу тем же участником, и обе его
- * вкладки — пульт и ПРОЕКЦИЯ на кафедральном ноутбуке — одинаково «хосты». Речь
- * преподавателя самому себе не должна доезжать до машины, которая стоит
- * раскрытой перед аудиторией, даже если на экран она это не выводит: файл,
- * которого там нет в памяти, невозможно случайно показать.
+ * The role is not enough. A presenter signs in on the tablet with a key as
+ * the same participant, and both of their tabs — the console and the
+ * PROJECTION on the lectern laptop — are equally "hosts". The teacher's words
+ * to themselves must not reach the machine that stands open in front of the
+ * audience, even if it does not put them on screen: a file that is not in its
+ * memory cannot be shown by accident.
  */
 const notesOpen = new WeakMap<WebSocket, string>()
 
-/* ------------------------------------------------------------- консилиум */
+/* --------------------------------------------------------------- council */
 
 /**
- * Та же фраза, что у клиента (web/src/lib/may.ts · COUNCIL_CLOSED): отказ
- * сервера и серая кнопка должны говорить одно и то же.
+ * The same phrase as the client's (web/src/lib/may.ts · COUNCIL_CLOSED): the
+ * server's refusal and the grey button must say the same thing.
  */
 const COUNCIL_CLOSED = () => tr("server.councilIsClosedYourTextRemainsIn.b08319")
 
 /**
- * Отказ по паузе между запусками — с тем же числом, что тикает под кнопкой.
+ * A refusal because of the pause between runs — with the same number that
+ * ticks under the button.
  *
- * Секунды округляются ВВЕРХ, и это не мелочь: отказ «через 0 с» читается как
- * поломка, а нажатие ровно в ту миллисекунду, которую назвал прошлый отказ,
- * должно проходить, а не встречать «через 0 с» второй раз.
+ * Seconds are rounded UP, and that is no trifle: a refusal "in 0 s" reads as
+ * a breakage, and a click at exactly the millisecond the previous refusal
+ * named must go through rather than meet "in 0 s" a second time.
  */
 function rerunPauseNote(until: number): string {
   return tr("server.yourNextRunIsInTheTeacher.95d4f8", {
@@ -1219,13 +1279,14 @@ function rerunPauseNote(until: number): string {
 }
 
 /**
- * Сказать всем преподавателям комнаты — и никому больше.
+ * Tell all the room's teachers — and nobody else.
  *
- * Не `toHosts`: тот отбирает ещё и по документу заметок. Стопка консилиума —
- * речь к пульту преподавателя, какой бы файл он ни открыл, и второй
- * преподаватель на планшете обязан видеть ту же стопку. Проекция на
- * кафедральном ноутбуке тоже хост и тоже получит стопку — не рисовать её на
- * экране решает клиент (протокол · council:count для проектора).
+ * Not `toHosts`: that one also filters by the notes document. The council
+ * pile is addressed to the teacher's console, whatever file they have open,
+ * and a second teacher on a tablet must see the same pile. The projection on
+ * the lectern laptop is a host too and will get the pile too — the client
+ * decides not to draw it on screen (protocol · council:count for the
+ * projector).
  */
 function toTeachers(sessionId: string, message: ControlServerMessage): void {
   const room = rooms.get(sessionId)
@@ -1235,8 +1296,8 @@ function toTeachers(sessionId: string, message: ControlServerMessage): void {
     if (ws.readyState !== WebSocket.OPEN) continue
     if (frame === null) {
       const text = frameOf(message)
-      // Кадр не собрался (стопка выросла за предел строки) — молчим одинаково
-      // всем пультам, а не половине.
+      // The frame could not be built (the pile outgrew the string limit) — we
+      // stay silent to all consoles alike, not to half of them.
       if (text === null) return
       frame = Buffer.from(text, 'utf8')
     }
@@ -1244,7 +1305,10 @@ function toTeachers(sessionId: string, message: ControlServerMessage): void {
   }
 }
 
-/** Есть ли в комнате хоть один пульт преподавателя — иначе стопку собирать незачем. */
+/**
+ * Whether the room has at least one teacher console — otherwise there is no
+ * point assembling the pile.
+ */
 function teachersOnline(sessionId: string): boolean {
   const room = rooms.get(sessionId)
   if (!room) return false
@@ -1253,11 +1317,12 @@ function teachersOnline(sessionId: string): boolean {
 }
 
 /**
- * Ячейка консилиума одним чтением: замок и ручки.
+ * A council cell in one read: the lock and the knobs.
  *
- * Именем, а не парой полей по месту: то и другое читают вместе — лист студента
- * спрашивает у одной и той же ячейки и «идёт ли консилиум», и «какая тут
- * пауза», — а ячейку ищут по всем тетрадям комнаты.
+ * By name rather than a pair of fields on the spot: both are read together —
+ * a student's sheet asks the same cell both "is the council running" and
+ * "what pause is set here" — and the cell is searched for across all of the
+ * room's notebooks.
  */
 interface CouncilCell {
   lock: CellLock
@@ -1265,10 +1330,12 @@ interface CouncilCell {
 }
 
 /**
- * Положение замка и ручки — из документа, где их записал сервер.
+ * The position of the lock and the knobs — from the document, where the
+ * server wrote them.
  *
- * Ячейки нет — замок закрыт: попытку в неё не принять, а стопка по ней всё ещё
- * собирается (попытки остаются на просмотр), только с закрытым замком.
+ * No cell — the lock is closed: an attempt cannot be accepted into it, while
+ * the pile for it is still assembled (attempts remain for viewing), only with
+ * a closed lock.
  */
 function councilCellOf(sessionId: string, id: string): CouncilCell {
   const found = findCell(getSessionDoc(sessionId).doc, id)
@@ -1277,46 +1344,52 @@ function councilCellOf(sessionId: string, id: string): CouncilCell {
 }
 
 /**
- * Стопка — не чаще, чем раз в это окно на ячейку, и не целиком.
+ * The pile — no more often than once per this window per cell, and not
+ * whole.
  *
- * Снимки приходят на каждую паузу в наборе от каждого из сотен человек. Дребезг
- * держит частоту: первая перемена уходит сразу (пульт не должен ждать окна на
- * одном нажатии), остальные в окне сливаются в один хвостовой кадр. Размер
- * держит дельта: у каждой попытки в стопке лежит её вывод — до 64 КБ текста и
- * до 2 МБ картинок, — и кадр со всей стопкой из-за одной буквы у одного
- * студента весил бы десятки мегабайт по три раза в секунду. Поэтому перемена
- * везёт только тех, кого коснулась (`council:patch`); вся стопка едет лишь
- * там, где сменилось общее — замок, ручки, оракул — или где стопки у пульта
- * ещё нет (приветственная пачка). Окно копит, кого трогали; «всех» в окне
- * побеждает любой список.
+ * Snapshots arrive on every pause in typing from each of hundreds of people.
+ * Debouncing holds the frequency: the first change goes out at once (the
+ * console must not wait for the window on a single click), the rest within
+ * the window merge into one tail frame. The delta holds the size: every
+ * attempt in the pile carries its output — up to 64 KB of text and up to 2 MB
+ * of images — and a frame with the whole pile because of one letter from one
+ * student would weigh tens of megabytes three times a second. So a change
+ * carries only those it touched (`council:patch`); the whole pile goes only
+ * where something shared changed — the lock, the knobs, the Oracle — or where
+ * the console does not have the pile yet (the welcome batch). The window
+ * accumulates whom it touched; within a window "everyone" beats any list.
  */
 const BOARD_EVERY_MS = 300
 /**
- * Сколько вывода попыток едет в ОДНОЙ полной стопке.
+ * How much attempt output travels in ONE full pile.
  *
- * У попытки в стопке лежит её вывод — до 64 КБ текста и до 2 МБ картинок
- * (kernel/council.ts). Пока попыток тридцать, всё помещается и ничего не
- * меняется. На пятистах прогнанных с графиком это десятки мегабайт в одном
- * кадре: `JSON.stringify` синхронно в цикле событий, разбор на iPad — и всё
- * это на каждый щелчок замка и каждое переподключение пульта. А свыше ~512 МБ
- * строки `JSON.stringify` бросает RangeError, и раньше он уводил процесс.
+ * An attempt in the pile carries its output — up to 64 KB of text and up to
+ * 2 MB of images (kernel/council.ts). While there are thirty attempts,
+ * everything fits and nothing changes. With five hundred run with a chart it
+ * is tens of megabytes in one frame: `JSON.stringify` synchronously in the
+ * event loop, parsing on the iPad — and all of that on every click of the
+ * lock and every console reconnect. And above ~512 MB of string
+ * `JSON.stringify` throws a RangeError, which used to take the process down.
  *
- * Поэтому у кадра бюджет: попытки едут с выводом, пока он не выбран, дальше —
- * с пустым `outputs` и признаком `outputsOmitted`. Вывод одной карточки пульт
- * просит `council:attempt` и получает дельтой. Дельты (`council:patch`) бюджету
- * не подчиняются: там от одной до нескольких попыток, и вывод в них — то, ради
- * чего их и шлют.
+ * So a frame has a budget: attempts travel with output until it is used up,
+ * after that with empty `outputs` and the `outputsOmitted` flag. The console
+ * asks for one card's output with `council:attempt` and gets it as a delta.
+ * Deltas (`council:patch`) are not subject to the budget: they carry one to a
+ * few attempts, and the output in them is what they are sent for.
  *
- * Четыре мегабайта, а не сколько-нибудь красивее: столько весит семинар на
- * тридцать человек, где КАЖДЫЙ нарисовал график, — то есть обычная пара
- * проходит целиком и ничего не замечает, а режется ровно поток на пятьсот, где
- * кадр иначе вырастает до десятков мегабайт. Когда пульт научится просить
- * вывод по карточке, число можно опускать: сделка станет честной в обе
- * стороны.
+ * Four megabytes, not some prettier number: that is what a seminar of thirty
+ * people weighs where EACH drew a chart — that is, an ordinary class period
+ * passes whole and notices nothing, and what is cut is exactly the
+ * five-hundred-person cohort, where the frame would otherwise grow to tens of
+ * megabytes. When the console learns to ask for output per card, the number
+ * can be lowered: the deal will become fair both ways.
  */
 const BOARD_OUTPUT_BUDGET = 4 * 1024 * 1024
 
-/** Во сколько знаков обходится вывод одной попытки — грубо и без сборки строки. */
+/**
+ * How many characters one attempt's output costs — roughly and without
+ * building a string.
+ */
 function outputWeight(run: CouncilRun): number {
   let total = 0
   for (const output of run.outputs) {
@@ -1330,10 +1403,11 @@ function outputWeight(run: CouncilRun): number {
 }
 
 /**
- * Стопка по бюджету вывода: что не поместилось — без выводов, но с признаком.
+ * The pile within the output budget: whatever did not fit goes without
+ * output, but with a flag.
  *
- * Порядок стопки — по времени правки, и режется её хвост: свежее (то, что
- * преподаватель только что запустил и смотрит) остаётся с выводом.
+ * The pile is ordered by edit time, and its tail is cut: the fresh part
+ * (what the teacher has just run and is looking at) keeps its output.
  */
 function withinBudget(board: CouncilBoard): CouncilBoard {
   let left = BOARD_OUTPUT_BUDGET
@@ -1347,8 +1421,8 @@ function withinBudget(board: CouncilBoard): CouncilBoard {
       return attempt
     }
     cut = true
-    // Копия, а не правка на месте: `run` здесь — тот самый объект из кэша
-    // попыток, и вычистить его значило бы стереть вывод у автора.
+    // A copy, not an edit in place: `run` here is the very object from the
+    // attempts cache, and clearing it would erase the output for the author.
     return { ...attempt, run: { ...run, outputs: [], outputsOmitted: true } }
   })
   return cut ? { ...board, attempts } : board
@@ -1357,7 +1431,7 @@ function withinBudget(board: CouncilBoard): CouncilBoard {
 interface BoardPending {
   timer: NodeJS.Timeout | null
   last: number
-  /** Кого трогали с прошлого кадра; `'all'` — стопку целиком. */
+  /** Whom we touched since the last frame; `'all'` means the whole pile. */
   dirty: Set<string> | 'all'
 }
 const boardsPending = new Map<string, BoardPending>()
@@ -1393,8 +1467,8 @@ function boardNow(sessionId: string, cellId: string, dirty: Set<string> | 'all')
 }
 
 /**
- * Стопку — хосту: без `touched` целиком, с ним — только этих людей (тех, кого
- * в стопке уже нет, кадр назовёт в `removed`).
+ * The pile — to the host: without `touched` whole, with it only these people
+ * (those no longer in the pile the frame will name in `removed`).
  */
 function boardOut(sessionId: string, cellId: string, touched?: readonly string[]): void {
   const key = `${sessionId}\n${cellId}`
@@ -1405,7 +1479,7 @@ function boardOut(sessionId: string, cellId: string, touched?: readonly string[]
   }
   if (touched === undefined) state.dirty = 'all'
   else if (state.dirty !== 'all') for (const id of touched) state.dirty.add(id)
-  // Хвостовой кадр уже назначен — он увезёт и эту перемену.
+  // The tail frame is already scheduled — it will carry this change too.
   if (state.timer) return
   const since = Date.now() - state.last
   if (since >= BOARD_EVERY_MS) {
@@ -1421,13 +1495,14 @@ function boardOut(sessionId: string, cellId: string, touched?: readonly string[]
 }
 
 /**
- * Отдать накопленное за окно одним кадром и начать копить заново.
+ * Hand over what accumulated during the window in one frame and start
+ * accumulating anew.
  *
- * Под перехватом: половина вызовов сюда приходит из `setTimeout`, где бросок
- * ловить некому, — он уходит в `uncaughtException`, а тот уводит процесс со
- * всеми комнатами инстанса. Стопка одной ячейки не стоит чужого семинара, и
- * копить заново надо в любом случае: иначе одна неудачная сборка запирает
- * окно навсегда.
+ * Under a catch: half the calls here come from `setTimeout`, where there is
+ * nobody to catch a throw — it goes to `uncaughtException`, and that takes
+ * the process down with every room of the instance. One cell's pile is not
+ * worth someone else's seminar, and accumulating anew is needed in any case:
+ * otherwise one failed assembly locks the window forever.
  */
 function flushBoard(sessionId: string, cellId: string, state: BoardPending): void {
   const dirty = state.dirty
@@ -1437,13 +1512,13 @@ function flushBoard(sessionId: string, cellId: string, state: BoardPending): voi
     boardNow(sessionId, cellId, dirty)
   } catch (err) {
     console.error(
-      `[control ${sessionId}] стопка ${cellId} не уехала:`,
+      `[control ${sessionId}] pile ${cellId} did not go out:`,
       reason(err, 'unknown error'),
     )
   }
 }
 
-/** Отправить отложенные стопки сейчас — ради теста, которому нечего ждать. */
+/** Send the postponed piles now — for a test that has nothing to wait for. */
 export function flushCouncilBoards(sessionId: string): void {
   for (const [key, state] of boardsPending) {
     if (!key.startsWith(`${sessionId}\n`) || !state.timer) continue
@@ -1462,16 +1537,17 @@ function forgetBoards(sessionId: string): void {
 }
 
 /**
- * Свой лист — одному человеку, на все его сокеты.
+ * One's own sheet — to one person, on all their sockets.
  *
- * `lock` — если положение замка уже прочитано снаружи. Замок один на ячейку, а
- * листы уходят пятистам: читать ради каждого одну и ту же ячейку (поиск по
- * всем массивам документа) значит пятьсот одинаковых обходов на одно нажатие.
+ * `lock` — if the lock position has already been read outside. There is one
+ * lock per cell, while sheets go out to five hundred: reading the same cell
+ * for each of them (a search over all of the document's arrays) means five
+ * hundred identical walks per click.
  *
- * `position` — то же самое про номер в очереди: когда листы рассылаются пачкой
- * после сдвига очереди, номера всех ждущих уже посчитаны одним проходом
- * (`councilQueuePositions`), и искать в очереди ещё раз на каждого — тот же
- * квадрат, только с другой стороны.
+ * `position` — the same about the queue number: when sheets are sent out in
+ * a batch after a queue shift, the numbers of all those waiting have already
+ * been computed in one pass (`councilQueuePositions`), and searching the
+ * queue again for each of them is the same square, only from the other side.
  */
 function mineOut(
   sessionId: string,
@@ -1491,10 +1567,10 @@ function mineMessage(
   known?: CouncilCell,
   knownPosition?: number | null,
 ): ControlServerMessage | null {
-  // Замок и ручки читаются одним заходом: обе стороны листа — «идёт ли
-  // консилиум» и «сколько ждать до следующего запуска» — живут на одной ячейке,
-  // и второй её поиск по всем тетрадям стоил бы ровно столько же, сколько
-  // первый.
+  // The lock and the knobs are read in one go: both sides of the sheet — "is
+  // the council running" and "how long until the next run" — live on one
+  // cell, and a second search for it across all notebooks would cost exactly
+  // as much as the first.
   const cell = known ?? councilCellOf(sessionId, cellId)
   const position =
     knownPosition !== undefined
@@ -1505,31 +1581,32 @@ function mineMessage(
     cellId,
     participantId,
     cell.lock !== 'council',
-    // Ноль — «считается сейчас», и об этом говорит сам `run.state`.
+    // Zero means "being computed now", and `run.state` itself says so.
     position !== null && position > 0 ? position : null,
     cell.settings.rerunPauseSec,
   )
   return state ? { t: 'council:mine', cellId, state } : null
 }
 
-/** «N сдали из M» — всей комнате, без текстов. */
+/** "N of M submitted" — to the whole room, without texts. */
 function countOut(sessionId: string, cellId: string): void {
   const { submitted, total } = countFor(sessionId, cellId)
   broadcast(sessionId, { t: 'council:count', cellId, submitted, total })
 }
 
 /**
- * Что на экране по этой ячейке — всей комнате, включая студентов.
+ * What is on screen for this cell — to the whole room, students included.
  *
- * Единственный кадр консилиума с чужим кодом, который уходит не только
- * преподавателю, и это ровно то, что сейчас стоит на проекторе: плашка под
- * ячейкой у всех — это подпись к тому, на что класс и так смотрит
- * (shared/protocol.ts · CouncilShown).
+ * The only council frame with someone else's code that goes out not only to
+ * the teacher, and it is exactly what is on the projector right now: the
+ * badge under the cell for everyone is a caption for what the class is
+ * looking at anyway (shared/protocol.ts · CouncilShown).
  *
- * Зовётся только там, где показ мог смениться: показали, убрали, автор
- * переписал показанный текст, преподаватель досчитал его запуск, щёлкнули
- * ручкой имён, забанили автора. На каждый кадр ядра — нет: в плашку едет
- * только досчитавшийся запуск, и промежуточные кадры в ней ничего не меняют.
+ * Called only where the showing may have changed: shown, removed, the author
+ * rewrote the shown text, the teacher's run of it finished, the names knob
+ * was clicked, the author was banned. Not on every kernel frame: only a
+ * finished run goes into the badge, and intermediate frames change nothing
+ * in it.
  */
 function shownOut(sessionId: string, cellId: string): void {
   const { settings } = councilCellOf(sessionId, cellId)
@@ -1540,7 +1617,10 @@ function shownOut(sessionId: string, cellId: string): void {
   })
 }
 
-/** Кто сейчас на экране по ячейке — без сборки кадра; `null` — никто. */
+/**
+ * Who is on screen for the cell right now — without assembling a frame;
+ * `null` means nobody.
+ */
 function shownWho(sessionId: string, cellId: string): string | null {
   for (const attempt of attemptsOf(sessionId, cellId)) {
     if (attempt.shown) return attempt.participantId
@@ -1549,42 +1629,46 @@ function shownWho(sessionId: string, cellId: string): string | null {
 }
 
 /**
- * Номер в очереди, который каждый ждущий видел последним, — по комнате.
+ * The queue number each waiting person saw last — per room.
  *
- * Нужен, чтобы не слать кадр, в котором для человека ничего не изменилось:
- * очередь дёргается на каждое начало и каждый конец ЛЮБОЙ работы ядра.
- * Ключ — «ячейка и человек», значение — номер.
+ * Needed so as not to send a frame in which nothing changed for the person:
+ * the queue twitches on every start and every end of ANY kernel work. The
+ * key is "cell and person", the value is the number.
  */
 const queueSent = new Map<string, Map<string, number>>()
 
 /**
- * Очередь сдвинулась — каждому, кого сдвинуло, его новый номер.
+ * The queue moved — to everyone it moved, their new number.
  *
- * «Вы 37-й» без этого показывал бы номер на момент нажатия до конца пары.
+ * Without this "You are 37th" would show the number at the moment of the
+ * click until the end of the class period.
  *
- * Уезжает ЧИСЛО, а не лист. Каждый конец любой работы ядра двигает номер у всех
- * ждущих сразу — то есть отсев «у этого не изменилось» не срабатывал никогда, —
- * и на пятистах попытках один досчитавшийся запуск рассылал пятьсот
- * `council:mine`. Каждый из них сервер собирал отдельно (`mineFor`: чтение
- * попытки из базы, её запуск, письма преподавателя) и вёз целиком, вместе с
- * текстом попытки и заданием, ради одного числа в нём. Замер на пятистах
- * ждущих: 0.32 МБ на сдвиг против 30 КБ.
+ * A NUMBER goes out, not a sheet. Every end of any kernel work moves the
+ * number for all those waiting at once — that is, the "nothing changed for
+ * this one" filter never fired — and with five hundred attempts one finished
+ * run sent out five hundred `council:mine`. The server assembled each of them
+ * separately (`mineFor`: reading the attempt from the database, its run, the
+ * teacher's letters) and carried it whole, along with the attempt's text and
+ * the task, for the sake of one number in it. Measured with five hundred
+ * waiting: 0.32 MB per shift against 30 KB.
  *
- * Комнате целиком очередь при этом не рассылается, хотя так её и собирали бы
- * один раз на всех: список из пятисот ждущих — одиннадцать килобайт, и уехал
- * бы он пятистам (замерено 5.65 МБ на сдвиг) ради одного числа каждому.
- * Дешевле собрать пятьсот кадров по шестьдесят байт — сборка такого кадра
- * стоит рядом с отправкой ничего.
+ * The queue is not broadcast to the whole room, although that way it would
+ * be assembled once for everyone: a list of five hundred waiting is eleven
+ * kilobytes, and it would go to five hundred people (measured 5.65 MB per
+ * shift) for the sake of one number each. It is cheaper to assemble five
+ * hundred frames of sixty bytes — assembling such a frame costs nothing next
+ * to sending it.
  *
- * И `null` тому, кого в очереди больше нет: его попытка дошла до ядра. Раньше
- * об этом не говорил никто — рассылка шла только по тем, кто в очереди
- * остался, — и «вы 1-й» висел над считающейся попыткой до её конца.
+ * And `null` to whoever is no longer in the queue: their attempt reached the
+ * kernel. Nobody used to say so — the broadcast went only to those who stayed
+ * in the queue — and "you are 1st" hung over an attempt being computed until
+ * its end.
  *
- * Номера — одним проходом по очереди, а не поиском в ней на каждого ждущего:
- * поштучный `councilQueuePosition` — это поиск по всей очереди на каждого её
- * участника, то есть четверть миллиона сравнений на один сдвиг при пятистах
- * попытках. Формула номера при этом одна и лежит в kernel/index.ts: здесь её
- * нет и не должно быть.
+ * Numbers come from one pass over the queue, not a search in it for each one
+ * waiting: the one-by-one `councilQueuePosition` is a search over the whole
+ * queue for each of its members, that is, a quarter of a million comparisons
+ * per shift with five hundred attempts. The number's formula is still one and
+ * lives in kernel/index.ts: it is not here and must not be.
  */
 function tellQueued(sessionId: string): void {
   const queued = councilQueuePositions(sessionId)
@@ -1606,19 +1690,22 @@ function tellQueued(sessionId: string): void {
 }
 
 /**
- * Чем занято ядро тетради этой ячейки — одному пульту, одним маленьким кадром.
+ * What the kernel of this cell's notebook is busy with — to one console, in
+ * one small frame.
  *
- * Собирается здесь, а не в ядре, ровно потому, что ядро не знает имён и не
- * умеет считать номер ячейки: у него есть `participantId` и `cellId`, а пульту
- * нужны «Петя» и «ячейка 7». Всё, что ядро знает само, приезжает из
- * `kernelWorkOf` неизменным — включая признак «не отвечает на прерывание».
+ * Assembled here, not in the kernel, precisely because the kernel does not
+ * know names and cannot count the cell number: it has `participantId` and
+ * `cellId`, while the console needs "Petya" and "cell 7". Everything the
+ * kernel knows itself arrives from `kernelWorkOf` unchanged — including the
+ * "does not respond to interrupt" flag.
  *
- * Имена здесь настоящие всегда: кадр едет одному преподавателю, а прятать их
- * за «Вариант 12» при выключенной ручке — дело пульта, как и у стопки.
+ * The names here are always real: the frame goes to one teacher, and hiding
+ * them behind "Answer 12" when the knob is off is the console's job, as with
+ * the pile.
  */
 function kernelMessage(sessionId: string, cellId: string): ControlServerMessage | null {
   const work = kernelWorkOf(sessionId, cellId)
-  // Область ещё не заводили — в этой тетради ничего не запускали ни разу.
+  // The scope has not been created yet — nothing has ever been run in this notebook.
   if (!work) return { t: 'council:kernel', cellId, kernel: { busy: null, queued: 0 } }
   const busy = work.busy
   if (!busy) return { t: 'council:kernel', cellId, kernel: { busy: null, queued: work.queued } }
@@ -1631,8 +1718,9 @@ function kernelMessage(sessionId: string, cellId: string): ControlServerMessage 
       busy: {
         kind: busy.kind,
         index: found ? found.index + 1 : null,
-        // У попытки называется её АВТОР, а не тот, кто нажал: преподаватель,
-        // запустивший чужое решение у доски, — не тот, чья это работа.
+        // An attempt is named by its AUTHOR, not by whoever pressed: a teacher
+        // who ran someone's solution at the board is not the one whose work it
+        // is.
         name: displayName(sessionId, busy.participantId ?? busy.runById),
         participantId: busy.participantId,
         here: busy.kind === 'attempt' && busy.cellId === cellId,
@@ -1650,20 +1738,21 @@ function kernelOut(sessionId: string, cellId: string): void {
 }
 
 /**
- * Очередь тетради сдвинулась — сказать пультам, но не чаще окна.
+ * The notebook's queue moved — tell the consoles, but no more often than the
+ * window.
  *
- * По всем ячейкам со стопкой, а не по одной: пульт открыт на одной ячейке, но
- * какой именно — сервер не знает и знать не должен (вкладку переключают без
- * него). Ячеек консилиума в занятии единицы, кадр — полсотни байт, и окно у
- * него то же, что у номеров очереди: очередь дёргается дважды на каждую
- * работу.
+ * Across all cells with a pile, not just one: the console is open on one
+ * cell, but which one the server does not know and should not know (the tab
+ * is switched without it). There are only a handful of council cells in a
+ * class, the frame is fifty bytes, and its window is the same as the queue
+ * numbers': the queue twitches twice for every piece of work.
  *
- * Нет ни одного пульта — не собираем вовсе: на потоке очередь дёргается
- * непрерывно, а слушать её некому.
+ * No console at all — nothing is assembled: in a large cohort the queue
+ * twitches continuously, and there is nobody to listen to it.
  */
 function nudgeKernel(sessionId: string): void {
   if (!teachersOnline(sessionId)) return
-  onTick(sessionId, 'ядро тетради', QUEUE_EVERY_MS, () => {
+  onTick(sessionId, 'notebook kernel', QUEUE_EVERY_MS, () => {
     if (!teachersOnline(sessionId)) return
     for (const id of new Set([...councilCells(sessionId), ...cellsWithAttempts(sessionId)])) {
       kernelOut(sessionId, id)
@@ -1672,46 +1761,56 @@ function nudgeKernel(sessionId: string): void {
 }
 
 /**
- * Очередь дёрнулась — сказать ждущим новый номер, но не чаще окна.
+ * The queue twitched — tell those waiting their new number, but no more
+ * often than the window.
  *
- * Раньше номера пересылались только на конце ЧУЖОЙ ПОПЫТКИ консилиума. Очередь
- * же одна на всю комнату, и номер студенту считает и ячейки впереди: пять
- * ячеек преподавательского Run All, досчитавшись, двигали его с шестого места
- * на первое — и не говорили ему об этом ни слова до конца следующей попытки.
+ * Numbers used to be sent only at the end of SOMEONE ELSE'S council attempt.
+ * But the queue is one for the whole room, and a student's number also counts
+ * the cells ahead: five cells of the teacher's Run All, once finished, moved
+ * them from sixth place to first — and did not say a word about it until the
+ * end of the next attempt.
  *
- * Окно — потому что очередь дёргается дважды на каждую работу ядра, а кадр
- * уходит каждому ждущему: на пятистах это заметная пачка, и склеить две
- * перемены подряд в одну дешевле, чем послать её дважды.
+ * A window — because the queue twitches twice for every piece of kernel work,
+ * and the frame goes to each person waiting: with five hundred that is a
+ * noticeable batch, and gluing two consecutive changes into one is cheaper
+ * than sending it twice.
  */
 const QUEUE_EVERY_MS = 250
 
 function nudgeQueue(sessionId: string): void {
-  onTick(sessionId, 'номера очереди', QUEUE_EVERY_MS, () => tellQueued(sessionId))
+  onTick(sessionId, 'queue numbers', QUEUE_EVERY_MS, () => tellQueued(sessionId))
 }
 
-/** Комната опустела: очередь, которую в ней помнили, больше ничья. */
+/** The room has emptied: the queue it remembered is nobody's any more. */
 function forgetQueue(sessionId: string): void {
   queueSent.delete(sessionId)
 }
 
-/** Все, кому положен свой лист по этой ячейке: онлайн и те, у кого есть попытка. */
+/**
+ * Everyone entitled to their own sheet for this cell: those online and those
+ * with an attempt.
+ */
 function councilAudience(sessionId: string, cellId: string): Set<string> {
   const people = new Set<string>(rooms.get(sessionId)?.byParticipant.keys())
   for (const attempt of attemptsOf(sessionId, cellId)) people.add(attempt.participantId)
   return people
 }
 
-/** Замок сменился — хосту стопка, каждому его лист, комнате счётчик и экран. */
+/**
+ * The lock changed — the pile to the host, each person their sheet, the room
+ * the counter and the screen.
+ */
 function councilChanged(sessionId: string, cellId: string): void {
   boardOut(sessionId, cellId)
-  // Ячейка читается один раз на всех: замок и ручки на ней одни, а листов
-  // пятьсот.
+  // The cell is read once for everyone: the lock and the knobs on it are one,
+  // while there are five hundred sheets.
   const cell = councilCellOf(sessionId, cellId)
   for (const participantId of councilAudience(sessionId, cellId))
     mineOut(sessionId, cellId, participantId, cell)
   countOut(sessionId, cellId)
-  // И «что на экране»: сюда же приходит перемена ручки имён, а она решает,
-  // чьим именем подписано показанное — или номером варианта вместо имени.
+  // And "what is on screen": a change of the names knob comes here too, and it
+  // decides whose name captions what is shown — or the variant number instead
+  // of a name.
   shownOut(sessionId, cellId)
 }
 
@@ -1748,7 +1847,7 @@ function tellClearedRunRequests(sessionId: string, changed: ReturnType<typeof cl
   for (const [id, people] of cells) boardOut(sessionId, id, people)
 }
 
-/** Ячейки, где консилиум идёт сейчас, — по всем тетрадям комнаты. */
+/** Cells where the council is running now — across all of the room's notebooks. */
 function councilCells(sessionId: string): string[] {
   const doc = peekSessionDoc(sessionId)?.doc
   if (!doc) return []
@@ -1760,16 +1859,18 @@ function councilCells(sessionId: string): string[] {
 }
 
 /**
- * Приветственная пачка консилиума — тому, кто только что подключился.
+ * The council's welcome batch — to whoever has just connected.
  *
- * Хосту — стопки по всем ячейкам, где консилиум идёт или где остались попытки
- * (после закрытия они на просмотр). Каждому — его листы там же, и счётчики.
- * Прямо в этот сокет, не через `tell`: второй вкладке того же человека пачка
- * уже приезжала при её собственном подключении.
+ * To the host — piles for all cells where the council is running or where
+ * attempts remain (after closing they are for viewing). To everyone — their
+ * sheets in the same cells, and the counters. Straight into this socket, not
+ * through `tell`: the batch already arrived for a second tab of the same
+ * person when that tab connected.
  */
 function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload): void {
-  // Ячейки с консилиумом — один обход всех тетрадей комнаты, а не два: пачка
-  // собирается на каждое подключение, а после сбоя сети их пятьсот подряд.
+  // Cells with a council — one walk over all of the room's notebooks, not two:
+  // the batch is assembled on every connection, and after a network failure
+  // there are five hundred of them in a row.
   const open = councilCells(sessionId)
   const cells = new Set<string>([...open, ...cellsWithAttempts(sessionId)])
   if (payload.role === 'host') {
@@ -1777,13 +1878,14 @@ function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload)
       send(ws, {
         t: 'council:board',
         cellId: id,
-        // По бюджету вывода: у пульта, вернувшегося после обрыва, стопка на
-        // пятьсот прогнанных попыток иначе весит десятки мегабайт — и это
-        // первое, что он получает.
+        // Within the output budget: for a console coming back after a drop,
+        // the pile for five hundred run attempts would otherwise weigh tens of
+        // megabytes — and it is the first thing it receives.
         board: withinBudget(boardFor(sessionId, id, councilCellOf(sessionId, id))),
       })
-      // И чем занято ядро тетради: пульт, вернувшийся после обрыва, обязан
-      // увидеть чужую работу, которая держит очередь, а не пустую карточку.
+      // And what the notebook's kernel is busy with: a console coming back
+      // after a drop must see someone else's work holding the queue, not an
+      // empty card.
       const kernel = kernelMessage(sessionId, id)
       if (kernel) send(ws, kernel)
     }
@@ -1797,14 +1899,15 @@ function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload)
     const { submitted, total } = countFor(sessionId, id)
     send(ws, { t: 'council:count', cellId: id, submitted, total })
     /*
-     * И «что на экране» — кадром на каждую ячейку, даже когда показывать
-     * нечего.
+     * And "what is on screen" — a frame per cell, even when there is nothing
+     * to show.
      *
-     * `null` здесь не лишний, а несущий: состояние консилиума живёт у клиента
-     * дольше сокета, и вкладка, у которой связь оборвалась ДО «убрать с
-     * экрана», вернулась бы с плашкой, которой у всех остальных уже нет, и
-     * стояла бы с ней до следующего нажатия преподавателя. Цена — кадр в
-     * шестьдесят байт рядом со счётчиком, который по тем же ячейкам едет уже.
+     * `null` here is not redundant but load-bearing: the council state lives
+     * on the client longer than the socket, and a tab whose connection dropped
+     * BEFORE "take off the screen" would come back with a badge that everyone
+     * else no longer has, and would keep it until the teacher's next click.
+     * The price is a sixty-byte frame next to the counter, which already goes
+     * for the same cells.
      */
     send(ws, {
       t: 'council:shown',
@@ -1813,45 +1916,50 @@ function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload)
     })
   }
   /*
-   * И точка: пачка кончилась.
+   * And a full stop: the batch is over.
    *
-   * Последним кадром и всегда — даже когда перед ним не ушло ни одного: в
-   * комнате без консилиума пустота и есть ответ, и сказать её надо ровно так
-   * же явно. Без этой точки клиент не мог отличить «кадр ещё едет» от «его не
-   * будет», и пульт мигал «ячейка не в консилиуме» между заставкой и собой
-   * (shared/protocol.ts · council:ready).
+   * As the last frame and always — even when not a single frame went before
+   * it: in a room without a council emptiness is the answer, and it has to be
+   * said just as explicitly. Without this full stop the client could not tell
+   * "the frame is still on its way" from "there will be none", and the console
+   * flickered "the cell is not in council" between the splash screen and
+   * itself (shared/protocol.ts · council:ready).
    */
   send(ws, { t: 'council:ready' })
 }
 
 /**
- * Убрать попытки забаненного из всех ячеек — и показать хосту стопки без него.
+ * Remove a banned person's attempts from all cells — and show the host the
+ * piles without them.
  *
- * Зовётся из routes/bans.ts рядом с purgeQuestions: за спам в общей ленте банят,
- * а попытка в консилиуме — тот же текст перед глазами преподавателя.
+ * Called from routes/bans.ts next to purgeQuestions: people are banned for
+ * spam in the shared feed, and an attempt in the council is the same text in
+ * front of the teacher's eyes.
  */
 export function purgeCouncilOf(sessionId: string, participantId: string): number {
   const cells = cellsOfParticipant(sessionId, participantId)
   const gone = purgeAttempts(sessionId, participantId)
   /*
-   * И очередь тоже: ядро на поток одно, а его минута, потраченная на код
-   * человека, которого в комнате уже нет, — это минута, которую ждёт весь
-   * остальной класс. Убираются все его ждущие попытки; если одна уже крутится,
-   * прерывается только она, а чужая очередь дожидается конца этого interrupt.
+   * And the queue too: there is one kernel per cohort, and its minute spent on
+   * the code of a person who is no longer in the room is a minute the whole
+   * rest of the class waits for. All their waiting attempts are removed; if
+   * one is already spinning, only it is interrupted, and the others' queue
+   * waits for the end of that interrupt.
    */
   purgeCouncilRunsOf(sessionId, participantId)
   for (const id of cells) {
-    // Попытки уже нет — кадр назовёт человека в `removed`.
+    // The attempt is gone already — the frame will name the person in `removed`.
     boardOut(sessionId, id, [participantId])
     countOut(sessionId, id)
-    // И плашка с его кодом, если на экране был он: забаненный уходит с экрана
-    // вместе со своей попыткой, а не остаётся висеть под ячейкой у класса.
+    // And the badge with their code, if they were on screen: a banned person
+    // leaves the screen together with their attempt rather than staying under
+    // the cell for the class.
     shownOut(sessionId, id)
   }
   return gone
 }
 
-/** Целое в границах — иначе ручку считаем неприложенной. */
+/** An integer within bounds — otherwise we consider the knob not applied. */
 function whole(value: unknown, min: number, max: number): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
     ? value
@@ -1859,13 +1967,14 @@ function whole(value: unknown, min: number, max: number): number | null {
 }
 
 /**
- * Ручки консилиума из сообщения — только известные значения.
+ * Council knobs from a message — only known values.
  *
- * Непонятное ОТБРАСЫВАЕТСЯ, а не подменяется умолчанием: сообщение с одной
- * ручкой — это «переключить её», остальные остаются как были, и «предел 99999»
- * из чужого клиента не должен молча вернуть ячейку к тридцати секундам. Второй
- * замок — `readCouncilSettings` над слитыми ручками там, где их пишут в
- * документ: он чинит и то, что уже лежит в ячейке.
+ * Anything unclear is DISCARDED, not replaced by a default: a message with
+ * one knob means "switch that one", the others stay as they were, and a
+ * "limit 99999" from someone else's client must not silently return the cell
+ * to thirty seconds. The second lock is `readCouncilSettings` over the merged
+ * knobs where they are written into the document: it also fixes what already
+ * lies in the cell.
  */
 function pickSettings(raw: unknown): Partial<CouncilSettings> {
   const out: Partial<CouncilSettings> = {}
@@ -1873,8 +1982,8 @@ function pickSettings(raw: unknown): Partial<CouncilSettings> {
   const from = raw as Record<string, unknown>
   if (typeof from.studentRun === 'boolean' || from.studentRun === 'request') out.studentRun = from.studentRun
   if (typeof from.namesOnProjector === 'boolean') out.namesOnProjector = from.namesOnProjector
-  // `null` у предела — законное значение и единственное не-число здесь: «без
-  // предела» это выбор преподавателя, а не отсутствие ручки.
+  // `null` for the limit is a legitimate value and the only non-number here:
+  // "no limit" is the teacher's choice, not the absence of a knob.
   if (from.runLimitSec === null) out.runLimitSec = null
   else {
     const limit = whole(from.runLimitSec, 1, COUNCIL_RUN_LIMIT_MAX)
@@ -1886,19 +1995,20 @@ function pickSettings(raw: unknown): Partial<CouncilSettings> {
 }
 
 /*
- * Ячеек больше нет — снять их с выполнения.
+ * The cells are gone — take them off execution.
  *
- * Убрать можно и ту ячейку, что стоит в очереди: документ этого не запрещает, и
- * запрещать не следует — человек видит ячейку и вправе её убрать. Но очередь
- * живёт именами, и ядро потом честно берёт из неё id, которому не соответствует
- * ничего: Run All обрывается на пустом месте, а `meta.queue` называет ячейки,
- * которых в тетради не найти.
+ * A cell standing in the queue can be removed too: the document does not
+ * forbid it, and it should not — a person sees the cell and is entitled to
+ * remove it. But the queue lives by names, and the kernel then honestly takes
+ * from it an id that corresponds to nothing: Run All breaks off on an empty
+ * spot, and `meta.queue` names cells that cannot be found in the notebook.
  *
- * `isHost` здесь не про право и не про человека: очередь разбирает сервер,
- * потому что запускать больше нечего, — своё и чужое одинаково. Ячейку, которая
- * СЧИТАЕТСЯ прямо сейчас, прерывает само ядро (`stopIfDeleted` в
- * kernel/index.ts): оно видит ту же правку документа и знает, что у него в
- * работе, а отсюда это было бы вторым SIGINT в ту же секунду.
+ * `isHost` here is not about a right or a person: the server clears the queue
+ * because there is nothing to run any more — one's own and someone else's
+ * alike. A cell that is BEING COMPUTED right now is interrupted by the kernel
+ * itself (`stopIfDeleted` in kernel/index.ts): it sees the same document
+ * edit and knows what it has in progress, and from here that would be a
+ * second SIGINT in the same second.
  */
 onCellsRemoved((sessionId, cellIds) => {
   cancelRun(sessionId, cellIds, '', true)
@@ -1914,19 +2024,20 @@ onRefusal((sessionId, participantId, refusal) => {
 })
 
 /**
- * Оракул о решениях сменил состояние — сказать пультам.
+ * The Oracle on solutions changed state — tell the consoles.
  *
- * Только преподавателям: сводка читала тексты студентов, на проектор и в зал ей
- * нельзя. Регистрация здесь, а не в routes/council.ts: сокеты преподавателей
- * знает только этот модуль, а импорт control.ts из ai/council.ts замкнул бы
- * модули друг на друга — как и у onRefusal.
+ * Only to teachers: the summary read the students' texts, it must not go to
+ * the projector or the hall. The registration is here, not in
+ * routes/council.ts: only this module knows the teachers' sockets, and
+ * importing control.ts from ai/council.ts would close the modules onto each
+ * other — as with onRefusal.
  *
- * И БЕЗ стопки следом. Она уезжала здесь ради подписей на чипах сводки, но
- * ни сводки, ни подписей больше нет, а пульт
- * кладёт оракула в свою стопку сам (council.svelte.ts · withOracle). Стоила эта
- * лишняя строка двух полных стопок на один вопрос — «читаю» и «готово», — то
- * есть двух кадров со всеми попытками и их выводами на каждое нажатие
- * «Спросить».
+ * And WITHOUT the pile after it. It used to go out here for the sake of the
+ * captions on the summary chips, but there is no summary and no captions any
+ * more, and the console puts the Oracle into its pile itself
+ * (council.svelte.ts · withOracle). This extra line cost two full piles per
+ * question — "reading" and "ready" — that is, two frames with all attempts
+ * and their outputs on every press of "Ask".
  */
 onCouncilOracle((sessionId, cellId, oracle) => {
   toTeachers(sessionId, { t: 'council:oracle', cellId, oracle })
@@ -1939,10 +2050,11 @@ onTerminalPhase((sessionId, status) => broadcast(sessionId, { t: 'terminal', sta
 /* ----------------------------------------------------------------- doc */
 
 /**
- * Состояние ядра одной тетради — по её записи в карте `meta.kernels`.
+ * The kernel state of one notebook — by its entry in the `meta.kernels` map.
  *
- * Без корня — тетрадь комнаты: так читает вкладка, открытая до того, как ядер
- * стало несколько, и так же отвечает первый кадр `ready`.
+ * Without a root — the room's notebook: that is how a tab opened before there
+ * were several kernels reads it, and that is also how the first `ready` frame
+ * answers.
  */
 function kernelStatus(sessionId: string, root: string = CELLS_KEY): KernelStatus {
   try {
@@ -1952,7 +2064,7 @@ function kernelStatus(sessionId: string, root: string = CELLS_KEY): KernelStatus
   }
 }
 
-/** Состояние ядер по тетрадям — то, что едет в первом кадре сокета. */
+/** Kernel states per notebook — what goes into the socket's first frame. */
 function kernelStatuses(sessionId: string): Array<{ book: string; status: KernelStatus }> {
   try {
     const { doc } = getSessionDoc(sessionId)
@@ -1970,35 +2082,37 @@ function kernelStatuses(sessionId: string): Array<{ book: string; status: Kernel
  * there. Mirroring it onto this socket costs one small frame and keeps clients
  * that are watching only the control channel honest.
  *
- * И заодно — очередь. Она в том же `meta` (kernel/index.ts · syncQueue), и её
- * зеркало меняется на каждый сдвиг: ячейка встала, ячейка досчиталась, попытка
- * пошла в работу. Отсюда ждущим уходит новый номер — единственное место, где
- * он честен по любому поводу, а не только по концу чужой попытки консилиума.
+ * And the queue while we are at it. It is in the same `meta`
+ * (kernel/index.ts · syncQueue), and its mirror changes on every shift: a cell
+ * was queued, a cell finished, an attempt went into work. From here the new
+ * number goes out to those waiting — the only place where it is honest for
+ * any reason, not only at the end of someone else's council attempt.
  *
- * `observeDeep`, а не `observe`: список очереди — вложенный Y.Array, и его
- * правку (а это самый частый сдвиг) карта наружу не показывает.
+ * `observeDeep`, not `observe`: the queue list is a nested Y.Array, and the
+ * map does not show its edits (and they are the most frequent shift) to the
+ * outside.
  */
 function watchRoomMeta(sessionId: string): () => void {
   const { doc } = getSessionDoc(sessionId)
   const meta = getMeta(doc)
   /*
-   * Прежнее состояние — ПО ТЕТРАДЯМ.
+   * The previous state — PER NOTEBOOK.
    *
-   * Одно поле `last` на комнату означало бы, что вторая тетрадь, ставшая
-   * `busy` следом за первой, кадра не получает вовсе: значение то же. Кадр при
-   * этом называет свой лист, и старая вкладка читает его как прежде — поле
-   * `book` она просто не знает.
+   * One `last` field per room would mean that a second notebook becoming
+   * `busy` right after the first gets no frame at all: the value is the same.
+   * The frame names its own sheet, and an old tab reads it as before — it
+   * simply does not know the `book` field.
    */
   const last = new Map<string, KernelStatus>()
   /*
-   * Список тетрадей обходится ТОЛЬКО когда изменилась карта ядер.
+   * The notebook list is walked ONLY when the kernels map has changed.
    *
-   * `observeDeep` будит нас на каждый сдвиг очереди — два раза на ячейку, а при
-   * Run All на сорок ячеек это восемьдесят раз подряд, всей комнате. Пока полей
-   * было два, обход стоил двух чтений; теперь это проход по списку тетрадей с
-   * чтением записи каждой. Путь события от `meta` и говорит, куда писали:
-   * `['kernels', <корень>, …]` — в карту, пустой путь с ключом `kernels` — её
-   * только что завели.
+   * `observeDeep` wakes us on every queue shift — twice per cell, and with Run
+   * All over forty cells that is eighty times in a row, for the whole room.
+   * While there were two fields, the walk cost two reads; now it is a pass
+   * over the notebook list reading each one's entry. The path of the event
+   * from `meta` says where the write went: `['kernels', <root>, …]` means into
+   * the map, an empty path with the `kernels` key means it was just created.
    */
   const touchesKernels = (events: Y.YEvent<any>[]): boolean =>
     events.some(
@@ -2027,11 +2141,12 @@ function watchRoomMeta(sessionId: string): () => void {
  * and returns nothing if the id is unknown, so a stale "run above" from a tab
  * that missed a deletion cannot silently turn into "run the whole notebook".
  *
- * `null` — «тетрадь названа, а такой в комнате нет». Это не то же самое, что
- * «путь не задан»: без пути подразумевается тетрадь комнаты (так читаются
- * сообщения вкладок, открытых до того, как тетрадей стало несколько), а вот
- * вкладка убранной тетради, не успевшая узнать об этом, нажатием Run All
- * поставила бы в очередь ЧУЖОЙ лист целиком.
+ * `null` means "a notebook was named, and there is no such one in the room".
+ * That is not the same as "no path given": without a path the room's notebook
+ * is implied (that is how messages from tabs opened before there were several
+ * notebooks read), whereas the tab of a removed notebook that has not yet
+ * learned about it would, by pressing Run All, queue SOMEONE ELSE'S whole
+ * sheet.
  */
 function codeCellIds(
   sessionId: string,
@@ -2091,13 +2206,14 @@ function frameText(data: RawData): string {
 }
 
 /**
- * Кадр толще потолка — это не мусор, и молчать про него нельзя.
+ * A frame thicker than the ceiling is not garbage, and it must not be passed
+ * over in silence.
  *
- * Раньше он выбрасывался здесь же, вместе с неразборчивым: ни ошибки, ни
- * строки в журнале. Для попытки консилиума это худшее, что провод может
- * сделать, — студент дописывает лист, снимки перестают доезжать МОЛЧА, и на
- * «Сдать» преподаватель видит текст получасовой давности. Отдельный ответ, а
- * не `null`.
+ * It used to be thrown away right here, together with the unparseable: no
+ * error, no line in the log. For a council attempt that is the worst thing
+ * the wire can do — the student keeps writing the sheet, the snapshots stop
+ * arriving SILENTLY, and on "Submit" the teacher sees text half an hour old.
+ * A separate answer, not `null`.
  */
 const TOO_BIG = 'too-big'
 
@@ -2116,18 +2232,18 @@ function parse(data: RawData): ControlClientMessage | typeof TOO_BIG | null {
   }
 }
 
-/** Точка на конце — как у соседних фраз: это законченное предложение. */
+/** A full stop at the end, like the neighbouring phrases: it is a complete sentence. */
 const OVER = 'server.classOverPeriod'
 
 /**
- * Отказ по праву — и одна фраза на все отказы законченного занятия.
+ * A refusal by right — and one phrase for all refusals of a finished class.
  *
- * Права после конца занятия ужесточаются сами: их спрашивают у `getRules`, а
- * та отдаёт действующие (db.ts). А вот слова остались бы прежними — «В этом
- * семинаре запускает преподаватель» посылает человека искать преподавателя,
- * который ничего не менял. Поэтому подмена фразы стоит в одном месте, через
- * которое проходят все отказы по праву: проверка, дописанная завтра, получит
- * её даром, если откажет через этот helper.
+ * The rights after the end of class tighten by themselves: they are asked of
+ * `getRules`, and it hands out the effective ones (db.ts). But the words
+ * would have stayed the same — "In this seminar the teacher runs cells" sends
+ * the person to look for a teacher who changed nothing. So the phrase swap
+ * stands in one place that all refusals by right pass through: a check
+ * written tomorrow gets it for free if it refuses through this helper.
  */
 function refuse(ws: WebSocket, sessionId: string, payload: TokenPayload, message: string): void {
   send(ws, {
@@ -2137,33 +2253,36 @@ function refuse(ws: WebSocket, sessionId: string, payload: TokenPayload, message
 }
 
 /**
- * Одна фраза на отказ по правилу `run` — и потому она константа.
+ * One phrase for a refusal by the `run` rule — and so it is a constant.
  *
- * Запуск ячейки теперь спрашивает право, уже зная про замок, и потому называет
- * фразу сам; без общего имени в коде оказалось бы два одинаковых предложения,
- * из которых однажды поправят одно.
+ * Running a cell now asks for the right already knowing about the lock, and
+ * so it names the phrase itself; without a shared name the code would have
+ * two identical sentences, of which one day only one would be corrected.
  */
 const RUN_IS_THE_TEACHERS = () => tr("server.onlyTheTeacherRunsCellsInThis.21ec54")
 
-/* ------------------------------------------- правила ОТДЕЛЬНОЙ тетради */
+/* ---------------------------------------- rules of a SEPARATE notebook */
 
 /**
- * Кто спрашивает — в той форме, в какой это читают правила тетради.
+ * Who is asking — in the form in which the notebook rules read it.
  *
- * Имя нужно ровно одному вопросу: его ли это личная тетрадь (shared/rules.ts ·
- * BookRule.owner). Всё остальное решается ролью, как и решалось.
+ * The name is needed for exactly one question: is this their personal
+ * notebook (shared/rules.ts · BookRule.owner). Everything else is decided by
+ * the role, as it always was.
  */
 function asker(payload: TokenPayload): Asker {
   return { role: payload.role, participantId: payload.participantId }
 }
 
 /**
- * Кто заводит тетрадь — для записи об авторе.
+ * Who creates a notebook — for the author record.
  *
- * Имя берётся здесь, в момент заведения, а не ищется потом: тетрадь переживает
- * семестр, участника из базы могли и убрать, и «личная тетрадь: —» не объясняет
- * ничего (shared/rules.ts · BookRule.ownerName). Преподавателя запись не
- * касается — `rememberAuthor` отсеивает его сам, и роль едет сюда ровно затем.
+ * The name is taken here, at the moment of creation, rather than looked up
+ * later: a notebook outlives a semester, the participant may have been
+ * removed from the database, and "personal notebook: —" explains nothing
+ * (shared/rules.ts · BookRule.ownerName). The record does not concern the
+ * teacher — `rememberAuthor` filters them out itself, and the role travels
+ * here exactly for that.
  */
 function authorOf(sessionId: string, payload: TokenPayload): BookAuthor {
   return {
@@ -2174,33 +2293,35 @@ function authorOf(sessionId: string, payload: TokenPayload): BookAuthor {
 }
 
 /**
- * Корень тетради, в которой лежит эта ячейка.
+ * The root of the notebook this cell lies in.
  *
- * `null` — такой ячейки в комнате нет. Тогда права решают правила комнаты, и
- * отказ говорит про них: рассуждать о доступе к тетради, которой у ячейки нет,
- * не о чем.
+ * `null` means there is no such cell in the room. Then the room's rules
+ * decide the rights, and the refusal speaks of them: there is nothing to
+ * reason about access to a notebook the cell does not have.
  */
 function rootOf(sessionId: string, cellId: string): string | null {
   return rootOfCell(getSessionDoc(sessionId).doc, cellId)
 }
 
 /**
- * Корень НАЗВАННОЙ тетради — или тетради комнаты, если её не назвали.
+ * The root of the NAMED notebook — or of the room's notebook if none was
+ * named.
  *
- * Без имени подразумевается первая тетрадь: так читаются сообщения вкладок,
- * открытых до того, как тетрадей стало несколько (см. `bookOf`). `null` —
- * названа тетрадь, которой в комнате нет; зовущий отвечает на это своим
- * NO_SUCH_BOOK, а не молча правилами комнаты.
+ * Without a name the first notebook is implied: that is how messages from
+ * tabs opened before there were several notebooks read (see `bookOf`).
+ * `null` means a notebook was named that is not in the room; the caller
+ * answers that with its NO_SUCH_BOOK, not silently with the room's rules.
  */
 /**
- * В какой лист СОБРАН этот список ячеек — по первой из них.
+ * Which sheet this list of cells was COLLECTED from — by the first of them.
  *
- * Отдельно от `rootOfBook`, и это не педантизм. Без имени листа права
- * спрашиваются у `mainRoot` (первой тетради по порядку), а ячейки собирает
- * `codeCellIds` из корня `cells` — и у комнаты, где тетрадь комнаты убрали, эти
- * два ответа расходятся. Очередь при этом принимает только ячейки СВОЕЙ тетради
- * (kernel/index.ts · requestRun), так что разойдясь, они дали бы Run All,
- * который молча не делает ничего. Очередь спрашивает у самих ячеек.
+ * Separate from `rootOfBook`, and this is not pedantry. Without a sheet name
+ * the rights are asked of `mainRoot` (the first notebook in order), while the
+ * cells are collected by `codeCellIds` from the `cells` root — and in a room
+ * where the room's notebook was removed these two answers diverge. The queue
+ * accepts only cells of ITS OWN notebook (kernel/index.ts · requestRun), so
+ * having diverged they would produce a Run All that silently does nothing.
+ * The queue asks the cells themselves.
  */
 function rootOfCells(sessionId: string, ids: string[]): string {
   for (const id of ids) {
@@ -2216,23 +2337,25 @@ function rootOfBook(sessionId: string, book: string | undefined): string | null 
 }
 
 /**
- * Действующие правила ОДНОЙ тетради для ЭТОГО человека.
+ * The effective rules of ONE notebook for THIS person.
  *
- * Та же функция, которой считает серые кнопки браузер и судит кадры гейт
- * (shared/rules.ts · rulesForBook). Второй копии развилки «чья это тетрадь» в
- * продукте нет намеренно — расходятся такие копии молча и в сторону кнопки,
- * которая нажимается и приносит отказ.
+ * The same function the browser uses to compute grey buttons and the gate
+ * uses to judge frames (shared/rules.ts · rulesForBook). There is
+ * deliberately no second copy of the "whose notebook is this" fork in the
+ * product — such copies diverge silently and in the direction of a button
+ * that can be pressed and brings a refusal.
  */
 function rulesIn(sessionId: string, payload: TokenPayload, root: string | null): RoomRules {
   return rulesForBook(getRules(sessionId), root, asker(payload))
 }
 
 /**
- * Слова отказа: тетради, когда отказала она, и комнаты во всех прочих случаях.
+ * The words of a refusal: the notebook's, when it was the one refusing, and
+ * the room's in all other cases.
  *
- * «В этом семинаре запускает преподаватель», сказанное про чужую личную
- * тетрадь, отправляет человека к преподавателю, который ничего не запрещал.
- * Конец занятия поверх этого накладывает `refuse` — одной фразой на всё.
+ * "In this seminar the teacher runs cells", said about someone else's
+ * personal notebook, sends the person to a teacher who forbade nothing. The
+ * end of class is laid over this by `refuse` — one phrase for everything.
  */
 function whyIn(
   sessionId: string,
@@ -2256,17 +2379,19 @@ function whyIn(
  * The refusal is spoken rather than silent. A button that does nothing is a bug
  * report; a button that says why is a rule.
  *
- * `cellOpen` — замок на ячейке: преподаватель открыл вот эту одну, и в ней
- * комната считает даже там, где вообще запускает он. Умолчание `false`, и это
- * важнее, чем кажется: тем же helper'ом спрашивают Run All, запуск файла и
- * команду оболочки, а открытая ячейка ни листа, ни терминала не открывает —
- * она открыта одна и ровно одна.
+ * `cellOpen` is the lock on the cell: the teacher opened this one, and in it
+ * the room computes even where the teacher is otherwise the one who runs.
+ * The default is `false`, and this matters more than it seems: the same
+ * helper is asked about Run All, running a file and a shell command, and an
+ * open cell opens neither a sheet nor the terminal — it is open alone and
+ * exactly alone.
  *
- * `root` — тетрадь, в которую метит нажатие: у неё может быть свой доступ, и
- * тогда правило комнаты подменяется им (`rulesIn`). Умолчание `null` — «речь не
- * про тетрадь», и его берут `file:run` и `term:run`: скрипт из дерева и команда
- * в общей оболочке — это ядро комнаты, а не чья-то тетрадь, и открывать их
- * личной тетрадью было бы дырой ровно в том правиле, ради которого она заведена.
+ * `root` is the notebook the press aims at: it may have its own access, and
+ * then the room rule is replaced by it (`rulesIn`). The default `null` means
+ * "this is not about a notebook", and `file:run` and `term:run` use it: a
+ * script from the tree and a command in the shared shell are the room's
+ * kernel, not someone's notebook, and opening them with a personal notebook
+ * would be a hole in exactly the rule it was created for.
  */
 function mayRun(
   sessionId: string,
@@ -2284,12 +2409,13 @@ function mayRun(
 }
 
 /**
- * Открыта ли эта ячейка комнате.
+ * Whether this cell is open to the room.
  *
- * Спрашивается у документа, а не у сообщения: поле пишет сервер (см.
- * `cell:open`), и читать его надо там же, где оно записано. Ячейки нет в
- * комнате — значит и замка нет: право тогда решают обычные правила, и отказ
- * говорит про них, а не про ячейку, которой не существует.
+ * Asked of the document, not of the message: the server writes the field
+ * (see `cell:open`), and it has to be read where it is written. The cell is
+ * not in the room — then there is no lock either: the right is then decided
+ * by the ordinary rules, and the refusal speaks of them, not of a cell that
+ * does not exist.
  */
 function cellIsOpen(sessionId: string, id: string): boolean {
   const found = findCell(getSessionDoc(sessionId).doc, id)
@@ -2297,13 +2423,14 @@ function cellIsOpen(sessionId: string, id: string): boolean {
 }
 
 /**
- * То же для правки ОДНОЙ ячейки — и тоже с замком.
+ * The same for editing ONE cell — and also with the lock.
  *
- * Ровно тот же вопрос, что задаёт гейт CRDT на набор в этой ячейке
- * (collab/gate.ts) и клиент на серую кнопку (web/src/lib/may.ts). Открытая
- * ячейка — право поверх правил: в лекционной тетради зал в ней печатает и
- * запускает, и спрашивать про неё голое `rules.edit` значит отвечать «тетрадь
- * принадлежит преподавателю» про ячейку, которую преподаватель открыл.
+ * Exactly the same question the CRDT gate asks about typing in this cell
+ * (collab/gate.ts) and the client asks about a grey button
+ * (web/src/lib/may.ts). An open cell is a right above the rules: in a lecture
+ * notebook the hall types and runs in it, and asking a bare `rules.edit`
+ * about it means answering "the notebook belongs to the teacher" about a
+ * cell the teacher opened.
  */
 function mayEditThis(
   sessionId: string,
@@ -2312,8 +2439,9 @@ function mayEditThis(
   cellId: string,
 ): boolean {
   const open = cellIsOpen(sessionId, cellId)
-  // И по правилам ТОЙ ТЕТРАДИ, в которой ячейка лежит: у личной тетради свой
-  // ответ на «кто здесь печатает», и он сильнее комнатного в обе стороны.
+  // And by the rules of THE NOTEBOOK the cell lies in: a personal notebook has
+  // its own answer to "who types here", and it is stronger than the room's in
+  // both directions.
   const root = rootOf(sessionId, cellId)
   if (mayEditCell(rulesIn(sessionId, payload, root), payload.role, open, isFinished(sessionId))) {
     return true
@@ -2328,11 +2456,13 @@ function mayEditThis(
 }
 
 /**
- * А это — про весь лист сразу, и оно отдельное от предыдущего.
+ * And this is about the whole sheet at once, and it is separate from the
+ * previous one.
  *
- * Ядро одно, и разница между «двадцать человек считают» и «двадцать человек
- * забили очередь на восемьсот ячеек» ровно здесь. «По одной» разрешает нажать
- * на ячейке и запрещает Run All.
+ * The kernel is one, and the difference between "twenty people are
+ * computing" and "twenty people clogged the queue with eight hundred cells"
+ * lies exactly here. "One at a time" allows pressing on a cell and forbids
+ * Run All.
  */
 function mayBulkRun(
   sessionId: string,
@@ -2340,9 +2470,10 @@ function mayBulkRun(
   ws: WebSocket,
   root: string | null = null,
 ): boolean {
-  // Весь лист — это лист ОДНОЙ тетради, и спрашивать надо у неё: Run All в
-  // своей личной тетради не должен упираться в лекционное правило комнаты,
-  // а в чужой личной — не должен проходить при открытой.
+  // The whole sheet is the sheet of ONE notebook, and it is that notebook that
+  // must be asked: Run All in one's own personal notebook must not run into
+  // the room's lecture rule, and in someone else's personal one it must not
+  // get through when the room is open.
   if (allowsRun(rulesIn(sessionId, payload, root).run, payload.role, 'bulk')) return true
   refuse(
     ws,
@@ -2353,7 +2484,7 @@ function mayBulkRun(
   return false
 }
 
-/** Право по простому правилу, с одной фразой на отказ. */
+/** A right by a simple rule, with one phrase for the refusal. */
 function may(
   sessionId: string,
   rule: Who,
@@ -2367,19 +2498,22 @@ function may(
 }
 
 /**
- * Не оборвёт ли это идущую лекцию — и вправе ли этот человек её обрывать.
+ * Whether this would break off a running lecture — and whether this person
+ * is entitled to break it off.
  *
- * Общий экран и лекция — один и тот же документ (см. `setBoard`), поэтому
- * «поставить другой файл» и «убрать файл» заканчивают лекцию. Само по себе это
- * намеренно, а вот вход в него был открыт настежь: щелчок по `homework.pdf` в
- * панели файлов выглядит как «открыть файл себе» и ничем не отличается от
- * щелчка по любому другому — а стоит сорока минут разметки на проекторе, при
- * всех и без возврата (чернила живут только в памяти). Крестик на вкладке
- * документа лекции — то же самое: он шлёт `board:close`.
+ * The shared screen and the lecture are one and the same document (see
+ * `setBoard`), so "put up another file" and "remove the file" end the
+ * lecture. That in itself is intentional, but the way in was wide open: a
+ * click on `homework.pdf` in the files panel looks like "open the file for
+ * myself" and is no different from a click on any other — and it costs forty
+ * minutes of markup on the projector, in front of everyone and with no way
+ * back (ink lives only in memory). The cross on the lecture document's tab is
+ * the same thing: it sends `board:close`.
  *
- * Поэтому пока лекция идёт, обрывают её только двумя руками: руками ведущего
- * (он и меняет документ, и заканчивает) или явным «Закончить». Всё остальное —
- * отказ словами, и слова называют документ, чтобы человек понял, во что упёрся.
+ * So while a lecture is running, it is broken off only by two hands: the
+ * presenter's (they both change the document and end it) or an explicit
+ * "End". Everything else is a refusal in words, and the words name the
+ * document, so that the person understands what they ran into.
  */
 function lectureInTheWay(
   sessionId: string,
@@ -2397,19 +2531,20 @@ function lectureInTheWay(
 }
 
 /**
- * Пульт в руках — и занятие ещё идёт.
+ * The console in hand — and the class still in progress.
  *
- * Ведущий не всегда преподаватель: в комнате с `board: 'room'` студенты по
- * очереди показывают своё, и пульт у студента — не дыра, а смысл настройки.
- * Поэтому после звонка одной роли мало, а `isPresenter` мало тем более: иначе
- * студент-ведущий листает страницы всему залу, рисует и гасит экран в комнате,
- * где все остальные уже только читают.
+ * The presenter is not always the teacher: in a room with `board: 'room'`
+ * students take turns showing their work, and the console in a student's
+ * hands is not a hole but the point of the setting. So after the bell a role
+ * alone is not enough, and `isPresenter` even less so: otherwise a student
+ * presenter flips pages for the whole hall, draws and blanks the screen in a
+ * room where everyone else is read-only by now.
  *
- * Саму лекцию звонок не гасит — сорок минут разметки живут только в памяти, и
- * терять их нажатием «Закончить занятие» дороже, чем оставить картинку на
- * экране, зрителем в ней участник и так был. Отбирается управление:
- * преподаватель перехватывает пульт тем же `lecture:start` или заканчивает
- * лекцию, как и раньше.
+ * The bell does not turn off the lecture itself — forty minutes of markup
+ * live only in memory, and losing them with a press of "End class" costs more
+ * than leaving the picture on screen, where the participant was a viewer
+ * anyway. What is taken away is control: the teacher takes over the console
+ * with the same `lecture:start` or ends the lecture, as before.
  */
 function atTheRemote(sessionId: string, payload: TokenPayload): boolean {
   return (
@@ -2419,17 +2554,18 @@ function atTheRemote(sessionId: string, payload: TokenPayload): boolean {
 }
 
 /**
- * Поставить в очередь и, если что-то не поместилось, сказать это один раз.
+ * Queue up and, if something did not fit, say so once.
  *
- * Потолок берётся из правила: «по одной» — одна ячейка на человека
- * одновременно. Это и делает правило границей, а не счётчиком нажатий:
- * скриптовый цикл получает одну ячейку в очереди и одну фразу.
+ * The ceiling comes from the rule: "one at a time" means one cell per person
+ * at a time. That is what makes the rule a boundary rather than a click
+ * counter: a scripted loop gets one cell in the queue and one phrase.
  *
- * `root` — в чью очередь. Очередей теперь столько, сколько тетрадей, и потолок
- * считается по каждой отдельно: «по одной» значит «по одной в тетради», иначе
- * ячейка, считающаяся в лекции, запирала бы человеку его собственный черновик.
- * Правило при этом комнатное (`getRules`, а не `rulesIn`) и таким остаётся:
- * потолок очереди — не право доступа к тетради.
+ * `root` — whose queue. There are now as many queues as notebooks, and the
+ * ceiling is counted for each separately: "one at a time" means "one at a
+ * time per notebook", otherwise a cell being computed in the lecture would
+ * lock a person out of their own draft. The rule is still the room's
+ * (`getRules`, not `rulesIn`) and stays that way: the queue ceiling is not an
+ * access right to a notebook.
  */
 function queue(
   ws: WebSocket,
@@ -2456,19 +2592,21 @@ function queue(
 }
 
 /**
- * Одна фраза на потолок глубины — и потому она константа.
+ * One phrase for the depth ceiling — and so it is a constant.
  *
- * Её говорят двоим: полю ввода, где набрали слишком длинный путь, и переезду
- * папки, содержимое которой на новом месте ушло бы за восьмой уровень. Причина
- * одна и та же, и разъехаться этим двум предложениям незачем.
+ * It is said to two parties: the input field where a path that is too long
+ * was typed, and the move of a folder whose contents would go past the eighth
+ * level in the new place. The reason is the same, and these two sentences
+ * have no reason to drift apart.
  */
 const TOO_DEEP = () => tr("server.pathsMayBeUpToLevelsDeep.8e0b25", { p0: MAX_DEPTH })
 
 /**
- * Почему путь не годится — теми же словами, что и в поле ввода панели.
+ * Why a path is unfit — in the same words as in the panel's input field.
  *
- * Отказ приходит на последний сегмент: остальные человек не набирал, они
- * пришли из дерева, и жаловаться на них значило бы указывать не туда.
+ * The refusal is about the last segment: the person did not type the others,
+ * they came from the tree, and complaining about them would mean pointing in
+ * the wrong direction.
  */
 function refusedPath(raw: unknown): string {
   const shown = typeof raw === 'string' ? raw : ''
@@ -2479,18 +2617,19 @@ function refusedPath(raw: unknown): string {
 }
 
 /**
- * Всё, что лежит внутри этого пути, — считая его самого.
+ * Everything that lies inside this path — including the path itself.
  *
- * Переименовать и убрать можно не только файл: `movePath` переносит каталог
- * целиком, `deleteFile` сносит его со всем содержимым, а правка имени в панели
- * заводится двойным щелчком по любой строке дерева, включая папку. При этом
- * всё, что помнит путь, — открытый в редакторе документ, тетрадь, заметки
- * спикера, лекция и общий экран — знает только точное имя, и без этого списка
- * папку переименовывали бы, а её содержимое оставалось бы жить по старому
- * адресу: тетрадь воскрешала бы папку проекцией, а проектор показывал бы файл,
- * которого нет.
+ * Not only a file can be renamed and removed: `movePath` moves a directory
+ * whole, `deleteFile` removes it with all its contents, and name editing in
+ * the panel is started by a double click on any tree row, a folder included.
+ * Meanwhile everything that remembers a path — the document open in the
+ * editor, a notebook, speaker notes, the lecture and the shared screen —
+ * knows only the exact name, and without this list a folder would be renamed
+ * while its contents kept living at the old address: a notebook would
+ * resurrect the folder with its projection, and the projector would show a
+ * file that does not exist.
  *
- * Считается ДО правки дерева: после неё спрашивать уже некого.
+ * Computed BEFORE the tree edit: after it there is nobody left to ask.
  */
 function pathsInside(sessionId: string, dir: string): string[] {
   const found = new Set<string>([dir])
@@ -2499,19 +2638,22 @@ function pathsInside(sessionId: string, dir: string): string[] {
       if (!entry.dir && isInside(entry.path, dir)) found.add(entry.path)
     }
   } catch {
-    /* папку не прочитать — обойдёмся самим путём */
+    /* the folder cannot be read — we make do with the path itself */
   }
-  // И тетради по списку комнаты: у обхода папки есть потолок, а тетрадь,
-  // не попавшая в список файлов, — как раз та, чью запись важнее всего увести.
+  // And the notebooks by the room's list: the folder walk has a ceiling, and a
+  // notebook that did not make it into the file list is exactly the one whose
+  // record matters most to carry over.
   const doc = peekSessionDoc(sessionId)?.doc
   if (doc) for (const book of bookList(doc)) if (isInside(book.path, dir)) found.add(book.path)
   /*
-   * И то, что помнит один-единственный путь наизусть: документ на экране и файл
-   * лекции. Довод тот же, что у тетрадей: обход дерева обрезается — по числу
-   * строк и по глубине, — а документ, не попавший в список, никуда не делся, он
-   * идёт на проекторе прямо сейчас. Спросить их стоит двух чтений из памяти;
-   * пропустить — значит оставить проектор на пути, которого после переезда нет,
-   * и речь к двадцати четырём страницам под ключом, которого не существует.
+   * And what remembers one single path by heart: the document on screen and
+   * the lecture file. The argument is the same as for notebooks: the tree walk
+   * is truncated — by the number of rows and by depth — and a document that
+   * did not make it into the list has not gone anywhere, it is on the
+   * projector right now. Asking about them costs two reads from memory;
+   * skipping them means leaving the projector on a path that does not exist
+   * after the move, and the talk for twenty-four pages under a key that does
+   * not exist.
    */
   const shown = boardOf(sessionId)
   if (shown && isInside(shown, dir)) found.add(shown)
@@ -2521,23 +2663,25 @@ function pathsInside(sessionId: string, dir: string): string[] {
 }
 
 /**
- * Что сказать, когда путь годится, а сделать всё равно не вышло.
+ * What to say when the path is fine but the thing still could not be done.
  *
- * Две стороны, а не одна: у переезда «не нашли» — это про источник, а «занято»
- * — про цель, и одной строкой на оба случая назывался файл, которого человек не
- * трогал: после `a.py` → `b.py` он читал «„b.py“ в комнате больше нет» про имя,
- * которого никогда не было. Там, где заводят новое, обе стороны совпадают, и
- * звать можно с одним путём.
+ * Two sides, not one: for a move, "not found" is about the source, and
+ * "taken" is about the target, and one line for both cases named a file the
+ * person had not touched: after `a.py` → `b.py` they read that "b.py" is no
+ * longer in this room — about a name that never existed. Where something new
+ * is created, the two sides coincide, and the function can be called with
+ * one path.
  */
 function treeTrouble(outcome: TreeResult, target: string, source = target): string {
   const name = baseOf(target)
   if (outcome === 'exists') {
     /*
-     * Место называется, когда оно не то, на которое человек смотрит. Он
-     * перетащил файл в соседнюю папку и получил отказ — а «в этой папке» из
-     * прежней фразы указывает на ту, ИЗ которой тащил, и одноимённых data.csv
-     * в комнате бывает несколько. Переименование на месте оставлено словом в
-     * слово: там «эта папка» — ровно та, что открыта.
+     * The place is named when it is not the one the person is looking at.
+     * They dragged a file into a neighbouring folder and got a refusal — and
+     * "in this folder" from the old phrase points to the one they dragged
+     * FROM, and a room can have several data.csv files of the same name.
+     * Renaming in place is left word for word: there "this folder" is exactly
+     * the one that is open.
      */
     const into = parentOf(target)
     if (into === parentOf(source)) return tr("server.alreadyExistsInThisFolder.3e8b1f", { p0: name })
@@ -2548,17 +2692,18 @@ function treeTrouble(outcome: TreeResult, target: string, source = target): stri
   if (outcome === 'missing') return tr("server.isNoLongerInThisRoom.2ab165", { p0: baseOf(source) })
   if (outcome === 'too-deep') return TOO_DEEP()
   /*
-   * Виновата не та запись, которую переставляют, — её путь короток, — а то, что
-   * лежит внутри: после переезда путь до него длиннее адресуемого, и открыть,
-   * скачать или убрать его поштучно уже нечем. Панель говорит это теми же
-   * словами (`tooLong` в tree-move.ts), не дожидаясь круга по сети.
+   * The culprit is not the entry being moved — its path is short — but what
+   * lies inside it: after the move the path to that is longer than
+   * addressable, and there is no longer any way to open, download or remove
+   * it item by item. The panel says so in the same words (`tooLong` in
+   * tree-move.ts), without waiting for a round trip over the network.
    */
   if (outcome === 'too-long') {
     return tr("server.cannotMoveANestedPathWouldExceed.541d8f", { p0: baseOf(source), p1: MAX_PATH })
   }
-  // Получить его можно единственным способом: попросить положить внутрь файла
-  // (`отчёт.py/данные.csv`). Корень папкой быть не перестаёт, так что имя того,
-  // во что не влезло, здесь есть всегда.
+  // There is only one way to get this: ask to put something inside a file
+  // (`report.py/data.csv`). The root does not stop being a folder, so the
+  // name of what did not fit is always available here.
   if (outcome === 'not-a-folder') {
     return tr("server.isAFileChooseADestinationFolder.298ed2", { p0: baseOf(parentOf(target)) })
   }
@@ -2567,23 +2712,23 @@ function treeTrouble(outcome: TreeResult, target: string, source = target): stri
 }
 
 /**
- * Какую тетрадь называет сообщение.
+ * Which notebook a message names.
  *
- * `undefined` — тетрадь комнаты. Так же читается сообщение вкладки, открытой до
- * того, как тетрадей стало несколько: путь в нём просто не проставлен, и
- * подразумевается единственная, которая тогда была.
+ * `undefined` means the room's notebook. A message from a tab opened before
+ * there were several notebooks reads the same way: the path in it is simply
+ * not set, and the only one that existed then is implied.
  */
 function bookOf(message: { book?: unknown }): string | undefined {
   return typeof message.book === 'string' && message.book ? message.book : undefined
 }
 
 /**
- * Одна фраза на все сообщения, называющие тетрадь, которой в комнате нет.
+ * One phrase for all messages naming a notebook that is not in the room.
  *
- * Тетрадь убирают из комнаты, а вкладка у соседа живёт до прихода списка
- * файлов — и нажатие в ней не должно молча попадать в тетрадь комнаты. Вслух,
- * а не молчанием: «Run All ничего не сделал» человек объясняет себе сам, и
- * объясняет неверно.
+ * A notebook is removed from the room, while a neighbour's tab lives on until
+ * the file list arrives — and a press in it must not silently land in the
+ * room's notebook. Out loud, not in silence: "Run All did nothing" a person
+ * explains to themselves, and explains wrongly.
  */
 const NO_SUCH_BOOK = () => tr("server.thisNotebookIsNoLongerInThe.513a76")
 
@@ -2591,50 +2736,53 @@ function optionalId(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : undefined
 }
 
-/* --------------------------------------------- дополнение и справка ядра */
+/* -------------------------------------------- kernel completion and help */
 
 /**
- * Потолок текста, который едет ядру на дополнение.
+ * The ceiling on text that goes to the kernel for completion.
  *
- * Двадцать четыре килобайта — это ячейка на восемьсот строк, каких в тетради
- * не бывает; а кадр пульта режется на тридцати двух (MAX_FRAME_BYTES), и
- * между этими числами должно остаться место под сам JSON. Клиент режет у себя
- * (session.svelte.ts), сервер режет ещё раз: клиент не единственный, кто умеет
- * открыть этот сокет, а `complete_request` с мегабайтом кода — это jedi,
- * разбирающий мегабайт, на ядре, которое в этот момент общее для всей комнаты.
+ * Twenty-four kilobytes is a cell of eight hundred lines, which notebooks do
+ * not have; and a console frame is cut at thirty-two (MAX_FRAME_BYTES), and
+ * between these numbers there must be room left for the JSON itself. The
+ * client cuts on its side (session.svelte.ts), the server cuts once more: the
+ * client is not the only one who can open this socket, and a
+ * `complete_request` with a megabyte of code is jedi parsing a megabyte on a
+ * kernel that is, at that moment, shared by the whole room.
  */
 const MAX_COMPLETE_CHARS = 24 * 1024
 
 /**
- * Сколько вопросов о дополнении один сокет вправе задавать.
+ * How many completion questions one socket is entitled to ask.
  *
- * Подсказка спрашивается НА НАЖАТИЕ КЛАВИШИ, и это делает её единственным
- * сообщением пульта, которое человек отправляет десятками в секунду, ничего
- * при этом не нажимая осознанно. Ведро на десять в секунду — это быстрее,
- * чем печатает человек, и медленнее, чем вкладка, у которой что-то заело;
- * четыре в полёте — потому что ядро отвечает по одному, и пятый вопрос всё
- * равно ждал бы своей очереди на shell.
+ * A hint is asked for ON A KEYSTROKE, and that makes it the only console
+ * message a person sends by the dozen per second without deliberately
+ * pressing anything. A bucket of ten per second is faster than a person types
+ * and slower than a tab where something got stuck; four in flight — because
+ * the kernel answers one at a time, and a fifth question would wait for its
+ * turn on the shell anyway.
  *
- * Перебравшему отвечаем ПУСТЫМ ответом, а не молчанием: обещание на клиенте
- * должно чем-то разрешиться, иначе редактор будет ждать своей подсказки до
- * таймаута и не покажет даже слова из самой ячейки.
+ * Whoever overdoes it gets an EMPTY answer, not silence: the promise on the
+ * client must resolve with something, otherwise the editor will wait for its
+ * hint until the timeout and will not show even the words from the cell
+ * itself.
  */
 const ASK_PER_SECOND = 10
 const ASK_BURST = 10
 const ASK_IN_FLIGHT = 4
 
 interface AskBudget {
-  /** Ведро, пополняемое временем; дробное — доливается по миллисекундам. */
+  /** A bucket refilled by time; fractional — topped up by the millisecond. */
   tokens: number
   at: number
-  /** Сколько вопросов этого сокета ядро ещё не закрыло. */
+  /** How many of this socket's questions the kernel has not yet closed. */
   flight: number
 }
 
 /*
- * По сокету, а не по человеку: ограничение тут про провод и про ядро, а
- * вкладка — это и есть провод. WeakMap по той же причине, что у `owner`:
- * закрытый сокет уносит свою запись сам, и чистить за ним нечего.
+ * Per socket, not per person: the limit here is about the wire and the
+ * kernel, and a tab is the wire. A WeakMap for the same reason as `owner`: a
+ * closed socket carries its entry away itself, and there is nothing to clean
+ * up after it.
  */
 const asking = new WeakMap<WebSocket, AskBudget>()
 
@@ -2656,11 +2804,12 @@ function askDone(ws: WebSocket): void {
 }
 
 /**
- * Двадцать четыре килобайта, КОНЧАЮЩИЕСЯ курсором.
+ * Twenty-four kilobytes ENDING at the cursor.
  *
- * Начало режется, а не конец: дополняют то, что стоит перед кареткой, и
- * тысяча строк ниже по ячейке разбору не нужна вовсе. Курсор при этом
- * переезжает вместе с текстом — иначе ядро дополняло бы другое место.
+ * The beginning is cut, not the end: what gets completed is what stands
+ * before the caret, and a thousand lines further down the cell are not
+ * needed for parsing at all. The cursor moves along with the text —
+ * otherwise the kernel would complete a different place.
  */
 function trimToCursor(code: string, cursor: number): { code: string; cursor: number } {
   const at = Math.max(0, Math.min(cursor, code.length))
@@ -2670,38 +2819,41 @@ function trimToCursor(code: string, cursor: number): { code: string; cursor: num
 }
 
 /**
- * Право на подсказку — то же самое, что право запустить ячейку.
+ * The right to a hint is the same as the right to run a cell.
  *
- * И это не осторожность ради осторожности. `complete_request` спрашивает
- * ЖИВОЕ ядро тетради: по `df.` видно, какие у преподавателя переменные, по
- * `_` — что он считал последним, а `__builtins__.` вместе со справкой читается
- * как оглавление чужого сеанса. Комната, где запускает преподаватель, — это
- * комната, где состояние ядра принадлежит ему; читать его через подсказку
- * было бы обходом правила, а не удобством.
+ * And this is not caution for caution's sake. `complete_request` asks the
+ * notebook's LIVE kernel: `df.` shows what variables the teacher has, `_`
+ * shows what they computed last, and `__builtins__.` together with help reads
+ * like the table of contents of someone else's session. A room where the
+ * teacher runs cells is a room where the kernel state belongs to them;
+ * reading it through a hint would be a bypass of the rule, not a convenience.
  *
- * Замок на ячейке по догадке здесь по-прежнему не спрашивается — но кадр
- * теперь МОЖЕТ назвать ячейку сам, и это меняет ровно один случай: свой лист
- * консилиума.
+ * The lock on a guessed cell is still not asked here — but a frame CAN now
+ * name the cell itself, and that changes exactly one case: one's own council
+ * sheet.
  *
- * Лист — та единственная ячейка, в которой студенту велено писать код: за этим
- * консилиум и открывают. В лекционной комнате (`run: 'host'`) прежнее правило
- * отказывало в нём каждому, и отказывало молча: имена приезжали из слов самой
- * ячейки, а столбцы настоящего `df`, ради которого задание и дано, — нет.
- * Обхода правила тут нет: попытка и так считается в ядре СВОЕЙ тетради
- * (`council:run` с ручкой преподавателя), и то же состояние, которое подсказка
- * покажет, человек в этой ячейке и так может напечатать и запустить.
+ * The sheet is the only cell in which a student is told to write code: that
+ * is what the council is opened for. In a lecture room (`run: 'host'`) the
+ * old rule refused it to everyone, and refused silently: names came from the
+ * words of the cell itself, while the columns of the real `df`, for which the
+ * task is given, did not. There is no bypass of the rule here: the attempt is
+ * computed in the kernel of ITS OWN notebook anyway (`council:run` with the
+ * teacher's knob), and the same state that a hint would show the person can
+ * type and run in this cell anyway.
  *
- * Имя ячейки доверяется потому, что проверяется: замок читается из документа
- * комнаты, а не из кадра. Назвал чужую ячейку не в консилиуме — правило
- * прежнее; назвал ячейку в консилиуме — значит она в консилиуме у всех.
+ * The cell name is trusted because it is checked: the lock is read from the
+ * room's document, not from the frame. Named someone else's cell that is not
+ * in council — the old rule applies; named a cell in council — then it is in
+ * council for everyone.
  */
 /**
- * По каким листам подсказка сейчас в пути — `sessionId:cellId:participantId`.
+ * Which sheets a hint is currently on its way for —
+ * `sessionId:cellId:participantId`.
  *
- * Второе нажатие, пока первое идёт, — второй запрос к модели и вторая строка
- * расхода: кнопка гаснет на клиенте, но клиент здесь не единственный, кто
- * может прислать кадр. Память местная и умирает с процессом: незавершённый
- * запрос его не переживёт.
+ * A second press while the first is in progress is a second request to the
+ * model and a second spending line: the button goes dark on the client, but
+ * the client is not the only one here that can send a frame. The memory is
+ * local and dies with the process: an unfinished request will not survive it.
  */
 const hintsReading = new Set<string>()
 
@@ -2714,20 +2866,23 @@ function mayComplete(sessionId: string, payload: TokenPayload, cellId?: unknown)
 }
 
 /**
- * Может ли этот вопрос ПОДНЯТЬ ядро комнаты — то есть право нажать «Запустить».
+ * Whether this question may WAKE the room's kernel — that is, the right to
+ * press "Run".
  *
- * «Право = запуск» — и запуск в ТОЙ ТЕТРАДИ, где набирают. Иначе подсказки
- * молчали бы в собственной тетради студента посреди лекции: он там пишет и
- * считает, а дополнение отвечало бы пустотой, потому что комната закрыта.
+ * "Right = run" — and a run in THE NOTEBOOK where the typing happens.
+ * Otherwise hints would be silent in a student's own notebook in the middle
+ * of a lecture: they write and compute there, and completion would answer
+ * with emptiness because the room is closed.
  *
- * Отдельно от `mayComplete` ровно из-за одной развилки: тот пускает к подсказке
- * ещё и своего листа консилиума, где студент пишет код в лекционной комнате.
- * Читать состояние ядра оттуда можно, а ЗАВОДИТЬ комнате Python — нет: пуск
- * видит вся комната («запускается окружение») и греет машину на полторы
- * минуты. Кто нажимает Run, тот и будит.
+ * Separate from `mayComplete` because of exactly one fork: that one also lets
+ * one's own council sheet through to hints, where a student writes code in a
+ * lecture room. Reading the kernel state from there is allowed, but STARTING
+ * Python for the room is not: the start is seen by the whole room ("the
+ * environment is starting") and heats the machine for a minute and a half.
+ * Whoever presses Run is the one who wakes it.
  *
- * Законченное занятие сюда не попадает: `mayRunCell` спрашивают вместе с
- * `isFinished`, и в закрытой комнате ядро не поднимает уже никто.
+ * A finished class does not get here: `mayRunCell` is asked together with
+ * `isFinished`, and in a closed room nobody wakes the kernel any more.
  */
 function mayWake(sessionId: string, payload: TokenPayload, cellId?: unknown): boolean {
   const id = optionalId(cellId)
@@ -2736,19 +2891,23 @@ function mayWake(sessionId: string, payload: TokenPayload, cellId?: unknown): bo
 }
 
 /**
- * Шапка импортов тетради — строки `import …` из ячеек кода ВЫШЕ этой.
+ * The notebook's import header — the `import …` lines from code cells ABOVE
+ * this one.
  *
- * Нужна статическому разбору справки: jedi отвечает про `sns.lmplot`, только
- * если знает, что `sns` — это seaborn, а знать это в тетради неоткуда, кроме
- * ячейки с импортами. Область видимости в тетради — не ячейка, а ядро: шапка
- * ровно это и повторяет (kernel/inspect-static.ts · `importHeader`).
+ * Needed by the static help parsing: jedi answers about `sns.lmplot` only if
+ * it knows that `sns` is seaborn, and in a notebook there is nowhere to know
+ * that from except the cell with the imports. The scope in a notebook is not
+ * the cell but the kernel: the header repeats exactly that
+ * (kernel/inspect-static.ts · `importHeader`).
  *
- * Выше — и только выше: тетрадь читают и запускают сверху вниз, и импорт,
- * написанный ниже места, где набирают, в этот момент ещё ничего не значит.
+ * Above — and only above: a notebook is read and run from top to bottom, and
+ * an import written below the place where the typing happens means nothing
+ * yet at that moment.
  *
- * И только СВОЕЙ тетради. Ядер теперь столько, сколько тетрадей, и шапка,
- * собранная по соседней, рассказала бы jedi про импорты, которых в этом Python
- * нет вовсе: корень приезжает сюда тот же, которым выбрано ядро.
+ * And only of ONE'S OWN notebook. There are now as many kernels as
+ * notebooks, and a header collected from a neighbouring one would tell jedi
+ * about imports that do not exist in this Python at all: the root arriving
+ * here is the same one the kernel was chosen by.
  */
 function importsAbove(sessionId: string, root: string, cell: string | undefined): string {
   if (!cell) return ''
@@ -2768,25 +2927,26 @@ function importsAbove(sessionId: string, root: string, cell: string | undefined)
 }
 
 /**
- * Спросить ядро и ответить — или ответить пустым, что бы ни случилось.
+ * Ask the kernel and answer — or answer empty, whatever happens.
  *
- * Пустой ответ на КАЖДУЮ беду: нет права, нет ядра, ядро занято, вопросов
- * больше позволенного, ядро бросило. Обещание на той стороне должно
- * разрешиться всегда.
+ * An empty answer for EVERY trouble: no right, no kernel, the kernel is busy,
+ * more questions than allowed, the kernel threw. The promise on the other
+ * side must always resolve.
  *
- * У ДОПОЛНЕНИЯ пустой ответ к тому же безмолвный, и это правило: список
- * спрашивается на каждую букву, и тост «здесь запускает преподаватель» на
- * каждую набранную точку — наказание за печатание. А у СПРАВКИ с 19.09 к
- * пустому ответу прилагается причина (`inspect:reply.reason`): её спрашивают
- * наведением, то есть осознанно и по одному разу, и молчание в ответ на жест
- * читается как поломка — «она не всегда появляется». Причина едет одним словом
- * (protocol.ts · `InspectMiss`), а слова к ней подбирает клиент: тексты живут
- * на языке комнаты, а не на языке сервера.
+ * For COMPLETION the empty answer is also silent, and that is the rule: the
+ * list is asked for on every letter, and a toast "the teacher runs cells
+ * here" on every typed dot is a punishment for typing. But for HELP, since
+ * 19 Sep 2026, a reason comes with the empty answer (`inspect:reply.reason`):
+ * it is asked for by hovering, that is, deliberately and once at a time, and
+ * silence in response to a gesture reads as breakage — "it does not always
+ * appear". The reason travels as one word (protocol.ts · `InspectMiss`), and
+ * the client picks the words for it: the texts live in the room's language,
+ * not the server's.
  *
- * В журнал занятия не пишется ничего. Журнал — это то, что человек СДЕЛАЛ
- * («запустил ячейку», «открыл терминал»); нажатая точка — не поступок, а
- * тысяча строк «спросил дополнение» за пару похоронила бы в нём всё
- * остальное.
+ * Nothing is written into the class log. The log is what a person DID ("ran
+ * a cell", "opened the terminal"); a typed dot is not an action, and a
+ * thousand "asked for completion" lines per class period would bury
+ * everything else in it.
  */
 function askKernel(
   ws: WebSocket,
@@ -2796,7 +2956,10 @@ function askKernel(
 ): void {
   const id = message.id
   if (typeof id !== 'number' || !Number.isFinite(id)) return
-  /** Отказ до всякого похода к ядру: причина у него одна — «спрашивать было нельзя». */
+  /**
+   * A refusal before any trip to the kernel: it has one reason — "asking was
+   * not allowed".
+   */
   const empty: ControlServerMessage =
     message.t === 'complete'
       ? { t: 'complete:reply', id, matches: [], start: 0, end: 0 }
@@ -2811,17 +2974,18 @@ function askKernel(
   }
   const { code, cursor } = trimToCursor(message.code, message.cursor)
   /*
-   * Спрашиваем ядро ТОЙ тетради, в которой набирают.
+   * We ask the kernel of THE notebook where the typing happens.
    *
-   * Ядер теперь столько, сколько тетрадей, и дополнение обязано знать про
-   * переменные своего листа: `df.` в семинаре — это `df` семинара, а не тот,
-   * что преподаватель загрузил на лекции. Кадр называет ячейку; ячейка — свою
-   * тетрадь. Ячейки нет (пишут в пустом месте) — тетрадь комнаты, как раньше.
+   * There are now as many kernels as notebooks, and completion must know
+   * about the variables of its own sheet: `df.` in a seminar is the seminar's
+   * `df`, not the one the teacher loaded in the lecture. The frame names the
+   * cell; the cell names its notebook. No cell (typing in an empty place) —
+   * the room's notebook, as before.
    *
-   * Той же тетрадью меряется и всё остальное, что знает эта дверь: право
-   * поднять ядро (`mayWake`) и шапка импортов для статического разбора
-   * (`importsAbove`). Спросить одну тетрадь, а ответить по другой — самый
-   * тихий способ показать человеку чужие переменные.
+   * Everything else this door knows is measured by the same notebook: the
+   * right to wake the kernel (`mayWake`) and the import header for static
+   * parsing (`importsAbove`). Asking one notebook and answering by another is
+   * the quietest way to show a person someone else's variables.
    */
   const askRoot = (message.cellId ? rootOf(sessionId, message.cellId) : null) ?? CELLS_KEY
   const wake = mayWake(sessionId, payload, message.cellId)
@@ -2845,12 +3009,12 @@ function askKernel(
     return
   }
   /*
-   * Вопрос про ЗНАЧЕНИЕ — своя короткая дорога.
+   * A question about a VALUE — a short road of its own.
    *
-   * Ни справки, ни подъёма ядра, ни статического разбора: тип и размер
-   * объекта, который в ядре уже лежит. Нет ядра или оно занято — ответ пуст, и
-   * клиент молчит: про переменную либо есть мгновенный ответ, либо ничего
-   * (kernel/index.ts · `briefIn`).
+   * No help, no waking the kernel, no static parsing: the type and size of an
+   * object that already lies in the kernel. No kernel or it is busy — the
+   * answer is empty, and the client stays silent: about a variable there is
+   * either an instant answer or nothing (kernel/index.ts · `briefIn`).
    */
   if (message.brief === true) {
     void briefIn(sessionId, nameChainAt(code, cursor), askRoot)
@@ -2879,20 +3043,22 @@ function askKernel(
 }
 
 /**
- * Двадцать четыре килобайта ВОКРУГ каретки — тот же потолок, что у соседей, и
- * стоит он здесь по тому же поводу: клиент режет у себя (session.svelte.ts ·
- * windowAroundCursor), а сервер режет ещё раз, потому что клиент не
- * единственный, кто умеет открыть этот сокет.
+ * Twenty-four kilobytes AROUND the caret — the same ceiling as the
+ * neighbours', and it stands here for the same reason: the client cuts on its
+ * side (session.svelte.ts · windowAroundCursor), and the server cuts once
+ * more, because the client is not the only one who can open this socket.
  *
- * Но режется иначе, и это единственная развилка на всю дорогу. Дополнению
- * довольно текста ДО каретки, а определение почти всегда стоит НИЖЕ места,
- * откуда по нему щёлкнули: `helper()` в третьей строке при `def helper()` в
- * тридцатой — обычная ячейка, обратный порядок — редкость. Обрезав хвост, как
- * `trimToCursor`, сервер честно отвечал бы «не нашлось, где определено» ровно
- * там, где переход нужнее всего, — в длинном файле.
+ * But it is cut differently, and that is the only fork on the whole road.
+ * Completion needs only the text BEFORE the caret, while a definition almost
+ * always stands BELOW the place it was clicked from: `helper()` on the third
+ * line with `def helper()` on the thirtieth is an ordinary cell, the reverse
+ * order is a rarity. Cutting off the tail like `trimToCursor`, the server
+ * would honestly answer "could not find where it is defined" exactly where
+ * the jump is needed most — in a long file.
  *
- * Курсор переезжает ровно на столько, сколько срезано слева: разъехавшись на
- * символ, разбор взял бы ДРУГОЕ имя — и увёл бы уверенно и не туда.
+ * The cursor moves by exactly as much as was cut on the left: off by one
+ * character, the parser would take a DIFFERENT name — and lead confidently
+ * in the wrong direction.
  */
 function windowAround(code: string, cursor: number): { code: string; cursor: number; from: number } {
   const at = Math.max(0, Math.min(cursor, code.length))
@@ -2903,28 +3069,31 @@ function windowAround(code: string, cursor: number): { code: string; cursor: num
 }
 
 /**
- * Где это определено — третий вопрос той же формы и единственный, на который
- * отвечает не ядро.
+ * Where this is defined — the third question of the same shape and the only
+ * one answered not by the kernel.
  *
- * ПРАВА здесь не спрашиваются, и это решение, а не пропуск. `mayComplete` у
- * соседей — про чтение состояния ЖИВОГО ядра: по `df.` видно переменные
- * преподавателя, по `_` — что он считал последним, и в лекционной комнате это
- * его и только его. Переход к определению не трогает ядро вовсе: он читает
- * документ комнаты и .py-файлы её папки — то самое, что каждый участник и так
- * видит в тетради и в панели файлов, и читает через CRDT без всякого спроса.
- * Поставить сюда `mayComplete` значило бы погасить переход всей группе в
- * лекции — за чтение того, что у них и так открыто на экране.
+ * RIGHTS are not asked here, and that is a decision, not an omission. The
+ * neighbours' `mayComplete` is about reading the state of the LIVE kernel:
+ * `df.` shows the teacher's variables, `_` shows what they computed last, and
+ * in a lecture room that is theirs and theirs alone. Jumping to a definition
+ * does not touch the kernel at all: it reads the room's document and the .py
+ * files of its folder — exactly what every participant already sees in the
+ * notebook and the files panel, and reads through the CRDT without asking
+ * anyone. Putting `mayComplete` here would mean turning off the jump for the
+ * whole group in a lecture — for reading what they already have open on
+ * screen.
  *
- * Ведро `mayAsk` переиспользуется как есть. Щелчок редок, и человеку это ведро
- * не помеха; но кадр в сокет умеет слать не только редактор, а каждый такой
- * вопрос — это обход папки семинара и разбор до восьмидесяти файлов
- * (definitions.ts · MAX_FILES_READ). `askDone` тут же, в `finally`: ядра никто
- * не ждёт, ответ считается здесь и сейчас, и держать место «в полёте» не за
- * чем — иначе пятый щелчок подряд отказывал бы навсегда.
+ * The `mayAsk` bucket is reused as is. A click is rare, and the bucket is no
+ * hindrance to a person; but frames into the socket can be sent not only by
+ * the editor, and each such question is a walk of the seminar folder and
+ * parsing of up to eighty files (definitions.ts · MAX_FILES_READ). `askDone`
+ * is right there, in `finally`: nobody waits for a kernel, the answer is
+ * computed here and now, and there is no reason to hold a place "in flight"
+ * — otherwise the fifth click in a row would refuse forever.
  *
- * В журнал занятия не пишется ничего — по тому же доводу, что у дополнения:
- * журнал про поступки, а прочитать, где определена функция, поступком не
- * является.
+ * Nothing is written into the class log — by the same argument as for
+ * completion: the log is about actions, and reading where a function is
+ * defined is not an action.
  */
 function answerDefine(
   ws: WebSocket,
@@ -2934,11 +3103,12 @@ function answerDefine(
   const id = message.id
   if (typeof id !== 'number' || !Number.isFinite(id)) return
   /*
-   * Ответ на всякую беду — `nothing`, а не молчание: обещание на той стороне
-   * обязано разрешиться. И именно `nothing`, потому что его одного клиент
-   * проживает МОЛЧА (goto.svelte.ts · words): там, где сервер отказал по
-   * ведру или не разобрал кадр, человеку сказать нечего — жест он сделал
-   * правильный, объяснять ему нечего.
+   * The answer to any trouble is `nothing`, not silence: the promise on the
+   * other side must resolve. And precisely `nothing`, because it is the only
+   * one the client lives through SILENTLY (goto.svelte.ts · words): where the
+   * server refused because of the bucket or could not parse the frame, there
+   * is nothing to tell the person — they made the right gesture, and there is
+   * nothing to explain to them.
    */
   const nothing: ControlServerMessage = { t: 'define:reply', id, miss: { why: 'nothing' } }
   if (typeof message.code !== 'string' || typeof message.cursor !== 'number') {
@@ -2952,10 +3122,11 @@ function answerDefine(
   try {
     const { code, cursor, from } = windowAround(message.code, message.cursor)
     /*
-     * Срез складывается: клиент мог отрезать своё окно (session.svelte.ts ·
-     * windowAroundCursor), а здесь режется второй раз — от чужого клиента,
-     * который потолка не знает. Строки считаются от НАЧАЛА ИСХОДНИКА, и оба
-     * среза обязаны доехать до `defineIn` одним числом.
+     * The cuts add up: the client may have cut its window
+     * (session.svelte.ts · windowAroundCursor), and here it is cut a second
+     * time — for a foreign client that does not know the ceiling. Lines are
+     * counted from the START OF THE SOURCE, and both cuts must reach
+     * `defineIn` as one number.
      */
     const cut =
       (typeof message.from === 'number' && Number.isFinite(message.from) && message.from > 0
@@ -2969,10 +3140,11 @@ function answerDefine(
     const answer = defineIn(sessionId, code, cursor, cellId, path, cut)
     send(ws, { t: 'define:reply', id, ...answer })
   } catch (error) {
-    // Разбор чужого кода — место, где ошибиться можно на любом углу, а цена
-    // такой ошибки не должна быть «упал сокет комнаты». Молчаливый `nothing`
-    // и строка в консоль: человеку переход просто не сработал.
-    if (seldom('define-failed')) console.warn('[control] переход к определению не удался:', error)
+    // Parsing someone else's code is a place where one can go wrong at every
+    // corner, and the price of such a mistake must not be "the room's socket
+    // fell". A silent `nothing` and a line in the console: for the person the
+    // jump simply did not work.
+    if (seldom('define-failed')) console.warn('[control] jump to definition failed:', error)
     send(ws, nothing)
   } finally {
     askDone(ws)
@@ -2980,11 +3152,11 @@ function answerDefine(
 }
 
 /**
- * Разбор одного сообщения управляющего сокета.
+ * Parsing one control socket message.
  *
- * Экспортируется ради теста: таблица прав живёт здесь, и проверять её через
- * настоящий сокет значило бы поднимать ядро ради того, чтобы убедиться, что до
- * ядра не дошло. Каждый отказ отвечает раньше всякого действия.
+ * Exported for the test's sake: the rights table lives here, and checking it
+ * through a real socket would mean starting a kernel just to make sure it
+ * was not reached. Every refusal answers before any action.
  */
 export function dispatch(
   ws: WebSocket,
@@ -2994,14 +3166,16 @@ export function dispatch(
 ): void {
   switch (message.t) {
     case 'ping':
-      // Пульс раз в 25 секунд — и заодно самый частый повод заметить ячейку,
-      // которую документ считает работающей, а сервер о ней не знает. Это то,
-      // что ограничивает жизнь такого призрака одним ударом пульса, а не
-      // «пока кто-нибудь что-нибудь не нажмёт». Проход читает по одному ключу
-      // на ячейку и пишет только там, где документ неправ.
+      // A pulse every 25 seconds — and also the most frequent occasion to
+      // notice a cell that the document considers running while the server
+      // knows nothing about it. This is what limits the life of such a ghost
+      // to one pulse beat, rather than "until somebody presses something".
+      // The pass reads one key per cell and writes only where the document is
+      // wrong.
       sweepOrphanRuns(sessionId)
-      // Часы сервера в ответ: по ним браузер считает свою поправку и не
-      // показывает «40.0s» на только что запущенной ячейке. См. session.svelte.ts.
+      // The server's clock in response: the browser computes its correction
+      // from it and does not show "40.0s" on a cell that has just been
+      // started. See session.svelte.ts.
       send(ws, { t: 'pong', now: Date.now() })
       return
 
@@ -3009,10 +3183,11 @@ export function dispatch(
       const id = optionalId(message.cellId)
       if (!id) return
       /*
-       * Про ячейку спрашиваем РАНЬШЕ, чем про право: открытый замок и есть то,
-       * что делает этот запуск разрешённым, а узнать о нём можно только в
-       * документе. Проверка стояла до всякого знания о ячейке и потому не
-       * могла его учесть. Отказ при этом остался одной фразой — той же самой.
+       * We ask about the cell BEFORE asking about the right: an open lock is
+       * exactly what makes this run allowed, and it can only be learned from
+       * the document. The check used to stand before any knowledge of the
+       * cell and so could not take it into account. The refusal remained one
+       * phrase — the same one.
        */
       if (
         !mayRun(
@@ -3021,7 +3196,8 @@ export function dispatch(
           ws,
           RUN_IS_THE_TEACHERS(),
           cellIsOpen(sessionId, id),
-          // И тетрадь этой ячейки: у личной свой ответ на «кто здесь запускает».
+          // And this cell's notebook: a personal one has its own answer to
+          // "who runs here".
           rootOf(sessionId, id),
         )
       ) {
@@ -3032,9 +3208,10 @@ export function dispatch(
     }
 
     /*
-     * Дополнение и справка — единственные два кадра пульта, которые приходят
-     * на нажатие КЛАВИШИ, а не на нажатие кнопки. Поэтому у них своя дверь с
-     * ведром, ответ в классе «можно потерять», и ни строки в журнале занятия.
+     * Completion and help are the only two console frames that arrive on a
+     * KEYSTROKE rather than on a button press. So they have their own door
+     * with a bucket, an answer in the "may be lost" class, and not a line in
+     * the class log.
      */
     case 'complete':
     case 'inspect':
@@ -3042,9 +3219,10 @@ export function dispatch(
       return
 
     /*
-     * Переход к определению — третий кадр той же формы, но своей дверью: он не
-     * идёт в ядро вовсе, отвечается синхронно и стоит не на праве запускать, а
-     * на праве читать комнату. Всё это — в `answerDefine`.
+     * Jumping to a definition is a third frame of the same shape, but with
+     * its own door: it does not go to the kernel at all, is answered
+     * synchronously and rests not on the right to run but on the right to
+     * read the room. All of this is in `answerDefine`.
      */
     case 'define':
       answerDefine(ws, sessionId, message)
@@ -3061,10 +3239,11 @@ export function dispatch(
 
     case 'runAll': {
       /*
-       * Тетрадь — раньше права, и это тот же порядок, что у `run` выше: право
-       * запускать здесь решает не только комната, но и доступ к НАЗВАННОЙ
-       * тетради, а узнать его можно, только разыскав её корень. Названная и
-       * несуществующая отвечает своей фразой, а не правилами комнаты.
+       * The notebook comes before the right, and that is the same order as
+       * for `run` above: the right to run here is decided not only by the
+       * room but also by access to the NAMED notebook, and that can only be
+       * learned by finding its root. A named and nonexistent one answers with
+       * its own phrase, not with the room's rules.
        */
       const book = bookOf(message)
       const root = rootOfBook(sessionId, book)
@@ -3086,7 +3265,7 @@ export function dispatch(
     case 'runAbove': {
       const id = optionalId(message.cellId)
       if (!id) return
-      // По тетради, в которой нажали, — тот же довод, что у Run All.
+      // By the notebook where it was pressed — the same argument as for Run All.
       const book = bookOf(message)
       const root = rootOfBook(sessionId, book)
       if (book && root === null) {
@@ -3106,12 +3285,13 @@ export function dispatch(
 
     case 'interrupt': {
       /*
-       * Какую тетрадь останавливаем.
+       * Which notebook we are stopping.
        *
-       * Названная ячейка сильнее имени листа: она и есть та работа, ради
-       * которой нажали, а лист приезжает из вкладки, которая в этот момент
-       * открыта. Без обоих — тетрадь комнаты, то есть прежнее поведение кадра
-       * от вкладки, открытой до появления нескольких ядер.
+       * A named cell outranks the sheet name: it is the very work the press
+       * was for, while the sheet comes from the tab that is open at that
+       * moment. Without either — the room's notebook, that is, the old
+       * behaviour of a frame from a tab opened before there were several
+       * kernels.
        */
       const stopBook = bookOf(message)
       const stopRoot = rootOfBook(sessionId, stopBook)
@@ -3126,10 +3306,10 @@ export function dispatch(
        * at a time in a notebook, and a seminar with no teacher in the room
        * otherwise has no way at all to end a loop that will not end itself.
        *
-       * Право спрашивается про ВСЁ занятие, а не про названную тетрадь:
-       * человек, у которого считается ячейка в семинаре, остаётся хозяином
-       * своей работы, какую бы вкладку ни держал открытой. Тетрадь решает, что
-       * именно остановится, — не кто вправе нажать.
+       * The right is asked about the WHOLE class, not about the named
+       * notebook: a person who has a cell being computed in the seminar stays
+       * the master of their own work, whichever tab they keep open. The
+       * notebook decides what exactly stops — not who is entitled to press.
        *
        * By participant id, not by name — two students called Anna are two
        * people, and a name is not a credential.
@@ -3144,22 +3324,23 @@ export function dispatch(
         return
       }
       /*
-       * Нажатие на ячейке называет свою цель, комнатное — нет.
+       * A press on a cell names its target, a room-wide one does not.
        *
-       * Кнопка на ячейке нарисована по состоянию документа, а документ отстаёт
-       * от сервера на круг: нажатие в промежутке между двумя ячейками Run All
-       * попадало в ветку «ничего не выполняется» и выносило очередь всей
-       * комнаты. Право проверено выше и по-прежнему по среде исполнения, а не
-       * по документу: имя цели ничего не разрешает, оно только уточняет.
+       * The button on a cell is drawn from the document's state, and the
+       * document lags one round trip behind the server: a press in the gap
+       * between two Run All cells fell into the "nothing is running" branch
+       * and wiped out the queue of the whole room. The right is checked above
+       * and still by the execution environment, not by the document: the
+       * target's name permits nothing, it only narrows.
        */
       /*
-       * Безымянное нажатие выносит очередь целиком — включая пачки, которые
-       * поставили туда другие, под тем же правом, что и «остановить свою
-       * ячейку». Это не право, а поведение: у себя останавливай что угодно,
-       * чужие пачки не трогай.
+       * A nameless press wipes out the queue whole — including batches others
+       * put there, under the same right as "stop your own cell". That is not
+       * a right but a behaviour: stop anything of your own, do not touch
+       * other people's batches.
        */
       const target = optionalId(message.cellId)
-      // Очередь разбирается у ОДНОЙ тетради — у неё и спрашиваем, чья она.
+      // The queue is cleared for ONE notebook — so we ask that one whose it is.
       if (!target && payload.role !== 'host' && !queueIsOnly(sessionId, payload.participantId, here)) {
         send(ws, {
           t: 'error',
@@ -3180,8 +3361,9 @@ export function dispatch(
 
     case 'restart': {
       /*
-       * Перезапуск уносит переменные ОДНОЙ тетради — той, что названа; без
-       * имени — тетради комнаты, как у вкладки, открытой до выкатки.
+       * A restart takes away the variables of ONE notebook — the named one;
+       * without a name, the room's notebook, as with a tab opened before the
+       * rollout.
        */
       const restartBook = bookOf(message)
       const restartRoot = rootOfBook(sessionId, restartBook)
@@ -3190,14 +3372,15 @@ export function dispatch(
         return
       }
       /*
-       * Право — по ТЕТРАДИ, а не только по комнате.
+       * The right is by NOTEBOOK, not only by room.
        *
-       * По умолчанию перезапуск преподавательский: он сбрасывает переменные
-       * занятия, и комната, где работают вдвоём, вправе решить иначе. Но в
-       * личной тетради студента ядро своё и переменные свои, и спрашивать на
-       * них преподавателя — значит поднимать руку посреди лекции, чтобы заново
-       * объявить `x` в собственном черновике. Развилка живёт в одном месте
-       * (shared/rules.ts · rulesForBook), и здесь мы просто её спрашиваем.
+       * By default restart belongs to the teacher: it resets the class's
+       * variables, and a room where two people work is entitled to decide
+       * otherwise. But in a student's personal notebook the kernel is its own
+       * and the variables are its own, and asking the teacher about them
+       * means raising a hand in the middle of a lecture to redeclare `x` in
+       * one's own draft. The fork lives in one place (shared/rules.ts ·
+       * rulesForBook), and here we simply ask it.
        */
       if (
         !may(
@@ -3229,16 +3412,18 @@ export function dispatch(
 
     case 'clearOutputs': {
       /*
-       * Своя ячейка и вся доска — разные действия, и правила у них разные.
-       * Иначе «стирать всё — преподавателю» запрещало бы студенту прибрать за
-       * собой в собственной ячейке, чего никто не имел в виду.
+       * One's own cell and the whole board are different actions, and their
+       * rules are different. Otherwise "erasing everything is the teacher's"
+       * would forbid a student to tidy up after themselves in their own cell,
+       * which nobody meant.
        */
       const one = optionalId(message.cellId)
       const book = bookOf(message)
       /*
-       * Названная тетрадь обязана существовать: ниже неизвестный путь означает
-       * «тетрадь не названа», а это стёртые выводы ВСЕХ тетрадей комнаты —
-       * полтора часа счёта, снятые нажатием в закрывающейся вкладке.
+       * A named notebook must exist: below, an unknown path means "no
+       * notebook named", and that is erased outputs of ALL the room's
+       * notebooks — an hour and a half of computation, removed by a press in a
+       * closing tab.
        */
       const wipeRoot = rootOfBook(sessionId, book)
       if (book && wipeRoot === null) {
@@ -3246,14 +3431,15 @@ export function dispatch(
         return
       }
       /*
-       * У своей ячейки — то же право, что у набора в ней, ЗАМОК ВКЛЮЧАЯ.
-       * Открытая преподавателем ячейка — это «здесь комната работает»: зал в
-       * ней печатает и запускает, а на «стереть вывод» читал отказ про
-       * тетрадь, которую ему только что открыли, — про свой же трейсбек на
-       * пол-экрана.
+       * For one's own cell — the same right as for typing in it, THE LOCK
+       * INCLUDED. A cell opened by the teacher means "the room works here":
+       * the hall types and runs in it, and on "clear output" read a refusal
+       * about the notebook that had just been opened to them — about their
+       * own half-screen traceback.
        *
-       * У целого листа — право ТОЙ тетради: в личной вывод собственный, и
-       * стирает его автор (shared/rules.ts · rulesForBook).
+       * For the whole sheet — the right of THAT notebook: in a personal one
+       * the output is one's own, and its author erases it (shared/rules.ts ·
+       * rulesForBook).
        */
       const allowed = one
         ? mayEditThis(sessionId, payload, ws, one)
@@ -3270,10 +3456,11 @@ export function dispatch(
     }
 
     /**
-     * Поставить документ на общий экран.
+     * Put a document on the shared screen.
      *
-     * Смотреть и листать самому может любой всегда — файл комнаты и так
-     * скачивается кем угодно из неё. Право здесь про другое: про общий экран.
+     * Anyone may always look and flip pages themselves — the room's file can
+     * be downloaded by anyone in it anyway. The right here is about something
+     * else: about the shared screen.
      */
     case 'board:open': {
       if (
@@ -3290,10 +3477,10 @@ export function dispatch(
       const name = normalizePath(typeof message.name === 'string' ? message.name : '') ?? ''
       if (lectureInTheWay(sessionId, payload, ws, name)) return
       /*
-       * Существование проверяется здесь, а не у смотрящего: иначе комната
-       * получит имя, которого нет, и двадцать человек увидят пустую область.
-       * Спрашивается сам путь: в дереве его может не быть просто потому, что
-       * список упёрся в потолок, а документ на диске лежит.
+       * Existence is checked here, not by the viewer: otherwise the room gets
+       * a name that does not exist, and twenty people see an empty area. The
+       * path itself is asked: it may be absent from the tree simply because
+       * the list hit the ceiling, while the document lies on disk.
        */
       if (!name || statPath(sessionId, name)?.dir !== false) {
         send(ws, { t: 'error', message: tr("server.thisFileIsNotInTheRoom.f557d3") })
@@ -3320,21 +3507,23 @@ export function dispatch(
       return
     }
 
-    /* ----------------------------------------------------------- занятие */
+    /* ------------------------------------------------------------- class */
 
     /**
-     * Закончить занятие — и открыть его обратно.
+     * End the class — and open it back up.
      *
-     * Комната от этого не закрывается: тетрадь, файлы, лента терминала и
-     * ответы оракула остаются открытыми на чтение — после пары в них и ходят.
-     * Закрываются действия, и закрываются сами: проверки прав спрашивают
-     * действующие правила, а те после конца занятия преподавательские
+     * The room does not close because of this: the notebook, the files, the
+     * terminal feed and the Oracle's answers stay open for reading — that is
+     * what people come to them for after class. Actions are closed, and they
+     * close by themselves: rights checks ask for the effective rules, and
+     * after the end of class those are the teacher's
      * (shared/rules.ts · rulesAfterClass).
      *
-     * Лекцию при этом не гасим: сорок минут разметки живут только в памяти, и
-     * терять их нажатием «Закончить занятие» — потеря работы, а зрителем в
-     * лекции участник и так был. И ядро не гасим: преподаватель после пары ещё
-     * считает, холодный старт стоит минуты, а простаивающее приберёт уборка.
+     * We do not turn off the lecture: forty minutes of markup live only in
+     * memory, and losing them with a press of "End class" is a loss of work,
+     * while the participant was a viewer in the lecture anyway. And we do not
+     * turn off the kernel: the teacher still computes after class, a cold
+     * start costs a minute, and an idle one will be tidied up by the cleanup.
      */
     case 'class:finish':
     case 'class:resume': {
@@ -3351,9 +3540,10 @@ export function dispatch(
         return
       }
       /*
-       * Второе нажатие — не ошибка: у преподавателя открыты две вкладки, и на
-       * второй кнопка та же. Но и не новое время — «закончено в 15:40» не
-       * должно переезжать на 16:10 оттого, что по кнопке попали ещё раз.
+       * A second press is not an error: the teacher has two tabs open, and on
+       * the second the button is the same. But it is not a new time either —
+       * "ended at 15:40" must not move to 16:10 because the button was hit
+       * once more.
        */
       if (finish === (finishedAt(sessionId) !== null)) return
       const at = finish ? Date.now() : null
@@ -3361,30 +3551,33 @@ export function dispatch(
       appendActivity(sessionId, payload.participantId, finish ? 'class.finished' : 'class.resumed', {}, payload.role)
       broadcast(sessionId, { t: 'class', finishedAt: at })
       /*
-       * И оборвать идущий ход оракула — там же, где его обрывают стирание
-       * треда и удаление семинара. Иначе он ещё десяток шагов правит файлы в
-       * комнате, где всем остальным уже только читать.
+       * And cut off the Oracle's running turn — in the same place where it is
+       * cut off by erasing the thread and deleting the seminar. Otherwise it
+       * would edit files for another dozen steps in a room where everyone else
+       * is read-only by now.
        *
-       * А очередь ячеек, поставленная до звонка, доводится до конца — и это не
-       * непоследовательность. Ход обрывается ровно потому, что он ПРАВИТ ФАЙЛЫ
-       * дальше: каждый следующий его шаг переписывает комнату уже после звонка.
-       * Ячейка не переписывает ничего — она досчитывает то, что человек
-       * запустил, пока было можно, и её вывод как раз и есть то, за чем в
-       * комнату приходят после пары. Начатое доводится, начать — уже нельзя.
+       * The queue of cells set before the bell, however, is carried through to
+       * the end — and that is not an inconsistency. The turn is cut off
+       * precisely because it keeps EDITING FILES: each of its next steps
+       * rewrites the room after the bell. A cell rewrites nothing — it
+       * finishes computing what a person started while it was allowed, and its
+       * output is exactly what people come to the room for after class. What
+       * has started is carried through; starting is no longer allowed.
        */
       if (finish) stopAll(sessionId)
       return
     }
 
-    /* ------------------------------------------------------------ лекция */
+    /* ----------------------------------------------------------- lecture */
 
     /**
-     * Начать лекцию.
+     * Start a lecture.
      *
-     * Право то же, что у общего экрана: ставить документ перед всей комнатой.
-     * Ведущий один — тот, кто начал; вторая попытка перехватывает пульт, и это
-     * намеренно: двое преподавателей в комнате — обычное дело, а спорить о том,
-     * чей планшет главный, посреди пары невозможно.
+     * The right is the same as for the shared screen: putting a document in
+     * front of the whole room. There is one presenter — whoever started; a
+     * second attempt takes over the console, and that is intentional: two
+     * teachers in a room is common, and arguing about whose tablet is the
+     * main one in the middle of a class period is impossible.
      */
     case 'lecture:start': {
       if (
@@ -3408,41 +3601,47 @@ export function dispatch(
         return
       }
       /*
-       * Та же лекция, но другими руками — это ПЕРЕДАЧА пульта, а не начало.
+       * The same lecture but in other hands is a HANDOVER of the console, not
+       * a start.
        *
-       * Второму преподавателю нечем сказать «возьму управление»: кнопка «взять
-       * пульт» шлёт тот же `lecture:start` по тому же файлу. Провалившись
-       * дальше, оно ушло бы в `startLecture` и стёрло бы всё, ради чего пульт и
-       * берут: страницу вернуло бы на первую, чернила — все до одного, часы
-       * лекции — в ноль. Сорок минут разметки, стёртые нажатием «перехватить»,
-       * и стёртые на проекторе при всех.
+       * A second teacher has no way to say "I'll take control": the "Take
+       * control" button sends the same `lecture:start` for the same file.
+       * Falling through, it would go into `startLecture` and erase everything
+       * the console is taken for: the page would go back to the first one, the
+       * ink — every last stroke, the lecture clock — to zero. Forty minutes of
+       * markup erased by pressing "take over", and erased on the projector in
+       * front of everyone.
        *
-       * Только когда ведёт КТО-ТО ДРУГОЙ: то же нажатие своего же пульта — это
-       * «начать заново», и заново значит начисто. Общий экран здесь не трогаем
-       * — документ на нём уже стоит, это та же лекция.
+       * Only when SOMEONE ELSE is presenting: the same press on one's own
+       * console means "start over", and over means from scratch. The shared
+       * screen is not touched here — the document is already on it, it is the
+       * same lecture.
        */
       const going = lectureOf(sessionId)
       if (going && going.file === wanted && going.by === payload.participantId) {
         /*
-         * Свой же документ своими же руками — это НИЧЕГО.
+         * One's own document in one's own hands is NOTHING.
          *
-         * «Ещё → сменить документ» показывает все PDF комнаты, и тот, что идёт
-         * сейчас, стоит в том же ряду. Нажатие по нему читается как «убедиться,
-         * что открыт правильный», а не как «начать заново начисто» — а стоило
-         * бы это сорока минутами разметки и часами лекции, стёртыми на
-         * проекторе при всех. Начать заново — это закончить и начать: два
-         * нажатия, второе из которых человек делает уже осознанно.
+         * "More → Change document" shows all the room's PDFs, and the one
+         * running now stands in the same row. A press on it reads as "make
+         * sure the right one is open", not as "start over from scratch" — and
+         * it would cost forty minutes of markup and the lecture clock, erased
+         * on the projector in front of everyone. Starting over means ending
+         * and starting: two presses, the second of which a person makes
+         * deliberately.
          */
         return
       }
       if (going && going.file === wanted) {
         /*
-         * Взять пульт у другого — дело преподавателя, а не правила `board`.
+         * Taking the console from someone else is the teacher's business, not
+         * the `board` rule's.
          *
-         * Правило решает, кому ставить документ залу; забрать управление у
-         * того, кто уже ведёт, — другой поступок, и в открытой комнате, где
-         * доску ставит любой, он означал бы, что студент посреди пары молча
-         * забирает страницу, чернила и указку себе.
+         * The rule decides who may put a document before the hall; taking
+         * control away from whoever is already presenting is a different act,
+         * and in an open room where anyone puts up the board it would mean a
+         * student silently taking the page, the ink and the pointer for
+         * themselves in the middle of class.
          */
         if (payload.role !== 'host') {
           refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayTakeOverThe.31823b"))
@@ -3457,27 +3656,30 @@ export function dispatch(
         )
         if (taken) {
           broadcast(sessionId, { t: 'lecture', state: taken })
-          // Рука сменилась: пятно прежнего ведущего залу больше ничего не
-          // показывает, а само оно не погаснет — он уже не шлёт кадров.
+          // The hand changed: the previous presenter's spot no longer shows
+          // the hall anything, and it will not go out by itself — they no
+          // longer send frames.
           laserOff(sessionId)
           return
         }
       }
       /*
-       * Дальше — начать НОВУЮ лекцию по другому документу, а идущая при этом
-       * кончается. Менять документ залу вправе только тот, кто ведёт: для всех
-       * остальных, включая второго преподавателя, это стёртые чернила чужой
-       * лекции без предупреждения и без возврата. Им — «Закончить» и потом
-       * «Лекция»: два нажатия, второе из которых делают осознанно.
+       * Next — start a NEW lecture on another document, and the running one
+       * ends. Only whoever is presenting is entitled to change the document
+       * for the hall: for everyone else, including a second teacher, it is
+       * the erased ink of someone else's lecture, with no warning and no way
+       * back. For them — "End" and then "Lecture": two presses, the second of
+       * which is made deliberately.
        */
       if (lectureInTheWay(sessionId, payload, ws, wanted)) return
       /*
-       * Лекция ставит документ и на общий экран — до того, как начаться.
+       * A lecture also puts its document on the shared screen — before it
+       * starts.
        *
-       * Не для красоты: правило «доска ушла — лекция кончилась» выше держится
-       * ровно на том, что это один и тот же файл. Порядок важен — setBoard
-       * успевает закрыть предыдущую лекцию, если она шла по другому документу,
-       * и только потом комната узнаёт о новой.
+       * Not for looks: the rule "the board went away — the lecture ended"
+       * above rests exactly on this being the same file. The order matters —
+       * setBoard manages to close the previous lecture if it ran on another
+       * document, and only then does the room learn about the new one.
        */
       setBoard(sessionId, wanted)
       const started = startLecture(sessionId, {
@@ -3488,12 +3690,13 @@ export function dispatch(
       })
       broadcast(sessionId, { t: 'lecture', state: started })
       /*
-       * Чистый лист — и опись к нему, хотя она пустая.
+       * A clean sheet — and an inventory for it, even though it is empty.
        *
-       * Опись едет рядом с КАЖДЫМ полным кадром `ink`, и здесь это важнее
-       * всего: она живёт у вкладки дольше самих чернил (по ней считаются
-       * листы в ленте), и опись прошлой лекции, не стёртая новой, заставила бы
-       * пульт держать её страницы пустыми листами.
+       * The inventory travels next to EVERY full `ink` frame, and here this
+       * matters most of all: it lives in the tab longer than the ink itself
+       * (the sheets in the strip are counted by it), and the previous
+       * lecture's inventory, not erased by the new one, would make the
+       * console keep its pages as blank sheets.
        */
       broadcast(sessionId, { t: 'ink', strokes: [] })
       broadcast(sessionId, { t: 'ink:pages', pages: [] })
@@ -3513,11 +3716,12 @@ export function dispatch(
         return
       }
       /*
-       * И это второе право, а не то же самое: правило `board` решает, кому
-       * ставить документ залу, а закончить ЧУЖУЮ лекцию — поступок другого
-       * рода. В открытой комнате, где доску ставит любой, иначе получалось бы,
-       * что студент одним нажатием гасит проекцию преподавателя вместе со всей
-       * разметкой.
+       * And this is a second right, not the same one: the `board` rule decides
+       * who may put a document before the hall, while ending SOMEONE ELSE'S
+       * lecture is an act of a different kind. In an open room where anyone
+       * puts up the board, it would otherwise turn out that a student turns
+       * off the teacher's projection with one press, along with all the
+       * markup.
        */
       if (payload.role !== 'host' && !isPresenter(sessionId, payload.participantId)) {
         refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayEndAnotherPerson.8212a2"))
@@ -3530,13 +3734,14 @@ export function dispatch(
     }
 
     /*
-     * Заметки спикера. Право — роль хоста, и это не то же самое, что право
-     * вести лекцию.
+     * Speaker notes. The right is the host role, and that is not the same as
+     * the right to present a lecture.
      *
-     * Не `isPresenter`: заметки пишут накануне вечером, когда лекции нет вовсе и
-     * вести некому. И не правило `board`: правило решает, кому показывать
-     * документ залу, а заметка залу не показывается никогда — в открытой
-     * комнате, где доску ставит любой, она осталась бы преподавательской.
+     * Not `isPresenter`: notes are written the evening before, when there is
+     * no lecture at all and nobody to present. And not the `board` rule: the
+     * rule decides who may show a document to the hall, while a note is never
+     * shown to the hall — in an open room where anyone puts up the board, it
+     * would still remain the teacher's.
      */
     case 'notes:open': {
       if (payload.role !== 'host') {
@@ -3549,10 +3754,10 @@ export function dispatch(
         return
       }
       /*
-       * Ответ — одному сокету, а не всем хостам: это ответ на вопрос, который
-       * задала одна вкладка. Второму преподавателю, ничего не спрашивавшему,
-       * приехала бы карта к документу, которого у него не открыто, и его пульт
-       * подменил бы ею свою.
+       * The answer goes to one socket, not to all hosts: it answers a question
+       * one tab asked. A second teacher who asked nothing would get a map for
+       * a document they do not have open, and their console would replace its
+       * own with it.
        */
       notesOpen.set(ws, file)
       send(ws, { t: 'notes', file, notes: notesOf(sessionId, file) })
@@ -3571,17 +3776,17 @@ export function dispatch(
       }
       const page = Number(message.page)
       if (!Number.isFinite(page) || page < 1) {
-        // Тоже вслух: всё, что теряет написанный текст, обязано это сказать.
+        // Out loud too: everything that loses written text must say so.
         send(ws, { t: 'error', message: tr("server.aNoteMustBelongToADocument.783591") })
         return
       }
       const text = typeof message.text === 'string' ? message.text : ''
       if (text.length > MAX_NOTE_CHARS) {
         /*
-         * Вслух, а не обрезать. Обрезанная посередине фраза выглядит как
-         * сохранённая, и человек узнаёт о потере на паре, читая обрубок; клиент
-         * держит тот же потолок полем `maxlength`, так что сюда доезжает только
-         * то, что мимо клиента.
+         * Out loud, not truncated. A phrase cut off in the middle looks saved,
+         * and the person learns about the loss in class, reading the stump;
+         * the client holds the same ceiling with the `maxlength` field, so
+         * only what bypasses the client gets here.
          */
         send(ws, {
           t: 'error',
@@ -3591,46 +3796,49 @@ export function dispatch(
       }
       const at = Math.floor(page)
       setNote(sessionId, file, at, text)
-      // Тем же текстом, каким он лёг в базу: `setNote` подрезает края, а пустая
-      // заметка — это её отсутствие, и эхо обязано говорить то же самое, иначе
-      // у второго устройства останется строка из пробелов там, где строки нет.
+      // With the same text as went into the database: `setNote` trims the
+      // edges, and an empty note is its absence, and the echo must say the
+      // same, otherwise the second device keeps a string of spaces where there
+      // is no string.
       toHosts(sessionId, file, { t: 'notes:one', file, page: at, text: text.trim() })
       return
     }
 
     /**
-     * Чернила одной страницы — по вопросу вкладки.
+     * The ink of one page — at a tab's request.
      *
-     * Не пультовое и правом не закрыто: спрашивает не ведущий, а тот, кто
-     * смотрит, — вкладка, отставшая от зала, и лента эскизов на пульте. Право
-     * здесь то же, что у приветственной пачки, которая эти же чернила и везёт:
-     * кто в комнате, тот видит лекцию.
+     * Not a console action and not closed by a right: it is asked not by the
+     * presenter but by whoever is watching — a tab that has fallen behind the
+     * hall, and the thumbnail strip on the console. The right here is the
+     * same as for the welcome batch, which carries this very ink: whoever is
+     * in the room sees the lecture.
      *
-     * Пустой список — законный ответ и означает «страница чистая». По нему
-     * вкладка закрывает вопрос и второй раз про эту страницу не спрашивает;
-     * молчание оставило бы её ждать чернил до конца лекции — и спрашивать
-     * снова на каждое движение пера.
+     * An empty list is a legitimate answer and means "the page is clean". By
+     * it the tab closes the question and does not ask about this page a
+     * second time; silence would leave it waiting for ink until the end of
+     * the lecture — and asking again on every movement of the pen.
      */
     case 'ink:page': {
-      // Как у указки: `Number` от чужого поля даёт NaN, а `JSON.stringify`
-      // пишет его `null`, и вкладка приняла бы ответ про «страницу null» за
-      // ответ про свою.
+      // As with the pointer: `Number` of a foreign field gives NaN, and
+      // `JSON.stringify` writes it as `null`, and the tab would take an answer
+      // about "page null" for an answer about its own.
       const asked = Number(message.page)
       if (!Number.isFinite(asked)) return
       const page = Math.trunc(asked)
-      // Придержанные куски — вперёд ответа: страница едет целиком, и точки,
-      // дописанные к ней следом, приехали бы спрашивавшему дважды.
+      // The held pieces go ahead of the answer: the page travels whole, and
+      // points appended to it right after would reach the asker twice.
       flushInk(sessionId)
       send(ws, { t: 'ink:page', page, strokes: inkPageOf(sessionId, page) })
       return
     }
 
     /*
-     * Дальше — то, чем управляет ПУЛЬТ. Право здесь не спрашивается: страницу,
-     * чернила и указку двигает тот, кто ведёт, и только он — пока идёт занятие
-     * (см. `atTheRemote`). Отказ молчаливый — это не решение преподавателя, о
-     * котором надо рассказать, а сообщение от вкладки, которая ещё не знает,
-     * что лекцию ведёт кто-то другой или что прозвенел звонок.
+     * Next — what the CONSOLE controls. The right is not asked here: the
+     * page, the ink and the pointer are moved by whoever is presenting, and
+     * only by them — while the class is in progress (see `atTheRemote`). The
+     * refusal is silent — this is not a teacher's decision that needs
+     * telling, but a message from a tab that does not yet know that someone
+     * else is presenting or that the bell has rung.
      */
     case 'lecture:page': {
       if (!atTheRemote(sessionId, payload)) return
@@ -3638,19 +3846,20 @@ export function dispatch(
       if (!turned) return
       broadcast(sessionId, { t: 'lecture', state: turned })
       /*
-       * И разметка новой страницы — следом за состоянием, всем сразу.
+       * And the markup of the new page — right after the state, to everyone
+       * at once.
        *
-       * Это не оптимизация, а условие: после обрезки приветственной пачки
-       * чернил этой страницы у зала нет, и спросить её каждый умеет сам —
-       * пятьсот вопросов на каждое перелистывание, то есть ровно тот круг
-       * рассылки, ради которого пачку и обрезали. Вкладка поэтому ждёт
-       * досылку (InkLayer · INK_WAIT_MS) и спрашивает, только если её не
-       * дождалась.
+       * This is not an optimisation but a condition: after the welcome batch
+       * was trimmed the hall does not have this page's ink, and everyone can
+       * ask for it themselves — five hundred questions on every page turn,
+       * that is, exactly the broadcast round the batch was trimmed for. So the
+       * tab waits for the follow-up (InkLayer · INK_WAIT_MS) and asks only if
+       * it did not get it.
        *
-       * Один кадр на всех, не глядя, у кого что уже есть: страница — единица
-       * выдачи, и `ink:page` заменяет её целиком, так что второй раз получить
-       * то же самое безвредно. Чистый лист стоит при этом пустой список —
-       * десятки байт.
+       * One frame for everyone, regardless of who already has what: a page is
+       * the unit of delivery, and `ink:page` replaces it whole, so receiving
+       * the same thing a second time is harmless. A clean sheet costs an empty
+       * list — tens of bytes.
        */
       broadcast(sessionId, {
         t: 'ink:page',
@@ -3680,14 +3889,15 @@ export function dispatch(
       })
       if (!added) return
       /*
-       * Потолок — вслух, как переполненная заметка.
+       * The ceiling — out loud, like an overflowing note.
        *
-       * Молчание здесь стоило четырёх секунд и восьми досылок штриха ЦЕЛИКОМ:
-       * пульт не отличал отказ от потерянного кадра. Свои два потолка он теперь
-       * считает сам и штрих на полной странице не открывает вовсе; сюда доезжает
-       * то, чего он посчитать не может, — точки, кончившиеся в середине штриха,
-       * и расхождение после переподключения. Слова — общие (shared/lecture.ts ·
-       * inkFullSays), чтобы один и тот же отказ не звучал двумя голосами.
+       * Silence here cost four seconds and eight resends of the stroke WHOLE:
+       * the console could not tell a refusal from a lost frame. It now counts
+       * its two ceilings itself and does not open a stroke on a full page at
+       * all; what gets here is what it cannot count — points that ran out in
+       * the middle of a stroke, and a divergence after a reconnect. The words
+       * are shared (shared/lecture.ts · inkFullSays), so that one and the same
+       * refusal does not speak in two voices.
        */
       if (added.full) {
         send(ws, { t: 'error', message: inkFullSays(added.full) })
@@ -3711,10 +3921,10 @@ export function dispatch(
       const id = optionalId(message.id)
       if (!id || !Number.isFinite(page)) return
       /*
-       * Рассылаем только то, что действительно стёрли. Ластик проходит по
-       * одному штриху десяток раз за движение руки, и «сотрите штрих, которого
-       * нет» заставляло бы двадцать браузеров перерисовывать страницу впустую —
-       * ровно за этим `eraseInk` и отвечает, был ли он там.
+       * We broadcast only what was really erased. The eraser passes over one
+       * stroke a dozen times per hand movement, and "erase a stroke that is
+       * not there" would make twenty browsers redraw the page for nothing —
+       * that is exactly why `eraseInk` answers whether it was there.
        */
       if (eraseInk(sessionId, page, id)) broadcast(sessionId, { t: 'ink:drop', page, id })
       return
@@ -3726,29 +3936,31 @@ export function dispatch(
       clearInk(sessionId, page)
       broadcast(sessionId, { t: 'ink:clear', page: page ?? null })
       /*
-       * И свежая опись следом — «стереть» убавляет исписанные страницы.
+       * And a fresh inventory right after — "erase" reduces the inked pages.
        *
-       * Опись говорит про страницы, которых у вкладки на руках нет, и сама
-       * себя по кадру `ink:clear` не поправит: стёртая страница осталась бы в
-       * ней лишним листом в ленте и вопросом про чернила, которых больше нет.
-       * Стоит это десятки байт — в отличие от чернил, которые она описывает.
+       * The inventory speaks of pages the tab does not hold, and it will not
+       * correct itself from an `ink:clear` frame: the erased page would stay
+       * in it as an extra sheet in the strip and a question about ink that no
+       * longer exists. It costs tens of bytes — unlike the ink it describes.
        */
       broadcast(sessionId, { t: 'ink:pages', pages: inkedPagesOf(sessionId) })
       return
     }
 
     /*
-     * Указка не хранится вовсе: где она была секунду назад — не факт о лекции,
-     * а движение руки. Поэтому её просто пересылают, и опоздавший её не видит,
-     * пока ведущий не пошевелит рукой, — то есть примерно через полсекунды.
+     * The pointer is not stored at all: where it was a second ago is not a
+     * fact about the lecture but a movement of a hand. So it is simply
+     * forwarded, and a latecomer does not see it until the presenter moves
+     * their hand — that is, roughly half a second later.
      */
     case 'laser': {
       if (!atTheRemote(sessionId, payload)) return
       const x = Number(message.x)
       const y = Number(message.y)
-      // И страница — так же, как x и y: без проверки NaN уезжает в кадр как
-      // `null` (так его пишет JSON), и зал рисует указку на своей текущей
-      // странице, а ведущий в это время говорит про другую.
+      // And the page — just like x and y: without a NaN check it goes into the
+      // frame as `null` (that is how JSON writes it), and the hall draws the
+      // pointer on its current page while the presenter is talking about
+      // another.
       const page = Number(message.page)
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(page)) return
       const shape = message.shape === 'dot' ? 'dot' : 'line'
@@ -3763,15 +3975,15 @@ export function dispatch(
     }
 
     /*
-     * Правка дерева файлов. Четыре глагола и две границы между ними.
+     * Editing the file tree. Four verbs and two boundaries between them.
      *
-     * Завести — по правилу `files`, тому же, по которому файл загружают: и то и
-     * другое ДОБАВЛЯЕТ, и открытая комната, куда каждый кладёт своё решение, —
-     * обычный семинар. Убрать и переименовать — преподавательские, потому что
-     * оба УБИРАЮТ: старого пути после переименования нет ровно так же, как нет
-     * удалённого файла, и раздатка, которую класс разбирает, исчезает у всех
-     * одинаково. Это не новое ограничение — удаление было правом
-     * преподавателя и раньше.
+     * Creating is by the `files` rule, the same one files are uploaded by:
+     * both ADD, and an open room where everyone puts in their solution is an
+     * ordinary seminar. Removing and renaming are the teacher's, because both
+     * REMOVE: after a rename the old path is gone exactly as a deleted file is
+     * gone, and the handout the class is working through disappears for
+     * everyone alike. This is not a new restriction — deletion was the
+     * teacher's right before too.
      */
     case 'tree:mkdir':
     case 'tree:new': {
@@ -3781,17 +3993,18 @@ export function dispatch(
         return
       }
       /*
-       * Файл с именем .ipynb — это просьба о тетради, а не о пустом файле.
-       * Заводится он сразу тетрадью: иначе человек получил бы файл, который
-       * открывается редактором как строка JSON, и должен был бы догадаться,
-       * что с ним делать.
+       * A file named .ipynb is a request for a notebook, not for an empty
+       * file. It is created as a notebook right away: otherwise the person
+       * would get a file that the editor opens as a JSON string, and they
+       * would have to guess what to do with it.
        *
-       * И правило у него СВОЁ — `ownBooks`, а не `files`, — поэтому ветка стоит
-       * выше проверки папки. Это не обход: `files` про общую папку занятия,
-       * куда кладут раздатку и решения, а своя тетрадь студента — про его
-       * собственную работу, и её файл пишет сервер проекцией. Лекция, где файлы
-       * преподавательские, а свои тетради разрешены, — обычная пара, и
-       * проверка в прежнем порядке делала такую пару невозможной.
+       * And it has ITS OWN rule — `ownBooks`, not `files` — so the branch
+       * stands above the folder check. This is not a bypass: `files` is about
+       * the class's shared folder, where handouts and solutions are put, while
+       * a student's own notebook is about their own work, and its file is
+       * written by the server through the projection. A lecture where files
+       * are the teacher's and own notebooks are allowed is an ordinary class
+       * period, and the check in the old order made such a class impossible.
        */
       if (message.t === 'tree:new' && kindOf(wanted) === 'notebook') {
         const made = createBook(sessionId, wanted, authorOf(sessionId, payload))
@@ -3824,16 +4037,18 @@ export function dispatch(
     }
 
     /*
-     * Продублировать файл — копией рядом, под свободным именем.
+     * Duplicate a file — a copy next to it, under a free name.
      *
-     * Правило — `files`, то же, что у «нового файла» и у загрузки, и стоит оно
-     * тут по той же причине: копия ДОБАВЛЯЕТ запись в папку. Переименование и
-     * удаление остались преподавательскими, потому что убирают прежний путь, а
-     * это нет — исходный файл после копии лежит там же и таким же.
+     * The rule is `files`, the same as for "new file" and for upload, and it
+     * stands here for the same reason: a copy ADDS an entry to the folder.
+     * Renaming and deletion stayed the teacher's because they remove the
+     * previous path, and this does not — the original file stays after the
+     * copy where it was and as it was.
      *
-     * Имя выбирает сервер (`freeCopyName`), а не тот, кто нажал. Занятость тут
-     * не отказ, а обычное дело: дублируют одно и то же дважды подряд, и вторая
-     * копия обязана называться «(копия 2)», а не отвечать «уже есть».
+     * The server picks the name (`freeCopyName`), not whoever pressed. A
+     * taken name here is not a refusal but the ordinary case: people
+     * duplicate the same thing twice in a row, and the second copy must be
+     * called "copy 2" rather than answer "already exists".
      */
     case 'tree:copy': {
       const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
@@ -3853,12 +4068,13 @@ export function dispatch(
         return
       }
       /*
-       * Тетрадь комнаты — это документ, а файл под ней проекция, и пишется она
-       * с задержкой в полторы секунды после последней правки (collab/books.ts ·
-       * WRITE_AFTER_MS). Копировать её файл, не дописав проекцию, — значит
-       * отдать человеку тетрадь без последней ячейки, которую он только что и
-       * набрал. Копия при этом остаётся обычным .ipynb в папке: внести её в
-       * комнату — отдельное действие с отдельным правилом (`ownBooks`).
+       * A room notebook is a document, and the file under it is a projection,
+       * written a second and a half after the last edit (collab/books.ts ·
+       * WRITE_AFTER_MS). Copying its file without finishing the projection
+       * means handing the person a notebook without the last cell they have
+       * just typed. The copy stays an ordinary .ipynb in the folder: bringing
+       * it into the room is a separate action with a separate rule
+       * (`ownBooks`).
        */
       if (isBookFile(sessionId, wanted)) projectBooks(sessionId)
       const info = statPath(sessionId, wanted)
@@ -3870,8 +4086,8 @@ export function dispatch(
         send(ws, { t: 'error', message: tr('server.files.copyFolder') })
         return
       }
-      // Потолок на один файл — тот же, что у загрузки: копия занимает место
-      // ровно так же, как принесённый с диска файл того же размера.
+      // The per-file ceiling is the same as for upload: a copy takes up space
+      // exactly like a file of the same size brought from disk.
       if (info.size > config.maxUploadBytes) {
         send(ws, {
           t: 'error',
@@ -3883,11 +4099,12 @@ export function dispatch(
         return
       }
       /*
-       * И потолок на комнату целиком. Считается обходом папки, а не счётчиком
-       * загрузок (routes/files.ts · usedBytes): счётчик живёт в маршруте, и
-       * тащить его сюда значило бы замкнуть два модуля друг на друга ради
-       * действия, которое человек нажимает раз в семинар. Цена расхождения
-       * названа там же вслух: счётчик и так не знает о записях из ячейки.
+       * And the ceiling for the whole room. Counted by a walk of the folder,
+       * not by the upload counter (routes/files.ts · usedBytes): the counter
+       * lives in the route, and dragging it here would mean closing two
+       * modules onto each other for the sake of an action a person presses
+       * once a seminar. The price of the divergence is named out loud there:
+       * the counter does not know about writes from a cell anyway.
        */
       if (sessionBytes(sessionId) + info.size > config.maxSessionBytes) {
         send(ws, {
@@ -3899,9 +4116,10 @@ export function dispatch(
         })
         return
       }
-      // Несохранённый хвост открытого документа — на диск до копирования: иначе
-      // копия отстаёт от того, что человек видит на экране, ровно на последние
-      // полсекунды набора. Тот же порядок, что у `tree:move` ниже.
+      // The unsaved tail of an open document goes to disk before copying:
+      // otherwise the copy lags behind what the person sees on screen by
+      // exactly the last half second of typing. The same order as for
+      // `tree:move` below.
       flushFile(sessionId, wanted)
       const landing = freeCopyName(sessionId, wanted)
       const copied = copyFile(sessionId, wanted, landing)
@@ -3914,20 +4132,22 @@ export function dispatch(
     }
 
     /*
-     * Внести .ipynb в комнату.
+     * Bring an .ipynb into the room.
      *
-     * Это ДОБАВЛЕНИЕ тетради, а не чтение файла: внесённая тетрадь становится
-     * частью комнаты — попадает в снимок, в историю и на экран ко всем. Право
-     * у неё то же, что у «новой тетради», и спрашивает его одна дверь
-     * (collab/books.ts · whyNotAddBook), поэтому здесь проверки нет вовсе.
+     * This is ADDING a notebook, not reading a file: a notebook brought in
+     * becomes part of the room — it gets into the snapshot, the history and
+     * onto everyone's screen. Its right is the same as for "new notebook",
+     * and one door asks it (collab/books.ts · whyNotAddBook), so there is no
+     * check here at all.
      *
-     * Правило `files` сюда не годится, и раньше стояло именно оно: файл в
-     * папке и тетрадь в комнате — разные вещи. При `files: 'room'` и
-     * выключенных своих тетрадях положить .ipynb в папку можно, а внести его в
-     * комнату — нет; при `files: 'host'` и разрешённых — наоборот.
+     * The `files` rule does not fit here, and it was exactly the one that
+     * used to stand here: a file in the folder and a notebook in the room are
+     * different things. With `files: 'room'` and own notebooks turned off, an
+     * .ipynb can be put into the folder but not brought into the room; with
+     * `files: 'host'` and them allowed — the other way round.
      *
-     * Читать её глазами при этом может кто угодно и без этого: файл
-     * скачивается, как любой другой.
+     * Anyone can read it with their eyes without this anyway: the file is
+     * downloaded like any other.
      */
     case 'book:open': {
       const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
@@ -3956,32 +4176,34 @@ export function dispatch(
         return
       }
       /*
-       * Переезд в никуда — тихое ничего.
+       * A move to nowhere is a quiet nothing.
        *
-       * Мышь отпускают там же, где взяли, чаще, чем попадают в соседнюю папку.
-       * До сих пор такой жест доезжал до `movePath` и возвращался фразой
-       * «„data.csv“ в этой папке уже есть» — то есть объяснял человеку, что файл
-       * столкнулся сам с собой. Сказать здесь нечего: ничего не произошло и
-       * ничего не сломалось, а отказ на пустом месте читается как поломка.
+       * The mouse is released where it was picked up more often than it hits
+       * a neighbouring folder. Until now such a gesture reached `movePath` and
+       * came back with the phrase that "data.csv" already exists in this
+       * folder — that is, it explained to the person that the file had
+       * collided with itself. There is nothing to say here: nothing happened
+       * and nothing broke, and a refusal out of nowhere reads as breakage.
        */
       if (from === to) return
       /*
-       * Папку — не внутрь себя. Отказ стоит здесь, а не только в `movePath`,
-       * ради слов: та отвечает `bad-name`, и фраза выходила про имя («„src“ не
-       * годится в качестве имени»), тогда как имя как раз годится — не годится
-       * место. Перетаскивание попадает сюда всякий раз, когда папку роняют на
-       * что-нибудь внутри неё самой, то есть промахом на одну строку.
+       * A folder — not into itself. The refusal stands here, not only in
+       * `movePath`, for the sake of the words: that one answers `bad-name`,
+       * and the phrase came out about the name (that "src" cannot be used as
+       * a name), while the name is perfectly fine — the place is not.
+       * Dragging gets here every time a folder is dropped onto something
+       * inside itself, that is, by missing by one row.
        */
       if (isInside(to, from)) {
         send(ws, { t: 'error', message: tr("server.cannotBePlacedInsideItself.de928c", { p0: baseOf(from) }) })
         return
       }
-      // Переименовать могли и папку — тогда переезжает всё, что в ней.
+      // A folder may have been renamed too — then everything in it moves.
       const inside = pathsInside(sessionId, from)
-      // Несохранённый хвост — на диск ДО переезда: `movePath` переносит то, что
-      // уже лежит на диске, а `forgetFile` ниже уносит документ вместе с
-      // отложенным сохранением. Иначе последние полсекунды набора пропадают, и
-      // сказать об этом некому.
+      // The unsaved tail goes to disk BEFORE the move: `movePath` moves what
+      // already lies on disk, and `forgetFile` below takes the document away
+      // together with its postponed save. Otherwise the last half second of
+      // typing is lost, and there is nobody to tell about it.
       for (const path of inside) flushFile(sessionId, path)
       const outcome = movePath(sessionId, from, to)
       if (outcome !== 'ok') {
@@ -3991,46 +4213,50 @@ export function dispatch(
       for (const was of inside) {
         const now = to + was.slice(from.length)
         /*
-         * Один путь не обрывает остальные.
+         * One path does not break off the others.
          *
-         * Файлы на диске уже переехали — все разом, одним `rename`, — и отказ
-         * на середине списка оставляет комнату наполовину на старых путях:
-         * тетрадь по новому адресу, проектор по старому, и ни одного слова о
-         * том, почему. Заметки — единственные здесь, кто ходит в базу, то есть
-         * единственные, кто умеет отказать по-настоящему; спор за занятый ключ
-         * они решают в пользу переезжающего файла (db.ts · moveNotes,
-         * `UPDATE OR REPLACE`), так что терять тут больше нечего, — но перехват
-         * полезен и сам по себе: доска и проектор не должны падать вместе с
-         * одной строкой SQL.
+         * The files on disk have already moved — all at once, with one
+         * `rename` — and a refusal in the middle of the list leaves the room
+         * half on the old paths: the notebook at the new address, the
+         * projector at the old one, and not a word about why. Notes are the
+         * only ones here that go to the database, that is, the only ones that
+         * can really refuse; they settle a dispute over a taken key in favour
+         * of the moving file (db.ts · moveNotes, `UPDATE OR REPLACE`), so
+         * there is nothing more to lose here — but the catch is useful in
+         * itself: the board and the projector must not fall together with one
+         * SQL line.
          */
         try {
-          // Документ старого пути больше ни на что не смотрит: у него на диске
-          // ничего нет, и следующее сохранение воскресило бы файл под прежним
-          // именем. Наблюдатель заметит это сам, но не раньше двух секунд — а
-          // вкладки, открытые на нём, должны узнать сразу.
+          // The document of the old path no longer looks at anything: it has
+          // nothing on disk, and the next save would resurrect the file under
+          // its old name. The watcher will notice this by itself, but not
+          // sooner than in two seconds — while the tabs open on it must learn
+          // at once.
           forgetFile(sessionId, was)
-          // Тетрадь переезжает вместе со своим файлом: корень тот же, путь новый.
+          // The notebook moves together with its file: the same root, a new path.
           moveBook(sessionId, was, now)
           const moved = moveLecture(sessionId, was, now)
           if (moved) broadcast(sessionId, { t: 'lecture', state: moved })
-          // Лекция уезжает раньше доски намеренно: `setBoard` заканчивает лекцию,
-          // если документ на экране разошёлся с её файлом.
+          // The lecture moves before the board on purpose: `setBoard` ends the
+          // lecture if the document on screen has diverged from its file.
           if (boardOf(sessionId) === was) setBoard(sessionId, now)
           /*
-           * И заметки спикера — они привязаны к пути документа, а не к лекции.
+           * And the speaker notes — they are bound to the document's path, not
+           * to the lecture.
            *
-           * Переименовать файл посреди пары — обычное дело: преподаватель правит
-           * «лекция3.pdf» на «Лекция 3. Поток и дивергенция.pdf». Без этой строки
-           * вечер, потраченный на речь к двадцати четырём страницам, превращается
-           * в строки, к которым больше нет ключа: старого пути на диске уже нет, а
-           * восстановить их из интерфейса нечем.
+           * Renaming a file in the middle of class is common: the teacher
+           * changes "lecture3.pdf" to "Lecture 3. Flux and divergence.pdf".
+           * Without this line an evening spent on the talk for twenty-four
+           * pages turns into rows that no longer have a key: the old path is
+           * no longer on disk, and there is no way to restore them from the
+           * interface.
            *
-           * Последними в списке: только они ходят в базу, а значит только они
-           * умеют отказать по-настоящему.
+           * Last in the list: only they go to the database, which means only
+           * they can really refuse.
            */
           moveNotesTo(sessionId, was, now)
         } catch {
-          /* см. выше: этот путь переехал не целиком, остальные переезжают */
+          /* see above: this path did not move whole, the others still move */
         }
       }
       broadcastFiles(sessionId)
@@ -4044,21 +4270,23 @@ export function dispatch(
         return
       }
       /*
-       * Убирают файлы из комнаты преподаватель — и автор СВОЕЙ личной тетради.
+       * Files are removed from the room by the teacher — and by the author of
+       * THEIR OWN personal notebook.
        *
-       * Исключение ровно одно и без него «своя тетрадь» была бы полуправдой:
-       * черновик, который студент завёл сам и который считается против его же
-       * потолка (`MAX_OWN_BOOKS`), обязан убираться им же, иначе три неудачных
-       * попытки запирают его до конца занятия. Чужую личную — нет, тетрадь
-       * комнаты — нет, любой другой файл — нет.
+       * There is exactly one exception, and without it "one's own notebook"
+       * would be a half-truth: a draft the student created themselves and
+       * that counts against their own ceiling (`MAX_OWN_BOOKS`) must be
+       * removable by them, otherwise three failed attempts lock them out
+       * until the end of class. Someone else's personal one — no, the room's
+       * notebook — no, any other file — no.
        */
       if (payload.role !== 'host' && !ownsBookAt(sessionId, wanted, payload.participantId)) {
         refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayRemoveAFile.77a4ef"))
         return
       }
-      // Панель обещает «убрать папку со всем, что в ней», и обещание держится
-      // здесь: список считается до удаления, потому что после него спрашивать
-      // дерево уже не о чем.
+      // The panel promises "remove the folder with everything in it", and the
+      // promise is kept here: the list is computed before the deletion,
+      // because after it there is nothing left to ask the tree about.
       const inside = pathsInside(sessionId, wanted)
       if (!deleteFile(sessionId, wanted)) {
         send(ws, { t: 'error', message: tr("server.thisFileIsNoLongerInThe.b66e1e") })
@@ -4066,8 +4294,9 @@ export function dispatch(
       }
       for (const path of inside) {
         forgetFile(sessionId, path)
-        // Иначе тетрадь, лежавшая внутри папки, осталась бы в комнате — и
-        // проекция через полторы секунды завела бы папку и файл заново.
+        // Otherwise a notebook that lay inside the folder would stay in the
+        // room — and a second and a half later the projection would create
+        // the folder and the file anew.
         dropBook(sessionId, path)
       }
       forgetMissingBoard(sessionId)
@@ -4076,12 +4305,13 @@ export function dispatch(
     }
 
     /*
-     * Дерево целиком — тому, кто спросил.
+     * The whole tree — to whoever asked.
      *
-     * Спрашивают в одном случае: приехала дельта, а склеить её не с чем. Права
-     * здесь нет и быть не может — этот же список сокет получает приветственной
-     * пачкой. Кадр берётся из общей памяти комнаты: если разрыв увидели все
-     * разом, обход папки всё равно будет один.
+     * It is asked in one case: a delta arrived and there is nothing to glue it
+     * to. There is no right here and there cannot be — the socket gets this
+     * same list in the welcome batch. The frame is taken from the room's
+     * shared memory: if everyone saw the gap at once, there will still be only
+     * one folder walk.
      */
     case 'files:ask': {
       const frame = filesFrame(sessionId)
@@ -4090,9 +4320,9 @@ export function dispatch(
     }
 
     /*
-     * Запуск скрипта. Право — то же, что у ячейки: это тот же контейнер, тот же
-     * Python и та же чужая машина. Разница только в том, что вывод идёт в
-     * терминал, а не в ячейку.
+     * Running a script. The right is the same as for a cell: it is the same
+     * container, the same Python and the same someone else's machine. The
+     * only difference is that the output goes to the terminal, not to a cell.
      */
     case 'file:run': {
       if (!mayRun(sessionId, payload, ws)) return
@@ -4107,18 +4337,19 @@ export function dispatch(
         return
       }
       /*
-       * Сначала на диск, потом запускать: Cmd+Enter приходит из самого
-       * редактора и обгоняет отложенное сохранение, а `python` читает диск.
-       * Иначе запускается текст без последних набранных строк — и это худший
-       * вид ошибки: она про строку, которая на экране выглядит правильной, а со
-       * второго нажатия всё «само» работает.
+       * First to disk, then run: Cmd+Enter comes from the editor itself and
+       * overtakes the postponed save, while `python` reads the disk. Otherwise
+       * the text runs without the last typed lines — and that is the worst
+       * kind of error: it is about a line that looks right on screen, and on
+       * the second press everything works "by itself".
        */
       flushFile(sessionId, wanted)
       /*
-       * Кавычки одинарные с экранированием: имя файла набирает человек, и в нём
-       * бывает пробел, скобка и апостроф. Строка уходит в ту же оболочку, что и
-       * всё, что люди набирают в терминале руками, — и разница в том, что эту
-       * строку человек не набирал и увидеть перед запуском не мог.
+       * Single quotes with escaping: the file name is typed by a person, and
+       * it may have a space, a parenthesis and an apostrophe. The string goes
+       * into the same shell as everything people type in the terminal by hand
+       * — with the difference that this string the person did not type and
+       * could not see before the run.
        */
       const quoted = `'${wanted.replace(/'/g, `'\\''`)}'`
       runCommand(
@@ -4130,21 +4361,21 @@ export function dispatch(
     }
 
     /*
-     * Перестановка ячейки — серверная операция, и это вынужденно: см.
-     * `collab/ops.ts`. Право проверяется здесь, а не в классификаторе, потому
-     * что в документе этого глагола больше нет вовсе.
+     * Moving a cell is a server operation, and necessarily so: see
+     * `collab/ops.ts`. The right is checked here, not in the classifier,
+     * because this verb no longer exists in the document at all.
      */
     /*
-     * Отменить ход оракула: вернуть файлы к тому, что было до него.
+     * Undo an Oracle turn: return the files to what they were before it.
      *
-     * Право почти то же, что и у самого режима «сделать»: кто мог его
-     * запустить, тот может и отменить, — «разрешено начинать, но не разрешено
-     * откатывать» было бы худшей из возможных пар. Разница одна, и она про
-     * `off`: правила меняются на живой комнате, и естественный ход
-     * «оракул натворил → выключаю оракула → откатываю» упирался в отказ,
-     * который вдобавок говорил «может преподаватель» тому самому
-     * преподавателю. Выключенный режим останавливает дальнейшие действия; убрать за уже
-     * начатым преподаватель вправе всегда.
+     * The right is almost the same as for the "do" mode itself: whoever could
+     * start it can also undo it — "allowed to start but not allowed to roll
+     * back" would be the worst possible pair. There is one difference, and it
+     * is about `off`: the rules change in a live room, and the natural move
+     * "the Oracle made a mess → I turn off the Oracle → I roll back" ran into
+     * a refusal, which on top of that said "the teacher may" to that very
+     * teacher. A turned-off mode stops further actions; the teacher is always
+     * entitled to clean up after what has already started.
      */
     case 'ai:undo': {
       if (payload.role !== 'host' && !allowsAgent(getRules(sessionId).agent, payload.role)) {
@@ -4170,10 +4401,10 @@ export function dispatch(
         message.direction === -1 || message.direction === 1 ? message.direction : null
       if (!id || direction === null) return
       /*
-       * Состав — по правилам ТОЙ тетради, в которой переставляют: перестановка
-       * не выходит за её пределы (`moveInCells` двигает внутри одного листа), и
-       * спрашивать про неё комнату значило бы запрещать студенту перекладывать
-       * ячейки в собственной тетради.
+       * The structure — by the rules of THE notebook where the move happens:
+       * the move does not leave its bounds (`moveInCells` moves within one
+       * sheet), and asking the room about it would mean forbidding a student
+       * to rearrange cells in their own notebook.
        */
       const root = rootOf(sessionId, id)
       if (!allowsStructure(rulesIn(sessionId, payload, root).structure, payload.role, 'move')) {
@@ -4185,7 +4416,7 @@ export function dispatch(
         )
         return
       }
-      // От имени нажавшего: у версии в истории должен быть автор.
+      // On behalf of whoever pressed: the version in history must have an author.
       const { doc } = getSessionDoc(sessionId)
       applyOnBehalf(sessionId, payload.participantId, () => {
         moveInCells(doc, id, direction)
@@ -4194,12 +4425,13 @@ export function dispatch(
     }
 
     /*
-     * Замок на ячейке: преподаватель открывает одну, и в ней комната печатает и
-     * запускает — в лекционной тетради, где всё остальное его.
+     * The lock on a cell: the teacher opens one, and in it the room types and
+     * runs — in a lecture notebook where everything else is theirs.
      *
-     * Право простое и не выражается правилом комнаты: открывает тот, чья
-     * тетрадь, то есть преподаватель. Правило здесь было бы правилом о том, кто
-     * раздаёт права, — а такого в RoomRules нет и заводить его не за чем.
+     * The right is simple and is not expressed by a room rule: it is opened
+     * by whoever owns the notebook, that is, the teacher. A rule here would be
+     * a rule about who hands out rights — and RoomRules has no such thing and
+     * there is no reason to create one.
      */
     case 'cell:open':
     case 'cell:lock': {
@@ -4208,11 +4440,12 @@ export function dispatch(
         return
       }
       /*
-       * И не в законченном занятии. Открытая ячейка — это обещание комнате, что
-       * здесь ей можно; после звонка нельзя нигде (shared/rules.ts ·
-       * rulesAfterClass), и обещание оказалось бы пустым: замок открыт, а Run
-       * отвечает «занятие закончено». Пустое обещание хуже отказа — по нему
-       * идут и упираются.
+       * And not in a finished class. An open cell is a promise to the room
+       * that it may work here; after the bell it may not anywhere
+       * (shared/rules.ts · rulesAfterClass), and the promise would turn out
+       * empty: the lock is open, while Run answers "the class is over". An
+       * empty promise is worse than a refusal — people follow it and run into
+       * a wall.
        */
       if (isFinished(sessionId)) {
         send(ws, { t: 'error', message: tr(OVER) })
@@ -4221,18 +4454,19 @@ export function dispatch(
       const id = optionalId(message.cellId)
       if (!id) return
       /*
-       * `cell:open` — частный случай на два положения, и читается он тем же
-       * кодом: два обработчика одного замка разъехались бы на первой правке.
+       * `cell:open` is a special case with two positions, and it is read by
+       * the same code: two handlers of one lock would drift apart on the
+       * first edit.
        */
       let state: CellLock
       let settings: Partial<CouncilSettings> = {}
       if (message.t === 'cell:open') {
         if (typeof message.open !== 'boolean') return
         /*
-         * Один щелчок по замку открывает так, как заведено в комнате: в лекции —
-         * общий текст, в консилиуме — каждому свой лист (shared/rules.ts ·
-         * opens). Меню замка шлёт `cell:lock` с явным положением и это правило
-         * не спрашивает.
+         * One click on the lock opens the way the room is set up: in a
+         * lecture — the shared text, in a council — everyone their own sheet
+         * (shared/rules.ts · opens). The lock menu sends `cell:lock` with an
+         * explicit position and does not ask this rule.
          */
         const opens = getRules(sessionId).opens
         state = message.open ? (opens === 'council' ? 'council' : 'open') : 'closed'
@@ -4251,25 +4485,27 @@ export function dispatch(
       }
       const was = cellLock(found.cell)
       /*
-       * Ручки: не приложены — как были; ячейка впервые в консилиуме — умолчания
-       * (readCouncilSettings отдаёт их на пустом месте). Повторный `cell:lock`
-       * с тем же положением и новыми ручками — это и есть «переключить ручку».
+       * The knobs: not applied — as they were; a cell in council for the
+       * first time — the defaults (readCouncilSettings returns them from
+       * nothing). A repeated `cell:lock` with the same position and new knobs
+       * is exactly "switch a knob".
        */
       const prior = readCouncilSettings(found.cell.get('council'))
       /*
-       * Слитые ручки — ЧЕРЕЗ санитайзер, а не как пришли.
+       * The merged knobs go THROUGH the sanitiser, not as they came.
        *
-       * `pickSettings` уже отбросил непонятное из сообщения, но слева от него
-       * стоит то, что лежит в документе, а документ в комнате пишут все. Ячейка
-       * с `runLimitSec: "много"`, приехавшим мимо этого обработчика, доехала бы
-       * до ядра и завела там будильник на NaN — то есть сняла бы предел молча.
-       * Санитайзер здесь и есть та единственная дверь, за которой в документе
-       * лежат только годные ручки.
+       * `pickSettings` has already thrown out anything unclear from the
+       * message, but to the left of it stands what lies in the document, and
+       * everyone in the room writes to the document. A cell with
+       * `runLimitSec: "lots"` that arrived bypassing this handler would reach
+       * the kernel and set an alarm there for NaN — that is, silently remove
+       * the limit. The sanitiser here is that one door behind which only
+       * valid knobs lie in the document.
        */
       const next: CouncilSettings | null =
         state === 'council' ? readCouncilSettings({ ...prior, ...settings }) : null
-      // Повторное нажатие — не событие: лишняя версия в истории на каждый
-      // щелчок по уже открытой ячейке ничего не рассказывает.
+      // A repeated press is not an event: an extra version in history for
+      // every click on an already open cell tells nothing.
       const sameKnobs =
         next === null ||
         (next.studentRun === prior.studentRun &&
@@ -4281,64 +4517,68 @@ export function dispatch(
         clearRunRequests(sessionId, id)
       }
       /*
-       * ЗАДАНИЕ — снимается здесь, на самом переходе в консилиум, и только на нём.
+       * THE TASK — taken here, on the very switch to council, and only there.
        *
-       * Общий текст ячейки в эту секунду — то, что преподаватель дал классу;
-       * через минуту он им уже не будет: «Показать классу» кладёт в ячейку
-       * чьё-то решение (см. `council:show` ниже). Опоздавший или просто
-       * перезагрузивший страницу засевал свой лист тем, что лежит в ячейке
-       * СЕЙЧАС, — то есть чужим ответом, и одно нажатие «Сдать» отправляло его
-       * в группу автора.
+       * The cell's shared text at this second is what the teacher gave the
+       * class; a minute later it will not be: "Show the class" puts someone's
+       * solution into the cell (see `council:show` below). A latecomer, or
+       * someone who just reloaded the page, seeded their sheet with what lies
+       * in the cell NOW — that is, with someone else's answer, and one press
+       * of "Submit" sent it into the author's group.
        *
-       * Не на каждом нажатии: `cell:lock` с тем же положением — это
-       * переключение ручки, и переписывать им задание значило бы вернуть ровно
-       * ту же подмену. Пустая строка — законное задание: консилиум открыли на
-       * пустой ячейке, «напишите сами».
+       * Not on every press: `cell:lock` with the same position is a knob
+       * toggle, and rewriting the task with it would bring back exactly the
+       * same swap. An empty string is a legitimate task: the council was
+       * opened on an empty cell, "write it yourselves".
        */
       if (was !== 'council' && state === 'council') {
         rememberSeed(sessionId, id, cellSource(found.cell).toString())
       }
       /*
-       * От имени сервера, как `state` и `outputs` у той же ячейки: `open` —
-       * право, а не чей-то набор, и автора у него нет. Ключ `council` пишется
-       * только там, где он есть или нужен: ячейке, которая консилиумом не была,
-       * `null` в нём ничего не рассказывает.
+       * On behalf of the server, like `state` and `outputs` of the same cell:
+       * `open` is a right, not someone's typing, and it has no author. The
+       * `council` key is written only where it exists or is needed: for a
+       * cell that has never been a council, `null` in it tells nothing.
        */
       doc.transact(() => {
         found.cell.set('open', openValueFor(state))
         if (next !== null || found.cell.get('council') != null) found.cell.set('council', next)
       }, ORIGIN)
       /*
-       * Предел, поменянный посреди чужого запуска, действует на него же.
+       * A limit changed in the middle of someone's run applies to that run
+       * too.
        *
-       * «Правила действуют сразу» — обещание всей комнаты, и предел запуска не
-       * может быть из него исключением: преподаватель ставит его, ГЛЯДЯ на
-       * зависший цикл, и ждать конца этого самого цикла — единственное, чего он
-       * в эту секунду не хочет. Новый предел отсчитывается от начала идущей
-       * попытки, так что «тридцать секунд» на попытке, идущей минуту, срабатывает
-       * сразу (kernel/index.ts · retimeCouncilRun).
+       * "The rules apply at once" is a promise to the whole room, and the run
+       * limit cannot be an exception to it: the teacher sets it while LOOKING
+       * at a hung loop, and waiting for the end of that very loop is the one
+       * thing they do not want at that second. The new limit is counted from
+       * the start of the running attempt, so "thirty seconds" on an attempt
+       * running for a minute fires at once (kernel/index.ts ·
+       * retimeCouncilRun).
        */
       if (next !== null && next.runLimitSec !== prior.runLimitSec) {
         retimeCouncilRun(sessionId, id, next.runLimitSec)
       }
       /*
-       * Консилиум открыли, переключили или закрыли — комнате об этом надо
-       * сказать по управляющему проводу: попытки не в документе, и студент
-       * иначе узнал бы о закрытии только по отказу на следующий снимок. Закрытие
-       * не стирает попыток — они остаются на просмотр (боард с lock: 'closed'),
-       * а автору уходит `closed: true`, и текст остаётся у него черновиком.
+       * The council was opened, switched or closed — the room has to be told
+       * over the control wire: attempts are not in the document, and a
+       * student would otherwise learn about the closing only from a refusal on
+       * the next snapshot. Closing does not erase attempts — they remain for
+       * viewing (a board with lock: 'closed'), and the author gets
+       * `closed: true`, and the text stays with them as a draft.
        */
       if (was === 'council' || state === 'council') councilChanged(sessionId, id)
       return
     }
 
     /*
-     * Консилиум: свой лист студента.
+     * Council: a student's own sheet.
      *
-     * Право — `mayWriteCouncil`: правила комнаты ни при чём (свой лист и
-     * заводят там, где общий текст преподавательский), останавливают только
-     * закрытый замок и конец занятия. Снимок в ячейку без консилиума — отказ
-     * теми же словами, что у серой кнопки на клиенте.
+     * The right is `mayWriteCouncil`: the room's rules have nothing to do
+     * with it (one's own sheet is created exactly where the shared text is
+     * the teacher's), only a closed lock and the end of class stop it. A
+     * snapshot into a cell without a council is refused in the same words as
+     * the grey button on the client.
      */
     case 'council:draft':
     case 'council:submit':
@@ -4356,7 +4596,7 @@ export function dispatch(
       if (message.t === 'council:draft') {
         if (typeof message.text !== 'string') return
         if (message.text.length > MAX_ATTEMPT_CHARS) {
-          // Вслух, а не обрезать: обрезанный молча код на экране выглядит целым.
+          // Out loud, not truncated: code silently cut off looks whole on screen.
           send(ws, {
             t: 'error',
             message: tr("server.anAttemptMayContainUpToCharacters.ff604b", { p0: MAX_ATTEMPT_CHARS }),
@@ -4364,14 +4604,15 @@ export function dispatch(
           return
         }
         /*
-         * Текст сменился — ждущий запуск снимается с очереди.
+         * The text changed — a waiting run is taken out of the queue.
          *
-         * `saveDraft` честно убирает с попытки всё, что было сказано о прежнем
-         * тексте, и `recordRun` выбрасывает опоздавший кадр, — но запись в
-         * очереди оставалась, и это стоило дважды. Ядру — минуту на код,
-         * которого уже нет, при общей очереди на весь поток. Автору — отказ
-         * «эта попытка уже в очереди» на попытку запустить НОВУЮ версию: пока
-         * старый исходник не досчитается, перезапустить нечего.
+         * `saveDraft` honestly removes from the attempt everything that was
+         * said about the previous text, and `recordRun` throws away a late
+         * frame — but the entry in the queue stayed, and that cost twice. For
+         * the kernel — a minute on code that no longer exists, with one queue
+         * for the whole cohort. For the author — a refusal "this attempt is
+         * already in the queue" on an attempt to run the NEW version: until
+         * the old source finishes computing, there is nothing to rerun.
          */
         const prior = attemptOf(sessionId, id, payload.participantId)
         const priorText = prior?.text
@@ -4380,12 +4621,13 @@ export function dispatch(
         }
         saveDraft(sessionId, id, payload.participantId, message.text, now)
         /*
-         * Автор переписал показанный текст — плашка на экране больше ни о чём.
+         * The author rewrote the shown text — the badge on screen is no longer
+         * about anything.
          *
-         * `saveDraft` честно снимает «на экране» вместе с запуском и отметкой
-         * (они приклеены к тексту), но комната об этом узнавала только из
-         * своего листа автора: у остальных под ячейкой продолжал висеть код,
-         * которого больше нет ни у кого.
+         * `saveDraft` honestly removes "on screen" together with the run and
+         * the mark (they are glued to the text), but the room learned about it
+         * only from the author's own sheet: for the others, code that nobody
+         * has any more kept hanging under the cell.
          */
         if (prior?.shown && priorText !== message.text) shownOut(sessionId, id)
       } else if (message.t === 'council:submit') {
@@ -4402,8 +4644,9 @@ export function dispatch(
       }
       mineOut(sessionId, id, payload.participantId)
       boardOut(sessionId, id, [payload.participantId])
-      // Счётчик — комнате, и только когда он сменился: снимок при паузе в
-      // наборе счётчика не двигает, а кадр на каждый — двадцать браузеров ради ничего.
+      // The counter goes to the room, and only when it changed: a snapshot on
+      // a pause in typing does not move the counter, and a frame for each
+      // would be twenty browsers for nothing.
       const after = countFor(sessionId, id)
       if (after.total !== before.total || after.submitted !== before.submitted) {
         countOut(sessionId, id)
@@ -4412,9 +4655,9 @@ export function dispatch(
     }
 
     /*
-     * Консилиум: то, что делает ведущий. Право одно на всё — `mayLeadCouncil`,
-     * и после звонка тоже: сданное остаётся на просмотр, разобрать его после
-     * пары — дело преподавателя.
+     * Council: what the leader does. One right for everything —
+     * `mayLeadCouncil`, and after the bell too: what was submitted remains
+     * for viewing, and reviewing it after class is the teacher's business.
      */
     case 'council:show':
     case 'council:show:clear': {
@@ -4432,34 +4675,38 @@ export function dispatch(
         return
       }
       /*
-       * Общий текст ячейки при показе НЕ трогается — в этом вся правка.
+       * The cell's shared text is NOT touched when showing — that is the whole
+       * fix.
        *
-       * Прежде «показать классу» переписывало `source` ячейки текстом попытки
-       * обычной правкой от имени преподавателя: заготовка исчезала у всех, в
-       * истории документа автором значился ведущий, отката не было (только
-       * печатать руками), а на экране ничто не говорило, что это чьё-то
-       * решение. Теперь показ — отметка на попытке плюс подписанный кадр
-       * комнате (`council:shown`), и ячейка остаётся ячейкой.
+       * "Show the class" used to rewrite the cell's `source` with the
+       * attempt's text as an ordinary edit on behalf of the teacher: the
+       * template disappeared for everyone, the document history named the
+       * presenter as the author, there was no undo (only typing by hand), and
+       * nothing on screen said that this was someone's solution. Now showing
+       * is a mark on the attempt plus a signed frame to the room
+       * (`council:shown`), and the cell stays a cell.
        */
-      // Кого показывали до этого: по нему различаются «показали другого» и
-      // «нажали на том же ещё раз» — второе обновляет время подписи, но
-      // событием в истории не становится.
+      // Who was shown before: it tells "showed someone else" from "pressed on
+      // the same one again" — the second updates the caption time but does
+      // not become an event in the history.
       const before = shownWho(sessionId, id)
       const changed = setShown(sessionId, id, target, clearing ? null : payload.participantId, Date.now())
-      // Убирать нечего — и говорить нечего: комнате не нужен кадр «плашки нет»
-      // там, где её и не было. А вот ПОКАЗ пересылается всегда, даже когда в
-      // строке ничего не поменялось: «Показать снова» на карточке — это и есть
-      // «обнови подпись», по нему пересчитывается «так же написали ещё K».
+      // Nothing to remove — and nothing to say: the room does not need a "no
+      // badge" frame where there was none. But SHOWING is always resent, even
+      // when nothing changed in the row: "Show again" on the card means
+      // exactly "refresh the caption", and "K more wrote the same" is
+      // recomputed on it.
       if (clearing && changed.length === 0) return
       const touched = target === null ? changed : [...new Set([...changed, target])]
       for (const participantId of touched) mineOut(sessionId, id, participantId)
       boardOut(sessionId, id, touched)
       shownOut(sessionId, id)
       /*
-       * В историю — обоими концами: «вывел решение на экран» и «убрал». Кто
-       * решал, чей код увидит класс, и чей это был код — то же самое, что
-       * «предложил ячейку для разбора» рядом, только со стороны ведущего.
-       * `subjectId` — автор показанного, актёр — преподаватель.
+       * Into the history — both ends: "put a solution on screen" and "took it
+       * off". Who decided whose code the class will see, and whose code it
+       * was — the same as "suggested a cell for review" next to it, only from
+       * the presenter's side. `subjectId` is the author of what was shown, the
+       * actor is the teacher.
        */
       if (clearing) {
         appendActivity(sessionId, payload.participantId, 'council.unshown',
@@ -4486,12 +4733,13 @@ export function dispatch(
         return
       }
       /*
-       * Пауза спрашивается на ПРОСЬБЕ, а не на одобрении.
+       * The pause is asked on the REQUEST, not on the approval.
        *
-       * Иначе она наказывала бы преподавателя: очередь просьб копится, он
-       * разбирает её через минуту — и половина одобрений упирается в паузу,
-       * которую отстояли, пока просьба лежала. Студент же о ней узнаёт там же,
-       * где нажимает, и отсчёт у него под кнопкой стоит с конца его запуска.
+       * Otherwise it would punish the teacher: the queue of requests piles up,
+       * they review it a minute later — and half of the approvals run into a
+       * pause that was already waited out while the request was lying there.
+       * The student, however, learns about it where they press, and their
+       * countdown under the button runs from the end of their run.
        */
       const waitUntil = nextRunAtFor(sessionId, id, payload.participantId, settings.rerunPauseSec)
       if (waitUntil !== null) {
@@ -4530,13 +4778,13 @@ export function dispatch(
 
     case 'council:run:drop': {
       /*
-       * Снять чужой ждущий запуск — не трогая человека.
+       * Take down someone else's waiting run — without touching the person.
        *
-       * Раньше единственной кнопкой у чужой записи в очереди было «убрать с
-       * занятия»: освободить очередь от запуска, поставленного по ошибке,
-       * можно было только вместе с автором. Здесь снимается работа и ничего
-       * больше — текст попытки остаётся, автор остаётся, право запускать
-       * остаётся.
+       * The only button on someone else's queue entry used to be "Remove from
+       * class": freeing the queue from a run queued by mistake was possible
+       * only together with its author. Here the work is taken down and
+       * nothing more — the attempt's text stays, the author stays, the right
+       * to run stays.
        */
       if (!mayLeadCouncil(payload.role)) {
         refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))
@@ -4546,15 +4794,16 @@ export function dispatch(
       const target = optionalId(message.participantId)
       if (!id || !target) return
       if (!cancelCouncilRun(sessionId, id, target)) {
-        // Ушедшую в ядро отсюда не достать: её останавливает «Прервать», и
-        // сказать об этом надо тем же словом, что написано на кнопке.
+        // One that went into the kernel cannot be reached from here: it is
+        // stopped by "Interrupt", and that has to be said with the same word
+        // that is written on the button.
         send(ws, { t: 'error', message: tr("server.theAttemptIsAlreadyRunningOrQueued.fc3fa7") })
         return
       }
       /*
-       * Автору — словом. Запуск, исчезнувший с карточки молча, читается как
-       * поломка: человек нажал, увидел «в очереди», а через минуту очереди
-       * нет и вывода нет.
+       * To the author — in words. A run that disappeared from the card
+       * silently reads as breakage: the person pressed, saw "queued", and a
+       * minute later there is no queue and no output.
        */
       tell(sessionId, target, { t: 'error', message: tr('server.council.runDropped') })
       mineOut(sessionId, id, target)
@@ -4587,7 +4836,8 @@ export function dispatch(
         refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayRunAttemptsIn.fbe78a"))
         return
       }
-      // Студент — только пока консилиум идёт; преподаватель считает и на просмотре.
+      // A student — only while the council is running; the teacher computes
+      // during review too.
       if (payload.role !== 'host' && lock !== 'council') {
         send(ws, { t: 'error', message: `${COUNCIL_CLOSED()}.` })
         return
@@ -4606,11 +4856,12 @@ export function dispatch(
         return
       }
       /*
-       * Пауза между своими запусками — только своя и только не преподавателю.
+       * The pause between one's own runs — only one's own, and never for the
+       * teacher.
        *
-       * Преподаватель не ждёт никогда: он запускает чужую попытку, разбирая её
-       * у доски, и пауза автора к этому нажатию отношения не имеет — как и к
-       * одобрению просьбы, которую спросили на ней же.
+       * The teacher never waits: they run someone else's attempt while
+       * reviewing it at the board, and the author's pause has nothing to do
+       * with that press — nor with approving a request that was asked on it.
        */
       if (payload.role !== 'host' && own) {
         const waitUntil = nextRunAtFor(sessionId, id, target, settings.rerunPauseSec)
@@ -4627,26 +4878,29 @@ export function dispatch(
           source: attempt.text,
           by: payload.role === 'host' ? 'host' : 'author',
           /*
-           * Предел снимается с ячейки в секунду нажатия и едет с заданием: ядро
-           * документа не читает (kernel/council.ts · CouncilJob.limitSec).
-           * Касается и преподавательских запусков: жирный код не становится
-           * легче оттого, кто нажал, а ядро одно на всю тетрадь.
+           * The limit is taken from the cell at the second of the press and
+           * travels with the job: the kernel does not read the document
+           * (kernel/council.ts · CouncilJob.limitSec). It applies to the
+           * teacher's runs too: heavy code does not get lighter depending on
+           * who pressed, and the kernel is one for the whole notebook.
            */
           limitSec: settings.runLimitSec,
           /*
-           * Каждый кадр ядра — к попытке и двоим, кому она видна. Очередь после
-           * конца запуска сдвинулась — ждущим новый номер.
+           * Every kernel frame goes to the attempt and to the two people who
+           * can see it. After a run ends the queue has moved — those waiting
+           * get their new number.
            */
           onChange: (run: CouncilRun | null) => {
             /*
-             * Кадр, который не лёг, никому и не рассылается.
+             * A frame that did not land is not broadcast to anyone.
              *
-             * `recordRun` отвечает `false` в двух случаях: попытки уже нет
-             * (бан) и кадр опоздал — пока запуск ждал очереди, автор сменил
-             * текст, и вывод относится к прежнему. Раньше за выброшенным
-             * кадром всё равно шли `mineOut`/`boardOut`: пустая дельта в
-             * каждый сокет комнаты, по три на попытку. Очередь при этом
-             * сдвинулась по-настоящему — про неё сказать надо.
+             * `recordRun` answers `false` in two cases: the attempt is gone
+             * (a ban) and the frame is late — while the run waited in the
+             * queue, the author changed the text, and the output belongs to
+             * the previous one. Before, `mineOut`/`boardOut` still followed a
+             * thrown-away frame: an empty delta into every socket of the room,
+             * three per attempt. The queue did move for real, though — that
+             * has to be told.
              */
             const landed = recordRun(sessionId, id, target, run)
             const over = run === null || run.state === 'ok' || run.state === 'error'
@@ -4656,9 +4910,10 @@ export function dispatch(
             }
             mineOut(sessionId, id, target)
             boardOut(sessionId, id, [target])
-            // Досчитался запуск того, кто на экране, — под плашкой у всей
-            // комнаты появляется его вывод. Промежуточные кадры в плашку не
-            // едут (`shownFor` берёт только досчитавшийся), и слать их некуда.
+            // The run of whoever is on screen has finished — its output
+            // appears under the badge for the whole room. Intermediate frames
+            // do not go into the badge (`shownFor` takes only a finished one),
+            // and there is nowhere to send them.
             if (over && shownWho(sessionId, id) === target) shownOut(sessionId, id)
             if (over) tellQueued(sessionId)
           },
@@ -4668,12 +4923,13 @@ export function dispatch(
       )
       if (!outcome.queued) {
         /*
-         * Отказ говорит, ЧТО именно занято. Три случая и три разные фразы:
-         * эта же попытка уже считается, эта же стоит в очереди — и, с недавних
-         * пор, в очереди стоит его работа по ДРУГОЙ ячейке этой тетради
-         * (kernel/index.ts · потолок «один запуск на человека в полёте»).
-         * Одна фраза на все три отправляла бы человека искать свою попытку
-         * там, где её нет.
+         * The refusal says WHAT exactly is busy. Three cases and three
+         * different phrases: this same attempt is already being computed,
+         * this same one is in the queue — and, recently, their work on
+         * ANOTHER cell of this notebook is in the queue (kernel/index.ts ·
+         * the "one run per person in flight" ceiling). One phrase for all
+         * three would send the person looking for their attempt where it is
+         * not.
          */
         const here = councilQueuePosition(sessionId, id, target)
         send(ws, {
@@ -4703,18 +4959,20 @@ export function dispatch(
         return
       }
       /*
-       * Адресат — только человек. Рассылка группе одинаковых решений («Всем
-       * N») снята вместе с самой группировкой: письмо, написанное по чужому
-       * тексту, приходило людям, которые его не писали, — совпал лишь код
-       * после нормализации. Старый клиент, приславший `{groupKey}`, получает
-       * молчание, а не рассылку: лучше не отправить, чем отправить не тем.
+       * The recipient is only a person. Sending to a group of identical
+       * solutions ("All N") was removed together with the grouping itself: a
+       * letter written about someone's text reached people who had not
+       * written it — only the code matched after normalisation. An old client
+       * that sends `{groupKey}` gets silence, not a group message: better not
+       * to send than to send to the wrong people.
        */
       const to = message.to as { participantId?: unknown } | undefined
       const participantId = optionalId(to?.participantId)
       if (participantId === undefined) return
       const address = { participantId }
-      // Подпись преподавателя, не оракула: черновик модели сюда попадает уже
-      // правленым текстом, и в ленте студента отвечает человек.
+      // The teacher's signature, not the Oracle's: the model's draft arrives
+      // here already as edited text, and in the student's feed it is a person
+      // who answers.
       const reply = { text, at: Date.now(), by: displayName(sessionId, payload.participantId) }
       const told = setReply(sessionId, id, address, reply)
       if (told.length === 0) {
@@ -4742,35 +5000,38 @@ export function dispatch(
       setMark(sessionId, id, target, correct)
       mineOut(sessionId, id, target)
       boardOut(sessionId, id, [target])
-      // Отметка стоит и в углу проекторной карточки: «верно», сказанное вслух,
-      // на экране держится дольше голоса.
+      // The mark also sits in the corner of the projector card: "correct",
+      // said out loud, stays on screen longer than the voice.
       if (shownWho(sessionId, id) === target) shownOut(sessionId, id)
       return
     }
 
     /*
-     * Попытка целиком — с выводом, которого не было в стопке.
+     * An attempt whole — with the output that was not in the pile.
      *
-     * У полной стопки есть бюджет вывода (`withinBudget`): на пятистах
-     * прогнанных попытках кадр со всеми картинками весит десятки мегабайт, а
-     * пульт рисует их по одной, когда карточку развернули. Это вторая половина
-     * сделки — «покажи вот эту».
+     * The full pile has an output budget (`withinBudget`): with five hundred
+     * run attempts a frame with all the images weighs tens of megabytes,
+     * while the console draws them one at a time, when a card is expanded.
+     * This is the second half of the deal — "show me this one".
      *
-     * Право то же, что у всей стопки: чужую попытку видит только ведущий.
-     * Ответ — обычная дельта, её пульт уже умеет класть в стопку. Попытки
-     * больше нет — молчим: её могли забанить, и `removed` уже уехал.
+     * The right is the same as for the whole pile: only the leader sees
+     * someone else's attempt. The answer is an ordinary delta, which the
+     * console already knows how to put into the pile. The attempt is gone —
+     * we stay silent: it may have been banned, and `removed` has already gone
+     * out.
      */
     /*
-     * «Подсказка оракула» — одному студенту по его же упавшей попытке.
+     * "Oracle hint" — to one student about their own failed attempt.
      *
-     * Сокетом, а не `/ai/ask`, и это несущее решение: тот маршрут пишет вопрос
-     * и ответ в ОБЩИЙ тред комнаты, а тексты консилиума частные — вопрос
-     * «почему у меня падает» вместе с кодом ушёл бы туда, где его прочитают
-     * сорок соседей. Ответ возвращается письмом внутрь самой попытки: его
-     * видят те же двое, что видят её текст, и он переживает перезагрузку.
+     * Over the socket, not `/ai/ask`, and that is a load-bearing decision:
+     * that route writes the question and the answer into the room's SHARED
+     * thread, while council texts are private — the question "why does mine
+     * fail" together with the code would go where forty neighbours will read
+     * it. The answer comes back as a letter inside the attempt itself: it is
+     * seen by the same two people who see its text, and it survives a reload.
      *
-     * Чужую попытку спросить нельзя по устройству кадра: participantId в нём
-     * не называется вовсе, он берётся из токена.
+     * Someone else's attempt cannot be asked about by the frame's design:
+     * participantId is not named in it at all, it is taken from the token.
      */
     case 'council:hint': {
       const id = optionalId(message.cellId)
@@ -4786,9 +5047,10 @@ export function dispatch(
       }
       const attempt = attemptFor(sessionId, id, author)
       /*
-       * Подсказку дают по УПАВШЕМУ запуску, и только по нему: без трейсбека
-       * спрашивать нечего, а «посмотри на мой код и скажи, верно ли» — это
-       * решение за студента, то есть ровно то, от чего консилиум и защищают.
+       * A hint is given on a FAILED run, and only on it: without a traceback
+       * there is nothing to ask, and "look at my code and tell me whether it
+       * is right" is solving it for the student — exactly what the council is
+       * protected from.
        */
       if (!attempt || !runFailed(attempt.run)) {
         hintState(false, tr("server.council.hintNeedsError"))
@@ -4803,9 +5065,10 @@ export function dispatch(
       hintsReading.add(`${sessionId}:${id}:${author}`)
       hintState(true)
 
-      // Условие обычно лежит в маркдаун-ячейке над заданием; заготовка — в
-      // `council_seed`, потому что в самой ячейке её к этому времени может уже
-      // не быть («Показать классу» кладёт туда чужое решение).
+      // The problem statement usually lies in the markdown cell above the
+      // task; the template is in `council_seed`, because by this time it may
+      // no longer be in the cell itself ("Show the class" puts someone else's
+      // solution there).
       const before = (() => {
         const found = findCell(getSessionDoc(sessionId).doc, id)
         if (!found || found.index === 0) return null
@@ -4813,9 +5076,10 @@ export function dispatch(
         return above ? cellSource(above).toString() : null
       })()
       /*
-       * Строка расхода — при приёме, как у `/ai/ask`: запрос к провайдеру уйдёт,
-       * чем бы он ни кончился. Своё действие в учёте: подсказка в разбивке
-       * панели не должна прятаться среди «спросили».
+       * The spending line — on acceptance, as for `/ai/ask`: the request to
+       * the provider will go out however it ends. Its own action in the
+       * accounting: a hint must not hide among "asked" in the panel's
+       * breakdown.
        */
       const usageId = recordQuestion({ sessionId, participantId: author, action: 'hint' })
       appendActivity(sessionId, author, 'oracle.asked', { action: 'hint', source: 'participant', cellId: id })
@@ -4836,8 +5100,8 @@ export function dispatch(
           setHint(sessionId, id, author, { text, at: Date.now(), by: tr('server.council.oracleName') })
           hintState(false)
           mineOut(sessionId, id, author)
-          // Преподавателю подсказка видна тоже: она часть попытки, и на разборе
-          // из неё понятно, что человек уже слышал.
+          // The teacher sees the hint too: it is part of the attempt, and in a
+          // review it shows what the person has already heard.
           boardOut(sessionId, id, [author])
         })
         .catch((err: unknown) => {
@@ -4876,16 +5140,17 @@ export function dispatch(
     }
 
     /*
-     * Решение по предложению оракула принимает сервер.
+     * The server makes the decision on the Oracle's suggestion.
      *
-     * Проверка «ещё открыто» внутри транзакции спасала от двух нажатий в одной
-     * вкладке и не спасала от двух браузеров: каждый читал в своей копии
-     * `'open'`, каждый писал, и Yjs добросовестно сливал обе правки — ячейка
-     * получала патч дважды. У сервера копия одна, и сообщения он разбирает по
-     * очереди: второе видит то, что поставило первое.
+     * The "still open" check inside the transaction saved against two presses
+     * in one tab and did not save against two browsers: each read `'open'` in
+     * its own copy, each wrote, and Yjs conscientiously merged both edits —
+     * the cell got the patch twice. The server has one copy, and it parses
+     * messages in turn: the second sees what the first set.
      *
-     * Имя берётся из соединения, а не из сообщения: в документе будет написано,
-     * кто принял, и написать туда чужое имя нельзя.
+     * The name is taken from the connection, not from the message: the
+     * document will record who accepted, and someone else's name cannot be
+     * written there.
      */
     case 'ai:decide': {
       const entryId = typeof message.entryId === 'string' ? message.entryId : ''
@@ -4894,34 +5159,34 @@ export function dispatch(
       const entry = findChatEntry(doc, entryId)
       if (!entry) return
       /*
-       * Право на принятие спрашивается у ЯЧЕЙКИ, а не только у правила.
+       * The right to accept is asked of the CELL, not only of the rule.
        *
-       * Иначе замок читался бы как поломка: ячейку студенту открыли, он в ней
-       * печатает и запускает, спрашивает оракула — и не может нажать
-       * «принять» на предложение, сделанное для этой самой ячейки. Правило
-       * `edit` при этом никуда не делось: в закрытой ячейке принимает
-       * преподаватель, как и было.
+       * Otherwise the lock would read as breakage: a cell was opened to a
+       * student, they type and run in it, ask the Oracle — and cannot press
+       * "accept" on a suggestion made for that very cell. The `edit` rule has
+       * not gone anywhere: in a closed cell the teacher accepts, as before.
        */
       /*
-       * И у консилиума — отдельным слагаемым.
+       * And for the council — as a separate term.
        *
-       * Правило `edit` в открытой комнате разрешает участнику править ячейки,
-       * а общая ячейка консилиума — это ЗАДАНИЕ: принять в неё предложение
-       * значило бы переписать задание всему классу одним нажатием. Замок при
-       * этом «открытой» её не считает (`open === 'council'`), так что прежняя
-       * проверка её и не замечала. Преподаватель принимает везде: эталон в
-       * общей ячейке — его текст.
+       * The `edit` rule in an open room allows a participant to edit cells,
+       * but the shared council cell is THE TASK: accepting a suggestion into
+       * it would mean rewriting the task for the whole class with one press.
+       * The lock does not consider it "open" (`open === 'council'`), so the
+       * old check did not even notice it. The teacher accepts everywhere: the
+       * reference solution in the shared cell is their text.
        */
       const target = entry.get('cellId')
       const targetLock = typeof target === 'string' ? councilCellOf(sessionId, target).lock : 'closed'
       const targetOpen = targetLock === 'open'
       /*
-       * И у тетради этой ячейки — тем же слагаемым, что и замок.
+       * And for the notebook of this cell — as the same term as the lock.
        *
-       * «Принять» переписывает ячейку, то есть это правка, и она обязана
-       * спрашивать там же, где спрашивает набор: в своей личной тетради студент
-       * принимает предложение оракула и при закрытой комнате, в чужой личной —
-       * не принимает и при открытой.
+       * "Accept" rewrites the cell, that is, it is an edit, and it must ask in
+       * the same place where typing asks: in their own personal notebook a
+       * student accepts the Oracle's suggestion even with the room closed, in
+       * someone else's personal one they do not accept it even with the room
+       * open.
        */
       const targetRoot = typeof target === 'string' ? rootOf(sessionId, target) : null
       if (
@@ -4934,8 +5199,8 @@ export function dispatch(
         ) ||
           (targetLock === 'council' && !mayLeadCouncil(payload.role)))
       ) {
-        // Отклонить может кто угодно: снятая плашка ничего не разрушает — пока
-        // занятие идёт и оракула можно спросить заново.
+        // Anyone may decline: a removed badge destroys nothing — while the
+        // class is in progress and the Oracle can be asked again.
         refuse(
           ws,
           sessionId,
@@ -4950,11 +5215,12 @@ export function dispatch(
         return
       }
       /*
-       * А после звонка — разрушает, и потому закрыто и отклонение. `patchState`
-       * становится `rejected` навсегда, а вернуть предложение нечем: спросить
-       * оракула участник уже не может, и снятая им плашка — это стёртая чужая
-       * работа. Правилом это не выражается: `edit` спрашивают у «принять», у
-       * «отклонить» правила нет вовсе — поэтому та же граница, что у `input`.
+       * After the bell, though, it does destroy, and so declining is closed
+       * too. `patchState` becomes `rejected` for good, and there is no way to
+       * bring the suggestion back: the participant can no longer ask the
+       * Oracle, and a badge they removed is someone else's work erased. A rule
+       * does not express this: `edit` is asked for "accept", and "decline" has
+       * no rule at all — hence the same boundary as for `input`.
        */
       if (!actsAfterClass(isFinished(sessionId), payload.role)) {
         send(ws, { t: 'error', message: tr(OVER) })
@@ -4962,12 +5228,13 @@ export function dispatch(
       }
       const who = displayName(sessionId, payload.participantId)
       /*
-       * От имени нажавшего, а не от имени сервера.
+       * On behalf of whoever pressed, not on behalf of the server.
        *
-       * Приняв патч, сервер переписывает текст ячейки — это правка документа,
-       * и в истории у неё должен быть автор. Без этого версия оказывалась
-       * ничьей: строка читалась как «the room», хотя нажал конкретный человек,
-       * и Ctrl+Z у него самого до собственной правки не доставал.
+       * Having accepted a patch, the server rewrites the cell's text — that is
+       * a document edit, and in history it must have an author. Without this
+       * the version turned out to be nobody's: the row read as "the room",
+       * although a specific person pressed, and their own Ctrl+Z did not reach
+       * their own edit.
        */
       applyOnBehalf(sessionId, payload.participantId, () => {
         if (message.accept) acceptPatch(doc, entry, who)
@@ -4978,19 +5245,20 @@ export function dispatch(
 
     case 'input': {
       /*
-       * Отвечает тот, чья ячейка спрашивает, — или преподаватель. Та же форма,
-       * что у «остановить», и по той же причине: приглашение ко вводу живёт в
-       * документе, потому что его должна видеть комната, — но видеть и
-       * отвечать не одно и то же, а `input()` под паролем тем более.
+       * Whoever's cell is asking answers — or the teacher. The same form as
+       * for "stop", and for the same reason: the input prompt lives in the
+       * document because the room must see it — but seeing and answering are
+       * not the same thing, and `input()` under a password even less so.
        */
       if (payload.role !== 'host' && !startedTheRunningCell(sessionId, payload.participantId)) {
         refuse(ws, sessionId, payload, tr("server.onlyTheParticipantWhoRanTheCell.d7ea88"))
         return
       }
       /*
-       * И не после конца занятия — правилом это не выражается, а действие то
-       * же: строка уходит в чужое ядро и двигает чужой счёт дальше. Читать
-       * приглашение ко вводу в ленте по-прежнему может вся комната.
+       * And not after the end of class — a rule does not express this, but
+       * the action is the same: the string goes into someone else's kernel
+       * and moves someone else's computation further. The whole room can
+       * still read the input prompt in the feed.
        */
       if (!actsAfterClass(isFinished(sessionId), payload.role)) {
         send(ws, { t: 'error', message: tr(OVER) })
@@ -4998,14 +5266,15 @@ export function dispatch(
       }
       const value = typeof message.value === 'string' ? message.value : ''
       /*
-       * И `false` — тоже ответ, а не только бросок.
+       * And `false` is an answer too, not only a throw.
        *
-       * `answerInput` возвращает его, когда ядро ввода уже не ждёт (или ждёт
-       * его в другой ячейке): строка никуда не ушла. Пока этот исход тихо
-       * выбрасывался, «Send» молчал — человек нажимал его ещё и ещё, а ядро
-       * стояло. Приглашение в документе гасит само ядро (kernel/index.ts ·
-       * clearStdinOn), но форма исчезает не мгновенно, и молчание в эту секунду
-       * читается как «отправлено».
+       * `answerInput` returns it when the kernel is no longer waiting for
+       * input (or is waiting for it in another cell): the string went nowhere.
+       * While this outcome was quietly thrown away, "Send" stayed silent — the
+       * person pressed it again and again while the kernel stood still. The
+       * prompt in the document is cleared by the kernel itself
+       * (kernel/index.ts · clearStdinOn), but the form does not disappear
+       * instantly, and silence in that second reads as "sent".
        */
       void answerInput(sessionId, value, optionalId(message.cellId))
         .then((answered) => {
@@ -5024,16 +5293,16 @@ export function dispatch(
 
     case 'format': {
       /*
-       * Названная тетрадь обязана существовать — тот же довод, что у
-       * clearOutputs и Run All: ниже по дороге неизвестный путь означает
-       * «тетрадь не названа» (kernel/format.ts · `cellsAt(...) ?? getCells`), а
-       * это black, переписавший КАЖДУЮ кодовую ячейку тетради КОМНАТЫ по
-       * нажатию во вкладке убранной тетради — у всех и без имени в строке
-       * терминала.
+       * A named notebook must exist — the same argument as for clearOutputs
+       * and Run All: further down the road an unknown path means "no notebook
+       * named" (kernel/format.ts · `cellsAt(...) ?? getCells`), and that is
+       * black rewriting EVERY code cell of THE ROOM'S notebook at a press in
+       * the tab of a removed notebook — for everyone and without a name in the
+       * terminal line.
        *
-       * И раньше права: форматирует black РОВНО эту тетрадь, значит и правило
-       * спрашивается у неё (`rulesIn`), а узнать её доступ можно только зная
-       * корень.
+       * And before the right: black formats EXACTLY this notebook, so the rule
+       * is asked of it (`rulesIn`), and its access can only be learned by
+       * knowing the root.
        */
       const book = bookOf(message)
       const root = rootOfBook(sessionId, book)
@@ -5042,8 +5311,9 @@ export function dispatch(
         return
       }
       /*
-       * Строже обоих соседей: black и переписывает каждую ячейку с кодом, и
-       * выполняется на общем ядре. Хватило бы одного из двух, чтобы спросить.
+       * Stricter than both neighbours: black both rewrites every code cell and
+       * runs on the shared kernel. Either of the two would have been enough to
+       * ask.
        */
       if (
         !may(
@@ -5068,14 +5338,15 @@ export function dispatch(
         .then((outcome) => {
           if (outcome.error) {
             /*
-             * Отказ — нажавшему, а не только в журнал ядра.
+             * The refusal goes to whoever pressed, not only into the kernel
+             * log.
              *
-             * Причина у него теперь по делу: «ядро занято ячейкой», «ячейка
-             * ждёт input()», «в очереди стоят ячейки» (kernel/index.ts ·
-             * formatBlocker). Журнал эти слова получает тоже — их касается вся
-             * комната, — но тот, кто нажал, смотрит на кнопку, а не в ленту
-             * терминала, и без этой строки Format выглядел бы просто не
-             * сработавшим.
+             * Its reason is now to the point: "the kernel is busy with a
+             * cell", "a cell is waiting for input()", "cells are queued"
+             * (kernel/index.ts · formatBlocker). The log gets these words too
+             * — they concern the whole room — but whoever pressed is looking at
+             * the button, not at the terminal feed, and without this line
+             * Format would look as if it simply had not worked.
              */
             send(ws, { t: 'error', message: outcome.error })
             return
@@ -5088,10 +5359,10 @@ export function dispatch(
             tr('server.formattedCells', { count: outcome.changed }),
           ]
           /*
-           * Два разных «не тронули», и сваливать их в одно число нельзя: про
-           * ячейку, которую правили, пока работал black, сказано ровно
-           * обратное тому, что про ячейку, которую он не смог прочитать.
-           * `edited` входит в `skipped`, поэтому вычитается.
+           * Two different "left alone", and they must not be lumped into one
+           * number: about a cell that was edited while black was working, the
+           * exact opposite is said of what is said about a cell it could not
+           * read. `edited` is included in `skipped`, so it is subtracted.
            */
           const unread = outcome.skipped - outcome.edited
           if (unread > 0) {
@@ -5120,18 +5391,20 @@ export function dispatch(
 
     case 'term:open': {
       /*
-       * Открыть ящик — не действие, а взгляд: расшифровка общая, и после конца
-       * занятия её дочитывают так же, как тетрадь. Набрать в нём команду
-       * нельзя — это `term:run` и правило `run`. Цена названа вслух: уснувший
-       * контейнер ящик поднимет, но ящик, который не открывается, читается как
-       * поломка, а не как правило.
+       * Opening the drawer is not an action but a look: the transcript is
+       * shared, and after the end of class it is read to the end just like
+       * the notebook. A command cannot be typed in it — that is `term:run` and
+       * the `run` rule. The price is named out loud: the drawer will wake a
+       * sleeping container, but a drawer that does not open reads as breakage,
+       * not as a rule.
        *
-       * А после звонка эту цену платить уже не за что: поднять контейнер и
-       * завести новую оболочку ради ленты, которую и так отдаёт документ, —
-       * минута ожидания и лишние гигабайты в комнате, где всем, кроме
-       * преподавателя, только читать. Поэтому участнику ящик открывается и
-       * читается, а оболочка остаётся спать. Отказа нет — есть статус: без него
-       * вкладка ждала бы запуска, которого никто не начинал.
+       * After the bell, though, there is nothing left to pay that price for:
+       * starting a container and a new shell for the sake of a feed that the
+       * document hands out anyway is a minute of waiting and extra gigabytes
+       * in a room where everyone except the teacher is read-only. So for a
+       * participant the drawer opens and can be read, while the shell stays
+       * asleep. There is no refusal — there is a status: without it the tab
+       * would wait for a start nobody began.
        */
       if (!actsAfterClass(isFinished(sessionId), payload.role)) {
         send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
@@ -5148,12 +5421,13 @@ export function dispatch(
 
     case 'term:run': {
       /*
-       * То же право, что у ячейки, и по той же причине: `python train.py` в
-       * оболочке — тот же контейнер и то же процессорное время, что и Run.
-       * Без этой строки правило `run` оставалось честным только для тетради:
-       * кнопка над файлом гаснет со словами «Запускает преподаватель», а
-       * строкой ниже тот же скрипт запускается кем угодно. Открыть ящик и
-       * читать чужой вывод по-прежнему может вся комната — оболочка общая.
+       * The same right as for a cell, and for the same reason:
+       * `python train.py` in the shell is the same container and the same CPU
+       * time as Run. Without this line the `run` rule stayed honest only for
+       * the notebook: the button over a file goes dark with the words "the
+       * teacher runs this one", while one line below the same script is run by
+       * anyone. Opening the drawer and reading someone else's output is still
+       * open to the whole room — the shell is shared.
        */
       if (
         !mayRun(
@@ -5197,12 +5471,13 @@ export function dispatch(
         return
       }
       /*
-       * Хост сбрасывает всю очередь, остальные — только своё.
+       * The host resets the whole queue, the others — only their own.
        *
-       * У хоста кнопка означает «прекратить в этой комнате всё» и всегда
-       * означала. У студента она означает «останови мою зависшую команду», и
-       * раньше означала то же, что у хоста: прервав свой `pip install`, он
-       * молча уносил всё, что успел поставить в очередь преподаватель.
+       * For the host the button means "stop everything in this room", and it
+       * always did. For a student it means "stop my hung command", and it
+       * used to mean the same as for the host: having interrupted their own
+       * `pip install`, they silently took away everything the teacher had
+       * managed to queue.
        */
       interruptTerminal(
         sessionId,
@@ -5229,8 +5504,8 @@ export function dispatch(
     }
 
     case 'term:close': {
-      // Закрыть оболочку — то же, что стереть расшифровку: она общая, и гасит
-      // её тот же, кто вправе стирать общее.
+      // Closing the shell is the same as erasing the transcript: it is shared,
+      // and whoever may erase shared things is the one who shuts it down.
       if (
         !may(
           sessionId,
@@ -5258,28 +5533,29 @@ function reason(err: unknown, fallback: string): string {
 }
 
 /**
- * Чернила показываемой страницы — и один сбор на всех, кто пришёл между двумя
- * штрихами.
+ * The ink of the page being shown — and one collection for everyone who came
+ * in between two strokes.
  *
- * Опоздавший обязан увидеть ту же страницу, что и зал, вместе с тем, что на
- * ней уже нарисовано. Раньше это собиралось из ВСЕХ страниц лекции (`inkOf` и
- * `JSON.stringify` — под мегабайт на лекции с двадцатью минутами письма), и
- * после сбоя сети зал возвращался весь сразу: мегабайт умножался на пятьсот.
- * Теперь пачка везёт одну страницу, а про остальные говорит опись
- * (`ink:pages`) — десятки байт вместо мегабайта; страницу, на которую ушли не
- * спросясь, вкладка спрашивает сама (`case 'ink:page'`), а ту, на которую
- * ведущий перевёл зал, сервер досылает (`case 'lecture:page'`).
+ * A latecomer must see the same page as the hall, together with what is
+ * already drawn on it. This used to be assembled from ALL the lecture's pages
+ * (`inkOf` and `JSON.stringify` — nearly a megabyte for a lecture with twenty
+ * minutes of writing), and after a network failure the hall came back all at
+ * once: the megabyte was multiplied by five hundred. Now the batch carries
+ * one page, and the inventory (`ink:pages`) speaks of the rest — tens of
+ * bytes instead of a megabyte; a page someone went to without asking is
+ * requested by the tab itself (`case 'ink:page'`), and one the presenter
+ * moved the hall to is sent after by the server (`case 'lecture:page'`).
  *
- * Кэш при этом остался и стал ключом на пару «перемена в чернилах + страница»:
- * пятьсот вернувшихся вкладок смотрят ОДНУ страницу — ту, что показывает
- * ведущий, — и собирать её пятьсот раз незачем. Номер перемены — сквозной
- * (lecture.ts · inkRevision): пока никто не рисует, кадр тот же самый.
- * Держится он байтами: иначе `ws.send` кодировал бы его в UTF-8 заново на
- * каждый сокет (см. sendFrame).
+ * The cache has stayed, and it is now keyed by the pair "ink revision +
+ * page": five hundred returning tabs look at ONE page — the one the presenter
+ * is showing — and there is no reason to assemble it five hundred times. The
+ * revision number is global (lecture.ts · inkRevision): while nobody draws,
+ * the frame is the same. It is kept as bytes: otherwise `ws.send` would
+ * encode it into UTF-8 anew for every socket (see sendFrame).
  *
- * Одна запись на комнату, а не по записи на страницу: спрошенные страницы
- * ответом и уходят, кэшировать их значило бы держать в памяти всю лекцию ради
- * ленты эскизов, открытой раз за пару.
+ * One entry per room, not one per page: pages that were asked for leave as
+ * the answer, and caching them would mean keeping the whole lecture in memory
+ * for the sake of a thumbnail strip opened once a class period.
  */
 const inkFrames = new Map<string, { rev: number; page: number; frame: Buffer }>()
 
@@ -5310,8 +5586,8 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     rooms.set(sessionId, room)
     // Attach after the room exists, so the first status change has somewhere to go.
     room.unwatch = watchRoomMeta(sessionId)
-    // И один такт пинга на всю комнату — заводится с первым её сокетом и
-    // снимается с последним (см. `pingRoom`).
+    // And one ping tick for the whole room — started with its first socket
+    // and removed with the last (see `pingRoom`).
     room.pingTimer = setInterval(() => pingRoom(sessionId), PING_INTERVAL_MS)
     room.pingTimer.unref?.()
   }
@@ -5319,9 +5595,9 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   const mine = room.byParticipant.get(payload.participantId) ?? new Set<WebSocket>()
   mine.add(ws)
   room.byParticipant.set(payload.participantId, mine)
-  // Роль запоминается здесь и больше нигде: `toHosts` и стопка консилиума
-  // спрашивают только её, а сокет живёт с той ролью, с которой пришёл, —
-  // ровно с той, которую dispatch проверяет на каждом сообщении.
+  // The role is remembered here and nowhere else: `toHosts` and the council
+  // pile ask only it, and a socket lives with the role it came with — exactly
+  // the one dispatch checks on every message.
   if (payload.role === 'host') room.hosts.add(ws)
   owner.set(ws, payload.participantId)
 
@@ -5330,64 +5606,71 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   send(ws, { t: 'role', role: payload.role })
   send(ws, { t: 'instance:language', language: getLocale() })
   /*
-   * И правила — здесь же, а не только при их изменении.
+   * And the rules — right here, not only when they change.
    *
-   * Иначе клиент, чей управляющий сокет моргнул поперёк смены правила, живёт со
-   * старыми правилами до конца пары: слой погашенных кнопок отказывает ровно
-   * тогда, когда он всего нужнее, и человек упирается в отказы сервера вместо
-   * того, чтобы видеть, чего в этой комнате нельзя.
+   * Otherwise a client whose control socket blinked across a rule change
+   * lives with the old rules until the end of the class period: the layer of
+   * greyed-out buttons fails exactly when it is needed most, and the person
+   * runs into server refusals instead of seeing what is not allowed in this
+   * room.
    */
   send(ws, { t: 'rules', rules: storedRules(sessionId) })
   /*
-   * Правила здесь — ХРАНИМЫЕ, а конец занятия едет отдельным кадром, и клиент
-   * накладывает одно на другое сам (shared/rules.ts · rulesAfterClass). Иначе
-   * преподаватель, открывший настройки комнаты после конца пары, увидел бы в
-   * них не то, что выбрал, а то, во что это превратил конец занятия.
+   * The rules here are the STORED ones, and the end of class travels as a
+   * separate frame, and the client lays one over the other itself
+   * (shared/rules.ts · rulesAfterClass). Otherwise a teacher who opened the
+   * room settings after the end of the class period would see in them not
+   * what they chose but what the end of class turned it into.
    *
-   * А кадр — по той же причине, что и правила: зашедший в середине обязан
-   * увидеть, что пара кончилась, сразу, а не по первому отказу.
+   * And the frame — for the same reason as the rules: someone who came in in
+   * the middle must see that the class is over at once, not on the first
+   * refusal.
    */
   send(ws, { t: 'class', finishedAt: finishedAt(sessionId) })
   /*
-   * И что комната смотрит сейчас. Без этой строки человек, зашедший в середине
-   * занятия, не узнает про открытый документ, пока преподаватель его не
-   * переоткроет, — то есть, скорее всего, никогда.
+   * And what the room is watching now. Without this line a person who came
+   * in in the middle of a class will not learn about the open document until
+   * the teacher reopens it — that is, most likely never.
    */
   send(ws, { t: 'board', open: boardOf(sessionId) })
   /*
-   * И лекция, если она идёт: опоздавший должен увидеть ту же страницу, что и
-   * зал, вместе с тем, что на ней уже нарисовано, — а не белый лист до
-   * следующего движения ведущего.
+   * And the lecture, if one is running: a latecomer must see the same page as
+   * the hall, together with what is already drawn on it — not a blank sheet
+   * until the presenter's next movement.
    */
   const lecture = lectureOf(sessionId)
   send(ws, { t: 'lecture', state: lecture })
   if (lecture) {
     /*
-     * Чернила — ТОЛЬКО показываемой страницы, а про остальные едет опись.
+     * Ink — ONLY for the page being shown, and an inventory travels for the
+     * rest.
      *
-     * Двадцать минут разметки — это около мегабайта, и весь он уезжал каждому
-     * вошедшему, хотя смотрит вошедший одну страницу; после сбоя Wi-Fi зал
-     * возвращается весь сразу, и мегабайт умножается на пятьсот. Опись стоит
-     * десятки байт и говорит ровно то, чего в обрезанном кадре больше нет:
-     * какие страницы исписаны. По ней пульт считает заведённые чистые листы и
-     * лента эскизов знает, что просить; недостающее вкладка спрашивает сама
-     * (`ink:page`), а страницу, на которую ведущий перевёл зал, сервер
-     * досылает.
+     * Twenty minutes of markup is about a megabyte, and all of it went to
+     * everyone entering, although the one entering looks at one page; after a
+     * Wi-Fi failure the hall comes back all at once, and the megabyte is
+     * multiplied by five hundred. The inventory costs tens of bytes and says
+     * exactly what the trimmed frame no longer has: which pages are written
+     * on. By it the console counts the blank sheets that were created, and
+     * the thumbnail strip knows what to ask for; the tab asks for what is
+     * missing itself (`ink:page`), and the page the presenter moved the hall
+     * to is sent after by the server.
      *
-     * Порядок — кадр, потом опись: вкладка принимает `ink` как полную замену
-     * чернил, и опись, пришедшая перед ним, описывала бы прошлую лекцию.
+     * The order is the frame, then the inventory: the tab takes `ink` as a
+     * full replacement of the ink, and an inventory arriving before it would
+     * describe the previous lecture.
      */
-    // И придержанные куски — до кадра: вошедший получает страницу целиком, а
-    // склейка, уехавшая следом, дописала бы ему точки, которые в ней уже есть.
+    // And the held pieces go before the frame: the one entering gets the page
+    // whole, and a glued batch going out after it would append points they
+    // already have.
     flushInk(sessionId)
     const ink = inkFrame(sessionId, lecture.page)
     if (ink !== null) sendFrame(ws, ink)
     send(ws, { t: 'ink:pages', pages: inkedPagesOf(sessionId) })
   }
   /*
-   * И консилиум: попытки живут не в документе, и опоздавший иначе не узнал бы
-   * ни о своём листе, ни о стопке (хост), ни о счётчике — до первого чужого
-   * нажатия.
+   * And the council: attempts do not live in the document, and a latecomer
+   * would otherwise learn neither about their own sheet, nor about the pile
+   * (host), nor about the counter — until someone else's first press.
    */
   councilWelcome(ws, sessionId, payload)
 
@@ -5405,13 +5688,14 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
       if (mine.size === 0) current.byParticipant.delete(who)
     }
     /*
-     * Ведущий ушёл молча — гасим его указку сами.
+     * The presenter left silently — we turn off their pointer ourselves.
      *
-     * Пульт на iPad выгружают из памяти, не сказав «off»: вкладка не успевает
-     * ничего послать, а лекция продолжается — стёртой она от этого не
-     * считается. И только если у ведущего в комнате не осталось ни одного
-     * сокета: у него их обычно два (планшет и кафедральный ноутбук), и уход
-     * второго не должен гасить пятно, которое первый держит неподвижно.
+     * The console on the iPad gets unloaded from memory without saying "off":
+     * the tab does not manage to send anything, and the lecture goes on — it
+     * does not count as erased because of that. And only if the presenter has
+     * not a single socket left in the room: they usually have two (a tablet
+     * and the lectern laptop), and the second one leaving must not turn off a
+     * spot the first is holding still.
      */
     if (who && isPresenter(sessionId, who) && !current.byParticipant.has(who)) laserOff(sessionId)
     if (current.sockets.size === 0) {
@@ -5419,16 +5703,18 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
       if (current.pingTimer) clearInterval(current.pingTimer)
       current.pingTimer = null
       rooms.delete(sessionId)
-      // Ждать в этой комнате больше некому: номера, которые в ней помнили,
-      // ничьи.
+      // There is nobody left to wait in this room: the numbers it remembered
+      // are nobody's.
       forgetQueue(sessionId)
-      // И кэшам приветственной пачки незачем переживать последнего ушедшего:
-      // семестр пустых комнат — это семестр списков файлов в памяти процесса.
+      // And the welcome batch caches have no reason to outlive the last one to
+      // leave: a semester of empty rooms is a semester of file lists in
+      // process memory.
       treeSent.delete(sessionId)
       inkFrames.delete(sessionId)
       laserHeld.delete(sessionId)
       inkHeld.delete(sessionId)
-      // Хвосты склейки — туда же: слать их некому и некуда.
+      // The coalescing tails go the same way: there is nobody to send them to
+      // and nowhere.
       forgetTicks(sessionId)
     }
   }
@@ -5442,8 +5728,9 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     if (isBinary) return
     const message = parse(data)
     if (message === TOO_BIG) {
-      // Называем оба потолка, до которых это доходит на самом деле: снимок
-      // попытки и речь к странице. Всё прочее в этот провод в разы короче.
+      // We name both ceilings this actually reaches: an attempt snapshot and a
+      // page's speaker notes. Everything else on this wire is many times
+      // shorter.
       send(ws, {
         t: 'error',
         message:
@@ -5466,44 +5753,47 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   ws.on('close', drop)
   ws.on('error', drop)
 
-  // Переподключившаяся вкладка — это ровно тот, кто приносит с собой ячейку,
-  // «работающую» в процессе, которого больше нет. Один проход на подключение.
+  // A reconnected tab is exactly the one that brings along a cell "running"
+  // in a process that no longer exists. One pass per connection.
   sweepOrphanRuns(sessionId)
   /*
-   * `kernel` — состояние тетради комнаты, как и было: вкладка, открытая до
-   * появления нескольких ядер, читает только его. `kernels` — по тетрадям, для
-   * той, что умеет. Дальше и то и другое живёт в документе (`meta.kernels`), и
-   * этот кадр только про первый миг, пока sync ещё едет.
+   * `kernel` is the state of the room's notebook, as before: a tab opened
+   * before there were several kernels reads only it. `kernels` is per
+   * notebook, for a tab that can handle it. After that both live in the
+   * document (`meta.kernels`), and this frame is only about the first moment
+   * while sync is still on its way.
    */
   send(ws, {
     t: 'ready',
     kernel: kernelStatus(sessionId),
     kernels: kernelStatuses(sessionId),
-    // Не умеет их ровно брокер: Pod он заводит один на занятие. Тестовый
-    // бэкенд умеет — у него ядра живут в одном Jupyter, и сессии по тетрадям
-    // там такие же настоящие, как в контейнере.
+    // Only the broker cannot do them: it creates one Pod per class. The test
+    // backend can — its kernels live in one Jupyter, and per-notebook
+    // sessions there are just as real as in a container.
     ownKernels: kernelBackend() !== 'broker',
   })
   send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
   /*
-   * Дерево — из общего кэша комнаты: после перезапуска сервера сюда приходят
-   * пятьсот вкладок за две секунды, и обход папки на каждую — это секунды
-   * блокировки цикла событий ровно тогда, когда все ждут возврата. Обход не
-   * удался — молчим: пустой список здесь читался бы как «в комнате ничего
-   * нет», а это не то, что случилось.
+   * The tree comes from the room's shared cache: after a server restart five
+   * hundred tabs come here within two seconds, and a folder walk for each is
+   * seconds of event loop blocking exactly when everyone is waiting for the
+   * comeback. If the walk failed, we stay silent: an empty list here would
+   * read as "there is nothing in the room", and that is not what happened.
    *
-   * Остальная цена того же возврата замерена и записана числом, а не догадкой
-   * (tests/sync-storm-cost.test.mts): на семестровой комнате step2 каждого
-   * вернувшегося — 87 КБ и 5.6 мс разбора гейтом, ответ сервера ему — те же 87
-   * КБ. Это ×500 и лежит уже не здесь, а на общем документе.
+   * The rest of the price of the same comeback is measured and written down
+   * as a number, not a guess (tests/sync-storm-cost.test.mts): in a
+   * semester-long room each returning tab's step2 is 87 KB and 5.6 ms of
+   * gate parsing, and the server's answer to it is the same 87 KB. That is
+   * ×500 and lives not here any more but on the shared document.
    */
   /*
-   * И номер списка вошедший получает вместе с ним. Это же и лечит расхождение,
-   * ради которого раньше снималась расписка: пока комната стояла пустой, дерево
-   * могло измениться, и вошедший пересчитал его — то есть сдвинул номер. У
-   * остальных на руках прежний, и первая же дельта к ним не подойдёт: они
-   * спросят дерево целиком сами (`files:ask`), вместо того чтобы применить
-   * перемену к чужому списку.
+   * And the one entering gets the list's number along with it. This also
+   * cures the divergence for which the receipt used to be dropped: while the
+   * room stood empty, the tree may have changed, and the one entering
+   * recomputed it — that is, moved the number. The others hold the old one,
+   * and the very first delta will not fit them: they will ask for the whole
+   * tree themselves (`files:ask`) instead of applying the change to someone
+   * else's list.
    */
   const files = filesFrame(sessionId)
   if (files !== null) sendFrame(ws, files)

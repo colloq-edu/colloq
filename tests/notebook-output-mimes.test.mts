@@ -1,12 +1,13 @@
 /**
- * Чем тетрадь показывает запись вывода — и почему список типов ровно один.
+ * What the notebook uses to show an output record — and why there is exactly
+ * one list of types.
  *
- * Набор растровых типов был переписан от руки рядом с комментарием, который
- * обещал, что он совпадает с `BLOB_MIMES` публикации, «и это не совпадение».
- * Связаны они не были ничем: добавленный в `BLOB_MIMES` тип на опубликованной
- * странице приезжает адресом и рисуется, а в живой комнате приезжает base64 и
- * не рисуется вовсе — `pickMime` его не выбирает. Ровно те два места, которые
- * обязаны совпадать, и расходились бы молча.
+ * The set of raster types was copied by hand next to a comment promising that
+ * it matches the publication's `BLOB_MIMES`, "and that is no coincidence".
+ * Nothing tied them together: a type added to `BLOB_MIMES` arrives on the
+ * published page as an address and is drawn, while in a live room it arrives
+ * as base64 and is not drawn at all — `pickMime` does not choose it. Exactly
+ * the two places that must match would drift apart silently.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -21,46 +22,48 @@ import {
   pickMime,
 } from '../web/src/components/notebook/output-mimes.js'
 
-test('набор картинок — тот же, что выносит публикация', () => {
+test('the image set is the same as the one publication moves out to blobs', () => {
   assert.deepEqual([...IMG_MIMES].sort(), [...BLOB_MIMES].sort())
-  // И он не пуст: пустой список молча увёл бы каждый график в ветку текста.
+  // And it is not empty: an empty list would silently send every plot down
+  // the text branch.
   assert.ok(IMG_MIMES.length >= 4)
 })
 
-test('всё, что публикация выносит в блоб, тетрадь показывает картинкой', () => {
+test('everything publication moves out to a blob, the notebook shows as an image', () => {
   for (const mime of BLOB_MIMES) {
     assert.equal(pickMime({ [mime]: 'AAAA', 'text/plain': '<Figure>' }, true), mime)
     assert.equal(asImage(mime, 'AAAA'), true)
   }
 })
 
-test('картинка выигрывает у текста, а разметка — только у текста', () => {
+test('an image beats text, and markup beats only text', () => {
   assert.equal(pickMime({ 'text/html': '<b>x</b>', 'text/plain': 'x' }, true), 'text/html')
-  // Пока санитайзер не приехал, разметку не показываем вовсе — только текст.
+  // Until the sanitizer has arrived, markup is not shown at all — only text.
   assert.equal(pickMime({ 'text/html': '<b>x</b>', 'text/plain': 'x' }, false), 'text/plain')
   assert.equal(pickMime({ 'image/png': 'AAAA', 'text/html': '<b>x</b>' }, false), 'image/png')
 })
 
-test('незнакомый текстовый тип всё же показывается', () => {
+test('an unfamiliar text type is still shown', () => {
   assert.equal(pickMime({ 'text/markdown': '# hi' }, true), 'text/markdown')
   assert.equal(pickMime({ 'application/vnd.unknown': '{}' }, true), null)
 })
 
-test('адрес блоба узнаётся по /api/, а не по косой черте', () => {
+test('a blob address is recognised by /api/, not by a slash', () => {
   assert.equal(isAddress('/api/p/pub1/blob/abc'), true)
-  // base64 любого JPEG начинается с «/9j/» — по косой черте фотография уезжала
-  // в src сырым payload'ом, то есть битым значком у всей комнаты.
+  // The base64 of any JPEG starts with "/9j/" — going by the slash, a photo
+  // went into src as a raw payload, that is, as a broken icon for the whole
+  // room.
   assert.equal(isAddress('/9j/4AAQSkZJRg=='), false)
-  assert.equal(asImage('text/html', '/api/p/pub1/blob/abc'), true, 'адрес рисуют картинкой из любой ветки')
+  assert.equal(asImage('text/html', '/api/p/pub1/blob/abc'), true, 'an address is drawn as an image from any branch')
 })
 
-test('src собирается только там, где его нет', () => {
+test('src is built only where there is none', () => {
   assert.equal(imageSrc('image/png', '/api/p/pub1/blob/abc'), '/api/p/pub1/blob/abc')
   assert.equal(imageSrc('image/png', 'data:image/png;base64,AAAA'), 'data:image/png;base64,AAAA')
   assert.equal(imageSrc('image/png', 'AA\nAA'), 'data:image/png;base64,AAAA')
 })
 
-test('картинку не режем, таблицу режем', () => {
+test('an image is not cut, a table is', () => {
   const png = { kind: 'data', data: { 'image/png': 'AAAA' }, execCount: null } as const
   const html = { kind: 'data', data: { 'text/html': '<table></table>' }, execCount: null } as const
   const svg = { kind: 'data', data: { 'image/svg+xml': '<svg></svg>' }, execCount: null } as const

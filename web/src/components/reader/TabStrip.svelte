@@ -1,13 +1,15 @@
 <!--
-  Строка вкладок центра: тетрадь и всё, что в комнате открыли.
+  The centre's tab row: the notebook and everything that has been opened in the
+  room.
 
-  Появляется только когда есть что переключать: в семинаре, где никто не открыл
-  ни файла, этой строки нет вовсе, и она не стоит ни пикселя высоты. Это и есть
-  ответ на «чтобы не отняла место» — платит за неё та комната, которая ею
-  пользуется.
+  It appears only when there is something to switch between: in a seminar where
+  nobody has opened a single file this row does not exist at all, and it costs
+  not a pixel of height. That is the answer to "so that it does not take up
+  space" — the room that uses it is the one that pays for it.
 
-  Здесь же — и где преподаватель в документе. Отдельная плашка внизу читалки
-  говорила то же самое вторым голосом; одно место надёжнее двух.
+  This is also where the teacher's position in the document is shown. A separate
+  pill at the bottom of the reader said the same thing in a second voice; one
+  place is more reliable than two.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -24,55 +26,57 @@
   import type { BookAccess } from '@shared/rules'
 
   interface Props {
-    /** Весь ряд — пути открытых файлов. Тетрадь среди них такой же файл. */
+    /** Paths of the open files. The notebook is just a file among them. */
     tabs: string[]
     active: TabKey
-    /** Документ на общем экране комнаты: его вкладка помечена и закрывается иначе. */
+    /** The shared-screen document: its tab is marked and closes differently. */
     board: string | null
-    /** Можно ли убрать общий документ у всей комнаты. */
+    /** Whether the shared document may be removed for the whole room. */
     mayBoard: boolean
-    /** За кем идём по документу, если есть за кем. */
+    /** Whom we follow through the document, if there is anyone to follow. */
     lead: Lead | null
-    /** Ведущий был и пропал — не то же самое, что «ведущего нет». */
+    /** The presenter was here and left — not the same as "no presenter". */
     orphaned: boolean
     /**
-     * Идёт ли смотрящий за ведущим прямо сейчас.
+     * Whether the viewer is following the presenter right now.
      *
-     * Считает читалка: следование снимает любой свой жест, в том числе
-     * прокрутка в пределах той же страницы. Пока этого признака здесь не было,
-     * строка писала «Идём за Анной» тому, кто уже отстал по своей воле, — а
-     * читалка строкой ниже честно говорила «смотрите сами».
+     * Computed by the reader: any gesture of the viewer's own breaks following,
+     * including scrolling within the same page. Until this flag was here, the
+     * row said "Following Anna" to someone who had already fallen behind of
+     * their own accord — while the reader a line below honestly said "you are
+     * on your own".
      */
     following?: boolean
     page: number
     pages: number
     /**
-     * Вкладки, приколотые комнатой: общий экран и лекция.
+     * Tabs pinned by the room: the shared screen and the lecture.
      *
-     * Их не двигают. Порядок приколотых задаёт комната, а не тот, кто на них
-     * смотрит, — и перетащить чужую вкладку значило бы переставить её себе,
-     * а увидеть это как «встало у всех».
+     * They are not moved. The order of pinned tabs is set by the room, not by
+     * whoever is looking at them — and dragging someone else's tab would mean
+     * rearranging it for yourself while seeing it as "moved for everyone".
      */
     pinned?: string[]
     /**
-     * Тетради комнаты вместе с их доступом — по одной записи на открытую.
+     * The room's notebooks together with their access — one entry per open
+     * notebook.
      *
-     * Здесь, а не внутри самой тетради, потому что метка нужна ИЗВНЕ: доступ
-     * объясняет, почему у вкладки, на которую человек ещё не переключился,
-     * кнопки будут серыми, а у соседней нет.
+     * Here, and not inside the notebook itself, because the mark is needed from
+     * OUTSIDE: access explains why a tab the person has not switched to yet
+     * will have grey buttons, while the neighbouring one will not.
      */
     books?: BookTab[]
-    /** Меню «Доступ» — преподавательское: раздаёт права тот, чья комната. */
+    /** The "Access" menu is the teacher's: the room owner hands out rights. */
     mayAccess?: boolean
-    /** Свой participantId: про собственную тетрадь метка говорит «моя». */
+    /** Own participantId: for one's own notebook the mark says "mine". */
     meId?: string | null
-    /** Сменить доступ тетради. Уезжает тем же маршрутом, что и правила комнаты. */
+    /** Change a notebook's access. Goes by the same route as the room rules. */
     onaccess?: (root: string, access: BookAccess) => void
     onshow: (key: TabKey) => void
     onclose: (path: string) => void
-    /** Переставить свою вкладку: `onto === null` — в конец ряда. */
+    /** Move one's own tab: `onto === null` means to the end of the row. */
     onreorder?: (dragged: string, onto: string | null) => void
-    /** Догнать преподавателя: читалка слушает это как счётчик. */
+    /** Catch up with the teacher: the reader listens to this as a counter. */
     oncatchup: () => void
   }
 
@@ -97,26 +101,26 @@
     oncatchup,
   }: Props = $props()
 
-  /* ----------------------------------------------------- доступ к тетради */
+  /* ------------------------------------------------------ notebook access */
 
-  /** Что комната помнит про эту вкладку. `null` — вкладка не тетрадь. */
+  /** What the room knows about this tab; `null`: the tab is not a notebook. */
   const bookOf = (key: string): BookTab | null =>
     books.find((book) => book.path === key) ?? null
 
-  /** Метка доступа этой вкладки — или `null`, когда доступ комнатный. */
+  /** This tab's access mark — or `null` when the access is the room's. */
   const markOf = (key: string) => bookMark(bookOf(key)?.rule ?? null, meId)
 
-  /** Ядро этой тетради считает прямо сейчас. Не тетрадь — молчит. */
+  /** This notebook's kernel is computing right now. Not a notebook: silent. */
   const busyOf = (key: string): boolean => bookOf(key)?.busy === true
 
   /**
-   * Меню открыто на этой тетради — и вот где оно стоит.
+   * The menu is open on this notebook — and here is where it stands.
    *
-   * `position: fixed` и вычисленная точка, а не `absolute` внутри вкладки:
-   * строка вкладок прокручивается по горизонтали (`overflow-x-auto`), а это по
-   * спецификации включает и вертикальное обрезание — выпадающий список внутри
-   * неё срезало бы по нижней кромке в 38 пикселей. Тот же приём, что у меню
-   * бана (panels/BanMenu.svelte), и по той же причине.
+   * `position: fixed` and a computed point, not `absolute` inside the tab: the
+   * tab row scrolls horizontally (`overflow-x-auto`), and by the spec that also
+   * turns on vertical clipping — a dropdown inside it would be cut off at the
+   * 38-pixel bottom edge. The same technique as the ban menu
+   * (panels/BanMenu.svelte), and for the same reason.
    */
   let menuAt = $state<{ root: string; x: number; y: number } | null>(null)
   let opener: HTMLElement | null = null
@@ -124,10 +128,11 @@
 
   const MENU_W = 268
   /*
-   * Высота меню — измеренная, а не вычисленная: четыре строки с подписями дают
-   * на узком экране около трёхсот пикселей. Число нужно ровно затем, чтобы
-   * прижать меню к нижней кромке окна, а не для раскладки; ошибка в большую
-   * сторону безобидна, в меньшую — режет последнюю строку на телефоне.
+   * The menu height is measured, not computed: four rows with captions come to
+   * about three hundred pixels on a narrow screen. The number is needed only to
+   * press the menu against the bottom edge of the window, not for layout; an
+   * error on the high side is harmless, on the low side it cuts off the last
+   * row on a phone.
    */
   const MENU_H = 360
 
@@ -140,9 +145,10 @@
     opener = button
     const box = button.getBoundingClientRect()
     /*
-     * Не вылезать за окно — по обеим осям. Вкладок бывает десяток, и последняя
-     * стоит у правого края; на телефоне в 390 пикселей за край уезжает уже
-     * вторая. Меню, ушедшее под кромку, выглядит как не сработавшее нажатие.
+     * Do not go past the window — on both axes. There can be a dozen tabs, and
+     * the last one stands at the right edge; on a 390-pixel phone the second
+     * one already goes past the edge. A menu that has gone under the edge looks
+     * like a click that did not work.
      */
     menuAt = {
       root: book.root,
@@ -150,16 +156,16 @@
       y: Math.max(8, Math.min(box.bottom + 2, window.innerHeight - MENU_H - 8)),
     }
     /*
-     * Открытый слой сразу забирает клавиатуру — и первой берёт строку, которую
-     * МОЖНО выбрать: «Личная» у преподавательской тетради стоит погашенной, и
-     * фокус на ней означал бы меню, из которого с клавиатуры не выйти вперёд.
+     * The opened layer takes the keyboard at once — and first takes a row that
+     * CAN be chosen: "Personal" is dimmed on a teacher's notebook, and focus on
+     * it would mean a menu the keyboard cannot move forward out of.
      */
     void tick().then(() =>
       menuBox?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus(),
     )
   }
 
-  /** Закрыть и вернуть фокус туда, откуда открыли: меню обходится клавиатурой. */
+  /** Close and return focus to the opener: the menu is keyboard-navigable. */
   function closeMenu(): void {
     if (!menuAt) return
     const back = opener
@@ -176,11 +182,12 @@
   }
 
   /*
-   * Меню закрывается снаружи: щелчок мимо, Escape, исчезнувшая тетрадь.
+   * The menu closes from outside: a click outside, Escape, a notebook that has
+   * disappeared.
    *
-   * Слушатели ставятся только пока меню открыто — по образцу замка на ячейке
-   * (notebook/CellView.svelte), чтобы на строке вкладок не висело двух
-   * оконных обработчиков всю пару.
+   * The listeners are installed only while the menu is open — following the
+   * lock on a cell (notebook/CellView.svelte) — so that two window handlers do
+   * not hang on the tab row for the whole class.
    */
   $effect(() => {
     if (!menuAt) return
@@ -204,22 +211,24 @@
     }
   })
 
-  /* Тетрадь убрали из комнаты, пока меню было открыто, — закрывать нечего. */
+  /* The notebook was removed from the room while the menu was open — there is
+     nothing left to close off. */
   $effect(() => {
     if (menuAt && !books.some((book) => book.root === menuAt?.root)) closeMenu()
   })
 
   /*
-   * Перетаскивание вкладок — и почему оно живёт здесь, а не в общем месте.
+   * Dragging tabs — and why it lives here rather than in a shared place.
    *
-   * Решение «куда встала» считает чистая функция (lib/tabs.svelte · reordered),
-   * ровно как у дерева файлов (lib/tree-move.ts): там же оно и проверяется.
-   * Здесь остаётся мышь — и одна вещь, которую мышью не заменишь: `dragging`
-   * нужен, чтобы знать СТОРОНУ, с которой тянут, и чтобы не рисовать черту
-   * под самой перетаскиваемой вкладкой.
+   * The "where did it land" decision is computed by a pure function
+   * (lib/tabs.svelte · reordered), just as for the file tree
+   * (lib/tree-move.ts): that is also where it is tested. What remains here is
+   * the mouse — and one thing the mouse cannot do without: `dragging` is needed
+   * to know the SIDE it is being dragged from, and so as not to draw the line
+   * under the dragged tab itself.
    */
   let dragging = $state<string | null>(null)
-  /** Куда встанет: путь вкладки, перед/после которой ляжет черта, или конец. */
+  /** Where it lands: the tab the line goes before/after, or the end. */
   let over = $state<string | null>(null)
   let atEnd = $state(false)
 
@@ -229,9 +238,10 @@
     if (!movable(key)) return
     dragging = key
     /*
-     * `move`, а не `copy`: курсор обязан говорить правду о том, что случится.
-     * И текст в обмен — чтобы перетаскивание не выглядело сломанным там, куда
-     * вкладку бросать нельзя (в редактор, в панель файлов): туда уедет путь.
+     * `move`, not `copy`: the cursor has to tell the truth about what will
+     * happen. And text in the transfer — so that the drag does not look broken
+     * where a tab cannot be dropped (into the editor, into the files panel):
+     * the path goes there.
      */
     event.dataTransfer?.setData('text/plain', key)
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
@@ -239,7 +249,8 @@
 
   function aim(event: DragEvent, key: string | null): void {
     if (dragging === null) return
-    // Без preventDefault браузер не считает это местом, куда можно бросить.
+    // Without preventDefault the browser does not treat this as a place where
+    // things can be dropped.
     event.preventDefault()
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
     over = key
@@ -260,11 +271,11 @@
   }
 
   /**
-   * И то же самое с клавиатуры.
+   * And the same from the keyboard.
    *
-   * Перетаскивание мышью — единственный способ переставить вкладку, а строка
-   * вкладок обходится Tab'ом и живёт под фокусом: жест, которого нет у
-   * клавиатуры, здесь означал бы «этой возможности у вас нет».
+   * Dragging with the mouse is the only way to rearrange a tab, and the tab row
+   * is traversed with Tab and lives under focus: a gesture the keyboard does
+   * not have would mean "you do not have this ability" here.
    */
   function nudge(event: KeyboardEvent, key: string): void {
     if (!event.altKey || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return
@@ -278,16 +289,17 @@
   }
 
   /*
-   * Отстал ли смотрящий — то есть предлагать ли «догнать».
+   * Whether the viewer has fallen behind — that is, whether to offer "catch
+   * up".
    *
-   * Не только по номеру страницы: перестать идти можно и не сменив её, одной
-   * прокруткой в пределах листа, и тогда «догнать» — единственная дорога
-   * обратно. Порога по доле высоты здесь нет намеренно (см. follow.ts): не
-   * читалка решает, разъехались ли, а сам человек — следование снимает его
-   * жест.
+   * Not only by page number: one can stop following without changing it, with a
+   * single scroll within the page, and then "catch up" is the only way back.
+   * There is deliberately no threshold on a fraction of the height here (see
+   * follow.ts): it is not the reader that decides whether they have drifted
+   * apart but the person — following is broken by their gesture.
    */
   const behind = $derived(lead !== null && (!following || lead.page !== page))
-  /** Показывают ли сейчас документ — тогда справа стоит счётчик страниц. */
+  /** Is a document shown now? Then a page counter stands on the right. */
   const reading = $derived(typeof active === 'string' && kindOf(active) === 'pdf')
 
   const TAB =
@@ -305,25 +317,25 @@
 </script>
 
 <!--
-  Отступа слева у строки нет: он был только у первой вкладки, и она стояла на
-  двадцать пикселей правее всех остальных. Каждая вкладка платит за себя сама и
-  ровно столько же, сколько соседняя.
+  The row has no left padding: it used to be only on the first tab, and that tab
+  stood twenty pixels to the right of all the others. Every tab pays for itself,
+  and exactly as much as its neighbour.
 -->
 <div class="flex h-[38px] shrink-0 items-stretch overflow-x-auto border-b border-line bg-surface">
   {#each tabs as key (key)}
       <!--
-        Ширина вкладки ужимается до предела и не дальше: десять открытых файлов
-        не должны превращать имена в одну букву. Дальше строка прокручивается —
-        это честнее, чем прятать вкладки в меню, которого не видно.
+        A tab's width shrinks to a limit and no further: ten open files must not
+        turn the names into a single letter. Beyond that the row scrolls — that
+        is more honest than hiding tabs in a menu nobody can see.
       -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <!--
-        Вкладка с меткой доступа шире обычной, и это не украшение: «личная ·
-        Аким Студентов» рядом с именем файла не помещалась в 220 пикселей, и
-        первым в ноль ужималось ИМЯ ФАЙЛА — вкладка оставалась подписанной
-        одной меткой. Двести восемьдесят — это имя плюс метка в обычных
-        случаях; дальше и то и другое режется многоточием, а строка вкладок
-        по-прежнему прокручивается.
+        A tab with an access mark is wider than an ordinary one, and that is not
+        decoration: "personal · Akim Studentov" next to a file name did not fit
+        into 220 pixels, and the first thing to shrink to zero was the FILE
+        NAME — the tab was left labelled with the mark alone. Two hundred and
+        eighty is the name plus the mark in ordinary cases; beyond that both are
+        cut with an ellipsis, and the tab row still scrolls.
       -->
       <div
         class={`relative flex min-w-0 shrink items-stretch ${markOf(key) ? 'max-w-[280px]' : 'max-w-[220px]'} ${active === key ? 'bg-canvas' : ''} ${dragging === key ? 'opacity-40' : ''}`}
@@ -332,9 +344,10 @@
         ondrop={(event) => drop(event, key)}
       >
         <!--
-          Черта показывает, КУДА встанет вкладка, а не над чем висит указатель:
-          тянут влево — слева, вправо — справа. Без неё бросок вслепую, и
-          промахнуться на одну позицию можно, ничего об этом не узнав.
+          The line shows WHERE the tab will land, not what the pointer hovers
+          over: dragging left — on the left, right — on the right. Without it
+          the drop is blind, and one can miss by a position without ever
+          learning about it.
         -->
         {#if over === key && dragging !== null && dragging !== key}
           {@const back = tabs.indexOf(dragging) > tabs.indexOf(key)}
@@ -355,14 +368,15 @@
         >
           <Icon name={iconFor(key)} size={13} class="shrink-0" />
           <!--
-            Ядро этой тетради считает.
+            This notebook's kernel is computing.
 
-            У каждой тетради свой Python и своя очередь, и считать они могут
-            одновременно: без точки соседняя вкладка, в которой идёт обучение,
-            выглядит ровно как пустая, и узнать, кончилось ли, можно только
-            переключившись. Точка, а не слово: место на вкладке уже делят имя
-            файла и метка доступа, а «считает» здесь — факт, а не подпись.
-            Титул вкладки остаётся путём (`title={key}`), поэтому у точки свой.
+            Every notebook has its own Python and its own queue, and they can
+            compute at the same time: without the dot, a neighbouring tab where
+            training is running looks exactly like an idle one, and the only way
+            to learn whether it has finished is to switch to it. A dot, not a
+            word: the file name and the access mark already share the space on
+            the tab, and "computing" here is a fact, not a caption. The tab's
+            title stays the path (`title={key}`), so the dot has its own.
           -->
           {#if busyOf(key)}
             <span
@@ -371,23 +385,23 @@
               aria-label={tr('room.book.busy')}
             ></span>
           {/if}
-          <!-- Имени оставлен пол в три с четвертью строки: метка длинная
-               («личная · Аким Студентов»), и без пола вкладка подписывалась
-               одним многоточием вместо имени файла. -->
+          <!-- The name is given a floor of three and a quarter rem: the mark is
+               long ("personal · Akim Studentov"), and without the floor the tab
+               was labelled with a single ellipsis instead of the file name. -->
           <span class="min-w-[3.25rem] flex-1 truncate font-mono text-code">{baseOf(key)}</span>
           <!--
-            Метка доступа — только там, где он НЕ «как в комнате».
+            An access mark — only where the access is NOT "as in the room".
 
-            Подпись у каждой тетради была бы шумом: у большинства правила
-            комнатные, и «как в комнате» на каждой вкладке не говорит ничего.
-            Она появляется ровно тогда, когда внутри что-то серое, и объясняет
-            это ДО переключения — иначе про чужую личную тетрадь узнаёшь, только
-            открыв её и потыкав в погасшие кнопки.
+            A caption on every notebook would be noise: most have the room's
+            rules, and "as in the room" on every tab says nothing. It appears
+            exactly when something inside is grey, and explains that BEFORE
+            switching — otherwise you learn about someone else's personal
+            notebook only by opening it and poking at the dimmed buttons.
           -->
           {#if markOf(key)}
             {@const mark = markOf(key)!}
-            <!-- Метка ужимается раньше имени файла: у вкладки спрашивают «что
-                 это за файл», а метка отвечает на второй вопрос. -->
+            <!-- The mark shrinks before the file name: a tab is asked "what
+                 file is this", and the mark answers a second question. -->
             <span
               class={`min-w-0 max-w-[8.5rem] shrink truncate px-1.5 py-0.5 text-2xs font-semibold ${
                 mark.tone === 'mine' ? 'bg-accent/15 text-accent-text' : 'bg-raised text-muted'
@@ -396,8 +410,9 @@
             >{mark.text}</span>
           {/if}
           {#if key === board && active !== key && lead}
-            <!-- Где преподаватель — видно и из тетради: иначе о том, что лекция
-                 уехала на другую страницу, узнаёшь, только переключившись. -->
+            <!-- Where the teacher is can be seen from the notebook too:
+                 otherwise you learn that the lecture has moved to another page
+                 only by switching. -->
             <span class="flex shrink-0 items-center gap-1.5 bg-raised px-1.5 py-0.5">
               <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span>
               <span class="text-2xs font-semibold text-muted">{lead.name} {tr('room.ui.737')} {lead.page}</span>
@@ -405,12 +420,12 @@
           {/if}
         </button>
         <!--
-          «Доступ» — преподавательское меню и только у тетрадей.
+          "Access" is a teacher's menu, and only on notebooks.
 
-          Рядом с закрытием, а не в панели правил: доступ — свойство ОДНОЙ
-          тетради, и решают про него, глядя на неё. В панели правил живёт
-          соседний вопрос — что получит тетрадь, которую студент заведёт себе
-          сам (`ownBooks`).
+          Next to closing, not in the rules panel: access is a property of ONE
+          notebook, and it is decided while looking at that notebook. The rules
+          panel holds the neighbouring question — what a notebook that a student
+          creates for themselves will get (`ownBooks`).
         -->
         {#if mayAccess && bookOf(key)}
           {@const book = bookOf(key)!}
@@ -430,11 +445,12 @@
           </button>
         {/if}
         <!--
-          Закрыть. У того, кто ставил документ комнате, — убирает у всех; у
-          открывшего себе — только у себя; у студента, которому общий документ
-          убирать нельзя, — уводит в тетрадь, а комнате документ остаётся.
-          Кнопка живёт на вкладке, а не в панели файлов: закрывают то, что
-          смотрят, там же, где смотрят.
+          Close. For whoever put the document up for the room, it removes it for
+          everyone; for whoever opened it for themselves, only for themselves;
+          for a student who may not remove the shared document, it takes them to
+          the notebook, and the document stays with the room. The button lives
+          on the tab, not in the files panel: people close what they are looking
+          at, right where they are looking at it.
         -->
         <button
           type="button"
@@ -451,9 +467,9 @@
   {/each}
 
   <!--
-    Пустое место справа — тоже цель: бросок сюда ставит вкладку последней.
-    Иначе последнюю позицию нечем занять, кроме как попасть в правую половину
-    крайней вкладки, а это мишень шириной в несколько пикселей.
+    The empty space on the right is a target too: a drop here puts the tab last.
+    Otherwise there is nothing to take the last position with except hitting the
+    right half of the rightmost tab, and that is a target a few pixels wide.
   -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <span
@@ -485,9 +501,9 @@
         </span>
       {:else if orphaned}
         <!--
-          Только тому, кто ЗА КЕМ-ТО ШЁЛ и потерял. У самого преподавателя
-          ведущего нет никогда — за собой не идут, — и говорить ему «вы вышли»
-          значит сообщать о событии, которого не было.
+          Only for someone who WAS FOLLOWING SOMEONE and lost them. The teacher
+          never has a presenter — nobody follows themselves — and telling them
+          "you have left" means reporting an event that did not happen.
         -->
         <span class="text-2xs text-muted">{tr('room.ui.741')}</span>
       {/if}
@@ -500,10 +516,11 @@
 </div>
 
 <!--
-  Меню доступа стоит ВНЕ прокручиваемой строки и позиционируется от окна: см.
-  `menuAt`. Только вход по кривой продукта — уход не анимируется, потому что
-  меню убирают клавишей, а анимировать действие с клавиатуры нельзя (то же
-  решение у BanMenu и у пульта правил).
+  The access menu stands OUTSIDE the scrolling row and is positioned from the
+  window: see `menuAt`. Only the entrance follows the product's curve — the exit
+  is not animated, because the menu is dismissed with a key, and an action from
+  the keyboard must not be animated (the same decision as in BanMenu and the
+  rules console).
 -->
 {#if menuAt}
   {@const open = books.find((book) => book.root === menuAt?.root)}
@@ -519,12 +536,13 @@
       in:fly={{ y: prefersReducedMotion() ? 0 : -4, duration: 120, easing: quintOut }}
     >
       <!--
-        Шапка с именем тетради — как в меню бана (panels/BanMenu.svelte).
+        A header with the notebook's name — as in the ban menu
+        (panels/BanMenu.svelte).
 
-        Меню стоит поверх строки вкладок и открывается от маленькой кнопки на
-        ЛЮБОЙ из них, а горит при этом активная: без имени внутри легко решить,
-        что настраиваешь ту тетрадь, на которую смотришь, — и раздать права не
-        той.
+        The menu stands on top of the tab row and opens from a small button on
+        ANY of the tabs, while the active one stays lit: without the name
+        inside, it is easy to believe you are configuring the notebook you are
+        looking at — and hand out rights to the wrong one.
       -->
       <p class="truncate px-2.5 pb-1 pt-0.5 text-2xs font-bold uppercase tracking-label text-muted">
         {baseOf(open.path)}

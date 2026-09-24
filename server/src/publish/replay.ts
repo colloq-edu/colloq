@@ -1,61 +1,63 @@
 /**
- * Проход по истории комнаты одним документом.
+ * A pass over a room's history with one document.
  *
- * Развернуть тетрадь «на момент строки N» стоит снимка целиком (с выводами —
- * мегабайты) плюс всех дельт после него. Пока это делалось на каждую строку
- * заново, столько раз оно и стоило: до четырёхсот раз у панели кандидатов и до
- * сорока у публикации, синхронно, в процессе, который в эту минуту держит
- * сокеты чужого занятия.
+ * Unfolding the notebook "as of row N" costs the whole snapshot (with
+ * outputs, megabytes) plus every delta after it. While this was done afresh
+ * for every row, it cost that much every time: up to four hundred times for
+ * the candidates panel and up to forty for a publication, synchronously, in
+ * the process that holds the sockets of someone else's class at that minute.
  *
- * Здесь снимок и каждая дельта применяются по одному разу на весь проход:
- * документ идёт от строки к строке вперёд, а собирается заново только там, где
- * между ними появился новый снимок — тогда он дешевле дельт, которые он собой
- * и заменил. Это же условие спасает от подрезанной на ходу истории (db.ts ·
- * trimHistory): она оставляет за собой кейфрейм, и проход, увидев его впереди
- * своего состояния, начинает с него, а не досчитывает по строкам, которых уже
- * нет.
+ * Here the snapshot and each delta are applied once for the whole pass: the
+ * document moves forward from row to row and is rebuilt only where a new
+ * snapshot appeared in between, since then it is cheaper than the deltas it
+ * replaced. The same condition saves us from a history trimmed mid-way
+ * (db.ts · trimHistory): it leaves a keyframe behind, and the pass, seeing it
+ * ahead of its own state, starts from it instead of counting on through rows
+ * that no longer exist.
  *
- * Порядок — по возрастанию `seq`, и только он: назад документ не отматывается
- * (CRDT так не умеет), и просьба о строке ниже уже пройденной собирает новый.
+ * The order is ascending `seq`, and only that: the document does not rewind
+ * (a CRDT cannot do that), and a request for a row below one already passed
+ * builds a new document.
  *
- * Строка, которая не разворачивается, роняет `at` наружу — и документ при этом
- * бросается: в нём половина применённого, и следующая строка обязана начать с
- * чистого. Что значит такая строка, решает зовущий: панель кандидатов считает
- * её пустой, публикация — сломанным шагом.
+ * A row that does not unfold makes `at` throw, and the document is dropped:
+ * it holds half of what was applied, and the next row has to start clean.
+ * What such a row means is for the caller to decide: the candidates panel
+ * treats it as empty, the publication as a broken step.
  *
- * Правило «повтор начинается с ближайшего кейфрейма» живёт в db.ts
- * (`updatesUpTo`) и здесь не повторяется: оттуда берётся начало прохода, а
- * запрос ниже — только его продолжение поверх состояния, которое уже собрано.
+ * The rule "a replay starts from the nearest keyframe" lives in db.ts
+ * (`updatesUpTo`) and is not repeated here: the pass takes its start from
+ * there, and the query below is only its continuation on top of the state
+ * already built.
  */
 import * as Y from 'yjs'
 import { db, updatesUpTo } from '../db.js'
 
-/** Ближайший снимок целого документа не выше строки. */
+/** The nearest whole-document snapshot not above the row. */
 const selectKeyframeAt = db.prepare(`
   SELECT seq FROM doc_history
   WHERE session_id = ? AND seq <= ? AND kind = 'keyframe'
   ORDER BY seq DESC LIMIT 1
 `)
 
-/** Строки, которых в уже собранном документе ещё нет. */
+/** Rows not yet in the document built so far. */
 const selectAfter = db.prepare(`
   SELECT update_blob FROM doc_history
   WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq ASC
 `)
 
-/** Помечает записи, сделанные повтором, — как и в остальной публикации. */
+/** Marks writes made by the replay, as in the rest of the publication. */
 const ORIGIN = 'publish'
 
 export interface Replay {
-  /** Тетрадь на момент строки: тот же документ, продвинутый вперёд. */
+  /** The notebook as of the row: the same document, moved forward. */
   at(seq: number): Y.Doc
-  /** Отпустить документ: пока проход открыт, он держит всю тетрадь в памяти. */
+  /** Release the document: while the pass is open it holds the whole notebook in memory. */
   close(): void
 }
 
 export function openReplay(sessionId: string): Replay {
   let doc: Y.Doc | null = null
-  /** До какой строки документ уже досчитан. */
+  /** The row up to which the document has been computed. */
   let applied = -1
 
   const drop = (): void => {

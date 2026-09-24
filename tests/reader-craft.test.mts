@@ -1,18 +1,18 @@
 import { translate, tr } from '../shared/i18n.js'
 /**
- * Публичные страницы — единственные адреса Colloq, которые открывают с
- * телефона, из дома, через неделю после занятия. И это же единственное место
- * продукта, где нет ни сокета, ни ядра, ни чистой функции: почти всё здесь —
- * разметка, а разметка ломается тихо и откатывается одной строкой.
+ * The public pages are the only Colloq addresses that get opened from a phone,
+ * from home, a week after the class. And they are also the only place in the
+ * product with no socket, no kernel and no pure function: almost everything
+ * here is markup, and markup breaks quietly and reverts with one line.
  *
- * Проверяется то, что проверяется без браузера: что рельса шагов на узком
- * экране существует, что заголовок вкладки не «Colloq», что адрес под курсом —
- * тот, который диктовали, что подпись у скачивания говорит правду и что отказ
- * буфера обмена виден. Раскладка и дерево доступности живут в
- * scripts/ui-check.mts.
+ * What is checked is what can be checked without a browser: that the step rail
+ * exists on a narrow screen, that the tab title is not "Colloq", that the
+ * address under a course is the one that was read out, that the download
+ * caption tells the truth and that a clipboard refusal is visible. Layout and
+ * the accessibility tree live in scripts/ui-check.mts.
  *
- * Тот же приём, что в `panels-craft.test.mts`, и по той же причине: тест со
- * своей копией правила проходит вечно, пока файл уезжает.
+ * The same technique as in `panels-craft.test.mts`, and for the same reason: a
+ * test with its own copy of the rule passes forever while the file drifts away.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -23,7 +23,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка и код без комментариев: объяснение — не обещание. */
+/** Markup and code without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -32,144 +32,146 @@ const SCREEN = code(read('web/src/screens/ReaderScreen.svelte'))
 const COURSE = code(read('web/src/components/reader/CourseList.svelte'))
 const NOTEBOOK = code(read('web/src/components/reader/PublicNotebook.svelte'))
 
-/* ------------------------------------------------- шаги на узком экране */
+/* --------------------------------------------- steps on a narrow screen */
 
-test('на телефоне у публикации есть переход по шагам', () => {
+test('on a phone a publication has step navigation', () => {
   /*
-   * Единственной навигацией была боковая рельса `hidden … sm:flex`: ниже
-   * 640 px её нет вовсе, а шапка при этом честно писала «6 шагов». Публикация
-   * из шести шагов сводилась к первому — остальные достижимы только правкой
-   * адреса. Статическая выгрузка той же публикации рельсу на узком экране
-   * оставляет блоком (publish/render.ts), то есть SPA была хуже статики.
+   * The only navigation was the side rail `hidden … sm:flex`: below 640 px it
+   * does not exist at all, while the header honestly said "6 steps". A six-step
+   * publication came down to the first step — the rest reachable only by editing
+   * the address. The static export of the same publication keeps the rail as a
+   * block on a narrow screen (publish/render.ts), so the SPA was worse than static.
    */
   const navs = SCREEN.match(/<nav[\s\S]*?aria-label=\{tr\('room\.ui\.869'\)\}/g) ?? []
-  assert.ok(navs.length >= 2, 'рельса шагов снова одна — значит, только для широкого экрана')
+  assert.ok(navs.length >= 2, 'there is again only one step rail, which means only for a wide screen')
 
   const narrow = navs.filter((nav) => /\bsm:hidden\b/.test(nav))
-  assert.equal(narrow.length, 1, 'нет рельсы, живущей ИМЕННО на узком экране')
-  assert.doesNotMatch(narrow[0], /\bhidden\b(?!\S)/, 'узкая рельса спрятана сама от себя')
+  assert.equal(narrow.length, 1, 'there is no rail that lives SPECIFICALLY on a narrow screen')
+  assert.doesNotMatch(narrow[0], /\bhidden\b(?!\S)/, 'the narrow rail is hidden from itself')
 
   const wide = navs.filter((nav) => /\bsm:flex\b/.test(nav))
-  assert.equal(wide.length, 1, 'боковая рельса широкого экрана пропала')
+  assert.equal(wide.length, 1, 'the wide-screen side rail is gone')
 })
 
-test('полоса шагов на телефоне прокручивается вбок и липнет к верху', () => {
+test('the step strip on a phone scrolls sideways and sticks to the top', () => {
   const nav = (SCREEN.match(/<nav[^>]*sm:hidden[\s\S]*?>/) ?? [''])[0]
-  assert.match(nav, /overflow-x-auto/, 'одиннадцать шагов в одну строку без прокрутки не влезут')
-  assert.match(nav, /sticky top-0/, 'уйдя вниз по тетради, к следующему шагу перейти нечем')
+  assert.match(nav, /overflow-x-auto/, 'eleven steps in one line will not fit without scrolling')
+  assert.match(nav, /sticky top-0/, 'once down the notebook, there is nothing to move to the next step with')
 })
 
-test('отмеченный шаг подводится к глазам сам', () => {
-  // Открыв ссылку на седьмой шаг, человек видит первые три и ни одного
-  // признака, что он на седьмом: полоса прокручена в начало.
-  assert.match(SCREEN, /scrollIntoView\(/, 'полосу шагов никто не доводит до отмеченного')
-  assert.match(SCREEN, /inline: 'center'/, 'отмеченный шаг не выводится в середину полосы')
+test('the marked step brings itself into view', () => {
+  // Having opened a link to the seventh step, a person sees the first three and
+  // no sign that they are on the seventh: the strip is scrolled to the start.
+  assert.match(SCREEN, /scrollIntoView\(/, 'nothing scrolls the step strip to the marked step')
+  assert.match(SCREEN, /inline: 'center'/, 'the marked step is not brought to the middle of the strip')
 })
 
-/* ------------------------------------------------------ заголовок вкладки */
+/* ---------------------------------------------------------- the tab title */
 
-test('вкладка курса и публикации названа своим именем', () => {
+test('the tab of a course or a publication carries its own name', () => {
   /*
-   * Страница курса — единственный адрес Colloq, который человек сохраняет в
-   * закладки, и это написано на ней самой. В закладках, в истории и в
-   * переключателе вкладок все курсы и все семинары назывались «Colloq».
+   * The course page is the only Colloq address a person bookmarks, and the page
+   * itself says so. In bookmarks, in the history and in the tab switcher, every
+   * course and every seminar was called "Colloq".
    */
-  assert.match(SCREEN, /document\.title\s*=/, 'ReaderScreen снова не трогает заголовок вкладки')
+  assert.match(SCREEN, /document\.title\s*=/, 'ReaderScreen again does not touch the tab title')
   assert.match(
     SCREEN,
     /document\.title = 'Colloq'/,
-    'заголовок не возвращается на выходе — имя семинара останется висеть над комнатой',
+    'the title is not restored on exit: the seminar name would stay hanging over the room',
   )
 })
 
-/* -------------------------------------------------- лишний запрос на шаг */
+/* --------------------------------------------- an extra request per step */
 
-test('шаг публикации не перезагружает семинар', () => {
+test('a publication step does not reload the seminar', () => {
   /*
-   * `readPublicRoute` собирает новый объект на каждое изменение адреса, включая
-   * `/p/x/3` → `/p/x/4`. Эффекты, читающие `publication?.id`, зависели от
-   * объекта — и каждый шаг стоил лишнего GET /api/p/:id, ровно того, что
-   * обещал не делать ключ `{#key}` в App.svelte.
+   * `readPublicRoute` builds a new object on every address change, including
+   * `/p/x/3` → `/p/x/4`. Effects reading `publication?.id` depended on the
+   * object — and every step cost an extra GET /api/p/:id, exactly what the
+   * `{#key}` in App.svelte promised not to do.
    */
-  assert.match(SCREEN, /const pubId = \$derived\(/, 'идентификатор публикации снова не выделен')
+  assert.match(SCREEN, /const pubId = \$derived\(/, 'the publication id is again not split out')
   const effects = SCREEN.match(/\$effect\(\(\) => \{[\s\S]*?\n  \}\)/g) ?? []
-  assert.ok(effects.length > 0, 'эффектов в экране не нашлось — тест смотрит не туда')
+  assert.ok(effects.length > 0, 'no effects found in the screen: the test is looking in the wrong place')
   for (const effect of effects) {
     assert.doesNotMatch(
       effect,
       /publication\?\.id/,
-      'эффект снова зависит от объекта маршрута: лишний запрос семинара на каждый шаг',
+      'an effect again depends on the route object: an extra seminar request on every step',
     )
   }
 })
 
-/* ----------------------------------------------------- скачивание тетради */
+/* ----------------------------------------------- downloading the notebook */
 
-test('скачивание несёт тот шаг, на котором стоят, и подпись это говорит', () => {
+test('the download carries the step being viewed, and the caption says so', () => {
   /*
-   * Ссылка была одна на всех шагах, а сервер собирал по ней тетрадь ПОСЛЕДНЕГО
-   * шага и без выводов (publish/notebook.ts). Читатель, сравнивающий «до» и
-   * «после» на шаге 2 из 5 — ровно тот, ради кого шаг живёт в адресе, — уносил
-   * состояние шага 5 и узнавал об этом, только открыв файл.
+   * The link was one for all steps, and the server built from it the notebook of
+   * the LAST step, without outputs (publish/notebook.ts). A reader comparing
+   * "before" and "after" at step 2 of 5 — exactly the reader for whom the step
+   * lives in the address — took away the state of step 5 and learned of it only
+   * on opening the file.
    *
-   * Сервер принимает `?step=<seq>` и на незнакомый номер отвечает последним
-   * шагом, а не 404 (routes/courses.ts → notebookOfStep). От читалки нужны две
-   * вещи: нести в ссылке свой шаг и не обещать словами чужой — «последнего
-   * шага» там, где отдаётся последний, «этого шага» там, где отдаётся текущий.
+   * The server accepts `?step=<seq>` and answers an unknown number with the last
+   * step rather than a 404 (routes/courses.ts → notebookOfStep). Two things are
+   * needed from the reader: to carry its own step in the link and not to promise
+   * another one in words — "the last step" where the last one is served, "this
+   * step" where the current one is.
    */
   const at = SCREEN.indexOf('notebook.ipynb')
-  assert.ok(at > 0, 'ссылки на .ipynb на странице нет')
+  assert.ok(at > 0, 'there is no .ipynb link on the page')
   const near = SCREEN.slice(at, at + 600)
-  assert.match(near, /\?step=\$\{current\}/, 'ссылка снова одна на все шаги — унесут последний')
-  assert.match(near, /tr\('room\.ui\.882'\)/, 'подпись молчит о том, что отдаёт шаг, на котором стоят')
-  assert.match(near, /tr\('room\.ui\.881'\)/, 'на последнем шаге подпись не называет его последним')
-  assert.match(translate('ru', 'room.ui.882'), /без выводов/, 'ссылка молчит о том, что выводов в файле не будет')
+  assert.match(near, /\?step=\$\{current\}/, 'the link is again one for all steps: people will take away the last one')
+  assert.match(near, /tr\('room\.ui\.882'\)/, 'the caption says nothing about serving the step being viewed')
+  assert.match(near, /tr\('room\.ui\.881'\)/, 'on the last step the caption does not call it the last')
+  assert.match(translate('ru', 'room.ui.882'), /без выводов/, 'the link says nothing about the file having no outputs')
 })
 
-/* ------------------------------------------------------------ адрес курса */
+/* ----------------------------------------------------- the course address */
 
-test('под курсом стоит адрес, который диктовали вслух', () => {
+test('under a course stands the address that was read out loud', () => {
   /*
-   * Панель копирует и диктует `/c/<slug>`, статическая страница печатает
-   * `slug ?? id` — а SPA печатала восемь случайных букв идентификатора под
-   * словами «сохраните эту страницу».
+   * The panel copies and reads out `/c/<slug>`, the static page prints
+   * `slug ?? id` — while the SPA printed eight random letters of the id under
+   * the words "save this page".
    */
-  assert.match(COURSE, /\/c\/\{course\.slug \?\? course\.id\}/, 'адрес курса снова по id')
+  assert.match(COURSE, /\/c\/\{course\.slug \?\? course\.id\}/, 'the course address is by id again')
 })
 
-/* ------------------------------------------------- отказ буфера обмена */
+/* ------------------------------------------------- a clipboard refusal */
 
-test('отказ буфера обмена виден на экране, а не в консоли', () => {
+test('a clipboard refusal is visible on screen, not in the console', () => {
   /*
-   * `copyText` бросает, когда разрешения нет или execCommand отказал: на
-   * http-инстансе кафедры и в строгом браузере кнопка «скопировать» не делала
-   * ничего — ни галочки, ни слова, отклонение уходило в unhandledrejection.
+   * `copyText` throws when there is no permission or execCommand refused: on a
+   * department's http instance and in a strict browser the "copy" button did
+   * nothing — no checkmark, no word, the rejection went to unhandledrejection.
    */
-  assert.match(NOTEBOOK, /catch \{/, 'копирование снова без обработки отказа')
-  assert.match(NOTEBOOK, /refused/, 'состояния «не скопировалось» нет')
-  assert.match(NOTEBOOK, /tr\('room\.ui\.731'\)/, 'человеку не сказано ни слова и не предложен выход')
+  assert.match(NOTEBOOK, /catch \{/, 'copying again has no refusal handling')
+  assert.match(NOTEBOOK, /refused/, 'there is no "not copied" state')
+  assert.match(NOTEBOOK, /tr\('room\.ui\.731'\)/, 'the person is told nothing and offered no way out')
 })
 
-test('кнопка ячейки — с откликом на нажатие и с целью под палец', () => {
+test('the cell button has press feedback and a finger-sized target', () => {
   const button = (NOTEBOOK.match(/<button[\s\S]*?<\/button>/) ?? [''])[0]
-  assert.match(button, /\bpress\b/, 'нажимаемое без .press: единственное доказательство, что клик услышан')
+  assert.match(button, /\bpress\b/, 'pressable without .press: the only proof that the click was heard')
   const size = /h-\[(\d+)px\] w-\[(\d+)px\]/.exec(button)
-  assert.ok(size, 'размер кнопки копирования перестал быть явным')
+  assert.ok(size, 'the copy button size is no longer explicit')
   assert.ok(
     Number(size[1]) >= 24 && Number(size[2]) >= 24,
-    `цель ${size[1]}×${size[2]} px на странице, которую открывают с телефона`,
+    `a ${size[1]}×${size[2]} px target on a page that is opened from a phone`,
   )
 })
 
-/* --------------------------------------------------------- мёртвый код */
+/* ----------------------------------------------------------- dead code */
 
-test('класс, которого не знает ни одна таблица стилей, не навешивается', () => {
+test('a class no stylesheet knows is not applied', () => {
   /*
-   * `documentElement.classList.add('reader')` обещал «режим читалки», а правил
-   * для `.reader` в проекте нет ни одного: следующий, кто станет искать, почему
-   * публичная страница выглядит иначе, будет искать несуществующее.
+   * `documentElement.classList.add('reader')` promised a "reader mode", but the
+   * project has not a single rule for `.reader`: the next person to look for why
+   * the public page looks different would be looking for something that does not exist.
    */
-  assert.doesNotMatch(SCREEN, /classList\.add\('reader'\)/, 'мёртвый класс вернулся')
+  assert.doesNotMatch(SCREEN, /classList\.add\('reader'\)/, 'the dead class is back')
   const css = read('web/src/index.css')
-  assert.doesNotMatch(css, /(^|[\s,{])(html)?\.reader\b/m, 'правило для .reader появилось — тогда и класс вернуть')
+  assert.doesNotMatch(css, /(^|[\s,{])(html)?\.reader\b/m, 'a rule for .reader appeared: then bring the class back too')
 })

@@ -1,25 +1,30 @@
 /**
- * Образ colloq-vast (deploy/vast/): что обязано сходиться с остальным кодом.
+ * The colloq-vast image (deploy/vast/): what must agree with the rest of the
+ * code.
  *
- * Сам образ собирается и проверяется настоящим docker в `make vast-image-run`
- * (deploy/vast/smoke.sh: dind вместо VM, комната, ячейка, копия), и в сюите его
- * нет — docker здесь есть не у всех. Но пять вещей ломаются молча — первые
- * четыре при правке СОСЕДНЕГО файла, — а узнают о них только на арендованной
- * машине. Их и держит этот файл:
+ * The image itself is built and checked by real docker in
+ * `make vast-image-run` (deploy/vast/smoke.sh: dind instead of a VM, a room, a
+ * cell, a copy), and it is not in the suite — not everyone has docker here.
+ * But five things break silently — the first four when a NEIGHBOURING file is
+ * edited — and people learn about them only on a rented machine. This file
+ * holds them:
  *
- *   1. то, что Dockerfile копирует из репозитория, существует: переименовали
- *      скрипт — сборка образа упадёт уже в CI, а не у владельца перед арендой;
- *   2. сервер действительно пустит докер-бэкенд с тем окружением, которое ему
- *      даёт точка входа (NODE_ENV=development, KERNEL_BACKEND=docker): запрети
- *      кто-нибудь docker вне тестов — образ поднимется и откажет на первом Run;
- *   3. имя образа ядра то же, что ждёт pool.ts: точка входа собирает и тянет
- *      `colloq-kernel:<окружение>`, и другое имя значит «окружение не собрано»
- *      на каждой комнате при собранном образе;
- *   4. frpc в образе той же версии, что ставят ретранслятору и прежнему пути
- *      на VM: протокол frp между версиями ломался;
- *   5. повторный on-start (перезагрузка VM) не трогает живой инстанс: не
- *      пересоздаёт контейнер из-за порядка строк в colloq.env и не откатывает
- *      образ, выбранный `colloq-host update`, к тому, что стоял в шаблоне.
+ *   1. what the Dockerfile copies from the repository exists: rename a script
+ *      and the image build fails already in CI, not for the owner right before
+ *      renting;
+ *   2. the server really allows the docker backend with the environment the
+ *      entrypoint gives it (NODE_ENV=development, KERNEL_BACKEND=docker): if
+ *      someone forbids docker outside tests, the image comes up and refuses on
+ *      the first Run;
+ *   3. the kernel image name is the one pool.ts expects: the entrypoint builds
+ *      and pulls `colloq-kernel:<environment>`, and a different name means
+ *      "environment not built" in every room while the image is built;
+ *   4. frpc in the image is the same version as the one installed on the relay
+ *      and on the old VM path: the frp protocol has broken between versions;
+ *   5. a repeated on-start (a VM reboot) does not touch a live instance: it
+ *      does not recreate the container because of the line order in
+ *      colloq.env and does not roll the image chosen by `colloq-host update`
+ *      back to the one in the template.
  */
 import './_env.mts'
 import test from 'node:test'
@@ -35,7 +40,7 @@ const DOCKERFILE = read('deploy/vast/Dockerfile')
 const ENTRYPOINT = read('deploy/vast/entrypoint.sh')
 
 test('every path the vast Dockerfile copies from the repository exists', () => {
-  // Строки продолжения (`\`) склеиваются: COPY бывает многострочным.
+  // Continuation lines (`\`) are joined: COPY can span several lines.
   const lines = DOCKERFILE.replace(/\\\n/g, ' ').split('\n')
   const sources: string[] = []
   for (const line of lines) {
@@ -76,7 +81,7 @@ test('the image pins the same frp version as the relay and the VM path', () => {
   const image = /ARG FRP_VERSION=(\S+)/.exec(DOCKERFILE)?.[1]
   assert.ok(image, 'deploy/vast/Dockerfile should pin FRP_VERSION')
   for (const file of ['scripts/relay-setup.sh', 'scripts/vast-legacy.sh']) {
-    // С кавычками и без: `FRP_VERSION="${FRP_VERSION:-0.71.0}"` и `FRP_VERSION=${FRP_VERSION:-0.71.0}`.
+    // With and without quotes: `FRP_VERSION="${FRP_VERSION:-0.71.0}"` and `FRP_VERSION=${FRP_VERSION:-0.71.0}`.
     const pinned = /^FRP_VERSION="?\$\{FRP_VERSION:-([0-9.]+)\}"?/m.exec(read(file))?.[1]
     assert.equal(pinned, image, `${file} pins frp ${pinned}, the image ${image}`)
   }
@@ -95,14 +100,15 @@ test('the vast shell scripts parse', () => {
 
 test('a repeated on-start leaves a running instance and its image alone', () => {
   const host = read('deploy/vast/colloq-host')
-  // Отпечаток настроек решает, пересоздавать ли контейнер. write_env переносит
-  // каждый переписанный ключ в конец файла, ensure_gpu дописывает KERNEL_GPUS
-  // последним — те же значения приходят в другом порядке, и без sort вторая
-  // загрузка GPU-машины снимала живой сервер (проверено заглушкой docker).
+  // The settings fingerprint decides whether to recreate the container.
+  // write_env moves every rewritten key to the end of the file, ensure_gpu
+  // appends KERNEL_GPUS last — the same values arrive in a different order,
+  // and without sort the second boot of a GPU machine took down the live
+  // server (checked with a docker stub).
   const sum = /\nconfig_sum\(\) \{\n([^\n]*)/.exec(host)?.[1] ?? ''
   assert.match(sum, /sort "\$ENV_FILE"/, 'config_sum should hash colloq.env sorted, not in file order')
-  // COLLOQ_IMAGE из on-start только заводит /etc/colloq/image; после update
-  // файлом владеет update, иначе перезагрузка откатывала бы версию.
+  // COLLOQ_IMAGE from on-start only seeds /etc/colloq/image; after an update
+  // the file belongs to update, otherwise a reboot would roll the version back.
   const image = /\nimage\(\) \{\n([\s\S]*?)\n\}/.exec(host)?.[1] ?? ''
   assert.match(image, /elif \[ ! -s "\$IMAGE_FILE" \] && \[ -n "\$\{COLLOQ_IMAGE:-\}" \]/,
     'COLLOQ_IMAGE should only seed /etc/colloq/image, never overwrite it')

@@ -9,11 +9,11 @@
  * actually type; `alt` carries the second word people reach for — "dinosaur"
  * finds both dinosaurs, "ladybug" finds the ladybird.
  *
- * Живёт в shared, а не у экрана входа, потому что судья уникальности —
- * сервер: он подменяет занятую метку свободной на входе (routes/sessions.ts ·
- * `/join`), и выбирать ему не из чего, кроме этого списка. Два списка,
- * разошедшиеся на одну строку, дали бы комнату, где сервер раздаёт зверя,
- * которого браузер не рисует вовсе.
+ * Lives in shared rather than next to the join screen, because the judge of
+ * uniqueness is the server: it swaps a taken mark for a free one at the door
+ * (routes/sessions.ts · `/join`), and it has nothing to choose from but this
+ * list. Two lists that drifted apart by one line would give a room where the
+ * server hands out an animal the browser does not draw at all.
  */
 export interface Mark {
   mark: string
@@ -67,13 +67,14 @@ export const MARKS: readonly Mark[] = [
 const BY_MARK = new Map(MARKS.map((entry) => [entry.mark, entry]))
 
 /**
- * Метка ли это вообще.
+ * Whether this is a mark at all.
  *
- * Спрашивает Avatar, и вопрос не праздный: метка приезжает в чужие браузеры
- * через присутствие, то есть как угодно правленным клиентом, а рисуется у
- * каждого в комнате — в списке людей, в шапке, под ячейкой, в терминале.
- * Строка из этого списка — единственное, что продукт когда-либо выдаёт;
- * всё остальное рисовать НЕ надо.
+ * Avatar asks, and the question is not idle: a mark reaches other people's
+ * browsers through presence, that is, from a client that may have been
+ * modified in any way, and it is drawn for everyone in the room — in the list
+ * of people, in the header, under a cell, in the terminal. A string from this
+ * list is the only thing the product ever hands out; anything else must NOT
+ * be drawn.
  */
 export function isMark(value: string | null | undefined): boolean {
   return !!value && BY_MARK.has(value)
@@ -85,12 +86,12 @@ export function markName(mark: string | null): string {
 }
 
 /**
- * Кто уже носит метку — только этот вопрос, и всё равно чем отвечено.
+ * Who already wears a mark — only that question, whatever answers it.
  *
- * Экран входа держит таблицу «метка → цвет носителя» (она же рисует занятых
- * серым), сервер — просто множество занятых. Общей функции нужна одна
- * операция, и требовать ради неё одинаковую коллекцию с обеих сторон значит
- * заставить одну из них строить лишнюю.
+ * The join screen keeps a "mark → wearer's color" table (it is also what
+ * draws the taken ones in gray), the server just a set of taken ones. The
+ * shared function needs one operation, and demanding the same collection on
+ * both sides for its sake would force one of them to build an extra one.
  */
 export type MarkSet = { has(mark: string): boolean }
 

@@ -1,37 +1,40 @@
 /**
- * «Та ли это сеть» — вопрос, ценой ответа на который идут переменные семинара.
+ * "Is this the right network" — a question with the seminar's variables
+ * riding on the answer.
  *
- * Контейнер комнаты переживает перезапуск сервера намеренно: `make run` после
- * правки не должен стоить занятию состояния. Единственное, что стоит на этом
- * пути, — сравнение режима сети: не сошлось, значит до контейнера нет дороги,
- * значит сносим и поднимаем пустой. Сравнение было со словом `default`, и на
- * docker 24+ (`bridge`) оно не сходилось НИКОГДА — то есть каждый первый Run
- * после перезапуска молча уносил всё, что комната успела посчитать.
+ * The room container survives a server restart on purpose: `make run` after
+ * an edit must not cost the class its state. The only thing standing in the
+ * way is the network mode comparison: if it does not match, there is no road
+ * to the container, so we tear it down and start an empty one. The comparison
+ * was against the word `default`, and on docker 24+ (`bridge`) it NEVER
+ * matched — that is, every first Run after a restart silently took away
+ * everything the room had managed to compute.
  *
- * Настоящего docker в сюите нет (см. `_env.mts`), поэтому проверяется чистое
- * правило — та самая строка, в которой всё и было.
+ * There is no real docker in the suite (see `_env.mts`), so the pure rule is
+ * checked — the very line where the whole problem was.
  */
 import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { networkMatches } from '../server/src/kernel/pool.js'
 
-test('в хостовом режиме контейнер без --network считается своим', () => {
-  // Docker 20 и его `default`, docker 24+ и его `bridge` — одно и то же
-  // положение дел: контейнер поднят без `--network`, порт опубликован на петле.
+test('in host mode a container without --network counts as ours', () => {
+  // Docker 20 with its `default` and docker 24+ with its `bridge` are the same
+  // state of affairs: the container was started without `--network`, and the
+  // port is published on loopback.
   assert.equal(networkMatches('default', ''), true)
   assert.equal(networkMatches('bridge', ''), true)
   assert.equal(networkMatches('  bridge  ', ''), true)
 })
 
-test('в хостовом режиме контейнер из сети compose своим не считается', () => {
-  // До него нет дороги: порт не опубликован, а по имени контейнера с хоста не
-  // ходят. Такой пересоздать — правильно.
+test('in host mode a container from the compose network does not count as ours', () => {
+  // There is no road to it: the port is not published, and the host does not
+  // reach containers by name. Recreating such a container is right.
   assert.equal(networkMatches('colloq', ''), false)
   assert.equal(networkMatches('host', ''), false)
 })
 
-test('в сетевом режиме сходится только названная сеть', () => {
+test('in network mode only the named network matches', () => {
   assert.equal(networkMatches('colloq', 'colloq'), true)
   assert.equal(networkMatches('bridge', 'colloq'), false)
   assert.equal(networkMatches('default', 'colloq'), false)

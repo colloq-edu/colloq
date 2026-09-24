@@ -1,19 +1,20 @@
 /**
- * Русское числительное: один шаг, два шага, пять шагов.
+ * Russian plural agreement: один шаг, два шага, пять шагов (one step, two
+ * steps, five steps).
  *
- * В shared, а не рядом с экраном, потому что подпись с числом рисуют ДВА
- * отрисовщика: компоненты комнаты и читалки — и статические страницы, которые
- * собирает сервер для Pages (`server/src/publish/render.ts`). Пока правило
- * лежало только в `web/src/lib`, у второго была своя копия тернарником
- * («n < 5 ? шага : шагов», «N шага»), и она врала: «5 шага», «12 шага»,
- * «21 шагов» — в шапке каждой многошаговой страницы на colloq.ru.
+ * In shared rather than next to a screen, because a label with a number is
+ * drawn by TWO renderers: the room and reader components, and the static pages
+ * the server builds for Pages (`server/src/publish/render.ts`). While the rule
+ * lived only in `web/src/lib`, the second one had its own ternary copy
+ * ("n < 5 ? шага : шагов", "N шага"), and it lied: "5 шага", "12 шага",
+ * "21 шагов" — in the header of every multi-step page on colloq.ru.
  *
- * Правило одно и целиком здесь: единица, кроме одиннадцати; двойка-четвёрка,
- * кроме двенадцати-четырнадцати; всё остальное.
+ * There is one rule and all of it is here: one, except eleven; two to four,
+ * except twelve to fourteen; everything else.
  *
- * Возвращает СЛОВО, а не «число слово»: у страницы курса единственное число
- * пишется словом («одна страница»), и подставить его туда может только тот, кто
- * строит фразу.
+ * Returns the WORD, not "number word": on a course page the singular is
+ * spelled out as a word ("одна страница", one page), and only the code that
+ * builds the phrase can put it there.
  */
 export function plural(n: number, one: string, few: string, many: string): string {
   const mod10 = n % 10

@@ -1,49 +1,57 @@
 <!--
-  Чернила и указка поверх страницы.
+  Ink and the pointer on top of the page.
 
-  Холст ровно по странице, координаты — доли этой страницы. У проектора 1920
-  пикселей, у планшета 1180, у студента — половина окна браузера: пиксель
-  ведущего не значит ничего ни у кого из них, а доля значит одно и то же везде.
+  A canvas exactly the size of the page, coordinates as fractions of that
+  page. The projector has 1920 pixels, the tablet 1180, a student half a
+  browser window: the presenter's pixel means nothing to any of them, while
+  a fraction means the same thing everywhere.
 
-  Рисует ВСЕГДА, а принимает ввод — только у ведущего. Это один компонент, а не
-  два, ровно потому, что рисовать и показывать нарисованное должно одним кодом:
-  разойдясь, они дадут линию, которая у ведущего идёт под пером, а на проекторе
-  ложится на сантиметр левее, и заметить это можно только в аудитории.
+  It ALWAYS draws, and takes input only for the presenter. It is one
+  component rather than two precisely because drawing and showing what was
+  drawn must be one piece of code: if they drifted apart, they would give a
+  line that runs under the pen for the presenter and lies a centimetre to the
+  left on the projector, and nobody could notice it anywhere but in the
+  lecture hall.
 
-  ТРИ ХОЛСТА, А НЕ ОДИН — и это главное решение файла.
+  THREE CANVASES, NOT ONE, and that is the main decision of this file.
 
-  Сначала холст был один и рисовал ровно то, что подтвердил сервер: свою линию
-  ведущий видел после кругосветки — сто миллисекунд между пером и пикселем,
-  и это ощущалось не как «сеть медленная», а как «планшет сломан». Появился
-  второй, МОКРЫЙ, холст для своих ещё не подтверждённых штрихов. Но на него же
-  легли указка и кольцо ластика, и каждый кадр горящего хвоста перерисовывал
-  все мокрые штрихи целиком: указка на исписанной странице «прыгала», потому
-  что кадр стоил дороже кадра.
+  At first there was one canvas, and it drew exactly what the server had
+  confirmed: the presenter saw their own line after a round trip, a hundred
+  milliseconds between pen and pixel, and that felt not like "the network is
+  slow" but like "the tablet is broken". A second, WET, canvas appeared for
+  one's own not-yet-confirmed strokes. But the pointer and the eraser ring
+  landed on it too, and every frame of the glowing tail redrew all the wet
+  strokes in full: on a heavily inked page the pointer "jumped", because a
+  frame cost more than a frame's time.
 
-  Теперь их три, и у каждого своя частота жизни:
-  — СУХОЙ (`ink-dry`): чернила комнаты, одни у всех — у ведущего, у зала, на
-    проекторе. Меняется по эху сервера, и то приращением: перерисовать целиком
-    его заставляет только исчезновение штриха, смена страницы или размера.
-  — МОКРЫЙ (`ink-wet`): только свои незакрытые и неподтверждённые штрихи.
-    Растёт прямо из обработчика пера, кусками кривой, — ни `clearRect`, ни
-    полного пути на каждое движение. Гаснет штрих не по подъёму пера, а когда
-    его эхо доехало и легло на сухой холст, — по подъёму в линии была бы дыра
-    ровно длиной в круг до сервера.
-  — ЖИВОЙ (`ink-live`): всё, что горит и гаснет само — голова и хвост указки,
-    кольцо ластика, предсказанный кончик штриха. Один цикл кадров, дешёвая
-    очистка, ничего долговечного: его можно стереть в любой момент, и ни у
-    кого ничего не пропадёт.
+  Now there are three, and each has its own rhythm of life:
+  — DRY (`ink-dry`): the room's ink, the same for everyone: the presenter,
+    the audience, the projector. It changes on the server's echo, and even
+    then incrementally: only a stroke disappearing, a page change or a size
+    change makes it redraw in full.
+  — WET (`ink-wet`): only one's own unfinished and unconfirmed strokes. It
+    grows right from the pen handler, in pieces of curve, with no
+    `clearRect` and no full path on every movement. A stroke is put out not
+    when the pen lifts but when its echo has arrived and landed on the dry
+    canvas; on lift the line would have a gap exactly as long as the round
+    trip to the server.
+  — LIVE (`ink-live`): everything that glows and fades by itself: the
+    pointer's head and tail, the eraser ring, the predicted tip of a stroke.
+    One frame loop, cheap clearing, nothing lasting: it can be wiped at any
+    moment, and nobody loses anything.
 
-  Все три строят путь ОДНОЙ функцией. Разойдясь, они дадут штрих, который
-  дёргается в тот миг, когда мокрая линия сменяется сухой, — и заметить это
-  снова можно будет только в аудитории.
+  All three build their path with ONE function. If they drifted apart, they
+  would give a stroke that twitches at the moment the wet line gives way to
+  the dry one, and again nobody could notice it anywhere but in the lecture
+  hall.
 
-  ЛАДОНЬ — НЕ СОБЫТИЕ. Раньше слой отдавал «чужой» палец родителю, и тот
-  толковал его как свайп, а два пальца — как «этого штриха не было» и стирал
-  начатое. Пятка ладони и мизинец — это и есть два пальца, и ладонь лежит на
-  планшете всё время письма: третий из трёх быстрых штрихов не рисовался. Теперь
-  единственный владелец касаний на листе — этот слой, и палец, когда есть перо,
-  не значит ничего, кроме двухпальцевого тапа — отмены.
+  THE PALM IS NOT AN EVENT. The layer used to hand a "foreign" finger to the
+  parent, which read it as a swipe, and two fingers as "this stroke never
+  happened", erasing what had been started. The heel of the palm and the
+  little finger are exactly two fingers, and the palm rests on the tablet the
+  whole time one writes: the third of three quick strokes did not get drawn.
+  Now the only owner of touches on the sheet is this layer, and a finger,
+  when there is a pen, means nothing except a two-finger tap: undo.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -54,91 +62,101 @@
   import { inkRefusal } from './pult'
 
   interface Props {
-    /** Страница, чернила которой показываем. */
+    /** The page whose ink we show. */
     page: number
     /**
-     * Принимать ли перо: у ведущего да, у зала нет.
+     * Whether to accept the pen: yes for the presenter, no for the audience.
      *
-     * `false` посреди штриха — штрих ЗАКРЫВАЕТСЯ, а не стирается: подняли лист
-     * заметок, нажали кнопку — это «дописал», а не «этого не было».
+     * `false` in the middle of a stroke CLOSES the stroke rather than erasing
+     * it: raised the notes sheet, pressed a button, that means "finished
+     * writing", not "this never happened".
      */
     live: boolean
-    /** Чем рисуем сейчас: перо, маркер, ластик или указка. */
+    /** What we draw with now: pen, marker, eraser or pointer. */
     tool: 'pen' | 'marker' | 'eraser' | 'laser' | 'off'
     /**
-     * Указка: точкой или линией.
+     * The pointer: as a dot or as a line.
      *
-     * Это два разных жеста, и раньше был только второй. ЛИНИЕЙ обводят —
-     * «вот эта область», «вот от сюда до сюда», — и след обязан держаться,
-     * пока про обведённое говорят. ТОЧКОЙ показывают — «вот здесь», «эта
-     * строка», — и след тогда мешает: за полминуты объяснения слайд
-     * покрывается красной паутиной, сквозь которую уже не видно самого слайда.
-     * Одно вместо другого не работает ни в одну сторону, поэтому выбор.
+     * These are two different gestures, and there used to be only the
+     * second. With a LINE one circles: "this area", "from here to here", and
+     * the trail must stay while the circled thing is being talked about. With
+     * a DOT one points: "right here", "this line", and then a trail gets in
+     * the way: in half a minute of explanation the slide is covered in a red
+     * web through which the slide itself can no longer be seen. Neither works
+     * in place of the other, either way round, hence the choice.
      */
     laserShape?: 'dot' | 'line'
     color: string
-    /** Толщина в долях ширины страницы. */
+    /** Thickness as a fraction of the page width. */
     width: number
     /**
-     * Толщина по нажиму Pencil — зарезервировано, всегда `false`.
+     * Thickness from Pencil pressure: reserved, always `false`.
      *
-     * Нажим читается в модель точки (см. `Wet.force`), но в отрисовку и в
-     * провод не идёт: локальная толщина без провода дала бы проектору другую
-     * линию, чем у ведущего, — а этот файл затеян ровно ради того, чтобы линия
-     * была одна.
+     * Pressure is read into the point model (see `Wet.force`), but it goes
+     * neither into drawing nor down the wire: a local thickness without the
+     * wire would give the projector a different line than the presenter's,
+     * and this file exists precisely so that there is one line.
      */
     pressure?: boolean
     /**
-     * Рисует ли палец текущим инструментом.
+     * Whether a finger draws with the current tool.
      *
-     * На ноутбуке и до первого касания Pencil — да, иначе рисовать нечем.
-     * Когда перо на этом экране видели, родитель выключает: палец с этого
-     * момента — ладонь, и она есть всегда.
+     * On a laptop and until the first Pencil touch, yes: otherwise there is
+     * nothing to draw with. Once a pen has been seen on this screen, the
+     * parent turns it off: from that moment a finger is the palm, and the
+     * palm is always there.
      */
     finger?: boolean
     /*
-     * Размер листа в пикселях — от того, кто его посчитал.
+     * The sheet's size in pixels, from whoever computed it.
      *
-     * Не меряется здесь заново: холст обязан совпадать с листом пиксель в
-     * пиксель, а два измерения одного и того же расходятся — и расхождение
-     * видно как чернила, съехавшие относительно текста. К тому же мерить было
-     * бы нечем: наблюдатель размера молчит, пока браузер не рисует вкладку.
+     * Not measured here again: the canvas must match the sheet pixel for
+     * pixel, and two measurements of the same thing diverge, and the
+     * divergence shows as ink shifted against the text. Besides, there would
+     * be nothing to measure with: the size observer is silent while the
+     * browser does not render the tab.
      */
     w: number
     h: number
     /**
-     * На сколько слой ввода выходит за страницу, в px с каждой стороны.
+     * How far the input layer reaches beyond the page, in px on each side.
      *
-     * Пульт кладёт страницу в коробку с полями, и слой ввода обязан накрыть
-     * коробку целиком: поле, отданное системе, — это ладонь, которая выделяет
-     * и прокручивает лист, и перо, которое «не сработало», потому что штрих
-     * начали с края бумаги. Умолчание — ноль: у зала и в колонке ноутбука
-     * страница и есть вся коробка.
+     * The console puts the page into a box with margins, and the input layer
+     * must cover the whole box: a margin given away to the system is a palm
+     * that selects and scrolls the sheet, and a pen that "didn't work"
+     * because the stroke was started at the paper's edge. The default is
+     * zero: for the audience and in the laptop column the page is the whole
+     * box.
      */
     reach?: { top: number; right: number; bottom: number; left: number }
     /**
-     * Слой держит указатель: идёт штрих, стирание или горит указка.
+     * The layer has captured the pointer: a stroke, an erase or the laser
+     * pointer is in progress.
      *
-     * Родитель по этому флагу не пускает ладонь к кнопкам рейла. Без него
-     * пульт нажимал бы «Назад» пяткой руки, которая пишет.
+     * The parent uses this flag to keep the palm away from the rail buttons.
+     * Without it the console would press "Back" with the heel of the writing
+     * hand.
      */
     onbusy?: (busy: boolean) => void
-    /** Два пальца тапнули по листу — отменить последний штрих. */
+    /** Two fingers tapped the sheet: undo the last stroke. */
     onundo?: () => void
-    /** Первое перо на этом экране за жизнь компонента: палец больше не рисует. */
+    /** First pen on this screen in the component's lifetime: fingers stop drawing. */
     onpen?: () => void
     /**
-     * Слой отказался что-то делать, и об этом надо сказать вслух.
+     * The layer refused to do something, and that must be said out loud.
      *
-     * Отказов ровно два, и оба раньше были молчаливыми. Ластик без связи
-     * стирал у себя и клал стирание в очередь — а через полминуты штрихи
-     * пропадали у зала сами, посреди следующего слайда. Штрих на полной
-     * странице сервер не принимал вовсе, и слой, не отличая это от потерянного
-     * кадра, восемь раз досылал его целиком и через четыре секунды убирал с
-     * листа: линия нарисовалась и исчезла, ни строки объяснения.
+     * There are exactly two refusals, and both used to be silent. The eraser
+     * without a connection erased locally and put the erase into the queue,
+     * and half a minute later strokes vanished for the audience by
+     * themselves, in the middle of the next slide. A stroke on a full page
+     * was not accepted by the server at all, and the layer, not telling this
+     * from a lost frame, resent it whole eight times and removed it from the
+     * sheet four seconds later: the line was drawn and disappeared, without a
+     * line of explanation.
      *
-     * Не передан — молчим, как молчали: у зала и на проекции говорить некому и
-     * не о чем, там ничего не рисуют.
+     * Not passed: we stay silent, as before: for the audience and on the
+     * projection there is nobody to tell and nothing to tell about, nothing
+     * is drawn there.
      */
     onrefuse?: (says: string) => void
   }
@@ -150,7 +168,7 @@
     laserShape = 'line',
     color,
     width,
-    // `pressure` намеренно не читается: см. комментарий к пропу.
+    // `pressure` is deliberately not read: see the comment on the prop.
     finger = true,
     w,
     h,
@@ -167,22 +185,24 @@
   let liveCanvas = $state<HTMLCanvasElement | null>(null)
   let inputNode = $state<HTMLDivElement | null>(null)
 
-  /* ------------------------------------------------- геометрия штриха */
+  /* -------------------------------------------------- stroke geometry */
 
   /**
-   * Подогнать холст под лист и приготовить перо.
+   * Fit the canvas to the sheet and get the pen ready.
    *
-   * Присвоение width/height стирает и пиксели, и состояние контекста — и делает
-   * это даже когда значение то же самое. Поэтому только при настоящей смене
-   * размера: поворот планшета иначе гасил бы страницу на ровном месте.
+   * Assigning width/height wipes both the pixels and the context state, and
+   * does so even when the value is the same. So only on a real size change:
+   * otherwise rotating the tablet would blank the page out of nowhere.
    *
-   * Возвращает, случилась ли эта смена: холст после неё пуст, и дорисовывать в
-   * него «с того места, где остановились» уже нельзя — путь надо собрать заново
-   * из долей. Пересчёт бесплатный: точки и хранятся в долях.
+   * Returns whether that change happened: the canvas is empty after it, and
+   * one can no longer draw into it "from where we stopped"; the path has to
+   * be rebuilt from fractions. The recomputation is free: the points are
+   * stored as fractions anyway.
    *
-   * `desynchronized` — мокрому и живому: браузер тогда не ждёт композитора и
-   * кладёт пиксели под перо на кадр раньше. Сухому — нет: он меняется по сети,
-   * и разрыв кадра на нём виден как мигание, а выигрыша нет никакого.
+   * `desynchronized` for the wet and the live canvas: the browser then does
+   * not wait for the compositor and puts pixels under the pen a frame
+   * earlier. Not for the dry one: it changes over the network, a tear in a
+   * frame shows on it as flicker, and there is no gain whatsoever.
    */
   function fitTo(
     node: HTMLCanvasElement,
@@ -207,16 +227,18 @@
   }
 
   /**
-   * Путь по точкам: квадратичные кривые через середины отрезков.
+   * A path through the points: quadratic curves through segment midpoints.
    *
-   * Было — ломаная из `lineTo`, то есть ровно те точки, что успел прислать
-   * браузер. На медленном штрихе разницы нет, на быстром видны грани, а на
-   * проекторе в 1920 они видны всему залу: рука за кадр проходит сантиметр, и
-   * линия становится многоугольником. Кривая через середины стоит столько же
-   * операций пути — та же одна на точку, — но проходит через точки гладко.
+   * It used to be a polyline of `lineTo`, that is, exactly the points the
+   * browser managed to send. On a slow stroke there is no difference, on a
+   * fast one facets show, and on a 1920 projector they show to the whole
+   * audience: the hand covers a centimetre per frame, and the line becomes
+   * a polygon. A curve through midpoints costs as many path operations (the
+   * same one per point) but passes through the points smoothly.
    *
-   * Эта функция — единственное место, где строится путь. Все три холста зовут
-   * её; иначе линия дёрнется в тот миг, когда один сменит другой.
+   * This function is the only place a path is built. All three canvases
+   * call it; otherwise the line would twitch at the moment one replaces
+   * another.
    */
   function trace(paint: CanvasRenderingContext2D, points: number[], px: number, py: number): void {
     const last = points.length / 2 - 1
@@ -231,11 +253,11 @@
   }
 
   /**
-   * Штрих целиком — одним `stroke()`.
+   * A whole stroke, with one `stroke()`.
    *
-   * Одним, а не по отрезкам: маркер полупрозрачный, и на стыке двух отдельных
-   * вызовов альфа складывается. Линия вышла бы пятнистой ровно там, где рука
-   * замедлилась и точки легли часто.
+   * One, not per segment: the marker is translucent, and at the joint of two
+   * separate calls the alpha adds up. The line would come out blotchy
+   * exactly where the hand slowed down and the points fell close together.
    */
   function drawStroke(
     paint: CanvasRenderingContext2D,
@@ -249,9 +271,9 @@
     const line = Math.max(1, thick * px)
     if (points.length === 2) {
       /*
-       * Тап пером — это ровно две координаты, и раньше такой штрих доезжал до
-       * сервера, хранился там и не рисовался никогда: путь из одной точки не
-       * рисует ничего. Точку рисует круг.
+       * A pen tap is exactly two coordinates, and such a stroke used to reach
+       * the server, be stored there and never be drawn: a path of one point
+       * draws nothing. A circle draws the dot.
        */
       paint.fillStyle = tint
       paint.beginPath()
@@ -265,21 +287,21 @@
     paint.stroke()
   }
 
-  /** Прозрачный цвет — восьмизначный (или четырёхзначный) hex: у маркера альфа в цвете. */
+  /** Translucent = 8-digit (or 4-digit) hex: the marker's alpha lives in its colour. */
   function seeThrough(tint: string): boolean {
     return /^#(?:[\da-f]{4}|[\da-f]{8})$/i.test(tint)
   }
 
-  /** Докуда доведена кривая на холсте: индекс последней точки и конец пути в пикселях. */
+  /** How far the curve on the canvas reaches: last point index and path end in px. */
   interface Tail {
-    /** Сколько чисел штриха уже лежит на холсте. */
+    /** How many of the stroke's numbers are already on the canvas. */
     n: number
     curved: number
     tipX: number
     tipY: number
   }
 
-  /** Хвост штриха, нарисованного целиком через `drawStroke`. */
+  /** The tail of a stroke drawn whole through `drawStroke`. */
   function tailOf(points: number[]): Tail {
     const last = points.length / 2 - 1
     if (last < 1) return { n: points.length, curved: 0, tipX: points[0] * w, tipY: points[1] * h }
@@ -292,22 +314,24 @@
   }
 
   /**
-   * Дорисовать штрих с того места, где остановились.
+   * Continue drawing a stroke from where we stopped.
    *
-   * Не `clearRect` на каждое движение пера: чистить и собирать заново весь
-   * штрих — это менять одну полную перерисовку на другую, а мокрый слой затеян
-   * ровно ради того, чтобы её не делать. Кладём только новые куски кривой.
+   * Not `clearRect` on every pen movement: clearing and rebuilding the whole
+   * stroke means trading one full repaint for another, and the wet layer
+   * exists precisely to avoid it. We lay down only the new pieces of the
+   * curve.
    *
-   * Хвост от последней середины до последней точки кладём предварительно и
-   * перекрываем на следующем движении настоящей кривой. Без него линия отстаёт
-   * от пера на полсэмпла — то есть на сантиметр при быстром росчерке, ровно на
-   * то расстояние, ради которого всё это и делается. Для непрозрачного цвета
-   * перекрытие невидимо; прозрачный маркер так рисовать нельзя — звать только
-   * для непрозрачных.
+   * The tail from the last midpoint to the last point is laid down
+   * provisionally and covered by the real curve on the next movement.
+   * Without it the line lags behind the pen by half a sample, that is, by a
+   * centimetre on a fast flourish, exactly the distance all of this is done
+   * for. For an opaque colour the overlap is invisible; a translucent marker
+   * cannot be drawn this way, so call it only for opaque ones.
    *
-   * Одна и та же функция растит и свой мокрый штрих под пером, и чужой сухой по
-   * эху: сухому холсту иначе пришлось бы перерисовывать страницу на каждый
-   * кадр чужого пера — двадцать пять раз в секунду по шестистам штрихам.
+   * One and the same function grows one's own wet stroke under the pen and
+   * someone else's dry one by echo: otherwise the dry canvas would have to
+   * repaint the page on every frame of someone else's pen, twenty-five
+   * times a second over six hundred strokes.
    */
   function growPath(paint: CanvasRenderingContext2D, points: number[], tint: string, thick: number, tail: Tail): void {
     const last = points.length / 2 - 1
@@ -339,37 +363,37 @@
     tail.n = points.length
   }
 
-  /* ---------------------------------------------------- сухой холст */
+  /* ----------------------------------------------------- dry canvas */
 
-  /** Штрихи, которые сейчас держит мокрый слой: сухой их не рисует — задвоятся. */
+  /** Strokes held by the wet layer now: the dry one skips them, or they double. */
   let wetIds = $state.raw<Set<string>>(new Set())
   /**
-   * Стёртое ластиком, чего сервер ещё не подтвердил.
+   * Erased with the eraser but not yet confirmed by the server.
    *
-   * Гасим сразу, не дожидаясь `ink:drop`: ластик, который срабатывает через
-   * круг до сервера, ощущается как неисправный, и по штриху водят второй раз.
-   * Если подтверждения не будет, штрих вернётся с ближайшей полной пачкой —
-   * самоисправляющаяся ложь длиной в секунду честнее ластика, который «не
-   * работает».
+   * We put it out at once, without waiting for `ink:drop`: an eraser that
+   * takes effect after a round trip to the server feels broken, and people
+   * go over the stroke a second time. If the confirmation never comes, the
+   * stroke returns with the nearest full batch: a self-correcting lie a
+   * second long is more honest than an eraser that "doesn't work".
    */
   let erased = $state.raw<Set<string>>(new Set())
 
   /**
-   * Что лежит на сухом холсте, по именам штрихов.
+   * What lies on the dry canvas, by stroke id.
    *
-   * По этой карте эхо кладётся приращением: новый штрих — целиком, доросший —
-   * только новым куском. Полная перерисовка остаётся на три случая, когда
-   * пиксели надо УБРАТЬ: штрих исчез (отмена, ластик, чистка), сменилась
-   * страница, сменился размер. Дорастающий полупрозрачный чужой маркер — тоже
-   * перерисовка: его нельзя класть кусками (см. drawStroke), а бывает он
-   * только у второго преподавателя.
+   * By this map the echo is applied incrementally: a new stroke in full, a
+   * grown one only by its new piece. A full repaint remains for the three
+   * cases when pixels must be REMOVED: a stroke vanished (undo, eraser,
+   * clearing), the page changed, the size changed. Someone else's growing
+   * translucent marker is a repaint too: it cannot be laid down in pieces
+   * (see drawStroke), and it only ever comes from a second teacher.
    */
   const drawn = new Map<string, Tail>()
   let drawnPage = Number.NaN
 
   $effect(() => {
     const node = dryCanvas
-    // Читаем счётчик правок: он и есть повод перерисовать.
+    // Read the edit counter: it is the very reason to repaint.
     void session.inkRevision
     const hidden = wetIds
     const gone = erased
@@ -379,27 +403,30 @@
   })
 
   /*
-   * ЧЕРНИЛА ПОКАЗЫВАЕМОЙ СТРАНИЦЫ — спросить, если они не доехали.
+   * INK FOR THE PAGE BEING SHOWN: ask for it if it has not arrived.
    *
-   * Приветственная пачка больше не обязана везти всё письмо лекции: она везёт
-   * текущую страницу и опись остальных, а страница, на которую ушли не
-   * спросясь, приезжает по вопросу (ink.ts · `askInkPage`). Стоит он здесь, а
-   * не на пульте, ровно потому, что этот слой — единственное место, где
-   * страницу ПОКАЗЫВАЮТ: проекция, зал и лист под пером собраны из него
-   * одного, и спрошенное однажды доедет до всех троих.
+   * The welcome batch no longer has to carry all of the lecture's writing:
+   * it carries the current page and an inventory of the rest, and a page
+   * one moved to without asking arrives on request (ink.ts · `askInkPage`).
+   * The request lives here rather than on the console precisely because
+   * this layer is the only place where a page is SHOWN: the projection, the
+   * audience and the sheet under the pen are all built from it alone, and
+   * what was asked once will reach all three.
    *
-   * ЧЕРЕЗ ПАУЗУ, И ЭТО ГЛАВНОЕ ЗДЕСЬ. Страницу, на которую ведущий перевёл
-   * зал, сервер досылает сам, вслед за кадром лекции. Спроси слой сразу — и
-   * каждое перелистывание стоило бы пятисот одинаковых вопросов в ту секунду,
-   * пока досылка ещё в пути, то есть ровно того круга рассылки, ради которого
-   * пачку и обрезали. Поэтому вопрос — не первый ход, а починка: он задаётся
-   * только если через `INK_WAIT_MS` чернил всё ещё нет.
+   * AFTER A PAUSE, AND THAT IS THE MAIN THING HERE. The page the presenter
+   * moved the audience to is sent by the server itself, right after the
+   * lecture frame. If the layer asked at once, every page turn would cost
+   * five hundred identical questions in the second while that delivery is
+   * still on its way, that is, exactly the broadcast round for which the
+   * batch was trimmed. So the question is not the first move but a repair:
+   * it is asked only if the ink is still missing after `INK_WAIT_MS`.
    *
-   * Счётчик правок читается затем, что ожидание начинается заново с каждой
-   * переменой в чернилах: опись приезжает вместе с ним, а доехавшая страница
-   * закрывает вопрос сама (`askInkPage` молчит, когда чернила на руках).
+   * The edit counter is read because the wait starts over on every change
+   * in the ink: the inventory arrives together with it, and a page that has
+   * arrived closes the question by itself (`askInkPage` stays silent when
+   * the ink is on hand).
    */
-  /** Сколько ждать досылку, прежде чем спросить самому. Круг до сервера и запас. */
+  /** How long to await delivery before asking ourselves: a round trip plus margin. */
   const INK_WAIT_MS = 600
 
   $effect(() => {
@@ -457,41 +484,41 @@
     }
   }
 
-  /* --------------------------------------------------- мокрый холст */
+  /* ----------------------------------------------------- wet canvas */
 
   interface Wet {
     id: string
     page: number
     color: string
     width: number
-    /** Все точки штриха, парами долей. */
+    /** All the stroke's points, as pairs of fractions. */
     points: number[]
     /**
-     * Нажим по точкам, 0..1, — по одному числу на пару.
+     * Pressure per point, 0..1, one number per pair.
      *
-     * В провод и на холст не идёт (см. проп `pressure`), но собирается уже
-     * сейчас: когда провод научится толщине, менять придётся отправку, а не
-     * модель точки.
+     * It goes neither down the wire nor onto the canvas (see the `pressure`
+     * prop), but it is collected already: when the wire learns thickness,
+     * what will have to change is the sending, not the point model.
      */
     force: number[]
-    /** Сколько чисел уже ушло на сервер: по ним и узнаём своё эхо. */
+    /** How many numbers have gone to the server: that is how we know our echo. */
     sent: number
-    /** Перо подняли — можно ждать эха. */
+    /** The pen was lifted: we may wait for the echo. */
     closed: boolean
-    /** Когда закрыли: досылку не начинаем раньше, чем эхо успело бы доехать. */
+    /** When it was closed: resending does not start before the echo could arrive. */
     closedAt: number
-    /** Сколько раз досылали хвост, которого сервер не подтвердил. */
+    /** How many times the unconfirmed tail has been resent. */
     resent: number
-    /** Эхо этого штриха уже видели: если оно исчезнет — штрих убрали при всех. */
+    /** This stroke's echo was seen: if it vanishes, the stroke was removed for all. */
     echoed: boolean
-    /** Докуда доведена кривая на мокром холсте. */
+    /** How far the curve on the wet canvas reaches. */
     tail: Tail
   }
 
   /**
-   * Штрихи, которых сервер ещё не подтвердил. Список, а не один штрих: на
-   * оборванной связи их накапливается сколько угодно, и каждый ждёт своего эха
-   * сам по себе.
+   * Strokes the server has not confirmed yet. A list, not one stroke: on a
+   * broken connection any number of them pile up, and each waits for its own
+   * echo on its own.
    */
   let wet: Wet[] = []
 
@@ -500,10 +527,11 @@
   }
 
   /**
-   * Мокрый холст целиком — только когда изменился СПИСОК мокрых: штрих лёг
-   * на сухой, страницу перелистнули, лист сменил размер. Своё движение пера
-   * кладёт на холст `growWet` прямо из обработчика; ни указки, ни кольца здесь
-   * нет — они живут на живом холсте и с чернилами не соревнуются за кадр.
+   * The whole wet canvas, only when the LIST of wet strokes has changed: a
+   * stroke landed on the dry one, the page was turned, the sheet changed
+   * size. One's own pen movement is put on the canvas by `growWet` right
+   * from the handler; neither the pointer nor the ring is here: they live on
+   * the live canvas and do not compete with the ink for a frame.
    */
   function paintWetAll(): void {
     const node = wetCanvas
@@ -528,16 +556,17 @@
     untrack(() => paintWetAll())
   })
 
-  /** Свой штрих под пером — приращением, в этом же кадре. */
+  /** One's own stroke under the pen: incrementally, in this same frame. */
   function growWet(stroke: Wet): void {
     const node = wetCanvas
     if (!node || w === 0 || h === 0) return
     const ready = fitTo(node, true)
     if (!ready) return
     /*
-     * Маркер полупрозрачный и обязан быть одним `stroke()`: для него мокрый
-     * холст собирается заново. Список мокрых короток — закрытые гаснут через
-     * круг до сервера, — так что это дёшево, а по-другому нельзя.
+     * The marker is translucent and must be one `stroke()`: for it the wet
+     * canvas is rebuilt. The list of wet strokes is short (closed ones go out
+     * after a round trip to the server), so this is cheap, and there is no
+     * other way.
      */
     if (ready.blank || seeThrough(stroke.color)) {
       paintWetAll()
@@ -546,79 +575,85 @@
     growPath(ready.paint, stroke.points, stroke.color, stroke.width, stroke.tail)
   }
 
-  /* ---------------------------------------------------- живой холст */
+  /* ---------------------------------------------------- live canvas */
 
   /**
-   * Красная. Не цветом ведущего.
+   * Red. Not in the presenter's colour.
    *
-   * Указку узнают, не думая: красная точка на слайде — это «смотрите сюда», и
-   * так во всех аудиториях мира, где есть лазерная указка. Цвет ведущего
-   * приезжал сюда из общей привычки красить всё по автору, и у второго
-   * преподавателя указка оказывалась синей — то есть неотличимой от его же
-   * чернил, которыми он через секунду подчеркнёт строку.
+   * A pointer is recognised without thinking: a red dot on a slide means
+   * "look here", in every lecture hall in the world that has a laser
+   * pointer. The presenter's colour came here from a general habit of
+   * colouring everything by author, and a second teacher's pointer turned
+   * out blue, that is, indistinguishable from their own ink with which they
+   * will underline a line a second later.
    */
   const LASER = '#ff2b1d'
 
   /**
-   * Хвост.
+   * The tail.
    *
-   * Точка без хвоста на проекторе теряется: она проходит полметра между двумя
-   * кадрами, и глаз в зале ловит её только там, где она остановилась, — то
-   * есть уже после того, как ей показали. Хвост показывает ДВИЖЕНИЕ: откуда
-   * рука ведёт и куда, — и держится ровно столько, чтобы прочертить путь и
-   * не превратиться в линию, которую примут за чернила.
+   * A dot without a tail gets lost on a projector: it travels half a metre
+   * between two frames, and an eye in the hall catches it only where it
+   * stopped, that is, after it has already pointed. The tail shows MOVEMENT:
+   * where the hand is leading from and to, and it lasts exactly long enough
+   * to trace the path without turning into a line that would be taken for
+   * ink.
    *
-   * Точки хвоста — настоящие сэмплы с настоящими временными метками. Раньше
-   * промежутки между кадрами провода добивались «серединами» с выдуманным
-   * временем, и хвост от этого мерцал: середины гасли не в том порядке, в
-   * каком легли. Гладкость теперь даёт голова (см. ниже), а не подделка.
+   * The tail's points are real samples with real timestamps. The gaps
+   * between wire frames used to be padded with "midpoints" with made-up
+   * times, and the tail flickered because of it: the midpoints faded out of
+   * the order in which they were laid. Smoothness now comes from the head
+   * (see below), not from forgery.
    */
   /*
-   * Сколько живёт след. Было 420 мс — росчерк гас раньше, чем ведущий успевал
-   * договорить фразу про то, что им обвёл: «обвёл — и уже нет». Секунда с
-   * лишним держит обведённое ровно столько, чтобы на него посмотрели и с
-   * последнего ряда, и не превращает след в линию, которую примут за чернила:
-   * он всё это время тает.
+   * How long the trail lives. It was 420 ms: a flourish faded before the
+   * presenter could finish the sentence about what they had circled with it:
+   * "circled it, and it's gone". A second and more holds the circled thing
+   * exactly long enough for it to be seen even from the back row, and does
+   * not turn the trail into a line that would be taken for ink: it melts the
+   * whole time.
    */
   /*
-   * Сколько след держится ЦЕЛИКОМ и сколько гаснет.
+   * How long the trail holds WHOLE and how long it fades.
    *
-   * Указкой обводят фигуру и говорят про неё: «вот эта область». Пока говорят,
-   * фигура обязана стоять — вся, а не таять с хвоста. Поэтому у следа две
-   * поры: он держится в полную силу HOLD_MS после того, как перо подняли, и
-   * потом гаснет ЦЕЛИКОМ за FADE_MS. Возраста у отдельной точки больше нет:
-   * прежнее «каждая точка живёт свои 1.2 с» и было той самой кристаллизацией —
-   * след разъедало с хвоста, пока голова ещё писала.
+   * With the pointer one circles a shape and talks about it: "this area".
+   * While they talk, the shape must stand, all of it, rather than melt from
+   * the tail. So the trail has two phases: it holds at full strength for
+   * HOLD_MS after the pen is lifted, and then fades WHOLE over FADE_MS.
+   * Individual points no longer have an age: the old "each point lives its
+   * 1.2 s" was that very crystallisation: the trail was eaten away from the
+   * tail while the head was still writing.
    */
   const HOLD_MS = 900
   const FADE_MS = 900
   /*
-   * Потолок точек одной фигуры. Точку кладёт кадр (см. `tick`), то есть
-   * шестьдесят в секунду: шестьсот — это десять секунд непрерывного обведения,
-   * дольше которых одним движением не водят, а дальше самые старые точки
-   * уходят из головы фигуры.
+   * The ceiling of points in one shape. A point is laid by a frame (see
+   * `tick`), that is, sixty per second: six hundred is ten seconds of
+   * continuous circling, longer than anyone moves in one motion, and beyond
+   * that the oldest points drop off the front of the shape.
    */
   const TRAIL_MAX = 600
   /*
-   * Шаг пересборки следа, в пикселях холста.
+   * The trail rebuild step, in canvas pixels.
    *
-   * По проводу указка идёт двадцатью пятью кадрами в секунду: при быстром
-   * движении между двумя сэмплами — сантиметры, и след, соединённый прямыми,
-   * читается на проекторе многоугольником — «кручу кружок, а выходит
-   * пятиугольник». Поэтому перед отрисовкой точки пересобираются кривой
-   * Катмулла — Рома с шагом в четыре пикселя: у себя это почти ничего не
-   * меняет (сэмплы и так плотные), а в зале и на проекторе даёт ту же гладкую
-   * линию, что видит ведущий.
+   * Over the wire the pointer travels at twenty-five frames per second: in a
+   * fast movement there are centimetres between two samples, and a trail
+   * joined with straight lines reads as a polygon on the projector: "I draw
+   * a circle, and I get a pentagon". So before drawing, the points are
+   * rebuilt with a Catmull–Rom curve at a four-pixel step: locally this
+   * changes almost nothing (the samples are dense anyway), while in the hall
+   * and on the projector it gives the same smooth line the presenter sees.
    */
   const TRAIL_STEP_PX = 4
   /*
-   * Фигур на слайде несколько.
+   * There are several shapes on a slide.
    *
-   * Указкой не обводят одним росчерком: подчеркнули строку, потом обвели
-   * формулу, потом ткнули в ось. Пока каждое новое касание стирало предыдущее,
-   * договорить фразу было нельзя — половина показанного пропадала под рукой.
-   * Теперь касание заводит СВОЮ фигуру, и каждая доживает свой век сама;
-   * потолок держит слайд от того, чтобы за пару превратиться в чернила.
+   * People do not circle with the pointer in a single flourish: they
+   * underline a line, then circle a formula, then poke at an axis. While each
+   * new touch erased the previous one, it was impossible to finish a
+   * sentence: half of what was shown vanished under the hand. Now a touch
+   * starts ITS OWN shape, and each one lives out its life by itself; the
+   * ceiling keeps the slide from turning into ink over a class.
    */
   const MARKS_MAX = 8
   interface Dot {
@@ -628,13 +663,13 @@
   interface Mark {
     page: number
     dots: Dot[]
-    /** Когда перо отпустили; `null` — эту фигуру ведут прямо сейчас. */
+    /** When the pen let go; `null` means this shape is being drawn right now. */
     letGo: number | null
-    /** С какой яркостью фигура нарисована сейчас на холсте. */
+    /** At what brightness the shape is currently drawn on the canvas. */
     shown: number
   }
 
-  /** Во сколько сил горит фигура: HOLD_MS стоит, FADE_MS тает. */
+  /** How brightly a shape glows: it stands for HOLD_MS, melts over FADE_MS. */
   function glow(mark: Mark, now: number): number {
     if (mark.letGo === null) return 1
     const since = now - mark.letGo
@@ -642,72 +677,77 @@
   }
   let marks: Mark[] = []
 
-  /** Фигура под пером — последняя, пока её не отпустили. */
+  /** The shape under the pen: the last one, until it is let go. */
   function drawnNow(): Mark | null {
     const last = marks[marks.length - 1]
     return last && last.letGo === null ? last : null
   }
 
   /**
-   * Голова указки — пружина, а не последняя точка.
+   * The pointer's head is a spring, not the last point.
    *
-   * Куда указку ведут — известно в момент сэмпла; где её РИСОВАТЬ — вопрос
-   * кадра. Кладя голову ровно в последний сэмпл, на 25 Гц провода получаем
-   * пятно, прыгающее по полсантиметра: это и есть «указка прыгает» из
-   * аудитории. Голова идёт к цели критически демпфированной пружиной с
-   * временем успокоения около пятидесяти миллисекунд: свою руку ведущий
-   * догоняет за три кадра и не замечает, а чужой след в зале сглаживается
-   * между кадрами провода. Пружина аналитическая, не шаговая: шаговая с такой
-   * жёсткостью на пропущенном кадре разлетается.
+   * Where the pointer is being led is known at the moment of the sample;
+   * where to DRAW it is a question for the frame. Putting the head exactly at
+   * the last sample, at the wire's 25 Hz we get a spot jumping by half a
+   * centimetre: that is the "pointer jumps" reported from the lecture hall.
+   * The head goes to the target on a critically damped spring with a
+   * settling time of about fifty milliseconds: the presenter's own hand is
+   * caught up with in three frames and goes unnoticed, while someone else's
+   * trail in the hall is smoothed between wire frames. The spring is
+   * analytic, not stepped: a stepped one with this stiffness blows up on a
+   * missed frame.
    *
-   * Голова живёт, пока указку держат: указкой чаще всего СТОЯТ на месте («вот
-   * здесь»), и точка, живущая по таймеру, пропадала бы под рукой. Гасит голову
-   * только отпущенная указка (laser:off) — или уход на другую страницу; сама
-   * фигура после этого стоит и тает своим чередом.
+   * The head lives while the pointer is held: most often the pointer STANDS
+   * still ("right here"), and a dot living on a timer would vanish under the
+   * hand. Only a released pointer (laser:off) puts the head out, or moving to
+   * another page; the shape itself then stands and melts in its own time.
    */
   /**
-   * Жёсткость — ПО ИСТОЧНИКУ СЭМПЛОВ, и это не тонкость.
+   * Stiffness goes BY THE SAMPLE SOURCE, and that is not a subtlety.
    *
-   * Пружина сглаживает промежуток между двумя сэмплами, а промежутки у своей
-   * руки и у провода разные на порядок: перо отдаёт положение сто двадцать раз
-   * в секунду, провод — пятнадцать. Одно число на двоих даёт что-то одно:
-   * жёсткое (110 рад/с, остаток 4 % через 50 мс) держит СВОЮ указку под рукой,
-   * но у зала долетает до цели и стоит, дожидаясь следующего кадра, — то есть
-   * ступеньками; мягкое сглаживает зал, но своя указка начинает отставать от
-   * собственной руки, а видно это как раз ведущему.
+   * The spring smooths the gap between two samples, and the gaps for one's
+   * own hand and for the wire differ by an order of magnitude: the pen
+   * reports its position a hundred and twenty times a second, the wire
+   * fifteen. One number for both gives only one of the two: a stiff one
+   * (110 rad/s, 4 % left after 50 ms) keeps ONE'S OWN pointer under the
+   * hand, but for the audience it reaches the target and stands waiting for
+   * the next frame, that is, in steps; a soft one smooths the audience's
+   * view, but one's own pointer starts lagging behind one's own hand, and it
+   * is the presenter who sees that.
    *
-   * Поэтому их два, и второе выведено из такта провода: остаток 4 % набегает
-   * примерно за 3.2/k секунды, значит k ≈ 3.2 / такт — голова доходит ровно к
-   * приходу следующего сэмпла и не останавливается между ними. Для
-   * `LASER_EVERY_MS` = 66 мс это 3.2 / 0.066 ≈ 48. Число выписано, а не
-   * посчитано от такта: 3.2 — оценка на глаз, а не тождество, и `const`,
-   * выведенный отсюда, тащил бы жёсткость пружины за каждой правкой такта, ни
-   * разу не показавшись человеку на экране.
+   * So there are two, and the second is derived from the wire's tick: the
+   * 4 % remainder is reached in about 3.2/k seconds, so k ≈ 3.2 / tick: the
+   * head arrives exactly as the next sample does and does not stop between
+   * them. For `LASER_EVERY_MS` = 66 ms that is 3.2 / 0.066 ≈ 48. The number
+   * is written out rather than computed from the tick: 3.2 is an estimate by
+   * eye, not an identity, and a `const` derived from the tick would drag the
+   * spring's stiffness along with every edit of the tick without ever once
+   * being shown to a person on screen.
    */
   const SPRING_HAND = 110
   const SPRING_WIRE = 48
   interface Head {
     page: number
-    /** Куда идём. */
+    /** Where we are heading. */
     tx: number
     ty: number
-    /** Где рисуем и с какой скоростью летим. */
+    /** Where we draw and how fast we fly. */
     x: number
     y: number
     vx: number
     vy: number
-    /** Жёсткость этой головы: своя рука или провод. */
+    /** This head's stiffness: one's own hand or the wire. */
     k: number
   }
   let head: Head | null = null
   let headAt = 0
   /**
-   * Где голова нарисована последним кадром, в px холста, — для стенда (см.
-   * `window.__inkLat`). Стенд следил за головой по пикселям живого холста,
-   * читая их на каждом кадре; но чтение пикселей заставляет браузер
-   * растеризовать холст прямо сейчас, и на программном растре это стоило
-   * больше кадра — стенд мерил собственную тень. Отсюда он берёт то, что
-   * кадр действительно нарисовал.
+   * Where the head was drawn in the last frame, in canvas px, for the test
+   * bench (see `window.__inkLat`). The bench used to track the head by the
+   * live canvas's pixels, reading them on every frame; but reading pixels
+   * forces the browser to rasterise the canvas right away, and with a
+   * software rasteriser that cost more than a frame: the bench was measuring
+   * its own shadow. From here it takes what the frame actually drew.
    */
   let shownHead: { x: number; y: number; at: number } | null = null
 
@@ -725,7 +765,7 @@
     head.y = head.ty + (dy + by * dt) * decay
     head.vx = (bx - k * (dx + bx * dt)) * decay
     head.vy = (by - k * (dy + by * dt)) * decay
-    // Долетели — на треть пикселя: дальше кадры ради головы не крутятся.
+    // Arrived, to within a third of a pixel: no more frames spin for the head.
     const still = Math.hypot(head.x - head.tx, head.y - head.ty) * w < 0.3
     if (still) {
       head.x = head.tx
@@ -737,37 +777,40 @@
   }
 
   /**
-   * Куда указку ведут. Сама линия кладётся не здесь.
+   * Where the pointer is being led. The line itself is not laid here.
    *
-   * Раньше в след попадали сырые сэмплы, а голова шла к ним пружиной — и
-   * лента, дойдя до самого свежего сэмпла, возвращалась назад, к отставшей
-   * голове. Эта петля и читалась как «хвост догоняет своё начало», причём
-   * только на планшете: там сэмплов сто двадцать в секунду, и отставание
-   * головы успевает набрать сантиметр, а по проводу их двадцать пять — голова
-   * долетает между кадрами.
+   * Raw samples used to go into the trail while the head went to them on a
+   * spring, and the ribbon, having reached the freshest sample, came back
+   * to the lagging head. That loop read as "the tail is catching up with its
+   * own start", and only on the tablet: there are a hundred and twenty
+   * samples a second there, and the head's lag has time to build up to a
+   * centimetre, while over the wire there are twenty-five and the head
+   * arrives between frames.
    *
-   * Теперь сэмпл только двигает ЦЕЛЬ, а в линию ложится то, что нарисовано, —
-   * положение головы на каждом кадре. Лента поэтому всегда кончается ровно
-   * головой (складка невозможна в принципе), а пружина заодно работает
-   * сглаживанием: дрожь пера в неё не проходит, и по проводу между двумя
-   * редкими сэмплами получаются свои шестьдесят точек в секунду, а не прямая.
+   * Now a sample only moves the TARGET, and what goes into the line is what
+   * was drawn: the head's position on each frame. So the ribbon always ends
+   * exactly at the head (a fold is impossible in principle), and the spring
+   * doubles as smoothing: pen jitter does not pass through it, and over the
+   * wire, between two sparse samples, we get our own sixty points a second
+   * rather than a straight line.
    */
   function aim(x: number, y: number, at: number, k: number): void {
     if (!head || head.page !== at) {
-      // Появилась — сразу на месте: голова, подлетающая из угла, читалась бы
-      // как «указка залипла».
+      // Appeared: right in place at once; a head flying in from a corner
+      // would read as "the pointer got stuck".
       head = { page: at, tx: x, ty: y, x, y, vx: 0, vy: 0, k }
       headAt = performance.now()
     } else {
       head.tx = x
       head.ty = y
-      // Указку могли перехватить: пружина идёт за источником сэмплов.
+      // The pointer may have been taken over: the spring follows the sample source.
       head.k = k
     }
     /*
-     * Точкой — фигуры не заводим вовсе. Не «рисуем и прячем»: несуществующая
-     * фигура не копит точек, не просит кадров на затухание и не уходит по
-     * проводу, а голова у указки была своя всегда — она и есть точка.
+     * As a dot, no shapes are started at all. Not "draw and hide": a shape
+     * that does not exist accumulates no points, asks for no frames to fade
+     * and does not go down the wire, and the pointer has always had its own
+     * head: that is the dot.
      */
     if (shapeNow === 'line' && !drawnNow()) {
       marks.push({ page: at, dots: [{ x: head.x, y: head.y }], letGo: null, shown: 0 })
@@ -777,19 +820,20 @@
   }
 
   /**
-   * Указку отпустили.
+   * The pointer was released.
    *
-   * `soft` — обычный случай: гаснет ГОЛОВА, а след догорает сам за свои
-   * TRAIL_MS. Ровно этого и ждут от указки: обвёл, отпустил — обведённое ещё
-   * секунду видно и залу, и на проекторе. Начисто (`soft = false`) гасит
-   * только то, после чего следу негде лежать: смена страницы, уход слоя,
-   * отобранный лист.
+   * `soft` is the usual case: the HEAD goes out, and the trail burns down by
+   * itself over its TRAIL_MS. That is exactly what one expects of a pointer:
+   * circled, let go, and the circled thing is visible for another second to
+   * the audience and on the projector. A clean wipe (`soft = false`) puts
+   * out only what leaves the trail no place to lie: a page change, the layer
+   * leaving, the sheet taken away.
    */
   function douse(soft = false): void {
     head = null
     if (soft) {
-      // Фигуру, которую только что обвели, оставляем стоять: HOLD_MS в полную
-      // силу, потом FADE_MS на общее угасание. Отсчёт ведётся отсюда.
+      // The shape that was just circled is left standing: HOLD_MS at full
+      // strength, then FADE_MS to fade out as a whole. The count starts here.
       const now = drawnNow()
       if (now) now.letGo = performance.now()
     } else {
@@ -798,23 +842,24 @@
     wake()
   }
 
-  /** Где ластик прямо сейчас: кольцо под пером рисуем только себе. */
+  /** Where the eraser is right now: the ring under the pen is drawn only for us. */
   let ring: { x: number; y: number } | null = null
   /**
-   * Предсказанный кончик штриха.
+   * The predicted tip of a stroke.
    *
-   * Между сэмплом и пикселем — кадр, и на быстром росчерке линия отстаёт от
-   * пера на сантиметр. Браузер (`getPredictedEvents`) или мы сами по скорости
-   * последних сэмплов дорисовываем десять миллисекунд вперёд. Живёт на живом
-   * холсте: стирается перед следующим приращением и в точки не попадает — на
-   * проекторе это была бы линия, которой рука не вела.
+   * Between a sample and a pixel there is a frame, and on a fast flourish
+   * the line lags behind the pen by a centimetre. The browser
+   * (`getPredictedEvents`), or we ourselves from the speed of the last
+   * samples, draw ten milliseconds ahead. It lives on the live canvas: it is
+   * wiped before the next increment and never gets into the points: on the
+   * projector it would be a line the hand never drew.
    */
   let guess: { fromX: number; fromY: number; x: number; y: number; color: string; width: number } | null = null
 
   let liveFrame: number | undefined
   let liveDirty = false
 
-  /** Живому холсту есть что нарисовать в ближайшем кадре. */
+  /** The live canvas has something to draw in the next frame. */
   function wake(): void {
     liveDirty = true
     if (liveFrame !== undefined) return
@@ -826,10 +871,10 @@
     const now = performance.now()
     const moving = settleHead(now)
     /*
-     * Линию кладёт кадр, а не сэмпл: точка ставится там, где голова НАРИСОВАНА
-     * (см. `aim`). Полпикселя — порог, ниже которого точка ничего не добавляет,
-     * кроме работы: стоящая на месте указка не копит тысячу точек в одном
-     * пятне.
+     * The line is laid by the frame, not by the sample: a point is placed
+     * where the head is DRAWN (see `aim`). Half a pixel is the threshold
+     * below which a point adds nothing but work: a pointer standing still
+     * does not pile up a thousand points in one spot.
      */
     const led = drawnNow()
     if (head && led && led.page === head.page) {
@@ -840,14 +885,15 @@
       }
     }
     /*
-     * Догорела до конца — фигура уходит целиком, одним куском, какой и стояла.
+     * Burnt down completely: the shape leaves whole, in one piece, as it
+     * stood.
      *
-     * И главное: пока фигура ДЕРЖИТСЯ, на холсте не меняется ничего — а кадр
-     * всё равно перерисовывал её шестьдесят раз в секунду почти секунду
-     * подряд. На проекторе с программным растром это и был самый дорогой
-     * простой в показе: работа ради того же самого изображения. Теперь кадр
-     * рисует, только если яркость какой-то фигуры действительно другая (или
-     * фигура появилась, ушла, голова летит).
+     * And the main thing: while a shape HOLDS, nothing on the canvas changes,
+     * yet the frame used to redraw it sixty times a second for nearly a
+     * second in a row. On a projector with a software rasteriser that was the
+     * most expensive idle work in the show: labour for the sake of the same
+     * image. Now a frame draws only if some shape's brightness really is
+     * different (or a shape appeared, left, or the head is flying).
      */
     let alive = false
     let burnt = false
@@ -858,30 +904,32 @@
         continue
       }
       if (mark.letGo !== null) alive = true
-      // Фигура с другой страницы не рисуется вовсе — и кадра ради себя не просит.
+      // A shape from another page is not drawn at all, and asks for no frame.
       if (mark.page === page && Math.abs(glow(mark, now) - mark.shown) > 0.004) changed = true
     }
     if (burnt) marks = marks.filter((mark) => mark.letGo === null || now - mark.letGo < HOLD_MS + FADE_MS)
     if (liveDirty || moving || changed || burnt) paintLive(now)
     liveDirty = false
     /*
-     * Кадры крутятся, пока есть незакрытое дело: голова летит к перу или
-     * какая-то фигура ещё не догорела. Стоящую фигуру кадр всё равно
-     * обходит — иначе некому заметить, что HOLD_MS вышли и пора гаснуть, —
-     * но НЕ РИСУЕТ её: пока яркость та же, `changed` остаётся ложью и
-     * живой холст не трогают вовсе. Дорог здесь растр, а не обход списка.
+     * Frames keep spinning while there is unfinished business: the head is
+     * flying to the pen or some shape has not burnt down yet. A standing
+     * shape is still visited by the frame (otherwise nobody would notice
+     * that HOLD_MS is up and it is time to fade), but it is NOT DRAWN: while
+     * the brightness is the same, `changed` stays false and the live canvas
+     * is not touched at all. What is expensive here is rasterising, not
+     * walking the list.
      */
     if (moving || alive) liveFrame = requestAnimationFrame(tick)
   }
 
   /**
-   * След, пересобранный кривой в пиксели холста.
+   * The trail, rebuilt as a curve in canvas pixels.
    *
-   * Центростремительная кривая Катмулла — Рома: обычная (равномерная) на
-   * резком повороте даёт петлю, а указкой как раз обводят — то есть поворот
-   * здесь не исключение, а основной случай. Голова добавляется последней
-   * точкой: она отстаёт от последнего сэмпла на пружину, и без неё лента
-   * висела бы в воздухе перед пятном.
+   * A centripetal Catmull–Rom curve: the ordinary (uniform) one gives a loop
+   * on a sharp turn, and circling is exactly what the pointer is for, so a
+   * turn here is not an exception but the main case. The head is added as
+   * the last point: it lags behind the last sample by the spring, and
+   * without it the ribbon would hang in the air in front of the spot.
    */
   function smoothTrail(mark: Mark): { x: number; y: number }[] {
     const pts: { x: number; y: number }[] = []
@@ -897,8 +945,9 @@
       const p2 = pts[i + 1]
       const p3 = pts[i + 2 < pts.length ? i + 2 : pts.length - 1]
       const span = Math.hypot(p2.x - p1.x, p2.y - p1.y)
-      // Шагов ровно столько, сколько нужно этому промежутку: на медленном
-      // движении сэмплы и так в пикселе друг от друга, и делить их незачем.
+      // Exactly as many steps as this gap needs: in slow movement samples
+      // are within a pixel of each other anyway, and there is no point
+      // dividing them.
       const steps = Math.max(1, Math.min(16, Math.ceil(span / TRAIL_STEP_PX)))
       for (let k = 1; k <= steps; k += 1) {
         const t = k / steps
@@ -921,14 +970,15 @@
       }
     }
     /*
-     * Потолок точек на кадр. Длинная фигура — это до тысячи точек после
-     * пересборки, а лента строится по ним ДВАЖДЫ (ореол и ядро), то есть
-     * четыре тысячи отрезков в кадре. Триста шестьдесят — предел, за которым
-     * глаз разницы уже не видит (на длинной фигуре это точка каждые
-     * шесть-восемь пикселей, а стык круглый), а кадр перестаёт зависеть от
-     * того, как долго водили указкой. Число маленькое не зря: обводка с
-     * круглым стыком стоит дуги на каждой точке, и на программном растре
-     * проектора это самая дорогая часть кадра.
+     * The ceiling of points per frame. A long shape is up to a thousand
+     * points after rebuilding, and the ribbon is built from them TWICE (halo
+     * and core), that is, four thousand segments per frame. Three hundred
+     * and sixty is the limit past which the eye no longer sees a difference
+     * (on a long shape that is a point every six to eight pixels, and the
+     * join is round), and the frame stops depending on how long the pointer
+     * was moved. The number is small for a reason: a stroke with a round join
+     * costs an arc at every point, and on the projector's software rasteriser
+     * that is the most expensive part of the frame.
      */
     if (out.length > 120) {
       const stride = Math.ceil(out.length / 120)
@@ -962,28 +1012,31 @@
     const radius = Math.max(9, w * 0.011)
     if (marks.length > 0) {
       /*
-       * СЛЕД — ОДНА ПЛОТНАЯ СВЕТЯЩАЯСЯ ЛИНИЯ.
+       * THE TRAIL IS ONE DENSE GLOWING LINE.
        *
-       * Ни цепочки пятен, ни сужения к хвосту, ни поточечного угасания: всё
-       * это читалось как «хвост из шариков, догоняющий голову», и как
-       * кристаллизация — след разъедало с конца, пока рука ещё вела. Указка не
-       * комета: ею обводят фигуру, и фигура обязана стоять целиком, пока про
-       * неё говорят. Гаснет она тоже целиком: HOLD_MS стоит, FADE_MS тает.
+       * No chain of blobs, no tapering towards the tail, no per-point fading:
+       * all of that read as "a tail of beads chasing the head", and as
+       * crystallisation: the trail was eaten away from the end while the hand
+       * was still leading. The pointer is not a comet: it circles a shape, and
+       * the shape must stand whole while it is being talked about. It goes out
+       * whole as well: it stands for HOLD_MS, melts over FADE_MS.
        *
-       * Линия ОБВОДИТСЯ, а не заливается. Заливка контура (две стороны ленты
-       * одним путём) на самопересечении гасит саму себя: у петли и у резкого
-       * поворота стороны идут навстречу, обмотки складываются в ноль — и в
-       * мазке появляются дыры. На проводе с его двадцатью пятью сэмплами это
-       * почти не встречалось, а на планшете, где точек в пять раз больше, след
-       * рассыпался в шероховатость и вдруг снова становился плотным. Обводка
-       * круглым стыком таких дыр не знает вовсе и стоит не дороже.
+       * The line is STROKED, not filled. Filling an outline (both sides of the
+       * ribbon as one path) cancels itself at a self-intersection: at a loop
+       * and at a sharp turn the sides run towards each other, the windings add
+       * up to zero, and holes appear in the stroke. Over the wire with its
+       * twenty-five samples this almost never happened, while on the tablet,
+       * where there are five times as many points, the trail crumbled into
+       * roughness and then suddenly became dense again. A stroke with a round
+       * join knows no such holes at all and costs no more.
        */
       /*
-       * Стык СРЕЗАННЫЙ, а не круглый. Круглый стык — дуга на каждой точке, и
-       * растеризатор проектора (программный, без видеокарты) на длинной фигуре
-       * тратит на них четверть кадра. При шаге в шесть-восемь пикселей и
-       * плавном повороте руки срез от дуги не отличить, а концы у линии всё
-       * равно круглые — их всего два.
+       * The join is BEVELLED, not round. A round join is an arc at every
+       * point, and the projector's rasteriser (software, no graphics card)
+       * spends a quarter of a frame on them for a long shape. With a step of
+       * six to eight pixels and a smooth turn of the hand a bevel cannot be
+       * told from an arc, and the line's caps are round anyway: there are
+       * only two of them.
        */
       paint.lineJoin = 'bevel'
       paint.lineCap = 'round'
@@ -997,7 +1050,7 @@
         const path = smoothTrail(mark)
         if (path.length === 0) continue
         if (path.length === 1) {
-          // Ткнули и не повели: точка «вот здесь» — тоже фигура.
+          // Poked and not moved: a "right here" dot is a shape too.
           paint.globalAlpha = 0.85 * dim
           paint.beginPath()
           paint.arc(path[0].x, path[0].y, core, 0, Math.PI * 2)
@@ -1008,19 +1061,20 @@
         line.moveTo(path[0].x, path[0].y)
         for (let i = 1; i < path.length; i += 1) line.lineTo(path[i].x, path[i].y)
         /*
-         * Ореол идёт по ТОМУ ЖЕ пути, что и ядро.
+         * The halo follows THE SAME path as the core.
          *
-         * Раньше — по редкой копии, каждой четвёртой точке: экономия была
-         * задумана против круглого стыка на программном растре. Но стык давно
-         * срезанный и стоит дёшево, а шаг в шестнадцать пикселей на полосе,
-         * которая в пять раз шире ядра, виден как ломаная — светящийся контур
-         * вокруг гладкого ядра шёл углами. Экономили на том, что и так уже не
-         * дорого, а платили тем, ради чего указку и завели.
+         * It used to follow a sparse copy, every fourth point: the saving was
+         * meant against the round join on the software rasteriser. But the
+         * join has long been bevelled and is cheap, and a sixteen-pixel step
+         * on a band five times wider than the core shows as a polyline: the
+         * glowing outline around the smooth core went in corners. We saved on
+         * what was no longer expensive and paid with the very thing the
+         * pointer exists for.
          */
         paint.globalAlpha = 0.18 * dim
         paint.lineWidth = core * 5.2
         paint.stroke(line)
-        // Ядро.
+        // The core.
         paint.globalAlpha = 0.85 * dim
         paint.lineWidth = core * 2
         paint.stroke(line)
@@ -1030,17 +1084,19 @@
 
     if (head && head.page === page) {
       /*
-       * Голова. Мягкое пятно вокруг ядра: на проекторе яркая точка в четыре
-       * пикселя теряется в белом слайде, а свечение видно с последнего ряда.
+       * The head. A soft spot around the core: on a projector a bright
+       * four-pixel dot gets lost on a white slide, while the glow is visible
+       * from the back row.
        */
       const x = head.x * w
       const y = head.y * h
       shownHead = { x, y, at: now }
       /*
-       * Голова — не отдельный шар, догоняющий ленту, а её горящий конец:
-       * ореол вдвое меньше прежнего и ядро чуть крупнее, так что вместе с
-       * лентой они читаются одной вещью. Свечение всё равно нужно: яркая точка
-       * в четыре пикселя теряется на белом слайде за десять метров.
+       * The head is not a separate ball chasing the ribbon but its glowing
+       * end: the halo is half its former size and the core slightly larger,
+       * so together with the ribbon they read as one thing. The glow is
+       * still needed: a bright four-pixel dot gets lost on a white slide at
+       * ten metres.
        */
       const halo = paint.createRadialGradient(x, y, 0, x, y, radius * 1.5)
       halo.addColorStop(0, LASER)
@@ -1061,9 +1117,10 @@
 
     if (ring && live && tool === 'laser') {
       /*
-       * Тень указки — СЕРАЯ, а не красная: красным на этом экране светит
-       * только то, что видит зал, и тень, покрашенная в тот же цвет, читалась
-       * бы как «я уже показываю», хотя пера ещё нет на стекле.
+       * The pointer's shadow is GREY, not red: on this screen only what the
+       * audience sees glows red, and a shadow painted the same colour would
+       * read as "I'm already pointing", although the pen is not on the glass
+       * yet.
        */
       const x = ring.x * w
       const y = ring.y * h
@@ -1084,9 +1141,10 @@
 
     if (ring && live && (tool === 'pen' || tool === 'marker')) {
       /*
-       * Тень пера: пятно ровно той ширины, какой ляжет штрих, и того же цвета,
-       * но вполсилы — это ещё не чернила. Тонкая тёмная обводка держит её на
-       * белом слайде, где полупрозрачное пятно своего цвета иначе теряется.
+       * The pen's shadow: a spot exactly as wide as the stroke will be and of
+       * the same colour, but at half strength: this is not ink yet. A thin
+       * dark outline holds it on a white slide, where a translucent spot of
+       * its own colour would otherwise get lost.
        */
       const x = ring.x * w
       const y = ring.y * h
@@ -1107,10 +1165,10 @@
 
     if (ring && live && tool === 'eraser') {
       /*
-       * Кольцо ластика — своё, и только своё: на проекторе его нет. Полое, а не
-       * залитое: под ним смотрят, попадает ли оно по штриху. Белая обводка под
-       * тёмной — единственный способ остаться видимым и на белом слайде, и на
-       * тёмной картинке во весь лист.
+       * The eraser ring is our own, and only ours: it is not on the
+       * projector. Hollow, not filled: people look under it to see whether it
+       * hits the stroke. A white outline under a dark one is the only way to
+       * stay visible both on a white slide and on a dark full-sheet picture.
        */
       const x = ring.x * w
       const y = ring.y * h
@@ -1125,8 +1183,8 @@
     }
   }
 
-  // Живой холст: смена страницы и размера — перерисовать; сменился инструмент —
-  // кольцо ластика могло стать неуместным.
+  // The live canvas: a page or size change means repaint; a tool change may
+  // have made the eraser ring out of place.
   $effect(() => {
     void page
     void w
@@ -1137,23 +1195,25 @@
   })
 
   /*
-   * Чужая указка — из комнаты; своя — прямо из-под пера.
+   * Someone else's pointer comes from the room; our own straight from under
+   * the pen.
    *
-   * Пока указка — наш инструмент, эхо сервера игнорируется: оно отстаёт на
-   * круг по сети, и хвост шёл бы за рукой с задержкой, которую видно именно у
-   * того, кто ведёт. И ещё четыреста миллисекунд после того, как отпустили:
-   * последние кадры эха доезжают уже после `laser:off` и вспыхивали бы точкой
-   * на пустом месте.
+   * While the pointer is our tool, the server's echo is ignored: it lags a
+   * network round trip behind, and the tail would follow the hand with a
+   * delay visible precisely to the one presenting. And for four hundred
+   * milliseconds more after letting go: the last echo frames arrive after
+   * `laser:off` and would flash as a dot on an empty spot.
    */
   const QUIET_AFTER_OFF_MS = 400
   let quietUntil = 0
   /**
-   * Форма указки, которой светит ВЕДУЩИЙ.
+   * The pointer shape the PRESENTER is using.
    *
-   * У себя мы знаем её из пропа, а зал и проектор — только из эха: свой проп у
-   * них всегда `line` по умолчанию, и без этой строки ведущий показывал бы
-   * точкой, а зал видел бы линию. Своя форма важнее приехавшей ровно пока
-   * указка наша.
+   * Locally we know it from the prop, while the audience and the projector
+   * know it only from the echo: their own prop is always the default
+   * `line`, and without this line the presenter would point with a dot
+   * while the audience saw a line. Our own shape outranks the arrived one
+   * exactly as long as the pointer is ours.
    */
   let shownShape = $state<'dot' | 'line'>('line')
   const shapeNow = $derived(live && tool === 'laser' ? laserShape : shownShape)
@@ -1163,27 +1223,29 @@
     untrack(() => {
       if (own || performance.now() < quietUntil) return
       if (!spot) {
-        // Ведущий отпустил указку: голова гаснет, обведённое догорает.
+        // The presenter let go: the head goes out, what was circled burns down.
         douse(true)
         return
       }
       shownShape = spot.shape
-      // Чужая указка: сэмплы приходят тактом провода, и пружина мягче.
+      // Someone else's pointer: samples come at the wire's tick, so a softer spring.
       aim(spot.x, spot.y, spot.page, SPRING_WIRE)
     })
   })
 
   /*
-   * Обрыв связи гасит ЧУЖУЮ указку.
+   * A dropped connection puts out SOMEONE ELSE'S pointer.
    *
-   * `laser:off` ведущего уходит по проводу мимо того, кто в этот миг офлайн, а
-   * в приветственной пачке переподключившемуся указки нет вовсе. Без этого
-   * красное пятно стояло на слайде до конца лекции — а следующее движение
-   * ведущего дотягивало от него прямую через полстраницы, потому что фигура
-   * так и осталась незакрытой. Гасим мягко: обведённое догорает, как при
-   * обычном «отпустили».
+   * The presenter's `laser:off` goes down the wire past whoever is offline
+   * at that moment, and the welcome batch for someone reconnecting has no
+   * pointer at all. Without this, a red spot stood on the slide until the
+   * end of the lecture, and the presenter's next movement drew a straight
+   * line from it across half the page, because the shape was left unclosed.
+   * We put it out softly: what was circled burns down, as on an ordinary
+   * "let go".
    *
-   * Своей указки это не касается: она местная, и обрыв ей не мешает.
+   * Our own pointer is not affected: it is local, and a dropped connection
+   * does not bother it.
    */
   $effect(() => {
     if (session.connected) return
@@ -1193,33 +1255,36 @@
     })
   })
 
-  /* ------------------------------------------------------- эхо и досылка */
+  /* ----------------------------------------------------- echo and resend */
 
-  /** Как часто проверяем закрытые мокрые штрихи. */
+  /** How often we check closed wet strokes. */
   const SETTLE_EVERY_MS = 250
-  /** Сколько ждать эха на живой связи, прежде чем досылать хвост. */
+  /** How long to wait for the echo on a live connection before resending the tail. */
   const RESEND_AFTER_MS = 500
   /**
-   * Сколько раз досылать, прежде чем признать, что серверу этот штрих не
-   * нужен: он упёрся в потолок штрихов на странице или точек в штрихе. Иначе
-   * мокрая линия жила бы на пульте вечно, а у зала её нет и не будет.
+   * How many times to resend before admitting that the server does not want
+   * this stroke: it has hit the ceiling of strokes per page or of points per
+   * stroke. Otherwise the wet line would live on the console forever, while
+   * the audience does not have it and never will.
    */
   const RESEND_MAX = 8
   let settleTimer: number | undefined
 
   /**
-   * Убрать мокрые штрихи, которые уже легли на сухой холст, и дослать те, чьё
-   * эхо отстало.
+   * Remove wet strokes that have already landed on the dry canvas, and
+   * resend those whose echo is lagging.
    *
-   * Признак — эхо: штрих с этим именем есть в чернилах комнаты и в нём не
-   * меньше точек, чем мы отправили. По подъёму пера гасить нельзя: сухой холст
-   * в этот момент ещё не получил последний кусок, и в линии появилась бы дыра
-   * длиной в круг до сервера. По таймеру гасить тоже нельзя — так было, и
-   * шесть штрихов подряд на медленном планшете «гасли и возвращались».
+   * The sign is the echo: a stroke with this id is in the room's ink and has
+   * no fewer points than we sent. Putting it out on pen lift is not
+   * possible: the dry canvas has not yet received the last piece at that
+   * moment, and the line would get a gap as long as a round trip to the
+   * server. Putting it out on a timer is not possible either: that is how it
+   * was, and six strokes in a row on a slow tablet "went out and came back".
    *
-   * Досылка — обобщение прежней «связь вернулась»: очередь сокета держит
-   * шестнадцать кадров и выбрасывает старые, и кадр, потерянный на моргнувшем
-   * вайфае, здесь же и восполняется — с той точки, которую сервер подтвердил.
+   * Resending generalises the old "connection is back": the socket queue
+   * holds sixteen frames and throws out old ones, and a frame lost on a
+   * blinking Wi-Fi is made up for right here, from the point the server
+   * confirmed.
    */
   function settle(): void {
     if (wet.length === 0) return
@@ -1233,8 +1298,9 @@
         changed = true
         return false
       }
-      // Эхо было и исчезло: штрих отменили, стёрли или страницу очистили при
-      // всех — мокрой копии на пульте тоже больше не место.
+      // The echo was there and vanished: the stroke was undone, erased or the
+      // page cleared for everyone, so the wet copy on the console has no place
+      // anymore either.
       if (!echo && stroke.echoed) {
         changed = true
         return false
@@ -1272,111 +1338,116 @@
     untrack(() => settle())
   })
 
-  /* ------------------------------------------------------------- ввод */
+  /* ------------------------------------------------------------ input */
 
-  /** Когда перо в последний раз подавало признаки жизни. См. двухпальцевый тап. */
+  /** When the pen last showed signs of life. See the two-finger tap. */
   let lastPenAt = 0
-  /** Перо на этом экране уже видели: `onpen` зовём один раз. */
+  /** A pen has been seen on this screen: `onpen` is called once. */
   let penKnown = false
   /**
-   * Штрих, который ведут сейчас. `pointer` — чтобы никакое другое касание его
-   * не закрыло; `byFinger` — чтобы перо могло: см. `down`.
+   * The stroke being drawn now. `pointer` so that no other touch closes it;
+   * `byFinger` so that the pen can: see `down`.
    */
   let drawing: { pointer: number; byFinger: boolean; stroke: Wet } | null = null
-  /** Указатель, которым нажали указку: парение пера её не гасит. */
+  /** The pointer that pressed the laser: a hovering pen does not put it out. */
   let beaming: number | null = null
-  /** Указка горит — `laser:off` должен уйти ровно один раз. */
+  /** The laser is lit: `laser:off` must go out exactly once. */
   let lit = false
-  /** Указатель, которым стирают. */
+  /** The pointer that is erasing. */
   let erasing: number | null = null
-  /** Точки, набранные с прошлой отправки. */
+  /** Points collected since the last send. */
   let pending: number[] = []
   let flushTimer: number | undefined
 
   /**
-   * ДВА ТАКТА, А НЕ ОДИН: у чернил и у указки разная цена ошибки.
+   * TWO TICKS, NOT ONE: ink and the pointer have different costs of error.
    *
-   * Такт был общий, сорок миллисекунд, и на пятьсот слушателей одна рука
-   * ведущего, ведущая указкой поверх штриха, давала пятьдесят кадров в
-   * секунду — то есть двадцать пять тысяч `ws.send` в секунду в одном
-   * процессе Node, и у каждого слушателя пересборку массива чернил двадцать
-   * пять раз в секунду.
+   * The tick used to be shared, forty milliseconds, and with five hundred
+   * listeners one presenter's hand, leading the pointer over a stroke, gave
+   * fifty frames a second, that is, twenty-five thousand `ws.send` calls a
+   * second in one Node process, and for every listener a rebuild of the ink
+   * array twenty-five times a second.
    *
-   * ЧЕРНИЛА — 50 мс. Кадр везёт ВСЕ точки, набранные с прошлой посылки, так
-   * что линия от такта не зависит вовсе: меняется только задержка хвоста, и
-   * десять миллисекунд её никто не различит. Двадцать кадров в секунду —
-   * ровно столько, сколько надо, чтобы линия у зала «шла за рукой», а не
-   * появлялась кусками.
+   * INK: 50 ms. A frame carries ALL points collected since the previous
+   * send, so the line does not depend on the tick at all: only the tail's
+   * delay changes, and nobody can tell ten milliseconds of it apart. Twenty
+   * frames a second is exactly what it takes for the line to "follow the
+   * hand" for the audience rather than appear in pieces.
    *
-   * УКАЗКА — реже: `LASER_EVERY_MS`, пятнадцать кадров в секунду. У неё нет
-   * накопления: важна только последняя точка, и между двумя редкими сэмплами
-   * голова у зрителя строится пружиной, своими шестьюдесятью точками в секунду
-   * (см. `aim`). Пружина при этом обязана знать, откуда сэмплы: своя рука
-   * отдаёт их сто двадцать раз в секунду, провод — пятнадцать, и одна и та же
-   * жёсткость на двоих даёт либо отставание от собственной руки, либо
-   * ступеньки у зала.
+   * THE POINTER: less often, `LASER_EVERY_MS`, fifteen frames a second. It
+   * has no accumulation: only the last point matters, and between two sparse
+   * samples the viewer's head is built by the spring, with its own sixty
+   * points a second (see `aim`). The spring, however, must know where the
+   * samples come from: one's own hand gives them a hundred and twenty times
+   * a second, the wire fifteen, and one and the same stiffness for both
+   * gives either a lag behind one's own hand or steps for the audience.
    *
-   * Такт указки — не наш, а ОБЩИЙ, и приходит из `@shared/lecture`: тем же
-   * окном сервер придерживает точку и рассылает последнюю (control.ts ·
-   * `laserTo`). Своя копия здесь стояла — и оставила по себе ровно ту беду,
-   * ради которой числа переезжают в shared: серверная копия объясняла себя
-   * ссылкой на `SEND_EVERY_MS`, то есть на такт ЧЕРНИЛ, другое число, — и
-   * следующий, кто взялся бы их сводить, сдвинул бы не ту константу.
+   * The pointer's tick is not ours but SHARED, and comes from
+   * `@shared/lecture`: with the same window the server holds a point back
+   * and broadcasts the last one (control.ts · `laserTo`). A copy of our own
+   * used to stand here, and it left behind exactly the trouble for which
+   * numbers move to shared: the server's copy explained itself by reference
+   * to `SEND_EVERY_MS`, that is, to the INK tick, a different number, and
+   * the next person to reconcile them would have moved the wrong constant.
    *
-   * Такт чернил при этом остаётся ЗДЕСЬ и общим быть не обязан: кадр везёт все
-   * набранные с прошлой посылки точки, так что серверу сверять с ним нечего.
+   * The ink tick, meanwhile, stays HERE and need not be shared: a frame
+   * carries all points collected since the previous send, so the server has
+   * nothing to check against it.
    */
   const SEND_EVERY_MS = 50
   /**
-   * Насколько указка должна сдвинуться, чтобы её стоило отправлять.
+   * How far the pointer must move to be worth sending.
    *
-   * Указкой чаще всего СТОЯТ на месте — «вот здесь», — и дрожь руки на
-   * планшете даёт свой сэмпл каждые восемь миллисекунд. Две тысячных ширины
-   * страницы — это четыре пикселя на проекторе в 4К, то есть меньше самой
-   * красной точки: разницы не видно, а кадров нет.
+   * Most often the pointer STANDS still ("right here"), and hand tremor on a
+   * tablet produces a sample every eight milliseconds. Two thousandths of
+   * the page width is four pixels on a 4K projector, that is, less than the
+   * red dot itself: no difference is visible, and there are no frames.
    */
   const LASER_MIN_MOVE = 0.002
 
   /**
-   * Сколько чисел влезает в кадр.
+   * How many numbers fit into a frame.
    *
-   * Потолок кадра управляющего сокета — 32 КБ (`MAX_FRAME_BYTES` в
-   * server/src/control.ts), и кадр, который его перебрал, сервер молча
-   * выбрасывает: ни ошибки, ни строки в журнале. При четырёх знаках после
-   * запятой число занимает семь символов с запятой, так что четыреста чисел —
-   * это 2800 байт, запас больше чем десятикратный. Само число здесь не от
-   * потолка кадра, а от потолка сервера на ЧИСЛА в одном сообщении
-   * (`MAX_POINTS_PER_MESSAGE` = 512 в shared/lecture.ts): всё сверх него
-   * сервер отрезает, и кусок линии пропал бы у зала молча. Перо, задержанное
-   * системой на полсекунды, отдаёт свои сэмплы пачкой, и без нарезки такая
-   * пачка ушла бы одним сообщением.
+   * The control socket's frame ceiling is 32 KB (`MAX_FRAME_BYTES` in
+   * server/src/control.ts), and a frame that exceeds it is silently dropped
+   * by the server: no error, not a line in the log. With four decimal places
+   * a number takes seven characters with the comma, so four hundred numbers
+   * are 2800 bytes, a margin of more than ten times. The number itself comes
+   * not from the frame ceiling but from the server's ceiling on NUMBERS in
+   * one message (`MAX_POINTS_PER_MESSAGE` = 512 in shared/lecture.ts):
+   * everything beyond it the server cuts off, and a piece of the line would
+   * vanish for the audience silently. A pen held back by the system for half
+   * a second gives up its samples in a batch, and without slicing such a
+   * batch would go as one message.
    */
   const MAX_NUMBERS_PER_FRAME = 400
   /**
-   * Потолок сервера — четыре тысячи чисел на штрих, и всё сверх он молча
-   * отбрасывает. Длинная волнистая линия через весь слайд его достаёт. Чуть
-   * раньше потолка штрих закрывается и продолжается новым — с той же точки,
-   * так что разрыва в линии нет ни у кого.
+   * The server's ceiling is four thousand numbers per stroke, and it
+   * silently discards everything beyond. A long wavy line across the whole
+   * slide reaches it. A little before the ceiling the stroke is closed and
+   * continued with a new one, from the same point, so nobody sees a break in
+   * the line.
    */
   const SPLIT_AT_NUMBERS = 3900
 
   /**
-   * Округление до четырёх знаков.
+   * Rounding to four decimal places.
    *
-   * Доля страницы с четырьмя знаками — это четверть пикселя на проекторе в
-   * 4К. Без округления `0.1` пришедшее из деления даёт «0.10000000000000009»:
-   * восемнадцать символов вместо шести, то есть втрое более толстый провод
-   * ради точности, которой не существует.
+   * A page fraction with four decimals is a quarter of a pixel on a 4K
+   * projector. Without rounding, a `0.1` coming out of a division gives
+   * "0.10000000000000009": eighteen characters instead of six, that is, a
+   * wire three times fatter for a precision that does not exist.
    */
   function round(value: number): number {
     return Math.round(value * 1e4) / 1e4
   }
 
   /**
-   * Где лист на экране — снято один раз на касании и по наблюдателю размера.
+   * Where the sheet is on screen: taken once on touch and by the size
+   * observer.
    *
-   * `getBoundingClientRect` на каждом сэмпле — это принудительная раскладка
-   * двести раз в секунду; Pencil этого не прощает.
+   * `getBoundingClientRect` on every sample is a forced layout two hundred
+   * times a second; Pencil does not forgive that.
    */
   let rect: DOMRect | null = null
   function measure(): void {
@@ -1385,11 +1456,12 @@
   }
 
   /**
-   * Координаты в долях листа, с зажимом в [0, 1].
+   * Coordinates as fractions of the sheet, clamped to [0, 1].
    *
-   * Слой ввода шире листа — на нём и поля. Штрих, начатый на поле и заведённый
-   * на лист, начинается: на бумаге ведут от края, и перо, которое молчит, пока
-   * не пересечёт невидимую черту, — это перо, которое «не сработало».
+   * The input layer is wider than the sheet: the margins are on it too. A
+   * stroke started on the margin and carried onto the sheet does start: on
+   * paper one draws from the edge, and a pen that stays silent until it
+   * crosses an invisible line is a pen that "didn't work".
    */
   function at(event: { clientX: number; clientY: number }): { x: number; y: number } | null {
     if (!rect || rect.width === 0 || rect.height === 0) return null
@@ -1402,22 +1474,22 @@
   }
 
   /**
-   * Пятно контакта шириной от 40 px — ладонь, а не палец.
+   * A contact patch 40 px wide or more is a palm, not a finger.
    *
-   * Подушечка пальца на стекле — 15–20 px, пятка ладони — 40–60. Это
-   * единственный признак, по которому ладонь отличима от пальца ДО того, как
-   * перо коснулось листа: раньше пятка, севшая на 200 мс раньше кончика,
-   * считалась пальцем и рисовала точку (или светила указкой) там, где лежит
-   * рука. Браузер размер отдаёт не всегда (у мыши и у старых WebKit это 1×1),
-   * поэтому признак работает только в одну сторону: крупное — точно ладонь,
-   * мелкое — ещё не значит палец.
+   * A fingertip on glass is 15–20 px, the heel of the palm 40–60. This is
+   * the only sign by which a palm can be told from a finger BEFORE the pen
+   * has touched the sheet: the heel, landing 200 ms before the tip, used to
+   * count as a finger and drew a dot (or shone the pointer) where the hand
+   * rests. The browser does not always report the size (for a mouse and on
+   * older WebKit it is 1×1), so the sign works only one way: large is
+   * certainly a palm, small does not yet mean a finger.
    */
   const PALM_PX = 40
   function palmish(event: PointerEvent): boolean {
     return event.pointerType === 'touch' && (event.width >= PALM_PX || event.height >= PALM_PX)
   }
 
-  /** Перо подало признаки жизни: с этого мига считается пауза до двухпальцевого тапа. */
+  /** The pen showed signs of life: the pause before a two-finger tap counts from now. */
   function penSeen(event: PointerEvent): void {
     if (event.pointerType !== 'pen') return
     lastPenAt = performance.now()
@@ -1428,24 +1500,27 @@
   }
 
   /**
-   * Чей это указатель — инструмента или ладони.
+   * Whose pointer this is: the tool's or the palm's.
    *
-   * Перо и мышь — всегда инструмент, при любом числе лежащих касаний: ладонь
-   * при письме лежит всегда, и «перо при двух касаниях не рисует» означало бы
-   * «перо не рисует». Палец — инструмент, пока родитель не сказал иначе.
+   * A pen and a mouse are always the tool, whatever the number of resting
+   * touches: the palm always rests while writing, and "the pen does not draw
+   * with two touches down" would mean "the pen does not draw". A finger is
+   * the tool until the parent says otherwise.
    *
-   * С указкой палец светит и при выключенном пальце — показать пальцем, как во
-   * Freeform, — но только если он один и перо не в деле: раньше «палец при
-   * указке светит всегда» значило, что пятка ладони, севшая на лист, пока
-   * пером водят указку, ПЕРЕХВАТЫВАЛА луч, и у зала точка прыгала к ладони и
-   * там застревала, а перо дальше не слушалось.
+   * With the pointer tool a finger shines even with finger drawing off (to
+   * point with a finger, as in Freeform), but only if it is alone and the
+   * pen is not in play: previously "a finger with the pointer always shines"
+   * meant that the heel of the palm landing on the sheet while the pen was
+   * leading the pointer TOOK OVER the beam, and for the audience the dot
+   * jumped to the palm and got stuck there, while the pen no longer obeyed.
    *
-   * Владелец луча проходит здесь ВСЕГДА, и без этого обещание не сдерживалось
-   * вовсе: луч зажигается тем же касанием, `down` ставит `beaming` своим
-   * pointerId — и все последующие `pointermove` этого же пальца гибли на
-   * `beaming === null` до того, как дойти до ветки указки. Палец зажигал точку
-   * и не мог её сдвинуть: зал видел неподвижное пятно не там, куда показывают.
-   * Пятка ладони при этом по-прежнему отсекается — у неё другой pointerId.
+   * The beam's owner ALWAYS passes here, and without that the promise was not
+   * kept at all: the beam is lit by the same touch, `down` sets `beaming` to
+   * its pointerId, and all subsequent `pointermove` events of that same
+   * finger died on `beaming === null` before reaching the pointer branch.
+   * The finger lit the dot and could not move it: the audience saw a
+   * motionless spot away from where one was pointing. The heel of the palm
+   * is still cut off: it has a different pointerId.
    */
   function mine(event: PointerEvent): boolean {
     if (!live || tool === 'off') return false
@@ -1466,7 +1541,7 @@
     return true
   }
 
-  /** Держим ли указатель. Родитель по этому не пускает ладонь к кнопкам. */
+  /** Whether we hold the pointer. The parent uses it to keep the palm off the buttons. */
   let busy = false
   function syncBusy(): void {
     const next = drawing !== null || erasing !== null || beaming !== null || lit
@@ -1476,31 +1551,32 @@
   }
 
   /**
-   * Отдать точки серверу. Возвращает, ушли ли они.
+   * Hand the points to the server. Returns whether they went out.
    *
-   * НА ЗАКРЫТОМ СОКЕТЕ КАДР ЧЕРНИЛ НЕ ОТПРАВЛЯЕТСЯ ВОВСЕ.
+   * ON A CLOSED SOCKET AN INK FRAME IS NOT SENT AT ALL.
    *
-   * `session.send` кладёт неотправленное в очередь управления, а она держит
-   * шестнадцать сообщений и выбрасывает САМЫЕ СТАРЫЕ. Три секунды письма на
-   * моргнувшем вайфае — это семьдесят пять кадров, из которых доедут последние
-   * шестнадцать: сервер заводит штрих С СЕРЕДИНЫ формулы, и его копия
-   * перестаёт быть началом нашей. А досылка (`settle`) именно началом её и
-   * считает — шлёт хвост от числа подтверждённых точек, — так что поверх
-   * обрубка ложился ещё и прыжок назад, и зал видел линию, идущую с конца и
-   * дописанную поверх себя. Заодно кадры вытесняли из очереди нажатия, ради
-   * которых она и заведена.
+   * `session.send` puts what could not be sent into the control queue, and
+   * that holds sixteen messages and throws out THE OLDEST. Three seconds of
+   * writing on a blinking Wi-Fi are seventy-five frames, of which the last
+   * sixteen get through: the server starts the stroke FROM THE MIDDLE of the
+   * formula, and its copy stops being the beginning of ours. Resending
+   * (`settle`) treats it precisely as the beginning (it sends the tail from
+   * the count of confirmed points), so on top of the stump came a jump back
+   * as well, and the audience saw a line running from its end and written
+   * over itself. On top of that, the frames pushed out of the queue the
+   * presses it exists for.
    *
-   * Инвариант, который держит всё остальное: серверная копия штриха — всегда
-   * НАЧАЛО нашей. Поэтому неотправленное не пропадает, а остаётся в `pending`
-   * (см. `flush`) и уходит целым куском, когда связь вернётся; у закрытого
-   * штриха то же делает досылка.
+   * The invariant that holds everything else up: the server's copy of a
+   * stroke is always the BEGINNING of ours. So what was not sent is not lost
+   * but stays in `pending` (see `flush`) and goes out as a whole piece when
+   * the connection returns; for a closed stroke resending does the same.
    */
   function sendPoints(stroke: Wet, numbers: number[]): boolean {
     if (!session.connected) return false
     /*
-     * Нарезка по кадрам, а не одно сообщение: см. MAX_NUMBERS_PER_FRAME. Куски
-     * идут под одним и тем же именем штриха — сервер дописывает их в тот же
-     * штрих, а не заводит новый.
+     * Sliced into frames, not one message: see MAX_NUMBERS_PER_FRAME. The
+     * pieces go under one and the same stroke id: the server appends them to
+     * the same stroke rather than starting a new one.
      */
     for (let from = 0; from < numbers.length; from += MAX_NUMBERS_PER_FRAME) {
       const chunk = numbers.slice(from, from + MAX_NUMBERS_PER_FRAME)
@@ -1513,7 +1589,7 @@
         points: chunk,
       })
     }
-    // Счёт отправленному: по нему мокрый штрих узнаёт своё эхо.
+    // Count what was sent: that is how the wet stroke recognises its echo.
     stroke.sent = stroke.points.length
     return true
   }
@@ -1522,9 +1598,9 @@
     window.clearTimeout(flushTimer)
     flushTimer = undefined
     if (!drawing || pending.length < 2) return
-    // Не ушло — точки остаются накопленными и уедут одним куском, когда связь
-    // вернётся. Очистить `pending` здесь значило бы вырезать из штриха дыру
-    // ровно там, где моргнул вайфай.
+    // Not sent: the points stay accumulated and will go as one piece when the
+    // connection returns. Clearing `pending` here would cut a hole in the
+    // stroke exactly where the Wi-Fi blinked.
     if (!sendPoints(drawing.stroke, pending)) return
     pending = []
   }
@@ -1553,15 +1629,16 @@
 
   function openStroke(pointer: number, byFinger: boolean, place: { x: number; y: number }, force: number): void {
     /*
-     * Перо коснулось — тень кончика убирается. У ластика кольцо в контакте
-     * остаётся (по нему смотрят, попадает ли он по штриху), а у пера под
-     * кончиком уже своя линия: пятно поверх неё читается как клякса, которой
-     * рука не вела.
+     * The pen touched down: the tip's shadow is removed. For the eraser the
+     * ring stays in contact (people watch it to see whether it hits the
+     * stroke), but under the pen's tip there is already its own line: a spot
+     * on top of it reads as a blot the hand never made.
      */
     if (ring && tool !== 'eraser') ring = null
     const stroke = newStroke(place.x, place.y, force)
-    // Фильтр начинается с той точки, где перо коснулось: иначе новый штрих
-    // выехал бы из конца предыдущего, притянутый его последним значением.
+    // The filter starts at the point where the pen touched down: otherwise
+    // the new stroke would come out of the end of the previous one, pulled
+    // by its last value.
     smoothX = place.x
     smoothY = place.y
     wet = [...wet, stroke]
@@ -1570,14 +1647,15 @@
     pending = [place.x, place.y]
     growWet(stroke)
     /*
-     * Первая точка — сразу: тап пером обязан доехать даже если перо тут же
-     * подняли, а сорок миллисекунд такта на первую точку никто не заметит.
+     * The first point goes at once: a pen tap must arrive even if the pen was
+     * lifted right away, and nobody will notice forty milliseconds of tick on
+     * the first point.
      *
-     * Пальцем — с задержкой в четверть секунды: столько отведено второму
-     * пальцу, чтобы превратить касание в тап-отмену (см. `down`). Отправленную
-     * точку уже не забрать, а неотправленной «не было» — это единственный
-     * случай, когда штрих исчезает молча, и он разрешён ровно потому, что
-     * наружу из него не ушло ничего.
+     * With a finger, after a quarter-second delay: that much is set aside for
+     * a second finger to turn the touch into an undo tap (see `down`). A sent
+     * point cannot be taken back, while an unsent one "never happened": this
+     * is the only case when a stroke disappears silently, and it is allowed
+     * precisely because nothing from it has gone out.
      */
     if (byFinger) {
       window.clearTimeout(flushTimer)
@@ -1588,7 +1666,7 @@
     syncBusy()
   }
 
-  /** Штрих, из которого не ушло ни одной точки, — забыть: см. `openStroke`. */
+  /** A stroke from which not a single point went out: forget it, see `openStroke`. */
   function forgetUnsent(): void {
     if (!drawing || drawing.stroke.sent !== 0) return
     window.clearTimeout(flushTimer)
@@ -1605,10 +1683,11 @@
   }
 
   /**
-   * Перо подняли, инструмент сменили, страницу перелистнули, лист заняли:
-   * штрих ДОПИСАН, дальше он ждёт своего эха. Никогда не стирается — то, что
-   * ведущий уже провёл, зал уже видел; «этого не было» — только ластик и
-   * отмена, и обе — руками.
+   * The pen was lifted, the tool changed, the page turned, the sheet taken:
+   * the stroke is FINISHED, and from here on it waits for its echo. It is
+   * never erased: what the presenter has already drawn, the audience has
+   * already seen; "this never happened" is only the eraser and undo, and
+   * both by hand.
    */
   function closeStroke(): void {
     if (!drawing) return
@@ -1623,29 +1702,31 @@
   }
 
   /**
-   * ЛЁГКОЕ СГЛАЖИВАНИЕ ВХОДА.
+   * LIGHT SMOOTHING OF THE INPUT.
    *
-   * Кривая через середины отрезков (`trace`) убирает грани между сэмплами, но
-   * идёт РОВНО по тем точкам, что прислал браузер, — вместе с дрожью руки и
-   * шумом сенсора. На листе в 1084 px это незаметно, на проекторе в 1920 —
-   * видно всему залу: буква ведётся уверенно, а выглядит шершавой.
+   * The curve through segment midpoints (`trace`) removes the facets between
+   * samples, but it runs EXACTLY through the points the browser sent, along
+   * with hand tremor and sensor noise. On a 1084 px sheet this is invisible,
+   * on a 1920 projector the whole audience sees it: a letter is drawn with
+   * confidence but looks rough.
    *
-   * Фильтр здесь самый простой и самый дешёвый: новая точка тянется к
-   * пришедшей на семь десятых пути. Ровно `0.7`, а не меньше: на этом
-   * коэффициенте кончик отстаёт примерно на треть сэмпла — для пера с его
-   * сотней двадцатью сэмплами в секунду это около трёх миллисекунд, то есть
-   * не отстаёт вовсе. Всё, что сильнее, начинает «плыть» на резком повороте, а
-   * поворот — основной случай в рукописи.
+   * The filter here is the simplest and cheapest: the new point is pulled
+   * seven tenths of the way towards the incoming one. Exactly `0.7`, not
+   * less: at this coefficient the tip lags by about a third of a sample; for
+   * a pen with its hundred and twenty samples a second that is about three
+   * milliseconds, that is, no lag at all. Anything stronger starts to
+   * "float" on a sharp turn, and a turn is the main case in handwriting.
    *
-   * Сглаживается ДО отправки и до отрисовки, одним значением: зал обязан
-   * получить ту же линию, что видит ведущий, иначе на проекторе будет своя
-   * рукопись. Первая точка штриха не сглаживается ничем — ей не с чем.
+   * Smoothing happens BEFORE sending and before drawing, with one value: the
+   * audience must get the same line the presenter sees, otherwise the
+   * projector would have its own handwriting. The first point of a stroke is
+   * not smoothed at all: it has nothing to be smoothed with.
    */
   const SMOOTH = 0.7
   let smoothX = 0
   let smoothY = 0
 
-  /** Добавить сэмпл к штриху под пером; у потолка сервера — начать новый с той же точки. */
+  /** Add a sample to the stroke; at the server's ceiling start a new one from this point. */
   function addPoint(place: { x: number; y: number }, force: number): void {
     if (!drawing) return
     const stroke = drawing.stroke
@@ -1669,17 +1750,19 @@
   }
 
   /*
-   * Указка — СВОИМ тактом, реже чернил (см. `LASER_EVERY_MS`).
+   * The pointer goes at ITS OWN tick, less often than ink (see
+   * `LASER_EVERY_MS`).
    *
-   * У неё нет ни накопления, ни истории: важна только последняя точка. Но
-   * посылать её на каждое движение указателя значит слать по сто двадцать
-   * кадров в секунду на всю комнату — а глазом от этого не отличить ничего:
-   * пятно и так летит быстрее, чем за ним успевают следить, и промежуток
-   * между сэмплами достраивает пружина головы у каждого зрителя.
+   * It has neither accumulation nor history: only the last point matters.
+   * But sending it on every pointer movement means sending a hundred and
+   * twenty frames a second to the whole room, and the eye cannot tell any
+   * difference: the spot already flies faster than anyone can follow it,
+   * and the gap between samples is filled in by the head's spring for every
+   * viewer.
    */
   let spot: { x: number; y: number } | null = null
   let spotTimer: number | undefined
-  /** Последнее, что ушло по проводу: по нему считается порог сдвига. */
+  /** The last thing sent down the wire: the move threshold is measured from it. */
   let beamed: { x: number; y: number } | null = null
 
   function beamNow(): void {
@@ -1687,18 +1770,19 @@
     spotTimer = undefined
     if (!spot) return
     /*
-     * Порог сдвига. Указка стоит на месте чаще, чем движется, а сэмплы идут
-     * всё равно — и каждый уходил кадром на все пятьсот сокетов, показывая
-     * дрожь руки. Первый кадр (`beamed === null`) уходит всегда: он зажигает
-     * точку, и ждать от него сдвига было бы нечего.
+     * The move threshold. The pointer stands still more often than it moves,
+     * yet samples keep coming, and each went out as a frame to all five
+     * hundred sockets, showing hand tremor. The first frame
+     * (`beamed === null`) always goes out: it lights the dot, and there would
+     * be no movement to wait for from it.
      */
     const far =
       beamed === null ||
       Math.abs(spot.x - beamed.x) >= LASER_MIN_MOVE ||
       Math.abs(spot.y - beamed.y) >= LASER_MIN_MOVE
-    // На закрытом сокете кадр указки в очередь не кладём: важна только
-    // последняя точка, и она уедет со следующим движением — а место в очереди
-    // на шестнадцать сообщений принадлежит нажатиям.
+    // On a closed socket the pointer frame is not queued: only the last point
+    // matters, and it will go with the next movement, while the places in
+    // the sixteen-message queue belong to presses.
     if (far && session.connected) {
       session.send({ t: 'laser', page, x: spot.x, y: spot.y, shape: laserShape })
       beamed = spot
@@ -1709,14 +1793,15 @@
 
   function beam(to: { x: number; y: number }, when: number): void {
     spot = to
-    // Себе — сразу, не дожидаясь круга по сети: свою указку сравнивают с
-    // собственной рукой, и отставание видно только здесь. Пружина при этом
-    // жёсткая: сэмплы свои, их сто двадцать в секунду.
+    // For ourselves, at once, without waiting for a network round trip: one's
+    // own pointer is compared with one's own hand, and the lag is visible
+    // only here. The spring is stiff here: the samples are our own, a hundred
+    // and twenty a second.
     aim(to.x, to.y, page, SPRING_HAND)
     if (spotTimer === undefined) spotTimer = window.setTimeout(beamNow, LASER_EVERY_MS)
   }
 
-  /** Указку отпустили или сменили инструмент: `laser:off` один раз, своё — сразу. */
+  /** The pointer was released or the tool changed: `laser:off` once, our own at once. */
   function beamOff(): void {
     window.clearTimeout(spotTimer)
     spotTimer = undefined
@@ -1728,26 +1813,27 @@
       session.send({ t: 'laser:off' })
       quietUntil = performance.now() + QUIET_AFTER_OFF_MS
     }
-    // Своё — сразу: ждать эха, чтобы погасить СВОЮ же указку, значит держать
-    // её на экране лишний круг по сети после того, как палец подняли. След при
-    // этом остаётся догорать: он и есть то, ради чего указкой обводят.
+    // Our own, at once: waiting for the echo to put out OUR OWN pointer means
+    // keeping it on screen one extra network round trip after the finger was
+    // lifted. The trail stays behind to burn down: it is exactly what one
+    // circles with the pointer for.
     douse(true)
     syncBusy()
   }
 
-  /* ------------------------------------------------------------ ластик */
+  /* ----------------------------------------------------------- eraser */
 
-  /** Запас попадания: тонкий штрих иначе невозможно поймать движущимся пером. */
+  /** Hit margin: otherwise a thin stroke cannot be caught with a moving pen. */
   const ERASE_REACH = 0.012
-  /** Сколько держим стёртое несбывшимся, если сервер промолчал. */
+  /** How long erased strokes stay hidden if the server says nothing. */
   const ERASE_GRACE_MS = 1200
   let forgetTimer: number | undefined
-  /** Где ластик был на прошлом сэмпле: стираем отрезком, а не точкой. */
+  /** Where the eraser was at the previous sample: we erase by segment, not by point. */
   let rubbed: { x: number; y: number } | null = null
-  /** Про обрыв связи сказано за этот росчерк. Снимается подъёмом ластика. */
+  /** Offline already reported for this sweep. Cleared when the eraser lifts. */
   let erasingTold = false
 
-  /** Квадрат расстояния от точки до отрезка. Всё — в долях ШИРИНЫ страницы. */
+  /** Squared distance from a point to a segment. All in fractions of the page WIDTH. */
   function toSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
     const dx = bx - ax
     const dy = by - ay
@@ -1764,12 +1850,13 @@
   }
 
   /**
-   * Прошёл ли ластик по штриху.
+   * Whether the eraser went over a stroke.
    *
-   * Двумя проверками, и обе нужны. Пересечение — потому что стирают
-   * поперечным росчерком, и у такого росчерка все четыре конца далеко от
-   * штриха. Расстояние от концов — потому что стирают и вдоль, и коротким
-   * тычком по толстой линии, где пересечения нет вовсе.
+   * Two checks, and both are needed. Intersection, because people erase with
+   * a crosswise sweep, and all four ends of such a sweep are far from the
+   * stroke. Distance from the ends, because people also erase lengthwise,
+   * and with a short jab at a thick line, where there is no intersection at
+   * all.
    */
   function crosses(
     ax: number, ay: number, bx: number, by: number,
@@ -1780,8 +1867,9 @@
     const s2 = side(cx, cy, dx, dy, bx, by)
     const s3 = side(ax, ay, bx, by, cx, cy)
     const s4 = side(ax, ay, bx, by, dx, dy)
-    // Концы ластика по разные стороны штриха, и концы штриха — по разные
-    // стороны ластика: это и есть пересечение крест-накрест.
+    // The eraser's ends are on different sides of the stroke, and the
+    // stroke's ends on different sides of the eraser: that is a crosswise
+    // intersection.
     if ((s1 > 0) !== (s2 > 0) && (s3 > 0) !== (s4 > 0)) return true
     const near = reach * reach
     return (
@@ -1793,33 +1881,36 @@
   }
 
   /**
-   * Стереть штрихи, по которым провели.
+   * Erase the strokes that were swept over.
    *
-   * Стирается ШТРИХ целиком, а не пиксели под пером: в проводе есть только
-   * «убрать штрих с таким именем», а пиксельное стирание потребовало бы нового
-   * формата и переписывания всей истории лекции ради жеста, который в лекции
-   * делают трижды за пару.
+   * The WHOLE stroke is erased, not the pixels under the pen: the wire only
+   * has "remove the stroke with this id", and pixel erasing would need a new
+   * format and a rewrite of the whole lecture history for a gesture that is
+   * made three times per class in a lecture.
    *
-   * Считаем в долях ШИРИНЫ: доля высоты на широком слайде — это другой
-   * сантиметр, и порог попадания перекосило бы вместе с листом.
+   * We count in fractions of the WIDTH: a fraction of the height on a wide
+   * slide is a different centimetre, and the hit threshold would be skewed
+   * along with the sheet.
    */
   function rub(from: { x: number; y: number }, to: { x: number; y: number }): void {
     if (w === 0 || h === 0) return
     /*
-     * БЕЗ СВЯЗИ ЛАСТИК НЕ СТИРАЕТ — и говорит об этом.
+     * WITHOUT A CONNECTION THE ERASER DOES NOT ERASE, and says so.
      *
-     * `ink:erase` не из тех кадров, что выбрасываются на закрытом сокете: он
-     * ложился в очередь управления, по одному на каждый задетый штрих. Дальше
-     * происходило три вещи разом. Штрих исчезал у себя и через 1.2 с
-     * возвращался (см. `ERASE_GRACE_MS`) — то есть ластик выглядел сломанным.
-     * Очередь на шестнадцать сообщений забивалась стираниями, вытесняя из неё
-     * настоящие нажатия. А когда вайфай возвращался, она выстреливала: штрихи
-     * пропадали у всего зала сами, без человека, посреди следующего слайда.
-     * Ровно это «Отменить» и «Стереть страницу» на пульте называют хуже
-     * отказа и от чего защищены сами.
+     * `ink:erase` is not one of the frames that are dropped on a closed
+     * socket: it went into the control queue, one per stroke touched. Then
+     * three things happened at once. The stroke vanished locally and came
+     * back after 1.2 s (see `ERASE_GRACE_MS`), that is, the eraser looked
+     * broken. The sixteen-message queue filled up with erases, pushing real
+     * presses out of it. And when the Wi-Fi came back, it fired: strokes
+     * vanished for the whole audience by themselves, with nobody doing it,
+     * in the middle of the next slide. Exactly what "Undo" and "Erase page"
+     * on the console call worse than a refusal, and are protected from
+     * themselves.
      *
-     * Один отказ на жест, а не на штрих: ластик проходит по бумаге десятки
-     * раз в секунду, и тост на каждый росчерк — это тот же шум, только словами.
+     * One refusal per gesture, not per stroke: the eraser crosses the paper
+     * dozens of times a second, and a toast for every sweep is the same
+     * noise, only in words.
      */
     if (!session.connected) {
       if (!erasingTold) {
@@ -1834,10 +1925,10 @@
     const bx = to.x
     const by = to.y * skew
     /*
-     * Стираем и то, что уже подтвердил сервер, и то, что ещё сохнет на мокром
-     * слое: штрих, нарисованный секунду назад, виден на листе, и ластик,
-     * проходящий сквозь него, выглядит сломанным. Имя у сервера он уже имеет —
-     * точки ушли, пока его вели.
+     * We erase both what the server has already confirmed and what is still
+     * drying on the wet layer: a stroke drawn a second ago is visible on the
+     * sheet, and an eraser passing through it looks broken. It already has
+     * its id on the server: its points went out while it was being drawn.
      */
     const targets: { id: string; width: number; points: number[] }[] = [
       ...session.ink.filter((stroke) => stroke.page === page && !erased.has(stroke.id)),
@@ -1862,8 +1953,9 @@
         const cy = points[i * 2 + 1] * skew
         const nx = i < last ? points[i * 2 + 2] : cx
         const ny = i < last ? points[i * 2 + 3] * skew : cy
-        // Дешёвый отказ по рамке: штрихов на странице до шестисот, и считать
-        // для каждого отрезка полную геометрию на каждое движение пера незачем.
+        // A cheap rejection by bounding box: a page has up to six hundred
+        // strokes, and there is no point computing the full geometry of every
+        // segment on every pen movement.
         if (Math.min(cx, nx) > hiX || Math.max(cx, nx) < loX) continue
         if (Math.min(cy, ny) > hiY || Math.max(cy, ny) < loY) continue
         if (!crosses(ax, ay, bx, by, cx, cy, nx, ny, reach)) continue
@@ -1874,8 +1966,9 @@
     if (hit.length === 0) return
     erased = new Set([...erased, ...hit])
     for (const id of hit) session.send({ t: 'ink:erase', page, id })
-    // Мокрая копия стёртого иначе держалась бы до эха — то есть круг по сети
-    // жила бы линия, которую при всех только что убрали.
+    // Otherwise the wet copy of what was erased would stay until the echo,
+    // that is, for a network round trip a line would live on that was just
+    // removed in front of everyone.
     const dried = wet.filter((stroke) => !hit.includes(stroke.id))
     if (dried.length !== wet.length) {
       wet = dried
@@ -1883,8 +1976,9 @@
     }
     window.clearTimeout(forgetTimer)
     forgetTimer = window.setTimeout(() => {
-      // Срок вышел: то, что сервер подтвердил, из чернил уже ушло, а то, что
-      // не дошло, честнее показать снова, чем оставить стёртым только у себя.
+      // Time is up: what the server confirmed has already left the ink, and
+      // what did not get through is more honest to show again than to leave
+      // erased only for ourselves.
       erased = new Set()
     }, ERASE_GRACE_MS)
   }
@@ -1898,17 +1992,18 @@
     syncBusy()
   }
 
-  /* ------------------------------------------------ двухпальцевый тап */
+  /* ---------------------------------------------------- two-finger tap */
 
   /**
-   * Два пальца, коротко коснувшиеся листа, — отмена. Как в Procreate.
+   * Two fingers briefly touching the sheet mean undo. As in Procreate.
    *
-   * Единственное, что значат пальцы на листе, когда есть перо. Всё остальное
-   * — ладонь: она лежит, ползёт, отрывается и садится снова, и любое другое
-   * толкование пальцев рано или поздно срабатывает от неё. Условия жёсткие
-   * ровно поэтому: два касания в четверть секунды, оба подняты в треть
-   * секунды, ни одно не сдвинулось, перо не в контакте и не касалось листа
-   * последние полсекунды — ладонь, пока пишут, так себя не ведёт.
+   * The only thing fingers on the sheet mean when there is a pen. Everything
+   * else is the palm: it rests, creeps, lifts off and lands again, and any
+   * other reading of fingers sooner or later fires from it. The conditions
+   * are strict precisely for that reason: two touches within a quarter of a
+   * second, both lifted within a third of a second, neither moved, the pen
+   * not in contact and not touching the sheet in the last half second; a
+   * palm does not behave like that while one writes.
    */
   const TAP_TOGETHER_MS = 250
   const TAP_HOLD_MS = 300
@@ -1939,7 +2034,7 @@
   function tapUp(event: PointerEvent, cancelled: boolean): void {
     const now = performance.now()
     const tap = taps.find((known) => known.pointer === event.pointerId)
-    // Подъём приходит дважды, когда был захват: pointerup и lostpointercapture.
+    // The lift arrives twice when there was a capture: pointerup and lostpointercapture.
     if (!tap || tap.up !== null) return
     if (cancelled) {
       taps = taps.filter((known) => known !== tap)
@@ -1956,38 +2051,39 @@
     onundo?.()
   }
 
-  /* --------------------------------------------------------- указатель */
+  /* ----------------------------------------------------------- pointer */
 
   function capture(event: PointerEvent): void {
     /*
-     * Захват указателя — попытка, а не требование. Штрих, ушедший за край
-     * листа, должен дорисоваться, а не оборваться на кромке; но захват у
-     * указателя, которого браузер уже не считает активным, бросает исключение —
-     * и штрих обрывался бы совсем.
+     * Pointer capture is an attempt, not a demand. A stroke that goes past
+     * the sheet's edge must be drawn to the end rather than cut off at the
+     * border; but capturing a pointer the browser no longer considers active
+     * throws an exception, and the stroke would be cut off entirely.
      */
     try {
       inputNode?.setPointerCapture(event.pointerId)
     } catch {
-      /* перо уже отпустили — рисуем без захвата */
+      /* the pen has already been released: draw without capture */
     }
   }
 
   function down(event: PointerEvent): void {
     measure()
-    // Пятка ладони — не палец и в счёт двухпальцевого тапа не идёт: тап —
-    // это два МЕЛКИХ касания, а пятка с мизинцем это и есть та пара, которую
-    // раньше принимали за отмену.
+    // The heel of the palm is not a finger and does not count towards a
+    // two-finger tap: a tap is two SMALL touches, while the heel plus the
+    // little finger is exactly the pair that used to be taken for undo.
     if (event.pointerType === 'touch' && !palmish(event)) tapDown(event)
     if (!mine(event)) return
     const place = at(event)
     if (!place) return
     /*
-     * Два пальца легли почти одновременно, а перо ещё не найдено и палец
-     * рисует: это тап-отмена, а не две точки. Первый палец уже открыл штрих,
-     * но точки его ещё не ушли (см. `openStroke`) — штрих просто забывается,
-     * а второй палец штриха не открывает. Раньше первый ставил точку, второй
-     * подъёмом отменял «последний штрих» — и на сервере это была гонка между
-     * только что отправленной точкой и настоящим предыдущим штрихом.
+     * Two fingers landed almost at once, the pen has not been found yet and
+     * the finger draws: this is an undo tap, not two dots. The first finger
+     * has already opened a stroke, but its points have not gone out yet (see
+     * `openStroke`): the stroke is simply forgotten, and the second finger
+     * opens no stroke. Previously the first put a dot and the second, on
+     * lift, undid "the last stroke", and on the server that was a race
+     * between the point just sent and the real previous stroke.
      */
     if (event.pointerType === 'touch' && drawing?.byFinger && drawing.stroke.sent === 0) {
       const first = taps.find((tap) => tap.pointer === drawing?.pointer)
@@ -1999,20 +2095,20 @@
     event.preventDefault()
     capture(event)
     if (tool === 'laser') {
-      // Луч уже ведут другим указателем: перо забирает его у пальца (перо
-      // главнее всегда), а палец у пера — никогда. Иначе второе касание
-      // перетаскивало голову указки на себя посреди показа.
+      // The beam is already led by another pointer: the pen takes it from a
+      // finger (the pen always wins), a finger from the pen never. Otherwise
+      // a second touch dragged the pointer's head to itself mid-show.
       if (beaming !== null && beaming !== event.pointerId) {
         if (event.pointerType === 'touch') return
       }
-      // Первое касание — сразу: указка, появляющаяся через сорок миллисекунд
-      // после того, как на неё нажали, ощущается как залипшей.
+      // The first touch, at once: a pointer appearing forty milliseconds
+      // after it was pressed feels stuck.
       beaming = event.pointerId
       aim(place.x, place.y, page, SPRING_HAND)
       spot = place
       beamNow()
-      // И пиксель — в этом же обработчике, не дожидаясь кадра: холодный старт
-      // указки меряют от нажатия до первого красного.
+      // And the pixel too, in this same handler, without waiting for a frame:
+      // the pointer's cold start is measured from the press to the first red.
       paintLive(performance.now())
       syncBusy()
       return
@@ -2027,32 +2123,36 @@
       return
     }
     /*
-     * Штрих один. Второе перо на том же листе не бывает; мышь поверх пера —
-     * стенд: второй указатель ждёт. Но перо поверх ПАЛЬЦА — не ждёт: пока
-     * перо на этом экране не видели, палец рисует, и первым на лист ложится
-     * ладонь. Штрих, который она завела, закрывается — и без этого перо было
-     * заперто, пока ладонь не поднимут, то есть всё время письма.
+     * One stroke. A second pen on the same sheet does not happen; a mouse on
+     * top of a pen is the test bench: the second pointer waits. But a pen on
+     * top of a FINGER does not wait: until a pen has been seen on this
+     * screen, a finger draws, and the first thing to land on the sheet is the
+     * palm. The stroke it started gets closed; without that the pen was
+     * locked out until the palm was lifted, that is, the whole time one
+     * writes.
      */
     if (drawing) {
       if (event.pointerType === 'touch' || !drawing.byFinger) return
       closeStroke()
     }
     /*
-     * СТРАНИЦА ПОЛНА — ШТРИХ НЕ ОТКРЫВАЕТСЯ ВОВСЕ.
+     * THE PAGE IS FULL: THE STROKE DOES NOT OPEN AT ALL.
      *
-     * Сервер на 601-м штрихе (и на 201-й исписанной странице) возвращает
-     * `null` и не шлёт ничего. Отличить это от потерянного кадра слой не мог:
-     * он честно досылал штрих ЦЕЛИКОМ каждые полсекунды — до десяти кадров по
-     * четыреста чисел, восемь раз, — и только потом убирал его с листа. На
-     * пульте это выглядело так: линия нарисовалась, четыре секунды повисела и
-     * пропала; следующая — так же; у зала её не было вовсе. На чистом листе
-     * шестьсот штрихов набираются за один длинный вывод формулы, буква — это
-     * один-три штриха.
+     * At the 601st stroke (and at the 201st inked page) the server returns
+     * `null` and sends nothing. The layer could not tell that from a lost
+     * frame: it dutifully resent the stroke WHOLE every half second (up to
+     * ten frames of four hundred numbers, eight times) and only then removed
+     * it from the sheet. On the console it looked like this: a line was
+     * drawn, hung for four seconds and vanished; the next one likewise; the
+     * audience never had it at all. On a blank sheet six hundred strokes add
+     * up over one long derivation of a formula; a letter is one to three
+     * strokes.
      *
-     * Отказ здесь, ДО первой точки: линия, которой не будет у зала, не должна
-     * появляться и у ведущего. Слова — не «те же, что назвал бы сервер», а
-     * буквально его: `inkFullSays` из shared одна на оба конца, и сервер
-     * отвечает ею же (control.ts · `case 'ink'`).
+     * The refusal is here, BEFORE the first point: a line the audience will
+     * not have must not appear for the presenter either. The words are not
+     * "the same ones the server would give" but literally the server's:
+     * `inkFullSays` from shared is one for both ends, and the server answers
+     * with it too (control.ts · `case 'ink'`).
      */
     const full = inkRefusal(session.ink, wet, page)
     if (full) {
@@ -2062,20 +2162,20 @@
     openStroke(event.pointerId, event.pointerType === 'touch', place, event.pressure)
   }
 
-  /** Сэмплы события — слитые, если браузер их отдаёт. */
+  /** The event's samples: the coalesced ones, if the browser provides them. */
   function samples(event: PointerEvent): PointerEvent[] {
     /*
-     * `getCoalescedEvents` — то, чем перо отличается от мыши: между двумя
-     * кадрами Pencil успевает сообщить десяток положений, и линия, собранная
-     * только по кадрам, выходит гранёной на быстром движении. Проверка на
-     * существование не формальная: в Safari метод появился только в 18.2, а
-     * рисуют на планшетах и постарше.
+     * `getCoalescedEvents` is what sets a pen apart from a mouse: between two
+     * frames Pencil manages to report a dozen positions, and a line built
+     * from frames alone comes out faceted on a fast movement. The existence
+     * check is not a formality: in Safari the method appeared only in 18.2,
+     * and people draw on older tablets too.
      */
     const steps = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : []
     return steps.length > 0 ? steps : [event]
   }
 
-  /** Куда перо придёт через десять миллисекунд — от браузера или по скорости. */
+  /** Where the pen will be in ten milliseconds: from the browser or from velocity. */
   function foresee(event: PointerEvent, stroke: Wet): { x: number; y: number } | null {
     const told = typeof event.getPredictedEvents === 'function' ? event.getPredictedEvents() : []
     if (told.length > 0) return at(told[told.length - 1])
@@ -2086,26 +2186,28 @@
     const ay = points[count * 2 - 1]
     const bx = points[count * 2 - 6]
     const by = points[count * 2 - 5]
-    // Средний шаг за последние два сэмпла, и ровно один такой шаг вперёд —
-    // это и есть «десять миллисекунд» на частоте Pencil. Дальше нельзя:
-    // предсказание, обгоняющее руку, на повороте торчит усом.
+    // The average step over the last two samples, and exactly one such step
+    // ahead: that is the "ten milliseconds" at Pencil's rate. No further: a
+    // prediction that overtakes the hand sticks out like a whisker on a turn.
     return { x: round(ax + (ax - bx) / 2), y: round(ay + (ay - by) / 2) }
   }
 
   function move(event: PointerEvent): void {
     if (event.pointerType === 'touch') tapMove(event)
     /*
-     * Перо живо, пока движется, а не только пока опускается: раньше время
-     * «перо видели» ставилось лишь на касании, и после штриха в полторы
-     * секунды защита двухпальцевого тапа считала, что пера не было полторы
-     * секунды, — пятка с мизинцем, севшие через 120 мс после буквы, отменяли
-     * её у всего зала. Только В КОНТАКТЕ: Pencil парит над стеклом всё
-     * время, пока рука над планшетом, и парение в счёт не идёт — иначе два
-     * пальца никогда не отменили бы ничего.
+     * The pen is alive while it moves, not only while it goes down: the "pen
+     * seen" time used to be set only on touch, and after a stroke lasting a
+     * second and a half the two-finger tap guard thought there had been no
+     * pen for a second and a half: the heel and the little finger, landing
+     * 120 ms after a letter, undid it for the whole audience. Only IN
+     * CONTACT: Pencil hovers above the glass the whole time the hand is over
+     * the tablet, and hovering does not count, otherwise two fingers would
+     * never undo anything.
      */
     if (event.buttons !== 0) penSeen(event)
-    // Свой штрих продолжается своим указателем, что бы ни сменилось вокруг:
-    // пружинная указка по клавише не обрывает букву на середине.
+    // One's own stroke continues with its own pointer, whatever changes
+    // around it: a spring-loaded pointer on a key does not cut a letter off
+    // in the middle.
     if (drawing && drawing.pointer === event.pointerId) {
       event.preventDefault()
       for (const step of samples(event)) {
@@ -2114,7 +2216,7 @@
         addPoint(place, step.pressure)
       }
       if (!drawing) return
-      // Линия под пером — в этом же кадре, а не после круга до сервера.
+      // The line under the pen: in this same frame, not after a round trip to the server.
       growWet(drawing.stroke)
       const ahead = foresee(event, drawing.stroke)
       const points = drawing.stroke.points
@@ -2136,13 +2238,13 @@
     if (!mine(event)) return
     if (tool === 'laser') {
       /*
-       * ПАРЕНИЕ БОЛЬШЕ НЕ СВЕТИТ.
+       * HOVERING NO LONGER SHINES.
        *
-       * Раньше Pencil, поднесённый к стеклу, уже вёл луч по проектору: рука
-       * идёт к листу — зал видит красную линию, которую никто не показывал.
-       * Теперь парение показывает только СВОЮ тень (серую, как у пера), а луч
-       * зажигается касанием — тем же движением, каким берут настоящую указку в
-       * руку и нажимают кнопку.
+       * Previously a Pencil brought to the glass already led the beam across
+       * the projector: the hand moves to the sheet, and the audience sees a
+       * red line nobody was pointing with. Now hovering shows only ONE'S OWN
+       * shadow (grey, like the pen's), and the beam is lit by touch, the same
+       * motion with which one picks up a real pointer and presses its button.
        */
       const hover = event.buttons === 0
       if (hover) {
@@ -2163,16 +2265,19 @@
       return
     }
     /*
-     * Тень пера и маркера — то же, что кольцо ластика: пятно ровно там, куда
-     * ляжет штрих, и ровно той ширины. Без неё Pencil на планшете «промахивается
-     * мимо строки» — на стекле нет курсора, и до первого касания не видно, где
-     * кончик. В КОНТАКТЕ её нет: там уже есть сам штрих, и вторая метка под
-     * пером мешала бы смотреть на букву (у ластика наоборот — кольцо и есть его
-     * рабочая площадь, потому и остаётся).
+     * The pen and marker shadow is the same as the eraser ring: a spot
+     * exactly where the stroke will land, and exactly as wide. Without it a
+     * Pencil on the tablet "misses the line": there is no cursor on glass,
+     * and until the first touch one cannot see where the tip is. IN CONTACT
+     * it is not there: the stroke itself is already there, and a second mark
+     * under the pen would get in the way of looking at the letter (for the
+     * eraser it is the other way round: the ring is its working area, which
+     * is why it stays).
      */
     if (tool === 'pen' || tool === 'marker') {
-      // Палец тени не двигает и не гасит: иначе ладонь, лежащая на листе,
-      // сбивала бы тень парящего рядом пера каждым своим дрожанием.
+      // A finger neither moves nor puts out the shadow: otherwise a palm
+      // resting on the sheet would knock the shadow of a pen hovering nearby
+      // with its every tremor.
       if (event.pointerType === 'touch') return
       const place = event.buttons === 0 ? at(event) : null
       if (!place) {
@@ -2219,9 +2324,10 @@
     }
     if (beaming === event.pointerId) {
       /*
-       * Перо подняли — луч выключен, и без всякого догорания: парение его
-       * больше не подхватывает, гасить «на всякий случай через 300 мс» стало
-       * нечего. Обведённая фигура при этом остаётся стоять — см. `douse`.
+       * The pen was lifted: the beam is off, and without any burn-down:
+       * hovering no longer picks it up, so there is nothing left to put out
+       * "just in case after 300 ms". The circled shape stays standing,
+       * though: see `douse`.
        */
       beamOff()
       return
@@ -2233,10 +2339,11 @@
   }
 
   /**
-   * Перо ушло с листа, не нажимая: погасить то, что жило от парения — кольцо
-   * ластика и парящую указку. Штрих здесь НЕ закрывается: у него есть захват,
-   * и он живёт до подъёма пера; так было раньше — и штрих, вышедший за поле,
-   * обрывался на кромке.
+   * The pen left the sheet without pressing: put out what lived from
+   * hovering, the eraser ring and the hovering pointer. The stroke is NOT
+   * closed here: it has a capture and lives until the pen is lifted; it used
+   * to be closed here, and a stroke that went past the margin was cut off at
+   * the edge.
    */
   function leave(event: PointerEvent): void {
     if (drawing && drawing.pointer === event.pointerId) return
@@ -2246,17 +2353,20 @@
       ring = null
       wake()
     }
-    // Луч зажигается только касанием, поэтому уход парящего пера его не
-    // касается: гасить нечего, а обведённая фигура держится сама.
+    // The beam is lit only by touch, so a hovering pen leaving does not
+    // concern it: there is nothing to put out, and the circled shape holds by
+    // itself.
   }
 
   /*
-   * Инструмент сменили, лист забрали или роль поменялась посреди штриха.
+   * The tool changed, the sheet was taken away or the role changed
+   * mid-stroke.
    *
-   * Открытый штрих закрывается — не стирается: подъём пера до него уже не
-   * дойдёт другим инструментом, и штрих некому было бы закрыть. Переходы в
-   * указку и из неё штрих НЕ трогают: пружинная указка по клавише зажигается
-   * посреди буквы, и буква обязана дописаться своим пером.
+   * An open stroke is closed, not erased: the pen lift will no longer reach
+   * it through another tool, and there would be nobody to close the stroke.
+   * Switching to and from the pointer does NOT touch the stroke: the
+   * spring-loaded pointer on a key lights up in the middle of a letter, and
+   * the letter must be finished with its own pen.
    */
   let wasTool: Props['tool'] | null = null
   $effect(() => {
@@ -2278,7 +2388,7 @@
     })
   })
 
-  // Родитель выключил палец (нашлось перо): штрих, который вёл палец, дописан.
+  // The parent turned the finger off (a pen was found): the finger's stroke is finished.
   $effect(() => {
     const on = finger
     untrack(() => {
@@ -2287,19 +2397,21 @@
   })
 
   /*
-   * Страницу перелистнули, а перо не поднято.
+   * The page was turned while the pen is still down.
    *
-   * Так бывает не только от ладони: страницу листают и с кликалки, и стрелкой,
-   * и вторым преподавателем с ноутбука. Штрих закрывается на СТАРОЙ странице —
-   * там он и нарисован, туда уже уехали его точки, — а перо на новом листе
-   * начинает с чистого места. Указка на новой странице — заново.
+   * This happens not only because of the palm: pages are turned from the
+   * clicker, with an arrow key, and by a second teacher from a laptop. The
+   * stroke is closed on the OLD page (that is where it is drawn, and where
+   * its points have already gone), and the pen on the new sheet starts from
+   * a clean spot. The pointer on a new page starts afresh.
    */
   $effect(() => {
     const now = page
     untrack(() => {
       if (drawing && drawing.stroke.page !== now) closeStroke()
-      // Страница сменилась: след предыдущей не тает у неё на глазах, а уходит
-      // вместе с ней — на новом листе ему взяться неоткуда.
+      // The page changed: the previous one's trail does not melt before one's
+      // eyes but leaves together with it; on the new sheet it has nowhere to
+      // come from.
       if ((head && head.page !== now) || marks.some((mark) => mark.page !== now)) {
         if (head && head.page !== now) head = null
         marks = marks.filter((mark) => mark.page === now)
@@ -2309,13 +2421,14 @@
   })
 
   /*
-   * Слой ввода — единственный владелец касаний на листе.
+   * The input layer is the only owner of touches on the sheet.
    *
-   * `touch-action: none` в CSS не отменяет системного выделения текста под
-   * ладонью и лупы по долгому нажатию; их отменяет только `preventDefault` на
-   * НЕпассивном `touchstart`. Svelte вешает слушатели касаний пассивными, и
-   * поэтому — руками. Заодно наблюдатель размера: rect листа кэшируется, а
-   * лист меняет место при повороте планшета и при выдвижении заметок.
+   * `touch-action: none` in CSS does not cancel the system's text selection
+   * under the palm or the magnifier on a long press; only `preventDefault`
+   * on a NON-passive `touchstart` cancels them. Svelte attaches touch
+   * listeners as passive, hence by hand. Along with it, a size observer: the
+   * sheet's rect is cached, and the sheet moves when the tablet rotates and
+   * when the notes slide out.
    */
   $effect(() => {
     const node = inputNode
@@ -2334,15 +2447,17 @@
     }
   })
 
-  /* ------------------------------------------------------------ замер */
+  /* ------------------------------------------------------ measurement */
 
   /**
-   * Задержка «сэмпл → пиксель» для стенда: кольцевой буфер в `window.__inkLat`.
+   * "Sample → pixel" latency for the test bench: a ring buffer in
+   * `window.__inkLat`.
    *
-   * Меряется от метки времени последнего сэмпла до кадра после приращения и
-   * ещё до макрозадачи после него — то есть до момента, когда браузер отдал
-   * кадр композитору. Стенд читает p50/p95. Не отключается в сборке: стенд
-   * гоняет именно сборку, а цена — один колбэк кадра на событие пера.
+   * Measured from the timestamp of the last sample to the frame after the
+   * increment and on to the macrotask after it, that is, to the moment the
+   * browser handed the frame to the compositor. The bench reads p50/p95. Not
+   * disabled in the build: the bench drives precisely the build, and the
+   * price is one frame callback per pen event.
    */
   const LAT_SIZE = 128
   let latencies: number[] = []
@@ -2375,7 +2490,7 @@
     }
   }
 
-  // Вкладку закрыли посреди штриха — таймеры уносим с собой.
+  // The tab was closed mid-stroke: we take the timers with us.
   $effect(() => () => {
     window.clearTimeout(flushTimer)
     window.clearTimeout(spotTimer)
@@ -2383,13 +2498,14 @@
     window.clearTimeout(forgetTimer)
     if (liveFrame !== undefined) cancelAnimationFrame(liveFrame)
     /*
-     * И сказать наружу, что указатель отпущен.
+     * And tell the outside that the pointer is released.
      *
-     * Слой чернил исчезает целиком — кончилась лекция, планшет уехал в Split
-     * View, — и если он уходит молча, у родителя навсегда остаётся «перо на
-     * листе». А по этому признаку пульт глотает касания пальцем, чтобы ладонь
-     * не нажимала кнопок: пульт становится мёртвым для пальца весь, включая
-     * экран выбора документа, и выйти из этого можно только перезагрузкой.
+     * The ink layer disappears entirely (the lecture ended, the tablet went
+     * into Split View), and if it leaves silently, the parent is left with
+     * "pen on the sheet" forever. And by that sign the console swallows
+     * finger touches so that the palm does not press buttons: the whole
+     * console goes dead to the finger, including the document picker screen,
+     * and the only way out is a reload.
      */
     if (busy) {
       busy = false
@@ -2401,14 +2517,15 @@
 </script>
 
 <!--
-  Холсты — ровно по странице; слой ввода — во всю коробку листа, на `reach`
-  дальше страницы с каждой стороны, включая поля. Он всегда `touch-action:
-  none` и без выделения, а не только когда есть чем рисовать: поля, отданные
-  системе, — это ладонь, которая выделяет и прокручивает лист посреди письма.
-  Указатель он ловит только у ведущего с инструментом: у зала под ним живая
-  страница.
+  The canvases are exactly the size of the page; the input layer covers the
+  whole sheet box, `reach` beyond the page on each side, margins included. It
+  is always `touch-action: none` and without selection, not only when there
+  is something to draw with: margins given away to the system are a palm
+  that selects and scrolls the sheet in the middle of writing. It catches
+  the pointer only for the presenter with a tool: for the audience a live
+  page lies under it.
 
-  Холсты указателя не ловят никогда: ввод принимает только слой ввода.
+  The canvases never catch the pointer: only the input layer takes input.
 -->
 <div class="pointer-events-none absolute inset-0">
   <div class="ink-page absolute inset-0" style="width: {w}px; height: {h}px">
@@ -2433,11 +2550,11 @@
 
 <style>
   /*
-   * Долгое нажатие на iPad вызывает системную лупу и меню «скопировать» —
-   * поверх страницы, посреди лекции. Отменяется это только вебкитовскими
-   * свойствами: беспрефиксного `touch-callout` не существует вовсе, а серая
-   * вспышка по касанию — это `-webkit-tap-highlight-color`, и она мигает на
-   * каждой точке штриха.
+   * A long press on iPad brings up the system magnifier and the "copy" menu,
+   * over the page, in the middle of a lecture. Only WebKit properties cancel
+   * it: an unprefixed `touch-callout` does not exist at all, and the grey
+   * flash on touch is `-webkit-tap-highlight-color`, which blinks at every
+   * point of a stroke.
    */
   .ink {
     -webkit-touch-callout: none;
@@ -2446,9 +2563,10 @@
     -webkit-user-select: none;
   }
   /*
-   * `touch-action: none` — всегда, а не пока есть чем рисовать: без него первый
-   * же штрих прокручивает страницу вместо линии, а ладонь на полях начинает
-   * системное выделение, которого на листе для рисования быть не может.
+   * `touch-action: none` always, not only while there is something to draw
+   * with: without it the very first stroke scrolls the page instead of
+   * drawing a line, and a palm on the margins starts a system selection,
+   * which cannot be allowed on a drawing sheet.
    */
   .ink-input {
     touch-action: none;

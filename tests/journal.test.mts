@@ -1,15 +1,17 @@
 /**
- * Что человек читает, когда что-то пошло не так, и что об этом остаётся в журнале.
+ * What a person reads when something goes wrong, and what is left of it in
+ * the log.
  *
- * Оба поводом стали живой парой. Шлюз с Gemini пять раз подряд отказал по
- * своему фильтру безопасности — без HTTP-статуса, одним словом SAFETY, — а
- * комната прочитала «не удалось достучаться до оракула, проверьте адрес и
- * ключ»: преподаватель ушёл чинить сеть и ключ, оба совершенно здоровые. И в
- * том же семинаре набралось пятьсот строк одного и того же участника, потому
- * что по журналу нельзя было сказать, какая именно проверка возврата не прошла.
+ * Both came from a live class. A gateway to Gemini refused five times in a row
+ * by its own safety filter — without an HTTP status, with the single word
+ * SAFETY — and the room read "could not reach the oracle, check the address
+ * and the key": the teacher went off to fix the network and the key, both
+ * perfectly healthy. And in the same seminar five hundred rows of one and the
+ * same participant piled up, because the log could not tell which exact
+ * return check had failed.
  *
- * Поэтому здесь проверяются ФРАЗЫ и СТРОКИ, а не коды: и то и другое читает
- * человек, и цена ошибки — полпары, потраченные не на то.
+ * So what is checked here is PHRASES and LINES, not codes: a person reads
+ * both, and the cost of a mistake is half a class spent on the wrong thing.
  */
 import './_env.mts'
 import { after, beforeEach, test } from 'node:test'
@@ -26,15 +28,16 @@ import { createSession } from '../server/src/db.js'
 import { signToken } from '../server/src/auth.js'
 import { sessionRoutes } from '../server/src/routes/sessions.js'
 
-/* ------------------------------------------------------------------ оракул */
+/* ------------------------------------------------------------------ oracle */
 
 /**
- * Поддельный OpenAI-совместимый шлюз.
+ * A fake OpenAI-compatible gateway.
  *
- * Отвечает настоящим SSE, потому что проверяется именно то, как ошибку рождает
- * SDK: кадр с полем `error` он превращает в APIError БЕЗ статуса, и по одному
- * отсутствию статуса такая ошибка неотличима от «хост не ответил». Подделать
- * тут можно только эндпоинт — саму ошибку должен собрать настоящий SDK.
+ * It answers with real SSE, because what is checked is exactly how the SDK
+ * gives birth to the error: it turns a frame with an `error` field into an
+ * APIError WITHOUT a status, and by the missing status alone such an error is
+ * indistinguishable from "the host did not answer". Only the endpoint can be
+ * faked here — the error itself must be assembled by the real SDK.
  */
 async function withEndpoint(frames: string[], run: () => Promise<void>): Promise<void> {
   const app = express()
@@ -59,7 +62,7 @@ async function withEndpoint(frames: string[], run: () => Promise<void>): Promise
   }
 }
 
-/** Спросить и вернуть то, что прочитает комната. */
+/** Ask and return what the room will read. */
 async function said(): Promise<string> {
   try {
     await streamChat([{ role: 'user', content: 'привет' }], () => {})
@@ -70,53 +73,54 @@ async function said(): Promise<string> {
 }
 
 /**
- * Ни самого адреса, ни самого ключа, ни совета их проверить.
+ * Neither the address itself, nor the key itself, nor advice to check them.
  *
- * Сказать «дело не в адресе и не в ключе» — можно и нужно: ровно за этим
- * преподаватель и уходил чинить здоровую сеть. А вот показать их значения или
- * послать в панель их править — это тот же совет, только другими словами.
+ * Saying "it is not the address and not the key" is allowed and needed: that
+ * is exactly why the teacher went off to fix a healthy network. But showing
+ * their values or sending people to the panel to edit them is the same
+ * advice, only in other words.
  */
 function blamesNothingLocal(message: string): void {
-  assert.doesNotMatch(message, /https?:\/\//i, `адрес эндпоинта показан: ${message}`)
-  assert.doesNotMatch(message, /test-key|OPENAI_API_KEY|admin panel/i, `ключ показан: ${message}`)
-  assert.doesNotMatch(message, /\bcheck\b|Could not reach/i, `послали чинить: ${message}`)
-  assert.doesNotMatch(message, /address|key/i, `отказ модели делает вывод об адресе или ключе: ${message}`)
+  assert.doesNotMatch(message, /https?:\/\//i, `the endpoint address is shown: ${message}`)
+  assert.doesNotMatch(message, /test-key|OPENAI_API_KEY|admin panel/i, `the key is shown: ${message}`)
+  assert.doesNotMatch(message, /\bcheck\b|Could not reach/i, `sent off to fix things: ${message}`)
+  assert.doesNotMatch(message, /address|key/i, `the model refusal draws a conclusion about the address or key: ${message}`)
 }
 
-test('отказ фильтра безопасности назван отказом модели, а не поломкой связи', async () => {
+test('a safety filter refusal is called a model refusal, not a broken connection', async () => {
   await withEndpoint(['{"error":{"message":"SAFETY"}}'], async () => {
     const message = await said()
-    assert.match(message, /declined/i, `не сказано, что модель отказалась: ${message}`)
-    assert.match(message, /model/i, `не сказано, что отказ пришёл от модели: ${message}`)
-    assert.match(message, /this request/i, `отказ не привязан к текущему запросу: ${message}`)
+    assert.match(message, /declined/i, `it does not say the model declined: ${message}`)
+    assert.match(message, /model/i, `it does not say the refusal came from the model: ${message}`)
+    assert.match(message, /this request/i, `the refusal is not tied to the current request: ${message}`)
     blamesNothingLocal(message)
   })
 })
 
-test('отказ, названный кодом content_filter, читается так же', async () => {
+test('a refusal named by the content_filter code reads the same', async () => {
   const frame = '{"error":{"code":"content_filter","message":"The response was blocked."}}'
   await withEndpoint([frame], async () => {
     const message = await said()
-    assert.match(message, /declined/i, `не сказано, что модель отказалась: ${message}`)
+    assert.match(message, /declined/i, `it does not say the model declined: ${message}`)
     blamesNothingLocal(message)
   })
 })
 
-test('«прекратил на полуслове» — не то же, что «не достучались»', async () => {
+test('"broke off mid-sentence" is not the same as "could not reach"', async () => {
   await withEndpoint(['{"error":{"message":"upstream connection reset"}}'], async () => {
     const message = await said()
-    assert.match(message, /broke off/i, `обрыв не назван обрывом: ${message}`)
+    assert.match(message, /broke off/i, `a break-off is not called a break-off: ${message}`)
     assert.doesNotMatch(
       message,
       /Could not reach/i,
-      `ответивший эндпоинт объявлен недостижимым: ${message}`,
+      `an endpoint that answered is declared unreachable: ${message}`,
     )
   })
 })
 
-test('до эндпоинта правда не достучались — про адрес и ключ говорят по-прежнему', async () => {
-  // Порт, на котором заведомо никого нет: этот случай и есть тот единственный,
-  // ради которого фраза про адрес и ключ вообще существует.
+test('the endpoint really could not be reached — the address and key are still mentioned', async () => {
+  // A port known to have nobody on it: this is the one case the phrase about
+  // the address and the key exists for at all.
   updateOracleSettings({
     provider: 'custom',
     baseUrl: 'http://127.0.0.1:1/v1',
@@ -124,13 +128,13 @@ test('до эндпоинта правда не достучались — пр�
     apiKey: 'test-key',
   })
   const message = await said()
-  assert.match(message, /Could not reach/i, `не сказано главное: ${message}`)
+  assert.match(message, /Could not reach/i, `the main thing is not said: ${message}`)
   assert.match(message, /address/i)
 })
 
-/* ------------------------------------------------------------ сводка минуты */
+/* ------------------------------------------------------------ minute summary */
 
-/** Одна сводка: подсунуть перепись, позвать её руками, вернуть строку. */
+/** One summary: slip in a census, call it by hand, return the line. */
 function minuteLine(census: {
   rooms: number
   people: number
@@ -152,51 +156,54 @@ function minuteLine(census: {
   return line
 }
 
-test('сводка минуты складывается в одну строку и без нулей', () => {
-  // Тихая сводка — она же и конец предыдущей минуты: счётчики соседних тестов
-  // остаются им, а не приезжают сюда.
+test('the minute summary fits in one line and without zeros', () => {
+  // A quiet summary is also the end of the previous minute: the counters of
+  // neighbouring tests stay theirs instead of arriving here.
   minuteLine({ rooms: 0, people: 0, kernels: { live: 0, busy: 0, dead: 0 } })
   tally('frames', 1204)
   tally('gate', 3)
   const line = minuteLine({ rooms: 2, people: 41, kernels: { live: 2, busy: 1, dead: 0 } })
-  assert.ok(line, 'сводки нет вовсе')
+  assert.ok(line, 'there is no summary at all')
   assert.match(line!, /rooms 2/)
   assert.match(line!, /people 41/)
   assert.match(line!, /kernels 2 live \(1 busy\)/)
   assert.match(line!, /frames 1204/)
   assert.match(line!, /gate refused 3/)
-  // Нулевые счётчики не печатаются: короткая строка — та, в которой всё важно.
-  assert.doesNotMatch(line!, /aborted/, `нулевой счётчик в строке: ${line}`)
-  assert.doesNotMatch(line!, /dead/, `мёртвых ядер нет, а слово есть: ${line}`)
+  // Zero counters are not printed: a short line is one in which everything
+  // matters.
+  assert.doesNotMatch(line!, /aborted/, `a zero counter in the line: ${line}`)
+  assert.doesNotMatch(line!, /dead/, `there are no dead kernels, yet the word is there: ${line}`)
 })
 
-test('счётчики обнуляются каждую минуту, а не копятся весь день', () => {
+test('counters reset every minute instead of piling up all day', () => {
   tally('aborted', 7)
   const first = minuteLine({ rooms: 1, people: 1, kernels: { live: 1, busy: 0, dead: 0 } })
   assert.match(first!, /aborted 7/)
   const second = minuteLine({ rooms: 1, people: 1, kernels: { live: 1, busy: 0, dead: 0 } })
-  assert.doesNotMatch(second!, /aborted/, `прошлая минута протекла в следующую: ${second}`)
+  assert.doesNotMatch(second!, /aborted/, `the previous minute leaked into the next one: ${second}`)
 })
 
-test('на пустой машине сводка молчит — 1440 строк ни о чём это тот же пустой журнал', () => {
+test('on an empty machine the summary stays silent — 1440 lines about nothing are the same empty log', () => {
   const line = minuteLine({ rooms: 0, people: 0, kernels: { live: 0, busy: 0, dead: 0 } })
-  assert.equal(line, null, `тишину записали строкой: ${line}`)
+  assert.equal(line, null, `silence was written down as a line: ${line}`)
 })
 
-/* ------------------------------------------------------------ тише минуты */
+/* ------------------------------------------------------------ quieter than a minute */
 
-test('одно и то же событие говорится раз в минуту, а не на каждый повтор', () => {
+test('the same event is reported once a minute, not on every repeat', () => {
   const key = `test-${Date.now()}`
-  assert.equal(seldom(key), true, 'первый раз обязан быть сказан')
-  assert.equal(seldom(key), false, 'второй за ту же минуту — уже поток')
+  assert.equal(seldom(key), true, 'the first time must be reported')
+  assert.equal(seldom(key), false, 'a second one within the same minute is already a flood')
   assert.equal(seldom(key), false)
-  // Другая комната — другой ключ, и её отказ молчанием соседа не съедается.
+  // Another room is another key, and its refusal is not swallowed by the
+  // neighbour's silence.
   assert.equal(seldom(`${key}-other`), true)
-  // Окно прошло — снова говорится: иначе редкое событие пропало бы навсегда.
+  // The window has passed — it is reported again: otherwise a rare event
+  // would disappear forever.
   assert.equal(seldom(key, 0), true)
 })
 
-/* -------------------------------------------------------------------- вход */
+/* -------------------------------------------------------------------- join */
 
 const app = express()
 app.use(express.json())
@@ -205,7 +212,7 @@ const server = app.listen(0, '127.0.0.1')
 const base = () => `http://127.0.0.1:${(server.address() as { port: number }).port}`
 after(() => server.close())
 
-/** Строки журнала, которые написал вход, за время одного вызова. */
+/** The log lines the join wrote during one call. */
 async function joinLines(id: string, body: Record<string, unknown>): Promise<string[]> {
   const lines: string[] = []
   const original = console.log
@@ -225,24 +232,26 @@ async function joinLines(id: string, body: Record<string, unknown>): Promise<str
   return lines
 }
 
-test('вход пишет одну строку, и по ней видно — вернулся собой или заведён заново', async () => {
+test('a join writes one line, and it shows whether the person came back as themselves or was created anew', async () => {
   const id = 'journal-join'
   createSession(id, 'Журнал')
 
-  // Первый раз человека здесь не было: сказать ему нечего, и это «no id».
+  // The first time, the person was not here: they have nothing to present,
+  // and that is "no id".
   const first = await joinLines(id, { name: 'Аня' })
-  assert.equal(first.length, 1, `строка обязана быть ровно одна: ${JSON.stringify(first)}`)
+  assert.equal(first.length, 1, `there must be exactly one line: ${JSON.stringify(first)}`)
   assert.match(first[0], /\[join journal-join\]/)
   assert.match(first[0], /\bnew\b/)
   assert.match(first[0], /no id/)
   assert.match(first[0], /participant by link/)
-  // Ничего личного: имя в журнал не едет.
-  assert.doesNotMatch(first[0], /Аня/, 'имя участника попало в журнал')
+  // Nothing personal: the name does not go into the log.
+  assert.doesNotMatch(first[0], /Аня/, 'the participant name got into the log')
 
   const me = /new (p_[A-Za-z0-9_-]+)/.exec(first[0])?.[1]
-  assert.ok(me, `в строке нет идентификатора участника: ${first[0]}`)
+  assert.ok(me, `the line has no participant id: ${first[0]}`)
 
-  // Он же, со своим токеном: возврат собой, и повода заводить строку нет.
+  // The same person with their token: a return as themselves, and no reason
+  // to create a row.
   const back = await joinLines(id, {
     name: 'Аня',
     participantId: me,
@@ -250,51 +259,52 @@ test('вход пишет одну строку, и по ней видно — �
   })
   assert.equal(back.length, 1)
   /*
-   * Не `\b`: имя участника кончается любым знаком своей азбуки, в том числе
-   * дефисом, а после дефиса границы слова нет — и тест краснел на каждом
-   * шестидесятом прогоне, когда такое имя выпадало. Здесь нужно ровно одно:
-   * что имя целое, а не начало другого.
+   * Not `\b`: a participant id ends with any character of its alphabet,
+   * including a hyphen, and after a hyphen there is no word boundary — and the
+   * test went red on every sixtieth run, when such an id came up. Only one
+   * thing is needed here: that the id is whole, not the start of another one.
    */
   assert.match(back[0], new RegExp(`back ${me}(?![A-Za-z0-9_-])`))
   assert.doesNotMatch(back[0], /\bnew\b/)
 })
 
-test('строка входа называет, какая именно проверка возврата не прошла', async () => {
+test('the join line names exactly which return check failed', async () => {
   const mine = 'journal-mine'
   const other = 'journal-other'
   createSession(mine, 'Моя')
   createSession(other, 'Чужая')
 
   const idOnly = await joinLines(mine, { name: 'Б', participantId: 'p_ghost' })
-  assert.match(idOnly[0], /no token/, `не назван недостающий токен: ${idOnly[0]}`)
+  assert.match(idOnly[0], /no token/, `the missing token is not named: ${idOnly[0]}`)
 
   const garbage = await joinLines(mine, { name: 'Б', participantId: 'p_ghost', token: 'мусор' })
-  assert.match(garbage[0], /bad token/, `неразобранный токен назван иначе: ${garbage[0]}`)
+  assert.match(garbage[0], /bad token/, `an unparsable token is named differently: ${garbage[0]}`)
 
   const foreign = await joinLines(mine, {
     name: 'Б',
     participantId: 'p_ghost',
     token: signToken({ sessionId: other, participantId: 'p_ghost', role: 'participant' }),
   })
-  assert.match(foreign[0], /other room/, `токен чужой комнаты назван иначе: ${foreign[0]}`)
+  assert.match(foreign[0], /other room/, `a token of another room is named differently: ${foreign[0]}`)
 
   const impostor = await joinLines(mine, {
     name: 'Б',
     participantId: 'p_ghost',
     token: signToken({ sessionId: mine, participantId: 'p_someone_else', role: 'participant' }),
   })
-  assert.match(impostor[0], /other person/, `токен на другого назван иначе: ${impostor[0]}`)
+  assert.match(impostor[0], /other person/, `a token for someone else is named differently: ${impostor[0]}`)
 
-  // Всё сходится, а строки в базе нет: семинар чистили, а браузер этого не знает.
+  // Everything matches, but the row is not in the database: the seminar was
+  // cleaned up, and the browser does not know it.
   const gone = await joinLines(mine, {
     name: 'Б',
     participantId: 'p_ghost',
     token: signToken({ sessionId: mine, participantId: 'p_ghost', role: 'participant' }),
   })
-  assert.match(gone[0], /row gone/, `исчезнувшая строка названа иначе: ${gone[0]}`)
+  assert.match(gone[0], /row gone/, `a vanished row is named differently: ${gone[0]}`)
 
-  // И ни в одной из них — токена: по нему входят.
+  // And none of them contains the token: it is what people sign in with.
   for (const line of [...idOnly, ...garbage, ...foreign, ...impostor, ...gone]) {
-    assert.doesNotMatch(line, /eyJ/, `в журнал уехал токен: ${line}`)
+    assert.doesNotMatch(line, /eyJ/, `a token went into the log: ${line}`)
   }
 })

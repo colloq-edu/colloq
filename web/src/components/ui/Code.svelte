@@ -43,17 +43,18 @@
   const ready = $derived(highlightable ? syntax() : null)
 
   /*
-   * Разбор отстаёт от текста, пока текст пишется.
+   * The parse lags behind the text while the text is being written.
    *
-   * Блок ответа растёт флешами (ANSWER_FLUSH_MS = 60 мс на сервере), а разбор
-   * здесь не инкрементальный: каждый флеш — Lezer по всему блоку плюс обход
-   * всех строк в CodeLine, и файл на пятьсот строк успевает разобраться десятки
-   * раз, каждый раз дороже предыдущего, у всех, у кого открыта панель.
+   * The answer block grows in flushes (ANSWER_FLUSH_MS = 60 ms on the server),
+   * and parsing here is not incremental: every flush is Lezer over the whole
+   * block plus a pass over all the lines in CodeLine, and a five-hundred-line
+   * file gets parsed dozens of times, each time more expensive than the last,
+   * for everyone who has the panel open.
    *
-   * Пять кадров в секунду вместо шестнадцати: на глаз это тот же поток, а
-   * разборов втрое меньше. Последний флеш доезжает всегда — таймер ставится на
-   * КАЖДОЕ изменение, а не только на первое, — так что дописанный блок стоит на
-   * экране целиком, а не без последней строки.
+   * Five frames a second instead of sixteen: to the eye it is the same stream,
+   * and there are three times fewer parses. The last flush always gets
+   * through — the timer is set on EVERY change, not only on the first — so a
+   * finished block stands on screen in full, not without its last line.
    */
   const PAINT_MS = 200
   // svelte-ignore state_referenced_locally
@@ -77,9 +78,10 @@
 </script>
 
 <!--
-  Единственное, что здесь ездит вбок, — сам блок, и только он. `max-w-full`,
-  чтобы строка на четыреста знаков не растянула коробку хода; `overscroll-x-contain`,
-  чтобы жест, доехавший до конца строки, не продолжился лентой панели.
+  The only thing here that scrolls sideways is the block itself, and only the
+  block. `max-w-full` so that a four-hundred-character line does not stretch the
+  turn's box; `overscroll-x-contain` so that a gesture that has reached the end
+  of a line does not carry on into the panel's feed.
 -->
 <div
   class={cn(

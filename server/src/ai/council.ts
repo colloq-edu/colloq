@@ -1,39 +1,43 @@
 import { tr } from '@shared/i18n'
 /**
- * Оракул о классе: один взгляд сверху на то, как идёт задача.
+ * The oracle about the class: one look from above at how the task is going.
  *
- * Один кадр, один ответ, одна лента. Раньше их было два: «сводка по решениям»
- * читала только СДАННОЕ и складывала его в шесть групп одинаковых текстов, а
- * «вопрос о классе» видел весь класс и отвечал прозой. Оба вида ушли в один, и
- * это решение владельца, а не упрощение ради упрощения:
+ * One frame, one answer, one feed. There used to be two: the "summary of
+ * solutions" read only what was SUBMITTED and sorted it into six groups of
+ * identical texts, while the "question about the class" saw the whole class
+ * and answered in prose. Both views went into one, and that is the owner's
+ * decision, not simplification for its own sake:
  *
- *   — группы преподаватель попросил снести. Шесть безымянных стопок — это не
- *     то, как он думает о классе; он думает «у Ани работает, у Пети падает», а
- *     черновик письма группе в придачу оказывался письмом не тому;
- *   — спрашивать можно ВСЕГДА, в том числе когда не сдал ещё никто: «что это
- *     вообще за задание и как им лучше действовать» — законный вопрос на
- *     десятой минуте, а кадр несёт текст общей ячейки и markdown над ней даже
- *     на пустой ячейке.
+ *   — the teacher asked for the groups to be removed. Six nameless piles are
+ *     not how a teacher thinks about the class; they think "Anya's works,
+ *     Petya's fails", and the draft letter to a group thrown in on top turned
+ *     out to be a letter to the wrong people;
+ *   — asking is possible ALWAYS, including when nobody has submitted yet:
+ *     "what is this task about and how should they best go at it" is a
+ *     legitimate question at minute ten, and the frame carries the text of the
+ *     shared cell and the markdown above it even when the cell is empty.
  *
- * Модель видит ИМЕНА. Это тоже выбор владельца, и он записан здесь честно,
- * потому что раньше в этой шапке стояло обратное обещание. С метками S1…SN
- * модель отвечала «S7 и S12 застряли», преподаватель читал шифр, а на просьбу
- * «кому подойти» модель имена выдумывала. Теперь в кадре стоят настоящие имена
- * из состава комнаты, и она ссылается на людей так же, как это сделал бы
- * коллега. Выключается это одной настройкой инстанса («Имена учащихся в
- * запросах к модели», OracleSettings.sendNames) — тогда возвращаются метки, и
- * соответствие «метка → человек» остаётся на сервере (`ClassFrame.people`).
- * Решает владелец ключа: это про то, что уходит ЧУЖОМУ провайдеру.
+ * The model sees NAMES. This is also the owner's choice, and it is written
+ * down here honestly, because this header used to carry the opposite promise.
+ * With labels S1…SN the model answered "S7 and S12 are stuck", the teacher
+ * read a cipher, and when asked "whom to go to" the model made names up. Now
+ * the frame carries the real names from the room's roster, and the model
+ * refers to people the way a colleague would. One instance setting switches
+ * this off ("Student names in model requests", OracleSettings.sendNames) —
+ * then the labels come back, and the "label → person" mapping stays on the
+ * server (`ClassFrame.people`). The key's owner decides: this is about what
+ * goes to SOMEONE ELSE'S provider.
  *
- * Обновляется только рукой. Вопрос стоит строки из лимита комнаты, а класс
- * сдаёт по одному в секунду: авто-обновление тратило бы ключ на каждую сдачу и
- * переписывало абзацы под глазами у того, кто их читает.
+ * Refreshed only by hand. A question costs a row from the room's limit, and
+ * the class submits one per second: auto-refresh would spend the key on every
+ * submission and rewrite paragraphs under the eyes of whoever is reading them.
  *
- * И у похода к модели есть сторож. Общий, из ai/watch.ts: 20.09 на живом
- * занятии «Обновить сводку» на тридцати работах повисло навсегда — ни ответа,
- * ни ошибки, ни строки в журнале, — а запись в карте `reading` держала ячейку
- * запертой до перезапуска сервера. Теперь у запроса три срока, у карты второй
- * замок, а у приёма и исхода — по строке в журнале.
+ * And the trip to the model has a watchdog. The shared one, from ai/watch.ts:
+ * on 20 Sep 2026, in a live class, "Refresh summary" on thirty submissions
+ * hung forever — no answer, no error, not a line in the log — and the entry in
+ * the `reading` map kept the cell locked until the server was restarted. Now
+ * the request has three deadlines, the map has a second lock, and intake and
+ * outcome each get a line in the log.
  */
 import type {
   CouncilOracle,
@@ -59,16 +63,16 @@ import {
   seconds,
 } from './text.js'
 
-/** То, что оракулу нужно от попытки. Имя — если инстанс разрешил его слать. */
+/** What the oracle needs from an attempt. The name, if the instance allows sending it. */
 export interface OracleAttempt {
   participantId: string
   /**
-   * Имя человека, как его видит комната.
+   * The person's name as the room sees it.
    *
-   * Необязательное: тесты и старые вызовы приходят без него, и кадр тогда
-   * зовёт человека меткой — ровно так же, как при выключенной настройке.
-   * Цвета и аватара здесь нет и не будет: модели они ни о чём не говорят, а в
-   * промпте чужого провайдера это лишние данные о человеке.
+   * Optional: tests and old calls come without it, and the frame then calls the
+   * person by a label — exactly as with the setting switched off. There is no
+   * colour or avatar here and there will not be: they tell the model nothing,
+   * and in someone else's provider's prompt they are extra data about a person.
    */
   name?: string | null
   text: string
@@ -76,35 +80,36 @@ export interface OracleAttempt {
   run: CouncilRun | null
   correct: boolean | null
   /**
-   * Просьба о запуске, если запуск идёт «по просьбе»: `pending` — человек ждёт,
-   * пока его пустят к ядру.
+   * The run request, if runs go "on request": `pending` means the person is
+   * waiting to be let through to the kernel.
    *
-   * Оракулу это нужно ровно как одна цифра в сводке («ждут разрешения: 3») и
-   * одна пометка в строке человека: ждущий запуска не застрял и не упал, он
-   * упёрся в очередь, и говорить о нём «не запускал» было бы неправдой.
+   * The oracle needs this exactly as one number in the summary ("waiting for
+   * permission: 3") and one mark in the person's row: someone waiting for a run
+   * is not stuck and has not failed, they hit the queue, and saying "did not
+   * run" about them would be untrue.
    */
   runRequest?: CouncilRunRequest | null
   /**
-   * Когда попытку правили в последний раз — по нему считается тишина.
+   * When the attempt was last edited — silence is counted from it.
    *
-   * Необязательное: попытка, пришедшая без него, считается никогда не
-   * молчавшей (см. `silent`), потому что «нет времени» и «давно не трогали» —
-   * разные вещи, и путать их значит объявить застрявшим весь класс.
+   * Optional: an attempt that arrives without it counts as never silent (see
+   * `silent`), because "no time" and "not touched for a long time" are
+   * different things, and mixing them up means declaring the whole class stuck.
    */
   updatedAt?: number
 }
 
-/** Задание, как его видит модель: текст общей ячейки и то, что вокруг. */
+/** The task as the model sees it: the text of the shared cell and what surrounds it. */
 export interface OracleTask {
-  /** Текст общей ячейки — то, что студенты решают. */
+  /** The text of the shared cell — what the students are solving. */
   source: string
-  /** Предыдущая ячейка: условие часто лежит в markdown над кодом. */
+  /** The previous cell: the problem statement often sits in markdown above the code. */
   before: string | null
-  /** Эталонное решение, если преподаватель его дал. Пока его негде взять — `null`. */
+  /** The teacher's reference solution, if given. Nowhere to get one yet, so `null`. */
   reference: string | null
 }
 
-/** Где оракул хранит состояние — council.ts; в тестах подменяется. */
+/** Where the oracle keeps its state — council.ts; replaced in tests. */
 export interface OracleStore {
   oracleOf(sessionId: string, cellId: string): CouncilOracle | null
   setOracle(sessionId: string, cellId: string, oracle: CouncilOracle): void
@@ -112,29 +117,31 @@ export interface OracleStore {
 
 const MAX_TASK_SOURCE = 4_000
 
-/** Сколько кода одного листа едет в кадре: экран, а не файл. */
+/** How much of one sheet's code travels in the frame: a screen, not a file. */
 const MAX_SHEET_SOURCE = 900
 
 /**
- * Пять минут без единой правки — «застрял»: лист открыт, в нём ничего не происходит.
+ * Five minutes without a single edit means "stuck": the sheet is open, and
+ * nothing is happening in it.
  *
- * Число берётся из `@shared/notebook`: им же красится строка «молчит 7 мин» и
- * считается чип «Молчат N» во вкладке «Пишут» у пульта. Свою копию здесь держали
- * до 20.09 — и любая правка одной из них разводила сводку оракула со списком.
+ * The number comes from `@shared/notebook`: the same one colours the "silent
+ * for 7 min" row and counts the "Silent N" chip in the console's "Writing" tab.
+ * A copy of its own was kept here until 20 Sep 2026 — and any edit to one of
+ * them pulled the oracle's summary apart from the list.
  */
 const SILENCE_MS = COUNCIL_SILENCE_MS
 
 /**
- * Какую долю СВОБОДНОГО места забирают строки по людям.
+ * What share of the FREE space the per-person rows take.
  *
- * Половина: на классе в пятьсот человек список сам по себе съел бы весь кадр, и
- * модель отвечала бы «кто застрял» по одним цифрам, не видя ни строчки кода.
- * Вторая половина — листам: сначала тем, у кого что-то случилось, потом
- * остальным сданным.
+ * Half: in a class of five hundred people the list alone would eat the whole
+ * frame, and the model would answer "who is stuck" from numbers alone, without
+ * seeing a line of code. The other half goes to the sheets: first to those
+ * where something happened, then to the rest of the submitted ones.
  */
 const ROSTER_SHARE = 0.5
 
-/* ----------------------------------------------------------------- слова */
+/* ----------------------------------------------------------------- words */
 
 const STATUS_WORDS: Record<CouncilStatus, string> = {
   unrun: 'не запускали',
@@ -145,24 +152,25 @@ const STATUS_WORDS: Record<CouncilStatus, string> = {
 }
 
 /**
- * Состояние попытки одним словом — как в `CouncilStatus`: отметка
- * преподавателя сильнее запуска, потому что решение о верности — его.
+ * The attempt's state in one word — as in `CouncilStatus`: the teacher's mark
+ * outranks the run, because the decision about correctness is theirs.
  *
- * Тонкая обёртка над общей `attemptStatus` (protocol.ts): здесь лежала своя
- * копия того же правила, третья по счёту.
+ * A thin wrapper over the shared `attemptStatus` (protocol.ts): a copy of the
+ * same rule used to live here, the third one.
  */
 export function statusOf(attempt: Pick<OracleAttempt, 'run' | 'correct'>): CouncilStatus {
   return attemptStatus({ run: attempt.run ?? null, correct: attempt.correct ?? null })
 }
 
 /**
- * Состояние ОДНОГО листа словами — то же правило, что у `statusOf`, плюс две
- * вещи, которых в нём нет: остановка по пределу и ожидание разрешения.
+ * The state of ONE sheet in words — the same rule as `statusOf`, plus two
+ * things it lacks: a stop by the limit and waiting for permission.
  *
- * Остановку по пределу отдельно от падения, потому что это разные разговоры:
- * упавший ошибся, а остановленный написал бесконечный цикл или ждёт `input()`, и
- * преподаватель подходит к нему по-другому. По `ename` их не различить —
- * сервер прерывает запуск сам (`CouncilRun.timedOut`).
+ * A stop by the limit is kept apart from a failure, because these are
+ * different conversations: the one who failed made a mistake, while the one
+ * who was stopped wrote an infinite loop or is waiting on `input()`, and the
+ * teacher approaches them differently. They cannot be told apart by `ename` —
+ * the server interrupts the run itself (`CouncilRun.timedOut`).
  */
 function sheetStatus(attempt: OracleAttempt): string {
   const status = statusOf(attempt)
@@ -176,27 +184,29 @@ function sheetStatus(attempt: OracleAttempt): string {
 }
 
 /**
- * Голова и хвост: в хвосте кода — возврат, в хвосте условия — вопрос.
+ * Head and tail: the tail of code holds the return, the tail of a problem
+ * statement holds the question.
  *
- * Общей обрезкой (text.ts · clip), только словами по-русски: кадр написан
- * по-русски, и английский маркер посреди него читался бы как чужой.
+ * The shared clipping (text.ts · clip), only with the words in Russian: the
+ * frame is written in Russian, and an English marker in the middle of it would
+ * read as foreign.
  */
 function clip(text: string, limit: number): string {
   return clipTo(text, limit, (dropped) => `\n… пропущено ${dropped} знаков …\n`)
 }
 
-/** Однострочно: трейсбек в строке человека читается только так. */
+/** On one line: a traceback in a person's row only reads this way. */
 function clipLine(text: string, limit: number): string {
   return cutLine(flatten(text), limit)
 }
 
-/** «17:25» — время сдачи в строке человека; часы сервера, как и везде в кадре. */
+/** "17:25", the submit time in a person's row; server clock, as everywhere in the frame. */
 function hhmm(at: number): string {
   const when = new Date(at)
   return `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
 }
 
-/** «только что», «3 мин назад», «1 ч 05 мин назад» — давность правки листа. */
+/** "just now", "3 min ago", "1 h 05 min ago" — how long since the sheet was edited. */
 function ago(ms: number): string {
   const minutes = Math.floor(Math.max(ms, 0) / 60_000)
   if (minutes < 1) return 'только что'
@@ -204,52 +214,56 @@ function ago(ms: number): string {
   return `${Math.floor(minutes / 60)} ч ${String(minutes % 60).padStart(2, '0')} мин назад`
 }
 
-/** «1 строка», «3 строки», «12 строк» — счёт, который не режет глаз в кадре. */
+/**
+ * "1 строка", "3 строки", "12 строк" (line forms): a count that does not jar
+ * the eye in the frame.
+ */
 function linesWord(n: number): string {
   return tr('server.ai.linesWord', { count: n })
 }
 
-/** Ждёт ли человек, пока его пустят к ядру. */
+/** Whether the person is waiting to be let through to the kernel. */
 function waiting(attempt: OracleAttempt): boolean {
   return attempt.runRequest?.status === 'pending'
 }
 
 /**
- * Черновик, в который давно не дописали ни знака.
+ * A draft to which not a single character has been added for a long time.
  *
- * Без `updatedAt` — не молчит: время правки необязательное, и считать «нет
- * времени» за «давно не трогали» значило бы объявить застрявшим весь класс на
- * первом же кадре без этого поля.
+ * Without `updatedAt` it is not silent: the edit time is optional, and taking
+ * "no time" for "not touched for a long time" would mean declaring the whole
+ * class stuck on the very first frame without this field.
  */
 function silent(attempt: OracleAttempt, now: number): boolean {
   if (attempt.submittedAt !== null || attempt.updatedAt === undefined) return false
   return now - attempt.updatedAt > SILENCE_MS
 }
 
-/* ----------------------------------------------------------------- кадр */
+/* ----------------------------------------------------------------- frame */
 
-/** Кадр для модели: что уехало и кого она под каким именем (или меткой) видела. */
+/** The model's frame: what went out, and who appeared to it under which name (or label). */
 export interface ClassFrame {
   turns: ChatTurn[]
   /**
-   * ПОДПИСЬ В КАДРЕ → participantId. Ключ — либо метка `S7`, либо имя ровно
-   * так, как оно уехало модели («Анна Иванова», «Анна Иванова (2)»).
+   * CAPTION IN THE FRAME → participantId. The key is either a label `S7` or a
+   * name exactly as it went to the model ("Anna Ivanova", "Anna Ivanova (2)").
    *
-   * Одно поле на оба случая, и это не мелочь: пульт подсвечивает в ответе
-   * ключи этого словаря и больше ничего, так что ему не нужно ни знать, какой
-   * сейчас режим, ни второй раз выводить те же подписи по составу комнаты —
-   * а два вывода одного правила однажды разошлись бы на тёзках.
+   * One field for both cases, and that is not a trifle: the console highlights
+   * the keys of this dictionary in the answer and nothing else, so it needs
+   * neither to know which mode is on nor to derive the same captions from the
+   * room's roster a second time — and two derivations of one rule would one day
+   * diverge on namesakes.
    */
   people: Record<string, string>
-  /** На каком классе отвечали — эта пара стоит под ответом в ленте. */
+  /** What class the answer was based on — this pair is shown under the answer in the feed. */
   basedOn: { submitted: number; drafts: number }
-  /** Сколько знаков уехало модели — одно число в журнале приёма. */
+  /** How many characters went to the model — one number in the intake log line. */
   chars: number
 }
 
-/** Как в кадре зовут людей: настоящими именами или метками S1…SN. */
+/** How people are called in the frame: by real names or by labels S1…SN. */
 export interface FrameNaming {
-  /** `true` — имена; `false` — метки. Умолчание берётся из настроек инстанса. */
+  /** `true` for names, `false` for labels. The default comes from instance settings. */
   names: boolean
 }
 
@@ -271,8 +285,9 @@ function systemFrame(names: boolean, effort: ReasoningEffort | undefined): strin
     lines.push(
       'Людей зовут метками S1…SN, и других имён у них нет — не выдумывай их и не',
       'придумывай новых меток. Метки перечисляй через запятую (S6, S7, S8) и никогда',
-      // Диапазон «S6–S10» пульт подменяет двумя именами с тире посередине, и
-      // фраза читается как чужая фамилия: «Александр Яковлев–Александр».
+      // The console replaces a range "S6–S10" with two names with a dash in
+      // the middle, and the phrase reads like someone's double surname:
+      // "Aleksandr Yakovlev–Aleksandr".
       'не пиши их диапазоном вида S6–S10: преподаватель видит на месте метки имя.',
     )
   }
@@ -288,11 +303,11 @@ function systemFrame(names: boolean, effort: ReasoningEffort | undefined): strin
   return lines.join('\n') + '\n' + tr('server.ai.answerLanguage')
 }
 
-/** Строка одного человека и его место в очереди на внимание. */
+/** One person's row and their place in the queue for attention. */
 interface Row {
   label: string
   attempt: OracleAttempt
-  /** 0 — похоже, нужна помощь; 1 — молчит; 2 — просто работает. */
+  /** 0: probably needs help; 1: silent; 2: just working. */
   rank: number
   line: string
 }
@@ -314,10 +329,11 @@ function rowOf(label: string, attempt: OracleAttempt, now: number): Row {
 }
 
 /**
- * Числа по классу — то, с чего модель начинает читать кадр.
+ * Numbers for the class — what the model starts reading the frame with.
  *
- * Отдельной функцией, потому что по ней же собираются `basedOn` ленты и порядок
- * строк: одно место, где решается, кто «упал», кто «молчит» и кто «ждёт».
+ * A separate function, because the feed's `basedOn` and the order of rows are
+ * built from it too: one place that decides who "failed", who is "silent" and
+ * who is "waiting".
  */
 function tally(attempts: readonly OracleAttempt[], now: number) {
   let submitted = 0
@@ -361,25 +377,26 @@ function tally(attempts: readonly OracleAttempt[], now: number) {
     right,
     wrong,
     quiet,
-    // Топ имён исключений: три штуки — это уже «типичная ошибка», дальше хвост.
+    // Top exception names: three is already "a typical error", beyond that is the tail.
     errors: [...errors.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 3),
   }
 }
 
 /**
- * Имена, которыми в кадре зовут людей.
+ * The names by which people are called in the frame.
  *
- * С включённой настройкой — настоящее имя; человек без имени (участника уже
- * нет в базе, строка битая) всё равно получает метку, иначе строка кадра
- * начиналась бы с пустоты. С выключенной — только метки.
+ * With the setting on, the real name; a person without a name (the participant
+ * is no longer in the database, the row is broken) still gets a label,
+ * otherwise the frame row would start with emptiness. With it off, labels only.
  *
- * Метки раздаются по participantId, а не по времени сдачи или правки. И то и
- * другое живое: сосед сдал, передумал, дописал запятую — и S7 в следующем
- * вопросе оказался бы другим человеком.
+ * Labels are handed out by participantId, not by submission or edit time. Both
+ * of those are alive: a neighbour submitted, changed their mind, added a comma
+ * — and S7 in the next question would turn out to be a different person.
  *
- * Одинаковые имена — обычное дело в классе на сто человек, и две «Анны
- * Ивановы» в кадре сделали бы ответ неразрешимым: обеим дописывается номер
- * («Анна Иванова (2)»), и по нему же пульт находит нужную работу.
+ * Identical names are common in a class of a hundred people, and two "Anna
+ * Ivanova"s in the frame would make the answer unresolvable: both get a number
+ * appended ("Anna Ivanova (2)"), and the console finds the right submission by
+ * it.
  */
 function namesFor(
   attempts: readonly OracleAttempt[],
@@ -404,22 +421,24 @@ function namesFor(
 }
 
 /**
- * Кадр для модели — один на все вопросы.
+ * The frame for the model — one for all questions.
  *
- * `now` — параметром, а не `Date.now()` внутри: «тишина» и «правка 3 мин назад»
- * считаются от него, и тест, у которого время подставное, проверяет настоящие
- * числа, а не то, что успело пройти между двумя строками.
+ * `now` is a parameter, not `Date.now()` inside: "silence" and "edited 3 min
+ * ago" are counted from it, and a test with fake time checks the real numbers,
+ * not whatever managed to pass between two lines.
  *
- * Бюджет — `contextChars` инстанса. Тратится по порядку: сначала системный
- * кадр, задание и числа (они едут всегда — кадр без них не кадр), потом строки
- * по людям (не больше половины оставшегося), потом код листов: сперва у кого
- * что-то случилось, потом остальные сданные. Хвост и там, и там сворачивается
- * в счёт: модель должна знать, что за кадром есть ещё класс, иначе «у всех
- * остальных всё хорошо» она скажет, не имея на это права.
+ * The budget is the instance's `contextChars`. It is spent in order: first the
+ * system frame, the task and the numbers (they always go — a frame without them
+ * is not a frame), then the per-person rows (no more than half of what is
+ * left), then the sheets' code: first those where something happened, then the
+ * rest of the submitted ones. In both places the tail folds into a count: the
+ * model must know there is more class beyond the frame, otherwise it will say
+ * "everyone else is fine" without having the right to.
  *
- * ГОЛОВА КАДРА СЧИТАЕТСЯ В БЮДЖЕТ. Раньше не считалась вовсе: задание на
- * четыре тысячи знаков уезжало сверх потолка, и преподаватель, опустивший
- * contextChars под маленькую модель, получал запрос вдвое больше названного.
+ * THE HEAD OF THE FRAME COUNTS TOWARDS THE BUDGET. It used to not count at all:
+ * a task of four thousand characters went over the ceiling, and a teacher who
+ * lowered contextChars for a small model got a request twice the size they
+ * named.
  */
 export function oraclePrompt(
   task: OracleTask,
@@ -470,8 +489,8 @@ export function oraclePrompt(
 
   const rows = attempts
     .map((attempt) => rowOf(label.get(attempt.participantId) ?? attempt.participantId, attempt, now))
-    // Сначала те, кому вероятнее нужна помощь: упал, молчит, всё остальное.
-    // Внутри разряда — по подписи, чтобы два одинаковых кадра совпали.
+    // First those who more likely need help: failed, silent, everything else.
+    // Within a rank, by caption, so that two identical frames match.
     .sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label, 'ru', { numeric: true }))
 
   let used = system.length + head.join('\n').length + question.length
@@ -507,15 +526,15 @@ export function oraclePrompt(
   }
 
   /*
-   * Код — вторым заходом, и поимённо. Групп больше нет: одинаковые решения
-   * едут как есть, каждое со своим именем, потому что преподаватель спрашивает
-   * не «что в группе G2», а «что у Пети».
+   * Code in a second pass, and by name. There are no groups anymore: identical
+   * solutions travel as they are, each with its own name, because the teacher
+   * asks not "what is in group G2" but "what does Petya have".
    *
-   * Порядок — тот же, что у строк: сперва упавшие и молчащие (о них и
-   * спрашивают), потом остальные сданные. Черновики без происшествий кодом не
-   * едут вовсе: полторы строки начатого листа стоят места, на котором иначе
-   * поместится чья-то настоящая ошибка, а сам факт «пишет, 3 строки» уже стоит
-   * в строке человека.
+   * The order is the same as for the rows: first the failed and the silent
+   * (they are what people ask about), then the rest of the submitted ones.
+   * Drafts without incidents do not travel as code at all: a line and a half of
+   * a started sheet costs the space where someone's real error would otherwise
+   * fit, and the fact "writing, 3 lines" is already in the person's row.
    */
   const code: string[] = []
   const worth = rows.filter(
@@ -557,19 +576,20 @@ export function oraclePrompt(
   }
 }
 
-/** «1 лист», «3 листа», «5 листов» — счёт свёрнутого хвоста. */
+/** "1 лист", "3 листа", "5 листов" (sheet forms): the count of the folded tail. */
 function listsWord(n: number): string {
   return tr('server.council.sheetsWord', { count: n })
 }
 
-/* -------------------------------------------------------------- состояние */
+/* -------------------------------------------------------------- state */
 
 /**
- * Сколько ходов ленты держит сервер.
+ * How many feed turns the server keeps.
  *
- * Шесть — это разговор на паре: что спрашивали полчаса назад, на доске уже
- * неважно. И это потолок кадра: каждый ответ везёт свой словарь меток, и лента
- * без предела росла бы в КАЖДОМ `council:oracle` до конца занятия.
+ * Six is a conversation during a class: what was asked half an hour ago no
+ * longer matters at the whiteboard. And it is the frame's ceiling: every answer
+ * carries its own dictionary of labels, and a feed without a limit would grow
+ * in EVERY `council:oracle` until the end of the class.
  */
 export const MAX_ORACLE_ANSWERS = 6
 
@@ -585,14 +605,14 @@ export function idleOracle(): CouncilOracle {
 }
 
 /**
- * Прочитанный из базы оракул, приведённый к сегодняшнему кадру.
+ * An oracle read from the database, brought to today's shape.
  *
- * Строки `council_oracle` пишутся JSON-ом и переживают обновление сервера:
- * записанные прошлой версией несут поля, которых больше нет (`summary`,
- * `groupLabels`, `drafts`), и не несут тех, что появились. Здесь строка
- * приводится к нынешней форме — иначе читатель, положившийся на наличие поля,
- * уронил бы пульт на первом же занятии, начатом вчера. Здесь же держится и
- * потолок ленты.
+ * `council_oracle` rows are written as JSON and survive a server upgrade: those
+ * written by the previous version carry fields that no longer exist
+ * (`summary`, `groupLabels`, `drafts`) and lack the ones that appeared since.
+ * Here the row is brought to the current form — otherwise a reader relying on a
+ * field being present would crash the console on the very first class that was
+ * started yesterday. The feed's ceiling is also held here.
  */
 export function normalizeOracle(oracle: CouncilOracle): CouncilOracle {
   const answers = Array.isArray(oracle.answers) ? oracle.answers.slice(-MAX_ORACLE_ANSWERS) : []
@@ -611,9 +631,9 @@ type OracleListener = (sessionId: string, cellId: string, oracle: CouncilOracle)
 let listener: OracleListener | null = null
 
 /**
- * Кому сказать, что оракул сменил состояние. Регистрирует control.ts — у него
- * сокеты преподавателей; импорт control.ts отсюда замкнул бы модули друг на
- * друга, ровно как onRefusal в collab/index.ts.
+ * Whom to tell that the oracle changed state. Registered by control.ts — it has
+ * the teachers' sockets; importing control.ts from here would tie the modules
+ * into a loop, exactly like onRefusal in collab/index.ts.
  */
 export function onCouncilOracle(next: OracleListener): void {
   listener = next
@@ -624,26 +644,29 @@ function announce(sessionId: string, cellId: string, oracle: CouncilOracle): voi
 }
 
 /**
- * Ключ — `${sessionId}:${cellId}`; запись есть только пока модель читает.
+ * The key is `${sessionId}:${cellId}`; an entry exists only while the model is
+ * reading.
  *
- * У записи ДВА замка. Первый — `.finally()` того же обещания, который снимает
- * её, чем бы чтение ни кончилось. Второй — срок: если обещание не разрешилось
- * вовсе (а именно это и случилось 20.09), запись снимается по таймеру, и
- * ячейка не остаётся запертой на 409 до перезапуска сервера. Один замок здесь
- * уже был, и его не хватило.
+ * An entry has TWO locks. The first is the `.finally()` of the same promise,
+ * which removes it however the reading ends. The second is a deadline: if the
+ * promise never settles at all (and that is exactly what happened on 20 Sep
+ * 2026), the entry is removed by a timer, and the cell does not stay locked on
+ * 409 until the server restarts. There was already one lock here, and it was
+ * not enough.
  */
 interface Reading {
   controller: AbortController
-  /** Второй замок: снимает запись, даже если обещание не разрешилось. */
+  /** The second lock: removes the entry even if the promise never settled. */
   latch: NodeJS.Timeout
 }
 
 const reading = new Map<string, Reading>()
 
 /**
- * Запас поверх потолка запроса: сторож обрывает на 180 с, разрешение обещания
- * и запись состояния стоят ещё доли секунды. Полминуты — с избытком, и это
- * аварийный путь, а не рабочий.
+ * A margin on top of the request ceiling: the watchdog cuts off at 180 s, and
+ * settling the promise and writing the state take fractions of a second more.
+ * Half a minute is more than enough, and this is the emergency path, not the
+ * working one.
  */
 const LATCH_GRACE_MS = 30_000
 
@@ -663,24 +686,25 @@ export interface AskCouncilOracle {
   task: OracleTask
   attempts: readonly OracleAttempt[]
   store: OracleStore
-  /** Строка расхода, заведённая маршрутом при приёме: токены лягут на неё. */
+  /** The usage row the route created at intake: the tokens will be added to it. */
   usageId?: number
-  /** Вопрос преподавателя. Пусто — маршрут подставляет свою заготовку. */
+  /** The teacher's question. Empty means the route puts in its own default. */
   question: string
-  /** Уровень размышлений на этот запрос; пусто — умолчание инстанса. */
+  /** The reasoning level for this request; empty means the instance default. */
   effort?: ReasoningEffort
   /**
-   * Сроки сторожа. Маршрут их не передаёт — у него `COUNCIL_WATCH`; подставляет
-   * их тест, и другого способа нет: проверка «замолчавший провайдер кончается
-   * понятной ошибкой» по настоящим срокам стоила бы трёх минут ожидания на
-   * каждый прогон, то есть её бы не было вовсе.
+   * The watchdog's deadlines. The route does not pass them — it has
+   * `COUNCIL_WATCH`; the test puts them in, and there is no other way: checking
+   * "a silent provider ends with an understandable error" on the real deadlines
+   * would cost three minutes of waiting on every run, that is, the check would
+   * not exist at all.
    */
   times?: WatchTimes
 }
 
 /**
- * Спросить. Возвращает состояние «читает» сразу — 202 отдаётся им; ответ
- * приезжает потом через `onCouncilOracle`.
+ * Ask. Returns the "reading" state right away — the 202 is answered with it;
+ * the answer arrives later through `onCouncilOracle`.
  */
 export function askCouncilOracle(input: AskCouncilOracle): CouncilOracle {
   const { sessionId, cellId, store } = input
@@ -704,7 +728,7 @@ export function askCouncilOracle(input: AskCouncilOracle): CouncilOracle {
   const entry: Reading = {
     controller,
     latch: setTimeout(() => {
-      // Сюда попадают только застрявшие: обычное чтение снимает запись раньше.
+      // Only stuck ones get here: a normal reading removes the entry earlier.
       if (reading.get(key) !== entry) return
       reading.delete(key)
       console.warn(`[session ${sessionId}] council oracle: stuck reading on ${cellId}, freed by latch`)
@@ -718,7 +742,7 @@ export function askCouncilOracle(input: AskCouncilOracle): CouncilOracle {
   return started
 }
 
-/** Ячейка, застрявшая в «читает», — привести в порядок и сказать об этом пульту. */
+/** A cell stuck in "reading": put it in order and tell the console. */
 function settleStuck(input: AskCouncilOracle, previous: CouncilOracle): void {
   const current = input.store.oracleOf(input.sessionId, input.cellId)
   if (!current || current.state !== 'reading') return
@@ -732,12 +756,12 @@ function settleStuck(input: AskCouncilOracle, previous: CouncilOracle): void {
 }
 
 /**
- * Отказ — в ЛЕНТУ, а не только красной плашкой.
+ * A refusal goes into the FEED, not only into a red banner.
  *
- * Вопрос преподавателя при отказе не исчезает: ход остаётся на месте с
- * причиной вместо ответа. Пока его не было, «Обновить сводку», кончившееся
- * ничем, стирало и сам вопрос — повторить было нечего, а понять, на что не
- * ответили, невозможно.
+ * The teacher's question does not disappear on a refusal: the turn stays in
+ * place with the reason instead of an answer. Before this, a "Refresh summary"
+ * that ended in nothing erased the question itself too — there was nothing to
+ * repeat, and no way to understand what had gone unanswered.
  */
 function failedOracle(current: CouncilOracle, previous: CouncilOracle, reason: string): CouncilOracle {
   const asked = current.pending ?? previous.pending
@@ -776,19 +800,19 @@ async function read(
     store.setOracle(sessionId, cellId, oracle)
     announce(sessionId, cellId, oracle)
   }
-  /** Текущее состояние, а не то, что было на входе: ленту мог дополнить сосед. */
+  /** Current state, not the one at entry: someone else may have added to the feed. */
   const nowState = () => normalizeOracle(store.oracleOf(sessionId, cellId) ?? previous)
 
   /*
-   * Потраченный впустую вопрос не должен съедать часовой лимит комнаты.
+   * A question spent for nothing must not eat the room's hourly limit.
    *
-   * Строка расхода заводится при ПРИЁМЕ (маршрут), потому что запрос к
-   * провайдеру уйдёт, чем бы он ни кончился. Но «Обновить», повисшее на три
-   * минуты и кончившееся отказом, — это не вопрос, а потерянное время, и
-   * платить за него местом в часовом потолке несправедливо вдвойне: именно
-   * тогда преподаватель и жмёт кнопку ещё раз. Снимается строка, только если
-   * провайдер ни одного токена не назвал; назвал — значит деньги ушли, и
-   * счёт остаётся (admin/usage.ts · dropQuestion).
+   * The usage row is created at INTAKE (the route), because the request to the
+   * provider goes out however it ends. But a "Refresh" that hung for three
+   * minutes and ended in a refusal is not a question but lost time, and paying
+   * for it with a slot under the hourly ceiling is doubly unfair: that is
+   * exactly when the teacher presses the button again. The row is removed only
+   * if the provider named not a single token; if it did, the money is gone and
+   * the count stays (admin/usage.ts · dropQuestion).
    */
   const wasted = () => {
     if (input.usageId !== undefined) dropQuestion(input.usageId)
@@ -817,12 +841,13 @@ async function read(
     )
     if (controller.signal.aborted) {
       /*
-       * Три исхода одной отмены, и разводятся они словами.
+       * Three outcomes of one cancellation, and they are told apart in words.
        *
-       * «Не открыл поток» — правда только до первого кадра: лечится это
-       * меньшим contextChars, и говорит об этом фраза про отведённое время.
-       * «Замолчал на середине» — уже разговор с эндпоинтом, и там совет
-       * «повторите» уместен. «Нажали Стоп» — вообще не отказ.
+       * "Did not open the stream" is true only before the first frame: the
+       * cure is a smaller contextChars, and the phrase about the allotted time
+       * says so. "Went silent midway" is already a conversation with the
+       * endpoint, and there the advice "retry" is appropriate. "Stop was
+       * pressed" is not a refusal at all.
        */
       const why =
         guard.why === null
@@ -890,10 +915,11 @@ async function read(
 }
 
 /**
- * «Стоп» — не отказ: ход просто уходит из ленты вместе с ожиданием.
+ * "Stop" is not a refusal: the turn simply leaves the feed together with the
+ * wait.
  *
- * Ошибку не ставим и прежнюю снимаем: красная плашка после собственного
- * нажатия читается как поломка.
+ * We do not set an error and we clear the previous one: a red banner after
+ * your own press reads as a breakage.
  */
 function stoppedOracle(current: CouncilOracle): CouncilOracle {
   return {
@@ -905,19 +931,19 @@ function stoppedOracle(current: CouncilOracle): CouncilOracle {
 }
 
 /**
- * «Стоп»: оборвать чтение. Возвращает `true`, если было что обрывать.
+ * "Stop": abort the reading. Returns `true` if there was something to abort.
  *
- * И приводит состояние в порядок, даже когда обрывать нечего. Это второй замок
- * на ту же дверь, что и срок у записи: ячейка, застрявшая в `reading` без
- * живого чтения, отвечала 409 на каждый следующий вопрос — то есть «Стоп»
- * переставал работать ровно тогда, когда он и нужен.
+ * And it puts the state in order even when there is nothing to abort. This is
+ * the second lock on the same door as the entry's deadline: a cell stuck in
+ * `reading` without a live reading answered 409 to every next question — that
+ * is, "Stop" stopped working exactly when it was needed.
  */
 export function stopCouncilOracle(sessionId: string, cellId: string, store?: OracleStore): boolean {
   const key = `${sessionId}:${cellId}`
   const entry = reading.get(key)
   if (entry) {
     entry.controller.abort()
-    // Запись снимет `.finally()` чтения; латч — на случай, если не снимет.
+    // The reading's `.finally()` removes the entry; the latch is in case it does not.
   }
   if (store) {
     const current = store.oracleOf(sessionId, cellId)
@@ -931,12 +957,13 @@ export function stopCouncilOracle(sessionId: string, cellId: string, store?: Ora
 }
 
 /**
- * Оборвать все чтения комнаты — семинар сносят.
+ * Abort all readings of the room — the seminar is being deleted.
  *
- * Зовёт `discardCouncil` (server/src/council.ts). Без этого ответ, пришедший
- * через минуту после удаления, шёл в `setOracle`, а тот заводил кэш комнаты
- * заново и писал строку `council_oracle` для сессии, которой в списке уже нет.
- * Возвращает, сколько чтений оборвали, — ради журнала и теста.
+ * Called by `discardCouncil` (server/src/council.ts). Without this, an answer
+ * arriving a minute after deletion went into `setOracle`, which created the
+ * room's cache again and wrote a `council_oracle` row for a session that is no
+ * longer on the list. Returns how many readings were aborted — for the log and
+ * the test.
  */
 export function stopRoomOracles(sessionId: string): number {
   const prefix = `${sessionId}:`

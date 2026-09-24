@@ -1,14 +1,15 @@
 /**
- * Версия проекта: одно число в корневом package.json и его копии.
+ * The project version: one number in the root package.json and its copies.
  *
- * Здесь проверяется то, что ломается молча. Поднимает число release-please, и
- * копию, которой нет в его extra-files, он просто не тронет: PR выпуска уедет
- * с колесом одной версии и тегом другой, и заметно это станет на PyPI, где
- * ничего нельзя перезалить. Поэтому `version.mts check` проигрывает правку
- * release-please офлайн, и тесты ниже держат эту репетицию честной — теми же
- * правилами, что в исходниках release-please 17 (updaters/generic.ts,
- * generic-json.ts, node/package-lock-json.ts, changelog.ts). Последний тест тот
- * же, что `make version` и CI, — на настоящем дереве.
+ * What is checked here is what breaks silently. release-please raises the
+ * number, and a copy that is not in its extra-files it simply will not touch:
+ * the release PR goes out with a wheel of one version and a tag of another,
+ * and this becomes noticeable on PyPI, where nothing can be re-uploaded. So
+ * `version.mts check` replays release-please's edit offline, and the tests
+ * below keep this rehearsal honest — with the same rules as in the
+ * release-please 17 sources (updaters/generic.ts, generic-json.ts,
+ * node/package-lock-json.ts, changelog.ts). The last test is the same as
+ * `make version` and CI — on the real tree.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -43,7 +44,7 @@ const CHANGELOG = `${HEADER}## [0.1.0](https://github.com/example/colloq/release
 - Everything.
 `
 
-/** Конфиг release-please того же устройства, что настоящий, на два воркспейса. */
+/** A release-please config built the same way as the real one, for two workspaces. */
 function rpConfig(extra?: unknown[]) {
   return {
     'release-type': 'node',
@@ -64,7 +65,7 @@ function rpConfig(extra?: unknown[]) {
   }
 }
 
-/** Дерево с теми же копиями, что у настоящего: корень, два воркспейса, замок, питон, журнал, release-please. */
+/** A tree with the same copies as the real one: root, two workspaces, lock, Python, changelog, release-please. */
 function fixture(version = '0.1.0', changelog = CHANGELOG): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-version-'))
   const write = (file: string, text: string) => {
@@ -124,10 +125,11 @@ const read = (dir: string, file: string) => fs.readFileSync(path.join(dir, file)
 const writeJson = (dir: string, file: string, value: unknown) => fs.writeFileSync(path.join(dir, file), json(value))
 
 /*
- * Правка release-please Generic, переписанная отдельно от version.mts: строка
- * с x-release-please-version, первое число semver в ней меняется, остальное
- * нетронуто (release-please 17, src/updaters/generic.ts). Два независимых
- * списания одного правила — чтобы опечатка в одном не подтвердила сама себя.
+ * release-please's Generic edit, rewritten separately from version.mts: in a
+ * line with x-release-please-version the first semver number changes and the
+ * rest stays untouched (release-please 17, src/updaters/generic.ts). Two
+ * independent copies of one rule — so that a typo in one does not confirm
+ * itself.
  */
 function releasePleaseGeneric(text: string, version: string): string {
   const semver = /(\d+)\.(\d+)\.(\d+)(-[\w.]+)?(\+[-\w.]+)?/
@@ -141,7 +143,7 @@ test('only versions the wheel, the tag and the image can all carry are accepted'
   for (const good of ['0.1.0', '10.20.30', '1.0.0-alpha.0', '1.0.0-beta.2', '1.0.0-rc.11']) {
     assert.ok(isVersion(good), good)
   }
-  // PEP 440 не знает «next», у тега и образа нет «+», ведущий ноль — не semver.
+  // PEP 440 does not know "next", a tag and an image have no "+", a leading zero is not semver.
   for (const bad of ['v1.0.0', '1.0', '01.0.0', '1.0.0-next.1', '1.0.0-rc', '1.0.0+sha', '1.0.0-rc.01']) {
     assert.equal(isVersion(bad), false, bad)
   }
@@ -150,14 +152,15 @@ test('only versions the wheel, the tag and the image can all carry are accepted'
 test('the version file carries the release-please marker on its version line and nowhere else', () => {
   const text = pythonVersionFile('0.1.0')
   const marked = text.split('\n').filter((line) => line.includes('x-release-please'))
-  // Строку с пометкой Generic правит целиком: пометка в шапке превратила бы в
-  // «версию» первое число в комментарии.
+  // Generic edits the marked line as a whole: a marker in the header would turn
+  // the first number in the comment into the "version".
   assert.deepEqual(marked, ['__version__ = "0.1.0"  # x-release-please-version'])
-  // release-please меняет ровно число — и получается тот же шаблон: упаковка
-  // (scripts/pack.mts) после PR выпуска дерево не пачкает.
+  // release-please changes exactly the number — and the result is the same
+  // template: packaging (scripts/pack.mts) does not dirty the tree after the
+  // release PR.
   assert.equal(releasePleaseGeneric(text, '0.2.0'), pythonVersionFile('0.2.0'))
   assert.equal(releasePleaseGeneric(text, '1.0.0-rc.1'), pythonVersionFile('1.0.0-rc.1'))
-  // hatchling читает __version__ своим шаблоном; хвостовой комментарий ему не мешает.
+  // hatchling reads __version__ with its own pattern; the trailing comment does not bother it.
   const hatchling = /^(__version__|VERSION) *= *(['"])v?(?<version>.+?)\2/m
   assert.equal(hatchling.exec(text)?.groups?.version, '0.1.0')
 })
@@ -183,7 +186,7 @@ test('check names every copy that disagrees, and a tag that does not match', () 
 
 test('a version raised by hand, past release-please, is caught by its manifest', () => {
   withFixture((dir) => {
-    // Все копии подняты «как надо», но мимо PR выпуска: манифест остался 0.1.0.
+    // All copies are raised "properly", but past the release PR: the manifest stayed at 0.1.0.
     const edits = versionEdits(diskReader(dir), '0.2.0')
     for (const [file, text] of edits) fs.writeFileSync(path.join(dir, file), text)
     writeJson(dir, 'package.json', { ...JSON.parse(read(dir, 'package.json')), version: '0.2.0' })
@@ -213,15 +216,16 @@ test('the changelog: release-please headings count, the top one is the version, 
   assert.deepEqual(changelogVersions(released), ['0.2.0', '0.1.1', '0.1.0', '0.0.9'])
   withFixture((dir) => assert.deepEqual(checkVersions(dir), []), '0.2.0', released)
 
-  // Рукописный «Unreleased» над выпусками перехватил бы вставку release-please.
+  // A hand-written "Unreleased" above the releases would intercept release-please's insertion.
   const unreleased = CHANGELOG.replace('## [0.1.0]', '## [Unreleased]\n\n- Pending.\n\n## [0.1.0]')
   withFixture((dir) => {
     const problems = checkVersions(dir).join('\n')
     assert.match(problems, /"## \[Unreleased\]" would take release-please's next section/)
   }, '0.1.0', unreleased)
 
-  // Второй раздел того же числа — второй PR «release 0.2.0» после выпуска
-  // 0.2.0 (release-as забыли убрать): CI должен уронить его до слияния.
+  // A second section for the same number is a second "release 0.2.0" PR after
+  // releasing 0.2.0 (release-as was not removed): CI must fail it before the
+  // merge.
   const twice = released.replace('## 0.1.1 (2026-09-15)', '## [0.2.0](https://x) (2026-09-21)')
   withFixture((dir) => assert.match(checkVersions(dir).join('\n'), /two sections for 0\.2\.0/), '0.2.0', twice)
 
@@ -242,8 +246,8 @@ test('the release-please rehearsal moves every copy, and only version lines', ()
       'server/package.json',
       'shared/package.json',
     ])
-    // Замок: версии корня и воркспейсов — да, чужие пакеты — нет; меняются
-    // ровно строки с версией.
+    // The lock: the root and workspace versions — yes, other packages — no;
+    // exactly the version lines change.
     const before = read(dir, 'package-lock.json').split('\n')
     const after = files.get('package-lock.json')!.split('\n')
     assert.equal(before.length, after.length)
@@ -252,20 +256,20 @@ test('the release-please rehearsal moves every copy, and only version lines', ()
     assert.ok(changed.every((line) => /"version": "0\.1\.0"/.test(line)))
     assert.equal(JSON.parse(files.get('package-lock.json')!).packages['node_modules/left-pad'].version, '1.3.0')
     assert.equal(files.get('python/colloq/_version.py'), pythonVersionFile('0.2.0'))
-    // Раздел нового выпуска — наверху, под шапкой; прежний журнал цел.
+    // The new release section is at the top, under the header; the old changelog is intact.
     const changelog = files.get('CHANGELOG.md')!
     assert.deepEqual(changelogVersions(changelog), ['0.2.0', '0.1.0'])
     assert.ok(changelog.startsWith(HEADER))
     assert.match(changelog, /- Everything\.\n$/)
 
-    // Итог репетиции проходит ту же сверку, что PR выпуска в CI.
+    // The result of the rehearsal passes the same check as the release PR in CI.
     for (const [file, text] of files) fs.writeFileSync(path.join(dir, file), text)
     assert.deepEqual(checkVersions(dir, { tag: 'v0.2.0' }), [])
   })
 })
 
 test('a copy release-please would not touch fails the check, whatever the reason', () => {
-  // Новый воркспейс без строки в extra-files.
+  // A new workspace without a line in extra-files.
   withFixture((dir) => {
     const config = rpConfig()
     config.packages['.']['extra-files'] = config.packages['.']['extra-files'].filter(
@@ -277,8 +281,8 @@ test('a copy release-please would not touch fails the check, whatever the reason
       /release-please would leave cli\/package\.json at 0\.1\.0: add it to extra-files/,
     )
   })
-  // Опечатка в пути, путь к полю, которого нет, и файл версии без пометки —
-  // release-please все три пропускает молча.
+  // A typo in a path, a path to a field that does not exist, and a version
+  // file without a marker — release-please silently skips all three.
   withFixture((dir) => {
     writeJson(
       dir,
@@ -295,7 +299,7 @@ test('a copy release-please would not touch fails the check, whatever the reason
     assert.match(problems, /\$\.packages\.srever\.version: no version string there/)
     assert.match(problems, /no line marked x-release-please-version in python\/colloq\/_version\.py/)
   })
-  // release-type не node — корень замка и package.json никто не поднимет.
+  // release-type is not node — nobody will raise the lock root and package.json.
   withFixture((dir) => {
     writeJson(dir, 'release-please-config.json', { ...rpConfig(), 'release-type': 'simple' })
     assert.match(checkVersions(dir).join('\n'), /release-type must be "node"/)
@@ -324,7 +328,7 @@ test('the command line: check fails loudly, the old bump is gone', () => {
     assert.equal(quietly(() => main(['current'], dir)), 0)
     writeJson(dir, '.release-please-manifest.json', { '.': '0.0.1' })
     assert.equal(quietly(() => main(['check'], dir)), 1)
-    // Числа поднимает только PR выпуска release-please.
+    // Only the release-please release PR raises the numbers.
     assert.equal(quietly(() => main(['bump', 'minor'], dir)), 2)
     assert.equal(quietly(() => main(['notes', '0.1.0'], dir)), 2)
   })
@@ -333,12 +337,12 @@ test('the command line: check fails loudly, the old bump is gone', () => {
 test('this checkout: every copy agrees, release-please would move them all, and nothing hard-codes it', async () => {
   assert.deepEqual(checkVersions(repo), [])
   const version = JSON.parse(read(repo, 'package.json')).version as string
-  // Упаковка пишет _version.py той же функцией — значит, `make pack` не пачкает дерево.
+  // Packaging writes _version.py with the same function — so `make pack` does not dirty the tree.
   assert.equal(read(repo, 'python/colloq/_version.py'), pythonVersionFile(version))
   assert.match(read(repo, 'scripts/pack.mts'), /writeFileSync\([^\n]*_version\.py'\), pythonVersionFile\(version\)\)/)
   const { COLLOQ_VERSION } = await import('../server/src/version.ts')
   assert.equal(COLLOQ_VERSION, version)
-  // Панель берёт число из сборки (vite define), а не из строки в разметке.
+  // The panel takes the number from the build (vite define), not from a string in the markup.
   const shell = read(repo, 'web/src/admin/AdminShell.svelte')
   assert.doesNotMatch(shell, /<Wordmark[^>]*version="v?\d/)
   assert.match(shell, /__COLLOQ_VERSION__/)

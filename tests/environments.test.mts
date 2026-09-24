@@ -7,8 +7,9 @@
  * and the same `KERNEL_ENV` line, which is why the parsing rules live in one
  * place and are pinned here.
  *
- * Каталогов, впрочем, два: привезённые с продуктом только читаются, свои
- * человек заводит сам. Про это — последняя секция файла.
+ * There are two directories, though: the ones shipped with the product are
+ * only read, one's own a person creates. That is the last section of the
+ * file.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -82,95 +83,99 @@ test('a package with a marker or an extra survives whole', () => {
   ])
 })
 
-/* ------------------------------------------- окружению нужен срез GPU */
+/* ---------------------------------- the environment needs a GPU slice */
 
 /*
- * GPU — свойство окружения, а не комнаты: колёса torch собраны под CUDA, и «то
- * же самое, только на процессоре» здесь не существует. Объявляется строкой в
- * шапке файла, потому что список пакетов и есть окружение, а отдельный реестр
- * рядом с ним разъезжается на первой же правке руками.
+ * GPU is a property of the environment, not of the room: torch wheels are
+ * built for CUDA, and "the same, only on the CPU" does not exist here. It is
+ * declared by a line in the file header, because the package list is the
+ * environment, and a separate registry next to it drifts apart at the very
+ * first manual edit.
  */
-test('директива в шапке объявляет GPU, а pip её не видит', () => {
+test('a directive in the header declares GPU, and pip does not see it', () => {
   const source = '# нейросети\n# colloq: gpu\ntorch>=2.4\n'
   assert.equal(declaresGpu(source), true)
-  // Для pip это комментарий: ни лишнего пакета в счёте, ни «Needs rebuild» на
-  // собранном образе из-за одной строки.
+  // For pip it is a comment: neither an extra package in the count nor
+  // "Needs rebuild" on a built image because of one line.
   assert.deepEqual(parsePackages(source), ['torch>=2.4'])
   assert.equal(listChanged('torch>=2.4\n', source), false)
 })
 
-test('пробелы и регистр директиву не ломают', () => {
+test('spaces and case do not break the directive', () => {
   assert.equal(declaresGpu('  #   colloq:  gpu  \n'), true)
   assert.equal(declaresGpu('# Colloq: GPU\n'), true)
 })
 
-test('обычное окружение среза не просит', () => {
+test('an ordinary environment does not ask for a slice', () => {
   assert.equal(declaresGpu(''), false)
   assert.equal(declaresGpu('# зрение на процессоре\ntorch>=2.4\n'), false)
-  // Слово в предложении — не директива: иначе фраза про GPU внутри пояснения
-  // забирала бы срез у семинара, которому он действительно нужен.
+  // A word in a sentence is not a directive: otherwise a phrase about GPU
+  // inside an explanation would take the slice away from a seminar that
+  // really needs it.
   assert.equal(declaresGpu('# colloq: gpu тут не нужен\n'), false)
 })
 
-test('образцовое окружение gpu действительно объявляет срез, а базовое — нет', () => {
-  // Единственные два примера этой директивы в репозитории: base-gpu объявляет
-  // её сам, gpu получает по наследству. Выпадет она — комната поедет на
-  // процессоре и упадёт на первом `.cuda()`.
+test('the model gpu environment does declare the slice, and the base one does not', () => {
+  // The only two examples of this directive in the repository: base-gpu
+  // declares it itself, gpu gets it by inheritance. Should it fall out, the
+  // room will run on the CPU and fail on the first `.cuda()`.
   assert.equal(needsGpu('base-gpu'), true)
   assert.equal(needsGpu('gpu'), true)
   assert.equal(needsGpu('base'), false)
   assert.equal(needsGpu('cv'), false)
-  // Несуществующее имя — это пустой файл, а не исключение: спрашивают об этом
-  // на подъёме ядра, и падать там незачем.
+  // A non-existent name is an empty file, not an exception: this is asked at
+  // kernel start-up, and there is no reason to fail there.
   assert.equal(needsGpu('нет-такого'), false)
 })
 
-/* ------------------------------------------- поверх чего это собирается */
+/* ------------------------------------------- what it is built on top of */
 
 /*
- * Слой окружения один, и любая правка списка ставит его целиком заново: для
- * окружения с torch это три гигабайта колёс и девять минут за добавленный timm.
- * `# colloq: from base-gpu` переносит тяжёлое в общий слой — родитель
- * собирается один раз, дети за секунды. Пишется в том же виде, что и
- * `# colloq: gpu`, и так же остаётся для pip комментарием.
+ * An environment has one layer, and any edit of the list installs it all
+ * over again: for an environment with torch that is three gigabytes of
+ * wheels and nine minutes per added timm. `# colloq: from base-gpu` moves
+ * the heavy part into a shared layer — the parent is built once, the
+ * children in seconds. It is written in the same form as `# colloq: gpu`,
+ * and it stays a comment for pip in the same way.
  */
-test('директива в шапке называет родителя, а pip её не видит', () => {
+test('a directive in the header names the parent, and pip does not see it', () => {
   const source = '# нейросети\n# colloq: from base-gpu\ntransformers>=4.44\n'
   assert.equal(declaresParent(source), 'base-gpu')
   assert.deepEqual(parsePackages(source), ['transformers>=4.44'])
-  // Ни лишнего пакета в счёте, ни «Needs rebuild» на собранном образе.
+  // Neither an extra package in the count nor "Needs rebuild" on a built
+  // image.
   assert.equal(listChanged('transformers>=4.44\n', source), false)
 })
 
-test('пробелы и регистр директиву не ломают, а фраза о ней — не директива', () => {
+test('spaces and case do not break the directive, and a phrase about it is not a directive', () => {
   assert.equal(declaresParent('  #   colloq:  from   base-gpu  \n'), 'base-gpu')
   assert.equal(declaresParent('# Colloq: FROM base-gpu\n'), 'base-gpu')
   assert.equal(declaresParent('# colloq: from base-gpu и дальше своё\n'), null)
   assert.equal(declaresParent('# строится from base-gpu\n'), null)
 })
 
-test('родитель не назван — строимся поверх обычной базы, как раньше', () => {
+test('no parent named — we build on top of the ordinary base, as before', () => {
   assert.equal(declaresParent(''), null)
   assert.equal(declaresParent('# зрение\ntorch>=2.4\n'), null)
   assert.equal(declaresParent(readSource('cv')), null)
 })
 
-test('образцовые окружения репозитория сцеплены именно так', () => {
-  // Выпадет строка из gpu.txt — и «правка списка» снова станет девятью
-  // минутами, молча.
+test('the repository\'s model environments are chained exactly like this', () => {
+  // Should the line fall out of gpu.txt, "editing the list" will become nine
+  // minutes again, silently.
   assert.equal(declaresParent(readSource('gpu')), 'base-gpu')
   assert.deepEqual(buildChain('gpu'), ['base-gpu', 'gpu'])
   assert.deepEqual(buildChain('cv'), ['cv'])
 })
 
-/* --------------------------------------------------- порядок и отказы */
+/* ------------------------------------------------- order and refusals */
 
-/** Окружения, каких на диске нет: разбор цепочки от диска не зависит. */
+/** Environments that do not exist on disk: chain parsing does not depend on the disk. */
 function reader(files: Record<string, string>) {
   return (name: string): string | null => files[name] ?? null
 }
 
-test('цепочка собирается от корня к листу', () => {
+test('a chain is built from the root to the leaf', () => {
   const read = reader({
     'base-gpu': '# colloq: gpu\ntorch>=2.4\n',
     gpu: '# colloq: from base-gpu\ntransformers>=4.44\n',
@@ -180,14 +185,14 @@ test('цепочка собирается от корня к листу', () => 
   assert.deepEqual(buildChain('base-gpu', read), ['base-gpu'])
 })
 
-test('петля — отказ, а не бесконечная сборка', () => {
+test('a loop is a refusal, not an endless build', () => {
   const read = reader({ a: '# colloq: from b\n', b: '# colloq: from a\n' })
   assert.throws(() => buildChain('a', read), /по кругу/)
-  // И самый короткий круг тоже: файл, назвавший родителем себя.
+  // And the shortest loop too: a file that named itself as its parent.
   assert.throws(() => buildChain('s', reader({ s: '# colloq: from s\n' })), /по кругу/)
 })
 
-test('слишком длинная цепочка — отказ, а не сборка на девять слоёв', () => {
+test('a chain that is too long is a refusal, not a build of nine layers', () => {
   const files: Record<string, string> = {}
   const last = MAX_INHERITANCE + 1
   for (let i = 0; i <= last; i += 1) files[`e${i}`] = i === 0 ? '' : `# colloq: from e${i - 1}\n`
@@ -195,17 +200,18 @@ test('слишком длинная цепочка — отказ, а не сб�
   assert.throws(() => buildChain(`e${last}`, reader(files)), /длиннее/)
 })
 
-test('неизвестный родитель назван вслух, и до docker', () => {
+test('an unknown parent is named out loud, and before docker', () => {
   const read = reader({ gpu: '# colloq: from base-gpu\n' })
-  // Девять минут, чтобы упасть на `COPY environments/base-gpu.txt`, — та же
-  // ошибка, только дороже.
+  // Nine minutes to fail on `COPY environments/base-gpu.txt` is the same
+  // error, only more expensive.
   assert.throws(() => buildChain('gpu', read), /«base-gpu»/)
   assert.throws(() => buildChain('missing', read), /нет окружения/)
-  // Имя уходит и в путь, и в тег образа: не имя — не родитель.
+  // The name goes both into the path and into the image tag: not a name —
+  // not a parent.
   assert.throws(() => buildChain('x', reader({ x: '# colloq: from ../etc\n' })), /не может быть/)
 })
 
-test('признак gpu наследуется вместе с колёсами под CUDA', () => {
+test('the gpu flag is inherited together with the CUDA wheels', () => {
   const read = reader({
     'base-gpu': '# colloq: gpu\ntorch>=2.4\n',
     gpu: '# colloq: from base-gpu\ntransformers>=4.44\n',
@@ -213,40 +219,42 @@ test('признак gpu наследуется вместе с колёсами
     cpu: '# colloq: from base\npillow\n',
     base: '',
   })
-  // Иначе комната получит образ с CUDA-колёсами и без устройства — то есть
-  // упадёт на первом `.cuda()`, а панель будет молчать.
+  // Otherwise the room gets an image with CUDA wheels and no device — that
+  // is, it fails on the first `.cuda()`, while the panel stays silent.
   assert.equal(needsGpu('gpu', read), true)
   assert.equal(needsGpu('vlm', read), true)
   assert.equal(needsGpu('cpu', read), false)
 })
 
-test('своя директива у ребёнка тоже считается', () => {
+test('a child\'s own directive counts too', () => {
   const read = reader({ base: '', own: '# colloq: from base\n# colloq: gpu\n' })
   assert.equal(needsGpu('own', read), true)
 })
 
-test('сломанная цепочка не отнимает срез у того, кто его просит', () => {
-  // Об этом скажет сборка. Промолчать здесь — значит поднять комнату без
-  // устройства и узнать об этом посреди пары.
+test('a broken chain does not take the slice away from whoever asks for it', () => {
+  // The build will say so. Staying silent here means bringing up a room
+  // without a device and finding out in the middle of a class.
   assert.equal(needsGpu('gpu', reader({ gpu: '# colloq: gpu\n# colloq: from нет\n' })), true)
 })
 
-/* --------------------------------------------------- чем это собирается */
+/* ------------------------------------------------------- what builds it */
 
 /*
- * Настоящего docker в сюите нет (см. `_env.mts`), поэтому проверяется то, что
- * от него не зависит: команда, которую мы для него собираем, — как в gpu.test.
+ * There is no real docker in the suite (see `_env.mts`), so what is checked
+ * is what does not depend on it: the command we build for it — as in
+ * gpu.test.
  *
- * Путей два, и это не украшение. На машине с репозиторием собирает compose: он
- * подхватывает dev-override, без которого пересобранное общее ядро возвращается
- * без проброшенного 8888. В контейнере app compose нет вовсе — есть каталог
- * kernel и сокет, и этого достаточно.
+ * There are two paths, and that is not decoration. On a machine with the
+ * repository compose builds: it picks up the dev override, without which a
+ * rebuilt shared kernel comes back without the forwarded 8888. In the app
+ * container there is no compose at all — there is the kernel directory and
+ * the socket, and that is enough.
  */
 
-/** Путь к каталогу kernel в этих проверках: сам он существовать не обязан. */
+/** The path to the kernel directory in these checks: it does not have to exist. */
 const KERNEL = '/srv/colloq/kernel'
 
-test('прямая сборка обходится каталогом kernel — ни compose, ни репозитория', () => {
+test('a direct build makes do with the kernel directory — neither compose nor the repository', () => {
   const { args, env } = buildCommand({ via: 'direct' }, 'cv', null, KERNEL)
   assert.deepEqual(args, [
     'build',
@@ -258,21 +266,22 @@ test('прямая сборка обходится каталогом kernel —
     'colloq-kernel:cv',
     '/srv/colloq/kernel',
   ])
-  // Контекст читает клиент и отдаёт демону, поэтому демон на хосте — не помеха.
-  // А `docker compose` отсюда падал бы «no configuration file provided», и
-  // ровно из-за этого панель гасила Build под `make up`.
+  // The context is read by the client and handed to the daemon, so a daemon
+  // on the host is no obstacle. While `docker compose` would fail from here
+  // with "no configuration file provided", and that is exactly why the panel
+  // dimmed Build under `make up`.
   assert.ok(!args.includes('compose'))
   assert.equal(env.KERNEL_ENV, undefined)
 })
 
-test('без родителя аргумент PARENT не передаётся вовсе', () => {
-  // Умолчание — в самом Dockerfile: назови базовый образ ещё и здесь, и
-  // однажды его поднимут там, а тут забудут.
+test('without a parent the PARENT argument is not passed at all', () => {
+  // The default is in the Dockerfile itself: name the base image here as
+  // well, and one day it will be raised there and forgotten here.
   const { args } = buildCommand({ via: 'direct' }, 'base', null, KERNEL)
   assert.ok(!args.some((arg) => arg.startsWith('PARENT=')))
 })
 
-test('через compose переменные, а не флаги: аргументы подставляет он сам', () => {
+test('via compose, variables rather than flags: it substitutes the arguments itself', () => {
   const files = ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
   const { args, env } = buildCommand({ via: 'compose', files }, 'gpu', 'colloq-kernel:base-gpu')
   assert.deepEqual(args, ['compose', ...files, 'build', 'kernel'])
@@ -280,7 +289,7 @@ test('через compose переменные, а не флаги: аргуме�
   assert.equal(env.KERNEL_PARENT, 'colloq-kernel:base-gpu')
 })
 
-test('в прямом пути каждый слой встаёт поверх образа предыдущего', () => {
+test('on the direct path every layer stands on top of the previous one\'s image', () => {
   const read = reader({
     'base-gpu': '# colloq: gpu\ntorch>=2.4\n',
     gpu: '# colloq: from base-gpu\ntransformers>=4.44\n',
@@ -298,21 +307,21 @@ test('в прямом пути каждый слой встаёт поверх �
   assert.ok(commands[0]?.includes('--build-arg KERNEL_ENV=base-gpu'))
   assert.ok(commands[0]?.includes('-t colloq-kernel:base-gpu'))
   assert.ok(!commands[0]?.includes('PARENT='))
-  // Ради этого наследование и заведено: torch остаётся в родителе, и правка
-  // листа стоит секунды, а не девять минут.
+  // This is what inheritance exists for: torch stays in the parent, and
+  // editing a leaf costs seconds, not nine minutes.
   assert.ok(commands[1]?.includes('--build-arg PARENT=colloq-kernel:base-gpu'))
   assert.ok(commands[1]?.includes('-t colloq-kernel:gpu'))
 })
 
-/* ----------------------------------------- что здесь вообще можно сделать */
+/* ------------------------------------------- what can be done here at all */
 
 /*
- * Собрать и назначить умолчанием — два разных вопроса, и одна причина на двоих
- * гасила обе кнопки: под `make up` окружение нельзя было собрать вовсе, только
- * зайти по ssh.
+ * Building and making default are two different questions, and one reason
+ * shared by both dimmed both buttons: under `make up` an environment could
+ * not be built at all, only by going in over ssh.
  */
 
-test('репозиторий рядом — можно и собрать, и назначить умолчанием', () => {
+test('the repository is next door — one can both build and make default', () => {
   const can = abilities({ docker: true, context: true, repository: true, home: false })
   assert.deepEqual(
     [can.canBuild, can.cannotBuildReason, can.canSetDefault, can.cannotSetDefaultReason],
@@ -320,27 +329,28 @@ test('репозиторий рядом — можно и собрать, и н�
   )
 })
 
-test('в контейнере только kernel: собрать можно, умолчание — на хосте', () => {
-  // Ровно `make up`: примонтированы kernel и сокет, а docker-compose.yml и .env
-  // остались снаружи. Писать .env внутрь контейнера — врать: правка доживёт до
-  // первой пересборки, пока compose читает файл на хосте.
+test('in a container there is only kernel: building is possible, the default is on the host', () => {
+  // Exactly `make up`: kernel and the socket are mounted, while
+  // docker-compose.yml and .env stayed outside. Writing .env inside the
+  // container is lying: the edit lives until the first rebuild, while
+  // compose reads the file on the host.
   const can = abilities({ docker: true, context: true, repository: false, home: false })
   assert.equal(can.canBuild, true)
   assert.equal(can.cannotBuildReason, null)
   assert.equal(can.canSetDefault, false)
-  // Отказ называет выполнимое действие, а не «всё сломано».
+  // The refusal names a doable action, not "everything is broken".
   assert.match(can.cannotSetDefaultReason ?? '', /make env-use/)
 })
 
-test('нет и каталога kernel — отказ в сборке называет монт', () => {
+test('there is no kernel directory either — the build refusal names the mount', () => {
   const can = abilities({ docker: true, context: false, repository: false, home: false })
   assert.equal(can.canBuild, false)
   assert.match(can.cannotBuildReason ?? '', /kernel/)
-  // И умолчание не обещает сборку, которой здесь тоже нет.
+  // And the default does not promise a build that is not here either.
   assert.ok(!/works from here/.test(can.cannotSetDefaultReason ?? ''))
 })
 
-test('docker не виден — нельзя ничего, и причина у обеих кнопок одна', () => {
+test('docker is not visible — nothing is possible, and both buttons have the same reason', () => {
   const can = abilities({ docker: false, context: true, repository: true, home: false })
   assert.equal(can.canBuild, false)
   assert.equal(can.canSetDefault, false)
@@ -378,85 +388,89 @@ test('a name is short enough to read in a table row', () => {
   assert.ok(!ENVIRONMENT_NAME.test('a'.repeat(33)))
 })
 
-/* ------------------------------------------- собрана ли она на самом деле */
+/* ----------------------------------------------------- is it really built */
 
 /*
- * «Собрана или нет» решалось сравнением времени правки файла со временем
- * сборки образа — то есть отвечало на другой вопрос: не изменился ли список, а
- * трогали ли файл. Открыть список и сохранить не меняя, или просто иметь файл
- * новее образа, собранного через docker compose, — этого хватало, чтобы на
- * рабочей среде повисло «Needs rebuild» рядом с «216 MB · built 5 days ago».
+ * "Built or not" used to be decided by comparing the file's modification
+ * time with the image's build time — that is, it answered a different
+ * question: not whether the list changed, but whether the file was touched.
+ * Opening the list and saving without changes, or simply having a file
+ * newer than an image built through docker compose, was enough for "Needs
+ * rebuild" to hang in production next to "216 MB · built 5 days ago".
  */
-test('сохранение без изменений — не изменение', () => {
+test('saving without changes is not a change', () => {
   assert.equal(listChanged('torch>=2.4\ntimm>=1.0\n', 'torch>=2.4\ntimm>=1.0\n'), false)
 })
 
-test('комментарий и пустая строка не меняют того, что поставит pip', () => {
+test('a comment and a blank line do not change what pip will install', () => {
   assert.equal(
     listChanged('torch>=2.4\ntimm>=1.0\n', '# зрение\n\ntorch>=2.4\n\ntimm>=1.0\n'),
     false,
   )
 })
 
-test('тот же список в другом порядке — тот же список', () => {
+test('the same list in a different order is the same list', () => {
   assert.equal(listChanged('torch>=2.4\ntimm>=1.0\n', 'timm>=1.0\ntorch>=2.4\n'), false)
 })
 
-test('новый пакет — изменение', () => {
+test('a new package is a change', () => {
   assert.equal(listChanged('torch>=2.4\n', 'torch>=2.4\nnumpy\n'), true)
 })
 
-test('другая версия того же пакета — изменение', () => {
+test('another version of the same package is a change', () => {
   assert.equal(listChanged('torch>=2.4\n', 'torch>=2.5\n'), true)
 })
 
-test('убранный пакет — изменение', () => {
+test('a removed package is a change', () => {
   assert.equal(listChanged('torch>=2.4\ntimm>=1.0\n', 'torch>=2.4\n'), true)
 })
 
-/* ------------------------------------------ какое окружение по умолчанию */
+/* -------------------------------------- which environment is the default */
 
 /*
- * `.env` — файл хоста, и в образе app его нет. Без запасного пути панель под
- * `make up` всегда отвечала «base», а новый семинар записывался на base при
- * собранном ядре cv: имя окружения у семинара решает, из какого образа
- * поднимется его контейнер, когда сервер увидит docker.
+ * `.env` is a host file, and the app image does not have it. Without a
+ * fallback the panel under `make up` always answered "base", and a new
+ * seminar was recorded on base with the cv kernel built: a seminar's
+ * environment name decides which image its container comes up from once the
+ * server sees docker.
  */
-test('строка .env решает, пока она есть', () => {
+test('the .env line decides while it exists', () => {
   assert.equal(pickActiveName('PORT=3000\nKERNEL_ENV=cv\n', 'base'), 'cv')
 })
 
-test('последняя строка — та, что дописал make env-use', () => {
+test('the last line is the one make env-use appended', () => {
   assert.equal(pickActiveName('KERNEL_ENV=base\nKERNEL_ENV=nlp\n', undefined), 'nlp')
 })
 
-test('без файла берётся то, что compose передал контейнеру', () => {
+test('without the file, what compose passed to the container is taken', () => {
   assert.equal(pickActiveName(null, 'cv'), 'cv')
 })
 
-test('в файле нет строки — тоже переменная окружения', () => {
+test('no line in the file — the environment variable too', () => {
   assert.equal(pickActiveName('PORT=3000\n', 'cv'), 'cv')
 })
 
-test('нет ни файла, ни переменной — base', () => {
+test('neither a file nor a variable — base', () => {
   assert.equal(pickActiveName(null, undefined), 'base')
   assert.equal(pickActiveName('KERNEL_ENV=\n', ''), 'base')
 })
 
-test('имя, которым не может быть ни файл, ни тег, не считается', () => {
-  // Оно уходит в путь и в имя образа, поэтому проверяется здесь, а не там.
+test('a name that can be neither a file nor a tag does not count', () => {
+  // It goes into a path and an image name, so it is checked here, not there.
   assert.equal(pickActiveName('KERNEL_ENV=../etc\n', undefined), 'base')
   assert.equal(pickActiveName('KERNEL_ENV=CV\n', 'cv'), 'cv')
 })
 
-/* ------------------------------------------- создание против перезаписи */
+/* ------------------------------------------ creating versus overwriting */
 
 /**
- * PUT одинаков для «завёл окружение» и «поправил список», а намерения разные.
+ * PUT is the same for "created an environment" and "edited the list", while
+ * the intentions differ.
  *
- * Форма «New environment» шлёт тот же запрос, и на занятом имени она молча
- * затирала чужой список пакетов целиком — истории у этих файлов нет, вернуть
- * нечем. `If-None-Match: *` — это «только если такого ещё нет».
+ * The "New environment" form sends the same request, and on a taken name it
+ * silently overwrote someone else's package list wholesale — these files
+ * have no history, there is nothing to restore from. `If-None-Match: *`
+ * means "only if there is no such thing yet".
  */
 const app = express()
 app.use(express.json())
@@ -474,10 +488,12 @@ before(async () => {
 after(() => server?.close())
 
 /**
- * issueStaffCookie пишет в express-овый Response; это самое малое, что им является.
+ * issueStaffCookie writes into an express Response; this is the least thing
+ * that is one.
  *
- * Преподаватель заводится один на всю сюиту: адрес уникален индексом, и второй
- * вызов с тем же вернул бы null, а не второе печенье.
+ * The teacher is created once for the whole suite: the address is unique by
+ * index, and a second call with the same one would return null, not a
+ * second cookie.
  */
 let cookie = ''
 function staffCookie(): string {
@@ -493,7 +509,7 @@ function staffCookie(): string {
   return cookie
 }
 
-test('создание по занятому имени отказывает, а не переписывает список', async () => {
+test('creating on a taken name refuses instead of rewriting the list', async () => {
   const before = readSource('base')
   const res = await fetch(`${base}/api/admin/environments/base`, {
     method: 'PUT',
@@ -507,50 +523,54 @@ test('создание по занятому имени отказывает, а
   assert.equal(res.status, 409)
   const body = (await res.json()) as { reason?: string }
   assert.equal(body.reason, 'exists')
-  // Главное: файл не тронут — иначе отказ был бы вежливостью после потери.
+  // The main thing: the file is untouched — otherwise the refusal would be
+  // politeness after the loss.
   assert.equal(readSource('base'), before)
 })
 
-/* ------------------------------- своё ядро у комнаты или общее на всех */
+/* ------------------------ its own kernel per room or one shared by all */
 
 /**
- * Признак едет вместе со списком, потому что показывают его там же.
+ * The flag travels together with the list, because it is shown in the same
+ * place.
  *
- * Панель обещала контейнер на семинар безусловно, а на установке без docker или
- * с KERNEL_ISOLATION=off это неправда сразу в двух местах: комнаты видят файлы
- * друг друга, и «Make default» действительно забирает переменные у открытых
- * семинаров. Знает об этом только сервер — значит, он и говорит.
+ * The panel promised a container per seminar unconditionally, while on an
+ * install without docker or with KERNEL_ISOLATION=off that is untrue in two
+ * places at once: rooms see each other's files, and "Make default" really
+ * takes variables away from open seminars. Only the server knows this — so
+ * it is the one who says it.
  */
-test('список окружений не предлагает общий production runtime', async () => {
+test('the environment list does not offer a shared production runtime', async () => {
   const res = await fetch(`${base}/api/admin/environments`, { headers: { cookie: staffCookie() } })
   assert.equal(res.status, 200)
   const body = (await res.json()) as { environments?: unknown; shared?: unknown }
   assert.ok(Array.isArray(body.environments))
-  // Булево, а не «поля нет»: `undefined` панель читает как «всё в порядке».
+  // A boolean, not "no field": the panel reads `undefined` as "all is well".
   assert.equal(typeof body.shared, 'boolean')
   // Test-only Jupyter bypass is not a production shared-runtime capability.
   assert.equal(body.shared, false)
 })
 
-/* ------------------------------------ .env.example против docker-compose */
+/* ------------------------------------ .env.example versus docker-compose */
 
 /**
- * Каждая строка из .env.example доезжает до контейнера app.
+ * Every line from .env.example reaches the app container.
  *
- * compose читает .env только для подстановки: переменная, не названная в
- * `environment:`, до сервера внутри контейнера не доходит вовсе. Так
- * `MAX_SESSION_MB=200` и `AI_REASONING=true` молча не работали под `make up`,
- * хотя и README, и .env.example их обещали, а `make run` те же строки
- * применял — два режима одного инстанса вели себя по-разному, и заметить это
- * можно было только по загруженному в комнату лишнему гигабайту.
+ * compose reads .env only for substitution: a variable not named in
+ * `environment:` never reaches the server inside the container at all. This
+ * is how `MAX_SESSION_MB=200` and `AI_REASONING=true` silently did not work
+ * under `make up`, even though both README and .env.example promised them,
+ * while `make run` applied the same lines — two modes of one instance
+ * behaved differently, and it could only be noticed by an extra gigabyte
+ * loaded into a room.
  */
-test('переменная, обещанная в .env.example, доезжает до контейнера', () => {
+test('a variable promised in .env.example reaches the container', () => {
   const root = fileURLToPath(new URL('..', import.meta.url))
   const documented = readFileSync(path.join(root, '.env.example'), 'utf8')
     .split('\n')
     .filter((line) => /^[A-Z][A-Z0-9_]*=/.test(line))
     .map((line) => line.slice(0, line.indexOf('=')))
-  assert.ok(documented.length > 10, 'разбор .env.example ничего не нашёл')
+  assert.ok(documented.length > 10, 'parsing .env.example found nothing')
 
   const compose = readFileSync(path.join(root, 'docker-compose.yml'), 'utf8')
   const app = compose.slice(compose.indexOf('\n  app:'), compose.indexOf('\n  kernel:'))
@@ -578,27 +598,29 @@ test('переменная, обещанная в .env.example, доезжает
   }
 })
 
-/* ------------------------------------------- два каталога окружений */
+/* -------------------------------------- two environment directories */
 
 /**
- * Окружения живут в двух местах, и это не симметрия, а необходимость.
+ * Environments live in two places, and this is not symmetry but necessity.
  *
- * Привезённые с продуктом (base, base-gpu, cv, gpu) лежат рядом с приложением;
- * у установленного через pip colloq это site-packages — каталог перезаписывает
- * следующий `pip install -U`, а на многих машинах в него и не пишется вовсе.
- * Свои человек заводит `colloq env new`, и они ложатся в каталог состояния,
- * рядом с .env и data/.
+ * The ones shipped with the product (base, base-gpu, cv, gpu) lie next to
+ * the application; for colloq installed via pip that is site-packages — a
+ * directory the next `pip install -U` overwrites, and on many machines it
+ * is not writable at all. One's own a person creates with `colloq env new`,
+ * and they go into the state directory, next to .env and data/.
  *
- * Панель знала об одном каталоге из двух, и на одном экране противоречила сама
- * себе: заведённое человеком окружение не показывалось в списке, а активным
- * панель называла именно его имя. Заведённое ИЗ панели уезжало в site-packages
- * — отказ прав или файл, исчезающий на первом обновлении.
+ * The panel knew about one directory of the two, and on one screen
+ * contradicted itself: an environment the person created was not shown in
+ * the list, while the panel named exactly its name as the active one. One
+ * created FROM the panel went into site-packages — a permission refusal or
+ * a file that vanishes at the first update.
  *
- * Здесь проверяется вся модель: чтение объединением, запись только в своё,
- * удаление только своего и контекст `docker build`, который видит оба.
+ * The whole model is checked here: reading as a union, writing only into
+ * one's own, deleting only one's own, and the `docker build` context that
+ * sees both.
  */
 
-/** Каталог состояния на один тест: переменная — то, чем его называет супервизор. */
+/** A state directory for one test: the variable is what the supervisor calls it. */
 async function withHome<T>(run: (home: string) => Promise<T> | T): Promise<T> {
   const home = mkdtempSync(path.join(tmpdir(), 'colloq-home-'))
   const before = process.env.COLLOQ_HOME
@@ -612,11 +634,13 @@ async function withHome<T>(run: (home: string) => Promise<T> | T): Promise<T> {
   }
 }
 
-test('свой каталог считается от состояния, а в репозитории совпадает с привезённым', () => {
-  // Без переменной сервер подняли не супервизором — каталог один, как было.
+test('one\'s own directory is derived from the state, and in the repository it coincides with the shipped one', () => {
+  // Without the variable the server was not brought up by the supervisor —
+  // one directory, as before.
   assert.equal(ownEnvDirOf('/app', null), path.join('/app', 'kernel', 'environments'))
-  // Состояние и есть приложение (репозиторий, клон, контейнер под make up):
-  // второй каталог рядом увёл бы файл из-под make env-list и из-под сборки.
+  // The state is the application itself (a repository, a clone, a container
+  // under make up): a second directory next to it would take the file away
+  // from under make env-list and from under the build.
   assert.equal(ownEnvDirOf('/app', '/app'), path.join('/app', 'kernel', 'environments'))
   assert.equal(
     ownEnvDirOf('/app', '/home/ada/.colloq'),
@@ -624,59 +648,63 @@ test('свой каталог считается от состояния, а в 
   )
 })
 
-test('список — объединение двух каталогов, и переопределённое имя в нём одно', async () => {
+test('the list is a union of two directories, and an overridden name appears in it once', async () => {
   await withHome(async () => {
     writeSource('own-nlp', 'transformers\n')
-    // Своё окружение с именем привезённого — то же самое окружение,
-    // переопределённое: в списке панели ему полагается одна строка.
+    // One's own environment with a shipped one's name is the same
+    // environment, overridden: it gets one row in the panel list.
     writeSource('cv', '# мой курс\ntimm\n')
     const names = listNames()
-    assert.ok(names.includes('own-nlp'), `своего окружения нет в списке: ${names.join(', ')}`)
-    assert.ok(names.includes('base'), 'привезённое окружение пропало из списка')
+    assert.ok(names.includes('own-nlp'), `the own environment is not in the list: ${names.join(', ')}`)
+    assert.ok(names.includes('base'), 'a shipped environment disappeared from the list')
     assert.equal(names.filter((name) => name === 'cv').length, 1)
   })
 })
 
-test('запись идёт в свой каталог, а привезённый файл остаётся нетронутым', async () => {
+test('writing goes into one\'s own directory, and the shipped file stays untouched', async () => {
   const shipped = readFileSync(path.join(ENV_DIR, 'cv.txt'), 'utf8')
   await withHome(async (home) => {
     writeSource('cv', '# мой курс\ntimm\n')
-    // Своё перебивает привезённое при чтении — человек вправе переопределить
-    // cv под свой курс.
+    // One's own overrides the shipped one on reading — a person is entitled
+    // to override cv for their course.
     assert.equal(readSource('cv'), '# мой курс\ntimm\n')
     assert.equal(
       readFileSync(path.join(home, 'environments', 'cv.txt'), 'utf8'),
       '# мой курс\ntimm\n',
     )
   })
-  // Главное: каталог приложения не тронут. Раньше запись шла ровно туда.
+  // The main thing: the application directory is untouched. Writing used to
+  // go exactly there.
   assert.equal(readFileSync(path.join(ENV_DIR, 'cv.txt'), 'utf8'), shipped)
 })
 
-test('привезённое окружение не удаляется, и отказ говорит, что делать вместо', async () => {
+test('a shipped environment is not deleted, and the refusal says what to do instead', async () => {
   await withHome(async () => {
     assert.equal(isShipped('cv'), true)
     assert.throws(() => removeEnvironment('cv'), /colloq/)
     assert.equal(existsSync(path.join(ENV_DIR, 'cv.txt')), true)
-    // Своя копия — уже не привезённое: её и удаляют.
+    // One's own copy is no longer shipped: that is what gets deleted.
     writeSource('cv', 'timm\n')
     assert.equal(isShipped('cv'), false)
     removeEnvironment('cv')
-    // Под тем же именем снова привезённое: удалили копию, а не окружение.
+    // Under the same name there is the shipped one again: the copy was
+    // deleted, not the environment.
     assert.equal(readSource('cv'), readFileSync(path.join(ENV_DIR, 'cv.txt'), 'utf8'))
   })
 })
 
-test('контекст docker build видит оба каталога, и своё в нём сильнее', async () => {
+test('the docker build context sees both directories, and one\'s own is stronger in it', async () => {
   await withHome(async (home) => {
     writeSource('own-nlp', '# colloq: from base\ntransformers\n')
     writeSource('cv', '# мой курс\ntimm\n')
     const context = buildContext('own-nlp')
-    // Склейка лежит в состоянии: в каталог приложения писать нечем.
-    assert.ok(context.startsWith(home), `контекст собран не в состоянии: ${context}`)
+    // The merge lies in the state: there is no way to write into the
+    // application directory.
+    assert.ok(context.startsWith(home), `the context was not assembled in the state: ${context}`)
     assert.equal(existsSync(path.join(context, 'Dockerfile')), true)
     assert.equal(existsSync(path.join(context, 'requirements.txt')), true)
-    // Привезённое на месте — без base цепочка не собирается вовсе.
+    // The shipped ones are in place — without base the chain does not build
+    // at all.
     assert.equal(existsSync(path.join(context, 'environments', 'base.txt')), true)
     assert.equal(
       readFileSync(path.join(context, 'environments', 'own-nlp.txt'), 'utf8'),
@@ -687,45 +715,47 @@ test('контекст docker build видит оба каталога, и св�
       '# мой курс\ntimm\n',
     )
   })
-  // Без переменной склеивать нечего: контекст — сам каталог ядра, как раньше.
+  // Without the variable there is nothing to merge: the context is the
+  // kernel directory itself, as before.
   assert.equal(buildContext('cv'), path.dirname(ENV_DIR))
 })
 
-test('умолчание читается и пишется в .env каталога состояния', async () => {
+test('the default is read and written in the state directory\'s .env', async () => {
   await withHome(async (home) => {
     const file = path.join(home, '.env')
     writeFileSync(file, 'PORT=3000\nKERNEL_ENV=own-nlp\n')
-    // Тот же файл правит `colloq env use` и перечитывает следующий запуск.
-    // Панель, смотревшая в .env каталога приложения, у установленного colloq
-    // называла активным base при любом выборе человека.
+    // The same file is edited by `colloq env use` and reread by the next
+    // start. A panel that looked into the application directory's .env named
+    // base as active for installed colloq whatever the person chose.
     assert.equal(activeName(), 'own-nlp')
     setActiveName('base')
     const written = readFileSync(file, 'utf8')
     assert.match(written, /KERNEL_ENV=base/)
-    // Остальные строки на месте: .env — файл человека, а не наш.
+    // The other lines are in place: .env is the person's file, not ours.
     assert.match(written, /PORT=3000/)
   })
 })
 
-test('у установленного colloq умолчание назначается, хотя compose рядом нет', () => {
-  // Запрет был про контейнер: там KERNEL_ENV читает compose с ХОСТА, и запись
-  // внутрь — ложь, которая доживёт до первой пересборки. У установленного
-  // colloq никакого хоста снаружи нет: .env лежит в каталоге состояния, и тот
-  // же файл читает следующий colloq run. Гасить кнопку значило посылать
-  // преподавателя в make, которого у него тоже нет.
+test('for installed colloq the default can be set even though there is no compose nearby', () => {
+  // The ban was about the container: there KERNEL_ENV is read by compose
+  // from the HOST, and writing inside is a lie that lives until the first
+  // rebuild. Installed colloq has no host outside: .env lies in the state
+  // directory, and the same file is read by the next colloq run. Dimming the
+  // button meant sending the teacher to make, which they do not have either.
   const can = abilities({ docker: true, context: true, repository: false, home: true })
   assert.equal(can.canSetDefault, true)
   assert.equal(can.cannotSetDefaultReason, null)
   assert.equal(can.canBuild, true)
-  // А в контейнере — по-прежнему нельзя, и причина прежняя.
+  // While in a container it is still not allowed, and the reason is the
+  // same.
   const inContainer = abilities({ docker: true, context: true, repository: false, home: false })
   assert.equal(inContainer.canSetDefault, false)
 })
 
-test('панель отказывает на удалении привезённого, а свою копию удаляет', async () => {
+test('the panel refuses to delete a shipped environment and deletes one\'s own copy', async () => {
   await withHome(async (home) => {
-    // Активное окружение защищено отдельной веткой; чтобы проверялась именно
-    // эта, умолчание назначается явно.
+    // The active environment is protected by a separate branch; so that this
+    // one is what gets checked, the default is set explicitly.
     writeFileSync(path.join(home, '.env'), 'KERNEL_ENV=base\n')
     const shipped = readSource('cv')
     const refused = await fetch(`${base}/api/admin/environments/cv`, {
@@ -735,8 +765,8 @@ test('панель отказывает на удалении привезённ
     assert.equal(refused.status, 409)
     const body = (await refused.json()) as { reason?: string; error?: string }
     assert.equal(body.reason, 'protected')
-    // Отказ, а не тихое «ничего не произошло» и не голое «internal error»
-    // от EACCES в site-packages.
+    // A refusal, not a quiet "nothing happened" and not a bare "internal
+    // error" from EACCES in site-packages.
     assert.match(body.error ?? '', /colloq/)
     assert.equal(readSource('cv'), shipped)
 

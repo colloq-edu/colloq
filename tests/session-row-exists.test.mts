@@ -1,18 +1,20 @@
 /**
- * «Строка комнаты ещё есть?» — вопрос, на который отвечает база, а не память.
+ * "Does the room's row still exist?" — a question answered by the database,
+ * not by memory.
  *
- * Строка семинара теперь отвечает из кэша (`db.ts` · roomCache): рукопожатий у
- * зала на пятьсот человек — тысяча за секунду, и каждое спрашивало одно и то же.
- * Но у того же вопроса есть второй, редкий читатель — сброс снимка документа
- * (`collab/persistence.ts`): он не пишет тетрадь комнаты на диск, если комнаты
- * больше нет, и это последняя линия обороны против семинара, воскресшего через
- * несколько секунд после удаления. Ответь ему кэш — и защита держалась бы не на
- * базе, а на том, что каждый путь удаления не забыл позвать `forgetRoom`.
+ * The seminar row is now answered from a cache (`db.ts` · roomCache): a hall
+ * of five hundred people makes a thousand handshakes a second, and each one
+ * asked the same thing. But the same question has a second, rare reader — the
+ * document snapshot flush (`collab/persistence.ts`): it does not write the
+ * room's notebook to disk if the room is gone, and that is the last line of
+ * defence against a seminar resurrected a few seconds after deletion. If the
+ * cache answered it, the protection would rest not on the database but on
+ * every deletion path remembering to call `forgetRoom`.
  *
- * Поэтому у db.ts две двери на один вопрос, и здесь закреплено, чем они
- * отличаются: `getSession` быстрый и помнит, `sessionRowExists` медленный (один
- * SELECT по первичному ключу раз в несколько секунд на комнату) и не помнит
- * ничего.
+ * So db.ts has two doors for one question, and here it is pinned down how
+ * they differ: `getSession` is fast and remembers, `sessionRowExists` is slow
+ * (one SELECT by primary key every few seconds per room) and remembers
+ * nothing.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -20,33 +22,35 @@ import assert from 'node:assert/strict'
 import { createSession, db, forgetRoom, getSession, sessionRowExists } from '../server/src/db.js'
 
 /**
- * Запись мимо этого модуля — та самая забытая инвалидация, только устроенная
- * нарочно: продуктовый путь удаления зовёт `forgetRules` и через неё
- * `forgetRoom`, а этот тест проверяет, что будет, когда кто-нибудь однажды
- * этого не сделает.
+ * A write that bypasses this module — the very forgotten invalidation, only
+ * arranged on purpose: the product's deletion path calls `forgetRules` and
+ * through it `forgetRoom`, and this test checks what happens when someone one
+ * day does not.
  */
 const deleteBehindTheBack = db.prepare('DELETE FROM sessions WHERE id = ?')
 
-test('о комнате, которой никогда не было, отвечает «нет»', () => {
+test('answers "no" about a room that never existed', () => {
   assert.equal(sessionRowExists('никогда-не-заводили'), false)
 })
 
-test('строку снесли мимо кэша: память ещё помнит комнату, база уже нет', () => {
+test('the row was deleted behind the cache: memory still remembers the room, the database does not', () => {
   const id = 'row-exists-room'
   createSession(id, 'Комната', null)
   assert.equal(sessionRowExists(id), true)
-  // Тот же вопрос через кэш — чтобы в нём наверняка лежала эта комната.
+  // The same question through the cache — so that this room is sure to be in
+  // it.
   assert.equal(getSession(id)?.name, 'Комната')
 
   deleteBehindTheBack.run(id)
 
-  assert.equal(sessionRowExists(id), false, 'ответ приехал из памяти, а не из базы')
+  assert.equal(sessionRowExists(id), false, 'the answer came from memory, not from the database')
   assert.ok(
     getSession(id),
-    'кэш вдруг узнал об удалении сам — тогда этот тест проверяет не то, что нужно',
+    'the cache suddenly learned about the deletion by itself — then this test checks the wrong thing',
   )
 
-  // А продуктовый путь удаления сходится с базой: он забывает комнату целиком.
+  // And the product's deletion path agrees with the database: it forgets the
+  // room entirely.
   forgetRoom(id)
   assert.equal(getSession(id), null)
   assert.equal(sessionRowExists(id), false)

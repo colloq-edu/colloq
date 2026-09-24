@@ -1,104 +1,113 @@
 import { createHash } from 'node:crypto'
 
 /**
- * Справка о том, чего в ядре ещё нет: сигнатура, прочитанная jedi ИЗ ИСХОДНИКОВ.
+ * Help for what the kernel does not have yet: a signature jedi read FROM THE
+ * SOURCES.
  *
- * `inspect_request` отвечает по ПРОСТРАНСТВУ ИМЁН: он смотрит на живой объект,
- * и пока ячейку `import seaborn as sns` не запустили, `sns.lmplot` для него —
- * несуществующее имя. Отсюда половина жалоб «справка не всегда появляется»:
- * тетрадь открыли, до ячейки с импортами ещё не дошли, а сигнатуру хочется
- * посмотреть именно сейчас — когда строку пишут, а не когда её уже написали.
+ * `inspect_request` answers from the NAMESPACE: it looks at a live object, and
+ * until the `import seaborn as sns` cell has been run, `sns.lmplot` is a name
+ * that does not exist for it. Hence half the complaints that "help does not
+ * always appear": the notebook was opened, the cell with the imports has not
+ * been reached yet, and the signature is wanted right now, while the line is
+ * being written, not after it has been written.
  *
- * Второй путь отвечает на тот же вопрос статически. jedi стоит в каждом ядре —
- * он приезжает вместе с IPython, и это тот же jedi, которым ipykernel отвечает
- * на `complete_request`, — и умеет прочитать сигнатуру, ни разу ничего не
- * выполнив. Ему нужно только одно, чего нет в тексте одной ячейки: откуда
- * взялось имя `sns`. Поэтому сверху к разбираемому коду приклеивается ШАПКА
- * ИМПОРТОВ — строки `import …` из ячеек кода той же тетради выше текущей (см.
- * `importHeader`). В тетради область видимости — не ячейка, а ядро, и шапка
- * ровно это и повторяет.
+ * The second path answers the same question statically. jedi is in every
+ * kernel (it comes with IPython, and it is the same jedi ipykernel uses to
+ * answer `complete_request`), and it can read a signature without executing
+ * anything at all. It needs just one thing the text of a single cell lacks:
+ * where the name `sns` came from. So an IMPORT HEADER is glued on top of the
+ * code being analysed: the `import …` lines from the code cells of the same
+ * notebook above the current one (see `importHeader`). In a notebook the scope
+ * is not the cell but the kernel, and the header repeats exactly that.
  *
- * Почему исходник уезжает в САМО ядро, а не разбирается на сервере: jedi
- * отвечает про те библиотеки, которые стоят В ЭТОМ окружении. Сервер живёт на
- * хосте, где нет ни seaborn, ни torch, ни того, что преподаватель доставил
- * `pip install` в терминале комнаты; ядро — единственное место, где вопрос
- * «какая сигнатура у lmplot» вообще имеет ответ.
+ * Why the source travels into the kernel ITSELF instead of being analysed on
+ * the server: jedi answers about the libraries installed IN THIS environment.
+ * The server lives on a host that has neither seaborn nor torch nor whatever
+ * the teacher added with `pip install` in the room's terminal; the kernel is
+ * the only place where the question "what is lmplot's signature" has an answer
+ * at all.
  *
- * Что здесь принято ради безопасности и тишины — и почему:
- *   · скрытый модуль в `sys.modules`, ни одного связанного имени в `globals()`
- *     студента (тот же приём, что у изоляции консилиума);
- *   · `silent: true, store_history: False` — ни вывода, ни следа в `In`/`Out`;
- *   · ответ едет `user_expressions` — при `silent` в IOPUB не приходит ничего;
- *   · будильник внутри Python: чужое ядро не имеет права стоять секундами
- *     из-за наведённой мыши, и обрывать jedi надо ТАМ, а не только переставать
- *     его ждать здесь;
- *   · потолок размера: docstring numpy бывает в сотни килобайт, а едет он
- *     через тот же сокет, что и вывод занятия.
+ * What is done here for safety and quiet, and why:
+ *   · a hidden module in `sys.modules`, not a single name bound in the
+ *     student's `globals()` (the same trick as the council isolation);
+ *   · `silent: true, store_history: False`: no output, no trace in `In`/`Out`;
+ *   · the answer travels in `user_expressions`: with `silent` nothing arrives
+ *     over IOPUB;
+ *   · an alarm clock inside Python: someone else's kernel has no right to stand
+ *     still for seconds because of a hovering mouse, and jedi has to be cut off
+ *     THERE, not merely stop being waited for here;
+ *   · a size ceiling: a numpy docstring can run to hundreds of kilobytes, and
+ *     it travels over the same socket as the class's output.
  *
- * Чистый модуль: исходники на Python, сборка вопроса и разбор ответа — ни
- * сети, ни Yjs, ни docker (тот же приём, что в council-isolation.ts).
+ * A pure module: the Python sources, building the question and parsing the
+ * answer, no network, no Yjs, no docker (the same trick as in
+ * council-isolation.ts).
  */
 
-/** Скрытый модуль, в котором живёт разбор. Не имя в `globals()`. */
+/** The hidden module the analysis lives in. Not a name in `globals()`. */
 export const INSPECT_MODULE = '_colloq_inspect'
 
-/** Ключ, под которым ответ едет в `user_expressions`. */
+/** The key the answer travels under in `user_expressions`. */
 export const INSPECT_REPORT_KEY = 'colloq'
 
 /**
- * Выражение, которое ядро посчитает после кода и положит в `execute_reply`.
+ * The expression the kernel evaluates after the code and puts into
+ * `execute_reply`.
  *
- * До модуля приходится добираться через `__import__`: в `user_ns` его нет
- * нарочно — см. заголовок файла.
+ * The module has to be reached through `__import__`: it is deliberately not in
+ * `user_ns`; see the file header.
  */
 export const INSPECT_REPORT_EXPR = `__import__('sys').modules['${INSPECT_MODULE}'].report`
 
 /**
- * Сколько секунд jedi разрешено думать.
+ * How many seconds jedi is allowed to think.
  *
- * Две с половиной, и число замерено, а не выбрано. На холодном контейнере
- * первый разбор pandas стоит ~1,5 с (jedi разбирает исходники библиотеки и
- * кладёт разбор в свой кеш), второй — 0,5 с, третий и дальше — единицы
- * миллисекунд; seaborn после прогретого pandas — 0,57 с. Прежние полторы
- * секунды резали ровно первое наведение на самую тяжёлую библиотеку — и
- * человек получал «сказать нечего» там, где ответ был в полушаге.
+ * Two and a half, and the number is measured, not picked. On a cold container
+ * the first analysis of pandas costs ~1.5 s (jedi parses the library's sources
+ * and puts the result into its cache), the second 0.5 s, the third and later a
+ * few milliseconds; seaborn after a warmed-up pandas takes 0.57 s. The previous
+ * one and a half seconds cut off exactly the first hover over the heaviest
+ * library, and the person got "nothing to say" where the answer was half a
+ * step away.
  *
- * Почему не больше: на это время занят shell ядра, то есть Run, нажатый в ту
- * же секунду, ждёт. Три секунды ожидания перед началом счёта — это уже
- * заметно, две с половиной — ещё нет. А не успевший разбор больше не врёт: он
- * отвечает «ещё думаю» (`thinking`), клиент переспрашивает сам, и к следующему
- * разу jedi прогрет.
+ * Why not more: for this long the kernel's shell is busy, i.e. a Run pressed in
+ * the same second waits. Three seconds of waiting before the computation starts
+ * are already noticeable, two and a half not yet. And an analysis that did not
+ * make it no longer lies: it answers "still thinking" (`thinking`), the client
+ * asks again by itself, and by the next time jedi is warm.
  */
 export const INSPECT_BUDGET_SEC = 2.5
 
-/** Потолок ответа: docstring бывает в сотни килобайт, а сокет у комнаты общий. */
+/** Answer ceiling: a docstring can be hundreds of KB, and the room shares a socket. */
 export const INSPECT_LIMIT_BYTES = 20 * 1024
 
-/** Сколько строк импорта уезжает в шапку. Учебная тетрадь укладывается вдесятеро. */
+/** How many import lines go into the header. A course notebook fits ten times over. */
 const HEADER_MAX_LINES = 60
 
-/** И сколько знаков: кадр к ядру и так не резиновый. */
+/** And how many characters: the frame to the kernel is not made of rubber either. */
 const HEADER_MAX_CHARS = 4 * 1024
 
 /**
- * Строка, которую можно поставить в шапку: один цельный импорт верхнего уровня.
+ * A line that may go into the header: one whole top-level import.
  *
- * Только верхнего: `import cv2` внутри `try:` в шапке был бы отступом посреди
- * модуля, то есть синтаксической ошибкой, из-за которой jedi не разобрал бы
- * ВСЮ шапку — а значит и ни одного имени в ней. Только цельный: продолжение
- * строки (`\` или незакрытая скобка) без своего хвоста означает то же самое.
+ * Top-level only: `import cv2` inside a `try:` would be an indent in the middle
+ * of the module in the header, i.e. a syntax error that would keep jedi from
+ * parsing the WHOLE header, and so not a single name in it. Whole only: a line
+ * continuation (`\` or an unclosed bracket) without its tail means the same.
  */
 const IMPORT_LINE = /^(?:import\s+[A-Za-z_][\w.]*.*|from\s+[.\w]+\s+import\s+.+)$/
 
 /**
- * Шапка импортов тетради: строки `import …` и `from … import …` из ячеек кода.
+ * The notebook's import header: the `import …` and `from … import …` lines from
+ * its code cells.
  *
- * Порядок — тот же, что в тетради: её читают и запускают сверху вниз, и если
- * `np` переопределили ниже, действует нижнее. Повторы выбрасываются — одна и та
- * же строка стоит в половине ячеек учебной тетради.
+ * The order is the notebook's own: it is read and run top to bottom, and if
+ * `np` was redefined lower down, the lower one is in effect. Repeats are
+ * dropped: the same line stands in half the cells of a course notebook.
  *
- * Ячейки с `%%magic` пропускаются целиком: `%%bash` с `import` внутри — это не
- * Python, и приклеенная к шапке строка оттуда испортила бы разбор всему.
+ * Cells with `%%magic` are skipped entirely: `%%bash` with an `import` inside is
+ * not Python, and a line from there glued into the header would spoil the
+ * analysis of everything.
  */
 export function importHeader(sources: readonly string[]): string {
   const lines: string[] = []
@@ -109,10 +118,10 @@ export function importHeader(sources: readonly string[]): string {
     if (/^\s*%%/.test(source)) continue
     for (const row of source.split('\n')) {
       const line = row.replace(/\s+$/, '')
-      // Отступ — значит импорт внутри `try`, функции или `if`: см. IMPORT_LINE.
+      // Indented: an import inside `try`, a function or `if`; see IMPORT_LINE.
       if (line !== line.trimStart()) continue
       if (!IMPORT_LINE.test(line)) continue
-      // Продолжение строки: хвоста у него в шапке не будет.
+      // A line continuation: its tail will not be in the header.
       if (line.endsWith('\\') || (line.includes('(') && !line.includes(')'))) continue
       if (seen.has(line)) continue
       if (lines.length >= HEADER_MAX_LINES || chars + line.length + 1 > HEADER_MAX_CHARS) {
@@ -127,13 +136,13 @@ export function importHeader(sources: readonly string[]): string {
 }
 
 /**
- * Имя под кареткой — цепочкой через точки, как его видит человек.
+ * The name under the caret, as a dotted chain, the way a person sees it.
  *
- * Нужно ровно затем, чтобы написать в сигнатуре `sns.lmplot(...)`, а не
- * `lmplot(...)`: jedi знает найденное по собственному имени и про приставку не
- * догадывается, а `inspect_request` пишет именно то, что набрано. Разойдись
- * они — и один и тот же наведённый `sns.lmplot` выглядел бы по-разному в
- * зависимости от того, запускали в комнате ячейку с импортом или нет.
+ * Needed exactly so that the signature says `sns.lmplot(...)`, not
+ * `lmplot(...)`: jedi knows what it found by its own name and does not guess the
+ * prefix, while `inspect_request` writes exactly what was typed. Were they to
+ * diverge, the same hovered `sns.lmplot` would look different depending on
+ * whether the cell with the import had been run in the room.
  */
 export function nameChainAt(code: string, cursor: number): string {
   const at = Math.max(0, Math.min(cursor, code.length))
@@ -143,30 +152,31 @@ export function nameChainAt(code: string, cursor: number): string {
 }
 
 /**
- * Исходник разбора — вся работа, которую делает ядро, одним куском.
+ * The analysis source: all the work the kernel does, in one piece.
  *
- * Отдельной строкой в файле, а не собирается из кусков, ровно по тому же
- * доводу, что у изоляции консилиума: это Python, и читать его надо как Python,
- * с отступами и комментариями на своих местах.
+ * A separate string in the file rather than assembled from pieces, for the same
+ * reason as the council isolation: this is Python, and it should read as
+ * Python, with indents and comments in their places.
  */
 const IMPL = `
-"""Сигнатура и документация по исходникам — глазами jedi, без единого запуска."""
+"""Signatures and docs from the sources, through jedi's eyes, running nothing."""
 import json
 import sys
 
 version = '__VERSION__'
 
-# Ответ последнего вопроса. Сервер забирает его через user_expressions, а не с
-# возвратом: при silent=True у execute_request возврата и нет.
+# The answer to the last question. The server picks it up through
+# user_expressions, not as a return value: with silent=True an execute_request
+# has no return value.
 report = None
 
 
 class _Report(object):
-    """Отчёт серверу: его repr и есть готовый JSON.
+    """A report for the server: its repr is ready-made JSON.
 
-    user_expressions возвращает mimebundle, а text/plain в нём — repr()
-    значения. Отдать строку нельзя: её repr приехал бы в кавычках и с
-    экранированием, то есть JSON внутри JSON.
+    user_expressions returns a mimebundle, and its text/plain is the repr() of
+    the value. A string cannot be handed over: its repr would arrive in quotes
+    and escaped, i.e. JSON inside JSON.
     """
     __slots__ = ('text',)
 
@@ -178,16 +188,16 @@ class _Report(object):
 
 
 class _Timeout(Exception):
-    """Будильник: jedi думает дольше, чем комната согласна ждать."""
+    """The alarm clock: jedi is thinking longer than the room agrees to wait."""
 
 
 def _arm(budget):
-    """Завести будильник на бюджет секунд; None — завести было нечем.
+    """Arm an alarm for budget seconds; None means it could not be armed.
 
-    Обрывать надо ИЗНУТРИ: сервер, переставший ждать, не освобождает ядро — оно
-    так и будет разбирать pandas, пока кто-то ждёт своей ячейки. SIGALRM
-    работает только в главном потоке; ipykernel считает код именно в нём, но
-    проверка тут стоит на тот случай, когда это не так.
+    It has to be cut off FROM INSIDE: a server that stopped waiting does not
+    free the kernel, which would go on parsing pandas while someone waits for
+    their cell. SIGALRM works only in the main thread; ipykernel runs code in
+    exactly that thread, but the check is here for the case when it does not.
     """
     try:
         import signal
@@ -223,15 +233,16 @@ _BACKSLASH = chr(92)
 
 
 def _split(inner):
-    """Параметры из текста сигнатуры — по запятым ВЕРХНЕГО уровня.
+    """Parameters from the signature text, split on TOP-LEVEL commas.
 
-    По тексту, а не по sig.params, и это не придирка: в списке параметров jedi
-    нет голой звёздочки, а она и есть та черта, после которой аргументы
-    передаются только по имени. У lmplot без неё сигнатура читалась бы как
-    разрешение написать lmplot(data, x, y) — то есть как неправда.
+    From the text, not from sig.params, and that is not nitpicking: jedi's
+    parameter list has no bare asterisk, and that asterisk is exactly the line
+    after which arguments are passed by name only. Without it, lmplot's
+    signature would read as permission to write lmplot(data, x, y), i.e. as an
+    untruth.
 
-    Кавычки и вложенные скобки считаются, потому что запятая живёт и внутри
-    умолчания: markers=("o", "x"), dtype=Dict[str, int].
+    Quotes and nested brackets are counted, because a comma also lives inside a
+    default: markers=("o", "x"), dtype=Dict[str, int].
     """
     parts = []
     depth = 0
@@ -263,11 +274,11 @@ def _split(inner):
 
 
 def _wrap(display, sig):
-    """Сигнатуру — столбиком, если в строку она не помещается.
+    """The signature in a column, if it does not fit on one line.
 
-    Так её печатает и сам IPython: двадцать пять параметров lmplot в одну
-    строку читаются хуже, чем не читаются вовсе. Хвост («-> Self») остаётся на
-    месте: он часть того же текста и переписывать его нечем.
+    That is how IPython itself prints it: twenty-five lmplot parameters on one
+    line read worse than not at all. The tail ("-> Self") stays in place: it is
+    part of the same text, and there is nothing to rewrite it with.
     """
     try:
         text = sig.to_string()
@@ -290,21 +301,22 @@ def _wrap(display, sig):
     return text[:at] + '(\\n' + ''.join('    ' + p + ',\\n' for p in parts) + ')' + text[close + 1:]
 
 
-# Карта «имя верхнего модуля → дистрибутив», посчитанная один раз на ядро.
+# The "top-level module name → distribution" map, computed once per kernel.
 #
-# packages_distributions() обходит ВСЕ dist-info окружения: 84 мс и 117 записей
-# на образе colloq-kernel:base (замер 20.09). На один вопрос это дороже самого
-# разбора jedi (9 мс у pd), а меняется карта только при pip install — то есть
-# раз в занятие, и не молча: новое ядро её перечитает.
+# packages_distributions() walks ALL dist-info of the environment: 84 ms and 117
+# entries on the colloq-kernel:base image (measured 20 Sep 2026). For a single
+# question that costs more than jedi's analysis itself (9 ms for pd), and the
+# map changes only on pip install, i.e. once a class, and not silently: a new
+# kernel rereads it.
 _dists = None
 
 
 def _dist_of(top):
-    """Дистрибутив по имени верхнего модуля — БЕЗ импорта самого модуля.
+    """The distribution of a top-level module, WITHOUT importing the module.
 
-    sklearn живёт в scikit-learn, cv2 в opencv-python, PIL в Pillow: имя, под
-    которым модуль импортируют, и имя, под которым его ставят, совпадают не
-    всегда, а человеку в справке нужно второе.
+    sklearn lives in scikit-learn, cv2 in opencv-python, PIL in Pillow: the name
+    a module is imported under and the name it is installed under do not always
+    match, and the person needs the second one in the help.
     """
     global _dists
     if _dists is None:
@@ -316,8 +328,8 @@ def _dist_of(top):
     names = _dists.get(top) or []
     if not names:
         return None
-    # Несколько дистрибутивов на один модуль (пространства имён вроде
-    # zope.*): берём тот, чьё имя и есть имя модуля, иначе первый.
+    # Several distributions for one module (namespaces like zope.*): take the
+    # one whose name is the module's name, otherwise the first.
     for name in names:
         if name.replace('-', '_').lower() == top.replace('-', '_').lower():
             return name
@@ -325,7 +337,7 @@ def _dist_of(top):
 
 
 def _docs_link(meta):
-    """Ссылка на документацию — по меткам Project-URL, потом Home-page."""
+    """A documentation link: by the Project-URL labels, then Home-page."""
     labelled = {}
     try:
         for row in meta.get_all('Project-URL') or []:
@@ -344,12 +356,12 @@ def _docs_link(meta):
 
 
 def _package(full):
-    """Секции про пакет: Package / Summary / Docs. Пусто — метаданных нет.
+    """Package sections: Package / Summary / Docs. Empty means no metadata.
 
-    Метаданные лежат на диске рядом с пакетом (dist-info), и читаются они БЕЗ
-    импорта: наведение мышью не имеет права исполнять чужой код. У модуля
-    стандартной библиотеки и у файла из папки занятия дистрибутива нет вовсе —
-    тогда этих секций просто не будет.
+    The metadata lies on disk next to the package (dist-info), and it is read
+    WITHOUT importing: a mouse hover has no right to execute someone else's
+    code. A standard library module and a file from the class folder have no
+    distribution at all; then these sections are simply absent.
     """
     top = (full or '').split('.')[0]
     if not top:
@@ -376,7 +388,7 @@ def _package(full):
         summary = (meta.get('Summary') or '').strip()
     except Exception:
         summary = ''
-    # «UNKNOWN» ставит setuptools, когда автор описания не написал.
+    # "UNKNOWN" is what setuptools puts when the author wrote no description.
     if summary and summary.lower() != 'unknown':
         out.append('Summary: ' + summary)
     link = _docs_link(meta)
@@ -386,7 +398,7 @@ def _package(full):
 
 
 def _module_facts(full):
-    """Всё, что мы знаем о модуле, до его собственной документации."""
+    """Everything we know about a module, before its own documentation."""
     parts = []
     if full:
         parts.append('Module: ' + full)
@@ -396,16 +408,17 @@ def _module_facts(full):
 
 
 def facts(ns, expr, limit):
-    """Те же секции для ЖИВОГО модуля — по объекту из пространства имён.
+    """The same sections for a LIVE module, from the object in the namespace.
 
-    Нужно там, где ответил сам inspect_request: он про модуль говорит «Type:
-    module», «String form: <module 'seaborn' from ...>» и «Docstring: <no
-    docstring>» — то есть ничего. Имя пакета и его описание лежат в
-    метаданных, и достать их можно, ничего не импортируя: объект УЖЕ создан
-    (импорт в ячейке выполнили), нам остаётся прочитать его __name__.
+    Needed where inspect_request itself answered: about a module it says "Type:
+    module", "String form: <module 'seaborn' from ...>" and "Docstring: <no
+    docstring>", i.e. nothing. The package name and description lie in the
+    metadata, and they can be read without importing anything: the object
+    ALREADY exists (the import in the cell was run), and all that is left is to
+    read its __name__.
 
-    Разбор выражения — по точкам и только getattr: ни вызовов, ни индексов, ни
-    eval. Наведение мышью не считает чужой код.
+    The expression is parsed by dots and with getattr only: no calls, no
+    indexing, no eval. A mouse hover does not run someone else's code.
     """
     global report
     out = {'found': False, 'why': 'nothing'}
@@ -429,11 +442,11 @@ def facts(ns, expr, limit):
     report = _Report(json.dumps(out))
 
 
-# Сколько знаков значения показываем и сколько элементов смотрим у списка.
+# How many characters of a value we show, and how many list elements we look at.
 _BRIEF_CHARS = 40
 _BRIEF_PEEK = 20
 
-# Типы, у которых repr() заведомо дёшев и безвреден.
+# Types whose repr() is known to be cheap and harmless.
 _PLAIN = (bool, int, float, complex, str, bytes, range, slice, type(None))
 
 
@@ -443,19 +456,19 @@ def _short(text, limit=_BRIEF_CHARS):
 
 
 def _type_name(value):
-    """Имя типа с пакетом, если он не встроенный: DataFrame, torch.Tensor."""
+    """Type name with its package unless builtin: DataFrame, torch.Tensor."""
     cls = type(value)
     name = getattr(cls, '__name__', '?')
     module = getattr(cls, '__module__', '') or ''
     if module in ('builtins', '__main__', ''):
         return name
-    # Показываем верхний пакет, а не внутренний путь: pandas.core.frame.DataFrame
-    # человеку не говорит ничего сверх DataFrame.
+    # We show the top package, not the internal path: pandas.core.frame.DataFrame
+    # tells a person nothing beyond DataFrame.
     return name
 
 
 def _elem_type(items):
-    """Один тип на всех — или пусто. Смотрим не больше _BRIEF_PEEK элементов."""
+    """One type for all, or empty. We look at no more than _BRIEF_PEEK elements."""
     seen = None
     count = 0
     for item in items:
@@ -471,18 +484,20 @@ def _elem_type(items):
 
 
 def _brief_of(value):
-    """Короткая правда о значении: тип, размер, иногда само значение.
+    """A short truth about a value: its type, size, sometimes the value itself.
 
-    Строго O(1) и без побочных действий. Незнакомый объект отвечает ОДНИМ
-    именем типа: ни len(), ни repr(), ни str() у него не зовут — у курсора
-    базы, генератора и ленивой коллекции это может стоить дорого, а то и
-    сдвинуть их с места. Наведение мышью не имеет права менять состояние.
+    Strictly O(1) and without side effects. An unfamiliar object gets ONE type
+    name as its answer: neither len(), nor repr(), nor str() is called on it;
+    for a database cursor, a generator or a lazy collection that can be
+    expensive, or even move them forward. A mouse hover has no right to change
+    state.
     """
     import sys
 
     np0 = sys.modules.get('numpy')
-    # Скаляр numpy проверяется ПЕРВЫМ: np.float64 наследует float, и обычная
-    # ветка показала бы «float64 · np.float64(3.5)» вместо «float64 · 3.5».
+    # A numpy scalar is checked FIRST: np.float64 inherits from float, and the
+    # ordinary branch would show "float64 · np.float64(3.5)" instead of
+    # "float64 · 3.5".
     if np0 is not None and isinstance(value, np0.generic):
         return {'type': str(value.dtype), 'value': _short(repr(value.item()))}
 
@@ -530,8 +545,8 @@ def _brief_of(value):
         if nn is not None and isinstance(value, nn.Module):
             out = {'type': _type_name(value)}
             try:
-                # Счёт параметров — обход списка модулей, а не данных; у сетей
-                # семинара это сотни записей, не миллионы.
+                # Counting parameters walks the module list, not the data; for
+                # a seminar's networks that is hundreds of entries, not millions.
                 total = sum(p.numel() for p in value.parameters())
                 out['note'] = str(total) + ' параметров'
             except Exception:
@@ -603,8 +618,8 @@ def _brief_of(value):
         try:
             if isinstance(value, base.BaseEstimator):
                 out = {'type': _type_name(value)}
-                # Обучен ли — по следам обучения в самом объекте: атрибуты с
-                # подчёркиванием на конце. Ни один метод при этом не зовётся.
+                # Is it fitted: by the traces of fitting in the object itself,
+                # attributes with a trailing underscore. No method is called.
                 fitted = any(
                     k.endswith('_') and not k.startswith('__') for k in vars(value)
                 )
@@ -613,16 +628,16 @@ def _brief_of(value):
         except Exception:
             pass
 
-    # Незнакомое: только имя типа. Ни len, ни repr — см. заголовок функции.
+    # Unfamiliar: only the type name. Neither len nor repr; see the function header.
     return {'type': _type_name(value)}
 
 
 def brief(ns, expr):
-    """Короткая строка про значение — по объекту из пространства имён.
+    """A short line about a value, from the object in the namespace.
 
-    Разбор выражения тот же, что у facts: только точки и getattr, ни вызовов,
-    ни индексов, ни eval. Имени нет — ответа нет: наведение на слово, которого
-    в ядре не существует, обязано молчать.
+    The expression is parsed the same way as in facts: only dots and getattr, no
+    calls, no indexing, no eval. No name means no answer: hovering over a word
+    that does not exist in the kernel must stay silent.
     """
     global report
     out = {'found': False}
@@ -653,15 +668,16 @@ def brief(ns, expr):
 
 
 def _render(found, display, limit):
-    """Лучшее из найденного, разложенное по заголовкам IPython.
+    """The best of what was found, laid out under IPython's headers.
 
-    Те же заголовки, что у inspect_request, — и это условие всей затеи: разбор
-    на клиенте один (web/src/lib/signature-help.ts), и два ответа на один
-    вопрос обязаны выглядеть одинаково.
+    The same headers as inspect_request's, and that is the condition of the
+    whole idea: there is one parser on the client
+    (web/src/lib/signature-help.ts), and two answers to one question must look
+    the same.
 
-    ЛУЧШЕЕ, а не первое: у pd.read_csv jedi отдаёт пять перегрузок из .pyi, и
-    документация есть не у каждой. Берём ту, у которой есть и сигнатура, и
-    документация; нет такой — ту, у которой есть хоть что-то.
+    The BEST, not the first: for pd.read_csv jedi returns five overloads from
+    the .pyi, and not every one has documentation. We take the one with both a
+    signature and documentation; if there is none, the one with anything at all.
     """
     best = None
     for d in found:
@@ -686,19 +702,19 @@ def _render(found, display, limit):
     kind = getattr(d, 'type', '') or ''
     parts = []
     if kind == 'module':
-        """Модуль — это пакет, а не объект.
+        """A module is a package, not an object.
 
-        У pandas строка документации модуля собирается присваиванием __doc__ в
-        рантайме, у seaborn её нет вовсе, и до 21.09 наведение на них отвечало
-        «module · <module pandas>» — словами, из которых человек не узнаёт
-        ничего. Про пакет всё написано рядом с ним на диске: имя, версия,
-        описание, ссылка на документацию (см. _package).
+        pandas assembles its module docstring by assigning __doc__ at runtime,
+        seaborn has none at all, and until 21 Sep 2026 hovering over them
+        answered "module · <module pandas>", words from which a person learns
+        nothing. Everything about the package is written next to it on disk:
+        the name, version, description, documentation link (see _package).
         """
         full = getattr(d, 'full_name', '') or getattr(d, 'name', '') or display
         parts.extend(_module_facts(full))
     elif sig:
-        # У класса сигнатуры нет — есть сигнатура его __init__, и IPython
-        # называет её именно так.
+        # A class has no signature: there is the signature of its __init__, and
+        # IPython calls it exactly that.
         head = 'Init signature' if kind == 'class' else 'Signature'
         parts.append(head + ':\\n' + sig)
     if kind and kind != 'module':
@@ -706,9 +722,9 @@ def _render(found, display, limit):
     if doc.strip():
         parts.append('Docstring:\\n' + doc)
     elif not sig and kind != 'module':
-        # Ни сигнатуры, ни документации, и это не модуль, — но сказать всё
-        # равно есть что: хотя бы род и полное имя, тем же полем, каким это
-        # показывает сам IPython.
+        # Neither a signature nor documentation, and it is not a module, but
+        # there is still something to say: at least the kind and the full name,
+        # in the same field IPython itself shows them in.
         full = getattr(d, 'full_name', '') or getattr(d, 'name', '') or ''
         if not full and not kind:
             return ''
@@ -717,20 +733,20 @@ def _render(found, display, limit):
         return ''
     text = '\\n'.join(parts)
     if len(text) > limit:
-        # Обрыв виден: молча укороченная документация читается как
-        # документация, которая так и кончается.
+        # The cut is visible: silently shortened documentation reads as
+        # documentation that simply ends there.
         text = text[:limit] + '\\n…'
     return text
 
 
 def look(code, line, column, display, budget, limit):
-    """Ответить на один вопрос и положить ответ в report."""
+    """Answer one question and put the answer into report."""
     global report
     report = None
     try:
         import jedi
     except Exception:
-        # jedi нет в этом окружении — обычное дело для ядра, собранного не нами.
+        # No jedi in this environment: ordinary for a kernel not built by us.
         report = _Report(json.dumps({'found': False, 'why': 'no-jedi'}))
         return
     out = {'found': False, 'why': 'nothing'}
@@ -742,8 +758,9 @@ def look(code, line, column, display, budget, limit):
         except Exception:
             found = []
         if not found:
-            # infer отвечает про ЗНАЧЕНИЕ имени, goto — про то, где оно
-            # объявлено. Второе знает больше там, где первое не разрешило тип.
+            # infer answers about the name's VALUE, goto about where it is
+            # declared. The latter knows more where the former could not resolve
+            # the type.
             try:
                 found = script.goto(line, column, follow_imports=True)
             except Exception:
@@ -762,7 +779,7 @@ def look(code, line, column, display, budget, limit):
 
 let stamp: string | null = null
 
-/** Версия исходника: другая сборка сервера — другой хеш, и ядро перечитает код. */
+/** Source version: a new server build means a new hash, and the kernel rereads it. */
 function implVersion(): string {
   return (stamp ??= createHash('sha256').update(IMPL).digest('hex').slice(0, 12))
 }
@@ -773,34 +790,35 @@ function implLiteral(): string {
 }
 
 export interface StaticInspectQuestion {
-  /** Код ячейки — тот же, что уехал бы в `inspect_request`. */
+  /** The cell's code, the same that would go into `inspect_request`. */
   code: string
-  /** Каретка в этом коде, в знаках от начала. */
+  /** The caret in this code, in characters from the start. */
   cursor: number
-  /** Шапка импортов тетради; `''` — импортов выше не было. */
+  /** The notebook's import header; `''` means there were no imports above. */
   header?: string
   budgetSec?: number
   limitBytes?: number
 }
 
 /**
- * Ячейка вопроса: установка модуля (если он не тот) и один вызов.
+ * The question cell: install the module (if it is not the right one) and make
+ * one call.
  *
- * `exec` в `__dict__` скрытого модуля — единственный способ занести сюда
- * двести строк Python, не оставив в пространстве студента ни `sys`, ни
- * временных переменных. Сверка по версии делает установку идемпотентной и
- * бесплатной: `compile` этого исходника стоит миллисекунду, а между вопросами
- * он не меняется никогда.
+ * `exec` into the hidden module's `__dict__` is the only way to bring two
+ * hundred lines of Python in here without leaving either `sys` or temporary
+ * variables in the student's namespace. The version check makes the install
+ * idempotent and free: `compile` of this source costs a millisecond, and
+ * between questions it never changes.
  */
 export function inspectStaticSource(question: StaticInspectQuestion): string {
   const header = typeof question.header === 'string' ? question.header : ''
   const cell = typeof question.code === 'string' ? question.code : ''
   const at = Math.max(0, Math.min(question.cursor ?? 0, cell.length))
   /*
-   * Шапка встаёт СВЕРХУ, и каретка уезжает вниз ровно на столько строк,
-   * сколько в ней есть. Считать позицию заново по склеенному тексту нельзя:
-   * разъехавшись на знак, jedi разобрал бы соседнее имя и уверенно ответил
-   * не о том.
+   * The header goes ON TOP, and the caret moves down by exactly as many lines
+   * as it has. Recomputing the position from the glued text is not an option:
+   * off by one character, jedi would analyse the neighbouring name and
+   * confidently answer about the wrong thing.
    */
   const whole = header === '' ? cell : `${header}\n${cell}`
   const before = whole.slice(0, whole.length - cell.length + at)
@@ -824,18 +842,20 @@ export function inspectStaticSource(question: StaticInspectQuestion): string {
 }
 
 /**
- * Вопрос про ЖИВОЙ модуль: имя пакета, версия, описание, ссылка.
+ * A question about a LIVE module: the package name, version, description,
+ * link.
  *
- * Второй, короткий запрос — и задаётся он только там, где `inspect_request`
- * уже ответил «Type: module». Сам IPython про модуль говорит три вещи, и все
- * три бесполезны: род, адрес объекта в памяти и `<no docstring>` — у pandas
- * строка документации собирается в рантайме, у seaborn её нет вовсе, и
- * человек видел «module · <module pandas>».
+ * A second, short request, and it is asked only where `inspect_request` has
+ * already answered "Type: module". About a module IPython itself says three
+ * things, and all three are useless: the kind, the object's address in memory
+ * and `<no docstring>`; pandas assembles its docstring at runtime, seaborn has
+ * none at all, and the person saw "module · <module pandas>".
  *
- * `globals()` уезжает первым аргументом: код выполняется в пространстве имён
- * студента, и модуль там УЖЕ лежит — импорт был, иначе `inspect_request` не
- * ответил бы. Разбор выражения внутри — только по точкам и только `getattr`
- * (inspect-static · `facts`): наведение мышью не считает чужой код.
+ * `globals()` goes as the first argument: the code runs in the student's
+ * namespace, and the module is ALREADY there; there was an import, otherwise
+ * `inspect_request` would not have answered. The expression inside is parsed
+ * only by dots and only with `getattr` (inspect-static · `facts`): a mouse
+ * hover does not run someone else's code.
  */
 export function inspectFactsSource(expr: string, limitBytes?: number): string {
   const limit = Number.isFinite(limitBytes) ? Math.floor(Number(limitBytes)) : INSPECT_LIMIT_BYTES
@@ -851,28 +871,30 @@ export function inspectFactsSource(expr: string, limitBytes?: number): string {
 }
 
 /**
- * Ответ живого ядра про модуль — дополненный теми же секциями.
+ * The live kernel's answer about a module, supplemented with the same sections.
  *
- * Секции про пакет встают СВЕРХУ: у IPython всё содержательное (`Docstring:`)
- * идёт последним, и приписанное после него было бы прочитано разбором как
- * часть документации. А `String form:` и `File:` у модуля не показываются
- * вовсе (web/src/lib/signature-help.ts) — адрес объекта в чужом процессе и
- * путь внутри контейнера человеку в комнате не говорят ничего.
+ * The package sections go ON TOP: in IPython everything substantial
+ * (`Docstring:`) comes last, and anything appended after it would be read by
+ * the parser as part of the documentation. And `String form:` and `File:` are
+ * not shown for a module at all (web/src/lib/signature-help.ts): the object's
+ * address in another process and the path inside the container tell a person
+ * in the room nothing.
  */
 export function withModuleFacts(live: string, facts: string): string {
   const extra = facts.trim()
   if (extra === '') return live
   /*
-   * Шапку IPython при этом снимаем, и без этого приписка ломала бы разбор.
+   * IPython's header is stripped at the same time, and without that the
+   * appended part would break the parsing.
    *
-   * Про модуль IPython говорит ровно три строки — `Type:`, `String form:`,
-   * `File:`, — и все три у нас уже есть или не нужны: род назван в приписке,
-   * адрес объекта в памяти и путь внутри контейнера человеку в комнате не
-   * говорят ничего. А оставленные, они приезжают ПОВТОРНЫМИ заголовками, и
-   * разбор на клиенте — справедливо — считает повтор частью открытого
-   * раздела: ссылка на документацию превращалась бы в «https://… Type:
-   * module». Снимаем только ведущие строки: такая же строка внутри
-   * документации остаётся текстом, каким и была.
+   * About a module IPython says exactly three lines, `Type:`, `String form:`,
+   * `File:`, and all three we either already have or do not need: the kind is
+   * named in the appended part, and the object's address in memory and the path
+   * inside the container tell a person in the room nothing. Left in, they
+   * arrive as REPEATED headers, and the parser on the client, rightly, counts a
+   * repeat as part of the open section: the documentation link would turn into
+   * "https://… Type: module". Only leading lines are stripped: the same line
+   * inside the documentation stays text, as it was.
    */
   const rows = live.replace(/\r/g, '').split('\n')
   let at = 0
@@ -881,18 +903,19 @@ export function withModuleFacts(live: string, facts: string): string {
   return rest === '' ? extra : `${extra}\n${rest}`
 }
 
-/** Отвечает ли ядро «это модуль»: по тому же разбору, что и у клиента. */
+/** Does the kernel say "this is a module": by the same parsing as the client. */
 export function looksLikeModule(text: string): boolean {
   return /^Type: *module\s*$/m.test(text.replace(/\r/g, ''))
 }
 
 /**
- * Что коротко известно о значении: тип, размер, иногда само значение.
+ * What is briefly known about a value: its type, size, sometimes the value
+ * itself.
  *
- * Всё поля необязательные, и это не лень, а форма ответа: у `int` есть
- * значение и нет размера, у `DataFrame` — наоборот, а у незнакомого объекта
- * есть только имя типа, и спрашивать у него что-то ещё мы не имеем права
- * (inspect-static · `_brief_of`).
+ * All fields are optional, and that is not laziness but the shape of the
+ * answer: an `int` has a value and no size, a `DataFrame` the other way round,
+ * and an unfamiliar object has only a type name, and we have no right to ask it
+ * for anything else (inspect-static · `_brief_of`).
  */
 export interface BriefValue {
   type: string
@@ -903,11 +926,11 @@ export interface BriefValue {
 }
 
 /**
- * Вопрос про ЗНАЧЕНИЕ имени — самый дешёвый из всех.
+ * A question about a name's VALUE, the cheapest of all.
  *
- * Ни jedi, ни документации, ни метаданных: объект уже посчитан и лежит в
- * памяти ядра, у него спрашивают тип и размер. Поэтому и бюджет короткий, и
- * ядро ради этого не поднимают: нет ядра — нет и строки.
+ * No jedi, no documentation, no metadata: the object is already computed and
+ * lies in the kernel's memory; it is asked for its type and size. So the
+ * budget is short, and no kernel is started for this: no kernel, no line.
  */
 export function inspectBriefSource(expr: string): string {
   const module = JSON.stringify(INSPECT_MODULE)
@@ -921,7 +944,7 @@ export function inspectBriefSource(expr: string): string {
   ].join('\n')
 }
 
-/** Разобрать ответ про значение; `null` — сказать нечего или ответа не было. */
+/** Parse the answer about a value; `null` means nothing to say or no answer. */
 export function parseBrief(raw: unknown): BriefValue | null {
   let text: string | null = null
   if (typeof raw === 'string') text = raw
@@ -953,28 +976,29 @@ export function parseBrief(raw: unknown): BriefValue | null {
 export interface StaticInspectAnswer {
   found: boolean
   text: string | null
-  /** Почему не нашлось: `no-jedi` — его нет в окружении, `timeout` — не успел. */
+  /** Why not found: `no-jedi`, not in the environment; `timeout`, too slow. */
   why: 'no-jedi' | 'timeout' | 'nothing' | null
 }
 
 /**
- * Разобрать ответ ядра.
+ * Parse the kernel's answer.
  *
- * Принимает и то, что приезжает в `user_expressions` (`{status, data}` с
- * `text/plain` внутри), и голую строку JSON — второе ради теста, который гоняет
- * тот же исходник настоящим python3 и читает ответ со stdout.
+ * Accepts both what arrives in `user_expressions` (`{status, data}` with
+ * `text/plain` inside) and a bare JSON string; the latter for the test that
+ * runs the same source with a real python3 and reads the answer from stdout.
  *
- * `null` — подтверждения не было вовсе: модуль не установился, запуск не
- * прошёл, ядро ответило чем-то другим. Отличать это от «не нашлось» важно:
- * первое — наша беда, второе — обычный исход.
+ * `null` means there was no confirmation at all: the module did not install,
+ * the run failed, the kernel answered with something else. Telling this apart
+ * from "not found" matters: the first is our trouble, the second an ordinary
+ * outcome.
  */
 export function parseStaticInspect(raw: unknown): StaticInspectAnswer | null {
   let text: string | null = null
   if (typeof raw === 'string') text = raw
   else if (raw && typeof raw === 'object') {
     const wrapper = raw as { status?: unknown; data?: Record<string, unknown> }
-    // status !== 'ok' — это `_user_obj_error()` IPython: выражение не
-    // посчиталось, то есть модуля или ответа в нём нет.
+    // status !== 'ok' is IPython's `_user_obj_error()`: the expression was not
+    // evaluated, i.e. the module or its answer is missing.
     if (wrapper.status !== undefined && wrapper.status !== 'ok') return null
     const plain = wrapper.data?.['text/plain']
     if (typeof plain === 'string') text = plain

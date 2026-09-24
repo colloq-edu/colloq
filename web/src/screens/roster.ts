@@ -1,35 +1,37 @@
 import { tr } from '@shared/i18n'
 /**
- * Лица в полосе состояния — и то, как не пересобирать их на каждый чужой курсор.
+ * The faces in the status bar — and how not to rebuild them on every other
+ * person's cursor.
  *
- * `yCollab` объявляет положение курсора через присутствие на каждое движение
- * выделения: при сотне печатающих это сотни кадров присутствия в секунду, и
- * каждый из них будил в комнате всю бухгалтерию людей — новый массив из 500
- * объектов, склейку 500 имён в `title`, перерисовку стопки аватаров. Ничего из
- * этого от курсора не меняется: полоса рисует ИМЯ, МЕТКУ и ЦВЕТ, а они за пару
- * не меняются вовсе.
+ * `yCollab` announces the cursor position through presence on every
+ * selection move: with a hundred people typing that is hundreds of presence
+ * frames a second, and each of them woke the room's whole people bookkeeping
+ * — a new array of 500 objects, joining 500 names into `title`, redrawing
+ * the avatar stack. None of that changes because of a cursor: the bar draws
+ * the NAME, the MARK and the COLOR, and those do not change at all during a
+ * class.
  *
- * Поэтому здесь два чистых куска: сравнение «то же самое ли рисуем» без единой
- * аллокации (его хватает, чтобы вернуть ТОТ ЖЕ массив и остановить всё, что
- * ниже) и строка имён с потолком — 500 имён в `title` не читает никто, а
- * склеивать их на каждый кадр приходилось.
+ * Hence two pure pieces here: an "are we drawing the same thing" comparison
+ * without a single allocation (it is enough to return THE SAME array and
+ * stop everything downstream) and a names line with a cap — nobody reads
+ * 500 names in a `title`, yet they had to be joined on every frame.
  *
- * Настоящая починка — выше по течению, в коалесинге присутствия (см. handoff
- * по `#readPeers`); это то, что можно сделать со стороны экрана, и оно снимает
- * всё, что происходит ПОСЛЕ прихода кадра.
+ * The real fix is upstream, in presence coalescing (see the handoff on
+ * `#readPeers`); this is what can be done from the screen's side, and it
+ * removes everything that happens AFTER a frame arrives.
  */
 
-/** Человек так, как его рисует полоса состояния. */
+/** A person as the status bar draws them. */
 export interface Face {
   id: string
   name: string
   avatar: string | null
   color: string
-  /** Подпись под наведением: имя, и «(you)» — если это ты. */
+  /** The hover caption: the name, plus "(you)" if it is you. */
   title: string
 }
 
-/** То немногое из присутствия, от чего лицо в полосе зависит. */
+/** The little from presence that a face in the bar depends on. */
 export interface Someone {
   user: { id: string; name: string; avatar: string | null; color: string }
   isSelf: boolean
@@ -46,11 +48,11 @@ export function faceOf(person: Someone): Face {
 }
 
 /**
- * Рисуем ли мы то же самое, что и в прошлый раз.
+ * Whether we are drawing the same thing as last time.
  *
- * Ни одной аллокации: сравниваются четыре примитива на человека, а не
- * собирается ключ строкой. Порядок значим и это верно — список приходит
- * отсортированным, и перестановка двух имён в стопке видна.
+ * Not a single allocation: four primitives per person are compared rather
+ * than a string key built. The order matters, and that is right — the list
+ * arrives sorted, and swapping two names in the stack is visible.
  */
 export function sameFaces(prev: readonly Face[], people: readonly Someone[]): boolean {
   if (prev.length !== people.length) return false
@@ -62,7 +64,7 @@ export function sameFaces(prev: readonly Face[], people: readonly Someone[]): bo
       was.name !== now.user.name ||
       was.avatar !== now.user.avatar ||
       was.color !== now.user.color ||
-      // «(you)» в подписи — тоже то, что видно.
+      // "(you)" in the caption is also something visible.
       was.title !== (now.isSelf ? tr('room.person.self', { name: now.user.name }) : now.user.name)
     ) {
       return false
@@ -72,11 +74,12 @@ export function sameFaces(prev: readonly Face[], people: readonly Someone[]): bo
 }
 
 /**
- * Имена под наведением — с потолком.
+ * Names on hover — with a cap.
  *
- * Подсказка на пятьсот имён не читается и не помещается: браузер обрезает её
- * сам, но склеить строку всё равно приходится. Двадцать имён — это уже больше,
- * чем успевают прочитать, а хвост назван числом.
+ * A tooltip of five hundred names is unreadable and does not fit: the
+ * browser truncates it itself, but the string still has to be joined. Twenty
+ * names is already more than anyone manages to read, and the tail is given
+ * as a number.
  */
 export function namesLine(faces: readonly Face[], cap = 20): string {
   if (faces.length <= cap) return faces.map((face) => face.title).join(', ')

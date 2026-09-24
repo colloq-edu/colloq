@@ -1,17 +1,19 @@
 /**
- * Публикация целиком — один проход истории, и рельса от этого не поехала.
+ * A whole publication is one pass over the history, and the rail did not go
+ * astray because of it.
  *
- * Маршрут собирал шаги по одному (`buildPageAt`), а каждый такой вызов — новый
- * `Y.Doc` и повтор всей истории от кейфрейма: до сорока полных повторов на одну
- * публикацию, синхронно, в процессе, где у коллеги в эту минуту идёт пара.
- * Проход вперёд одним документом (`publish/build.ts` · pagesAtAsync) убирает
- * повторы, но платит состоянием, которое живёт между шагами, — и потому обязан
- * доказать, что снаружи ничего не изменилось.
+ * The route built the steps one at a time (`buildPageAt`), and every such call
+ * meant a new `Y.Doc` and a replay of the whole history from a keyframe: up to
+ * forty full replays per publication, synchronously, in the process where a
+ * colleague is teaching a class at that very minute. A forward pass with one
+ * document (`publish/build.ts` · pagesAtAsync) removes the replays but pays
+ * with state that lives between steps — and so it has to prove that nothing
+ * has changed from the outside.
  *
- * Свойства самого прохода проверены в `publish-replay.test.mts`; здесь — то,
- * что через него ходит маршрут: шаг в публикации ровно тот же, что собранный с
- * нуля, порядок рельсы по-прежнему выбирает преподаватель, а выпавший момент
- * по-прежнему назван вслух, а не потерян молча.
+ * The properties of the pass itself are checked in `publish-replay.test.mts`;
+ * here is what the route does through it: a step in the publication is exactly
+ * the one built from scratch, the teacher still chooses the order of the rail,
+ * and a dropped moment is still named out loud rather than lost in silence.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -50,8 +52,8 @@ before(async () => {
   rotateLinkKey(owner.id)
   cookie = cookieFor(owner)
 
-  /* Три названных момента: пустая тетрадь, код, код с выводом. Шаги обязаны
-   * выйти разными — иначе «совпало» ничего не значит. */
+  /* Three named moments: an empty notebook, code, code with output. The steps
+   * have to come out different — otherwise "matched" means nothing. */
   createSession(ROOM, 'Градиентный спуск', null)
   doc = getSessionDoc(ROOM, 'Градиентный спуск').doc
   const cells = doc.getArray<Y.Map<unknown>>('cells')
@@ -84,16 +86,16 @@ after(() => {
   shutdownCollab()
 })
 
-/** Моменты комнаты по возрастанию — их и предлагает панель. */
+/** The room's moments in ascending order, which is what the panel offers. */
 const moments = (): number[] =>
   candidatesFor(ROOM)
     .map((c) => c.seq)
     .sort((a, b) => a - b)
 
-/** Страница шага, собранная с нуля: проход длиной в один шаг. */
+/** A step's page built from scratch: a pass one step long. */
 const alone = (seq: number): PublicCell[] => {
   const page = pagesAt(ROOM, [seq], newBlobBag()).get(seq)
-  assert.ok(page?.ok, `шаг ${seq} не собрался в одиночку — сравнивать нечего`)
+  assert.ok(page?.ok, `step ${seq} did not build on its own: nothing to compare`)
   return page.cells
 }
 
@@ -114,25 +116,25 @@ async function publish(steps: unknown[]): Promise<Published> {
 
 async function stepOf(pub: string, seq: number): Promise<PublicCell[]> {
   const res = await fetch(`${base}/api/p/${pub}/step/${seq}`)
-  assert.equal(res.status, 200, `шага ${seq} нет на опубликованной странице`)
+  assert.equal(res.status, 200, `step ${seq} is missing from the published page`)
   const body = (await res.json()) as { step: { cells: PublicCell[] } }
   return body.step.cells
 }
 
-test('каждый шаг публикации — тот же, что собранный с нуля', async () => {
+test('every step of a publication is the same as one built from scratch', async () => {
   const seqs = moments()
-  assert.ok(seqs.length >= 3, 'моменты не записались — публиковать нечего')
+  assert.ok(seqs.length >= 3, 'the moments were not recorded: nothing to publish')
 
-  // Порядок рельсы выбирает преподаватель: просим наоборот.
+  // The teacher chooses the order of the rail: ask for it reversed.
   const asked = [...seqs].reverse().map((seq, i) => ({ seq, label: `шаг ${i + 1}` }))
   const answer = await publish(asked)
-  assert.deepEqual(answer.skipped, [], 'шаг выпал там, где выпадать нечему')
+  assert.deepEqual(answer.skipped, [], 'a step dropped out where nothing should drop')
 
-  // Рельса — в том порядке, в каком назвали, и с последней страницей в конце.
+  // The rail is in the order given, with the last page at the end.
   assert.deepEqual(
     answer.publication.steps.map((s) => s.seq),
     [...asked.map((s) => s.seq), 0],
-    'проход по возрастанию переложил рельсу за преподавателя',
+    'the ascending pass reordered the rail instead of the teacher',
   )
   assert.deepEqual(
     answer.publication.steps.map((s) => s.label),
@@ -143,30 +145,30 @@ test('каждый шаг публикации — тот же, что собр�
     assert.deepEqual(
       await stepOf(answer.publication.id, seq),
       alone(seq),
-      `шаг ${seq} в общем проходе разошёлся со сборкой с нуля`,
+      `step ${seq} in the shared pass diverged from the build from scratch`,
     )
   }
 
-  // И это не «пусто равно пусто»: моменты правда разные.
+  // And this is not "empty equals empty": the moments really differ.
   const first = await stepOf(answer.publication.id, seqs[0])
   const last = await stepOf(answer.publication.id, seqs[seqs.length - 1])
-  assert.notDeepEqual(first, last, 'все шаги вышли одинаковыми — тетрадь собралась не так')
+  assert.notDeepEqual(first, last, 'all steps came out the same: the notebook was built wrong')
 })
 
-test('выпавший момент по-прежнему назван вслух', async () => {
+test('a dropped moment is still named out loud', async () => {
   const seqs = moments()
   const answer = await publish([
     { seq: seqs[0], label: 'первый' },
-    // Безымянный шаг не публикуется: «Снимок №14» в рельсе у студента — не
-    // название, а признание, что назвать забыли.
+    // An unnamed step is not published: "Snapshot #14" on a student's rail is
+    // not a name but an admission that someone forgot to name it.
     { seq: seqs[1], label: '' },
-    // И тот же адрес дважды — это про запрос, а не про занятие.
+    // And the same address twice is about the request, not about the class.
     { seq: seqs[0], label: 'первый ещё раз' },
   ])
   assert.deepEqual(
     answer.publication.steps.map((s) => s.seq),
     [seqs[0], 0],
-    'в рельсу попал шаг, которого не просили',
+    'a step nobody asked for got into the rail',
   )
   assert.deepEqual(
     answer.skipped,
@@ -174,15 +176,15 @@ test('выпавший момент по-прежнему назван вслу�
       { seq: seqs[1], label: '', reason: 'unnamed' },
       { seq: seqs[0], label: 'первый ещё раз', reason: 'duplicate' },
     ],
-    'выпавшие моменты нечем назвать в панели',
+    'the panel has nothing to name the dropped moments with',
   )
 })
 
-test('шаг, которого не из чего собрать, называет причину, а не пропадает', async () => {
+test('a step with nothing to build from names a reason instead of vanishing', async () => {
   /*
-   * Причина приходит из самого прохода (`BuiltPage.reason`), а не из разбора
-   * запроса, — и это ровно то, что могло потеряться при переходе на один
-   * проход: у комнаты без истории тетрадь на любом шаге пуста.
+   * The reason comes from the pass itself (`BuiltPage.reason`), not from parsing
+   * the request — and that is exactly what could have been lost in the move to a
+   * single pass: a room without history has an empty notebook at any step.
    */
   const empty = 'publish-pass-empty'
   createSession(empty, 'Комната без истории', null)
@@ -197,6 +199,6 @@ test('шаг, которого не из чего собрать, называе
   assert.deepEqual(
     answer.publication.steps.map((s) => s.seq),
     [0],
-    'несобранный шаг всё-таки попал в рельсу',
+    'an unbuilt step got into the rail after all',
   )
 })

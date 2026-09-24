@@ -1,10 +1,10 @@
 /**
- * За кем идти по документу и тот ли это ведущий.
+ * Whom to follow through the document, and whether it is the same leader.
  *
- * Всё здесь ломается тихо: экран просто ведёт себя странно, а объяснения нет.
- * Две вкладки одного преподавателя, двое преподавателей на разных страницах,
- * позиция в чужом файле — каждое из этого даёт дрожание или прыжки, которые
- * выглядят как поломка отрисовки.
+ * Everything here breaks quietly: the screen just behaves strangely, with no
+ * explanation. Two tabs of one teacher, two teachers on different pages, a
+ * position in another file — each of these gives jitter or jumps that look
+ * like a rendering bug.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -35,7 +35,7 @@ function peer(
 
 const HERE = { file: 'lecture.pdf', page: 3, y: 0.1 }
 
-test('идут за преподавателем, а не за соседом', () => {
+test('people follow the teacher, not a neighbour', () => {
   const student = peer('participant', { file: 'lecture.pdf', page: 9, y: 0 })
   const teacher = peer('host', HERE, { name: 'Ада' })
   const lead = leaderFor([student, teacher], 'lecture.pdf', null)
@@ -43,25 +43,26 @@ test('идут за преподавателем, а не за соседом', 
   assert.equal(lead?.page, 3)
 })
 
-test('позиция в другом файле не считается', () => {
+test('a position in another file does not count', () => {
   /*
-   * Двенадцатая страница другого документа — не то же место. Без имени файла
-   * экран прыгал бы по чужим страницам, и это выглядит как поломка рендера.
+   * Page twelve of another document is not the same place. Without the file
+   * name the screen would jump around someone else's pages, and that looks
+   * like a rendering bug.
    */
   const teacher = peer('host', { file: 'seminar-02.pdf', page: 12, y: 0 })
   assert.equal(leaderFor([teacher], 'lecture.pdf', null), null)
 })
 
-test('за собой не идут', () => {
+test('nobody follows themselves', () => {
   const me = peer('host', HERE, { isSelf: true })
   assert.equal(leaderFor([me], 'lecture.pdf', null), null)
 })
 
-test('из двух вкладок берут ту, где документ открыт', () => {
+test('of two tabs, the one with the document open is taken', () => {
   /*
-   * Сведение вкладок в одного человека предпочитает вкладку с активной
-   * ячейкой — то есть запросто ту, где PDF не открыт. Поэтому читается сырой
-   * список присутствий, а вкладка выбирается по наличию позиции в этом файле.
+   * Merging tabs into one person prefers the tab with an active cell — which
+   * may well be the one without the PDF open. So the raw presence list is
+   * read, and the tab is chosen by whether it has a position in this file.
    */
   const notebookTab = peer('host', null, { name: 'Ада', id: 10 })
   const readerTab = peer('host', { file: 'lecture.pdf', page: 7, y: 0.5 }, { name: 'Ада', id: 11 })
@@ -70,62 +71,64 @@ test('из двух вкладок берут ту, где документ от
   assert.equal(lead?.page, 7)
 })
 
-test('ведущий залипает: двое преподавателей не раскачивают экран', () => {
+test('the leader sticks: two teachers do not rock the screen', () => {
   /*
-   * `host` — не один человек: преподавательская кука делает хостом любого
-   * сотрудника. Двое на разных страницах без залипания дают дрожание экрана у
-   * всей комнаты.
+   * `host` is not one person: the teacher cookie makes any staff member a
+   * host. Two of them on different pages without stickiness make the screen
+   * jitter for the whole room.
    */
   const first = peer('host', { file: 'lecture.pdf', page: 3, y: 0 }, { name: 'Ада', id: 20 })
   const second = peer('host', { file: 'lecture.pdf', page: 8, y: 0 }, { name: 'Борис', id: 5 })
 
-  // Без истории — устойчивый выбор, а не «первый в списке»: порядок в
-  // присутствии меняется от прихода любого кадра.
+  // Without history — a stable choice, not "the first in the list": the order
+  // in presence changes with the arrival of any frame.
   assert.equal(leaderFor([first, second], 'lecture.pdf', null)?.clientId, 5)
   assert.equal(leaderFor([second, first], 'lecture.pdf', null)?.clientId, 5)
 
-  // А если уже шли за первым — остаёмся с ним, хотя у второго id меньше.
+  // And if we were already following the first one, we stay with them, even
+  // though the second has a smaller id.
   assert.equal(leaderFor([first, second], 'lecture.pdf', 20)?.clientId, 20)
 })
 
-test('ведущий ушёл — идти не за кем, и это отличается от «молчит»', () => {
+test('the leader left — there is no one to follow, and that differs from "silent"', () => {
   const gone = leaderFor([], 'lecture.pdf', 20)
   assert.equal(gone, null)
-  // Позиции нет вовсе — тоже «не за кем»: кадр присутствия мог быть отброшен
-  // целиком, например по потолку на число лиц с одного сокета.
+  // No position at all is also "no one to follow": the presence frame could
+  // have been dropped entirely, for instance by the ceiling on the number of
+  // faces from one socket.
   assert.equal(leaderFor([peer('host', null)], 'lecture.pdf', null), null)
 })
 
-test('доска закрыта — вести некому', () => {
+test('the board is closed — there is no one to lead', () => {
   assert.equal(leaderFor([peer('host', HERE)], null, null), null)
 })
 
-/* --------------------------------------------------- тот же ли ведущий */
+/* --------------------------------------------------- same leader or not */
 
 const lead = { clientId: 1, name: 'Ада', color: '#000', page: 5, y: 0.4 }
 
-test('тот же ведущий на том же месте — не повод переписывать свойство', () => {
+test('the same leader in the same place is no reason to rewrite the property', () => {
   /*
-   * `leaderFor` каждый раз собирает НОВЫЙ объект, и без этой сверки эффект,
-   * пишущий его в связанное свойство, подписывается на то, что сам же и
-   * вызывает: родитель перерисовывается, свойство приезжает обратно, эффект
-   * считает заново — effect_update_depth_exceeded.
+   * `leaderFor` builds a NEW object every time, and without this comparison
+   * the effect that writes it into a bound property subscribes to what it
+   * itself causes: the parent re-renders, the property comes back, the effect
+   * recomputes — effect_update_depth_exceeded.
    */
   assert.equal(sameLead(lead, { ...lead }), true)
-  // Дрожание прокрутки на пиксель — то же место: доля высоты страницы, и
-  // сотая её часть на 1080 px это десять пикселей.
+  // A one-pixel scroll jitter is the same place: y is a fraction of the page
+  // height, and a hundredth of it at 1080 px is ten pixels.
   assert.equal(sameLead(lead, { ...lead, y: 0.405 }), true)
 })
 
-test('сдвинулся сам или сменился — другой ведущий', () => {
+test('moved or replaced — a different leader', () => {
   assert.equal(sameLead(lead, { ...lead, page: 6 }), false)
   assert.equal(sameLead(lead, { ...lead, y: 0.9 }), false)
   assert.equal(sameLead(lead, { ...lead, clientId: 2 }), false)
 })
 
-test('«идти не за кем» сравнивается само с собой', () => {
-  // На самом преподавателе ведущий всегда `null`, и без этой ветки эффект
-  // считал бы каждый его кадр сменой ведущего.
+test('"no one to follow" compares equal to itself', () => {
+  // On the teacher themselves the leader is always `null`, and without this
+  // branch the effect would count every frame of theirs as a change of leader.
   assert.equal(sameLead(null, null), true)
   assert.equal(sameLead(null, lead), false)
   assert.equal(sameLead(lead, null), false)

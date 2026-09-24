@@ -50,24 +50,26 @@
    * the browser already knows would buy nothing but a spinner.
    */
   /*
-   * Адреса и их разбор живут в `lib/routes.ts` — там же, где их проверяют
-   * тесты: регулярка, тихо переставшая совпадать, сборку не уронит, а высадит
-   * планшет с живым ключом в адресной строке на экран входа.
+   * Addresses and their parsing live in `lib/routes.ts` — the same place where
+   * the tests check them: a regex that quietly stopped matching will not break
+   * the build, but it will drop a tablet with a live key in the address bar
+   * onto the entry screen.
    */
   let path = $state(location.pathname)
   /**
-   * Комната и то, каким из её экранов её открыли.
+   * The room and which of its screens it was opened with.
    *
-   * Режим одним значением, а не набором флагов: экранов ровно четыре и они
-   * взаимоисключающие, а пара `projection` + `pult` умеет быть включённой
-   * одновременно — то есть умеет означать то, чего не бывает.
+   * The mode is one value, not a set of flags: there are exactly four screens
+   * and they are mutually exclusive, while a `projection` + `pult` pair can be
+   * switched on at the same time — that is, it can mean something that does
+   * not happen.
    */
   const roomRoute = $derived(readRoomRoute(path))
   const sessionId = $derived(roomRoute?.id ?? null)
   const mode = $derived(roomRoute?.mode ?? 'room')
-  /** Ячейка пульта консилиума — только у режима `council`. */
+  /** The council console's cell — only in the `council` mode. */
   const councilCell = $derived(roomRoute?.cellId ?? null)
-  /** Ключ из ссылки на пульт: планшет меняет его на обычный вход. */
+  /** The key from the console link: the tablet exchanges it for an ordinary entry. */
   const handoffKey = $derived(roomRoute?.handoffKey ?? null)
   // The teaching side. It routes its own sub-paths; this only has to get out of
   // the way, and to do so before the seminar route touches localStorage.
@@ -75,9 +77,10 @@
   const courseId = $derived(readCourseId(path))
   const publicSeminar = $derived(readPublicRoute(path))
   /*
-   * Соревнования — четвёртая публичная дверь продукта, рядом с курсом и
-   * публикацией: ни комнаты, ни токена участника здесь нет, а личность — своя,
-   * уровня инстанса, и живёт она в печенье, а не в localStorage.
+   * Competitions are the product's fourth public door, next to the course and
+   * the publication: there is no room and no participant token here, and the
+   * identity is its own, instance-level, and lives in a cookie, not in
+   * localStorage.
    */
   const competition = $derived(readCompetitionRoute(path))
 
@@ -114,10 +117,10 @@
       () => import('@/screens/SessionScreen.svelte').then((m) => m.default), 'room', language.current))
 
   /*
-   * Публичные страницы — тоже отдельным куском, и по более резкому поводу, чем
-   * панель: это единственные адреса Colloq, которые открывают с телефона, из
-   * дома, через неделю после занятия. Тащить туда редактор, терминал и оракула
-   * значит платить за них тем, кто пришёл прочитать тетрадь.
+   * Public pages are a separate chunk too, and for a sharper reason than the
+   * panel: they are the only Colloq addresses people open from a phone, from
+   * home, a week after the class. Dragging the editor, the terminal and the
+   * Oracle there means making those who came to read a notebook pay for them.
    */
   let readerChunk: Promise<typeof import('@/screens/ReaderScreen.svelte').default> | null = null
   const reader = () =>
@@ -125,9 +128,10 @@
       () => import('@/screens/ReaderScreen.svelte').then((m) => m.default), 'reader', language.current))
 
   /*
-   * И соревнования — тем же куском и по тому же доводу: `/k` открывают дома с
-   * телефона за час до дедлайна, и редактор, терминал и оракул там не нужны
-   * ни одной строкой. Словарь у них свой (lib/screen-language.ts · competitions).
+   * And competitions — in the same kind of chunk and for the same reason: `/k`
+   * is opened at home from a phone an hour before the deadline, and the
+   * editor, the terminal and the Oracle are not needed there by a single line.
+   * They have their own dictionary (lib/screen-language.ts · competitions).
    */
   let competitionsChunk:
     | Promise<typeof import('@/screens/CompetitionsScreen.svelte').default>
@@ -142,21 +146,23 @@
   let session = $state<SessionInfo | null>(null)
   let identity = $state<StoredIdentity | null>(null)
   let failure = $state<{ missing: boolean; message: string } | null>(null)
-  /** О комнате знают, а не догадываются: см. `enter`. */
+  /** The room is known, not guessed: see `enter`. */
   let confirmed = $state(false)
   let attempt = $state(0)
-  /** Что сказать на экране входа тому, кого туда вернули не по его воле. */
+  /** What to say on the entry screen to someone who was sent back there against their will. */
   let notice = $state<string | null>(null)
 
   /**
-   * Место в комнате перестало действовать — назваться придётся заново.
+   * The seat in the room stopped being valid — one has to introduce oneself
+   * again.
    *
-   * Ключ участника живёт тридцать дней и перестаёт проверяться сразу после
-   * смены SESSION_SECRET; оба сокета тогда отвергаются на рукопожатии, и
-   * комната крутит «Reconnecting» вечно. Починить это молча нельзя — имя
-   * выбирает человек, — поэтому сохранённая личность стирается (SessionState
-   * это уже сделала), и App возвращается к форме имени с этой строкой.
-   * Тетрадь при этом на сервере цела, и сказать об этом важнее всего.
+   * A participant key lives thirty days and stops verifying right after
+   * SESSION_SECRET changes; both sockets are then refused at the handshake,
+   * and the room spins "Reconnecting" forever. This cannot be fixed silently —
+   * the person chooses the name — so the saved identity is erased
+   * (SessionState has already done that), and App returns to the name form
+   * with this line. The notebook on the server is intact, and saying so
+   * matters most.
    */
   const EXPIRED_NOTICE =
     tr('room.ui.1219')
@@ -164,16 +170,17 @@
   function navigate(next: string): void {
     if (next !== location.pathname) history.pushState({}, '', next)
     /*
-     * Публичные страницы — единственные во всём продукте, где прокручивается
-     * сам документ: комната закреплена по высоте окна. Переход внутри них —
-     * это новая страница, а не смена панели, и открываться она обязана сверху:
-     * студент, долиставший курс до пятнадцатой строки и нажавший семинар,
-     * попадал в середину чужой тетради, без шапки и без рельсы шагов, и решал,
-     * что промахнулся.
+     * Public pages are the only ones in the whole product where the document
+     * itself scrolls: the room is pinned to the window height. A transition
+     * inside them is a new page, not a panel change, and it must open at the
+     * top: a student who had scrolled the course down to the fifteenth row and
+     * clicked a seminar landed in the middle of someone else's notebook,
+     * without the header and without the steps rail, and decided they had
+     * clicked the wrong thing.
      *
-     * Только для перехода вперёд. `popstate` сюда не заходит (у него свой
-     * слушатель), и это намеренно: место на странице, с которой ушли, — дело
-     * браузера, он его и восстанавливает.
+     * Only for forward navigation. `popstate` does not come here (it has its
+     * own listener), and this is on purpose: the position on the page one
+     * left is the browser's business, and the browser restores it.
      */
     if (next.startsWith('/c/') || next.startsWith('/p/')) window.scrollTo({ top: 0 })
     path = next
@@ -190,22 +197,25 @@
      * here would grey out controls that are in fact allowed — a lie that
      * corrects itself a second later, which is the worst kind.
      */
-    // published/course пусты до ответа сервера: указатель на опубликованную
-    // версию — это утверждение о факте, а первый кадр его не знает.
+    // published/course are empty until the server answers: a pointer to the
+    // published version is a statement of fact, and the first frame does not
+    // know it.
     return (
       cached ?? {
         id,
         name: '',
         createdAt: Date.now(),
         rules: { ...OPEN_ROOM },
-        // И «занятие идёт» — по тому же доводу, что и открытые правила рядом:
-        // угадать строже значит погасить кнопки, которые на самом деле живые.
+        // And "class in progress" — by the same argument as the open rules
+        // next to it: guessing stricter means putting out buttons that are in
+        // fact live.
         finishedAt: null,
         published: null,
         course: null,
-        // Организация — свойство инстанса, но узнать его до ответа сервера
-        // неоткуда. Пусто значит «линейки нет»: надпись, появившаяся вторым
-        // кадром, лучше чужой надписи, угаданной первым.
+        // The organization is a property of the instance, but there is no way
+        // to learn it before the server answers. Empty means "no separator": a
+        // label that appears on the second frame is better than a wrong label
+        // guessed on the first.
         institution: '',
       }
     )
@@ -217,11 +227,11 @@
     identity = id ? loadIdentity(id) : null
     const cached = id ? recallSessionInfo(id) : null
     /*
-     * «Про комнату известно» — это ответ сервера или память браузера, но НЕ
-     * заглушка из `knownRoom`: у неё пустое имя и угаданные правила, и снимать
-     * по ней заставку значит показать форму входа, на которой вместо названия
-     * занятия стоит серая полоса. Ровно тот кадр, ради которого заставку и
-     * держат (lib/boot.ts).
+     * "Something is known about the room" means the server's answer or the
+     * browser's memory, but NOT the placeholder from `knownRoom`: it has an
+     * empty name and guessed rules, and removing the splash on it means showing
+     * an entry form with a grey bar in place of the class name. Exactly the
+     * frame the splash is held for (lib/boot.ts).
      */
     confirmed = cached !== null
     session = id ? knownRoom(id, cached) : null
@@ -240,13 +250,14 @@
   })
 
   /*
-   * Язык сменили — доложить словарь тому экрану, который уже открыт.
+   * The language was changed — fetch the dictionary for the screen that is
+   * already open.
    *
-   * Экранный словарь везёт один язык (lib/screen-language.ts), поэтому смена
-   * языка — это ещё и загрузка. До её конца `translate` отдаёт прежний язык, а
-   * не голый ключ; `messagesChanged` перерисовывает переведённое, когда словарь
-   * доехал. Куски экранов при этом не трогаются: ни одна память комнаты не
-   * пересобирается из-за переключателя языка.
+   * A screen dictionary carries one language (lib/screen-language.ts), so a
+   * language change is also a download. Until it finishes, `translate` gives
+   * the previous language, not a bare key; `messagesChanged` redraws what was
+   * translated once the dictionary has arrived. The screen chunks are not
+   * touched: no memory of the room is rebuilt because of the language switch.
    */
   let localeShown = language.current
   $effect(() => {
@@ -257,18 +268,19 @@
   })
 
   /**
-   * Когда снимать заставку из index.html — на тех экранах, которые рисует сам
-   * App (lib/boot.ts · кто докладывает).
+   * When to remove the splash from index.html — on the screens App draws
+   * itself (lib/boot.ts · who reports).
    *
-   * Их два. Экран отказа — это уже экран: ждать под заставкой больше нечего, и
-   * висеть она обязана не дольше, чем есть надежда. Форма входа — это экран,
-   * как только известно, КУДА входят: у неё в шапке название занятия, и до
-   * ответа сервера там стоит заглушка.
+   * There are two. The failure screen is already a screen: there is nothing
+   * left to wait for under the splash, and it must hang no longer than there
+   * is hope. The entry form is a screen as soon as it is known WHERE people
+   * are entering: its header has the class name, and until the server answers
+   * a placeholder stands there.
    *
-   * Остальные ветки докладывают о себе сами, когда доедут: панель, читалка,
-   * комната. Обмен ключа на вход (`claiming`) намеренно молчит — это один
-   * запрос, и заставка над ним честнее, чем мелькнувшая строка «Открываем
-   * пульт…» под ней.
+   * The other branches report for themselves when they arrive: the panel, the
+   * reader, the room. Exchanging the key for an entry (`claiming`) stays
+   * silent on purpose — it is one request, and the splash over it is more
+   * honest than an "Opening the console…" line flickering under it.
    */
   $effect(() => {
     if (failure || (session && !identity && confirmed)) firstScreenReady()
@@ -310,15 +322,17 @@
       .catch((error: unknown) => {
         if (cancelled) return
         /*
-         * НАШ 404, а не любой.
+         * OUR 404, not just any.
          *
-         * Здесь стирают местную копию тетради — то есть всё, что человек успел
-         * напечатать без связи, — и по голому коду состояния этого делать
-         * нельзя: 404 отдаёт и ретранслятор, у которого отвалился frpc, и
-         * статика, раздающая index.html на всё подряд. Тогда перебой связи
-         * превращался в «этот семинар удалён» у всего класса разом. Признак —
-         * слова сервера в теле ответа (shared/protocol.ts · saysSessionMissing);
-         * чужой 404 ниже разбирается как обычный обрыв.
+         * This is where the local copy of the notebook is wiped — that is,
+         * everything the person managed to type without a connection — and
+         * this must not be done on a bare status code: a 404 also comes from a
+         * relay whose frpc has dropped, and from static hosting that serves
+         * index.html for everything. Then a connection glitch turned into
+         * "this seminar has been deleted" for the whole class at once. The sign
+         * is the server's words in the response body (shared/protocol.ts ·
+         * saysSessionMissing); a foreign 404 is handled below as an ordinary
+         * dropped connection.
          */
         if (saysSessionMissing(error)) {
           // The one case where the cache is a liar. Tear the room down and drop
@@ -374,8 +388,9 @@
     if (!id || !me || me.role === 'host' || !mightBeStaff()) return
 
     let cancelled = false
-    // Один помощник на оба экрана — см. screens/staff.ts: снятие метки и
-    // разбор ответа «нет»/«не знаю» жили здесь и в JoinScreen по-разному.
+    // One helper for both screens — see screens/staff.ts: removing the mark
+    // and parsing the "no"/"don't know" answer lived here and in JoinScreen,
+    // each in its own way.
     void upgradeIfStaff(id, me)
       .then((next) => {
         if (!cancelled && next) identity = next
@@ -391,29 +406,33 @@
   })
 
   /**
-   * Ссылка на пульт: обменять ключ на вход и стереть его из адреса.
+   * The console link: exchange the key for an entry and erase it from the
+   * address.
    *
-   * Планшет открывает `/s/:id/t/<ключ>` и должен оказаться в комнате ТЕМ ЖЕ
-   * человеком, что и ноутбук, — без формы имени и без второго участника в
-   * списке. Ключ одноразовый и живёт минуты, но адрес переживает и то и
-   * другое: он остаётся в истории, во вкладках и на снимке экрана, который
-   * преподаватель потом покажет классу. Поэтому сразу после обмена адрес
-   * заменяется — replaceState, чтобы «назад» не возвращало на мёртвый ключ.
+   * The tablet opens `/s/:id/t/<key>` and must end up in the room as THE SAME
+   * person as the laptop — without the name form and without a second
+   * participant in the list. The key is single-use and lives for minutes, but
+   * the address outlives both: it stays in the history, in tabs and on the
+   * screenshot the teacher will later show the class. So right after the
+   * exchange the address is replaced — replaceState, so that "back" does not
+   * return to a dead key.
    *
-   * Заменяется на ЭКРАН, КОТОРЫЙ НАЗВАЛА ССЫЛКА (`handoffLanding`), а не на
-   * комнату: этой ссылкой открывают планшет, чтобы ВЕСТИ, и раньше он приезжал
-   * в ту же комнату, что и ноутбук — с вкладками, панелью файлов и оракулом, из
-   * которых на паре не нужно ничего. Комната остаётся в одном нажатии («В
-   * комнату» в «Ещё»), а пульт больше не надо искать.
+   * It is replaced with THE SCREEN THE LINK NAMED (`handoffLanding`), not with
+   * the room: this link opens the tablet in order to LEAD, and it used to
+   * arrive in the same room as the laptop — with tabs, the files panel and the
+   * Oracle, none of which is needed in class. The room stays one tap away
+   * ("Go to room" in "More"), and the console no longer has to be searched
+   * for.
    *
-   * Экран берётся из разбора ДО обмена и запоминается: `path` меняется здесь же,
-   * и читать его после было бы чтением собственного следа. Пульт консилиума
-   * этим и живёт — ссылка с ключом ведёт в конкретную ячейку, а не «куда-нибудь
-   * в пульт»; голый `/s/:id/t/<ключ>` по-прежнему означает пульт лекции.
+   * The screen is taken from the parse BEFORE the exchange and remembered:
+   * `path` changes right here, and reading it afterwards would be reading our
+   * own trace. The council console lives by this — a link with a key leads to
+   * a specific cell, not "somewhere into the console"; a bare `/s/:id/t/<key>`
+   * still means the lecture console.
    *
-   * Не сработавший ключ — исключение: там пульта не будет (право на него —
-   * `role === 'host'`), и адрес пульта, оставшийся в строке после отказа, был
-   * бы обещанием, которого никто не сдержит.
+   * A key that did not work is the exception: there will be no console there
+   * (the right to it is `role === 'host'`), and a console address left in the
+   * bar after a refusal would be a promise nobody will keep.
    */
   let claiming = $state(false)
   let claimedKey: string | null = null
@@ -443,19 +462,21 @@
       })
       .catch((cause: unknown) => {
         /*
-         * Ключ протух — это обычный ход дела, а не поломка: ссылку открыли
-         * через час. Поэтому причина едет запиской на экран входа, а не
-         * экраном поломки.
+         * An expired key is the ordinary course of things, not a breakage: the
+         * link was opened an hour later. So the reason travels as a note to
+         * the entry screen, not as a failure screen.
          *
-         * Раньше здесь ставился `failure`, и ветка `failure` в разметке стоит
-         * раньше и комнаты, и формы: комментарий обещал «оставляем экран
-         * входа», а на деле человек видел «Could not open this seminar» —
-         * причём и тот, у кого личность для этой комнаты уже сохранена.
-         * Ноутбук преподавателя, открывший вчерашнюю ссылку на пульт,
-         * выкидывало из живой комнаты до нажатия «Try again».
+         * Previously `failure` was set here, and the `failure` branch in the
+         * markup stands before both the room and the form: the comment
+         * promised "we keep the entry screen", but in fact the person saw
+         * "Could not open this seminar" — even one who already had an identity
+         * saved for this room. The teacher's laptop, having opened yesterday's
+         * console link, got thrown out of a live room until "Try again" was
+         * pressed.
          *
-         * Записку рисует JoinScreen; у кого личность есть — тот просто входит
-         * в комнату, и говорить ему не о чем: пульт он откроет из «Ещё».
+         * The note is drawn by JoinScreen; whoever has an identity simply
+         * enters the room, and there is nothing to tell them: they will open
+         * the console from "More".
          */
         notice =
           cause instanceof ApiError
@@ -472,23 +493,25 @@
 </script>
 
 {#if courseId || publicSeminar}
-  <!-- Ни токена, ни личности, ни сокетов: эти страницы читают и всё. -->
+  <!-- No token, no identity, no sockets: these pages are read, and that is all. -->
   <!--
-    По ключу страницы, а не по одному условию на обе: `/c/…` и `/p/…` — один и
-    тот же компонент, и переход между ними (нажатие на семинар в списке курса)
-    менял только пропсы. Экран при этом оставался прежним: загруженный курс
-    никто не гасил, и студент, ткнув в занятие, видел тот же список.
+    By the page key, not by one condition for both: `/c/…` and `/p/…` are one
+    and the same component, and a transition between them (clicking a seminar
+    in the course list) changed only the props. The screen stayed the same:
+    nobody put out the loaded course, and a student who clicked a class saw
+    the same list.
 
-    Ключ без шага: `/p/:id/3` → `/p/:id/4` — это перелистывание внутри одной
-    публикации, и пересобирать её ради него значило бы загружать семинар
-    заново на каждый шаг.
+    The key without the step: `/p/:id/3` → `/p/:id/4` is paging within one
+    publication, and rebuilding it for that would mean loading the seminar
+    again on every step.
 
-    И С ПРЕФИКСОМ ВИДА. Slug уникален внутри вида, а не глобально: адреса
-    курса и публикации проверяются разными таблицами (PK — пара вид+slug), так
-    что `/c/ml-2026` и `/p/ml-2026` существуют одновременно совершенно
-    законно. Голый handle давал им один и тот же ключ, экран не пересобирался,
-    загруженный курс никто не гасил — и нажатие на семинар в списке меняло
-    адрес, оставляя на экране тот же список.
+    AND WITH A KIND PREFIX. A slug is unique within its kind, not globally:
+    course and publication addresses are checked against different tables (the
+    PK is the kind+slug pair), so `/c/ml-2026` and `/p/ml-2026` exist at the
+    same time perfectly legitimately. A bare handle gave them the same key, the
+    screen was not rebuilt, nobody put out the loaded course — and a click on a
+    seminar in the list changed the address, leaving the same list on the
+    screen.
   -->
   {#key courseId ? `c:${courseId}` : `p:${publicSeminar?.id ?? ''}`}
     {#await reader()}
@@ -503,14 +526,14 @@
   {/key}
 {:else if competition}
   <!--
-    Страницы соревнований. Стоят перед панелью и перед комнатой, потому что
-    `/k/…` не пересекается ни с тем, ни с другим, а ссылка для входа
-    (`/k/t/<ключ>`) обязана доехать до своего экрана раньше, чем что-нибудь
-    решит, что адрес ему незнаком, и отправит человека в панель.
+    Competition pages. They stand before the panel and before the room because
+    `/k/…` overlaps with neither, and the sign-in link (`/k/t/<key>`) must
+    reach its screen before anything decides the address is unfamiliar and
+    sends the person to the panel.
 
-    Без ключа: `#key` здесь не нужен — переход между вкладками одного
-    соревнования это та же страница, и пересобирать её значило бы загружать
-    задачу заново на каждое нажатие.
+    Without a key: `#key` is not needed here — moving between the tabs of one
+    competition is the same page, and rebuilding it would mean loading the task
+    again on every click.
   -->
   {#await competitions()}
     <Splash />
@@ -530,10 +553,10 @@
     what they want is the panel. AdminScreen shows the sign-in when there is no
     session, which is the "or the sign-in" half of it.
 
-    «Не имеет причины» — не то же самое, что «не может»: студента сюда приводил
-    каждый выход из комнаты, потому что и марка в шапке, и кнопка на экране
-    отказа вели на `/`. Обе теперь ведут туда только штат — см. выше и
-    SessionScreen.
+    "Has no reason" is not the same as "cannot": every exit from the room used
+    to bring a student here, because both the mark in the header and the button
+    on the failure screen led to `/`. Both now lead only staff there — see
+    above and SessionScreen.
   -->
   {#await adminScreen()}
     <Splash />
@@ -557,15 +580,15 @@
           : tr(failure.message)}
       </p>
       <!--
-        «Back to Colloq» — только тому, кому там есть куда прийти.
+        "Back to Colloq" — only for those who have somewhere to go there.
 
-        Корень — это панель преподавателя (ниже), а на ней — форма «paste the
-        setup token». Студент, ткнувший сюда с неверной ссылки на семинар,
-        оказывался на экране входа штата и терял последнее, что у него было, —
-        адрес комнаты в строке браузера. Метка `mightBeStaff` ничего не
-        разрешает и ничего не спрашивает у сервера: она говорит только, что
-        этот браузер когда-то подписывался в панели, — и этого ровно достаточно,
-        чтобы решить, показывать ли дорогу туда.
+        The root is the teacher's panel (below), and on it is the "paste the
+        setup token" form. A student who clicked here from a wrong seminar link
+        ended up on the staff sign-in screen and lost the last thing they had —
+        the room address in the browser bar. The `mightBeStaff` mark permits
+        nothing and asks the server nothing: it only says that this browser
+        once signed in to the panel — and that is exactly enough to decide
+        whether to show the way there.
       -->
       <div class="mt-5 flex items-center justify-center gap-2">
         {#if !failure.missing}
@@ -582,9 +605,10 @@
   </div>
 {:else if claiming || handoffKey}
   <!--
-    Обмен ключа на вход. Занимает один запрос, но экран входа мигнуть за это
-    время успевает — а человек, который только что открыл ссылку «свой пульт»,
-    увидел бы форму «как вас зовут» и решил бы, что ссылка не сработала.
+    Exchanging the key for an entry. It takes one request, but the entry screen
+    has time to flash during it — and a person who has just opened the "your
+    console" link would see the "what is your name" form and decide the link
+    did not work.
   -->
   <div class="flex h-full items-center justify-center bg-canvas">
     <div class="flex items-center gap-2 text-ui text-muted">

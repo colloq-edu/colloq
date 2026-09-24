@@ -1,106 +1,112 @@
 /**
- * Соревнования: типы и правила, общие серверу и вебу.
+ * Competitions: types and rules shared by the server and the web app.
  *
- * Соревнование — это задача с ответами, которых участник не видит. Он
- * присылает ТЕТРАДЬ, сервер исполняет её с нуля в одноразовом контейнере без
- * сети, забирает написанный ею `submission.csv` и вторым, отдельным
- * контейнером считает по нему метрику преподавателя. Метрика зовётся дважды —
- * на публичной части строк и на приватной; публичный лидерборд виден всегда,
- * приватный скрыт до дедлайна, чтобы под него нельзя было подогнаться.
+ * A competition is a task with answers the participant does not see. They
+ * send a NOTEBOOK, the server runs it from scratch in a disposable container
+ * without network, takes the `submission.csv` it wrote and, in a second,
+ * separate container, computes the teacher's metric on it. The metric is
+ * called twice — on the public part of the rows and on the private one; the
+ * public leaderboard is always visible, the private one is hidden until the
+ * deadline so that nobody can fit to it.
  *
- * ЧТО ЛЕЖИТ ИМЕННО ЗДЕСЬ, а не на сервере. Правила, у которых обе стороны
- * обязаны дать один и тот же ответ: сколько посылок осталось сегодня (участник
- * видит число в зоне загрузки, сервер по нему отказывает), какая посылка идёт
- * в зачёт, как сортируется лидерборд и как строки делятся на публичную и
- * приватную часть. Разъехавшись, эти копии не падают — они тихо врут, и
- * замечает это тот, кто пересчитал место вручную.
+ * WHAT LIVES EXACTLY HERE, and not on the server. The rules on which both
+ * sides must give one and the same answer: how many submissions are left
+ * today (the participant sees the number in the upload area, the server
+ * refuses by it), which submission counts, how the leaderboard is sorted and
+ * how rows are split into the public and the private part. Once apart, these
+ * copies do not crash — they quietly lie, and whoever notices is the one who
+ * recomputed a place by hand.
  *
- * Чего здесь нет: ни одного обращения к диску, базе и docker. Всё, что ниже, —
- * чистые функции и данные, и тесты на них такие же (tests/competitions-rules).
+ * What is not here: a single access to the disk, the database or docker.
+ * Everything below is pure functions and data, and so are the tests for them
+ * (tests/competitions-rules).
  */
 import { tr } from './i18n.js'
 import { slugOk } from './publish.js'
 
-/* --------------------------------------------------------- соревнование */
+/* ---------------------------------------------------------- competition */
 
 /**
- * Черновик · идёт · завершено.
+ * Draft · live · finished.
  *
- * Три состояния, а не флаг «опубликовано»: черновик не имеет адреса у
- * участника вовсе, у идущего работает приём посылок, а у завершённого
- * лидерборд превращается в итоговый и больше не меняется. Переход
- * `draft → live` закрыт, пока сэмпл-тетрадь не прошла весь путь до числа:
- * соревнование, задача которого не решается даже автором, открывать нечего.
+ * Three states, not a "published" flag: a draft has no address for
+ * participants at all, a live one accepts submissions, and a finished one
+ * turns its leaderboard into the final one, which no longer changes. The
+ * `draft → live` transition is closed until the sample notebook has gone the
+ * whole way to a number: a competition whose task even its author cannot
+ * solve has nothing to open.
  */
 export type CompetitionState = 'draft' | 'live' | 'finished'
 
-/** Куда смотрит метрика: MAPE вниз, ROC AUC вверх. */
+/** Which way the metric points: MAPE down, ROC AUC up. */
 export type MetricDirection = 'lower' | 'higher'
 
-/** Когда открывается приватный лидерборд: сам после дедлайна или рукой на разборе. */
+/** When the private leaderboard opens: by itself after the deadline, or by hand at the review. */
 export type PrivateRelease = 'auto' | 'manual'
 
 /**
- * Что идёт в зачёт.
+ * What counts.
  *
- * `chosen` — выбор участника (и молчание считается выбором «лучшая по
- * публичной»), `bestPublic` — лучшая по публичной части, `last` — последняя.
- * Выбор между «верю лидерборду» и «верю своей валидации» — половина урока,
- * поэтому по умолчанию выбирает участник.
+ * `chosen` — the participant's choice (and silence counts as choosing "the
+ * best on the public part"), `bestPublic` — the best on the public part,
+ * `last` — the last one. The choice between "I trust the leaderboard" and "I
+ * trust my own validation" is half the lesson, so by default the participant
+ * chooses.
  */
 export type ScoringRule = 'chosen' | 'bestPublic' | 'last'
 
-/** Метрика преподавателя: имя в шапке колонки, направление и сам код `score`. */
+/** The teacher's metric: the name in the column header, the direction and the `score` code itself. */
 export interface CompetitionMetric {
-  /** Короткое имя — подставляется в «ИТОГОВЫЙ {metric}». */
+  /** A short name — substituted into "FINAL {metric}". */
   name: string
   direction: MetricDirection
-  /** Python: `def score(solution, submission) -> float`. Участнику не уезжает. */
+  /** Python: `def score(solution, submission) -> float`. Never sent to participants. */
   code: string
 }
 
-/** Пределы одного прогона и дневная норма человека. */
+/** The limits of one run and a person's daily quota. */
 export interface CompetitionLimits {
-  /** Общий срок посылки. Вышел — контейнер убит, без уговоров. */
+  /** The submission's overall time limit. Once it is up, the container is killed, no persuasion. */
   wallSeconds: number
   memoryMb: number
   cpus: number
-  /** Посылок в день на участника; 0 — без предела. */
+  /** Submissions per day per participant; 0 — no limit. */
   perDay: number
 }
 
 export interface Competition {
   id: string
-  /** Имя в адресе: `/k/<slug>`. */
+  /** The name in the address: `/k/<slug>`. */
   slug: string
   title: string
-  /** Одна строка — в списке у участника. */
+  /** One line — in the participant's list. */
   blurb: string
-  /** Markdown: задача, данные, что сдавать. */
+  /** Markdown: the task, the data, what to submit. */
   description: string
   state: CompetitionState
   metric: CompetitionMetric
-  /** Доля строк, которую считают сразу, в процентах. */
+  /** The share of rows scored right away, in percent. */
   publicPercent: number
   /**
-   * Зерно деления строк.
+   * The seed for splitting rows.
    *
-   * Записано в строке соревнования, а не берётся из времени: деление обязано
-   * воспроизводиться через месяц на другой машине — иначе пересчёт после
-   * правки метрики поменяет не только числа, но и то, какие строки были
-   * публичными, и весь прошлый лидерборд станет несравним с новым.
+   * Recorded in the competition row rather than taken from the clock: the
+   * split must reproduce a month later on another machine — otherwise a
+   * recomputation after a metric edit would change not only the numbers but
+   * also which rows were public, and the whole past leaderboard would become
+   * incomparable with the new one.
    */
   splitSeed: string
   limits: CompetitionLimits
-  /** Имя образа: то же окружение, что у ядра в занятии. */
+  /** The image name: the same environment as a class kernel's. */
   environment: string
   startsAt: number | null
   deadlineAt: number | null
   privateRelease: PrivateRelease
   scoring: ScoringRule
-  /** Когда приватный лидерборд открыли (сам или рукой); null — ещё закрыт. */
+  /** When the private leaderboard was opened (by itself or by hand); null — still closed. */
   privateOpenedAt: number | null
-  /** Посылка сэмпл-тетради: она же строка «бейзлайн» в лидерборде. */
+  /** The sample notebook's submission: it is also the "baseline" row on the leaderboard. */
   baselineSubmissionId: string | null
   /** Stable service identity, independent of the latest baseline notebook. */
   baselineEntrantId?: string | null
@@ -115,11 +121,12 @@ export interface Competition {
 }
 
 /**
- * Соревнование глазами участника.
+ * A competition as a participant sees it.
  *
- * Код метрики и зерно деления сюда не попадают, и это не вкусовщина: по зерну
- * и доле восстанавливается, какие именно строки публичные, а зная это, ответ
- * можно подогнать под скрытую часть, не решая задачу.
+ * The metric code and the split seed do not get in here, and that is not a
+ * matter of taste: from the seed and the share one can reconstruct exactly
+ * which rows are public, and knowing that, an answer can be fitted to the
+ * hidden part without solving the task.
  */
 export type CompetitionPublic = Omit<Competition, 'metric' | 'splitSeed' | 'createdBy'> & {
   metric: Omit<CompetitionMetric, 'code'>
@@ -130,11 +137,12 @@ export function publicCompetition(c: Competition): CompetitionPublic {
   return { ...rest, metric: { name: metric.name, direction: metric.direction } }
 }
 
-/* ------------------------------------------------------------------ файлы */
+/* ------------------------------------------------------------------ files */
 
 /**
- * Открытые файлы участник скачивает и видит в контейнере как `data/`; скрытые
- * не покидают DATA_DIR соревнования и попадают только в контейнер метрики.
+ * Open files a participant downloads and sees in the container as `data/`;
+ * hidden ones never leave the competition's DATA_DIR and get only into the
+ * metric container.
  */
 export type FileVisibility = 'open' | 'hidden'
 
@@ -142,70 +150,72 @@ export interface CompetitionFile {
   competitionId: string
   name: string
   bytes: number
-  /** Строк в таблице — показывается рядом с именем; null для не-CSV. */
+  /** Rows in the table — shown next to the name; null for non-CSV. */
   rows: number | null
   visibility: FileVisibility
   uploadedAt: number
 }
 
-/* --------------------------------------------------------------- участник */
+/* ------------------------------------------------------------ participant */
 
 /**
- * Участник соревнований — сущность УРОВНЯ ИНСТАНСА, а не комнаты.
+ * A competition participant is an INSTANCE-LEVEL entity, not a room one.
  *
- * Личность студента в занятии живёт в localStorage и привязана к session_id:
- * зашёл с телефона — другой человек. Для соревнования это негодно, потому что
- * посылки и место обязаны возвращаться с другого устройства и через неделю.
- * Отсюда «ключ входа» — ровно та же механика, что у личных ссылок
- * преподавателей (`staff.link_key`), и с той же ценой: кто знает ключ, тот и
- * участник. Преподаватель может выдать новый; старый тут же перестаёт
- * действовать.
+ * A student's identity in a class lives in localStorage and is bound to the
+ * session_id: come in from a phone and you are a different person. For a
+ * competition that will not do, because submissions and a place must come
+ * back on another device and a week later. Hence the "sign-in key" — exactly
+ * the same mechanism as teachers' personal links (`staff.link_key`), and at
+ * the same price: whoever knows the key is the participant. The teacher can
+ * issue a new one; the old one stops working at once.
  */
 export interface Entrant {
   id: string
   name: string
   createdAt: number
   lastSeenAt: number | null
-  /** Ключ отозвали (выдали новый) — строка живёт, посылки остаются. */
+  /** The key was revoked (a new one issued) — the row lives on, the submissions stay. */
   disabled: boolean
 }
 
 /**
- * КЛЮЧА ЗДЕСЬ НЕТ, и это не забывчивость.
+ * THE KEY IS NOT HERE, and that is not forgetfulness.
  *
- * `Entrant` уезжает в браузер — своему хозяину в `/api/k/me`, преподавателю
- * списком участников, всем подряд строкой лидерборда. Пока ключ лежал полем
- * этой записи, один недосмотренный `res.json({ entrants })` раздавал классу
- * входы друг к другу, а заметить это можно было только чтением ответа.
- * Секрет возвращают ровно две двери сервера — выдача и `entrantKeyOf`, — и обе
- * названы так, что их видно (server/src/competitions/key.ts · store.ts).
+ * `Entrant` travels to the browser — to its owner in `/api/k/me`, to the
+ * teacher in the list of participants, to everyone as a leaderboard row.
+ * While the key lay in a field of this record, a single overlooked
+ * `res.json({ entrants })` handed the class each other's sign-ins, and one
+ * could notice it only by reading the response. The secret is returned by
+ * exactly two server doors — issuing and `entrantKeyOf` — and both are named
+ * so that they stand out (server/src/competitions/key.ts · store.ts).
  */
 export interface MintedEntrant {
   entrant: Entrant
-  /** `K7Q-M2X-9FD`. Показывается хозяину и больше нигде. */
+  /** `K7Q-M2X-9FD`. Shown to its owner and nowhere else. */
   key: string
 }
 
 /**
- * Печенье участника — своё, отдельно от преподавательского.
+ * The participant's cookie — their own, separate from the teachers'.
  *
- * Разными печеньями, а не одной ролью в одной подписи: преподаватель, вошедший
- * на `/k` посмотреть глазами студента, обязан остаться преподавателем в
- * соседней вкладке с панелью, а участник — не получить ничего от того, что у
- * него в браузере когда-то лежал `colloq_staff`.
+ * Different cookies, not one role in one signature: a teacher who came to
+ * `/k` to look through a student's eyes must stay a teacher in the
+ * neighboring tab with the panel, and a participant must get nothing from the
+ * fact that their browser once held `colloq_staff`.
  */
 export const ENTRANT_COOKIE = 'colloq_k'
 
-/** Куда ведёт «Ссылка для входа»: страница меняет ключ на печенье. */
+/** Where the "Sign-in link" leads: the page exchanges the key for the cookie. */
 export const ENTRANT_SIGN_IN_PATH = '/k/t/'
 
 /**
- * Почему дверь `/api/k` отказала — словом, на которое ветвится экран.
+ * Why the `/api/k` door refused — as a word the screen branches on.
  *
- * `error` читает человек, это — читает код: поле ключа после `key_disabled`
- * предлагает спросить новый, после `key_unknown` — проверить буквы; зона
- * загрузки после `quota` гаснет до завтра, а после `in_flight` — до конца
- * идущего прогона. По тексту отказа различить это нельзя, а различать надо.
+ * `error` is read by a person, this one by code: after `key_disabled` the key
+ * field offers to ask for a new one, after `key_unknown` to check the
+ * letters; after `quota` the upload area goes dim until tomorrow, and after
+ * `in_flight` until the current run ends. The refusal text cannot tell these
+ * apart, and they do need telling apart.
  */
 export type CompetitionRefusal =
   | 'unauthenticated'
@@ -213,16 +223,16 @@ export type CompetitionRefusal =
   | 'not_found'
   | 'invalid'
   | 'unavailable'
-  /** Имя занято тёзкой в этом соревновании. */
+  /** The name is taken by a namesake in this competition. */
   | 'name_taken'
   | 'key_unknown'
   | 'key_disabled'
-  /** Соревнование ещё черновик или не наступило его начало. */
+  /** The competition is still a draft or has not started yet. */
   | 'not_open'
-  /** Дедлайн прошёл или преподаватель завершил досрочно. */
+  /** The deadline has passed or the teacher finished it early. */
   | 'closed'
   | 'not_joined'
-  /** Прошлая посылка ещё в полёте: по одной за раз. */
+  /** The previous submission is still in flight: one at a time. */
   | 'in_flight'
   | 'quota'
   | 'too_often'
@@ -234,11 +244,11 @@ export interface CompetitionErrorBody {
 }
 
 /**
- * Идёт ли приём посылок прямо сейчас.
+ * Whether submissions are being accepted right now.
  *
- * Три «нет» вместо одного `boolean`: до открытия человеку говорят «ещё не
- * открыто», после дедлайна — «приём закрыт», и это разные экраны. Черновик
- * сюда не доходит вовсе — его на `/k` нет.
+ * Three answers instead of one `boolean`: before the opening a person is told
+ * "not open yet", after the deadline "submissions are closed", and those are
+ * different screens. A draft never gets here — it does not exist on `/k`.
  */
 export function submissionsOpen(
   c: Pick<Competition, 'state' | 'startsAt' | 'deadlineAt'>,
@@ -252,16 +262,17 @@ export function submissionsOpen(
 }
 
 /**
- * Имя, приведённое к виду, в котором сравнивают ТЁЗОК.
+ * A name brought to the form in which NAMESAKES are compared.
  *
- * «Тёзки в лидерборде недопустимы» — правило про глаз, а не про байты: две
- * строки «Анна Ким» и «анна  ким» человек читает как одно имя и спорит о том,
- * чьё место выше. Поэтому регистр и лишние пробелы не считаются, а `ё`
- * складывается с `е`: «Артём» и «Артем» в одной таблице — ровно та путаница,
- * ради которой правило и заведено.
+ * "Namesakes on the leaderboard are not allowed" is a rule about the eye, not
+ * about bytes: two rows "Анна Ким" and "анна  ким" read to a person as one
+ * name, and people argue about whose place is higher. So case and extra
+ * spaces do not count, and `ё` is folded into `е`: "Артём" and "Артем" in one
+ * table are exactly the confusion the rule exists for.
  *
- * Разбор тут же и ограничение длины — нет: уникальность проверяет база по
- * этому ключу, а длину режет `LIMITS.entrantName` на входе.
+ * The normalization is here, but limiting the length is not: uniqueness is
+ * checked by the database on this key, and the length is cut by
+ * `LIMITS.entrantName` on input.
  */
 export function entrantNameKey(name: string): string {
   return String(name ?? '')
@@ -272,22 +283,23 @@ export function entrantNameKey(name: string): string {
 }
 
 /**
- * Алфавит ключа: без `O`, `0`, `I`, `1` и `L`.
+ * The key alphabet: without `O`, `0`, `I`, `1` and `L`.
  *
- * Ключ диктуют вслух и переписывают с экрана телефона на ноутбук. Пара
- * «ноль — О» стоит одного обращения к преподавателю за новым ключом, и
- * дешевле её просто не выпускать.
+ * The key is dictated aloud and copied from a phone screen to a laptop. The
+ * "zero — O" pair costs one trip to the teacher for a new key, and it is
+ * cheaper not to issue it at all.
  */
 export const ENTRANT_KEY_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
 export const ENTRANT_KEY_GROUPS = 3
 export const ENTRANT_KEY_GROUP_SIZE = 3
 
 /**
- * Привести ключ к каноническому виду или отказать.
+ * Bring a key to canonical form or refuse.
  *
- * Человек вставляет его с пробелами, в нижнем регистре и без дефисов — всё это
- * тот же ключ. А вот буква не из алфавита — не описка, а другой ключ, и
- * угадывать за человека здесь нельзя.
+ * A person pastes it with spaces, in lower case and without dashes — all of
+ * that is the same key. But a letter outside the alphabet is not a typo; it
+ * is a different key, and guessing on the person's behalf is not allowed
+ * here.
  */
 export function normalizeEntrantKey(raw: string): string | null {
   const flat = String(raw ?? '')
@@ -307,20 +319,23 @@ export function entrantKeyOk(value: string): boolean {
   return normalizeEntrantKey(value) === value
 }
 
-/* --------------------------------------------------------------- посылка */
+/* ------------------------------------------------------------ submission */
 
 /**
- * Исход посылки — ровно те восемь, что нарисованы в макете, и один девятый.
+ * A submission's outcome — exactly the eight drawn in the mockup, and a
+ * ninth.
  *
- * Девятый — `cancelled`: кнопка «Отменить» есть у идущей и у стоящей в
- * очереди посылки, а плашки для снятой в макете нет. Состояние всё равно
- * обязано существовать, иначе снятая посылка вечно висела бы «В ОЧЕРЕДИ».
+ * The ninth is `cancelled`: the "Cancel" button exists on a running and on a
+ * queued submission, but the mockup has no badge for a withdrawn one. The
+ * state must exist anyway, otherwise a withdrawn submission would hang
+ * "IN QUEUE" forever.
  *
- * `rejected` («ОТВЕТ НЕ ПРИНЯТ») покрывает не только `ParticipantVisibleError`
- * метрики, но и «тетрадь дошла до конца, а `submission.csv` не написала» и
- * «написала, но его не прочесть». Слово участнику одно и то же, различается
- * причина, и она лежит в `participantError`: дробить плашки по техническому
- * поводу значит отвечать человеку словарём прогонщика.
+ * `rejected` ("ANSWER REJECTED") covers not only the metric's
+ * `ParticipantVisibleError` but also "the notebook ran to the end and did not
+ * write `submission.csv`" and "wrote it, but it cannot be read". The word for
+ * the participant is one and the same, the reason differs, and it lies in
+ * `participantError`: splitting badges by technical cause would mean
+ * answering a person in the runner's vocabulary.
  */
 export type SubmissionState =
   | 'queued'
@@ -345,7 +360,7 @@ export const SUBMISSION_STATES: readonly SubmissionState[] = [
   'cancelled',
 ]
 
-/** Этапы прогона, в порядке полосы под идущей посылкой (P2). */
+/** The run's stages, in the order of the strip under a running submission (P2). */
 export type SubmissionStage = 'accepted' | 'queue' | 'dependencies' | 'notebook' | 'check' | 'score'
 
 export const SUBMISSION_STAGES: readonly SubmissionStage[] = [
@@ -357,7 +372,7 @@ export const SUBMISSION_STAGES: readonly SubmissionStage[] = [
   'score',
 ]
 
-/** Пройден · идёт сейчас · ещё не наступил. */
+/** Passed · going on now · not reached yet. */
 export type StagePosition = 'done' | 'current' | 'ahead'
 
 export interface Submission {
@@ -368,43 +383,44 @@ export interface Submission {
   id: string
   competitionId: string
   entrantId: string
-  /** Номер по порядку В ПРЕДЕЛАХ соревнования: «#12» в списке участника. */
+  /** The ordinal number WITHIN the competition: "#12" in the participant's list. */
   number: number
   fileName: string
   bytes: number
   acceptedAt: number
   state: SubmissionState
-  /** Докуда дошла: этап, на котором посылка стоит или остановилась. */
+  /** How far it got: the stage at which the submission stands or stopped. */
   stage: SubmissionStage
   publicScore: number | null
-  /** Участнику не уезжает до открытия приватного лидерборда. */
+  /** Not sent to the participant until the private leaderboard opens. */
   privateScore: number | null
-  /** Сколько шла, в миллисекундах; null — ещё идёт или не начиналась. */
+  /** How long it ran, in milliseconds; null — still running or never started. */
   durationMs: number | null
-  /** На какой ячейке кончилась и сколько их было. */
+  /** At which cell it ended and how many there were. */
   cellsDone: number
   cellsTotal: number
-  /** Что показать участнику: текст ParticipantVisibleError или объяснение отказа. */
+  /** What to show the participant: the ParticipantVisibleError text or the refusal's explanation. */
   participantError: string | null
-  /** Трейс и всё остальное — только преподавателю. */
+  /** The traceback and everything else — for the teacher only. */
   teacherError: string | null
-  /** Выбрана автором в зачёт. */
+  /** Picked by its author to count. */
   chosen: boolean
 }
 
 /**
- * Посылка глазами её автора.
+ * A submission as its author sees it.
  *
- * Два поля не уезжают. `teacherError` — трейс, и он не участнику: «ошибка в
- * вашем коде, не у участника» (A3) читает тот, кто писал метрику. А
- * `privateScore` считается с первой же посылки и лежит в той же строке, что и
- * публичный, — и если отдать его до открытия приватного лидерборда, весь
- * смысл деления теста исчезает: под скрытую часть можно подогнаться, обновляя
- * страницу.
+ * Two fields are not sent. `teacherError` is a traceback, and it is not for
+ * the participant: "the error is in your code, not the participant's" (A3) is
+ * read by whoever wrote the metric. And `privateScore` is computed from the
+ * very first submission and sits in the same row as the public one — and if
+ * it is handed out before the private leaderboard opens, the whole point of
+ * splitting the test disappears: one could fit to the hidden part by
+ * refreshing the page.
  *
- * Функцией, а не выборкой в SQL: то же правило применяется к посылке, которую
- * вернула отправка, к списку «Мои посылки» и к одной строке после пересчёта —
- * три места, из которых забыть можно любое.
+ * A function, not a selection in SQL: the same rule applies to the submission
+ * the upload returned, to the "My submissions" list and to a single row after
+ * a recomputation — three places, any of which can be forgotten.
  */
 export type EntrantSubmission = Omit<Submission, 'teacherError' | 'privateScore'> & {
   privateScore: number | null
@@ -416,16 +432,17 @@ export function entrantSubmission(s: Submission, privateOpen: boolean): EntrantS
 }
 
 /**
- * Почему присланный файл — не тетрадь.
+ * Why the uploaded file is not a notebook.
  *
- * Разбирается ЗДЕСЬ, до очереди, и не ради вкуса: тетрадь читает `nbformat` в
- * одноразовом контейнере, и битый JSON там становится «упала тетрадь» — то
- * есть приговором коду, которого человек не писал, да ещё и потраченной
- * посылкой из пяти дневных. Проверка дешёвая и отвечает словами про файл.
+ * Checked HERE, before the queue, and not for taste: the notebook is read by
+ * `nbformat` in a disposable container, and broken JSON there becomes
+ * "notebook failed" — that is, a verdict on code the person did not write,
+ * and a spent submission out of the five a day on top of that. The check is
+ * cheap and answers in words about the file.
  *
- * Строгости ровно столько, сколько переживёт настоящая тетрадь из чужого
- * Jupyter: объект, массив `cells`, у каждой ячейки свой `cell_type`. Версию
- * `nbformat` не проверяем — её чинит сам `nbformat.read`.
+ * Exactly as strict as a real notebook from someone else's Jupyter will
+ * survive: an object, a `cells` array, each cell with its own `cell_type`.
+ * The `nbformat` version is not checked — `nbformat.read` fixes it itself.
  */
 export function whyNotebookRefused(text: string): string | null {
   let parsed: unknown
@@ -448,21 +465,22 @@ export function whyNotebookRefused(text: string): string | null {
 }
 
 /**
- * Прогон — ОДИН заход в контейнер, и их у посылки несколько.
+ * A run is ONE trip into a container, and a submission has several of them.
  *
- * Строкой на этап, а не на посылку, ради единственной вещи, которую обещает
- * макет: «после правки метрики всё пересчитывается без повторного исполнения
- * тетрадей». Пересчёт заводит новый прогон вида `metric` рядом с прежним
- * `notebook`, и тетрадь второй раз не запускается. Заодно сюда же ложится
- * «исполнить заново» из меню строки.
+ * A row per stage, not per submission, for the sake of the one thing the
+ * mockup promises: "after a metric edit everything is recomputed without
+ * running the notebooks again". A recomputation creates a new run of kind
+ * `metric` next to the earlier `notebook` one, and the notebook is not run a
+ * second time. "Run again" from the row menu lands here too.
  */
 export type RunKind = 'notebook' | 'metric'
 
 /**
- * Слова прогонщика — ровно те, что пишет обвязка в `run.json` и `score.json`
- * (см. прототип: harness/run_notebook.py, harness/score_metric.py). Здесь они
- * не переводятся и не приукрашиваются: разбирать их в состояние — дело одной
- * функции ниже, а всё остальное смотрит на состояние.
+ * The runner's words — exactly those the harness writes in `run.json` and
+ * `score.json` (see the prototype: harness/run_notebook.py,
+ * harness/score_metric.py). Here they are neither translated nor
+ * embellished: turning them into a state is the job of one function below,
+ * and everything else looks at the state.
  */
 export type RunVerdict =
   | 'ok'
@@ -486,13 +504,13 @@ export interface SubmissionRun {
   inputRevision?: number | null
   id: string
   submissionId: string
-  /** Номер прогона по порядку внутри посылки. */
+  /** The run's ordinal number within the submission. */
   seq: number
   kind: RunKind
   startedAt: number
   finishedAt: number | null
   verdict: RunVerdict | null
-  /** Имя контейнера — по нему его убивают и по нему же ищут в журнале docker. */
+  /** The container's name — it is killed by this name and looked up by it in the docker log. */
   container: string | null
   exitCode: number | null
   oom: boolean
@@ -505,20 +523,21 @@ export interface SubmissionRun {
 }
 
 /**
- * Во что превращается слово прогонщика.
+ * What the runner's word turns into.
  *
- * Порядок разбора — тот же, что у прототипа (`drive.py` · verdict_of), и он
- * же единственная копия правила: убийство по памяти и по сроку старше всего,
- * что успела записать обвязка, а «нет файла» идёт раньше её `status`, иначе
- * посылка с пустыми руками считалась бы удавшейся.
+ * The order of parsing is the same as in the prototype (`drive.py` ·
+ * verdict_of), and it is also the only copy of the rule: a kill for memory
+ * and for time outranks everything the harness managed to write, and "no
+ * file" comes before its `status`, otherwise a submission that came back
+ * empty-handed would count as a success.
  */
 export function stateOfVerdict(kind: RunKind, verdict: RunVerdict): SubmissionState {
   if (verdict === 'out-of-memory') return 'outOfMemory'
   if (verdict === 'timeout' || verdict === 'cell_timeout') return 'timedOut'
   if (kind === 'metric') {
     if (verdict === 'ok') return 'scored'
-    // ParticipantVisibleError — единственная ошибка метрики, которую участник
-    // читает дословно; любая другая означает, что упал код преподавателя.
+    // ParticipantVisibleError is the only metric error the participant reads
+    // verbatim; any other means the teacher's code crashed.
     return verdict === 'participant_error' ? 'rejected' : 'metricFailed'
   }
   switch (verdict) {
@@ -528,33 +547,35 @@ export function stateOfVerdict(kind: RunKind, verdict: RunVerdict): SubmissionSt
     case 'target_too_large':
     case 'target_unreadable':
     case 'dependency_error':
-      // Тетрадь отработала, а ответа нет или он нечитаем — это отказ участнику,
-      // а не падение тетради: ячейка с ошибкой тут ни при чём.
+      // The notebook ran but there is no answer or it is unreadable — that is a
+      // refusal to the participant, not a notebook failure: no failing cell is
+      // involved.
       return 'rejected'
     case 'cell_error':
     case 'kernel_died':
     case 'exit':
       return 'notebookFailed'
     default:
-      // harness_error и unknown: виновата обвязка, а не участник, и разбирать
-      // это преподавателю. Показывать человеку «ошибка в тетради» нельзя.
+      // harness_error and unknown: the harness is to blame, not the
+      // participant, and it is for the teacher to sort out. Showing a person
+      // "notebook error" is not allowed.
       return 'metricFailed'
   }
 }
 
-/** Дошла ли посылка до конца пути — в любом смысле, включая плохой. */
+/** Whether the submission has reached the end of the road — in any sense, including a bad one. */
 export function isTerminal(state: SubmissionState): boolean {
   return state !== 'queued' && state !== 'running'
 }
 
-/* ------------------------------------------------- слова про состояние */
+/* ---------------------------------------------------- words for states */
 
-/** Тон плашки — по таблице макета «Плашки статусов». */
+/** The badge's tone — per the mockup's "Status badges" table. */
 export type BadgeTone = 'accent' | 'positive' | 'danger' | 'warning' | 'neutral'
 
 /**
- * Форма: залитая бледным фоном, залитая насыщенным цветом или контурная.
- * «УПАЛА МЕТРИКА» и «ВЫПОЛНЯЕТСЯ» — единственные насыщенные.
+ * The form: filled with a pale background, filled with a saturated color, or
+ * outlined. "METRIC FAILED" and "RUNNING" are the only saturated ones.
  */
 export type BadgeForm = 'filled' | 'strong' | 'outline'
 
@@ -565,11 +586,11 @@ export interface SubmissionBadge {
 }
 
 /**
- * Плашка посылки ГЛАЗАМИ УЧАСТНИКА.
+ * A submission's badge AS THE PARTICIPANT SEES IT.
  *
- * `null` — плашки нет вовсе, и это не пропуск: упавший код метрики виноват
- * перед участником, а не наоборот, и на его строке стоит фраза
- * (`METRIC_FAILED_NOTE`), а не ярлык.
+ * `null` means no badge at all, and that is not an omission: a crashed metric
+ * code is at fault before the participant, not the other way round, and their
+ * row carries a phrase (`METRIC_FAILED_NOTE`), not a label.
  */
 export function entrantBadge(state: SubmissionState): SubmissionBadge | null {
   switch (state) {
@@ -586,9 +607,10 @@ export function entrantBadge(state: SubmissionState): SubmissionBadge | null {
     case 'timedOut':
       return { word: tr('competitions.entrant.timedOut'), tone: 'danger', form: 'filled' }
     case 'outOfMemory':
-      // В макете участника этой плашки нет — нарисован только преподавательский
-      // случай. Молчать нельзя: посылка, убитая по памяти, обязана назваться,
-      // иначе она выглядит пропавшей. Слово взято у преподавателя.
+      // The participant's mockup has no such badge — only the teacher's case is
+      // drawn. Staying silent is not an option: a submission killed for memory
+      // must name itself, otherwise it looks lost. The word is borrowed from
+      // the teacher's set.
       return { word: tr('competitions.entrant.outOfMemory'), tone: 'danger', form: 'filled' }
     case 'cancelled':
       return { word: tr('competitions.entrant.cancelled'), tone: 'neutral', form: 'filled' }
@@ -598,11 +620,12 @@ export function entrantBadge(state: SubmissionState): SubmissionBadge | null {
 }
 
 /**
- * Плашка посылки ГЛАЗАМИ ПРЕПОДАВАТЕЛЯ.
+ * A submission's badge AS THE TEACHER SEES IT.
  *
- * `null` у идущей и стоящей в очереди: в таблице A3 их нет, они живут в блоке
- * очереди сверху («ИСПОЛНЯЕТСЯ СЕЙЧАС» и «ЖДУТ · N»), и второй раз называть
- * их плашкой значит показать одно и то же дважды разными словами.
+ * `null` for a running and a queued one: they are not in the A3 table, they
+ * live in the queue block above ("RUNNING NOW" and "WAITING · N"), and
+ * naming them with a badge a second time would show the same thing twice in
+ * different words.
  */
 export function teacherBadge(state: SubmissionState): SubmissionBadge | null {
   switch (state) {
@@ -617,8 +640,8 @@ export function teacherBadge(state: SubmissionState): SubmissionBadge | null {
     case 'outOfMemory':
       return { word: tr('competitions.teacher.outOfMemory'), tone: 'danger', form: 'filled' }
     case 'metricFailed':
-      // Единственная насыщенно-красная плашка продукта: её видит только тот,
-      // кто может это починить.
+      // The only saturated red badge in the product: it is seen only by the
+      // person who can fix it.
       return { word: tr('competitions.teacher.metricFailed'), tone: 'danger', form: 'strong' }
     case 'cancelled':
       return { word: tr('competitions.teacher.cancelled'), tone: 'neutral', form: 'filled' }
@@ -628,36 +651,37 @@ export function teacherBadge(state: SubmissionState): SubmissionBadge | null {
   }
 }
 
-/** Фраза вместо плашки — то, что читает участник у посылки с упавшей метрикой. */
+/** A phrase instead of a badge — what the participant reads on a submission whose metric crashed. */
 export function metricFailedNote(): string {
   return tr('competitions.metricFailedNote')
 }
 
-/** Состояние соревнования словом: «ЧЕРНОВИК», «ИДЁТ», «ЗАВЕРШЕНО». */
+/** The competition's state as a word: "DRAFT", "LIVE", "FINISHED". */
 export function competitionWord(state: CompetitionState): string {
   return tr(`competitions.state.${state}`)
 }
 
-/** Подпись этапа прогона. */
+/** The label of a run stage. */
 export function stageWord(stage: SubmissionStage): string {
   if (stage === 'dependencies') return tr('dependencies.installing')
   return tr(`competitions.stage.${stage}`)
 }
 
-/** Направление метрики словами (A1, A2, P2, P3). */
+/** The metric's direction in words (A1, A2, P2, P3). */
 export function directionWord(direction: MetricDirection): string {
   return tr(`competitions.direction.${direction}`)
 }
 
-/** Направление метрики знаком: `MAPE ↓`, `ROC AUC ↑` (P1, P4). Не перевод, а стрелка. */
+/** The metric's direction as a sign: `MAPE ↓`, `ROC AUC ↑` (P1, P4). Not a translation, an arrow. */
 export const DIRECTION_ARROW: Record<MetricDirection, string> = { lower: '↓', higher: '↑' }
 
 /**
- * Где посылка стоит на полосе этапов.
+ * Where a submission stands on the stage strip.
  *
- * Дошедшая до конца — вся зелёная: «ОЦЕНКА» у готовой посылки пройдена, а не
- * идёт. Упавшая красит пройденным всё до этапа, на котором умерла, и сам этот
- * этап оставляет текущим — там и надо искать причину.
+ * One that reached the end is all green: "SCORING" on a finished submission
+ * is passed, not in progress. A failed one paints everything up to the stage
+ * where it died as passed, and leaves that stage itself current — that is
+ * where to look for the reason.
  */
 export function stagePosition(
   state: SubmissionState,
@@ -671,32 +695,34 @@ export function stagePosition(
   return state === 'scored' ? 'done' : 'current'
 }
 
-/* ------------------------------------------------------------------ адрес */
+/* ---------------------------------------------------------------- address */
 
 /**
- * Почему это имя не годится в адрес — словом, а не «false».
+ * Why this name will not do as an address — as a word, not "false".
  *
- * Отказ «адрес не подходит» отправляет преподавателя перебирать буквы; отказ
- * `reserved` он читает один раз и больше сюда не приходит.
+ * A refusal "the address does not fit" sends the teacher trying letters one
+ * by one; a `reserved` refusal they read once and never come back here.
  */
 export type SlugRefusal = 'empty' | 'chars' | 'reserved'
 
 /**
- * Имена, занятые не соревнованиями.
+ * Names taken by things other than competitions.
  *
- * `t` — вход по ключу (`/k/t/<key>`), и соревнование с таким адресом отняло бы
- * у всех участников способ вернуться. Проверка здесь, а не в маршрутизаторе:
- * к моменту, когда до маршрута дойдёт дело, адрес уже роздан классу.
+ * `t` is the sign-in by key (`/k/t/<key>`), and a competition at that address
+ * would take away from every participant the way to come back. The check is
+ * here, not in the router: by the time the route gets involved, the address
+ * has already been handed out to the class.
  */
 export const RESERVED_SLUGS: readonly string[] = ['t', 'new']
 
 /**
- * Привести имя к адресу или отказать.
+ * Bring a name to an address or refuse.
  *
- * Правило букв — одно на весь продукт (`shared/publish.ts` · slugOk): только
- * строчные, цифры и дефис, потому что адрес диктуют вслух и пишут на доске.
- * Своей копии регулярки здесь нет намеренно — разойдясь, они дали бы курс и
- * соревнование с разными представлениями о том, что такое адрес.
+ * The letter rule is one for the whole product (`shared/publish.ts` ·
+ * slugOk): only lowercase letters, digits and a dash, because an address is
+ * dictated aloud and written on the blackboard. There is deliberately no copy
+ * of the regex here — once apart, they would give a course and a competition
+ * different ideas of what an address is.
  */
 export function parseSlug(raw: string): string | null {
   const value = String(raw ?? '').trim().toLowerCase()
@@ -711,14 +737,14 @@ export function slugRefusal(raw: string): SlugRefusal | null {
   return slugOk(value) ? null : 'chars'
 }
 
-/** Адрес страницы соревнования у участника. */
+/** The address of the competition's page for participants. */
 export function competitionPath(slug: string): string {
   return `/k/${slug}`
 }
 
-/* --------------------------------------------------- дневная норма посылок */
+/* -------------------------------------------------- daily submission quota */
 
-/** Всё, что нужно, чтобы решить, идёт ли посылка в счёт дня. */
+/** Everything needed to decide whether a submission counts against the day. */
 export interface QuotaEntry {
   acceptedAt: number
   state: SubmissionState
@@ -726,16 +752,17 @@ export interface QuotaEntry {
 }
 
 /**
- * Идёт ли посылка в дневную норму.
+ * Whether a submission counts against the daily quota.
  *
- * Два исключения, и оба названы макетом. Снятая участником не идёт: он её
- * отменил, а не потратил. И «посылки с ошибкой в счёт дня не идут, если упали
- * до первой ячейки» — то есть тетрадь, которая не запустилась вовсе (битый
- * JSON, мёртвое ядро на старте), норму не тратит: человек не получил ни одной
- * попытки решить задачу.
+ * Two exceptions, and the mockup names both. One withdrawn by the participant
+ * does not count: they cancelled it, not spent it. And "a failed submission
+ * does not count against the day if it died before the first cell" — that is,
+ * a notebook that never started at all (broken JSON, a dead kernel at
+ * startup) does not spend the quota: the person did not get a single attempt
+ * at solving the task.
  *
- * Стоящая в очереди и идущая — идут. Иначе один человек поставил бы в очередь
- * сто тетрадей, и норма дня начала бы действовать задним числом.
+ * A queued one and a running one do count. Otherwise one person would queue a
+ * hundred notebooks, and the daily quota would start working retroactively.
  */
 export function countsTowardDailyQuota(entry: QuotaEntry): boolean {
   if (entry.state === 'cancelled') return false
@@ -744,11 +771,13 @@ export function countsTowardDailyQuota(entry: QuotaEntry): boolean {
 }
 
 /**
- * Начало суток для момента `at` в поясе, сдвинутом на `offsetMinutes` от UTC.
+ * The start of the day for the moment `at` in a time zone shifted by
+ * `offsetMinutes` from UTC.
  *
- * Пояс приходит числом, а не именем зоны: сутки соревнования — это сутки той
- * аудитории, где его ведут (макет пишет «23:59 МСК»), и одно число здесь честнее
- * доверия к часам браузера, которые у половины класса стоят как попало.
+ * The zone comes as a number, not a zone name: a competition's day is the day
+ * of the classroom where it is held (the mockup writes "23:59 MSK"), and one
+ * number here is more honest than trusting the browser's clock, which in half
+ * the class is set any old way.
  */
 export function dayStart(at: number, offsetMinutes: number): number {
   const DAY = 24 * 60 * 60 * 1000
@@ -757,10 +786,10 @@ export function dayStart(at: number, offsetMinutes: number): number {
 }
 
 /**
- * Сколько посылок человеку осталось сегодня; `null` — предела нет.
+ * How many submissions a person has left today; `null` — there is no limit.
  *
- * Отрицательным не бывает: преподаватель может опустить норму в середине дня,
- * и «осталось −2» на экране участника — не число, а обвинение.
+ * Never negative: the teacher can lower the quota in the middle of the day,
+ * and "−2 left" on a participant's screen is not a number but an accusation.
  */
 export function submissionsLeftToday(
   perDay: number,
@@ -778,9 +807,9 @@ export function submissionsLeftToday(
   return Math.max(0, Math.floor(perDay) - used)
 }
 
-/* --------------------------------------------------------- зачёт и места */
+/* ----------------------------------------------- what counts, and places */
 
-/** Посылка глазами правил зачёта и лидерборда. */
+/** A submission as the counting and leaderboard rules see it. */
 export interface BoardEntry {
   id: string
   number: number
@@ -791,18 +820,18 @@ export interface BoardEntry {
   chosen: boolean
 }
 
-/** Годится ли посылка в лидерборд: дошла до числа, и число это настоящее. */
+/** Whether a submission is fit for the leaderboard: it reached a number, and the number is real. */
 export function hasScore(value: number | null): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
 /**
- * Что лучше: `-1`, если `a` выше `b`.
+ * Which is better: `-1` if `a` ranks above `b`.
  *
- * Ничья решается временем — «при одинаковом результате выше посылка,
- * отправленная раньше» (сноска P3). Правило не косметическое: без него порядок
- * зависел бы от того, в каком виде база вернула строки, и место участника
- * менялось бы между двумя обновлениями страницы.
+ * A tie is broken by time — "on equal results the submission sent earlier
+ * ranks higher" (footnote on P3). The rule is not cosmetic: without it the
+ * order would depend on how the database returned the rows, and a
+ * participant's place would change between two page refreshes.
  */
 export function compareScores(
   a: { score: number; at: number },
@@ -816,15 +845,16 @@ export function compareScores(
 }
 
 /**
- * Какая посылка участника идёт в зачёт.
+ * Which of a participant's submissions counts.
  *
- * `chosen` с оговоркой из макета: «Не выбрал — берётся лучшая по публичной
- * части». Оговорка лежит здесь, а не в вёрстке, потому что по этой же функции
- * сервер собирает итоговый лидерборд.
+ * `chosen` with the caveat from the mockup: "If they pick none, the best on
+ * the public part is taken". The caveat lives here, not in the markup,
+ * because the server builds the final leaderboard with this same function.
  *
- * `last` — последняя ДОШЕДШАЯ ДО ЧИСЛА, а не последняя присланная: упавшую
- * тетрадь в лидерборд поставить нечем, и «последняя» в этом случае означала бы
- * вылет участника из таблицы за одну неудачную посылку перед сном.
+ * `last` is the last one that REACHED A NUMBER, not the last one sent: a
+ * failed notebook has nothing to put on the leaderboard, and "last" in that
+ * case would mean a participant dropping out of the table over one unlucky
+ * submission before bedtime.
  */
 export function countedSubmission(
   rule: ScoringRule,
@@ -855,7 +885,7 @@ export function countedSubmission(
   )
 }
 
-/** Строка лидерборда до расстановки мест. */
+/** A leaderboard row before places are assigned. */
 export interface BoardRow {
   entrantId: string
   submissionId: string
@@ -866,11 +896,11 @@ export interface BoardRow {
 export type RankedRow = BoardRow & { place: number }
 
 /**
- * Расставить места.
+ * Assign places.
  *
- * Мест, разделённых на двоих, здесь нет: ничья уже решена временем, поэтому
- * место — просто порядковый номер. Иначе «ВАШЕ МЕСТО 7 из 28» перестало бы
- * сходиться с длиной таблицы.
+ * There are no shared places here: a tie is already broken by time, so a
+ * place is simply an ordinal number. Otherwise "YOUR PLACE 7 of 28" would
+ * stop matching the length of the table.
  */
 export function rankBoard(rows: readonly BoardRow[], direction: MetricDirection): RankedRow[] {
   return [...rows]
@@ -879,12 +909,13 @@ export function rankBoard(rows: readonly BoardRow[], direction: MetricDirection)
 }
 
 /**
- * Лидерборд одной части теста: по одной, зачётной, посылке на человека.
+ * The leaderboard of one part of the test: one counted submission per person.
  *
- * Считается из ПУБЛИЧНЫХ чисел даже для итоговой таблицы, и это не описка:
- * правило зачёта выбирает посылку по тому, что участник видел, а приватное
- * число лишь подставляется в выбранную. Иначе итог считался бы по посылке,
- * которую человек не выбирал и увидеть не мог.
+ * Computed from the PUBLIC numbers even for the final table, and that is not
+ * a typo: the counting rule picks a submission by what the participant saw,
+ * and the private number is merely substituted into the chosen one.
+ * Otherwise the final result would be computed on a submission the person
+ * did not choose and could not see.
  */
 export function boardOf(
   people: readonly { entrantId: string; entries: readonly BoardEntry[] }[],
@@ -908,17 +939,17 @@ export function boardOf(
   return rankBoard(rows, direction)
 }
 
-/** Место человека в готовой таблице, или null — его там нет. */
+/** A person's place in the finished table, or null — they are not in it. */
 export function placeOf(rows: readonly RankedRow[], entrantId: string): number | null {
   return rows.find((row) => row.entrantId === entrantId)?.place ?? null
 }
 
 /**
- * Насколько человек переехал между публичным и итоговым лидербордом.
+ * How far a person moved between the public and the final leaderboard.
  *
- * Положительное — поднялся (`▲`), отрицательное — опустился (`▼`), ноль —
- * остался (`—`). `null`, если в одной из таблиц его нет: «поднялся на 7 мест»
- * из ниоткуда — не факт, а выдумка.
+ * Positive — moved up (`▲`), negative — moved down (`▼`), zero — stayed
+ * (`—`). `null` if they are missing from one of the tables: "moved up 7
+ * places" out of nowhere is not a fact but an invention.
  */
 export function placeShift(publicPlace: number | null, privatePlace: number | null): number | null {
   if (publicPlace === null || privatePlace === null) return null
@@ -926,11 +957,11 @@ export function placeShift(publicPlace: number | null, privatePlace: number | nu
 }
 
 /**
- * Открыт ли приватный лидерборд.
+ * Whether the private leaderboard is open.
  *
- * `auto` открывает его дедлайн, `manual` — только рука преподавателя, и никакой
- * срок за него этого не сделает: вся ценность разбора в том, что места
- * называет он сам.
+ * `auto` opens it at the deadline, `manual` only by the teacher's hand, and
+ * no deadline will do it for them: the whole value of the review is that
+ * they name the places themselves.
  */
 export function privateBoardOpen(
   c: Pick<Competition, 'privateRelease' | 'deadlineAt' | 'privateOpenedAt'>,
@@ -941,16 +972,16 @@ export function privateBoardOpen(
   return c.deadlineAt !== null && now >= c.deadlineAt
 }
 
-/* ------------------------------------------------- деление строк ответов */
+/* --------------------------------------------- splitting the answer rows */
 
 export type RowPart = 'public' | 'private'
 
 /**
- * Сколько строк считать сразу.
+ * How many rows to score right away.
  *
- * Обе части обязаны быть непусты: метрика на нуле строк либо падает, либо
- * возвращает NaN, и соревнование с пустой приватной частью — это соревнование
- * без итога. Отсюда зажим, а не голое округление.
+ * Both parts must be non-empty: a metric on zero rows either crashes or
+ * returns NaN, and a competition with an empty private part is a competition
+ * without a result. Hence a clamp, not bare rounding.
  */
 export function publicRowCount(total: number, publicPercent: number): number {
   if (total <= 0) return 0
@@ -960,12 +991,13 @@ export function publicRowCount(total: number, publicPercent: number): number {
 }
 
 /**
- * FNV-1a, 32 бита.
+ * FNV-1a, 32 bits.
  *
- * Хэш здесь не про стойкость, а про повторяемость: одно и то же зерно и один и
- * тот же ключ строки обязаны дать одно и то же число сегодня, через месяц и на
- * другой машине. `Math.random` и порядок строк в файле для этого негодны — при
- * пересчёте после правки метрики публичной стала бы другая половина теста.
+ * The hash here is not about strength but about repeatability: the same seed
+ * and the same row key must give the same number today, in a month and on
+ * another machine. `Math.random` and the order of rows in the file are no
+ * good for this — on a recomputation after a metric edit, a different half
+ * of the test would become public.
  */
 function hash32(value: string): number {
   let hash = 0x811c9dc5
@@ -977,16 +1009,16 @@ function hash32(value: string): number {
 }
 
 /**
- * Разделить строки ответов на публичную и приватную часть.
+ * Split the answer rows into a public and a private part.
  *
- * Не «каждая строка с вероятностью p», а РАНГ по хэшу: доля должна давать ровно
- * то число строк, которое написано в макете («119 строк считаются сразу, 278 —
- * после дедлайна»), а жребий по каждой строке отдельно даёт 119 ± десяток и
- * разное число при каждом новом наборе.
+ * Not "each row with probability p" but a RANK by hash: the share must give
+ * exactly the number of rows written in the mockup ("119 rows count right
+ * away, 278 after the deadline"), while a separate coin toss per row gives
+ * 119 ± a dozen and a different number for every new set.
  *
- * Ответ выровнен по входу: `parts[i]` — про `ids[i]`. Перестановка строк в
- * файле ответов ничего не меняет — строка помнит свою часть по ключу, а не по
- * месту.
+ * The answer is aligned with the input: `parts[i]` is about `ids[i]`.
+ * Reordering rows in the answers file changes nothing — a row remembers its
+ * part by key, not by position.
  */
 export function splitRows(
   ids: readonly string[],
@@ -995,8 +1027,8 @@ export function splitRows(
 ): RowPart[] {
   const take = publicRowCount(ids.length, publicPercent)
   const order = ids.map((id, index) => ({ index, id, hash: hash32(`${seed}\u0000${id}`) }))
-  // Второй ключ — сам идентификатор: одинаковые хэши у разных строк случаются,
-  // и без него порядок зависел бы от того, как Array.sort повёл себя с ничьёй.
+  // The second key is the id itself: equal hashes for different rows happen,
+  // and without it the order would depend on how Array.sort handled the tie.
   order.sort((a, b) => (a.hash !== b.hash ? a.hash - b.hash : a.id < b.id ? -1 : 1))
   const parts: RowPart[] = new Array(ids.length).fill('private')
   for (let i = 0; i < take; i++) parts[order[i].index] = 'public'
@@ -1004,12 +1036,13 @@ export function splitRows(
 }
 
 /**
- * Деление, записанное преподавателем в колонке `Usage` файла ответов.
+ * The split the teacher recorded in the `Usage` column of the answers file.
  *
- * Оно старше зерна: разметив строки руками, преподаватель обычно делит их не
- * случайно, а по смыслу — по времени, по складу, по пациенту, — и подменять
- * такое деление жребием значит испортить задачу. `null` — колонка не годится
- * (чужие слова или одна часть пуста), и тогда делит зерно.
+ * It takes precedence over the seed: having marked the rows by hand, a
+ * teacher usually splits them not at random but by meaning — by time, by
+ * warehouse, by patient — and replacing such a split with a coin toss would
+ * spoil the task. `null` means the column will not do (foreign words, or one
+ * part is empty), and then the seed splits.
  */
 export function splitByUsage(usage: readonly string[]): RowPart[] | null {
   const parts: RowPart[] = []
@@ -1032,9 +1065,9 @@ export function splitByUsage(usage: readonly string[]): RowPart[] | null {
 }
 
 /**
- * Как разделить строки на самом деле: колонкой, если она есть и годна, иначе
- * зерном. Одна дверь на оба пути — чтобы «а откуда у этого соревнования такое
- * деление» имело один ответ.
+ * How to actually split the rows: by the column if it is there and usable,
+ * otherwise by the seed. One door for both paths — so that "where did this
+ * competition get such a split" has a single answer.
  */
 export function planSplit(
   rows: { ids: readonly string[]; usage?: readonly string[] | null },
@@ -1048,45 +1081,46 @@ export function planSplit(
   return { parts: splitRows(rows.ids, publicPercent, seed), by: 'seed' }
 }
 
-/* ----------------------------------------------------------------- пределы */
+/* ------------------------------------------------------------------ limits */
 
 /**
- * Длины и границы — одним местом, как в `shared/admin.ts`.
+ * Lengths and bounds — in one place, as in `shared/admin.ts`.
  *
- * Числа сторожат и форму в панели, и сервер: поле, отказавшее только на
- * клиенте, — это поле без ограничения.
+ * The numbers guard both the form in the panel and the server: a field
+ * refused only on the client is a field without a limit.
  */
 export const LIMITS = {
   title: 120,
   slug: 64,
   blurb: 240,
-  /** Markdown задачи. Двадцать килобайт — это десяток экранов текста. */
+  /** The task's Markdown. Twenty kilobytes is about ten screens of text. */
   description: 20_000,
   metricName: 24,
   metricCode: 40_000,
   entrantName: 60,
   fileName: 120,
-  /** Текст, который читает участник. Длиннее — это уже трейс, а он не ему. */
+  /** Text the participant reads. Anything longer is already a traceback, and that is not for them. */
   participantError: 2_000,
   teacherError: 20_000,
   publicPercent: { min: 1, max: 99, default: 30 },
   wallSeconds: { min: 30, max: 4 * 60 * 60, default: 600 },
   memoryMb: { min: 512, max: 64 * 1024, default: 4096 },
   cpus: { min: 1, max: 32, default: 2 },
-  /** Посылок в день на участника; 0 — без предела. */
+  /** Submissions per day per participant; 0 — no limit. */
   perDay: { min: 0, max: 100, default: 5 },
-  /** «до 200 МБ на соревнование» — подпись под списком открытых файлов (A2). */
+  /** "up to 200 MB per competition" — the caption under the list of open files (A2). */
   dataBytes: 200 * 1024 * 1024,
   files: 40,
   /**
-   * Потолок ПРИСЛАННОЙ тетради.
+   * The ceiling for a SUBMITTED notebook.
    *
-   * Свой, а не `config.maxUploadBytes`: `nbformat.read` разбирает файл в памяти
-   * контейнера целиком, и тетрадь на полсотни мегабайт base64-картинок убивает
-   * посылку по памяти ещё до первой ячейки — с причиной «не хватило памяти»,
-   * которую участник прочтёт как приговор своему коду.
+   * Its own, not `config.maxUploadBytes`: `nbformat.read` parses the whole
+   * file in the container's memory, and a notebook with fifty megabytes of
+   * base64 pictures kills the submission for memory before the first cell —
+   * with the reason "out of memory", which the participant will read as a
+   * verdict on their code.
    */
   notebookBytes: 20 * 1024 * 1024,
-  /** Потолок ответа, который обвязка забирает из контейнера (прототип: max_target). */
+  /** The ceiling for the answer the harness takes from the container (prototype: max_target). */
   submissionBytes: 64 * 1024 * 1024,
 } as const

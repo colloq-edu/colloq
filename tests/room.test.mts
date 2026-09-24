@@ -79,13 +79,13 @@ test('order follows arrival, so the list does not reshuffle as people type', () 
   assert.deepEqual(people.map((p) => p.user.name), ['Anna', 'Boris'])
 })
 
-/* --------------------------------------------------- где человек, и куда вести */
+/* ---------------------------------------- where a person is, and where to lead */
 
 /**
- * Строка в списке людей давно говорила, где человек, но никуда не вела:
- * увидеть было можно, дойти нельзя. Теперь ведёт — и вся ценность держится на
- * одном: фраза и место должны сходиться. «Правит ячейку 04», приводящее в
- * терминал, хуже, чем строка, которая никуда не ведёт.
+ * The row in the people list has long said where a person is, but led nowhere:
+ * you could see it, but not get there. Now it leads — and all its value rests
+ * on one thing: the phrase and the place must agree. "Editing cell 04" that
+ * leads to the terminal is worse than a row that leads nowhere.
  */
 
 const room = (over: Partial<RoomView> = {}): RoomView => ({
@@ -112,62 +112,62 @@ const who = (over: Partial<AwarenessUser> = {}, tabs = 1) => ({
   tabs,
 })
 
-test('человек в ячейке — фраза и место про одну и ту же ячейку', () => {
+test('a person in a cell: the phrase and the place are about the same cell', () => {
   const seen = whereabouts(who({ activeCellId: 'c2' }), room())
   assert.equal(seen.line, 'правит ячейку 02')
   assert.deepEqual(seen.place, { where: 'cell', cellId: 'c2' })
 })
 
-test('запуск перебивает место курсора — и фраза, и переход', () => {
-  // Пока ячейка считается, человек занят именно ею, где бы ни стоял курсор.
+test('a run overrides the cursor position, in both the phrase and the jump', () => {
+  // While a cell is computing, the person is busy with exactly that cell, wherever the cursor is.
   const seen = whereabouts(who({ activeCellId: 'c1' }), room({ runningCellId: 'c3', runBy: 'Мария' }))
   assert.equal(seen.line, 'запускает ячейку 03')
   assert.deepEqual(seen.place, { where: 'cell', cellId: 'c3' })
 })
 
-test('терминал и оракул ведут в свои панели', () => {
+test('the terminal and the oracle lead to their own panels', () => {
   assert.deepEqual(whereabouts(who({ inTerminal: true }), room()).place, { where: 'terminal' })
   assert.deepEqual(whereabouts(who({ composing: true }), room()).place, { where: 'oracle' })
 })
 
-test('терминал перебивает ячейку, а оракул уступает терминалу', () => {
+test('the terminal overrides the cell, and the oracle gives way to the terminal', () => {
   const both = who({ activeCellId: 'c1', inTerminal: true, composing: true })
   const seen = whereabouts(both, room())
   assert.equal(seen.line, 'в терминале')
   assert.deepEqual(seen.place, { where: 'terminal' })
 })
 
-test('удалённая ячейка не место: ни фразы, ни перехода', () => {
+test('a deleted cell is not a place: no phrase, no jump', () => {
   /*
-   * Курсор мог остаться на ячейке, которую с тех пор стёрли. Вести к тому,
-   * чего нет, хуже, чем не вести никуда, — и говорить про это тоже нечего.
+   * The cursor may have stayed on a cell that has been erased since. Leading to
+   * what is not there is worse than leading nowhere — and there is nothing to say about it either.
    */
   const seen = whereabouts(who({ activeCellId: 'ушла' }), room())
   assert.equal(seen.line, null)
   assert.equal(seen.place, null)
 })
 
-test('про вкладки сказать можно, а вести некуда', () => {
+test('tabs can be mentioned, but there is nowhere to lead', () => {
   const seen = whereabouts(who({}, 3), room())
-  // Числительное — по правилу, а не тернарником: «3 вкладки», но «5 вкладок».
+  // The numeral follows the plural rule, not a ternary: "3 вкладки" but "5 вкладок".
   assert.equal(seen.line, '3 вкладки')
   assert.equal(whereabouts(who({}, 5), room()).line, '5 вкладок')
   assert.equal(whereabouts(who({}, 21), room()).line, '21 вкладка')
-  assert.equal(seen.place, null, 'вкладки — не место в комнате')
+  assert.equal(seen.place, null, 'tabs are not a place in the room')
 })
 
-test('про молчащего человека нечего сказать и некуда вести', () => {
+test('about a silent person there is nothing to say and nowhere to lead', () => {
   const seen = whereabouts(who(), room())
   assert.equal(seen.line, null)
   assert.equal(seen.place, null)
 })
 
-test('фраза и место не расходятся ни в одном сочетании', () => {
+test('the phrase and the place agree in every combination', () => {
   /*
-   * Ровно то, ради чего они считаются одной функцией. Перебираем все
-   * осмысленные состояния и проверяем: если фраза называет ячейку — переход
-   * ведёт в ячейку с тем же номером; если говорит про терминал или оракула —
-   * переход туда же; если фраза молчит или про вкладки — перехода нет.
+   * Exactly why they are computed by one function. We go through every
+   * meaningful state and check: if the phrase names a cell, the jump leads to
+   * the cell with the same number; if it speaks of the terminal or the oracle,
+   * the jump leads there too; if the phrase is silent or about tabs, there is no jump.
    */
   const flags = [true, false]
   for (const inTerminal of flags)
@@ -180,7 +180,7 @@ test('фраза и место не расходятся ни в одном со
             const { line, place } = whereabouts(person, view)
 
             if (line === null) {
-              assert.equal(place, null, 'молчит, но куда-то ведёт')
+              assert.equal(place, null, 'silent, yet leads somewhere')
               continue
             }
             if (line === 'в терминале') assert.deepEqual(place, { where: 'terminal' })
@@ -188,9 +188,9 @@ test('фраза и место не расходятся ни в одном со
             else if (/вкладк/.test(line)) assert.equal(place, null)
             else {
               const no = line.slice(-2)
-              assert.ok(place && place.where === 'cell', `«${line}» ведёт не в ячейку`)
+              assert.ok(place && place.where === 'cell', `"${line}" does not lead to a cell`)
               const number = view.numbers.get((place as { cellId: string }).cellId)
-              assert.equal(String(number).padStart(2, '0'), no, `«${line}» ведёт в другую ячейку`)
+              assert.equal(String(number).padStart(2, '0'), no, `"${line}" leads to a different cell`)
             }
           }
 })

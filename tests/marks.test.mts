@@ -81,11 +81,12 @@ test('the card can name every mark, and has a word for none', () => {
 
 test('an address is never a mark', () => {
   /*
-   * Метка доезжает в чужой браузер присутствием, а не ответом сервера, то есть
-   * от как угодно правленного клиента. Avatar рисует по этому ответу — и «нет»
-   * здесь означает «никакого <img src> у тридцати человек в комнате».
+   * A mark reaches someone else's browser through presence, not through a
+   * server response, that is, from a client that may have been edited in any
+   * way. Avatar draws from this answer — and "no" here means "no <img src> for
+   * the thirty people in the room".
    */
-  for (const { mark } of MARKS) assert.ok(isMark(mark), `${mark} перестала быть меткой`)
+  for (const { mark } of MARKS) assert.ok(isMark(mark), `${mark} is no longer a mark`)
   for (const value of [
     'https://tracker.example/px.png?who=1',
     'http://tracker.example/px.png',
@@ -94,7 +95,7 @@ test('an address is never a mark', () => {
     '🦄',
     '',
   ]) {
-    assert.ok(!isMark(value), `«${value}» принята за метку`)
+    assert.ok(!isMark(value), `"${value}" is taken for a mark`)
   }
   assert.ok(!isMark(null))
   assert.ok(!isMark(undefined))

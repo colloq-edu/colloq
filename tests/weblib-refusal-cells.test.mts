@@ -1,23 +1,24 @@
 /**
- * Записка об отказе: что человек прочитает после того, как вкладку пересобрали.
+ * The refusal note: what a person will read after the tab has been rebuilt.
  *
- * Гейт отказывает КАДРУ ЦЕЛИКОМ, а кадр после обрыва связи — это всё, что
- * человек набрал без сети: печатать офлайн продукт разрешает намеренно. Дальше
- * вкладка стирает свой кэш и перезагружается, и всё, что не доехало до сервера,
- * исчезает — навсегда и без единого слова, если о нём не рассказать здесь.
+ * The gate refuses a FRAME AS A WHOLE, and a frame after a dropped connection
+ * is everything the person typed without the network: the product allows
+ * typing offline on purpose. Then the tab wipes its cache and reloads, and
+ * everything that did not reach the server disappears — forever and without a
+ * single word, unless it is told about here.
  *
- * Пока в записку клалась ОДНА ячейка (та, где стоял курсор), правки в остальных
- * уходили молча. Проверяется поэтому не текст на экране, а решение: что попало
- * в снимок, что из него правда потеряно, и в каком случае про это вообще
- * показывают окно.
+ * While the note held ONE cell (the one with the cursor), edits in the others
+ * went away silently. So what is checked is not the text on the screen but
+ * the decision: what went into the snapshot, what of it is really lost, and in
+ * which case a window about it is shown at all.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 /*
- * У узла нет sessionStorage — а записка живёт в нём. Подделка ровно того
- * размера, который читает модуль, плюс квота: без неё не проверить, что снимок,
- * который не влез, не уносит с собой и ту записку, что помещалась раньше.
+ * Node has no sessionStorage — and the note lives in it. A fake of exactly the
+ * size the module reads, plus a quota: without it one cannot check that a
+ * snapshot that did not fit does not carry away the note that fit before.
  */
 const store = new Map<string, string>()
 let quota = Number.POSITIVE_INFINITY
@@ -50,7 +51,7 @@ function note(over: Partial<Parameters<typeof stashRefusal>[0]> = {}) {
   }
 }
 
-test('в записку кладётся весь набранный текст, а не одна ячейка под курсором', () => {
+test('the note holds all the typed text, not just the one cell under the cursor', () => {
   store.clear()
   quota = Number.POSITIVE_INFINITY
   stashRefusal(note())
@@ -63,9 +64,9 @@ test('в записку кладётся весь набранный текст,
   )
 })
 
-test('после перезагрузки показывают только то, чего у сервера НЕ оказалось', () => {
-  // Вкладка собралась заново из серверной копии: две ячейки там такие же, одну
-  // сервер не принял, а ещё одну успели удалить.
+test('after the reload only what the server did NOT get is shown', () => {
+  // The tab was rebuilt from the server copy: two cells there are the same,
+  // one the server did not accept, and one more had already been deleted.
   const server = new Map([
     ['c03', 'df = read()'],
     ['c07', 'print(df.head())'],
@@ -77,7 +78,7 @@ test('после перезагрузки показывают только то
   )
 })
 
-test('расхождение в тексте — это тоже потеря, а не совпадение по имени', () => {
+test('a difference in the text is a loss too, not a match by name', () => {
   const server = new Map([['c03', 'df = read()  # старая строка сервера']])
   const lost = stillLost(
     note({ cells: [{ id: 'c03', text: 'df = read()' }] }),
@@ -86,7 +87,7 @@ test('расхождение в тексте — это тоже потеря, �
   assert.equal(lost.length, 1)
 })
 
-test('пустые ячейки в потери не идут: терять там нечего', () => {
+test('empty cells do not count as losses: there is nothing to lose there', () => {
   const lost = stillLost(
     note({
       cells: [
@@ -99,28 +100,29 @@ test('пустые ячейки в потери не идут: терять та
   assert.deepEqual(lost, [])
 })
 
-test('окно показывают и тогда, когда курсор стоял вне ячеек', () => {
-  // Ровно тот случай, из-за которого офлайн-правки исчезали тихо: `text` пуст,
-  // потому что якоря не было, а работа лежит в трёх других ячейках.
+test('the window is shown even when the cursor was outside the cells', () => {
+  // Exactly the case because of which offline edits disappeared quietly:
+  // `text` is empty because there was no anchor, while the work lies in three
+  // other cells.
   assert.equal(refusalHasText(note({ text: '' })), true)
   assert.equal(refusalHasText(note({ text: '', cells: [] })), false)
   assert.equal(refusalHasText(note({ text: 'что-то', cells: [] })), true)
 })
 
-test('снимок, не влезший в хранилище, не уносит с собой саму записку', () => {
+test('a snapshot that did not fit into storage does not take the note itself with it', () => {
   store.clear()
-  // Ровно столько, чтобы записка без снимка помещалась, а со снимком — нет.
+  // Exactly enough for the note to fit without the snapshot, but not with it.
   const small = JSON.stringify({ ...note(), cells: undefined })
   quota = small.length + 20
   stashRefusal(note())
   const back = takeRefusal('room1')
-  assert.ok(back, 'записки не стало вовсе — человек остался без единого слова')
+  assert.ok(back, 'the note is gone entirely — the person was left without a single word')
   assert.equal(back.message, 'Эту правку не приняли.')
-  assert.deepEqual(back.cells, [], 'снимка нет — и это честнее, чем половина снимка')
+  assert.deepEqual(back.cells, [], 'there is no snapshot — and that is more honest than half a snapshot')
   quota = Number.POSITIVE_INFINITY
 })
 
-test('записка прошлой сборки читается: снимка в ней нет, и это не мусор', () => {
+test('a note from the previous build is read: it has no snapshot, and that is not garbage', () => {
   store.clear()
   quota = Number.POSITIVE_INFINITY
   store.set(

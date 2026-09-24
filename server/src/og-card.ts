@@ -1,17 +1,18 @@
 /**
- * Карточка комнаты для мессенджера — картинка 1200×630 с именем занятия.
+ * The room card for messengers: a 1200×630 picture with the class name.
  *
- * Мессенджер показывает под ссылкой картинку, и одна на всех она врала: на
- * снимке экрана входа стояло имя пробной комнаты, а не той, куда зовут. Теперь
- * картинка рисуется под каждую комнату по макету из Paper («Превью · комната»):
- * слева «Вы входите в», имя занятия, дата и адрес, справа белая панель с полем
- * имени и кнопкой входа.
+ * A messenger shows a picture under the link, and one picture for everyone
+ * lied: the screenshot of the join screen carried the name of a test room, not
+ * the one the link invites to. Now the picture is drawn for each room from the
+ * Paper mock-up ("Превью · комната"): on the left "You are joining", the class
+ * name, the date and the address; on the right a white panel with the name
+ * field and the join button.
  *
- * Рисует satori (HTML-подобное дерево → SVG, со своей раскладкой строк) и
- * resvg (SVG → PNG). Браузера на сервере нет, и не нужно: шрифты лежат рядом
- * в server/assets/fonts, те же, что на сайте. Готовые байты кэшируются на
- * комнату: имя меняется редко, а мессенджеров, которые придут за одной и той
- * же картинкой, — по числу чатов, куда кинули ссылку.
+ * satori draws it (an HTML-like tree → SVG, with its own line layout) and
+ * resvg (SVG → PNG). There is no browser on the server, and none is needed:
+ * the fonts sit next to it in server/assets/fonts, the same ones the site
+ * uses. The finished bytes are cached per room: the name rarely changes, while
+ * messengers come for the same picture once per chat the link was dropped in.
  */
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -26,7 +27,7 @@ export const CARD_HEIGHT = 630
 
 const FONTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../assets/fonts')
 
-/* Палитра — токены из Paper (01 · Основа). */
+/* The palette: tokens from Paper (01 · Основа). */
 const BRAND = '#0F2D69'
 const BRAND_2 = '#374B9B'
 const ACCENT = '#0FA0D7'
@@ -66,14 +67,14 @@ function loadFonts(): Promise<FontFace[]> {
 
 export interface RoomCard {
   name: string
-  /** Когда комнату завели — в карточке как «12.09 · 14:54». */
+  /** When the room was created; on the card as "12.09 · 14:54". */
   createdAt: number
-  /** Что написать в углу: имя инстанса, без схемы. */
+  /** What goes in the corner: the instance's host name, without the scheme. */
   host: string
   language: Locale
 }
 
-/** Дальше этого имя в карточку не влезает никаким кеглем — режется с многоточием. */
+/** Past this the name fits the card at no font size, so it is cut with an ellipsis. */
 const NAME_LIMIT = 90
 
 export function cardName(name: string): string {
@@ -82,8 +83,8 @@ export function cardName(name: string): string {
 }
 
 /*
- * Кегль имени — по его длине. satori переносит строки сам, но три строки по
- * сто пикселей в карточку не влезут; дальше кегль убывает.
+ * The name's font size goes by its length. satori wraps lines itself, but three
+ * lines of a hundred pixels do not fit the card; beyond that the size shrinks.
  */
 function nameSize(name: string): number {
   const length = [...name].length
@@ -196,12 +197,12 @@ function card(room: RoomCard): Node {
 }
 
 let renders = 0
-/** Сколько раз картинку действительно рисовали: этим тест ловит кэш. */
+/** How many times the picture was actually drawn: the test catches the cache with it. */
 export function roomCardRenders(): number {
   return renders
 }
 
-/** Нарисовать карточку — без кэша; кэш у `roomCardPng`. */
+/** Draw the card, without the cache; the cache belongs to `roomCardPng`. */
 export async function renderRoomCard(room: RoomCard): Promise<Buffer> {
   const faces = await loadFonts()
   const svg = await satori(card(room) as never, { width: CARD_WIDTH, height: CARD_HEIGHT, fonts: faces })
@@ -210,9 +211,9 @@ export async function renderRoomCard(room: RoomCard): Promise<Buffer> {
 }
 
 /*
- * Кэш готовых байтов — по всему, от чего зависит рисунок. Потолок невысокий:
- * картинка нужна в момент, когда ссылку кидают в чат, то есть комнатам
- * ближайших дней, а не всему семестру.
+ * The cache of finished bytes is keyed by everything the drawing depends on.
+ * The ceiling is low: the picture is needed when the link is dropped into a
+ * chat, that is, for the rooms of the coming days, not the whole semester.
  */
 const MAX_CACHED = 64
 const cache = new Map<string, Promise<Buffer>>()

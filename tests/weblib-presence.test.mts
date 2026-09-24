@@ -1,16 +1,17 @@
 /**
- * Бухгалтерия присутствия: что доходит до экрана, а что нет.
+ * Presence bookkeeping: what reaches the screen and what does not.
  *
- * Присутствие — самый болтливый провод в продукте: курсор публикуется на каждое
- * нажатие у каждого из пятисот, и раньше каждый такой кадр пересобирал список
- * людей новым массивом. Новый массив будит ВСЕХ его читателей: счётчик в шапке,
- * панель людей, аватары оракула и поиск «кто запускал» в каждой смонтированной
- * ячейке — то есть сотни пересборок в секунду на каждом ноутбуке в аудитории.
+ * Presence is the chattiest wire in the product: the cursor is published on
+ * every keystroke by each of five hundred people, and previously every such
+ * frame rebuilt the people list as a new array. A new array wakes ALL of its
+ * readers: the counter in the header, the people panel, the Oracle's avatars
+ * and the "who ran this" lookup in every mounted cell — that is, hundreds of
+ * rebuilds a second on every laptop in the room.
  *
- * Ломается это молча: интерфейс остаётся правильным, просто у всех лагает
- * набор. Поэтому здесь проверяется не «что нарисовано», а «что дошло»:
- * тождественность массива после кадра, в котором не изменилось ничего из
- * нарисованного, — единственное, что отличает починенное от сломанного.
+ * This breaks silently: the interface stays correct, typing just lags for
+ * everyone. So what is checked here is not "what is drawn" but "what got
+ * through": the identity of the array after a frame in which nothing drawn
+ * has changed — the only thing that tells the fixed from the broken.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -35,29 +36,29 @@ function user(over: Partial<AwarenessUser> = {}): AwarenessUser {
   }
 }
 
-/** Состояния присутствия так, как их отдаёт `awareness.getStates()`. */
+/** Presence states as `awareness.getStates()` returns them. */
 function states(...rows: [number, AwarenessUser][]): Map<number, { user: AwarenessUser }> {
   return new Map(rows.map(([id, u]) => [id, { user: u }]))
 }
 
-test('кадр, в котором не изменилось нарисованное, не доходит ни до кого', () => {
+test('a frame in which nothing drawn has changed reaches no one', () => {
   const self = 7
   const first = nextPeers(states([self, user({ id: 'me', name: 'Я' })], [8, user()]), self, [])
   assert.equal(first.length, 2)
 
-  // Тот же состав, но объекты присутствия ДРУГИЕ: их декодируют заново на
-  // каждом кадре, и тождественность сама по себе ничего не значит.
+  // The same line-up, but the presence objects are DIFFERENT: they are
+  // decoded anew on every frame, and identity by itself means nothing.
   const again = nextPeers(states([self, user({ id: 'me', name: 'Я' })], [8, user()]), self, first)
-  assert.equal(again, first, 'вернулся новый массив — проснулись все читатели')
+  assert.equal(again, first, 'a new array came back — all readers woke up')
 })
 
-test('курсор, проехавший внутри той же ячейки, не считается изменением', () => {
+test('a cursor that moved within the same cell does not count as a change', () => {
   const before = nextPeers(states([8, user({ activeCellId: 'c1' })]), 7, [])
   const after = nextPeers(states([8, user({ activeCellId: 'c1' })]), 7, before)
   assert.equal(after, before)
 })
 
-test('переход в другую ячейку доходит, и прежние вкладки сохраняют себя', () => {
+test('moving to another cell gets through, and the previous tabs keep themselves', () => {
   const start = nextPeers(
     states([8, user({ id: 'a', name: 'Ада' })], [9, user({ id: 'b', name: 'Боря' })]),
     7,
@@ -71,12 +72,12 @@ test('переход в другую ячейку доходит, и прежн�
     7,
     start,
   )
-  assert.notEqual(moved, start, 'метка «правит ячейку» не доехала до экрана')
-  assert.equal(moved[0], start[0], 'у не изменившегося соседа отняли тождественность')
+  assert.notEqual(moved, start, 'the "editing a cell" label did not reach the screen')
+  assert.equal(moved[0], start[0], 'the unchanged neighbour lost its identity')
   assert.equal(moved[1].user.activeCellId, 'c4')
 })
 
-test('ушедший и пришедший — это изменение', () => {
+test('someone leaving and someone arriving is a change', () => {
   const two = nextPeers(states([8, user({ id: 'a' })], [9, user({ id: 'b' })]), 7, [])
   const one = nextPeers(states([8, user({ id: 'a' })]), 7, two)
   assert.equal(one.length, 1)
@@ -88,7 +89,7 @@ test('ушедший и пришедший — это изменение', () =>
   assert.equal(three.length, 3)
 })
 
-test('себя — первым, остальных по имени, независимо от порядка кадров', () => {
+test('oneself first, the rest by name, regardless of frame order', () => {
   const self = 7
   const order = nextPeers(
     states(
@@ -106,13 +107,13 @@ test('себя — первым, остальных по имени, незав�
   assert.equal(order[0].isSelf, true)
 })
 
-test('перестановка людей — тоже изменение: список рисуется в этом порядке', () => {
+test('reordering people is a change too: the list is drawn in this order', () => {
   const before = nextPeers(
     states([8, user({ id: 'a', name: 'Ада' })], [9, user({ id: 'b', name: 'Боря' })]),
     7,
     [],
   )
-  // Ада переименовалась в Яну — порядок обязан поменяться.
+  // Ada renamed herself to Yana — the order must change.
   const after = nextPeers(
     states([8, user({ id: 'a', name: 'Яна' })], [9, user({ id: 'b', name: 'Боря' })]),
     7,
@@ -125,7 +126,7 @@ test('перестановка людей — тоже изменение: сп�
   )
 })
 
-test('сокет без личности — это входящая страница, а не человек', () => {
+test('a socket without an identity is a page still entering, not a person', () => {
   const list = nextPeers(
     new Map([
       [8, { user: undefined }],
@@ -138,7 +139,7 @@ test('сокет без личности — это входящая стран�
   assert.equal(list.length, 1)
 })
 
-test('каждое поле, которое рисуют, считается изменением', () => {
+test('every field that is drawn counts as a change', () => {
   const base = user({ id: 'a' })
   const changes: Partial<AwarenessUser>[] = [
     { name: 'Боря' },
@@ -155,22 +156,24 @@ test('каждое поле, которое рисуют, считается и�
     assert.equal(
       samePeerUser(base, { ...base, ...over }),
       false,
-      `изменение ${Object.keys(over)[0]} не доехало бы до экрана`,
+      `a change to ${Object.keys(over)[0]} would not reach the screen`,
     )
   }
-  // А место на странице — это тоже поле: страница та же, доля высоты другая.
+  // And the position on the page is a field too: the same page, a different
+  // fraction of the height.
   const at = user({ id: 'a', viewing: { file: 'lecture.pdf', page: 3, y: 0.2 } })
   assert.equal(
     samePeerUser(at, { ...at, viewing: { file: 'lecture.pdf', page: 3, y: 0.7 } }),
     false,
   )
-  // Отсутствие поля и его пустое значение — одно и то же: старая сборка соседа
-  // не шлёт `composing` вовсе, и это не повод перерисовывать комнату.
+  // A missing field and its empty value are the same thing: a neighbour's old
+  // build does not send `composing` at all, and that is no reason to redraw
+  // the room.
   assert.equal(samePeerUser(base, { ...base, composing: false, inTerminal: false }), true)
   assert.equal(samePeerUser(base, { ...base, viewing: null }), true)
 })
 
-test('карта по участнику сводит вкладки одного человека в одно лицо', () => {
+test('the per-participant map merges the tabs of one person into one face', () => {
   const peers: Peer[] = [
     { clientId: 1, isSelf: false, user: user({ id: 'a', name: 'Ада' }) },
     { clientId: 2, isSelf: false, user: user({ id: 'a', name: 'Ада', activeCellId: 'c1' }) },
@@ -183,7 +186,7 @@ test('карта по участнику сводит вкладки одног�
   assert.equal(byId.get('нет такого'), undefined)
 })
 
-test('тик склейки — сотая доля секунды: не «на каждое нажатие» и ещё не заметно', () => {
-  assert.ok(PRESENCE_TICK_MS >= 50, 'слишком часто — склейки почти нет')
-  assert.ok(PRESENCE_TICK_MS <= 200, 'метка «правит здесь» начнёт отставать заметно')
+test('the coalescing tick is a hundred milliseconds: not "on every keystroke" and not yet noticeable', () => {
+  assert.ok(PRESENCE_TICK_MS >= 50, 'too often — there is almost no coalescing')
+  assert.ok(PRESENCE_TICK_MS <= 200, 'the "editing here" label will start lagging noticeably')
 })

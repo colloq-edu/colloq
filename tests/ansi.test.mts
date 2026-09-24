@@ -93,10 +93,10 @@ test('malformed input is returned rather than mangled', () => {
 })
 
 /*
- * Хвост растущего вывода дорисовывается отдельно (см. `ansi` в
- * render.svelte.ts), и вся его безопасность держится на одном: не разрезать
- * escape-последовательность пополам. Половина кода уехала бы в разбор как
- * мусор, а вторая покрасила бы остаток лога наугад.
+ * The tail of a growing output is drawn separately (see `ansi` in
+ * render.svelte.ts), and all of its safety rests on one thing: not cutting
+ * an escape sequence in half. One half of the code would go into parsing as
+ * garbage, and the other would colour the rest of the log at random.
  */
 test('a finished buffer may be cut anywhere', () => {
   for (const text of [
@@ -115,7 +115,7 @@ test('an escape the flush cut in half is left for the next one', () => {
   const started = `${ESC}[38;5;1`
   assert.equal(pendingEscape(`green text${started}`), started.length)
   assert.equal(pendingEscape(`${ESC}[31mred${ESC}`), 1, 'a lone escape byte')
-  // Незакрытый OSC: терминатор ещё не приехал.
+  // An unclosed OSC: the terminator has not arrived yet.
   const osc = `${ESC}]8;;http://example.com`
   assert.equal(pendingEscape(osc), osc.length)
 })
@@ -124,6 +124,6 @@ test('cutting at the pending escape leaves the visible text whole', () => {
   const text = `${ESC}[31mred${ESC}[38;5;2`
   const body = text.slice(0, text.length - pendingEscape(text))
   assert.equal(body, `${ESC}[31mred`)
-  // Хвост дописывается следующим флешем и складывается обратно без потерь.
+  // The tail is appended by the next flush and joins back up without losses.
   assert.equal(body + text.slice(body.length) + '8mgreen', `${text}8mgreen`)
 })

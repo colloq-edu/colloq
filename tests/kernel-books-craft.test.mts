@@ -1,15 +1,17 @@
 /**
- * Тетрадь = ядро — со стороны экрана.
+ * Notebook = kernel — from the screen's side.
  *
- * Сервер считает каждую тетрадь в своём Python (server/src/kernel/index.ts), и
- * всё, что от этого видно, легко потерять молча: плашка «ГОТОВО» над
- * считающей тетрадью, счётчик очереди соседнего листа, «Перезапустить»,
- * уносящий переменные не той тетради. Ни одно из этих трёх не падает в
- * тестах — каждое просто показывает неправду, и заметить её можно только на
- * паре, где две тетради заняты разным.
+ * The server runs each notebook in its own Python (server/src/kernel/index.ts),
+ * and everything visible from that is easy to lose silently: a "READY" badge
+ * over a notebook that is computing, the queue counter of a neighbouring
+ * sheet, a "Restart" that takes away the variables of the wrong notebook. None
+ * of these three fails in tests — each simply shows something untrue, and it
+ * can be noticed only in a class where two notebooks are busy with different
+ * things.
  *
- * Читается прямо из компонентов — тот же приём, что в panels-craft: тест со
- * своей копией правила проходит вечно, пока файл уезжает.
+ * It is read straight from the components — the same trick as in
+ * panels-craft: a test with its own copy of the rule passes forever while the
+ * file drifts away.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -23,7 +25,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка и стили без комментариев: объяснение — не обещание. */
+/** Markup and styles without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -34,159 +36,165 @@ const SCREEN = read('web/src/screens/SessionScreen.svelte')
 const TABS = read('web/src/components/reader/TabStrip.svelte')
 const YREACTIVE = read('web/src/lib/yreactive.svelte.ts')
 
-/* ------------------------------------------------------ полоса тетради */
+/* ------------------------------------------------------ notebook bar */
 
-test('полоса тетради читает ядро СВОЕЙ тетради, а не комнаты', () => {
+test('the notebook bar reads the kernel of ITS OWN notebook, not of the room', () => {
   const bar = code(NOTEBOOK)
   assert.match(
     bar,
     /const notebook = watchBookKernel\(session\.doc, \(\) => root\)/,
-    'полоса вернулась к общему на комнату состоянию',
+    'the bar went back to the room-wide state',
   )
-  assert.doesNotMatch(bar, /watchNotebookMeta/, 'комнатное состояние вернулось в полосу тетради')
-  // Через него же считаются плашка и счётчик — чтобы они не разъехались.
+  assert.doesNotMatch(bar, /watchNotebookMeta/, 'the room state is back in the notebook bar')
+  // The badge and the counter are computed through it too — so that they do
+  // not drift apart.
   assert.match(bar, /const kernel = \$derived\(notebook\.current\.kernelStatus\)/)
   assert.match(bar, /const queued = \$derived\(notebook\.current\.queue\.length\)/)
 })
 
-test('«Перезапустить» и «Прервать» из полосы называют свой лист', () => {
+test('"Restart" and "Interrupt" from the bar name their own sheet', () => {
   const bar = code(NOTEBOOK)
   const restarts = [...bar.matchAll(/send\(\{ t: 'restart'[^}]*\}\)/g)].map((m) => m[0])
-  assert.ok(restarts.length >= 2, `перезапусков в полосе: ${restarts.length}`)
+  assert.ok(restarts.length >= 2, `restarts in the bar: ${restarts.length}`)
   for (const one of restarts) {
-    assert.match(one, /book/, `перезапуск без имени листа: ${one}`)
+    assert.match(one, /book/, `a restart without a sheet name: ${one}`)
   }
   /*
-   * Interrupt без листа сервер понимает как «тетрадь комнаты» и разбирает её
-   * очередь — соседнюю, до которой этой кнопке дела нет.
+   * The server takes an Interrupt without a sheet as "the room's notebook" and
+   * clears its queue — a neighbouring one this button has no business with.
    */
   const stop = bar.slice(bar.indexOf('function interruptMessage'))
   const body = stop.slice(0, stop.indexOf('\n  }'))
-  // Оба выхода из функции называют лист — и её тип его знает.
+  // Both exits from the function name the sheet — and its type knows it.
   assert.equal(body.match(/return \{ t: 'interrupt'[^}]*book/g)?.length, 2, body)
-  assert.doesNotMatch(body, /\{ t: 'interrupt' \}/, 'безымянное «Прервать» вернулось')
+  assert.doesNotMatch(body, /\{ t: 'interrupt' \}/, 'the nameless "Interrupt" is back')
 })
 
-test('очередь у ячейки считается в её тетради', () => {
+test('the queue at a cell is counted in its notebook', () => {
   const cell = code(CELL)
   assert.match(cell, /watchBookKernel\(session\.doc, \(\) => bookRoot\)/)
   assert.match(cell, /queuePosition = \$derived\(notebook\.current\.queue\.indexOf\(id\)\)/)
 })
 
-/* --------------------------------------------------------- шапка и вкладки */
+/* --------------------------------------------------------- header and tabs */
 
-test('индикатор в шапке говорит про ОТКРЫТУЮ тетрадь', () => {
+test('the header indicator speaks about the OPEN notebook', () => {
   const screen = code(SCREEN)
   assert.match(screen, /const openKernel = watchBookKernel\(session\.doc, \(\) => openRoot\)/)
   assert.match(screen, /const kernel = \$derived\(KERNEL\[openKernel\.current\.kernelStatus\]\)/)
   assert.doesNotMatch(
     screen,
     /KERNEL\[meta\.current\.kernelStatus\]/,
-    'шапка снова показывает состояние комнаты вместо открытой тетради',
+    'the header shows the room state instead of the open notebook again',
   )
-  // Совет про неподнявшееся ядро — про ту же тетрадь, а не про соседнюю.
+  // The advice about a kernel that did not come up concerns the same
+  // notebook, not a neighbouring one.
   assert.match(screen, /openKernel\.current\.kernelProblem/)
   /*
-   * Корень считается ПОСЛЕ списка тетрадей и вкладок: он их читает, и
-   * переставленный выше он взял бы пустоту на первом кадре.
+   * The root is computed AFTER the notebook list and the tabs: it reads them,
+   * and moved above them it would get emptiness on the first frame.
    */
   assert.ok(
     screen.indexOf('const openRoot = $derived(') > screen.indexOf('const books = watchBooks('),
-    'открытая тетрадь считается раньше, чем известен их список',
+    'the open notebook is computed before their list is known',
   )
 })
 
-test('на вкладке есть точка занятости, и она не подпись', () => {
+test('a tab has a busy dot, and it is not a label', () => {
   const tabs = code(TABS)
   assert.match(tabs, /const busyOf = \(key: string\): boolean => bookOf\(key\)\?\.busy === true/)
   const dot = tabs.slice(tabs.indexOf('{#if busyOf(key)}'))
   const block = dot.slice(0, dot.indexOf('{/if}'))
-  assert.match(block, /rounded-full/, 'точка перестала быть точкой')
-  assert.match(block, /room\.book\.busy/, 'у точки нет слов для тех, кто её не видит')
-  assert.match(block, /prefersReducedMotion\(\)/, 'точка мигает и там, где движение выключено')
-  // Строка вкладок получает занятость извне: сама она документа не читает.
+  assert.match(block, /rounded-full/, 'the dot is no longer a dot')
+  assert.match(block, /room\.book\.busy/, 'the dot has no words for those who cannot see it')
+  assert.match(block, /prefersReducedMotion\(\)/, 'the dot blinks even where motion is turned off')
+  // The tab row gets the busy state from outside: it does not read the
+  // document itself.
   assert.match(code(SCREEN), /busy: bookBusy\.busy\(book\.root\)/)
 })
 
-/* ------------------------------------------------- реактивный слой */
+/* ------------------------------------------------- reactive layer */
 
-test('состояние ядер в браузере читается по тетрадям и будит только своих', () => {
+test('kernel state in the browser is read per notebook and wakes only its own', () => {
   const lib = code(YREACTIVE)
   assert.match(lib, /export function watchBookKernel/)
   assert.match(lib, /export function watchBookBusy/)
   /*
-   * Коробка на ПОЛЕ, внутри — карта «корень → значение», и все четыре заведены
-   * конструктором. Коробки на тетрадь, заводившиеся по первому спросу, стоили
-   * 20.09 целой жалобы: первый спрос приходит из `$derived` шапки, состояние,
-   * созданное внутри реакции, этой реакцией и владеется, и последующие записи
-   * её не будят — плашка ядра показывала «ЗАПУСК» у поднявшегося ядра вечно.
-   * Довод целиком — у `bookView`.
+   * One box per FIELD, holding a "root → value" map, and all four are created
+   * by the constructor. Per-notebook boxes created on first demand cost a
+   * whole complaint on 20 Sep 2026: the first demand comes from the header's
+   * `$derived`, state created inside a reaction is owned by that reaction,
+   * and later writes do not wake it — the kernel badge showed "STARTING"
+   * forever for a kernel that had come up. The full argument is at
+   * `bookView`.
    */
   assert.match(lib, /readonly bookStatus = box<Record<string, KernelStatus>>\(\{\}\)/)
   assert.match(lib, /#views = new Map<string, BookKernelView>\(\)/)
-  assert.doesNotMatch(lib, /BookKernelBoxes/, 'вернулись коробки на тетрадь')
-  // Прочитать заранее просит тот, кто может, — из тела компонента.
+  assert.doesNotMatch(lib, /BookKernelBoxes/, 'per-notebook boxes are back')
+  // Whoever can asks to read ahead of time — from the component body.
   assert.match(lib, /fields\.prime\(root\(\)\)/)
-  // А отложенное чтение не пишет в состояние во время счёта производной.
+  // And the deferred read does not write to state while a derived value is
+  // being computed.
   assert.match(lib, /queueMicrotask\(\(\) => this\.#readBooks\(root\)\)/)
   /*
-   * Запасной ответ для тетради комнаты — по прежним ключам: комната со старым
-   * снимком и вкладка, пришедшая раньше первого запуска, обязаны показать
-   * правду, а не «запускается» навсегда.
+   * The fallback answer for the room's notebook uses the old keys: a room with
+   * an old snapshot and a tab that arrived before the first run must show the
+   * truth, not "starting" forever.
    */
   assert.match(lib, /bookKernel\(this\.#doc, root\)/)
 })
 
-/* ------------------------------------ ресурсы личных тетрадей в правилах */
+/* ------------------------------------ personal notebook resources in the rules */
 
-test('ресурсы личных тетрадей раскрываются под правилом, и только когда оно включено', () => {
+test('personal notebook resources unfold under the rule, and only when it is on', () => {
   const rows = code(read('web/src/components/RoomRulesRows.svelte'))
   /*
-   * Вопрос «можно ли» и вопрос «сколько» человек задаёт себе подряд, одним
-   * движением. Блок на отдельном экране означал бы, что на второй вопрос
-   * большинство не ответит никогда — а умолчание «столько же» на машине стоит
-   * вдвое.
+   * A person asks themselves "may they" and "how much" in a row, in one
+   * motion. A block on a separate screen would mean that most people never
+   * answer the second question — and the "the same amount" default costs the
+   * machine double.
    */
   assert.match(rows, /\{#if row\.key === 'ownBooks' && rules\.ownBooks === 'on'\}/)
   assert.match(rows, /ownMemoryMb: event\.currentTarget\.value === '' \? null : Number/)
   assert.match(rows, /ownCpus: event\.currentTarget\.value === '' \? null : Number/)
-  // «Как у занятия» — пустая строка выбора, то есть `null`: отдельного
-  // выключателя у неё нет, и заводить его было бы вторым способом сказать то же.
+  // "Same as the class" is the empty choice, that is, `null`: it has no
+  // separate switch, and adding one would be a second way of saying the same.
   assert.match(rows, /<option value="">\{asClassMemory\}<\/option>/)
   assert.match(rows, /room\.rules\.ownRes\.noGpu/)
   assert.match(rows, /room\.rules\.ownRes\.note/)
-  // Телефон: выбор растёт до пальца, как соседние сегменты.
+  // Phone: the choice grows to finger size, like the neighbouring segments.
   assert.match(rows, /@media \(max-width: 640px\)[\s\S]*?\.rule-pick \{\s*height: 44px/)
 })
 
-test('слова правил называют вещи так, как их называет преподаватель', () => {
-  // Два режима замка зовутся ОДИНАКОВО везде, где о них говорят.
+test('the rule words name things the way a teacher names them', () => {
+  // The two lock modes are named THE SAME everywhere they are talked about.
   assert.equal(tr('room.ui.1130'), 'Пишут вместе')
   assert.equal(tr('room.ui.1131'), 'Каждый отвечает сам')
   assert.match(tr('room.ui.1079'), /пишут вместе/)
-  // Правило про личные тетради называет ядро и потолок в три строки.
+  // The personal notebooks rule names the kernel and the ceiling, in three
+  // sentences.
   assert.match(tr('room.rules.ownBooks.note'), /своё ядро/)
   assert.match(tr('room.rules.ownBooks.note'), /трёх/)
   assert.equal(tr('room.rules.ownBooks.on'), 'Можно')
-  // «По одной» — про тетрадь, а не про комнату: очередей столько же, сколько
-  // тетрадей (server/src/kernel/index.ts · requestRun).
+  // "One at a time" is about the notebook, not the room: there are as many
+  // queues as notebooks (server/src/kernel/index.ts · requestRun).
   assert.match(tr('room.ui.1135'), /в тетради не больше одной ячейки/)
-  // Очистка вывода теперь тоже по тетради.
+  // Clearing output is now per notebook too.
   assert.match(tr('room.ui.1162'), /ячеек тетради/)
   assert.match(tr('room.ui.1160'), /личной тетради/)
 })
 
-/* --------------------------------------------------------------- слова */
+/* --------------------------------------------------------------- words */
 
-test('слова про ядро говорят про тетрадь, а не про комнату', () => {
-  // Обещание консилиума — одной строкой каталога, а не копией в разметке.
+test('the words about the kernel speak about the notebook, not the room', () => {
+  // The council promise is one catalogue line, not a copy in the markup.
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /ядре этой тетради/)
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /по очереди/)
   assert.doesNotMatch(tr(COUNCIL_SHARED_KERNEL_NOTE), /в общем ядре/)
   /*
-   * Подсказка правила называет ядро; про GPU говорит блок ресурсов под ней —
-   * там, где выбирают, сколько отсыпать, и где «без GPU» и есть ответ на
-   * вопрос «а карту они заберут?».
+   * The rule hint names the kernel; the GPU is covered by the resources block
+   * under it — where people choose how much to hand out, and where "no GPU"
+   * is the answer to the question "will they take the card?".
    */
   assert.match(tr('room.rules.ownBooks.note'), /своё ядро/)
   assert.match(tr('room.rules.ownRes.noGpu'), /GPU/)

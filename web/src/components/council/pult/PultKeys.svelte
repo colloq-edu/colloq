@@ -1,16 +1,17 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   /**
-   * Полный список клавиш по «?».
+   * The full list of keys, on "?".
    *
-   * Пультом пользуются, не отводя глаз от зала, поэтому руки не должны искать
-   * мышь. Две главные напоминает строка состояния, остальные живут здесь и
-   * закрываются по Esc, по «?» и кнопкой закрытия.
+   * The console is used without taking one's eyes off the room, so hands
+   * should not have to look for the mouse. The status line reminds of the
+   * two main ones, the rest live here and close with Esc, "?" and the close
+   * button.
    *
-   * Пробела и стрелок ← → в списке больше нет: первый раскрывал группу
-   * одинаковых ответов, вторые ходили по ней. Группировку убрали 20.09, и
-   * строки справки ушли вместе с ней — справка, обещающая клавишу, которой нет,
-   * хуже отсутствующей строки.
+   * Space and the ← → arrows are no longer in the list: the first expanded a
+   * group of identical answers, the others moved through it. Grouping was
+   * removed on 20 Sep 2026, and the help lines went with it — help promising
+   * a key that does not exist is worse than a missing line.
    */
   import { cn } from '@/lib/utils'
 
@@ -28,8 +29,9 @@
 
   const ROWS: { keys: string[]; what: string }[] = [
     { keys: ['j', 'k', '↑↓'], what: tr('room.ui.1374') },
-    // Пульт один на комнату, и ячейку в нём переключают чаще, чем кажется:
-    // скобки делают это, не открывая меню (council-pult.ts · pultKeyAction).
+    // There is one console per room, and the cell in it is switched more
+    // often than it seems: the brackets do it without opening the menu
+    // (council-pult.ts · pultKeyAction).
     { keys: ['[', ']'], what: tr('room.pult.v3.keys.cells') },
     { keys: ['⌘F', '/'], what: tr('room.ui.1376') },
     { keys: ['Tab'], what: tr('room.ui.1377') },

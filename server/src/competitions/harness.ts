@@ -1,57 +1,61 @@
 /**
- * Питоновская обвязка, которая едет внутрь одноразового контейнера.
+ * The Python harness that travels into a disposable container.
  *
- * Исходники лежат здесь строками, а не файлами рядом, по той же причине, по
- * какой так сделан консилиум (kernel/council-isolation.ts): сборка сервера —
- * это `tsc`, и `.py` из `server/src` в `dist` не попадает. Строка переживает
- * сборку, контейнерную форму и установку из пакета, а лишний шаг «не забыть
- * скопировать» не переживает ничего.
+ * The sources live here as strings rather than as files alongside, for the
+ * same reason the council is done this way (kernel/council-isolation.ts): the
+ * server build is `tsc`, and a `.py` from `server/src` does not reach `dist`.
+ * A string survives the build, the container form and installation from a
+ * package, while an extra "don't forget to copy" step survives nothing.
  *
- * Перед прогоном обвязка МАТЕРИАЛИЗУЕТСЯ на диск — в `<DATA_DIR>/competitions/
- * .harness/<хэш содержимого>/`, и это не прихоть, а два требования сразу.
+ * Before a run the harness is MATERIALIZED on disk — in
+ * `<DATA_DIR>/competitions/.harness/<content hash>/`, and that is not a whim
+ * but two requirements at once.
  *
- * Первое: путь обязан быть переводим в путь хоста. Под `make up` сервер сам
- * сидит в контейнере, и `-v /app/competitions/harness:/harness` отдал бы
- * посылке каталог, заведённый демоном на лету, — то есть пустой. Всё, что
- * монтируется, обязано лежать внутри DATA_DIR, у которой есть `DATA_HOST_DIR`
+ * First: the path must be translatable into a host path. Under `make up` the
+ * server itself sits in a container, and
+ * `-v /app/competitions/harness:/harness` would give the submission a
+ * directory the daemon created on the fly — that is, an empty one. Everything
+ * that is mounted must lie inside DATA_DIR, which has `DATA_HOST_DIR`
  * (storage.ts · hostPathOf).
  *
- * Второе: имя каталога не должно повторяться после изменения содержимого. На
- * colima (virtiofs) каталог, снесённый и заведённый заново под тем же именем,
- * минуту отвечает изнутри «Directory nonexistent» — и посылка молча не видит
- * обвязки. Хэш в имени означает, что новая версия обвязки — это новый путь, а
- * старый никто не трогает.
+ * Second: the directory name must not repeat after the content changes. On
+ * colima (virtiofs) a directory removed and created again under the same name
+ * answers "Directory nonexistent" from inside for a minute — and the
+ * submission silently does not see the harness. A hash in the name means that
+ * a new version of the harness is a new path, and nobody touches the old one.
  *
- * Точка в начале имени (`.harness`) выбрана не для красоты: `sweepOrphans`
- * (storage.ts) сносит из корня всё, что похоже на идентификатор соревнования и
- * не числится живым, а его правило букв ведущей точки не допускает. Каталог
- * обвязки переживёт любую уборку.
+ * The leading dot in the name (`.harness`) was not chosen for looks:
+ * `sweepOrphans` (storage.ts) removes from the root everything that looks like
+ * a competition id and is not listed as live, and its letter rule does not
+ * allow a leading dot. The harness directory survives any cleanup.
  */
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { competitionsDir, competitionsFs } from './storage.js'
 
 /**
- * Исполнение тетради участника — nbclient без живого ядра комнаты.
+ * Executing the participant's notebook — nbclient without a live room kernel.
  *
- * Три вещи, ради которых это не `jupyter nbconvert --execute` одной строкой,
- * и каждая куплена опытом прототипа.
+ * Three things for which this is not a one-line `jupyter nbconvert --execute`,
+ * and each was bought by the prototype's experience.
  *
- * Маячок. Контейнер убивают СНАРУЖИ, и ни одна строка после `docker kill` не
- * исполняется — значит, «на какой ячейке остановились» обязано лежать на диске
- * ХОСТА до начала ячейки, а не после неё.
+ * The beacon. The container is killed from OUTSIDE, and not a single line runs
+ * after `docker kill` — so "which cell we stopped at" must be on the HOST disk
+ * before the cell starts, not after it.
  *
- * Потолок печати. `NotebookClient` копит выводы в объекте тетради: ячейка,
- * печатающая гигабайты, убивает не себя, а контейнер — по памяти, и причина в
- * журнале выглядит как нехватка памяти на обучении. Поэтому `output()`
- * перекрыт: после потолка кадры с сокета читаются дальше (иначе ядро встанет на
- * его буфере), но в память не кладутся.
+ * The print cap. `NotebookClient` accumulates outputs in the notebook object:
+ * a cell printing gigabytes kills not itself but the container — for memory,
+ * and the reason in the log looks like running out of memory during training.
+ * So `output()` is overridden: past the cap, frames from the socket keep being
+ * read (otherwise the kernel stalls on its buffer), but they are not kept in
+ * memory.
  *
- * Копия ответа. `/out` — это tmpfs, он умирает вместе с контейнером, и
- * `docker cp` из остановленного его уже не видит (проверено). Забрать файл
- * может только сам контейнер, изнутри и до своей смерти.
+ * A copy of the answer. `/out` is a tmpfs, it dies together with the
+ * container, and `docker cp` from a stopped container no longer sees it
+ * (verified). Only the container itself can take the file out, from inside
+ * and before its death.
  */
-const RUN_NOTEBOOK = `"""Исполнение присланной тетради внутри одноразового контейнера."""
+const RUN_NOTEBOOK = `"""Executing a submitted notebook inside a disposable container."""
 
 from __future__ import annotations
 
@@ -82,19 +86,21 @@ def env_int(name: str, default: int) -> int:
 
 
 NOTEBOOK = Path(os.environ.get("COMP_NOTEBOOK", "/submission/notebook.ipynb"))
-# Рабочая папка тетради: tmpfs с ЖЁСТКИМ потолком. Диска хоста в ней нет ни
-# байта, и «пишу терабайт» кончается на ENOSPC в ячейке участника.
+# The notebook's working folder: a tmpfs with a HARD cap. It holds not a single
+# byte of the host disk, and "I'll write a terabyte" ends in ENOSPC in the
+# participant's cell.
 OUT = Path(os.environ.get("COMP_OUT", "/out"))
 DATA = Path(os.environ.get("COMP_DATA", "/data"))
-# Крошечная папка на диске ХОСТА: маячок, итог, исполненная тетрадь и копия
-# ответа, которую обвязка кладёт сюда сама, проверив размер.
+# A tiny folder on the HOST disk: the beacon, the result, the executed notebook
+# and a copy of the answer, which the harness puts here itself after checking
+# its size.
 RESULT = Path(os.environ.get("COMP_RESULT", "/result"))
 TARGET = os.environ.get("COMP_TARGET", "submission.csv")
 MAX_OUTPUT = env_int("COMP_MAX_OUTPUT_BYTES", 2_000_000)
 MAX_OUTPUT_KILL = env_int("COMP_MAX_OUTPUT_KILL_BYTES", 64 * 1024 * 1024)
 MAX_TARGET = env_int("COMP_MAX_TARGET_BYTES", 64 * 1024 * 1024)
-# Потолок ОДНОЙ ячейки. Общий срок держит хост: внутренний таймер не переживёт
-# ячейку, захватившую GIL в сишном цикле.
+# The cap on ONE cell. The host holds the overall time limit: an internal timer
+# will not survive a cell that grabbed the GIL in a C loop.
 CELL_TIMEOUT = env_int("COMP_CELL_TIMEOUT_SEC", 0) or None
 
 PROGRESS = RESULT / "progress.json"
@@ -102,7 +108,7 @@ RUN_JSON = RESULT / "run.json"
 
 
 def write_json(path: Path, payload: dict) -> None:
-    """Запись, переживающая убийство контейнера в следующую миллисекунду."""
+    """A write that survives the container being killed a millisecond later."""
     payload["attemptId"] = os.environ.get("COMP_ATTEMPT_ID", "")
     tmp = path.with_suffix(".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
@@ -113,7 +119,7 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 class Runner(NotebookClient):
-    """NotebookClient с маячком, потолком вывода и присмотром за ответом."""
+    """NotebookClient with a beacon, an output cap and a watch over the answer."""
 
     def __init__(self, nb, **kwargs):
         super().__init__(nb, **kwargs)
@@ -155,8 +161,9 @@ class Runner(NotebookClient):
 
     def on_cell_executed(self, cell=None, cell_index=None, **kwargs):  # noqa: ARG002
         self.cell_times.append(round(time.monotonic() - self._cell_started, 3))
-        # Размер ответа проверяется МЕЖДУ ячейками: ulimit fsize обрывает запись
-        # жёстко и без объяснений, а здесь ещё можно назвать причину.
+        # The answer's size is checked BETWEEN cells: ulimit fsize cuts a write
+        # off hard and without explanation, while here we can still name the
+        # reason.
         target = OUT / TARGET
         try:
             size = target.stat().st_size
@@ -191,7 +198,7 @@ class Runner(NotebookClient):
 
 
 def read_peak() -> int | None:
-    """Пик памяти cgroup, снятый изнутри, — пока контейнер ещё жив."""
+    """The cgroup memory peak, read from inside while the container is still alive."""
     for path in ("/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory/memory.max_usage_in_bytes"):
         try:
             return int(Path(path).read_text().strip())
@@ -259,9 +266,9 @@ def prepare_dependencies() -> str:
 
 def main() -> int:
     prepare_workspace()
-    # HOME указывает в пустую tmpfs, и папки там ещё нет: --tmpfs создаёт только
-    # точку монтирования. IPython, не найдя HOME, уходит во временный каталог и
-    # печатает об этом предупреждение в КАЖДУЮ посылку.
+    # HOME points into an empty tmpfs, and the folder is not there yet: --tmpfs
+    # creates only the mount point. IPython, not finding HOME, falls back to a
+    # temporary directory and prints a warning about it into EVERY submission.
     for name in ("HOME", "JUPYTER_RUNTIME_DIR", "JUPYTER_DATA_DIR", "MPLCONFIGDIR"):
         target = os.environ.get(name)
         if target:
@@ -274,8 +281,9 @@ def main() -> int:
     try:
         nb = nbformat.read(NOTEBOOK, as_version=4)
     except Exception as exc:  # noqa: BLE001
-        # Битый JSON или не тетрадь вовсе: это отказ участнику, и он обязан
-        # прочитать его дословно — до первой ячейки дело не дошло.
+        # Broken JSON or not a notebook at all: this is a refusal to the
+        # participant, and they must read it verbatim — things never got as far
+        # as the first cell.
         write_json(
             RUN_JSON,
             {
@@ -309,8 +317,8 @@ def main() -> int:
         kernel_name=kernel_name,
         allow_errors=False,
         force_raise_errors=True,
-        # Рабочая папка тетради — записываемая /out: участник пишет ответ
-        # относительным путём, как он привык.
+        # The notebook's working folder is the writable /out: the participant
+        # writes the answer with a relative path, as they are used to.
         resources={"metadata": {"path": str(OUT)}},
     )
     runner.beat("start")
@@ -328,15 +336,16 @@ def main() -> int:
         detail = str(exc).splitlines()[0][:400]
     except CellExecutionError as exc:
         status = "cell_error"
-        # Участнику это показывают дословно: его собственная ошибка.
+        # This is shown to the participant verbatim: it is their own error.
         detail = cell_error_detail(exc)
     except Exception as exc:  # noqa: BLE001
         status = "harness_error"
         detail = f"{type(exc).__name__}: {exc}\\n{traceback.format_exc()[-2000:]}"
 
-    # Исполненная тетрадь — это то, что участник откроет на странице посылки:
-    # его код, его вывод, его трассировка на упавшей ячейке. Выводы в ней уже
-    # подрезаны потолком, поэтому записать её можно, не боясь гигабайтов.
+    # The executed notebook is what the participant opens on the submission
+    # page: their code, their output, their traceback on the failed cell. The
+    # outputs in it are already trimmed by the cap, so it can be written
+    # without fear of gigabytes.
     try:
         nbformat.write(nb, RESULT / "executed.ipynb")
     except Exception as exc:  # noqa: BLE001
@@ -373,7 +382,7 @@ def main() -> int:
         },
     )
     runner.beat("finished")
-    # Ноль — «тетрадь исполнилась»; всё прочее разбирает хост по run.json.
+    # Zero means "the notebook ran"; the host sorts out everything else from run.json.
     return 0 if status == "ok" else 1
 
 
@@ -382,59 +391,64 @@ if __name__ == "__main__":
 `
 
 /**
- * Единственный модуль, который импортирует код метрики преподавателя.
+ * The only module of ours that the teacher's metric code imports.
  *
- * `ParticipantVisibleError` — договор с участником: текст такой ошибки он
- * читает дословно, а любое другое исключение не видит вовсе. Отдельным
- * импортируемым именем, а не проверкой текста (как `kaggle_metric_utilities`):
- * преподаватель должен уметь сказать «это участнику» однозначно, а не гадать,
- * какая формулировка просочится наружу.
+ * `ParticipantVisibleError` is a contract with the participant: they read the
+ * text of such an error verbatim, and any other exception they do not see at
+ * all. A separate importable name rather than a check of the text (as in
+ * `kaggle_metric_utilities`): the teacher must be able to say "this is for the
+ * participant" unambiguously, not guess which wording will leak outside.
  */
-const COLLOQ_METRIC = `"""Что код метрики импортирует у нас."""
+const COLLOQ_METRIC = `"""What the metric code imports from us."""
 
 
 class ParticipantVisibleError(Exception):
-    """Ошибка, текст которой показывают участнику дословно."""
+    """An error whose text is shown to the participant verbatim."""
 `
 
 /**
- * Деление строк на публичную и приватную часть — ВТОРАЯ КОПИЯ одного правила.
+ * Splitting rows into the public and private part — the SECOND COPY of one
+ * rule.
  *
- * Первая живёт в `@shared/competitions` (splitRows, splitByUsage,
- * publicRowCount) и отвечает на вопрос страницы: «119 строк считаются сразу,
- * 278 — после дедлайна». Вторая — здесь, и по ней метрика на самом деле делит
- * ответы. Разойдясь, они не упадут: страница скажет одно, лидерборд посчитает
- * другое, и заметит это тот, кто пересчитает строки руками.
+ * The first lives in `@shared/competitions` (splitRows, splitByUsage,
+ * publicRowCount) and answers the page's question: "119 rows are scored right
+ * away, 278 after the deadline". The second is here, and it is what the metric
+ * actually uses to split the answers. If they diverge, nothing will crash: the
+ * page will say one thing, the leaderboard will compute another, and the one
+ * to notice will be whoever recounts the rows by hand.
  *
- * Поэтому копия лежит ОТДЕЛЬНЫМ модулем, без pandas и без единого импорта
- * тяжелее `math`: её можно запустить голым python и сверить с первой копией
- * прямо в сюите (tests/competitions-runner) — что и делается, и что уже
- * поймало разъехавшийся разделитель зерна.
+ * So the copy lives in a SEPARATE module, without pandas and without a single
+ * import heavier than `math`: it can be run with bare python and checked
+ * against the first copy right in the suite (tests/competitions-runner) —
+ * which is what is done, and what has already caught a drifted seed
+ * separator.
  */
-const COLLOQ_SPLIT = `"""Деление строк ответов — копия правила из @shared/competitions."""
+const COLLOQ_SPLIT = `"""Splitting answer rows: a copy of the @shared/competitions rule."""
 
 from __future__ import annotations
 
 import math
 
 """
-Чем склеены зерно и идентификатор строки.
+What joins the seed and the row id.
 
-Нулевой байт, а не пробел, и это не мелочь: идентификатор приходит из файла
-преподавателя и может содержать что угодно, включая пробел. С пробелом пара
-(«a», «b c») и пара («a b», «c») дали бы один хэш, то есть строки с разными
-ключами попали бы в одну ячейку. Ноля в идентификаторе не бывает.
+A null byte, not a space, and that is no trifle: the id comes from the
+teacher's file and may contain anything, including a space. With a space the
+pair ("a", "b c") and the pair ("a b", "c") would give the same hash, that is,
+rows with different keys would land in the same slot. A null never occurs in
+an id.
 """
 SEED_SEPARATOR = "\\x00"
 
 
 def code_units(text: str):
     """
-    Кодовые единицы UTF-16 — то, по чему считает String.charCodeAt.
+    UTF-16 code units — what String.charCodeAt counts by.
 
-    Мелочь, без которой хэш разошёлся бы ровно на тех задачах, где
-    идентификатор строки не латиница: Python ходит по кодовым ТОЧКАМ, и на
-    символе вне BMP он выдал бы одно число там, где браузер выдаёт два.
+    A detail without which the hash would diverge on exactly those tasks where
+    the row id is not Latin: Python walks code POINTS, and on a character
+    outside the BMP it would produce one number where the browser produces
+    two.
     """
     for ch in text:
         point = ord(ch)
@@ -447,7 +461,7 @@ def code_units(text: str):
 
 
 def hash32(value: str) -> int:
-    """FNV-1a, 32 бита — тот же, что в shared/competitions.ts."""
+    """FNV-1a, 32 bits — the same as in shared/competitions.ts."""
     result = 0x811C9DC5
     for unit in code_units(value):
         result ^= unit
@@ -456,18 +470,18 @@ def hash32(value: str) -> int:
 
 
 def public_row_count(total: int, percent: float) -> int:
-    """Сколько строк считать сразу; обе части обязаны быть непусты."""
+    """How many rows to score right away; both parts must be non-empty."""
     if total <= 0:
         return 0
     if total == 1:
         return 1
-    # Math.round округляет половину ВВЕРХ, а round() в Python — к чётному.
+    # Math.round rounds half UP, while Python's round() rounds to even.
     wanted = math.floor(total * percent / 100 + 0.5)
     return min(total - 1, max(1, wanted))
 
 
 def split_rows(ids: list[str], percent: float, seed: str) -> list[str]:
-    """Ранг по хэшу, а не жребий по строке: доля обязана дать ровно своё число."""
+    """Rank by hash, not a lottery per row: the share must give exactly its number."""
     take = public_row_count(len(ids), percent)
     order = sorted(
         (
@@ -483,7 +497,7 @@ def split_rows(ids: list[str], percent: float, seed: str) -> list[str]:
 
 
 def split_by_usage(usage: list[str]) -> list[str] | None:
-    """Деление, записанное преподавателем; None — колонка не годится."""
+    """The split written down by the teacher; None means the column is unusable."""
     parts: list[str] = []
     public_rows = 0
     for raw in usage:
@@ -501,21 +515,23 @@ def split_by_usage(usage: list[str]) -> list[str] | None:
 `
 
 /**
- * Метрика преподавателя — ОТДЕЛЬНЫМ контейнером, в котором участника нет.
+ * The teacher's metric — in a SEPARATE container with no participant in it.
  *
- * Деление строк здесь — ДОСЛОВНЫЙ перенос `@shared/competitions` (splitRows,
- * splitByUsage, publicRowCount), и это главное, что отличает его от прототипа.
- * Тот делил `solution.sample(random_state=seed)`, то есть по-своему, а браузер
- * тем временем рисовал «119 строк считаются сразу» по своему правилу. Две
- * копии одного деления, которые не сходятся, не падают — они тихо врут, и
- * замечает это тот, кто пересчитал число строк руками. Поэтому здесь
- * повторён ровно тот хэш, ровно тот порядок и ровно то округление.
+ * The row split here is a WORD-FOR-WORD port of `@shared/competitions`
+ * (splitRows, splitByUsage, publicRowCount), and that is the main thing that
+ * sets it apart from the prototype. The prototype split with
+ * `solution.sample(random_state=seed)`, that is, in its own way, while the
+ * browser meanwhile drew "119 rows are scored right away" by its own rule. Two
+ * copies of one split that disagree do not crash — they quietly lie, and the
+ * one who notices is whoever recounted the rows by hand. So exactly the same
+ * hash, exactly the same order and exactly the same rounding are repeated
+ * here.
  *
- * Наружу — только `/out/score.json`, не stdout: код преподавателя вправе
- * печатать что угодно, и разбирать его печать вперемешку со своей значит
- * однажды показать участнику строку из метрики.
+ * Only `/out/score.json` goes outside, not stdout: the teacher's code is free
+ * to print anything, and parsing its printing mixed with our own means one day
+ * showing the participant a line from the metric.
  */
-const SCORE_METRIC = `"""Метрика преподавателя в отдельном одноразовом контейнере."""
+const SCORE_METRIC = `"""The teacher's metric in a separate disposable container."""
 
 from __future__ import annotations
 
@@ -544,7 +560,7 @@ SPLIT_SEED = os.environ.get("COMP_SPLIT_SEED", "")
 
 
 def load_metric():
-    """Код преподавателя как модуль — без exec() и без общей области имён."""
+    """The teacher's code as a module — no exec(), no shared namespace."""
     spec = importlib.util.spec_from_file_location("colloq_teacher_metric", METRIC)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load metric from {METRIC}")
@@ -557,11 +573,12 @@ def load_metric():
 
 def plan_split(solution: pd.DataFrame) -> list[str]:
     """
-    Колонкой, если преподаватель её дал и она годна, иначе зерном.
+    By the column, if the teacher provided one and it is usable, otherwise by
+    the seed.
 
-    Колонка старше зерна: разметив строки руками, он обычно делит их по смыслу
-    — по времени, по складу, по пациенту, — и подменять такое деление жребием
-    значит испортить задачу.
+    The column outranks the seed: having labelled the rows by hand, the teacher
+    usually splits them by meaning — by time, by warehouse, by patient — and
+    replacing such a split with a lottery would spoil the task.
     """
     if USAGE_COLUMN in solution.columns:
         by_usage = split_by_usage(solution[USAGE_COLUMN].tolist())
@@ -574,10 +591,10 @@ def plan_split(solution: pd.DataFrame) -> list[str]:
 
 def plain(value):
     """
-    Питоновский скаляр вместо numpy.
+    A Python scalar instead of a numpy one.
 
-    Участник читает это дословно, а repr numpy-скаляра выглядит как
-    «id=np.int64(398692)» — мелочь, которую видит каждый, кто ошибся строкой.
+    The participant reads this verbatim, and the repr of a numpy scalar looks
+    like "id=np.int64(398692)" — a trifle seen by everyone who got a row wrong.
     """
     item = getattr(value, "item", None)
     return item() if callable(item) else value
@@ -585,11 +602,12 @@ def plain(value):
 
 def align(solution: pd.DataFrame, submission: pd.DataFrame) -> pd.DataFrame:
     """
-    Ответ участника, поставленный в порядок ответов, — или понятный отказ.
+    The participant's answer put in the order of the answer key — or a clear
+    refusal.
 
-    Отказ уезжает КОДОМ, а не фразой: текст живёт в shared/locales, потому что
-    страница участника бывает на двух языках, а контейнер о языке инстанса не
-    знает и знать не должен.
+    The refusal leaves as a CODE, not a sentence: the text lives in
+    shared/locales, because the participant's page comes in two languages, and
+    the container does not know the instance's language and must not.
     """
     if ID_COLUMN not in submission.columns:
         raise ParticipantVisibleError(
@@ -629,11 +647,11 @@ def align(solution: pd.DataFrame, submission: pd.DataFrame) -> pd.DataFrame:
 
 def participant_failure(exc: ParticipantVisibleError) -> dict:
     """
-    Наша проверка приезжает кодом, ошибка преподавателя — своим текстом.
+    Our check arrives as a code, the teacher's error as its own text.
 
-    Различаются они здесь и только здесь: всё, что метрика подняла сама,
-    участник читает слово в слово, а всё, что подняли мы, он читает на своём
-    языке.
+    They are told apart here and only here: everything the metric raised itself
+    the participant reads word for word, and everything we raised they read in
+    their own language.
     """
     text = str(exc)[:1000]
     try:
@@ -687,8 +705,8 @@ def main() -> int:
     except ParticipantVisibleError as exc:
         result = participant_failure(exc)
     except Exception as exc:  # noqa: BLE001
-        # Только преподавателю: в трассировке лежат строки его метрики и,
-        # бывает, куски ответов.
+        # Only for the teacher: the traceback holds lines of their metric and,
+        # sometimes, pieces of the answers.
         result = {
             "status": "metric_error",
             "teacherOnly": f"{type(exc).__name__}: {exc}\\n{traceback.format_exc()[-4000:]}",
@@ -755,7 +773,7 @@ else:
     sys.stdout.write(base64.b64encode(read(name)).decode("ascii"))
 `
 
-/** Что лежит в каталоге обвязки: имя файла — то, чем его зовут в контейнере. */
+/** What lies in the harness directory: the file name is what the container calls it. */
 const FILES: ReadonlyArray<readonly [string, string]> = [
   ['run_notebook.py', RUN_NOTEBOOK],
   ['score_metric.py', SCORE_METRIC],
@@ -777,15 +795,18 @@ runpy.run_path('/harness/score_metric.py', run_name='__main__')
 `],
 ]
 
-/** Исходник модуля деления — сюите, которая сверяет его с `@shared/competitions`. */
+/**
+ * The source of the split module — for the suite that checks it against
+ * `@shared/competitions`.
+ */
 export const SPLIT_SOURCE = COLLOQ_SPLIT
 
 /**
- * Версия обвязки — хэш её содержимого, а не число в константе.
+ * The harness version is the hash of its content, not a number in a constant.
  *
- * Руками проставленная версия забывается ровно в том случае, ради которого она
- * и нужна: правка на одну строку, выкаченная на машину, где старый каталог
- * обвязки уже лежит. Хэш не забывается.
+ * A hand-set version is forgotten in exactly the case it exists for: a
+ * one-line fix rolled out to a machine where the old harness directory already
+ * lies. A hash is not forgotten.
  */
 export const HARNESS_REVISION = createHash('sha256')
   .update(FILES.map(([name, body]) => `${name}\n${body}`).join('\n'))
@@ -795,11 +816,12 @@ export const HARNESS_REVISION = createHash('sha256')
 let materialized: string | null = null
 
 /**
- * Разложить обвязку на диск и вернуть каталог, который монтируют в контейнер.
+ * Lay the harness out on disk and return the directory that is mounted into
+ * the container.
  *
- * Идемпотентно и считается один раз на процесс: файлы не меняются между
- * посылками, а три записи на каждую посылку — это три записи в каталог,
- * смонтированный в идущий контейнер соседа.
+ * Idempotent and computed once per process: the files do not change between
+ * submissions, and three writes per submission are three writes into a
+ * directory mounted into a neighbour's running container.
  */
 export function harnessDir(): string {
   if (materialized) return materialized
@@ -807,8 +829,8 @@ export function harnessDir(): string {
   competitionsFs.mkdirSync(dir, { recursive: true })
   for (const [name, body] of FILES) {
     const file = path.join(dir, name)
-    // Уже лежит — не переписываем: у каталога с хэшем в имени содержимое либо
-    // то же самое, либо его там нет вовсе.
+    // Already there, so we do not rewrite it: in a directory with a hash in its
+    // name the content is either the same or not there at all.
     if (competitionsFs.existsSync(file)) continue
     competitionsFs.writeFileSync(file, Buffer.from(body, 'utf8'), { mode: 0o644 })
   }
@@ -832,7 +854,7 @@ export function brokerHarnessDir(): string {
   return dir
 }
 
-/** Забыть разложенное — тестам, которые меняют DATA_DIR под ногами. */
+/** Forget what was laid out — for tests that change DATA_DIR under our feet. */
 export function forgetHarness(): void {
   materialized = null
 }

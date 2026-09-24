@@ -6,13 +6,14 @@
     size?: 'sm' | 'md'
     tone?: 'onDark' | 'onLight'
     /**
-     * Кто развернул этот инстанс — строка за разделительной линейкой.
+     * Who deployed this instance — the line after the divider rule.
      *
-     * Здесь стояло булево `faculty` и зашитая под ним строка про один
-     * университет. Продукт разворачивают разные организации, и на чужом адресе
-     * это была не настройка по умолчанию, а чужое имя в шапке. Пусто или не
-     * передано — линейки и строки нет вовсе, логотип остаётся одним словом; это
-     * и есть умолчание.
+     * This used to be a boolean `faculty` with a line about one particular
+     * university hard-wired under it. The product is deployed by different
+     * organisations, and on someone else's address that was not a default
+     * setting but someone else's name in the header. Empty or not passed —
+     * there is no rule and no line at all, and the logo stays a single word;
+     * that is the default.
      */
     institution?: string
     /** A quiet trailing tag such as "v0.1", pushed to the far edge. */
@@ -33,8 +34,9 @@
 
   const onDark = $derived(tone === 'onDark')
 
-  // Строка из одних пробелов — это отсутствие строки, а не строка: линейка,
-  // повисшая рядом с пустотой, читается как недогрузившаяся вёрстка.
+  // A string of nothing but spaces is the absence of a string, not a string: a
+  // rule hanging next to emptiness reads as a layout that did not finish
+  // loading.
   const line = $derived(institution.trim())
 </script>
 

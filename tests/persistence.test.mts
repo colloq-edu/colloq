@@ -95,13 +95,13 @@ test('a browser standing in a deleted room cannot write it back', () => {
   assert.equal(loadDocSnapshot(id), null, 'a deleted seminar wrote itself back to disk')
 })
 
-test('снимок, который не записался, не считается записанным', () => {
+test('a snapshot that failed to write does not count as written', () => {
   /*
-   * `dirtySince` обнулялся до попытки записи, и ошибка sqlite (полный диск,
-   * ошибка ввода-вывода, занятая база) молча делала комнату «сохранённой»: ни
-   * таймер, ни flush на выходе к ней больше не возвращались. Класс, в котором
-   * после сбоя никто не напечатал ни символа, доезжал до `make down` без
-   * последних правок.
+   * `dirtySince` was cleared before the write was attempted, so a sqlite error
+   * (full disk, I/O error, busy database) silently made the room "saved":
+   * neither the timer nor the flush on exit ever came back to it. A class in
+   * which nobody typed a single character after the failure reached
+   * `make down` without its last edits.
    */
   const id = room()
   const { doc } = getSessionDoc(id)
@@ -115,16 +115,16 @@ test('снимок, который не записался, не считает�
   flushPersistence(id)
   db.pragma('query_only = OFF')
 
-  // Больше никто не печатает: сохранить это может только повтор.
+  // Nobody is typing any more: only a retry can save this.
   flushPersistence(id)
 
   const bytes = loadDocSnapshot(id)
-  assert.ok(bytes, 'снимка нет вовсе')
+  assert.ok(bytes, 'there is no snapshot at all')
   const restored = new Y.Doc()
   Y.applyUpdate(restored, bytes)
   assert.deepEqual(
     readNotebook(restored).map((c) => c.source),
     ['последняя строка перед сбоем'],
-    'правки после неудачной записи не попали на диск',
+    'the edits after the failed write did not reach the disk',
   )
 })

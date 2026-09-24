@@ -1,38 +1,40 @@
 /**
- * Откуда CLI знает, где он и что вокруг: каталог приложения, каталог
- * состояния, .env, пути.
+ * How the CLI knows where it is and what is around it: the application
+ * directory, the state directory, .env, paths.
  *
- * Чтение .env — построчная копия read_env() из scripts/lib.sh, включая то,
- * ради чего она там появилась: обрезаются только края, кавычки снимаются
- * парой, внутренность значения не трогается вовсе («RTX 4090» остаётся с
- * пробелом). Разъехаться этим двум чтениям нельзя.
+ * Reading .env is a line-by-line copy of read_env() from scripts/lib.sh,
+ * including what it appeared there for: only the edges are trimmed, quotes are
+ * removed as a pair, the inside of the value is not touched at all ("RTX 4090"
+ * keeps its space). These two readings must not drift apart.
  *
- * Секретов CLI не читает. Для JUPYTER_TOKEN, SESSION_SECRET и прочего из
- * SECRET_KEYS есть только has(): есть строка или нет. read() на таком ключе
- * бросает, и это стережёт тест — чтобы значение не утекло ни в argv, ни в
- * строку --dry-run, ни в вывод status.
+ * The CLI does not read secrets. For JUPYTER_TOKEN, SESSION_SECRET and the
+ * rest of SECRET_KEYS there is only has(): whether the line is there or not.
+ * read() on such a key throws, and a test guards that, so that the value leaks
+ * neither into argv, nor into the --dry-run line, nor into the status output.
  */
 
 import * as fs from 'node:fs'
 
 /*
- * Два корня — приложение и состояние — разрешаются в одном месте на весь CLI:
- * launch-state.ts (там же и объяснение, почему именно там). Здесь они только
- * перепечатываются наружу, чтобы команды звали их отсюда, вместе с остальными
- * путями, и второго ответа на вопрос «где мои данные» не завелось.
+ * The two roots, the application and the state, are resolved in one place for
+ * the whole CLI: launch-state.ts (which also explains why exactly there). Here
+ * they are only re-exported, so that the commands call them from here along
+ * with the other paths, and no second answer to the question "where is my
+ * data" appears.
  */
 import { appDir, homeDir, isDistribution, SESSION_FILE } from './launch-state.js'
 export { appDir, homeDir, isDistribution }
 
 /**
- * Имя среды: дословно то же сито, что в scripts/backup.sh и scripts/restore.sh
- * — буквы, цифры и дефис в середине. Имя среды — это подкаталог backups/.
+ * An environment name: word for word the same sieve as in scripts/backup.sh
+ * and scripts/restore.sh, letters, digits and a hyphen in the middle. An
+ * environment name is a subdirectory of backups/.
  */
 export function envNameOk(name: string): boolean {
   return /^[A-Za-z0-9-]+$/.test(name) && !name.startsWith('-') && !name.endsWith('-')
 }
 
-/** Ключи, значения которых CLI не берёт в руки никогда. */
+/** Keys whose values the CLI never takes into its hands. */
 export const SECRET_KEYS = [
   'JUPYTER_TOKEN',
   'SESSION_SECRET',
@@ -45,21 +47,22 @@ export const SECRET_KEYS = [
 
 export type SecretKey = (typeof SECRET_KEYS)[number]
 
-/** Единственная дверь к файловой системе для команд. Пути — абсолютные. */
+/** The only door to the file system for the commands. Paths are absolute. */
 export type Io = {
   exists(path: string): boolean
-  /** Содержимое файла или null, если его нет. */
+  /** The file's content, or null if it does not exist. */
   readText(path: string): string | null
-  /** Время правки в миллисекундах или null. */
+  /** The modification time in milliseconds, or null. */
   mtime(path: string): number | null
-  /** Имена в каталоге, отсортированные; нет каталога — пустой список. */
+  /** The names in a directory, sorted; no directory means an empty list. */
   list(path: string): string[]
-  /** Сейчас, в миллисекундах. В тестах — постоянное число. */
+  /** Now, in milliseconds. In tests, a constant number. */
   now(): number
   /**
-   * Запись. mode ставится только при создании файла — так же, как у fs: у
-   * существующего права не трогаются, и .env, положенный человеком, остаётся
-   * его. Нужен он одному случаю — .env, в котором лежат ключи входа.
+   * Writing. mode is set only when the file is created, just as with fs: the
+   * permissions of an existing file are not touched, and a .env put there by
+   * the person stays theirs. It is needed for one case: the .env that holds
+   * the sign-in keys.
    */
   writeText(path: string, text: string, mode?: number): void
 }
@@ -68,78 +71,82 @@ export type Relay = { domain: string; addr: string; port: number }
 
 export type EnvPaths = {
   /**
-   * Каталог приложения: web/dist, server/dist, kernel/, scripts/, node_modules.
+   * The application directory: web/dist, server/dist, kernel/, scripts/,
+   * node_modules.
    *
-   * Не «корень репозитория», как было сказано здесь до разделения корней: у
-   * установленного colloq репозитория нет вовсе, а этот каталог есть — он
-   * внутри пакета. Состояние занятия сюда не кладут НИКОГДА (см. home ниже):
-   * его перезапишет следующий `pip install -U`, а на многих машинах в него и
-   * не пишется.
+   * Not "the repository root", as it said here before the roots were split:
+   * an installed colloq has no repository at all, but it does have this
+   * directory, inside the package. The class state is NEVER put here (see home
+   * below): the next `pip install -U` would overwrite it, and on many machines
+   * it is not writable anyway.
    */
   root: string
   /**
-   * Каталог состояния: .env, .colloq/, .colloq.pid, .colloq.log, data/.
-   * В репозитории он же и есть корень; у установленного colloq — свой
-   * (homeDir). Пути ниже, которые относятся к состоянию, считаются от него.
+   * The state directory: .env, .colloq/, .colloq.pid, .colloq.log, data/.
+   * In the repository it is the root itself; an installed colloq has its own
+   * (homeDir). The paths below that belong to the state are resolved from it.
    */
   home: string
   envFile: string
   /**
-   * Кто сейчас ведёт занятие: pid супервизора, а НЕ сервера.
+   * Who is running the class now: the pid of the supervisor, NOT of the
+   * server.
    *
-   * Сервер — его ребёнок, и его номер лежит в расписке полем serverPid. Кто
-   * ищет по этому файлу слушателя порта, найдёт не того и назовёт своё же
-   * занятие чужим.
+   * The server is its child, and its number lies in the receipt in the
+   * serverPid field. Whoever looks for the port listener by this file will find
+   * the wrong one and call their own class someone else's.
    */
   pidFile: string
   logFile: string
   /**
-   * Расписка идущего занятия: порт, адрес, pid супервизора и сервера.
+   * The receipt of the running class: the port, the address, the pids of the
+   * supervisor and of the server.
    *
-   * Единственный источник правды о том, что работает ПРЯМО СЕЙЧАС. .env
-   * отвечает на другой вопрос — что настроено, — и `colloq run --port 4100`
-   * его не трогает вовсе.
+   * The single source of truth about what is running RIGHT NOW. .env answers
+   * another question, what is configured, and `colloq run --port 4100` does
+   * not touch it at all.
    */
   sessionFile: string
-  /** Списки пакетов, приехавшие с продуктом: одно окружение — один файл. */
+  /** The package lists that arrived with the product: one environment, one file. */
   envDir: string
   /**
-   * Списки пакетов, которые завёл человек: сюда и только сюда пишет
-   * `colloq env new`. Почему каталог второй — объяснено у его вычисления ниже.
+   * The package lists the person created: `colloq env new` writes here and
+   * only here. Why there is a second directory is explained at its
+   * computation below.
    */
   ownEnvDir: string
   backupsDir: string
-  /** Собранная панель. */
+  /** The built panel. */
   dist: string
 }
 
 export type Env = {
-  /** Каталог приложения; см. EnvPaths.root. */
+  /** The application directory; see EnvPaths.root. */
   root(): string
   /**
-   * Путь внутри каталога ПРИЛОЖЕНИЯ.
+   * A path inside the APPLICATION directory.
    *
-   * Только для файлов, которые приехали вместе с программой: cli/launch.mjs,
-   * kernel/Dockerfile, web/dist. Всё, что заводится на машине — .env, журнал,
-   * расписка, данные, свои окружения, — берётся из paths.*, и там оно уже
-   * посчитано от каталога состояния.
+   * Only for files that arrived together with the program: cli/launch.mjs,
+   * kernel/Dockerfile, web/dist. Everything created on the machine (.env, the
+   * log, the receipt, the data, one's own environments) is taken from paths.*,
+   * where it is already resolved from the state directory.
    */
   path(...parts: string[]): string
-  /** Путь из аргумента человека: считается от каталога, откуда он позвал (COLLOQ_CWD). */
+  /** A path from the person's argument: resolved from the directory they called from (COLLOQ_CWD). */
   userPath(path: string): string
-  /** Строка из .env. На ключе из SECRET_KEYS бросает. */
+  /** A line from .env. Throws on a key from SECRET_KEYS. */
   read(key: string): string
-  /** Есть ли непустая строка с этим ключом. Единственное, что можно спросить о секрете. */
+  /** Whether there is a non-empty line with this key. The only thing one may ask about a secret. */
   has(key: string): boolean
-  /** PORT, умолчание 3000. */
+  /** PORT, default 3000. */
   port(): number
-  /** KERNEL_ENV, умолчание base. */
+  /** KERNEL_ENV, default base. */
   kernelEnv(): string
-  /** PUBLIC_URL или пустая строка. */
+  /** PUBLIC_URL or an empty string. */
   publicUrl(): string
   /** RELAY_DOMAIN / RELAY_ADDR / RELAY_PORT (7000). */
   relay(): Relay
-  /** Домашний каталог человека или пустая строка: там лежат ключи ssh и cloudflared. */
+  /** The person's home directory or an empty string: the ssh and cloudflared keys lie there. */
   home(): string
   paths: EnvPaths
   io: Io
@@ -147,19 +154,19 @@ export type Env = {
 
 export type EnvOptions = {
   io?: Io
-  /** Корень; по умолчанию ищется вверх от этого файла. */
+  /** The root; by default it is searched for upwards from this file. */
   root?: string
-  /** Каталог состояния; по умолчанию — корень, как было всегда. */
+  /** The state directory; by default the root, as it always was. */
   home?: string
-  /** Каталог, откуда позвали (шим кладёт его в COLLOQ_CWD). */
+  /** The directory it was called from (the shim puts it into COLLOQ_CWD). */
   cwd?: string
-  /** Переменные окружения процесса — для COLLOQ_CWD. */
+  /** The process environment variables, for COLLOQ_CWD. */
   processEnv?: NodeJS.ProcessEnv
 }
 
 const SEP = '/'
 
-/** Соединить части пути без node:path: в этом модуле он не нужен. */
+/** Join path parts without node:path: this module does not need it. */
 export function joinPath(...parts: string[]): string {
   const segments: string[] = []
   let absolute = false
@@ -182,8 +189,8 @@ export function joinPath(...parts: string[]): string {
 }
 
 /**
- * Значение ключа так, как его читает scripts/lib.sh: последняя совпавшая
- * строка, срез \r, обрезка пробелов только по краям, парные кавычки снимаются.
+ * The key's value the way scripts/lib.sh reads it: the last matching line,
+ * \r cut off, spaces trimmed only at the edges, paired quotes removed.
  */
 export function parseEnvValue(text: string, key: string): string {
   let found = ''
@@ -204,9 +211,9 @@ export function parseEnvValue(text: string, key: string): string {
   return value
 }
 
-/** Настоящая файловая система. */
+/** The real file system. */
 export function createIo(): Io {
-  // node:fs живёт здесь и только здесь: командам он запрещён, у них ctx.io.
+  // node:fs lives here and only here: it is forbidden to the commands, they have ctx.io.
   return {
     exists: (path) => fs.existsSync(path),
     readText: (path) => {
@@ -239,7 +246,7 @@ export function createIo(): Io {
   }
 }
 
-/** Карта файлов в памяти — для тестов. Ключи и здесь абсолютные пути. */
+/** A map of files in memory, for tests. The keys here are absolute paths too. */
 export function createMemoryIo(files: Record<string, string> = {}, now = 0): Io {
   const map = new Map<string, string>(Object.entries(files))
   return {
@@ -264,12 +271,14 @@ export function createEnv(opts: EnvOptions = {}): Env {
   const processEnv = opts.processEnv ?? process.env
   const io = opts.io ?? createIo()
   /*
-   * Умолчания корней — те же два ответа, что у запуска (launch-state.ts), и
-   * это важнее, чем кажется: иначе `colloq run` писал бы журнал в одно место,
-   * а `colloq logs` читал его в другом.
+   * The defaults of the roots are the same two answers as the start has
+   * (launch-state.ts), and this matters more than it seems: otherwise
+   * `colloq run` would write the log in one place and `colloq logs` would read
+   * it in another.
    *
-   * home берёт корень, когда его назвали явно: так живут тесты и всё, что
-   * прикалывает CLI к своему дереву, — для них ничего не меняется.
+   * home takes the root when the root was named explicitly: that is how the
+   * tests live, and everything that pins the CLI to its own tree; nothing
+   * changes for them.
    */
   const root = opts.root ?? appDir()
   const home = opts.home ?? opts.root ?? homeDir()
@@ -285,25 +294,26 @@ export function createEnv(opts: EnvOptions = {}): Env {
     logFile: statePath('.colloq.log'),
     envDir: path('kernel/environments'),
     /*
-     * Второй каталог окружений — и он заводится ровно там, где первый писать
-     * нельзя.
+     * The second directory of environments, and it is created exactly where
+     * the first one cannot be written to.
      *
-     * Окружения, приехавшие с продуктом (base, base-gpu, cv, gpu), лежат в
-     * <app>/kernel/environments. У установленного colloq это site-packages:
-     * каталог целиком перезаписывается следующим `pip install -U`, а на многих
-     * машинах не пишется вовсе. Завести там своё окружение значит либо
-     * получить отказ прав, либо потерять файл на первом же обновлении.
+     * The environments that arrived with the product (base, base-gpu, cv, gpu)
+     * lie in <app>/kernel/environments. For an installed colloq that is
+     * site-packages: the directory is overwritten entirely by the next
+     * `pip install -U`, and on many machines is not writable at all. Creating
+     * one's own environment there means either a permission refusal or losing
+     * the file on the very first update.
      *
-     * Поэтому своё живёт в каталоге состояния, рядом с .env и data/, — там,
-     * где его никто не перезапишет: <home>/environments.
+     * So one's own lives in the state directory, next to .env and data/, where
+     * nobody will overwrite it: <home>/environments.
      *
-     * В репозитории (и в любом рабочем дереве, где home и есть корень
-     * приложения) второй каталог — это ПЕРВЫЙ, тот же самый путь. Так и
-     * задумано: там kernel/environments и пишется, и читается, и попадает в
-     * контекст `docker build`, и её же видят Makefile, launch-config.ts ·
-     * kernelInputs и панель преподавателя. Новый каталог рядом увёл бы файл
-     * из-под всех троих, и `colloq env new` в клоне заводил бы окружение,
-     * которого не видит сборка.
+     * In the repository (and in any working tree where home is the
+     * application root) the second directory is the FIRST one, the very same
+     * path. That is intended: there kernel/environments is both written and
+     * read, goes into the `docker build` context, and is seen by the Makefile,
+     * launch-config.ts · kernelInputs and the teacher's panel. A new directory
+     * next to it would pull the file from under all three, and `colloq env new`
+     * in a clone would create an environment the build does not see.
      */
     ownEnvDir: home === root ? path('kernel/environments') : joinPath(home, 'environments'),
     sessionFile: statePath(SESSION_FILE),

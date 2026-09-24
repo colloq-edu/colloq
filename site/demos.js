@@ -1,25 +1,28 @@
 /*
- * Живые куски лендинга: рейка присутствия в герое, чужие каретки в
- * заголовке, экран входа и две ячейки одного ядра.
+ * Live pieces of the landing page: the presence rail in the hero, other
+ * people's carets in the heading, the entry screen and two cells of one
+ * kernel.
  *
- * Скрипт общий для русской и английской страницы. Всё, что зависит от
- * языка — имена, слова-числа, сорок меток, реплики ядра — страница кладёт
- * в window.COLLOQ_I18N перед подключением этого файла. Разводить два
- * экземпляра тысячи строк ради «вошла/joined» нельзя: они разойдутся в
- * первый же день, и разойдутся молча.
+ * The script is shared by the Russian and the English page. Everything that
+ * depends on the language (names, number words, forty labels, the kernel's
+ * lines) the page puts into window.COLLOQ_I18N before including this file.
+ * Keeping two copies of a thousand lines for the sake of "joined" in two
+ * languages is not an option: they would diverge on the very first day, and
+ * diverge silently.
  */
 ;(function () {
   'use strict'
 
   /*
-   * Явный выбор языка. Клик по метке в шапке запоминается, и с этого
-   * момента автоопределение в <head> молчит: человек, который один раз
-   * сказал «мне по-русски», не должен говорить это на каждой вкладке.
+   * An explicit language choice. A click on a label in the header is
+   * remembered, and from then on the auto-detection in <head> stays quiet:
+   * a person who once said "Russian for me" should not have to say it on
+   * every tab.
    *
-   * Запись идёт синхронно в обработчике — до того, как браузер уйдёт по
-   * ссылке, — поэтому отдельного preventDefault не нужно. Блок стоит до
-   * проверки словаря: переключатель обязан работать и на странице, где
-   * живых демо нет вовсе.
+   * The write happens synchronously in the handler, before the browser
+   * follows the link, so no separate preventDefault is needed. The block
+   * stands before the dictionary check: the switch must work even on a page
+   * that has no live demos at all.
    */
   try {
     var picker = document.querySelector('.lang-switch')
@@ -35,7 +38,7 @@
   } catch (e) {}
 
   var S = window.COLLOQ_I18N
-  /* Без словаря показывать нечего: демо целиком состоит из его строк. */
+  /* No dictionary, nothing to show: the demo consists entirely of its strings. */
   if (!S) return
 
   var reduce = false
@@ -45,7 +48,7 @@
 
   var ROSTER = S.roster
 
-  /* ------------------------------------------- рейка присутствия в герое */
+  /* ------------------------------------------- presence rail in the hero */
   try {
     ;(function () {
       var room = document.getElementById('room')
@@ -160,9 +163,10 @@
       var say = function (who, arriving) {
         if (!sayBox) return
         var one = PEOPLE[who]
-        /* Род берётся из четвёртого поля строки списка, а не угадывается по
-           имени: в английском словаре оба варианта одинаковы, и правило
-           «вошла/вошёл» там просто не срабатывает. */
+        /* The gender comes from the fourth field of the roster row, not
+           guessed from the name: in the English dictionary both variants are
+           the same, and the Russian rule of a feminine or masculine "joined"
+           simply does not apply there. */
         var verb = (arriving ? S.joined : S.left)[one[3] ? 1 : 0]
         sayBox.textContent = one[2] + ' ' + verb
         sayBox.className = 'room-say is-on' + (arriving ? '' : ' is-gone')
@@ -240,7 +244,7 @@
     })()
   } catch (e) {}
 
-  /* ------------------------------------------ чужие каретки в заголовке */
+  /* ------------------------------- other people's carets in the heading */
   try {
     ;(function () {
       if (reduce) return
@@ -597,25 +601,25 @@
     })()
   } catch (e) {}
 
-  /* --------------------------------------------- живая ячейка -------- */
+  /* ------------------------------------------------ live cell -------- */
   try {
     var kernel = document.querySelector('.kernel')
     if (kernel) {
       var cells = Array.prototype.slice.call(kernel.querySelectorAll('.cell'))
       var hint = kernel.querySelector('.kernel-hint')
-      /* 380ms: это не длительность анимации, а выдуманная задержка, и
-         читатель уже нажал и ждёт. In [*] успевает прочитаться, а
-         ощущение медленного продукта ещё не появляется. */
+      /* 380ms: this is not an animation duration but an invented delay, and
+         the reader has already pressed and is waiting. In [*] has time to be
+         read, while the feeling of a slow product does not set in yet. */
       var RUN_MS = 380
       var busy = null
       var queued = null
       var hasDf = false
       var count = 0
 
-      /* Подмена реплики разведена во времени, как в .swhat: старая уходит
-         за 120ms, новая приходит за 160ms с задержкой в 100ms. Коробка под
-         две строки зарезервирована в CSS, поэтому шапка ядра больше не
-         толкает ячейки вниз в момент смены текста. */
+      /* The line swap is spread out in time, as in .swhat: the old one
+         leaves in 120ms, the new one arrives in 160ms with a 100ms delay. A
+         box for two lines is reserved in CSS, so the kernel header no longer
+         pushes the cells down at the moment the text changes. */
       var hintTimer = 0
       var say = function (text) {
         if (!hint) return
@@ -643,8 +647,9 @@
           out(cell, '(1000, 14)')
           var you = cells[1]
           if (you && you.getAttribute('data-run') === 'error') {
-            /* Ошибка снимается сама: переменная появилась в том же
-               ядре, и держать чужой NameError на экране больше незачем. */
+            /* The error clears itself: the variable appeared in the same
+               kernel, and there is no reason to keep someone else's NameError
+               on screen any more. */
             you.setAttribute('data-run', 'idle')
             prompt(you, 'In [ ]')
             window.setTimeout(function () {
@@ -672,9 +677,9 @@
         busy = cell
         cell.setAttribute('data-run', 'running')
         prompt(cell, 'In [*]')
-        /* Прошлый вывод стирается после того, как строка выцвела, а не в
-           тот же кадр: уход .cell-out p занимает 160ms. Гард на состояние —
-           чтобы не стереть результат, если он уже пришёл. */
+        /* The previous output is erased after the line has faded, not in the
+           same frame: .cell-out p takes 160ms to leave. The guard on state is
+           there so as not to erase the result if it has already arrived. */
         window.setTimeout(function () {
           if (cell.getAttribute('data-run') === 'running') out(cell, '')
         }, 160)
@@ -693,9 +698,10 @@
       var press = function (cell) {
         if (busy === cell || queued === cell) return
         if (busy) {
-          /* Очередь возникает естественным жестом: нажали вторую ячейку,
-             пока идёт первая. Ровно то, что написано в соседней плитке
-             про общий терминал, — команды двоих встают в очередь. */
+          /* The queue arises from a natural gesture: the second cell was
+             pressed while the first one is running. Exactly what the
+             neighbouring tile says about the shared terminal: the commands of
+             two people get queued. */
           queued = cell
           cell.setAttribute('data-run', 'queued')
           out(cell, S.kernelQueuedOut)
@@ -711,8 +717,8 @@
         btn.addEventListener('click', function () {
           press(cell)
         })
-        /* Shift+Enter — идиома Jupyter, и она сама по себе объясняет,
-           что перед вами ноутбук, а не картинка ноутбука. */
+        /* Shift+Enter is a Jupyter idiom, and by itself it explains that
+           what you see is a notebook, not a picture of a notebook. */
         cell.addEventListener('keydown', function (e) {
           if (e.key === 'Enter' && e.shiftKey) {
             e.preventDefault()

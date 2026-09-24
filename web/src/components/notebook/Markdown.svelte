@@ -31,11 +31,12 @@
   loadRenderers()
 
   /**
-   * Комната — или ничего, тем же доводом, что и у выводов.
+   * The room — or nothing, by the same argument as for outputs.
    *
-   * Тот же компонент рисует ответ оракула в панели и заметку на опубликованной
-   * странице, где сессии нет вовсе. Картинки заметки лежат на полке КОМНАТЫ, и
-   * без неё ссылка на них остаётся в тексте как есть.
+   * The same component draws an oracle answer in the panel and a note on a
+   * published page, where there is no session at all. A note's images lie on
+   * the ROOM's shelf, and without the room the link to them stays in the text
+   * as it is.
    */
   let room: { id: string; token: string } | null = null
   try {
@@ -47,13 +48,15 @@
   if (room) askTicket(room.id, room.token)
 
   /**
-   * Заметка, готовая к показу: `attachment:<sha>.<ext>` — адресом на полку.
+   * A note ready to be shown: `attachment:<sha>.<ext>` — as an address on the
+   * shelf.
    *
-   * Картинка условия живёт не в документе, а рядом с комнатой (shared/images.ts
-   * · server/src/notebook-images.ts): 9 МБ base64 в тексте ячеек — это 9 МБ
-   * каждому вошедшему. Пока ключ на полку не приехал, `blobSrc` отвечает
-   * `null`, и ссылка остаётся ссылкой: адрес подставится следующим кадром —
-   * ключ лежит в `$state`, и это чтение и есть подписка на него.
+   * A task-statement image lives not in the document but next to the room
+   * (shared/images.ts · server/src/notebook-images.ts): 9 MB of base64 in the
+   * text of cells is 9 MB for everyone who enters. Until the key to the shelf
+   * has arrived, `blobSrc` answers `null`, and the link stays a link: the
+   * address will be substituted on the next frame — the key lies in `$state`,
+   * and this read is exactly the subscription to it.
    */
   function withImages(text: string): string {
     if (!room) return text
@@ -66,18 +69,20 @@
       if (url) edits.push({ start: ref.start, end: ref.end, text: url })
     }
     /*
-     * И картинка, лежащая ФАЙЛОМ в папке семинара: `![схема](assets/fig01.png)`.
+     * And an image lying as a FILE in the seminar folder:
+     * `![diagram](assets/fig01.png)`.
      *
-     * Так написаны условия в тетради, приехавшей из репозитория курса, — путь к
-     * соседнему файлу, который Jupyter читает с диска рядом с ноутбуком. В
-     * комнате он оставался как написан, и браузер разрешал его относительно
-     * адреса страницы: `/s/<комната>/assets/fig01.png`, где стоит приложение и
-     * на любой путь отвечает своим `index.html`. То есть 200, `text/html` и
-     * пустая рамка — успех, который нечем показать, и в сети даже не 404.
+     * That is how task statements are written in a notebook that came from a
+     * course repository — a path to a neighbouring file that Jupyter reads from
+     * disk next to the notebook. In the room it stayed as written, and the
+     * browser resolved it relative to the page address:
+     * `/s/<room>/assets/fig01.png`, where the app lives and answers any path
+     * with its `index.html`. That is, 200, `text/html` and an empty frame — a
+     * success with nothing to show, and not even a 404 in the network tab.
      *
-     * Подставляется только адрес показа: в тексте ячейки путь не меняется (см.
-     * shared/images.ts), и `.ipynb` с `assets/fig01.png` внутри по-прежнему
-     * открывается в Jupyter.
+     * Only the display address is substituted: the path in the cell text does
+     * not change (see shared/images.ts), and an `.ipynb` with
+     * `assets/fig01.png` inside still opens in Jupyter.
      */
     for (const ref of findWorkspaceImages(text)) {
       const url = fileSrc(here.id, ref.path)
@@ -87,12 +92,13 @@
   }
 
   /*
-   * Билеты на файлы — из эффекта, а не из `withImages`.
+   * Tickets for files — from an effect, not from `withImages`.
    *
-   * Там сеть и запись в состояние, а `withImages` зовут из `$derived`: и то и
-   * другое посреди вычисления — способ получить перерисовку внутри
-   * перерисовки. Эффект перезапускается на правку текста, поэтому картинка,
-   * дописанная в ячейку при всех, находится так же, как при открытии комнаты.
+   * That involves the network and a state write, while `withImages` is called
+   * from `$derived`: doing either in the middle of a computation is a way to
+   * get a re-render inside a re-render. The effect re-runs on a text edit, so
+   * an image added to a cell live is found the same way as when the room is
+   * opened.
    */
   $effect(() => {
     const here = room
@@ -106,12 +112,14 @@
   const html = $derived(render ? render.markdown(shown) : null)
 
   /**
-   * Картинка не загрузилась — скорее всего, протух ключ в её адресе.
+   * An image failed to load — most likely the key in its address has gone
+   * stale.
    *
-   * То же лечение, что у выводов (CellOutputs · retry), и по той же причине:
-   * ключ живёт пять минут, а пара — полтора часа, и вкладка, вернувшаяся из
-   * сна, приходит за картинкой со старым. Ловим на всплытии вниз: событие
-   * `error` у `<img>` не всплывает, а перехватывается.
+   * The same cure as for outputs (CellOutputs · retry), and for the same
+   * reason: a key lives five minutes, while a class lasts an hour and a half,
+   * and a tab that has woken up from sleep comes for an image with the old key.
+   * We catch it on the way down: the `error` event on `<img>` does not bubble,
+   * but it can be captured.
    */
   function imageFailed(event: Event): void {
     if (!room) return
@@ -123,7 +131,8 @@
       if (forgetBlobSrc(here.id, sha)) askTicket(here.id, here.token)
       return
     }
-    // И то же самое для файла из папки: билет на него живёт те же пять минут.
+    // And the same for a file from the folder: its ticket lives the same five
+    // minutes.
     const path = pathOfFileSrc(here.id, src)
     if (path && forgetFileSrc(here.id, path)) askFiles(here.id, here.token, [path])
   }

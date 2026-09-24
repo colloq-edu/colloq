@@ -1,11 +1,11 @@
 /**
- * Место, которое ячейка не отдаёт, пока считает.
+ * The space a cell does not give up while it computes.
  *
- * Перезапуск ячейки с выводом схлопывал её и отрисовывал заново. Вывод
- * по-прежнему стирается сразу — прошлое число, выглядящее свежим, хуже рывка,
- * — а высота остаётся, и разжимается ровно один раз. Всё, что здесь
- * проверяется, ломается молча: в быстром тесте без картинок и без отступов
- * любая из этих ошибок выглядит совершенно правильно.
+ * Rerunning a cell with output collapsed it and drew it again. The output is
+ * still erased at once — an old number that looks fresh is worse than a jump —
+ * but the height stays, and it is released exactly once. Everything checked
+ * here breaks silently: in a quick test without images and without padding,
+ * any of these mistakes looks perfectly right.
  */
 import "./_env.mts";
 import { test } from "node:test";
@@ -19,8 +19,8 @@ import {
   runMark,
 } from "../web/src/lib/output-seat.js";
 
-test("ячейка, которая не считает, не резервирует ничего", () => {
-  // Ручной Clear в покое и ячейка в очереди схлопываются ровно как раньше.
+test("a cell that is not computing reserves nothing", () => {
+  // A manual Clear at rest and a queued cell collapse exactly as before.
   for (const held of [0, 12, 900]) {
     assert.equal(
       outputSeat({
@@ -43,7 +43,7 @@ test("ячейка, которая не считает, не резервиру�
   }
 });
 
-test("место держится, только пока показывать нечего", () => {
+test("the space is held only while there is nothing to show", () => {
   assert.equal(
     outputSeat({
       running: true,
@@ -53,7 +53,7 @@ test("место держится, только пока показывать н
     }),
     900,
   );
-  // Содержимое появилось — пол не нужен: дальше высоту держит оно само.
+  // Content has appeared, so no floor is needed: from here on it holds the height itself.
   assert.equal(
     outputSeat({
       running: true,
@@ -65,9 +65,9 @@ test("место держится, только пока показывать н
   );
 });
 
-test("нераскодированная картинка удерживает место", () => {
-  // Иначе: 900 пикселей резерва → восьмипиксельная белая полоска → рывок
-  // обратно на 900. Три состояния вместо обещанной неподвижности.
+test("an image not yet decoded holds the space", () => {
+  // Otherwise: 900 pixels reserved → an eight-pixel white strip → a jump back
+  // to 900. Three states instead of the promised stillness.
   assert.equal(
     outputSeat({
       running: true,
@@ -79,8 +79,8 @@ test("нераскодированная картинка удерживает �
   );
 });
 
-test("место никогда не добавляет высоты", () => {
-  // Нажатие Run не может заставить ячейку вырасти.
+test("the reserved space never adds height", () => {
+  // Pressing Run cannot make a cell grow.
   for (const outputs of [0, 1]) {
     for (const pendingImages of [0, 1]) {
       assert.equal(
@@ -91,10 +91,10 @@ test("место никогда не добавляет высоты", () => {
   }
 });
 
-test("собственные отступы пустой области не становятся резервом", () => {
-  // Пустая область меряет десяток пикселей своих отступов. Записать их —
-  // значит затереть девятисотпиксельный резерв, и в следующий раз ячейка не
-  // зарезервирует ничего.
+test("the empty area's own padding does not become the reserve", () => {
+  // An empty area measures a dozen pixels of its own padding. Recording them
+  // would overwrite the nine-hundred-pixel reserve, and next time the cell
+  // would reserve nothing.
   assert.deepEqual(
     nextHeld(
       { px: 900, fromError: false },
@@ -110,7 +110,7 @@ test("собственные отступы пустой области не с�
   );
 });
 
-test("очищенная руками ячейка забывает свою высоту", () => {
+test("a cell cleared by hand forgets its height", () => {
   assert.deepEqual(
     nextHeld(
       { px: 900, fromError: false },
@@ -126,8 +126,8 @@ test("очищенная руками ячейка забывает свою в�
   );
 });
 
-test("нераскодированная картинка не портит запомненную высоту", () => {
-  // График в девятьсот пикселей иначе запомнился бы как двадцать.
+test("an image not yet decoded does not spoil the remembered height", () => {
+  // Otherwise a nine-hundred-pixel chart would be remembered as twenty.
   assert.deepEqual(
     nextHeld(
       { px: 900, fromError: false },
@@ -143,7 +143,7 @@ test("нераскодированная картинка не портит за
   );
 });
 
-test("обмеренная высота запоминается, когда её есть с чего взять", () => {
+test("a measured height is remembered when there is something to take it from", () => {
   assert.deepEqual(
     nextHeld(NO_HELD, {
       running: true,
@@ -156,39 +156,39 @@ test("обмеренная высота запоминается, когда е�
   );
 });
 
-test("номер отнимают только там, где его правда отняли", () => {
+test("the number is taken away only where it really was taken away", () => {
   const has = { outputs: 1, execCount: null, state: "idle" as const };
   assert.equal(unnumberedResult(has), true);
-  // Ядро умерло до execute_input: номера нет, но выполнение было — и трейсбек
-  // под ним свежий.
+  // The kernel died before execute_input: there is no number, but there was a
+  // run — and the traceback under it is fresh.
   assert.equal(unnumberedResult({ ...has, state: "error" }), false);
   assert.equal(unnumberedResult({ ...has, execCount: 12 }), false);
   assert.equal(unnumberedResult({ ...has, outputs: 0 }), false);
 });
 
-test("место, сменившее содержимое, получает новый ключ; выросший поток — прежний", () => {
+test("a slot whose content changed gets a new key; a stream that grew keeps the old one", () => {
   const grew = outputKey(0, { kind: "stream", name: "stdout" });
   assert.equal(grew, outputKey(0, { kind: "stream", name: "stdout" }));
-  // Трейсбек, заменённый графиком в том же месте, обязан пересобраться: иначе
-  // график рисуется подрезанным по запомненной высоте трейсбека.
+  // A traceback replaced by a chart in the same slot has to be rebuilt:
+  // otherwise the chart is drawn clipped to the traceback's remembered height.
   assert.notEqual(
     outputKey(0, { kind: "error" }),
     outputKey(0, { kind: "data" }),
   );
-  // stdout и stderr в одном месте — тоже разные вещи.
+  // stdout and stderr in one slot are different things too.
   assert.notEqual(
     outputKey(0, { kind: "stream", name: "stdout" }),
     outputKey(0, { kind: "stream", name: "stderr" }),
   );
 });
 
-test("упавший вывод места не держит", () => {
+test("failed output holds no space", () => {
   /*
-   * Место резервируют в расчёте на то, что новый вывод будет примерно того же
-   * размера. Для ячейки, перезапускаемой без изменений, это верно; для
-   * упавшей — неверно ровно наоборот: её перезапускают, ПОТОМУ ЧТО в ней
-   * что-то поменяли. А трейсбеки высокие, и полэкрана пустоты в расчёте на
-   * то, чего не будет, — это и есть то, о чём сообщили как о баге.
+   * Space is reserved on the assumption that the new output will be about the
+   * same size. For a cell rerun without changes that holds; for a failed one it
+   * is exactly wrong: it is rerun BECAUSE something in it was changed. And
+   * tracebacks are tall, and half a screen of emptiness reserved for what will
+   * not come is exactly what was reported as a bug.
    */
   const afterError = nextHeld(NO_HELD, {
     running: true,
@@ -206,10 +206,10 @@ test("упавший вывод места не держит", () => {
       held: afterError,
     }),
     0,
-    "трейсбек зарезервировал под себя место",
+    "the traceback reserved space for itself",
   );
 
-  // А удачный вывод того же роста — держит.
+  // But a successful output of the same height does hold it.
   const afterOk = nextHeld(NO_HELD, {
     running: true,
     outputs: 1,
@@ -223,14 +223,14 @@ test("упавший вывод места не держит", () => {
   );
 });
 
-/* ------------------------------------------------- запускалась ли она вообще */
+/* ---------------------------------------------------- was it ever run at all */
 
 /**
- * Ячейка без вывода после запуска выглядела ровно как та, которой никто не
- * касался: номер в поле — порядковый, он у обеих одинаков, а строка `Out [n]`
- * рисовалась только под выводом. Метка отвечает на это у ВСЯКОЙ ячейки кода —
- * и ошибиться здесь легко в обе стороны: сказать «не запускалась» над живым
- * выводом или, наоборот, не сказать этого над пустой ячейкой.
+ * A cell with no output after a run looked exactly like one nobody had
+ * touched: the number in the gutter is an ordinal, the same for both, and the
+ * `Out [n]` line was drawn only under output. The mark answers this for EVERY
+ * code cell — and it is easy to get wrong both ways: to say "never run" over
+ * live output or, conversely, not to say it over an empty cell.
  */
 const CELL = {
   type: "code",
@@ -240,14 +240,14 @@ const CELL = {
   running: false,
 } as const;
 
-test("свежая ячейка — пустые скобки; у заметки метки нет вовсе", () => {
+test("a fresh cell gets empty brackets; a note has no mark at all", () => {
   assert.deepEqual(runMark(CELL), { label: "[ ]", tone: "idle" });
-  // У заметки не бывает запуска: пустые скобки под её номером обещали бы
-  // кнопку, которой у неё нет.
+  // A note is never run: empty brackets under its number would promise a
+  // button it does not have.
   assert.equal(runMark({ ...CELL, type: "markdown" }), null);
 });
 
-test("посчитанная показывает свой номер, упавшая — свой, и красным", () => {
+test("a computed cell shows its number, a failed one shows its own, in red", () => {
   assert.deepEqual(runMark({ ...CELL, execCount: 7, state: "ok" }), {
     label: "[7]",
     tone: "done",
@@ -258,34 +258,34 @@ test("посчитанная показывает свой номер, упав�
   });
 });
 
-test("считает и стоит в очереди — звёздочка: номер даст ядро", () => {
+test("computing and queued get an asterisk: the kernel will give the number", () => {
   assert.deepEqual(runMark({ ...CELL, running: true }), { label: "[*]", tone: "busy" });
   assert.deepEqual(runMark({ ...CELL, state: "queued" }), { label: "[*]", tone: "busy" });
-  // Звёздочка старше номера: перезапуск посчитанной ячейки показывает её ход,
-  // а не число с прошлого раза.
+  // The asterisk outranks the number: rerunning a computed cell shows it in
+  // progress, not the number from last time.
   assert.deepEqual(runMark({ ...CELL, execCount: 3, running: true }), {
     label: "[*]",
     tone: "busy",
   });
 });
 
-test("считалась, а номера нет — прочерк, а не пустые скобки", () => {
+test("computed but without a number gets a dash, not empty brackets", () => {
   /*
-   * Три разных случая, и во всех «не запускалась» было бы прямой неправдой:
-   * пустая ячейка (Jupyter номера не выдаёт вовсе), перезапуск ядра и возврат
-   * версии — у последних двух на экране настоящий вывод.
+   * Three different cases, and in all of them "never run" would be a plain lie:
+   * an empty cell (Jupyter gives no number at all), a kernel restart and a
+   * version restore — the last two have real output on screen.
    */
   assert.deepEqual(runMark({ ...CELL, state: "ok" }), { label: "[—]", tone: "lost" });
   assert.deepEqual(runMark({ ...CELL, outputs: 2 }), { label: "[—]", tone: "lost" });
   assert.equal(unnumberedResult({ state: "idle", execCount: null, outputs: 2 }), true);
-  // Упала без номера — прочерк, но красный: сначала важно, что упала.
+  // Failed without a number: a dash, but red — what matters first is that it failed.
   assert.deepEqual(runMark({ ...CELL, state: "error" }), { label: "[—]", tone: "error" });
 });
 
-test("метка всегда ровно три знака — на ней держится вертикаль", () => {
+test("the mark is always exactly three characters: the vertical alignment rests on it", () => {
   /*
-   * Скобки стоят колонкой на всю тетрадь, и лист читается сверху вниз одним
-   * взглядом. Четвёртый знак у любой из них — и колонка разъезжается.
+   * The brackets stand in a column down the whole notebook, and the sheet reads
+   * top to bottom at a glance. A fourth character in any of them and the column falls apart.
    */
   const cells = [
     CELL,
@@ -297,11 +297,11 @@ test("метка всегда ровно три знака — на ней де�
   ];
   for (const cell of cells) {
     const mark = runMark(cell);
-    assert.ok(mark, "метки нет");
-    assert.equal(mark!.label.length, 3, `«${mark!.label}» не в три знака`);
+    assert.ok(mark, "no mark");
+    assert.equal(mark!.label.length, 3, `"${mark!.label}" is not three characters`);
     assert.ok(mark!.label.startsWith("[") && mark!.label.endsWith("]"));
   }
-  // Двузначный номер шире — и это правильно: число важнее вертикали, а
-  // тетрадей с сотней запусков не бывает.
+  // A two-digit number is wider — and that is right: the number matters more
+  // than the alignment, and there are no notebooks with a hundred runs.
   assert.equal(runMark({ ...CELL, execCount: 12 })!.label, "[12]");
 });

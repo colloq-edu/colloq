@@ -1,17 +1,20 @@
 /**
- * Заглушки на экранах преподавателя: что стоит на месте чисел, пока их везут.
+ * Placeholders on the teacher screens: what stands in place of the numbers
+ * while they are on their way.
  *
- * Раздел «Ресурсы» кормится ответом машины, и до ответа он показывал ПУСТОЕ
- * включённое поле памяти: в него приглашали печатать за миг до того, как
- * приехавшее число сотрёт набранное, а подсказка под ним была пустой строкой.
- * Здесь проверяется ровно то, что откатывается одной строкой и не роняет ни
- * один другой тест: что до ответа на месте полей стоят заглушки, что пустого
- * включённого поля нет ни в одном состоянии, что при отказе сказано словами и
- * что кнопка «Создать занятие» не нажимается, пока форма не знает, что отправит.
+ * The "Resources" section is fed by the machine's answer, and before the
+ * answer it showed an EMPTY, enabled memory field: it invited typing a
+ * moment before the arriving number would erase what was typed, and the
+ * hint under it was an empty line. Checked here is exactly what gets rolled
+ * back in one line without breaking any other test: that before the answer
+ * placeholders stand in place of the fields, that there is no empty enabled
+ * field in any state, that a failure is stated in words, and that the
+ * "Create class" button cannot be pressed until the form knows what it will
+ * send.
  *
- * Читается прямо из компонентов, как в `panels-craft.test.mts` и
- * `screens-craft.test.mts`: тест со своей копией правила проходит вечно, пока
- * файл уезжает.
+ * It is read straight from the components, as in `panels-craft.test.mts`
+ * and `screens-craft.test.mts`: a test with its own copy of the rule passes
+ * forever while the file drifts away.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -23,7 +26,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка без комментариев: объяснение — не обещание. */
+/** Markup without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -33,112 +36,115 @@ const NEW_SEMINAR = 'web/src/admin/screens/NewSeminar.svelte'
 const SEMINARS = 'web/src/admin/screens/Seminars.svelte'
 const SKELETON = 'web/src/components/ui/Skeleton.svelte'
 
-/** Ветка `{#if loading}` целиком — от неё до `{:else}` того же уровня. */
+/** The whole `{#if loading}` branch, from it to the `{:else}` of the same level. */
 function loadingBranch(source: string): string {
   const start = source.indexOf('{#if loading}')
-  assert.notEqual(start, -1, 'ветка ожидания есть')
+  assert.notEqual(start, -1, 'the waiting branch exists')
   const end = source.indexOf('\n  {:else}', start)
-  assert.notEqual(end, -1, 'у ветки ожидания есть продолжение')
+  assert.notEqual(end, -1, 'the waiting branch has a continuation')
   return source.slice(start, end)
 }
 
-/* ------------------------------------------------------ поля под заглушкой */
+/* ---------------------------------------------- fields under a placeholder */
 
-test('пока ресурсы едут, на месте полей памяти и ядер стоят заглушки, а не пустые поля', () => {
+test('while resources are on their way, placeholders stand in place of the memory and core fields, not empty fields', () => {
   const resources = code(read(RESOURCES))
   const waiting = loadingBranch(resources)
-  // Два поля — память и ядра, — и оба под заглушкой ростом с настоящее поле.
+  // Two fields, memory and cores, both under a placeholder as tall as the real field.
   const fields = [...waiting.matchAll(/<Skeleton[^/]*height=\{FIELD_H\}/g)]
-  assert.equal(fields.length, 2, 'заглушка и у памяти, и у ядер')
-  // Ни одного поля ввода в этой ветке: пустое включённое поле — приглашение
-  // печатать в то, что через мгновение перепишет ответ сервера.
-  assert.doesNotMatch(waiting, /<input/, 'до ответа полей ввода нет вовсе')
-  // Полоски и подсказки — тоже, иначе раздел прыгнет, когда числа приедут.
-  assert.match(waiting, /hintLines\(/, 'подсказки заняли свои строки')
-  assert.match(waiting, /height="4px"/, 'полоска занятой памяти на месте')
+  assert.equal(fields.length, 2, 'a placeholder for both memory and cores')
+  // Not a single input in this branch: an empty enabled field is an
+  // invitation to type into what the server's answer will overwrite a moment
+  // later.
+  assert.doesNotMatch(waiting, /<input/, 'there are no input fields at all before the answer')
+  // Bars and hints too, otherwise the section jumps when the numbers arrive.
+  assert.match(waiting, /hintLines\(/, 'the hints took their lines')
+  assert.match(waiting, /height="4px"/, 'the used-memory bar is in place')
 })
 
-test('размеры заглушек берутся из одних чисел, а не пишутся в каждой по месту', () => {
+test('placeholder sizes come from shared numbers, not written into each one in place', () => {
   const resources = read(RESOURCES)
-  // Одно число на все поля и одно на все строки подсказок: разъехаться они
-  // могут только вместе, и тогда прыжок видно глазом.
-  assert.match(resources, /const FIELD_H = '38px'/, 'высота поля — одним числом')
-  assert.match(resources, /const HINT_LINE = 18\b/, 'высота строки подсказки — одним числом')
+  // One number for all fields and one for all hint lines: they can drift
+  // only together, and then the jump is visible to the eye.
+  assert.match(resources, /const FIELD_H = '38px'/, 'the field height is one number')
+  assert.match(resources, /const HINT_LINE = 18\b/, 'the hint line height is one number')
   const waiting = loadingBranch(code(resources))
-  // И поля берут высоту оттуда, а не переписывают число себе: пара «38px» в
-  // разметке и «38px» в константе расходится на первой же правке кегля.
-  assert.doesNotMatch(waiting, /height="38px"/, 'поле не носит свою копию высоты')
-  assert.doesNotMatch(waiting, /height="18px"/, 'строка подсказки — тоже')
+  // And the fields take their height from there instead of copying the
+  // number: a pair of "38px" in the markup and "38px" in the constant drifts
+  // apart at the very first font-size edit.
+  assert.doesNotMatch(waiting, /height="38px"/, 'the field does not carry its own copy of the height')
+  assert.doesNotMatch(waiting, /height="18px"/, 'nor does the hint line')
 })
 
-test('раздел ждёт ответа только когда ответ в пути, а не когда его уже не будет', () => {
+test('the section waits for an answer only while the answer is on its way, not when it will never come', () => {
   const resources = code(read(RESOURCES))
-  // `null` значил и «ещё не знаем», и «спросили и не узнали». Разделяет их флаг.
-  assert.match(resources, /loading\?: boolean/, 'ожидание — отдельное свойство')
-  assert.match(resources, /const unreadable = \$derived\(!resources && !loading\)/, 'отказ — это не ожидание')
+  // `null` meant both "we do not know yet" and "we asked and did not find out". A flag separates them.
+  assert.match(resources, /loading\?: boolean/, 'waiting is a separate property')
+  assert.match(resources, /const unreadable = \$derived\(!resources && !loading\)/, 'a failure is not waiting')
 })
 
-/* ------------------------------------------------------------ отказ машины */
+/* --------------------------------------------------------- machine failure */
 
-test('машина не ответила — поля остаются, и сказано об этом словами', () => {
+test('the machine did not answer: the fields stay, and that is said in words', () => {
   const resources = code(read(RESOURCES))
-  assert.match(resources, /admin\.resources\.unreadable/, 'строка отказа стоит под полями')
-  // Поле не остаётся немой пустой рамкой: подсказка внутри говорит, что
-  // комната получит умолчание.
+  assert.match(resources, /admin\.resources\.unreadable/, 'the failure line stands under the fields')
+  // The field does not stay a mute empty frame: the hint inside says the room
+  // will get the default.
   const placeholders = [...resources.matchAll(/placeholder=\{unreadable \? tr\('admin\.resources\.asDefault'\)/g)]
-  assert.equal(placeholders.length, 2, 'подсказка внутри обоих полей')
+  assert.equal(placeholders.length, 2, 'a hint inside both fields')
   for (const key of ['admin.resources.unreadable', 'admin.resources.asDefault', 'admin.resources.reading']) {
     const pair = adminMessages[key]
-    assert.ok(pair && pair.ru && pair.en, `${key} переведена на оба языка`)
+    assert.ok(pair && pair.ru && pair.en, `${key} is translated into both languages`)
   }
 })
 
-/* ------------------------------------------------------ бегущая полоса */
+/* ----------------------------------------------------- running shimmer */
 
-test('под «поменьше движения» заглушка перестаёт бежать, а не исчезает', () => {
+test('under "reduce motion" the placeholder stops running rather than disappearing', () => {
   const skeleton = read(SKELETON)
   const reduced = skeleton.slice(skeleton.indexOf('prefers-reduced-motion'))
-  assert.match(reduced, /animation:\s*none/, 'блик стоит на месте')
-  // Сам блок остаётся: он держит размер, и без него раздел схлопнется.
-  assert.match(reduced, /\.skeleton::after/, 'гасится блик, а не заглушка')
-  // Блик едет трансформацией: он идёт на КАЖДОМ кадре ожидания, и двигать им
-  // `left` или `background-position` значит раскладывать страницу заново всё
-  // то время, пока она и без того занята ответом сервера.
+  assert.match(reduced, /animation:\s*none/, 'the shimmer stands still')
+  // The block itself stays: it holds the size, and without it the section collapses.
+  assert.match(reduced, /\.skeleton::after/, 'the shimmer is turned off, not the placeholder')
+  // The shimmer moves by transform: it runs on EVERY frame of waiting, and
+  // moving it by `left` or `background-position` means laying out the page
+  // again the whole time it is already busy with the server's answer.
   const running = skeleton.slice(0, skeleton.indexOf('prefers-reduced-motion'))
-  assert.match(running, /transform:\s*translateX\(-100%\)/, 'блик стоит слева трансформацией')
-  assert.match(running, /@keyframes shimmer\s*\{\s*to\s*\{\s*transform:\s*translateX\(100%\)/, 'и ею же уезжает')
+  assert.match(running, /transform:\s*translateX\(-100%\)/, 'the shimmer sits on the left by transform')
+  assert.match(running, /@keyframes shimmer\s*\{\s*to\s*\{\s*transform:\s*translateX\(100%\)/, 'and leaves by it too')
 })
 
-/* -------------------------------------------------------- кнопка и чтения */
+/* ----------------------------------------------- the button and the reads */
 
-test('«Создать занятие» не нажимается, пока форма не знает, что отправит', () => {
+test('"Create class" cannot be pressed until the form knows what it will send', () => {
   const form = code(read(NEW_SEMINAR))
   assert.match(
     form,
     /const settling = \$derived\(environmentsLoading \|\| oracleLoading \|\| resourcesLoading\)/,
-    'ждут все три чтения — окружения, потолок оракула, ресурсы',
+    'all three reads are awaited: environments, the oracle ceiling, resources',
   )
-  assert.match(form, /!busy &&\s*\n\s*!settling &&/, 'кнопка ждёт вместе с ними')
-  // Флаг гаснет и на успехе, и на отказе: ждать второго ответа от того, кто
-  // уже сказал «нет», нечего — иначе кнопка не оживёт никогда.
+  assert.match(form, /!busy &&\s*\n\s*!settling &&/, 'the button waits along with them')
+  // The flag goes off both on success and on failure: there is nothing to
+  // wait for from someone who has already said "no", otherwise the button
+  // never comes alive.
   const finallies = [...form.matchAll(/\.finally\(\(\) => \((?:environments|oracle|resources)Loading = false\)\)/g)]
-  assert.equal(finallies.length, 3, 'каждое чтение гасит свой флаг')
+  assert.equal(finallies.length, 3, 'each read turns off its own flag')
 })
 
-test('список окружений тоже ждёт под заглушкой, а не пустой строкой', () => {
+test('the environment list also waits under a placeholder, not an empty line', () => {
   const form = code(read(NEW_SEMINAR))
   const start = form.indexOf('{#if environmentsLoading}')
-  assert.notEqual(start, -1, 'у списка есть состояние ожидания')
+  assert.notEqual(start, -1, 'the list has a waiting state')
   const waiting = form.slice(start, form.indexOf('{:else if environments'))
-  assert.match(waiting, /<Skeleton/, 'карточка окружения нарисована заглушкой')
-  assert.match(waiting, /h-\[45px\]/, 'строка имени занимает свою высоту')
+  assert.match(waiting, /<Skeleton/, 'the environment card is drawn as a placeholder')
+  assert.match(waiting, /h-\[45px\]/, 'the name line takes its height')
 })
 
-test('окно настроек занятия ждёт ответа тем же способом, что и форма', () => {
+test('the class settings window waits for the answer the same way as the form', () => {
   const list = code(read(SEMINARS))
-  assert.match(list, /loading=\{resourcesLoading\}/, 'тот же раздел получает тот же флаг')
-  // Перечитывание после сохранения идёт под уже нарисованными числами:
-  // мигать разделом на каждое изменение памяти нечем.
-  assert.match(list, /resourcesLoading = resources === null/, 'заглушки только на первом чтении')
-  assert.match(list, /\.finally\(\(\) => \(resourcesLoading = false\)\)/, 'отказ снимает ожидание')
+  assert.match(list, /loading=\{resourcesLoading\}/, 'the same section gets the same flag')
+  // Rereading after saving happens under the numbers already drawn: there is
+  // no reason to blink the section on every memory change.
+  assert.match(list, /resourcesLoading = resources === null/, 'placeholders only on the first read')
+  assert.match(list, /\.finally\(\(\) => \(resourcesLoading = false\)\)/, 'a failure ends the waiting')
 })

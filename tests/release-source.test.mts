@@ -86,7 +86,8 @@ test('release version defaults to v<package.json version> at the source commit a
     fs.writeFileSync(path.join(repo, 'kernel/environments/base.txt'), '# base\n')
     git('add', '.'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
     const commit = git('rev-parse', 'HEAD')
-    // Сборка и публикация подменены: проверяется только, каким числом помечены образы и манифест.
+    // Build and publish are stubbed out: all that is checked is which number the
+    // images and the manifest are tagged with.
     const code = `import importlib.util,sys,json,pathlib
 s=importlib.util.spec_from_file_location('builder',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
 repo,commit,out=sys.argv[2],sys.argv[3],sys.argv[4]

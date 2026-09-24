@@ -1,11 +1,12 @@
 <!--
-  Читалка PDF в комнате.
+  The PDF reader in the room.
 
-  Два режима, и они не одно и то же. Смотреть самому может любой — файл комнаты
-  и так скачивается кем угодно из неё. Идти за преподавателем — режим просмотра,
-  а не замок: любой жест студента снимает следование немедленно, а вернуться
-  предлагает плашка. Немедленно, а не по таймеру: программная прокрутка,
-  дерущаяся с пальцем на трекпаде, даёт залипание, которое выглядит поломкой.
+  Two modes, and they are not the same thing. Anyone can look on their own — a
+  room file can be downloaded by anyone in it anyway. Following the teacher is a
+  viewing mode, not a lock: any gesture of the student breaks following
+  immediately, and a pill offers the way back. Immediately, not on a timer:
+  programmatic scrolling fighting a finger on the trackpad causes a stickiness
+  that looks like a breakage.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -21,41 +22,44 @@
   import PageRail from './PageRail.svelte'
 
   interface Props {
-    /** Что открыто у этого человека. Может отличаться от того, что у комнаты. */
+    /** What this person has open. May differ from what the room has. */
     file: string
-    /** Пришёл ли документ от комнаты — тогда по умолчанию идём за преподавателем. */
+    /** Whether the room shared it: if so, we follow the teacher by default. */
     shared: boolean
     /**
-     * Счётчик нажатий «догнать» в строке вкладок.
+     * The counter of "catch up" presses in the tab row.
      *
-     * Счётчик, а не флаг: догнать можно дважды подряд, а флаг во второй раз не
-     * изменится и ничего не произойдёт.
+     * A counter, not a flag: one can catch up twice in a row, and a flag would
+     * not change the second time, so nothing would happen.
      */
     catchUp: number
-    /** Наружу — строке вкладок: она показывает и место, и за кем идём. */
+    /** Out to the tab row: it shows both the position and whom we follow. */
     page: number
     pages: number
     /**
-     * За кем идти по этому документу — считает экран, а не читалка.
+     * Whom to follow through this document — computed by the screen, not the
+     * reader.
      *
-     * Считалось здесь, и это было ошибкой ровно в одном месте: читалка
-     * размонтируется, когда человек уходит в тетрадь, а метка «преподаватель на
-     * стр. 4» на вкладке должна оставаться живой и оттуда. Считать её в экране
-     * стоит того же, а работает и когда смотреть некому.
+     * It used to be computed here, and that was a mistake in exactly one place:
+     * the reader unmounts when the person goes to the notebook, while the
+     * "teacher on p. 4" mark on the tab must stay live from there too.
+     * Computing it in the screen costs the same, and it works even when nobody
+     * is watching.
      */
     lead: Lead | null
     /**
-     * Идём ли за ведущим прямо сейчас — наружу, в строку вкладок.
+     * Whether we are following the presenter right now — out to the tab row.
      *
-     * Она пишет «Идём за …» и предлагает «догнать», а знала об этом только по
-     * номеру страницы: отставший на пол-листа читал в читалке «смотрите сами»,
-     * а строкой выше — «Идём за Анной». Два индикатора рядом, говорящие
-     * противоположное, — хуже одного.
+     * The tab row writes "Following …" and offers "catch up", and it knew about
+     * this only from the page number: someone who had fallen half a page behind
+     * read "you are on your own" in the reader and "Following Anna" a line
+     * above. Two indicators next to each other saying opposite things are worse
+     * than one.
      */
     following?: boolean
-    /** Может ли этот человек начать по документу лекцию. */
+    /** Whether this person may start a lecture from the document. */
     mayLead?: boolean
-    /** Лекция по этому документу идёт, а он ушёл читать сам, — как вернуться. */
+    /** A lecture on this document runs while they read alone: the way back. */
     backToLecture?: (() => void) | null
   }
 
@@ -78,24 +82,24 @@
   let scroller = $state<HTMLElement | null>(null)
 
   /**
-   * Сколько места занимает лист, который ещё не нарисован.
+   * How much space a page that has not been drawn yet takes.
    *
-   * Место обязано быть верным ДО отрисовки: и `place`, и `goTo` меряют высоту
-   * листа — по ней идут за преподавателем и по ней же возвращаются на своё
-   * место после зума. Пропорция берётся с первой страницы (как в полосе
-   * миниатюр) и уточняется по каждой нарисованной: у приложения в конце колоды
-   * своя ориентация.
+   * The space has to be right BEFORE drawing: both `place` and `goTo` measure
+   * the page's height — following the teacher goes by it, and so does returning
+   * to one's place after zooming. The proportion is taken from the first page
+   * (as in the thumbnail strip) and refined by each drawn one: an appendix at
+   * the end of a deck has its own orientation.
    */
   let aspect = $state('1 / 1.414')
   const ratios = $state<Record<number, string>>({})
 
   /*
-   * Масштаб считается ОТ ШИРИНЫ КОЛОНКИ, а не от размера страницы в пунктах.
+   * Scale is computed FROM THE COLUMN WIDTH, not from the page size in points.
    *
-   * Сто процентов — это «страница по ширине»: то, ради чего читалку и
-   * открывают, и то, что не приходится настраивать. Всё остальное — множитель к
-   * этому. Масштаб «как в акробате», где сто процентов означают физический
-   * размер листа, в колонке шириной в пол-экрана не значит ничего.
+   * A hundred percent is "fit to width": the reason the reader is opened at
+   * all, and what needs no adjusting. Everything else is a multiplier on that.
+   * Scale "as in Acrobat", where a hundred percent means the physical size of
+   * the sheet, means nothing in a column half a screen wide.
    */
   const STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3]
   let scale = $state(read(`colloq.zoom.${session.session.id}`, 1))
@@ -115,17 +119,17 @@
     try {
       localStorage.setItem(key, String(value))
     } catch {
-      /* приватный режим — масштаб просто не переживёт заход */
+      /* private mode — the zoom simply will not survive the visit */
     }
   }
 
   /**
-   * Сменить масштаб, не потеряв место в документе.
+   * Change the scale without losing one's place in the document.
    *
-   * Прокрутка держится за пиксели, а масштаб их меняет: без этого страница
-   * двадцать четыре уезжала бы к началу от одного нажатия на «плюс». Место
-   * снимается страницей и долей её высоты — тем же способом, которым за ним
-   * идут по комнате.
+   * Scrolling holds on to pixels, and scale changes them: without this, page
+   * twenty-four would slide back to the start after a single press on "plus".
+   * The place is taken as a page and a fraction of its height — the same way it
+   * is followed around the room.
    */
   function zoom(next: number): void {
     const wanted = Math.min(3, Math.max(0.5, next))
@@ -133,7 +137,8 @@
     const was = place()
     scale = wanted
     remember(`colloq.zoom.${session.session.id}`, wanted)
-    // Кадр: холсты успевают пересобраться, и только потом можно мерить высоты.
+    // A frame: the canvases get to rebuild, and only then can heights be
+    // measured.
     requestAnimationFrame(() => requestAnimationFrame(() => goTo(was)))
   }
 
@@ -142,27 +147,28 @@
     const next = direction === 1 ? STEPS[Math.min(STEPS.length - 1, at + 1)] : STEPS[Math.max(0, at - 1)]
     zoom(next ?? scale)
   }
-  /** Ставится, пока страницу двигает код, — чтобы не принять это за жест. */
+  /** Set while code moves the page, so as not to take that for a gesture. */
   let programmatic = false
 
   onMount(() => {
     let cancelled = false
     let opened: PDFDocumentProxy | null = null
     /*
-     * Счётчик страниц в строке вкладок — от ЭТОГО документа с первой секунды.
+     * The page counter in the tab row — from THIS document from the first
+     * second.
      *
-     * Читалка пересоздаётся на каждую вкладку (`{#key activePath}` в экране
-     * комнаты), а `page`/`pages` связаны с экраном и переживают пересоздание:
-     * без сброса над новым файлом висело «12 / 40» от прежнего, пока его не
-     * прокрутят.
+     * The reader is recreated for every tab (`{#key activePath}` in the room
+     * screen), while `page`/`pages` are bound to the screen and survive the
+     * recreation: without a reset, "12 / 40" from the previous file hung over
+     * the new one until it was scrolled.
      */
     page = 1
     pages = 0
     /*
-     * Умолчание следования: документ, который поставила комната, смотрят
-     * вместе; документ, открытый самому из панели файлов, — сам по себе.
-     * Человек пришёл смотреть своё, и утаскивать его на чужую страницу было бы
-     * грубо.
+     * Default following: a document put up by the room is watched together; a
+     * document opened for oneself from the files panel is looked at alone. The
+     * person came to look at their own thing, and dragging them to someone
+     * else's page would be rude.
      */
     following = shared
     void loadPdf()
@@ -170,24 +176,25 @@
       .then(async (ready) => {
         opened = ready
         if (cancelled) return
-        // Пропорция листа — до первой отрисовки: по высоте листов идут за
-        // преподавателем, и колода слайдов, разложенная столбиком A4, увела бы
-        // прыжок на страницу мимо.
+        // The page proportion comes before the first render: following the
+        // teacher goes by the page heights, and a deck of slides laid out as a
+        // column of A4 would send a jump to a page off target.
         const view = (await ready.getPage(1)).getViewport({ scale: 1 })
         if (cancelled) return
         aspect = `${Math.round(view.width)} / ${Math.round(view.height)}`
         doc = ready
         pages = ready.numPages
         /*
-         * Место сообщает эффект ниже, а не эта строка.
+         * The place is reported by the effect below, not by this line.
          *
-         * Сказать, где мы, надо сразу — не дожидаясь прокрутки: иначе
-         * преподаватель, открывший документ и не тронувший его, не публикует
-         * позицию вовсе, комната видит доску, но идти не за кем, и ни строки о
-         * том, почему. Обычный случай — открыл на первой странице и начал
-         * говорить. Но роль приезжает отдельным кадром и может прийти позже
-         * документа, а публикует место только тот, за кем можно пойти, — то
-         * есть это не одно событие, а два, и ждать надо оба.
+         * Where we are has to be said at once — without waiting for scrolling:
+         * otherwise a teacher who opened the document and did not touch it does
+         * not publish a position at all, the room sees the board but has no one
+         * to follow, and not a line about why. The usual case: opened it on the
+         * first page and started talking. But the role arrives in a separate
+         * frame and may come later than the document, and only someone who can
+         * be followed publishes their place — so this is not one event but two,
+         * and both have to be waited for.
          */
       })
       .catch(() => {
@@ -195,43 +202,45 @@
       })
     return () => {
       cancelled = true
-      // Освободить память страниц: тридцать отрисованных холстов A4 — это
-      // сотни мегабайт, и вкладка, где документ открывали трижды, встаёт.
-      // Закрыть документ целиком: `loadingTask.destroy()` останавливает и
-      // воркер, и незавершённые запросы кусков. Одного `cleanup` мало — он
-      // освобождает страницы, но оставляет транспорт живым.
+      // Free the pages' memory: thirty drawn A4 canvases are hundreds of
+      // megabytes, and a tab where the document was opened three times grinds
+      // to a halt. Close the document entirely: `loadingTask.destroy()` stops
+      // both the worker and unfinished chunk requests. `cleanup` alone is not
+      // enough — it frees the pages but keeps the transport alive.
       //
-      // По своей переменной, а не по `doc`: документ, доехавший после ухода, в
-      // `doc` уже не попадёт — и без этого уносил бы с собой живой воркер.
+      // By its own variable, not by `doc`: a document that arrived after
+      // leaving will never make it into `doc` — and without this it would keep
+      // its worker alive.
       void opened?.loadingTask.destroy()
     }
   })
 
   /**
-   * Отрисовка, которая идёт в этот холст прямо сейчас.
+   * The render that is going into this canvas right now.
    *
-   * pdf.js отказывается рисовать во второй раз в тот же холст, пока не
-   * закончилась первая: «Cannot use the same canvas during multiple render()
-   * operations». А масштаб переключают быстрее, чем считается страница A4, —
-   * два нажатия на «плюс» подряд и есть тот самый второй раз.
+   * pdf.js refuses to draw into the same canvas a second time until the first
+   * render is finished: "Cannot use the same canvas during multiple render()
+   * operations". And the zoom is switched faster than an A4 page is computed —
+   * two presses on "plus" in a row are exactly that second time.
    */
   interface Job {
-    /** Просьба остановиться: до `render` — флагом, после — отменой задачи. */
+    /** Stop request: a flag before `render`, a task cancel after it. */
     cancel(): void
-    /** Разрешается, когда холст свободен. Не отклоняется никогда. */
+    /** Resolves when the canvas is free. Never rejects. */
     free: Promise<void>
   }
   const rendering = new WeakMap<HTMLCanvasElement, Job>()
 
   /**
-   * Показать страницу: холст на страницу, отрисовка в воркере.
+   * Show a page: a canvas per page, rendering in the worker.
    *
-   * Место в карте занимается СРАЗУ, до первого `await`. Занималось после
-   * `getPage`, и в это окно вторая отрисовка проходила защиту как по пустой
-   * карте: она переставляла размеры холста под работающей первой — то есть
-   * стирала её и сбивала ей систему координат, — а исключение про «тот же
-   * холст» уходило в пустой catch. Страница оставалась пустой или наполовину
-   * нарисованной со сдвигом, молча, до следующей смены масштаба.
+   * The slot in the map is taken AT ONCE, before the first `await`. It used to
+   * be taken after `getPage`, and in that window a second render passed the
+   * guard as if the map were empty: it reset the canvas dimensions under the
+   * running first one — that is, wiped it and knocked its coordinate system
+   * off — and the "same canvas" exception went into an empty catch. The page
+   * stayed empty or half-drawn with an offset, silently, until the next zoom
+   * change.
    */
   async function draw(node: HTMLCanvasElement, index: number): Promise<void> {
     const previous = rendering.get(node)
@@ -247,9 +256,9 @@
     }
     rendering.set(node, job)
     /*
-     * Прошлую отрисовку сначала отменить и ДОЖДАТЬСЯ: `cancel()` только просит
-     * остановиться, а холст остаётся занятым до тех пор, пока обещание не
-     * разрешится. Отказ здесь — обычное дело, это и есть отмена.
+     * First cancel the previous render and WAIT for it: `cancel()` only asks it
+     * to stop, and the canvas stays busy until the promise settles. A rejection
+     * here is routine — that is what the cancellation is.
      */
     previous?.cancel()
     try {
@@ -257,19 +266,21 @@
       if (stopped || !doc) return
       const source = await doc.getPage(index)
       if (stopped) return
-      // Плотность экрана: без неё страница на retina выглядит размытой, как скан.
+      // Screen density: without it a page on retina looks blurry, like a scan.
       const density = Math.min(window.devicePixelRatio || 1, 2)
       const width = node.parentElement?.clientWidth ?? 800
       const base = source.getViewport({ scale: 1 })
       const css = width / base.width
-      // …но плотность — пожелание, а не право: на 250–300% лист выходит за общий
-      // бюджет холстов, и WebKit начинает гасить произвольные из них (см.
-      // budget.ts и `release`). Мутный лист читается, пустой — нет.
+      // …but density is a wish, not an entitlement: at 250–300% the page goes
+      // over the shared canvas budget, and WebKit starts blanking arbitrary
+      // canvases (see budget.ts and `release`). A blurry page can be read, an
+      // empty one cannot.
       const ratio = fits(base.width * css, base.height * css, density)
       const viewport = source.getViewport({ scale: css * ratio })
-      // Место под лист держит CSS, а не размер буфера: буфер меняется на каждый
-      // зум и отдаётся, когда страница уходит с экрана, а высота листа от этого
-      // меняться не должна — по ней идут за преподавателем.
+      // The page's space is held by CSS, not by the buffer size: the buffer
+      // changes on every zoom and is given back when the page leaves the
+      // screen, while the page height must not change because of that —
+      // following the teacher goes by it.
       ratios[index] = `${Math.round(base.width)} / ${Math.round(base.height)}`
       node.width = viewport.width
       node.height = viewport.height
@@ -279,7 +290,7 @@
       task = started
       await started.promise
     } catch {
-      // Отменили ради нового масштаба или закрыли документ — не поломка.
+      // Cancelled for a new zoom, or the document was closed — not a breakage.
     } finally {
       if (rendering.get(node) === job) rendering.delete(node)
       done()
@@ -287,28 +298,29 @@
   }
 
   /**
-   * Холст страницы: рисуется, когда до неё доскроллили, и ПЕРЕРИСОВЫВАЕТСЯ при
-   * смене масштаба или ширины колонки.
+   * A page's canvas: drawn when it is scrolled to, and REDRAWN when the zoom or
+   * the column width changes.
    *
-   * Рисовались все сразу, по холсту на страницу, в момент открытия. Колода на
-   * сорок слайдов — это сорок буферов по паре мегапикселей (сотни мегабайт) и
-   * сорок разборов в одной очереди: вкладка не отвечает секунды, а страница, на
-   * которую человек смотрит, приходит последней — «плюс» выглядит сломанным.
-   * Масштаб при этом множит буфер квадратично, и на iPad, где бюджет холстов
-   * один на процесс, это ровно то переполнение, из-за которого WebKit начинает
-   * гасить произвольные холсты (см. `release`). Полоса миниатюр рядом рисует
-   * лениво по той же причине, и `disableAutoFetch` в pdf.svelte.ts обещает то
-   * же самое: первый кадр сразу, остальное — по мере надобности.
+   * They used to be drawn all at once, a canvas per page, at the moment of
+   * opening. A deck of forty slides is forty buffers of a couple of megapixels
+   * each (hundreds of megabytes) and forty parses in one queue: the tab stops
+   * responding for seconds, and the page the person is looking at comes last —
+   * "plus" looks broken. Zoom multiplies the buffer quadratically, and on iPad,
+   * where the canvas budget is one per process, that is exactly the overflow
+   * that makes WebKit start blanking arbitrary canvases (see `release`). The
+   * thumbnail strip next to it draws lazily for the same reason, and
+   * `disableAutoFetch` in pdf.svelte.ts promises the same thing: the first
+   * frame at once, the rest as needed.
    *
-   * `update` действия — единственное место, где Svelte сообщает, что параметр
-   * изменился, не пересоздавая узел. Пересоздать холст значило бы на мгновение
-   * схлопнуть страницу в ноль высоты — то есть увести прокрутку у всех, кто в
-   * этот момент читает.
+   * An action's `update` is the only place where Svelte reports that a
+   * parameter changed without recreating the node. Recreating the canvas would
+   * mean collapsing the page to zero height for a moment — that is, pulling the
+   * scroll away from everyone reading at that moment.
    */
   interface Sheet {
     index: number
     scale: number
-    /** Ширина колонки: холст рисуется по ней, а меняют её не только кнопки. */
+    /** Column width: canvases are drawn to it; more than buttons change it. */
     column: number
   }
 
@@ -316,10 +328,10 @@
     let at = args
     let near = false
     /*
-     * Запас в экран с лишним: страница успевает нарисоваться до того, как её
-     * видно, и документ не мигает белыми листами под пальцем. Прокрутка берётся
-     * с разметки, а не из `scroller`: привязка может ещё не доехать к моменту,
-     * когда монтируется холст.
+     * A margin of a screen and more: the page gets drawn before it becomes
+     * visible, and the document does not flash white sheets under the finger.
+     * The scroll root is taken from the markup, not from `scroller`: the
+     * binding may not have arrived yet at the moment the canvas mounts.
      */
     const watcher = new IntersectionObserver(
       (entries) => {
@@ -346,17 +358,19 @@
   }
 
   /**
-   * Холст отдаёт свой буфер — уходя со страницы или уходя за край экрана.
+   * The canvas gives up its buffer — when leaving the page or going off the
+   * edge of the screen.
    *
-   * `width = height = 1` — единственное, что заставляет WebKit его отпустить:
-   * сборщик мусора отдаёт эти буферы когда угодно, только не вовремя. Бюджет
-   * памяти холстов на iPad один НА ПРОЦЕСС, и колода в шестьдесят страниц
-   * выбирает его целиком; переполнив его, WebKit начинает рисовать холсты
-   * прозрачными — причём произвольные, не обязательно те, что его переполнили.
-   * Обнулиться может лист идущей лекции в соседней вкладке, и эта строка
-   * защищает не читалку, а его.
+   * `width = height = 1` is the only thing that makes WebKit let it go: the
+   * garbage collector gives these buffers back whenever it likes, just never in
+   * time. On iPad the canvas memory budget is one PER PROCESS, and a sixty-page
+   * deck uses it up entirely; once it overflows, WebKit starts drawing canvases
+   * transparent — arbitrary ones, not necessarily those that overflowed it. The
+   * page of a running lecture in a neighbouring tab can be blanked, and this
+   * line protects that page, not the reader.
    *
-   * Высота листа при этом не меняется: её держит `aspect-ratio`, а не буфер.
+   * The page height does not change meanwhile: it is held by `aspect-ratio`,
+   * not by the buffer.
    */
   function release(node: HTMLCanvasElement): void {
     rendering.get(node)?.cancel()
@@ -365,15 +379,16 @@
   }
 
   /**
-   * Ширина колонки — тот же масштаб, что и кнопки «плюс».
+   * The column width is the same scale as the "plus" buttons.
    *
-   * Буфер холста считается от фактической ширины листа, а её меняют не только
-   * они: полоса страниц забирает 148 пикселей, панель оракула — треть экрана,
-   * окно разворачивают. Без наблюдателя страницы оставались нарисованными под
-   * прежнюю ширину и растягивались средствами CSS — на проекторе, где плотность
-   * экрана единица, текст мутнеет до конца пары, хотя комментарий `toggleRail`
-   * обещает перерисовку. С задержкой: тянуть окно мышью — это сотня событий
-   * подряд, и платить стоит за последнее.
+   * The canvas buffer is computed from the page's actual width, and it is
+   * changed not only by those buttons: the page strip takes 148 pixels, the
+   * oracle panel a third of the screen, the window gets maximized. Without the
+   * observer the pages stayed drawn for the old width and were stretched by
+   * CSS — on a projector, where the screen density is one, the text stays
+   * blurry until the end of class, even though the `toggleRail` comment
+   * promises a redraw. With a delay: dragging a window with the mouse is a
+   * hundred events in a row, and it is worth paying only for the last one.
    */
   let column = $state(0)
   $effect(() => {
@@ -393,19 +408,19 @@
   })
 
   /**
-   * Где лежит лист ВНУТРИ прокрутки.
+   * Where the page lies INSIDE the scroll area.
    *
-   * По прямоугольникам, а не по `offsetTop`: тот меряется от ближайшего
-   * позиционированного предка, а им оказалась вся секция читалки — вместе с
-   * полосой управления над прокруткой. Тридцать четыре пикселя её высоты
-   * прибавлялись к каждому прыжку: страница уезжала выше края, и вместо её
-   * начала было видно конец предыдущей.
+   * By rectangles, not by `offsetTop`: that is measured from the nearest
+   * positioned ancestor, and that turned out to be the whole reader section —
+   * together with the control bar above the scroll area. Thirty-four pixels of
+   * its height were added to every jump: the page went above the edge, and
+   * instead of its start one saw the end of the previous page.
    */
   function topOf(sheet: HTMLElement, root: HTMLElement): number {
     return sheet.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
   }
 
-  /** Куда прокручено — страницей и долей её высоты. */
+  /** Where it is scrolled to — as a page and a fraction of its height. */
   function place(): { page: number; y: number } {
     const root = scroller
     if (!root) return { page: 1, y: 0 }
@@ -430,14 +445,15 @@
     if (!root || !sheet) return
     const at = topOf(sheet, root)
     /*
-     * Начало страницы должно быть ВИДНО.
+     * The start of the page has to be VISIBLE.
      *
-     * Прыжок ровно на верхний край прижимает лист к кромке окна: видно, что
-     * что-то сменилось, и не видно, где страница началась. Поэтому отступ на
-     * поле — те же двенадцать пикселей, которыми лист отбит от края всегда.
+     * A jump exactly to the top edge presses the page against the edge of the
+     * window: one sees that something changed, but not where the page began. So
+     * there is an offset for the margin — the same twelve pixels by which a
+     * page is always set off from the edge.
      *
-     * А страницу, которая целиком помещается в окно, ставим посередине: у неё
-     * не бывает «начала сверху», ей нужен воздух с обеих сторон.
+     * And a page that fits entirely into the window is put in the middle: it
+     * has no "start at the top", it needs air on both sides.
      */
     const gap = 12
     const fits = sheet.offsetHeight + gap * 2 <= root.clientHeight
@@ -450,20 +466,22 @@
           : Math.max(0, at - gap)
     programmatic = true
     root.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' })
-    // Кадр, а не таймер: прокрутка успевает произойти, а жест — ещё нет.
+    // A frame, not a timer: the scroll gets to happen, and a gesture does not
+    // yet.
     requestAnimationFrame(() => requestAnimationFrame(() => (programmatic = false)))
   }
 
-  /* Экран идёт за преподавателем. Прыжком, а не плавно: плавность на каждый
-     его пиксель превратила бы занятие в непрерывную анимацию. */
+  /* The screen follows the teacher. By jumping, not smoothly: smoothness on
+     each of their pixels would turn the class into one continuous animation. */
   $effect(() => {
     if (!following || !lead || !doc) return
     goTo({ page: lead.page, y: lead.y })
   })
 
   /*
-   * «Догнать» нажали в строке вкладок. Плавно — это единственное место, где
-   * плавность уместна: жест человека, а не чужой пиксель прокрутки.
+   * "Catch up" was pressed in the tab row. Smoothly — this is the only place
+   * where smoothness is appropriate: a person's gesture, not someone else's
+   * scroll pixel.
    */
   // svelte-ignore state_referenced_locally
   let caught = catchUp
@@ -476,13 +494,13 @@
   })
 
   /**
-   * Открыть или закрыть полосу страниц.
+   * Open or close the page strip.
    *
-   * Полоса — колонка, а ширина колонки и есть масштаб: страница рисуется по
-   * ней. Значит, открытие и закрытие стоят перерисовки (её делает наблюдатель
-   * ширины выше) — и требуют того же, что и масштаб: снять место в документе до
-   * и вернуть после, иначе читающий двадцать четвёртую страницу уезжает в
-   * начало от нажатия на «страницы».
+   * The strip is a column, and the column width is the scale: the page is drawn
+   * to it. So opening and closing cost a redraw (done by the width observer
+   * above) — and demand the same as zooming: take the place in the document
+   * before and give it back after, otherwise someone reading page twenty-four
+   * slides back to the start after pressing "pages".
    */
   function toggleRail(): void {
     const was = place()
@@ -492,36 +510,40 @@
   }
 
   /**
-   * Может ли комната пойти за ЭТИМ человеком — и, значит, нужно ли комнате его
-   * место.
+   * Whether the room can follow THIS person — and, therefore, whether the room
+   * needs their place.
    *
-   * Ведущим `leaderFor` берёт только преподавателя, поэтому место студента не
-   * читает никто, а стоит оно кадра присутствия ВСЕЙ комнате — и не одного: у
-   * следующего за преподавателем читалка прокручивается программно, то есть на
-   * каждый его шаг отвечает своим кадром. На лекции в пятьсот человек один шаг
-   * преподавателя разворачивался в пятьсот кадров и двести пятьдесят тысяч
-   * доставок; прокрученная страница — в миллионы. Правило одно на обе стороны
-   * и живёт в shared/rules.ts, чтобы «кого выбирают ведущим» и «кто публикует
-   * место» не разъехались.
+   * `leaderFor` takes only a teacher as the leader, so nobody reads a student's
+   * place, yet it costs a presence frame for the WHOLE room — and not just one:
+   * the reader of whoever follows the teacher scrolls programmatically, that
+   * is, it answers each of their steps with its own frame. At a lecture of five
+   * hundred people, one step of the teacher unfolded into five hundred frames
+   * and two hundred and fifty thousand deliveries; a scrolled page, into
+   * millions. The rule is one for both sides and lives in shared/rules.ts, so
+   * that "who is chosen as the leader" and "who publishes a place" do not drift
+   * apart.
    */
   const leads = $derived(mayBeFollowed(session.me.role))
 
   /**
-   * Последнее своё место — тем же способом, каким за ним идут по комнате.
+   * One's last place — in the same form in which it is followed around the
+   * room.
    *
-   * Обычная переменная, не `$state`: её читает эффект ниже, и зависеть от неё
-   * он не должен — иначе каждая прокрутка будила бы его вместо `onScroll`.
+   * A plain variable, not `$state`: the effect below reads it, and it must not
+   * depend on it — otherwise every scroll would wake it instead of `onScroll`.
    */
   let seen = { page: 1, y: 0 }
 
   /*
-   * Место уходит в присутствие, когда сошлось двое: документ открылся и роль
-   * приехала. Кадры эти независимы, поэтому это эффект, а не строка в onMount:
-   * преподавательская кука подтверждается управляющим сокетом и запросто
-   * позже, чем pdf.js разберёт первую страницу.
+   * The place goes into presence when two things have come together: the
+   * document has opened and the role has arrived. These frames are independent,
+   * so this is an effect, not a line in onMount: the teacher cookie is
+   * confirmed by the control socket, and easily later than pdf.js parses the
+   * first page.
    *
-   * Роль сняли посреди пары — место снимается тоже: иначе комната продолжила бы
-   * идти за последним, что бывший ведущий успел сообщить.
+   * The role was removed in the middle of a class — the place is removed too:
+   * otherwise the room would keep following the last thing the former leader
+   * managed to report.
    */
   $effect(() => {
     if (!doc) return
@@ -532,35 +554,39 @@
   function onScroll(): void {
     const here = place()
     page = here.page
-    // Свой жест снимает следование. Программную прокрутку за жест не считаем.
+    // One's own gesture breaks following. Programmatic scrolling does not count
+    // as a gesture.
     if (!programmatic && following && lead) following = false
     seen = here
-    // Своё место — в присутствие, чтобы за этим человеком могли пойти. За тем,
-    // за кем идти нельзя, никто и не пойдёт: его кадр — чистый расход.
+    // One's own place goes into presence, so that this person can be followed.
+    // Nobody will follow someone who cannot be followed: their frame is pure
+    // waste.
     if (leads) session.setViewing({ file, page: here.page, y: here.y })
   }
 
 /*
- * Позиция НЕ снимается при размонтировании.
+ * The position is NOT removed on unmount.
  *
- * Читалка исчезает, когда человек переключился на тетрадь, — но место в
- * документе от этого не перестало существовать. Снимать его здесь значило бы:
- * преподаватель на секунду ушёл в тетрадь дописать ячейку — и вся комната
- * потеряла метку «он на странице 4», хотя лекция никуда не делась. Снимает её
- * тот, кто знает, что документ закрыт совсем, — экран комнаты.
+ * The reader disappears when the person switches to the notebook — but the
+ * place in the document has not stopped existing because of that. Removing it
+ * here would mean: the teacher went to the notebook for a second to finish a
+ * cell — and the whole room lost the "they are on page 4" mark, although the
+ * lecture has not gone anywhere. It is removed by whoever knows that the
+ * document is closed for good — the room screen.
  */
 </script>
 
 <!--
-  Ни шапки, ни нижней плашки: имя файла, номер страницы и «за кем идём» живут в
-  строке вкладок над центром. Два места, говорящие одно и то же, расходятся.
+  No header, no bottom pill: the file name, the page number and "whom we follow"
+  live in the tab row above the centre. Two places saying the same thing drift
+  apart.
 -->
 <section class="relative flex min-h-0 flex-1 flex-col bg-surface">
   <!--
-    Полоса управления читалкой — там же, где у тетради Run All, а у скрипта
-    «Запустить»: у каждой вкладки своя, и она всегда под строкой вкладок.
-    Номер страницы сюда не переезжает: он живёт в строке вкладок, и два места,
-    говорящие одно и то же, расходятся.
+    The reader's control bar — in the same place as Run All for a notebook and
+    "Run" for a script: every tab has its own, and it is always under the tab
+    row. The page number does not move here: it lives in the tab row, and two
+    places saying the same thing drift apart.
   -->
   <div class="flex h-[34px] shrink-0 items-stretch border-b border-line bg-canvas">
     <button
@@ -579,8 +605,8 @@
     <span class="my-2 w-px bg-line" aria-hidden="true"></span>
 
     <!--
-      Минус, доля, плюс. Доля — кнопка: нажатие возвращает «по ширине», и это
-      единственный масштаб, который не приходится выбирать.
+      Minus, fraction, plus. The fraction is a button: pressing it returns "fit
+      to width", and that is the only scale that does not have to be chosen.
     -->
     <button
       type="button"
@@ -621,9 +647,10 @@
 
     {#if backToLecture}
       <!--
-        Лекция по этому документу идёт прямо сейчас, а этот человек отошёл
-        читать сам. Дорога назад обязана быть там же, где он ушёл, — иначе
-        «Читать самому» это дверь в одну сторону до конца пары.
+        A lecture on this document is running right now, and this person has
+        gone off to read on their own. The way back has to be right where they
+        left — otherwise "Read on my own" is a one-way door until the end of
+        class.
       -->
       <button
         type="button"
@@ -636,9 +663,10 @@
         <Icon name="board" size={12} /> {tr('room.ui.725')} </button>
     {:else if mayLead}
       <!--
-        Начать лекцию. Кнопка стоит в читалке, а не в панели файлов, потому что
-        решение это не про файл, а про то, что с ним делают: тот же PDF минуту
-        назад листали молча, а теперь по нему ведут пару.
+        Start a lecture. The button is in the reader, not in the files panel,
+        because this decision is not about the file but about what is done with
+        it: the same PDF was being leafed through silently a minute ago, and now
+        a class is being taught from it.
       -->
       <button
         type="button"
@@ -652,8 +680,9 @@
     {/if}
 
     {#if !following && lead}
-      <!-- Отстал намеренно: следование снимается любым своим жестом, и сказать
-           об этом надо там же, где кнопки, а не только в строке вкладок. -->
+      <!-- Fell behind on purpose: following is broken by any gesture of one's
+           own, and that has to be said right where the buttons are, not only in
+           the tab row. -->
       <span class="flex shrink-0 items-center gap-1.5 px-4 text-2xs text-muted">
         <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span> {tr('room.ui.727')} </span>
     {/if}
@@ -668,15 +697,15 @@
         {lead}
         onpick={(target) => {
           /*
-           * Прыжком, а не плавно, и это не экономия. «Догнать» плавно — потому
-           * что это поправка на страницу-другую, и видно, куда уехали. Выбор в
-           * полосе — это переход куда угодно, хоть на двухсотую: анимировать
-           * его значит показать полминуты пролетающих страниц вместо той, за
-           * которой пришли.
+           * By jumping, not smoothly, and this is not economy. "Catch up" is
+           * smooth because it is a correction by a page or two, and one can see
+           * where one went. A choice in the strip is a move to anywhere, even
+           * to page two hundred: animating it means showing half a minute of
+           * pages flying by instead of the one people came for.
            *
-           * И полоса при этом ОСТАЁТСЯ открытой: по ней ходят несколько раз
-           * подряд, и закрываться после каждого прыжка — значит заставлять
-           * открывать её снова.
+           * And the strip STAYS open meanwhile: people move through it several
+           * times in a row, and closing after every jump means making them open
+           * it again.
            */
           goTo({ page: target, y: 0 })
         }}
@@ -692,23 +721,24 @@
     {#if failure}
       <p class="p-4 text-ui text-muted">{failure}</p>
     {:else if !doc}
-      <!-- Не спиннер, а имя файла: человек знает, что открывает, и видит, что
-           это уже происходит. Библиотека и воркер — полтора мегабайта, на
-           лекционном вайфае это секунды. -->
+      <!-- Not a spinner but the file name: the person knows what they are
+           opening and sees that it is already happening. The library and the
+           worker are a megabyte and a half, which is seconds on lecture-hall
+           wifi. -->
       <p class="p-4 text-ui text-muted">{tr('room.ui.728')} {file}…</p>
     {:else}
       {#each Array.from({ length: pages }, (_, i) => i + 1) as index (index)}
-        <!-- Ширина листа — и есть масштаб: страница рисуется по ширине своего
-             места. Крупнее колонки — появляется горизонтальная прокрутка, и
-             это единственный честный способ показать увеличенное. -->
+        <!-- The page width is the scale: a page is drawn to the width of its
+             slot. Wider than the column, a horizontal scroll appears, and that
+             is the only honest way to show the enlarged page. -->
         <div
           data-page={index}
           class="mx-auto mb-3 bg-white shadow-sm"
           style={`width:${scale * 100}%`}
         >
-          <!-- Пропорция на холсте, а не размер буфера: у ненарисованного листа
-               высота обязана быть настоящей, иначе прыжок на страницу и место
-               после зума считаются по пустоте. -->
+          <!-- The proportion is on the canvas, not the buffer size: an undrawn
+               page must have its real height, otherwise a jump to a page and
+               the place after zooming are computed against emptiness. -->
           <canvas
             use:canvas={{ index, scale, column }}
             class="block w-full"

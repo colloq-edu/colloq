@@ -1,23 +1,26 @@
-# Заголовок PR — Conventional Commit.
+# The PR title is a Conventional Commit.
 #
-# PR сливаются squash-ом, и заголовок PR становится темой коммита в main. Из
-# этих тем release-please решает, какое число будет следующим и что попадёт в
-# CHANGELOG. Заголовок «Fix stuff» release-please просто не заметит: правка
-# уйдёт в main и не попадёт ни в заметки, ни в подъём версии.
+# PRs are squash-merged, and the PR title becomes the subject of the commit in
+# main. From these subjects release-please decides what the next number is and
+# what goes into the CHANGELOG. A "Fix stuff" title release-please simply will
+# not notice: the change lands in main and gets into neither the notes nor the
+# version bump.
 #
-# Отдельный файл, а не задача в ci.yml: заголовок меняют правкой PR (edited), и
-# в ci.yml этот тип события перезапускал бы всю сюиту и сборку образов, а его
-# concurrency ещё и отменял бы уже идущий прогон тестов.
+# A separate file, not a job in ci.yml: the title is changed by editing the PR
+# (edited), and in ci.yml this event type would rerun the whole suite and the
+# image builds, and its concurrency would also cancel a test run already in
+# progress.
 #
-# Ни checkout, ни токена: заголовок приходит из события и читается только из
-# переменной окружения — в тексте скрипта он был бы инъекцией из PR форка.
+# No checkout, no token: the title comes from the event and is read only from
+# an environment variable; in the script text it would be an injection from a
+# fork's PR.
 name: PR title
 
 on:
   pull_request:
-    # synchronize — хотя заголовок от пуша не меняется: обязательная проверка
-    # привязана к последнему коммиту PR, и без прогона на нём висела бы
-    # «ожидается».
+    # synchronize, even though a push does not change the title: a required
+    # check is tied to the PR's latest commit, and without a run on it the
+    # check would hang at "expected".
     types: [opened, edited, reopened, synchronize]
 
 permissions: {}
@@ -36,9 +39,10 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
-          # Типы — те, что знает release-please-config.json (changelog-sections).
-          # Область необязательна; «!» — ломающая правка. PR выпуска
-          # «chore(main): release 0.2.0» проходит так же.
+          # The types are those release-please-config.json knows
+          # (changelog-sections). The scope is optional; "!" marks a breaking
+          # change. The release PR "chore(main): release 0.2.0" passes the
+          # same way.
           types='feat|fix|perf|revert|docs|refactor|style|test|build|ci|chore'
           if printf '%s' "$TITLE" | grep -Eq "^($types)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^ ]"; then
             echo "ok: $TITLE"

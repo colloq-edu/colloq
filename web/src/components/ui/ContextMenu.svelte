@@ -2,29 +2,30 @@
   import type { IconName } from '@/components/ui/Icon.svelte'
 
   /**
-   * Один пункт меню.
+   * One menu item.
    *
-   * `gap` — разделитель ПЕРЕД пунктом, а не отдельная запись в списке: список
-   * с двумя видами элементов пришлось бы разбирать на каждой отрисовке, и
-   * первый же «уберите этот пункт по правам» оставлял бы висеть черту, за
-   * которой ничего нет.
+   * `gap` is a divider BEFORE the item, not a separate entry in the list: a
+   * list with two kinds of elements would have to be taken apart on every
+   * render, and the very first "remove this item because of permissions" would
+   * leave a line hanging with nothing after it.
    *
-   * `why` — не украшение. Погашенный пункт без причины читается как поломка, и
-   * это то самое место, где комната обязана сказать, что остановило правило, а
-   * не кнопка (см. lib/may.ts). Причина при этом не прячется в `title`: под
-   * указателем её видно, а с пальца — никогда, и на телефоне погашенный пункт
-   * оставался бы немым. Поэтому причины собираются в строку под меню.
+   * `why` is not decoration. A dimmed item without a reason reads as a
+   * breakage, and this is exactly the place where the room has to say that a
+   * rule stopped it, not the button (see lib/may.ts). The reason is not hidden
+   * in `title`, though: under a pointer it can be seen, but with a finger
+   * never, and on a phone a dimmed item would stay mute. That is why the
+   * reasons are gathered into a line under the menu.
    */
   export interface ContextMenuItem {
-    /** Черта перед пунктом: начало новой группы. */
+    /** A line before the item: the start of a new group. */
     gap?: boolean
     label: string
     icon?: IconName
-    /** Сочетание клавиш справа — тихо, как подпись, а не как кнопка. */
+    /** Key shortcut on the right — quiet, like a caption, not like a button. */
     keys?: string
     danger?: boolean
     disabled?: boolean
-    /** Почему нельзя. Выносится строкой под меню; там же и в `title`. */
+    /** Why not. Shown as a line under the menu, and also in `title`. */
     why?: string
     run: () => void
   }
@@ -32,31 +33,35 @@
 
 <script lang="ts">
   /**
-   * Меню, всплывающее у точки, — общее на всю комнату.
+   * A menu that pops up at a point — shared by the whole room.
    *
-   * `position: fixed` и вычисленная точка, а не `absolute` внутри строки. Все
-   * места, откуда такое меню зовут, лежат в прокручиваемых полосах, а
-   * `overflow` по спецификации обрезает и по вертикали: меню, открытое у нижней
-   * строки панели шириной 240 пикселей, срезало бы ровно там, где на него
-   * смотрят. Тот же приём и по той же причине, что у меню бана
-   * (panels/BanMenu.svelte) и у меню доступа на вкладке (reader/TabStrip.svelte).
+   * `position: fixed` and a computed point, not `absolute` inside the row. All
+   * the places this menu is called from sit in scrolling strips, and by the
+   * spec `overflow` clips vertically too: a menu opened at the bottom row of a
+   * 240-pixel-wide panel would be cut off exactly where people are looking at
+   * it. The same technique, for the same reason, as the ban menu
+   * (panels/BanMenu.svelte) and the access menu on the tab
+   * (reader/TabStrip.svelte).
    *
-   * Размер не задаётся константой, как у тех двоих: состав пунктов здесь
-   * зависит от того, по чему нажали, и «примерная высота» разошлась бы с
-   * правдой на первом же пункте, который спрятали по правам. Меряется настоящая
-   * коробка — один раз, сразу после того как меню появилось, до того как его
-   * успеют увидеть: въезд идёт от прозрачности, и поправка на кромку окна
-   * укладывается в первый же кадр.
+   * The size is not set by a constant, as in those two: the set of items here
+   * depends on what was clicked, and an "approximate height" would part ways
+   * with the truth at the first item hidden by permissions. The real box is
+   * measured — once, right after the menu appears and before anyone gets to see
+   * it: the entrance starts from transparency, and the correction for the
+   * window edge fits into the very first frame.
    *
-   * НА ПАЛЬЦЕ меню — не поповер, а нижний лист. Поповер у пальца закрывается
-   * самим пальцем, ставится там, где человек держал руку, и требует цели в 28
-   * пикселей; лист приходит снизу, занимает всю ширину и даёт строки по 44.
-   * Признак — `(hover: none) and (pointer: coarse)`, тот же, которым
-   * `hoverOnlyWhenSupported` в tailwind.config.js отключает `hover:` утилиты.
+   * ON A FINGER the menu is not a popover but a bottom sheet. A popover at a
+   * finger is covered by the finger itself, lands where the person held their
+   * hand, and demands 28-pixel targets; a sheet arrives from below, takes the
+   * full width and gives 44-pixel rows. The signal is
+   * `(hover: none) and (pointer: coarse)`, the same one that
+   * `hoverOnlyWhenSupported` in tailwind.config.js uses to switch off the
+   * `hover:` utilities.
    *
-   * Анимация — только на вход. Меню убирают клавишей (Escape) и нажатием мимо,
-   * а анимировать ответ на клавишу нельзя: то же решение принято для ящиков,
-   * пульта правил и обоих соседних меню.
+   * Animation is on entry only. The menu is dismissed with a key (Escape) and
+   * with a click outside, and a response to a key must not be animated: the
+   * same decision was taken for the drawers, the rules console and both
+   * neighbouring menus.
    */
   import { tr } from '@shared/i18n'
   import { tick } from 'svelte'
@@ -66,17 +71,18 @@
   import { prefersReducedMotion } from '@/lib/utils'
 
   interface Props {
-    /** Где нажали — в координатах окна. `null` — меню закрыто. */
+    /** Where it was clicked, in window coordinates; `null`: menu closed. */
     at: { x: number; y: number } | null
-    /** Чем это меню подписано для экранного диктора. */
+    /** How this menu is labelled for a screen reader. */
     label: string
-    /** Строка-заголовок: по чему нажали. Имя файла, например. */
+    /** Header line: what was clicked. A file name, for example. */
     title?: string | null
     items: ContextMenuItem[]
     /**
-     * Куда вернуть фокус. Меню обходится клавиатурой целиком, и выход из него
-     * обязан возвращать туда, откуда вошли, — иначе Escape роняет фокус в
-     * начало страницы, а список файлов приходится обходить Tab'ом заново.
+     * Where to return focus. The menu is fully keyboard-navigable, and leaving
+     * it has to return to where one came in from — otherwise Escape drops focus
+     * to the start of the page, and the file list has to be tabbed through all
+     * over again.
      */
     opener?: HTMLElement | null
     onclose: () => void
@@ -86,21 +92,23 @@
 
   let box = $state<HTMLElement | null>(null)
   /**
-   * Место, куда меню встало на самом деле.
+   * Where the menu actually landed.
    *
-   * Сначала — просто точка нажатия, потом — она же, прижатая к кромкам окна по
-   * измеренной коробке. Правая кнопка по нижней строке — обычное дело, а меню,
-   * ушедшее под кромку, выглядит как не сработавшее нажатие.
+   * First it is just the click point, then the same point pressed against the
+   * window edges according to the measured box. A right click on the bottom row
+   * is routine, and a menu that has gone under the edge looks like a click that
+   * did not work.
    */
   let place = $state({ x: 0, y: 0 })
 
   /**
-   * Это палец, а не указатель.
+   * This is a finger, not a pointer.
    *
-   * Вопрос задаётся про УСТРОЙСТВО ввода, а не про ширину окна: узкое окно на
-   * ноутбуке — по-прежнему мышь, и нижний лист там был бы капризом. Ответ
-   * читается заново на каждое открытие и слушает смену (планшет с подключённой
-   * мышью отвечает по-разному в разные минуты).
+   * The question is asked about the input DEVICE, not about the window width: a
+   * narrow window on a laptop is still a mouse, and a bottom sheet there would
+   * be a whim. The answer is read afresh on every opening and listens for
+   * changes (a tablet with a mouse attached answers differently from one minute
+   * to the next).
    */
   let coarse = $state(false)
 
@@ -125,22 +133,23 @@
     }
   })
 
-  /* Открытое меню сразу забирает клавиатуру — и первым берёт пункт, который
-     МОЖНО выбрать: фокус на погашенном означал бы меню, из которого с
-     клавиатуры не выйти вперёд. Тот же приём, что у меню доступа. */
+  /* An open menu takes the keyboard at once — and first takes an item that CAN
+     be chosen: focus on a dimmed one would mean a menu the keyboard cannot move
+     forward out of. The same technique as in the access menu. */
   $effect(() => {
     if (!at) return
     void tick().then(() => live()[0]?.focus())
   })
 
   /**
-   * Почему часть пунктов погашена — словами и под самим меню.
+   * Why some items are dimmed — in words, and under the menu itself.
    *
-   * Не в `title` у каждого: под указателем подсказку ждут секунду, а с пальца
-   * её не видно никогда. Причина обычно одна на всё меню («переименовывает и
-   * удаляет преподаватель»), так что повторять её у каждого пункта значило бы
-   * написать одно и то же трижды в списке из восьми строк. Две — потолок:
-   * дальше это уже не подпись, а абзац.
+   * Not in each item's `title`: under a pointer a tooltip takes a second to
+   * appear, and with a finger it is never seen. The reason is usually one for
+   * the whole menu ("only the teacher renames and deletes"), so repeating it on
+   * every item would mean writing the same thing three times in a list of eight
+   * rows. Two is the ceiling: beyond that it is no longer a caption but a
+   * paragraph.
    */
   const reasons = $derived.by(() => {
     const out: string[] = []
@@ -153,8 +162,8 @@
   })
 
   /**
-   * Закрыть — и вернуть фокус. Одна дверь на все выходы: Escape, нажатие мимо,
-   * прокрутка, выбранный пункт.
+   * Close — and return focus. One door for every exit: Escape, a click outside,
+   * scrolling, a chosen item.
    */
   function close(): void {
     const back = opener
@@ -166,15 +175,15 @@
 
   function choose(item: ContextMenuItem): void {
     if (item.disabled) return
-    // Сначала закрыть, потом сделать: половина пунктов открывает строку ввода
-    // или подтверждение в той же панели, и меню поверх них — лишний слой между
-    // человеком и тем, что он только что заказал. Фокус при этом возвращается
-    // на строку, а действие уводит его дальше само.
+    // Close first, then act: half of the items open an input line or a
+    // confirmation in the same panel, and a menu on top of them is an extra
+    // layer between the person and what they have just asked for. Focus returns
+    // to the row meanwhile, and the action carries it further on its own.
     close()
     item.run()
   }
 
-  /** Пункты, которые можно выбрать, — в порядке отрисовки. */
+  /** Items that can be chosen — in render order. */
   function live(): HTMLButtonElement[] {
     if (!box) return []
     return [...box.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')]
@@ -182,17 +191,18 @@
 
   function onkeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
-      // Съеденный ключ помечается: тем же Escape комната закрывает ящик
-      // терминала, и «убрал меню» — как раз тот случай, когда он понадобился.
+      // The consumed key is marked: the room closes the terminal drawer with
+      // the same Escape, and "dismissed the menu" is exactly the case it was
+      // needed for.
       event.preventDefault()
       event.stopPropagation()
       close()
       return
     }
     if (event.key === 'Tab') {
-      // Круга Tab внутри меню нет намеренно: меню — не окно, уходить из него
-      // Tab'ом естественно, а ловушка фокуса в списке из восьми строк только
-      // запирает того, кто промахнулся клавишей.
+      // There is deliberately no Tab cycle inside the menu: the menu is not a
+      // window, leaving it with Tab is natural, and a focus trap in a list of
+      // eight rows only locks in whoever hit the wrong key.
       event.preventDefault()
       close()
       return
@@ -212,24 +222,25 @@
   }
 
   /*
-   * Меню закрывается снаружи: нажатие мимо, прокрутка, смена размера окна,
-   * уход со вкладки. Слушатели живут ровно столько, сколько открыто меню, —
-   * по образцу меню доступа, чтобы на окне не висело лишних обработчиков всю
-   * пару.
+   * The menu closes from outside: a click outside, scrolling, a window resize,
+   * leaving the tab. The listeners live exactly as long as the menu is open —
+   * following the access menu — so that no extra handlers hang on the window
+   * for the whole class.
    *
-   * Прокрутка ловится в фазе захвата: полоса, в которой лежит позвавшая
-   * строка, прокручивается сама, а меню прибито к окну — оно осталось бы
-   * висеть над файлом, которого под ним уже нет. Нижний лист прокрутку
-   * переживает: он не привязан ни к какой точке, а под ним всё равно подложка.
+   * Scrolling is caught in the capture phase: the strip holding the row that
+   * called the menu scrolls on its own, while the menu is pinned to the
+   * window — it would stay hanging over a file that is no longer under it. The
+   * bottom sheet survives scrolling: it is not tied to any point, and there is
+   * a backdrop under it anyway.
    */
   $effect(() => {
     if (!at) return
     const away = (event: PointerEvent): void => {
       const target = event.target as HTMLElement | null
       if (target?.closest('[data-context-menu]')) return
-      // Кнопка, открывшая меню, закрывает его сама вторым нажатием: без этого
-      // подложка успевала закрыть меню раньше, и кнопка тут же открывала его
-      // заново.
+      // The button that opened the menu closes it itself on a second press:
+      // without this, the backdrop managed to close the menu first, and the
+      // button immediately opened it again.
       if (target?.closest('[data-menu-button]')) return
       close()
     }
@@ -273,8 +284,8 @@
       onclick={() => choose(item)}
     >
       {#if item.icon}
-        <!-- Значок в слоте постоянной ширины: без него подписи разъезжались бы
-             по строкам, у которых значка нет. -->
+        <!-- The icon sits in a fixed-width slot: without it, the labels in rows
+             that have no icon would fall out of line. -->
         <span class="flex shrink-0 items-center justify-center {sheet ? 'w-4' : 'w-[13px]'}">
           <Icon name={item.icon} size={sheet ? 16 : 13} />
         </span>
@@ -289,9 +300,9 @@
 
 {#snippet why()}
   {#if reasons.length > 0}
-    <!-- Причина одна на всё меню и стоит под ним: см. `reasons`. Полоса
-         отделена чертой и залита surface, чтобы не читаться как ещё один
-         пункт, по которому можно нажать. -->
+    <!-- The reason is one for the whole menu and sits under it: see `reasons`.
+         The strip is separated by a line and filled with surface so that it
+         does not read as one more item that can be clicked. -->
     <div data-menu-why class="mt-1 border-t border-line bg-surface px-2.5 py-2">
       {#each reasons as reason (reason)}
         <p class="text-2xs leading-snug text-muted">{reason}</p>
@@ -302,16 +313,18 @@
 
 {#if at && coarse}
   <!--
-    Палец: нижний лист во всю ширину. Ярус тот же, что у поповера ниже.
+    Finger: a full-width bottom sheet. The same layer as the popover below.
   -->
   <div class="fixed inset-0 z-[60]" role="presentation">
     <!--
-      Подложка ничего не слушает сама, и это не упущение. Лист открывается
-      ДОЛГИМ нажатием: палец к этой секунде уже лежит на экране, и его подъём
-      браузер отдаёт как `click` — по тому, что оказалось под пальцем, то есть
-      по подложке. Кнопка на ней закрывала бы лист ровно в тот миг, когда его
-      открыли. Нажатие мимо ловит общий слушатель `pointerdown` (см. эффект
-      выше): он срабатывает на НОВОЕ касание, а не на конец прежнего.
+      The backdrop listens to nothing itself, and that is not an oversight. The
+      sheet opens on a LONG press: by that second the finger is already resting
+      on the screen, and the browser delivers its lift-off as a `click` — to
+      whatever turned out to be under the finger, that is, to the backdrop. A
+      button on it would close the sheet at the very moment it was opened. A
+      click outside is caught by the shared `pointerdown` listener (see the
+      effect above): it fires on a NEW touch, not at the end of the previous
+      one.
     -->
     <div class="absolute inset-0 bg-canvas/70" aria-hidden="true"></div>
     <div
@@ -330,8 +343,8 @@
           <p class="min-w-0 flex-1 truncate text-2xs font-bold uppercase tracking-label text-muted">
             {title}
           </p>
-          <!-- Выход, который видно. Подложка закрывает лист и так, но на
-               телефоне «нажмите мимо» — знание, а не подсказка. -->
+          <!-- A way out that can be seen. The backdrop closes the sheet anyway,
+               but on a phone "tap outside" is knowledge, not a hint. -->
           <button
             type="button"
             class="flex h-11 w-11 shrink-0 items-center justify-center text-muted
@@ -350,11 +363,12 @@
   </div>
 {:else if at}
   <!--
-    Ярус — тот же, что у меню доступа на вкладке тетради (z-[60]): выше ящиков
-    комнаты (z-40) и пульта правил (z-50), ниже меню бана (z-[96]), окна отказа
-    (z-[97]) и плашек «вас удалили» (z-[100]). Порядок важен в обе стороны:
-    под ящиком меню было бы нарисованным, кликабельным и невидимым, а поверх
-    окна отказа — перекрывало бы единственное, что в ту минуту важно.
+    The layer is the same as that of the access menu on the notebook tab
+    (z-[60]): above the room's drawers (z-40) and the rules console (z-50),
+    below the ban menu (z-[96]), the refusal window (z-[97]) and the "you have
+    been removed" overlays (z-[100]). The order matters both ways: under a
+    drawer the menu would be drawn, clickable and invisible, and on top of the
+    refusal window it would cover the only thing that matters at that minute.
   -->
   <div
     bind:this={box}
@@ -370,9 +384,10 @@
   >
     <div class="px-1">
       {#if title}
-        <!-- Имя того, по чему нажали, — как в меню бана и меню доступа. Меню
-             встаёт поверх списка и закрывает собой соседние строки: без имени
-             внутри легко решить, что удаляешь не то, во что целился. -->
+        <!-- The name of what was clicked — as in the ban menu and the access
+             menu. The menu lands on top of the list and covers the neighbouring
+             rows: without the name inside, it is easy to believe you are
+             deleting something other than what you aimed at. -->
         <p
           class="truncate px-2.5 pb-1 pt-0.5 text-2xs font-bold uppercase tracking-label text-muted"
         >

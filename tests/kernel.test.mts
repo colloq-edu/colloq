@@ -38,17 +38,17 @@ let swallowExecutes = false
 let holdInterrupts = false
 let pendingInterrupts: Array<() => void> = []
 /**
- * То же для служебных запросов по shell — дополнения и справки.
+ * The same for service requests over shell — completions and help.
  *
- * Отдельным флагом, потому что это отдельный случай из жизни: ядро, считающее
- * чужую ячейку, на `complete_request` не отвечает вовсе — ipykernel разбирает
- * shell по одному сообщению за раз. Проверять это через `swallowExecutes`
- * нечем: выполнение и дополнение теперь ходят разными дорогами.
+ * A separate flag, because this is a separate case from real life: a kernel
+ * computing someone else's cell does not answer `complete_request` at all —
+ * ipykernel handles shell one message at a time. `swallowExecutes` cannot
+ * check this: execution and completion now travel by different roads.
  */
 let swallowShell = false
-/** Счётчик выполнений подделки — то же, что In [n] у настоящего ядра. */
+/** The fake's execution counter — the same as In [n] in a real kernel. */
 let executions = 0
-/** Что просили выполнить и как: `store_history` — кладёт ли IPython исходник в In/_ih. */
+/** What was asked to run and how: `store_history` is whether IPython puts the source into In/_ih. */
 const requests: { code: string; store_history: boolean; silent: boolean }[] = []
 /**
  * Requests the fake is sitting on. A real kernel answers an interrupted request
@@ -58,18 +58,20 @@ const requests: { code: string; store_history: boolean; silent: boolean }[] = []
 let held: Array<{ socket: WebSocket; parent: unknown; asked?: boolean; code?: string }> = []
 
 /**
- * Отчёт входа изоляции консилиума (kernel/council-isolation.ts).
+ * The report of the council isolation entry (kernel/council-isolation.ts).
  *
- * Настоящее ядро отвечает на `user_expressions` даже молча, и сервер читает
- * это как «личные копии данных готовы». Без ответа он обязан НЕ запускать
- * попытку — значит подделка без этой ветки проверяла бы только отказ.
+ * A real kernel answers `user_expressions` even when silent, and the server
+ * reads that as "the personal data copies are ready". Without an answer it
+ * must NOT start the attempt — so a fake without this branch would check
+ * only the refusal.
  */
 function councilExpressions(asked: boolean, code = ''): Record<string, unknown> {
   if (!asked) return {}
   /*
-   * Установка защиты от опасных команд приходит той же дорогой и тем же
-   * ключом, а сервер без подтверждения ячейку не запускает вовсе (kernel/
-   * index.ts · ensureGuard). Ответ общий на все подделки — tests/_guard.mts.
+   * Installing the guard against dangerous commands comes by the same road
+   * and with the same key, and without confirmation the server does not run
+   * the cell at all (kernel/index.ts · ensureGuard). The answer is shared by
+   * all fakes — tests/_guard.mts.
    */
   const guard = guardAnswer(code)
   if (guard) {
@@ -80,11 +82,11 @@ function councilExpressions(asked: boolean, code = ''): Record<string, unknown> 
     }
   }
   /*
-   * Ключ `colloq` один на два служебных запуска — вход консилиума и
-   * статический разбор справки (kernel/inspect-static.ts), — и отвечать им
-   * надо РАЗНЫМ. Различаем по коду: справка приходит со своим скрытым
-   * модулем в первой же строке. Иначе разбор справки читал бы отчёт
-   * консилиума и всегда отвечал «не нашлось».
+   * The `colloq` key is shared by two service runs — the council entry and
+   * the static help parse (kernel/inspect-static.ts) — and they must be
+   * answered DIFFERENTLY. We tell them apart by the code: help arrives with its
+   * own hidden module on the very first line. Otherwise the help parse would
+   * read the council report and always answer "not found".
    */
   const text = code.includes('.brief(globals()')
     ? JSON.stringify({ found: true, brief: { type: 'DataFrame', dims: '1460 × 81' } })
@@ -111,14 +113,14 @@ function reply(socket: WebSocket, parent: unknown, msgType: string, content: unk
       metadata: {},
       content,
       /*
-       * Канал — настоящий, а не «iopub, что бы ни было».
+       * The channel is the real one, not "iopub, whatever it is".
        *
-       * Здесь стоял `msgType === 'status' ? 'iopub' : 'iopub'` — мёртвый
-       * тернарник, обе ветки одинаковы. Сервер поле `channel` сегодня не
-       * читает, так что подделка оставалась зелёной при любом значении; но
-       * настоящий Jupyter шлёт `execute_reply` по shell, а `input_request` по
-       * stdin, и первая же маршрутизация входящих по каналу разошлась бы с
-       * подделкой молча — тесты зелёные, живое ядро сломано.
+       * Here stood `msgType === 'status' ? 'iopub' : 'iopub'` — a dead
+       * ternary, both branches the same. The server does not read the
+       * `channel` field today, so the fake stayed green with any value; but a
+       * real Jupyter sends `execute_reply` over shell and `input_request` over
+       * stdin, and the very first routing of incoming messages by channel
+       * would silently diverge from the fake — tests green, live kernel broken.
        */
       channel: msgType.endsWith('_reply')
         ? 'shell'
@@ -167,17 +169,17 @@ before(async () => {
     }
     if (req.method === 'POST' && /\/restart$/.test(url.pathname)) {
       /*
-       * Перезапуск, какой его делает настоящий Jupyter: тот же id ядра, тот же
-       * сокет, процесс за ними — новый. Подделка этого не умела вовсе и
-       * отвечала 404, так что `restartSession` уходил в catch и до сброса
-       * ячеек не доходил никогда — а тест на этот сброс поэтому пришлось бы
-       * гонять против живого контейнера. Один раз так и вышло: зелёный, пока
-       * рядом случайно работало ядро.
+       * A restart the way a real Jupyter does it: the same kernel id, the same
+       * socket, a new process behind them. The fake could not do this at all
+       * and answered 404, so `restartSession` went into catch and never got to
+       * resetting the cells — and a test for that reset would therefore have
+       * to run against a live container. Once it did: green as long as a
+       * kernel happened to be running nearby.
        */
       const id = /^\/api\/kernels\/([^/]+)\/restart$/.exec(url.pathname)?.[1]
       const kernel = id ? kernels.get(id) : undefined
       if (kernel) kernel.busy = false
-      // Ожидающие выполнения умирают вместе с процессом.
+      // Pending executions die together with the process.
       for (const { socket, parent } of held.splice(0)) {
         reply(socket, parent, 'execute_reply', { status: 'abort', execution_count: 1 })
         reply(socket, parent, 'status', { execution_state: 'idle' })
@@ -220,11 +222,11 @@ before(async () => {
           content: { code: string; store_history: boolean; silent: boolean }
         }
         /*
-         * Дополнение и справка: тот же сокет, тот же shell, вывода нет — но
-         * `busy` и `idle` вокруг ответа есть, как у настоящего ipykernel: он
-         * публикует статус вокруг ЛЮБОГО запроса по shell. Подделка раньше их
-         * не слала, и поэтому не видела, как индикатор ядра моргает у всей
-         * комнаты на каждую букву дополнения.
+         * Completion and help: the same socket, the same shell, no output —
+         * but there are `busy` and `idle` around the answer, as with a real
+         * ipykernel: it publishes a status around ANY request over shell. The
+         * fake used to not send them, and so did not see the kernel indicator
+         * blinking for the whole room on every completion keystroke.
          */
         if (msg.header.msg_type === 'complete_request') {
           if (swallowShell) return
@@ -234,8 +236,8 @@ before(async () => {
             matches: ['df.head', 'df.describe'],
             cursor_start: 3,
             cursor_end: 3,
-            // Поле экспериментальное и есть не у всех ядер — отсюда и
-            // проверка, что без него список всё равно строится.
+            // The field is experimental and not every kernel has it — hence
+            // the check that the list is built even without it.
             metadata: {
               _jupyter_types_experimental: [{ type: 'function' }, { type: 'function' }],
             },
@@ -249,17 +251,17 @@ before(async () => {
           reply(ws, msg.header, 'inspect_reply', {
             status: 'ok',
             /*
-             * `NOTFOUND` в коде — имя, которого в пространстве имён нет.
-             * Настоящее ядро отвечает так всякий раз, когда ячейку с импортом
-             * ещё не запускали, и ровно отсюда начинается второй путь справки
-             * — статический разбор jedi.
+             * `NOTFOUND` in the code is a name that is not in the namespace.
+             * A real kernel answers like this whenever the cell with the
+             * import has not been run yet, and exactly here the second help
+             * path begins — jedi's static parse.
              */
             found: !msg.content.code.includes('NOTFOUND'),
             /*
-             * Про МОДУЛЬ настоящий IPython отвечает ровно этим: род, адрес
-             * объекта в памяти и `<no docstring>` — у seaborn строки
-             * документации нет вовсе. Ради такого ответа и заведена приписка
-             * про пакет (kernel/inspect-static.ts · facts).
+             * About a MODULE a real IPython answers exactly this: the kind, the
+             * object's memory address and `<no docstring>` — seaborn has no
+             * docstring at all. The package addition (kernel/inspect-static.ts
+             * · facts) exists for this kind of answer.
              */
             data: {
               'text/plain': msg.content.code.includes('MODULE')
@@ -280,32 +282,32 @@ before(async () => {
           Object.keys((msg.content as { user_expressions?: object }).user_expressions ?? {}).length >
           0
         /*
-         * Метки ищутся только в КОДЕ ЯЧЕЙКИ, а не в служебных запросах.
+         * Markers are looked for only in CELL CODE, not in service requests.
          *
-         * Служебное ядро считает молча (`silent: true`), и туда уезжает
-         * исходник изоляции консилиума — сотня строк с комментариями, в
-         * которых честно написано «OOM-killer». Подделка читала это как
-         * «ячейка убила ядро по памяти» и отвечала `restarting`: попытка
-         * не начиналась вовсе, а тест падал пятью секундами ожидания.
+         * The service kernel runs silently (`silent: true`), and the council
+         * isolation source goes there — a hundred lines with comments that
+         * honestly say "OOM-killer". The fake read that as "the cell killed
+         * the kernel for memory" and answered `restarting`: the attempt never
+         * started, and the test failed after five seconds of waiting.
          */
         const service = msg.content.silent === true
         /*
-         * `HOLD` — ячейка, которая не кончается, пока её не отпустят ПОИМЁННО.
+         * `HOLD` is a cell that does not finish until it is released BY NAME.
          *
-         * `swallowExecutes` — флаг на всю подделку, и для одного ядра этого
-         * хватало. Ядер теперь столько, сколько тетрадей, и главное про них —
-         * что считают они ПАРАЛЛЕЛЬНО: проверить это можно, только удержав
-         * одно, пока второе отвечает. Метка стоит в коде ячейки, так что
-         * держится ровно то ядро, которому её послали.
+         * `swallowExecutes` is a flag for the whole fake, and for one kernel
+         * that was enough. There are now as many kernels as notebooks, and the
+         * main thing about them is that they compute IN PARALLEL: this can be
+         * checked only by holding one while the other answers. The marker is
+         * in the cell code, so exactly the kernel it was sent to is held.
          */
         /*
-         * Установка защиты держится НИКОГДА, что бы ни стояло во флагах.
+         * The guard installation is NEVER held, whatever the flags say.
          *
-         * Настоящее ядро отвечает на неё первой же миллисекундой после
-         * подъёма — это одна строка `apply()` в свежем процессе, и держать её
-         * нечем. Подделка, удержавшая её вместе с ячейкой, проверяла бы не
-         * очередь, а пятисекундное ожидание подтверждения, которого никто не
-         * собирался слать.
+         * A real kernel answers it in the very first millisecond after coming
+         * up — it is one `apply()` line in a fresh process, and there is
+         * nothing to hold it with. A fake that held it together with the cell
+         * would be checking not the queue but a five-second wait for a
+         * confirmation nobody was going to send.
          */
         const guarding = guardAnswer(msg.content.code) !== null
         if (!guarding && (swallowExecutes || (!service && /HOLD/.test(msg.content.code)))) {
@@ -315,21 +317,21 @@ before(async () => {
         }
         reply(ws, msg.header, 'status', { execution_state: 'busy' })
         /*
-         * Номер выполнения приезжает в execute_input, и настоящее ядро шлёт
-         * его всегда — а подделка не слала никогда, так что execCount в тестах
-         * молча оставался null и любая проверка про номер была бессмысленной.
+         * The execution number arrives in execute_input, and a real kernel
+         * always sends it — while the fake never did, so execCount in tests
+         * silently stayed null and any check about the number was pointless.
          */
         reply(ws, msg.header, 'execute_input', {
           code: msg.content.code,
           execution_count: ++executions,
         })
         /*
-         * Ячейка, которая убивает ядро по памяти.
+         * A cell that kills the kernel for memory.
          *
-         * Настоящий Jupyter в этом случае не отвечает на запрос вовсе: он
-         * присылает `status: restarting` — тот же id ядра, тот же сокет, новый
-         * процесс за ними. Подделка этого не умела, и весь путь автоперезапуска
-         * не был покрыт ничем.
+         * In this case a real Jupyter does not answer the request at all: it
+         * sends `status: restarting` — the same kernel id, the same socket, a
+         * new process behind them. The fake could not do this, and the whole
+         * auto-restart path was covered by nothing.
          */
         if (!service && /OOM/.test(msg.content.code)) {
           reply(ws, msg.header, 'status', { execution_state: 'restarting' })
@@ -348,13 +350,13 @@ before(async () => {
           return
         }
         /*
-         * `имя?` — справка, и приходит она не по iopub.
+         * `name?` is help, and it does not arrive over iopub.
          *
-         * IPython отвечает на неё полем `payload` в самом execute_reply, тем
-         * самым куском, который в настоящем ноутбуке открывается «страницей»
-         * внизу окна. Ни stream, ни display_data при этом нет вовсе — поэтому
-         * ячейка и оставалась пустой, пока сервер читал из этого сообщения
-         * один только status. Подделка повторяет ту же форму.
+         * IPython answers it with the `payload` field in the execute_reply
+         * itself, the very piece that in a real notebook opens as a "page" at
+         * the bottom of the window. There is no stream and no display_data at
+         * all — which is why the cell stayed empty while the server read only
+         * the status from this message. The fake repeats the same shape.
          */
         if (!service && /\?$/.test(msg.content.code.trim())) {
           reply(ws, msg.header, 'execute_reply', {
@@ -371,16 +373,16 @@ before(async () => {
           reply(ws, msg.header, 'status', { execution_state: 'idle' })
           return
         }
-        // Ячейка, которая ничего не печатает: `x = 1`, определение функции,
-        // импорт. Настоящее ядро на такую отвечает ровно этим — реплаем и
-        // idle, без единого iopub-вывода.
+        // A cell that prints nothing: `x = 1`, a function definition, an
+        // import. A real kernel answers such a cell with exactly this — a reply
+        // and idle, without a single iopub output.
         if (!service && /SILENT/.test(msg.content.code)) {
           reply(ws, msg.header, 'execute_reply', { status: 'ok', execution_count: 1 })
           reply(ws, msg.header, 'status', { execution_state: 'idle' })
           return
         }
-        // Молчаливый запрос вывода не показывает — но вход изоляции ждёт от
-        // него `user_expressions`, и это единственный ответ, который он услышит.
+        // A silent request shows no output — but the isolation entry expects
+        // `user_expressions` from it, and that is the only answer it will hear.
         if (!msg.content.silent) {
           reply(ws, msg.header, 'stream', { name: 'stdout', text: `${msg.content.code}\n` })
         }
@@ -404,14 +406,15 @@ before(async () => {
 })
 
 /*
- * Подделка перестаёт глотать выполнения после КАЖДОГО теста, что бы в нём ни
- * случилось.
+ * The fake stops swallowing executions after EVERY test, whatever happened in
+ * it.
  *
- * Флаг выставлялся в начале теста и снимался его последней строкой — то есть
- * упавшее посередине утверждение оставляло подделку глотающей, и весь хвост
- * файла падал с «the cell never started»: настоящий сбой тонул в двух десятках
- * ложных, и найти его в выводе было нечем. Задержанные запросы уходят вместе с
- * флагом — комната у каждого теста своя, и досиживать их некому.
+ * The flag was set at the start of a test and cleared by its last line — so an
+ * assertion failing in the middle left the fake swallowing, and the whole tail
+ * of the file failed with "the cell never started": the real failure drowned
+ * in two dozen false ones, and there was nothing to find it by in the output.
+ * Held requests go away together with the flag — each test has its own room,
+ * and nobody is left to sit them out.
  */
 afterEach(() => {
   swallowExecutes = false
@@ -452,7 +455,7 @@ function say(text: string): void {
   reply(first.socket, first.parent, 'stream', { name: 'stdout', text })
 }
 
-/** Отпустить только те задержанные запросы, чей код подходит под образец. */
+/** Release only the held requests whose code matches the pattern. */
 function finishHeld(match: RegExp): number {
   const mine = held.filter((one) => match.test(one.code ?? ''))
   held = held.filter((one) => !match.test(one.code ?? ''))
@@ -624,12 +627,12 @@ test('a cell runs and the room sees its output', async () => {
   assert.match(JSON.stringify(outputs), /print\(1\)/)
 })
 
-test('попытка консилиума считается без истории ядра — In/_ih чужих попыток не выдаёт', async () => {
+test('a council attempt runs without kernel history — In/_ih does not give away other attempts', async () => {
   const { requestRun, requestCouncilRun } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   room.type('print("cell")')
   requestRun(room.id, [room.cellId], 'Ада', 'p_t')
-  assert.ok(await until(() => room.state() === 'ok'), 'ячейка не досчиталась')
+  assert.ok(await until(() => room.state() === 'ok'), 'the cell did not finish computing')
 
   let last: { state: string } | null = null
   requestCouncilRun(
@@ -649,15 +652,16 @@ test('попытка консилиума считается без истори
   )
   assert.ok(
     await until(() => last !== null && (last as { state: string }).state === 'ok'),
-    'попытка не досчиталась',
+    'the attempt did not finish computing',
   )
   const cell = requests.find((r) => r.code === 'print("cell")')
   const attempt = requests.find((r) => r.code === 'print("attempt")')
-  assert.ok(cell && attempt, 'подделка не увидела запросов')
-  assert.equal(cell.store_history, true, 'ячейка — обычная, In[n] у неё есть')
-  // Ядро общее: с историей текст попытки читал бы любой, кому потом откроют ячейку.
+  assert.ok(cell && attempt, 'the fake did not see the requests')
+  assert.equal(cell.store_history, true, 'the cell is an ordinary one, it has In[n]')
+  // The kernel is shared: with history, anyone the cell is opened to later
+  // could read the attempt's text.
   assert.equal(attempt.store_history, false)
-  // Но не silent: вывод выражения (execute_result) попытке нужен.
+  // But not silent: the attempt needs the expression output (execute_result).
   assert.equal(attempt.silent, false)
 })
 
@@ -743,14 +747,15 @@ test('work left over from a dead server is let go of, not waited on', async () =
   )
 })
 
-test('Run All на тихо умершем ядре доводит до конца всю пачку', async () => {
+test('Run All on a kernel that died quietly carries the whole batch through to the end', async () => {
   /*
-   * Ядро умирает на перемене: сокет остаётся открытым, и узнаётся это только
-   * опросом перед отправкой ячейки. Раньше в этот момент `dropQueue` выносил
-   * очередь ЦЕЛИКОМ — до проверки «смерть ожидаемая», — так что Run All на
-   * тридцати ячейках выполнял первую, а остальные молча возвращались в покой,
-   * без единого слова о том, почему. И заодно уносил чужие пачки, вопреки
-   * обещанию «сбой останавливает только свою».
+   * The kernel dies during the break: the socket stays open, and this is
+   * found out only by polling before a cell is sent. At that moment
+   * `dropQueue` used to clear the queue ENTIRELY — before the "expected death"
+   * check — so Run All on thirty cells executed the first, and the rest
+   * silently went back to rest without a single word about why. And it took
+   * other people's batches along too, against the promise "a failure stops
+   * only your own".
    */
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { getCells, createCell } = await import('../shared/notebook.js')
@@ -761,10 +766,11 @@ test('Run All на тихо умершем ядре доводит до конц
   room.type('print("one")')
 
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
-  assert.ok(await until(() => room.state() === 'ok'), 'первый запуск не прошёл')
+  assert.ok(await until(() => room.state() === 'ok'), 'the first run did not go through')
 
   for (const kernel of kernels.values()) kernel.alive = false
-  // Дольше KERNEL_QUIET_MS: следующая отправка сначала спросит, живо ли ядро.
+  // Longer than KERNEL_QUIET_MS: the next send will first ask whether the
+  // kernel is alive.
   await wait(250)
 
   const ids = [room.cellId, tail[0].get('id') as string, tail[1].get('id') as string]
@@ -773,31 +779,32 @@ test('Run All на тихо умершем ядре доводит до конц
   const states = () => [room.state(), ...tail.map((c) => c.get('state'))]
   assert.ok(
     await until(() => states().every((state) => state === 'ok')),
-    `пачка кончилась как ${JSON.stringify(states())}`,
+    `the batch ended as ${JSON.stringify(states())}`,
   )
 })
 
-test('ячейка, убившая ядро по памяти, кончается ошибкой, а не тихим «Out [n]»', async () => {
+test('a cell that killed the kernel for memory ends with an error, not a quiet "Out [n]"', async () => {
   /*
-   * При автоперезапуске фаза ядра — `restarting`, а не `dead`, и проверка в
-   * runOne мимо неё промахивалась: выполнение завершалось `abort`, ячейка
-   * садилась в `idle` с номером выполнения и частичным выводом — на экране
-   * неотличимо от успешной. Следующая ячейка падала с NameError, и связи с
-   * этой не видел никто.
+   * On an auto-restart the kernel phase is `restarting`, not `dead`, and the
+   * check in runOne missed it: the execution ended with `abort`, the cell
+   * settled into `idle` with an execution number and partial output — on
+   * screen indistinguishable from a successful one. The next cell failed with
+   * NameError, and nobody saw the link to this one.
    */
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { readNotebook } = await import('../shared/notebook.js')
   const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
   /*
-   * Подделка docker — с числами живой машины 13.09: лимит два гигабайта, пик,
-   * упёршийся в лимит, и счётчик убийств cgroup. Настоящий docker сюите
-   * недоступен (см. `_env.mts`), а проверяется здесь как раз то, что без него
-   * не случается.
+   * The docker fake carries the numbers of the live machine on 13 Sep 2026: a
+   * two-gigabyte limit, a peak that hit the limit, and the cgroup kill
+   * counter. Real docker is not available to the suite (see `_env.mts`), and
+   * what is checked here is exactly what does not happen without it.
    */
   let kills = 16
   useDockerForPostmortem(async (args) => {
-    // Счётчик растёт между замерами — ровно так это и выглядит на машине:
-    // подъём ядра запоминает одно число, смерть приносит следующее.
+    // The counter grows between readings — exactly how it looks on the
+    // machine: the kernel start remembers one number, the death brings the
+    // next.
     if (args[0] === 'exec') return { code: 0, out: `limit 2147483648\npeak 2149163008\ncurrent 122683392\nkills ${kills++}` }
     if (args[0] === 'logs') return { code: 0, out: '' }
     return { code: 0, out: 'running 0 true 2147483648' }
@@ -809,29 +816,31 @@ test('ячейка, убившая ядро по памяти, кончаетс�
 
     assert.ok(
       await until(() => room.state() === 'error'),
-      `ячейка кончилась как ${String(room.state())}`,
+      `the cell ended as ${String(room.state())}`,
     )
     const outputs = readNotebook(room.doc)[1].outputs
-    assert.match(JSON.stringify(outputs), /KernelDied/, 'ячейка ничего не сказала про смерть ядра')
-    assert.equal(room.cell.get('execCount'), null, 'номер выполнения остался от убитого процесса')
+    assert.match(JSON.stringify(outputs), /KernelDied/, 'the cell said nothing about the kernel death')
+    assert.equal(room.cell.get('execCount'), null, 'the execution number was left from the killed process')
     assert.ok(
       room.notes().some((note) => /memory|restart/i.test(note)),
-      `комнате не сказали про перезапуск: ${JSON.stringify(room.notes())}`,
+      `the room was not told about the restart: ${JSON.stringify(room.notes())}`,
     )
     /*
-     * И, второй строкой, — ПОЧЕМУ. Вся беда 13.09 была в том, что дальше
-     * «ядро перезапустилось» журнал не шёл: пятнадцать одинаковых записей и ни
-     * одного числа. Лимит, занятое и номер ячейки — то, с чем можно что-то
-     * сделать, не заходя на машину.
+     * And, on a second line — WHY. The whole trouble on 13 Sep 2026 was that
+     * the log went no further than "the kernel restarted": fifteen identical
+     * entries and not a single number. The limit, the usage and the cell
+     * number are what one can do something with without logging into the
+     * machine.
      */
     assert.ok(
       await until(() => room.notes().some((note) => /2 ГБ|2 GB/.test(note))),
-      `причину смерти комната так и не узнала: ${JSON.stringify(room.notes())}`,
+      `the room never learned the cause of death: ${JSON.stringify(room.notes())}`,
     )
     const why = room.notes().find((note) => /2 ГБ|2 GB/.test(note)) ?? ''
-    // Номер — порядковый в тетради, считая markdown: тот же, что нарисован
-    // слева от ячейки. Здесь тетрадь из markdown и кода, ячейка вторая.
-    assert.match(why, /(ячейке|cell) 2\b/, `номер ячейки в причине неверен: ${why}`)
+    // The number is the ordinal in the notebook, counting markdown: the same
+    // one drawn to the left of the cell. The notebook here is markdown and
+    // code, and the cell is the second.
+    assert.match(why, /(ячейке|cell) 2\b/, `the cell number in the cause is wrong: ${why}`)
   } finally {
     useDockerForPostmortem(null)
   }
@@ -839,18 +848,19 @@ test('ячейка, убившая ядро по памяти, кончаетс�
 
 /*
  * --------------------------------------------------------------------------
- * 20.09.2026. Комната на тридцать человек потеряла ядро девять раз за
- * одиннадцать минут. Журнал девять раз сказал «restarted itself — oom», а
- * вскрытие СТРОКОЙ НИЖЕ возразило: «завершился не по памяти, занято 5,2 ГБ из
- * 16». Убивал `os._exit(0)` в попытке консилиума; cgroup был не тронут
- * (`oom_kill 0`), dmesg чист. Слово «oom» было догадкой нашего кода — и оно
- * отправило искать прожорливую ячейку, которой не существовало.
+ * 20 Sep 2026. A room of thirty people lost its kernel nine times in eleven
+ * minutes. Nine times the log said "restarted itself — oom", and the
+ * postmortem ONE LINE BELOW objected: "did not exit because of memory, 5.2 GB
+ * of 16 in use". The killer was `os._exit(0)` in a council attempt; the cgroup
+ * was untouched (`oom_kill 0`), dmesg was clean. The word "oom" was a guess by
+ * our code — and it sent people looking for a greedy cell that did not exist.
  *
- * Ниже — три вещи, которых в тот день не хватило: честное слово в журнале,
- * имя того, что выполнялось, и счёт падений вместо девяти одинаковых заметок.
+ * Below are the three things that were missing that day: an honest word in
+ * the log, the name of what was executing, and a count of crashes instead of
+ * nine identical notes.
  * -------------------------------------------------------------------------- */
 
-/** Числа того самого контейнера: предел 16 ГБ, пик 5,2 ГБ, cgroup никого не убивал. */
+/** The numbers of that very container: a 16 GB limit, a 5.2 GB peak, the cgroup killed nobody. */
 function notMemoryDocker() {
   return async (args: string[]) => {
     if (args[0] === 'exec') {
@@ -861,7 +871,7 @@ function notMemoryDocker() {
   }
 }
 
-/** Перехватить журнал машины на время одного прогона. */
+/** Capture the machine log for the duration of one run. */
 async function withWarnings<T>(body: (lines: string[]) => Promise<T>): Promise<T> {
   const lines: string[] = []
   const original = console.warn
@@ -875,7 +885,7 @@ async function withWarnings<T>(body: (lines: string[]) => Promise<T>): Promise<T
   }
 }
 
-test('журнал не говорит «oom», когда ядро умерло не от памяти', async () => {
+test('the log does not say "oom" when the kernel did not die of memory', async () => {
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
   useDockerForPostmortem(notMemoryDocker())
@@ -884,30 +894,31 @@ test('журнал не говорит «oom», когда ядро умерло
     const warned = await withWarnings(async (lines) => {
       room.type('OOM: import os; os._exit(0)')
       requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
-      assert.ok(await until(() => room.state() === 'error'), `ячейка кончилась как ${String(room.state())}`)
-      // Вскрытие приезжает вторым, через docker: ждём именно его строку.
-      assert.ok(await until(() => lines.some((line) => /] (oom|died):/.test(line))), `вскрытие не напечаталось: ${JSON.stringify(lines)}`)
+      assert.ok(await until(() => room.state() === 'error'), `the cell ended as ${String(room.state())}`)
+      // The postmortem arrives second, via docker: we wait for exactly its line.
+      assert.ok(await until(() => lines.some((line) => /] (oom|died):/.test(line))), `the postmortem was not printed: ${JSON.stringify(lines)}`)
       return lines
     })
     const said = warned.filter((line) => line.includes(room.id))
     const restart = said.find((line) => /restarted itself/.test(line)) ?? ''
-    assert.ok(restart, `нет строки о перезапуске: ${JSON.stringify(said)}`)
+    assert.ok(restart, `there is no line about the restart: ${JSON.stringify(said)}`)
     /*
-     * Вот она, та самая ложь. Строка печатается ДО похода к docker, то есть
-     * когда про память ещё ничего не известно, — и говорить «oom» ей нечем.
+     * Here it is, that very lie. The line is printed BEFORE going to docker,
+     * that is, when nothing is known about memory yet — and it has nothing to
+     * say "oom" with.
      */
-    assert.doesNotMatch(restart, /oom/i, `журнал снова угадывает причину: ${restart}`)
-    assert.match(restart, /cause unknown/, `журнал не сказал, что причина неизвестна: ${restart}`)
-    // А вскрытие, которому есть что сказать, говорит `died:`, а не `oom:`.
+    assert.doesNotMatch(restart, /oom/i, `the log is guessing the cause again: ${restart}`)
+    assert.match(restart, /cause unknown/, `the log did not say the cause is unknown: ${restart}`)
+    // And a postmortem that has something to say says `died:`, not `oom:`.
     const why = said.find((line) => /] (oom|died):/.test(line)) ?? ''
-    assert.match(why, /] died:/, `вскрытие назвало это нехваткой памяти: ${why}`)
-    assert.doesNotMatch(why, /] oom:/, `вскрытие назвало это нехваткой памяти: ${why}`)
+    assert.match(why, /] died:/, `the postmortem called this a memory shortage: ${why}`)
+    assert.doesNotMatch(why, /] oom:/, `the postmortem called this a memory shortage: ${why}`)
   } finally {
     useDockerForPostmortem(null)
   }
 })
 
-test('заметка комнате называет ячейку и того, кто её запустил', async () => {
+test('the note to the room names the cell and whoever ran it', async () => {
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { upsertParticipant } = await import('../server/src/db.js')
   const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
@@ -917,23 +928,23 @@ test('заметка комнате называет ячейку и того, �
     upsertParticipant({ sessionId: room.id, id: 'p_maria', name: 'Мария', role: 'participant', avatar: null })
     room.type('OOM: x = 1')
     requestRun(room.id, [room.cellId], 'Мария', 'p_maria')
-    assert.ok(await until(() => room.state() === 'error'), `ячейка кончилась как ${String(room.state())}`)
+    assert.ok(await until(() => room.state() === 'error'), `the cell ended as ${String(room.state())}`)
     /*
-     * Тетрадь здесь — markdown и код, то есть номер выполнявшейся ячейки 2:
-     * тот же, что нарисован в комнате слева от неё.
+     * The notebook here is markdown and code, so the number of the executing
+     * cell is 2: the same one drawn to the left of it in the room.
      */
     assert.ok(
       await until(() => room.notes().some((note) => /(ячейка|Cell) 2\b/.test(note))),
-      `комната не узнала, что выполнялось: ${JSON.stringify(room.notes())}`,
+      `the room did not learn what was executing: ${JSON.stringify(room.notes())}`,
     )
     const said = room.notes().find((note) => /(ячейка|Cell) 2\b/.test(note)) ?? ''
-    assert.match(said, /Мария/, `в заметке нет имени запустившего: ${said}`)
+    assert.match(said, /Мария/, `the note does not have the name of whoever ran it: ${said}`)
   } finally {
     useDockerForPostmortem(null)
   }
 })
 
-test('когда умирает попытка консилиума, комната узнаёт ЧЬЯ', async () => {
+test('when a council attempt dies, the room learns WHOSE it was', async () => {
   const { requestCouncilRun } = await import('../server/src/kernel/index.js')
   const { upsertParticipant } = await import('../server/src/db.js')
   const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
@@ -943,9 +954,9 @@ test('когда умирает попытка консилиума, комна�
     upsertParticipant({ sessionId: room.id, id: 'p_chel', name: 'Чел', role: 'participant', avatar: null })
     upsertParticipant({ sessionId: room.id, id: 'p_host', name: 'Aleksandr K.', role: 'host', avatar: null })
     /*
-     * Именно так это и было: попытку запускает ПРЕПОДАВАТЕЛЬ, перебирая
-     * консилиум пультом, а написал её студент. Без обоих имён заметка
-     * отправляет разбираться не к тому человеку.
+     * That is exactly how it was: the TEACHER runs the attempt, going through
+     * the council with the console, while a student wrote it. Without both
+     * names the note sends people to sort it out with the wrong person.
      */
     requestCouncilRun(
       room.id,
@@ -962,17 +973,17 @@ test('когда умирает попытка консилиума, комна�
     )
     assert.ok(
       await until(() => room.notes().some((note) => /Чел/.test(note))),
-      `комната не узнала, чья попытка убила ядро: ${JSON.stringify(room.notes())}`,
+      `the room did not learn whose attempt killed the kernel: ${JSON.stringify(room.notes())}`,
     )
     const said = room.notes().find((note) => /Чел/.test(note)) ?? ''
-    assert.match(said, /(консилиум|Council)/i, `заметка не сказала, что это была попытка: ${said}`)
-    assert.match(said, /(ячейк|cell) 2\b/i, `заметка не назвала ячейку консилиума: ${said}`)
+    assert.match(said, /(консилиум|Council)/i, `the note did not say it was an attempt: ${said}`)
+    assert.match(said, /(ячейк|cell) 2\b/i, `the note did not name the council cell: ${said}`)
   } finally {
     useDockerForPostmortem(null)
   }
 })
 
-test('падения подряд считаются, а не повторяются девять раз одинаково', async () => {
+test('crashes in a row are counted instead of being repeated nine times the same way', async () => {
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
   useDockerForPostmortem(notMemoryDocker())
@@ -980,22 +991,24 @@ test('падения подряд считаются, а не повторяют
     const room = await seminar()
     room.type('OOM: x = 1')
     requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
-    assert.ok(await until(() => room.state() === 'error'), 'первая смерть не дошла')
+    assert.ok(await until(() => room.state() === 'error'), 'the first death did not arrive')
     const first = room.notes().length
-    // Первый раз про счёт молчим: «1-й раз за десять минут» — это не новость.
+    // The first time the count is not mentioned: "1st time in ten minutes"
+    // is not news.
     assert.ok(
       room.notes().every((note) => !/десять минут|ten minutes/.test(note)),
-      `о счёте сказали уже на первой смерти: ${JSON.stringify(room.notes())}`,
+      `the count was mentioned already on the first death: ${JSON.stringify(room.notes())}`,
     )
     requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
     assert.ok(
       await until(() => room.notes().length > first && room.notes().some((note) => /десять минут|ten minutes/.test(note))),
-      `вторая смерть не сказала, что она вторая: ${JSON.stringify(room.notes())}`,
+      `the second death did not say it is the second: ${JSON.stringify(room.notes())}`,
     )
     const said = room.notes().find((note) => /десять минут|ten minutes/.test(note)) ?? ''
-    assert.match(said, /2/, `в заметке нет счёта: ${said}`)
-    // И предложение, которое можно выполнить, не заходя на машину.
-    assert.match(said, /(очеред|queue)/i, `заметка не предложила остановить очередь: ${said}`)
+    assert.match(said, /2/, `the note has no count: ${said}`)
+    // And a suggestion that can be carried out without logging into the
+    // machine.
+    assert.match(said, /(очеред|queue)/i, `the note did not suggest stopping the queue: ${said}`)
   } finally {
     useDockerForPostmortem(null)
   }
@@ -1086,13 +1099,14 @@ test('interrupting stops the tail as well as the cell', async () => {
   assert.ok(cellSource(extra[0]).toString().length > 0)
 })
 
-test('промах по чужой ячейке не разбирает чужую очередь', async () => {
+test("a miss on someone else's cell does not clear their queue", async () => {
   /*
-   * Кнопка нарисована по документу, а документ отстаёт на круг: «стоп» по своей
-   * ячейке доезжает в тот момент, когда она уже кончилась, а ядро взяло первую
-   * ячейку из чужого Run All. `stopBatchOf` по текущей ячейке падал на
-   * `currentBatch` — то есть на ЧУЖУЮ пачку, и двенадцать ячеек студента гасли
-   * от нажатия преподавателя, с примечанием, объясняющим не то.
+   * The button is drawn from the document, and the document lags a round trip
+   * behind: a "stop" on one's own cell arrives when it has already finished,
+   * and the kernel has taken the first cell of someone else's Run All.
+   * `stopBatchOf` for the current cell fell back to `currentBatch` — that is,
+   * to SOMEONE ELSE'S batch, and a student's twelve cells were switched off by
+   * the teacher's press, with a note explaining the wrong thing.
    */
   const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
   const { getCells, createCell } = await import('../shared/notebook.js')
@@ -1101,12 +1115,12 @@ test('промах по чужой ячейке не разбирает чужу
   const theirs = [createCell('code', 'while True: pass'), createCell('code', 'print("theirs")')]
   room.doc.transact(() => cells.push(theirs))
 
-  // Ячейка преподавателя своё отработала.
+  // The teacher's cell has done its work.
   room.type('print("mine")')
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
-  assert.ok(await until(() => room.state() === 'ok'), 'ячейка преподавателя не прошла')
+  assert.ok(await until(() => room.state() === 'ok'), "the teacher's cell did not run")
 
-  // Run All студента: первая считает, вторая ждёт.
+  // The student's Run All: the first one computes, the second one waits.
   swallowExecutes = true
   requestRun(
     room.id,
@@ -1114,31 +1128,33 @@ test('промах по чужой ячейке не разбирает чужу
     'Ivan',
     'p_ivan',
   )
-  assert.ok(await until(() => theirs[0].get('state') === 'running'), 'чужая ячейка не пошла')
-  assert.ok(await until(() => theirs[1].get('state') === 'queued'), 'чужой хвост не встал')
+  assert.ok(await until(() => theirs[0].get('state') === 'running'), "the other person's cell did not start")
+  assert.ok(await until(() => theirs[1].get('state') === 'queued'), "the other person's tail did not queue")
 
-  // Преподаватель жмёт «стоп» на своей — уже закончившейся.
+  // The teacher presses "stop" on their own cell — one that has already
+  // finished.
   await interruptSession(room.id, room.cellId)
   swallowExecutes = false
 
   /*
-   * SIGINT достаётся тому, что считается: ядро одно, и выбирать ему не из чего,
-   * — так что чужая ячейка всё равно упадёт, а её собственный хвост снимет уже
-   * её собственный провал. Проверяется здесь другое: чужую пачку не разбирает
-   * само нажатие, и комнате не рассказывают, будто её сняли «прерыванием».
+   * The SIGINT goes to whatever is computing: there is one kernel, and it has
+   * nothing to choose from — so the other person's cell fails anyway, and its
+   * own tail is then removed by its own failure. What is checked here is
+   * something else: the press itself does not clear someone else's batch, and
+   * the room is not told it was removed "by the interrupt".
    */
   assert.ok(
     !room.notes().some((note) => /interrupt also dropped/i.test(note)),
-    `нажатие отчиталось о чужой очереди: ${JSON.stringify(room.notes())}`,
+    `the press reported on someone else's queue: ${JSON.stringify(room.notes())}`,
   )
 })
 
-test('семинар, закрытый во время подъёма ядра, не возвращается в память', async () => {
+test('a seminar closed while the kernel was starting does not come back into memory', async () => {
   /*
-   * `shutdownSession` снимает среду исполнения, но подъём ядра доживает свою
-   * минуту на захваченном объекте — и всё, что он пишет, идёт через
-   * `getSessionDoc`, который заводит документ заново. Удалённая комната
-   * возвращалась в память вместе с папкой и строкой в истории.
+   * `shutdownSession` removes the runtime, but the kernel start lives out its
+   * minute on the captured object — and everything it writes goes through
+   * `getSessionDoc`, which creates the document anew. A deleted room came back
+   * into memory together with its folder and a history row.
    */
   const { createSession } = await import('../server/src/db.js')
   const { ensureKernel, shutdownSession } = await import('../server/src/kernel/index.js')
@@ -1150,13 +1166,13 @@ test('семинар, закрытый во время подъёма ядра, 
   getSessionDoc(id)
 
   const starting = ensureKernel(id)
-  // Ровно в это окно владелец удаляет семинар.
+  // Exactly in this window the owner deletes the seminar.
   await shutdownSession(id)
   dropSessionDoc(id)
   await starting.catch(() => {})
   await wait(400)
 
-  assert.equal(peekSessionDoc(id), null, 'комната воскресла из подъёма собственного ядра')
+  assert.equal(peekSessionDoc(id), null, 'the room came back to life from the start of its own kernel')
 })
 
 /* ---------------------------------------------------- taking a run back */
@@ -1405,12 +1421,13 @@ test('deleting a cell mid-run does not stall the queue behind it', async () => {
   )
 })
 
-test('удалённая ячейка не оставляет ядро крутить свой цикл', async () => {
+test('a deleted cell does not leave the kernel spinning its loop', async () => {
   /*
-   * Удаление ничем не связано с выполнением: ячейка исчезала из документа, а
-   * `while True` крутился до конца пары. Остановить это было нечем — кнопка
-   * «стоп» нарисована на ячейке, а ячейки нет, — и `meta.runningCell` при этом
-   * продолжал называть её id, то есть комната считала, что работа идёт.
+   * Deletion was in no way tied to execution: the cell disappeared from the
+   * document, while `while True` kept spinning until the end of class. There
+   * was nothing to stop it with — the "stop" button is drawn on the cell, and
+   * the cell is gone — and `meta.runningCell` kept naming its id, that is, the
+   * room believed the work was going on.
    */
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { getCells, getMeta } = await import('../shared/notebook.js')
@@ -1420,7 +1437,7 @@ test('удалённая ячейка не оставляет ядро крут�
   room.type('while True: pass')
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
-  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+  assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
 
   room.doc.transact(() => {
     const index = cells.toArray().findIndex((c) => (c.get('id') as string) === room.cellId)
@@ -1430,11 +1447,11 @@ test('удалённая ячейка не оставляет ядро крут�
 
   assert.ok(
     await until(() => getMeta(room.doc).get('runningCell') == null),
-    'комната всё ещё считает, что удалённая ячейка выполняется',
+    'the room still believes the deleted cell is executing',
   )
   assert.ok(
     room.notes().some((note) => /deleted/i.test(note)),
-    `про остановку ничего не сказали: ${JSON.stringify(room.notes())}`,
+    `nothing was said about the stop: ${JSON.stringify(room.notes())}`,
   )
 })
 
@@ -1488,42 +1505,43 @@ test('two clears in the same moment are one clear', async () => {
 
 /* ------------------------------------------------------- the run's clock */
 
-test('секундомер заводится при старте и гаснет в конце', async () => {
+test('the stopwatch starts at the start and stops at the end', async () => {
   const { requestRun } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   room.type('print(1)')
 
   /*
-   * Ячейку держат нарочно, и это половина смысла теста.
+   * The cell is held on purpose, and that is half the point of the test.
    *
-   * Подделка отвечает в тот же тик, так что `running` почти никогда не
-   * попадалось на глаза, а проверка «заводится при старте» стояла под
-   * `if (state === 'running')` — то есть не выполнялась почти никогда: снять
-   * запись `startedAt` в kernel/index.ts можно было, не уронив ни одного
-   * утверждения. Теперь ядро молчит, пока секундомер не проверят.
+   * The fake answers in the same tick, so `running` was almost never seen,
+   * and the "starts at the start" check stood under `if (state === 'running')`
+   * — that is, it almost never ran: the `startedAt` write in kernel/index.ts
+   * could be removed without failing a single assertion. Now the kernel stays
+   * silent until the stopwatch has been checked.
    */
   const before = Date.now()
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
-  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+  assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
   const at = room.startedAt()
-  assert.ok(at !== null, 'работающая ячейка без отметки начала')
-  assert.ok(at >= before - 1000 && at <= Date.now() + 1000, `отметка не похожа на сейчас: ${at}`)
-  assert.equal(room.ranMs(), null, 'длительность объявлена у ячейки, которая ещё считает')
+  assert.ok(at !== null, 'a running cell without a start mark')
+  assert.ok(at >= before - 1000 && at <= Date.now() + 1000, `the mark does not look like now: ${at}`)
+  assert.equal(room.ranMs(), null, 'a duration was announced for a cell that is still computing')
 
   swallowExecutes = false
   shellFinish()
   assert.ok(
     await until(() => room.state() === 'ok'),
-    `ячейка кончилась как ${String(room.state())}`,
+    `the cell ended as ${String(room.state())}`,
   )
-  // Погашен — иначе полоса дышала бы и часы шли бы на успокоившейся ячейке.
-  assert.equal(room.startedAt(), null, 'секундомер остался идти после завершения')
+  // Stopped — otherwise the bar would breathe and the clock would run on a
+  // cell that has settled.
+  assert.equal(room.startedAt(), null, 'the stopwatch kept running after completion')
   const took = room.ranMs()
-  assert.ok(typeof took === 'number' && took >= 0, `длительность не записана: ${String(took)}`)
+  assert.ok(typeof took === 'number' && took >= 0, `the duration was not recorded: ${String(took)}`)
 })
 
-test('стоящая в очереди ячейка секундомера не заводит', async () => {
+test('a queued cell does not start the stopwatch', async () => {
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { getCells, createCell } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -1534,23 +1552,23 @@ test('стоящая в очереди ячейка секундомера не 
 
   swallowExecutes = true
   requestRun(room.id, [room.cellId, second.get('id') as string], 'Maria', 'p_maria')
-  assert.ok(await until(() => second.get('state') === 'queued'), 'вторая не встала в очередь')
-  assert.equal(second.get('startedAt'), null, 'очередь завела секундомер')
+  assert.ok(await until(() => second.get('state') === 'queued'), 'the second one did not join the queue')
+  assert.equal(second.get('startedAt'), null, 'the queue started the stopwatch')
 
   const { interruptSession } = await import('../server/src/kernel/index.js')
   await interruptSession(room.id)
   swallowExecutes = false
 })
 
-test('прерванная ячейка кончается ошибкой, и время у неё есть', async () => {
+test('an interrupted cell ends with an error, and it has a time', async () => {
   /*
-   * Правило: длительность получают только те исходы, которые чем-то кончились.
+   * The rule: only outcomes that ended in something get a duration.
    *
-   * Живое ядро отвечает на SIGINT так же, как на всякое исключение:
-   * KeyboardInterrupt в ячейке, `execute_reply` со статусом error. Это конец,
-   * пусть и плохой, — и время у него есть. Исход здесь один и проверяется без
-   * `if`: прежняя развилка «idle или error» принимала оба, так что регрессия
-   * любой из веток была невидима.
+   * A live kernel answers SIGINT the same way as any exception: a
+   * KeyboardInterrupt in the cell, an `execute_reply` with status error. That
+   * is an end, if a bad one — and it has a time. There is one outcome here,
+   * and it is checked without an `if`: the old "idle or error" fork accepted
+   * both, so a regression in either branch was invisible.
    */
   const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
   const room = await seminar()
@@ -1558,25 +1576,25 @@ test('прерванная ячейка кончается ошибкой, и в
 
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
-  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+  assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
   await interruptSession(room.id)
   swallowExecutes = false
 
-  assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
-  assert.equal(room.state(), 'error', `исход прерывания: ${String(room.state())}`)
-  assert.equal(room.startedAt(), null, 'секундомер остался идти после остановки')
+  assert.ok(await until(() => room.state() !== 'running'), 'the cell did not stop')
+  assert.equal(room.state(), 'error', `interrupt outcome: ${String(room.state())}`)
+  assert.equal(room.startedAt(), null, 'the stopwatch kept running after the stop')
   assert.ok(
     typeof room.ranMs() === 'number',
-    `прерванная ячейка осталась без длительности: ${String(room.ranMs())}`,
+    `the interrupted cell was left without a duration: ${String(room.ranMs())}`,
   )
 })
 
-test('снятая с очереди ячейка времени завершения не получает', async () => {
+test('a cell removed from the queue does not get a completion time', async () => {
   /*
-   * Вторая половина того же правила, и вот исход, у которого времени быть не
-   * должно: ячейка, которую прерывание вынесло из очереди, не выполнялась ни
-   * миллисекунды. Напечатать ей длительность рядом с пустым `Out [ ]` значило
-   * бы объявить результат, которого не появилось.
+   * The second half of the same rule, and here is an outcome that must not
+   * have a time: a cell the interrupt took out of the queue did not execute
+   * for a single millisecond. Printing a duration for it next to an empty
+   * `Out [ ]` would announce a result that never appeared.
    */
   const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
   const { getCells, createCell } = await import('../shared/notebook.js')
@@ -1588,27 +1606,29 @@ test('снятая с очереди ячейка времени заверше�
 
   swallowExecutes = true
   requestRun(room.id, [room.cellId, second.get('id') as string], 'Maria', 'p_maria')
-  assert.ok(await until(() => second.get('state') === 'queued'), 'вторая не встала в очередь')
+  assert.ok(await until(() => second.get('state') === 'queued'), 'the second one did not join the queue')
   await interruptSession(room.id)
   swallowExecutes = false
 
-  assert.ok(await until(() => second.get('state') === 'idle'), 'вторая осталась в очереди')
-  assert.equal(second.get('startedAt'), null, 'у не начинавшейся ячейки завёлся секундомер')
-  assert.equal(second.get('ranMs'), null, 'не выполнявшаяся ячейка обзавелась длительностью')
+  assert.ok(await until(() => second.get('state') === 'idle'), 'the second one stayed in the queue')
+  assert.equal(second.get('startedAt'), null, 'a cell that never started got a stopwatch')
+  assert.equal(second.get('ranMs'), null, 'a cell that never executed acquired a duration')
 })
 
-test('промахнувшийся «стоп» останавливает работу, но не разбирает очередь', async () => {
+test('a "stop" that misses still stops the work but does not clear the queue', async () => {
   /*
-   * Кнопка на ячейке нарисована по документу, а документ отстаёт от сервера на
-   * круг: к моменту, когда нажатие доедет, выполняться может уже следующая
-   * ячейка того же Run All. Опасна тут была только вторая ветка
-   * `interruptSession` — `dropQueue` выносит очередь всей комнаты, включая
-   * чужие батчи. Останавливать текущую работу промахнувшимся нажатием не
-   * опасно: `stopBatchOf` ограничен батчем той ячейки, которая выполняется, а
-   * попади нажатие точно в цель — сняло бы ровно тот же батч.
+   * The button on a cell is drawn from the document, and the document lags the
+   * server by a round trip: by the time the press arrives, the next cell of
+   * the same Run All may already be executing. The only dangerous part here
+   * was the second branch of `interruptSession` — `dropQueue` clears the queue
+   * of the whole room, including other people's batches. Stopping the current
+   * work with a press that missed is not dangerous: `stopBatchOf` is limited
+   * to the batch of the cell that is executing, and had the press hit its
+   * target, it would have removed exactly the same batch.
    *
-   * Сначала проверка цели стояла над всей функцией, и промах не делал вообще
-   * ничего: человек жал «стоп», тетрадь продолжала считать, кнопка молчала.
+   * At first the target check stood over the whole function, and a miss did
+   * nothing at all: a person pressed "stop", the notebook kept computing, the
+   * button stayed silent.
    */
   const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
   const { getCells, createCell } = await import('../shared/notebook.js')
@@ -1625,29 +1645,30 @@ test('промахнувшийся «стоп» останавливает ра�
     'Maria',
     'p_maria',
   )
-  assert.ok(await until(() => room.state() === 'running'), 'первая не пошла')
+  assert.ok(await until(() => room.state() === 'running'), 'the first one did not start')
   assert.ok(
     await until(() => tail.every((c) => c.get('state') === 'queued')),
-    'хвост не встал в очередь',
+    'the tail did not join the queue',
   )
 
-  // Целимся в ячейку, которой в комнате нет вовсе — крайний случай промаха.
+  // Aim at a cell that does not exist in the room at all — the extreme case
+  // of a miss.
   await interruptSession(room.id, 'no-such-cell')
   swallowExecutes = false
 
-  assert.ok(await until(() => room.state() !== 'running'), 'промах не остановил работу')
+  assert.ok(await until(() => room.state() !== 'running'), 'the miss did not stop the work')
   assert.ok(
     await until(() => tail.every((c) => c.get('state') === 'idle')),
-    'хвост своего батча остался стоять',
+    'the tail of its own batch was left standing',
   )
 })
 
-test('призрачная работающая ячейка убирается проходом, а живая — нет', async () => {
+test('a ghost running cell is cleared by the pass, but a live one is not', async () => {
   /*
-   * Вкладка, открытая в момент падения сервера, сливает свои обновления
-   * обратно как есть, и 'running' из умершего процесса может пережить сброс.
-   * До появления анимации такая ячейка тихо стояла; теперь она дышала бы и
-   * считала секунды до конца пары.
+   * A tab that was open when the server crashed merges its updates back as
+   * they are, and a 'running' from the dead process can survive the reset.
+   * Before the animation existed such a cell just stood there quietly; now it
+   * would breathe and count seconds until the end of class.
    */
   const { sweepOrphanRuns } = await import('../server/src/kernel/index.js')
   const room = await seminar()
@@ -1661,16 +1682,16 @@ test('призрачная работающая ячейка убирается 
   assert.equal(room.state(), 'idle')
   assert.equal(room.startedAt(), null)
 
-  // А по-настоящему работающую ячейку проход не трогает.
+  // But the pass does not touch a cell that is really running.
   const { requestRun } = await import('../server/src/kernel/index.js')
   room.type('while True: pass')
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
-  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
-  // Часы вызывающего — на окно вперёд: иначе проход отказал бы по окну
-  // (ORPHAN_SWEEP_EVERY_MS), а не потому, что ячейка работает по-настоящему, и
-  // утверждение стало бы тавтологией.
-  assert.equal(sweepOrphanRuns(room.id, Date.now() + 3000), 0, 'проход снял работающую ячейку')
+  assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
+  // The caller's clock is one window ahead: otherwise the pass would refuse
+  // because of the window (ORPHAN_SWEEP_EVERY_MS), not because the cell is
+  // really running, and the assertion would become a tautology.
+  assert.equal(sweepOrphanRuns(room.id, Date.now() + 3000), 0, 'the pass cleared a running cell')
   assert.equal(room.state(), 'running')
 
   const { interruptSession } = await import('../server/src/kernel/index.js')
@@ -1678,14 +1699,14 @@ test('призрачная работающая ячейка убирается 
   swallowExecutes = false
 })
 
-test('справка по вопросительному знаку доезжает до ячейки', async () => {
+test('help from a question mark reaches the cell', async () => {
   /*
-   * `print?` печатал пустоту. Ответ на такой вопрос IPython кладёт в payload
-   * самого execute_reply — «страницей», которую настоящий ноутбук открывает
-   * внизу окна, — и по iopub не присылает ничего. Сервер читал из этого
-   * сообщения только status, так что вся справка уходила в никуда: ячейка
-   * отрабатывала за миллисекунды и оставалась пустой, будто вопросительный
-   * знак ничего не значит.
+   * `print?` printed nothing. IPython puts the answer to such a question into
+   * the payload of the execute_reply itself — as a "page" that the real
+   * notebook opens at the bottom of the window — and sends nothing over iopub.
+   * The server read only the status from this message, so all the help went
+   * nowhere: the cell finished in milliseconds and stayed empty, as if the
+   * question mark meant nothing.
    */
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { readNotebook } = await import('../shared/notebook.js')
@@ -1694,17 +1715,17 @@ test('справка по вопросительному знаку доезжа
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
   assert.ok(
     await until(() => room.state() === 'ok'),
-    `ячейка кончилась как ${String(room.state())}`,
+    `the cell ended as ${String(room.state())}`,
   )
 
   const outputs = readNotebook(room.doc)[1].outputs
-  assert.equal(outputs.length, 1, `выводов ${outputs.length}, а справка должна быть одна`)
-  assert.match(JSON.stringify(outputs), /Docstring/, 'справка не доехала до ячейки')
+  assert.equal(outputs.length, 1, `outputs: ${outputs.length}, but there should be a single help output`)
+  assert.match(JSON.stringify(outputs), /Docstring/, 'the help did not reach the cell')
 })
 
-test('обычная ячейка от этого ничего не теряет', async () => {
-  // Полезная проверка ровно потому, что справка ходит по тому же сообщению,
-  // что и статус: сломать обычный путь тут проще всего.
+test('an ordinary cell loses nothing from this', async () => {
+  // A useful check precisely because help travels in the same message as the
+  // status: this is where the ordinary path is easiest to break.
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { readNotebook } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -1714,13 +1735,14 @@ test('обычная ячейка от этого ничего не теряет
   assert.match(JSON.stringify(readNotebook(room.doc)[1].outputs), /print\(1\)/)
 })
 
-test('проход чистит и зеркало в meta, а не только ячейки', async () => {
+test('the pass cleans the mirror in meta too, not only the cells', async () => {
   /*
-   * Тот же умерший процесс оставляет за собой не только состояние ячеек, но и
-   * своё зеркало в meta: runningCell, queue и kernelStatus. По ним считают чип
-   * «2 queued» в панели, строку «Maria — running cell 05» в списке людей и то,
-   * рисовать ли комнатный Interrupt включённым. Починить ячейки и оставить
-   * зеркало значило починить видимое и оставить то, по чему считают.
+   * The same dead process leaves behind not only the cell state but also its
+   * mirror in meta: runningCell, queue and kernelStatus. From them come the
+   * "2 queued" chip in the panel, the "Maria — running cell 05" line in the
+   * people list and whether the room's Interrupt is drawn enabled. Fixing the
+   * cells and leaving the mirror would mean fixing what is visible and
+   * leaving what things are computed from.
    */
   const { sweepOrphanRuns } = await import('../server/src/kernel/index.js')
   const { getMeta } = await import('../shared/notebook.js')
@@ -1738,47 +1760,49 @@ test('проход чистит и зеркало в meta, а не только 
   assert.equal(sweepOrphanRuns(room.id), 1)
   assert.equal(room.state(), 'idle')
   assert.equal(room.startedAt(), null)
-  // Форма ввода, за которой уже никого нет, — это поле, чей «Send» уходит в пустоту.
-  assert.equal(room.cell.get('stdin'), null, 'вопрос ядра остался на экране')
-  assert.equal(meta.get('runningCell'), null, 'зеркало всё ещё называет работающую ячейку')
-  assert.notEqual(meta.get('kernelStatus'), 'busy', 'ядро всё ещё числится занятым')
+  // An input form with nobody behind it anymore is a field whose "Send" goes
+  // into the void.
+  assert.equal(room.cell.get('stdin'), null, "the kernel's question stayed on screen")
+  assert.equal(meta.get('runningCell'), null, 'the mirror still names a running cell')
+  assert.notEqual(meta.get('kernelStatus'), 'busy', 'the kernel is still listed as busy')
 })
 
-test('длительность считается по записи сервера, а не по полю документа', async () => {
+test("the duration is computed from the server's record, not from the document field", async () => {
   /*
-   * `startedAt` лежит в общем документе, а его пишет кто угодно в комнате — это
-   * устройство продукта. Считать по нему длительность значило дать любому
-   * студенту дописать преподавателю «выполнялось три часа».
+   * `startedAt` lies in the shared document, and anyone in the room writes it —
+   * that is how the product works. Computing the duration from it would let
+   * any student write "ran for three hours" for the teacher.
    */
   const { requestRun } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   room.type('print(1)')
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
 
-  // Пока считается — подделываем отметку в документе, как это может сделать
-  // любая вкладка в комнате.
+  // While it computes, we fake the mark in the document, as any tab in the
+  // room can.
   await until(() => room.state() === 'running' || room.state() === 'ok')
   room.doc.transact(() => room.cell.set('startedAt', Date.now() - 3 * 60 * 60 * 1000))
 
   assert.ok(
     await until(() => room.state() === 'ok'),
-    `ячейка кончилась как ${String(room.state())}`,
+    `the cell ended as ${String(room.state())}`,
   )
   const took = room.ranMs()
-  assert.ok(typeof took === 'number', 'длительность не записана')
-  assert.ok(took < 60_000, `подделка попала в длительность: ${took} мс`)
+  assert.ok(typeof took === 'number', 'the duration was not recorded')
+  assert.ok(took < 60_000, `the fake got into the duration: ${took} ms`)
 })
 
-test('запуск открывается одной транзакцией', async () => {
+test('a run opens with a single transaction', async () => {
   /*
-   * Раньше старт выполнения был двумя записями подряд: сначала поля ячейки,
-   * потом стирание вывода. Клиент получал два события — на первом просыпался
-   * наблюдатель полей и пропадала строка «Out [n]», на втором пропадало тело.
-   * Между этими кадрами область успевала обмериться на двадцать четыре
-   * пикселя короче, то есть место под новый вывод резервировалось неверным.
+   * The start of an execution used to be two writes in a row: first the cell
+   * fields, then clearing the output. The client got two events — on the first
+   * the field observer woke up and the "Out [n]" line disappeared, on the
+   * second the body disappeared. Between these frames the area managed to be
+   * measured twenty-four pixels shorter, that is, the space for the new output
+   * was reserved wrong.
    *
-   * Проверка молчаливая по своей природе: разъедини транзакции обратно, и всё
-   * продолжит работать — просто чуть заметнее дёргаться.
+   * The check is silent by nature: split the transactions apart again, and
+   * everything keeps working — it just jerks a little more visibly.
    */
   const { requestRun } = await import('../server/src/kernel/index.js')
   const room = await seminar()
@@ -1799,15 +1823,15 @@ test('запуск открывается одной транзакцией', as
   assert.ok(await until(() => room.state() === 'ok'))
   room.doc.off('afterTransaction', on)
 
-  // Ровно одна транзакция обнуляет вывод, и она же объявляет ячейку
-  // работающей и снимает номер.
+  // Exactly one transaction empties the output, and the same one declares the
+  // cell running and removes the number.
   const emptied = marks.filter((m, i) => m.outs === 0 && (i === 0 || marks[i - 1].outs > 0))
-  assert.equal(emptied.length, 1, `вывод обнулялся ${emptied.length} раз(а)`)
-  assert.equal(emptied[0].state, 'running', 'стирание и объявление разошлись по разным транзакциям')
-  assert.equal(emptied[0].exec, null, 'номер снялся не в той же транзакции')
+  assert.equal(emptied.length, 1, `the output was emptied ${emptied.length} time(s)`)
+  assert.equal(emptied[0].state, 'running', 'the clearing and the announcement ended up in different transactions')
+  assert.equal(emptied[0].exec, null, 'the number was removed in a different transaction')
 })
 
-test('выполнение, которое ничего не печатает, не оставляет прошлого вывода', async () => {
+test('an execution that prints nothing does not keep the previous output', async () => {
   const { requestRun } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   room.type('print(1)')
@@ -1815,10 +1839,10 @@ test('выполнение, которое ничего не печатает, �
   assert.ok(await until(() => room.state() === 'ok'))
   assert.ok(
     (room.cell.get('outputs') as { length: number }).length > 0,
-    'первый запуск ничего не напечатал',
+    'the first run printed nothing',
   )
 
-  // Подделка Jupyter отвечает потоком на любой код, кроме этого маркера.
+  // The Jupyter fake answers any code with a stream, except this marker.
   room.type('SILENT')
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
   assert.ok(await until(() => room.state() === 'ok'))
@@ -1826,22 +1850,22 @@ test('выполнение, которое ничего не печатает, �
   assert.equal(
     (room.cell.get('outputs') as { length: number }).length,
     0,
-    'ячейка держит результат выполнения, которого больше нет',
+    'the cell holds the result of an execution that no longer exists',
   )
-  assert.notEqual(room.cell.get('execCount'), null, 'у прошедшего выполнения нет номера')
+  assert.notEqual(room.cell.get('execCount'), null, 'the completed execution has no number')
 })
 
-test('перезапуск снимает номер выполнения со всех результатов', async () => {
+test('a restart removes the execution number from all results', async () => {
   /*
-   * Исключение для ячейки, которую разбирает насос, накрывало и номер: после
-   * перезапуска сорок результатов оставались на экране, а единственный
-   * проверяемый факт о них исчезал у всех, кроме одной — и самая свежая
-   * ячейка выглядела единственной настоящей.
+   * The exception for the cell the pump is processing covered the number too:
+   * after a restart forty results stayed on screen, while the only verifiable
+   * fact about them disappeared from all but one — and the freshest cell
+   * looked like the only real one.
    *
-   * Живёт здесь, а не в restart.test.mts: `restartSession` поднимает ядро, и
-   * там его нет. Первая версия этого теста шла через него, зелёной была ровно
-   * до тех пор, пока рядом случайно работал контейнер, и падала шестьюдесятью
-   * секундами таймаута, когда его не стало.
+   * It lives here, not in restart.test.mts: `restartSession` brings a kernel
+   * up, and there is none there. The first version of this test went through
+   * it, stayed green exactly as long as a container happened to be running
+   * nearby, and failed with a sixty-second timeout once it was gone.
    */
   const { requestRun, restartSession } = await import('../server/src/kernel/index.js')
   const { getCells, createCell } = await import('../shared/notebook.js')
@@ -1854,28 +1878,28 @@ test('перезапуск снимает номер выполнения со �
   requestRun(room.id, [room.cellId, second.get('id') as string], 'Alexander', 'p_1')
   assert.ok(
     await until(() => room.state() === 'ok'),
-    `ячейка кончилась как ${String(room.state())}`,
+    `the cell ended as ${String(room.state())}`,
   )
-  assert.ok(await until(() => second.get('state') === 'ok'), 'вторая не отработала')
-  assert.notEqual(room.cell.get('execCount'), null, 'номера не было и до перезапуска')
+  assert.ok(await until(() => second.get('state') === 'ok'), 'the second one did not run')
+  assert.notEqual(room.cell.get('execCount'), null, 'there was no number even before the restart')
 
   await restartSession(room.id, 'Alexander')
 
   for (const cell of [room.cell, second]) {
-    assert.equal(cell.get('execCount'), null, 'номер пережил перезапуск ядра')
+    assert.equal(cell.get('execCount'), null, 'the number survived the kernel restart')
     assert.equal(cell.get('state'), 'idle')
     assert.equal(cell.get('startedAt'), null)
   }
 })
 
-test('проход по призракам не повторяется чаще окна', async () => {
+test('the ghost pass does not repeat more often than the window', async () => {
   /*
-   * Поводов пройти три — пульс, нажатие, подключение управляющего сокета, — и
-   * после перезапуска сервера они приходят пачкой: пятьсот вкладок за две
-   * секунды, то есть пятьсот транзакций по всем ячейкам всех тетрадей одной
-   * комнаты ровно тогда, когда весь зал ждёт синхронизации. Чинить проходу
-   * нужно то, что осталось от умершего процесса, — оно никуда не денется за
-   * две секунды.
+   * There are three reasons for a pass — the heartbeat, a press, a control
+   * socket connecting — and after a server restart they come in a batch: five
+   * hundred tabs in two seconds, that is, five hundred transactions over all
+   * cells of all notebooks of one room exactly when the whole hall is waiting
+   * for sync. What the pass needs to fix is what the dead process left behind
+   * — it will not go anywhere in two seconds.
    */
   const { sweepOrphanRuns } = await import('../server/src/kernel/index.js')
   const room = await seminar()
@@ -1890,27 +1914,28 @@ test('проход по призракам не повторяется чаще 
   assert.equal(sweepOrphanRuns(room.id, at), 1)
   assert.equal(room.state(), 'idle')
 
-  // Второй сокет той же секунды документ не читает вовсе.
+  // A second socket in the same second does not read the document at all.
   ghost()
-  assert.equal(sweepOrphanRuns(room.id, at + 1_999), 0, 'проход пошёл по документу второй раз')
-  assert.equal(room.state(), 'running', 'а раз не пошёл — призрак ещё стоит')
+  assert.equal(sweepOrphanRuns(room.id, at + 1_999), 0, 'the pass went over the document a second time')
+  assert.equal(room.state(), 'running', 'and since it did not, the ghost is still there')
 
-  // Окно кончилось — призрака снимают.
+  // The window is over — the ghost is removed.
   assert.equal(sweepOrphanRuns(room.id, at + 2_001), 1)
   assert.equal(room.state(), 'idle')
 })
 
-test('правка листа перезапускает попытку, а не упирается в «уже в очереди»', async () => {
+test('editing the sheet restarts the attempt instead of hitting "already in the queue"', async () => {
   /*
-   * Очередь на потоке одна, ждать минуту — обычное дело, и правка за это время
-   * тоже обычна. Прежде ждущая запись была неприкасаемой: студент, поправивший
-   * лист, получал «эта попытка уже в очереди — 37-я» и не мог запустить НОВУЮ
-   * версию, пока ядро не досчитает старую, — а её вывод к тому времени всё
-   * равно выбрасывался как опоздавший (council.ts · recordRun). Считаться
-   * должно то, что человек видит на экране.
+   * In a lecture there is one queue, waiting a minute is normal, and an edit
+   * in that time is normal too. The waiting record used to be untouchable: a
+   * student who fixed the sheet got "this attempt is already in the queue —
+   * 37th" and could not run the NEW version until the kernel finished the old
+   * one — and by then its output was thrown away as late anyway (council.ts ·
+   * recordRun). What should be computed is what the person sees on the
+   * screen.
    *
-   * Место в очереди при этом остаётся прежним: за исправленную опечатку не
-   * отправляют в хвост.
+   * The place in the queue stays the same: nobody is sent to the tail for
+   * fixing a typo.
    */
   const { requestRun, requestCouncilRun, councilQueuePositions, cancelCouncilRun, interruptSession } =
     await import('../server/src/kernel/index.js')
@@ -1918,7 +1943,7 @@ test('правка листа перезапускает попытку, а не
   room.type('while True: pass')
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Ада', 'p_t')
-  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+  assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
 
   const first: (string | null)[] = []
   const second: (string | null)[] = []
@@ -1940,21 +1965,22 @@ test('правка листа перезапускает попытку, а не
   assert.deepEqual(press('print(1)', first), { queued: true, position: 2 })
   assert.deepEqual(first, ['queued'])
 
-  // То же самое второй раз — это второе нажатие, а не другой запуск.
+  // The same thing a second time is a second press, not a different run.
   assert.deepEqual(press('print(1)', second), { queued: false, position: 2 })
-  assert.deepEqual(second, [], 'по второму нажатию кадр всё-таки уехал')
+  assert.deepEqual(second, [], 'a frame went out on the second press after all')
 
-  // Другой текст — другой запуск: запись подменяется на месте.
+  // Different text is a different run: the record is replaced in place.
   assert.deepEqual(press('print(2)', second), { queued: true, position: 2 })
-  assert.deepEqual(second, ['queued'], 'новому тексту не сказали, что он в очереди')
-  assert.deepEqual(first, ['queued'], 'прежнему заданию досталось лишнее слово')
+  assert.deepEqual(second, ['queued'], 'the new text was not told it is in the queue')
+  assert.deepEqual(first, ['queued'], 'the previous task got an extra word')
   assert.deepEqual(
     councilQueuePositions(room.id),
     [{ cellId: room.cellId, participantId: 'p_1', position: 2 }],
-    'подмена завела вторую запись вместо замены',
+    'the substitution created a second record instead of replacing',
   )
 
-  // Снятая попытка говорит своему заданию «запуска не было» — и только ему.
+  // A removed attempt tells its own task "there was no run" — and only that
+  // task.
   assert.ok(cancelCouncilRun(room.id, room.cellId, 'p_1'))
   assert.deepEqual(second, ['queued', null])
   assert.deepEqual(first, ['queued'])
@@ -1962,16 +1988,16 @@ test('правка листа перезапускает попытку, а не
 
   swallowExecutes = false
   await interruptSession(room.id)
-  assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+  assert.ok(await until(() => room.state() !== 'running'), 'the cell did not stop')
 })
 
-test('номера очереди консилиума считаются одним проходом и совпадают с поштучным счётом', async () => {
+test('council queue numbers are computed in one pass and match the one-by-one count', async () => {
   /*
-   * `tellQueued` шлёт новый номер каждому ждущему на каждый сдвиг очереди, а
-   * номер считался поиском по всей очереди — на пятистах попытках это
-   * четверть миллиона сравнений на одно завершение. Массовый счёт обязан
-   * давать ровно то же, что поштучный, иначе студент увидит один номер, а его
-   * сосед — другой.
+   * `tellQueued` sends a new number to everyone waiting on every shift of the
+   * queue, and the number used to be computed by searching the whole queue —
+   * with five hundred attempts that is a quarter of a million comparisons per
+   * completion. The bulk count must give exactly the same as the one-by-one
+   * count, otherwise a student sees one number and their neighbour another.
    */
   const {
     requestRun,
@@ -1985,7 +2011,7 @@ test('номера очереди консилиума считаются одн
   room.type('while True: pass')
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Ада', 'p_t')
-  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+  assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
 
   const attempt = (participantId: string) =>
     requestCouncilRun(
@@ -2002,7 +2028,7 @@ test('номера очереди консилиума считаются одн
       'p_t',
     )
 
-  // Считая ту, что занимает ядро прямо сейчас.
+  // Counting the one occupying the kernel right now.
   assert.equal(attempt('p_1').position, 2)
   assert.equal(attempt('p_2').position, 3)
 
@@ -2015,25 +2041,25 @@ test('номера очереди консилиума считаются одн
     assert.equal(
       councilQueuePosition(room.id, one.cellId, one.participantId),
       one.position,
-      `массовый счёт разошёлся с поштучным у ${one.participantId}`,
+      `the bulk count disagreed with the one-by-one count for ${one.participantId}`,
     )
   }
 
-  // Ушедшая из середины очереди попытка двигает тех, кто за ней.
-  assert.ok(cancelCouncilRun(room.id, room.cellId, 'p_1'), 'попытка не снялась')
+  // An attempt leaving from the middle of the queue moves those behind it.
+  assert.ok(cancelCouncilRun(room.id, room.cellId, 'p_1'), 'the attempt was not removed')
   assert.deepEqual(
     councilQueuePositions(room.id),
     [{ cellId: room.cellId, participantId: 'p_2', position: 2 }],
-    'номер соседа не сдвинулся',
+    "the neighbour's number did not move",
   )
 
   cancelCouncilRun(room.id, room.cellId, 'p_2')
   swallowExecutes = false
   await interruptSession(room.id)
-  assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+  assert.ok(await until(() => room.state() !== 'running'), 'the cell did not stop')
 })
 
-test('бан участника останавливает его текущую попытку и сохраняет чужую очередь', async () => {
+test("banning a participant stops their current attempt and keeps everyone else's queue", async () => {
   const { requestCouncilRun } = await import('../server/src/kernel/index.js')
   const { purgeCouncilOf } = await import('../server/src/control.js')
   const { saveDraft } = await import('../server/src/council.js')
@@ -2059,26 +2085,26 @@ test('бан участника останавливает его текущую
     limitSec: null,
     onChange: (run) => neighbour.push(run?.state ?? null),
   }, 'Сосед', 'neighbour')
-  assert.ok(await until(() => offender.includes('running')), 'попытка нарушителя не началась')
+  assert.ok(await until(() => offender.includes('running')), "the offender's attempt did not start")
   assert.ok(
     await until(() => held.length > 0 && requests.at(-1)?.silent === true),
-    'служебный снимок пространства имён не начался',
+    'the service namespace snapshot did not start',
   )
   shellFinish()
   assert.ok(
     await until(() => held.length > 0 && requests.at(-1)?.silent === false),
-    'до ядра не дошёл код нарушителя',
+    "the offender's code did not reach the kernel",
   )
 
   swallowExecutes = false
   assert.equal(purgeCouncilOf(room.id, 'offender'), 1)
-  assert.ok(await until(() => neighbour.includes('ok')), 'чужая очередь не продолжилась после остановки')
+  assert.ok(await until(() => neighbour.includes('ok')), 'the queue of the others did not continue after the stop')
   assert.deepEqual(offender.slice(0, 2), ['queued', 'running'])
   assert.equal(offender.at(-1), 'error')
   assert.deepEqual(neighbour, ['queued', 'running', 'ok'])
 })
 
-test('бан другого участника снимает только его очередь и не прерывает текущую попытку', async () => {
+test('banning another participant removes only their queue and does not interrupt the current attempt', async () => {
   const { councilQueuePositions, requestCouncilRun } =
     await import('../server/src/kernel/index.js')
   const { purgeCouncilOf } = await import('../server/src/control.js')
@@ -2105,28 +2131,28 @@ test('бан другого участника снимает только ег�
     limitSec: null,
     onChange: (run) => removed.push(run?.state ?? null),
   }, 'Ушедший', 'offline-offender')
-  assert.ok(await until(() => running.includes('running')), 'чужая попытка не началась')
+  assert.ok(await until(() => running.includes('running')), 'the other attempt did not start')
   assert.ok(
     await until(() => held.length > 0 && requests.at(-1)?.silent === true),
-    'служебный снимок пространства имён не начался',
+    'the service namespace snapshot did not start',
   )
   shellFinish()
   assert.ok(
     await until(() => held.length > 0 && requests.at(-1)?.silent === false),
-    'до ядра не дошёл код текущей попытки',
+    'the code of the current attempt did not reach the kernel',
   )
 
   assert.equal(purgeCouncilOf(room.id, 'offline-offender'), 1)
   assert.deepEqual(removed, ['queued', null])
-  assert.deepEqual(running, ['queued', 'running'], 'текущей попытке досталось прерывание чужого бана')
+  assert.deepEqual(running, ['queued', 'running'], "the current attempt got the interrupt of someone else's ban")
   assert.deepEqual(councilQueuePositions(room.id), [])
 
   swallowExecutes = false
   await (await import('../server/src/kernel/index.js')).interruptSession(room.id)
-  assert.ok(await until(() => running.at(-1) === 'error'), 'тестовая попытка не завершилась')
+  assert.ok(await until(() => running.at(-1) === 'error'), 'the test attempt did not finish')
 })
 
-test('опоздавшее прерывание бана не попадает в следующего автора', async () => {
+test('a late ban interrupt does not hit the next author', async () => {
   const { requestCouncilRun } = await import('../server/src/kernel/index.js')
   const { purgeCouncilOf } = await import('../server/src/control.js')
   const { saveDraft } = await import('../server/src/council.js')
@@ -2159,27 +2185,29 @@ test('опоздавшее прерывание бана не попадает �
 
   holdInterrupts = true
   assert.equal(purgeCouncilOf(room.id, 'late-offender'), 1)
-  assert.ok(await until(() => pendingInterrupts.length === 1), 'прерывание не дошло до сервера')
+  assert.ok(await until(() => pendingInterrupts.length === 1), 'the interrupt did not reach the server')
 
-  // Нарушитель успевает закончить сам, пока HTTP-ответ на interrupt задержан.
+  // The offender manages to finish on their own while the HTTP answer to the
+  // interrupt is held back.
   shellFinish()
   assert.ok(await until(() => held.length > 0 && requests.at(-1)?.silent === true))
   shellFinish()
   await wait(50)
-  assert.deepEqual(neighbour, ['queued'], 'очередь пустила следующего под опоздавший SIGINT')
+  assert.deepEqual(neighbour, ['queued'], 'the queue let the next one in under the late SIGINT')
 
   swallowExecutes = false
   holdInterrupts = false
   for (const finish of pendingInterrupts.splice(0)) finish()
-  assert.ok(await until(() => neighbour.at(-1) === 'ok'), 'следующая попытка не продолжилась')
+  assert.ok(await until(() => neighbour.at(-1) === 'ok'), 'the next attempt did not continue')
 })
 
 /*
- * Дополнение ходит к ядру мимо очереди выполнения — и это главное, что о нём
- * надо знать. Очередь комнаты общая: подсказка, вставшая в неё за чужой
- * ячейкой, приехала бы через минуту, то есть не приехала бы вовсе.
+ * Completion goes to the kernel past the execution queue — and that is the
+ * main thing to know about it. The room's queue is shared: a hint standing in
+ * it behind someone else's cell would arrive a minute later, that is, not at
+ * all.
  */
-test('ядро отвечает на complete и inspect отдельным путём, без очереди выполнения', async () => {
+test('the kernel answers complete and inspect by a separate path, without the execution queue', async () => {
   const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
   const kernel = await JupyterKernel.connect('complete-ok', defaultEndpoint())
   try {
@@ -2193,18 +2221,18 @@ test('ядро отвечает на complete и inspect отдельным пу
 
     const help = await kernel.inspect('df.head', 7)
     assert.equal(help.found, true)
-    // Раскраска снята: в подсказке над кареткой ANSI читается как мусор.
+    // The colouring is stripped: in a hint above the caret ANSI reads as junk.
     assert.equal(help.text, 'Signature: df.head(n=5)')
   } finally {
     await kernel.dispose()
   }
 })
 
-test('подсказка не делает ядро занятым: её busy/idle — не фаза комнаты', async () => {
+test('a hint does not make the kernel busy: its busy/idle is not the room phase', async () => {
   const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
   const kernel = await JupyterKernel.connect('complete-quiet', defaultEndpoint())
   try {
-    // Сначала обычная ячейка: после неё фаза — честный idle.
+    // First an ordinary cell: after it the phase is an honest idle.
     await kernel.execute('1 + 1', {
       onExecuteInput: () => {}, onStream: () => {}, onData: () => {}, onError: () => {}, onClear: () => {},
     })
@@ -2213,16 +2241,16 @@ test('подсказка не делает ядро занятым: её busy/id
     kernel.onPhaseChange((phase) => seen.push(phase))
     await kernel.complete('df.', 3)
     await kernel.inspect('df.head', 7)
-    // Статусы подделка шлёт сразу за ответом; даём им доехать.
+    // The fake sends the statuses right after the answer; let them arrive.
     await new Promise((resolve) => setTimeout(resolve, 50))
-    assert.deepEqual(seen, [], `индикатор моргнул на подсказке: ${seen.join(' → ')}`)
+    assert.deepEqual(seen, [], `the indicator blinked on a hint: ${seen.join(' → ')}`)
     assert.equal(kernel.phase, 'idle')
   } finally {
     await kernel.dispose()
   }
 })
 
-test('занятое ядро не отвечает на дополнение — и обещание отказывает по времени', async () => {
+test('a busy kernel does not answer a completion — and the promise rejects on timeout', async () => {
   const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
   const kernel = await JupyterKernel.connect('complete-timeout', defaultEndpoint())
   swallowShell = true
@@ -2230,12 +2258,12 @@ test('занятое ядро не отвечает на дополнение �
     const started = Date.now()
     await assert.rejects(kernel.complete('df.', 3), /timed out/)
     /*
-     * Не мгновенно и не «пока не надоест»: две с половиной секунды — потолок,
-     * записанный в SHELL_REQUEST_MS. Нижняя граница со скидкой на то, что
-     * таймеры в node просыпаются не раньше, но и не ровно вовремя.
+     * Not instantly and not "until we get bored": two and a half seconds is
+     * the ceiling written in SHELL_REQUEST_MS. The lower bound allows for node
+     * timers waking up no earlier, but also not exactly on time.
      */
     const spent = Date.now() - started
-    assert.ok(spent >= 2000 && spent < 6000, `отказ пришёл через ${spent} мс`)
+    assert.ok(spent >= 2000 && spent < 6000, `the refusal came after ${spent} ms`)
   } finally {
     swallowShell = false
     await kernel.dispose()
@@ -2243,79 +2271,83 @@ test('занятое ядро не отвечает на дополнение �
 })
 
 /*
- * Справка о том, что стоит под кареткой, — и второй её путь.
+ * Help about what is under the caret — and its second path.
  *
- * Живое ядро знает только то, что в нём ВЫПОЛНИЛИ: пока ячейку `import seaborn
- * as sns` не запускали, `inspect_request` честно отвечает «не нашлось». На
- * занятии это читалось как «справка появляется через раз», и половина жалоб
- * была именно про это. Второй путь спрашивает jedi по исходникам — настоящим
- * `execute_request`, молча и с будильником внутри Python.
+ * A live kernel knows only what was EXECUTED in it: until the
+ * `import seaborn as sns` cell has been run, `inspect_request` honestly
+ * answers "not found". In class this read as "help appears every other
+ * time", and half of the complaints were about exactly that. The second path
+ * asks jedi from the sources — with a real `execute_request`, silently and
+ * with an alarm inside Python.
  *
- * Здесь проверяется то, что ломается тихо: причина отказа вместо молчания,
- * порядок двух путей и — главное — что служебный запуск не виден комнате.
+ * What is checked here breaks quietly: a refusal reason instead of silence,
+ * the order of the two paths and — most importantly — that the service run is
+ * not visible to the room.
  */
-test('справка про невыполненное имя достаётся статическим разбором', async () => {
+test('help about a name that was not executed comes from static parsing', async () => {
   const { ensureKernel, inspectIn } = await import('../server/src/kernel/index.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
   await ensureKernel(room.id)
-  assert.ok(await until(() => room.status() === 'idle'), 'ядро не поднялось')
+  assert.ok(await until(() => room.status() === 'idle'), 'the kernel did not come up')
 
-  // Имя, которое ядро знает: отвечает оно само, и второй путь не нужен вовсе.
+  // A name the kernel knows: it answers itself, and the second path is not
+  // needed at all.
   const known = await inspectIn(room.id, 'df.head', 7)
   assert.equal(known.found, true)
   assert.equal(known.text, 'Signature: df.head(n=5)')
   assert.equal(known.reason, null)
 
   const before = requests.length
-  // А это имя ядро не знает (подделка отвечает found: false), и тогда
-  // спрашивается jedi — вместе с шапкой импортов той же тетради.
+  // But this name the kernel does not know (the fake answers found: false),
+  // and then jedi is asked — together with the import header of the same
+  // notebook.
   const missing = await inspectIn(room.id, 'NOTFOUND.lmplot', 15, CELLS_KEY, {
     header: 'import seaborn as sns',
   })
-  assert.equal(missing.found, true, `второй путь не ответил: ${missing.reason}`)
+  assert.equal(missing.found, true, `the second path did not answer: ${missing.reason}`)
   assert.match(missing.text ?? '', /^Signature:\nsns\.lmplot\(data\)/)
 
   const service = requests.slice(before)
-  assert.equal(service.length, 1, 'статический разбор ушёл не одним запросом')
-  // Молча и без следа: ни вывода в комнату, ни строки в `In`/`Out`.
+  assert.equal(service.length, 1, 'static parsing went out as more than one request')
+  // Silently and without a trace: no output to the room, no line in `In`/`Out`.
   assert.equal(service[0].silent, true)
   assert.equal(service[0].store_history, false)
   assert.match(service[0].code, /_colloq_inspect/)
-  assert.match(service[0].code, /import seaborn as sns/, 'шапка импортов не доехала')
+  assert.match(service[0].code, /import seaborn as sns/, 'the import header did not arrive')
 })
 
-test('служебный запрос справки не двигает фазу ядра: индикатор не моргает', async () => {
+test('the service help request does not move the kernel phase: the indicator does not blink', async () => {
   const { ensureKernel, inspectIn } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   await ensureKernel(room.id)
   assert.ok(await until(() => room.status() === 'idle'))
 
   /*
-   * Статусы `busy`/`idle` ipykernel публикует вокруг ЛЮБОГО запроса, в том
-   * числе вокруг нашего служебного `execute_request`. Пока их принимали за
-   * фазу, индикатор ядра моргал бы у всей комнаты на каждое наведение мышью —
-   * та же беда, что коммит 37fce13 закрыл для `complete_request`.
+   * ipykernel publishes `busy`/`idle` statuses around ANY request, including
+   * our service `execute_request`. While they were taken for the phase, the
+   * kernel indicator would blink for the whole room on every mouse hover — the
+   * same trouble commit 37fce13 closed for `complete_request`.
    */
   const { getMeta } = await import('../shared/notebook.js')
   const meta = getMeta(room.doc)
   const seen: string[] = []
-  // Наблюдатель, а не опрос: моргание длится миллисекунды, и опрос его не
-  // поймал бы — то есть тест был бы зелёным при сломанном индикаторе.
+  // An observer, not polling: a blink lasts milliseconds, and polling would
+  // not catch it — that is, the test would be green with a broken indicator.
   const watch = () => seen.push(String(meta.get('kernelStatus')))
   meta.observe(watch)
   try {
     const answer = await inspectIn(room.id, 'NOTFOUND.lmplot', 15)
     assert.equal(answer.found, true)
     await wait(80)
-    assert.deepEqual(seen, [], `индикатор моргнул на справке: ${seen.join(' → ')}`)
+    assert.deepEqual(seen, [], `the indicator blinked on help: ${seen.join(' → ')}`)
     assert.equal(room.status(), 'idle')
   } finally {
     meta.unobserve(watch)
   }
 })
 
-test('занятому ядру справка не задаётся вовсе — отказ приходит сразу', async () => {
+test('a busy kernel is not asked for help at all — the refusal comes at once', async () => {
   const { ensureKernel, inspectIn, requestRun } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   await ensureKernel(room.id)
@@ -2324,18 +2356,18 @@ test('занятому ядру справка не задаётся вовсе 
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Student', 'p_student')
   try {
-    assert.ok(await until(() => room.state() === 'running'), 'ячейка не начала считаться')
+    assert.ok(await until(() => room.state() === 'running'), 'the cell did not start computing')
     const started = Date.now()
     const answer = await inspectIn(room.id, 'df.head', 7)
     const spent = Date.now() - started
     assert.equal(answer.found, false)
     assert.equal(answer.reason, 'busy')
     /*
-     * Сразу — это меньше секунды. Своих двух с половиной (SHELL_REQUEST_MS)
-     * ждать нечего: сервер и так знает, что в этой тетради считается ячейка, и
-     * тишина на наведение мышью читается как поломка.
+     * At once means under a second. There is no point waiting for its two and
+     * a half (SHELL_REQUEST_MS): the server already knows a cell is computing
+     * in this notebook, and silence on a mouse hover reads as breakage.
      */
-    assert.ok(spent < 1000, `отказ «занято» ждал ${spent} мс`)
+    assert.ok(spent < 1000, `the "busy" refusal waited ${spent} ms`)
   } finally {
     swallowExecutes = false
     shellFinish()
@@ -2343,67 +2375,69 @@ test('занятому ядру справка не задаётся вовсе 
 })
 
 /*
- * Плашка ядра обязана пройти путь «не запущено → запуск → готово» БЕЗ единого
- * Run — на одном наведении за справкой.
+ * The kernel badge must go through "not started → starting → ready" WITHOUT a
+ * single Run — on one hover for help.
  *
- * С занятия 20.09: «навожу — пишет, что ядро запускается, справка появляется,
- * а статус ядра всё ещё в запуске». Ядро при этом поднималось и отвечало;
- * врала именно плашка. Здесь закреплена серверная половина: подъём наведением
- * доводит состояние ОБЛАСТИ до idle. (Вторая половина была на клиенте —
- * коробки состояния, заведённые внутри производной; она закреплена чтением в
- * kernel-books-craft.)
+ * From the class of 20 Sep 2026: "I hover — it says the kernel is starting,
+ * the help appears, but the kernel status is still starting". The kernel did
+ * come up and answer meanwhile; it was the badge that lied. This pins down the
+ * server half: a start by hover brings the SCOPE's state to idle. (The other
+ * half was on the client — state boxes created inside a derived value; it is
+ * pinned down by reading in kernel-books-craft.)
  */
-test('справка поднимает ядро и доводит его состояние до «готово» без Run', async () => {
+test('help brings the kernel up and takes its state to "ready" without Run', async () => {
   const { inspectIn } = await import('../server/src/kernel/index.js')
   const { bookKernel, CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
   const state = () => bookKernel(room.doc, CELLS_KEY).status
 
-  // Комната только открыта: ядра нет и никто его не поднимает.
-  assert.equal(state(), 'off', `свежая комната показывает ${state()}`)
+  // The room has just been opened: there is no kernel and nobody brings it up.
+  assert.equal(state(), 'off', `a fresh room shows ${state()}`)
 
-  // Первое наведение поднимает ядро и честно говорит, что ответа пока нет.
+  // The first hover brings the kernel up and honestly says there is no answer
+  // yet.
   const first = await inspectIn(room.id, 'df.head', 7, CELLS_KEY, { mayWake: true })
   assert.equal(first.found, false)
   assert.equal(first.reason, 'starting')
 
-  // И доводит состояние до конца — само, без единого запуска ячейки.
-  assert.ok(await until(() => state() === 'idle'), `состояние застряло на ${state()}`)
+  // And it takes the state all the way — by itself, without a single cell run.
+  assert.ok(await until(() => state() === 'idle'), `the state got stuck at ${state()}`)
   const second = await inspectIn(room.id, 'df.head', 7, CELLS_KEY, { mayWake: true })
-  assert.equal(second.found, true, `второй вопрос не ответил: ${second.reason}`)
-  assert.equal(room.state(), 'idle', 'ячейка чего-то насчитала, хотя Run не нажимали')
+  assert.equal(second.found, true, `the second question got no answer: ${second.reason}`)
+  assert.equal(room.state(), 'idle', 'the cell computed something although Run was not pressed')
 })
 
-test('без права запускать справка ядро не поднимает', async () => {
+test('without the right to run, help does not bring the kernel up', async () => {
   const { inspectIn } = await import('../server/src/kernel/index.js')
   const { bookKernel, CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
   /*
-   * Право будить — это право нажать Run, и оно уже проверено дверью
-   * (control.ts · mayWake): сюда приезжает готовое «да» или «нет». Здесь
-   * закреплено следствие: на «нет» ядра не появляется. Словами про это
-   * отвечает control-complete — там же, где считается право.
+   * The right to wake is the right to press Run, and it has already been
+   * checked at the door (control.ts · mayWake): a ready "yes" or "no" arrives
+   * here. This pins down the consequence: on "no" no kernel appears.
+   * control-complete answers for the words about it — where the right is
+   * computed.
    */
   await inspectIn(room.id, 'df.head', 7, CELLS_KEY, { mayWake: false })
   await wait(300)
-  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'off', 'ядро подняли без права')
+  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'off', 'the kernel was brought up without the right')
 })
 
-test('строка про значение не будит ядро и молчит, когда его нет', async () => {
+test('the value line does not wake the kernel and stays silent when there is none', async () => {
   const { briefIn } = await import('../server/src/kernel/index.js')
   const { bookKernel, CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
   /*
-   * Про переменную либо есть мгновенный ответ, либо тишина. Поднимать ради
-   * неё ядро бессмысленно: до первого запуска переменной не существует, и
-   * свежее ядро ответило бы то же самое — ничего.
+   * About a variable there is either an instant answer or silence. Bringing a
+   * kernel up for it is pointless: before the first run the variable does not
+   * exist, and a fresh kernel would answer the same — nothing.
    */
   assert.equal(await briefIn(room.id, 'apartments', CELLS_KEY), null)
   await wait(300)
-  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'off', 'строка про значение подняла ядро')
+  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'off', 'the value line brought the kernel up')
 })
 
-test('строка про значение идёт тихо и не двигает индикатор ядра', async () => {
+test('the value line goes quietly and does not move the kernel indicator', async () => {
   const { briefIn, ensureKernel } = await import('../server/src/kernel/index.js')
   const { CELLS_KEY, getMeta } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2419,18 +2453,18 @@ test('строка про значение идёт тихо и не двига�
     const said = await briefIn(room.id, 'apartments', CELLS_KEY)
     assert.deepEqual(said, { type: 'DataFrame', dims: '1460 × 81' })
     await wait(80)
-    assert.deepEqual(seen, [], `индикатор моргнул на строке про значение: ${seen.join(' → ')}`)
+    assert.deepEqual(seen, [], `the indicator blinked on the value line: ${seen.join(' → ')}`)
   } finally {
     meta.unobserve(watch)
   }
   const service = requests.slice(before)
-  assert.equal(service.length, 1, 'вопрос про значение ушёл не одним запросом')
+  assert.equal(service.length, 1, 'the value question went out as more than one request')
   assert.equal(service[0].silent, true)
   assert.equal(service[0].store_history, false)
   assert.match(service[0].code, /\.brief\(globals\(\)/)
 })
 
-test('занятому ядру про значение не задают вопроса вовсе', async () => {
+test('a busy kernel is not asked about a value at all', async () => {
   const { briefIn, ensureKernel, requestRun } = await import('../server/src/kernel/index.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2443,16 +2477,17 @@ test('занятому ядру про значение не задают воп
     const before = requests.length
     const started = Date.now()
     assert.equal(await briefIn(room.id, 'apartments', CELLS_KEY), null)
-    // Ни кадра, ни ожидания: ответа не будет, и ждать его незачем.
-    assert.equal(requests.length, before, 'занятому ядру всё же задали вопрос')
-    assert.ok(Date.now() - started < 200, 'ждали занятое ядро')
+    // No frame and no waiting: there will be no answer, and there is no reason
+    // to wait for it.
+    assert.equal(requests.length, before, 'the busy kernel was asked a question after all')
+    assert.ok(Date.now() - started < 200, 'the busy kernel was waited for')
   } finally {
     assert.equal(finishHeld(/HOLD/), 1)
     assert.ok(await until(() => room.state() === 'ok'))
   }
 })
 
-test('ответ живого ядра про модуль дополняется именем пакета и ссылкой', async () => {
+test('a live kernel answer about a module is extended with the package name and a link', async () => {
   const { ensureKernel, inspectIn } = await import('../server/src/kernel/index.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2463,54 +2498,56 @@ test('ответ живого ядра про модуль дополняетс�
   const answer = await inspectIn(room.id, 'MODULE sns', 10, CELLS_KEY)
   assert.equal(answer.found, true)
   /*
-   * `Type: module` от IPython — это род, адрес объекта в памяти и «нет
-   * документации»: у seaborn её и правда нет. Про ПАКЕТ всё написано рядом с
-   * ним на диске, и одного тихого вопроса хватает, чтобы справка перестала
-   * быть бесполезной.
+   * `Type: module` from IPython is the kind, the object's memory address and
+   * "no documentation": seaborn really has none. Everything about the PACKAGE
+   * is written next to it on disk, and one quiet question is enough for the
+   * help to stop being useless.
    */
   assert.match(answer.text ?? '', /^Module: seaborn\n/)
   assert.match(answer.text ?? '', /Package: seaborn 0\.13\.2/)
   assert.match(answer.text ?? '', /Docs: http:\/\/seaborn\.pydata\.org/)
-  // Адрес в памяти и путь внутри контейнера до комнаты не доезжают.
+  // The memory address and the path inside the container do not reach the room.
   assert.doesNotMatch(answer.text ?? '', /String form:/)
   assert.doesNotMatch(answer.text ?? '', /__init__\.py/)
 
   const service = requests.slice(before)
-  assert.equal(service.length, 1, 'приписка ушла не одним запросом')
+  assert.equal(service.length, 1, 'the addition went out as more than one request')
   assert.equal(service[0].silent, true)
   assert.equal(service[0].store_history, false)
   assert.match(service[0].code, /\.facts\(globals\(\)/)
 })
 
-test('справка второй тетради идёт к ЕЁ ядру и не ждёт занятой первой', async () => {
+test('help in the second notebook goes to ITS kernel and does not wait for the busy first one', async () => {
   const { ensureKernel, inspectIn, requestRun } = await import('../server/src/kernel/index.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
   const other = await secondBook(room, 'Справка.ipynb')
   await ensureKernel(room.id, CELLS_KEY)
   await ensureKernel(room.id, other.root)
-  assert.ok(await until(() => room.status() === 'idle'), 'ядро лекции не поднялось')
+  assert.ok(await until(() => room.status() === 'idle'), 'the lecture kernel did not come up')
 
-  // Лекция считает и не кончается, пока её не отпустят поимённо.
+  // The lecture computes and does not finish until it is released by name.
   room.type('HOLD lecture')
   requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
-  assert.ok(await until(() => room.state() === 'running'), 'лекция не пошла в работу')
+  assert.ok(await until(() => room.state() === 'running'), 'the lecture did not start working')
   try {
     /*
-     * Главное утверждение: занятость СОСЕДНЕЙ тетради справке не мешает.
+     * The main assertion: the NEIGHBOURING notebook being busy does not get in
+     * the way of help.
      *
-     * Ядра у тетрадей разные, очереди тоже, и «занято» обязано считаться по
-     * области той тетради, в которой навели мышь. Пока занятость спрашивалась у
-     * занятия, справка в личной тетради студента молчала всю лекцию — и
-     * выглядело это ровно как «она не всегда появляется», от чего вся эта
-     * правка и заведена.
+     * The notebooks have different kernels and different queues, and "busy"
+     * must be computed from the scope of the notebook the mouse is hovering
+     * in. While busyness was asked of the class, help in a student's personal
+     * notebook stayed silent for the whole lecture — and it looked exactly
+     * like "it does not always appear", which is what this whole change was
+     * made for.
      */
     const here = await inspectIn(room.id, 'df.head', 7, other.root)
-    assert.equal(here.found, true, `вторая тетрадь получила отказ: ${here.reason}`)
+    assert.equal(here.found, true, `the second notebook got a refusal: ${here.reason}`)
     assert.equal(here.reason, null)
     assert.equal(here.text, 'Signature: df.head(n=5)')
 
-    // А в той тетради, которая считает, — честное «занято».
+    // And in the notebook that is computing — an honest "busy".
     const busy = await inspectIn(room.id, 'df.head', 7, CELLS_KEY)
     assert.equal(busy.found, false)
     assert.equal(busy.reason, 'busy')
@@ -2520,22 +2557,24 @@ test('справка второй тетради идёт к ЕЁ ядру и н
   }
 })
 
-test('перезапуск ядра снимает и висящее дополнение, а не только выполнение', async () => {
+test('a kernel restart drops a pending completion too, not only an execution', async () => {
   const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
   const kernel = await JupyterKernel.connect('complete-restart', defaultEndpoint())
   swallowShell = true
   try {
     /*
-     * Ожидание отказа берётся ДО перезапуска: `restart` снимает висящее тем же
-     * движением, каким объявляет фазу, то есть в той же задаче цикла событий, —
-     * и обещание, к которому ещё никто не приставлен, успело бы стать
-     * необработанным отказом и уронить весь файл.
+     * The rejection expectation is set up BEFORE the restart: `restart` drops
+     * what is pending in the same move it announces the phase with, that is,
+     * in the same event loop task — and a promise nobody is attached to yet
+     * would manage to become an unhandled rejection and bring down the whole
+     * file.
      */
     const asking = assert.rejects(kernel.complete('df.', 3), /kernel/i)
     /*
-     * Процесс за сокетом меняется, и ответа на вопрос, заданный прошлому, не
-     * будет никогда. Без этого обещание досиживало бы свои две с половиной
-     * секунды впустую — а `dispose` оставлял бы его висеть навсегда.
+     * The process behind the socket changes, and a question asked of the old
+     * one will never be answered. Without this the promise would sit out its
+     * two and a half seconds for nothing — and `dispose` would leave it
+     * hanging forever.
      */
     await kernel.restart()
     await asking
@@ -2545,15 +2584,16 @@ test('перезапуск ядра снимает и висящее допол�
   }
 })
 
-test('пока ячейка пишет вывод, комнату из памяти не выселяют', async () => {
+test('while a cell is writing output, the room is not evicted from memory', async () => {
   /*
-   * Пустая комната выселяется через десять минут, и выселение уничтожает
-   * `Y.Doc`. `OutputWriter` берёт документ в конструкторе и пишет в ЭТОТ объект
-   * до конца выполнения — запись в уничтоженный не видит никто и молча. Пока
-   * писатель жив, комната держится (kernel/index.ts · dropWriter → holdRoom).
+   * An empty room is evicted after ten minutes, and eviction destroys the
+   * `Y.Doc`. `OutputWriter` takes the document in its constructor and writes
+   * into THIS object until the end of the execution — nobody sees writes into
+   * a destroyed one, silently. While the writer is alive, the room is held
+   * (kernel/index.ts · dropWriter → holdRoom).
    *
-   * Последним в файле: проход выселяет ВСЕ пустые комнаты, в том числе те, что
-   * завели тесты выше.
+   * Last in the file: the pass evicts ALL empty rooms, including the ones the
+   * tests above created.
    */
   const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
   const { sweepIdleRooms } = await import('../server/src/collab/index.js')
@@ -2561,28 +2601,29 @@ test('пока ячейка пишет вывод, комнату из памя�
   room.type('while True: pass')
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_2')
-  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+  assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
 
-  // Все закрыли ноутбуки час назад, а ячейка всё считает.
+  // Everyone closed their laptops an hour ago, and the cell is still computing.
   const hour = Date.now() + 60 * 60 * 1000
-  assert.ok(!sweepIdleRooms(hour).includes(room.id), 'комнату выселили из-под писателя')
+  assert.ok(!sweepIdleRooms(hour).includes(room.id), 'the room was evicted from under the writer')
 
   swallowExecutes = false
   await interruptSession(room.id)
-  assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+  assert.ok(await until(() => room.state() !== 'running'), 'the cell did not stop')
 
-  // Писатель отпустил — и комната стала обычной пустой комнатой.
-  assert.ok(sweepIdleRooms(hour).includes(room.id), 'комната осталась удержанной навсегда')
+  // The writer let go — and the room became an ordinary empty room.
+  assert.ok(sweepIdleRooms(hour).includes(room.id), 'the room stayed held forever')
 })
 
-/* ------------------------------------------------------ тетрадь = ядро */
+/* ------------------------------------------------------ notebook = kernel */
 
 /**
- * Вторая тетрадь в той же комнате — со своей ячейкой.
+ * A second notebook in the same room — with a cell of its own.
  *
- * Корень у неё `nb:…`, а не `cells`: `cells` достаётся только первой и только
- * пока комната ни одной не заводила (shared/notebook.ts · rootForNewBook), а
- * `seminar()` выше комнату уже открыл, то есть тетрадь ей уже приписана.
+ * Its root is `nb:…`, not `cells`: `cells` goes only to the first one and only
+ * while the room has created none (shared/notebook.ts · rootForNewBook), and
+ * `seminar()` above has already opened the room, that is, a notebook is
+ * already assigned to it.
  */
 async function secondBook(room: Awaited<ReturnType<typeof seminar>>, path = 'Семинар.ipynb') {
   const { addBook, bookCells, cellSource, createCell } = await import('../shared/notebook.js')
@@ -2604,7 +2645,7 @@ async function secondBook(room: Awaited<ReturnType<typeof seminar>>, path = 'С�
   }
 }
 
-test('две тетради — два ядра: переменные и очереди у них раздельные', async () => {
+test('two notebooks — two kernels: their variables and queues are separate', async () => {
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { jupyterSessionPath } = await import('../server/src/kernel/jupyter.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
@@ -2614,46 +2655,47 @@ test('две тетради — два ядра: переменные и оче�
   room.type('HOLD lecture')
   other.type('print("seminar")')
   requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
-  assert.ok(await until(() => room.state() === 'running'), 'лекция не пошла в работу')
+  assert.ok(await until(() => room.state() === 'running'), 'the lecture did not start working')
 
   /*
-   * Главное утверждение всей правки: пока лекция считает, семинар СЧИТАЕТСЯ, а
-   * не стоит за ней в очереди. До этого шага ядро и насос были одни на комнату,
-   * и вторая тетрадь ждала бы конца первой.
+   * The main assertion of the whole change: while the lecture computes, the
+   * seminar IS COMPUTED instead of standing in the queue behind it. Before
+   * this step there was one kernel and one pump per room, and the second
+   * notebook would have waited for the first one to finish.
    */
   requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
-  assert.ok(await until(() => other.state() === 'ok'), 'семинар не досчитался при занятой лекции')
-  assert.equal(room.state(), 'running', 'лекцию отпустило чужое ядро')
+  assert.ok(await until(() => other.state() === 'ok'), 'the seminar did not finish computing while the lecture was busy')
+  assert.equal(room.state(), 'running', 'another kernel released the lecture')
 
-  // Два ядра — это две СЕССИИ Jupyter, по одной на путь; путь и есть ключ.
+  // Two kernels are two Jupyter SESSIONS, one per path; the path is the key.
   assert.ok(byPath.has(jupyterSessionPath(room.id, CELLS_KEY)), [...byPath.keys()].join(', '))
   assert.ok(byPath.has(jupyterSessionPath(room.id, other.root)), [...byPath.keys()].join(', '))
   assert.notEqual(
     byPath.get(jupyterSessionPath(room.id, CELLS_KEY)),
     byPath.get(jupyterSessionPath(room.id, other.root)),
-    'обе тетради попали в одно ядро',
+    'both notebooks ended up in one kernel',
   )
 
   assert.equal(finishHeld(/HOLD/), 1)
   assert.ok(await until(() => room.state() === 'ok'))
 })
 
-test('путь сессии тетради комнаты — прежний, и выкатка не заводит ей второе ядро', async () => {
+test('the session path of the room notebook is unchanged, and a rollout does not start a second kernel for it', async () => {
   const { jupyterSessionPath, jupyterSessionName } = await import('../server/src/kernel/jupyter.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
   /*
-   * Комната, которая идёт прямо сейчас, после обновления сервера обязана найти
-   * СВОЁ живое ядро. Сессии Jupyter опознаются по пути, так что путь тетради
-   * `cells` — это обратная совместимость целиком, одной строкой.
+   * A room that is running right now must find ITS OWN live kernel after the
+   * server is updated. Jupyter sessions are identified by path, so the path of
+   * the `cells` notebook is the whole of backward compatibility, in one line.
    */
   assert.equal(jupyterSessionPath('r1', CELLS_KEY), 'r1/session.ipynb')
   assert.equal(jupyterSessionName('r1', CELLS_KEY), 'r1')
-  // У остальных путь свой — и без двоеточия, которое корень `nb:` приносит.
+  // The others have their own path — without the colon the `nb:` root brings.
   assert.equal(jupyterSessionPath('r1', 'nb:b_abc12345'), 'r1/session-nb-b_abc12345.ipynb')
   assert.equal(jupyterSessionName('r1', 'nb:b_abc12345'), 'r1#nb:b_abc12345')
 })
 
-test('перезапуск одной тетради не трогает соседнюю', async () => {
+test('restarting one notebook does not touch the neighbouring one', async () => {
   const { requestRun, restartSession } = await import('../server/src/kernel/index.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2665,21 +2707,21 @@ test('перезапуск одной тетради не трогает сос�
   requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
   assert.ok(await until(() => other.state() === 'ok'))
   const lectureRun = room.cell.get('execCount') as number | null
-  assert.ok(lectureRun !== null, 'номер выполнения у лекции не записался')
+  assert.ok(lectureRun !== null, 'the execution number of the lecture was not recorded')
 
   await restartSession(room.id, 'Аким', other.root)
   /*
-   * Перезапуск уносит номера выполнений СВОЕЙ тетради — переменных у неё
-   * больше нет, и `Out [7]` над прошлым выводом врал бы. Соседняя тетрадь при
-   * этом не трогалась: её процесс жив, и объявлять её результаты
-   * недействительными не за что.
+   * A restart takes away the execution numbers of ITS OWN notebook — it has
+   * no variables anymore, and `Out [7]` over the old output would lie. The
+   * neighbouring notebook was not touched: its process is alive, and there is
+   * no reason to declare its results invalid.
    */
-  assert.equal(other.execCount(), null, 'номер выполнения в перезапущенной тетради остался')
-  assert.equal(room.cell.get('execCount'), lectureRun, 'перезапуск обнулил соседнюю тетрадь')
+  assert.equal(other.execCount(), null, 'the execution number stayed in the restarted notebook')
+  assert.equal(room.cell.get('execCount'), lectureRun, 'the restart reset the neighbouring notebook')
   assert.equal(room.state(), 'ok')
 })
 
-test('состояние ядер лежит по тетрадям, а тетрадь комнаты ещё и зеркалится в прежние ключи', async () => {
+test('kernel state is kept per notebook, and the room notebook is also mirrored into the old keys', async () => {
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { bookKernel, CELLS_KEY, getMeta } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2692,8 +2734,9 @@ test('состояние ядер лежит по тетрадям, а тетр�
   assert.ok(await until(() => bookKernel(room.doc, other.root).runningCell === other.id))
 
   const meta = getMeta(room.doc)
-  // Зеркало — ровно тетрадь комнаты: она свободна, и старая вкладка видит это.
-  assert.equal(meta.get('runningCell'), null, 'зеркало показало чужую работающую ячейку')
+  // The mirror is exactly the room notebook: it is free, and an old tab sees
+  // that.
+  assert.equal(meta.get('runningCell'), null, "the mirror showed another notebook's running cell")
   assert.equal(bookKernel(room.doc, CELLS_KEY).runningCell, null)
   assert.equal(meta.get('kernelStatus'), bookKernel(room.doc, CELLS_KEY).status)
   assert.equal(bookKernel(room.doc, other.root).status, 'busy')
@@ -2702,11 +2745,11 @@ test('состояние ядер лежит по тетрадям, а тетр�
   assert.ok(await until(() => other.state() === 'ok'))
 
   /*
-   * И очередь: ожидающие СЕМИНАРА в зеркало не попадают.
+   * And the queue: cells waiting in the SEMINAR do not get into the mirror.
    *
-   * Зеркало читает вкладка, открытая до выкатки, и по нему же считается чип
-   * «2 в очереди». Показать в нём чужую очередь значило бы сказать лекции, что
-   * её ядро занято, когда оно свободно.
+   * The mirror is read by a tab opened before the rollout, and the "2 in the
+   * queue" chip is counted from it too. Showing another notebook's queue in it
+   * would mean telling the lecture its kernel is busy when it is free.
    */
   other.type('HOLD again')
   requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
@@ -2714,14 +2757,14 @@ test('состояние ядер лежит по тетрадям, а тетр�
   const second = await secondBook(room, 'Ещё.ipynb')
   second.type('HOLD queued')
   requestRun(room.id, [second.id], 'Student', 'p_student', undefined, second.root)
-  assert.ok(await until(() => second.state() === 'running'), 'третья тетрадь не пошла в работу')
-  assert.deepEqual(bookKernel(room.doc, CELLS_KEY).queue, [], 'чужая очередь попала в зеркало')
+  assert.ok(await until(() => second.state() === 'running'), 'the third notebook did not start working')
+  assert.deepEqual(bookKernel(room.doc, CELLS_KEY).queue, [], "another notebook's queue got into the mirror")
   const legacy = meta.get('queue')
   assert.equal(legacy === undefined || (legacy as { length: number }).length, 0)
   assert.equal(finishHeld(/HOLD/), 2)
 })
 
-test('shutdownSession гасит ЯДРА ВСЕХ тетрадей занятия, а не одно', async () => {
+test('shutdownSession stops the KERNELS OF ALL the class notebooks, not one', async () => {
   const { requestRun, shutdownSession, kernelCensus } = await import('../server/src/kernel/index.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2732,18 +2775,18 @@ test('shutdownSession гасит ЯДРА ВСЕХ тетрадей заняти
   requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
   assert.ok(await until(() => room.state() === 'ok' && other.state() === 'ok'))
   const before = kernelCensus().live
-  assert.ok(before >= 2, `перепись не увидела оба ядра: ${before}`)
+  assert.ok(before >= 2, `the census did not see both kernels: ${before}`)
 
   await shutdownSession(room.id)
   /*
-   * Оставить хоть одно значило бы оставить процесс, который пишет вывод в
-   * документ комнаты, которой больше нет, — и который `getSessionDoc` завёл бы
-   * заново вместе с папкой и строкой в истории.
+   * Leaving even one would mean leaving a process that writes output into the
+   * document of a room that no longer exists — and that `getSessionDoc` would
+   * recreate together with the folder and a history row.
    */
-  assert.equal(kernelCensus().live, before - 2, 'после конца занятия осталось живое ядро')
+  assert.equal(kernelCensus().live, before - 2, 'a live kernel remained after the class ended')
 })
 
-test('потолок личных ядер отказывает словами, а не молчанием', async () => {
+test('the personal kernel ceiling refuses in words, not with silence', async () => {
   const { ensureKernel } = await import('../server/src/kernel/index.js')
   const { setRules, storedRules } = await import('../server/src/db.js')
   const room = await seminar()
@@ -2761,14 +2804,14 @@ test('потолок личных ядер отказывает словами, 
   try {
     await ensureKernel(room.id, first.root)
     /*
-     * Второе личное ядро сверх потолка — отказ с числом и с советом, а не
-     * контейнер, упавший на пределе процессов посреди пары вместе с работой
-     * всех остальных.
+     * A second personal kernel over the ceiling is a refusal with a number and
+     * advice, not a container that fell over at the process limit in the
+     * middle of class together with everyone else's work.
      */
     await assert.rejects(
       ensureKernel(room.id, second.root),
       /1|закройте|close/,
-      'потолок личных ядер не сработал',
+      'the personal kernel ceiling did not kick in',
     )
   } finally {
     if (previous === undefined) delete process.env.KERNEL_OWN_MAX
@@ -2776,7 +2819,7 @@ test('потолок личных ядер отказывает словами, 
   }
 })
 
-test('смена доступа к тетради гасит её ядро — и говорит об этом', async () => {
+test('changing access to a notebook stops its kernel — and says so', async () => {
   const { requestRun, syncBookKernels } = await import('../server/src/kernel/index.js')
   const { setRules, storedRules } = await import('../server/src/db.js')
   const { bookKernel } = await import('../shared/notebook.js')
@@ -2786,8 +2829,8 @@ test('смена доступа к тетради гасит её ядро — �
   requestRun(room.id, [other.id], 'Аким', 'p_akim', undefined, other.root)
   assert.ok(await until(() => other.state() === 'running'))
 
-  // Преподаватель делает тетрадь личной: её ядро переезжает в другой контейнер,
-  // а переехать живой процесс не может — значит, он гасится, и вслух.
+  // The teacher makes the notebook personal: its kernel moves to another
+  // container, and a live process cannot move — so it is stopped, out loud.
   setRules(room.id, {
     ...storedRules(room.id),
     books: { [other.root]: { access: 'owner', owner: 'p_akim', ownerName: 'Аким' } },
@@ -2796,7 +2839,7 @@ test('смена доступа к тетради гасит её ядро — �
 
   assert.ok(
     await until(() => other.state() === 'idle'),
-    `считавшаяся ячейка не вернулась в покой: ${String(other.state())}`,
+    `the cell that was computing did not return to rest: ${String(other.state())}`,
   )
   assert.equal(bookKernel(room.doc, other.root).runningCell, null)
   assert.ok(
@@ -2805,7 +2848,7 @@ test('смена доступа к тетради гасит её ядро — �
   )
 })
 
-test('убранная тетрадь уносит своё ядро, а соседнюю не трогает', async () => {
+test('a removed notebook takes its kernel along and leaves the neighbouring one alone', async () => {
   const { requestRun, syncBookKernels } = await import('../server/src/kernel/index.js')
   const { bookKernel, CELLS_KEY, removeBook } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2818,13 +2861,14 @@ test('убранная тетрадь уносит своё ядро, а сос�
 
   removeBook(room.doc, other.path)
   syncBookKernels(room.id)
-  // Тетради больше нет — и её ядра тоже: `off` (см. довод у уборки простоя).
+  // The notebook is gone — and so is its kernel: `off` (see the argument at
+  // the idle sweep).
   assert.ok(await until(() => bookKernel(room.doc, other.root).status === 'off'))
-  // Соседняя тетрадь живёт своей жизнью: её ядро никто не трогал.
+  // The neighbouring notebook lives its own life: nobody touched its kernel.
   assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'idle')
 })
 
-test('консилиум во второй тетради считается в ЕЁ ядре', async () => {
+test('council in the second notebook is computed in ITS kernel', async () => {
   const { requestCouncilRun, councilQueuePosition } = await import('../server/src/kernel/index.js')
   const { jupyterSessionPath } = await import('../server/src/kernel/jupyter.js')
   const room = await seminar()
@@ -2845,22 +2889,24 @@ test('консилиум во второй тетради считается в 
     'p_akim',
   )
   assert.ok(await until(() => (last as { state?: string } | null)?.state === 'ok'), JSON.stringify(last))
-  // Ядро у попытки — ядро её тетради: путь сессии заведён, и он не комнатный.
+  // The attempt's kernel is its notebook's kernel: the session path exists,
+  // and it is not the room's.
   assert.ok(byPath.has(jupyterSessionPath(room.id, other.root)), [...byPath.keys()].join(', '))
   assert.equal(councilQueuePosition(room.id, other.id, 'p_akim'), null)
 })
 
-test('ячейка из чужой тетради в эту очередь не встаёт', async () => {
+test('a cell from another notebook does not join this queue', async () => {
   /*
-   * Кадр приходит по проводу, и ячейку в нём можно назвать от любой тетради.
-   * Посчитать её в чужом ядре значило бы дать ей чужие переменные — ровно ту
-   * границу, ради которой ядер и стало несколько. Молча и без единого слова на
-   * экране: имя ячейки в документе настоящее, и выглядело бы это как «запуск
-   * почему-то делает не то».
+   * The frame comes over the wire, and a cell in it can be named from any
+   * notebook. Computing it in another notebook's kernel would give it someone
+   * else's variables — exactly the boundary there are several kernels for.
+   * Silently and without a single word on screen: the cell name in the
+   * document is real, and it would look like "the run for some reason does
+   * the wrong thing".
    *
-   * Тот же случай стережёт control.ts · rootOfCells: список ячеек и права там
-   * считаются РАЗНЫМИ путями, и разойдясь, они дали бы Run All, который ничего
-   * не делает.
+   * The same case is guarded by control.ts · rootOfCells: the cell list and
+   * the permissions are computed there by DIFFERENT paths, and if they drifted
+   * apart they would give a Run All that does nothing.
    */
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
@@ -2871,28 +2917,29 @@ test('ячейка из чужой тетради в эту очередь не 
   await wait(400)
   assert.ok(
     other.state() === undefined || other.state() === 'idle',
-    `ячейка семинара посчиталась в ядре лекции: ${String(other.state())}`,
+    `a seminar cell was computed in the lecture kernel: ${String(other.state())}`,
   )
-  assert.equal(other.execCount(), null, 'у чужой ячейки появился номер выполнения')
+  assert.equal(other.execCount(), null, 'a cell from another notebook got an execution number')
   /*
-   * И тетрадь при этом не объявлена мёртвой.
+   * And the notebook is not declared dead in the process.
    *
-   * Отсеявшийся запуск заводит область, а насос в `finally` объявляет фазу
-   * ядра — у не поднимавшегося её нет, и читается она как «остановлено». Плашка
-   * «ЯДРО ОСТАНОВЛЕНО» над тетрадью, в которой никто ничего не запускал, — это
-   * поломка на ровном месте.
+   * A run that was filtered out creates a scope, and the pump in `finally`
+   * announces the kernel phase — a kernel that never came up has none, and it
+   * reads as "stopped". A "KERNEL STOPPED" badge over a notebook in which
+   * nobody ran anything is breakage out of nothing.
    */
   const { bookKernel: readKernel } = await import('../shared/notebook.js')
   assert.notEqual(readKernel(room.doc, other.root).status, 'dead')
 
-  // А в своей — считается, и это тот же кадр с тем же именем.
+  // And in its own notebook it is computed — the same frame with the same
+  // name.
   requestRun(room.id, [other.id], 'Teacher', 'p_host', undefined, other.root)
   assert.ok(await until(() => other.state() === 'ok'))
 })
 
-/* ------------------------------------------ простой личных ядер */
+/* ------------------------------------------ personal kernels idle */
 
-/** Комната с личной тетрадью: доступ `owner`, то есть отдельный контейнер. */
+/** A room with a personal notebook: `owner` access, that is, a separate container. */
 async function personalBook(room: Awaited<ReturnType<typeof seminar>>, path = 'Аким.ipynb') {
   const { setRules, storedRules } = await import('../server/src/db.js')
   const book = await secondBook(room, path)
@@ -2909,7 +2956,7 @@ async function personalBook(room: Awaited<ReturnType<typeof seminar>>, path = '�
 
 const LATER = (minutes: number) => Date.now() + minutes * 60_000
 
-test('личное ядро гаснет по простою, а ядро занятия — нет', async () => {
+test('a personal kernel is stopped when idle, but the class kernel is not', async () => {
   const { requestRun, sweepIdleKernels } = await import('../server/src/kernel/index.js')
   const { bookKernel, CELLS_KEY } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2920,37 +2967,39 @@ test('личное ядро гаснет по простою, а ядро зан
   requestRun(room.id, [mine.id], 'Аким', 'p_akim', undefined, mine.root)
   assert.ok(await until(() => room.state() === 'ok' && mine.state() === 'ok'))
 
-  // Полчаса ещё не прошло — не трогаем ничего.
+  // Half an hour has not passed yet — nothing is touched.
   await sweepIdleKernels(LATER(29))
   assert.equal(bookKernel(room.doc, mine.root).status, 'idle')
 
   /*
-   * Прошло — гаснет ОДНО ядро, личное. Занятие при этом идёт дальше: его
-   * собственное ядро живёт по другому счёту (два часа пустой комнаты), и
-   * путать эти два — значит гасить лекцию посреди пары.
+   * It has passed — ONE kernel is stopped, the personal one. The class goes
+   * on: its own kernel lives by a different count (two hours of an empty
+   * room), and mixing the two up means stopping the lecture in the middle of
+   * class.
    */
   await sweepIdleKernels(LATER(31))
   /*
-   * `off`, а не `starting` и не `dead`. Уборка по простою — штатное засыпание:
-   * ядра нет и никто его не поднимает, пока не нажмут Run. До 20.09 запись
-   * тетради здесь просто удалялась, и комната читала пустоту как «запускается»
-   * — плашка обещала подъём, которого не было (а тетрадь комнаты сползала на
-   * «ГОТОВО», обещая живой Python). Красная «ЯДРО ОСТАНОВЛЕНО» тут тоже была
-   * бы ложной тревогой: она про OOM и падение.
+   * `off`, not `starting` and not `dead`. An idle sweep is a normal falling
+   * asleep: there is no kernel and nobody brings it up until Run is pressed.
+   * Until 20 Sep 2026 the notebook's entry was simply deleted here, and the
+   * room read the emptiness as "starting" — the badge promised a start that
+   * was not happening (and the room notebook slid to "READY", promising a
+   * live Python). A red "KERNEL STOPPED" would also be a false alarm here: it
+   * is about an OOM or a crash.
    */
-  assert.equal(bookKernel(room.doc, mine.root).status, 'off', 'личное ядро не погасло')
-  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'idle', 'ядро занятия погасло вместе с личным')
+  assert.equal(bookKernel(room.doc, mine.root).status, 'off', 'the personal kernel was not stopped')
+  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'idle', 'the class kernel was stopped along with the personal one')
   assert.ok(
     room.notes().some((line) => /Аким\.ipynb/.test(line) && /30/.test(line)),
     room.notes().join(' | '),
   )
 
-  // И следующий запуск поднимает его обычным путём.
+  // And the next run brings it up the usual way.
   requestRun(room.id, [mine.id], 'Аким', 'p_akim', undefined, mine.root)
-  assert.ok(await until(() => mine.state() === 'ok'), 'ядро не поднялось после уборки')
+  assert.ok(await until(() => mine.state() === 'ok'), 'the kernel did not come up after the sweep')
 })
 
-test('считающее и ждущее личное ядро уборка простоя не трогает', async () => {
+test('the idle sweep does not touch a personal kernel that is computing and waiting', async () => {
   const { requestRun, sweepIdleKernels } = await import('../server/src/kernel/index.js')
   const { bookKernel } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2960,19 +3009,19 @@ test('считающее и ждущее личное ядро уборка пр
   assert.ok(await until(() => mine.state() === 'running'))
 
   /*
-   * Ячейка идёт — у работы есть хозяин, который вернётся за результатом.
-   * Долгое обучение в личной тетради выглядит для этого прохода ровно как
-   * простой: ничего не происходило полчаса, — и без этой проверки уборка
-   * убивала бы именно то, ради чего тетрадь и открыли.
+   * A cell is running — the work has an owner who will come back for the
+   * result. To this pass, long training in a personal notebook looks exactly
+   * like idleness: nothing happened for half an hour — and without this check
+   * the sweep would kill precisely what the notebook was opened for.
    */
   await sweepIdleKernels(LATER(120))
-  assert.equal(mine.state(), 'running', 'считающую ячейку унесла уборка простоя')
+  assert.equal(mine.state(), 'running', 'the idle sweep took away a cell that was computing')
   assert.equal(bookKernel(room.doc, mine.root).status, 'busy')
   assert.equal(finishHeld(/HOLD/), 1)
   assert.ok(await until(() => mine.state() === 'ok'))
 })
 
-test('KERNEL_OWN_IDLE_MIN=0 выключает уборку личных ядер', async () => {
+test('KERNEL_OWN_IDLE_MIN=0 turns off the sweep of personal kernels', async () => {
   const { requestRun, sweepIdleKernels } = await import('../server/src/kernel/index.js')
   const { bookKernel } = await import('../shared/notebook.js')
   const room = await seminar()
@@ -2985,7 +3034,7 @@ test('KERNEL_OWN_IDLE_MIN=0 выключает уборку личных яде�
   process.env.KERNEL_OWN_IDLE_MIN = '0'
   try {
     await sweepIdleKernels(LATER(600))
-    assert.equal(bookKernel(room.doc, mine.root).status, 'idle', 'ноль не выключил уборку')
+    assert.equal(bookKernel(room.doc, mine.root).status, 'idle', 'zero did not turn off the sweep')
   } finally {
     if (previous === undefined) delete process.env.KERNEL_OWN_IDLE_MIN
     else process.env.KERNEL_OWN_IDLE_MIN = previous

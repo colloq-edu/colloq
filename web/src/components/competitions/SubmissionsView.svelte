@@ -1,12 +1,13 @@
 <script lang="ts">
   /**
-   * Вкладка «Посылки» — P2 на десктопе, P4 на телефоне.
+   * The "Submissions" tab — P2 on a desktop, P4 on a phone.
    *
-   * Тремя блоками: чем отправить, что уже отправлено, и в каких условиях это
-   * исполняется. Условия стоят СБОКУ, а не под списком, потому что читают их
-   * ровно один раз — перед первой посылкой, — а список обновляется каждые
-   * несколько секунд; поменяй их местами, и человек будет пролистывать
-   * неизменную таблицу, чтобы посмотреть на свой таймер.
+   * In three blocks: what to send with, what has already been sent, and
+   * under what conditions it runs. The conditions stand to the SIDE, not
+   * under the list, because they are read exactly once — before the first
+   * submission — while the list refreshes every few seconds; swap them and a
+   * person would be scrolling past an unchanging table to look at their
+   * timer.
    */
   import { tr } from '@shared/i18n'
   import { countedSubmission, compareScores, type EntrantSubmission } from '@shared/competitions'
@@ -57,7 +58,7 @@
     onjoin,
   }: Props = $props()
 
-  /** Первая страница — семь строк, как в макете; остальное по кнопке. */
+  /** The first page is seven rows, as in the mockup; the rest behind a button. */
   const PAGE = 7
   let shown = $state(PAGE)
 
@@ -66,13 +67,13 @@
   )
   const liveFor = (id: string) => mine.live.find((row) => row.submissionId === id) ?? null
   /*
-   * Выбор зачётной посылки замерзает вместе с приёмом.
+   * Choosing the counted submission freezes together with submissions.
    *
-   * Итоги открываются на дедлайне, и в «моих посылках» становится видно
-   * приватное число каждой строки: кнопка, оставленная после этого, — прямая
-   * подгонка под скрытую часть. Дверь отказывает (routes/competitions.ts ·
-   * choose), а кнопка обязана исчезнуть раньше отказа — предлагать действие,
-   * которое сервер не выполнит, хуже, чем не предлагать его вовсе.
+   * The final results open at the deadline, and "my submissions" then shows
+   * each row's private number: a button left after that is outright fitting
+   * to the hidden part. The door refuses (routes/competitions.ts · choose),
+   * and the button must disappear before the refusal — offering an action
+   * the server will not perform is worse than not offering it at all.
    */
   const canChoose = $derived(view.competition.scoring === 'chosen')
   const counted = $derived(countedSubmission(view.competition.scoring, mine.submissions.map((s) => ({ ...s, privateScore: s.privateScore ?? null })), view.competition.metric.direction)?.id ?? null)
@@ -80,11 +81,12 @@
   const limitMs = $derived(view.competition.limits.wallSeconds * 1000)
 
   /**
-   * Лучшая своя посылка — та, что пойдёт в зачёт без выбора.
+   * Your own best submission — the one that counts without a choice.
    *
-   * Считается тем же сравнением, что и лидерборд (`compareScores`): «лучший
-   * результат» под именем файла и место в таблице обязаны называть одну и ту
-   * же строку, иначе человек выбирает в зачёт не то, что ему обещано.
+   * Computed with the same comparison as the leaderboard (`compareScores`):
+   * the "best result" under the file name and the place in the table must
+   * name the same row, otherwise a person chooses to count something other
+   * than what they were promised.
    */
   const best = $derived.by(() => {
     const scored = mine.submissions.filter(
@@ -105,10 +107,10 @@
 </script>
 
 <!--
-  Правая колонка уезжает под список раньше, чем кончается место: при 1024 px
-  (ноутбук в половину экрана) пять колонок строки и 300 px условий оставляют
-  имени файла сотню пикселей, и `lgbm_lags_v4_holidays.ipynb` превращается в
-  «lgbm_lags_v...». Столбиком читается всё.
+  The right column moves under the list before the room runs out: at 1024 px
+  (a laptop at half screen) the row's five columns and 300 px of conditions
+  leave the file name a hundred pixels, and `lgbm_lags_v4_holidays.ipynb`
+  turns into "lgbm_lags_v...". As a column, everything reads.
 -->
 <div class="flex flex-col gap-6 xl:flex-row xl:gap-12">
   <div class="flex min-w-0 grow flex-col gap-4 sm:gap-7">

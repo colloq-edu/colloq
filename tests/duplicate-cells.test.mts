@@ -12,11 +12,12 @@
  * one stays. It decides, for the reason it also owns the seminar's title: there
  * is one of it, and it cannot be a stale client racing another.
  *
- * Порядок предпочтения — не вкусовщина. Совпавшее имя бывает законным: кто-то
- * вернул удалённую ячейку из истории — возврат воссоздаёт её с ПРЕЖНИМ именем,
- * — а тот, кто её удалял, нажал Ctrl+Z, и Yjs отменил удаление копией. Выкинуть
- * надо копию: оставь её вместо живой ячейки, и подменить чужую работу своей
- * можно было бы одним совпадением имени.
+ * The order of preference is not a matter of taste. A matching id can be
+ * legitimate: someone brought a deleted cell back from history — the restore
+ * recreates it with the OLD id — and the one who had deleted it pressed
+ * Ctrl+Z, and Yjs undid the deletion with a copy. The copy is what must be
+ * thrown out: keep it instead of the living cell, and someone else's work
+ * could be replaced with one's own by a single id match.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -44,15 +45,17 @@ function room(sources: string[]) {
 const ids = (cells: Y.Array<Y.Map<unknown>>) => cells.toArray().map((c) => c.get('id') as string)
 
 /*
- * Ничего не ждём, и это утверждение о починке, а не экономия.
+ * We wait for nothing, and that is a statement about the repair, not a
+ * saving.
  *
- * Наблюдатель — `afterTransaction`, то есть копия исчезает ВНУТРИ той же
- * транзакции, что её принесла: тетрадь не бывает с двойником ни одного тика.
- * Здесь стояли `await setTimeout(10)`, которые не ждали ничего (транзакция уже
- * кончилась) и заодно прятали бы задуманное: отложи починку хоть на кадр — и
- * ячейка успела бы уехать в ядро, оракулу и на проектор под чужим именем. Тест
- * проверяет состояние сразу после `transact`, так что отложенная починка
- * упадёт здесь, а не станет флаки.
+ * The observer is `afterTransaction`, that is, the copy disappears INSIDE
+ * the same transaction that brought it: the notebook never has a twin for a
+ * single tick. There used to be `await setTimeout(10)` here, which waited
+ * for nothing (the transaction had already ended) and would also hide the
+ * intent: delay the repair by even one frame — and the cell would have time
+ * to reach the kernel, the oracle and the projector under someone else's
+ * id. The test checks the state right after `transact`, so a deferred repair
+ * fails here instead of becoming flaky.
  */
 
 /** What a clone-based move produces, without going through the editor. */
@@ -71,16 +74,17 @@ function cloneOf(cell: Y.Map<unknown>): Y.Map<unknown> {
 
 test('a copy that arrives beside a living cell is the one that goes', () => {
   const { doc, cells } = room(['one', 'two', 'three'])
-  // Ctrl+Z после чужого возврата версии выглядит ровно так: ячейка на месте, и
-  // рядом встаёт её копия — с текстом на момент удаления.
+  // Ctrl+Z after someone else's version restore looks exactly like this: the
+  // cell is in place, and its copy stands next to it — with the text as of
+  // the deletion.
   const copy = cloneOf(cells.get(2))
   copy.set('source', new Y.Text('другое'))
   doc.transact(() => cells.insert(1, [copy]))
 
   assert.equal(new Set(ids(cells)).size, cells.length, `ids are not unique: ${ids(cells)}`)
   assert.equal(cells.length, 3, 'the notebook grew or shrank')
-  // Живая ячейка осталась на месте со своим текстом: подменить её по имени
-  // нельзя, и Ctrl+Z у соседа не стоил ему закрытого сокета.
+  // The living cell stayed in place with its text: it cannot be replaced by
+  // id, and Ctrl+Z did not cost the neighbour a closed socket.
   assert.deepEqual(
     cells.toArray().map((c) => cellSource(c as never).toString()),
     ['one', 'two', 'three'],
@@ -88,10 +92,11 @@ test('a copy that arrives beside a living cell is the one that goes', () => {
 })
 
 test('the first copy is the one that stays, when the original is gone', () => {
-  // Что оставляют две слитые перестановки: удаление у обеих одно и то же и
-  // применяется однажды, а вставок две — и обе новые.
+  // What two merged moves leave: the deletion is the same for both and is
+  // applied once, while there are two inserts — and both are new.
   const { doc, cells } = room(['one', 'two'])
-  // Клоны снимаются до удаления: у удалённой Y.Map ключей уже не прочитать.
+  // The clones are taken before the deletion: the keys of a deleted Y.Map
+  // can no longer be read.
   const copies = [cloneOf(cells.get(1)), cloneOf(cells.get(1))]
   doc.transact(() => {
     cells.delete(1, 1)

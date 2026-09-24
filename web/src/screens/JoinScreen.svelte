@@ -9,12 +9,12 @@
    * the seminar, which is why the poster beside the form names the seminar the
    * link opened.
    *
-   * «Когда постучали» — не «никогда»: сорок меток на класс из тридцати, и две
-   * вкладки, постучавшие в одну секунду, друг друга не видят. Ростер читается
-   * перед входом и при открытии подборщика, а последнее слово — за сервером:
-   * выданную нами метку он подменит свободной, если её успели занять, а
-   * выбранную руками оставит как есть (`picked` в теле /join). Обещать на
-   * экране больше этого нельзя.
+   * "When you knocked" is not "ever": forty marks for a class of thirty, and
+   * two tabs knocking in the same second do not see each other. The roster is
+   * read before joining and when the picker opens, and the last word belongs
+   * to the server: a mark we handed out it will swap for a free one if it was
+   * taken in the meantime, while one picked by hand it leaves as is (`picked`
+   * in the /join body). The screen cannot promise more than that.
    *
    * Who is "in the room" here is presence, not the participants table: that
    * table remembers every name that ever joined, and a poster announcing "148
@@ -46,12 +46,12 @@
   interface Props {
     session: SessionInfo
     /**
-     * Почему человек снова видит эту форму, если он тут уже был.
+     * Why the person sees this form again if they have been here before.
      *
-     * Пусто в обычном случае: студент, открывший ссылку впервые, ничего не
-     * терял и объяснять ему нечего. Строка появляется, когда сохранённое место
-     * в комнате перестало работать (см. App): без неё форма имени посреди
-     * занятия читается как «всё сломалось».
+     * Empty in the usual case: a student opening the link for the first time
+     * lost nothing and there is nothing to explain. The line appears when the
+     * saved place in the room stopped working (see App): without it, a name
+     * form in the middle of a class reads as "everything broke".
      */
     notice?: string | null
     /** Load the room concurrently with the join request, without delaying it. */
@@ -85,22 +85,23 @@
   const present = $derived(roster.filter((person) => onlineIds.has(person.id)))
   let busy = $state(false)
   /**
-   * Вкладка ждёт и войдёт ещё раз сама.
+   * The tab is waiting and will join again by itself.
    *
-   * Отдельно от `error`, потому что это не отказ: отказ — это то, с чем человек
-   * остаётся, а здесь ему остаётся только подождать несколько секунд.
+   * Separate from `error`, because this is not a refusal: a refusal is what
+   * the person is left with, while here all that is left is to wait a few
+   * seconds.
    */
   let retrying = $state(false)
   let retryNotice = $state(CROWD_NOTICE)
   let errorRender = $state<() => string | null>(() => null)
   const error = $derived(errorRender())
   /**
-   * Нас не пустили: момент конца бана.
+   * We were not let in: the moment the ban ends.
    *
-   * Отдельно от `error` по той же причине, по какой отдельно `retrying`: это не
-   * поломка, которую человек может обойти, попробовав ещё раз. Форма после
-   * этого не нужна вовсе — назваться иначе и войти было бы ровно тем, чего бан
-   * не позволяет, — поэтому экран заменяется целиком.
+   * Separate from `error` for the same reason `retrying` is separate: this is
+   * not a breakage the person can get around by trying again. The form is not
+   * needed at all after this — giving a different name and joining would be
+   * exactly what the ban does not allow — so the whole screen is replaced.
    */
   let bannedUntil = $state<number | null>(null)
   let nameInput = $state<HTMLInputElement | null>(null)
@@ -126,7 +127,7 @@
     return formatDate(ms, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
   }
   const stamp = $derived(stampOf(session.createdAt))
-  /** Когда занятие закончили — теми же цифрами, что и час его начала. */
+  /** When the class was finished — in the same digits as the hour it started. */
   const finishedStamp = $derived(session.finishedAt === null ? null : stampOf(session.finishedAt))
 
   /*
@@ -165,13 +166,15 @@
   onMount(() => {
     if (!signingIn) return
     void (async () => {
-      // Один помощник на оба экрана — см. screens/staff.ts. Он же решает
-      // судьбу местной метки: снимает её отказ сервера, а не оборванный вайфай.
+      // One helper for both screens — see screens/staff.ts. It also decides
+      // the fate of the local marker: a server refusal clears it, a dropped
+      // Wi-Fi does not.
       const staff = await staffName()
       if (!alive) return
       if (!staff) {
-        // Печенье протухло, этот браузер никогда не был штатом — или сервера
-        // не слышно. В любом случае человеку нужна обычная форма, а не тупик.
+        // The cookie went stale, this browser was never staff — or the server
+        // cannot be heard. Either way the person needs the ordinary form, not
+        // a dead end.
         signingIn = false
         return
       }
@@ -186,23 +189,23 @@
   }
 
   /**
-   * Экран ушёл, а ожидание осталось.
+   * The screen is gone, but the wait remains.
    *
-   * Между отказом и повтором проходят секунды, и за них человек успевает
-   * закрыть вкладку или уйти по ссылке в другую комнату. Впустить его туда,
-   * откуда он ушёл, — худший вид опоздавшего ответа: он не виден, он меняет
-   * маршрут.
+   * Seconds pass between a refusal and a retry, and in them the person
+   * manages to close the tab or follow a link to another room. Letting them
+   * into the place they left is the worst kind of late answer: it is not
+   * visible, and it changes the route.
    */
   let alive = true
   onDestroy(() => (alive = false))
 
   /**
-   * Кто в комнате прямо сейчас — и метка по этому ответу.
+   * Who is in the room right now — and the mark based on that answer.
    *
-   * Читаем при монтировании (карточка и постер) и открытии подборщика
-   * (занятые метки должны быть сегодняшними). Правило выбора
-   * при этом одно — `markToClaim`: выданную нами метку пересчитываем по свежей
-   * занятости, выбранную руками не трогаем.
+   * Read on mount (the card and the poster) and when the picker opens (taken
+   * marks must be today's). There is one choosing rule for it — `markToClaim`:
+   * a mark we handed out is recomputed against fresh occupancy, one picked by
+   * hand is left alone.
    */
   async function readRoom(): Promise<void> {
     const body = await api.listParticipants(session.id)
@@ -213,17 +216,18 @@
   }
 
   /**
-   * Подборщик открывают — комнату перечитывают.
+   * The picker opens — the room is re-read.
    *
-   * Ростер, прочитанный при монтировании, к этой минуте уже старый: студент
-   * читал постер, печатал имя, а класс всё это время входил. Подборщик рисует
-   * занятые метки занятыми и нажать на них не даёт — но только по тому
-   * списку, который у него есть, и без этого чтения список был минутной
-   * давности: человек жал на свободного с виду ежа и входил вторым ежом.
+   * The roster read on mount is stale by this minute: the student read the
+   * poster, typed a name, and the class was joining all that time. The picker
+   * draws taken marks as taken and does not let them be pressed — but only by
+   * the list it has, and without this read the list was a minute old: a
+   * person pressed a hedgehog that looked free and joined as a second
+   * hedgehog.
    *
-   * Открывается он сразу, не дожидаясь ответа: сетка нужна сейчас, а серые
-   * плитки доедут через круг сети. Неудача чтения ничего не меняет — выбирают
-   * из того, что известно.
+   * It opens at once, without waiting for the answer: the grid is needed now,
+   * and the grey tiles will arrive after a network round trip. A failed read
+   * changes nothing — people choose from what is known.
    */
   function openPicker(): void {
     picking = true
@@ -232,21 +236,23 @@
     })
   }
 
-  /** Одна попытка войти: если она удалась, человек уже в комнате. */
+  /** One attempt to join: if it succeeds, the person is already in the room. */
   async function knock(who: string): Promise<void> {
     onjoining?.()
     const result = await api.join(session.id, {
       name: who,
       avatar: mark,
       /*
-       * Выбрана руками — сервер её не подменит.
+       * Picked by hand — the server will not swap it.
        *
-       * Судья уникальности он: занятую метку он меняет на свободную, и без
-       * этого поля отличить выданную экраном от ткнутой пальцем ему нечем —
-       * подменялись обе. Человек жал на ежа и оказывался выдрой, а объяснения
-       * этому нет ни на одном экране: карточка к тому моменту уже уехала.
-       * Плитки занятых зверей нажать нельзя, так что совпасть выбранная может
-       * только в круге сети, и два ежа там дешевле молчаливой подмены.
+       * The server is the judge of uniqueness: it replaces a taken mark with a
+       * free one, and without this field it had no way to tell a mark handed
+       * out by the screen from one poked with a finger — both got swapped. A
+       * person pressed the hedgehog and ended up an otter, and no screen
+       * explains that: by then the card had already gone. The tiles of taken
+       * animals cannot be pressed, so a picked mark can only clash within a
+       * network round trip, and two hedgehogs there are cheaper than a silent
+       * swap.
        */
       picked,
       // What keeps a refresh from turning one person into two — and the
@@ -283,13 +289,15 @@
     // server and respects `picked`, so a slow roster must not delay entry.
     if (!alive) return
     /*
-     * Толпа на входе — не отказ, а очередь: вкладка стучится ещё раз сама.
+     * A crowd at the entrance is not a refusal but a queue: the tab knocks
+     * again by itself.
      *
-     * Сколько раз и через сколько, решает lib/crowd.ts, и решение там ровно
-     * одно на весь продукт. Здесь — то, что человек в это время видит: кнопка
-     * так и говорит «Joining…», а строка под именем объясняет, чего ждут.
-     * Прежний отказ с кнопкой никуда не делся, он просто наступает позже — и
-     * только когда ждать уже нечего.
+     * How many times and how long apart is decided by lib/crowd.ts, and there
+     * is exactly one decision for the whole product. Here is what the person
+     * sees meanwhile: the button keeps saying "Joining…", and the line under
+     * the name explains what is being waited for. The old refusal with a
+     * button has not gone anywhere, it just comes later — and only when there
+     * is nothing left to wait for.
      */
     for (let tried = 1; alive; tried += 1) {
       try {
@@ -297,8 +305,9 @@
         retrying = false
         return
       } catch (cause: unknown) {
-        // Бан приезжает сроком в теле отказа: спорить с ним нечем, и повторять
-        // нечего — экран меняется на объяснение.
+        // A ban arrives as a deadline in the refusal body: there is nothing to
+        // argue with and nothing to retry — the screen changes to an
+        // explanation.
         if (cause instanceof ApiError && cause.status === 403 && cause.until !== null) {
           bannedUntil = cause.until
           retrying = false
@@ -396,7 +405,7 @@
 {/snippet}
 
 {#if bannedUntil !== null}
-  <!-- Ни афиши, ни формы: обе обещали бы вход, которого сейчас нет. -->
+  <!-- No poster, no form: both would promise an entry that is not there now. -->
   <div class="flex h-full items-center justify-center px-6">
     <BannedScreen until={bannedUntil} />
   </div>
@@ -437,13 +446,14 @@
       <div class="mx-auto flex min-h-full w-full max-w-md flex-col justify-center gap-3 py-12">
         <p class="text-2xs font-bold uppercase tracking-label text-muted">{tr('room.ui.841')}</p>
         <!--
-          «Straight away» — пока это правда.
+          "Straight away" — only while it is true.
 
-          Вход штата идёт через тот же `join`, что и у всех, а он в толпе
-          получает 429 и стучится ещё раз сам (lib/crowd.ts). Строка про
-          очередь стояла ВНУТРИ формы, а формы в этой ветке нет — и экран
-          четыре с лишним секунды обещал мгновенный вход и молчал. Теперь
-          обещание уступает место объяснению на том же месте.
+          Staff sign-in goes through the same `join` as everyone else's, and in
+          a crowd that gets a 429 and knocks again by itself (lib/crowd.ts). The
+          line about the queue was INSIDE the form, and this branch has no form
+          — so for four-plus seconds the screen promised an instant entry and
+          said nothing. Now the promise gives way to an explanation in the same
+          place.
         -->
         <p class="text-ui-lg text-muted">
           {#if retrying}
@@ -483,8 +493,8 @@
       </div>
 
       {#if notice}
-        <!-- Спокойной строкой, не красной: место в комнате истекает само, и
-             человек, который сюда попал, ничего не сделал неправильно. -->
+        <!-- A calm line, not a red one: a place in the room expires by itself,
+             and the person who ended up here did nothing wrong. -->
         <p class="border border-line bg-surface px-4 py-3 text-ui text-muted" role="status">
           {notice}
         </p>
@@ -492,12 +502,12 @@
 
       {#if finishedStamp}
         <!--
-          Сказать до входа, а не после.
+          Say it before joining, not after.
 
-          Иначе человек называет имя, заходит и упирается в тетрадь, где не
-          нажимается ничего, — а это ровно то, что читается как сломанная
-          комната. Форма остаётся рабочей: комната открыта на чтение, и войти в
-          неё за разбором — обычное дело.
+          Otherwise a person gives a name, joins and runs into a notebook where
+          nothing can be pressed — which is exactly what reads as a broken
+          room. The form stays working: the room is open for reading, and
+          joining it for the review is an ordinary thing.
         -->
         <div
           class="flex flex-col gap-2 border border-line bg-surface px-4 py-3 text-ui text-muted"
@@ -506,17 +516,17 @@
           <p> {tr('room.ui.843')} {finishedStamp}{tr('room.ui.844')} </p>
           {#if session.published}
             <!--
-              И куда идти вместо комнаты.
+              And where to go instead of the room.
 
-              Ссылка в чате ведёт сюда, и это единственный адрес, который у
-              студента есть: без этой строки он через неделю называет имя,
-              заводит ещё одну строку участника, будит ядро и оказывается один
-              в живой тетради, где ничто не говорит, что разбор давно
-              опубликован.
+              The link in the chat leads here, and it is the only address the
+              student has: without this line, a week later they give a name,
+              create yet another participant row, wake the kernel and end up
+              alone in a live notebook where nothing says that the review was
+              published long ago.
 
-              Адрес — через `publicationAddress`: страницы живут по имени,
-              которое дали классу, а `/p/<id>` — запасной вход для тех, у кого
-              имени нет.
+              The address goes through `publicationAddress`: pages live under
+              the name given to the class, and `/p/<id>` is the fallback entry
+              for those without a name.
             -->
             <p> {tr('room.ui.845')} <a
                 class="font-semibold text-accent-text hover:underline"
@@ -540,13 +550,14 @@
         > {tr('room.ui.848')} </label>
         <!-- A ruled box on the page's own ground, not a filled surface: on this
              screen the field is the only thing the student has to fill in.
-             Через `.field`, а не своей рамкой: фокусный язык на продукт один —
-             акцентная рамка и кольцо 4px вместо системного контура, — и это
-             первое поле, которое видит каждый студент. Своим набором классов
-             оно давало рамку И глобальный `:focus-visible` outline разом, то
-             есть выглядело иначе, чем все остальные поля Colloq. Размеры и
-             грунт переопределены утилитами: `.field` лежит в слое компонентов,
-             утилиты — выше. -->
+             Through `.field`, not a border of its own: the product has one
+             focus language — an accent border and a 4px ring instead of the
+             system outline — and this is the first field every student sees.
+             With its own set of classes it got the border AND the global
+             `:focus-visible` outline at once, that is, it looked different from
+             every other Colloq field. Size and ground are overridden by
+             utilities: `.field` lives in the components layer, utilities above
+             it. -->
         <input
           id="join-name"
           bind:this={nameInput}
@@ -561,9 +572,9 @@
         {#if error}
           <p class="text-ui text-danger" role="alert">{error}</p>
         {:else if retrying}
-          <!-- Спокойной строкой, не красной, и на том же месте, где стоял бы
-               отказ: человек ничего не сделал неправильно, а знать, чего он
-               ждёт, всё равно должен. -->
+          <!-- A calm line, not a red one, and in the same place a refusal would
+               stand: the person did nothing wrong, but they still need to know
+               what they are waiting for. -->
           <p class="text-ui text-muted" role="status">{tr(retryNotice)}</p>
         {/if}
       </div>
@@ -604,11 +615,11 @@
             </span>
             <div class="flex min-w-[11rem] flex-1 flex-col gap-0.5">
               <p class="text-ui-lg font-semibold text-ink">{tr('room.mark.owned', { name: markName(mark) })}</p>
-              <!-- Обещание ровно на то, что делается: ростер читается перед
-                   входом, а не при монтировании, — но сорок меток на класс и
-                   две вкладки, постучавшие в одну секунду, всё ещё могут
-                   сойтись. «Always yours» было обещанием сервера, которого
-                   сервер не даёт. -->
+              <!-- A promise of exactly what is done: the roster is read before
+                   joining, not on mount — but forty marks for a class and two
+                   tabs knocking in the same second can still collide. "Always
+                   yours" was a promise on the server's behalf that the server
+                   does not give. -->
               <p class="text-2xs text-muted"> {tr('room.ui.853')} </p>
             </div>
             <!-- `press` is the house helper for a control that does not route

@@ -3,33 +3,35 @@ import os from 'node:os'
 import path from 'node:path'
 
 /**
- * Что человек видит, когда занятие поднялось, — одним блоком и одной ссылкой.
+ * What a person sees once the class is up: one block and one link.
  *
- * Было: лог сборки ядра, строки сервера с отметками времени, рамка «nobody
- * owns this Colloq yet» посреди них и в самом конце «Panel: …/admin» — адрес,
- * по которому открывался экран входа, а не панель. Браузер открывался туда
- * же, и преподаватель на своём же компьютере первым делом искал токен.
+ * It used to be: the kernel build log, server lines with timestamps, the
+ * "nobody owns this Colloq yet" frame in the middle of them, and at the very
+ * end "Panel: …/admin", an address that opened the sign-in screen, not the
+ * panel. The browser opened there too, and the teacher, on their own
+ * computer, first of all went looking for the token.
  *
- * Теперь ссылка несёт токен установки, как у Jupyter: `/admin/t/<токен>` на
- * свежей установке открывает «стать владельцем» с уже вписанным ключом, а
- * потом просто входит (web/src/admin/entry.ts). Страница сразу стирает ключ из
- * адресной строки — проектор его не покажет. Всё, что пишут сервер и сборка,
- * уходит в журнал; на экран журнал попадает только хвостом и только при сбое.
+ * Now the link carries the setup token, as with Jupyter: `/admin/t/<token>` on
+ * a fresh install opens "become the owner" with the key already filled in, and
+ * afterwards simply signs in (web/src/admin/entry.ts). The page immediately
+ * erases the key from the address bar, so the projector will not show it.
+ * Everything the server and the build write goes to the log; the log reaches
+ * the screen only as a tail and only on a failure.
  */
 
-/** Ссылка входа преподавателя; без токена на диске — просто панель. */
+/** The teacher's sign-in link; with no token on disk, just the panel. */
 export function teacherLink(url: string, dataDir: string): string {
   try {
     const token = fs.readFileSync(path.join(dataDir, 'setup-token'), 'utf8').trim()
-    // Тот же алфавит, что принимает entry.ts: иначе ссылка вела бы на пустую панель.
+    // The same alphabet that entry.ts accepts: otherwise the link would lead to an empty panel.
     if (/^[A-Za-z0-9_-]{1,128}$/.test(token)) return `${url}/admin/t/${token}`
   } catch {
-    /* Токена ещё нет или файл закрыт — войти можно и из панели. */
+    /* No token yet, or the file is closed: one can sign in from the panel too. */
   }
   return `${url}/admin`
 }
 
-/** Путь от домашнего каталога — короче и читается глазами. */
+/** A path from the home directory: shorter and easier to read. */
 export function tilde(file: string, home = os.homedir()): string {
   return home && (file === home || file.startsWith(home + path.sep))
     ? '~' + file.slice(home.length)
@@ -68,8 +70,8 @@ export function renderBanner(banner: Banner, home = os.homedir()): string[] {
 }
 
 /**
- * Последние строки журнала — то, что раньше человек видел «выше» на экране.
- * Коды цвета и возвраты каретки срезаны: docker пишет их и в файл.
+ * The last lines of the log: what a person used to see "above" on the screen.
+ * Colour codes and carriage returns are cut: docker writes them to the file too.
  */
 export function logTail(logFile: string, lines = 25): string[] {
   let text: string

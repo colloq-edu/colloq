@@ -135,13 +135,13 @@ test('a wrong setup token is refused and a right one is not', () => {
   assert.equal(verifySetupToken(null), false)
   assert.equal(verifySetupToken(12345), false)
   /*
-   * Положительная половина, без которой имя теста было неправдой: сломанный
-   * verifySetupToken, возвращающий false всегда, проходил все четыре проверки
-   * выше — а по этому токену идёт первый вход владельца на инстанс и обратная
-   * дорога, когда владелец потерял свою ссылку.
+   * The positive half, without which the test name was untrue: a broken
+   * verifySetupToken that always returns false passed all four checks above,
+   * and this token is how the owner signs into the instance for the first
+   * time, and the way back when the owner has lost their link.
    */
   assert.equal(verifySetupToken(readSetupToken()), true)
-  // Пробелы и перевод строки — часть договора: токен копируют из терминала.
+  // Spaces and a newline are part of the contract: the token is copied from a terminal.
   assert.equal(verifySetupToken(` ${readSetupToken()}\n`), true)
 })
 
@@ -154,9 +154,9 @@ test('a teacher can be renamed without losing their link', () => {
     email: 'M.Somerville@EXAMPLE.edu ',
   })
   assert.equal(fixed?.name, 'Mary Somerville')
-  // Тот же адрес, приведённый к одному виду — как и на заведении.
+  // The same address, normalized to one form, as on creation.
   assert.equal(fixed?.email, 'm.somerville@example.edu')
-  // Смысл правки в том, что ссылка остаётся: иначе это удаление с заводом заново.
+  // The point of the edit is that the link stays: otherwise it is deletion and creation anew.
   assert.equal(linkKeyOf(mary.id), key)
   assert.ok(getTeacherByEmail('m.somerville@example.edu'))
   assert.equal(getTeacherByEmail('somervile@example.edu'), null)
@@ -167,31 +167,32 @@ test('a rename onto somebody else’s address is refused, not merged', () => {
   fresh('Olga', 'olga@example.edu')
 
   assert.equal(updateTeacherIdentity(one.id, { name: 'Sergey', email: 'olga@example.edu' }), null)
-  // Отказ не должен переименовать наполовину.
+  // A refusal must not rename halfway.
   assert.equal(getTeacherByEmail('sergey@example.edu')?.id, one.id)
 })
 
 /* ------------------------------------------------------- the routes themselves */
 
 /**
- * Правила панели живут в маршрутах, а не в хранилище, и проверялись до сих пор
- * только глазами. Опечатка `< 1` вместо `<= 1` в одной строке оставляет
- * инстанс без владельца — добавить в штат станет некому, и обратная дорога
- * только через шелл на сервере.
+ * The panel rules live in the routes, not in the store, and until now they
+ * were checked only by eye. A typo of `< 1` instead of `<= 1` in one line
+ * leaves the instance without an owner: nobody will be able to add staff,
+ * and the only way back is a shell on the server.
  */
 let base = ''
 let server: http.Server
 
 before(async () => {
   /*
-   * Монтируется ПРИЛОЖЕНИЕ, а не его подобие.
+   * The APP is mounted, not a lookalike.
    *
-   * Здесь стояла своя сборка express с комментарием «тот же порядок, что в
-   * index.ts» — и копия порядка расхождений не ловит, она их повторяет:
-   * переставь проверку происхождения относительно роутеров в продукте, и эти
-   * тесты останутся зелёными. Порядок теперь один на всех (server/src/app.ts),
-   * и панельные двери проверяются за тем же, за чем стоят на паре: разбор
-   * json, происхождение записи, продление печенья штата.
+   * There used to be an express assembly of its own here with the comment
+   * "the same order as in index.ts", and a copy of the order does not catch
+   * divergences, it repeats them: move the origin check relative to the
+   * routers in the product, and these tests stay green. The order is now one
+   * for everyone (server/src/app.ts), and the panel doors are checked behind
+   * the same things they stand behind in a class: json parsing, the origin
+   * of the write, the extension of the staff cookie.
    */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -220,7 +221,7 @@ function call(
 test('the last owner cannot be demoted or removed', async () => {
   const owner = oldestOwner()
   assert.ok(owner)
-  assert.equal(countOwners(), 1, 'этот тест имеет смысл только при одном владельце')
+  assert.equal(countOwners(), 1, 'this test only makes sense with a single owner')
   const cookie = mintCookie(owner)
 
   const demoted = await call('PATCH', `/api/admin/teachers/${owner.id}`, {
@@ -230,7 +231,7 @@ test('the last owner cannot be demoted or removed', async () => {
   assert.equal(demoted.status, 409)
   const removed = await call('DELETE', `/api/admin/teachers/${owner.id}`, { cookie })
   assert.equal(removed.status, 409)
-  // И инстанс всё ещё кому-то принадлежит — ради этого всё и затевалось.
+  // And the instance still belongs to someone: that is what all this was for.
   assert.equal(countOwners(), 1)
 })
 
@@ -243,7 +244,7 @@ test('a teacher is refused the owner-only doors, and told which one', async () =
   assert.equal(refused.status, 403)
   const body = (await refused.json()) as { error: string; reason: string }
   assert.equal(body.reason, 'forbidden')
-  // Отказ называет то, что отказано: «only an owner can …» про список штата.
+  // The refusal names what is refused: "only an owner can …" about the staff list.
   assert.match(body.error, /список преподавателей/)
   assert.equal(getTeacherByEmail('someone.routes@example.edu'), null)
 })
@@ -261,7 +262,7 @@ test('a write from somebody else’s page is refused before it is read', async (
   assert.equal(foreign.status, 403)
   assert.equal(getTeacherByEmail('mallory.routes@example.edu'), null)
 
-  // Со своего происхождения тот же запрос проходит — иначе проверка запрещает всё.
+  // From its own origin the same request goes through, otherwise the check forbids everything.
   const own = await call('POST', '/api/admin/teachers', {
     cookie,
     origin: base,
@@ -272,10 +273,11 @@ test('a write from somebody else’s page is refused before it is read', async (
 
 test('the dev server on its own port is not somebody else', async () => {
   /*
-   * `npm run dev` отдаёт страницу с :5173, а прокси переписывает Host на адрес
-   * сервера — Origin и Host расходятся всегда, и панель отвечала 403 на каждую
-   * запись, включая вход. Для браузера это один сайт (SameSite не смотрит на
-   * порт), так что уступки здесь нет.
+   * `npm run dev` serves the page from :5173, and the proxy rewrites Host to
+   * the server's address: Origin and Host always differ, and the panel
+   * answered 403 to every write, including sign-in. For the browser it is one
+   * site (SameSite does not look at the port), so there is no concession
+   * here.
    */
   const owner = oldestOwner()
   assert.ok(owner)
@@ -289,11 +291,12 @@ test('the dev server on its own port is not somebody else', async () => {
 
 test('the share tunnel is our own address, though it arrives as 127.0.0.1', async () => {
   /*
-   * `colloq start --share`: cloudflared приходит с Host 127.0.0.1:<порт>
-   * (scripts/host.sh подменяет его), а страница шлёт Origin адреса туннеля.
-   * До починки каждый POST оттуда получал «другой адрес сервера», и ссылка
-   * входа с токеном на публичном адресе не входила. Свой адрес — тот, который
-   * сервер сам раздаёт как публичный (config.publicUrl).
+   * `colloq start --share`: cloudflared arrives with Host 127.0.0.1:<port>
+   * (scripts/host.sh substitutes it), while the page sends the Origin of the
+   * tunnel address. Before the fix every POST from there got "a different
+   * server address", and a sign-in link with a token on the public address
+   * did not sign in. Our own address is the one the server itself hands out
+   * as public (config.publicUrl).
    */
   const owner = oldestOwner()
   assert.ok(owner)
@@ -308,7 +311,7 @@ test('the share tunnel is our own address, though it arrives as 127.0.0.1', asyn
       body: { name: 'Tunnel', email: 'tunnel.routes@example.edu' },
     })
     assert.equal(tunnel.status, 201)
-    // Другой туннель — уже чужой сайт.
+    // Another tunnel is already a foreign site.
     const other = await call('POST', '/api/admin/teachers', {
       cookie,
       origin: 'https://other.trycloudflare.com',
@@ -321,7 +324,7 @@ test('the share tunnel is our own address, though it arrives as 127.0.0.1', asyn
     if (saved.url === undefined) delete process.env.COLLOQ_LOCAL_URL
     else process.env.COLLOQ_LOCAL_URL = saved.url
   }
-  // Без туннеля адрес *.trycloudflare.com снова чужой.
+  // Without a tunnel an address at *.trycloudflare.com is foreign again.
   const after = await call('POST', '/api/admin/teachers', {
     cookie,
     origin: 'https://plug-catalog.trycloudflare.com',
@@ -332,10 +335,11 @@ test('the share tunnel is our own address, though it arrives as 127.0.0.1', asyn
 
 test('the number of files on a card follows the folder', async () => {
   /*
-   * Число на карточке считается с кешем — иначе список обходил дерево каждой
-   * комнаты на каждую строку, при каждой смене вкладки и раз в двадцать
-   * секунд, синхронно и в том же цикле событий, что обслуживает живые комнаты.
-   * Цена кеша — ровно одна: он обязан замечать изменение папки.
+   * The number on the card is computed with a cache, otherwise the list
+   * walked every room's tree for every row, on every tab switch and every
+   * twenty seconds, synchronously and in the same event loop that serves the
+   * live rooms. The cache has exactly one price: it must notice a change in
+   * the folder.
    */
   const owner = oldestOwner()
   assert.ok(owner)
@@ -351,15 +355,15 @@ test('the number of files on a card follows the folder', async () => {
 
   assert.equal(await shown(), 0)
   fs.writeFileSync(path.join(sessionDir(room), 'data.csv'), 'a,b\n')
-  assert.equal(await shown(), 1, 'карточка показывает вчерашнее число файлов')
+  assert.equal(await shown(), 1, 'the card shows an outdated number of files')
 })
 
-test('карточка семинара называет адрес страницы, а не её идентификатор', async () => {
+test('the seminar card names the page address, not its id', async () => {
   /*
-   * Заданное имя в адресе — это и есть тот адрес, который дали классу; список
-   * панели был единственным местом, печатавшим вместо него идентификатор.
-   * Печатает и копирует его клиент, но взять `slug` ему неоткуда, пока строка
-   * списка его не несёт.
+   * A name set in the address is exactly the address the class was given;
+   * the panel list was the only place printing the id instead of it. The
+   * client prints and copies it, but it has nowhere to get `slug` from until
+   * the list row carries it.
    */
   const owner = oldestOwner()
   assert.ok(owner)
@@ -379,12 +383,12 @@ test('карточка семинара называет адрес страни
   assert.equal(rows.find((row) => row.id === room)?.publication?.slug, 'week-one')
 })
 
-test('режим при создании — это пресет правил, а присланное ложится поверх', async () => {
+test('the mode at creation is a rules preset, and whatever is sent goes on top', async () => {
   /*
-   * Режим не заводит в комнате второго состояния рядом с правилами: 'lecture' —
-   * это `LECTURE_ROOM`, записанный в ту же строку, и дальше о том, что в комнате
-   * можно, спрашивают одни правила. Два источника правды разъехались бы на
-   * первом переключателе в настройках.
+   * The mode does not create a second state in the room next to the rules:
+   * 'lecture' is `LECTURE_ROOM` written into the same row, and from then on
+   * only the rules are asked what is allowed in the room. Two sources of
+   * truth would drift apart at the first toggle in the settings.
    */
   const owner = oldestOwner()
   assert.ok(owner)
@@ -399,11 +403,11 @@ test('режим при создании — это пресет правил, �
   assert.deepEqual(storedRules(lecture), LECTURE_ROOM)
   assert.equal(isLectureRoom(storedRules(lecture)), true)
 
-  // Нет поля — 'lab', то есть ровно то, чем семинар был всегда.
+  // No field means 'lab', that is, exactly what a seminar has always been.
   const lab = await made({ name: 'Лаборатория' })
   assert.deepEqual(storedRules(lab), OPEN_ROOM)
 
-  // Человек выбрал режим и подкрутил одну строку: подкрученное сильнее пресета.
+  // The person chose a mode and tweaked one row: the tweak beats the preset.
   const mixed = await made({
     name: 'Лекция, где спрашивают',
     mode: 'lecture',
@@ -411,17 +415,18 @@ test('режим при создании — это пресет правил, �
   })
   assert.deepEqual(storedRules(mixed), { ...LECTURE_ROOM, run: 'single', oracle: 'hints' })
 
-  // Третий режим — тем же путём: консилиум записывается своим пресетом.
+  // The third mode goes the same way: a council is written with its own preset.
   const council = await made({ name: 'Консилиум', mode: 'council' })
   assert.deepEqual(storedRules(council), COUNCIL_ROOM)
 })
 
-test('режим работает у всех дверей: импорт тетради с диска знает консилиум', async () => {
+test('the mode works at every door: importing a notebook from disk knows the council', async () => {
   /*
-   * Панель прячет эту дыру: она всегда шлёт полный `rules` рядом с `mode`, и
-   * пресет на сервере не спрашивается. Скрипт или клиент постарше шлёт один
-   * `mode` — и тогда сервер обязан знать все три, иначе консилиум без правил
-   * заводился бы открытой комнатой, где печатают все.
+   * The panel hides this hole: it always sends the full `rules` next to
+   * `mode`, and the preset on the server is not consulted. A script or an
+   * older client sends only `mode`, and then the server must know all three,
+   * otherwise a council without rules would be created as an open room where
+   * everyone types.
    */
   const owner = oldestOwner()
   assert.ok(owner)
@@ -442,9 +447,9 @@ test('режим работает у всех дверей: импорт тет�
 
   assert.deepEqual(storedRules(await imported('council')), COUNCIL_ROOM)
   assert.deepEqual(storedRules(await imported('lecture')), LECTURE_ROOM)
-  // Без режима — лаборатория, как и у общего создания.
+  // Without a mode it is a lab, as with regular creation.
   assert.deepEqual(storedRules(await imported(undefined)), OPEN_ROOM)
-  // Подкрученная строка сильнее пресета и здесь.
+  // A tweaked row beats the preset here too.
   const res = await call('POST', '/api/admin/import/notebook', {
     cookie,
     body: {
@@ -460,13 +465,14 @@ test('режим работает у всех дверей: импорт тет�
   assert.deepEqual(storedRules(id), { ...COUNCIL_ROOM, oracle: 'hints' })
 })
 
-test('панель заканчивает занятие и открывает его обратно', async () => {
+test('the panel ends a class and reopens it', async () => {
   /*
-   * Та же дверь, что кнопка в комнате: преподаватель, закрывший вкладку и
-   * вспомнивший про это в метро, не должен возвращаться в неё ради одного
-   * нажатия. Проверяется вместе с тем, что строка списка отдаёт ВЫБРАННЫЕ
-   * правила: нарисовав в настройках ужесточённые, панель записала бы их обратно
-   * первым же переключателем — и открывать занятие было бы уже не во что.
+   * The same door as the button in the room: a teacher who closed the tab
+   * and remembered about it on the metro should not have to go back into it
+   * for one press. Checked together with the list row returning the CHOSEN
+   * rules: had it drawn the tightened ones in the settings, the panel would
+   * write them back with the very first toggle, and there would be nothing
+   * left to reopen the class into.
    */
   const owner = oldestOwner()
   assert.ok(owner)
@@ -485,16 +491,16 @@ test('панель заканчивает занятие и открывает �
     status: string
     rules: { run: string }
   }
-  assert.equal(typeof row.finishedAt, 'number', 'строка списка не назвала время')
+  assert.equal(typeof row.finishedAt, 'number', 'the list row did not name the time')
   /*
-   * И слово в списке сменилось. Раньше пустая комната и законченное занятие
-   * показывались одним и тем же `ended`, так что звонок в панели ничего не
-   * менял: закончил — а строка говорит то же, что и до.
+   * And the word in the list changed. An empty room and a finished class used
+   * to be shown with the same `ended`, so the bell changed nothing in the
+   * panel: you finished, and the row says the same as before.
    */
-  assert.equal(row.status, 'finished', 'слово в списке не заметило звонка')
-  assert.equal(row.rules.run, 'room', 'в настройках оказалось ужесточение вместо выбранного')
+  assert.equal(row.status, 'finished', 'the word in the list did not notice the bell')
+  assert.equal(row.rules.run, 'room', 'the settings got the tightening instead of the chosen rules')
   assert.equal(isFinished(room), true)
-  assert.equal(getRules(room).run, 'host', 'права в комнате остались прежними')
+  assert.equal(getRules(room).run, 'host', 'the rights in the room stayed the same')
 
   const resumed = await call('PATCH', `/api/admin/seminars/${room}`, {
     cookie,
@@ -504,13 +510,14 @@ test('панель заканчивает занятие и открывает �
   const back = (await resumed.json()) as { finishedAt: number | null; status: string }
   assert.equal(back.finishedAt, null)
   /*
-   * И слово вернулось к тому, что происходит само. В эту комнату не заходил
-   * никто, поэтому `draft` — «ссылку ещё не давали»; заходили бы и ушли, было
-   * бы `idle`. Важно, что «закончено» больше не прилипает к пустой комнате.
+   * And the word went back to what is happening by itself. Nobody entered
+   * this room, so it is `draft`, "the link has not been given yet"; had
+   * people come and left, it would be `idle`. What matters is that
+   * "finished" no longer sticks to an empty room.
    */
   assert.equal(back.status, 'draft')
   assert.equal(isFinished(room), false)
-  // И комната вернулась ровно в ту настройку, из которой её закончили.
+  // And the room came back to exactly the setup it was finished from.
   assert.equal(storedRules(room).run, 'room')
   assert.equal(getRules(room).run, 'room')
 })
@@ -528,18 +535,19 @@ test('a cookie older than its month is nobody', () => {
       .digest('base64url')
     return `${STAFF_COOKIE}=${body}.${sig}`
   }
-  // Max-Age — обещание браузера; сервер стареет печенье сам, иначе снятая
-  // копия живёт вечно.
+  // Max-Age is a promise of the browser; the server ages the cookie itself,
+  // otherwise a copied cookie lives forever.
   assert.equal(staffFromCookieHeader(stale(31 * 24 * 3_600_000)), null)
   assert.equal(staffFromCookieHeader(stale(60_000))?.id, boris.id)
 })
 
 test('a malformed cookie is nobody, not a crash', () => {
   /*
-   * `decodeURIComponent('%')` бросает URIError, а ту же функцию зовёт разбор
-   * роли на рукопожатии сокета — где исключение уходило в uncaughtException и
-   * клало процесс со всеми комнатами. Стоила эта строка одного участника с
-   * ссылкой и одной строчки в консоли браузера.
+   * `decodeURIComponent('%')` throws URIError, and the same function is
+   * called by role parsing on the socket handshake, where the exception went
+   * to uncaughtException and brought down the process with all its rooms.
+   * All it took was one participant with a link and one line in the browser
+   * console.
    */
   for (const bad of ['%', '%E0%A4%A', '%%%', 'a%zz']) {
     assert.equal(staffFromCookieHeader(`${STAFF_COOKIE}=${bad}`), null, bad)
@@ -555,12 +563,12 @@ test('a patch of the oracle settings is refused by shape, not by luck', () => {
   assert.ok('error' in parseOraclePatch({ questionsPerHour: 'many' }))
   assert.ok('error' in parseOraclePatch({ slowModeSeconds: 'поменьше' }))
   assert.ok('error' in parseOraclePatch({ defaultMode: 'shout' }))
-  // Адрес, на который уедет ключ инстанса, обязан быть адресом.
+  // The address the instance key will go to must be an address.
   assert.ok('error' in parseOraclePatch({ baseUrl: 'evil.example' }))
 
   const good = parseOraclePatch({ model: 'gpt-4o-mini', questionsPerHour: 5, baseUrl: '' })
   assert.ok('patch' in good)
   assert.equal(good.patch.model, 'gpt-4o-mini')
-  // Пустая строка — это «перестань переопределять», а не отказ.
+  // An empty string means "stop overriding", not a refusal.
   assert.equal(good.patch.baseUrl, '')
 })

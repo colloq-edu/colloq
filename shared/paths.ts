@@ -1,58 +1,62 @@
 import { tr } from './i18n.js'
 /**
- * Пути внутри папки семинара — одни правила для браузера и для сервера.
+ * Paths inside the seminar folder — one set of rules for the browser and the
+ * server.
  *
- * До сих пор папка была плоской: проверка имени на сервере отвергала всё, где
- * есть разделитель, и этого хватало ровно до того дня, когда в комнате
- * понадобился `src/model.py`. Разделитель разрешён — а значит, всё, что он
- * приносит с собой, надо назвать по именам: `..`, абсолютный путь, пустой
- * сегмент, `.` посередине, глубина, при которой дерево перестаёт помещаться в
- * панель, и длина, при которой файловая система откажет сама.
+ * Until now the folder was flat: the name check on the server rejected
+ * anything with a separator, and that was enough right up to the day a room
+ * needed `src/model.py`. The separator is allowed — which means everything it
+ * brings along has to be called by name: `..`, an absolute path, an empty
+ * segment, `.` in the middle, a depth at which the tree no longer fits in the
+ * panel, and a length at which the file system refuses by itself.
  *
- * Модуль общий, потому что проверка нужна в двух местах и обязана быть одной.
- * Сервер отказывает — это граница. Браузер отказывает раньше, чтобы человек
- * увидел «так нельзя» в поле ввода, а не после круга по сети. Разойдясь, эти
- * две проверки дают худший из возможных видов ошибки: панель уверена, что имя
- * годится, сервер молча его не принимает.
+ * The module is shared because the check is needed in two places and must be
+ * one. The server refuses — that is the boundary. The browser refuses
+ * earlier, so that a person sees "you can't do that" in the input field
+ * rather than after a round trip over the network. Once apart, these two
+ * checks give the worst possible kind of error: the panel is sure the name is
+ * fine, the server silently does not accept it.
  *
- * Ни одного имени не чинит и не переименовывает: имя либо годится, либо
- * отвергается целиком. Тихо поправленное имя — это файл, который человек потом
- * не найдёт там, где положил.
+ * It does not fix or rename a single name: a name is either fine or rejected
+ * whole. A quietly corrected name is a file the person later will not find
+ * where they put it.
  *
- * Разделители — другое дело, и это единственное исключение, названное вслух:
- * `a//b` и `data/` приводятся к канонической форме (`normalizePath`). Ни один
- * сегмент от этого не меняется — меняется только запись пути, а по протоколу и
- * в ключах он ходит в одном виде. Разрешать двум записям одного пути гулять по
- * коду хуже: `parentOf('data/')` — это `data`, и дерево получило бы папку
- * внутри самой себя.
+ * Separators are another matter, and this is the only exception, named out
+ * loud: `a//b` and `data/` are brought to the canonical form
+ * (`normalizePath`). No segment changes because of it — only the spelling of
+ * the path changes, and in the protocol and in keys it travels in one form.
+ * Letting two spellings of the same path roam the code is worse:
+ * `parentOf('data/')` is `data`, and the tree would get a folder inside
+ * itself.
  */
 
-/** Сегментов в глубину. Восемь — это `a/b/c/d/e/f/g/файл`, и дерево ещё читаемо. */
+/** Segments deep. Eight is `a/b/c/d/e/f/g/file`, and the tree is still readable. */
 export const MAX_DEPTH = 8
-/** Длина одного имени. Дальше начинают отказывать сами файловые системы. */
+/** Length of one name. Beyond it, file systems themselves start to refuse. */
 export const MAX_SEGMENT = 120
 export const MAX_SEGMENT_BYTES = 255
 const pathEncoder = new TextEncoder()
 export const segmentBytes = (name: string): number => pathEncoder.encode(name).length
-/** Длина всего пути. С запасом под 255 у ext4 и 1024 у macOS вместе с корнем. */
+/** Length of the whole path. Headroom under ext4's 255 and macOS's 1024, root included. */
 export const MAX_PATH = 400
 
 /*
- * Управляющий символ в имени законен в POSIX и вреден везде остальном: перевод
- * строки разрывает строку списка надвое, возврат каретки прячет хвост имени в
- * терминале, и ни то ни другое не переживает `pd.read_csv`. Тот же довод, что
- * и у имён участников.
+ * A control character in a name is legal in POSIX and harmful everywhere
+ * else: a line feed splits a list line in two, a carriage return hides the
+ * tail of the name in the terminal, and neither survives `pd.read_csv`. The
+ * same argument as for participants' names.
  */
-// eslint-disable-next-line no-control-regex -- управляющие символы и есть предмет
+// eslint-disable-next-line no-control-regex -- control characters are the very subject here
 const CONTROL = /[\u0000-\u001f\u007f]/
 
 /**
- * Годится ли одно имя — файла или папки.
+ * Whether one name — of a file or a folder — will do.
  *
- * Точка в начале отвергается, и это не про безопасность, а про честность:
- * скрытые файлы не показываются в дереве, и принять `.env`, а потом никогда
- * его не показать — хуже, чем сказать «нет» сразу. Тем же правилом из списка
- * выпадают `.ipynb_checkpoints` и `.git`, которые заводит не человек.
+ * A leading dot is rejected, and that is not about security but about
+ * honesty: hidden files are not shown in the tree, and accepting `.env` and
+ * then never showing it is worse than saying "no" right away. The same rule
+ * drops `.ipynb_checkpoints` and `.git`, which no person creates, from the
+ * list.
  */
 export function safeSegment(name: string): boolean {
   if (!name || name === '.' || name === '..') return false
@@ -60,38 +64,40 @@ export function safeSegment(name: string): boolean {
   if (name.startsWith('.')) return false
   if (name.includes('/') || name.includes('\\')) return false
   if (CONTROL.test(name)) return false
-  // Пробел на конце — имя, которое невозможно набрать и трудно заметить.
+  // A trailing space — a name that is impossible to type and hard to notice.
   if (name !== name.trim()) return false
   return true
 }
 
 /**
- * Привести путь к каноническому виду или отвергнуть его.
+ * Bring a path to canonical form or reject it.
  *
- * Возвращает путь без ведущего и хвостового слеша, с одинарными разделителями
- * — форма, в которой пути ходят по протоколу и лежат в ключах. Корень папки
- * семинара — пустая строка; она допустима как РОДИТЕЛЬ (создать файл в корне),
- * но не как цель, поэтому `normalizePath('')` возвращает пустую строку, а не
- * null, и звать её надо там, где корень имеет смысл.
+ * Returns the path without a leading or trailing slash, with single
+ * separators — the form in which paths travel through the protocol and sit in
+ * keys. The root of the seminar folder is the empty string; it is allowed as
+ * a PARENT (create a file in the root) but not as a target, which is why
+ * `normalizePath('')` returns an empty string rather than null, and it should
+ * be called where the root makes sense.
  *
- * Что канонизируется, названо здесь целиком, чтобы «маленькое исправление»
- * имени не сослалось однажды на эту строчку: ПУСТЫЕ СЕГМЕНТЫ. `a//b` — это
- * `a/b`, `data/` — это `data`. Больше ничего: ни один сегмент не правится, не
- * обрезается и не переименовывается — не подошёл, и весь путь отвергнут
- * (`safeSegment`). Разница между этими двумя вещами и есть всё правило модуля:
- * запись пути ничего не говорит о том, где окажется файл, а имя говорит.
+ * What gets canonicalized is named here in full, so that a "small fix" to a
+ * name never cites this line one day: EMPTY SEGMENTS. `a//b` is `a/b`,
+ * `data/` is `data`. Nothing else: no segment is corrected, trimmed or
+ * renamed — if one does not fit, the whole path is rejected (`safeSegment`).
+ * The difference between these two things is the whole rule of the module:
+ * the spelling of a path says nothing about where the file will end up, and
+ * a name does.
  */
 export function normalizePath(raw: string): string | null {
   if (typeof raw !== 'string') return null
   if (raw.length > MAX_PATH) return null
   /*
-   * Абсолютный путь отвергается, а не срезается до относительного.
+   * An absolute path is rejected, not trimmed down to a relative one.
    *
-   * Срезать было бы соблазнительно — `/etc/passwd` превратился бы в папку
-   * `etc` внутри семинара и никуда бы не убежал, — но это ровно то тихое
-   * исправление имени, которого этот модуль не делает нигде: человек, набравший
-   * `/data/train.csv`, имел в виду файл на машине, а получил бы новую папку и
-   * пустоту в ней.
+   * Trimming would be tempting — `/etc/passwd` would turn into an `etc`
+   * folder inside the seminar and escape nowhere — but that is exactly the
+   * quiet name correction this module does nowhere: a person who typed
+   * `/data/train.csv` meant a file on the machine, and would have got a new
+   * folder with nothing in it.
    */
   if (raw.startsWith('/') || raw.startsWith('\\')) return null
   const parts = raw.split('/').filter((part) => part.length > 0)
@@ -101,45 +107,45 @@ export function normalizePath(raw: string): string | null {
   return parts.join('/')
 }
 
-/** Путь папки, в которой лежит `path`. Корень — пустая строка. */
+/** The path of the folder `path` lies in. The root is the empty string. */
 export function parentOf(path: string): string {
   const at = path.lastIndexOf('/')
   return at === -1 ? '' : path.slice(0, at)
 }
 
-/** Имя без папок. */
+/** The name without folders. */
 export function baseOf(path: string): string {
   const at = path.lastIndexOf('/')
   return at === -1 ? path : path.slice(at + 1)
 }
 
-/** Расширение в нижнем регистре, без точки. У файла без точки — пустая строка. */
+/** The extension in lower case, without the dot. A file without a dot gets the empty string. */
 export function extOf(path: string): string {
   const base = baseOf(path)
   const at = base.lastIndexOf('.')
   return at <= 0 ? '' : base.slice(at + 1).toLowerCase()
 }
 
-/** Лежит ли `path` внутри папки `dir` (или это она сама). */
+/** Whether `path` lies inside the folder `dir` (or is that folder itself). */
 export function isInside(path: string, dir: string): boolean {
   if (dir === '') return true
   return path === dir || path.startsWith(dir + '/')
 }
 
 /**
- * Соединить папку и имя. Ни то ни другое здесь не проверяется — результат
- * всё равно проходит `normalizePath` там, где им пользуются.
+ * Join a folder and a name. Neither is checked here — the result goes through
+ * `normalizePath` anyway wherever it is used.
  */
 export function joinPath(dir: string, name: string): string {
   return dir ? `${dir}/${name}` : name
 }
 
 /**
- * Почему имя не годится — фразой, с которой человек может что-то сделать.
+ * Why a name will not do — as a phrase a person can act on.
  *
- * `safeSegment` отвечает «да» или «нет», и этого хватает серверу и не хватает
- * никому больше: «недопустимое имя» посреди пары не говорит ни какое, ни чем
- * оно плохо.
+ * `safeSegment` answers "yes" or "no", and that is enough for the server and
+ * for nobody else: "invalid name" in the middle of a class says neither which
+ * name nor what is wrong with it.
  */
 export function whySegmentRefused(name: string): string {
   const shown = name.slice(0, 60) || tr("server.empty.9a3a4f")
@@ -159,18 +165,18 @@ export function whySegmentRefused(name: string): string {
   return tr("server.cannotBeUsedAsAName.67c58f", { p0: shown })
 }
 
-/* ------------------------------------------------------------------- вид */
+/* ------------------------------------------------------------------ kind */
 
 /**
- * Чем файл окажется на экране.
+ * What a file will turn out to be on screen.
  *
- * `text` — открывается в редакторе. `notebook` — тетрадь, и её редактор не
- * трогает: у комнаты одна тетрадь, и открывать вторую в виде JSON значит
- * предлагать её править руками. `pdf` и `image` — смотрят. `binary` — только
- * скачать.
+ * `text` opens in the editor. `notebook` is a notebook, and the editor does
+ * not touch it: the room has one notebook, and opening a second one as JSON
+ * would mean inviting people to edit it by hand. `pdf` and `image` are for
+ * viewing. `binary` is download-only.
  *
- * Список расширений, а не угадывание по содержимому: угадывание ошибается
- * ровно на тех файлах, которые студент только что создал и ещё не наполнил.
+ * A list of extensions, not guessing by content: guessing is wrong exactly on
+ * the files a student has just created and not yet filled.
  */
 export type FileKind = 'text' | 'notebook' | 'pdf' | 'image' | 'binary'
 
@@ -229,7 +235,7 @@ const TEXT_EXT = new Set([
 
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'])
 
-/** Файлы без расширения, которые всё равно текст. */
+/** Files without an extension that are text all the same. */
 const TEXT_NAMES = new Set(['makefile', 'dockerfile', 'readme', 'license', 'requirements'])
 
 export function kindOf(path: string): FileKind {
@@ -243,12 +249,12 @@ export function kindOf(path: string): FileKind {
 }
 
 /**
- * Чем файл запускается — или ничем.
+ * What runs the file — or nothing.
  *
- * Ровно два способа, и оба уже есть в комнате: `python` и оболочка контейнера.
- * Ничего третьего сюда добавлять не надо, пока в образе не появится третий
- * язык, — кнопка «Запустить», которая зовёт несуществующий интерпретатор, ведёт
- * себя как поломка.
+ * Exactly two ways, and both are already in the room: `python` and the
+ * container's shell. Nothing third should be added here until a third
+ * language appears in the image — a "Run" button that calls a nonexistent
+ * interpreter behaves like a breakage.
  */
 export function runnerFor(path: string): 'python' | 'shell' | null {
   const ext = extOf(path)
@@ -258,10 +264,12 @@ export function runnerFor(path: string): 'python' | 'shell' | null {
 }
 
 /**
- * Язык для подсветки. Имя из набора CodeMirror, который грузит редактор.
+ * The language for highlighting. A name from the CodeMirror set the editor
+ * loads.
  *
- * `null` — подсветки нет, и это нормально: .csv и .log читаются как текст, а
- * грамматика, натянутая не на тот язык, красит хуже, чем не красит вовсе.
+ * `null` means no highlighting, and that is fine: .csv and .log read as text,
+ * and a grammar stretched over the wrong language colors worse than no color
+ * at all.
  */
 export type Highlight = 'python' | 'markdown' | 'json' | 'yaml' | 'javascript' | 'css' | 'html'
 

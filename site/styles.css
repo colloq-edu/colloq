@@ -1,24 +1,26 @@
 /*
- * Лендинг Colloq. Палитра и шкала взяты один в один из самого продукта
- * (web/src/index.css и web/tailwind.config.js), чтобы страница и приложение
- * не разъезжались: сайт — это тот же печатный объект, что и семинар внутри.
+ * The Colloq landing page. The palette and scale are taken one to one from
+ * the product itself (web/src/index.css and web/tailwind.config.js), so that
+ * the page and the app do not drift apart: the site is the same printed
+ * object as the seminar inside.
  */
 
 /*
  * ------------------------------------------------------------ HSE Sans ---
  *
- * Корпоративный шрифт университета, подмножеством: кириллица, латиница,
- * типографские знаки. Четыре веса — те, что страница действительно набирает;
- * Thin и Italic не берутся, потому что на ней нет ни одного места, где они бы
- * включились, а каждый лишний файл это ещё один запрос.
+ * The university's corporate typeface, as a subset: Cyrillic, Latin,
+ * typographic signs. Four weights, the ones the page actually sets; Thin
+ * and Italic are not taken, because there is not a single place on the page
+ * where they would kick in, and every extra file is one more request.
  *
- * swap, а не block: текст обязан быть виден с первого кадра. Подмена
- * начертания на 15-килобайтном файле происходит быстрее, чем читатель
- * добирается до конца первой строки, и это дешевле, чем пустой экран.
+ * swap, not block: text must be visible from the first frame. Swapping the
+ * face on a 15-kilobyte file happens faster than the reader gets to the end
+ * of the first line, and that is cheaper than an empty screen.
  *
- * 500 в стеке нет намеренно: у HSE Sans нет Medium, и правило подбора CSS
- * само возьмёт ближайший — SemiBold. Объявлять 500 файлом от 600 значило бы
- * соврать браузеру о том, что у нас есть.
+ * There is no 500 in the stack on purpose: HSE Sans has no Medium, and the
+ * CSS matching rule will take the nearest one, SemiBold, by itself.
+ * Declaring 500 with the 600 file would mean lying to the browser about
+ * what we have.
  */
 @font-face {
   font-family: 'HSE Sans';
@@ -55,22 +57,22 @@
 /*
  * -------------------------------------------------------- JetBrains Mono ---
  *
- * Моноширинный — метки разделов, команды, терминал — тоже приезжает со
- * страницей, а не с fonts.googleapis.com.
+ * The monospace face (section labels, commands, the terminal) also arrives
+ * with the page, not from fonts.googleapis.com.
  *
- * Это была единственная внешняя зависимость лендинга, и держалась она на
- * доводе «шрифт не наш, чтобы его сабсетить», который просто неверен:
- * JetBrains Mono лежит под SIL OFL 1.1 (текст рядом, fonts/JetBrainsMono-OFL.txt),
- * и хостить и резать его можно. А страницу открывают ровно из тех сетей, где
- * Google блокируется: у университетского Wi-Fi без выхода наружу и из России,
- * где внешние CDN уже перекрывали. Там терминал в герое рисовался Menlo, и
- * ширины букв в нём другие — «make up» переставал попадать в свою строку.
+ * It was the landing page's only external dependency, and it rested on the
+ * argument "the font is not ours to subset", which is simply wrong:
+ * JetBrains Mono is under SIL OFL 1.1 (the text is next to it,
+ * fonts/JetBrainsMono-OFL.txt), and it may be hosted and cut. And the page
+ * is opened from exactly the networks where Google is blocked: university
+ * Wi-Fi without outside access, and Russia, where external CDNs have
+ * already been cut off. There the hero terminal was drawn in Menlo, whose
+ * letter widths differ: "make up" stopped fitting on its line.
  *
- * Один файл на подмножество, вариативный по начертанию: 400 и 500 берутся из
- * одного и того же woff2, потому что у него ось веса. Латиница
- * предзагружается разметкой — на ней набраны все команды; кириллица и
- * остальное подтянутся по unicode-range, только если такие буквы правда
- * рисуют.
+ * One file per subset, variable in weight: 400 and 500 come from the same
+ * woff2, because it has a weight axis. Latin is preloaded by the markup
+ * (all the commands are set in it); Cyrillic and the rest are pulled in by
+ * unicode-range only if such letters are actually drawn.
  */
 @font-face {
   font-family: 'JetBrains Mono';
@@ -114,37 +116,41 @@
 }
 
 /*
- * Подменный моноширинный — тот, что стоит, пока настоящий в пути.
+ * The fallback monospace: the one in place while the real one is on its way.
  *
- * `font-display: swap` меняет шрифт на лету, и без этой пары строки
- * подпрыгивали: у JetBrains Mono строка занимает 1.32em и знак 0.6em, у Menlo —
- * 1.164em и 0.602em, у Consolas — 0.55em. Правки метрик приводят системный
- * шрифт к нашему: строка встаёт на то же место, колонка команды — на ту же
- * ширину, и подмена перестаёт быть видимой. Те же цифры стоят в приложении
- * (web/index.html): шрифт и подмена у страницы и у тетради одни.
+ * `font-display: swap` changes the font on the fly, and without this pair
+ * the lines jumped: in JetBrains Mono a line takes 1.32em and a glyph 0.6em,
+ * in Menlo 1.164em and 0.602em, in Consolas 0.55em. The metric overrides
+ * bring the system font to ours: the line lands in the same place, the
+ * command column at the same width, and the swap stops being visible. The
+ * same numbers are in the app (web/index.html): the page and the notebook
+ * share the font and the fallback.
  *
- * Семейств два, и имена у них РАЗНЫЕ. Правка ширины у Consolas своя, одной
- * цифрой оба не накрыть, — а два правила под одним именем держались бы на том,
- * чего спецификация не обещает: что делает браузер, когда у выбранного лица не
- * нашлось ни одного local(), — переберёт ли остальные лица той же семьи или
- * бросит семью целиком — его дело. Проиграй эта лотерея на Windows, и подмены
- * там не было бы вовсе — ровно на той машине, ради которой писано первое
- * правило.
+ * There are two families, and their names are DIFFERENT. Consolas has its
+ * own width override, one number cannot cover both, and two rules under one
+ * name would rely on something the specification does not promise: what the
+ * browser does when the chosen face has no matching local() (whether it
+ * tries the other faces of the same family or drops the family altogether)
+ * is up to it. Should this lottery be lost on Windows, there would be no
+ * fallback there at all, exactly on the machine the first rule was written
+ * for.
  *
- * Разные имена — обычный перебор семейств, который обещан: Consolas не нашёлся
- * (мак, Linux) — берём следующее; не нашлось ни одного — остаётся ровно то,
- * что было до этой правки. Оба имени стоят подряд в --mono ниже, между
- * настоящим шрифтом и системным хвостом; порядок между ними не решает ничего —
- * обе правки приводят свой шрифт к одним и тем же метрикам.
+ * Different names mean ordinary family fallback, which is promised: Consolas
+ * not found (Mac, Linux), take the next one; none found, and what remains is
+ * exactly what there was before this change. Both names stand one after the
+ * other in --mono below, between the real font and the system tail; the
+ * order between them decides nothing: both overrides bring their font to the
+ * same metrics.
  *
- * `local()` берёт ЛИЦО, а не семью, и по имени лица — полному или
- * постскриптовому. Замерено в Chrome на маке (ширина строки из 80 «M»):
- * 'Menlo' не находится вообще — у семьи Menlo нет лица с таким именем, есть
- * «Menlo Regular» и «Menlo-Regular». Пока здесь стояло одно 'Menlo', на маке
- * подмены не было вовсе: семья оставалась пустой, стек проваливался в
- * неисправленный ui-monospace, и строка терминала в герое на 16px теряла 2px
- * против настоящего шрифта. Поэтому у каждого шрифта перечислены все
- * написания: лишнее local() ничего не стоит, ненайденное пропускается.
+ * `local()` takes a FACE, not a family, and by the face name, full or
+ * PostScript. Measured in Chrome on a Mac (width of a line of 80 "M"):
+ * 'Menlo' is not found at all: the Menlo family has no face with that name,
+ * there are "Menlo Regular" and "Menlo-Regular". While there was only
+ * 'Menlo' here, there was no fallback on the Mac at all: the family stayed
+ * empty, the stack fell through to the uncorrected ui-monospace, and the
+ * terminal line in the hero at 16px lost 2px against the real font. That is
+ * why every spelling is listed for each font: an extra local() costs
+ * nothing, and one that is not found is skipped.
  */
 @font-face {
   font-family: 'JetBrains Mono Fallback Consolas';
@@ -168,13 +174,13 @@
 }
 
 :root {
-  /* Синь ВШЭ — земля героя и подвала. Одинакова в обеих темах продукта. */
+  /* HSE blue: the ground of the hero and the footer. The same in both product themes. */
   --brand: #0f2d69;
   --brand-2: #374b9b;
-  /* Единственный яркий цвет на всю страницу: голубая метка приводки. */
+  /* The only bright colour on the whole page: the light-blue registration mark. */
   --accent: #0fa0d7;
   --accent-soft: #4fc3ee;
-  /* Та же метка как текст на белом: яркая не проходит по контрасту. */
+  /* The same mark as text on white: the bright one fails the contrast check. */
   --accent-text: #0a6e96;
 
   --canvas: #ffffff;
@@ -185,7 +191,7 @@
   --muted: #5d6b8a;
   --faint: #9ba6be;
 
-  /* Тёмная земля терминала — ровно та, на которой работает ночная тема. */
+  /* The dark terminal ground, exactly the one the night theme works on. */
   --term-bg: #060c1c;
   --term-line: #16244b;
   --term-ink: #9ba6be;
@@ -193,47 +199,50 @@
   --term-ok: #3ec9a7;
 
   /*
-   * HSE Sans, и страница привозит его с собой.
+   * HSE Sans, and the page brings it along.
    *
-   * Раньше он просто стоял первым в стеке — и это работало ровно у тех, у кого
-   * шрифт установлен, то есть у автора и у части ФКН. Все остальные видели
-   * Inter, в котором те же слова шире на десятую, и заголовок, подогнанный под
-   * метрики HSE Sans, ложился на три строки вместо двух. Хуже всего, что с
-   * машины, где шрифт стоит, эту поломку нельзя увидеть в принципе.
+   * It used to simply stand first in the stack, and that worked exactly for
+   * those who have the font installed, that is, the author and part of the
+   * Faculty of Computer Science. Everyone else saw Inter, where the same
+   * words are a tenth wider, and the heading fitted to the metrics of HSE
+   * Sans fell onto three lines instead of two. Worst of all, this breakage
+   * cannot in principle be seen from a machine where the font is installed.
    *
-   * Теперь четыре начертания лежат в /fonts и грузятся страницей — 72 КБ на
-   * все, потому что подмножество оставляет кириллицу, латиницу и типографику,
-   * а больше здесь ничего и не набрано. Inter остался в стеке подстраховкой на
-   * случай, если файлы не доедут.
+   * Now the four faces live in /fonts and are loaded by the page, 72 KB for
+   * all of them, because the subset keeps Cyrillic, Latin and typography,
+   * and nothing else is set here anyway. Inter stayed in the stack as a
+   * safety net in case the files do not arrive.
    */
   --sans: 'HSE Sans', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --mono:
     'JetBrains Mono', 'JetBrains Mono Fallback Consolas', 'JetBrains Mono Fallback Menlo',
     ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /* Поле страницы: 96px на макете, ужимается до 20px на телефоне. */
+  /* The page margin: 96px in the mockup, shrinks to 20px on a phone. */
   --gutter: clamp(20px, 6.7vw, 96px);
 
   /*
-   * Движение. До этой правки на всю страницу приходился один transition и ни
-   * одной кривой. Обе кривые — усиленные варианты стандартных: встроенные
-   * ease-* слишком вялые, на них движение читается как задержка, а не как
-   * ответ. ease-in не заведён намеренно и не должен появиться: он тормозит в
-   * первый момент — ровно тогда, когда за движением следят внимательнее всего.
+   * Motion. Before this change the whole page had one transition and not a
+   * single curve. Both curves are strengthened versions of the standard
+   * ones: the built-in ease-* are too sluggish, and motion on them reads as
+   * a delay rather than a response. ease-in is deliberately not defined and
+   * must not appear: it drags at the first moment, exactly when motion is
+   * watched most closely.
    */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 
   /*
-   * Длительности одним словарём, чтобы страница говорила в одном темпе.
-   * Всё, что отвечает руке, живёт под 300ms; машинный набор считается
-   * посимвольно и в бюджет интерфейса не входит — это объяснение, не отклик.
+   * Durations in one dictionary, so that the page speaks at one tempo.
+   * Everything that answers the hand lives under 300ms; machine typing is
+   * counted per character and is outside the interface budget: it is an
+   * explanation, not a response.
    */
-  --t-color: 120ms; /* смена цвета: столько уже живут ссылки шапки */
-  --t-press: 140ms; /* отклик на нажатие: рука не должна ждать ответа */
-  --t-swap: 200ms; /* подмена текста в переключателе кресел */
-  --t-out: 260ms; /* появление вывода ячейки: это событие, а не перекраска */
-  --t-type: 18ms; /* один символ машинного набора в терминале */
+  --t-color: 120ms; /* colour change: what the header links already use */
+  --t-press: 140ms; /* response to a press: the hand must not wait for an answer */
+  --t-swap: 200ms; /* text swap in the seat switcher */
+  --t-out: 260ms; /* a cell output appearing: an event, not a recolouring */
+  --t-type: 18ms; /* one character of machine typing in the terminal */
 }
 
 *,
@@ -243,10 +252,10 @@
 }
 
 /*
- * Правило браузера `[hidden] { display: none }` живёт в его таблице и
- * проигрывает по весу любому классу с display. На двери прячутся именно такие
- * элементы — сетка меток (grid) и карточка (flex), — и без этой строки они
- * оставались бы на экране обоими состояниями сразу.
+ * The browser rule `[hidden] { display: none }` lives in its stylesheet and
+ * loses on specificity to any class with display. Exactly such elements are
+ * hidden on the door, the label grid (grid) and the card (flex), and without
+ * this line they would stay on screen in both states at once.
  */
 [hidden] {
   display: none !important;
@@ -257,11 +266,12 @@ html {
 }
 
 /*
- * Три якоря в шапке до этого телепортировали страницу: щелчок мгновенно
- * подменял весь экран, и связь между «где я был» и «куда попал» терялась.
- * scroll-margin здесь не нужен — липкой шапки на странице нет, а у всех трёх
- * целей уже есть padding-top до 112px, то есть воздуха над заголовком вдвое
- * больше любого разумного margin.
+ * The three anchors in the header used to teleport the page: a click
+ * instantly replaced the whole screen, and the link between "where I was"
+ * and "where I landed" was lost. scroll-margin is not needed here: there is
+ * no sticky header on the page, and all three targets already have
+ * padding-top of up to 112px, that is, twice as much air above the heading
+ * as any reasonable margin.
  */
 @media (prefers-reduced-motion: no-preference) {
   html {
@@ -298,7 +308,7 @@ ul {
   list-style: none;
 }
 
-/* ------------------------------------------------------------- голоса */
+/* ------------------------------------------------------------- voices */
 
 .label {
   font-family: var(--mono);
@@ -335,9 +345,10 @@ ul {
 }
 
 /*
- * Скрыто от глаза, но не от клавиатуры и не от скринридера: legend и сами
- * радиокнопки переключателя обязаны остаться в дереве доступности.
- * display:none отобрал бы у переключателя фокус и стрелки.
+ * Hidden from the eye, but not from the keyboard or the screen reader: the
+ * legend and the switch's radio buttons themselves must stay in the
+ * accessibility tree. display:none would take focus and arrows away from
+ * the switch.
  */
 .vh {
   position: absolute;
@@ -351,7 +362,7 @@ ul {
   border: 0;
 }
 
-/* ------------------------------------------------------------- секции */
+/* ----------------------------------------------------------- sections */
 
 .section {
   padding: clamp(64px, 7.8vw, 112px) var(--gutter);
@@ -372,8 +383,9 @@ ul {
 }
 
 /*
- * Полосы со снимками уходят за поле страницы: на макете рабочий экран
- * обрезан правым и нижним краем разворота, и это кадр, а не картинка в рамке.
+ * Bands with screenshots extend beyond the page margin: in the mockup the
+ * working screen is cropped by the right and bottom edges of the spread, and
+ * it is a frame, not a picture in a frame.
  */
 .bleed {
   padding-left: 0;
@@ -381,7 +393,7 @@ ul {
   padding-bottom: 0;
 }
 
-/* --------------------------------------------------------------- шапка */
+/* -------------------------------------------------------------- header */
 
 .nav {
   display: flex;
@@ -397,7 +409,7 @@ ul {
   flex: none;
 }
 
-/* Марка-ссылка ведёт на эту же страницу и подчёркиваться не должна. */
+/* The logo link leads to this same page and must not be underlined. */
 a.wordmark {
   color: inherit;
   text-decoration: none;
@@ -429,9 +441,10 @@ a.wordmark {
 }
 
 /*
- * Тач выдаёт hover по тапу: без гейта нажатый якорь остаётся подсвеченным всю
- * плавную прокрутку и читается как «я всё ещё здесь». Гейт тот же, что у
- * .cell-run:hover ниже, — политика на странице одна.
+ * Touch fires hover on tap: without the gate a pressed anchor stays
+ * highlighted for the whole smooth scroll and reads as "I am still here".
+ * The gate is the same as for .cell-run:hover below: the page has one
+ * policy.
  */
 @media (hover: hover) and (pointer: fine) {
   .nav-links a:hover {
@@ -439,7 +452,7 @@ a.wordmark {
   }
 }
 
-/* --------------------------------------------------------- снимки экрана */
+/* ----------------------------------------------------------- screenshots */
 
 .shot-head {
   display: flex;
@@ -502,7 +515,7 @@ a.wordmark {
   margin: 0 auto;
 }
 
-/* ---------------------------------------------------------------- шаги */
+/* --------------------------------------------------------------- steps */
 
 .steps-head {
   display: flex;
@@ -567,7 +580,7 @@ a.wordmark {
   font-weight: 700;
   line-height: 1.28;
   letter-spacing: -0.015em;
-  /* Две строки заголовка держат прозу трёх колонок на одной линии. */
+  /* Two-line headings keep the prose of the three columns aligned. */
   min-height: 72px;
 }
 
@@ -577,7 +590,7 @@ a.wordmark {
   color: var(--muted);
 }
 
-/* ------------------------------------------------------------- свойства */
+/* ----------------------------------------------------------- properties */
 
 .feat-head {
   display: flex;
@@ -635,15 +648,17 @@ a.wordmark {
   color: var(--muted);
 }
 
-/* ---------------------------------------------------------- живая ячейка */
+/* ------------------------------------------------------------- live cell */
 
 /*
- * Две ячейки одного документа и одно ядро на двоих. Единственное место на
- * странице, где продукт можно потрогать рукой, а не прочитать про него:
- * запустите свою ячейку первой — и получите NameError, потому что переменную
- * создаёт не тот, кто её читает. Объяснение здесь делает не движение, а
- * порядок нажатий; движение только не даёт выводу выскочить из ниоткуда.
- * Рамка без радиуса и без тени: на сером это документ, а не карточка.
+ * Two cells of one document and one kernel shared by both. The only place
+ * on the page where the product can be touched rather than read about: run
+ * your cell first and you get a NameError, because the variable is created
+ * not by the one who reads it. The explanation here is made not by motion
+ * but by the order of presses; motion only keeps the output from popping up
+ * out of nowhere.
+ * A frame with no radius and no shadow: on grey this is a document, not a
+ * card.
  */
 .kernel {
   margin-bottom: clamp(36px, 4vw, 56px);
@@ -665,13 +680,15 @@ a.wordmark {
 }
 
 /*
- * Единственная фраза, объясняющая, что произошло. Две строки зарезервированы
- * заранее: пять реплик по 58–75 знаков пересекают границу «одна строка / две»
- * на планшетных ширинах, и без резерва шапка ядра толкала бы обе ячейки вниз
- * ровно тогда, когда читатель тянется ко второй, — тот же рывок, ради которого
- * этажом ниже стоит .cell-out { min-height: 36px }.
- * Подмена — та же идиома, что у .swhat: уход 120ms, приход 160ms с задержкой
- * в 100ms, чтобы глаз увидел чистое поле между репликами, а не две наложенные.
+ * The only phrase explaining what happened. Two lines are reserved in
+ * advance: five lines of 58–75 characters cross the "one line / two"
+ * boundary at tablet widths, and without the reserve the kernel header would
+ * push both cells down exactly when the reader reaches for the second one,
+ * the same jerk for which .cell-out { min-height: 36px } stands one floor
+ * below.
+ * The swap is the same idiom as in .swhat: leaving in 120ms, arriving in
+ * 160ms with a 100ms delay, so that the eye sees a clean field between the
+ * lines rather than two overlapping ones.
  */
 .kernel-hint {
   font-size: 15px;
@@ -708,9 +725,9 @@ a.wordmark {
 }
 
 /*
- * Промпт проходит In [ ] → In [*] → In [1]. Цвет меняется за те же 120ms,
- * что и единственная существующая на странице смена цвета — ссылки шапки;
- * второй идиомы для одного и того же события заводить незачем.
+ * The prompt goes In [ ] → In [*] → In [1]. The colour changes in the same
+ * 120ms as the only existing colour change on the page, the header links;
+ * there is no reason to introduce a second idiom for the same event.
  */
 .cell-prompt {
   grid-column: 1;
@@ -758,17 +775,17 @@ a.wordmark {
     border-color var(--t-color) ease;
 }
 
-/* Настоящая кнопка обязана отвечать на нажатие раньше, чем придёт результат. */
+/* A real button must respond to a press before the result arrives. */
 .cell-run:active {
   transform: scale(0.97);
 }
 
 /*
- * ...но только тогда, когда нажатие что-то делает. Для занятой и для уже
- * стоящей в очереди ячейки press() выходит вхолостую, и отклик обязан
- * замолчать вместе с ней: кнопка, которая ужимается и не делает ничего,
- * отчитывается за действие, которое было отброшено. Состояние уже размечено
- * атрибутом data-run, править скрипт не нужно.
+ * ...but only when the press does something. For a busy cell and for one
+ * already queued, press() exits idly, and the response must fall silent
+ * along with it: a button that shrinks and does nothing reports an action
+ * that was discarded. The state is already marked by the data-run
+ * attribute, no script change is needed.
  */
 .cell[data-run='running'] .cell-run,
 .cell[data-run='queued'] .cell-run {
@@ -780,14 +797,14 @@ a.wordmark {
   transform: none;
 }
 
-/* На странице до сих пор не было ни одного видимого состояния фокуса —
-   новому контролу оно обязательно. */
+/* Until now the page had not a single visible focus state; a new control
+   must have one. */
 .cell-run:focus-visible {
   outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 
-/* Тач по кнопке не должен оставлять её в «наведённом» состоянии. */
+/* A tap on the button must not leave it in the "hovered" state. */
 @media (hover: hover) and (pointer: fine) {
   .cell-run:hover {
     border-color: var(--accent-text);
@@ -795,11 +812,12 @@ a.wordmark {
 }
 
 /*
- * Место под вывод занято всегда. Раскрытие высоты сдвинуло бы вторую ячейку —
- * ту самую, на которую читатель смотрит и куда сейчас потянется, — то есть
- * произвело бы ровно тот рывок, ради которого движение сюда и ставится.
- * Строка вывода не переносится, а прокручивается: так высота не зависит от
- * ширины экрана и не меняется в момент появления текста.
+ * The space for output is always taken. Expanding the height would shift
+ * the second cell, the very one the reader is looking at and about to reach
+ * for, that is, it would produce exactly the jerk the motion is here to
+ * prevent. The output line does not wrap but scrolls: that way the height
+ * does not depend on the screen width and does not change when the text
+ * appears.
  */
 .cell-out {
   grid-column: 2 / -1;
@@ -817,12 +835,13 @@ a.wordmark {
   white-space: pre;
   opacity: 0;
   transform: translateY(4px);
-  /* transition, а не keyframes: при быстрых повторных нажатиях переход
-     переприцеливается с текущей точки, кейфрейм начал бы с нуля.
-     Базовая длительность — уход, и он короче прихода: приход вывода это
-     событие (--t-out, 260ms), а уход — ответ системы, он обязан щёлкать.
-     Скрипт стирает текст ровно через 160ms, то есть после того, как строка
-     выцвела, а не посреди собственного фейда. */
+  /* transition, not keyframes: on fast repeated presses a transition
+     retargets from the current point, a keyframe would start from zero.
+     The base duration is the leaving one, and it is shorter than arriving:
+     output arriving is an event (--t-out, 260ms), while leaving is the
+     system's answer, it must snap. The script erases the text exactly after
+     160ms, that is, after the line has faded, not in the middle of its own
+     fade. */
   transition:
     opacity 160ms var(--ease-out),
     transform 160ms var(--ease-out);
@@ -838,16 +857,16 @@ a.wordmark {
     transform var(--t-out) var(--ease-out);
 }
 
-/* Ошибка и очередь — не результат: тот же моноширинный голос, но приглушённый. */
+/* An error and a queue are not a result: the same monospace voice, but muted. */
 .cell[data-run='error'] .cell-out p,
 .cell[data-run='queued'] .cell-out p {
   color: var(--muted);
 }
 
 /*
- * --muted, а не --faint: оговорка о том, что блок постановочный, не имеет
- * права быть слабейшим текстом на странице. #9ba6be на белом даёт 2.4:1 —
- * ниже порога AA; #5d6b8a даёт 5.4:1.
+ * --muted, not --faint: the note that the block is staged has no right to
+ * be the weakest text on the page. #9ba6be on white gives 2.4:1, below the
+ * AA threshold; #5d6b8a gives 5.4:1.
  */
 .kernel-note {
   margin-top: 16px;
@@ -859,7 +878,7 @@ a.wordmark {
   color: var(--muted);
 }
 
-/* ---------------------------------------------------------------- финал */
+/* --------------------------------------------------------------- finale */
 
 .finale {
   display: flex;
@@ -877,7 +896,8 @@ a.wordmark {
   max-width: 900px;
 }
 
-/* Кнопки и сноска под ними — одна связка: сноска объясняет, почему кнопки мертвы. */
+/* The buttons and the footnote under them go together: the footnote explains
+   why the buttons are dead. */
 .finale-call {
   display: flex;
   flex-direction: column;
@@ -885,7 +905,7 @@ a.wordmark {
   gap: 20px;
 }
 
-/* --------------------------------------------------------------- подвал */
+/* --------------------------------------------------------------- footer */
 
 .foot {
   display: flex;
@@ -947,9 +967,9 @@ a.wordmark {
   color: rgba(255, 255, 255, 0.62);
 }
 
-/* Единственная ссылка в подвале, по которой можно написать автору. Выглядит
-   как соседние строки и подчёркивается только под курсором: подвал — это
-   справка, а не набор кнопок. */
+/* The only link in the footer through which the author can be written to.
+   It looks like the neighbouring lines and is underlined only under the
+   cursor: the footer is reference, not a set of buttons. */
 .foot-col a.host {
   text-decoration: none;
   transition: color var(--t-color) ease;
@@ -961,15 +981,16 @@ a.wordmark {
   text-underline-offset: 3px;
 }
 
-/* ------------------------------------------------------- узкие экраны */
+/* ----------------------------------------------------- narrow screens */
 
 /*
- * Дверь теряет афишу раньше остальной страницы — на 1024px, ровно там же, где
- * её теряет продукт (Poster объявлен как `hidden w-3/5 lg:flex`). Рубеж не
- * подобран под макет: ниже него сорок процентов ширины перестают вмещать
- * карточку метки одной строкой, и она разваливается на три этажа — аватар,
- * фраза, кнопка, — вместо того чтобы читаться одной. Форме нужна вся ширина
- * раньше, чем странице нужен телефонный режим.
+ * The door loses its poster earlier than the rest of the page, at 1024px,
+ * exactly where the product loses it (Poster is declared as
+ * `hidden w-3/5 lg:flex`). The breakpoint is not tuned to the mockup: below
+ * it forty percent of the width can no longer fit the label card on one
+ * line, and it falls apart into three floors (avatar, phrase, button)
+ * instead of reading as one. The form needs the full width before the page
+ * needs the phone mode.
  */
 
 @media (max-width: 1100px) {
@@ -1010,10 +1031,11 @@ a.wordmark {
   }
 
   /*
-   * Ниже 1100px натуральный масштаб перестаёт быть кадром и становится
-   * обрезком: при 900px в коробке 420px от снимка оставалось 58% ширины и
-   * 47% высоты — четверть площади, — а панель оракула, названная в alt,
-   * не попадала в кадр вовсе. Снимок показывается целиком.
+   * Below 1100px the natural scale stops being a frame and becomes a
+   * cut-out: at 900px, in a 420px box, 58% of the width and 47% of the
+   * height of the screenshot remained (a quarter of the area), and the
+   * oracle panel named in the alt did not get into the frame at all. The
+   * screenshot is shown whole.
    */
   .shot-frame {
     height: auto;
@@ -1033,8 +1055,9 @@ a.wordmark {
     font-size: 16px;
   }
 
-  /* Линейка между заголовком и «≈ 40 секунд» схлопывается в ноль, и подпись
-     повисает сбоку от двух строк. Проще положить её под заголовок. */
+  /* The rule between the heading and "≈ 40 seconds" collapses to zero, and
+     the caption hangs to the side of two lines. Simpler to put it under the
+     heading. */
   .steps-head {
     flex-direction: column;
     align-items: flex-start;
@@ -1045,9 +1068,9 @@ a.wordmark {
     display: none;
   }
 
-  /* Кнопка уходит под ячейку и получает полноценную цель для пальца.
-     58px — ширина «In [ ]» плюс воздух: при 48px промпт вставал вплотную
-     к коду и читался как его часть. */
+  /* The button goes under the cell and gets a proper finger target.
+     58px is the width of "In [ ]" plus air: at 48px the prompt sat right up
+     against the code and read as part of it. */
   .cell {
     grid-template-columns: 58px minmax(0, 1fr);
   }
@@ -1062,15 +1085,16 @@ a.wordmark {
 }
 
 /*
- * Reduced motion — это «меньше и мягче», а не «ноль». Прежний блок глушил
- * подряд все transition на странице, вместе с подсветкой ссылок шапки: она
- * помогает понять состояние и ничего не двигает. Гребёнка ниже гасит только
- * то, что действительно ездит, — длительности анимаций, их повторы и плавную
- * прокрутку; всё остальное снимается точечно.
+ * Reduced motion means "less and softer", not "zero". The former block
+ * silenced every transition on the page in a row, including the highlight
+ * of the header links: it helps to understand the state and moves nothing.
+ * The comb below turns off only what actually moves: animation durations,
+ * their repeats and smooth scrolling; everything else is removed one by
+ * one.
  *
- * Именно 1ms, а не animation:none: конечный кадр у набора, аватаров и ответа
- * терминала задан через forwards, и none оставил бы их на первом кадре —
- * то есть невидимыми навсегда.
+ * Exactly 1ms, not animation:none: the final frame of the typing, the
+ * avatars and the terminal's answer is set through forwards, and none would
+ * leave them on the first frame, that is, invisible forever.
  */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -1082,13 +1106,13 @@ a.wordmark {
     scroll-behavior: auto !important;
   }
 
-  /* Всё, что ездит по экрану, снимается поимённо. */
+  /* Everything that moves across the screen is removed by name. */
   .cell-run:active {
     transform: none;
   }
 
-  /* Нажатие всё равно обязано быть слышно: вместо масштаба отвечает рамка.
-     И так же молчит там, где нажатие ничего не делает. */
+  /* A press must still be felt: instead of scaling, the outline responds.
+     And it stays quiet in the same way where the press does nothing. */
   .cell-run:active {
     border-color: var(--accent-text);
   }
@@ -1098,22 +1122,23 @@ a.wordmark {
     border-color: var(--line);
   }
 
-  /* Один селектор на все состояния вывода — и результат, и ошибку, и очередь. */
+  /* One selector for all output states: the result, the error and the queue. */
   .cell-out p {
     transform: none !important;
     transition: opacity 120ms linear !important;
   }
 }
 
-/* ------------------------------------------------------------- лекция --- */
+/* ------------------------------------------------------------ lecture --- */
 
 /*
- * Шапка секции: метка НАД заголовком, всё по одной левой кромке.
+ * Section header: the label ABOVE the heading, everything on one left edge.
  *
- * Была колонкой слева, как в «Зачем», — но там под шапкой идут строки с
- * такой же колонкой номеров, а здесь под ней лид и карточки от края. Заголовок
- * оказывался сдвинут вправо один на всю секцию, и это читалось как ошибка
- * вёрстки, а не как сетка.
+ * It used to be a column on the left, as in "Why", but there the header is
+ * followed by rows with the same column of numbers, while here it is
+ * followed by the lead and edge-to-edge cards. The heading ended up shifted
+ * right, alone for the whole section, and that read as a layout error, not
+ * as a grid.
  */
 .sec-head {
   display: flex;
@@ -1127,8 +1152,9 @@ a.wordmark {
 }
 
 /*
- * Три карточки без рамок: информация лежит прямо на поверхности, а линейка
- * сверху отбивает их друг от друга — тот же приём, что у «Что ломается».
+ * Three cards without borders: the information lies right on the surface,
+ * and a rule on top separates them from one another, the same device as in
+ * "What breaks".
  */
 .lec-grid {
   display: grid;
@@ -2201,15 +2227,17 @@ summary:focus-visible {
 }
 
 /*
- * =========================================================== два языка ===
+ * ======================================================= two languages ===
  *
- * Переключатель — тот же, что в документации (site/docs/docs.css): две
- * метки моноширинным, точка между ними, текущий язык подчёркнут. Отличие
- * одно и вынужденное: здесь он стоит на синем, поэтому цвета берутся из
- * пары ссылок шапки, а не из --muted, который на этой земле не читается.
+ * The switch is the same as in the docs (site/docs/docs.css): two labels in
+ * monospace, a dot between them, the current language underlined. There is
+ * one difference, and it is forced: here it stands on blue, so the colours
+ * are taken from the pair of header links rather than from --muted, which
+ * cannot be read on this ground.
  *
- * Текущий язык — не ссылка: вести со страницы на неё же незачем, а
- * скринридер получает aria-current и не предлагает переход.
+ * The current language is not a link: there is no point linking a page to
+ * itself, and a screen reader gets aria-current and does not offer the
+ * jump.
  */
 .lang-switch {
   display: flex;
@@ -2228,8 +2256,8 @@ summary:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* 32px — не украшение: это минимальная мишень под палец, а метка
-     шириной в две буквы сама по себе даёт около двадцати. */
+  /* 32px is not decoration: it is the minimum finger target, and a label
+     two letters wide gives only about twenty by itself. */
   min-width: 32px;
   min-height: 32px;
   padding: 0 4px;
@@ -2261,11 +2289,11 @@ summary:focus-visible {
 }
 
 /*
- * ========================================================== установка ===
+ * ======================================================= installation ===
  *
- * Блок сразу под героем: три команды и три ссылки. Терминал тёмный — та же
- * земля, на которой работает терминал продукта (--term-bg), потому что это
- * и есть терминал, а не картинка про него.
+ * The block right under the hero: three commands and three links. The
+ * terminal is dark, the same ground the product's terminal works on
+ * (--term-bg), because this is a terminal, not a picture of one.
  */
 .install-section {
   padding-top: clamp(56px, 6vw, 88px);
@@ -2302,9 +2330,10 @@ summary:focus-visible {
 }
 
 /*
- * Строка команды целиком выделяется мышью и копируется как есть: приглашение
- * «$» лежит в ::before, а не в тексте, — иначе в буфер уезжает доллар, и
- * первая же вставка в чужой терминал ломается.
+ * The whole command line is selected with the mouse and copied as is: the
+ * "$" prompt lives in ::before, not in the text, otherwise a dollar goes
+ * into the clipboard and the very first paste into someone's terminal
+ * breaks.
  */
 .install-term code {
   display: block;
@@ -2365,8 +2394,8 @@ summary:focus-visible {
   }
 }
 
-/* Требования уезжают к правому полю и отбиваются линейкой — тот же приём,
-   что у шапки шагов (.steps-head). */
+/* The requirements move to the right margin and are set off by a rule, the
+   same device as in the steps header (.steps-head). */
 .install-req {
   display: flex;
   align-items: center;
@@ -2386,16 +2415,16 @@ summary:focus-visible {
 }
 
 /*
- * ============================================================= сцены ===
+ * ============================================================ scenes ===
  *
- * Пять анимированных SVG вместо снимков экрана. Каждый лежит на белой
- * плите с рамкой: собственная подложка сцены — это --surface, и на
- * секции того же цвета она растворяется без рамки.
+ * Five animated SVGs instead of screenshots. Each sits on a white slab with
+ * a border: the scene's own backing is --surface, and on a section of the
+ * same colour it would dissolve without a border.
  *
- * Ширина картинки ограничена 1040px при колонке в 1248: на всю колонку
- * сцена шириной 880 растягивается в полтора раза, и подписи внутри неё
- * становятся крупнее прозы самой страницы — то есть страница начинает
- * кричать собственной иллюстрацией.
+ * The picture width is limited to 1040px in a 1248 column: across the whole
+ * column a scene 880 wide is stretched one and a half times, and the
+ * captions inside it become larger than the page's own prose, that is, the
+ * page starts shouting with its own illustration.
  */
 .scene-band {
   margin: 0;
@@ -2411,8 +2440,8 @@ summary:focus-visible {
   border: 1px solid var(--line);
 }
 
-/* В полосе, вынесенной за поле страницы (.bleed), поля берёт на себя сама
-   плита: у секции их нет. */
+/* In a band taken beyond the page margin (.bleed), the slab itself takes on
+   the margins: the section has none. */
 .bleed .scene-plate {
   width: calc(100% - 2 * var(--gutter));
 }
@@ -2425,9 +2454,10 @@ summary:focus-visible {
   margin: 0 auto;
 }
 
-/* Подсказка про боковую прокрутку нужна только там, где прокрутка есть.
-   Коробку она берёт ту же, что плита: в полосе за полем страницы (.bleed)
-   у секции полей нет, и подпись иначе прижимается к самому краю экрана. */
+/* The hint about sideways scrolling is needed only where there is scrolling.
+   It takes the same box as the slab: in a band beyond the page margin
+   (.bleed) the section has no margins, and otherwise the caption presses
+   against the very edge of the screen. */
 .scene-hint {
   display: none;
   width: 100%;
@@ -2444,17 +2474,17 @@ summary:focus-visible {
   width: calc(100% - 2 * var(--gutter));
 }
 
-/* Под лекцией три карточки объясняют ровно те три экрана, что нарисованы
-   в сцене, — поэтому она идёт сразу под ними, а не сбоку. */
+/* Under the lecture, three cards explain exactly the three screens drawn in
+   the scene, so the scene comes right under them, not to the side. */
 .lecture-cards {
   padding-top: clamp(32px, 4vw, 56px);
 }
 
 @media (max-width: 760px) {
   /*
-   * Переключатель уходит на первую строку к марке: на этой ширине .nav
-   * переносится, и .nav-links занимает вторую строку целиком — без order
-   * языки оказались бы на третьей, ниже навигации.
+   * The switch moves to the first line, next to the logo: at this width .nav
+   * wraps, and .nav-links takes the whole second line; without order the
+   * languages would end up on the third, below the navigation.
    */
   .hero .lang-switch {
     order: 0;
@@ -2469,16 +2499,16 @@ summary:focus-visible {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* Кнопки переносятся по две в ряд, требования уезжают на свою строку — и
-     линейка перед ними схлопывается в огрызок длиной в палец. Убираем. */
+  /* The buttons wrap two per row, the requirements move to their own line,
+     and the rule before them shrinks to a finger-long stub. We remove it. */
   .install-req::before {
     display: none;
   }
 
   /*
-   * Сцена шириной 880 в колонку 350 сжимает подписи до пяти пикселей —
-   * это уже не рисунок, а текстура. Поэтому на телефоне плита становится
-   * лентой: картинка держит 760px и листается вбок.
+   * A scene 880 wide in a 350 column shrinks the captions to five pixels:
+   * that is no longer a drawing but a texture. So on a phone the slab
+   * becomes a strip: the picture keeps 760px and scrolls sideways.
    */
   .scene-plate {
     padding: 10px;
@@ -2494,8 +2524,8 @@ summary:focus-visible {
   }
 }
 
-/* Команда внутри прозы — моноширинным, но в цвет окружающего текста:
-   это имя команды, а не выделенный кусок кода. */
+/* A command inside prose: monospace, but in the colour of the surrounding
+   text: it is the name of a command, not a highlighted piece of code. */
 .release-note code,
 .setup-sheet code {
   font-family: var(--mono);
@@ -2503,8 +2533,9 @@ summary:focus-visible {
   color: inherit;
 }
 
-/* Заметка про общее ядро переехала из сетки под сцену — сетка больше не
-   отбивает её от соседа сверху, и отступ нужен свой. */
+/* The note about the shared kernel moved from the grid to under the scene:
+   the grid no longer sets it off from its upper neighbour, so it needs its
+   own margin. */
 .council-section .scene-band + .inner .council-kernel {
   margin-top: clamp(28px, 3vw, 40px);
 }

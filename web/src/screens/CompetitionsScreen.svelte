@@ -1,22 +1,24 @@
 <script lang="ts">
   /**
-   * Страницы соревнований `/k` — список, соревнование, посылки, лидерборд.
+   * The competition pages under `/k` — list, competition, submissions,
+   * leaderboard.
    *
-   * Один экран на все четыре адреса нарочно: вкладки одного соревнования — это
-   * одна страница, и переход между ними не должен заново грузить задачу,
-   * ронять таймер и рвать живой поток. Адрес разбирает `lib/routes.ts`, данные
-   * ходят через `lib/entrantApi.ts`, слова и счёт — `lib/competition-words.ts`;
-   * здесь остаётся только то, что нельзя посчитать заранее: что сейчас на
-   * экране, что уже приехало и что сломалось.
+   * One screen for all four addresses on purpose: the tabs of one competition
+   * are one page, and moving between them must not reload the task, drop the
+   * timer or break the live stream. The address is parsed by `lib/routes.ts`,
+   * data goes through `lib/entrantApi.ts`, words and numbers come from
+   * `lib/competition-words.ts`; what stays here is only what cannot be
+   * computed in advance: what is on screen now, what has already arrived and
+   * what broke.
    *
-   * ЖИВОЕ ОБНОВЛЕНИЕ — `EventSource`, тем же способом, что журнал сборки
-   * окружений и экран соревнования у преподавателя. Сокет комнаты сюда не
-   * годится вовсе: у этих страниц нет ни комнаты, ни документа, ни присутствия,
-   * а нужно им ровно одно направление — сервер говорит, что посылка сдвинулась.
-   * Поток открывается, только пока у человека что-то ИДЁТ, и закрывается, как
-   * только всё досчиталось: тридцать открытых вкладок лидерборда, каждая со
-   * своим соединением, — это тридцать соединений ради страницы, на которой
-   * ничего не меняется.
+   * LIVE UPDATES — `EventSource`, the same way as the environment build log
+   * and the teacher's competition screen. The room socket does not fit here at
+   * all: these pages have no room, no document, no presence, and they need
+   * exactly one direction — the server saying that a submission moved on. The
+   * stream is open only while the person has something RUNNING, and closes as
+   * soon as everything has been scored: thirty open leaderboard tabs, each
+   * with its own connection, are thirty connections for a page where nothing
+   * changes.
    */
   import { tr } from '@shared/i18n'
   import { isTerminal, placeShift } from '@shared/competitions'
@@ -47,13 +49,13 @@
 
   const { route, onnavigate }: Props = $props()
 
-  /* ------------------------------------------------------------- ширина */
+  /* -------------------------------------------------------------- width */
 
   /*
-   * Телефон — не «то же самое, но уже»: у него своя раскладка строки посылки,
-   * свои подписи и нет полосы этапов (P4). Поэтому ширина читается здесь, а не
-   * только классами: разница структурная, и рисовать оба дерева сразу значит
-   * возить лишнее каждому.
+   * A phone is not "the same thing, only narrower": it has its own layout of
+   * the submission row, its own labels and no stage strip (P4). So the width
+   * is read here, not only through classes: the difference is structural, and
+   * drawing both trees at once means shipping the extra to everyone.
    */
   const PHONE = '(max-width: 700px)'
   let phone = $state(typeof window === 'undefined' ? false : window.matchMedia(PHONE).matches)
@@ -67,7 +69,7 @@
     return () => media.removeEventListener('change', sync)
   })
 
-  /* --------------------------------------------------------- состояние */
+  /* ------------------------------------------------------------- state */
 
   let now = $state(Date.now())
   let me = $state<EntrantMe | null>(null)
@@ -108,37 +110,40 @@
     return slug && slug === route.slug && carried === `${slug}:${me?.entrant?.id ?? ''}` ? slug : null
   }
 
-  /* ------------------------------------------------------------- часы */
+  /* ------------------------------------------------------------ clock */
 
   /*
-   * ОДНО булево, а не чтение всего `mine`, и это не стиль.
+   * ONE boolean, not a read of the whole `mine`, and this is not about style.
    *
-   * Живой кадр приезжает раз в секунду и заменяет `mine` целиком. Эффект,
-   * который читает `mine` прямо в теле, перезапускается на каждом кадре — то
-   * есть каждую секунду пересоздаёт таймер (и он не успевает тикнуть) и
-   * ЗАКРЫВАЕТ-ОТКРЫВАЕТ поток. Второе измерено на стенде: прокси между
-   * браузером и сервером кончился локальными портами (EADDRNOTAVAIL) за
-   * полминуты такой работы. `$derived` от булева пересчитывается тихо, а
-   * эффект будит только его СМЕНА.
+   * A live frame arrives once a second and replaces `mine` wholesale. An
+   * effect that reads `mine` right in its body re-runs on every frame — that
+   * is, every second it recreates the timer (which never gets to tick) and
+   * CLOSES-AND-REOPENS the stream. The latter was measured on the test bench:
+   * the proxy between the browser and the server ran out of local ports
+   * (EADDRNOTAVAIL) after half a minute of this. A `$derived` from a boolean
+   * recomputes quietly, and only its CHANGE wakes the effect.
    */
   const running = $derived((mine?.submissions ?? []).some((it) => !isTerminal(it.state)))
 
   $effect(() => {
-    // Секунда, пока что-то идёт (у таймера прогона она в подписи), и полминуты
-    // в остальное время: обратный счёт до дедлайна меняется раз в минуту.
+    // A second while something is running (the run timer shows seconds in its
+    // label), and half a minute otherwise: the countdown to the deadline
+    // changes once a minute.
     const step = running ? 1000 : 30_000
     const timer = setInterval(() => (now = Date.now()), step)
     return () => clearInterval(timer)
   })
 
-  /* ------------------------------------------------------ ключ из ссылки */
+  /* --------------------------------------------------- key from the link */
 
   /**
-   * Ключ из ссылки — в печенье, и сразу же прочь из адресной строки.
+   * The key from the link goes into a cookie, and straight out of the address
+   * bar.
    *
-   * Адрес переживает и вкладку, и снимок экрана, который студент пришлёт
-   * однокурснику вместе со своим местом; ключ в нём — это чужие посылки. То же
-   * правило и по той же причине, что у ссылки на пульт (App.svelte · claiming).
+   * The address outlives both the tab and the screenshot a student sends a
+   * classmate along with their place; a key in it puts the student's
+   * submissions in someone else's hands. The same rule for the same reason as
+   * the console link (App.svelte · claiming).
    */
   let claiming = $state(false)
   let claimed: string | null = null
@@ -167,7 +172,7 @@
       })
   })
 
-  /* --------------------------------------------------------- загрузка */
+  /* ---------------------------------------------------------- loading */
 
   function say(error: unknown): string {
     return error instanceof EntrantApiError ? error.message : tr('common.networkError')
@@ -267,18 +272,20 @@
     }
     void loadPage(slug)
     /*
-     * Лидерборд грузится на ЛЮБОЙ вкладке, включая «Задачу»: из него считается
-     * «ВАШЕ МЕСТО» в шапке — место среди людей, без базового решения. Без него
-     * шапка берёт место, посчитанное сервером по всей таблице, и говорит «4 из
-     * 3» на соревновании, где бейзлайн идёт первым.
+     * The leaderboard loads on ANY tab, including "Task": the "YOUR PLACE" in
+     * the header is computed from it — the place among people, without the
+     * baseline. Without it the header takes the place the server computed over
+     * the whole table, and says "4 of 3" in a competition where the baseline
+     * comes first.
      */
     void loadBoard(slug)
     if (view === 'submissions' && person !== null) void loadMine(slug)
   })
 
   /*
-   * Итоговая таблица выбирается сама, когда её открыли: человек, зашедший на
-   * лидерборд после дедлайна, пришёл за итогом, а не за публичной частью.
+   * The final table selects itself once it has been opened: a person who
+   * comes to the leaderboard after the deadline came for the result, not for
+   * the public part.
    */
   let switched: string | null = null
   $effect(() => {
@@ -288,7 +295,7 @@
     final = true
   })
 
-  /* ------------------------------------------------------- живой поток */
+  /* ------------------------------------------------------- live stream */
 
   $effect(() => {
     const slug = route.slug
@@ -301,10 +308,11 @@
       try {
         const fresh = JSON.parse((event as MessageEvent<string>).data) as EntrantSubmissions
         /*
-         * Посылка ДОСЧИТАЛАСЬ — значит, рядом устарело всё остальное: место в
-         * шапке, мини-таблица лидерборда, «лучший результат» под именем файла.
-         * Поток про них не знает (он про мои посылки), поэтому конец прогона —
-         * единственный момент, когда страница спрашивает соседние двери заново.
+         * A submission FINISHED scoring — which means everything else nearby
+         * is stale: the place in the header, the mini leaderboard, the "best
+         * result" under the file name. The stream does not know about them
+         * (it is about my submissions), so the end of a run is the only moment
+         * the page asks the neighboring doors again.
          */
         const was = new Map((mine?.submissions ?? []).map((it) => [it.id, it.state]))
         const landed = fresh.submissions.some(
@@ -316,13 +324,14 @@
           void loadPage(slug)
         }
       } catch {
-        /* кадр не разобрался — следующий приедет через секунду */
+        /* the frame did not parse — the next one arrives in a second */
       }
     })
     /*
-     * Поток оборвался — и это надо сказать: перезапуск сервера, прокси,
-     * уснувший ноутбук. Таймер и полоса просто замирают, и без слова страница
-     * выглядит живой, будучи мёртвой. Числа догонит опрос ниже.
+     * The stream broke — and that has to be said: a server restart, a proxy, a
+     * laptop gone to sleep. The timer and the bar simply freeze, and without a
+     * word the page looks alive while being dead. The poll below will catch
+     * up with the numbers.
      */
     stream.addEventListener('error', () => {
       if (!currentContext(context)) return
@@ -332,10 +341,10 @@
   })
 
   /*
-   * Запасной опрос — на случай, когда поток не доехал вовсе (буферизующий
-   * прокси, корпоративная сеть, выключённый EventSource). Пять секунд, а не
-   * одна: это запасной путь, и платить за него столько же, сколько за живой,
-   * незачем.
+   * A fallback poll — for when the stream never got through at all (a
+   * buffering proxy, a corporate network, EventSource turned off). Five
+   * seconds, not one: this is the fallback path, and there is no reason to
+   * pay as much for it as for the live one.
    */
   $effect(() => {
     const slug = route.slug
@@ -345,15 +354,16 @@
   })
 
   /*
-   * Оболочка из index.html снимается по первому экрану, а не по монтированию
-   * (lib/boot.ts). Обмен ключа под заставкой — честнее, чем мелькнувшая пустая
-   * страница под ним, поэтому доклад ждёт его конца.
+   * The shell from index.html is removed on the first screen, not on mount
+   * (lib/boot.ts). Exchanging the key under the splash is more honest than a
+   * blank page flashing under it, so the report waits for the exchange to
+   * finish.
    */
   $effect(() => {
     if (!claiming && (ready || failure)) firstScreenReady()
   })
 
-  /* --------------------------------------------------------- действия */
+  /* ---------------------------------------------------------- actions */
 
   async function join(slug: string, wanted: string): Promise<void> {
     if (joinBusy) return
@@ -471,17 +481,18 @@
     document.querySelector('[data-key-card]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 
-  /* --------------------------------------------------- счёт для шапки */
+  /* --------------------------------------------------- header numbers */
 
   const myPublic = $derived(board?.public.find((line) => line.you) ?? null)
 
   /**
-   * «ВАШЕ МЕСТО 7 из 28» — место СРЕДИ ЛЮДЕЙ.
+   * "YOUR PLACE 7 of 28" — the place AMONG PEOPLE.
    *
-   * В таблице базовое решение стоит обычной строкой со своим местом (так в
-   * макете P3), но в знаменателе шапки — участники, и брать числитель из той
-   * же таблицы значит однажды показать «2 из 1»: на соревновании, где никто
-   * ещё не прислал решения лучше бейзлайна, он идёт первым.
+   * In the table the baseline stands as an ordinary row with its own place
+   * (as in mockup P3), but the header's denominator is the participants, and
+   * taking the numerator from the same table means one day showing "2 of 1":
+   * in a competition where nobody has yet sent a solution better than the
+   * baseline, it comes first.
    */
   function placeAmongPeople(lines: readonly { you: boolean; baseline: boolean }[]): number | null {
     const at = lines.filter((line) => !line.baseline).findIndex((line) => line.you)
@@ -494,8 +505,9 @@
 </script>
 
 {#if route.view === 'screen' && page && board}
-  <!-- Проектор: тот же лидерборд без шапки и вкладок. Его показывают классу с
-       заднего ряда, и всё, что не строка таблицы, отсюда убрано. -->
+  <!-- The projector: the same leaderboard without the header and tabs. It is
+       shown to the class and read from the back row, so everything that is
+       not a table row is removed from here. -->
   <main class="competition-ui flex h-full flex-col gap-6 overflow-auto bg-canvas p-10">
     <h1 class="text-gauge-lg font-black text-ink">{page.competition.title}</h1>
     <BoardView
@@ -509,9 +521,10 @@
 {:else}
   <div class="competition-ui flex h-full flex-col overflow-auto bg-canvas">
     <!--
-      На телефоне внутри соревнования полосы нет: её место занимает шапка
-      страницы, где уже есть и «‹ Соревнования», и имя (P4). Две полосы подряд
-      в 390 px — это 110 px мебели над названием задачи.
+      On a phone there is no bar inside a competition: its place is taken by
+      the page header, which already has both "‹ Competitions" and the name
+      (P4). Two bars in a row at 390 px are 110 px of furniture above the task
+      title.
     -->
     {#if !phone || route.slug === null}
       <TopBar {name} {onnavigate} onkey={showKey} />

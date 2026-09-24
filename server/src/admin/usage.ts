@@ -58,8 +58,8 @@ export interface QuestionRecord {
   participantId: string
   /**
    * The AiAction that was actually run, or 'ask' for a free-form question.
-   * 'work' — не AiAction: это ход режима «сделать», поручение агенту, и самая
-   * дорогая строка в таблице.
+   * 'work' is not an AiAction: it is a turn of the "Act" mode, a task given to
+   * the agent, and the most expensive row in the table.
    */
   action: string
   /** Only when the endpoint reported it; most do not on a stream. */
@@ -80,21 +80,22 @@ export function recordQuestion(question: QuestionRecord): number {
 
 const addTokens = db.prepare('UPDATE ai_usage SET tokens = COALESCE(tokens, 0) + ? WHERE id = ?')
 
-/** Строка вопроса, который ничего не стоил, — только если провайдер молчал о расходе. */
+/** Row of a question that cost nothing — only if the provider was silent on usage. */
 const dropRow = db.prepare('DELETE FROM ai_usage WHERE id = ? AND tokens IS NULL')
 
 /**
- * Снять строку расхода с вопроса, на который не ответили.
+ * Take the usage row off a question that was not answered.
  *
- * Строка заводится при ПРИЁМЕ, потому что запрос к провайдеру уйдёт, чем бы он
- * ни кончился, — и это верно ровно до тех пор, пока он чем-то кончается.
- * Оракул консилиума, повисший на три минуты и оборванный сторожем, съедал
- * место в часовом потолке комнаты; преподаватель, у которого «Обновить»
- * молчало, жал кнопку ещё раз — и упирался в 429 по вине первого нажатия.
+ * The row is created at INTAKE, because the request to the provider goes out
+ * however it ends — and that is true exactly as long as it ends somehow. A
+ * council oracle that hung for three minutes and was cut off by the watchdog
+ * ate a slot in the room's hourly cap; a teacher whose "Refresh" stayed silent
+ * pressed the button again — and ran into a 429 because of the first press.
  *
- * Условие `tokens IS NULL` — не перестраховка, а всё правило: провайдер,
- * успевший назвать расход, уже выставил счёт, и прятать его из таблицы значит
- * врать владельцу ключа о том, куда ушёл семестр. Возвращает, сняли ли строку.
+ * The `tokens IS NULL` condition is not over-caution but the whole rule: a
+ * provider that managed to report usage has already billed for it, and hiding
+ * it from the table means lying to the key's owner about where the semester
+ * went. Returns whether the row was removed.
  */
 export function dropQuestion(id: number): boolean {
   if (!Number.isFinite(id)) return false
@@ -102,19 +103,19 @@ export function dropQuestion(id: number): boolean {
 }
 
 /**
- * Сколько на самом деле стоил вопрос.
+ * What a question actually cost.
  *
- * Считается вопрос при приёме, а токены известны только в конце ответа — и до
- * сих пор не были известны никогда: `stream_options.include_usage` никто не
- * просил, столбец оставался пустым, а плитка в панели писала «tokens — not
- * reported by this endpoint». На инстансе с чужим ключом это единственное
- * место, где видно, во что обошёлся семестр.
+ * A question is counted at intake, while tokens are known only at the end of
+ * the answer — and until now they were never known at all: nobody asked for
+ * `stream_options.include_usage`, the column stayed empty, and the tile in the
+ * panel said "tokens — not reported by this endpoint". On an instance with
+ * someone else's key this is the only place that shows what the semester cost.
  *
- * Прибавляется, а не записывается. Перезапись была верна ровно для одного
- * потока на вопрос; режим «сделать» ходит к модели до двенадцати раз, каждый
- * ход отчитывается только за себя, и в строке оставался последний — самый
- * большой, потому что контекст растёт, но всё же доля. Самый дорогой режим
- * учитывался в разы дешевле, чем стоил.
+ * Added, not written. Overwriting was right for exactly one stream per
+ * question; the "Act" mode goes to the model up to twelve times, each turn
+ * reports only for itself, and the row kept the last one — the biggest,
+ * because the context grows, but still only a share. The most expensive mode
+ * was counted as several times cheaper than it cost.
  */
 export function noteTokens(id: number, tokens: number): void {
   if (!Number.isFinite(tokens) || tokens <= 0) return

@@ -1,48 +1,52 @@
 #!/usr/bin/env bash
 #
-# Выставить семинар наружу и получить ссылку для аудитории.
+# Expose a seminar to the outside and get a link for the audience.
 #
-# Главное, ради чего этот скрипт вообще существует: PUBLIC_URL. Сервер кладёт
-# его в ссылку, которую вы копируете и раздаёте. Если оставить localhost, ссылка
-# будет открываться только у вас, а вся аудитория получит «сайт недоступен» —
-# и это выяснится ровно в тот момент, когда тридцать человек уже сидят в классе.
-# Временный адрес публикуется без перезапуска приложения.
+# The main reason this script exists at all: PUBLIC_URL. The server puts it
+# into the link you copy and hand out. Leave localhost there, and the link
+# opens only for you, while the whole audience gets "site can't be reached",
+# and you find this out at exactly the moment thirty people are already
+# sitting in the classroom. A temporary address is published without
+# restarting the application.
 #
-# Транспортов четыре:
+# There are four transports:
 #
-#   ./scripts/host.sh                       быстрый туннель Cloudflare, адрес
-#                                           случайный и живёт до Ctrl+C
-#   COLLOQ_HOSTNAME=seminar.sleep3r.ru      именованный туннель Cloudflare
-#   COLLOQ_HOSTNAME=hse.colloq.ru           свой ретранслятор (frpc → frps)
-#   COLLOQ_DIRECT=1 COLLOQ_HOSTNAME=…       прямо с этой машины, без посредника
+#   ./scripts/host.sh                       quick Cloudflare tunnel, the address
+#                                           is random and lives until Ctrl+C
+#   COLLOQ_HOSTNAME=seminar.sleep3r.ru      named Cloudflare tunnel
+#   COLLOQ_HOSTNAME=hse.colloq.ru           our own relay (frpc → frps)
+#   COLLOQ_DIRECT=1 COLLOQ_HOSTNAME=…       straight from this machine, no middleman
 #
-# Первые три — исходящее соединение отсюда наружу: не нужны ни белый IP, ни
-# проброс портов на роутере. Четвёртый — противоположность: 80 и 443 на этой
-# машине принимают студентов сами, caddy снимает TLS и отдаёт запрос colloq на
-# localhost. Ему нужен настоящий публичный адрес, и он единственный, у кого на
-# пути пары нет ни одного чужого узла.
+# The first three are an outbound connection from here to the outside: no
+# public IP and no port forwarding on the router are needed. The fourth is the
+# opposite: 80 and 443 on this machine take the students themselves, caddy
+# terminates TLS and hands the request to colloq on localhost. It needs a real
+# public address, and it is the only one with not a single foreign node on the
+# class's path.
 #
-# Почему появился четвёртый. Туннель Cloudflare всегда выходит на пограничные
-# адреса Cloudflare, снять с них проксирование нельзя (запись
-# *.cfargotunnel.com имеет смысл только для их прокси), а из России эти адреса
-# не открываются — поэтому под colloq.ru стоит свой ретранслятор. Но и он не
-# бесплатен: измерено на живой паре, двести студентов в один вечер положили
-# VPS на 951 МБ памяти — ядро тридцать шесть раз убивало то frps (209 МБ), то
-# caddy (186 МБ на двух сотнях сокетов), и каждое убийство рвало все туннели
-# разом, а зал уходил в переподключение. Ретранслятор — общая точка отказа для
-# всех имён под ним, и трафик пары не должен через него ходить, когда у машины
-# есть свой публичный адрес.
+# Why the fourth appeared. A Cloudflare tunnel always comes out at Cloudflare's
+# edge addresses, proxying cannot be taken off them (a *.cfargotunnel.com
+# record only makes sense for their proxy), and those addresses do not open
+# from Russia; that is why colloq.ru has a relay of its own. But the relay is
+# not free either: measured on a live class, two hundred students in one
+# evening brought down a VPS with 951 MB of memory. The OS kernel killed now
+# frps (209 MB), now caddy (186 MB on two hundred sockets), thirty-six times,
+# every kill tore down all the tunnels at once, and the room went into
+# reconnecting. The relay is a shared point of failure for every name under
+# it, and a class's traffic should not go through it when the machine has a
+# public address of its own.
 #
-# Что ставится: frpc (brew install frpc) для ретранслятора, cloudflared для
-# Cloudflare, caddy для прямого режима — последний скрипт поставит сам. Нет
-# cloudflared в PATH — colloq скачивает закреплённый выпуск со сверкой суммы
-# в <состояние>/bin (cli/src/launch-cloudflared.ts); COLLOQ_CLOUDFLARED=/путь
-# называет файл явно.
+# What gets installed: frpc (brew install frpc) for the relay, cloudflared for
+# Cloudflare, caddy for direct mode (the script installs the last one itself).
+# With no cloudflared in PATH, colloq downloads a pinned release with a
+# checksum check into <state>/bin (cli/src/launch-cloudflared.ts);
+# COLLOQ_CLOUDFLARED=/path names the file explicitly.
 #
-# Замок: наружу уходит только сервер, у которого ядро каждой комнаты в своём
-# контейнере — так он сам отвечает полем isolation в /api/health (docker или
-# broker). Ссылка — это дверь: кто её получил, тот запускает код на этой
-# машине, и общее ядро за такой дверью не публикуется никаким транспортом.
+# The lock: only a server whose every room kernel sits in a container of its
+# own goes out, which the server itself reports in the isolation field of
+# /api/health (docker or broker). A link is a door: whoever gets it runs code
+# on this machine, and a shared kernel behind such a door is not published by
+# any transport.
 #
 set -euo pipefail
 
@@ -52,59 +56,64 @@ RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; CYAN=$'\033[36m'; OFF=$'\033[0
 say() { printf '%s\n' "$*"; }
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
-# docker нужен не каждой форме, а только той, с которой скрипт говорит через
-# него, — контейнеру `make up`: узнать его, пересоздать с новым PUBLIC_URL,
-# достать токен установки из тома (см. «Кто именно держит порт» ниже).
+# docker is not needed by every form, only by the one the script talks to
+# through it: the `make up` container, to recognize it, recreate it with a new
+# PUBLIC_URL and get the installation token out of its volume (see "Who
+# exactly holds the port" below).
 #
-# Здесь стоял безусловный отказ «docker is not installed», и он ронял
-# k3s-машину на первой же строке: под релизом сервер и ядра живут в k3s, докера
-# на арендованной VM может не быть вовсе, и `make vast-up HOST=…` оставлял
-# семинар без адреса — tmux-сессия с этим скриптом умирала через секунду.
-# Локальной сессии, службе и `make run` докер от этого скрипта тоже не нужен:
-# ядра — забота сервера, и если они не встают, об этом скажет /api/health на
-# первом шаге. Без докера просто не бывает формы «контейнер».
+# There used to be an unconditional refusal "docker is not installed" here,
+# and it dropped a k3s machine on the very first line: under a release the
+# server and the kernels live in k3s, a rented VM may have no docker at all,
+# and `make vast-up HOST=…` left the seminar without an address: the tmux
+# session running this script died a second later. A local session, the
+# service and `make run` do not need docker from this script either: kernels
+# are the server's business, and if they do not come up, /api/health says so
+# at the first step. Without docker there is simply no "container" form.
 HAVE_DOCKER=""
 if command -v docker >/dev/null 2>&1; then HAVE_DOCKER=1; fi
 
-# Настройки ретранслятора живут в .env рядом со всем остальным. Пусто — значит
-# этот инстанс им не пользуется, и остаётся Cloudflare.
+# The relay settings live in .env next to everything else. Empty means this
+# instance does not use one, and Cloudflare remains.
 #
-# read_env общий для всех скриптов — scripts/lib.sh. Своя копия была в трёх
-# файлах и во всех трёх вырезала пробелы внутри значений.
+# read_env is shared by all the scripts: scripts/lib.sh. A copy of its own used
+# to live in three files, and in all three it cut out the spaces inside values.
 . ./scripts/lib.sh
 
-# Состояние — не там, где приложение. Каталог над scripts/ — это приложение
-# (web/dist, kernel/, эти скрипты), а .env, расписка занятия и .colloq.pid
-# лежат в каталоге СОСТОЯНИЯ: он и есть COLLOQ_STATE_ROOT из lib.sh. В
-# репозитории это один и тот же каталог, у поставленного пакета — разные, и
-# все пути ниже считаются от состояния, а не от «себя».
+# The state is not where the application is. The directory above scripts/ is
+# the application (web/dist, kernel/, these scripts), while .env, the class
+# receipt and .colloq.pid lie in the STATE directory: that is COLLOQ_STATE_ROOT
+# from lib.sh. In the repository it is one and the same directory, for an
+# installed package they differ, and all paths below are counted from the
+# state, not from "itself".
 SESSION_RECEIPT="$COLLOQ_STATE_ROOT/.colloq/local-session.json"
 PIDFILE="${PIDFILE:-$COLLOQ_STATE_ROOT/.colloq.pid}"
 
-# Чем звать расписку внешнего адреса (scripts/public-url-lease.mts).
+# What to call the external address receipt with (scripts/public-url-lease.mts).
 #
-# В репозитории — исходником через tsx: его правят рядом с сервером, и сборка
-# между правкой и проверкой ни к чему. В дистрибутиве нет ни исходника, ни
-# tsx: `node --import tsx` падает там ещё до первой строки («Cannot find
-# package 'tsx'»), а вместе с ним падал и весь скрипт — локальная сессия
-# оставалась без адреса на ровном месте. Поэтому scripts/pack.mts кладёт рядом
-# с cli/launch.mjs собранный cli/public-url-lease.mjs, и если он на месте,
-# зовём голый node. Та же развилка и по той же причине стоит в CLI —
-# cli/src/commands/local.ts · launcher.
+# In the repository, the source through tsx: it is edited next to the server,
+# and a build between the edit and the check is pointless. The distribution has
+# neither the source nor tsx: `node --import tsx` fails there before the first
+# line ("Cannot find package 'tsx'"), and the whole script used to fail with
+# it: a local session was left without an address for no reason at all. So
+# scripts/pack.mts puts the built cli/public-url-lease.mjs next to
+# cli/launch.mjs, and if it is in place, we call plain node. The same fork, for
+# the same reason, stands in the CLI: cli/src/commands/local.ts · launcher.
 #
-# Массивом, а не функцией: сторож адреса запускается в фон, и в $! должен
-# оказаться номер самого node. У функции там был бы номер подоболочки, а
-# cleanup убивал бы её, оставляя сторожа сиротой — он ещё три секунды продлевал
-# бы аренду адреса, который мы только что отдали.
+# An array, not a function: the address watcher is started in the background,
+# and $! must hold the pid of node itself. With a function it would hold the
+# pid of a subshell, and cleanup would kill that, leaving the watcher an
+# orphan: for three more seconds it would renew the lease of an address we had
+# just given up.
 if [ -f cli/public-url-lease.mjs ]; then
   LEASE=(node cli/public-url-lease.mjs)
 else
   LEASE=(node --import tsx scripts/public-url-lease.mts)
 fi
-# Супервизор занятия — тем же выбором: собранный в пакете, исходник рядом с
-# репозиторием. Отсюда он нужен одним словом, cloudflared: найти или скачать
-# (со сверкой суммы) и назвать путь. Правило поиска живёт там одно на всех —
-# и для `colloq start --share`, и для `colloq host`, и для `make host`.
+# The class supervisor, by the same choice: built in the package, the source
+# next to the repository. From here it is needed for one word, cloudflared:
+# find or download it (with a checksum check) and name the path. The search
+# rule lives there, one for everyone: for `colloq start --share`, for
+# `colloq host` and for `make host`.
 if [ -f cli/launch.mjs ]; then
   LAUNCHER=(node cli/launch.mjs)
 else
@@ -116,15 +125,16 @@ RELAY_ADDR="$(read_env RELAY_ADDR)"
 RELAY_PORT="$(read_env RELAY_PORT)"; RELAY_PORT="${RELAY_PORT:-7000}"
 RELAY_TOKEN="$(read_env RELAY_TOKEN)"
 
-# Между туннелями транспорт выбирается именем, а не отдельным флагом: имя под
-# нашей зоной может обслужить только наш ретранслятор, а любое другое — только
-# Cloudflare. Флаг здесь был бы третьим способом сказать то, что уже сказано
-# адресом.
+# Between the tunnels the transport is chosen by the name, not by a separate
+# flag: a name under our zone can be served only by our relay, and any other
+# only by Cloudflare. A flag here would be a third way of saying what the
+# address has already said.
 #
-# А вот прямой режим именем не выражается вовсе, и это не оплошность: hse.colloq.ru
-# может обслужить и ретранслятор, и эта машина — разница не в имени, а в том,
-# есть ли у машины белый адрес. Спросить об этом можно только явно, поэтому у
-# прямого режима есть свой выключатель: COLLOQ_DIRECT=1 (make host-direct HOST=…).
+# Direct mode, however, is not expressed by the name at all, and that is not
+# an oversight: hse.colloq.ru can be served both by the relay and by this
+# machine; the difference is not in the name but in whether the machine has a
+# public address. That can only be asked explicitly, so direct mode has a
+# switch of its own: COLLOQ_DIRECT=1 (make host-direct HOST=…).
 VIA="cloudflare"
 if [ "${COLLOQ_DIRECT:-}" = "1" ] && [ "${COLLOQ_LOCAL_SESSION:-}" != 1 ]; then
   VIA="direct"
@@ -141,13 +151,14 @@ case "$VIA" in
     [ -n "$RELAY_TOKEN" ] || die "no RELAY_TOKEN in .env — the shared secret of the relay."
     ;;
   direct)
-    # Всё, что нужно проверить до первого действия. Отказ здесь дешёвый:
-    # ни записи в DNS, ни поставленного caddy ещё нет.
+    # Everything that must be checked before the first action. A refusal here
+    # is cheap: there is no DNS record and no installed caddy yet.
     #
-    # Имя обязательно и обязательно полное. Прямому режиму неоткуда взять
-    # умолчание: у ретранслятора короткое имя достраивается до RELAY_DOMAIN,
-    # у быстрого туннеля имя выдаёт Cloudflare, а здесь имя — это то, на что
-    # выпишут сертификат, и придумать его за человека нельзя.
+    # The name is required, and it must be a full one. Direct mode has nowhere
+    # to take a default from: for the relay a short name is completed up to
+    # RELAY_DOMAIN, for the quick tunnel Cloudflare hands out the name, while
+    # here the name is what the certificate is issued for, and it cannot be
+    # made up on a person's behalf.
     [ -n "${COLLOQ_HOSTNAME:-}" ] || die \
       "direct mode needs a name: make host-direct HOST=hse.colloq.ru"
     case "$COLLOQ_HOSTNAME" in
@@ -158,33 +169,35 @@ case "$VIA" in
     printf '%s' "$COLLOQ_HOSTNAME" | grep -qE '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$' || die \
       "the name ${COLLOQ_HOSTNAME} has something other than a-z, digits, dots and hyphens."
 
-    # systemd — не придирка. Прямой режим оставляет после себя службу caddy,
-    # которая живёт дольше этого окна; без systemd оставить её было бы негде,
-    # и семинар умирал бы вместе с закрытым терминалом, ничего об этом не сказав.
-    # На ноутбуке (macOS) это и не нужно: у него нет белого адреса, ему туннель.
+    # systemd is not nitpicking. Direct mode leaves behind a caddy service that
+    # outlives this window; without systemd there would be nowhere to leave it,
+    # and the seminar would die along with the closed terminal without a word
+    # about it. A laptop (macOS) does not need this anyway: it has no public
+    # address, it gets a tunnel.
     command -v systemctl >/dev/null 2>&1 || die \
       "direct mode is for a machine with systemd and a public address (a Linux server).
   There is no systemd here: from a laptop a class goes out through a tunnel —
   make host HOST=<name>."
 
-    # 80 и 443 — привилегированные порты, и службу в systemd тоже ставят от root.
+    # 80 and 443 are privileged ports, and a systemd service is installed as root too.
     [ "$(id -u)" = "0" ] || die \
       "direct mode installs the caddy service and takes 80 and 443 — root is needed.
   Try again: sudo make host-direct HOST=${COLLOQ_HOSTNAME}"
 
-    # python3 нужен и здесь (проверка портов), и в scripts/dns.sh, который
-    # пишет запись.
+    # python3 is needed both here (the port check) and in scripts/dns.sh, which
+    # writes the record.
     command -v python3 >/dev/null 2>&1 || die \
       "no python3 — it is what checks the ports and writes the DNS record (scripts/dns.sh)."
     command -v curl >/dev/null 2>&1 || die "no curl."
     [ -x ./scripts/dns.sh ] || die "no scripts/dns.sh — it is what sets the A record for the name."
     ;;
   *)
-    # Названный явно (супервизор передаёт уже найденный и сверенный) — берём
-    # как есть. Поставленный в PATH — тоже: быстрый путь без node. Иначе
-    # спрашиваем супервизор: он сверит свою копию в <состояние>/bin или
-    # скачает закреплённый выпуск, говоря об этом в stderr, а путь отдаст в
-    # stdout. Проверка суммы — там; своей копии без неё отсюда не запускаем.
+    # Named explicitly (the supervisor passes one it has already found and
+    # verified): take it as it is. Installed in PATH: the same, the fast path
+    # without node. Otherwise ask the supervisor: it verifies its copy in
+    # <state>/bin or downloads a pinned release, saying so in stderr, and hands
+    # the path over in stdout. The checksum check lives there; from here we do
+    # not run a copy of our own without it.
     CLOUDFLARED="${COLLOQ_CLOUDFLARED:-$(read_env COLLOQ_CLOUDFLARED)}"
     if [ -z "$CLOUDFLARED" ]; then CLOUDFLARED="$(command -v cloudflared 2>/dev/null || true)"; fi
     if [ -z "$CLOUDFLARED" ]; then
@@ -196,7 +209,7 @@ case "$VIA" in
     ;;
 esac
 
-# PORT нужен до старта туннеля: на него cloudflared и будет светить.
+# PORT is needed before the tunnel starts: that is the port cloudflared exposes.
 PORT="${PORT:-$(read_env PORT)}"
 PORT="${PORT:-3000}"
 CLUSTER="${COLLOQ_CLUSTER:-$(read_env COLLOQ_CLUSTER)}"
@@ -220,34 +233,37 @@ HEALTH_LOCAL="http://127.0.0.1:${PORT}"
 # Only the local origin sees this rewrite; the public Host still routes at the relay.
 # Vite retains its Host protection instead of accepting every external hostname.
 #
-# Раскрывается ниже как ${ORIGIN_ARGS[@]+"${ORIGIN_ARGS[@]}"}, а не голым
-# "${ORIGIN_ARGS[@]}": пустой массив под set -u в bash до 4.4 — «unbound
-# variable», а это штатный /bin/bash macOS (3.2). Туннель Cloudflare без
-# локальной сессии (служба, `make run`, k3s) падал там, не успев стартовать.
+# Expanded below as ${ORIGIN_ARGS[@]+"${ORIGIN_ARGS[@]}"}, not as a bare
+# "${ORIGIN_ARGS[@]}": an empty array under set -u in bash before 4.4 is an
+# "unbound variable", and that is the stock /bin/bash of macOS (3.2). A
+# Cloudflare tunnel without a local session (the service, `make run`, k3s)
+# failed there before it could start.
 ORIGIN_ARGS=()
 if [ -n "$LOCAL_RUN_ID" ]; then ORIGIN_ARGS=(--http-host-header "127.0.0.1:${TUNNEL_PORT}"); fi
 
-# Шаблон с иксами, а не просто имя: BSD mktemp дописывает случайный хвост
-# сам, а GNU требует «XXXXXX» в шаблоне и без них падает с «too few X's».
-# Скрипт живёт на обеих системах — на ноутбуке преподавателя и на арендованной
-# машине, — и там, где он падал, семинар оставался без адреса.
+# A template with X's, not just a name: BSD mktemp appends a random tail by
+# itself, while GNU requires "XXXXXX" in the template and fails without them
+# with "too few X's". The script lives on both systems (the teacher's laptop
+# and a rented machine), and wherever it failed, the seminar was left without
+# an address.
 LOG="$(mktemp -t colloq-tunnel.XXXXXX)"
 TUNNEL_PID=""
-# Временный слушатель 80 и 443 в прямом режиме — см. проверку портов.
+# A temporary listener on 80 and 443 in direct mode: see the port check.
 LISTEN_PID=""
 LISTEN_LOG=""
-# Ставили ли мы PUBLIC_URL сами — см. cleanup.
+# Whether we set PUBLIC_URL ourselves: see cleanup.
 TOUCHED_ENV=""
-# Какой адрес мы отдали кластеру k3s (cluster.sh public-url) — его и только
-# его cleanup снимает на выходе, см. там.
+# Which address we gave the k3s cluster (cluster.sh public-url): that one and
+# only that one is taken down by cleanup on exit, see there.
 CLUSTER_PUBLISHED=""
-# Где k3s держит данные приложения — тот же каталог состояния и то же
-# умолчание, что у scripts/cluster.sh, backup.sh и restore.sh.
+# Where k3s keeps the application data: the same state directory and the same
+# default as in scripts/cluster.sh, backup.sh and restore.sh.
 CLUSTER_STATE="${COLLOQ_STATE_DIR:-/var/lib/colloq}"
 
-# Шагов у транспортов разное число, а нумерация нужна везде: человек по ней
-# понимает, где скрипт застрял. Поэтому счётчик, а не вписанные руками «1/4»,
-# которые в прямом режиме врали бы на два шага.
+# The transports have different numbers of steps, and numbering is needed
+# everywhere: by it a person understands where the script got stuck. Hence a
+# counter, not a hand-written "1/4", which in direct mode would be off by two
+# steps.
 STEPS=4
 if [ "$VIA" = direct ]; then STEPS=6; fi
 STEP=0
@@ -256,12 +272,13 @@ step() { STEP=$((STEP + 1)); say "${BOLD}${STEP}/${STEPS}${OFF} $*"; }
 cleanup() {
   local code=$?
   trap - EXIT INT TERM
-  # Уборка идёт до конца, а не до первого отказа, и закрытое окно её не
-  # обрывает. На арендованной машине скрипт живёт в tmux как `host.sh | tee`:
-  # Ctrl+C убивает и tee, и первая же строка уборки получала бы SIGPIPE —
-  # оболочка умерла бы, не вернув адрес; закрытая сессия (SIGHUP) рвала бы на
-  # полпути cluster.sh, который как раз перезапускает приложение. Всё ниже и
-  # так лучшее усилие с `|| true`; set -e здесь только обрывал бы на выводе.
+  # The cleanup runs to the end, not to the first failure, and a closed window
+  # does not cut it short. On a rented machine the script lives in tmux as
+  # `host.sh | tee`: Ctrl+C kills tee as well, and the very first line of the
+  # cleanup would get SIGPIPE, the shell would die without returning the
+  # address; a closed session (SIGHUP) would tear cluster.sh apart halfway,
+  # just as it restarts the application. Everything below is best effort with
+  # `|| true` anyway; set -e here would only cut things off at output.
   set +e
   trap '' HUP PIPE
   [ -n "$LEASE_PID" ] && kill "$LEASE_PID" 2>/dev/null || true
@@ -269,31 +286,34 @@ cleanup() {
     "${LEASE[@]}" release "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" || true
   fi
   [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null || true
-  # Слушатель занимает ровно те порты, которые нужны caddy. Не убрать его —
-  # значит уронить выдачу сертификата, причём молча.
+  # The listener holds exactly the ports caddy needs. Not removing it means
+  # breaking the certificate issuance, and silently at that.
   [ -n "$LISTEN_PID" ] && kill "$LISTEN_PID" 2>/dev/null || true
   [ -n "$LISTEN_LOG" ] && rm -f "$LISTEN_LOG" || true
-  # Прямой режим не возвращает PUBLIC_URL назад, и это не забывчивость.
-  # Ссылка там живёт не в этом окне, а в службе caddy: она переживает и Ctrl+C,
-  # и закрытый ssh. Вернуть адрес на localhost значило бы, что после выхода из
-  # скрипта работающий семинар начинает раздавать ссылки на localhost.
+  # Direct mode does not put PUBLIC_URL back, and that is not forgetfulness.
+  # The link there lives not in this window but in the caddy service: it
+  # survives Ctrl+C and a closed ssh alike. Returning the address to localhost
+  # would mean that after the script exits a working seminar starts handing
+  # out links to localhost.
   if [ "$VIA" = direct ]; then rm -f "$LOG"; exit $code; fi
-  # k3s. Адрес здесь живёт не в .env, а в конфиге кластера: `cluster.sh
-  # public-url` пишет его в <состояние>/config.env и перезапускает приложение,
-  # которое читает PUBLIC_URL один раз, при старте. Уборка раньше обходила
-  # кластер вовсе, и после Ctrl+C панель так и раздавала ссылки на туннель,
-  # которого больше нет, а `make vast-status` пересказывал мёртвый адрес как
-  # живой.
+  # k3s. Here the address lives not in .env but in the cluster config:
+  # `cluster.sh public-url` writes it into <state>/config.env and restarts the
+  # application, which reads PUBLIC_URL once, at startup. The cleanup used to
+  # bypass the cluster entirely, and after Ctrl+C the panel went on handing
+  # out links to a tunnel that no longer existed, while `make vast-status`
+  # reported the dead address as alive.
   #
-  # Снимаем ровно то, что ставили, — как локальная сессия отпускает только
-  # свою аренду адреса (release с владельцем, выше): --if-current сверяет под
-  # замком состояния, что в кластере всё ещё наш адрес, и чужой не трогает.
-  # Цена — перезапуск приложения, но зал к этому моменту и так отрезан:
-  # туннель уже закрыт строками выше.
+  # We take down exactly what we set, the way a local session releases only
+  # its own address lease (release with the owner, above): --if-current checks
+  # under the state lock that the cluster still holds our address, and leaves
+  # someone else's alone. The price is an application restart, but by this
+  # point the room is cut off anyway: the lines above have already closed the
+  # tunnel.
   #
-  # Причину отказа показываем: «не смог» без неё отправляло бы человека гадать
-  # между замком состояния (идёт vast-sync), не-root и таймаутом перезапуска —
-  # а в tmux эти строки и есть единственный след в host.log.
+  # We show the reason for a failure: "could not" without it would send a
+  # person guessing between the state lock (vast-sync is running), not being
+  # root and a restart timeout, and in tmux these lines are the only trace in
+  # host.log.
   if [ -n "$CLUSTER_PUBLISHED" ]; then
     say "${DIM}taking ${CLUSTER_PUBLISHED} off the cluster — the app restarts, up to 3 minutes${OFF}"
     local why rc
@@ -305,42 +325,47 @@ cleanup() {
       *) say "${RED}could not take ${CLUSTER_PUBLISHED} off the cluster (exit ${rc}):${OFF}"
          [ -z "$why" ] || printf '%s\n' "$why" | tail -3 | sed 's/^/    /'
          say "${DIM}By hand, as root:${OFF} bash scripts/cluster.sh public-url ${LOCAL}"
-         # Кластер так и раздаёт мёртвый адрес — значит, и запись в .env должна
-         # его называть: по ней vast-status проверит адрес снаружи и скажет
-         # «не отвечает», а не «наружу не выставлен» при живых ссылках на туннель.
+         # The cluster keeps handing out the dead address, so the entry in .env
+         # must name it too: by it vast-status checks the address from outside
+         # and says "not answering", not "not exposed" while links to the tunnel
+         # are alive.
          TOUCHED_ENV="" ;;
     esac
   fi
-  # Ссылка мертва вместе с туннелем. Оставить её в .env значит, что следующий
-  # `make up` без туннеля раздаст студентам адрес, который никуда не ведёт. На
-  # k3s .env приложение не читает, но по нему `make vast-status` узнаёт, какой
-  # адрес машина обслуживает, — и мёртвый там был бы той же неправдой.
+  # The link is dead along with the tunnel. Leaving it in .env means the next
+  # `make up` without a tunnel hands the students an address that leads
+  # nowhere. On k3s the application does not read .env, but `make vast-status`
+  # learns from it which address the machine serves, and a dead one there
+  # would be the same untruth.
   #
-  # Только если её ставили мы: отказ на первом шаге — «инстанс нездоров»,
-  # «ретранслятор отказал» — не повод переписывать чужую настройку, к которой
-  # мы ещё не прикасались. И только если в файле всё ещё НАШ адрес: второй
-  # `make host`, поднятый поверх, переписал его своим, и вернуть localhost
-  # поверх живого чужого туннеля значило бы сломать ему ссылки.
+  # Only if we set it: a refusal at the first step ("the instance is
+  # unhealthy", "the relay refused") is no reason to rewrite someone else's
+  # setting that we have not touched yet. And only if the file still holds OUR
+  # address: a second `make host` started on top has rewritten it with its
+  # own, and putting localhost back over someone else's live tunnel would
+  # break their links.
   if [ -n "$TOUCHED_ENV" ] && [ -f "$ENV_FILE" ] && [ "$(read_env PUBLIC_URL)" = "${PUBLIC:-}" ]; then
     restore_public_url
-    # Вернуть строку в .env мало тому, кто читает её один раз, при запуске.
+    # Putting the line back into .env is not enough for whoever reads it only
+    # once, at startup.
     #
-    # Контейнеру: файла внутри нет вовсе, PUBLIC_URL запечён в окружение на
-    # `docker compose up -d app` предпоследним шагом. Без пересоздания в панели
-    # так и раздаются ссылки на туннель, которого больше нет, — и видно это
-    # только тому, кому её отправили.
+    # The container: there is no file inside at all, PUBLIC_URL is baked into
+    # the environment by `docker compose up -d app` at the second-to-last step.
+    # Without recreating it the panel keeps handing out links to a tunnel that
+    # no longer exists, and only the person the link was sent to sees it.
     #
-    # Службе — ничего: сервер на хосте перечитывает .env сам, не реже раза в
-    # две секунды (readPublicUrl в server/src/config.ts), и файл для него
-    # главнее окружения из EnvironmentFile. Перезапуск здесь только рвал бы
-    # сокеты всей комнаты — в том числе на Ctrl+C, которым туннель закрывают
-    # штатно.
+    # The service: nothing. The server on the host rereads .env by itself, at
+    # least once every two seconds (readPublicUrl in server/src/config.ts), and
+    # for it the file wins over the environment from EnvironmentFile. A restart
+    # here would only tear down the sockets of the whole room, including on the
+    # Ctrl+C by which the tunnel is normally closed.
     #
-    # Сервер, запущенный через `make run`, тоже не трогаем: его подняли руками,
-    # и снимать его молча, за спиной, нельзя. Он перечитает адрес оттуда же.
+    # A server started through `make run` is not touched either: it was started
+    # by hand, and it must not be taken down silently behind someone's back. It
+    # rereads the address from the same place.
     #
-    # Кластеру — уже сказано выше: .env для него только запись, и о снятом
-    # адресе строкой выше отчитался cluster.sh.
+    # The cluster: already said above; .env is only a record for it, and
+    # cluster.sh reported the address taken down a line above.
     case "${WHO:-}" in
       container) PUBLIC_URL="$LOCAL" docker compose up -d app >/dev/null 2>&1 || true ;;
     esac
@@ -351,7 +376,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# sed -i несовместим между macOS и GNU, поэтому пишем через временный файл.
+# sed -i is incompatible between macOS and GNU, so we write through a temporary file.
 set_public_url() {
   local url="$1" tmp
   tmp="$(mktemp)"
@@ -361,23 +386,25 @@ set_public_url() {
     cat "$ENV_FILE" > "$tmp" 2>/dev/null || true
   fi
   printf 'PUBLIC_URL=%s\n' "$url" >> "$tmp"
-  # Содержимое переливается в существующий .env, а не `mv` поверх него.
-  # Разница видна там, где скрипт запускают под sudo (прямой режим и любая
-  # выделенная машина): mv из /tmp сделал бы .env файлом root с правами 600,
-  # и следующий `make run` от преподавателя не смог бы его ни переписать, ни
-  # прочитать. Файл при этом всё равно готовится целиком заранее — на месте
-  # он не редактируется ни секунды.
+  # The content is poured into the existing .env instead of `mv` over it. The
+  # difference shows where the script is run under sudo (direct mode and any
+  # dedicated machine): mv from /tmp would make .env a root file with mode 600,
+  # and the teacher's next `make run` could neither rewrite nor read it. The
+  # file is still prepared whole in advance: it is not edited in place for a
+  # single second.
   cat "$tmp" > "$ENV_FILE"
   rm -f "$tmp"
 }
 restore_public_url() { set_public_url "$LOCAL"; }
 
-# Спрашиваем несколько резолверов: на корпоративных сетях запросы к 1.1.1.1
-# режутся через раз — измерено, три подряд dig дали ответ, пусто, пусто.
+# Ask several resolvers: on corporate networks requests to 1.1.1.1 are cut
+# every other time; measured, three dig calls in a row gave an answer, empty,
+# empty.
 #
-# Имя приходит аргументом, а не из глобальной переменной: спрашивают отсюда
-# двое — проверка «отвечает ли адрес снаружи» в конце и прямой режим, которому
-# надо дождаться, пока новая A-запись доедет до публичных резолверов.
+# The name comes as an argument, not from a global variable: two callers ask
+# from here, the "does the address answer from outside" check at the end and
+# direct mode, which has to wait until the new A record reaches the public
+# resolvers.
 resolve_any() {
   local name="$1" r ip
   for r in 1.1.1.1 8.8.8.8 9.9.9.9; do
@@ -387,19 +414,20 @@ resolve_any() {
   return 1
 }
 
-# ------------------------------------------------------------- статика наружу
+# ------------------------------------------------------------- static files outward
 #
-# Три каталога, и все три — одно и то же у всех, кто пришёл на пару.
-# assets/ Vite штампует хэшем содержимого (их и отдают с immutable на год),
-# fonts/ и pdf/ меняются только с выкладкой. Именно они и зеркалятся на
-# ретрансляторе, и именно они сжимаются заранее.
+# Three directories, and all three are the same for everyone who came to the
+# class. Vite stamps assets/ with a content hash (which is why they are served
+# as immutable for a year), fonts/ and pdf/ change only with a deployment.
+# These are exactly what is mirrored on the relay, and exactly what is
+# compressed in advance.
 DIST_DIRS="assets fonts pdf"
 
-# Сколько собранных файлов лежат БЕЗ сжатого соседа.
+# How many built files lie WITHOUT a compressed neighbour.
 #
-# Порог в килобайт — тот же, что у web/scripts/precompress.mjs: на меньшем
-# обёртка формата съедает всё, что сжатие выигрывает, и .br там не бывает по
-# замыслу, а не по забывчивости.
+# The threshold of a kilobyte is the same as in web/scripts/precompress.mjs:
+# below it the format wrapper eats everything compression gains, and .br is
+# absent there by design, not by forgetfulness.
 assets_uncompressed() {
   local n=0 f
   [ -d web/dist/assets ] || { printf 0; return 0; }
@@ -411,11 +439,12 @@ assets_uncompressed() {
   printf '%s' "$n"
 }
 
-# Архив для зеркала: ровно те каталоги, что есть, и ничего скрытого.
+# The archive for the mirror: exactly the directories that exist, and nothing
+# hidden.
 #
-# COPYFILE_DISABLE — про macOS: без него tar кладёт рядом с каждым файлом
-# ещё и `._имя` с расширенными атрибутами, и зеркало получает вдвое больше
-# файлов, половина из которых ничего не значит.
+# COPYFILE_DISABLE is about macOS: without it tar also puts a `._name` with
+# extended attributes next to every file, and the mirror gets twice as many
+# files, half of which mean nothing.
 assets_tar() {
   local out="$1" dir dirs=""
   for dir in $DIST_DIRS; do
@@ -426,16 +455,17 @@ assets_tar() {
   COPYFILE_DISABLE=1 tar -czf "$out" --exclude '.*' --exclude '*/.*' -C web/dist $dirs
 }
 
-# Положить статику на ретранслятор, чтобы он раздавал её сам.
+# Put the static files on the relay so that it serves them itself.
 #
-# Без этого КАЖДЫЙ байт каждого /assets/*, /fonts/* и /pdf/* едет через этот
-# ноутбук: 598 КБ сжатого на каждого пришедшего, по тому же туннелю, по
-# которому в этот момент живут сокеты комнаты. Файлы одинаковые у всех, и
-# ретранслятор вполне может отдать их сам (scripts/relay-assets.py).
+# Without this EVERY byte of every /assets/*, /fonts/* and /pdf/* travels
+# through this laptop: 598 KB compressed for everyone who arrives, over the
+# same tunnel the room's sockets live on at that moment. The files are the
+# same for everyone, and the relay can perfectly well serve them itself
+# (scripts/relay-assets.py).
 #
-# Отказ здесь — предупреждение, а не смерть: туннель работает и без зеркала,
-# просто медленнее. Ретранслятор, поставленный до появления зеркала, отвечает
-# на этот адрес чем угодно — про него и сказано отдельно.
+# A failure here is a warning, not death: the tunnel works without the mirror
+# too, just slower. A relay installed before the mirror appeared answers this
+# address with anything at all; that case gets a message of its own.
 upload_assets() {
   local archive answer code files bytes
   archive="$(mktemp -t colloq-assets.XXXXXX)"
@@ -467,23 +497,25 @@ upload_assets() {
   rm -f "$archive" "$answer"
 }
 
-# ---------------------------------------------------------------- запуск
+# ---------------------------------------------------------------- start
 
 step "checking colloq at ${LOCAL}"
 #
-# Ничего не поднимаем, если оно уже поднято. Это не бережливость, а исправление:
-# `docker compose up -d` пересоздаёт и ядро тоже — по основному compose-файлу,
-# без dev-override. Override публикует 8888 на хост и монтирует ./workspace, и
-# ровно этим живёт сервер, запущенный руками. Одна такая пересборка — и ядро
-# перестаёт стартовать, а терминал молчит, хотя контейнер «healthy».
+# Start nothing if it is already running. This is not thrift but a fix:
+# `docker compose up -d` recreates the kernel too, from the main compose file,
+# without the dev override. The override publishes 8888 on the host and mounts
+# ./workspace, and a server started by hand lives on exactly that. One such
+# rebuild, and the kernel stops starting while the terminal stays silent,
+# though the container is "healthy".
 #
 #
-# /api/health отвечает 200 только когда и база читается, и Jupyter отзывается,
-# поэтому «не отвечает» здесь значит и «никого нет», и «есть, но семинар вести
-# нельзя» — второе curl -sf тоже считает отказом, и правильно делает.
+# /api/health answers 200 only when the database can be read and Jupyter
+# responds, so "not answering" here means both "nobody is there" and "someone
+# is, but a seminar cannot be held"; curl -sf counts the second as a failure
+# too, and rightly so.
 #
-# Тело ответа не выбрасываем: в нём поле isolation, по которому ниже решается,
-# можно ли вообще открывать дверь.
+# The response body is not thrown away: it holds the isolation field, by which
+# it is decided below whether the door may be opened at all.
 HEALTH_BODY=""
 if HEALTH_BODY="$(curl -sf --max-time 5 "$HEALTH_LOCAL/api/health" 2>/dev/null)"; then
   say "${DIM}    already running — touching nothing${OFF}"
@@ -492,11 +524,12 @@ elif [ "$CLUSTER" = 1 ]; then
 elif { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; } \
      || { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }; then
   #
-  # Сервер на хосте жив — службой или руками, — но здоровым себя не считает.
-  # Почти всегда это выключенный Docker или ни разу не собранное окружение
-  # ядра. Поднимать здесь `docker compose up` нельзя: он поднимет и app, и на
-  # порту окажется второй Colloq с другой базой поверх первого. Это и был
-  # «третий переход»: три разных инстанса за одно утро.
+  # The server on the host is alive (as a service or by hand) but does not
+  # consider itself healthy. Almost always that is Docker switched off or a
+  # kernel environment that was never built. Running `docker compose up` here
+  # is not allowed: it would bring up app as well, and the port would get a
+  # second Colloq with a different database on top of the first. That was the
+  # "third switch-over": three different instances in one morning.
   #
   die "colloq at ${LOCAL} is running, but is not ready to hold a class — usually that
   is Docker switched off or a kernel environment that was never built
@@ -504,28 +537,31 @@ elif { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet collo
   Check: curl -s ${LOCAL}/api/health"
 else
   #
-  # Ничего не поднимаем сами — и это исправление, купленное дорого.
+  # We start nothing ourselves, and this is a fix that was paid for dearly.
   #
-  # Здесь стоял `docker compose up -d`, и он поднимал ВЕСЬ стек, включая `app`.
-  # Достаточно было, чтобы health на секунду ответил отказом — например, потому
-  # что выключили ядро, — и рядом с уже работающим сервером на хосте вставал
-  # второй Colloq в контейнере. Оба — полноправные Yjs-авторитеты, оба пишут в
-  # одну базу (после перехода на bind-монты — буквально в ту же), и браузер
-  # попадает то в один, то в другой: тетрадь то полупустая, то с задвоенными
-  # ячейками, и сокет не переставая переподключается.
+  # There used to be `docker compose up -d` here, and it brought up the WHOLE
+  # stack, including `app`. It was enough for health to answer with a failure
+  # for a second (for instance, because the kernel was switched off), and next
+  # to the server already running on the host a second Colloq came up in a
+  # container. Both are full Yjs authorities, both write into one database
+  # (after the move to bind mounts, literally the same one), and the browser
+  # lands now on one, now on the other: the notebook is now half empty, now
+  # has doubled cells, and the socket reconnects without end.
   #
-  # Туннель — это про то, чтобы показать наружу уже работающий инстанс. Решать
-  # за человека, какой из двух способов запуска ему нужен, он не должен.
+  # The tunnel is about showing an already running instance to the outside. It
+  # should not decide for a person which of the two ways of starting they
+  # need.
   #
   say "${RED}    nobody answers at ${LOCAL}${OFF}"
-  # Совет обязан быть выполнимым на той машине, где его прочитали.
+  # The advice must be doable on the machine where it was read.
   #
-  # Здесь стояло «make up / make run / make service-install» — три цели Makefile,
-  # которого у поставленного через pip colloq нет вовсе. А срабатывает эта
-  # строка именно на `colloq host`: на команде, которой класс получает ссылку.
-  # Человек читал совет, набирал make и получал «command not found» вторым
-  # отказом подряд. Цели остаются — но только там, где есть Makefile, и это
-  # видно по тому же признаку, по которому скрипт уже выбирает каталоги.
+  # There used to be "make up / make run / make service-install" here: three
+  # targets of a Makefile that colloq installed through pip does not have at
+  # all. And this line fires precisely on `colloq host`, the command by which
+  # a class gets its link. A person read the advice, typed make and got
+  # "command not found" as a second refusal in a row. The targets remain, but
+  # only where there is a Makefile, and that is visible by the same sign by
+  # which the script already chooses directories.
   if [ "${COLLOQ_STATE_ROOT}" = "." ] || [ -f "$PWD/Makefile" ]; then
     die "start the class first — colloq start (or make up for everything in
   docker, make service-install on a dedicated machine), then try again."
@@ -533,20 +569,22 @@ else
   die "start the class first — colloq start — then try again."
 fi
 
-# Замок публикации — до первого действия наружу, одинаковый для всех форм.
+# The publishing lock: before the first action toward the outside, the same for
+# all forms.
 #
-# Решение автора: в интернет уходит только занятие, где ядро каждой комнаты
-# сидит в своём контейнере. Кто получил ссылку, тот запускает код на этой
-# машине; общее ядро за такой дверью — это чужой код рядом с тетрадями всего
-# класса, и никакой транспорт это не лечит. Судим не по .env (у локального
-# занятия супервизор всё равно ставит docker сам), а по ответу сервера: поле
-# isolation он ставит, только когда проверка ядра прошла — демон docker или
-# брокер ответили (server/src/app.ts · roomIsolation). Нет поля — значит, это
-# сервер старше этой проверки или бэкенд без изоляции, и в обоих случаях
-# публиковать нечего.
+# The author's decision: only a class where every room's kernel sits in a
+# container of its own goes onto the internet. Whoever gets the link runs code
+# on this machine; a shared kernel behind such a door is someone else's code
+# next to the notebooks of the whole class, and no transport cures that. We
+# judge not by .env (for a local class the supervisor sets docker itself
+# anyway) but by the server's answer: it sets the isolation field only when
+# the kernel check has passed, that is, the docker daemon or the broker
+# answered (server/src/app.ts · roomIsolation). No field means a server older
+# than this check or a backend without isolation, and in both cases there is
+# nothing to publish.
 #
-# Строгое сравнение по строке, без jq: JSON.stringify пишет без пробелов, а
-# этот скрипт обходится тем, что есть на голой машине.
+# A strict comparison by string, without jq: JSON.stringify writes without
+# spaces, and this script gets by with what a bare machine has.
 case "$HEALTH_BODY" in
   *'"isolation":"docker"'* | *'"isolation":"broker"'*) : ;;
   *) die "not publishing: the server at ${LOCAL} does not confirm that every room
@@ -557,26 +595,30 @@ case "$HEALTH_BODY" in
   Check: curl -s ${LOCAL}/api/health — restart or update colloq if the field is missing." ;;
 esac
 
-# Кто именно держит порт. Случаев четыре, и все четыре настоящие:
+# Who exactly holds the port. There are four cases, and all four are real:
 #
-#   служба      — systemd на выделенной машине: сервер на хосте, в docker
-#                 только ядра комнат. Так стоит арендованная машина и любая,
-#                 где идут занятия;
-#   контейнер   — `make up`, приложение целиком в docker;
-#   хост        — `make run`, сервер на машине, ядро в docker. Так проект
-#                 запускают, когда правят код, и .colloq.pid — его расписка;
-#   чужой       — что-то другое. Туннель встанет и на него, но PUBLIC_URL ему
-#                 никто не поправит, и об этом придётся сказать вслух.
+#   service     — systemd on a dedicated machine: the server on the host, only
+#                 the room kernels in docker. That is how a rented machine is
+#                 set up, and any machine where classes run;
+#   container   — `make up`, the whole application in docker;
+#   host        — `make run`, the server on the machine, the kernel in docker.
+#                 That is how the project is run while the code is edited, and
+#                 .colloq.pid is its receipt;
+#   other       — something else. The tunnel will stand in front of it too, but
+#                 nobody will fix its PUBLIC_URL, and that has to be said out
+#                 loud.
 #
-# Порядок разбора — не алфавитный, а по надёжности признака. Служба спрашивается
-# первой: на машине под службой рядом валяется и .colloq.pid от давнего `make
-# run`, и остановленный контейнер app, — а перезапускать надо ту форму, которая
-# сейчас держит порт. Расписка `make run` идёт последней ровно поэтому: pid-файл
-# переживает и перезагрузку, и смену формы, и говорит о прошлом, а не о
-# настоящем.
+# The order of checks is not alphabetical but by how reliable the sign is. The
+# service is asked first: on a machine under the service there is also a
+# .colloq.pid lying around from a long-ago `make run`, and a stopped app
+# container, while what has to be restarted is the form that holds the port
+# now. The `make run` receipt goes last for exactly that reason: a pid file
+# survives both a reboot and a change of form, and speaks about the past, not
+# the present.
 #
-# Различать обязательно: ссылки на семинары строятся из PUBLIC_URL, и семинар,
-# розданный со ссылкой на localhost, — это семинар, на который никто не зашёл.
+# Telling them apart is a must: links to seminars are built from PUBLIC_URL,
+# and a seminar handed out with a link to localhost is a seminar nobody came
+# to.
 WHO="other"
 if [ -n "$LOCAL_RUN_ID" ]; then
   WHO="local"
@@ -590,22 +632,23 @@ elif [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; t
   WHO="host"
 fi
 
-# ------------------------------------------------- прямой режим: без посредника
+# ------------------------------------------------- direct mode: no middleman
 #
-# Всё, что ниже, работает только при COLLOQ_DIRECT=1. Смысл режима в одной
-# фразе: на пути от студента до этой машины нет никого. Ни ретранслятора,
-# который на 951 МБ памяти ложился от двухсот сокетов, ни Cloudflare, чьи
-# адреса из России не открываются. Цена — машине нужен настоящий публичный
-# адрес и настоящие 80 и 443 на нём.
+# Everything below works only with COLLOQ_DIRECT=1. The point of the mode in
+# one sentence: there is nobody on the path from the student to this machine.
+# Neither the relay, which at 951 MB of memory went down under two hundred
+# sockets, nor Cloudflare, whose addresses do not open from Russia. The price:
+# the machine needs a real public address and real 80 and 443 on it.
 
 DIRECT_IP=""
 
-# Адрес этой машины, каким его видит внешний мир.
+# This machine's address as the outside world sees it.
 #
-# Спрашиваем несколько служб подряд: любая из них может быть недоступна именно
-# из этой сети, а ошибиться адресом нельзя — запись в DNS уведёт всю аудиторию
-# не туда. Cloudflare среди них нет намеренно: из России их адреса не
-# открываются, и «не смог узнать свой адрес» было бы неправдой о машине.
+# Ask several services in a row: any of them may be unreachable from this very
+# network, and the address must not be wrong: a DNS record would send the
+# whole audience to the wrong place. Cloudflare is not among them on purpose:
+# its addresses do not open from Russia, and "could not find out my address"
+# would be an untruth about the machine.
 public_ip() {
   local url addr
   for url in https://api.ipify.org https://checkip.amazonaws.com https://ident.me https://ipinfo.io/ip; do
@@ -618,14 +661,14 @@ public_ip() {
   return 1
 }
 
-# Висит ли этот адрес прямо на интерфейсе машины.
+# Whether this address sits directly on the machine's interface.
 #
-# Ответ «нет» сам по себе ничего не решает и отказом не является: у облачных
-# машин (AWS, GCP) публичный адрес живёт на пограничном маршрутизаторе, на
-# интерфейсе только частный, и прямой режим там работает прекрасно. Но это же
-# «нет» бывает и у машины за пробросом портов, где 80 и 443 не открыты вовсе.
-# Поэтому признак используется только как подсказка к вердикту проверки
-# снаружи — она и есть настоящий ответ.
+# A "no" by itself decides nothing and is not a refusal: on cloud machines
+# (AWS, GCP) the public address lives on the edge router, the interface has
+# only a private one, and direct mode works there perfectly well. But the same
+# "no" also comes from a machine behind port forwarding, where 80 and 443 are
+# not open at all. So the sign is used only as a hint to the verdict of the
+# outside check, which is the real answer.
 ip_is_local() {
   local want="$1"
   if command -v ip >/dev/null 2>&1; then
@@ -637,12 +680,13 @@ ip_is_local() {
   fi
 }
 
-# Временно занять 80 и 443, чтобы снаружи было к чему подключаться.
+# Take 80 and 443 for a while, so that there is something to connect to from
+# outside.
 #
-# Проверять «открыт ли порт», не слушая его, невозможно: закрытый фаерволом и
-# никем не занятый порт выглядят снаружи одинаково. Поэтому на время проверки
-# порты держит крошечный слушатель на python3 — он же доказывает, что порты
-# вообще свободны и что их разрешено занимать.
+# Checking "is the port open" without listening on it is impossible: a port
+# closed by a firewall and a port nobody holds look the same from outside. So
+# for the time of the check the ports are held by a tiny listener in python3,
+# which also proves that the ports are free at all and may be taken.
 listener_start() {
   LISTEN_LOG="$(mktemp -t colloq-ports.XXXXXX)"
   python3 - 80 443 >"$LISTEN_LOG" 2>&1 <<'PY' &
@@ -656,8 +700,8 @@ for port in (int(a) for a in sys.argv[1:]):
     s.listen(16)
     socks.append(s)
 
-# Слово печатается только после того, как оба порта заняты: ждущая сторона
-# по нему и понимает, что спрашивать снаружи уже есть смысл.
+# The word is printed only after both ports are taken: the waiting side learns
+# from it that asking from outside now makes sense.
 print("READY", flush=True)
 
 
@@ -667,9 +711,9 @@ def serve(sock):
             conn, _ = sock.accept()
         except OSError:
             return
-        # Проверяющий узел снаружи смотрит только на то, состоялось ли
-        # соединение, но ответить всё же вежливее: так в чужих журналах не
-        # остаётся оборванных запросов.
+        # The checking node outside looks only at whether the connection
+        # happened, but answering is still more polite: that way no torn
+        # requests remain in other people's logs.
         try:
             conn.sendall(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
         except OSError:
@@ -696,14 +740,14 @@ listener_stop() {
   LISTEN_PID=""
 }
 
-# Спросить снаружи: пускает ли эта машина на такой-то порт. Печатает
-# open, closed или unknown.
+# Ask from outside: does this machine let us in on such-and-such a port.
+# Prints open, closed or unknown.
 #
-# Спрашиваем check-host.net: он бесплатен, без ключей, отвечает из нескольких
-# стран и — в отличие от большинства подобных служб — открывается из России.
-# Форма ответа выверена на живых запросах, а не по памяти: пока проверка идёт,
-# значение узла равно null; удавшееся соединение приходит как
-# [{"address": …, "time": …}], отказ — как [{"error": "Connection timed out"}].
+# We ask check-host.net: it is free, needs no keys, answers from several
+# countries and, unlike most such services, opens from Russia. The shape of
+# the answer was checked on live requests, not from memory: while the check is
+# running, a node's value is null; a successful connection comes as
+# [{"address": …, "time": …}], a refusal as [{"error": "Connection timed out"}].
 ask_outside() {
   local addr="$1" port="$2" id res verdict i
   id="$(curl -s --max-time 10 -H 'Accept: application/json' \
@@ -727,8 +771,8 @@ if not isinstance(rows, dict) or not rows:
 else:
     vals = list(rows.values())
     done = [v for v in vals if isinstance(v, list)]
-    # Достаточно одного узла, которому ответили: соединение снаружи состоялось,
-    # значит порт открыт. А вот «закрыт» — только когда высказались все.
+    # One node that got an answer is enough: a connection from outside
+    # happened, so the port is open. "Closed", though, only when all have spoken.
     if any(v and isinstance(v[0], dict) and v[0].get("address") for v in done):
         print("open")
     elif len(done) == len(vals):
@@ -740,19 +784,21 @@ else:
   printf 'unknown'
 }
 
-# Спросить снаружи, что отвечает по адресу на 80. Печатает code:<код>,
-# closed или unknown.
+# Ask from outside what answers at the address on 80. Prints code:<code>,
+# closed or unknown.
 #
-# Отдельно от ask_outside, потому что вопрос другой и он важнее. «Порт открыт»
-# — это ещё не «порт открыт у нас»: измерено прямо на этой машине, где
-# публичным адресом оказался выход VPN, и на его 80 и 443 честно отвечал чужой
-# веб-сервер. TCP-проверка сказала бы «открыт», имя семинара уехало бы на
-# чужую машину, а сертификат не выпустился бы никогда — и понять, почему,
-# было бы не по чему. Поэтому пока порты держит наш слушатель, отдающий 204,
-# мы спрашиваем именно код ответа: 204 значит «это мы».
+# Separate from ask_outside, because the question is different and more
+# important. "The port is open" is not yet "the port is open to us": measured
+# right on this machine, where the public address turned out to be a VPN exit,
+# and on its 80 and 443 someone else's web server honestly answered. A TCP
+# check would have said "open", the seminar name would have gone to someone
+# else's machine, and the certificate would never have been issued, with
+# nothing to tell why. So while the ports are held by our listener, which
+# answers 204, we ask precisely for the response code: 204 means "it is us".
 #
-# Форма ответа check-host для http-проверки, выверена на живом запросе:
-# [[1, 0.13, "OK", "200", "8.47.69.0"]] — успех и код в четвёртом поле.
+# The shape of check-host's answer for an http check, verified on a live
+# request: [[1, 0.13, "OK", "200", "8.47.69.0"]], success and the code in the
+# fourth field.
 ask_outside_http() {
   local url="$1" id res verdict i
   id="$(curl -s --max-time 10 -H 'Accept: application/json' \
@@ -792,28 +838,30 @@ else:
   printf 'unknown'
 }
 
-# ---------------------------------------------------------- шаг: порты
+# ---------------------------------------------------------- step: ports
 
 direct_check_ports() {
   step "checking that 80 and 443 on this machine are visible from outside"
   #
-  # Это самая важная проверка прямого режима, и поэтому она первая — до записи
-  # в DNS и до установки caddy.
+  # This is the most important check of direct mode, and that is why it comes
+  # first, before the DNS record and before installing caddy.
   #
-  # Сертификат выдаётся по HTTP-01: Let's Encrypt приходит на 80 по имени и
-  # ждёт ответа именно этой машины. Нет 80 — нет сертификата; нет 443 — нет
-  # семинара. Узнать это на выдаче сертификата значит узнать поздно и невнятно:
-  # caddy не падает, он молча повторяет попытки, а у зала в браузере всё это
-  # время «не удалось установить соединение».
+  # The certificate is issued over HTTP-01: Let's Encrypt comes to 80 by the
+  # name and expects an answer from exactly this machine. No 80, no
+  # certificate; no 443, no seminar. Finding this out at certificate issuance
+  # means finding out late and unclearly: caddy does not fail, it silently
+  # retries, and all that time the room's browsers say "unable to connect".
   #
-  # Случай не выдуманный. На арендованной машине vast.ai наружу открыт только
-  # проброшенный ssh: у предложения есть direct_port_count, но настоящих 80 и
-  # 443 vast не даёт вовсе — проверено. Прямой режим там невозможен, и сказать
-  # об этом надо словами, а не падением на сертификате через десять минут.
+  # The case is not made up. On a rented vast.ai machine only the forwarded ssh
+  # is open to the outside: the offer has direct_port_count, but vast does not
+  # give real 80 and 443 at all (verified). Direct mode is impossible there,
+  # and that has to be said in words, not by failing on the certificate ten
+  # minutes later.
   #
-  # Colloq на 80 или 443 — это тот же порт, что просит caddy, и вдвоём они на
-  # нём не поместятся. Сказать это здесь дешевле, чем сломать уже работающий
-  # инстанс перезапуском caddy, который всё равно не встанет.
+  # Colloq on 80 or 443 is the same port caddy asks for, and the two of them
+  # will not fit on it together. Saying so here is cheaper than breaking an
+  # already running instance by restarting caddy, which would not come up
+  # anyway.
   case "$PORT" in
     80|443) die "colloq listens on ${PORT} — and direct mode needs exactly that port for caddy.
   Move the instance to another port (PORT in .env, then make run/service-restart)
@@ -834,9 +882,9 @@ direct_check_ports() {
     say "${DIM}    is how it should be, behind port forwarding it is trouble)${OFF}"
   fi
 
-  # caddy, уже занявший порты с прошлого запуска, — это не «занято», а «мы же
-  # их и заняли». Своего слушателя тогда не поднимаем: порты и так открыты, и
-  # спросить снаружи можно прямо так.
+  # caddy already holding the ports from a previous run is not "taken" but "we
+  # took them ourselves". We do not start our own listener then: the ports are
+  # open anyway, and we can ask from outside right away.
   local held_by_caddy=""
   if systemctl is-active --quiet caddy 2>/dev/null; then
     held_by_caddy=1
@@ -844,7 +892,7 @@ direct_check_ports() {
   elif ! listener_start; then
     tail -3 "$LISTEN_LOG" 2>/dev/null | sed 's/^/    /' >&2 || true
     if grep -q 'Address already in use' "$LISTEN_LOG" 2>/dev/null; then
-      # Кто именно держит порт — это ответ, а «занято» — только половина.
+      # Who exactly holds the port is the answer; "taken" is only half of it.
       command -v ss >/dev/null 2>&1 && \
         ss -lntp 2>/dev/null | awk 'NR==1 || /:(80|443) /' >&2 || true
       die "80 or 443 on this machine are already taken — and direct mode needs exactly them.
@@ -856,11 +904,12 @@ direct_check_ports() {
 
   local verdict closed="" unknown="" foreign=""
 
-  # 80 спрашиваем строже остальных: по нему придёт Let's Encrypt, и по нему же
-  # видно, наша ли это машина. Пока порт держит наш слушатель, ответ 204 —
-  # доказательство; любой другой код значит, что снаружи на этом адресе сидит
-  # кто-то другой. Когда порты держит уже поднятый caddy, спрашиваем только
-  # связность: он отвечает редиректом на https, а не нашим 204.
+  # 80 is asked more strictly than the rest: Let's Encrypt comes over it, and
+  # it also shows whether this is our machine. While the port is held by our
+  # listener, a 204 answer is proof; any other code means someone else sits at
+  # this address outside. When the ports are held by an already running caddy,
+  # we ask only for connectivity: it answers with a redirect to https, not
+  # with our 204.
   if [ -n "$held_by_caddy" ]; then
     verdict="$(ask_outside "$DIRECT_IP" 80)"
   else
@@ -878,8 +927,9 @@ direct_check_ports() {
     *)       say "${DIM}    80 — could not ask from outside${OFF}"; unknown="${unknown} 80" ;;
   esac
 
-  # 443 — только связность: TLS наш временный слушатель не умеет, и ничего
-  # умнее «соединение состоялось» про этот порт заранее не узнать.
+  # 443: connectivity only. Our temporary listener cannot do TLS, and nothing
+  # smarter than "the connection happened" can be learned about this port in
+  # advance.
   case "$(ask_outside "$DIRECT_IP" 443)" in
     open)   say "${DIM}    443 — open from outside${OFF}" ;;
     closed) say "${RED}    443 — closed from outside${OFF}"; closed="${closed} 443" ;;
@@ -887,8 +937,9 @@ direct_check_ports() {
   esac
   [ -n "$held_by_caddy" ] || listener_stop
 
-  # Чужая машина на нашем «публичном» адресе — отдельный отказ, и обойти его
-  # флагом нельзя: тут не сомнение проверки, а прямой ответ, что адрес не наш.
+  # Someone else's machine at our "public" address is a separate refusal, and
+  # no flag can get around it: this is not a doubt of the check but a direct
+  # answer that the address is not ours.
   if [ -n "$foreign" ]; then
     die "the address ${DIRECT_IP} answers from outside, but it is not this machine.
   That is what a VPN or a proxy looks like: traffic leaves through someone else's
@@ -900,13 +951,13 @@ direct_check_ports() {
   If it does not — this is a case for a tunnel:  make host HOST=${COLLOQ_HOSTNAME}"
   fi
 
-  # Отказ должен называть причину и давать выход, а не просто «нельзя».
+  # A refusal must name the reason and offer a way out, not just say "no".
   #
-  # COLLOQ_DIRECT_FORCE=1 отказ снимает, и это не лазейка «на всякий случай»:
-  # проверяющая служба видит машину из Германии и Финляндии, а бывают фаерволы,
-  # закрытые для половины мира и открытые для университетской сети. Решение
-  # тогда за человеком — но он должен сказать это вслух, а не узнать, что
-  # скрипт молча пошёл дальше.
+  # COLLOQ_DIRECT_FORCE=1 lifts the refusal, and it is not a "just in case"
+  # loophole: the checking service sees the machine from Germany and Finland,
+  # and there are firewalls closed to half the world and open to the
+  # university network. The decision is then the person's, but they have to
+  # say it out loud, not find out that the script silently went on.
   if [ -n "$closed" ] && [ "${COLLOQ_DIRECT_FORCE:-}" = "1" ]; then
     say "${RED}    ports${closed} are closed from outside, but COLLOQ_DIRECT_FORCE=1 — going on${OFF}"
     say "${DIM}    If the check is right, there will be no certificate: journalctl -u caddy -f${OFF}"
@@ -925,8 +976,9 @@ direct_check_ports() {
   fi
 
   if [ -n "$unknown" ]; then
-    # Спросить снаружи не вышло — это не приговор портам, это молчание
-    # проверяющей службы. Но и «всё хорошо» сказать нельзя.
+    # Asking from outside did not work: that is not a verdict on the ports but
+    # the silence of the checking service. Still, "all is well" cannot be said
+    # either.
     if [ -n "$on_iface" ]; then
       say "${DIM}    the checking service did not answer; the address belongs to this${OFF}"
       say "${DIM}    machine, the ports are free — going on. If 80 and 443 are closed${OFF}"
@@ -943,31 +995,32 @@ direct_check_ports() {
   fi
 }
 
-# ------------------------------------------------------------- шаг: имя
+# ------------------------------------------------------------- step: name
 
 direct_point_dns() {
   step "pointing ${COLLOQ_HOSTNAME} at ${DIRECT_IP}"
   #
-  # Запись пишет scripts/dns.sh — тот же код, что приводит в порядок всю зону.
-  # Своей копии здесь нет намеренно: правило «удалить лишнее, создать
-  # недостающее и НИКОГДА не оставлять проксирование» должно жить в одном
-  # месте и в одном месте чиниться.
+  # The record is written by scripts/dns.sh, the same code that puts the whole
+  # zone in order. There is no copy here on purpose: the rule "delete the
+  # extra, create the missing and NEVER leave proxying on" must live in one
+  # place and be fixed in one place.
   #
-  # Проксирование (оранжевое облако) выключено, и это не мелочь настройки:
-  # включённое, оно уводит студентов на пограничные адреса Cloudflare, а они
-  # из России не открываются. Прямой режим ценен ровно тем, что между машиной
-  # и залом нет никого, — проксирование вернуло бы посредника, да ещё и того
-  # самого, от которого уходили.
+  # Proxying (the orange cloud) is off, and that is no minor setting: turned
+  # on, it takes the students to Cloudflare's edge addresses, and those do not
+  # open from Russia. Direct mode is valuable exactly because there is nobody
+  # between the machine and the room; proxying would bring back a middleman,
+  # and the very one we were moving away from.
   #
   ./scripts/dns.sh point "$COLLOQ_HOSTNAME" "$DIRECT_IP" || die \
     "could not set the A record ${COLLOQ_HOSTNAME} → ${DIRECT_IP}.
   CF_TOKEN (Zone:Read + DNS:Edit) is needed, and CF_ZONE in .env if the token
   cannot list the zones."
 
-  # Ждём, пока имя начнёт разрешаться в наш адрес. Это не педантизм: пока
-  # публичные резолверы отдают старое, Let's Encrypt придёт по HTTP-01 на
-  # прежний адрес, получит отказ и уйдёт в паузу на несколько минут. Полминуты
-  # ожидания здесь дешевле, чем эта пауза на паре.
+  # Wait until the name starts resolving to our address. This is not pedantry:
+  # while the public resolvers hand out the old one, Let's Encrypt comes over
+  # HTTP-01 to the previous address, gets refused and backs off for several
+  # minutes. Half a minute of waiting here is cheaper than that pause during a
+  # class.
   local seen="" i
   for i in $(seq 1 30); do
     [ "$(resolve_any "$COLLOQ_HOSTNAME" || true)" = "$DIRECT_IP" ] && { seen=1; break; }
@@ -976,21 +1029,22 @@ direct_point_dns() {
   if [ -n "$seen" ]; then
     say "${DIM}    the name already resolves to ${DIRECT_IP}${OFF}"
   else
-    # Не отказ: TTL записи 300 секунд, и старый ответ может ещё лежать в
-    # кэшах. caddy повторит попытку сам, поэтому идём дальше, но вслух.
+    # Not a refusal: the record's TTL is 300 seconds, and the old answer may
+    # still sit in caches. caddy retries by itself, so we go on, but out loud.
     say "${DIM}    the name does not resolve here yet — the record has a 300 second TTL.${OFF}"
     say "${DIM}    The certificate may be late by those five minutes.${OFF}"
   fi
 }
 
-# ----------------------------------------------------------- шаг: caddy
+# ----------------------------------------------------------- step: caddy
 
 direct_caddy() {
   step "starting caddy on this machine"
   #
-  # Приём тот же, что у ретранслятора (scripts/relay-setup.sh): один собранный
-  # бинарник вместо репозитория с ключом. Модули здесь не нужны — сертификат
-  # берётся по HTTP-01, — а один файл проще обновлять и понимать.
+  # The same approach as on the relay (scripts/relay-setup.sh): one prebuilt
+  # binary instead of a repository with a key. No modules are needed here (the
+  # certificate is obtained over HTTP-01), and a single file is simpler to
+  # update and to understand.
   #
   local arch caddy_bin
   if ! command -v caddy >/dev/null 2>&1; then
@@ -1007,10 +1061,10 @@ direct_caddy() {
   fi
   caddy_bin="$(command -v caddy)"
 
-  # Чужой конфиг не трогаем, и спрашиваем об этом до того, как заведём
-  # пользователя и поменяем права на /etc/caddy. На машине, где caddy уже
-  # что-то обслуживает, переписать Caddyfile значило бы молча выключить чей-то
-  # сайт — и узнал бы об этом его владелец, а не мы.
+  # Someone else's config is not touched, and we check that before creating
+  # the user and changing permissions on /etc/caddy. On a machine where caddy
+  # already serves something, rewriting the Caddyfile would silently switch off
+  # someone's site, and its owner would find out about it, not us.
   if [ -f /etc/caddy/Caddyfile ] && ! grep -q '^# colloq:' /etc/caddy/Caddyfile; then
     die "this machine already has a /etc/caddy/Caddyfile of its own — I will not overwrite it.
   Add the site to it by hand:
@@ -1022,33 +1076,34 @@ direct_caddy() {
     useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy
   install -d -o caddy -g caddy -m 0750 /var/lib/caddy /etc/caddy
 
-  # Конфиг на одно имя, и больше ничего. Он переписывается на каждый запуск —
-  # это и делает команду повторяемой: сменилось имя или порт, и файл просто
-  # становится верным, без чистки руками.
+  # A config for one name and nothing else. It is rewritten on every run, and
+  # that is what makes the command repeatable: the name or the port changed,
+  # and the file simply becomes right, without cleaning up by hand.
   cat > /etc/caddy/Caddyfile <<CONF
-# colloq: прямой режим (scripts/host.sh). Файл переписывается на каждый запуск,
-# правки руками пропадут — правьте скрипт.
+# colloq: direct mode (scripts/host.sh). The file is rewritten on every run,
+# edits by hand will be lost; edit the script.
 #
-# Сертификат выпишется автоматически при первом обращении: caddy сам сходит в
-# Let's Encrypt по HTTP-01, для чего и нужны настоящие 80 и 443. Ключ от DNS на
-# машине не хранится и не нужен.
+# The certificate is issued automatically on the first request: caddy goes to
+# Let's Encrypt over HTTP-01 by itself, which is what the real 80 and 443 are
+# needed for. No DNS key is stored on the machine, and none is needed.
 ${COLLOQ_HOSTNAME} {
-	# Вебсокеты (а Colloq это в первую очередь они: /collab и /control)
-	# проходят через reverse_proxy сами, отдельной настройки не требуют.
+	# WebSockets (and Colloq is WebSockets first of all: /collab and /control)
+	# pass through reverse_proxy by themselves and need no separate setup.
 	reverse_proxy 127.0.0.1:${PORT} {
-		# Единственный заголовок, названный вслух. Ставит его caddy и без нас,
-		# но от него зависит флаг Secure на куке персонала (server/src/admin/
-		# auth.ts читает x-forwarded-proto), и молчаливое умолчание тут хуже
-		# явной строки. X-Forwarded-Host не пишем: caddy передаёт его сам и на
-		# лишнюю строку ругается предупреждением при каждой проверке конфига.
+		# The only header named out loud. caddy sets it without us too, but the
+		# Secure flag on the staff cookie depends on it (server/src/admin/
+		# auth.ts reads x-forwarded-proto), and a silent default is worse here
+		# than an explicit line. X-Forwarded-Host is not written: caddy passes it
+		# itself and complains about the extra line with a warning on every
+		# config check.
 		header_up X-Forwarded-Proto https
 	}
 }
 CONF
   "$caddy_bin" fmt --overwrite /etc/caddy/Caddyfile >/dev/null 2>&1 || true
-  # Вывод проверки придерживаем и печатаем только при отказе: на успехе caddy
-  # пишет несколько строк JSON про адаптацию конфига, и человек, запустивший
-  # «выставь семинар наружу», читает их как ошибку.
+  # The validation output is held back and printed only on failure: on success
+  # caddy writes several lines of JSON about adapting the config, and a person
+  # who ran "expose the seminar" reads them as an error.
   local report
   if ! report="$("$caddy_bin" validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1)"; then
     printf '%s\n' "$report" >&2
@@ -1068,8 +1123,8 @@ ExecStart=${caddy_bin} run --config /etc/caddy/Caddyfile --adapter caddyfile
 ExecReload=${caddy_bin} reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
 Restart=on-abnormal
 RestartSec=3
-# Право слушать 80 и 443 без запуска от root. Сертификаты и ключи лежат в
-# /var/lib/caddy — это домашний каталог пользователя caddy.
+# The right to listen on 80 and 443 without running as root. Certificates and
+# keys lie in /var/lib/caddy, the home directory of the caddy user.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -1084,9 +1139,9 @@ UNIT
 
   systemctl daemon-reload
   systemctl enable caddy >/dev/null 2>&1 || true
-  # enable --now не трогает уже запущенное, а команду задумано повторять:
-  # без явного перезапуска второй прогон оставил бы caddy на старом конфиге —
-  # то есть на прошлом имени семинара.
+  # enable --now does not touch what is already running, and the command is
+  # meant to be repeated: without an explicit restart a second run would leave
+  # caddy on the old config, that is, on the previous seminar name.
   systemctl restart caddy || {
     journalctl -u caddy -n 20 --no-pager 2>/dev/null >&2 || true
     die "caddy did not start."
@@ -1106,18 +1161,20 @@ direct_publish() {
   PUBLIC="https://${COLLOQ_HOSTNAME}"
 }
 
-# ------------------------------------------------------------- открываем адрес
+# ------------------------------------------------------------- opening the address
 
-# Сжато ли то, что сейчас поедет в аудиторию.
+# Is what is about to go to the audience compressed.
 #
-# Сказать об этом надо ДО ссылки и до первого студента: без .br рядом с
-# assets/ сервер сжимает каждый файл на каждый запрос — измерено на самом
-# большом куске этой сборки, 11.6 мс процессорного времени и 219 751 байт
-# вместо 194 920 у заранее сжатого. Умножается это на число пришедших.
+# This has to be said BEFORE the link and before the first student: without
+# .br next to assets/ the server compresses every file on every request;
+# measured on the largest piece of this build, 11.6 ms of CPU time and
+# 219 751 bytes instead of 194 920 for the precompressed one. That is
+# multiplied by the number of people who arrive.
 #
-# Не отказ: пара важнее, и запретить её из-за режима сборки нельзя. Но и
-# промолчать нельзя — раньше молчали, и `make run` без OPTIMIZE=1 уходил в
-# аудиторию ровно так.
+# Not a refusal: the class matters more, and it cannot be forbidden because of
+# the build mode. But staying silent is not allowed either: it used to stay
+# silent, and `make run` without OPTIMIZE=1 went to the audience exactly like
+# that.
 UNCOMPRESSED="$(assets_uncompressed)"
 if [ "${UNCOMPRESSED:-0}" != 0 ]; then
   say "${RED}${UNCOMPRESSED} files in web/dist/assets have no compressed neighbour (.br)${OFF}"
@@ -1129,17 +1186,20 @@ if [ "${UNCOMPRESSED:-0}" != 0 ]; then
 fi
 
 if [ "$VIA" = direct ]; then
-  # Три шага вместо одного «открываю туннель»: проверить порты, направить имя,
-  # поднять caddy. Туннеля здесь нет вовсе — наружу смотрит сама машина.
+  # Three steps instead of one "opening the tunnel": check the ports, point the
+  # name, bring up caddy. There is no tunnel here at all: the machine itself
+  # faces the outside.
   direct_publish
 elif [ "$VIA" = relay ]; then
   step "opening the tunnel to the relay"
-  # Поддомен — это всё, что инстанс просит у ретранслятора: frps выдаёт имена
-  # только под своей зоной, поэтому попросить чужое имя нельзя даже с секретом.
+  # The subdomain is all the instance asks of the relay: frps hands out names
+  # only under its own zone, so a foreign name cannot be requested even with
+  # the secret.
   SUB="${COLLOQ_HOSTNAME%".$RELAY_DOMAIN"}"
   CONF="$(mktemp -t colloq-frpc.XXXXXX)"
-  # Секрет уходит в файл, а не в аргументы: командная строка видна всей машине
-  # через ps, и общий ключ ретранслятора там светиться не должен.
+  # The secret goes into a file, not into arguments: the command line is
+  # visible to the whole machine through ps, and the relay's shared key must
+  # not show up there.
   cat > "$CONF" <<CONF
 serverAddr = "${RELAY_ADDR}"
 serverPort = ${RELAY_PORT}
@@ -1148,20 +1208,22 @@ auth.token = "${RELAY_TOKEN}"
 log.to = "console"
 log.level = "info"
 
-# Запас готовых соединений до ретранслятора.
+# A pool of ready connections to the relay.
 #
-# Без него каждый новый запрос студента ждёт, пока frpc установит соединение до
-# frps: лишний круг по сети ПЕРЕД первым байтом, и приходится он ровно на
-# звонок, когда вся группа открывает ссылку разом. Пять — это пять соединений,
-# которые висят готовыми; больше держать незачем, дальше работает мультиплекс
-# (tcpMux включён по умолчанию, и его мы не трогаем).
+# Without it every new student request waits for frpc to establish a
+# connection to frps: an extra round trip over the network BEFORE the first
+# byte, and it falls exactly on the bell, when the whole group opens the link
+# at once. Five means five connections hanging ready; there is no point
+# keeping more, beyond that the multiplexing works (tcpMux is on by default,
+# and we do not touch it).
 transport.poolCount = 5
 
-# useCompression здесь НЕ включается, и это решение, а не пропуск. Через этот
-# туннель едет то, что уже сжато: статику отдаёт сервер заранее сжатой (.br), а
-# после появления зеркала (см. upload_assets) она сюда и вовсе не заходит.
-# Сжимать сжатое — это процессорное время ноутбука за отрицательный выигрыш.
-# Мерить это стоит заново, когда зеркало поработает на живых парах.
+# useCompression is NOT enabled here, and that is a decision, not an omission.
+# What travels through this tunnel is already compressed: the server serves
+# static files precompressed (.br), and since the mirror appeared (see
+# upload_assets) they do not come in here at all. Compressing what is
+# compressed costs the laptop CPU time for a negative gain. It is worth
+# measuring again once the mirror has worked through live classes.
 
 [[proxies]]
 name = "${SUB}"
@@ -1177,18 +1239,18 @@ CONF
   frpc -c "$CONF" >"$LOG" 2>&1 &
   TUNNEL_PID=$!
   PUBLIC="https://${COLLOQ_HOSTNAME}"
-  # Ждём подтверждения от сервера, а не «прошло N секунд»: занятый кем-то
-  # поддомен или неверный секрет — это отказ, который приходит сразу, и молча
-  # пойти дальше значило бы раздать ссылку в никуда.
+  # Wait for confirmation from the server, not for "N seconds have passed": a
+  # subdomain taken by someone or a wrong secret is a refusal that comes at
+  # once, and silently going on would mean handing out a link to nowhere.
   #
-  # Строки — те, что frpc печатает на самом деле. Прежний `proxy name .* already`
-  # не совпадал ни с чем: frpc 0.71 пишет `start error: proxy [hse] already
-  # exists`. Из-за этого занятый поддомен — самый частый отказ, когда семинар
-  # уже поднят на другой машине, — распознавался не сразу, а через тридцать
-  # секунд ожидания, и назывался «не дождался ответа».
+  # The strings are the ones frpc actually prints. The former `proxy name .*
+  # already` matched nothing: frpc 0.71 writes `start error: proxy [hse]
+  # already exists`. Because of that a taken subdomain, the most common refusal
+  # when the seminar is already up on another machine, was recognized not at
+  # once but after thirty seconds of waiting, and was called "no answer".
   #
-  # Проверено на живом ретрансляторе: второй frpc с тем же именем печатает
-  # ровно эту строку через четверть секунды.
+  # Verified on a live relay: a second frpc with the same name prints exactly
+  # this line within a quarter of a second.
   #
   ok=""
   for _ in $(seq 1 30); do
@@ -1209,18 +1271,20 @@ CONF
   done
   rm -f "$CONF"
   [ -n "$ok" ] || { cat "$LOG" >&2; die "no answer from the relay in 30 seconds."; }
-  # Туннель есть — значит у имени есть и сертификат (ретранслятор выпускает
-  # его только живому имени), и статику можно класть на место. Именно здесь, а
-  # не в конце: зеркало должно быть полным к моменту, когда ссылка уйдёт в чат.
+  # The tunnel is up, so the name also has a certificate (the relay issues one
+  # only to a live name), and the static files can be put in place. Precisely
+  # here and not at the end: the mirror must be complete by the time the link
+  # goes to the chat.
   upload_assets
 elif [ -n "${COLLOQ_HOSTNAME:-}" ]; then
   step "opening the named Cloudflare tunnel"
-  # Именованный туннель: постоянный адрес, но его нужно один раз завести
-  # (make tunnel-setup). Без этого cloudflared не знает, куда маршрутизировать.
+  # A named tunnel: a permanent address, but it has to be set up once (make
+  # tunnel-setup). Without that cloudflared does not know where to route.
   #
-  # И говорим вслух, через что пошли: имя под своей зоной без RELAY_DOMAIN в
-  # .env молча уезжало в Cloudflare, а его адреса из России не открываются —
-  # выяснялось это уже в аудитории, где ссылка не открылась ни у кого.
+  # And we say out loud what we went through: a name under our own zone
+  # without RELAY_DOMAIN in .env silently went to Cloudflare, and its addresses
+  # do not open from Russia; this came out only in the classroom, where the
+  # link opened for nobody.
   say "${DIM}    through Cloudflare. Your own relay (Cloudflare addresses do not${OFF}"
   say "${DIM}    open from Russia) — RELAY_* in .env, see make relay-setup${OFF}"
   "$CLOUDFLARED" tunnel --no-autoupdate run --url "$LOCAL" ${ORIGIN_ARGS[@]+"${ORIGIN_ARGS[@]}"} colloq >"$LOG" 2>&1 &
@@ -1231,8 +1295,9 @@ else
   "$CLOUDFLARED" tunnel --no-autoupdate --url "$LOCAL" ${ORIGIN_ARGS[@]+"${ORIGIN_ARGS[@]}"} >"$LOG" 2>&1 &
   TUNNEL_PID=$!
   PUBLIC=""
-  # Адрес приходит не сразу и не первой строкой — cloudflared сначала пишет
-  # баннер. Ждём именно ссылку, а не «прошло N секунд».
+  # The address does not come at once and not on the first line: cloudflared
+  # prints a banner first. We wait for the link itself, not for "N seconds
+  # have passed".
   for _ in $(seq 1 60); do
     PUBLIC="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG" | head -1 || true)"
     [ -n "$PUBLIC" ] && break
@@ -1255,42 +1320,45 @@ case "$WHO" in
     LEASE_PID=$!
     ;;
   cluster)
-    # Запоминаем ДО вызова: упади он на полпути, config.env уже может нести
-    # этот адрес, и cleanup должен знать, что снимать.
+    # Remember it BEFORE the call: should it fail halfway, config.env may
+    # already carry this address, and cleanup must know what to take down.
     CLUSTER_PUBLISHED="$PUBLIC"
     bash scripts/cluster.sh public-url "$PUBLIC"
     ;;
   service)
-    # Службу НЕ перезапускаем, и это исправление.
+    # The service is NOT restarted, and this is a fix.
     #
-    # Здесь стоял `systemctl restart colloq` с объяснением «служба читает .env
-    # при запуске, новый адрес доезжает только перезапуском». Неправда:
-    # config.publicUrl — геттер, и readPublicUrl (server/src/config.ts)
-    # перечитывает файл не реже раза в две секунды, причём файл главнее
-    # переменной окружения; все ссылки строятся через него на каждый запрос.
-    # То же самое написано и в шапке deploy/colloq.service. А перезапуск рвал
-    # все сокеты комнаты — заметнее всего когда `make host` повторяют посреди
-    # пары, потому что упал туннель: зал уходил в переподключение без всякой
-    # причины.
+    # There used to be `systemctl restart colloq` here with the explanation
+    # "the service reads .env at startup, a new address only arrives by a
+    # restart". Not true: config.publicUrl is a getter, and readPublicUrl
+    # (server/src/config.ts) rereads the file at least once every two seconds,
+    # the file winning over the environment variable; all links are built
+    # through it on every request. The same is written in the header of
+    # deploy/colloq.service. And the restart tore down all the sockets of the
+    # room, most noticeably when `make host` is repeated in the middle of a
+    # class because the tunnel fell over: the room went into reconnecting for
+    # no reason at all.
     #
-    # Ждать — те самые две секунды, но не вслепую: `/api/health` называет
-    # адрес, который сервер СЕЙЧАС пишет в ссылки (server/src/app.ts ·
-    # publicUrl), и ждём мы совпадения, а не выжданного времени. Здесь стоял
-    # `sleep 3` — единственный сон в этом скрипте, поставленный не потому, что
-    # чего-то ждут, а потому, что спросить было некого.
+    # The wait is those same two seconds, but not blind: `/api/health` names
+    # the address the server writes into links RIGHT NOW (server/src/app.ts ·
+    # publicUrl), and we wait for a match, not for time to pass. There used to
+    # be `sleep 3` here, the only sleep in this script that was put in not
+    # because something is awaited but because there was nobody to ask.
     #
-    # Без `-f`: пока не поднято ядро, здоровье отвечает 503 — это по-прежнему
-    # живой сервер, и адрес в его ответе тот самый, ради которого мы ждём.
+    # Without `-f`: until the kernel is up, health answers 503; that is still a
+    # live server, and the address in its answer is the very one we are
+    # waiting for.
     ok=""
     said=""
     blind=0
     for _ in $(seq 1 20); do
       said="$(curl -s --max-time 2 "$LOCAL/api/health" 2>/dev/null || true)"
       if printf '%s' "$said" | grep -qF "\"publicUrl\":\"${PUBLIC%/}\""; then ok=1; break; fi
-      # Служба может быть собрана раньше этого поля: тогда спросить нечего, и
-      # остаётся прежний ответ — живой инстанс после трёх секунд перечитывания.
-      # Молчание и «поле есть, адрес другой» — это НЕ он, и ждать их надо до
-      # конца срока.
+      # The service may have been built before this field existed: then there
+      # is nothing to ask, and the former answer remains, a live instance after
+      # three seconds of rereading. Silence and "the field is there, the
+      # address is different" are NOT that, and have to be waited out to the
+      # end of the term.
       case "$said" in
         '' | *'"publicUrl"'*) ;;
         *)
@@ -1322,10 +1390,11 @@ case "$WHO" in
     [ -n "$ok" ] || die "The server did not reread the external address; local work continues."
     ;;
   *)
-    # Молча пройти мимо нельзя: аудитория получит localhost, то есть ничего.
+    # Passing by silently is not allowed: the audience would get localhost, that is, nothing.
     say "${RED}    ${LOCAL} is held by some other process, not colloq.${OFF}"
-    # Без докера форму «контейнер» не спросить вовсе, и `make up` здесь
-    # неотличим от чужого процесса — сказать это честнее, чем «не colloq».
+    # Without docker the "container" form cannot be asked at all, and `make up`
+    # here is indistinguishable from someone else's process; saying so is more
+    # honest than "not colloq".
     [ -n "$HAVE_DOCKER" ] || say "${DIM}    (there is no docker here, so a make up container could not even be asked)${OFF}"
     say "${DIM}    Its PUBLIC_URL cannot be changed from here — restart it yourself with${OFF}"
     say "${DIM}    PUBLIC_URL=${PUBLIC}, or links to classes will lead to localhost.${OFF}"
@@ -1334,13 +1403,15 @@ esac
 
 step "checking that it really answers from outside"
 #
-# Проверка идёт мимо системного резолвера. Измерено на живой машине: туннель
-# отдавал 200 за 0.6 секунды, а `curl https://<адрес>` тут же падал с «could
-# not resolve host» — getaddrinfo держал отрицательный ответ, хотя dig то же
-# имя видел прекрасно. Своя же проверка объявляла рабочий семинар сломанным.
+# The check bypasses the system resolver. Measured on a live machine: the
+# tunnel returned 200 in 0.6 seconds, while `curl https://<address>` failed
+# right away with "could not resolve host": getaddrinfo held on to a negative
+# answer, although dig saw the same name perfectly well. Our own check
+# declared a working seminar broken.
 #
-# Поэтому адрес берётся у публичного резолвера и подставляется через --resolve:
-# так проверяется туннель, а не настройки DNS на этом ноутбуке.
+# So the address is taken from a public resolver and substituted via
+# --resolve: that way the tunnel is checked, not the DNS settings of this
+# laptop.
 host_only="${PUBLIC#https://}"
 
 probe() {
@@ -1348,7 +1419,7 @@ probe() {
   if ip="$(resolve_any "$host_only")"; then
     [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$host_only:443:$ip" "$PUBLIC/" || true)" = "200" ] && return 0
   fi
-  # Системный резолвер — второй попыткой, а не первой: именно он здесь и врёт.
+  # The system resolver as the second attempt, not the first: it is exactly the one that lies here.
   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PUBLIC/" || true)" = "200" ] && return 0
   return 1
 }
@@ -1359,17 +1430,19 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
-# `colloq start --share`: итог печатает супервизор, одним блоком — со ссылкой
-# на занятие из базы, которой здесь не видно (cli/src/launch-share.ts). Отсюда
-# ему нужна одна строка-метка: адрес поднят, проверка снаружи прошла или нет.
-# Экрана она не достигает — супервизор её забирает.
+# `colloq start --share`: the summary is printed by the supervisor, in one
+# block, with the link to the class from the database, which cannot be seen
+# from here (cli/src/launch-share.ts). From here it needs one marker line: the
+# address is up, the check from outside passed or not. It does not reach the
+# screen: the supervisor takes it.
 #
-# Ссылки с токеном установки здесь нет намеренно: терминал с --share часто
-# стоит на проекторе, а CLI токена не печатает никогда (colloq link). Панель
-# на этом компьютере открыта по локальному адресу, и вход туда уже есть.
+# There is no link with the installation token here on purpose: a terminal
+# with --share often stands on the projector, and the CLI never prints the
+# token (colloq link). The panel on this computer is open at the local
+# address, and the sign-in there already exists.
 #
-# Только у локальной сессии: переменная, забытая в оболочке, не должна
-# прятать итог у службы или кластера.
+# Only for a local session: a variable forgotten in the shell must not hide
+# the summary for the service or the cluster.
 if [ "${COLLOQ_SHARE:-}" = 1 ] && [ "$WHO" = local ]; then
   if [ -n "$ok" ]; then say "@colloq-share ok ${PUBLIC}"; else say "@colloq-share unverified ${PUBLIC}"; fi
   wait "$TUNNEL_PID"
@@ -1377,17 +1450,20 @@ if [ "${COLLOQ_SHARE:-}" = 1 ] && [ "$WHO" = local ]; then
 fi
 
 #
-# Токен. Кука админки привязана к origin, а туннель каждый раз выдаёт новый —
-# значит после каждого `make host` преподаватель оказывается разлогинен и
-# перепечатывает тридцать два символа. Поэтому ссылка с токеном, как у Jupyter.
+# The token. The admin cookie is bound to the origin, and the tunnel hands out
+# a new one every time, so after each `make host` the teacher ends up signed
+# out and retypes thirty-two characters. Hence a link with the token, as in
+# Jupyter.
 #
-# Кандидатов два, и они разные: контейнер держит токен в своём томе, а сервер,
-# запущенный руками, — в локальном DATA_DIR. Угадывать нельзя. Стоило один раз
-# прочитать «тот, который запущен», и в туннель ушла ссылка от одного инстанса,
-# а порт держал другой: 401 и экран входа вместо панели.
+# There are two candidates, and they differ: the container keeps the token in
+# its volume, and a server started by hand in its local DATA_DIR. Guessing is
+# not allowed. It took reading "the one that is running" only once, and the
+# tunnel got a link from one instance while the port was held by another: 401
+# and the sign-in screen instead of the panel.
 #
-# Поэтому не гадаем, а спрашиваем сам сервер: 401 — не тот токен, 200 — тот и
-# инстанс занят, 409 — тот, но инстанс пока ничей. Годятся оба непустых ответа.
+# So we do not guess but ask the server itself: 401 is the wrong token, 200
+# is the right one and the instance is claimed, 409 is the right one but the
+# instance is nobody's yet. Either of the two non-empty answers will do.
 token_works() {
   local code
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
@@ -1397,12 +1473,13 @@ token_works() {
 }
 
 #
-# У k3s кандидат третий: том colloq-data — это <состояние>/data на хосте
-# (scripts/release.py · render, deploy/k3s/README.md), то есть
-# /var/lib/colloq/data, если COLLOQ_STATE_DIR не назван. Раньше его здесь не
-# было, и на k3s-машине ссылка на панель печаталась только тому, кто догадался
-# сам выставить DATA_DIR, — а `make vast-up` отсылал за ней именно сюда, в
-# вывод этой сессии. Спрашивается он первым и проверяется тем же token_works.
+# k3s has a third candidate: the colloq-data volume is <state>/data on the
+# host (scripts/release.py · render, deploy/k3s/README.md), that is,
+# /var/lib/colloq/data if COLLOQ_STATE_DIR is not named. It used to be missing
+# here, and on a k3s machine the link to the panel was printed only for
+# whoever guessed to set DATA_DIR themselves, while `make vast-up` sent people
+# for it exactly here, to the output of this session. It is asked first and
+# checked by the same token_works.
 read_setup_token() {
   local t dir dirs=()
   if [ "$CLUSTER" = 1 ]; then
@@ -1426,17 +1503,19 @@ if [ -n "$ok" ]; then
 else
   say "${RED}The check from this machine did not go through.${OFF}"
   if [ "$VIA" = direct ]; then
-    # В прямом режиме подозреваемый другой, и он один: сертификат. Порты мы уже
-    # проверили снаружи, имя направили — остаётся выдача, которая идёт минуту, а
-    # при неуехавшем DNS и все пять. caddy при этом молчит в терминал, зато
-    # говорит в журнал, поэтому сюда и посылаем.
+    # In direct mode the suspect is different, and there is only one: the
+    # certificate. We have already checked the ports from outside and pointed
+    # the name; what remains is the issuance, which takes a minute, and all
+    # five if the DNS has not caught up. caddy is silent to the terminal
+    # meanwhile but talks to the journal, which is why we send people there.
     say "${DIM}The ports are open and the name points here — most likely the certificate${OFF}"
     say "${DIM}is still being issued: up to a minute, and up to five if the DNS record${OFF}"
     say "${DIM}has just changed. What is going on: journalctl -u caddy -f${OFF}"
   else
-    # Чаще всего это не туннель, а сеть, из которой мы проверяем: корпоративный
-    # DNS или блокировка исходящих. Студенты из дома при этом заходят нормально,
-    # поэтому пугать «не работает» нельзя — надо сказать, что именно неясно.
+    # Most often it is not the tunnel but the network we check from: corporate
+    # DNS or blocked outbound traffic. Students at home get in normally, so
+    # scaring people with "does not work" is wrong; we have to say what exactly
+    # is unclear.
     say "${DIM}The tunnel is up, but the check did not pass — usually this network's DNS${OFF}"
     say "${DIM}is to blame, not the class. Open the link from a phone on mobile internet.${OFF}"
   fi
@@ -1447,19 +1526,21 @@ if [ -n "$SETUP_TOKEN" ]; then
   printf '\n'
   say "${BOLD}Sign-in to the panel — this link is for you only${OFF}"
   say "  ${CYAN}${PUBLIC}/admin/t/${SETUP_TOKEN}${OFF}"
-  # Строка стоит прямо под ссылкой, а не в конце: спутать её с адресом семинара
-  # и отправить в чат группы — ровно одно движение, и оно необратимо.
+  # The line stands right under the link, not at the end: mistaking it for the
+  # seminar address and sending it to the group chat is exactly one move, and
+  # an irreversible one.
   say "  ${RED}This is the key to the instance.${OFF} ${DIM}Do not send it to a chat and do${OFF}"
   say "  ${DIM}not leave it on screen while the room is watching. Students get the${OFF}"
   say "  ${DIM}class link, which you copy from the panel.${OFF}"
 else
-  # Ссылка, которая не откроет панель, хуже, чем её отсутствие: человек три раза
-  # ткнёт в неё, прежде чем усомнится в ссылке, а не в себе.
+  # A link that will not open the panel is worse than no link: a person pokes
+  # at it three times before doubting the link rather than themselves.
   printf '\n'
   say "${DIM}Not printing the sign-in link for the panel: none of the setup tokens found${OFF}"
   if [ "$CLUSTER" = 1 ]; then
-    # Каталог данных k3s — 0750 и принадлежит uid 1000 приложения (cluster.sh
-    # · prepare): не root его не прочтёт, поэтому и совет — через sudo.
+    # The k3s data directory is 0750 and belongs to the application's uid 1000
+    # (cluster.sh · prepare): a non-root user cannot read it, hence the advice
+    # goes through sudo.
     say "${DIM}suited the server at ${LOCAL}. On k3s it lies in ${CLUSTER_STATE}/data/setup-token${OFF}"
     say "${DIM}(readable by root): sudo cat it and open ${PUBLIC}/admin/t/<token>.${OFF}"
   else
@@ -1470,10 +1551,11 @@ fi
 
 printf '\n'
 if [ "$VIA" = direct ]; then
-  # Прямой режим нельзя описывать словами про это окно — оно здесь ни при чём,
-  # и притворяться, что Ctrl+C что-то выключает, значит обещать выключатель,
-  # которого нет. Адрес держит служба caddy, она переживает и закрытый терминал,
-  # и оборванный ssh, и перезагрузку машины.
+  # Direct mode cannot be described in words about this window: it has nothing
+  # to do with it, and pretending that Ctrl+C switches something off means
+  # promising a switch that does not exist. The address is held by the caddy
+  # service, which survives a closed terminal, a dropped ssh and a reboot of
+  # the machine alike.
   say "${DIM}Everything runs here, and the students come straight here too: caddy on${OFF}"
   say "${DIM}this machine terminates TLS and passes the request to colloq at ${LOCAL}.${OFF}"
   say "${DIM}There is no relay and no Cloudflare on this path.${OFF}"
@@ -1484,10 +1566,11 @@ if [ "$VIA" = direct ]; then
   say "${DIM}PUBLIC_URL stays in .env: the address is alive, and rolling it back to${OFF}"
   say "${DIM}localhost is pointless — unlike a tunnel, it does not die with the script.${OFF}"
   if [ -n "$RELAY_DOMAIN" ] && [ "${COLLOQ_HOSTNAME%".$RELAY_DOMAIN"}" != "$COLLOQ_HOSTNAME" ]; then
-    # Про это надо сказать прямо: запись на конкретное имя сильнее звёздочки,
-    # и пока она есть, ретранслятор для этого имени не при делах. Вернуть имя
-    # ему — значит удалить запись руками (или прогнать scripts/dns.sh, который
-    # приводит зону к виду «звёздочка на ретранслятор»).
+    # This has to be said plainly: a record for a specific name is stronger
+    # than the wildcard, and while it exists, the relay has nothing to do with
+    # this name. Giving the name back to it means deleting the record by hand
+    # (or running scripts/dns.sh, which brings the zone to the shape "wildcard
+    # to the relay").
     printf '\n'
     say "${DIM}The record ${COLLOQ_HOSTNAME} → ${DIRECT_IP} stays in the zone and overrides${OFF}"
     say "${DIM}*.${RELAY_DOMAIN}: while it is there, this name leads here, not to the relay.${OFF}"
@@ -1502,13 +1585,14 @@ else
 fi
 say "${DIM}to this window. Close it (Ctrl+C) and the link stops working, while colloq${OFF}"
 say "${DIM}keeps turning locally at ${LOCAL}.${OFF}"
-# Про кластер — вслух и заранее: уборка там не мгновенная (перезапуск
-# приложения), и второй Ctrl+C посреди неё оборвал бы cluster.sh на полпути.
+# About the cluster, out loud and in advance: the cleanup there is not instant
+# (an application restart), and a second Ctrl+C in the middle of it would cut
+# cluster.sh off halfway.
 if [ -n "$CLUSTER_PUBLISHED" ]; then
   say "${DIM}On exit the address is taken off the cluster too: the app restarts with${OFF}"
   say "${DIM}PUBLIC_URL=${LOCAL} — let that finish, do not press Ctrl+C twice.${OFF}"
 fi
 printf '\n'
 
-# Держим окно живым: туннель существует ровно столько, сколько этот процесс.
+# Keep the window alive: the tunnel exists exactly as long as this process.
 wait "$TUNNEL_PID"

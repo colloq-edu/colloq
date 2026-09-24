@@ -1,18 +1,20 @@
 /**
- * Прежний адрес публикации: страница переезжает, тетрадь остаётся на месте.
+ * A publication's former address: the page moves, the notebook stays put.
  *
- * Страницу под старым именем перекладывает файл-указатель, и по ней читатель
- * доезжает куда надо. С «Скачать тетрадь» так не выходит: этот адрес студент
- * копирует ссылкой и открывает напрямую — браузер скачивает файл, а не
- * показывает страницу, — и после переименования публикации ссылка из чата
- * группы отвечала 404, хотя сама страница по тому же старому адресу
- * открывалась. Поэтому `notebook.ipynb` пишется и под каждым прежним адресом.
+ * The page under the old name is redirected by a pointer file, and through it
+ * the reader gets where they need to. "Download notebook" does not work that
+ * way: a student copies that address as a link and opens it directly — the
+ * browser downloads the file rather than showing a page — and after the
+ * publication was renamed, the link from the group chat answered 404, even
+ * though the page itself opened at the same old address. So `notebook.ipynb`
+ * is written under every former address too.
  *
- * Второе утверждение здесь — про то, чего НЕ дублируется. Картинки под старым
- * адресом не лежат осознанно: указатель их не показывает (в нём нет ни одного
- * `<img>`), а копия стоила бы сотни килобайт × число прежних имён. Тест держит
- * обе половины решения рядом, чтобы следующий читатель видел не пропуск, а
- * выбор — и, передумав, снимал утверждение вместе с доводом.
+ * The second assertion here is about what is NOT duplicated. Images are not
+ * kept under the old address on purpose: the pointer does not show them (it
+ * has not a single `<img>`), and a copy would cost hundreds of kilobytes × the
+ * number of former names. The test keeps both halves of the decision side by
+ * side, so the next reader sees a choice rather than an omission — and, on
+ * changing their mind, removes the assertion together with the argument.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -35,7 +37,7 @@ const cell = (id: string, source: string, outputs: PublicCell['outputs'] = []): 
   ranMs: null,
 })
 
-/** Каталог выгрузки, который уберут за собой. */
+/** An export directory that gets cleaned up afterwards. */
 function exported(t: { after(fn: () => void): void }): {
   at: (...parts: string[]) => string
   read: (...parts: string[]) => string
@@ -47,7 +49,7 @@ function exported(t: { after(fn: () => void): void }): {
   return { at, read: (...parts: string[]) => fs.readFileSync(at(...parts), 'utf8') }
 }
 
-test('тетрадь скачивается по каждому адресу, который публикация носила', (t) => {
+test('the notebook downloads from every address the publication has had', (t) => {
   const id = 'pub-former-notebook'
   createSession(id, 'Переезд тетради', null)
   const pub = writePublication({
@@ -60,7 +62,7 @@ test('тетрадь скачивается по каждому адресу, к
     ],
     blobs: [],
   })
-  // Два переименования подряд: прежних имён у публикации бывает больше одного.
+  // Two renames in a row: a publication can have more than one former name.
   assert.equal(setPublicationSlug(pub.id, 'nedelya-02'), 'ok')
   assert.equal(setPublicationSlug(pub.id, 'nedelya-03'), 'ok')
   assert.equal(setPublicationSlug(pub.id, 'nedelya-04'), 'ok')
@@ -72,22 +74,22 @@ test('тетрадь скачивается по каждому адресу, к
       .map((c) => c.source.join(''))
       .join('\n')
 
-  // Нынешний адрес: корневая тетрадь — последний шаг, как и была.
+  // The current address: the root notebook is the last step, as it was.
   assert.equal(code('p', 'nedelya-04', 'notebook.ipynb'), 'after = 2')
-  // И тот же файл под каждым адресом, по которому эту страницу уже давали.
+  // And the same file under every address this page has already been given out at.
   for (const was of ['nedelya-02', 'nedelya-03', pub.id]) {
     assert.ok(
       fs.existsSync(at('p', was, 'notebook.ipynb')),
-      `«Скачать тетрадь» с адреса «${was}» ведёт в 404 — ` +
-        'а ссылку скопировали до переименования',
+      `"Download notebook" at the address "${was}" leads to a 404 — ` +
+        'and the link was copied before the rename',
     )
     assert.equal(code('p', was, 'notebook.ipynb'), 'after = 2')
-    // Страница по тому же адресу — указатель, а не копия: расходиться им нельзя.
+    // The page at the same address is a pointer, not a copy: they must not drift apart.
     assert.match(read('p', was, 'index.html'), /https:\/\/colloq\.ru\/p\/nedelya-04\//)
   }
 })
 
-test('картинок под прежним адресом нет — и это решение, а не пропуск', (t) => {
+test('there are no images under the former address — a decision, not an omission', (t) => {
   const id = 'pub-former-blob'
   createSession(id, 'Переезд с картинкой', null)
   const hash = 'f'.repeat(32)
@@ -113,25 +115,25 @@ test('картинок под прежним адресом нет — и это
   assert.equal(setPublicationSlug(pub.id, 'grafik-02'), 'ok')
 
   const { at, read } = exported(t)
-  // Под нынешним адресом картинка лежит и страница на неё ссылается.
-  assert.ok(fs.existsSync(at('p', 'grafik-02', 'blob', `${hash}.png`)), 'картинки нет у страницы')
+  // Under the current address the image is there and the page links to it.
+  assert.ok(fs.existsSync(at('p', 'grafik-02', 'blob', `${hash}.png`)), 'the page has no image')
   assert.match(read('p', 'grafik-02', 'index.html'), new RegExp(`blob/${hash}\\.png`))
 
   const pointer = read('p', 'grafik-01', 'index.html')
   /*
-   * Довод, на котором держится решение: указатель ничего не рисует. Пока это
-   * так, копия картинок под старым адресом — байты, которые никто не запросит;
-   * начнёт рисовать — утверждение упадёт раньше, чем страница поедет пустыми
-   * рамками у класса.
+   * The argument the decision rests on: the pointer draws nothing. As long as
+   * that holds, a copy of the images under the old address is bytes nobody will
+   * request; once it starts drawing, the assertion fails before the page goes
+   * out to a class with empty frames.
    */
-  assert.ok(!pointer.includes('<img'), 'указатель начал рисовать картинки — ему нужны свои')
+  assert.ok(!pointer.includes('<img'), 'the pointer started drawing images: it needs its own')
   assert.match(pointer, /https:\/\/colloq\.ru\/p\/grafik-02\//)
   assert.equal(
     fs.existsSync(at('p', 'grafik-01', 'blob')),
     false,
-    'картинки скопированы под прежний адрес: их там некому показывать, ' +
-      'а весят они сотни килобайт на каждое прежнее имя',
+    'images were copied under the former address: there is nobody there to show them to, ' +
+      'and they weigh hundreds of kilobytes per former name',
   )
-  // А тетрадь — наоборот: её адрес открывают напрямую, и она обязана быть.
+  // The notebook is the opposite: its address is opened directly, and it has to be there.
   assert.ok(fs.existsSync(at('p', 'grafik-01', 'notebook.ipynb')))
 })

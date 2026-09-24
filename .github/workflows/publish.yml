@@ -1,11 +1,13 @@
-# Публикация выпуска vX.Y.Z, который уже создал release-please. Вход один —
-# workflow_dispatch с тегом, и запускают его двое: release-please.yml сразу
-# после выпуска (обычный путь: слили PR выпуска, и всё едет само) и человек,
-# когда нужно дослать недостающие части для существующего тега.
+# Publishes the vX.Y.Z release that release-please has already created. There
+# is one entry point, workflow_dispatch with a tag, and two parties start it:
+# release-please.yml right after the release (the usual path: the release PR
+# was merged, and everything goes by itself) and a person, when missing parts
+# have to be delivered for an existing tag.
 #
-# Триггера `push: tags` нет нарочно. release-please создаёт тег личным токеном
-# владельца, а такой тег запускает workflow: с этим триггером выпуск
-# публиковался бы дважды, с двумя запросами одобрения PyPI. Путь оставлен один.
+# There is deliberately no `push: tags` trigger. release-please creates the
+# tag with the owner's personal token, and such a tag does start workflows:
+# with that trigger the release would be published twice, with two PyPI
+# approval requests. Only one path is left.
 #
 #   build           tag = package.json = CHANGELOG (scripts/version.mts check),
 #                   typecheck, the whole suite, and the pip wheels: the
@@ -20,24 +22,26 @@
 #   pypi            the wheels to PyPI, only when vars.PUBLISH_PYPI == 'true';
 #   image           the vast.ai image to GHCR, only when vars.PUBLISH_IMAGES == 'true'.
 #
-# PyPI и GHCR выключены, пока владелец не включит их переменными репозитория:
-# туда ничего нельзя перезалить, и первый выпуск не должен случайно занять имя
-# пакета или тег образа. Шаги и настройка — RELEASING.md.
+# PyPI and GHCR are off until the owner turns them on with repository
+# variables: nothing can be re-uploaded there, and the first release must not
+# accidentally take the package name or the image tag. Steps and setup:
+# RELEASING.md.
 #
-# Неизменяемый выпуск для k3s (release.json с digest-ами образов) — отдельный
-# ручной release.yml: ему нужны проверенная версия k3s и версии GPU-обвязки,
-# которые из тега не вывести. Он дописывает свои файлы в тот же GitHub Release.
+# The immutable release for k3s (release.json with the image digests) is the
+# separate manual release.yml: it needs a verified k3s version and versions of
+# the GPU plumbing that cannot be derived from the tag. It adds its files to
+# the same GitHub Release.
 #
-# workflow_dispatch с тегом — перезапуск для недостающих частей: например,
-# включили PUBLISH_PYPI после выпуска. Уже опубликованное не перезаписывается —
-# колесо берётся то, что приложено к выпуску, а существующий тег образа
-# пропускается. Запускать его — с самого тега («Use workflow from: vX.Y.Z»):
-# см. шаг сверки в build.
+# workflow_dispatch with a tag is a rerun for missing parts: for example,
+# PUBLISH_PYPI was turned on after the release. What is already published is
+# not overwritten: the wheel taken is the one attached to the release, and an
+# existing image tag is skipped. Run it from the tag itself ("Use workflow
+# from: vX.Y.Z"): see the verification step in build.
 #
-# Не workflow_call: вызванный из release-please.yml, этот файл нёс в
-# OIDC-токене workflow_ref = release-please.yml, а переиспользуемые workflow
-# Trusted Publishing PyPI не поддерживает. Самостоятельный прогон с тега
-# оставляет дорогу к нему открытой, даже пока выкладка идёт по токену.
+# Not workflow_call: called from release-please.yml, this file carried
+# workflow_ref = release-please.yml in its OIDC token, and PyPI Trusted
+# Publishing does not support reusable workflows. A standalone run from the
+# tag keeps the way to it open, even while uploads go by token.
 name: Publish
 
 on:
@@ -69,8 +73,8 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
-          # Токен не остаётся в .git/config на время `npm ci` и тестов: дальше
-          # git только читает локальную историю.
+          # The token does not stay in .git/config during `npm ci` and the
+          # tests: from here on git only reads the local history.
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -86,19 +90,22 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # Сверка — до того, как тег куда-либо запишется: пройдя её, он
-          # гарантированно имеет вид vX.Y.Z[-rc.N] и безопасен в выводах.
+          # The check comes before the tag is written anywhere: once it has
+          # passed, the tag is guaranteed to look like vX.Y.Z[-rc.N] and is
+          # safe in outputs.
           node --import tsx scripts/version.mts check --tag "$TAG"
-          # Тег — на проверяемом коммите, а не ветка с тем же именем.
+          # The tag is on the commit under check, not a branch of that name.
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)"
-          # Публикует тег тот workflow, что лежит в самом теге. Перезапуск с
-          # тега («Use workflow from: vX.Y.Z») это гарантирует сам. Вызов из
-          # release-please.yml идёт с main: этот файл взят из $GITHUB_SHA
-          # (у вызванного workflow это коммит вызвавшего), а release-please
-          # ставит тег на коммит слияния PR выпуска — обычно тот же самый.
-          # Если в очереди прогонов тег достался другому коммиту main, годится
-          # и он, пока .github у них одинаковый: workflow тогда тот же. Иначе,
-          # как и ручной запуск с ветки, — отказ: публиковал бы чужой workflow.
+          # A tag is published by the workflow that lies in the tag itself. A
+          # rerun from the tag ("Use workflow from: vX.Y.Z") guarantees that on
+          # its own. The call from release-please.yml comes from main: this
+          # file is taken from $GITHUB_SHA (for a called workflow that is the
+          # caller's commit), and release-please puts the tag on the merge
+          # commit of the release PR, usually the very same one. If in the
+          # queue of runs the tag went to another commit of main, that one
+          # will do too, as long as their .github is the same: the workflow is
+          # then the same. Otherwise, as with a manual run from a branch, it
+          # refuses: a different workflow would be doing the publishing.
           if [ "$GITHUB_REF" != "refs/tags/$TAG" ]; then
             if [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ] && ! git diff --quiet "$GITHUB_SHA" HEAD -- .github; then
               echo "::error::The workflows at $TAG differ from the ones running now. Run this workflow from the tag: gh workflow run publish.yml --ref $TAG -f tag=$TAG"
@@ -207,16 +214,17 @@ jobs:
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
           set -euo pipefail
-          # Выпуск создаёт release-please при слиянии PR выпуска, и заметки у
-          # него оттуда же. Его нет — значит, тег поставлен мимо release-please;
-          # создавать выпуск здесь — это второй писатель заметок, так что отказ.
+          # The release is created by release-please when the release PR is
+          # merged, and its notes come from there too. If it is missing, the
+          # tag was put past release-please; creating the release here would
+          # mean a second writer of notes, so refuse.
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             echo "::error::$TAG has no GitHub Release. Releases are created by release-please when its release pull request is merged; see RELEASING.md."
             exit 1
           fi
-          # release-please помечает предвыпуском только при prerelease: true,
-          # а оно пометило бы им и каждый 0.x. Поэтому -rc.N помечается здесь:
-          # иначе GitHub показал бы rc как «Latest».
+          # release-please marks a prerelease only with prerelease: true, and
+          # that would mark every 0.x as one too. So -rc.N is marked here:
+          # otherwise GitHub would show an rc as "Latest".
           if [ "$PRERELEASE" = true ] && [ "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" != true ]; then
             gh release edit "$TAG" --prerelease
           fi
@@ -229,8 +237,8 @@ jobs:
             echo "::notice::$TAG already carries every wheel; they stay the files of record."
             exit 0
           fi
-          # Без --clobber: файл с тем же именем (например, от release.yml) не
-          # перепишется, а откажет.
+          # No --clobber: a file with the same name (for example, from
+          # release.yml) is not overwritten; the upload fails instead.
           gh release upload "$TAG" "${upload[@]}"
 
   pypi:
@@ -238,19 +246,20 @@ jobs:
     needs: [build, github-release]
     if: vars.PUBLISH_PYPI == 'true'
     runs-on: ubuntu-24.04
-    # API-токен PyPI — секрет окружения `pypi`, а не репозитория: его видит
-    # только эта задача и только после одобрения. Окружение с обязательным
-    # ревьюером — последняя кнопка перед тем, что уже нельзя отозвать.
-    # Trusted Publishing отложен: v0.2.0 он отказал `invalid-publisher`, и
-    # первую версию выложили этим же токеном вручную.
+    # The PyPI API token is a secret of the `pypi` environment, not of the
+    # repository: only this job sees it, and only after approval. An
+    # environment with a required reviewer is the last button before what can
+    # no longer be taken back. Trusted Publishing is postponed: it refused
+    # v0.2.0 with `invalid-publisher`, and the first version was uploaded by
+    # hand with this same token.
     environment:
       name: pypi
       url: https://pypi.org/project/colloq/
     permissions:
       contents: read
     steps:
-      # Колесо — то, что приложено к выпуску, а не пересобранное: на PyPI и на
-      # странице выпуска должен лежать один и тот же файл.
+      # The wheel is the one attached to the release, not a rebuilt one: PyPI
+      # and the release page must carry the very same file.
       - name: Take the wheel attached to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -274,7 +283,7 @@ jobs:
         with:
           packages-dir: dist/
           password: ${{ secrets.PYPI_API_TOKEN }}
-          # Версию на PyPI не перезалить; повторный запуск просто её пропускает.
+          # A version on PyPI cannot be re-uploaded; a rerun simply skips it.
           skip-existing: true
           print-hash: true
 
@@ -306,8 +315,8 @@ jobs:
           fi
           name="ghcr.io/${OWNER,,}/colloq-vast"
           tags="$name:$VERSION"
-          # latest — только у выпуска: rc не должен доставаться тому, кто
-          # вписал в шаблон vast «последний».
+          # latest only for a release: an rc must not reach whoever put
+          # "latest" into their vast template.
           if [ "$PRERELEASE" != true ]; then tags="$tags,$name:latest"; fi
           { echo "name=$name"; echo "tags=$tags"; } >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
@@ -326,10 +335,11 @@ jobs:
             echo "::notice::$NAME:$VERSION is already published; not rebuilding it."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
-      # OCI-метки (version, revision, source, licenses) пишет сам
-      # deploy/vast/Dockerfile из этих аргументов — здесь их не дублируем,
-      # чтобы у образа не было двух описаний. Ревизия — коммит тега, а не
-      # github.sha: при ручном перезапуске тот указывает на ветку.
+      # The OCI labels (version, revision, source, licenses) are written by
+      # deploy/vast/Dockerfile itself from these arguments; they are not
+      # duplicated here, so the image does not get two descriptions. The
+      # revision is the tag's commit, not github.sha: on a manual rerun that
+      # one points at the branch.
       - uses: docker/build-push-action@v6
         if: steps.exists.outputs.skip != 'true'
         with:

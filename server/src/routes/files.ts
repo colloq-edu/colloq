@@ -37,37 +37,39 @@ interface UploadFailure {
 const MAX_FILES_PER_UPLOAD = 8
 
 /**
- * Место, занятое комнатой, — счётчиком на комнату, а не обходом на запрос.
+ * The space a room takes, as a per-room counter rather than a walk per
+ * request.
  *
- * `sessionBytes` — рекурсивный обход всей папки с lstat на каждую запись, без
- * потолка на число записей. После `!pip install -t .` или распакованного
- * датасета это десятки тысяч синхронных lstat — в том самом цикле событий,
- * который обслуживает CRDT всех комнат, — и делались они на КАЖДУЮ загрузку.
- * Пятьсот студентов, сдающих CSV в одну минуту, давали пятьсот таких обходов
- * подряд.
+ * `sessionBytes` is a recursive walk over the whole folder with an lstat per
+ * entry, with no cap on the number of entries. After `!pip install -t .` or an
+ * unpacked dataset that is tens of thousands of synchronous lstats, in the
+ * very event loop that serves the CRDT of every room, and they were done on
+ * EVERY upload. Five hundred students handing in a CSV in the same minute
+ * gave five hundred such walks in a row.
  *
- * Считаем один раз и дальше правим на свои же записи и удаления. Свежесть
- * ограничена десятью секундами, потому что ячейка пишет в ту же папку мимо нас
- * (`open('big.bin','wb')`) — это и так за границей потолка, см. комментарий
- * ниже, и десять секунд расхождения тут ничего не меняют.
+ * We count once and then adjust for our own writes and deletions. Freshness
+ * is limited to ten seconds, because a cell writes into the same folder behind
+ * our back (`open('big.bin','wb')`); that is beyond the cap anyway, see the
+ * comment below, and ten seconds of drift change nothing here.
  *
- * И это же делает потолок общим для одновременных загрузок: раньше каждый
- * запрос читал сумму один раз в начале, поэтому N студентов, нажавших «Отдать»
- * в одну секунду, видели одно и то же старое число и вместе перебирали потолок
- * комнаты в N раз.
+ * This also makes the cap shared by concurrent uploads: each request used to
+ * read the sum once at the start, so N students pressing "Hand in" in the
+ * same second saw the same old number and together exceeded the room's cap N
+ * times over.
  */
 const FRESH_MS = 10_000
 const measured = new Map<string, { bytes: number; at: number }>()
-/** Сколько потоков пишет в комнату прямо сейчас — см. usedBytes. */
+/** How many streams are writing into the room right now; see usedBytes. */
 const writing = new Map<string, number>()
 
 function usedBytes(sessionId: string): number {
   const known = measured.get(sessionId)
   /*
-   * Пока в папке лежат НАШИ недописанные файлы, пересчитывать нельзя: обход
-   * посчитает половину приезжающего файла, а целый его размер мы прибавим сами,
-   * когда поток закроется, — и место комнаты уехало бы дважды. Пока идёт
-   * загрузка, сумму ведут прибавки; заново меряем, когда всё дописано.
+   * While OUR unfinished files are in the folder, recounting is not allowed:
+   * the walk would count half of the arriving file, and we add its whole size
+   * ourselves when the stream closes, so the room's space would go twice.
+   * While an upload is running, increments keep the sum; we measure afresh
+   * when everything is written.
    */
   if (known && (Date.now() - known.at < FRESH_MS || writing.has(sessionId))) return known.bytes
   const bytes = sessionBytes(sessionId)
@@ -85,22 +87,24 @@ function endedWriting(sessionId: string): void {
   else writing.delete(sessionId)
 }
 
-/** Своя запись или своё удаление: счётчик правится, а не сбрасывается. */
+/** Our own write or our own deletion: the counter is adjusted, not reset. */
 function noteBytes(sessionId: string, delta: number): void {
   const known = measured.get(sessionId)
   if (known) known.bytes += delta
 }
 
-/** Считать заново: папку изменили не мы (удаление, уборка временных). */
+/** Count afresh: the folder was changed by someone else (a deletion, a temp-file sweep). */
 function forgetBytes(sessionId: string): void {
   measured.delete(sessionId)
 }
 
 /**
- * Уборка брошенных временных файлов — не чаще раза в пять минут на комнату.
+ * Sweeping abandoned temp files, no more often than once every five minutes
+ * per room.
  *
- * Порог у самой уборки — час (`sweepStaleUploads`), так что чаще незачем, а
- * стоит она такого же полного обхода папки, как и подсчёт байтов.
+ * The sweep's own threshold is an hour (`sweepStaleUploads`), so there is no
+ * point doing it more often, and it costs the same full walk of the folder as
+ * counting the bytes.
  */
 const SWEEP_EVERY_MS = 5 * 60_000
 const sweptAt = new Map<string, number>()
@@ -110,17 +114,17 @@ function sweepSometimes(sessionId: string): void {
   if (now - (sweptAt.get(sessionId) ?? 0) < SWEEP_EVERY_MS) return
   sweptAt.set(sessionId, now)
   sweepStaleUploads(sessionId)
-  // Уборка могла унести чужие недописанные — сумма после неё другая.
+  // The sweep may have taken others' unfinished files, so the sum is different after it.
   forgetBytes(sessionId)
 }
 
-/** Убрать свой временный файл и вернуть комнате его байты. */
+/** Remove our own temp file and give its bytes back to the room. */
 function removeTemp(sessionId: string, tmp: string): void {
   let size = 0
   try {
     size = workspaceFs.statSync(tmp).size
   } catch {
-    /* его уже нет — вычитать нечего */
+    /* it is already gone: nothing to subtract */
   }
   try { workspaceFs.rmSync(tmp, { force: true }) } catch { /* untrusted parent changed */ }
   if (size > 0) noteBytes(sessionId, -size)
@@ -129,9 +133,9 @@ function removeTemp(sessionId: string, tmp: string): void {
 export function fileRoutes(): Router {
   const router = Router()
 
-  // Закрытый доступ закрыт и здесь: раздатка, скачивание и — главное —
-  // загрузка, тот самый спам, за который человека и закрыли (routes/sessions.ts
-  // · banDoor).
+  // Blocked access is blocked here too: the handouts, downloads and, above
+  // all, uploads, the very spam the person was blocked for
+  // (routes/sessions.ts · banDoor).
   router.use('/api/sessions/:id', banDoor)
 
   /*
@@ -147,46 +151,49 @@ export function fileRoutes(): Router {
   router.get('/api/sessions/:id/files', (req, res) => {
     if (!getSession(req.params.id)) return res.status(404).json({ error: SESSION_MISSING })
     if (!sessionAuth(req)) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
-    // Вместе с признаком обрезки: список, упёршийся в потолок, — это не «в
-    // комнате столько файлов», и решать по нему, что чего-то не стало, нельзя.
+    // Together with the truncation flag: a list that hit the cap does not mean
+    // "the room has this many files", and it cannot be used to decide that
+    // something is gone.
     res.json(listTree(req.params.id))
   })
 
   /*
-   * Единственная запись вне /api/admin, которую авторизует одно печенье.
+   * The only write outside /api/admin that a cookie alone authorizes.
    *
-   * Проверка `sameOrigin` висела только на префиксе /api/admin — и комментарий
-   * над ней объясняет её ровно тем, что «помнить про неё на каждом новом
-   * маршруте» не выйдет. Этот маршрут и не вспомнил: печенье преподавателя
-   * пускает сюда без токена участника, то есть межсайтовый POST с чужой
-   * страницы клал бы файл в папку семинара, и держал бы его только SameSite=Lax
-   * браузера. Запрос без заголовка Origin (curl, скрипт) проходит как и раньше:
-   * межсайтовым он не бывает.
+   * The `sameOrigin` check hung only on the /api/admin prefix, and the comment
+   * above it justifies it exactly by "remembering it on every new route" not
+   * working out. This route did not remember: the teacher cookie lets one in
+   * here without a participant token, so a cross-site POST from someone
+   * else's page would put a file into the seminar folder, held back only by
+   * the browser's SameSite=Lax. A request without an Origin header (curl, a
+   * script) passes as before: it is never cross-site.
    */
   router.post('/api/sessions/:id/files', sameOrigin, (req, res) => {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     /*
-     * Либо участник комнаты, либо преподаватель этого инстанса.
+     * Either a participant of the room or a teacher of this instance.
      *
-     * Второе понадобилось, когда материалы стало можно прикреплять при
-     * создании семинара: панель ходит с печеньем преподавателя и токена
-     * участника у неё нет — она в комнату не заходила. Печенье при этом
-     * credential не слабее, а сильнее: оно отзывается удалением из списка
-     * преподавателей, а токен участника живёт своей жизнью. Ровно тот же довод
-     * записан в sessions.ts над проверкой роли.
+     * The second became necessary when materials could be attached while
+     * creating a seminar: the panel goes with the teacher cookie and has no
+     * participant token, since it never entered the room. The cookie is not a
+     * weaker credential but a stronger one: it is revoked by removal from the
+     * teacher list, while a participant token lives a life of its own. The
+     * very same argument is written in sessions.ts above the role check.
      */
     const joined = sessionAuth(req)
     if (!joined && !currentStaff(req)) {
       return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     }
-    // Роль решается тут же: печенье преподавателя сильнее токена участника, и
-    // человек, вошедший в комнату до входа в панель, — всё равно преподаватель.
+    // The role is decided right here: the teacher cookie beats a participant
+    // token, and a person who entered the room before signing into the panel
+    // is still a teacher.
     const role = currentStaff(req) ? 'host' : (joined?.role ?? 'participant')
     if (!allows(getRules(sessionId).files, role)) {
-      // Законченное занятие ужесточает `files` само (db.getRules); отдельная тут
-      // только фраза — человеку важно не правило, а то, что пара кончилась.
-      // Скачивание и чтение ниже не трогаются: после пары в файлы и ходят.
+      // A finished class tightens `files` by itself (db.getRules); only the
+      // sentence is separate here: what matters to a person is not the rule
+      // but that the lesson is over. Download and reading below are untouched:
+      // after the lesson is exactly when people go to the files.
       return res.status(403).json({
         error: isFinished(sessionId)
           ? tr(CLASS_IS_OVER)
@@ -200,11 +207,11 @@ export function fileRoutes(): Router {
     }
 
     // Before anything is written: an interrupted upload leaves a hidden temp
-    // that nothing else will ever remove. Раз в несколько минут на комнату —
-    // порог у самой уборки час, а стоит она обхода всей папки.
+    // that nothing else will ever remove. Once every few minutes per room: the
+    // sweep's own threshold is an hour, and it costs a walk of the whole folder.
     sweepSometimes(sessionId)
-    // И место комнаты — до того, как этот запрос заведёт свои временные файлы:
-    // дальше сумму ведут прибавки, а не обход (см. usedBytes).
+    // And the room's space, before this request creates its own temp files:
+    // from then on increments keep the sum, not a walk (see usedBytes).
     usedBytes(sessionId)
 
     let bb: ReturnType<typeof busboy>
@@ -230,11 +237,12 @@ export function fileRoutes(): Router {
     }
 
     /*
-     * В какую папку кладём. Поле формы, а не часть имени файла: имя приходит из
-     * файловой системы того, кто перетаскивает, и дописывать в него путь значит
-     * зависеть от того, что браузер положил в `filename`. Приходит раньше самих
-     * файлов, потому что панель добавляет его в форму первым; клиент, который
-     * так не делает, кладёт в корень — и это честный ответ, а не тихая ошибка.
+     * Which folder we put things in. A form field, not part of the file name:
+     * the name comes from the file system of whoever is dragging, and adding a
+     * path to it means depending on what the browser put into `filename`. It
+     * arrives before the files themselves, because the panel adds it to the
+     * form first; a client that does not puts things in the root, and that is
+     * an honest answer, not a silent error.
      */
     let intoDir = ''
     bb.on('field', (name, value) => {
@@ -244,52 +252,56 @@ export function fileRoutes(): Router {
     })
 
     const saved: string[] = []
-    /** Имена, которые легли поверх уже лежавших: об этом надо сказать вслух. */
+    /** Names that landed over files already there: that has to be said out loud. */
     const replaced: string[] = []
     const writes: Promise<void>[] = []
-    /** Все недописанные файлы этого запроса — их надо убрать, чем бы он ни кончился. */
+    /** All of this request's unfinished files: they must be removed however it ends. */
     const temps = new Set<string>()
-    /** Открытые сейчас потоки записи: обрыв закрывает их руками, см. ниже. */
+    /** The write streams open right now: a cut-off closes them by hand, see below. */
     const open = new Set<fs.WriteStream>()
     let failure: UploadFailure | null = null
     let answered = false
     /*
-     * Потолок — на комнату целиком и общий для всех, кто пишет в неё сейчас
-     * (см. usedBytes): место считается счётчиком комнаты, а временный файл уже
-     * лежит в её папке, поэтому две одновременные загрузки видят друг друга.
+     * The cap is for the whole room and shared by everyone writing into it
+     * right now (see usedBytes): the space is counted by the room's counter,
+     * and a temp file already lies in its folder, so two concurrent uploads
+     * see each other.
      *
-     * Потолок закрывает загрузку, но не ячейку.
+     * The cap closes the upload, not the cell.
      *
-     * Ячейка пишет в тот же каталог напрямую из ядра — `open('big.bin','wb')`
-     * мимо этой проверки, — и настоящая граница у диска одна: лимит на том
-     * рядом с mem_limit и pids_limit, которых у /workspace нет. Здесь мы
-     * останавливаем то, что можем остановить: случайную папку, уроненную в
-     * окно, а не злой умысел.
+     * A cell writes into the same directory straight from the kernel
+     * (`open('big.bin','wb')` bypasses this check), and the real disk boundary
+     * is only one: a volume limit next to mem_limit and pids_limit, which
+     * /workspace does not have. Here we stop what we can stop: a random folder
+     * dropped into the window, not malice.
      */
 
     /*
-     * Оборванная загрузка не должна лечь поверх целого файла.
+     * A cut-off upload must not land over a whole file.
      *
-     * Клиент, ушедший на середине, не поднимает 'limit' — это про размер, — и
-     * поток файла в busboy при этом просто кончается. Дальше срабатывал
-     * обычный путь: переименовать temp на место. Половина CSV ложилась поверх
-     * целого, pandas читал её без ошибки, и о потере узнавали по числам.
+     * A client that leaves midway does not raise 'limit' (that one is about
+     * size), and the file stream in busboy simply ends. Then the ordinary path
+     * fired: rename the temp into place. Half a CSV landed over the whole one,
+     * pandas read it without an error, and the loss was noticed by the
+     * numbers.
      */
     let aborted = false
     /*
-     * Обрыв закрываем сами — иначе не закроется никто.
+     * We close a cut-off ourselves, otherwise nobody will.
      *
-     * Здесь стояло «дождаться Promise.all(writes) и убрать временные», и этот
-     * момент не наступал никогда: busboy при обрыве не получает 'end', поток
-     * файла не кончается, `out.on('close')` не срабатывает — обещание не
-     * разрешается вовсе. Итог: `.имя.uploading-*` лежал в папке до ближайшей
-     * уборки (порог — час), всё это время считался в место комнаты и отнимал
-     * его у следующих загрузок, дескриптор записи оставался открытым, а файлы,
-     * успевшие лечь на место в том же запросе, не рассылались комнате — панель
-     * не видела их до следующего изменения дерева.
+     * There used to be "wait for Promise.all(writes) and remove the temps"
+     * here, and that moment never came: on a cut-off busboy does not get
+     * 'end', the file stream does not end, `out.on('close')` does not fire,
+     * and the promise never resolves. The result: `.name.uploading-*` lay in
+     * the folder until the next sweep (threshold: an hour), all that time
+     * counted towards the room's space and took it from the next uploads, the
+     * write descriptor stayed open, and files that made it into place in the
+     * same request were not broadcast to the room: the panel did not see them
+     * until the next tree change.
      *
-     * `bb.destroy()` и `out.destroy()` доводят потоки до 'close', после чего
-     * обычный путь ниже сам убирает недописанное и отдаёт байты обратно.
+     * `bb.destroy()` and `out.destroy()` bring the streams to 'close', after
+     * which the ordinary path below removes the unfinished parts and gives the
+     * bytes back by itself.
      */
     const cutOff = () => {
       if (aborted || answered) return
@@ -300,8 +312,8 @@ export function fileRoutes(): Router {
       void Promise.all(writes).then(finish)
     }
     req.on('aborted', cutOff)
-    // 'aborted' у запроса объявлен устаревшим, а 'close' приходит и на честно
-    // дочитанном теле — различает их `req.complete`.
+    // The request's 'aborted' is deprecated, and 'close' also comes for a body
+    // read to the end honestly; `req.complete` tells them apart.
     req.on('close', () => {
       if (!req.complete) cutOff()
     })
@@ -309,33 +321,35 @@ export function fileRoutes(): Router {
     function finish(): void {
       if (answered) return
       answered = true
-      // Всё, что не доехало до места, убирается здесь: обрыв на середине
-      // запроса не даёт сработать ни одному из путей выше.
+      // Whatever did not make it into place is removed here: a cut-off in the
+      // middle of the request lets none of the paths above fire.
       for (const tmp of temps) removeTemp(sessionId, tmp)
       /*
-       * Короткую память обхода сбрасываем сами: файлы легли переименованием,
-       * своими потоками, мимо workspace.ts. `renameSync` выше это уже сделал,
-       * но между ним и этой строкой чужой запрос успевает обойти папку и
-       * положить в память дерево без нашего файла — а уедет оно и в комнату, и
-       * в ответ.
+       * We reset the walk's short memory ourselves: the files landed by
+       * rename, through our own streams, bypassing workspace.ts. `renameSync`
+       * above already did this, but between it and this line another request
+       * manages to walk the folder and put into memory a tree without our
+       * file, and that tree would go both to the room and into the response.
        */
       if (saved.length > 0) forgetTree(sessionId)
-      // Отвечать оборванному запросу некому; комнате — есть кому: файлы,
-      // успевшие лечь на место, рассылаются и с обрыва. Дерево на это строит
-      // сама рассылка — ответа, ради которого его считают ниже, здесь не будет.
+      // There is nobody to answer for a cut-off request, but the room is there:
+      // files that made it into place are broadcast even on a cut-off. The
+      // broadcast builds the tree for that itself; the response it is computed
+      // for below will not happen here.
       if (aborted) {
         if (saved.length > 0) broadcastFiles(sessionId)
         return
       }
       /*
-       * Одно дерево на весь запрос: и комнате, и тому, кто нажал.
+       * One tree for the whole request: for the room and for whoever pressed.
        *
-       * Обход — readdir плюс lstat на каждую из двух тысяч записей, синхронно и
-       * в том же цикле, где идёт занятие; делать его дважды на одну загрузку
-       * незачем, и готовое дерево рассылка принимает (control.ts ·
-       * broadcastFiles). Считается ДО неё, потому что рассылка сбрасывает ту
-       * самую память обхода, — иначе второй обход достался бы ровно тому
-       * запросу, ради которого она и заведена.
+       * A walk is readdir plus an lstat for each of two thousand entries,
+       * synchronously and in the same loop where the class is running; there
+       * is no point doing it twice per upload, and the broadcast accepts a
+       * ready tree (control.ts · broadcastFiles). It is computed BEFORE the
+       * broadcast, because the broadcast resets that very walk memory;
+       * otherwise the second walk would fall to exactly the request the memory
+       * exists for.
        */
       const tree = listTree(sessionId)
       if (saved.length > 0) broadcastFiles(sessionId, tree)
@@ -348,14 +362,16 @@ export function fileRoutes(): Router {
 
     bb.on('file', (_field, stream, info) => {
       /*
-       * Имя меряется той же меркой, что и всё остальное в дереве.
+       * The name is measured by the same measure as everything else in the
+       * tree.
        *
-       * Раньше загрузка спрашивала свою мерку (двести символов, пробел с краю
-       * можно), а `resolveInSession` следом — `safeSegment` (сто двадцать,
-       * нельзя): имя в сто пятьдесят символов, каких полно в выгрузках из LMS,
-       * отвергалось фразой «cannot be used as a file name here», не называвшей
-       * ни причины, ни потолка. Папку из `filename` браузера по-прежнему
-       * срезаем: путь приходит полем `dir`, а не именем файла.
+       * The upload used to apply its own measure (two hundred characters, a
+       * space at the edge allowed), and `resolveInSession` right after it
+       * applied `safeSegment` (a hundred and twenty, not allowed): a name of a
+       * hundred and fifty characters, of which LMS exports are full, was
+       * rejected with "cannot be used as a file name here", naming neither the
+       * reason nor the limit. We still cut the folder off the browser's
+       * `filename`: the path comes in the `dir` field, not in the file name.
        */
       const name = basename(info.filename ?? '')
       if (!safeSegment(name)) {
@@ -375,12 +391,12 @@ export function fileRoutes(): Router {
       }
       const folder = target.slice(0, target.lastIndexOf('/'))
       /*
-       * Папка могла не существовать — панель умеет перетащить файл на новую. А
-       * могла быть занята файлом: `dir=data.csv` при лежащем `data.csv` — это
-       * EEXIST (а `data.csv/sub` — ENOTDIR) прямо из обработчика потока, мимо
-       * express, то есть `uncaughtException` и `process.exit(1)` на весь
-       * инстанс со всеми его семинарами. Любой отказ файловой системы здесь —
-       * это `failure` с кодом, а не исключение.
+       * The folder may not have existed: the panel can drag a file onto a new
+       * one. Or it may be taken by a file: `dir=data.csv` with a `data.csv`
+       * already there is EEXIST (and `data.csv/sub` is ENOTDIR) right from the
+       * stream handler, bypassing express, that is, `uncaughtException` and
+       * `process.exit(1)` for the whole instance with all its seminars. Any
+       * file system refusal here is a `failure` with a code, not an exception.
        */
       const at = intoDir ? statPath(sessionId, intoDir) : null
       if (at && !at.dir) {
@@ -438,16 +454,17 @@ export function fileRoutes(): Router {
           out.on('close', () => {
             open.delete(out)
             /*
-             * Записанное считается местом комнаты сразу, до всех проверок:
-             * временный файл уже лежит в её папке, и вторая загрузка, идущая в
-             * эту же секунду, обязана его видеть. Каждый путь ниже, который
-             * временный файл убирает, отдаёт байты обратно (removeTemp).
+             * What was written counts as the room's space at once, before all
+             * the checks: the temp file already lies in its folder, and a
+             * second upload running in the same second must see it. Every path
+             * below that removes the temp file gives the bytes back
+             * (removeTemp).
              */
             let written = 0
             try {
               written = workspaceFs.statSync(tmp).size
             } catch {
-              /* исчез — разберётся ветка ниже */
+              /* it vanished: the branch below will sort it out */
             }
             noteBytes(sessionId, written)
             endedWriting(sessionId)
@@ -470,22 +487,22 @@ export function fileRoutes(): Router {
               return
             }
             /*
-             * Потолок на комнату целиком, а не на один файл.
+             * The cap is for the whole room, not for one file.
              *
-             * Проверяется после записи, а не до: размер приходящего файла до
-             * конца потока неизвестен, а Content-Length говорит про весь
-             * многочастный запрос вместе с границами. Написанный, но не
-             * переименованный temp здесь же и удаляется, так что за отказ
-             * место не платят.
+             * It is checked after the write, not before: the size of an
+             * arriving file is unknown until the end of the stream, and
+             * Content-Length describes the whole multipart request, boundaries
+             * included. A temp that was written but not renamed is deleted
+             * right here, so a refusal costs no space.
              */
             /*
-             * Занято ли имя — спрашивается ЗДЕСЬ, за строку до переименования, а
-             * не в начале приёма файла. Два студента, кладущие `a.csv` в одну
-             * секунду, оба видели «такого файла нет» и оба проходили проверку
-             * «заменять чужое может преподаватель»: второй ложился поверх
-             * первого молча, и оба получали «загружено». Между этой строкой и
-             * `renameSync` ниже нет ни одного await, так что второй увидит файл
-             * первого.
+             * Whether the name is taken is asked HERE, a line before the
+             * rename, not at the start of receiving the file. Two students
+             * putting `a.csv` in the same second both saw "no such file" and
+             * both passed the "only a teacher may replace someone else's"
+             * check: the second silently landed over the first, and both got
+             * "uploaded". There is no await between this line and `renameSync`
+             * below, so the second will see the first one's file.
              */
             let already = 0
             let existed = false
@@ -493,7 +510,7 @@ export function fileRoutes(): Router {
               already = workspaceFs.statSync(target).size
               existed = true
             } catch {
-              // Файла с таким именем ещё нет: место под него не освободится.
+              // No file with this name yet: no space will be freed for it.
             }
             if (usedBytes(sessionId) - already > config.maxSessionBytes) {
               removeTemp(sessionId, tmp)
@@ -507,12 +524,13 @@ export function fileRoutes(): Router {
               return
             }
             /*
-             * Поверх тетради комнаты не ложится ничто.
+             * Nothing lands over a room notebook.
              *
-             * Файл тетради — проекция документа: он переписывается из комнаты
-             * через секунду после любой правки. Принять загрузку значило бы
-             * показать «загружено» и молча вернуть прежнее содержимое — худший
-             * вид отказа. Внести тетрадь заново можно, убрав её из комнаты.
+             * A notebook file is a projection of the document: the room
+             * rewrites it a second after any edit. Accepting the upload would
+             * mean showing "uploaded" and silently bringing back the previous
+             * content, the worst kind of refusal. A notebook can be brought in
+             * again after removing it from the room.
              */
             if (isBookFile(sessionId, rel)) {
               removeTemp(sessionId, tmp)
@@ -524,9 +542,10 @@ export function fileRoutes(): Router {
               return
             }
             /*
-             * Заменить чужой файл — это удалить его, а удаление уже
-             * преподавательское. Дыра была ровно такой ширины: DELETE
-             * спрашивал роль, а загрузка файла с тем же именем — нет.
+             * Replacing someone else's file means deleting it, and deletion is
+             * already teacher-only. The hole was exactly that wide: DELETE
+             * asked for the role, while uploading a file with the same name
+             * did not.
              */
             if (existed && role !== 'host') {
               removeTemp(sessionId, tmp)
@@ -539,12 +558,14 @@ export function fileRoutes(): Router {
             }
             try {
               workspaceFs.renameSync(tmp, target)
-              // Загрузка пишет своими потоками, мимо workspace.ts, — значит и
-              // короткую память обхода сбрасывает сама: ответ на этот же запрос
-              // отдаёт дерево, и файла в нём иначе не было бы.
+              // The upload writes through its own streams, bypassing
+              // workspace.ts, so it resets the walk's short memory itself: the
+              // response to this very request returns the tree, and the file
+              // would otherwise be missing from it.
               forgetTree(sessionId)
-              // Файл, который лёг на место, уносит с собой прежний: его байты
-              // комнате возвращаются, байты временного уже посчитаны выше.
+              // The file that took its place takes the previous one with it:
+              // its bytes go back to the room, and the temp's bytes were
+              // already counted above.
               noteBytes(sessionId, -already)
               temps.delete(tmp)
               saved.push(name)
@@ -580,14 +601,14 @@ export function fileRoutes(): Router {
   })
 
   /**
-   * Скачать файл.
+   * Download a file.
    *
-   * Путь — в строке запроса, а не в адресе, и это единственный способ адресовать
-   * файл во всём продукте. Косая черта внутри имени в адресе живёт только в
-   * виде `%2F`, а его по дороге разворачивает то один прокси, то другой — и
-   * `src/model.py` превращается либо в две части пути, либо в 404 в
-   * зависимости от того, что стоит перед сервером. Строка запроса не
-   * нормализуется никем.
+   * The path is in the query string, not in the address, and this is the only
+   * way to address a file in the whole product. A slash inside a name lives in
+   * the address only as `%2F`, and one proxy or another unfolds it on the
+   * way, so `src/model.py` turns either into two path segments or into a 404,
+   * depending on what stands in front of the server. Nobody normalizes a query
+   * string.
    */
   router.get('/api/sessions/:id/file', (req, res) => {
     const sessionId = req.params.id
@@ -632,11 +653,12 @@ export function fileRoutes(): Router {
   })
 
   /**
-   * Убрать файл или папку.
+   * Remove a file or a folder.
    *
-   * Право преподавателя, и было им и раньше: папка общая в обе стороны, и любой
-   * в комнате мог убрать раздатку, по которой класс работает. Добавить — прибавка
-   * и остаётся открытой всем; убрать — нет.
+   * A teacher's right, and it was meant to be one all along: the folder is
+   * shared both ways, and anyone in the room could remove the handout the
+   * class works from. Adding is an addition and stays open to everyone;
+   * removing is not.
    */
   router.delete('/api/sessions/:id/file', (req, res) => {
     const sessionId = req.params.id
@@ -646,10 +668,10 @@ export function fileRoutes(): Router {
     const wanted = normalizePath(typeof req.query.path === 'string' ? req.query.path : '')
     if (!wanted) return res.status(400).json({ error: tr("server.badPath.95c1aa") })
     /*
-     * И то же исключение, что у сокетной двери (control.ts · `tree:remove`):
-     * свою личную тетрадь автор убирает сам. Две двери на одно действие —
-     * панель ходит сюда, дерево шлёт кадр, — и правило у них обязано быть
-     * одним, иначе оно есть только на одной из них.
+     * And the same exception as at the socket door (control.ts ·
+     * `tree:remove`): an author removes their own personal notebook. Two doors
+     * for one action (the panel comes here, the tree sends a frame), and they
+     * must have one rule, otherwise it exists on only one of them.
      */
     if (who.role !== 'host' && !ownsBookAt(sessionId, wanted, who.participantId)) {
       return res.status(403).json({ error: tr("server.onlyTheTeacherCanRemoveAFile.289f45") })
@@ -657,23 +679,26 @@ export function fileRoutes(): Router {
     if (!deleteFile(sessionId, wanted)) {
       return res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
     }
-    // Убрали не мы, а сколько там было — не спросишь после: считаем заново.
-    // Преподаватель удаляет датасет ровно затем, чтобы место сразу освободилось.
+    // The removal did not go through our counter, and how much was there
+    // cannot be asked afterwards: count afresh. A teacher deletes a dataset
+    // precisely so that the space frees up at once.
     forgetBytes(sessionId)
     forgetFile(sessionId, wanted)
     dropBook(sessionId, wanted)
     /*
-     * И общий экран, если на нём был этот документ.
+     * And the shared screen, if this document was on it.
      *
-     * Сокетная дверь удаления это делает (control.ts · `tree:remove`), а эта —
-     * не делала: удалённый через панель PDF оставался на проекции у всей
-     * комнаты до перезагрузки страницы. Клиентская страховка по списку файлов
-     * с этим случаем больше не работает — она считает пропажу доказанной
-     * только на ПОЛНОМ списке (web/src/lib/board.ts), а список бывает обрезан.
+     * The socket deletion door does this (control.ts · `tree:remove`), and
+     * this one did not: a PDF deleted through the panel stayed on the
+     * projection for the whole room until a page reload. The client-side
+     * safety net based on the file list no longer works for this case: it
+     * considers a disappearance proven only on a FULL list
+     * (web/src/lib/board.ts), and the list can be truncated.
      */
     forgetMissingBoard(sessionId)
-    // Одно дерево на обоих: `deleteFile` короткую память обхода уже сбросил
-    // (workspace.ts), так что это свежий обход, а рассылка берёт его готовым.
+    // One tree for both: `deleteFile` already reset the walk's short memory
+    // (workspace.ts), so this is a fresh walk, and the broadcast takes it
+    // ready-made.
     const tree = listTree(sessionId)
     broadcastFiles(sessionId, tree)
     res.json(tree)

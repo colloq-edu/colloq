@@ -7,7 +7,7 @@ import config from '../web/vite.config.js'
 // the app exists. A bare /s/ URL used to fetch the entire editor in incognito.
 const plugin = (config as any).plugins.find((plugin: any) => plugin.name === 'colloq-first-paint')
 
-/** Куски так, как их видит Rollup: имя, файл и СТАТИЧЕСКИЕ импорты. */
+/** Chunks the way Rollup sees them: name, file and STATIC imports. */
 const bundle = {
   app: {
     type: 'chunk', name: 'App', fileName: 'assets/App-test.js', imports: ['assets/index-test.js'],
@@ -54,7 +54,7 @@ function downloads(path: string, saved: string | null, denied = false, ready = f
   return requested
 }
 
-/** Что именно кладётся в голову: ссылка целиком, а не только адрес. */
+/** What exactly goes into the head: the whole link, not just the address. */
 function links(path: string, saved: string | null, ready = false, lang = 'ru'): Record<string, unknown>[] {
   const made: Record<string, unknown>[] = []
   const listeners = new Map<string, () => void>()
@@ -106,8 +106,9 @@ test('unavailable or invalid browser storage keeps cold entry usable', () => {
   assert.deepEqual(downloads('/s/room1', null, true), [])
 })
 
-// Форма едет первой в документе: пока скрипт комнаты стоял выше этих ссылок,
-// 394 КБ тетради успевали занять очередь перед кодом самой формы.
+// The form goes first in the document: while the room script stood above
+// these links, 394 KB of notebook got to take the queue ahead of the form's
+// own code.
 test('the form and its shared dependencies are requested from the initial document', () => {
   const head = html.slice(0, html.indexOf('</head>'))
   const preloads = [...head.matchAll(/<link[^>]*rel="modulepreload"[^>]*href="([^"]+)"/g)].map((match) => match[1])
@@ -116,9 +117,9 @@ test('the form and its shared dependencies are requested from the initial docume
     'room bytes must not be queued ahead of the form')
 })
 
-// Помощник предзагрузки Vite ЖДЁТ App-*.css перед тем, как выполнить App.
-// Пока о нём узнавали только из входного куска, эти 852 байта стояли между
-// входом и экраном — целой волной сети позже, чем нужно.
+// Vite's preload helper WAITS for App-*.css before executing App. While it
+// was learned about only from the entry chunk, these 852 bytes stood between
+// the entry and the screen — a whole network round later than needed.
 test("the entry chunk's own stylesheet is named in the head, the page's is not repeated", () => {
   const head = html.slice(0, html.indexOf('</head>'))
   const styles = [...head.matchAll(/<link[^>]*rel="preload" as="style"[^>]*href="([^"]+)"/g)].map((match) => match[1])
@@ -126,7 +127,7 @@ test("the entry chunk's own stylesheet is named in the head, the page's is not r
   assert.equal(head.match(/href="\/assets\/index-test\.css"/g)?.length, 2, 'stylesheet plus its noscript copy')
 })
 
-// Лист приложения едет высоким приоритетом и не блокирует первый кадр.
+// The app stylesheet goes at high priority and does not block the first frame.
 test('the app stylesheet is preloaded as a style and promoted on load', () => {
   assert.match(html, /<link rel="preload" as="style" crossorigin href="\/assets\/index-test\.css" onload="this\.rel='stylesheet'" data-colloq-css>/)
   assert.match(html, /<noscript><link rel="stylesheet" crossorigin href="\/assets\/index-test\.css"><\/noscript>/)
@@ -149,8 +150,9 @@ test('ready does not duplicate a returning room preload', () => {
   assert.equal(downloads('/s/room1', '{"room1":{"token":"saved-token"}}', false, true).length, 7)
 })
 
-// Тетрадь нужна ПОСЛЕ формы, а не вместо неё: низкий приоритет — это и есть
-// разница между «греем свободной полосой» и «отнимаем у экрана входа».
+// The notebook is needed AFTER the form, not instead of it: low priority is
+// exactly the difference between "warming with spare bandwidth" and "taking
+// from the entry screen".
 test('room bytes are warmed at low priority; a screen with no form is not', () => {
   const warm = links('/s/room1', '{"room1":{"token":"t"}}')
   assert.deepEqual([...new Set(warm.slice(1).map((link) => link.fetchPriority))], ['low'])
@@ -167,7 +169,8 @@ test('non-room screens fetch their catalog and code concurrently without warming
   assert.deepEqual(downloads('/admin-elsewhere', null), [])
 })
 
-// Шрифт кода нужен там, где код рисуют. Форма входа штата — не такое место.
+// The code font is needed where code is drawn. The staff sign-in form is not
+// such a place.
 test('code font preload follows the code, not merely the absence of a room', () => {
   const fonts = (path: string, saved: string | null) =>
     downloads(path, saved).filter((file) => file.startsWith('/fonts/'))
@@ -179,8 +182,8 @@ test('code font preload follows the code, not merely the absence of a room', () 
   assert.deepEqual(fonts('/', null), [])
 })
 
-// 26 КБ index.html — это 8.9 КБ brotli на КАЖДУЮ навигацию, из которых десять
-// килобайт исходника были объяснениями для того, кто его правит.
+// 26 KB of index.html is 8.9 KB of brotli on EVERY navigation, of which ten
+// kilobytes of source were explanations for whoever edits it.
 test('the built page carries no comments, and the source keeps every one of them', async () => {
   assert.equal(html.includes('<!--'), false)
   const built = plugin.transformIndexHtml.handler(
@@ -195,8 +198,8 @@ test('the built page carries no comments, and the source keeps every one of them
   assert.ok(source.includes('<!--'), 'the source page explains itself to whoever edits it')
 })
 
-// Кусок переименовали — сборка обязана упасть, а не молча вернуть лишний круг
-// сети, который здесь и убирают.
+// A chunk was renamed — the build must fail rather than silently bring back
+// the extra network round that is removed here.
 test('a renamed chunk fails the build instead of silently losing a preload', () => {
   for (const name of ['SessionScreen', 'codemirror', 'render', 'App', 'room-ru', 'admin-en']) {
     const without = Object.fromEntries(

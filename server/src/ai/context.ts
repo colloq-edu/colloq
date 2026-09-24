@@ -52,29 +52,33 @@ const MAX_OUTPUT = 800
 const MAX_FILES = 40
 
 /**
- * Сколько текста открытого файла едет вместе с вопросом.
+ * How much of the open file's text travels with the question.
  *
- * Восемь тысяч знаков — это примерно двести строк: столько человек держит перед
- * глазами, когда спрашивает «почему тут падает». Файл длиннее едет началом, и
- * про обрезку сказано вслух — модель, дописывающая конец файла, которого не
- * видела, хуже модели, которая переспросила.
+ * Eight thousand characters is about two hundred lines: that is how much a
+ * person keeps before their eyes when asking "why does it fail here". A longer
+ * file travels as its beginning, and the clipping is stated out loud — a model
+ * finishing the end of a file it has not seen is worse than a model that asks
+ * back.
  */
 const MAX_OPEN_FILE = 8_000
 
 /**
- * Одна ячейка в кадре: сама ячейка, её тетрадь и номер внутри этой тетради.
+ * One cell in the frame: the cell itself, its notebook and its number within
+ * that notebook.
  *
- * Тетрадей в комнате несколько, и номер у ячейки свой в каждой — тот самый,
- * который нарисован у неё в поле слева. Пока список был плоским и одним,
- * номером служил индекс в нём; с двумя тетрадями это разошлось бы молча.
+ * A room has several notebooks, and a cell's number is its own in each — the
+ * very one drawn next to it in the left margin. While the list was flat and
+ * single, the index in it served as the number; with two notebooks that would
+ * have silently diverged.
  *
- * Выводы здесь НЕ лежат, и это главное различие с `readCell`. Разбор вывода —
- * это `JSON.parse` каждой записи data/error, включая base64 картинки на сотни
- * килобайт, и делался он для ВСЕХ ячеек всех тетрадей на каждый вопрос — при
- * том, что до кадра доезжают единицы: остальные бюджет сворачивает в одну
- * строку, где выводов нет вовсе. Здесь выводы читаются ровно у тех ячеек,
- * которые правда поедут модели (`outputsOf`), а «есть ли тут падение» узнаётся
- * по виду записи, без разбора её содержимого.
+ * Outputs are NOT kept here, and that is the main difference from `readCell`.
+ * Parsing an output is a `JSON.parse` of every data/error entry, including
+ * base64 images of hundreds of kilobytes, and it was done for ALL cells of all
+ * notebooks on every question — while only a handful make it into the frame:
+ * the budget folds the rest into one line with no outputs at all. Here outputs
+ * are read only for the cells that will really go to the model (`outputsOf`),
+ * and "is there a failure here" is learned from the kind of the entry, without
+ * parsing its contents.
  */
 interface Entry {
   raw: YCell
@@ -84,22 +88,22 @@ interface Entry {
   state: CellState
   execCount: number | null
   runBy: string | null
-  /** Среди выводов есть ошибка — по виду записи, без разбора JSON. */
+  /** There is an error among the outputs — by the entry's kind, without parsing JSON. */
   failed: boolean
   book: string
-  /** 1-based, как в поле у края и как в панели. */
+  /** 1-based, as in the margin at the edge and as in the panel. */
   no: number
-  /** Первая ячейка своей тетради — над ней ставится её заголовок. */
+  /** The first cell of its notebook — the notebook's header goes above it. */
   first: boolean
 }
 
-/** Список выводов ячейки, не заводя его, если его нет: чтение не правит документ. */
+/** The cell's outputs list, without creating it if absent: a read does not edit the doc. */
 function outputArray(cell: YCell): Y.Array<YOutput> | null {
   const outputs = cell.get('outputs') as Y.Array<YOutput> | undefined
   return outputs ?? null
 }
 
-/** Выводы ячейки — только когда она правда едет в кадре. */
+/** A cell's outputs — only when it really travels in the frame. */
 function outputsOf(entry: Entry): CellOutput[] {
   const outputs = outputArray(entry.raw)
   if (!outputs) return []
@@ -111,7 +115,7 @@ function outputsOf(entry: Entry): CellOutput[] {
   return out
 }
 
-/** Шапка ячейки — всё, кроме выводов: строки, а не мегабайты. */
+/** A cell's head — everything except the outputs: strings, not megabytes. */
 function headOf(cell: YCell, book: string, no: number, first: boolean): Entry {
   const outputs = outputArray(cell)
   let failed = false
@@ -138,20 +142,22 @@ function headOf(cell: YCell, book: string, no: number, first: boolean): Entry {
 export function buildContext(
   sessionId: string,
   /**
-   * На чём просят сосредоточиться — выделение спрашивающего.
+   * What the asker wants the focus on — the asker's selection.
    *
-   * Не «что показать»: тетради едут целиком в любом случае. Это про порядок
-   * внимания — что закрепить в кадре и о чём сказать модели прямо.
+   * Not "what to show": the notebooks travel whole in any case. This is about
+   * the order of attention — what to pin in the frame and what to tell the
+   * model directly.
    */
   focus: readonly string[],
   /**
-   * Кто спрашивает.
+   * Who is asking.
    *
-   * Нужно ради одной вещи: какой файл у этого человека сейчас открыт в
-   * редакторе. Спрашивают почти всегда про то, на что смотрят, а до сих пор в
-   * контекст ехали только имена файлов — модель отвечала про `train.py`, ни
-   * строчки из него не видев. Берётся из присутствия комнаты, а не из запроса:
-   * там это уже есть и уже чинится сервером.
+   * Needed for one thing: which file this person has open in the editor right
+   * now. People almost always ask about what they are looking at, and until
+   * now only file names went into the context — the model answered about
+   * `train.py` without having seen a line of it. Taken from the room's
+   * presence, not from the request: it is already there and already corrected
+   * by the server.
    */
   askedBy?: string | null,
 ): string {
@@ -162,12 +168,13 @@ export function buildContext(
   const meta = getMeta(doc)
 
   /*
-   * ВСЕ тетради комнаты, а не первая.
+   * ALL notebooks of the room, not the first one.
    *
-   * Пока тетрадь была одна, «ячейки комнаты» и «ячейки тетради» значили одно и
-   * то же. С несколькими вопрос про ячейку во второй уходил с заголовком
-   * «SELECTED CELL: none» и без самой ячейки — а панель при этом честно
-   * показывала её номер, и ответ приходил уверенный и про чужой код.
+   * While there was one notebook, "the room's cells" and "the notebook's cells"
+   * meant the same thing. With several, a question about a cell in the second
+   * went out with the header "SELECTED CELL: none" and without the cell itself —
+   * while the panel honestly showed its number, and the answer came back
+   * confident and about someone else's code.
    */
   const entries: Entry[] = allBooks(doc).flatMap(({ book, cells }) =>
     cells.toArray().map((cell, at) => headOf(cell, book.path, at + 1, at === 0)),
@@ -184,13 +191,14 @@ export function buildContext(
   if (errorIndex >= 0) pinned.add(errorIndex)
 
   /*
-   * Заголовок собирается дважды: с открытым файлом и без него.
+   * The header is assembled twice: with the open file and without it.
    *
-   * Блок открытого файла — единственная часть заголовка, которая может быть
-   * длиной с весь бюджет, а режут все три ступени экономии только ячейки. При
-   * маленьком contextChars (модель на машине преподавателя) он вытеснял и
-   * выбранную ячейку, и строку «ASKING ABOUT» — то есть сам вопрос. Теперь он
-   * и урезан по бюджету, и уходит первым, когда закреплённым блокам тесно.
+   * The open file block is the only part of the header that can be as long as
+   * the whole budget, while all three saving steps cut only cells. With a small
+   * contextChars (a model on the teacher's machine) it pushed out both the
+   * selected cell and the "ASKING ABOUT" line — that is, the question itself.
+   * Now it is both trimmed to the budget and the first to go when the pinned
+   * blocks are short of room.
    */
   const headerWith = (open: readonly string[]): string =>
     [
@@ -199,10 +207,11 @@ export function buildContext(
       `FILES IN WORKSPACE: ${describeFiles(sessionId)}`,
       ...open,
       /*
-       * «Смотри сюда в первую очередь», а не «вот всё, что есть».
+       * "Look here first", not "here is everything there is".
        *
-       * Формулировка важна: тетради в кадре целиком, и модель, прочитавшая
-       * «SELECTED CELL: none», раньше вела себя так, будто ей ничего не дали.
+       * The wording matters: the notebooks are in the frame in full, and a
+       * model that read "SELECTED CELL: none" used to behave as if it had
+       * been given nothing.
        */
       focused.length > 0
         ? `THE STUDENT IS ASKING ABOUT: ${focused
@@ -216,32 +225,33 @@ export function buildContext(
   const header = headerWith(openFile)
 
   /*
-   * Что выбрасывать первым.
+   * What to throw out first.
    *
-   * Сначала — чужие тетради: если спросили про ячейку в одной, содержимое
-   * другой стоит в кадре дешевле всего. Потом — то, что дальше от места, куда
-   * человек смотрит. Закреплённое не выбрасывается никогда.
+   * Other notebooks first: if the question is about a cell in one, the contents
+   * of another are worth the least in the frame. Then whatever is farther from
+   * where the person is looking. What is pinned is never thrown out.
    */
   const anchor = focused[0] ?? (errorIndex >= 0 ? errorIndex : entries.length - 1)
   const homeBooks = new Set(focused.map((i) => entries[i].book))
   const strangeness = (i: number) =>
     (homeBooks.size > 0 && !homeBooks.has(entries[i].book) ? 1_000_000 : 0) + Math.abs(i - anchor)
-  /** Ближние — первыми: дальние отсюда и начнут сворачиваться. */
+  /** Nearest first: so folding starts from the far end. */
   const nearest = entries
     .map((_, i) => i)
     .filter((i) => !pinned.has(i))
     .sort((a, b) => strangeness(a) - strangeness(b))
 
   /*
-   * Кто помещается — считается длинами, а не пересборкой всего текста.
+   * Who fits is counted by lengths, not by reassembling the whole text.
    *
-   * Прежний цикл на каждую выброшенную ячейку склеивал ВЕСЬ кадр заново: на
-   * тетради в двести ячеек это две сотни склеек текста в десятки килобайт,
-   * O(ячеек × длины) на каждый вопрос. Порядок решения тот же — сначала
-   * сворачивается самое далёкое, — но здесь он записан наоборот: закреплённое и
-   * ближние блоки берутся целиком, пока хватает бюджета, а как только очередной
-   * не поместился, всё, что за ним, сворачивается в строку. Разделители между
-   * блоками считаются отдельно: их число не меняется.
+   * The old loop glued the WHOLE frame together again for every dropped cell:
+   * on a notebook of two hundred cells that is two hundred concatenations of
+   * text tens of kilobytes long, O(cells × length) on every question. The order
+   * of decisions is the same — the farthest folds first — but here it is
+   * written the other way round: pinned and near blocks are taken whole while
+   * the budget lasts, and as soon as the next one does not fit, everything
+   * after it folds into a line. The separators between blocks are counted
+   * separately: their number does not change.
    */
   const gaps = 2 * entries.length
   const stubs = entries.map((entry) => bookHead(entry) + elide(entry))
@@ -257,8 +267,8 @@ export function buildContext(
 
   const blocks = [...stubs]
   let used = header.length + gaps + stubs.reduce((n, one) => n + one.length, 0)
-  // Закреплённое едет целиком всегда, даже если бюджет уже перебран: ради него
-  // запрос и отправляли.
+  // The pinned part always travels whole, even if the budget is already
+  // exceeded: it is what the request was sent for.
   for (const i of pinned) {
     blocks[i] = render(i)
     used += blocks[i].length - stubs[i].length
@@ -290,22 +300,24 @@ export function buildContext(
   if (text.length <= maxTotal) return text
 
   /*
-   * Даже свёрнутое не помещается — значит, дело в самих закреплённых блоках.
+   * Even the folded version does not fit — so the problem is the pinned blocks
+   * themselves.
    *
-   * `clip` режет середину, а середина — это и есть ячейка, о которой спросили:
-   * вопрос про 118-ю уходил без 118-й, пока чип в панели горел «Sees cell 118».
-   * Свёртка это почти всегда лечит, но не всегда: ячейка с гигантским выводом
-   * или два закреплённых блока подряд переберут бюджет и сами по себе.
+   * `clip` cuts the middle, and the middle is exactly the cell that was asked
+   * about: a question about cell 118 went out without cell 118, while the chip
+   * in the panel was lit with "Sees cell 118". Folding almost always cures it,
+   * but not always: a cell with a gigantic output, or two pinned blocks in a
+   * row, exceed the budget on their own.
    *
-   * Тогда лучше выбросить обзор и оставить то, ради чего запрос отправляли:
-   * заголовок и закреплённые блоки, подрезанные каждый по отдельности. Хуже,
-   * чем полная тетрадь, и несравнимо лучше, чем полная тетрадь без той
-   * единственной ячейки, о которой речь.
+   * Then it is better to drop the overview and keep what the request was sent
+   * for: the header and the pinned blocks, each trimmed separately. Worse than
+   * the full notebook, and incomparably better than the full notebook without
+   * the one cell it is all about.
    */
   const kept = blocks.filter((_, i) => pinned.has(i))
   if (kept.length > 0) {
-    // Со вторым заходом — уже без открытого файла: он контекст, а закреплённая
-    // ячейка — сам вопрос, и уступать место должен он.
+    // The second pass goes without the open file: it is context, while the
+    // pinned cell is the question itself, and the file is what must give way.
     for (const head of openFile.length > 0 ? [header, headerWith([])] : [header]) {
       const room = Math.max(200, Math.floor((maxTotal - head.length - 40) / kept.length))
       const trimmed = kept.map((block) => (block.length > room ? clip(block, room) : block))
@@ -320,7 +332,7 @@ export function buildContext(
   return clip(text, maxTotal)
 }
 
-/** Заголовок тетради — над первой её ячейкой, и только над ней. */
+/** The notebook header — above its first cell, and only above it. */
 function bookHead(entry: Entry): string {
   return entry.first ? `### notebook ${entry.book}\n` : ''
 }
@@ -346,8 +358,8 @@ function collapse(blocks: string[], pinned: Set<number>, entries: Entry[]): stri
     out.push(
       n === 1
         ? blocks[runFrom]
-        : // Номера — те же, что у человека на экране, и с именем тетради:
-          // «03–07» без него неотличимо в двух тетрадях сразу.
+        : // The numbers are the same as on the person's screen, and with the
+          // notebook name: "03–07" without it is ambiguous across two notebooks.
           `[${entries[runFrom].book} cells ${pad(entries[runFrom].no)}–${pad(entries[to].no)}]` +
             ` — … ${n} cells elided …`,
     )
@@ -386,10 +398,11 @@ function newestErrorIndex(entries: Entry[]): number {
 function renderCell(entry: Entry, full: boolean, selected: boolean): string {
   const cell = entry
   /*
-   * Номер — тот же, что видит человек: 1-based, с ведущим нулём.
+   * The number is the one the person sees: 1-based, with a leading zero.
    *
-   * Был индекс с нуля, и это расходилось молча: студент пишет «в 03-й падает»,
-   * модель читает «[cell 3]» — то есть четвёртую, — и виноватой выглядит модель.
+   * It used to be a zero-based index, and that diverged silently: a student
+   * writes "it fails in 03", the model reads "[cell 3]" — that is, the fourth —
+   * and the model looks like the culprit.
    */
   const head = [`[cell ${pad(entry.no)}]`, cell.type, cell.state]
   if (cell.execCount !== null) head.push(`In[${cell.execCount}]`)
@@ -411,13 +424,14 @@ function renderCell(entry: Entry, full: boolean, selected: boolean): string {
 }
 
 /**
- * Выводы одной ячейки — теми же словами, какими их видит кадр вопроса.
+ * The outputs of one cell — in the same words the question frame uses.
  *
- * Экспортируется ради `run_cell` в agent.ts: ход, запустивший ячейку, должен
- * увидеть её вывод, и увидеть его ТАК ЖЕ — с тем же «out[error]», той же
- * снятой раскраской трейсбека и той же строкой вместо картинки. Второй
- * отрисовщик рядом с этим разошёлся бы с ним на первой правке, а разошедшись,
- * научил бы модель двум разным форматам одного и того же.
+ * Exported for `run_cell` in agent.ts: a turn that ran a cell must see its
+ * output, and see it THE SAME WAY — with the same "out[error]", the same
+ * traceback colouring stripped and the same line in place of an image. A
+ * second renderer next to this one would drift from it on the first edit, and
+ * once drifted, it would teach the model two different formats for the same
+ * thing.
  */
 export function renderOutputs(cell: YCell, limit: number, whole = false): string[] {
   const outputs = outputArray(cell)
@@ -431,11 +445,11 @@ export function renderOutputs(cell: YCell, limit: number, whole = false): string
 }
 
 /**
- * `whole` — про трейсбек, и только про него.
+ * `whole` is about the traceback, and only about it.
  *
- * У закреплённой ячейки — той, о которой спросили, и той, что упала последней, —
- * трейсбек едет целиком: обрезанный посередине, он теряет как раз ту строку, где
- * названа поломка. Остальное режется потолком, как и прежде.
+ * For a pinned cell — the one asked about and the one that failed last — the
+ * traceback travels whole: cut in the middle, it loses exactly the line where
+ * the breakage is named. The rest is cut to the ceiling, as before.
  */
 function renderOutput(output: CellOutput, limit: number, whole: boolean): string {
   if (output.kind === 'stream') {
@@ -458,11 +472,12 @@ function renderData(output: DataOutput, limit: number): string {
   for (const [mime, value] of Object.entries(output.data)) {
     if (mime === 'text/plain') continue
     if (mime === PLOTLY_MIME) {
-      // Координаты модели не нужны и не поместились бы: `px.scatter` на сто
-      // тысяч точек — это два мегабайта JSON, то есть весь бюджет контекста за
-      // одну ячейку. А «здесь был график, и вот какой» — нужно: иначе ячейка с
-      // одним `px.histogram(...)` выглядит как ячейка, которая ничего не
-      // вывела. Тот же довод, что у картинок строкой выше.
+      // The model does not need the coordinates, and they would not fit:
+      // `px.scatter` of a hundred thousand points is two megabytes of JSON,
+      // that is, the whole context budget for one cell. But "there was a chart
+      // here, and this kind" is needed: otherwise a cell with a single
+      // `px.histogram(...)` looks like a cell that printed nothing. The same
+      // argument as for the images on the line above.
       parts.push(figureNote(value))
     } else if (mime.startsWith('image/')) {
       // Base64 pixels are pure noise to the model and would eat the whole budget.
@@ -474,15 +489,16 @@ function renderData(output: DataOutput, limit: number): string {
     }
   }
   /*
-   * Крупные картинки в документе не лежат — там ссылка (shared/notebook.ts ·
-   * OutputBlob). Пиксели модели не нужны и не отправлялись никогда, а вот
-   * «здесь был график» — нужно: без этой строки ячейка с одним `plt.show()`
-   * выглядит для оракула как ячейка, которая ничего не вывела.
+   * Large images are not stored in the document — there is a link there
+   * (shared/notebook.ts · OutputBlob). The model does not need the pixels and
+   * they were never sent, but "there was a chart here" is needed: without this
+   * line a cell with a single `plt.show()` looks to the oracle like a cell that
+   * printed nothing.
    */
   for (const blob of output.blobs ?? []) {
     const kilobytes = Math.max(1, Math.round(blob.bytes / 1024))
-    // Вынесенная фигура — это тоже график, и называть его картинкой нельзя:
-    // оракул подсказывает по `plt.savefig` там, где речь про plotly.
+    // An offloaded figure is still a chart, and it must not be called an image:
+    // the oracle then suggests `plt.savefig` where the question is about plotly.
     parts.push(
       blob.mime === PLOTLY_MIME
         ? `[plotly figure, ~${kilobytes} KB]`
@@ -493,10 +509,10 @@ function renderData(output: DataOutput, limit: number): string {
 }
 
 /**
- * Пересказ фигуры для модели: чем она является, без её содержимого.
+ * A retelling of the figure for the model: what it is, without its contents.
  *
- * Битый или незнакомый JSON — не повод молчать: «здесь был график» остаётся
- * правдой, даже если разобрать его не вышло.
+ * Broken or unfamiliar JSON is no reason to stay silent: "there was a chart
+ * here" stays true even if it could not be parsed.
  */
 function figureNote(json: string): string {
   let figure: PlotlyFigure | null = null
@@ -524,32 +540,33 @@ function elide(entry: Entry): string {
 }
 
 /**
- * Файл, открытый у спрашивающего, — целиком или началом.
+ * The file the asker has open — in full or its beginning.
  *
- * Пустой массив, если файл не открыт: заголовок «OPEN FILE: none» стоил бы
- * места на каждом вопросе ради строки, которая ничего не говорит.
+ * An empty array if no file is open: an "OPEN FILE: none" header would cost
+ * space on every question for a line that says nothing.
  */
 function openFileBlock(sessionId: string, askedBy: string | null, maxTotal: number): string[] {
   if (!askedBy) return []
   const path = editingPath(sessionId, askedBy)
   if (!path) return []
   /*
-   * Тетрадь сюда не попадает, хотя она тоже «открытый файл».
+   * The notebook does not get in here, although it is an "open file" too.
    *
-   * Её содержимое уже в кадре — ячейками, с выводами и состояниями. Файл же
-   * тетради это её проекция на диск: JSON без выводов, отстающий на полторы
-   * секунды. До восьми тысяч знаков того же самого, но хуже и вторым голосом —
-   * и вытесняющих собой настоящие ячейки, потому что заголовок бюджет не режет.
+   * Its contents are already in the frame — as cells, with outputs and states.
+   * The notebook file, on the other hand, is its projection onto disk: JSON
+   * without outputs, lagging a second and a half behind. Up to eight thousand
+   * characters of the same thing, only worse and in a second voice — and
+   * pushing out the real cells, because the budget does not cut the header.
    */
   if (kindOf(path) === 'notebook') return []
   const text = currentText(sessionId, path)
   if (text === null) return []
   /*
-   * Четверть бюджета — потолок для файла.
+   * A quarter of the budget is the ceiling for the file.
    *
-   * Восемь тысяч знаков — это про большое окно. При маленьком contextChars файл
-   * съедал заголовок целиком, а вместе с ним и ячейку, о которой спросили:
-   * ступени экономии режут только ячейки, до заголовка они не доходят.
+   * Eight thousand characters is about a large window. With a small
+   * contextChars the file ate the whole header, and with it the cell that was
+   * asked about: the saving steps cut only cells, they never reach the header.
    */
   const room = Math.min(MAX_OPEN_FILE, Math.floor(maxTotal / 4))
   const shown = text.length > room ? text.slice(0, room) : text
@@ -557,7 +574,7 @@ function openFileBlock(sessionId: string, askedBy: string | null, maxTotal: numb
   return [`OPEN FILE (${path}), what they are looking at right now:`, shown + cut]
 }
 
-/** Какой файл правит этот участник — из присутствия комнаты. */
+/** Which file this participant is editing — from the room's presence. */
 function editingPath(sessionId: string, participantId: string): string | null {
   const { awareness } = getSessionDoc(sessionId)
   for (const state of awareness.getStates().values()) {

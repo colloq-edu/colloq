@@ -1,36 +1,39 @@
 /**
- * Страница-рамка, внутри которой рисуется график plotly.
+ * A frame page inside which a plotly chart is drawn.
  *
- * Фигура — недоступные проверке данные (её собирает библиотека в коде любого,
- * кому разрешён запуск), а plotly.js — пять мегабайт чужого кода, который эти
- * данные разбирает: псевдо-HTML в подписях, ссылки, картинки по адресам,
- * MathJax. Рисовать это прямо в странице занятия значило бы поставить чужой
- * разбор рядом с токеном комнаты, списком участников и полосой оракула.
+ * The figure is data nobody can vet (the library assembles it in the code of
+ * anyone allowed to run), and plotly.js is five megabytes of third-party code
+ * that parses that data: pseudo-HTML in labels, links, images by address,
+ * MathJax. Drawing it right in the class page would put someone else's
+ * parsing next to the room token, the participant list and the Oracle strip.
  *
- * Поэтому рамка, и поэтому у неё СВОЙ заголовок:
+ * Hence a frame, and hence its OWN header:
  *
- *   sandbox allow-scripts …   origin документа становится непрозрачным: ни
- *                             кук, ни localStorage, ни доступа к DOM родителя
- *                             — и всё это действует, даже если адрес открыть
- *                             прямо в отдельной вкладке. Директива работает
- *                             только из ЗАГОЛОВКА: из `<meta>` её
- *                             спецификация игнорирует, и ровно поэтому рамка —
- *                             маршрут сервера, а не файл в `web/public`.
- *   default-src 'none'        всё, о чём ниже не сказано, запрещено.
- *   script-src <hash> <url>   ровно два скрипта: наш загрузчик (по хэшу его
- *                             текста) и бандл plotly по точному адресу.
- *                             `'self'` тут не годится: origin непрозрачный, и
- *                             опираться этому слову не на что.
- *   style-src 'unsafe-inline' plotly раскладывает график инлайновыми стилями и
- *                             своим `<style>`; без этого не рисуется ничего.
- *   img-src data: blob:       панель инструментов и снимок графика. НЕ `https:`
- *                             — иначе `layout.images` с чужим адресом выдал бы
- *                             автору фигуры IP каждого, кто её открыл.
- *   connect-src 'none'        из рамки не уходит ни один запрос.
- *   frame-ancestors 'self'    встроить рамку может только сам инстанс.
+ *   sandbox allow-scripts …   the document's origin becomes opaque: no
+ *                             cookies, no localStorage, no access to the
+ *                             parent's DOM, and all of that holds even if the
+ *                             address is opened directly in a separate tab.
+ *                             The directive works only from the HEADER: the
+ *                             spec ignores it in `<meta>`, and that is exactly
+ *                             why the frame is a server route rather than a
+ *                             file in `web/public`.
+ *   default-src 'none'        everything not mentioned below is forbidden.
+ *   script-src <hash> <url>   exactly two scripts: our loader (by the hash of
+ *                             its text) and the plotly bundle at its exact
+ *                             address. `'self'` is no good here: the origin
+ *                             is opaque, and the word has nothing to rest on.
+ *   style-src 'unsafe-inline' plotly lays out the chart with inline styles and
+ *                             its own `<style>`; without this nothing draws.
+ *   img-src data: blob:       the toolbar and the chart snapshot. NOT
+ *                             `https:`, otherwise `layout.images` with a
+ *                             foreign address would hand the figure's author
+ *                             the IP of everyone who opened it.
+ *   connect-src 'none'        not a single request leaves the frame.
+ *   frame-ancestors 'self'    only the instance itself may embed the frame.
  *
- * Сети у рамки нет вовсе, поэтому фигура приезжает `postMessage` от страницы —
- * см. `shared/plotly.ts`, где лежит форма сообщений, общая обеим сторонам.
+ * The frame has no network at all, so the figure arrives by `postMessage`
+ * from the page; see `shared/plotly.ts`, which holds the message shape shared
+ * by both sides.
  */
 import { createHash } from 'node:crypto'
 import {
@@ -41,19 +44,20 @@ import {
 } from '@shared/plotly'
 
 /**
- * Загрузчик рамки. Инлайновый и потому — по хэшу в политике.
+ * The frame's loader. Inline, and therefore allowed by hash in the policy.
  *
- * Текст ниже попадает в заголовок ХЭШЕМ, байт в байт: любая правка здесь
- * меняет `sha256`, и он пересчитывается из этой же строки на загрузке модуля.
- * Разойтись им негде, и это единственная причина, по которой скрипт живёт
- * строкой, а не файлом рядом с остальным фронтендом.
+ * The text below goes into the header as a HASH, byte for byte: any edit here
+ * changes the `sha256`, and it is recomputed from this very string at module
+ * load. They have nowhere to diverge, and that is the only reason the script
+ * lives as a string rather than as a file next to the rest of the frontend.
  *
- * Слушатель сообщений ставится ПЕРВЫМ действием, до загрузки бандла: фигура
- * приезжает от страницы, и она вправе прислать её раньше, чем доедут пять
- * мегабайт plotly. Пришедшая раньше — ждёт в `pending`.
+ * The message listener is installed as the FIRST action, before the bundle
+ * loads: the figure comes from the page, and the page may send it before the
+ * five megabytes of plotly arrive. One that arrives early waits in `pending`.
  *
- * Ошибок здесь не показывается словами: язык знает страница, а не рамка. Сюда
- * едет причина машинной строкой, а человеческую фразу рисует тетрадь.
+ * No errors are shown in words here: the page knows the language, the frame
+ * does not. The frame sends the reason as a machine string, and the notebook
+ * draws the human sentence.
  */
 const BOOT = `(function(){
   "use strict";
@@ -71,10 +75,10 @@ const BOOT = `(function(){
     var layout=figure.layout||{};
     delete layout.width;
     layout.autosize=true;
-    // Высоту считает страница (shared/plotly.ts · figureHeight) и кладёт её в
-    // layout: место под график она резервирует ДО того, как рамка загрузится,
-    // и разойтись эти два числа не должны. Своё — только на случай кадра без
-    // высоты вовсе.
+    // The page computes the height (shared/plotly.ts · figureHeight) and puts
+    // it into layout: it reserves the space for the chart BEFORE the frame
+    // loads, and these two numbers must not diverge. Our own value is only for
+    // a frame that has no height at all.
     if(typeof layout.height!=="number"||!isFinite(layout.height))layout.height=450;
     host.style.height=layout.height+"px";
     try{
@@ -105,16 +109,18 @@ const BOOT = `(function(){
   document.head.appendChild(tag);
 })();`
 
-/** Хэш загрузчика в том виде, в каком его читает браузер: sha256 от байтов. */
+/** The loader's hash in the form the browser reads it: sha256 of the bytes. */
 const BOOT_HASH = `'sha256-${createHash('sha256').update(BOOT, 'utf8').digest('base64')}'`
 
 /**
- * Политика рамки. Origin приходит от страницы — см. `PLOTLY_ORIGIN_PARAM`.
+ * The frame's policy. The origin comes from the page; see
+ * `PLOTLY_ORIGIN_PARAM`.
  *
- * `allow-downloads` в песочнице — ради одной кнопки панели plotly, «снимок
- * графика»: без неё Chrome отказывает молча и пишет в консоль. Ничего, кроме
- * этой кнопки, скачивания в рамке не запускает: фигура — это данные, а не код,
- * и plotly сам по себе ничего не качает.
+ * `allow-downloads` in the sandbox is there for one button of the plotly
+ * toolbar, the "chart snapshot": without it Chrome silently refuses and
+ * writes to the console. Nothing but that button starts downloads in the
+ * frame: the figure is data, not code, and plotly downloads nothing by
+ * itself.
  */
 export function framePolicy(origin: string): string {
   return [
@@ -131,12 +137,13 @@ export function framePolicy(origin: string): string {
 }
 
 /**
- * Разметка рамки: пустой блок под график и загрузчик над ним.
+ * The frame's markup: an empty block for the chart and the loader above it.
  *
- * Прозрачный фон — не украшение: белую подложку со скруглением рисует тетрадь
- * ВОКРУГ рамки, заранее и в тот же размер, так что при загрузке нет ни белой
- * вспышки, ни рывка. `overflow:hidden` тоже по делу: пока внутри нечего
- * прокручивать, колесо мыши над графиком прокручивает тетрадь, а не рамку.
+ * The transparent background is not decoration: the notebook draws the white
+ * rounded backing AROUND the frame, in advance and at the same size, so there
+ * is neither a white flash nor a jump on load. `overflow:hidden` is there for
+ * a reason too: while there is nothing to scroll inside, the mouse wheel over
+ * the chart scrolls the notebook, not the frame.
  */
 export const FRAME_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="color-scheme" content="light">
@@ -149,11 +156,11 @@ export const FRAME_HTML = `<!doctype html>
 `
 
 /**
- * Origin, которому можно верить настолько, чтобы положить его в заголовок.
+ * An origin trustworthy enough to put into the header.
  *
- * Не «любая строка от клиента»: значение уезжает в `Content-Security-Policy`,
- * где перевод строки или точка с запятой — это не мусор, а ВТОРАЯ директива.
- * Поэтому не экранирование, а белый список формы.
+ * Not "any string from the client": the value goes into
+ * `Content-Security-Policy`, where a newline or a semicolon is not garbage
+ * but a SECOND directive. Hence not escaping but a whitelist of the shape.
  */
 export function frameOrigin(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 300) return null

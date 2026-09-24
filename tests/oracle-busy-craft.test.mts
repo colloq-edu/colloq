@@ -1,24 +1,25 @@
 /**
- * «Оракул взял эту ячейку» — признак, который держится на трёх стыках.
+ * "The oracle has taken this cell" — a sign that rests on three joints.
  *
- * Проверка по исходнику, а не по поведению, и это тот же выбор, что у
- * sanitize.test.mts: чтобы увидеть бегущую полосу, нужен браузер, которого в
- * этой сюите нет. А каждый из трёх стыков — это одна строка в одном месте, и
- * потеря любой из них гасит признак МОЛЧА: кнопку нажали, оракул работает, а
- * на ячейке по-прежнему ничего.
+ * The check is by source, not by behaviour, and it is the same choice as in
+ * sanitize.test.mts: seeing the running bar takes a browser, which this suite
+ * does not have. And each of the three joints is one line in one place, and
+ * losing any of them turns the sign off SILENTLY: the button was pressed, the
+ * oracle is working, and the cell still shows nothing.
  *
- * Стык первый — наблюдатель. Реестр ленты будит ячейки только на перечисленные
- * ключи, и `state` попал в этот список ровно ради занятости: без него смена
- * `streaming` → `done` проходит мимо, и признак не гаснет НИКОГДА.
+ * The first joint is the observer. The feed registry wakes cells only on the
+ * listed keys, and `state` got into that list precisely for busyness: without
+ * it the `streaming` → `done` change goes past, and the sign NEVER goes out.
  *
- * Стык второй — старшинство. Ядро и оракул могут взяться за одну ячейку, и
- * слот в поле номера достаётся ядру: оно ячейку меняет, а оракул пока только
- * читает, и путать их в одном знаке нельзя.
+ * The second joint is precedence. The kernel and the oracle may both take on
+ * one cell, and the slot in the number field goes to the kernel: it changes
+ * the cell, while the oracle so far only reads, and the two must not be
+ * confused in one sign.
  *
- * Стык третий — само мерцание. Оно живёт на ДВУХ путях внутри значка, и держит
- * его связка «класс на обёртке + nth-of-type». Поменяют форму значка — и
- * мерцание тихо исчезнет, а признак останется неподвижной звёздочкой, которую
- * не отличить от простой пометки.
+ * The third joint is the twinkle itself. It lives on TWO paths inside the
+ * icon, and it is held together by the pairing "class on the wrapper +
+ * nth-of-type". Change the icon's shape and the twinkle quietly disappears,
+ * leaving the sign a motionless sparkle that cannot be told from a plain mark.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -29,76 +30,77 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel: string): string => readFileSync(path.join(root, rel), 'utf8')
 
-test('реестр ленты будит ячейки на смену состояния хода', () => {
+test('the feed registry wakes cells when a turn changes state', () => {
   const source = read('web/src/lib/yreactive.svelte.ts')
   const keys = /const PATCH_KEYS = \[([^\]]*)\]/.exec(source)
-  assert.ok(keys, 'список ключей, на которые смотрит реестр, исчез')
-  assert.match(keys[1], /'state'/, 'без state признак занятости не погаснет никогда')
-  assert.match(keys[1], /'cellIds'/, 'агент берёт несколько ячеек одним ходом')
+  assert.ok(keys, 'the list of keys the registry watches is gone')
+  assert.match(keys[1], /'state'/, 'without state the busy sign will never go out')
+  assert.match(keys[1], /'cellIds'/, 'the agent takes several cells in one turn')
   /*
-   * На ЛЕНТУ — один наблюдатель на документ, и занятость считается тем же
-   * проходом, что и предложения. Второй наблюдатель по ленте означал бы второй
-   * обход на каждое событие — ровно та цена, ради которой реестр и заведён
-   * (в файле есть и другие observeDeep: у метаданных, у выводов — они про
-   * другое).
+   * On the FEED there is one observer per document, and busyness is computed in
+   * the same pass as proposals. A second observer on the feed would mean a
+   * second walk on every event — exactly the cost the registry exists to avoid
+   * (the file has other observeDeep calls too: on metadata, on outputs — those
+   * are about something else).
    */
   assert.equal((source.match(/#chat\.observeDeep/g) ?? []).length, 1)
 })
 
-test('занятым считается ход, который ещё идёт, и обе формы адреса', () => {
+test('a turn still in progress counts as busy, with both forms of addressing', () => {
   const source = read('web/src/lib/yreactive.svelte.ts')
   const working = source.slice(source.indexOf('#working()'), source.indexOf('busy(id: string)'))
-  assert.match(working, /'streaming'/, 'занятость считается не по состоянию хода')
+  assert.match(working, /'streaming'/, 'busyness is not computed from the turn state')
   assert.match(working, /cellId/)
   assert.match(working, /cellIds/)
 })
 
-test('звёздочка стоит в поле номера и уступает выполнению', () => {
+test('the sparkle sits in the number field and gives way to execution', () => {
   /*
-   * Слот тот же, где стоит метка выполнения: это «что сейчас с этой ячейкой
-   * делают». Заняли оба — слот остаётся за `[*]`: ядро ячейку МЕНЯЕТ, оракул
-   * пока только читает. Про оракула в этом случае говорит строка под ячейкой.
+   * It is the same slot as the execution mark: "what is being done to this cell
+   * right now". If both have taken it, the slot stays with `[*]`: the kernel
+   * CHANGES the cell, the oracle so far only reads. In that case the line under
+   * the cell speaks for the oracle.
    */
   const cell = read('web/src/components/notebook/CellView.svelte')
   const at = cell.indexOf('{#if oracleBusy && !shownRunning}')
-  assert.notEqual(at, -1, 'звёздочка больше не уступает выполнению')
+  assert.notEqual(at, -1, 'the sparkle no longer gives way to execution')
   const slot = cell.slice(at, cell.indexOf('{/if}', at))
-  assert.match(slot, /name="sparkles"/, 'знак оракула сменился — его узнают по нему')
-  assert.match(slot, /cell-sparkle/, 'без класса мерцание не за что зацепить')
-  assert.match(slot, /\{:else if mark\}/, 'метка выполнения должна возвращаться после хода')
+  assert.match(slot, /name="sparkles"/, 'the oracle sign has changed, and people recognise the oracle by it')
+  assert.match(slot, /cell-sparkle/, 'without the class the twinkle has nothing to hook onto')
+  assert.match(slot, /\{:else if mark\}/, 'the execution mark has to come back after the turn')
 })
 
-test('слово под ячейкой — не только движение', () => {
-  // Движение у кромки означает «что-то происходит»; кто именно занят, говорит
-  // слово. Ради него всё и заведено: панель оракула бывает свёрнута.
+test('a word under the cell, not just motion', () => {
+  // Motion at the edge means "something is happening"; the word says who exactly
+  // is busy. The word is what all of this is for: the oracle panel may be collapsed.
   const cell = read('web/src/components/notebook/CellView.svelte')
   assert.match(cell, /\{#if oracleBusy\}[\s\S]{0,600}room\.oracle\.working/)
 })
 
-test('мерцают обе половины значка, и в противофазе', () => {
+test('both halves of the icon twinkle, and in antiphase', () => {
   const css = read('web/src/index.css')
   assert.match(css, /\.cell-sparkle path:nth-of-type\(1\)/)
   assert.match(css, /\.cell-sparkle path:nth-of-type\(2\)/)
-  // Противофаза и есть мерцание: в один и тот же миг одна половина ярче другой.
+  // Antiphase is what makes it a twinkle: at any moment one half is brighter than the other.
   const big = /@keyframes cell-sparkle-big \{([\s\S]*?)\}\s*\}/.exec(css)
   const small = /@keyframes cell-sparkle-small \{([\s\S]*?)\}\s*\}/.exec(css)
-  assert.ok(big && small, 'кадры мерцания исчезли')
-  assert.notEqual(big[1].trim(), small[1].trim(), 'обе половины мерцают одинаково — это не мерцание')
+  assert.ok(big && small, 'the twinkle keyframes are gone')
+  assert.notEqual(big[1].trim(), small[1].trim(), 'both halves twinkle the same: that is not a twinkle')
 
   /*
-   * Меняется ТОЛЬКО прозрачность, и поэтому у мерцания нет тихого близнеца:
-   * по политике из шапки index.css такие указатели при `prefers-reduced-motion`
-   * остаются как есть — остановленный указатель это ложь о системе.
+   * ONLY opacity changes, and that is why the twinkle has no quiet twin: by the
+   * policy in the header of index.css, such indicators stay as they are under
+   * `prefers-reduced-motion` — a stopped indicator is a lie about the system.
    */
   for (const frames of [big[1], small[1]]) {
-    assert.doesNotMatch(frames, /transform|translate|scale/, 'мерцание начало двигать значок')
+    assert.doesNotMatch(frames, /transform|translate|scale/, 'the twinkle started moving the icon')
   }
   const quiet = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'), css.indexOf('@media (prefers-color-scheme: dark)'))
-  assert.doesNotMatch(quiet, /cell-sparkle/, 'мерцание не должно отниматься: оно ничего не двигает')
+  assert.doesNotMatch(quiet, /cell-sparkle/, 'the twinkle must not be taken away: it moves nothing')
 
-  // И значок обязан остаться двухчастным: мерцание держится на nth-of-type.
+  // And the icon has to stay two-part: the twinkle rests on nth-of-type.
   const icon = read('web/src/components/ui/Icon.svelte')
   const sparkles = /sparkles:\s*\n?\s*'([^']*)'/.exec(icon)
-  assert.ok(sparkles, 'знак оракула пропал из набора')
-  assert.equal((sparkles[1].match(/<path/g) ?? []).length, 2, 'у знака стало не две половины — мерцать нечем')
+  assert.ok(sparkles, 'the oracle sign has disappeared from the set')
+  assert.equal((sparkles[1].match(/<path/g) ?? []).length, 2, 'the sign no longer has two halves: nothing to twinkle with')
 })

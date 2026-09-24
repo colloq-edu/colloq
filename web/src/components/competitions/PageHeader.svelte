@@ -1,12 +1,13 @@
 <script lang="ts">
   /**
-   * Шапка страницы соревнования: кто это, сколько осталось, где я — и вкладки.
+   * The competition page header: what this is, how much is left, where I am —
+   * and the tabs.
    *
-   * Одна на все три вкладки и на обе раскладки, потому что это одна страница:
-   * переход «Задача → Посылки → Лидерборд» не должен перерисовывать название и
-   * сбрасывать таймер, а телефон отличается от десктопа не составом, а тем,
-   * ЧТО в него помещается — три показателя в ряд вместо двух крупных справа и
-   * короткие имена вкладок («Задача» вместо «Задача и данные»).
+   * One for all three tabs and both layouts, because this is one page: going
+   * "Task → Submissions → Leaderboard" must not redraw the title and reset
+   * the timer, and a phone differs from a desktop not in what it contains but
+   * in WHAT fits into it — three figures in a row instead of two large ones
+   * on the right, and short tab names ("Task" instead of "Task and data").
    */
   import { tr } from '@shared/i18n'
   import { competitionWord, directionWord } from '@shared/competitions'
@@ -29,14 +30,14 @@
     tab: CompetitionView
     now: number
     phone: boolean
-    /** Счётчик во вкладке — только пока соревнование идёт и только на десктопе. */
+    /** The tab counter — only while the competition is live, and only on desktop. */
     submissions: number | null
     place: number | null
     total: number
-    /** Итоговое место и сдвиг: появляются вместе с приватным лидербордом. */
+    /** Final place and shift: they appear along with the private leaderboard. */
     finalPlace: number | null
     shift: number | null
-    /** Лучший публичный результат человека — третий показатель на телефоне. */
+    /** The person's best public result — the third figure on a phone. */
     score: number | null
     name: string | null
     ontab: (tab: CompetitionView) => void
@@ -61,19 +62,22 @@
 
   const competition = $derived(view.competition)
   /*
-   * «Кончилось» — это закрытый приём, а не состояние строки в базе.
+   * "Over" means submissions are closed, not the state of a row in the
+   * database.
    *
-   * Прошедший дедлайн НЕ переводит соревнование в `finished`: состояние меняет
-   * преподаватель кнопкой «Завершить сейчас», а он в это время на разборе и до
-   * неё не дошёл. Но приём уже закрыт, итоги уже открылись сами, и страница
-   * при этом показывала плашку «ИДЁТ» рядом с таймером «00:00» — единственное,
-   * что на ней врало. Макет P3 («лидерборд после дедлайна») рисует здесь
-   * «ЗАВЕРШЕНО», и берётся оно отсюда. `accepting` приезжает с сервера тем же
-   * `submissionsOpen`, которым дверь отказывает в посылке, — два ответа на один
-   * вопрос разошлись бы ровно в ту минуту, когда это заметит весь класс.
+   * A passed deadline does NOT move the competition to `finished`: the
+   * teacher changes the state with the "Finish now" button, and at that
+   * moment they are at the review and have not got to it yet. But
+   * submissions are already closed, the final results have already opened
+   * by themselves, and the page meanwhile showed a "LIVE" badge next to a
+   * "00:00" timer — the only thing on it that lied. The P3 mockup
+   * ("leaderboard after the deadline") draws "FINISHED" here, and this is
+   * where it comes from. `accepting` arrives from the server via the same
+   * `submissionsOpen` the door uses to refuse a submission — two answers to
+   * one question would diverge at exactly the minute the whole class notices.
    */
   const over = $derived(view.accepting === 'closed')
-  /** Приём идёт: счётчик во вкладке и часы имеют смысл только тогда. */
+  /** Submissions are open: the tab counter and the clock only make sense then. */
   const open = $derived(view.accepting === 'open')
   const urgent = $derived(deadlineUrgent(competition.deadlineAt, now))
   const stateBadge = $derived({
@@ -108,10 +112,10 @@
         >
           {tr('competitions.p.back')}
         </button>
-        <!-- Плашка состояния на телефоне живёт здесь, а не над названием: в
-             макете P4 соревнование идёт, и говорить об этом нечего, а вот
-             «ЗАВЕРШЕНО» сказать обязательно — иначе закрытый приём выглядит
-             как сломанная кнопка. -->
+        <!-- On a phone the state badge lives here, not above the title: in the
+             P4 mockup the competition is live and there is nothing to say
+             about it, but "FINISHED" must be said — otherwise closed
+             submissions look like a broken button. -->
         {#if over || competition.state !== 'live'}
           <Badge word={stateBadge.word} tone={stateBadge.tone} form="filled" phone />
         {/if}

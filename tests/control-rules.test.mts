@@ -1,18 +1,19 @@
 /**
- * Таблица прав на управляющем сокете.
+ * The rights table on the control socket.
  *
- * Каждая строка здесь — отказ, который должен прозвучать РАНЬШЕ действия:
- * ядро не трогается, оболочка не открывается, очередь не растёт. Сокет
- * поддельный, ядра нет вовсе — но ловит промах именно утверждение, а не
- * отсутствие ядра: `JUPYTER_URL` смотрит в мёртвый порт, отказ соединения
- * глотается молча, и пропущенная проверка сама по себе теста не роняет.
- * (Обратное здесь было написано и звучало убедительно ровно до первой попытки
- * на это положиться.) Побочный эффект той же тишины: разрешающая половина
- * каждой строки будит переподключения ядра и оболочки, которые живут до
- * `--test-force-exit`.
+ * Every row here is a refusal that must sound BEFORE the action: the kernel
+ * is not touched, the shell does not open, the queue does not grow. The
+ * socket is fake and there is no kernel at all — but what catches a miss is
+ * the assertion, not the missing kernel: `JUPYTER_URL` points at a dead port,
+ * the connection refusal is swallowed silently, and a skipped check does not
+ * fail the test by itself. (The opposite was written here and sounded
+ * convincing right up to the first attempt to rely on it.) A side effect of
+ * the same silence: the allowing half of every row wakes kernel and shell
+ * reconnects that live until `--test-force-exit`.
  *
- * И вторая половина, без которой первая ничего не стоит: при разрешающих
- * умолчаниях всё это проходит. Правило, которое отказывает всем, — не правило.
+ * And the second half, without which the first is worth nothing: with
+ * permissive defaults all of this goes through. A rule that refuses everyone
+ * is not a rule.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -26,7 +27,7 @@ import { addInk, inkOf, lectureOf, startLecture, stopLecture, turnTo } from '../
 import type { ControlClientMessage } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
 
-/** Ровно то, что читает `send`: состояние и приём кадра. */
+/** Exactly what `send` reads: the state and taking in a frame. */
 function socket(): { ws: WebSocket; said: string[] } {
   const said: string[] = []
   const ws = {
@@ -41,7 +42,7 @@ function socket(): { ws: WebSocket; said: string[] } {
 
 let rooms = 0
 
-/** Комната с этими правилами и один человек в ней. */
+/** A room with these rules and one person in it. */
 function room(rules: Partial<RoomRules>): string {
   const id = `ctl-${++rooms}`
   createSession(id, 'Control', null)
@@ -53,7 +54,7 @@ function who(role: 'host' | 'participant', sessionId: string): TokenPayload {
   return { sessionId, participantId: `p_${role}`, role }
 }
 
-/** Что сказал сервер в ответ на это сообщение. `null` — не сказал ничего. */
+/** What the server said in reply to this message; `null` if it said nothing. */
 function say(
   sessionId: string,
   role: 'host' | 'participant',
@@ -64,31 +65,32 @@ function say(
   return said[0] ?? null
 }
 
-/* ------------------------------------------------------------ весь лист */
+/* ---------------------------------------------------------- whole sheet */
 
-test('«по одной» разрешает ячейку и отказывает всему листу', () => {
+test('"one at a time" allows a cell and refuses the whole sheet', () => {
   const id = room({ run: 'single' })
-  // Одна ячейка — до ядра дойти и не должно: такой ячейки в тетради нет.
+  // One cell — it should not even reach the kernel: there is no such cell in
+  // the notebook.
   assert.equal(say(id, 'participant', { t: 'run', cellId: 'c_nope' }), null)
   assert.match(say(id, 'participant', { t: 'runAll' }) ?? '', /по одной/)
   assert.match(say(id, 'participant', { t: 'runAbove', cellId: 'c_nope' }) ?? '', /по одной/)
-  // Преподавателю — и то и другое.
+  // The teacher may do both.
   assert.equal(say(id, 'host', { t: 'runAll' }), null)
 })
 
-test('«запускает преподаватель» отказывает и ячейке, и листу', () => {
+test('"the teacher runs code" refuses both a cell and the sheet', () => {
   const id = room({ run: 'host' })
   assert.ok(say(id, 'participant', { t: 'run', cellId: 'c_nope' }))
   assert.ok(say(id, 'participant', { t: 'runAll' }))
   assert.equal(say(id, 'host', { t: 'run', cellId: 'c_nope' }), null)
 })
 
-/* -------------------------------------------------- своё и общее — разное */
+/* ------------------------------------------- own and shared are different */
 
-test('свою ячейку студент чистит, всю доску — нет', () => {
+test('a student clears their own cell, but not the whole board', () => {
   /*
-   * Иначе «стирать всё — преподавателю» запрещало бы студенту прибрать за
-   * собой в собственной ячейке, чего никто не имел в виду.
+   * Otherwise "wiping everything is for the teacher" would forbid a student to
+   * clean up after themselves in their own cell, which nobody meant.
    */
   const id = room({ wipe: 'host' })
   assert.equal(say(id, 'participant', { t: 'clearOutputs', cellId: 'c_nope' }), null)
@@ -96,19 +98,19 @@ test('свою ячейку студент чистит, всю доску — �
   assert.equal(say(id, 'host', { t: 'clearOutputs' }), null)
 })
 
-test('в лекционной комнате студент не чистит и свою ячейку', () => {
-  // Вывод — часть тетради; правило про тетрадь распространяется и на него.
+test('in a lecture room a student cannot clear even their own cell', () => {
+  // Output is part of the notebook; the notebook rule extends to it as well.
   const id = room({ edit: 'host' })
   assert.ok(say(id, 'participant', { t: 'clearOutputs', cellId: 'c_nope' }))
 })
 
-/* --------------------------------------------------------------- оболочка */
+/* ------------------------------------------------------------------ shell */
 
-test('открыть и закрыть оболочку — не одно право', () => {
+test('opening and closing the shell are not the same right', () => {
   /*
-   * Открыть может любой: оболочка общая и в этом её смысл. Закрыть — то же, что
-   * стереть расшифровку: гасит её тот, кто вправе стирать общее, иначе один
-   * клик убирает у комнаты то, что она смотрела.
+   * Anyone can open it: the shell is shared, and that is its point. Closing it
+   * is the same as wiping the transcript: it is shut by whoever may wipe shared
+   * things, otherwise one click takes away from the room what it was watching.
    */
   const id = room({})
   assert.equal(say(id, 'participant', { t: 'term:open' }), null)
@@ -117,10 +119,11 @@ test('открыть и закрыть оболочку — не одно пра
   assert.equal(say(id, 'host', { t: 'term:close' }), null)
 })
 
-/* ------------------------------------------------------------ состав и ядро */
+/* ----------------------------------------------------- structure and kernel */
 
-test('«только дописывать» не даёт переставлять чужие ячейки', () => {
-  // Переставить в никуда — обход запрета убирать, поэтому move идёт с remove.
+test('"append only" does not allow moving other people\'s cells', () => {
+  // Moving into nowhere is a way around the ban on removing, so move goes
+  // together with remove.
   const id = room({ structure: 'add' })
   assert.match(
     say(id, 'participant', { t: 'cells:move', cellId: 'c_nope', direction: 1 }) ?? '',
@@ -129,61 +132,64 @@ test('«только дописывать» не даёт переставлят
   assert.equal(say(id, 'host', { t: 'cells:move', cellId: 'c_nope', direction: 1 }), null)
 })
 
-test('перезапуск ядра — правило, а не роль', () => {
+test('restarting the kernel is a rule, not a role', () => {
   const strict = room({})
   assert.ok(say(strict, 'participant', { t: 'restart' }))
-  // Комната, где работают вдвоём, вправе решить иначе.
+  // A room where two people work together is entitled to decide otherwise.
   const open = room({ restart: 'room' })
   assert.equal(say(open, 'participant', { t: 'restart' }), null)
 })
 
-test('форматирование строже обоих соседей', () => {
-  // black и переписывает каждую ячейку, и выполняется на общем ядре.
+test('formatting is stricter than both of its neighbours', () => {
+  // black both rewrites every cell and runs on the shared kernel.
   assert.ok(say(room({ edit: 'host' }), 'participant', { t: 'format' }))
   assert.ok(say(room({ run: 'single' }), 'participant', { t: 'format' }))
   assert.equal(say(room({}), 'participant', { t: 'format' }), null)
 })
 
-/* ---------------------------------------------------- поведение, не право */
+/* ------------------------------------------------- behaviour, not a right */
 
-test('ответ на input() приходит от того, чья ячейка спрашивает', () => {
+test('the answer to input() comes from the person whose cell is asking', () => {
   /*
-   * Приглашение живёт в документе, потому что его должна видеть комната. Видеть
-   * и отвечать — разное, а `input()` под паролем тем более.
+   * The prompt lives in the document because the room must see it. Seeing and
+   * answering are different, all the more so for an `input()` asking for a
+   * password.
    */
   const id = room({})
   assert.match(say(id, 'participant', { t: 'input', value: 'пароль' }) ?? '', /участник, запустивший ячейку/i)
   assert.equal(say(id, 'host', { t: 'input', value: 'да' }), null)
 })
 
-test('замок на ячейке — роль, а не правило комнаты', () => {
+test('a cell lock is a role, not a room rule', () => {
   /*
-   * Открывает ячейки тот, чья тетрадь, и правила об этом не спрашивают:
-   * RoomRules говорят, что в комнате можно делать, а не кто раздаёт права. Само
-   * поведение замка — в control-lock.test.mts; здесь только строка в таблице.
+   * Cells are opened by whoever owns the notebook, and the rules are not asked
+   * about it: RoomRules say what can be done in the room, not who hands out
+   * rights. The lock's behaviour itself is in control-lock.test.mts; here it is
+   * only a row in the table.
    */
   const id = room({ run: 'host', edit: 'host' })
   assert.match(
     say(id, 'participant', { t: 'cell:open', cellId: 'c_nope', open: true }) ?? '',
     /преподавател/i,
   )
-  // А преподавателю отказ уже не про право: такой ячейки в комнате нет.
+  // For the teacher the refusal is no longer about the right: there is no such
+  // cell in the room.
   assert.match(say(id, 'host', { t: 'cell:open', cellId: 'c_nope', open: true }) ?? '', /ячейки/i)
 })
 
-test('остановить может тот, чья ячейка считается, — или преподаватель', () => {
-  // Правило старше правил комнаты и ими не управляется: ядро одно, и остановка
-  // задевает того, чей код в нём сейчас.
+test('whoever owns the running cell can stop it, or the teacher can', () => {
+  // This rule outranks the room rules and is not governed by them: there is
+  // one kernel, and a stop hits whoever's code is in it right now.
   const id = room({})
   assert.match(say(id, 'participant', { t: 'interrupt' }) ?? '', /преподаватель/i)
   assert.equal(say(id, 'host', { t: 'interrupt' }), null)
 })
 
-/* ------------------------------------------------- и всё это при умолчаниях */
+/* ------------------------------------------- and all this with the defaults */
 
-test('в комнате, где ничего не решали, студенту не отказывает ничто из его работы', () => {
-  // Правило, которое отказывает всем, — не правило. Умолчание — это Colloq,
-  // каким он был: работать в тетради и в оболочке может вся комната.
+test("in a room where nothing was decided, nothing in a student's work is refused", () => {
+  // A rule that refuses everyone is not a rule. The default is Colloq as it
+  // has been: the whole room can work in the notebook and in the shell.
   const id = room({})
   const messages: ControlClientMessage[] = [
     { t: 'run', cellId: 'c_nope' },
@@ -196,17 +202,17 @@ test('в комнате, где ничего не решали, студенту
     { t: 'cells:move', cellId: 'c_nope', direction: 1 },
   ]
   for (const message of messages) {
-    assert.equal(say(id, 'participant', message), null, `отказано на ${message.t}`)
+    assert.equal(say(id, 'participant', message), null, `refused on ${message.t}`)
   }
 })
 
-test('а разрушительное для всей комнаты — преподавательское с самого начала', () => {
+test("but what is destructive for the whole room is the teacher's from the start", () => {
   /*
-   * Единственное место, где умолчание строже прежнего поведения, и это
-   * намеренно. «Стереть все выводы» не спрашивало никого: одно нажатие
-   * студента убирало с экрана всё, что комната насчитала за полтора часа, и
-   * вернуть это нельзя ничем, кроме повторного запуска. Перезапуск ядра и
-   * очистка расшифровки были преподавательскими и раньше.
+   * The only place where the default is stricter than the old behaviour, and
+   * that is deliberate. "Clear all outputs" asked nobody: one press by a
+   * student removed from the screen everything the room had computed in an
+   * hour and a half, and nothing but a rerun could bring it back. Restarting
+   * the kernel and clearing the transcript were the teacher's before too.
    */
   const id = room({})
   for (const message of [
@@ -214,49 +220,53 @@ test('а разрушительное для всей комнаты — пре�
     { t: 'restart' },
     { t: 'term:clear' },
   ] as ControlClientMessage[]) {
-    assert.ok(say(id, 'participant', message), `${message.t} прошло у студента`)
-    assert.equal(say(id, 'host', message), null, `${message.t} отказано преподавателю`)
+    assert.ok(say(id, 'participant', message), `${message.t} went through for a student`)
+    assert.equal(say(id, 'host', message), null, `${message.t} was refused to the teacher`)
   }
 })
 
-/* ------------------------------------------------------------ общий экран */
+/* ---------------------------------------------------------- shared screen */
 
-test('поставить документ комнате может преподаватель, смотреть — любой', () => {
+test('the teacher can put a document up for the room, anyone can view it', () => {
   /*
-   * Право здесь про общий экран, а не про чтение: файл комнаты и так
-   * скачивается кем угодно из неё, и запрещать студенту открыть PDF у себя
-   * значило бы запретить то, что уже разрешено кнопкой «скачать».
+   * The right here is about the shared screen, not about reading: anyone in
+   * the room can download the room's file anyway, and forbidding a student to
+   * open a PDF on their own screen would mean forbidding what the "download"
+   * button already allows.
    */
   const id = room({})
   assert.match(say(id, 'participant', { t: 'board:open', name: 'lecture.pdf' }) ?? '', /преподавател/i)
   assert.match(say(id, 'participant', { t: 'board:close' }) ?? '', /преподавател/i)
 })
 
-test('комната, где показывать разрешено всем, пускает студента', () => {
-  // Семинар, где студенты по очереди показывают своё, — не выдумка.
+test('a room where everyone may present lets a student in', () => {
+  // A class where students take turns showing their work is not made up.
   const id = room({ board: 'room' })
-  // Файла нет — и отказ должен быть про файл, а не про право.
+  // There is no file, and the refusal must be about the file, not about the
+  // right.
   assert.match(say(id, 'participant', { t: 'board:open', name: 'lecture.pdf' }) ?? '', /файла/i)
   assert.equal(say(id, 'participant', { t: 'board:close' }), null)
 })
 
-test('на общий экран нельзя поставить то, чего в комнате нет', () => {
+test('what is not in the room cannot be put on the shared screen', () => {
   /*
-   * Проверяется на сервере, а не у смотрящего: иначе комната получит имя,
-   * которого нет, и двадцать человек увидят пустую область без объяснения.
+   * It is checked on the server, not by the viewer: otherwise the room gets a
+   * name that does not exist, and twenty people see an empty area without an
+   * explanation.
    */
   const id = room({})
   assert.match(say(id, 'host', { t: 'board:open', name: 'нет-такого.pdf' }) ?? '', /файла/i)
   assert.match(say(id, 'host', { t: 'board:open', name: '' }) ?? '', /файла/i)
 })
 
-/* --------------------------------------------------------- заметки спикера */
+/* ----------------------------------------------------------- speaker notes */
 
-test('заметки спикера — это роль преподавателя, а не правило комнаты', () => {
+test("speaker notes are the teacher's role, not a room rule", () => {
   /*
-   * Комната, где документ на общий экран ставит любой, — обычная. Заметки в
-   * ней всё равно преподавательские: правило `board` решает, кому показывать
-   * документ ЗАЛУ, а заметка залу не показывается никогда.
+   * A room where anyone puts a document on the shared screen is an ordinary
+   * one. The notes in it are still the teacher's: the `board` rule decides who
+   * shows a document to the AUDIENCE, and a note is never shown to the
+   * audience.
    */
   const id = room({ board: 'room' })
   assert.match(say(id, 'participant', { t: 'notes:open', file: 'l.pdf' }) ?? '', /преподавател/i)
@@ -265,18 +275,19 @@ test('заметки спикера — это роль преподавател
       '',
     /преподавател/i,
   )
-  assert.deepEqual(notesOf(id, 'l.pdf'), {}, 'студент дописался в чужую речь')
+  assert.deepEqual(notesOf(id, 'l.pdf'), {}, "a student wrote into someone else's speech")
 
   assert.equal(say(id, 'host', { t: 'notes:open', file: 'l.pdf' }), null)
   assert.equal(say(id, 'host', { t: 'notes:set', file: 'l.pdf', page: 1, text: 'спросить про Гаусса' }), null)
   assert.deepEqual(notesOf(id, 'l.pdf'), { 1: 'спросить про Гаусса' })
 })
 
-test('заметка длиннее потолка не пропадает молча', () => {
+test('a note longer than the ceiling does not vanish silently', () => {
   /*
-   * Кадр толще 8192 байт сервер выбрасывает в `parse` без единого слова, и
-   * страница речи исчезает посреди пары. Потолок на знаки стоит с запасом под
-   * кириллицу, и отказ на нём говорящий — иначе он ничем не лучше молчания.
+   * The server throws away a frame over 8192 bytes in `parse` without a single
+   * word, and a page of the speech vanishes in the middle of class. The
+   * character ceiling leaves headroom for Cyrillic, and the refusal at it
+   * speaks — otherwise it would be no better than silence.
    */
   const id = room({})
   assert.match(
@@ -286,34 +297,36 @@ test('заметка длиннее потолка не пропадает мо�
   assert.deepEqual(notesOf(id, 'l.pdf'), {})
 })
 
-/* ----------------------------------------------------------------- ластик */
+/* ----------------------------------------------------------------- eraser */
 
-test('ластик слушается ведущего и молчит у всех остальных', () => {
+test('the eraser obeys the presenter and stays silent for everyone else', () => {
   /*
-   * Отказ здесь молчаливый намеренно: это не решение преподавателя, о котором
-   * надо рассказать, а вкладка, не знающая, что лекцию ведёт кто-то другой.
+   * The refusal is silent here on purpose: this is not a teacher's decision
+   * that has to be announced but a tab that does not know someone else is
+   * presenting the lecture.
    */
   const id = room({})
   startLecture(id, { file: 'l.pdf', by: 'p_host', byName: 'Пётр Ильич', color: '#0f2d69' })
   addInk(id, { id: 's1', page: 3, color: '#d4162f', width: 0.005, points: [0.1, 0.1, 0.2, 0.2] })
 
   assert.equal(say(id, 'participant', { t: 'ink:erase', page: 3, id: 's1' }), null)
-  assert.equal(inkOf(id).length, 1, 'не ведущий стёр чужой штрих')
+  assert.equal(inkOf(id).length, 1, "a non-presenter erased someone else's stroke")
 
   assert.equal(say(id, 'host', { t: 'ink:erase', page: 3, id: 's1' }), null)
   assert.equal(inkOf(id).length, 0)
   stopLecture(id)
 })
 
-/* ------------------------------------------------------------ передача рук */
+/* ---------------------------------------------------------------- handover */
 
-test('второй преподаватель берёт пульт, не начиная лекцию заново', () => {
+test('a second teacher takes over the console without restarting the lecture', () => {
   /*
-   * Кнопки «взять пульт» в проводе нет: она шлёт тот же `lecture:start` по
-   * тому же файлу. Если он уйдёт в `startLecture`, нажатие на сороковой минуте
-   * вернёт страницу на первую, сотрёт всю разметку и обнулит часы — и сделает
-   * это на проекторе, при всех. Здесь проверяется именно развилка в `dispatch`:
-   * сама передача рук проверена в lecture.test.mts.
+   * The "take the console" button does not exist on the wire: it sends the
+   * same `lecture:start` for the same file. If that went into `startLecture`,
+   * a press in the fortieth minute would send the page back to the first,
+   * erase all the markup and reset the clock — and do it on the projector, in
+   * front of everyone. What is checked here is exactly the fork in `dispatch`:
+   * the handover itself is checked in lecture.test.mts.
    */
   const id = room({})
   makeFile(id, 'l3.pdf', '%PDF-1.4')
@@ -328,20 +341,20 @@ test('второй преподаватель берёт пульт, не нач
     file: 'l3.pdf',
   })
 
-  assert.equal(lectureOf(id)?.by, 'p_second', 'пульт не перешёл')
-  assert.equal(lectureOf(id)?.page, 14, 'страница вернулась к началу')
-  assert.equal(lectureOf(id)?.startedAt, began, 'часы лекции пошли заново')
-  assert.equal(inkOf(id).length, 1, 'разметка стёрлась')
+  assert.equal(lectureOf(id)?.by, 'p_second', 'the console did not change hands')
+  assert.equal(lectureOf(id)?.page, 14, 'the page went back to the start')
+  assert.equal(lectureOf(id)?.startedAt, began, 'the lecture clock restarted')
+  assert.equal(inkOf(id).length, 1, 'the markup was erased')
   stopLecture(id)
 })
 
-test('тот же преподаватель по тому же файлу не начинает ничего', () => {
+test('the same teacher on the same file starts nothing', () => {
   /*
-   * Список «сменить документ» показывает все PDF комнаты, и текущий стоит в том
-   * же ряду: нажатие по нему читается как «убедиться, что открыт правильный».
-   * Стоило это сорока минутами разметки и часами лекции, стёртыми на проекторе
-   * при всех. Начать заново — это «Закончить» и потом «Лекция»: два нажатия,
-   * второе из которых делают осознанно.
+   * The "change document" list shows all of the room's PDFs, and the current
+   * one sits in the same row: a press on it reads as "make sure the right one
+   * is open". It cost forty minutes of markup and the lecture clock, erased on
+   * the projector in front of everyone. Starting over means "Finish" and then
+   * "Lecture": two presses, the second of which is made deliberately.
    */
   const id = room({})
   makeFile(id, 'l3.pdf', '%PDF-1.4')
@@ -351,18 +364,19 @@ test('тот же преподаватель по тому же файлу не 
   const began = lectureOf(id)?.startedAt
 
   assert.equal(say(id, 'host', { t: 'lecture:start', file: 'l3.pdf' }), null)
-  assert.equal(lectureOf(id)?.page, 14, 'страница вернулась к началу')
-  assert.equal(lectureOf(id)?.startedAt, began, 'часы пошли заново')
-  assert.equal(inkOf(id).length, 1, 'разметка стёрлась')
+  assert.equal(lectureOf(id)?.page, 14, 'the page went back to the start')
+  assert.equal(lectureOf(id)?.startedAt, began, 'the clock restarted')
+  assert.equal(inkOf(id).length, 1, 'the markup was erased')
   stopLecture(id)
 })
 
-test('пульт у ведущего забирает преподаватель, а не всякий, кому можно доску', () => {
+test('the console is taken from the presenter by a teacher, not by anyone allowed to use the board', () => {
   /*
-   * Правило `board` решает, кому ставить документ залу. Забрать управление у
-   * того, кто уже ведёт, — другой поступок: в открытой комнате это значило бы,
-   * что студент посреди пары молча берёт себе страницу, чернила и указку, а
-   * преподаватель узнаёт об этом по пропавшему пульту.
+   * The `board` rule decides who puts a document up for the audience. Taking
+   * control from the one already presenting is a different act: in an open
+   * room it would mean a student silently taking the page, the ink and the
+   * pointer in the middle of class, with the teacher learning about it from
+   * the console going missing.
    */
   const id = room({ board: 'room' })
   makeFile(id, 'l4.pdf', '%PDF-1.4')
@@ -371,20 +385,21 @@ test('пульт у ведущего забирает преподаватель
 
   const denied = say(id, 'participant', { t: 'lecture:start', file: 'l4.pdf' })
   assert.match(String(denied ?? ''), /преподаватель/)
-  assert.equal(lectureOf(id)?.by, 'p_host', 'пульт ушёл студенту')
+  assert.equal(lectureOf(id)?.by, 'p_host', 'the console went to a student')
   assert.equal(lectureOf(id)?.page, 9)
   stopLecture(id)
 })
 
-/* ------------------------------------------------- лекция идёт, руки чужие */
+/* ----------------------------------- lecture running, someone else's hands */
 
-test('пока идёт лекция, чужая рука не меняет документ и не убирает его', () => {
+test("while a lecture is running, someone else's hand neither changes the document nor removes it", () => {
   /*
-   * У семинара бывает двое ведущих. Второй на ноутбуке щёлкает `homework.pdf` в
-   * панели файлов — это `board:open`, и раньше оно молча заканчивало лекцию
-   * первого: проектор гас, сорок минут разметки исчезали, вернуть их нечем
-   * (чернила живут только в памяти). Крестик на вкладке документа лекции — тот
-   * же случай: он шлёт `board:close`.
+   * A class sometimes has two presenters. The second one clicks `homework.pdf`
+   * in the file panel on a laptop — that is `board:open`, and it used to
+   * silently end the first one's lecture: the projector went dark, forty
+   * minutes of markup vanished, and there was nothing to bring them back with
+   * (the ink lives only in memory). The cross on the lecture document's tab is
+   * the same case: it sends `board:close`.
    */
   const id = room({})
   makeFile(id, 'l3.pdf', '%PDF-1.4')
@@ -398,17 +413,17 @@ test('пока идёт лекция, чужая рука не меняет до
     { t: 'board:close' },
     { t: 'lecture:start', file: 'homework.pdf' },
   ] as ControlClientMessage[]) {
-    assert.match(say(id, 'host', message) ?? '', /Идёт лекция/, `${message.t} прошло молча`)
+    assert.match(say(id, 'host', message) ?? '', /Идёт лекция/, `${message.t} went through silently`)
   }
-  assert.equal(lectureOf(id)?.file, 'l3.pdf', 'лекция закончилась чужой рукой')
+  assert.equal(lectureOf(id)?.file, 'l3.pdf', "the lecture was ended by someone else's hand")
   assert.equal(lectureOf(id)?.page, 14)
-  assert.equal(inkOf(id).length, 1, 'разметка стёрлась')
+  assert.equal(inkOf(id).length, 1, 'the markup was erased')
   stopLecture(id)
 })
 
-test('свою лекцию ведущий переводит на другой документ сам', () => {
-  // Ровно то, что делает «Ещё → сменить документ» на пульте: это его лекция, и
-  // начинается она начисто.
+test('the presenter switches their own lecture to another document themselves', () => {
+  // Exactly what "More → change document" does on the console: it is their
+  // lecture, and it starts from scratch.
   const id = room({})
   makeFile(id, 'l3.pdf', '%PDF-1.4')
   makeFile(id, 'l4.pdf', '%PDF-1.4')
@@ -417,15 +432,15 @@ test('свою лекцию ведущий переводит на другой 
 
   assert.equal(say(id, 'host', { t: 'lecture:start', file: 'l4.pdf' }), null)
   assert.equal(lectureOf(id)?.file, 'l4.pdf')
-  assert.equal(lectureOf(id)?.page, 1, 'другой документ — другая лекция, и она начинается сначала')
+  assert.equal(lectureOf(id)?.page, 1, 'a different document is a different lecture, and it starts from the beginning')
   stopLecture(id)
 })
 
-test('в комнате, где доску ставит любой, лекцию преподавателя студент не гасит', () => {
+test("in a room where anyone can use the board, a student cannot shut down the teacher's lecture", () => {
   /*
-   * Правило `board` решает, кому ставить документ залу; закончить чужую лекцию
-   * — другой поступок, и обходных путей к нему быть не должно: ни крестиком на
-   * вкладке, ни другим PDF, ни кнопкой «Закончить».
+   * The `board` rule decides who puts a document up for the audience; ending
+   * someone else's lecture is a different act, and there must be no way around
+   * it: not the tab's cross, not another PDF, not the "Finish" button.
    */
   const id = room({ board: 'room' })
   makeFile(id, 'l4.pdf', '%PDF-1.4')
@@ -437,21 +452,21 @@ test('в комнате, где доску ставит любой, лекцию
     { t: 'board:open', name: 'seminar.pdf' },
     { t: 'lecture:start', file: 'seminar.pdf' },
   ] as ControlClientMessage[]) {
-    assert.match(say(id, 'participant', message) ?? '', /Идёт лекция/, `${message.t} прошло молча`)
+    assert.match(say(id, 'participant', message) ?? '', /Идёт лекция/, `${message.t} went through silently`)
   }
   assert.match(say(id, 'participant', { t: 'lecture:stop' }) ?? '', /преподаватель/)
-  assert.equal(lectureOf(id)?.file, 'l4.pdf', 'лекция кончилась не своей рукой')
+  assert.equal(lectureOf(id)?.file, 'l4.pdf', 'the lecture was ended by a hand not its own')
   stopLecture(id)
 })
 
-/* ------------------------------------------------------- оболочка и ядро */
+/* ------------------------------------------------------ shell and kernel */
 
-test('команда в оболочке — под тем же правилом, что и ячейка', () => {
+test('a shell command falls under the same rule as a cell', () => {
   /*
-   * Тот же контейнер и то же процессорное время: комната, где кнопка
-   * «Запустить» над файлом погашена словами «Запускает преподаватель», не может
-   * разрешать тот же скрипт строкой ниже. Открыть ящик и читать общий вывод
-   * по-прежнему может любой — оболочка комнаты остаётся общей.
+   * The same container and the same CPU time: a room where the "Run" button
+   * above a file is greyed out with "The teacher runs code" cannot allow the
+   * same script one line below. Anyone can still open the drawer and read the
+   * shared output — the room's shell stays shared.
    */
   const id = room({ run: 'host' })
   assert.equal(say(id, 'participant', { t: 'term:open' }), null)
@@ -462,11 +477,12 @@ test('команда в оболочке — под тем же правилом
   assert.equal(say(id, 'host', { t: 'term:run', command: 'ls' }), null)
 })
 
-test('вкладка убранной тетради не запускает и не стирает чужой лист', () => {
+test("a tab of a removed notebook neither runs nor clears someone else's sheet", () => {
   /*
-   * Тетрадь убрали из комнаты, а вкладка у соседа живёт до прихода списка
-   * файлов. Нажатие в ней попадало в тетрадь комнаты: Run All ставил в очередь
-   * ЧУЖОЙ лист целиком, а «Clear» стирал выводы всех тетрадей сразу.
+   * The notebook was removed from the room, while a neighbour's tab lives on
+   * until the file list arrives. A press in it landed in the room notebook:
+   * Run All queued SOMEONE ELSE'S whole sheet, and "Clear" wiped the outputs of
+   * all notebooks at once.
    */
   const id = room({})
   for (const message of [
@@ -478,11 +494,11 @@ test('вкладка убранной тетради не запускает и 
   }
 })
 
-test('выключенный оракул не запирает отмену собственного хода', () => {
+test('a switched-off Oracle does not lock the undo of its own turn', () => {
   /*
-   * Правила меняются на живой комнате, и ход тут естественный: оракул натворил
-   * → выключаю оракула → откатываю. Отказ на последнем шаге вдобавок говорил
-   * «может преподаватель» тому самому преподавателю.
+   * Rules change on a live room, and the sequence here is natural: the Oracle
+   * made a mess → I switch the Oracle off → I roll it back. The refusal at the
+   * last step, on top of that, said "the teacher can" to that very teacher.
    */
   const id = room({ agent: 'off' })
   const host = say(id, 'host', { t: 'ai:undo', entryId: 'e_nope' })

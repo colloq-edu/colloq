@@ -1,32 +1,34 @@
 import { tr } from '@shared/i18n'
 /**
- * Одна кнопка на все состояния выполнения ячейки.
+ * One button for all of a cell's execution states.
  *
- * Первое место в тулбаре над ячейкой всегда рисовало «запустить» — и на
- * работающей ячейке, и на стоящей в очереди. Нажатие в этот момент уходило на
- * сервер и там молча выбрасывалось: `requestRun` пропускает ячейку, которая уже
- * выполняется, и ячейку, которая уже в очереди. То есть кнопка была включена,
- * обещала действие и не делала ничего — а «стоп» тем временем жил внизу ячейки,
- * в другом месте и другой формы. Отсюда и жалоба: странно сделано.
+ * The first slot in the toolbar above a cell always drew "run" — on a running
+ * cell and on a queued one alike. A press at that moment went to the server
+ * and was silently thrown away there: `requestRun` skips a cell that is
+ * already executing and a cell that is already queued. So the button was
+ * enabled, promised an action and did nothing — while "stop" lived at the
+ * bottom of the cell, in another place and in another shape. Hence the
+ * complaint: it's made strangely.
  *
- * Теперь это один слот с тремя лицами: запуск на успокоившейся ячейке, отмена
- * на стоящей в очереди, стоп на работающей. Решение вынесено сюда, потому что
- * шесть исходов и три правила доступа посреди разметки — это ровно тот способ,
- * которым была написана исходная неправда.
+ * Now it is one slot with three faces: run on a settled cell, cancel on a
+ * queued one, stop on a running one. The decision is moved here because six
+ * outcomes and three access rules in the middle of markup are exactly the way
+ * the original untruth was written.
  *
- * Импортируется только `@shared/notebook` и соседний `./controls`: путь `@/`
- * знает сборщик, но не знает tsx, а этот модуль обязан оставаться проверяемым.
+ * Only `@shared/notebook` and the neighbouring `./controls` are imported: the
+ * bundler knows the `@/` path but tsx does not, and this module must stay
+ * testable.
  */
 import type { CellState } from '@shared/notebook'
 import { controlDisabled, controlTitle } from './controls'
 
 export interface RunSlotGates {
   connected: boolean
-  /** Правила комнаты разрешают этому человеку запускать ячейки. */
+  /** The room's rules allow this person to run cells. */
   mayRun: boolean
-  /** Он же поставил её в очередь, либо он ведущий. */
+  /** They queued it themselves, or they are the host. */
   canCancel: boolean
-  /** Он же её запустил, либо он ведущий. */
+  /** They ran it themselves, or they are the host. */
   canInterrupt: boolean
 }
 
@@ -34,7 +36,7 @@ export interface RunSlot {
   action: 'run' | 'cancel' | 'interrupt'
   icon: 'play' | 'x' | 'stop'
   size: 11 | 12 | 13
-  /** Класс цвета для самого значка. */
+  /** The colour class for the icon itself. */
   tint: string
   label: string
   disabled: boolean
@@ -49,9 +51,9 @@ export function runSlot(state: CellState, gates: RunSlotGates): RunSlot {
       action: 'interrupt',
       icon: 'stop',
       size: 11,
-      // Не акцентный: на работающей ячейке акцентом горит всё остальное —
-      // полоса, номер, слово RUNNING. Кнопка остановки, выкрашенная тем же
-      // цветом, спорила бы с состоянием, о котором он и говорит.
+      // Not the accent: on a running cell everything else glows in the accent —
+      // the bar, the number, the word RUNNING. A stop button painted the same
+      // colour would argue with the very state that colour speaks of.
       tint: 'text-ink',
       get label() { return tr('room.ui.1163') },
       disabled: controlDisabled(connected, gates.canInterrupt),
@@ -73,13 +75,14 @@ export function runSlot(state: CellState, gates: RunSlotGates): RunSlot {
       get label() { return tr('room.ui.1165') },
       disabled: controlDisabled(connected, gates.canCancel),
       /*
-       * Фраза отказа здесь новая, и она понадобилась именно из-за этого слота.
+       * The refusal phrase here is new, and it was needed precisely because of
+       * this slot.
        *
-       * Внизу ячейки «отменить» просто прячут, когда нельзя, — там это
-       * последняя кнопка в ряду, и её исчезновение ничего не двигает. В
-       * тулбаре спрятать первый слот значит подвинуть «вверх» и «вниз» под
-       * курсор, который целился в одну из них. Поэтому здесь гасят, а гашёная
-       * кнопка обязана уметь объяснить себя.
+       * At the bottom of the cell "cancel" is simply hidden when not allowed —
+       * there it is the last button in the row, and its disappearance moves
+       * nothing. In the toolbar, hiding the first slot would shift "up" and
+       * "down" under a cursor that was aiming at one of them. So here it is
+       * dimmed, and a dimmed button must be able to explain itself.
        */
       title: controlTitle(
         connected,

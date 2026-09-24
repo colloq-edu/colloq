@@ -1,14 +1,15 @@
 /**
- * Что вкладка объявляет комнате.
+ * What a tab announces to the room.
  *
- * Присутствие — единственный провод, по которому вкладка говорит о СЕБЕ, и оба
- * решения web/src/lib/presence.ts про него: кого она называет и что про него
- * утверждает. Ошибка в первом не видна вовсе — она стоит серверу лишней
- * половины потока; ошибка во втором видна всем, кроме того, о ком врёт.
+ * Presence is the only wire over which a tab speaks about ITSELF, and both
+ * decisions in web/src/lib/presence.ts are about it: whom it names and what it
+ * claims about them. A mistake in the first is invisible — it costs the server
+ * an extra half of the stream; a mistake in the second is visible to everyone
+ * except the one it lies about.
  *
- * Провайдера здесь нет намеренно: `y-websocket` кодирует и отправляет, а
- * решает — этот слой, и проверять его надо на настоящем `Awareness`, но без
- * сокета.
+ * There is no provider here on purpose: `y-websocket` encodes and sends, but
+ * this layer decides, and it has to be checked on a real `Awareness`, just
+ * without a socket.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -24,9 +25,9 @@ import { LECTURE_ROOM, OPEN_ROOM } from '../shared/rules.js'
 import { permitsIn } from '../web/src/lib/may.js'
 import { cellToAnnounce, ownChanges, type AwarenessChanges } from '../web/src/lib/presence.js'
 
-/* --------------------------------------------------------------- эхо */
+/* -------------------------------------------------------------- echo */
 
-/** Кадры, которые вкладка отправила бы серверу, — с тем же фильтром. */
+/** The frames the tab would send to the server, with the same filter. */
 function wiretap(awareness: Awareness, self: number): AwarenessChanges[] {
   const sent: AwarenessChanges[] = []
   awareness.on('update', (changes: AwarenessChanges) => {
@@ -36,12 +37,12 @@ function wiretap(awareness: Awareness, self: number): AwarenessChanges[] {
   return sent
 }
 
-test('вкладка объявляет серверу только своё лицо', () => {
+test('a tab announces only its own face to the server', () => {
   /*
-   * `y-websocket` шлёт обратно каждое изменение присутствия, которое применил,
-   * — в том числе только что приехавшее от сервера. Сервер такое отвергает
-   * (`ownAwareness`, см. room-gate), но чтобы отвергнуть, разбирает: на 500
-   * вкладках это была половина всего потока присутствия.
+   * `y-websocket` sends back every presence change it has applied — including
+   * one that has just arrived from the server. The server rejects those
+   * (`ownAwareness`, see room-gate), but it has to parse them to reject them:
+   * at 500 tabs that was half of the whole presence stream.
    */
   const doc = new Y.Doc()
   const me = new Awareness(doc)
@@ -51,34 +52,34 @@ test('вкладка объявляет серверу только своё л�
   assert.deepEqual(
     sent,
     [{ added: [], updated: [doc.clientID], removed: [] }],
-    'своё состояние до сервера не доехало',
+    'its own state did not reach the server',
   )
 
   const peer = new Awareness(new Y.Doc())
   peer.setLocalStateField('user', { name: 'Сосед' })
-  applyAwarenessUpdate(me, encodeAwarenessUpdate(peer, [peer.clientID]), 'сервер')
+  applyAwarenessUpdate(me, encodeAwarenessUpdate(peer, [peer.clientID]), 'server')
 
-  assert.equal(sent.length, 1, 'чужое состояние уехало обратно на сервер')
-  // И при этом сосед на месте: фильтр стоит на отправке, а не на приёме, —
-  // иначе не было бы ни ростера, ни чужих курсоров.
-  assert.equal(me.getStates().has(peer.clientID), true, 'сосед не доехал до вкладки')
+  assert.equal(sent.length, 1, 'the state of a peer went back to the server')
+  // And the peer is still in place: the filter sits on sending, not on receiving —
+  // otherwise there would be neither a roster nor other people's cursors.
+  assert.equal(me.getStates().has(peer.clientID), true, 'the peer did not reach the tab')
 
-  // Уход соседа — тоже не наша новость: у сервера свой счёт молчащим.
-  removeAwarenessStates(me, [peer.clientID], 'сервер')
-  assert.equal(sent.length, 1, 'уход соседа уехал обратно на сервер')
-  assert.equal(me.getStates().has(peer.clientID), false, 'сосед не ушёл из ростера')
+  // A peer leaving is not our news either: the server keeps its own count of the silent.
+  removeAwarenessStates(me, [peer.clientID], 'server')
+  assert.equal(sent.length, 1, 'the peer leaving went back to the server')
+  assert.equal(me.getStates().has(peer.clientID), false, 'the peer did not leave the roster')
 
-  // А свой уход объявляется: им закрывается вкладка.
-  removeAwarenessStates(me, [doc.clientID], 'вкладку закрыли')
+  // But its own leaving is announced: that is how a tab closes.
+  removeAwarenessStates(me, [doc.clientID], 'tab closed')
   assert.deepEqual(sent.at(-1), { added: [], updated: [], removed: [doc.clientID] })
 
   peer.destroy()
   me.destroy()
 })
 
-test('кадр про своих и чужих разом уезжает без чужих', () => {
-  // Провайдер складывает added+updated+removed в один список, и сервер
-  // отвергает такую смесь ЦЕЛИКОМ — вместе с нашим собственным состоянием.
+test('a frame about itself and others at once leaves without the others', () => {
+  // The provider folds added+updated+removed into one list, and the server
+  // rejects such a mix WHOLESALE — together with our own state.
   const mine = 7
   assert.deepEqual(ownChanges({ added: [9], updated: [mine], removed: [3] }, mine), {
     added: [],
@@ -88,11 +89,11 @@ test('кадр про своих и чужих разом уезжает без 
   assert.equal(
     ownChanges({ added: [9], updated: [], removed: [3] }, mine),
     null,
-    'кадр без единого своего лица всё равно бы уехал',
+    'a frame without a single face of its own would still have gone out',
   )
 })
 
-/* ------------------------------------------------- метка «правит ячейку» */
+/* ---------------------------------------------- the "editing cell" badge */
 
 function room(): { doc: Y.Doc; open: string; shut: string } {
   const doc = new Y.Doc()
@@ -104,42 +105,42 @@ function room(): { doc: Y.Doc; open: string; shut: string } {
   return { doc, open: 'c_open', shut: 'c_shut' }
 }
 
-test('выделение закрытой ячейки не объявляет правку', () => {
+test('selecting a closed cell does not announce an edit', () => {
   /*
-   * Студент щёлкает по закрытой ячейке, чтобы прочитать её или спросить про
-   * неё, — и у всей комнаты рядом с ней появлялась его метка «редактирует
-   * здесь». Печатать он там не может: метка была неправдой.
+   * A student clicks a closed cell to read it or to ask about it — and the whole
+   * room saw their "editing here" badge next to it. They cannot type there: the
+   * badge was a lie.
    */
   const { doc, open, shut } = room()
   const student = permitsIn(LECTURE_ROOM, 'participant', false)
   assert.equal(cellToAnnounce(doc, shut, student), null)
-  assert.equal(cellToAnnounce(doc, open, student), open, 'открытую ячейку человек правда правит')
+  assert.equal(cellToAnnounce(doc, open, student), open, 'the person really is editing the open cell')
   doc.destroy()
 })
 
-test('преподавателю замок метку не отнимает — он печатает везде', () => {
+test('the lock does not take the badge from the teacher: the teacher types everywhere', () => {
   const { doc, shut } = room()
   assert.equal(cellToAnnounce(doc, shut, permitsIn(LECTURE_ROOM, 'host', false)), shut)
   doc.destroy()
 })
 
-test('в открытой лаборатории метка стоит на любой ячейке', () => {
-  // Замка там нет вовсе, и спрашивать не о чем: комната печатает везде.
+test('in an open lab the badge sits on any cell', () => {
+  // There is no lock there at all, and nothing to ask: the room types everywhere.
   const { doc, shut } = room()
   assert.equal(cellToAnnounce(doc, shut, permitsIn(OPEN_ROOM, 'participant', false)), shut)
   doc.destroy()
 })
 
-test('после звонка не правит никто — и метка гаснет вместе с правом', () => {
+test('after the bell nobody edits, and the badge goes out together with the right', () => {
   const { doc, open } = room()
   assert.equal(cellToAnnounce(doc, open, permitsIn(LECTURE_ROOM, 'participant', true)), null)
   assert.equal(cellToAnnounce(doc, open, permitsIn(OPEN_ROOM, 'participant', true)), null)
   doc.destroy()
 })
 
-test('ячейки, которой нет, в присутствии нет тоже', () => {
-  // Её могли удалить у человека под курсором: указывать комнате на пустое
-  // место — такая же неправда, только другого рода.
+test('a cell that does not exist is not in presence either', () => {
+  // It may have been deleted right under the person's cursor: pointing the room
+  // at an empty spot is just as much a lie, only of another kind.
   const { doc } = room()
   const student = permitsIn(OPEN_ROOM, 'participant', false)
   assert.equal(cellToAnnounce(doc, 'c_ушла', student), null)

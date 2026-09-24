@@ -1,34 +1,35 @@
 #!/usr/bin/env bash
 #
-# Выложить зеркало colloq.cc: воркер, маршруты, записи DNS.
+# Deploy the colloq.cc mirror: the worker, the routes, the DNS records.
 #
-# Голым curl, без wrangler, и это выбор, а не обход. `npx wrangler` тянет из
-# сети полсотни пакетов и требует отдельного входа в аккаунт; чинят же зеркало
-# обычно ровно тогда, когда с сетью и так плохо, а токен для Cloudflare в этом
-# репозитории уже есть — им живёт scripts/dns.sh. Всё, что нужно воркеру, —
-# три вызова API, и они здесь написаны прямо.
+# With plain curl, no wrangler, and that is a choice, not a workaround.
+# `npx wrangler` pulls fifty packages from the network and needs a separate
+# account login, while the mirror is usually fixed exactly when the network is
+# bad anyway, and this repository already has a Cloudflare token: scripts/dns.sh
+# lives on it. All the worker needs is three API calls, written out right here.
 #
-# Скрипт приводит аккаунт и зону к нужному виду, а не досыпает в них — как и
-# scripts/dns.sh, у которого та же болезнь лечилась тем же способом. Запускать
-# сколько угодно раз подряд: совпадающее не трогается, лишнее убирается,
-# недостающее создаётся.
+# The script brings the account and the zone to the desired state instead of
+# topping them up, like scripts/dns.sh, where the same disease was cured the
+# same way. Run it as many times in a row as you like: what matches is left
+# alone, what is extra is removed, what is missing is created.
 #
-#   deploy.sh                что есть и что будет сделано + выкладка
-#   deploy.sh --dry-run      только рассказать, ничего не менять
-#   deploy.sh --down         снять зеркало целиком (маршруты, DNS, воркер)
+#   deploy.sh                what exists and what will be done, then the upload
+#   deploy.sh --dry-run      only tell, change nothing
+#   deploy.sh --down         remove the mirror entirely (routes, DNS, worker)
 #
-# Токен берётся из .env репозитория тем же read_env, что у dns.sh. Годится
-# либо CF_TOKEN_CC (если для .cc завели отдельный), либо общий CF_TOKEN —
-# лишь бы у него были права, перечисленные в README рядом.
+# The token comes from the repository .env through the same read_env as in
+# dns.sh. Either CF_TOKEN_CC (if a separate one was made for .cc) or the shared
+# CF_TOKEN will do, as long as it has the rights listed in the README alongside.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 
-# Тем же порядком, что у dns.sh: COLLOQ_HOME сильнее корня репозитория —
-# у поставленного через pip colloq .env лежит в каталоге состояния, а не рядом
-# с приложением. Двумя строками, а не присваиванием перед `.`: bash снял бы
-# временное значение сразу после встроенной команды, а read_env зовут потом.
+# In the same order as in dns.sh: COLLOQ_HOME beats the repository root, since
+# for colloq installed through pip .env lies in the state directory, not next
+# to the application. Two lines, not an assignment in front of `.`: bash would
+# drop the temporary value right after the builtin, and read_env is called
+# later.
 ENV_FILE="${COLLOQ_HOME:-$ROOT}/.env"
 . "$ROOT/scripts/lib.sh"
 
@@ -46,11 +47,12 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# ------------------------------------------------------- настройки из toml
+# ------------------------------------------------------ settings from toml
 #
-# Имя, дата совместимости и маршруты читаются из wrangler.toml, а не лежат
-# здесь второй копией: иначе правка маршрута в одном файле молча разъезжалась
-# бы со вторым, и выкладка с чужой машины возвращала бы зеркало к прежнему.
+# The name, the compatibility date and the routes are read from wrangler.toml
+# rather than kept here as a second copy: otherwise a route edit in one file
+# would silently drift from the other, and a deploy from another machine would
+# return the mirror to the old state.
 TOML="$HERE/wrangler.toml"
 [[ -f "$TOML" ]] || die "no wrangler.toml next to this script"
 
@@ -58,8 +60,9 @@ NAME=$(sed -nE 's/^name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$TOML" | head
 COMPAT=$(sed -nE 's/^compatibility_date[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$TOML" | head -1)
 MAIN=$(sed -nE 's/^main[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$TOML" | head -1)
 ZONE_NAME=$(sed -nE 's/^zone_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$TOML" | head -1)
-# Через while-read, а не mapfile: в macOS штатный bash — 3.2, и mapfile там нет
-# вовсе. Makefile зовёт именно /bin/bash, так что проверять это будет каждый.
+# Through while-read, not mapfile: the stock bash on macOS is 3.2, and it has
+# no mapfile at all. The Makefile calls exactly /bin/bash, so everyone would
+# run into it.
 PATTERNS=()
 while read -r p; do [[ -n "$p" ]] && PATTERNS+=("$p"); done < <(
   sed -nE 's/^pattern[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$TOML")
@@ -68,12 +71,12 @@ while read -r p; do [[ -n "$p" ]] && PATTERNS+=("$p"); done < <(
   || die "wrangler.toml is missing name/main/compatibility_date/zone_name/routes"
 [[ -f "$HERE/$MAIN" ]] || die "wrangler.toml points at $MAIN, and there is no such file"
 
-# Имена, которым нужна запись в DNS: это маршруты без «/*». Отдельным списком
-# их не держим по той же причине — один источник правды.
+# The names that need a DNS record: the routes without "/*". We do not keep
+# them as a separate list for the same reason: one source of truth.
 HOSTNAMES=()
 for p in "${PATTERNS[@]}"; do HOSTNAMES+=("${p%%/*}"); done
 
-# ---------------------------------------------------------------- доступ
+# ---------------------------------------------------------------- access
 
 if [[ -z "${CF_TOKEN_CC:-}" ]]; then CF_TOKEN_CC=$(read_env CF_TOKEN_CC); fi
 if [[ -z "$CF_TOKEN_CC" ]]; then CF_TOKEN_CC="${CF_TOKEN:-}"; fi
@@ -82,19 +85,19 @@ if [[ -z "$CF_TOKEN_CC" ]]; then CF_TOKEN_CC=$(read_env CF_TOKEN); fi
 
 API=https://api.cloudflare.com/client/v4
 
-# Токен не попадает в argv НИ ОДНОГО процесса: printf — встроенная команда
-# bash, отдельного процесса под неё не заводится, а curl читает заголовок из
-# своего файла настроек на stdin. Через `-H "Authorization: …"` он был бы виден
-# в `ps` любому на машине — в том числе в журналах CI.
+# The token does not get into the argv of ANY process: printf is a bash
+# builtin, no separate process is started for it, and curl reads the header
+# from its config file on stdin. With `-H "Authorization: …"` it would be
+# visible in `ps` to anyone on the machine, CI logs included.
 api() {
   local method=$1 path=$2; shift 2
   printf 'header = "Authorization: Bearer %s"\n' "$CF_TOKEN_CC" \
     | curl -sS -K - -X "$method" "$API$path" "$@"
 }
 
-# Ответ Cloudflare проверяется всегда, а не выбрасывается в /dev/null. Без
-# этого «создано» печаталось бы и тогда, когда прав не хватило, — а узнавали бы
-# об этом по неоткрывающемуся сайту.
+# The Cloudflare response is always checked, not thrown into /dev/null.
+# Without that, "created" would be printed even when permissions were missing,
+# and one would find out from a site that does not open.
 check() {
   local resp=$1 what=$2
   if ! printf '%s' "$resp" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("success") else 1)' 2>/dev/null; then
@@ -110,7 +113,7 @@ except Exception:
   fi
 }
 
-# ------------------------------------------------------------ что за зона
+# -------------------------------------------------------------- which zone
 
 ZONE_ID="${CF_ZONE_CC:-$(read_env CF_ZONE_CC)}"
 ZONE_JSON=""
@@ -127,12 +130,13 @@ else
 fi
 [[ -n "$ZONE_ID" ]] || die "the zone ${ZONE_NAME} is not visible to this token.
   Either it is not in this Cloudflare account, or the token has no Zone: Read on it.
-  See README.md, section «Token permissions»."
+  See README.md, section \"Token permissions\"."
 
-# Аккаунт берётся ИЗ ЗОНЫ, а не из CF_ACCOUNT_ID в .env: воркер обязан лежать
-# в том же аккаунте, которому принадлежит зона, иначе маршрут в ней не найдёт,
-# к чему привязаться. CF_ACCOUNT_ID в .env заведён под colloq.ru и тут был бы
-# не подсказкой, а способом выложить воркер не туда.
+# The account is taken FROM THE ZONE, not from CF_ACCOUNT_ID in .env: the
+# worker must live in the same account the zone belongs to, otherwise the
+# route in it will not find anything to attach to. CF_ACCOUNT_ID in .env was
+# set up for colloq.ru, and here it would be not a hint but a way to upload the
+# worker to the wrong place.
 read -r ACCOUNT_ID ZONE_STATUS < <(printf '%s' "$ZONE_JSON" | python3 -c '
 import json,sys
 d = json.load(sys.stdin).get("result")
@@ -142,10 +146,10 @@ print((z.get("account") or {}).get("id", ""), z.get("status", "?"))')
 
 printf 'zone %s: %s (%s), account %s\n' "$ZONE_NAME" "${ZONE_ID:0:8}…" "$ZONE_STATUS" "${ACCOUNT_ID:0:8}…"
 if [[ "$ZONE_STATUS" != active ]]; then
-  printf '%s  зона не active: пока делегирование не доедет, зеркало не откроется%s\n' "$DIM" "$OFF"
+  printf '%s  the zone is not active: until the delegation arrives, the mirror will not open%s\n' "$DIM" "$OFF"
 fi
 
-# ------------------------------------------------------------------ снять
+# ---------------------------------------------------------------- remove
 
 if (( DOWN )); then
   echo "removing the mirror:"
@@ -183,10 +187,10 @@ for r in json.load(sys.stdin).get("result") or []:
   exit 0
 fi
 
-# --------------------------------------------------------------- выложить
+# ----------------------------------------------------------------- deploy
 
-# 1. Воркер. Модульный формат: metadata называет главный модуль, и часть с
-#    кодом обязана называться ровно так же.
+# 1. The worker. Module format: the metadata names the main module, and the
+#    part with the code must be named exactly the same.
 existing=$(api GET "/accounts/$ACCOUNT_ID/workers/scripts")
 check "$existing" "this token cannot see workers in this account (Account · Workers Scripts: Edit is missing)"
 had=$(printf '%s' "$existing" | NAME="$NAME" python3 -c '
@@ -208,8 +212,9 @@ else
   printf '  %-9s worker    %s\n' "$([[ $had == yes ]] && echo replaced || echo created)" "$NAME"
 fi
 
-# 2. Маршруты. Существующий с тем же образцом не пересоздаётся, а правится:
-#    удалить и создать заново означало бы окно, в котором имя не отвечает.
+# 2. The routes. An existing one with the same pattern is not re-created but
+#    edited: deleting and creating anew would mean a window in which the name
+#    does not answer.
 routes=$(api GET "/zones/$ZONE_ID/workers/routes")
 check "$routes" "this token cannot see worker routes in ${ZONE_NAME} (Zone · Workers Routes: Edit is missing)"
 
@@ -239,18 +244,20 @@ else:
   fi
 done
 
-# 3. DNS. Маршрут воркера срабатывает только если имя вообще резолвится и идёт
-#    ЧЕРЕЗ Cloudflare, поэтому на апекс и www ставится проксированная заглушка.
+# 3. DNS. A worker route fires only if the name resolves at all and goes
+#    THROUGH Cloudflare, so the apex and www get a proxied placeholder.
 #
-#    100:: — это префикс-сток из RFC 6666, «выбросить пакет». Выбран он нарочно
-#    вместо какого-нибудь настоящего адреса: если маршрут воркера однажды снимут
-#    или он отвалится, запрос упадёт сразу, а не уедет тихо на чью-то чужую
-#    машину. Тип AAAA при этом не оставляет за бортом клиентов без IPv6:
-#    проксированному имени Cloudflare раздаёт и A, и AAAA своих пограничных
-#    адресов, а запись за облаком видит только он сам.
+#    100:: is the discard prefix from RFC 6666, "drop the packet". It is chosen
+#    on purpose instead of some real address: if the worker route is ever
+#    removed or falls off, the request fails right away instead of quietly
+#    going off to someone else's machine. The AAAA type does not leave clients
+#    without IPv6 out, either: for a proxied name Cloudflare hands out both A
+#    and AAAA of its edge addresses, and only Cloudflare itself sees the record
+#    behind the cloud.
 #
-#    Трогаются только A, AAAA и CNAME на этих именах: MX, TXT и всё, чем живёт
-#    почта, остаются на месте. Иначе первый же запуск снёс бы домену почту.
+#    Only A, AAAA and CNAME on these names are touched: MX, TXT and everything
+#    mail lives on stay in place. Otherwise the very first run would wipe out
+#    the domain's mail.
 records=$(api GET "/zones/$ZONE_ID/dns_records?per_page=200")
 check "$records" "this token cannot see DNS in ${ZONE_NAME} (Zone · DNS: Edit is missing)"
 
@@ -276,7 +283,7 @@ for r in json.load(sys.stdin).get("result") or []:
 
   [[ -z "$keep" ]] || continue
   if (( DRY )); then printf '  would create dns    AAAA  %-16s -> 100:: (proxied)\n' "$host"; continue; fi
-  # ttl 1 — «автоматически»; проксированная запись другого ttl не принимает.
+  # ttl 1 means "automatic"; a proxied record accepts no other ttl.
   check "$(api POST "/zones/$ZONE_ID/dns_records" -H 'content-type: application/json' \
     --data "$(printf '{"type":"AAAA","name":"%s","content":"100::","ttl":1,"proxied":true}' "$host")")" \
     "cannot create the placeholder AAAA for $host"

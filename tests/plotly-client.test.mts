@@ -1,17 +1,18 @@
 /**
- * Сторона тетради: что она выбирает показать и что уезжает в рамку.
+ * The notebook side: what it chooses to show and what goes into the frame.
  *
- * Три отказа, каждый из которых виден только глазами и только на семинаре:
+ * Three failures, each visible only by eye and only at a seminar:
  *
- *  — выбор представления не знает про фигуру, и ячейка молча пуста (так и
- *    было: в наборе от plotly нет ни текста, ни картинки);
- *  — в рамку уезжает не только фигура, но и `config` из неё — то есть чужие
- *    настройки нашей панели инструментов, вплоть до адреса чужого сервера;
- *  — вывод, у которого после санитайзера не осталось ничего, снова рисуется
- *    пустым местом вместо слов.
+ *  — the choice of representation does not know about the figure, and the cell
+ *    is silently empty (that is how it was: the MIME bundle from plotly has
+ *    neither text nor an image);
+ *  — not only the figure goes into the frame but also its `config` — that is,
+ *    somebody else's settings for our toolbar, up to a foreign server address;
+ *  — output with nothing left after the sanitizer is again drawn as an empty
+ *    space instead of words.
  *
- * И одно правило про сборку: пять мегабайт plotly.js не должны оказаться в
- * куске, который качает каждый, кто открыл ссылку на занятие.
+ * And one rule about the build: five megabytes of plotly.js must not end up in
+ * the chunk that everyone who opens a class link downloads.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -39,36 +40,36 @@ import type { CellOutput } from '../shared/notebook.js'
 const read = (rel: string): string =>
   fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 
-/* ------------------------------------------------------- выбор представления */
+/* ----------------------------------------------- choosing the representation */
 
-test('фигура выбирается, даже когда в наборе больше ничего нет', () => {
-  // Ровно тот набор, который шлёт ipykernel с нынешним plotly: один ключ.
-  // Пока его тут не было, `pickMime` возвращал null, а null — это пустое место.
+test('the figure is chosen even when the bundle has nothing else', () => {
+  // Exactly the bundle ipykernel sends with current plotly: one key. Until it
+  // was here, `pickMime` returned null, and null is an empty space.
   assert.equal(pickMime({ [PLOTLY_MIME]: '{}' }, true), PLOTLY_MIME)
-  assert.equal(pickMime({ [PLOTLY_MIME]: '{}' }, false), PLOTLY_MIME, 'до рендерера — тоже')
-  // И она старше снимка того же графика: повертеть можно только фигуру.
+  assert.equal(pickMime({ [PLOTLY_MIME]: '{}' }, false), PLOTLY_MIME, 'before the renderer too')
+  // And it outranks a snapshot of the same chart: only a figure can be played with.
   assert.equal(pickMime({ [PLOTLY_MIME]: '{}', 'image/png': 'iVBOR' }, true), PLOTLY_MIME)
-  // Старый порядок не тронут.
+  // The old order is untouched.
   assert.equal(pickMime({ 'image/png': 'iVBOR', 'text/plain': 'x' }, true), 'image/png')
   assert.equal(pickMime({ 'text/html': '<b>1</b>', 'text/plain': 'x' }, true), 'text/html')
 })
 
-test('фигуру не рисуют картинкой — ни по типу, ни по адресу', () => {
-  // Вынесенная фигура приезжает адресом, точно как вынесенная картинка. По
-  // адресу лежит JSON: `<img>` показал бы битую рамку на месте графика.
+test('a figure is not drawn as an image, neither by type nor by address', () => {
+  // An offloaded figure arrives as an address, just like an offloaded image. The
+  // address holds JSON: an `<img>` would show a broken frame where the chart should be.
   assert.equal(asImage(PLOTLY_MIME, '/api/sessions/x/blobs/abc'), false)
   assert.equal(asImage('image/png', '/api/sessions/x/blobs/abc'), true)
   assert.equal(asImage('image/png', 'iVBORw0KGgo='), true)
 })
 
-test('график не подрезается кромкой «Show more»', () => {
-  // Под кромкой у графика оказались бы нижняя ось и подписи, а кнопка обещала
-  // бы продолжение вывода, которого там нет. Та же причина, что у картинок.
+test('a chart is not clipped by the "Show more" edge', () => {
+  // Under the edge would be the chart's bottom axis and labels, and the button
+  // would promise more output that is not there. The same reason as for images.
   const output: CellOutput = { kind: 'data', data: { [PLOTLY_MIME]: '{}' }, execCount: 1 }
   assert.equal(isPicture(output, true), true)
 })
 
-test('вынесенная фигура получает адрес тем же механизмом, что и картинка', () => {
+test('an offloaded figure gets its address by the same mechanism as an image', () => {
   const output: CellOutput = {
     kind: 'data',
     data: {},
@@ -81,15 +82,15 @@ test('вынесенная фигура получает адрес тем же 
   assert.equal(shown.data[PLOTLY_MIME], '/api/sessions/room/blobs/abc')
 })
 
-/* -------------------------------------------------------- фигура для рамки */
+/* ------------------------------------------------ the figure for the frame */
 
-test('в рамку уезжает только data, layout и frames', () => {
+test('only data, layout and frames go into the frame', () => {
   const figure = normalizeFigure({
     data: [{ type: 'bar', x: [1], y: [2] }],
     layout: { height: 300 },
     frames: [{ name: 'a' }],
-    // Всё, что ниже, — чужие настройки НАШЕЙ панели инструментов и мало ли
-    // что ещё. В рамку это не едет.
+    // Everything below is somebody else's settings for OUR toolbar and who knows
+    // what else. None of it goes into the frame.
     config: { plotlyServerURL: 'https://chart-studio.example', showSendToCloud: true },
     somethingNew: { x: 1 },
   })
@@ -98,26 +99,26 @@ test('в рамку уезжает только data, layout и frames', () => {
   assert.equal((figure as Record<string, unknown>).config, undefined)
 })
 
-test('не фигура — значит, показывать нечего, и это говорится словами', () => {
+test('not a figure means nothing to show, and that is said in words', () => {
   assert.equal(normalizeFigure(null), null)
   assert.equal(normalizeFigure('строка'), null)
   assert.equal(normalizeFigure([1, 2]), null)
-  assert.equal(normalizeFigure({ layout: {} }), null, 'без data это не фигура')
-  // Кривой layout не отменяет фигуру: рисовать по-прежнему есть что.
+  assert.equal(normalizeFigure({ layout: {} }), null, 'without data it is not a figure')
+  // A malformed layout does not cancel the figure: there is still something to draw.
   assert.deepEqual(normalizeFigure({ data: [], layout: 'нет' }), { data: [], layout: {} })
 })
 
-test('высота приходит из фигуры, но в разумных пределах', () => {
+test('the height comes from the figure, within reasonable limits', () => {
   assert.equal(figureHeight({ data: [], layout: {} }), PLOTLY_DEFAULT_HEIGHT)
   assert.equal(figureHeight({ data: [], layout: { height: 620 } }), 620)
-  // Число в layout пишет кто угодно: `height: 1e9` — это страница, которую
-  // не пролистать, а `height: 1` — график в одну строку.
+  // Anyone can write a number into layout: `height: 1e9` is a page that cannot
+  // be scrolled through, and `height: 1` is a chart one line tall.
   assert.equal(figureHeight({ data: [], layout: { height: 1e9 } }), PLOTLY_MAX_HEIGHT)
   assert.equal(figureHeight({ data: [], layout: { height: 1 } }), 180)
   assert.equal(figureHeight({ data: [], layout: { height: 'высокий' } }), PLOTLY_DEFAULT_HEIGHT)
 })
 
-test('сообщение рамки узнаётся по метке, а не по форме наугад', () => {
+test('a frame message is recognised by its tag, not by guessing at its shape', () => {
   assert.ok(isPlotlyMessage({ colloq: PLOTLY_MSG, kind: 'ready' }))
   assert.ok(!isPlotlyMessage({ kind: 'ready' }))
   assert.ok(!isPlotlyMessage({ colloq: 'webpackHotUpdate', kind: 'ready' }))
@@ -125,47 +126,47 @@ test('сообщение рамки узнаётся по метке, а не п
   assert.ok(!isPlotlyMessage(null))
 })
 
-/* --------------------------------------------- слова вместо пустого места */
+/* ---------------------------------------- words instead of an empty space */
 
-test('вывод, от которого после санитайзера ничего не осталось, узнаётся', () => {
-  // Bokeh, folium, altair без картинки, ipywidgets, plotly со старым
-  // рендерером: вся работа в `<script>`, а скрипты из вывода мы не исполняем.
+test('output with nothing left after the sanitizer is recognised', () => {
+  // Bokeh, folium, altair without an image, ipywidgets, plotly with the old
+  // renderer: all the work is in `<script>`, and we do not execute scripts from output.
   assert.equal(hasVisibleMarkup('<div id="bk-1" class="bk-root"></div>'), false)
   assert.equal(hasVisibleMarkup('  \n  '), false)
   assert.equal(hasVisibleMarkup('<div><span> </span></div>'), false)
-  // А настоящая разметка вывода — осталась.
+  // But real output markup remains.
   assert.equal(hasVisibleMarkup('<table><tr><td>1</td></tr></table>'), true)
   assert.equal(hasVisibleMarkup('<div>Решение</div>'), true)
-  // Картинку видно и без единой буквы внутри.
+  // An image is visible without a single letter inside.
   assert.equal(hasVisibleMarkup('<p><img src="data:image/png;base64,iVBOR"></p>'), true)
   assert.equal(hasVisibleMarkup('<svg><circle r="1"/></svg>'), true)
 })
 
-test('пустая строка text/plain остаётся законной пустотой', () => {
-  // `print("")` и `display("")` — это вывод, который ПРАВДА пуст, и строка
-  // про интерактивность здесь была бы враньём. Выбор до него доходит.
+test('an empty text/plain string stays a legitimate emptiness', () => {
+  // `print("")` and `display("")` are output that REALLY is empty, and a line
+  // about interactivity here would be a lie. The choice does reach it.
   assert.equal(pickMime({ 'text/plain': '' }, true), 'text/plain')
 })
 
-test('строку про интерактивный вывод рисует ровно одно место', () => {
+test('exactly one place draws the line about interactive output', () => {
   const source = read('web/src/components/notebook/CellOutputs.svelte')
   const uses = source.match(/room\.output\.interactive/g) ?? []
-  assert.equal(uses.length, 2, 'веток две: вычищенная разметка и незнакомый набор')
-  assert.ok(source.includes('hasVisibleMarkup('), 'разметку вывода больше не взвешивают')
+  assert.equal(uses.length, 2, 'there are two branches: scrubbed markup and an unknown bundle')
+  assert.ok(source.includes('hasVisibleMarkup('), 'the output markup is no longer weighed')
 })
 
-/* ------------------------------------------------------------- сборка */
+/* ---------------------------------------------------------- the build */
 
-test('plotly.js не попадает в бандл приложения — ни в какой кусок', () => {
+test('plotly.js does not get into the app bundle, not into any chunk', () => {
   /*
-   * Пять мегабайт (1.1 МБ brotli) грузятся ТОЛЬКО внутри рамки и только когда
-   * на экране есть график. Способ, которым это обеспечено, ровно один: ни один
-   * исходник фронтенда пакет не импортирует — он копируется в `public/` шагом
-   * сборки и цепляется скриптом уже в рамке.
+   * Five megabytes (1.1 MB brotli) load ONLY inside the frame and only when a
+   * chart is on screen. There is exactly one way this is ensured: no frontend
+   * source imports the package — it is copied into `public/` by a build step
+   * and attached by a script inside the frame.
    *
-   * Проверяется по исходникам, а не по собранному: сборка в тестах занимает
-   * полминуты, а импорт, случайно добавленный `import Plotly from …` ради
-   * типов, видно чтением.
+   * It is checked by the sources, not by the build output: a build in the tests
+   * takes half a minute, while an import added by accident, `import Plotly from
+   * …` for the types, can be seen by reading.
    */
   const offenders: string[] = []
   const walk = (dir: string): void => {
@@ -178,21 +179,21 @@ test('plotly.js не попадает в бандл приложения — н�
     }
   }
   for (const dir of ['web/src', 'shared', 'server/src']) walk(dir)
-  assert.deepEqual(offenders, [], `plotly.js импортируют:\n  ${offenders.join('\n  ')}`)
+  assert.deepEqual(offenders, [], `plotly.js is imported by:\n  ${offenders.join('\n  ')}`)
 
-  // И копия для рамки действительно раскладывается шагом сборки — иначе
-  // адрес в политике вёл бы в 404, а график был бы вечной заставкой.
+  // And the copy for the frame really is laid out by a build step — otherwise the
+  // address in the policy would lead to a 404, and the chart would be a placeholder forever.
   const web = JSON.parse(read('web/package.json')) as { scripts: Record<string, string> }
   assert.match(web.scripts['plotly:dist'], /plotly\.js-strict-dist-min/)
   assert.match(web.scripts['plotly:dist'], /public\/plotly\/plotly\.min\.js/)
   for (const script of ['dev', 'build']) {
-    assert.match(web.scripts[script], /assets/, `${script} не раскладывает копии в public/`)
+    assert.match(web.scripts[script], /assets/, `${script} does not lay the copies out into public/`)
   }
   assert.match(web.scripts.assets, /plotly:dist/)
 })
 
-test('берётся strict-сборка: без неё политике рамки понадобился бы unsafe-eval', () => {
+test('the strict build is used: without it the frame policy would need unsafe-eval', () => {
   const web = JSON.parse(read('web/package.json')) as { dependencies: Record<string, string> }
-  assert.ok(web.dependencies['plotly.js-strict-dist-min'], 'strict-сборки нет в зависимостях')
-  assert.equal(web.dependencies['plotly.js-dist-min'], undefined, 'обычная сборка тянет за собой eval')
+  assert.ok(web.dependencies['plotly.js-strict-dist-min'], 'the strict build is not among the dependencies')
+  assert.equal(web.dependencies['plotly.js-dist-min'], undefined, 'the regular build drags eval along')
 })

@@ -1,9 +1,9 @@
 <!--
-  Курсы: список и один курс.
+  Courses: the list and a single course.
 
-  Курс — это адрес, который дают классу в первую неделю и больше не дают
-  ничего. Поэтому у него нет ни архива, ни скрытия, а удаление живёт внутри
-  самого курса и называет ссылку, которую ломает.
+  A course is an address the class is given in the first week, and nothing
+  else is given after that. So it has neither an archive nor hiding, and
+  deletion lives inside the course itself and names the link it breaks.
 -->
 <script lang="ts">
   import { tr, getLocale } from '@shared/i18n'
@@ -35,7 +35,7 @@
   import { tick } from 'svelte'
 
   interface Props {
-    /** Открытый курс, если адрес его называет. */
+    /** The open course, if the address names one. */
     open: string | null
     navigate: (path: string) => void
   }
@@ -52,12 +52,13 @@
   let draftName = $state('')
   let copied = $state<string | null>(null)
   let adding = $state(false)
-  /** Курс запрошен, ответа ещё нет: пустая область — не ответ. */
+  /** Course requested, no answer yet: an empty area is not an answer. */
   let loadingOne = $state(false)
 
   const explain = (cause: unknown): string => {
-    // Мёртвым печеньем этот экран распорядиться не может: оболочка меняет всю
-    // панель на экран входа. С причиной — печенье доехало и его отвергли.
+    // This screen cannot deal with a dead cookie: the shell replaces the whole
+    // panel with the sign-in screen. With a reason — the cookie arrived and
+    // was rejected.
     if (cause instanceof AdminApiError) {
 
       return cause.message
@@ -65,7 +66,7 @@
     return tr("admin.could.not.complete.the.request.try.again")
   }
 
-  /** Адрес, который диктуют вслух: имя, если его дали, иначе идентификатор. */
+  /** The address read out loud: the name if one was given, otherwise the id. */
   const addressOf = (item: { id: string; slug: string | null }): string => item.slug ?? item.id
 
   async function loadList(): Promise<void> {
@@ -86,8 +87,8 @@
       errorText = null
     } catch (cause) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
-      // Курса по этому адресу нет — ветка внизу скажет это словами, а раньше на
-      // его месте была пустая область.
+      // There is no course at this address — the branch below says so in
+      // words; before, there was an empty area in its place.
       course = null
       errorText = () => (explain(cause))
       return
@@ -95,8 +96,9 @@
       loadingOne = false
     }
     try {
-      // Список семинаров нужен только кнопке «Добавить семинар»: без него экран
-      // курса остаётся целым, и объявлять курс ненайденным из-за него нельзя.
+      // The seminar list is needed only by the "Add seminar" button: without
+      // it the course screen stays whole, and declaring the course not found
+      // because of it would be wrong.
       seminars = await adminApi.listSeminars()
     } catch (cause) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
@@ -105,13 +107,14 @@
   }
 
   /*
-   * Одна загрузка на открытие, а не две.
+   * One load per opening, not two.
    *
-   * Рядом стоял `onMount` с теми же двумя вызовами: эффект выполняется сразу
-   * после монтирования, так что каждый экран уходил за списком дважды — два
-   * `listCourses` и два `listPublications`, а курс — два `course` и два
-   * `listSeminars`, тот самый, что разбирает снимок тетради каждой не-живой
-   * комнаты. Два ответа на один `course` вдобавок гонялись наперегонки.
+   * There used to be an `onMount` next to it with the same two calls: the
+   * effect runs right after mounting, so every screen went for its list
+   * twice — two `listCourses` and two `listPublications`, and for a course
+   * two `course` and two `listSeminars`, the very one that parses the
+   * notebook snapshot of every non-live room. On top of that, two answers to
+   * one `course` raced each other.
    */
   $effect(() => {
     const id = open
@@ -124,9 +127,9 @@
 
   async function create(): Promise<void> {
     const name = draftName.trim()
-    // busy проверяется, а не только выставляется: кнопка по нему гаснет, а Enter
-    // с автоповтором — нет, и полсекунды удержания заводили пять одинаковых
-    // курсов, каждый со своим адресом.
+    // busy is checked, not only set: the button greys out on it, but Enter
+    // with auto-repeat does not, and half a second of holding it created five
+    // identical courses, each with its own address.
     if (!name || busy) return
     busy = true
     try {
@@ -143,21 +146,23 @@
   }
 
   /**
-   * Один порядок — один запрос, со сравнением версии.
+   * One order — one request, with a version check.
    *
-   * Несовпадение не ошибка, а гонка: другой преподаватель переставил этот курс,
-   * пока экран держал его старым. Ответ несёт список таким, какой он сейчас.
+   * A mismatch is not an error but a race: another teacher reordered this
+   * course while the screen held it in its old state. The response carries
+   * the list as it is now.
    *
-   * Итог записи — словом, а не пустотой: форме строки плана надо знать, стирать
-   * ли набранное. Успех — стирать; гонка (409) — закрыть, потому что под
-   * формой уже другой список; сбой сети — оставить, чтобы нажать ещё раз, а
-   * не набирать тему заново.
+   * The outcome of the write comes as a word, not as nothing: the plan row
+   * form needs to know whether to clear what was typed. Success — clear it;
+   * a race (409) — close it, because there is already a different list
+   * under the form; a network failure — keep it, so you can press again
+   * instead of retyping the topic.
    */
   async function writeItems(items: CourseItem[]): Promise<'ok' | 'conflict' | 'failed'> {
-    // busy проверяется, а не только выставляется: «Убрать строку» и «Добавить
-    // семинар» гаснут по нему, но два быстрых нажатия успевают уйти с одним и
-    // тем же `rev`, и второе возвращалось как «этот курс успел изменить кто-то
-    // ещё» — про собственный двойной клик.
+    // busy is checked, not only set: "Remove row" and "Add seminar" grey out
+    // on it, but two quick presses manage to go out with the same `rev`, and
+    // the second came back as "someone else has changed this course" — about
+    // your own double click.
     if (!course || busy) return 'failed'
     busy = true
     errorText = null
@@ -168,10 +173,11 @@
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       if (cause instanceof AdminApiError && cause.status === 409) {
         /*
-         * Сначала перечитать, потом сказать. Было наоборот, а успешный
-         * `loadOne` сам обнуляет ошибку — и фраза «повторите изменение» гасла,
-         * не успев показаться: список молча становился другим, а правка
-         * преподавателя пропадала без единого слова.
+         * Re-read first, then speak. It used to be the other way round, and a
+         * successful `loadOne` clears the error by itself — so the "please
+         * repeat the change" phrase went out before it could be seen: the
+         * list silently became a different one, and the teacher's edit
+         * vanished without a single word.
          */
         await loadOne(course.id)
         errorText = () => (tr("admin.another.user.changed.the.course.the.current.version.will.load.ple"))
@@ -212,27 +218,28 @@
   }
 
   /**
-   * Строки плана — прямо в списке курса.
+   * Plan rows — right inside the course list.
    *
-   * Одна форма на экран: новая тема (внизу, `target: null`) или правка
-   * существующей (на месте строки). Две открытые сразу держали бы два номера
-   * строк, и после первого сохранения второй указывал бы уже не туда.
+   * One form per screen: a new topic (at the bottom, `target: null`) or an
+   * edit of an existing one (in the row's place). Two open at once would
+   * hold two row indexes, and after the first save the second would point
+   * to the wrong place.
    *
-   * Правка знает, какой строка БЫЛА (course-plan.ts · PlannedTarget): номер
-   * строки после чужой перестановки — это другая неделя, и переименовать её
-   * вместо своей значило бы испортить план молча.
+   * An edit knows what the row WAS (course-plan.ts · PlannedTarget): a row
+   * index after someone else's reordering is a different week, and renaming
+   * that one instead of yours would silently spoil the plan.
    */
   let plan = $state<{ target: PlannedTarget | null; name: string; when: string } | null>(null)
-  /** Строка плана, на место которой выбирают занятие. */
+  /** The plan row a class is being chosen to replace. */
   let seating = $state<PlannedTarget | null>(null)
   let planTopic = $state<HTMLInputElement | null>(null)
 
   const planReady = $derived(plan !== null && plannedRow(plan.name, plan.when) !== null)
 
   /**
-   * Перестановка или удаление строки сдвигает номера, и открытые на строках
-   * формы закрываются: правка по сдвинутому номеру правила бы соседа. Новая
-   * тема внизу номера не держит и остаётся с набранным.
+   * Reordering or removing a row shifts the indexes, and forms open on rows
+   * are closed: an edit by a shifted index would edit a neighbour. The new
+   * topic at the bottom holds no index and keeps what was typed.
    */
   function closeRowForms(): void {
     if (plan?.target) plan = null
@@ -265,25 +272,28 @@
       errorText = () => tr('admin.course.planRowMoved')
       return
     }
-    // Правка закрывается и после гонки: под ней уже другой список.
+    // The edit closes after a race too: there is already a different list
+    // under it.
     if (draft.target) {
       if ((await writeItems(next)) !== 'failed') plan = null
       return
     }
     /*
-     * План семестра набирают подряд — пятнадцать тем за один присест. Форма
-     * остаётся открытой, курсор снова в теме: иначе каждая неделя стоила бы
-     * лишнего нажатия «+ Тема по плану».
+     * A semester plan is typed in one go — fifteen topics in a single
+     * sitting. The form stays open, the cursor goes back to the topic:
+     * otherwise every week would cost an extra press of "+ Planned topic".
      *
-     * Пустеет форма СРАЗУ, а не по ответу. По ответу было так: Enter в поле
-     * недели, курсор остаётся там же, следующая тема печатается в хвост недели
-     * («1–7 сенДеревья»), а пришедший ответ стирает обе строки — на медленном
-     * плече это секунды, и набранное пропадало молча. И «Отмена» посреди
-     * записи открывала форму снова, когда ответ доезжал.
+     * The form empties IMMEDIATELY, not on the response. On the response it
+     * went like this: Enter in the week field, the cursor stays there, the
+     * next topic gets typed onto the end of the week ("1–7 SepTrees"), and
+     * the response arriving wipes both lines — on a slow link that is
+     * seconds, and what was typed vanished silently. And "Cancel" in the
+     * middle of a write reopened the form when the response arrived.
      *
-     * Не записалось (сбой, 409) — набранное возвращается, если в пустую форму
-     * ещё ничего не начали печатать и её не закрыли: набирать тему заново
-     * из-за сети незачем, а начатое поверх затирать нельзя.
+     * If it did not get written (a failure, a 409), what was typed comes
+     * back, provided nothing has been typed into the empty form yet and it
+     * has not been closed: there is no reason to retype a topic because of
+     * the network, and what has been started must not be overwritten.
      */
     const typed = { name: draft.name, when: draft.when }
     const writing = writeItems(next)
@@ -317,14 +327,14 @@
   }
 
   function planKeys(event: KeyboardEvent): void {
-    // Enter, которым подтверждают набор в IME, — не «Добавить»: тема ушла бы
-    // недонабранной.
+    // An Enter that confirms IME composition is not "Add": the topic would
+    // go out half-typed.
     if (event.isComposing) return
     if (event.key === 'Enter') void savePlan()
     if (event.key === 'Escape') plan = null
   }
 
-  /** Семинары, которых в этом курсе ещё нет. */
+  /** Seminars that are not in this course yet. */
   const addable = $derived(
     seminars.filter(
       (s) => !course?.items.some((i) => i.kind === 'seminar' && i.sessionId === s.id),
@@ -332,12 +342,12 @@
   )
 
   /**
-   * Скопировать — или показать ссылку словами.
+   * Copy — or show the link in words.
    *
-   * `copyText` бросает там, где буфер закрыт (панель по http на чужом хосте —
-   * обычный способ держать инстанс кафедры). Раньше этот отказ уходил
-   * необработанным промисом: «Скопировано» не появлялось, ссылки на экране не
-   * было, и нажатие выглядело как ничего.
+   * `copyText` throws where the clipboard is closed (the panel over http on
+   * another host is the usual way to run a department's instance). This
+   * refusal used to go off as an unhandled promise: "Copied" did not appear,
+   * there was no link on the screen, and the press looked like nothing.
    */
   async function copy(text: string, key: string): Promise<void> {
     try {
@@ -351,16 +361,16 @@
   }
 
   /**
-   * Черновики полей курса.
+   * Drafts of the course fields.
    *
-   * Предложение из названия — только когда имени ещё нет: подставлять его
-   * поверх выбранного человеком значило бы переписывать чужое решение при
-   * каждом открытии экрана.
+   * A suggestion from the title — only when there is no name yet: putting it
+   * over the one the person chose would mean rewriting someone else's
+   * decision every time the screen opens.
    *
-   * Ключ — идентификатор курса, а не сам объект: `course` переприсваивается
-   * ответом сервера после каждой перестановки строк, и эффект, зависевший от
-   * объекта, стирал набранный, но не сохранённый адрес — вместе с кнопкой
-   * «Сохранить адрес», которой его собирались сохранить.
+   * The key is the course id, not the object itself: `course` is reassigned
+   * by the server's response after every reordering of rows, and an effect
+   * that depended on the object wiped a typed but unsaved address — together
+   * with the "Save address" button that was about to save it.
    */
   let slugDraft = $state('')
   let nameDraft = $state('')
@@ -375,8 +385,8 @@
     }
     if (drafted === open.id) return
     drafted = open.id
-    // Форма строки плана принадлежит курсу: номер строки из соседнего курса
-    // здесь указывал бы на чужую неделю.
+    // The plan row form belongs to the course: a row index from a
+    // neighbouring course would point at someone else's week here.
     plan = null
     seating = null
     slugDraft = open.slug ?? suggestSlug(open.name)
@@ -385,17 +395,19 @@
   })
 
   /**
-   * Имя, которого не дали, и кто его держит.
+   * The name that was refused, and who holds it.
    *
-   * «Адрес «ml-2025» уже занят» — тупик, если держателя не назвать: курса с
-   * таким адресом в списке нет, его переименовали в «ml-2025-fall», и прежнее
-   * имя он держит ради ссылки, записанной в чате прошлогодней группы. Такое имя
-   * владелец отпускает сам (server/src/publish/store.ts · releaseFormerSlug);
-   * живой чужой адрес — не отпускает, и кнопки для него не будет. Пока сервер о
-   * держателе молчит, экран ведёт себя как раньше: повторяет фразу отказа.
+   * "The address "ml-2025" is already taken" is a dead end if the holder is
+   * not named: there is no course with that address in the list, it was
+   * renamed to "ml-2025-fall", and it holds the former name for the sake of
+   * a link written in last year's group chat. Such a name the owner releases
+   * themselves (server/src/publish/store.ts · releaseFormerSlug); someone
+   * else's live address they do not, and there will be no button for it.
+   * While the server says nothing about the holder, the screen behaves as
+   * before: it repeats the refusal phrase.
    */
   let held = $state<{ slug: string; holder: AddressHolder } | null>(null)
-  /** Второй шаг: отпустить прежний адрес необратимо, и спрашивается это вслух. */
+  /** Step two: releasing a former address is irreversible, so it is asked aloud. */
   let askingSlug = $state(false)
 
   async function saveSlug(): Promise<void> {
@@ -422,11 +434,11 @@
   }
 
   /**
-   * Освободить прежний адрес и занять его — одним решением.
+   * Release a former address and take it — as one decision.
    *
-   * Одним, потому что отпускают его ровно затем, чтобы дать это имя своему
-   * курсу: два нажатия подряд оставили бы посередине состояние «имя ничьё», в
-   * котором его занимает кто угодно другой.
+   * One, because it is released precisely to give that name to your own
+   * course: two presses in a row would leave a "the name belongs to nobody"
+   * state in between, in which anyone else can take it.
    */
   async function releaseSlug(): Promise<void> {
     if (!held || busy) return
@@ -449,17 +461,19 @@
   }
 
   /**
-   * Своё прежнее имя — то, которое держит этот курс.
+   * Your own former name — the one this course holds.
    *
-   * Второй путь к тому же действию, и нужен он не тому, кому имя отказали, а
-   * владельцу: курс «ML 2025», переименованный в «ml-2025-fall», держит
-   * «ml-2025» за собой навсегда — ссылка с ним записана в чате прошлогодней
-   * группы, — и курсу следующего года это имя не дать. Увидеть, что держит его
-   * именно этот курс, было негде: строки с таким адресом в списке нет вовсе.
-   * Список приезжает вместе с курсом (server/src/routes/courses.ts · former).
+   * A second path to the same action, and it is needed not by the one who
+   * was refused the name but by the owner: the course "ML 2025", renamed to
+   * "ml-2025-fall", keeps "ml-2025" for itself forever — a link with it is
+   * written in last year's group chat — and next year's course cannot be
+   * given that name. There was nowhere to see that it is this very course
+   * that holds it: there is no row with that address in the list at all.
+   * The list arrives together with the course (server/src/routes/courses.ts
+   * · former).
    */
   let dropping = $state<string | null>(null)
-  /** Прежние имена этого курса — с сервера, вместе с самим курсом. */
+  /** This course's former names — from the server, along with the course. */
   const former = $derived(course?.former ?? [])
 
   async function dropFormer(): Promise<void> {
@@ -478,16 +492,16 @@
       busy = false
     }
     dropping = null
-    // Перечитываем курс, а не вычитаем имя из списка на месте: прежние имена
-    // считает сервер, и вторая копия этого ответа разошлась бы с ним на первом
-    // же отказе.
+    // Re-read the course instead of removing the name from the list in
+    // place: the server counts the former names, and a second copy of that
+    // answer would diverge from it on the very first refusal.
     await loadOne(open.id)
   }
   /**
-   * Название и подпись курса.
+   * The course's title and caption.
    *
-   * Их не было нигде: курс, заведённый с опечаткой в названии, оставался с ней
-   * навсегда, и опечатку видел весь класс на публичной странице.
+   * They were nowhere: a course created with a typo in its title kept it
+   * forever, and the whole class saw the typo on the public page.
    */
   const detailsChanged = $derived(
     Boolean(course) &&
@@ -508,12 +522,13 @@
       const saved = await adminApi.updateCourse(open.id, { name, blurb: blurbDraft.trim() || null })
       course = saved
       /*
-       * Черновики — с ответа сервера, а не с того, что набрали.
+       * The drafts come from the server's response, not from what was typed.
        *
-       * Сервер режет подпись по `MAX_COURSE_BLURB`, и после сохранения
-       * сохранённое короче набранного: `detailsChanged` оставался истинным,
-       * кнопка «Сохранить изменения» не гасла, и её жали снова и снова. Эффект
-       * выше их не трогает — он ключом по `open.id`, а курс тот же.
+       * The server cuts the caption at `MAX_COURSE_BLURB`, and after saving
+       * what was saved is shorter than what was typed: `detailsChanged`
+       * stayed true, the "Save changes" button did not grey out, and people
+       * pressed it again and again. The effect above does not touch them — it
+       * is keyed by `open.id`, and the course is the same.
        */
       nameDraft = saved.name
       blurbDraft = saved.blurb ?? ''
@@ -526,10 +541,11 @@
   }
 
   /**
-   * Удаление курса — здесь же, и оно называет ссылку, которую ломает.
+   * Deleting the course — right here, and it names the link it breaks.
    *
-   * Сами семинары и их страницы остаются: курс — это порядок и адрес, а не
-   * хранилище. Ломается ровно то, что классу продиктовали в первую неделю.
+   * The seminars themselves and their pages stay: a course is an order and
+   * an address, not storage. What breaks is exactly what the class was
+   * dictated in the first week.
    */
   let doomed = $state(false)
 
@@ -551,12 +567,13 @@
   }
 
   /**
-   * Страницы, у которых больше нет комнаты.
+   * Pages that no longer have a room.
    *
-   * Удаление семинара по умолчанию оставляет чтение: розданную ссылку не
-   * отозвать. Но дальше страница пропадала из панели совсем — все остальные
-   * маршруты публикации спрашивают её по семинару, — и снять её можно было
-   * только правкой базы. Здесь она видна и снимается.
+   * Deleting a seminar keeps the reading page by default: a link that has
+   * been handed out cannot be recalled. But after that the page disappeared
+   * from the panel entirely — every other publication route asks for it by
+   * seminar — and it could only be withdrawn by editing the database. Here
+   * it is visible and can be withdrawn.
    */
   let orphans = $state<AdminPublication[]>([])
   let orphanBusy = $state<string | null>(null)
@@ -565,7 +582,7 @@
     try {
       orphans = (await adminApi.listPublications()).filter((p) => p.orphaned)
     } catch {
-      // Не беда: это приписка к списку курсов, а не сам список.
+      // No harm: this is an addendum to the course list, not the list itself.
       orphans = []
     }
   }
@@ -591,9 +608,9 @@
 </script>
 
 <!--
-  Поля строки плана — одни на новую тему и на правку существующей. Тема
-  обязательна (сервер без неё отказывает), неделя — нет: у темы «на потом»
-  недели ещё может не быть.
+  The plan row fields — the same ones for a new topic and for editing an
+  existing one. The topic is required (the server refuses without it), the
+  week is not: a "for later" topic may not have a week yet.
 -->
 {#snippet planForm(label: string)}
   {#if plan}
@@ -643,8 +660,9 @@
       <button type="button" class="btn-primary" onclick={() => (creating = true)}>{tr("admin.new.course")}</button>
     {/snippet}
 
-    <!-- Свой отступ — только от sm: у AdminPage он уже есть, и на телефоне
-         двойной съедал под списком курсов почти треть ширины. -->
+    <!-- Its own padding only from sm up: AdminPage already has one, and on a
+         phone the double padding ate almost a third of the width under the
+         course list. -->
     <div class="py-6 sm:px-8">
       {#if error}
         <p class="pb-4 text-ui text-danger">{error}</p>
@@ -684,9 +702,9 @@
 
       {#each courses as item (item.id)}
         {@const tally = courseTally(item.items)}
-        <!-- flex-wrap и basis-48: со счётом «по плану» строка счёта длиннее,
-             чем осталось места на телефоне, и без переноса она вылезала за
-             край, а название курса сжималось в ноль. -->
+        <!-- flex-wrap and basis-48: with the "planned" count the tally line is
+             longer than the room left on a phone, and without wrapping it
+             stuck out past the edge while the course title shrank to zero. -->
         <div class="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-line py-3.5">
           <button
             type="button"
@@ -694,8 +712,9 @@
             onclick={() => navigate(`/admin/courses/${item.id}`)}
           >
             <p class="text-ui-lg font-semibold text-ink">{item.name}</p>
-            <!-- Адрес печатается тот же, что диктуют классу: смысл имени в том,
-                 что оно и есть ссылка, а не второй адрес рядом с ней. -->
+            <!-- The address printed is the same one dictated to the class: the
+                 point of a name is that it is the link, not a second address
+                 next to it. -->
             <p class="mt-0.5 font-mono text-2xs text-muted">/c/{addressOf(item)}</p>
           </button>
           <p class="shrink-0 text-ui text-muted">
@@ -706,9 +725,9 @@
       {/each}
 
       <!--
-        Страницы без комнаты. Сервер их отдаёт и `make site` выкладывает, а в
-        панели их не было видно нигде — снять оставшуюся после удалённого
-        семинара страницу можно было только правкой базы.
+        Pages without a room. The server serves them and `make site` publishes
+        them, but they were visible nowhere in the panel — a page left behind
+        by a deleted seminar could only be withdrawn by editing the database.
       -->
       {#if orphans.length > 0}
         <div class="mt-8 border-t border-line pt-5">
@@ -747,8 +766,9 @@
                 >
                   {tr("admin.restore.page")}
                 </button>
-                <!-- Стереть — только владельцу и только у снятой: снятую можно
-                     вернуть, стёртую нельзя, и надгробие в курсе теряет ссылку. -->
+                <!-- Erasing is for the owner only and only for a withdrawn
+                     page: a withdrawn one can be restored, an erased one
+                     cannot, and the tombstone in the course loses its link. -->
                 {#if adminAuth.isOwner}
                   <button
                     type="button"
@@ -773,9 +793,9 @@
   {@const shown = course}
   <AdminPage title={shown.name}>
     {#snippet actions()}
-      <!-- Копируется тот же адрес, что диктуют вслух: /c/<имя>, если имя дали.
-           Иначе в чат уходил идентификатор, и у класса оказывалось два разных
-           адреса одного курса. -->
+      <!-- The address copied is the same one read out loud: /c/<name> if a
+           name was given. Otherwise the id went into the chat, and the class
+           ended up with two different addresses for the same course. -->
       <button
         type="button"
         class="btn-ghost"
@@ -801,8 +821,9 @@
       </button>
 
       <!--
-        Название и подпись — там же, где адрес: курс с опечаткой в названии
-        нельзя было поправить нигде, а видит её весь класс.
+        Title and caption — in the same place as the address: a course with a
+        typo in its title could not be fixed anywhere, and the whole class
+        sees it.
       -->
       <div class="flex flex-wrap items-center gap-2 pb-4">
         <input
@@ -839,9 +860,10 @@
       </div>
 
       <!--
-        Адрес курса — то, что диктуют классу вслух и пишут на доске. Поэтому он
-        редактируется прямо здесь, а не прячется в настройках: восемь случайных
-        символов запоминаются хуже, чем «ml-strong», и переспрашивают их чаще.
+        The course address is what gets dictated to the class and written on
+        the board. So it is edited right here rather than hidden in settings:
+        eight random characters are harder to remember than "ml-strong", and
+        people ask for them to be repeated more often.
       -->
       <div class="flex flex-wrap items-center gap-2 pb-5">
         <span class="font-mono text-2xs text-muted">{location.host}/c/</span>
@@ -860,10 +882,11 @@
             {tr("admin.save.address")}
           </button>
         {/if}
-        <!-- Имя держит не живой адрес, а память о розданной ссылке — и это
-             единственный вид «занято», который владелец разрешает сам. Кнопка
-             стоит у самого поля: искать её в другом месте экрана значит не
-             найти вовсе. -->
+        <!-- The name is held not by a live address but by the memory of a
+             link that was handed out — and that is the only kind of "taken"
+             the owner resolves themselves. The button sits right by the
+             field: looking for it elsewhere on the screen means not finding
+             it at all. -->
         {#if held}
           <button
             type="button"
@@ -888,14 +911,15 @@
       {/if}
 
       <!--
-        Прежние имена — под тем же полем, где их и меняли.
+        Former names — under the same field where they were changed.
 
-        Переименование не отменяет розданную ссылку: старое имя остаётся
-        адресом этого курса навсегда — и держит его для всех остальных тоже.
-        Курс следующего года получал «Адрес «ml-2025» — прежнее имя курса «ML
-        2025»», а увидеть, что имя держится ЗДЕСЬ, было негде: строки с таким
-        адресом в списке курсов нет. Цена отпускания названа рядом с кнопкой, а
-        не только в вопросе после неё.
+        Renaming does not cancel a link that has been handed out: the old name
+        stays this course's address forever — and holds it against everyone
+        else too. Next year's course got "The address "ml-2025" is the former
+        name of the course "ML 2025"", and there was nowhere to see that the
+        name is held HERE: there is no row with that address in the course
+        list. The cost of releasing is named next to the button, not only in
+        the question after it.
       -->
       {#if former.length > 0}
         <div class="mb-5 max-w-[640px] border border-line bg-surface">
@@ -926,8 +950,8 @@
       {/if}
 
       <!--
-        Утверждение, а не переключатель: видимость курса ничем не управляется, и
-        рисовать для неё тумблер значило бы обещать выбор, которого нет.
+        A statement, not a switch: nothing controls the course's visibility,
+        and drawing a toggle for it would promise a choice that does not exist.
       -->
       <div class="mb-6 flex flex-wrap items-start gap-x-7 gap-y-2 border-y border-line py-4">
         <div class="w-[220px] shrink-0">
@@ -936,8 +960,9 @@
             {tr("admin.the.page.is.accessible.by.link.without.signing.in")}
           </p>
         </div>
-        <!-- basis: без неё flex-1 оставался в строке рядом с подписью шириной в
-             тридцать пикселей и вылезал за край, вместо того чтобы уйти ниже. -->
+        <!-- basis: without it flex-1 stayed in the row next to the caption at
+             a width of thirty pixels and stuck out past the edge, instead of
+             moving down. -->
         <p class="min-w-0 max-w-[640px] flex-1 basis-[260px] text-ui leading-relaxed text-muted">
           {tr("admin.the.course.page.shows.seminar.names.in.the.chosen.order.and.links")}
         </p>
@@ -966,11 +991,12 @@
       {/if}
 
       <!--
-        Список — в контейнере со своей шириной: колонка «Публикация» в 290px и
-        стрелки не помещались рядом с названием уже на планшете с открытым
-        меню, а на телефоне название сжималось в столбик и текст публикации
-        ложился поверх него. Точка перелома — по ширине самого списка, а не
-        окна: меню панели съедает разную ширину на разных экранах.
+        The list sits in a container with its own width: the 290px
+        "Publication" column and the arrows did not fit next to the title even
+        on a tablet with the menu open, and on a phone the title squeezed into
+        a column with the publication text lying on top of it. The breakpoint
+        goes by the width of the list itself, not the window: the panel's menu
+        takes a different width on different screens.
       -->
       <div class="course-rows">
       <div class="flex items-center gap-4 pb-2">
@@ -992,10 +1018,11 @@
             {@render planForm(tr('admin.save'))}
           {:else if item.kind === 'planned'}
             <!--
-              Строка плана: тема и неделя, и три действия с ней. «Поставить
-              занятие» — главное из них и потому акцентом, как «Опубликовать» у
-              занятия: это и есть жизнь такой строки — прошла неделя, комната
-              встаёт на её место, нумерация недель не уезжает.
+              A plan row: topic and week, and three actions on it. "Assign
+              class" is the main one and is therefore in the accent colour,
+              like "Publish" on a class: that is the whole life of such a row
+              — a week has passed, the room takes its place, the week
+              numbering does not shift.
             -->
             <div class="course-name min-w-0 flex-1">
               <p class="text-ui text-ink">{item.name}</p>
@@ -1038,9 +1065,10 @@
               </p>
             </div>
             <div class="course-state flex w-[290px] shrink-0 items-baseline gap-3">
-              <!-- «Публиковать нечего» — правда только когда страницы нет.
-                   Комнату удалили, а чтение осталось: с курса до него иначе не
-                   дойти, хотя курс — единственный адрес, который дают классу. -->
+              <!-- "Nothing to publish" is true only when there is no page. The
+                   room was deleted but the reading page remained: otherwise
+                   there is no way to reach it from the course, even though
+                   the course is the only address the class is given. -->
               {#if item.publication}
                 <a
                   class="text-ui text-accent-text"
@@ -1090,8 +1118,8 @@
               {/if}
             </div>
           {/if}
-          <!-- Пока строка правится, стрелок у неё нет: переставленная правка
-               сохранялась бы уже в чужую позицию. -->
+          <!-- While a row is being edited it has no arrows: a moved edit would
+               be saved into someone else's position. -->
           {#if !editing}
             <div class="course-moves flex w-[60px] shrink-0 items-center justify-end gap-1">
               <button
@@ -1116,9 +1144,9 @@
           {/if}
         </div>
 
-        <!-- Выбор занятия — под самой строкой, а не над списком: в плане на
-             семестр нужная неделя стоит далеко внизу, и панель наверху
-             оказывалась за краем экрана от кнопки, которая её открыла. -->
+        <!-- The class picker sits right under the row, not above the list: in
+             a semester plan the week you need is far down, and a panel at the
+             top ended up off screen from the button that opened it. -->
         {#if seating && seating.at === index}
           {@const place = seating}
           <div class="mb-2.5 ml-[42px] border border-line bg-surface p-3">
@@ -1162,9 +1190,10 @@
       {/if}
 
       <!--
-        Новая тема — внизу списка, там, где она и окажется, и с номером, который
-        получит. Кнопка стоит на месте строки, а не в шапке: план набирают подряд,
-        и форма остаётся открытой, пока не нажали «Отмена».
+        A new topic goes at the bottom of the list, where it will end up, and
+        with the number it will get. The button stands in the row's place, not
+        in the header: a plan is typed in one go, and the form stays open
+        until "Cancel" is pressed.
       -->
       {#if plan && !plan.target}
         <div class="course-row {ROW}">
@@ -1192,9 +1221,9 @@
         {tr('admin.course.planHint')}
       </p>
 
-      <!-- Удаление живёт внутри самого курса и называет ссылку, которую ломает:
-           семинары и их страницы остаются, ломается адрес, который классу
-           продиктовали в первую неделю. -->
+      <!-- Deletion lives inside the course itself and names the link it
+           breaks: the seminars and their pages stay, what breaks is the
+           address the class was dictated in the first week. -->
       <div class="mt-8 flex flex-wrap items-center gap-3 border-t border-line pt-4">
         <p class="min-w-0 flex-1 text-2xs text-muted">
           {tr("admin.deleting.the.course.removes.the.seminar.list.its.order.and.the.ad")}
@@ -1212,9 +1241,10 @@
   </AdminPage>
 {:else}
   <!--
-    Курс по этому адресу не открылся. Адрес курса дают классу и им делятся с
-    коллегой, так что по устаревшему сюда придут — а раньше здесь была пустая
-    область без единого слова и без пути назад.
+    The course at this address did not open. A course address is given to the
+    class and shared with colleagues, so people will come here by a stale one
+    — and there used to be an empty area here without a single word and with
+    no way back.
   -->
   <AdminPage title={tr("admin.course.218")}>
     <div class="px-8 py-16 text-center">
@@ -1269,11 +1299,12 @@
 {/if}
 
 <!--
-  Освободить прежний адрес — вопросом, а не нажатием.
+  Releasing a former address — with a question, not a single press.
 
-  Единственное необратимое здесь, кроме удаления курса: ссылка, записанная в
-  чате прошлогодней группы, после этого отвечает 404, и вернуть её нечем.
-  Поэтому второй шаг, и цена в нём названа тем самым адресом.
+  The only irreversible thing here besides deleting the course: the link
+  written in last year's group chat answers 404 after this, and there is
+  nothing to bring it back with. Hence a second step, and the cost in it is
+  named by that very address.
 -->
 {#if askingSlug && held}
   {@const going = held}
@@ -1313,11 +1344,13 @@
 {/if}
 
 <!--
-  Отпустить своё прежнее имя — тот же вопрос, но никто его имени не ждёт.
+  Releasing your own former name — the same question, but nobody is waiting
+  for the name.
 
-  Здесь отпускают не затем, чтобы тут же занять: имя освобождается для всех, и
-  единственное, что происходит наверняка, — ссылка с ним перестаёт открываться.
-  Поэтому и вопрос другой, и кнопка называется другим глаголом.
+  Here it is released not in order to take it right away: the name is freed
+  for everyone, and the only thing that happens for sure is that the link
+  with it stops opening. Hence a different question, and the button is named
+  with a different verb.
 -->
 {#if dropping}
   {@const going = dropping}
@@ -1356,27 +1389,29 @@
 
 <style>
   /*
-   * Узкий список: название — своей строкой, публикация и стрелки — под ним.
+   * The narrow list: the title on its own line, the publication and arrows
+   * below it.
    *
-   * Точка перелома — ширина самого списка (container), а не окна: меню панели
-   * на md занимает 236px, и окно в 768 оставляет списку меньше, чем окно в 640
-   * с узким меню. 559px — это номер, колонка «Публикация» в 290, стрелки и
-   * хоть какое-то место для названия.
+   * The breakpoint is the width of the list itself (container), not the
+   * window: at md the panel's menu takes 236px, and a 768 window leaves the
+   * list less room than a 640 window with the narrow menu. 559px is the
+   * number, the 290 "Publication" column, the arrows and at least some room
+   * for the title.
    */
   .course-rows {
     container-type: inline-size;
   }
 
   @container (max-width: 559px) {
-    /* Номер — у названия, а не посередине двух строк: по центру он читался
-       как номер строки публикации. */
+    /* The number sits by the title, not midway between the two lines:
+       centred, it read as the publication line's number. */
     .course-row {
       flex-wrap: wrap;
       align-items: flex-start;
       row-gap: 0.5rem;
     }
 
-    /* Номер 26px и зазор 16px — название забирает остаток первой строки. */
+    /* A 26px number and a 16px gap — the title takes the rest of the first line. */
     .course-name {
       flex-basis: calc(100% - 42px);
     }

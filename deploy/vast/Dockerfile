@@ -1,52 +1,56 @@
 # syntax=docker/dockerfile:1
 #
-# colloq-vast — Colloq одним образом для арендованной машины.
+# colloq-vast: Colloq as a single image for a rented machine.
 #
-# Собирается из корня репозитория (контекст — весь репозиторий, как у
-# корневого Dockerfile):
+# Built from the repository root (the context is the whole repository, as for
+# the root Dockerfile):
 #
 #     docker build -f deploy/vast/Dockerfile -t colloq-vast:dev .
-#     make vast-image                       то же самое, с версией и ревизией
+#     make vast-image                       the same, with version and revision
 #
-# ЧТО ЭТО ЗА ОБРАЗ И ЧЕГО В НЁМ НЕТ. Внутри — сервер, собранный клиент,
-# туннели (frpc, cloudflared), docker CLI и контекст сборки ядер. Самих ядер
-# комнат внутри НЕТ и быть не может: у каждой комнаты свой контейнер (память,
-# процессор, pids и GPU режет cgroup), а поднимает их демон ХОСТА через
-# примонтированный /var/run/docker.sock. Поэтому образ работает на Vast VM и
-# на любой машине с docker, но не на обычном Docker-инстансе vast: там docker
-# внутри запрещён. Разбор решения и цена — deploy/vast/README.md, «Design».
+# WHAT THIS IMAGE IS AND WHAT IT LACKS. Inside: the server, the built client,
+# the tunnels (frpc, cloudflared), the docker CLI and the kernel build context.
+# The room kernels themselves are NOT inside and cannot be: every room has its
+# own container (memory, CPU, pids and GPU are cut by cgroup), and they are
+# started by the HOST daemon through the mounted /var/run/docker.sock. So the
+# image works on a Vast VM and on any machine with docker, but not on a regular
+# vast Docker instance: docker inside is forbidden there. The analysis of the
+# decision and its price: deploy/vast/README.md, "Design".
 #
-# ПОЧЕМУ НЕТ CUDA. Карта нужна ядру комнаты, а не серверу: колёса torch везут
-# свой CUDA runtime, драйвер приходит с хоста через nvidia-container-toolkit, и
-# `--gpus device=N` ставит сервер на контейнер комнаты. Образ nvidia/cuda под
-# сервером стоил бы трёх гигабайт скачивания на каждую аренду и не дал бы
-# комнате ничего.
+# WHY THERE IS NO CUDA. The card is needed by the room kernel, not by the
+# server: torch wheels carry their own CUDA runtime, the driver comes from the
+# host through nvidia-container-toolkit, and the server puts `--gpus device=N`
+# on the room container. An nvidia/cuda image under the server would cost three
+# gigabytes of download on every rental and give the room nothing.
 #
-# Сборочная стадия — та же, что в корневом Dockerfile (замок, `npm ci`,
-# build:optimized), и повторена здесь, а не взята оттуда: `FROM` чужой стадии
-# между файлами docker не умеет, а менять корневой Dockerfile ради этого образа
-# значило бы трогать образ разработки и релиза.
+# The build stage is the same as in the root Dockerfile (the lockfile,
+# `npm ci`, build:optimized), and it is repeated here rather than taken from
+# there: docker cannot do `FROM` of a stage in another file, and changing the
+# root Dockerfile for the sake of this image would mean touching the
+# development and release image.
 
 ARG NODE_IMAGE=node:22-bookworm-slim
 ARG DOCKER_CLI_IMAGE=docker:28-cli
 
-# ---------------------------------------------------------------- сборка
+# ----------------------------------------------------------------- build
 #
-# На платформе СБОРЩИКА, а не цели: server.js и web/dist — это JavaScript, им
-# всё равно, на чём их собрали. Под эмуляцией (amd64-образ на arm64-ноутбуке)
-# esbuild, бинарник Go, падает с SIGSEGV (код 139) — проверено 18.09.2026, — а
-# сборка клиента идёт впятеро дольше. Эмуляции остаётся только то, что правда
-# зависит от платформы: node_modules сервера (стадия deps ниже).
+# On the platform of the BUILDER, not the target: server.js and web/dist are
+# JavaScript, they do not care what they were built on. Under emulation (an
+# amd64 image on an arm64 laptop) esbuild, a Go binary, crashes with SIGSEGV
+# (code 139), checked on 18 Sep 2026, and the client build takes five times
+# longer. Emulation is left only with what really depends on the platform:
+# the server's node_modules (the deps stage below).
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
 WORKDIR /app
 
-# Сборке нужен полный node_modules, а в нём тоже better-sqlite3: без готовой
-# сборки под платформу он собирается из исходников.
+# The build needs the full node_modules, and it has better-sqlite3 too:
+# without a prebuilt binary for the platform it is built from source.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Замок вместе со ВСЕМИ манифестами workspaces: `npm ci` сверяет замок с каждым.
+# The lockfile together with ALL the workspace manifests: `npm ci` checks the
+# lockfile against each of them.
 COPY package.json package-lock.json ./
 COPY server/package.json server/
 COPY web/package.json web/
@@ -58,22 +62,24 @@ COPY shared/ shared/
 COPY server/ server/
 COPY web/ web/
 
-# Брокер ядер (runtime/) здесь не собирается: он нужен только k3s-пути.
+# The kernel broker (runtime/) is not built here: only the k3s path needs it.
 RUN npm run build:optimized -w @colloq/web \
  && npm run build -w @colloq/server
 
-# ------------------------------------------------- зависимости сервера
+# -------------------------------------------------- server dependencies
 #
-# На платформе ЦЕЛИ: better-sqlite3 и @resvg/resvg-js — нативные модули, и их
-# сборка должна совпасть с машиной, на которой образ будет работать.
+# On the platform of the TARGET: better-sqlite3 and @resvg/resvg-js are native
+# modules, and their build must match the machine the image will run on.
 #
-# И только сервера. `npm prune --omit=dev` корневого Dockerfile оставляет в
-# образе всё, что web объявил зависимостями (svelte, codemirror, pdf.js), — а
-# клиент уже собран в web/dist, серверу из этого не нужно ни байта. Корневые
-# зависимости (yjs) нужны: shared/ вшит в server.js и импортирует их.
+# And only the server's. `npm prune --omit=dev` of the root Dockerfile leaves
+# in the image everything web declared as dependencies (svelte, codemirror,
+# pdf.js), while the client is already built into web/dist, and the server
+# needs not a byte of it. The root dependencies (yjs) are needed: shared/ is
+# bundled into server.js and imports them.
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
-# better-sqlite3 собирается из исходников, когда готовой сборки под платформу нет.
+# better-sqlite3 is built from source when there is no prebuilt binary for
+# the platform.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -84,13 +90,13 @@ COPY runtime/package.json runtime/
 COPY cli/package.json cli/
 RUN npm ci --omit=dev --no-audit --no-fund --workspace=@colloq/server --include-workspace-root
 
-# ------------------------------------------------------------ туннели
+# ------------------------------------------------------------ tunnels
 #
-# Версии и контрольные суммы прибиты: бинарник, который держит туннель до
-# ретранслятора, — это то, через что идёт вся пара. frpc той же версии, что
-# стоит на ретрансляторе (scripts/relay-setup.sh, scripts/vast-legacy.sh).
-# Только скачать и сверить — на платформе сборщика; архитектуру бинарников
-# выбирает TARGETARCH.
+# Versions and checksums are pinned: the binary that holds the tunnel to the
+# relay is what the whole class goes through. frpc is the same version as the
+# one installed on the relay (scripts/relay-setup.sh, scripts/vast-legacy.sh).
+# Only downloading and verifying, on the builder's platform; TARGETARCH picks
+# the architecture of the binaries.
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS tunnels
 ARG TARGETARCH
 ARG FRP_VERSION=0.71.0
@@ -122,56 +128,62 @@ RUN set -eu; \
 
 FROM ${DOCKER_CLI_IMAGE} AS dockercli
 
-# ------------------------------------------------------------ образ
+# -------------------------------------------------------------- image
 FROM ${NODE_IMAGE} AS vast
 
-# tini — PID 1: пересылает сигналы и подбирает сирот (frpc, cloudflared, docker
-# build в фоне). sqlite3 — для копии занятия (scripts/backup-local.sh делает
-# VACUUM INTO). curl — проба готовности и зеркало статики на ретрансляторе.
+# tini as PID 1: forwards signals and reaps orphans (frpc, cloudflared, docker
+# build in the background). sqlite3 for the class backup
+# (scripts/backup-local.sh does VACUUM INTO). curl for the readiness probe and
+# the static mirror on the relay.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends tini curl ca-certificates sqlite3 procps \
  && rm -rf /var/lib/apt/lists/*
 
-# docker CLI и buildx — клиенты демона хоста: им сервер поднимает контейнеры
-# комнат и собирает окружения из панели (server/src/environments.ts).
+# The docker CLI and buildx are clients of the host daemon: with them the
+# server starts the room containers and builds environments from the panel
+# (server/src/environments.ts).
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=dockercli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 COPY --from=tunnels /out/frpc /out/cloudflared /usr/local/bin/
 
-# Раскладка — как у репозитория, и это не вкус. Сервер находит корень
-# приложения шагами вверх до kernel/environments (environments.ts ·
-# findRepoRoot), шрифты карточки — рядом с dist (og-card.ts), а .env — двумя
-# уровнями над dist/server.js (config.ts · readPublicUrl). С путями
-# репозитория все три находят своё без единой новой переменной.
+# The layout is the repository's, and that is not a matter of taste. The server
+# finds the application root by walking up to kernel/environments
+# (environments.ts · findRepoRoot), the card fonts next to dist (og-card.ts),
+# and .env two levels above dist/server.js (config.ts · readPublicUrl). With
+# the repository paths all three find what they need without a single new
+# variable.
 WORKDIR /opt/colloq
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/server/dist ./server/dist
-# package.json рядом с dist — ради "type": "module": без него node читает
-# server.js как CommonJS и падает на первом import.
+# package.json next to dist for the sake of "type": "module": without it node
+# reads server.js as CommonJS and fails on the first import.
 COPY server/package.json ./server/package.json
 COPY server/assets ./server/assets
 COPY --from=build /app/web/dist ./web/dist
 
-# Контекст сборки ядер: сервер собирает окружения из панели через демон хоста,
-# а точка входа — умолчательное окружение при первом запуске. Штампы
-# `.<имя>.built` не едут (.dockerignore): они про docker конкретной машины.
+# The kernel build context: the server builds environments from the panel
+# through the host daemon, and the entry point builds the default environment
+# on the first start. The `.<name>.built` stamps do not go in (.dockerignore):
+# they are about the docker of a particular machine.
 COPY kernel/Dockerfile kernel/requirements.txt ./kernel/
 COPY kernel/environments/ ./kernel/environments/
 
-# Копия и восстановление занятия — те же скрипты, что у колеса pip.
+# Backup and restore of the class: the same scripts as in the pip wheel.
 COPY scripts/lib.sh scripts/backup-local.sh scripts/restore.sh ./scripts/
 
 COPY deploy/vast/entrypoint.sh /usr/local/bin/colloq-vast
 COPY deploy/vast/colloq-host deploy/vast/onstart.sh ./deploy/vast/
 
-# Образ — копия программы, и MIT велит везти текст лицензии с ней. Метка
-# licenses="MIT" ниже — про код Colloq; что в образе под другими лицензиями
-# (frpc, cloudflared, docker CLI, бандлы, шрифты), перечислено в notices.
+# The image is a copy of the program, and MIT requires the license text to
+# travel with it. The licenses="MIT" label below is about the Colloq code; what
+# in the image is under other licenses (frpc, cloudflared, docker CLI, bundles,
+# fonts) is listed in the notices.
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
 
-# .env — файл состояния, а не образа: ссылка ведёт в примонтированный каталог.
-# Туда пишут точка входа (PUBLIC_URL) и панель (KERNEL_ENV), оттуда их
-# перечитывает сервер на ходу, и переживают они обновление образа.
+# .env is a state file, not an image file: the link leads into the mounted
+# directory. The entry point (PUBLIC_URL) and the panel (KERNEL_ENV) write
+# there, the server re-reads them from there on the fly, and they survive an
+# image update.
 RUN chmod 0755 /usr/local/bin/colloq-vast ./deploy/vast/colloq-host ./deploy/vast/onstart.sh \
  && ln -s /workspace/colloq/.env /opt/colloq/.env \
  && mkdir -p /workspace/colloq \
@@ -193,15 +205,17 @@ ENV COLLOQ_VERSION=${COLLOQ_VERSION} \
     PORT=3000 \
     NODE_OPTIONS=--enable-source-maps
 
-# Точка входа стартует от root ровно на подготовку каталога состояния и группы
-# сокета docker, а сервер, туннели и сборки уже работают от node (uid 1000) —
-# того же uid, что у пользователя ядра в kernel/Dockerfile: файлы комнаты пишут
-# обе стороны, и совпадение uid делает это без групп и umask.
+# The entry point starts as root just to prepare the state directory and the
+# docker socket group, while the server, the tunnels and the builds already run
+# as node (uid 1000), the same uid as the kernel user in kernel/Dockerfile: both
+# sides write the room files, and the matching uid makes that work without
+# groups and umask.
 USER root
 EXPOSE 3000
-# livez, а не health: health честно отвечает 503, пока окружение не собрано, а
-# первая сборка — минуты. Контейнер при этом жив и отдаёт панель; готовность к
-# паре показывает `colloq-vast status` и /api/health.
+# livez, not health: health honestly answers 503 until the environment is
+# built, and the first build takes minutes. The container is alive meanwhile
+# and serves the panel; readiness for the class is shown by `colloq-vast status`
+# and /api/health.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=4 \
   CMD curl -fsS "http://127.0.0.1:${PORT}/api/livez" >/dev/null || exit 1
 STOPSIGNAL SIGTERM

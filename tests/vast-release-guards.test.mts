@@ -44,13 +44,14 @@ test('registry credentials and anonymous-pull declaration are checked before acc
 })
 
 /**
- * Подсказки k3s-пути ведут в k3s-путь.
+ * The k3s path's hints lead into the k3s path.
  *
- * `make vast-*` выбирает скрипт по RELEASE (Makefile · VAST_SCRIPT): без него —
- * прежний scripts/vast-legacy.sh. vast.sh же советовал голое
- * «make vast-sync NAME=hse», и человек, послушавшись, снимал копию прежним
- * путём с машины, где его нет. Здесь настоящий vast.sh говорит с выдуманным
- * vast, а настоящий Makefile показывает, куда ведёт напечатанный им совет.
+ * `make vast-*` picks the script by RELEASE (Makefile · VAST_SCRIPT): without
+ * it — the old scripts/vast-legacy.sh. vast.sh, however, advised a bare
+ * "make vast-sync NAME=hse", and a person who followed it took a copy the old
+ * way from a machine where that way does not exist. Here the real vast.sh
+ * talks to a made-up vast, and the real Makefile shows where the advice it
+ * printed leads.
  */
 test('vast.sh hints route back to vast.sh: RELEASE with make, the script itself without it', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-vast-hints-'))
@@ -62,49 +63,49 @@ test('vast.sh hints route back to vast.sh: RELEASE with make, the script itself 
       { id: 11, label: 'colloq-hse', actual_status: 'running', dph_total: 0.3, gpu_name: 'RTX 5070', num_gpus: 1 },
       { id: 12, label: 'colloq-demo', actual_status: 'running', dph_total: 0.3, gpu_name: 'RTX 5070', num_gpus: 1 },
     ] })
-    // Ответ vast: тело — в файл после -o, код — в stdout, как делает curl с -w.
+    // The vast answer: the body goes to the file after -o, the code to stdout, as curl does with -w.
     fs.writeFileSync(path.join(dir, 'bin/curl'), `#!${process.execPath}
 const a = process.argv.slice(2), url = a[a.length - 1]
 const body = url.endsWith('/instances/') ? (process.env.FAKE_INSTANCES ?? '') : '{}'
 require('node:fs').writeFileSync(a[a.indexOf('-o') + 1], body)
 process.stdout.write('200')
 `, { mode: 0o755 })
-    // need_tools спрашивает только, есть ли они: в этом прогоне их не зовут.
+    // need_tools only asks whether they exist: they are not called in this run.
     for (const tool of ['ssh', 'rsync']) fs.writeFileSync(path.join(dir, 'bin', tool), '#!/bin/sh\nexit 97\n', { mode: 0o755 })
     const run = (args: string[], extra: Record<string, string>) => {
       const r = spawnSync('bash', ['scripts/vast.sh', ...args], { cwd: dir, encoding: 'utf8', env: { ...process.env,
         PATH: path.join(dir, 'bin') + ':' + process.env.PATH, RELEASE: '', NAME: '', HOST: '', FAKE_INSTANCES: instances, ...extra } })
       return (r.stdout + r.stderr).replace(/\x1b\[[0-9;]*m/g, '')
     }
-    // Ни одна напечатанная make-подсказка не должна уходить без RELEASE.
+    // Not a single printed make hint may go out without RELEASE.
     const bare = (text: string) => text.split('\n').filter(l => /make vast-(up|status|sync|logs|down)\b/.test(l) && !/RELEASE=/.test(l))
 
-    // Скрипт позвали напрямую, RELEASE не известен — подсказки зовут сам скрипт.
+    // The script was called directly, RELEASE is unknown — the hints call the script itself.
     let out = run(['status'], {})
     assert.match(out, /NAME=hse scripts\/vast\.sh sync/, out)
     assert.match(out, /NAME=demo scripts\/vast\.sh sync/, out)
-    assert.match(out, /NAME=<имя> scripts\/vast\.sh status/, out)
+    assert.match(out, /NAME=<name> scripts\/vast\.sh status/, out)
     assert.deepEqual(bare(out), [])
 
-    // Пришли через make с RELEASE — подсказки с ним же.
+    // Came through make with RELEASE — the hints carry it too.
     out = run(['status'], { RELEASE: '/srv/rel/release.json' })
     assert.match(out, /make vast-sync NAME=demo RELEASE=\/srv\/rel\/release\.json/, out)
-    assert.match(out, /make vast-status NAME=<имя> RELEASE=\/srv\/rel\/release\.json/, out)
+    assert.match(out, /make vast-status NAME=<name> RELEASE=\/srv\/rel\/release\.json/, out)
     assert.deepEqual(bare(out), [])
 
-    // Названная среда, ничего не арендовано: up без релиза не работает — он назван вслух.
+    // A named environment, nothing rented: up does not work without a release — it is named out loud.
     out = run(['status'], { NAME: 'demo', FAKE_INSTANCES: JSON.stringify({ instances: [] }) })
-    assert.match(out, /арендовать: make vast-up NAME=demo RELEASE=\/path\/release\.json/, out)
+    assert.match(out, /to rent: make vast-up NAME=demo RELEASE=\/path\/release\.json/, out)
     assert.deepEqual(bare(out), [])
-    // Арендована одна, копий здесь нет — совет снять их идёт тем же путём.
+    // One is rented, there are no copies here — the advice to take them goes the same way.
     out = run(['status'], { NAME: 'demo', FAKE_INSTANCES: JSON.stringify({ instances: [JSON.parse(instances).instances[1]] }) })
-    assert.match(out, /снять: NAME=demo scripts\/vast\.sh sync/, out)
+    assert.match(out, /take one: NAME=demo scripts\/vast\.sh sync/, out)
     assert.deepEqual(bare(out), [])
 
-    // Справка без команды тоже не обещает make без RELEASE.
+    // Help without a command does not promise make without RELEASE either.
     assert.deepEqual(bare(run([], {})), [])
 
-    // И главное — куда такой совет ведёт на самом деле: настоящий Makefile.
+    // And most importantly — where such advice really leads: the real Makefile.
     fs.copyFileSync(path.join(repo, 'Makefile'), path.join(dir, 'Makefile'))
     const make = spawnSync('make', ['-n', '--no-print-directory', 'vast-sync', 'NAME=demo', 'RELEASE=/srv/rel/release.json'], { cwd: dir, encoding: 'utf8' })
     assert.equal(make.status, 0, make.stderr)
@@ -114,10 +115,10 @@ process.stdout.write('200')
 })
 
 /**
- * Шаг, который уходит на машину, — как есть, с выдуманными tmux, pgrep и curl.
- * Сессия «жива», пока есть файл alive; host.sh в ней «работает», пока есть
- * running. На Ctrl+C уборка host.sh кончается через секунду; окно, заведённое
- * руками (manual), после этого остаётся жить оболочкой.
+ * The step that goes to the machine — as is, with made-up tmux, pgrep and
+ * curl. The session is "alive" while the alive file exists; host.sh "runs" in
+ * it while running exists. On Ctrl+C the host.sh cleanup ends after a second;
+ * a window created by hand (manual) stays alive as a shell after that.
  */
 function rehost(manual: boolean) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-vast-rehost-'))
@@ -139,7 +140,7 @@ case "$1" in
   new-session) touch '${alive}' ;;
 esac
 `, { mode: 0o755 })
-    // Настоящий pgrep видел бы host.sh соседних тестов на этой машине.
+    // A real pgrep would see the host.sh of neighbouring tests on this machine.
     fs.writeFileSync(path.join(bin, 'pgrep'), `#!/bin/sh\necho "pgrep $*" >> '${log}'\n[ -e '${running}' ]\n`, { mode: 0o755 })
     fs.writeFileSync(path.join(bin, 'curl'), `#!/bin/sh\necho "curl $*" >> '${log}'\nexit 0\n`, { mode: 0o755 })
     fs.writeFileSync(alive, ''); fs.writeFileSync(running, '')
@@ -153,25 +154,28 @@ esac
 }
 
 /**
- * Повторный vast-up на машину с живой tmux-сессией: сначала Ctrl+C и ожидание.
+ * A repeated vast-up onto a machine with a live tmux session: first Ctrl+C and
+ * a wait.
  *
- * host.sh на выходе снимает свой адрес с кластера (cluster.sh public-url,
- * перезапуск приложения, до трёх минут). Прежний `tmux kill-session` обрывал
- * эту уборку, а новая сессия, стартовавшая сразу, публиковала то же имя —
- * и опоздавшая уборка старой возвращала localhost уже поверх неё. Шаг,
- * который уходит на машину, запускается здесь как есть, с выдуманными tmux и
- * curl, и порядок их вызовов — это и есть проверка.
+ * On exit host.sh removes its address from the cluster (cluster.sh
+ * public-url, an app restart, up to three minutes). The former
+ * `tmux kill-session` cut this cleanup short, and a new session that started
+ * right away published the same name — and the late cleanup of the old one
+ * put localhost back on top of it. The step that goes to the machine is run
+ * here as is, with made-up tmux and curl, and the order of their calls is the
+ * check.
  */
 test('re-hosting stops the old tmux session gracefully and waits before health and the new session', () => {
   const { raw, calls } = rehost(false)
   const at = (what: string) => calls.indexOf(what)
   assert.ok(at('tmux send-keys') >= 0, calls.join('\n'))
-  // Ждали, пока уборка кончится: сессию спрашивали после Ctrl+C не раз.
+  // We waited until the cleanup was over: the session was asked more than once after Ctrl+C.
   assert.ok(calls.slice(at('tmux send-keys')).filter(c => c === 'tmux has-session').length >= 2, calls.join('\n'))
   assert.ok(at('tmux send-keys') < at('curl -sf'), 'health must be asked after the old session is gone')
   assert.ok(at('curl -sf') < at('tmux new-session'), calls.join('\n'))
-  // Уборку ждут по самому host.sh, а не по строке, которую носят и сервер
-  // tmux, и `sh -c` сессии: шаблон — от начала командной строки.
+  // The cleanup is awaited by host.sh itself, not by a string that both the
+  // tmux server and the session's `sh -c` carry: the pattern is anchored at
+  // the start of the command line.
   const pattern = raw.match(/^pgrep -f (.*)$/m)?.[1]
   assert.ok(pattern, raw)
   const re = new RegExp(pattern)
@@ -186,10 +190,10 @@ test('re-hosting stops the old tmux session gracefully and waits before health a
 })
 
 /**
- * Окно, заведённое руками (`tmux new -s colloq-host` — так советует сам
- * vast.sh), после Ctrl+C остаётся жить оболочкой. По одному has-session
- * повторный vast-up простаивал бы тут все двести секунд; ждать надо уборку
- * host.sh, а окно после неё просто закрыть.
+ * A window created by hand (`tmux new -s colloq-host` — as vast.sh itself
+ * advises) stays alive as a shell after Ctrl+C. Going by a single has-session,
+ * a repeated vast-up would idle here for all two hundred seconds; it is the
+ * host.sh cleanup that must be awaited, and the window simply closed after it.
  */
 test('re-hosting over a hand-made tmux window waits for host.sh, not for the window', () => {
   const { calls, seconds } = rehost(true)

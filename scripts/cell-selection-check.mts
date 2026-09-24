@@ -38,13 +38,15 @@ export async function checkCellSelection(page: Page): Promise<void> {
   assert.equal(await focused(), true, 'Shift+Arrow stays in text editing mode')
   console.log('PASS Shift inside the active cell selects text by mouse and keyboard')
   /*
-   * Модификатор набора ячеек вразбивку — ВТОРОЙ, не тот, которым ходят к
-   * определению (web/src/lib/utils.ts · isJumpClick: ⌘ на маке, Ctrl иначе).
-   * Стенд гоняют на маке, значит набирает здесь Ctrl, а ⌘ отдан переходу.
+   * The modifier for picking cells out of order is the SECOND one, not the one
+   * used to go to a definition (web/src/lib/utils.ts · isJumpClick: ⌘ on a
+   * Mac, Ctrl otherwise). The harness runs on a Mac, so Ctrl picks here, and
+   * ⌘ is given to the jump.
    *
-   * По коду это стоило одного жеста, и взамен у набора осталось три места:
-   * номер ячейки, поля и вывод. Номер и проверяется ниже — в него целятся,
-   * когда хотят ячейку, и он для того и помечен `data-cell-pick`.
+   * Over code this cost one gesture, and picking is left with three places
+   * instead: the cell number, the margins and the output. The number is what
+   * is checked below: people aim at it when they want a cell, and that is why
+   * it is marked `data-cell-pick`.
    */
   for (const [name, modifier, where] of [
     ['Ctrl in code', 2, 'code'],
@@ -64,10 +66,10 @@ export async function checkCellSelection(page: Page): Promise<void> {
   }
 
   /*
-   * И обратное утверждение: ⌘+клик ПО КОДУ выделения больше не меняет — это
-   * жест перехода к определению, и тетрадь пропускает его насквозь
-   * (Notebook.svelte · pick). Куда он уводит, проверяется не здесь: у стенда
-   * нет ни модулей семинара, ни второй ячейки с определением.
+   * And the converse: ⌘+click ON CODE no longer changes the selection. It is
+   * the go-to-definition gesture, and the notebook passes it straight through
+   * (Notebook.svelte · pick). Where it leads is not checked here: the harness
+   * has neither the seminar modules nor a second cell with the definition.
    */
   await click(1)
   assert.deepEqual(await selected(), [1])

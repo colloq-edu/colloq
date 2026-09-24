@@ -30,15 +30,15 @@ test('standalone host discovers the owning server and refuses a different run at
 })
 
 /*
- * Чужая расписка — не упавшая сессия.
+ * Someone else's receipt is not a crashed session.
  *
- * 20.09.2026 `make vast-up` привёз на арендованную машину `.colloq/` с ноутбука:
- * расписку `make dev` с номером процесса, которого на той машине никогда не
- * было. Сервер там работал службой systemd (о локальной сессии он не знает —
- * `localRunId: null`), а публикация отказывала словами «сначала запустите
- * colloq». Расписка с мёртвым процессом рядом с живым сервером, который ей не
- * принадлежит, — это «расписки нет» (код 2); с мёртвым процессом и пустым
- * портом — по-прежнему отказ.
+ * On 20 Sep 2026 `make vast-up` brought `.colloq/` from the laptop to the
+ * rented machine: the `make dev` receipt with a process id that had never
+ * existed on that machine. The server there ran as a systemd service (it knows
+ * nothing about a local session — `localRunId: null`), and publishing refused
+ * with the words "start colloq first". A receipt with a dead process next to a
+ * live server it does not belong to is "no receipt" (code 2); a dead process
+ * with an empty port is still a refusal.
  */
 test('a stale receipt next to a server that is not a local session counts as no receipt', async () => {
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colloq-stale-'))
@@ -46,7 +46,8 @@ test('a stale receipt next to a server that is not a local session counts as no 
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r))
  const port=(server.address() as import('node:net').AddressInfo).port
  const receipt=path.join(dir,'session.json')
- // pid 999999 — заведомо мёртвый: процесс с ноутбука на этой машине не живёт.
+ // pid 999999 is known to be dead: a process from the laptop does not live
+ // on this machine.
  const write=(at:number)=>fs.writeFileSync(receipt,JSON.stringify({pid:999999,runId:'laptop-run',port:at,url:'http://localhost:5173',leaseFile:path.join(dir,'lease.json'),dataDir:dir}))
  const env={...process.env,COLLOQ_LOCAL_SESSION:'',COLLOQ_LOCAL_RUN_ID:''}
  try {
@@ -56,7 +57,8 @@ test('a stale receipt next to a server that is not a local session counts as no 
   assert.equal(foreign.out,'')
  } finally {await new Promise<void>(r=>server.close(()=>r()))}
  try {
-  // Тот же порт, но сервера уже нет: это упавшая сессия, и говорить надо о ней.
+  // The same port, but the server is gone: this is a crashed session, and that
+  // is what must be reported.
   write(port)
   const crashed=await helper(['discover',receipt],env)
   assert.equal(crashed.code,1)
@@ -67,8 +69,9 @@ test('a stale receipt next to a server that is not a local session counts as no 
 test('the vast deploy never ships the laptop\'s session state and removes a receipt that already travelled', () => {
  const script=fs.readFileSync('scripts/vast-legacy.sh','utf8')
  const excludes=/<<'EXCL'\n([\s\S]*?)\nEXCL/.exec(script)?.[1].split('\n') ?? []
- for (const path of ['.colloq/','.claude/','scratchpad/']) assert.ok(excludes.includes(path),`${path} едет на арендованную машину`)
- // Исключённое rsync --delete не удаляет, а данные и .env там трогать нельзя — поэтому точечно.
+ for (const path of ['.colloq/','.claude/','scratchpad/']) assert.ok(excludes.includes(path),`${path} is shipped to the rented machine`)
+ // rsync --delete does not delete what is excluded, and the data and .env
+ // there must not be touched — hence the targeted removal.
  assert.match(script,/rssh "rm -f '\$REMOTE_DIR\/\.colloq\/local-session\.json'/)
  assert.doesNotMatch(script,/--delete-excluded/)
 })
@@ -144,8 +147,8 @@ test('local host script publishes and releases a lease without touching env or s
   const bin=path.join(dir,'bin');fs.mkdirSync(bin)
   const fake=(name:string,code:string)=>fs.writeFileSync(path.join(bin,name),`#!${process.execPath}\n${code}\n`,{mode:0o755})
   fake('docker','process.exit(1)')
-  // Здоровье называет изоляцию комнат: без поля isolation host.sh не
-  // публикует ничего (замок — см. тест ниже).
+  // Health names the room isolation: without the isolation field host.sh
+  // publishes nothing (the lock — see the test below).
   fake('curl',"if(process.argv.some(a=>a.includes('/api/health'))) process.stdout.write('{\"localRunId\":\"run\",\"isolation\":\"docker\"}');else if(process.argv.includes('-w')) process.stdout.write('200')")
   fake('dig',"process.stdout.write('127.0.0.1\\n')")
   fake('cloudflared',"require('node:fs').writeFileSync('tunnel-argv.json',JSON.stringify(process.argv.slice(2)));setInterval(()=>{},1000)")
@@ -172,10 +175,10 @@ test('local host script publishes and releases a lease without touching env or s
 })
 
 /**
- * Стенд host.sh под `colloq start --share`: настоящий скрипт и настоящая
- * расписка адреса, выдуманные curl, dig и cloudflared. cloudflared лежит НЕ в
- * PATH — его называет COLLOQ_CLOUDFLARED, как это делает супервизор, найдя и
- * сверив файл сам.
+ * A host.sh stand under `colloq start --share`: the real script and a real
+ * address receipt, with made-up curl, dig and cloudflared. cloudflared is NOT
+ * on PATH — COLLOQ_CLOUDFLARED names it, as the supervisor does after finding
+ * and verifying the file itself.
  */
 async function shareStand(health:string){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colloq-host-share-'))
@@ -193,7 +196,8 @@ async function shareStand(health:string){
  fake(bin,'docker','process.exit(1)')
  fake(bin,'curl',`if(process.argv.some(a=>a.includes('/api/health'))) process.stdout.write(${JSON.stringify(health)});else if(process.argv.includes('-w')) process.stdout.write('200')`)
  fake(bin,'dig',"process.stdout.write('127.0.0.1\\n')")
- // Быстрый туннель печатает адрес в свой вывод, а host.sh ищет его в журнале.
+ // A quick tunnel prints the address to its output, and host.sh looks for it
+ // in the log.
  fake(tools,'cloudflared',"require('node:fs').writeFileSync('tunnel-argv.json',JSON.stringify(process.argv.slice(2)));console.log('INF |  https://quick-share.trycloudflare.com  |');setInterval(()=>{},1000)")
  fs.writeFileSync(path.join(dir,'.env'),'RELAY_DOMAIN=\n')
  const lease=path.join(dir,'.colloq/public-url.json')
@@ -211,10 +215,11 @@ test('--share: host.sh names the address with one marker line and keeps its own 
   while(!s.read().includes('@colloq-share') && s.host.exitCode===null && Date.now()<deadline) await new Promise(r=>setTimeout(r,50))
   const out=s.read()
   assert.match(out,/^@colloq-share ok https:\/\/quick-share\.trycloudflare\.com$/m,out)
-  // Итог печатает супервизор: ни ссылки с токеном, ни своего абзаца здесь нет.
+  // The summary is printed by the supervisor: there is neither a link with a
+  // token nor a paragraph of its own here.
   assert.doesNotMatch(out,/Sign-in to the panel|Colloq is available|\/admin\/t\//)
   assert.equal(JSON.parse(fs.readFileSync(s.lease,'utf8')).url,'https://quick-share.trycloudflare.com')
-  // Туннель — тот cloudflared, что назван, и быстрый: без имени туннеля.
+  // The tunnel is the named cloudflared, and a quick one: no tunnel name.
   const argv=JSON.parse(fs.readFileSync(path.join(s.dir,'tunnel-argv.json'),'utf8'))
   assert.deepEqual(argv.slice(0,3),['tunnel','--no-autoupdate','--url'])
   assert.equal(s.host.exitCode,null,'host.sh must keep the tunnel open')

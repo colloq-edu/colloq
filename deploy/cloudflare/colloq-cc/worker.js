@@ -1,79 +1,84 @@
-// Зеркало colloq.ru на colloq.cc.
+// The colloq.ru mirror on colloq.cc.
 //
-// Зачем здесь вообще код, а не вторая запись в DNS. GitHub Pages отдаёт сайт
-// по ОДНОМУ собственному имени: в site/CNAME написано colloq.ru, и запрос с
-// заголовком `Host: colloq.cc` Pages встречает своей страницей «There isn't a
-// GitHub Pages site here». CNAME на colloq-edu.github.io — хоть серый, хоть
-// оранжевый — даёт ровно это, потому что Pages разбирает именно Host. Значит,
-// между посетителем и Pages нужен кто-то, кто подменит Host на colloq.ru;
-// этим воркер и занят, и в этом вся его работа.
+// Why there is code here at all rather than a second DNS record. GitHub Pages
+// serves a site under ONE name of its own: site/CNAME says colloq.ru, and a
+// request with the header `Host: colloq.cc` is met by Pages with its own
+// "There isn't a GitHub Pages site here" page. A CNAME to colloq-edu.github.io,
+// grey or orange, gives exactly that, because Pages goes by the Host. So
+// between the visitor and Pages there has to be someone who swaps the Host for
+// colloq.ru; that is what the worker does, and that is all of its job.
 //
-// Почему нельзя переехать на colloq.cc целиком. Пограничные адреса Cloudflare
-// из России не открываются (об этом шапка scripts/dns.sh и весь тамошний
-// «серое облако везде»), поэтому colloq.ru обязан остаться серым и смотреть
-// прямо на Pages. colloq.cc — имя для тех, кому Cloudflare доступен, и живёт
-// оно оранжевым. Два имени, один источник: site/ в этом репозитории.
+// Why we cannot move to colloq.cc entirely. Cloudflare edge addresses do not
+// open from Russia (see the header of scripts/dns.sh and its whole "grey cloud
+// everywhere" rule), so colloq.ru must stay grey and point straight at Pages.
+// colloq.cc is the name for those who can reach Cloudflare, and it lives
+// orange. Two names, one source: site/ in this repository.
 //
-// Из тела страницы правится РОВНО ОДНО: домен, напечатанный на ней текстом
-// (подпись в подвале, адрес курса) — см. VISIBLE_DOMAIN_SELECTOR ниже. Его
-// читают глазами и переписывают в адресную строку, и на зеркале он обязан
-// называть зеркало.
+// EXACTLY ONE thing in the page body is edited: the domain printed on it as
+// text (the caption in the footer, the course address); see
+// VISIBLE_DOMAIN_SELECTOR below. People read it with their eyes and retype it
+// into the address bar, and on the mirror it must name the mirror.
 //
-// Всё остальное в теле остаётся как есть, и это решение, а не лень. Атрибуты
-// href не трогаются вовсе — ссылки либо от корня, либо абсолютные нарочно
-// (GitHub, PyPI, почта автора).
+// Everything else in the body stays as is, and that is a decision, not
+// laziness. href attributes are not touched at all: links are either
+// root-relative or absolute on purpose (GitHub, PyPI, the author's email).
 //
-// В <head> правятся теги превью — og: и twitter:, и только на лендинге; см.
-// «превью ссылки» ниже. <title>, <meta name=description>, <link rel=canonical>
-// и hreflang не трогаются никогда: поисковику полагается видеть ОДИН
-// канонический сайт, а не две одинаковые копии, конкурирующие друг с другом.
+// In <head> the preview tags are edited, og: and twitter:, and only on the
+// landing page; see "link preview" below. <title>, <meta name=description>,
+// <link rel=canonical> and hreflang are never touched: a search engine is
+// supposed to see ONE canonical site, not two identical copies competing with
+// each other.
 //
-// Единственное исключение — Location у редиректов. Pages отвечает на /docs
-// (без косой черты) буквально `location: https://colloq.ru/docs/`, и без
-// правки посетитель, попросивший /docs на зеркале, уезжал бы на colloq.ru —
-// то есть туда, откуда его сюда и отправили.
+// The only exception is Location on redirects. Pages answers /docs (without a
+// trailing slash) with literally `location: https://colloq.ru/docs/`, and
+// without the edit a visitor who asked for /docs on the mirror would be sent
+// to colloq.ru, that is, to the very place they were sent here from.
 //
-// Комнат занятий здесь нет: они живут на машинах преподавателей и на именах
-// *.colloq.ru через ретранслятор, а на самом colloq.ru лежит только статика —
-// лендинг, /docs/ и опубликованные курсы /c/. Проксировать динамику не нужно,
-// поэтому и куки здесь не участвуют вовсе: ни туда, ни обратно.
+// There are no class rooms here: they live on the teachers' machines and under
+// *.colloq.ru names through the relay, while colloq.ru itself holds only static
+// files: the landing page, /docs/ and the published courses /c/. There is no
+// dynamic content to proxy, so cookies play no part here at all, in either
+// direction.
 
 const ORIGIN = 'colloq.ru'
 const MIRROR = 'colloq.cc'
 
-// Сколько ответ живёт у браузера и на границе Cloudflare.
+// How long a response lives in the browser and at the Cloudflare edge.
 //
-// Числа разные, и разведены они по одной причине: имена файлов в site/ НЕ
-// содержат отпечатка содержимого. styles.css после выкладки остаётся
-// styles.css, поэтому долгий срок жизни на нём — это не «быстро», а «человек
-// сутки видит старую вёрстку поверх новой разметки».
+// The numbers differ, and they are split apart for one reason: file names in
+// site/ do NOT contain a content fingerprint. styles.css stays styles.css
+// after a deploy, so a long lifetime on it means not "fast" but "for a day a
+// person sees the old styles on top of the new markup".
 //
-//   media — шрифты и картинки. Меняются вместе с дизайном, то есть почти
-//           никогда, а устаревшая картинка — это косметика, не поломка.
-//   code  — css и js. Меняются каждой выкладкой и ломаются заметно, если
-//           разъедутся с разметкой: час — потолок расхождения.
-//   page  — html и всё остальное. Сам Pages говорит про себя max-age=600;
-//           пять минут на зеркале не делают его свежее источника.
+//   media — fonts and pictures. They change together with the design, that
+//           is, almost never, and a stale picture is cosmetics, not breakage.
+//   code  — css and js. They change with every deploy and break visibly if
+//           they drift from the markup: an hour is the ceiling of the drift.
+//   page  — html and everything else. Pages itself says max-age=600 about
+//           itself; five minutes on the mirror do not make it fresher than
+//           the origin.
 const TTL = { media: 86400, code: 3600, page: 300 }
 
 const MEDIA = /\.(?:woff2?|ttf|otf|eot|png|jpe?g|webp|avif|gif|svg|ico)$/i
 const CODE = /\.(?:css|m?js|map)$/i
 
-// Заголовки, которые до Pages не доезжают.
+// Headers that do not reach Pages.
 //
-// host — ради него всё и затевалось: адрес запроса задаёт хост сам, а
-//   пришедший colloq.cc в заголовке вернул бы нас к «сайта здесь нет».
-// cookie — у зеркала нет ни одной своей куки, и возить на Pages чужие (домен
-//   верхнего уровня .cc делят с кем угодно) незачем.
-// x-forwarded-* — их сочиняет клиент, и Pages не должен принимать сочинённое
-//   за правду о себе.
+// host — the whole thing was started for its sake: the request URL sets the
+//   host itself, and colloq.cc arriving in the header would bring us back to
+//   "there is no site here".
+// cookie — the mirror has not a single cookie of its own, and there is no
+//   reason to carry other people's cookies to Pages (the .cc top-level domain
+//   is shared with anyone).
+// x-forwarded-* — the client makes them up, and Pages must not take what is
+//   made up for the truth about itself.
 const DROP_FROM_REQUEST = ['host', 'cookie', 'x-forwarded-host', 'x-forwarded-proto']
 
-// Статусы, у которых тела не бывает. Конструктор Response с телом при таком
-// статусе бросает исключение — и в Workers, и в node.
+// Statuses that never have a body. The Response constructor with a body at
+// such a status throws, both in Workers and in node.
 const NULL_BODY = new Set([101, 204, 205, 304])
 
-/** Сколько секунд держать ответ на этот путь. */
+/** How many seconds to keep the response for this path. */
 function ttlFor(pathname) {
   if (MEDIA.test(pathname)) return TTL.media
   if (CODE.test(pathname)) return TTL.code
@@ -81,17 +86,17 @@ function ttlFor(pathname) {
 }
 
 /**
- * Адрес из Location — на зеркало, если он указывал на источник.
+ * The address from Location, moved to the mirror if it pointed at the origin.
  *
- * Возвращает null, когда трогать нечего: тогда Location уезжает как приехал.
- * Чужие адреса (скажем, редирект на github.com) переписывать нельзя — это
- * увело бы посетителя на несуществующую страницу зеркала.
+ * Returns null when there is nothing to touch: then Location goes out as it
+ * came. Foreign addresses (say, a redirect to github.com) must not be
+ * rewritten: that would take the visitor to a nonexistent page on the mirror.
  */
 function toMirror(location) {
   let target
   try {
-    // База нужна: Location у Pages бывает и относительным («/docs/»), а без
-    // базы на вопрос «чей это адрес» ответить нечем.
+    // The base is needed: Location from Pages can also be relative ("/docs/"),
+    // and without a base there is no way to answer "whose address is this".
     target = new URL(location, `https://${ORIGIN}/`)
   } catch {
     return null
@@ -101,56 +106,60 @@ function toMirror(location) {
   return target.toString()
 }
 
-// ------------------------------------------------- видимое имя на странице
+// -------------------------------------------------- visible name on the page
 //
-// В разметке есть места, где домен НАПЕЧАТАН текстом, а не стоит ссылкой:
-// подпись в подвале лендинга (`<span class="host">colloq.ru</span>`) и адрес
-// курса на его странице (`<p class="addr">colloq.ru/c/ml-strong</p>`, его
-// собирает server/src/publish/render.ts). Их читают глазами и переписывают в
-// адресную строку — значит, на зеркале они обязаны называть зеркало.
+// There are places in the markup where the domain is PRINTED as text rather
+// than being a link: the caption in the landing page footer
+// (`<span class="host">colloq.ru</span>`) and the course address on its page
+// (`<p class="addr">colloq.ru/c/ml-strong</p>`, built by
+// server/src/publish/render.ts). People read them with their eyes and retype
+// them into the address bar, so on the mirror they must name the mirror.
 //
-// Список классов закрытый и короткий, и это важнее, чем кажется. Соблазн
-// дописать сюда <code> ломает документацию: в site/docs/networking.html
-// сказано, что скрипт настраивает ретранслятор «на зону проекта colloq.ru,
-// которая вам не принадлежит», — это утверждение про настоящую зону DNS, а не
-// про адрес открытой страницы, и подмена превратила бы его в неправду. То же
-// в language.html и students.html. Поэтому правятся ровно два класса, и оба
-// означают одно: «адрес, по которому вы сейчас находитесь».
+// The list of classes is closed and short, and that matters more than it
+// seems. The temptation to add <code> here breaks the documentation:
+// site/docs/networking.html says the script sets up the relay "on the colloq.ru
+// project zone, which does not belong to you", a statement about the real DNS
+// zone, not about the address of the open page, and the swap would turn it into
+// a falsehood. The same goes for language.html and students.html. So exactly
+// two classes are edited, and both mean one thing: "the address you are at
+// right now".
 //
-// `body` впереди — структурная гарантия, а не украшение. В <head> лежат
-// canonical, og:url и hreflang, которым положено и дальше звать colloq.ru;
-// с таким селектором замена просто не может туда дотянуться, и это не нужно
-// помнить при следующей правке.
+// `body` in front is a structural guarantee, not decoration. <head> holds
+// canonical, og:url and hreflang, which are supposed to keep naming colloq.ru;
+// with such a selector the replacement simply cannot reach there, and nobody
+// has to remember that during the next edit.
 export const VISIBLE_DOMAIN_SELECTOR = 'body .host, body .addr'
 
-// Имя целиком, а не подстрока: вся тонкость здесь в границах.
+// The whole name, not a substring: all the subtlety here is in the boundaries.
 //
-//   colloq.ru        -> colloq.cc      подпись в подвале
-//   colloq.ru/c/x    -> colloq.cc/c/x  адрес курса (косая черта справа — можно)
-//   hse.colloq.ru       остаётся       имена семинаров раздаёт ретранслятор в
-//                                      зоне colloq.ru, и в .cc их нет вовсе
-//   colloq.ruby         остаётся       это не наш домен
+//   colloq.ru        -> colloq.cc      the caption in the footer
+//   colloq.ru/c/x    -> colloq.cc/c/x  a course address (a slash on the right is fine)
+//   hse.colloq.ru       stays          seminar names are handed out by the relay
+//                                      in the colloq.ru zone, and .cc has none
+//   colloq.ruby         stays          that is not our domain
 //
-// Слева поэтому не должно быть ни точки, ни буквы (иначе это поддомен или
-// чужое слово), справа — ни буквы, ни дефиса (иначе другая зона).
+// So on the left there must be neither a dot nor a letter (otherwise it is a
+// subdomain or someone else's word), and on the right neither a letter nor a
+// hyphen (otherwise it is another zone).
 const VISIBLE_DOMAIN = new RegExp(`(?<![\\w.-])${ORIGIN.replace(/\./g, '\\.')}(?![\\w-])`, 'g')
 
 /**
- * Подменить домен в видимом тексте. Чистая функция — её и проверяют тестом:
- * на живом воркере границы имени не разглядеть.
+ * Swap the domain in visible text. A pure function, and it is what the test
+ * checks: on a live worker the boundaries of the name cannot be made out.
  */
 export function rewriteVisibleDomain(text) {
   return text.replace(VISIBLE_DOMAIN, MIRROR)
 }
 
 /**
- * Накопитель текста одного узла.
+ * Accumulator of one node's text.
  *
- * HTMLRewriter отдаёт текст КУСКАМИ, и граница куска приходится куда угодно —
- * в том числе на середину «colloq.ru». Замена покусочно пропустила бы такое
- * имя молча, поэтому текст копится до lastInTextNode и подменяется целиком.
- * Промежуточные куски при этом убираются: иначе они уедут читателю дважды —
- * сами по себе и ещё раз в накопленной строке.
+ * HTMLRewriter hands out text in CHUNKS, and a chunk boundary can fall
+ * anywhere, including the middle of "colloq.ru". A chunk-by-chunk replacement
+ * would silently miss such a name, so the text is accumulated until
+ * lastInTextNode and replaced as a whole. The intermediate chunks are removed
+ * meanwhile: otherwise they would reach the reader twice, on their own and
+ * once more in the accumulated string.
  */
 class VisibleDomain {
   constructor() {
@@ -166,62 +175,65 @@ class VisibleDomain {
       return
     }
     const replaced = rewriteVisibleDomain(this.buffer)
-    // Пришло одним куском и менять нечего — не трогаем вовсе: там, где
-    // подменять нечего, страница обязана доехать байт в байт. Это же и про
-    // `<a class="host" href="mailto:…">` в подвале: домена в её тексте нет,
-    // и она остаётся собой.
+    // It arrived in one chunk and there is nothing to change: leave it alone
+    // entirely: where there is nothing to swap, the page must arrive byte for
+    // byte. The same goes for `<a class="host" href="mailto:…">` in the
+    // footer: there is no domain in its text, and it stays itself.
     if (this.split || replaced !== this.buffer) chunk.replace(replaced, { html: false })
     this.buffer = ''
     this.split = false
   }
 }
 
-// ------------------------------------------------------- превью ссылки
+// -------------------------------------------------------------- link preview
 //
-// Разворачиватель ссылок (Telegram, WhatsApp, Slack, iMessage, X, Discord,
-// Facebook) не исполняет JS. Автовыбор языка на лендинге сделан скриптом в
-// <head>, и до бота он не доезжает вовсе: бот забирает `/`, читает og: и
-// twitter: и показывает РУССКУЮ карточку — в том числе тому, кому дали
-// colloq.cc, имя как раз для тех, у кого русского нет.
+// Link unfurlers (Telegram, WhatsApp, Slack, iMessage, X, Discord, Facebook)
+// do not run JS. The automatic language choice on the landing page is done by
+// a script in <head>, and it never reaches the bot at all: the bot fetches
+// `/`, reads og: and twitter: and shows the RUSSIAN card, including to someone
+// who was given colloq.cc, the name meant precisely for those without Russian.
 //
-// Поэтому на зеркале корень лендинга отдаёт теги превью своего английского
-// близнеца. Близнец ищется не по зашитому адресу, а по самой странице: в её
-// <head> стоит <link rel="alternate" hreflang="en" href="…">, и это ровно то
-// место, где живёт ответ на вопрос «а где английская версия». Переедет —
-// переедет и превью.
+// So on the mirror the landing root serves the preview tags of its English
+// twin. The twin is found not by a hard-coded address but by the page itself:
+// its <head> has <link rel="alternate" hreflang="en" href="…">, and that is
+// exactly the place where the answer to "where is the English version" lives.
+// If it moves, the preview moves too.
 //
-// Только ЛЕНДИНГ: корню подставляются теги близнеца, английской странице —
-// её собственные, ей нужны лишь своя картинка и свой адрес. У /docs/ и у
-// страниц курсов автовыбора языка нет, и английское превью привело бы там на
-// русскую страницу, то есть соврало бы; их голова не трогается ни тегом.
+// Only the LANDING page: the root gets the twin's tags, the English page its
+// own, since it only needs its own picture and its own address. /docs/ and the
+// course pages have no automatic language choice, and an English preview there
+// would lead to a Russian page, that is, it would lie; their head is not
+// touched by a single tag.
 //
-// Меняется содержимое тегов, а не разметка вокруг: <title> и description
-// остаются русскими — их читает поисковик, и ему полагается правда про
-// страницу, которую он сейчас качает.
+// The content of the tags changes, not the markup around them: <title> and
+// description stay Russian: a search engine reads them, and it is owed the
+// truth about the page it is downloading right now.
 //
-// og:url — единственный тег, который разворачиватель может ПЕРЕЧИТАТЬ:
-// Facebook и всё, что построено на его схеме, считает адрес из og:url
-// каноническим и идёт за тегами уже туда. Оставленный colloq.ru он увёл бы
-// бота обратно на источник — и человек, приславший colloq.cc, получил бы
-// русскую карточку с чужим доменом в подписи. Поэтому на зеркале og:url
-// называет зеркало, причём ТОТ ЖЕ адрес, который открыли: перечитав его, бот
-// получит ровно эти же теги, и картинка не «переедет» со второго захода.
-// Канон при этом остаётся у colloq.ru — он в <link rel=canonical>, и это
-// именно тот сигнал, по которому поисковик склеивает копии.
+// og:url is the only tag an unfurler may RE-READ: Facebook and everything
+// built on its scheme considers the address from og:url canonical and goes
+// for the tags there. Left as colloq.ru, it would take the bot back to the
+// origin, and a person who sent colloq.cc would get a Russian card with a
+// different domain in the caption. So on the mirror og:url names the mirror,
+// and the SAME address that was opened: having re-read it, the bot gets
+// exactly these same tags, and the picture does not "move" on the second
+// pass. The canonical address stays with colloq.ru meanwhile: it is in
+// <link rel=canonical>, and that is exactly the signal by which a search
+// engine merges copies.
 const LANDING_ROOT = new Set(['/', '/index.html'])
 const ENGLISH_LANDING = new Set(['/en/', '/en/index.html'])
 const PREVIEW_SELECTOR = 'head meta[property^="og:"], head meta[name^="twitter:"]'
 
-// Картинка превью: английская лежит на источнике, зеркальная — своя, с
-// подписью colloq.cc. Обе рисует scripts/site-og.mts.
+// The preview picture: the English one lies on the origin, the mirror one is
+// its own, captioned colloq.cc. Both are drawn by scripts/site-og.mts.
 const IMAGE_ORIGIN = '/img/og-en.png'
 const IMAGE_MIRROR = '/img/og-cc.png'
 
 /**
- * Адрес английского близнеца — из <link rel="alternate" hreflang="en">.
+ * The address of the English twin, from <link rel="alternate" hreflang="en">.
  *
- * null, когда ссылки нет: тогда подменять нечего и страница едет как есть.
- * Порядок атрибутов не важен — их и пишут по-разному.
+ * null when there is no link: then there is nothing to swap and the page goes
+ * out as is. The order of attributes does not matter: people write them in
+ * different orders.
  */
 export function twinHref(html) {
   const head = html.slice(0, html.indexOf('</head>') + 1 || undefined)
@@ -235,10 +247,10 @@ export function twinHref(html) {
 }
 
 /**
- * Теги превью страницы: ключ (og:title, twitter:card) → содержимое.
+ * The preview tags of a page: key (og:title, twitter:card) → content.
  *
- * Читается только <head>: og-теги в теле — это чужая цитата или пример в
- * документации, и им здесь делать нечего.
+ * Only <head> is read: og tags in the body are someone else's quote or an
+ * example in the documentation, and they have no business here.
  */
 export function previewTags(html) {
   const head = html.slice(0, html.indexOf('</head>') + 1 || undefined)
@@ -255,16 +267,18 @@ export function previewTags(html) {
 }
 
 /**
- * Картинка превью на зеркале — или null, если менять нечего.
+ * The preview picture on the mirror, or null if there is nothing to change.
  *
- * Подменяется РОВНО английская картинка источника: пока owner не выложил
- * og-en.png, теги близнеца зовут старый og.png, условие не срабатывает, и
- * зеркало показывает то же, что источник. Так воркер можно поставить раньше
- * картинок и не получить 404 в превью.
+ * EXACTLY the English picture of the origin is swapped: until the owner has
+ * published og-en.png, the twin's tags point at the old og.png, the condition
+ * does not fire, and the mirror shows the same as the origin. That way the
+ * worker can be deployed before the pictures without getting a 404 in the
+ * preview.
  *
- * Метка ?v= переносится как есть. Она обязана МЕНЯТЬСЯ вместе с картинкой, а
- * обе рисует один скрипт в одном коммите — значит, метка английской годится и
- * для зеркальной, и лишнего запроса к источнику за ней не нужно.
+ * The ?v= mark is carried over as is. It must CHANGE together with the
+ * picture, and both are drawn by one script in one commit, so the mark of the
+ * English one is good for the mirror one too, and no extra request to the
+ * origin is needed for it.
  */
 export function mirrorPreviewImage(content) {
   let target
@@ -282,11 +296,12 @@ export function mirrorPreviewImage(content) {
 }
 
 /**
- * Подменить содержимое одного тега превью. Чистая функция — ей и проверяется
- * вся развилка: что берётся у близнеца, что у самой страницы, что у зеркала.
+ * Swap the content of one preview tag. A pure function, and the whole fork is
+ * checked on it: what is taken from the twin, what from the page itself, what
+ * from the mirror.
  *
- * `tags` — теги английского близнеца или null, когда страница уже английская.
- * `ogUrl` — адрес этой же страницы на зеркале.
+ * `tags` are the tags of the English twin, or null when the page is already
+ * English. `ogUrl` is the address of this same page on the mirror.
  */
 export function previewContent(key, own, tags, ogUrl) {
   if (key === 'og:url') return ogUrl
@@ -295,7 +310,7 @@ export function previewContent(key, own, tags, ogUrl) {
   return mirrorPreviewImage(value) ?? value
 }
 
-/** Обработчик HTMLRewriter поверх previewContent. */
+/** An HTMLRewriter handler on top of previewContent. */
 class Preview {
   constructor(tags, ogUrl) {
     this.tags = tags
@@ -312,19 +327,19 @@ class Preview {
 }
 
 /**
- * Забрать теги превью у английского близнеца этой страницы.
+ * Fetch the preview tags from the English twin of this page.
  *
- * null при любой осечке — нет ссылки, не тот хост, источник не ответил,
- * тегов не нашлось. Тогда страница отдаётся нетронутой: превью на чужом языке
- * — беда, а страница без превью — та же страница.
+ * null on any misfire: no link, the wrong host, the origin did not answer, no
+ * tags found. Then the page is served untouched: a preview in the wrong
+ * language is a problem, while a page without a preview is the same page.
  */
 async function twinTags(html) {
   try {
     const href = twinHref(html)
     if (!href) return null
     const target = new URL(href, `https://${ORIGIN}/`)
-    // Только источник: hreflang в чужой разметке не должен превращаться в
-    // запрос воркера куда попало, а ссылка на само зеркало — в петлю.
+    // Only the origin: hreflang in foreign markup must not turn into a worker
+    // request to anywhere, nor a link to the mirror itself into a loop.
     if (target.hostname !== ORIGIN) return null
     const answer = await fetch(target.toString(), {
       cf: { cacheEverything: true, cacheTtlByStatus: { '200-299': TTL.page, '300-599': 0 } },
@@ -338,11 +353,11 @@ async function twinTags(html) {
 }
 
 /**
- * HSTS — на КАЖДЫЙ ответ, включая 405 и редирект с www.
+ * HSTS on EVERY response, including the 405 and the redirect from www.
  *
- * Заголовок, который приходит только со страницами, не защищает первый заход
- * на http://colloq.cc/что-угодно: именно он и есть тот единственный запрос,
- * который успевают прочитать по дороге.
+ * A header that comes only with pages does not protect the first visit to
+ * http://colloq.cc/anything: that is exactly the one request someone manages
+ * to read on the way.
  */
 function guarded(response) {
   response.headers.set('strict-transport-security', 'max-age=31536000; includeSubDomains')
@@ -353,9 +368,9 @@ export default {
   async fetch(request) {
     const url = new URL(request.url)
 
-    // Только чтение. Сайт статический: POST и всё остальное на зеркале — это
-    // либо ошибка, либо чужой сканер, ищущий админку. Пересылать такое на
-    // Pages смысла нет, а отвечать за него — тем более.
+    // Read-only. The site is static: a POST or anything else on the mirror is
+    // either a mistake or someone's scanner looking for an admin panel. There
+    // is no point forwarding such a thing to Pages, let alone answering for it.
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return guarded(
         new Response('Method Not Allowed\n', {
@@ -365,19 +380,20 @@ export default {
       )
     }
 
-    // www → апекс. Одно каноническое имя у зеркала, и причин тому две:
-    // Cloudflare иначе держит в кеше две копии каждой страницы, а поисковик
-    // видит уже ТРЕТИЙ адрес того же сайта — при том что вся затея ровно в
-    // обратном. Редирект собирается руками, а не через Response.redirect:
-    // у того заголовки неизменяемы, и HSTS на него не повесить.
+    // www → apex. The mirror has one canonical name, and there are two
+    // reasons for that: otherwise Cloudflare keeps two copies of every page in
+    // its cache, and a search engine sees yet a THIRD address of the same
+    // site, while the whole idea is exactly the opposite. The redirect is
+    // built by hand, not with Response.redirect: its headers are immutable,
+    // and HSTS cannot be put on it.
     if (url.hostname === `www.${MIRROR}`) {
       const apex = new URL(url)
       apex.hostname = MIRROR
       return guarded(new Response(null, { status: 301, headers: { location: apex.toString() } }))
     }
 
-    // Путь и запрос переносятся как есть — копией адреса, а не сборкой строки:
-    // так ничего не теряется и не перекодируется по дороге.
+    // The path and the query are carried over as is, by copying the URL, not
+    // by building a string: that way nothing is lost or re-encoded on the way.
     const upstream = new URL(url)
     upstream.protocol = 'https:'
     upstream.hostname = ORIGIN
@@ -391,14 +407,16 @@ export default {
     const response = await fetch(upstream.toString(), {
       method: request.method,
       headers,
-      // Ручной разбор редиректов. Иначе Location от Pages отработает внутри
-      // воркера, посетитель получит готовую страницу по адресу, которого не
-      // просил, и /docs навсегда останется в адресной строке без косой черты —
-      // а все относительные ссылки на такой странице съедут на этаж выше.
+      // Redirects are handled by hand. Otherwise the Location from Pages would
+      // be followed inside the worker, the visitor would get the finished page
+      // at an address they did not ask for, and /docs would stay in the
+      // address bar forever without the trailing slash, with every relative
+      // link on such a page shifted one level up.
       redirect: 'manual',
-      // Кеш на границе. colloq.ru — зона того же аккаунта, поэтому настройки
-      // cf для подзапроса действуют. Пятисотки не кешируются вовсе: минута
-      // лежачего Pages не должна превращаться в час лежачего зеркала.
+      // The edge cache. colloq.ru is a zone of the same account, so the cf
+      // settings for the subrequest apply. 5xx responses are not cached at
+      // all: a minute of Pages being down must not turn into an hour of the
+      // mirror being down.
       cf: {
         cacheEverything: true,
         cacheTtlByStatus: { '200-299': ttl, '301-302': ttl, '404': 60, '500-599': 0 },
@@ -406,7 +424,7 @@ export default {
     })
 
     const out = new Headers(response.headers)
-    // Куки у зеркала не участвуют ни в одну сторону.
+    // Cookies play no part on the mirror, in either direction.
     out.delete('set-cookie')
 
     const location = response.headers.get('location')
@@ -416,26 +434,27 @@ export default {
     }
 
     if (response.status >= 500) {
-      // Ошибку источника кешировать нельзя: Pages полежал минуту — зеркало
-      // держало бы его пятисотку у посетителя ещё пять.
+      // An origin error must not be cached: Pages was down for a minute, and
+      // the mirror would keep serving its 5xx to the visitor for five more.
       out.set('cache-control', 'no-store')
     } else if (response.status !== 304) {
       out.set('cache-control', `public, max-age=${ttl}`)
     }
 
-    // Чтобы `curl -sI https://colloq.cc/` одной строкой отвечал на вопрос
-    // «это зеркало или мне подменили DNS».
+    // So that `curl -sI https://colloq.cc/` answers in one line the question
+    // "is this the mirror, or has my DNS been spoofed".
     out.set('x-colloq-mirror', ORIGIN)
 
     let body = NULL_BODY.has(response.status) ? null : response.body
-    // Разметку — через замену видимого домена, всё остальное (шрифты,
-    // картинки, css, json) не пересобирается вовсе и течёт насквозь.
+    // Markup goes through the visible-domain replacement; everything else
+    // (fonts, pictures, css, json) is not rebuilt at all and flows straight
+    // through.
     const html = (out.get('content-type') || '').toLowerCase().startsWith('text/html')
 
-    // Теги превью правятся на лендинге и только на нём; корню вдобавок нужен
-    // английский близнец, а чтобы его найти, страницу приходится прочитать
-    // целиком. Это одна страница на весь сайт, и ради неё поток не жалко:
-    // всё остальное по-прежнему течёт насквозь.
+    // The preview tags are edited on the landing page and only there; the
+    // root also needs the English twin, and to find it the page has to be
+    // read in full. It is one page for the whole site, and giving up the
+    // stream for it is fine: everything else still flows straight through.
     const preview = body && html && response.status === 200
     const root = preview && LANDING_ROOT.has(url.pathname)
     let tags = null
@@ -445,12 +464,13 @@ export default {
     }
 
     if (body && html) {
-      // После пересборки заголовки о РАЗМЕРЕ и УПАКОВКЕ описывают уже не то
-      // тело, что приехало: HTMLRewriter отдаёт его потоком и заново. Даже
-      // когда длина совпала случайно (colloq.ru и colloq.cc — оба девять
-      // байт), оставлять их нельзя: следующая правка списка классов эту
-      // случайность сломает, а выглядеть это будет как оборванная страница.
-      // Сжатием на границе занимается Cloudflare, ему эти заголовки не нужны.
+      // After the rebuild the headers about SIZE and ENCODING no longer
+      // describe the body that arrived: HTMLRewriter emits it anew, as a
+      // stream. Even when the length matches by chance (colloq.ru and
+      // colloq.cc are both nine bytes), they must not be kept: the next edit
+      // of the class list will break that coincidence, and it will look like
+      // a truncated page. Compression at the edge is Cloudflare's job, and it
+      // does not need these headers.
       out.delete('content-length')
       out.delete('content-encoding')
     }
@@ -466,10 +486,11 @@ export default {
     if (!body || !html) return answer
 
     const rewriter = new HTMLRewriter().on(VISIBLE_DOMAIN_SELECTOR, new VisibleDomain())
-    // Корень — только когда близнец нашёлся: наполовину подменённая голова
-    // (русские теги с адресом зеркала в og:url) хуже нетронутой, потому что
-    // выглядит рабочей. Английская страница в близнеце не нуждается вовсе —
-    // она уже он, и ей нужна только своя картинка и свой адрес.
+    // The root only when the twin was found: a half-swapped head (Russian
+    // tags with the mirror address in og:url) is worse than an untouched one,
+    // because it looks like it works. The English page does not need the twin
+    // at all: it is the twin, and it only needs its own picture and its own
+    // address.
     if ((root && tags) || (preview && ENGLISH_LANDING.has(url.pathname))) {
       rewriter.on(PREVIEW_SELECTOR, new Preview(tags, `https://${MIRROR}${url.pathname}`))
     }

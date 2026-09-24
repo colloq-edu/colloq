@@ -6,11 +6,11 @@ export interface RuntimeEnvironment {
   gpu: boolean
   packages?: string[]
   /**
-   * Версия Python в опубликованном образе, `'3.12'` — если каталог её назвал.
+   * Python version in the published image, `'3.12'`, if the catalog named it.
    *
-   * Необязательна нарочно: образ здесь неизменен и собран снаружи, спросить его
-   * веб-приложение не может, а подставить умолчание — значит написать в панели
-   * версию, которой в образе может не быть. Не сказано — не показываем.
+   * Optional on purpose: the image here is immutable and built elsewhere, the
+   * web app cannot ask it, and filling in a default would mean writing in the
+   * panel a version the image may not have. Not stated means not shown.
    */
   python?: string
   current: boolean
@@ -27,45 +27,48 @@ export interface RuntimeEnsureRequest {
   /** Whole CPU cores for this room; absent uses the runtime's default. */
   cpus?: number
   /**
-   * Память комнаты в мебибайтах; нет поля — умолчание брокера.
+   * Room memory in mebibytes; no field means the broker's default.
    *
-   * До 18.09 поле памяти в форме занятия на k3s не делало ничего: брокер
-   * принимал только окружение, ревизию и ядра, и каждый Pod комнаты получал
-   * свои 2Gi, сколько бы преподаватель ни написал. Число едет тем же
-   * намерением, что и ядра, — шаблона Pod через этот вход не передать.
+   * Before 18 Sep 2026 the memory field in the class form did nothing on k3s:
+   * the broker accepted only the environment, the revision and the cores, and
+   * every room Pod got its 2Gi whatever the teacher wrote. The number travels
+   * in the same intent as the cores: a Pod template cannot be passed through
+   * this entry point.
    */
   memoryMb?: number
 }
 /**
- * Поднять или опустить память и ядра ЖИВОЙ комнате — без нового Pod.
+ * Raise or lower the memory and cores of a LIVE room, without a new Pod.
  *
- * Поля нет — этот ресурс не трогается; `null` — вернуть умолчание брокера.
- * Нужно хотя бы одно поле. Отдельно от ensure намеренно: ensure поднимает Pod,
- * если его нет, а смена лимита в панели не должна запускать Python комнате, в
- * которой сейчас никого.
+ * A missing field leaves that resource alone; `null` restores the broker's
+ * default. At least one field is required. Separate from ensure on purpose:
+ * ensure starts a Pod if there is none, and changing a limit in the panel
+ * must not start Python for a room nobody is in right now.
  *
- * Ядра здесь с 18.09. До того число ядер доезжало только через ensure и
- * входило в хэш шаблона Pod: смена его в форме ничего не меняла живой комнате,
- * а следующий подъём (открыли терминал, переподключилось ядро) молча сносил
- * Pod вместе со всеми переменными семинара.
+ * Cores are here since 18 Sep 2026. Before that the core count arrived only
+ * through ensure and was part of the Pod template hash: changing it in the
+ * form did nothing to a live room, and the next start (someone opened a
+ * terminal, the kernel reconnected) silently tore down the Pod together with
+ * all the seminar's variables.
  */
 export interface RuntimeResizeRequest {
   memoryMb?: number | null
-  /** Целые ядра, как в ensure. */
+  /** Whole cores, as in ensure. */
   cpus?: number | null
 }
 /**
- * Что стало с ресурсами живой комнаты.
+ * What happened to the resources of a live room.
  *
- * `applied` — kubelet уже переставил cgroup; `pending` — API принял, но узлу
- * пока нечем (Deferred) или kubelet ещё не успел; `absent` — Pod нет, число
- * возьмёт следующий подъём. Числа — только тех ресурсов, что просили менять.
+ * `applied`: kubelet has already moved the cgroup; `pending`: the API
+ * accepted, but the node has nothing to give yet (Deferred) or kubelet has
+ * not caught up; `absent`: there is no Pod, and the next start takes the
+ * number. Numbers are given only for the resources that were asked to change.
  */
 export interface RuntimeResizeResult {
   outcome: 'applied' | 'pending' | 'absent'
-  /** Сколько у Pod есть сейчас по словам kubelet; нет Pod — поля нет. */
+  /** What the Pod has right now according to kubelet; no Pod, no field. */
   memoryMb?: number
-  /** Ядра, которые у Pod есть сейчас; дробные, если так задал оператор. */
+  /** Cores the Pod has right now; fractional if the operator set it so. */
   cpus?: number
 }
 export interface RuntimeEndpoint {
@@ -81,9 +84,9 @@ export interface RuntimeHealth {
   /** Broker competition job capability; absent means that executor is unavailable. */
   competition?: import('./capabilities.js').CompetitionCapabilities
   defaultCpus?: number
-  /** Сколько памяти получает комната, которой ничего не задали. */
+  /** How much memory a room gets when nothing was set for it. */
   defaultMemoryMb?: number
-  /** Больше этого брокер комнате не выдаст: потолок оператора или узла. */
+  /** The broker gives a room no more than this: the operator's or node's ceiling. */
   maxMemoryMb?: number
   recovery?: { rollbackRetries: number; rollbackFailures: number; rollbacksApplied: number }
 }
@@ -95,33 +98,36 @@ export interface RuntimeRoom {
   revision: string
   reason?: string
   cpus?: number
-  /** Память, которая у Pod есть на самом деле, — из status, а не из spec. */
+  /** Memory the Pod really has, from status rather than from spec. */
   memoryMb?: number
 }
 /**
- * Почему Pod комнаты не встал на узел: ресурс, которого узлу не хватило, или
- * `other` — планировщик отказал по иной причине (taint, affinity, привязка тома).
+ * Why a room's Pod did not fit on a node: the resource the node was short of,
+ * or `other` when the scheduler refused for another reason (taint, affinity,
+ * volume binding).
  *
- * Слово, а не текст Kubernetes. Сообщение планировщика — это «0/1 nodes are
- * available: 1 Insufficient memory. preemption: …», и до 18.09 наружу не
- * выходило даже оно: комната читала «Room startup timed out: pending» через две
- * минуты ожидания. Из сообщения брокер берёт только имя ресурса — остальное
- * там про чужие узлы и чужие Pod, и показывать это людям незачем.
+ * A word, not Kubernetes text. The scheduler's message is "0/1 nodes are
+ * available: 1 Insufficient memory. preemption: …", and before 18 Sep 2026
+ * not even that got out: the room read "Room startup timed out: pending"
+ * after two minutes of waiting. The broker takes only the resource name from
+ * the message: the rest is about other nodes and other Pods, and there is no
+ * reason to show it to people.
  */
 export type RuntimeUnschedulable = 'memory' | 'cpu' | 'gpu' | 'other'
 const RUNTIME_UNSCHEDULABLE: readonly RuntimeUnschedulable[] = ['memory', 'cpu', 'gpu', 'other']
 /**
- * Отказ подъёма, который можно объяснить человеку: поля тела ошибки брокера
- * рядом с `error`. Числа — то, что Pod просил, а не то, что было в форме: их
- * брокер знает точно (умолчание, потолок), и ровно их узел не смог дать.
+ * A start failure that can be explained to a person: fields of the broker's
+ * error body next to `error`. The numbers are what the Pod requested, not
+ * what was in the form: the broker knows them exactly (default, ceiling), and
+ * exactly those are what the node could not give.
  */
 export interface RuntimeStartFailure {
   unschedulable: RuntimeUnschedulable
   memoryMb?: number
-  /** Ядра Pod; дробные, если так задал оператор (RUNTIME_KERNEL_CPU=1500m). */
+  /** Pod cores; fractional if the operator set it so (RUNTIME_KERNEL_CPU=1500m). */
   cpus?: number
 }
-/** Разбор недоверенного тела ошибки: не то слово или не те числа — не отказ, а ничего. */
+/** Parse an untrusted error body: a wrong word or wrong numbers give nothing, not a failure. */
 export function parseRuntimeStartFailure(value: unknown): RuntimeStartFailure | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const row = value as Record<string, unknown>
@@ -136,8 +142,9 @@ export function parseRuntimeStartFailure(value: unknown): RuntimeStartFailure | 
 }
 
 /**
- * Границы числа памяти в протоколе — те же, что брокер принимает у оператора
- * в RUNTIME_KERNEL_MEMORY. Потолок конкретного узла строже и живёт в брокере.
+ * Bounds of the memory number in the protocol: the same ones the broker
+ * accepts from the operator in RUNTIME_KERNEL_MEMORY. A particular node's
+ * ceiling is stricter and lives in the broker.
  */
 export const RUNTIME_MEMORY_MIN_MB = 64
 export const RUNTIME_MEMORY_MAX_MB = 262144
@@ -146,7 +153,7 @@ const runtimeMemoryMb = (value: unknown): value is number =>
   Number.isInteger(value) &&
   value >= RUNTIME_MEMORY_MIN_MB &&
   value <= RUNTIME_MEMORY_MAX_MB
-/** Ядра комнаты в протоколе — целые, от одного до 64, как и в форме. */
+/** Room cores in the protocol are whole, from one to 64, as in the form. */
 const runtimeCpus = (value: unknown): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 64
 
@@ -198,7 +205,7 @@ export function parseRuntimeEnsureRequest(value: unknown): RuntimeEnsureRequest 
 export function parseRuntimeResizeRequest(value: unknown): RuntimeResizeRequest {
   const row = object(value)
   onlyKeys(row, ['memoryMb', 'cpus'])
-  // Хотя бы одно поле: пустое тело — не «умолчание», а ошибка вызывающего.
+  // At least one field: an empty body is not "the default" but a caller error.
   if (!('memoryMb' in row) && !('cpus' in row))
     throw new Error('Resize requires memoryMb or cpus')
   if ('memoryMb' in row && row.memoryMb !== null && !runtimeMemoryMb(row.memoryMb))
@@ -252,9 +259,9 @@ export function parseRuntimeCatalog(value: unknown): RuntimeCatalog {
         item.packages.some((p) => typeof p !== 'string' || p.length > 512))
     )
       throw new Error('Invalid environment packages')
-    // Версия — та же форма, что и в директиве окружения: «3.12», а не «3.12 или
-    // новее». Панель показывает её как факт об образе, и свободный текст на
-    // этом месте был бы выдумкой о чужой сборке.
+    // The version has the same form as in the environment directive: "3.12",
+    // not "3.12 or newer". The panel shows it as a fact about the image, and
+    // free text in this place would be fiction about someone else's build.
     if ('python' in item && (typeof item.python !== 'string' || !/^\d+\.\d+$/.test(item.python)))
       throw new Error('Invalid environment Python version')
     return {

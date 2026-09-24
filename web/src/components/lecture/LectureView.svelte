@@ -1,20 +1,24 @@
 <!--
-  Лекция: три экрана из одного компонента.
+  The lecture: three screens from one component.
 
-  ПРОЕКЦИЯ — то, что видит зал: страница на весь экран, чёрный фон, ничего
-  больше. Живёт на компьютере у проектора, и всё, что на ней происходит, приходит
-  по сети от планшета в руках преподавателя. Никакой трансляции экрана: по
-  проводу едут номер страницы и точки, а не картинка.
+  THE PROJECTION is what the audience sees: the page full screen, a black
+  background, nothing else. It lives on the computer at the projector, and
+  everything that happens on it arrives over the network from the tablet in
+  the teacher's hands. No screen casting: the wire carries a page number and
+  points, not a picture.
 
-  ПУЛЬТ — то, что видит ведущий: та же страница, следующая рядом, часы и
-  инструменты. Отсюда листают, отсюда рисуют.
+  THE CONSOLE is what the presenter sees: the same page, the next one beside
+  it, a clock and tools. Pages are turned from here, and drawing is done from
+  here.
 
-  ЗАЛ — то, что видит студент у себя: та же страница и те же чернила, но без
-  пульта. Он может уйти в тетрадь и вернуться — лекция его не держит.
+  THE AUDIENCE is what a student sees on their own screen: the same page and
+  the same ink, but without the console. They can go off to the notebook and
+  come back: the lecture does not hold them.
 
-  Один компонент, а не три, по той же причине, по которой чернила рисует один
-  код: разойдясь, они покажут ведущему одно, а залу другое, и заметить это можно
-  будет только в аудитории.
+  One component rather than three, for the same reason one piece of code
+  draws the ink: if they drifted apart, they would show the presenter one
+  thing and the audience another, and nobody could notice it anywhere but in
+  the lecture hall.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -36,18 +40,18 @@
 
   interface Props {
     /*
-     * Не `state`: рядом живут руны, а `$state` в теле компонента, где есть
-     * переменная с таким именем, читается как подписка на хранилище `$state`.
-     * Компилятор скажет об этом невнятно, а имя всё равно было хуже.
+     * Not `state`: runes live nearby, and `$state` in a component body that
+     * has a variable of that name reads as a subscription to a `$state`
+     * store. The compiler says so unclearly, and the name was worse anyway.
      */
     lecture: LectureState
-    /** Кем этот экран смотрит на лекцию. */
+    /** In which role this screen looks at the lecture. */
     role: 'presenter' | 'audience' | 'projection'
-    /** Выйти из проекции обратно в комнату. */
+    /** Leave the projection, back to the room. */
     onleave?: () => void
-    /** Отправить ЭТОТ экран на проектор. */
+    /** Send THIS screen to the projector. */
     onproject?: () => void
-    /** Выйти из общей страницы в свою читалку. Ведущему не предлагается. */
+    /** Leave the shared page for one's own reader. Not offered to the presenter. */
     onsolo?: () => void
   }
 
@@ -61,40 +65,41 @@
   let pages = $state(0)
 
   /**
-   * Путь документа — ОТДЕЛЬНЫМ значением, а не чтением из `lecture` внутри
-   * эффекта.
+   * The document's path as a SEPARATE value, not a read from `lecture` inside
+   * the effect.
    *
-   * `lecture` приезжает с сервера целым объектом и подменяется на каждое
-   * изменение состояния — на каждое перелистывание в том числе. Эффект,
-   * читавший `lecture.file` у себя внутри, подписывался тем самым на весь
-   * объект: страница сменилась — эффект перезапущен, прежний документ
-   * уничтожен (`loadingTask.destroy()`), новый качается с нуля. То есть каждое
-   * нажатие «вперёд» заново скачивало и разбирало ВСЮ колоду, и до самой
-   * страницы дело доходило через полсекунды на пустом стенде — а на живой
-   * лекции с тридцатью мегабайтами через ретранслятор это и есть те самые
-   * «пять секунд или не догоняет вообще».
+   * `lecture` arrives from the server as a whole object and is replaced on
+   * every change of state, every page turn included. An effect that read
+   * `lecture.file` inside itself thereby subscribed to the whole object: the
+   * page changed, the effect restarted, the previous document was destroyed
+   * (`loadingTask.destroy()`), and the new one downloaded from scratch. That
+   * is, every press of "forward" downloaded and parsed the WHOLE deck again,
+   * and the page itself came half a second later on an empty test bench; at
+   * a live lecture with thirty megabytes through the relay, that is exactly
+   * the "five seconds, or it never catches up".
    *
-   * `$derived` от строки пути пропускает дальше только настоящую смену
-   * документа: значение сравнивается, а не ссылка.
+   * A `$derived` of the path string lets through only a real change of
+   * document: the value is compared, not the reference.
    */
   const file = $derived(lecture.file)
 
-  /** Счётчик попыток открыть: «Попробовать снова» и повтор на проекции. */
+  /** Counter of open attempts: "Try again" and the retry on the projection. */
   let attempt = $state(0)
 
   $effect(() => {
     const path = file
     void attempt
     /*
-     * Сбрасываем ВСЁ, а не один `doc`.
+     * We reset EVERYTHING, not just `doc`.
      *
-     * `failure` не снимался нигде и ни от чего: одна неудачная загрузка
-     * прибивала экран к ветке ошибки навсегда — даже смена документа лекции не
-     * возвращала картинку, потому что новый PDF приезжал в `doc`, а разметка
-     * всё равно показывала ошибку. Больнее всего на проекции: там кнопок нет
-     * намеренно, и зал до конца пары читает «Не удалось открыть документ
-     * лекции» вместо слайдов. `pages` от прошлой колоды к тому же держал
-     * неверную верхнюю границу шага.
+     * `failure` was never cleared, anywhere, by anything: one failed load
+     * pinned the screen to the error branch for good; even changing the
+     * lecture document did not bring the picture back, because the new PDF
+     * arrived in `doc` while the markup kept showing the error. It hurt most
+     * on the projection: there are no buttons there on purpose, and until the
+     * end of class the audience reads "Could not open the lecture document."
+     * instead of the slides. `pages` from the previous deck, on top of that,
+     * kept a wrong upper bound for the step.
      */
     doc = null
     pages = 0
@@ -105,9 +110,9 @@
       .then((pdf) => pdf.open(api.fileRaw(session.session.id, path), session.token))
       .then((ready) => {
         opened = ready
-        // Документ, доехавший после ухода, уносит с собой воркер pdf.js и его
-        // буферы: без `destroy` каждый уход посреди загрузки — живой воркер до
-        // конца пары.
+        // A document that arrives after we have left holds on to a pdf.js
+        // worker and its buffers: without `destroy`, every exit mid-load is a
+        // live worker until the end of class.
         if (dropped) {
           void ready.loadingTask.destroy()
           return
@@ -125,12 +130,14 @@
   })
 
   /**
-   * Проекция пробует снова сама.
+   * The projection retries by itself.
    *
-   * У неё нет ни одной кнопки — и это решение, а не упущение: кнопку на
-   * проекции видит зал. Значит и повторять за неё некому: ноутбук у проектора
-   * стоит открытым до пары, сеть моргает в момент старта, и без этого таймера
-   * лекция идёт с пульта, а зал сорок минут смотрит на строку ошибки.
+   * It has not a single button, and that is a decision, not an omission: a
+   * button on the projection is seen by the audience. So there is nobody to
+   * retry for it either: the laptop at the projector stands open before
+   * class, the network blinks at the moment of start, and without this timer
+   * the lecture runs from the console while the audience spends forty
+   * minutes looking at an error line.
    */
   const RETRY_MS = 5000
   $effect(() => {
@@ -139,47 +146,49 @@
     return () => window.clearTimeout(again)
   })
 
-  /* ------------------------------------------------------------ пульт */
+  /* ---------------------------------------------------------- console */
 
   /*
-   * Цвета пера — те же четыре, что и на пульте, и из одного места (`./pult`).
-   * Копия здесь уже разошлась с пультом однажды: там синее пера объясняли
-   * измеренными числами и убирали, здесь оно стояло вторым кружком. Зал при
-   * этом один и тот же, и проектор один и тот же.
+   * The pen colours are the same four as on the console, and from one place
+   * (`./pult`). A copy here has already drifted from the console once: there
+   * the blue pen was explained with measured numbers and removed, here it
+   * stood as the second circle. Yet the audience is the same, and so is the
+   * projector.
    */
   let tool = $state<'pen' | 'laser' | 'off'>('off')
   let ink = $state(INKS[0].color)
 
   const presenting = $derived(role === 'presenter')
   const page = $derived(lecture.page)
-  /** Хостовое здесь только заметки и ссылка-ключ: лекцию может вести и студент. */
+  /** Host-only here: just the notes and the key link; a student may present too. */
   const host = $derived(session.me.role === 'host')
 
   /**
-   * Занятие кончилось — пульт стал преподавательским.
+   * The class is over: the console became the teacher's.
    *
-   * Лекцию звонок НЕ гасит: сорок минут разметки живут только в памяти сервера,
-   * истории у них нет, и стирать их концом пары нельзя. Но управлять ею
-   * студент, который её вёл, больше не может — страницу, чернила и паузу сервер
-   * от него теперь не примет (control.ts), — поэтому здесь гаснет весь пульт
-   * разом: и полоса, и перо, и клавиатура. Кнопка, которая молчит, читается как
-   * поломка, а мазок, которого не видит зал, — как поломка вдвойне.
+   * The bell does NOT put out the lecture: forty minutes of annotation live
+   * only in the server's memory, they have no history, and the end of class
+   * must not erase them. But the student who presented it can no longer run
+   * it: the server will not accept a page, ink or pause from them anymore
+   * (control.ts), so the whole console goes dark here at once: the bar, the
+   * pen and the keyboard. A button that stays silent reads as a breakage,
+   * and a dab the audience cannot see reads as a breakage twice over.
    *
-   * Правилом `board` это не выражается: оно про то, кто ставит документ на
-   * общий экран, а не про то, кто ведёт уже начатую лекцию. Значит, та же
-   * `actsAfterClass`, что и у сервера.
+   * The `board` rule does not express this: it is about who puts a document
+   * on the shared screen, not about who presents a lecture already started.
+   * Hence the same `actsAfterClass` as on the server.
    */
   const acts = $derived(actsAfterClass(session.finished, session.me.role))
   const pult = $derived(presenting && acts)
 
   /**
-   * «Стереть» и «Закончить» спросили и ждут второго нажатия.
+   * "Erase" and "End" have asked and are waiting for a second press.
    *
-   * Снимаются сменой страницы: вопрос, оставшийся висеть на следующем слайде,
-   * превращает первое же нажатие в стирание без вопроса.
+   * Cleared by a page change: a question left hanging on the next slide
+   * turns the very first press into erasing without a question.
    *
-   * Два вопроса разом не висят: горящих красным кнопки в полосе тогда две, и
-   * «да» уходит не в ту.
+   * Two questions never hang at once: there would then be two buttons
+   * glowing red in the bar, and the "yes" would go to the wrong one.
    */
   let wipeAsked = $state(false)
   let stopAsked = $state(false)
@@ -192,14 +201,16 @@
   })
 
   /**
-   * РАЗРУШАЮЩЕЕ БЕЗ СВЯЗИ НЕ УХОДИТ В ОЧЕРЕДЬ.
+   * DESTRUCTIVE ACTIONS DO NOT GO INTO THE QUEUE WITHOUT A CONNECTION.
    *
-   * `session.send` на закрытом сокете кладёт кадр в очередь управления, и он
-   * доедет — через полминуты, когда вернётся вайфай. Для «Отменить», «Стереть»
-   * и «Закончить» это худший из исходов: на экране всё осталось на месте,
-   * человек пошёл дальше, а посреди следующего слайда чернила у зала пропали
-   * сами, без единого нажатия. Отложенное разрушение хуже отказа — тем же
-   * доводом от этого защищён пульт (см. `undoStroke` в ConsoleView).
+   * `session.send` on a closed socket puts the frame into the control queue,
+   * and it will get there half a minute later, when the Wi-Fi comes back.
+   * For "Undo", "Erase" and "End" that is the worst of outcomes: on screen
+   * everything stayed in place, the person moved on, and in the middle of
+   * the next slide the audience's ink vanished by itself, without a single
+   * press. Deferred destruction is worse than a refusal; the console is
+   * protected from this by the same argument (see `undoStroke` in
+   * ConsoleView).
    */
   function destructive(): boolean {
     if (session.connected) return true
@@ -227,18 +238,19 @@
   }
 
   /**
-   * «Закончить» — второе нажатие, как у «Стереть», и по той же причине.
+   * "End" takes a second press, like "Erase", and for the same reason.
    *
-   * Сервер на `lecture:stop` удаляет комнату лекции целиком: проекция гаснет,
-   * а чернила ВСЕХ страниц стираются у всех и безвозвратно — истории у них
-   * нет. Кнопка при этом стояла вплотную к «На проектор», то есть к той, что
-   * ведущий с ноутбука нажимает в начале пары: промах на одну кнопку уносил
-   * сорок минут разметки. На пульте тот же поступок спрашивает отдельной
-   * строкой в листе «Ещё».
+   * On `lecture:stop` the server deletes the lecture room entirely: the
+   * projection goes dark, and the ink of ALL pages is erased for everyone,
+   * irrecoverably: it has no history. Meanwhile the button stood right next
+   * to "Project", that is, the one the presenter presses on the laptop at
+   * the start of class: missing by one button took forty minutes of
+   * annotation with it. On the console the same act asks with a separate row
+   * in the "More" sheet.
    */
   function askStop(): void {
     if (!session.connected) {
-      // Своими словами: «ничего не стёрлось» здесь сказало бы не о том.
+      // Its own words: "nothing was erased" would say the wrong thing here.
       stopAsked = false
       refuse(tr('room.ui.255'))
       return
@@ -253,55 +265,58 @@
   }
 
   /**
-   * Куда мы уже попросили уйти.
+   * Where we have already asked to go.
    *
-   * Считать следующую страницу от `lecture.page` — то есть от того, что УЖЕ
-   * подтвердил сервер, — можно ровно при одном условии: между двумя нажатиями
-   * успевает обернуться сокет. На стенде семь нажатий стрелкой давали одну
-   * страницу вместо семи: все семь долетали до окна, все семь считали «текущая
-   * плюс один» от одной и той же текущей, и сервер, которому шестью подряд
-   * назвали одно и то же число, честно отвечал «я уже там». На паре это
-   * выглядит как залипшая стрелка: жмёшь десять раз, проектор двигается на
-   * одну.
+   * Counting the next page from `lecture.page`, that is, from what the
+   * server HAS ALREADY confirmed, works under exactly one condition: the
+   * socket has time to make a round trip between two presses. On the test
+   * bench seven arrow presses gave one page instead of seven: all seven
+   * reached the window, all seven computed "current plus one" from the same
+   * current page, and the server, told the same number six times in a row,
+   * honestly replied "I'm already there". In class this looks like a stuck
+   * arrow: you press ten times, the projector moves by one.
    *
-   * Поэтому шаг считается от СВОЕГО намерения, а не от чужого подтверждения.
-   * Намерение живёт до тех пор, пока сервер его не догонит или пока страницу
-   * не сменит кто-то другой, — за этим следит эффект ниже.
+   * So the step is counted from OUR OWN intention, not from someone else's
+   * confirmation. The intention lives until the server catches up with it or
+   * until someone else changes the page; the effect below watches for that.
    */
   let wanted = $state<number | null>(null)
   /**
-   * Страницы, которые мы успели попросить, пока намерение не сбылось.
+   * Pages we managed to ask for while the intention had not come true.
    *
-   * Без этого списка «сервер встал не на ту страницу, что мы хотим» читается
-   * как «листает кто-то другой» — а это чаще всего наш же собственный шаг по
-   * дороге: два нажатия подряд просят шестую и седьмую, эхо шестой приходит
-   * первым, и намерение на седьмую пришлось бы выбросить, не дождавшись. Не
-   * руна: её никто не рисует, она только сверяется.
+   * Without this list "the server stopped on a page other than the one we
+   * want" reads as "someone else is turning pages", and most often it is our
+   * own step along the way: two presses in a row ask for the sixth and the
+   * seventh, the echo of the sixth arrives first, and the intention for the
+   * seventh would have to be thrown away without waiting. Not a rune: nobody
+   * draws it, it is only checked against.
    */
   let asked = new Set<number>()
 
   /*
-   * Намерение снимается, когда сервер его подтвердил — и когда страницу увёл
-   * кто-то другой. Второе важнее первого: если ведущий листает с планшета, а
-   * это окно помнит своё старое «хочу на шестую», то следующая стрелка уедет
-   * от шестой, а не от той, что видит зал, — и два экрана разойдутся молча.
-   * Чужой ход всегда главнее нашего намерения.
+   * The intention is cleared when the server has confirmed it, and when
+   * someone else took the page away. The second matters more than the
+   * first: if the presenter turns pages from the tablet while this window
+   * remembers its old "I want the sixth", the next arrow will step from the
+   * sixth, not from the one the audience sees, and the two screens will
+   * drift apart silently. Someone else's move always outranks our intention.
    */
   $effect(() => {
     const at = lecture.page
     untrack(() => {
       if (wanted === null) return
       if (at === wanted) {
-        // Догнал: намерение сбылось.
+        // Caught up: the intention came true.
         wanted = null
         asked.clear()
       } else if (!asked.has(at)) {
         /*
-         * Страница, которой мы не просили, — значит листает кто-то другой:
-         * второй преподаватель или планшет того же человека. Чужой ход всегда
-         * главнее нашего намерения; иначе следующая стрелка уедет от нашей
-         * забытой седьмой, а не от той, что видит зал, и два экрана разойдутся
-         * молча — то есть случится ровно то, чего в лекции быть не должно.
+         * A page we did not ask for, so someone else is turning pages: a
+         * second teacher or the same person's tablet. Someone else's move
+         * always outranks our intention; otherwise the next arrow would step
+         * from our forgotten seventh, not from the one the audience sees, and
+         * the two screens would drift apart silently, that is, exactly what
+         * must not happen in a lecture would happen.
          */
         wanted = null
         asked.clear()
@@ -310,23 +325,25 @@
   })
 
   /**
-   * НАМЕРЕНИЕ НЕ ВЕЧНО: повторяем просьбу и сдаёмся.
+   * AN INTENTION IS NOT FOREVER: we repeat the request and then give up.
    *
-   * Эффект выше снимает `wanted` только эхом сервера, а эхо может не прийти
-   * вовсе: сокет закрылся сразу после `send` (он проверяет лишь readyState),
-   * или сервер отверг кадр в окно между звонком и приходом «занятие
-   * закончено». Тогда намерение висит навсегда, `turn()` считает от него, и
-   * следующая стрелка просит `wanted + 1` — зал прыгает через слайд.
+   * The effect above clears `wanted` only on the server's echo, and the echo
+   * may never come: the socket closed right after `send` (which checks only
+   * readyState), or the server rejected the frame in the window between the
+   * bell and the arrival of "class is over". Then the intention hangs
+   * forever, `turn()` counts from it, and the next arrow asks for
+   * `wanted + 1`: the audience jumps over a slide.
    *
-   * Поэтому здесь то же, что у пульта (ConsoleView): раз в 600 мс повторяем
-   * просьбу — `lecture:page` идемпотентен, сервер, уже стоящий на этой
-   * странице, просто промолчит, — а после пяти безответных попыток намерение
-   * снимается и шаг снова считается от того, что видит зал. Без связи
-   * попытки не считаются и не уходят: тратить их на закрытый сокет значило бы
-   * сдаться ровно тогда, когда сдаваться не за что.
+   * So here we do the same as the console (ConsoleView): every 600 ms we
+   * repeat the request (`lecture:page` is idempotent, and a server already on
+   * that page will simply stay silent), and after five unanswered attempts
+   * the intention is dropped and the step is counted again from what the
+   * audience sees. Without a connection, attempts are neither counted nor
+   * sent: spending them on a closed socket would mean giving up exactly when
+   * there is nothing to give up over.
    *
-   * `wanted` читается ЗДЕСЬ отслеживаемо (в отличие от эффекта выше): таймер
-   * обязан завестись на само намерение, а не только на ответ сервера.
+   * `wanted` is read HERE as tracked (unlike the effect above): the timer
+   * must start on the intention itself, not only on the server's answer.
    */
   const AGAIN_MS = 600
   const AGAIN_MAX = 5
@@ -349,11 +366,11 @@
   })
 
   /**
-   * Слайд, на который возвращаемся с чистого листа: последний, что видел зал.
+   * The slide we return to from a blank sheet: the last one the audience saw.
    *
-   * Своего счёта листам здесь нет (его ведёт пульт), поэтому «куда вернуться»
-   * помнится по самой лекции: единица — на случай, когда этот экран открыли
-   * уже на листе.
+   * There is no sheet count of our own here (the console keeps it), so
+   * "where to go back" is remembered from the lecture itself: one, for the
+   * case when this screen was opened already on a sheet.
    */
   let lastSlide = $state(1)
   $effect(() => {
@@ -364,17 +381,19 @@
   })
 
   /**
-   * Шаг вперёд-назад. Знает про чистые листы — страницы с ОТРИЦАТЕЛЬНЫМ
-   * номером (см. shared/lecture.ts).
+   * A step forward or back. Knows about blank sheets: pages with a NEGATIVE
+   * number (see shared/lecture.ts).
    *
-   * Арифметика «±1» на них мертва в обе стороны: с листа −1 «вперёд» даёт 0,
-   * «назад» даёт −2, и то и другое отбрасывалось молча — вместе со стрелками,
-   * пробелом и презентационной кликалкой, воткнутой в компьютер у проектора.
-   * Вернуть зал на слайды из комнаты было нечем вовсе.
+   * "±1" arithmetic is dead on them in both directions: from sheet −1
+   * "forward" gives 0, "back" gives −2, and both were silently dropped,
+   * together with the arrows, the space bar and the presentation clicker
+   * plugged into the computer at the projector. There was no way at all to
+   * bring the audience back to the slides from the room.
    *
-   * Порядок листов — по заведению (−1 первый), как в ленте пульта. «Вперёд» с
-   * любого листа возвращает к слайду: сколько листов заведено, знает только
-   * пульт, а заводить новый молча — это белое поле у зала посреди фразы.
+   * Sheets are ordered by creation (−1 first), as in the console's strip.
+   * "Forward" from any sheet returns to the slide: only the console knows
+   * how many sheets have been started, and starting a new one silently would
+   * put a white field in front of the audience mid-sentence.
    */
   function turn(step: -1 | 1): void {
     const from = wanted ?? page
@@ -384,11 +403,12 @@
     }
     const next = from + step
     /*
-     * Верхняя граница, когда своя копия не открылась (`pages === 0`): на одну
-     * страницу дальше той, что зал УЖЕ показывает. Без неё зажатая стрелка
-     * гнала залу номера за конец колоды — сервер принимает любой
-     * положительный, — и обратно возвращались шестьюдесятью нажатиями. Та же
-     * граница и по той же причине стоит в пульте (ConsoleView.goTo).
+     * The upper bound when our own copy did not open (`pages === 0`): one
+     * page past the one ALREADY on the audience's screen. Without it a held
+     * arrow drove the audience's page numbers past the end of the deck (the
+     * server accepts any positive one), and getting back took sixty presses.
+     * The same bound, for the same reason, stands in the console
+     * (ConsoleView.goTo).
      */
     const top = pages > 0 ? pages : Math.max(page, 1) + 1
     if (next < 1 || next > top) return
@@ -403,27 +423,29 @@
   }
 
   /*
-   * Клавиатура пульта: стрелки и пробел листают, B гасит экран, Z убирает
-   * последний штрих, E спрашивает про стирание страницы. Ровно то, что
-   * нажимают, не глядя, — и то, что шлёт презентационная кликалка, если её
-   * воткнуть в компьютер у проектора.
+   * The console keyboard: the arrows and the space bar turn pages, B blanks
+   * the screen, Z removes the last stroke, E asks about erasing the page.
+   * Exactly what is pressed without looking, and what a presentation clicker
+   * sends if you plug it into the computer at the projector.
    *
-   * Z и E — те же буквы, что на пульте (ConsoleView), и по `code`, а не по
-   * `key`: на русской раскладке `key` — это «я» и «у». Раньше их здесь не
-   * было вовсе, а комментарий и подпись кнопки про них говорили: человек с
-   * ноутбука читал «— Z на пульте», жал Z на этом же экране и не получал
-   * ничего.
+   * Z and E are the same letters as on the console (ConsoleView), and by
+   * `code`, not by `key`: on a Russian layout `key` is "я" and "у". They
+   * used to be missing here entirely, while the comment and the button label
+   * talked about them: a person on the laptop read "— Z on the console",
+   * pressed Z on this very screen and got nothing.
    */
   /**
-   * Свои ли это слайды. Проекция стоит на компьютере у проектора, и обычно это
-   * тот же преподаватель, что ведёт с планшета (планшет входит по ключу тем же
-   * участником), — тогда клавиатура и кликер, воткнутые в этот компьютер,
-   * листают лекцию. Чужую лекцию проекция не листает: сервер такое отбросит, а
-   * молчаливое нажатие лучше, чем перелистывание чужого слайда.
+   * Whether these are our own slides. The projection stands on the computer
+   * at the projector, and usually it is the same teacher who presents from
+   * the tablet (the tablet signs in by key as the same participant); then
+   * the keyboard and the clicker plugged into this computer turn the
+   * lecture's pages. The projection does not turn someone else's lecture:
+   * the server would drop that, and a silent press is better than turning
+   * someone else's slide.
    */
   const mine = $derived(lecture.by === session.me.id)
 
-  /* Полный экран проекции — по первому жесту в её окне, см. SessionScreen. */
+  /* Projection full screen: on the first gesture in its window, see SessionScreen. */
   let full = $state(fullscreenNow())
   $effect(() => {
     const sync = () => (full = fullscreenNow())
@@ -440,13 +462,14 @@
   }
 
   /**
-   * Отказ слоя чернил — одной строкой на шесть секунд.
+   * An ink layer refusal: one line for six seconds.
    *
-   * Отказ бывает один: страница набрала свои шестьсот штрихов, и сервер
-   * следующий не примет. Раньше об этом не говорил никто: линия появлялась,
-   * четыре секунды жила на досылках и пропадала, а у зала её не было вовсе.
-   * Плашки комнаты сюда не годятся — они про сеть и ядро, а это ответ на
-   * штрих, и стоять он должен там, где штрих: у листа.
+   * There is only one refusal: the page has collected its six hundred
+   * strokes, and the server will not accept the next one. Nobody used to say
+   * so: the line appeared, lived for four seconds on resends and vanished,
+   * while the audience never had it at all. The room's banners do not fit
+   * here: they are about the network and the kernel, while this is an answer
+   * to a stroke, and it must stand where the stroke is: at the sheet.
    */
   let refusal = $state<string | null>(null)
   let refusalTimer: number | undefined
@@ -463,14 +486,15 @@
       fillScreen()
       return
     }
-    // `acts` и на проекции: клавиатура у проектора листает лекцию так же, как
-    // пульт, и после звонка сервер её так же не послушает.
+    // `acts` on the projection too: the keyboard at the projector turns the
+    // lecture's pages just like the console, and after the bell the server
+    // will ignore it just the same.
     if (!pult && !(role === 'projection' && mine && acts)) return
-    // Цель бывает и не элементом (документ, окно): у них нет `closest`.
+    // The target may not be an element (document, window): no `closest` there.
     const target = event.target instanceof Element ? event.target : null
     if (target?.closest('input, textarea, [contenteditable]')) return
     if (event.key === 'Escape' && (wipeAsked || stopAsked)) {
-      // Заданный вопрос снимается тем же, чем снимают любой вопрос.
+      // A pending question is dismissed the way any question is dismissed.
       event.preventDefault()
       wipeAsked = false
       stopAsked = false
@@ -486,8 +510,9 @@
       event.preventDefault()
       session.send({ t: 'lecture:blank', on: !lecture.blank })
     } else if (event.code === 'KeyZ' && !event.metaKey && !event.ctrlKey && !event.altKey) {
-      // Только с пульта: чернила рисует планшет, а клавиатура у проектора
-      // листает. Отменять чужой штрих оттуда незачем.
+      // Only from the console: the tablet draws the ink, while the keyboard
+      // at the projector turns pages. There is no reason to undo someone
+      // else's stroke from there.
       if (!pult) return
       event.preventDefault()
       undoStroke()
@@ -495,9 +520,9 @@
       if (!pult) return
       event.preventDefault()
       /*
-       * Автоповтор сюда приходит десятками, и без этой строки зажатая E
-       * задавала вопрос и сама же на него отвечала — то есть стирала страницу
-       * удержанием клавиши.
+       * Auto-repeat arrives here by the dozen, and without this line a held E
+       * asked the question and answered it itself, that is, erased the page
+       * by holding the key.
        */
       if (event.repeat) return
       askWipe()
@@ -505,22 +530,23 @@
   }
 
   /*
-   * Трекингов здесь ровно два, и разница между ними носит смысл: 0.14em
-   * (`tracking-label`) называет ДЕЙСТВИЕ — то, что нажимают, — а 0.2em
-   * (`tracking-section`) называет МЕСТО: «дальше», «пауза». Стояли на одном и
-   * том же 11-пиксельном капсе четыре разных трекинга (0.08 на кнопках, 0.16 на
-   * состоянии проекции, 0.2 на именах областей); различить их читатель не может,
-   * а удержать согласованными не может никто, и через месяц они разъезжаются.
+   * There are exactly two trackings here, and the difference between them
+   * carries meaning: 0.14em (`tracking-label`) names an ACTION, something
+   * pressed, while 0.2em (`tracking-section`) names a PLACE: "next",
+   * "pause". The same 11-pixel caps used to carry four different trackings
+   * (0.08 on buttons, 0.16 on the projection state, 0.2 on area names); a
+   * reader cannot tell them apart, nobody can keep them consistent, and
+   * within a month they drift apart.
    */
   /*
-   * Нажатие выписано свойствами, а не помощником `.press`: утилита
-   * `transition-*` переписывает `transition-property` целиком, и transform из
-   * помощника в этот список бы не попал — та же ловушка, что у замка ячейки и
-   * у клавиш пульта. Полоса лекции — единственный орган управления ведущего с
-   * ноутбука, «Дальше» на ней нажимают полсотни раз за пару, а страница
-   * приезжает не мгновенно: 3 % под пальцем — то самое подтверждение, что
-   * нажатие услышано, которого у неё не было, пока она держала один
-   * `transition-colors`.
+   * The press is spelled out as properties, not the `.press` helper: a
+   * `transition-*` utility rewrites `transition-property` entirely, and the
+   * helper's transform would not make it into that list; the same trap as
+   * with the cell lock and the console keys. The lecture bar is the
+   * presenter's only control on the laptop, "Next" on it is pressed some
+   * fifty times per class, and the page does not arrive instantly: 3 % under
+   * the finger is exactly the confirmation that the press was heard, which
+   * it lacked while it carried a lone `transition-colors`.
    */
   const TOOL =
     'flex h-8 items-center gap-1.5 px-2.5 text-2xs font-bold uppercase tracking-label ' +
@@ -533,17 +559,19 @@
 
 {#if role === 'projection'}
   <!--
-    Проекция. Чёрный фон, ничего кроме страницы — и ни одной кнопки: всё, что
-    может понадобиться в аудитории, уже есть в руках у ведущего. Выход спрятан
-    под Escape и под щелчок в углу: случайное нажатие мышью по проекции не
-    должно прерывать лекцию.
+    The projection. A black background, nothing but the page, and not a
+    single button: everything that may be needed in the lecture hall is
+    already in the presenter's hands. The exit is hidden under Escape and a
+    click in the corner: a stray mouse click on the projection must not
+    interrupt the lecture.
   -->
   <!--
-    Щелчок по проекции — полный экран. Проекция теперь открывается отдельным
-    окном, а полный экран в чужом окне не попросить: браузер даёт его только
-    по жесту в самом окне. Первое, что делают с новым окном, — щёлкают в него,
-    и этого достаточно. Кнопки нет намеренно: любая кнопка на проекции —
-    кнопка, которую видит зал.
+    A click on the projection means full screen. The projection now opens as
+    a separate window, and full screen cannot be requested for another
+    window: the browser grants it only on a gesture in that window itself.
+    The first thing people do with a new window is click into it, and that is
+    enough. There is no button on purpose: any button on the projection is a
+    button the audience sees.
   -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -587,9 +615,10 @@
     </button>
     {#if !full && fullscreenPossible()}
       <!--
-        Подсказка живёт только ПОКА окно не во весь экран — то есть пока
-        проекцию ещё настраивают, а не показывают залу. Стрелки названы
-        только тому, чьи это слайды: чужие она не листает.
+        The hint lives only WHILE the window is not full screen, that is,
+        while the projection is still being set up rather than shown to the
+        audience. The arrows are mentioned only to the owner of the slides: it
+        does not turn anyone else's.
       -->
       <p class="pointer-events-none absolute bottom-4 right-5 text-2xs uppercase tracking-label text-white/35">
         {mine ? tr('room.ui.279') : ''}{tr('room.ui.280')} </p>
@@ -599,8 +628,8 @@
   <section class="flex min-h-0 flex-1 flex-col bg-surface">
     {#if pult}
       <!--
-        Пульт. Полоса под вкладками — там же, где у тетради Run All: у каждой
-        вкладки своя, и она всегда под ней.
+        The console. The bar under the tabs, where the notebook has Run All:
+        each tab has its own, and it is always under it.
       -->
       <div class="flex h-[34px] shrink-0 items-stretch border-b border-line bg-canvas">
         <button
@@ -627,9 +656,9 @@
 
         <span class="my-2 w-px bg-line" aria-hidden="true"></span>
 
-        <!-- Перо. Цвет выбирается тем же нажатием, что и само перо: два
-             отдельных переключателя ради четырёх цветов — это два вопроса там,
-             где человек задаёт один. -->
+        <!-- The pen. The colour is chosen by the same press as the pen itself:
+             two separate switches for four colours would be two questions
+             where the person asks one. -->
         {#each INKS as choice (choice.color)}
           <button
             type="button"
@@ -643,12 +672,12 @@
             }}
           >
             <!--
-              Кружок растёт от СОСТОЯНИЯ, и растёт мгновенно: состояние
-              приходит само, и анимировать его — значит рисовать его позже, чем
-              оно случилось (та же причина, по которой не анимируется полоса
-              «включено» на клавише пульта). Transform отдан пальцу: `press` на
-              самой кнопке, взятый именем — других утилит перехода на ней нет,
-              и переписывать `transition-property` некому.
+              The circle grows from STATE, and grows instantly: the state
+              arrives by itself, and animating it means drawing it later than
+              it happened (the same reason the "on" bar on a console key is
+              not animated). Transform is given to the finger: `press` on the
+              button itself, taken by name; there are no other transition
+              utilities on it, so nothing rewrites `transition-property`.
             -->
             <span
               class="h-4 w-4 rounded-full border-2 {tool === 'pen' && ink === choice.color
@@ -686,11 +715,12 @@
         >
           <Icon name="undo" size={12} /> {tr('room.ui.286')} </button>
         <!--
-          «Стереть» спрашивает, и это не вежливость: она стоит в одном ряду с
-          «Пауза», а промах мышью на одну кнопку влево уносил всю разметку
-          слайда у зала и на проекторе мгновенно и безвозвратно — чернила лекции
-          живут только в памяти сервера, истории у них нет. На пульте ту же
-          операцию защищают удержанием ластика и отдельным вопросом.
+          "Erase" asks, and not out of politeness: it stands in one row with
+          "Pause", and a mouse miss by one button to the left took away all of
+          the slide's annotation for the audience and on the projector,
+          instantly and irrecoverably: lecture ink lives only in the server's
+          memory, it has no history. On the console the same operation is
+          protected by holding the eraser and by a separate question.
         -->
         <button
           type="button"
@@ -713,19 +743,20 @@
         <span class="flex-1"></span>
 
         <!--
-          Пульт передаёт ПРЕПОДАВАТЕЛЬ. Вести лекцию может и студент — правило
-          `board: 'room'` это разрешает, — но `/handoff` ему отвечает 403, и
-          кнопка, у которой один исход и тот отказ, здесь не стоит.
+          The console is handed over by the TEACHER. A student may present a
+          lecture too (the `board: 'room'` rule allows it), but `/handoff`
+          answers them 403, and a button whose only outcome is a refusal does
+          not belong here.
         -->
         {#if host}
           <ConsoleLink class="{TOOL} text-muted hover:text-ink" />
         {/if}
         {@render projectButton()}
         <!--
-          Волосок между «На проектор» и «Закончить» — не украшение: это две
-          соседние кнопки, из которых первую нажимают в начале пары, а вторая
-          необратима. Вопрос вторым нажатием держит основную защиту, разрыв
-          держит палец.
+          The hairline between "Project" and "End" is not decoration: these
+          are two neighbouring buttons, the first pressed at the start of
+          class and the second irreversible. The second-press question is the
+          main protection; the gap holds back the finger.
         -->
         <span class="my-2 w-px bg-line" aria-hidden="true"></span>
         <button
@@ -740,16 +771,17 @@
       </div>
     {:else if presenting}
       <!--
-        Лекцию вёл он, а звонок уже был. Одна строка вместо полосы: лекция на
-        экране осталась — и страница, и чернила, — а пульт стал
-        преподавательским. Молча снятые клавиши читались бы как поломка
-        планшета посреди аудитории.
+        They presented the lecture, and the bell has already rung. One line
+        instead of the bar: the lecture stayed on screen (both the page and
+        the ink), and the console became the teacher's. Keys removed silently
+        would read as the tablet breaking down in the middle of the lecture
+        hall.
       -->
       <div
         class="flex h-[34px] shrink-0 items-center gap-2 border-b border-line bg-canvas px-4 text-2xs text-muted"
       >
-        <!-- Спокойная точка, не тревожная: это решение преподавателя, а не
-             поломка, и лекция на экране как стояла, так и стоит. -->
+        <!-- A calm dot, not an alarming one: this is the teacher's decision,
+             not a breakage, and the lecture on screen stays as it was. -->
         <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
         <span class="min-w-0 flex-1 truncate"> {tr('room.ui.295')} </span>
         <span class="shrink-0 font-mono tabular-nums">
@@ -758,18 +790,19 @@
         {@render projectButton()}
       </div>
     {:else}
-      <!-- Залу — одна строка: кто ведёт и что идёт. Управления нет вовсе. -->
+      <!-- One line for the audience: who presents and what is on. No controls at all. -->
       <div
         class="flex h-[34px] shrink-0 items-center gap-2 border-b border-line bg-canvas px-4 text-2xs text-muted"
       >
         <span class="h-1.5 w-1.5 shrink-0 rounded-full" style={`background:${lecture.color}`}></span>
         <!--
-          Кто ведёт и что идёт — одной усыхающей группой.
+          Who presents and what is on, as one shrinking group.
 
-          Имя и файл стояли голым текстом прямо во флексе, то есть не усыхали
-          ничем: на телефоне «идёт лекция Александра Константинопольская ·
-          lecture-07.pdf» выталкивала за правый край и счётчик страниц, и
-          «На общий экран». Усыхает то, что читают; счётчик и кнопки целы.
+          The name and the file stood as bare text right in the flex, that is,
+          nothing let them shrink: on a phone "lecture by Aleksandra
+          Konstantinopolskaya · lecture-07.pdf" pushed both the page counter
+          and "Share screen" off the right edge. What shrinks is what gets
+          read; the counter and the buttons stay whole.
         -->
         <span class="flex min-w-0 flex-1 items-center gap-2">
           <span class="truncate"> {tr('room.ui.297')} {lecture.byName} </span>
@@ -781,9 +814,10 @@
         </span>
         {#if onsolo}
           <!--
-            Отойти от общей страницы — и вернуться. За преподавателем в этом
-            продукте ИДУТ, а не привязаны к нему: студент, которому нужно
-            перечитать предыдущий слайд, не должен для этого ждать конца лекции.
+            Step away from the shared page, and come back. In this product the
+            teacher is FOLLOWED, not tied to: a student who needs to reread
+            the previous slide must not have to wait for the end of the
+            lecture to do it.
           -->
           <button
             type="button"
@@ -798,16 +832,18 @@
 
     {#if failure}
       <!--
-        Документ не открылся — У НАС: истёк токен, лопнула сеть, битый кэш. У
-        проектора он при этом, скорее всего, открыт, и лекцию можно довести по
-        кнопкам и по заметкам. Отнимать у ведущего то, что ещё работает,
-        из-за собственной неудачи — худшее, что этот экран может сделать.
+        The document did not open ON OUR SIDE: an expired token, a broken
+        network, a corrupt cache. At the projector it is most likely open, and
+        the lecture can be carried through with the buttons and the notes.
+        Taking away from the presenter what still works because of our own
+        failure is the worst thing this screen can do.
       -->
       <div class="flex min-h-0 flex-1 gap-3 p-3">
         <div class="flex min-w-0 flex-1 flex-col items-start gap-3">
           <p class="text-ui text-muted">{failure}</p>
-          <!-- Повтор руками: сеть, моргнувшая в момент старта, не повод
-               доводить пару без слайдов у себя на экране. -->
+          <!-- A manual retry: a network that blinked at the moment of start
+               is no reason to get through the class without slides on your
+               own screen. -->
           <button type="button" class="btn-outline h-8 px-3 text-2xs" onclick={() => (attempt += 1)}> {tr('room.ui.191')} </button>
         </div>
         {#if presenting && host}
@@ -833,8 +869,8 @@
           {/snippet}
         </LecturePage>
         {#if refusal}
-          <!-- У нижней кромки слева: туда не смотрят, пока рисуют, и туда
-               смотрят, когда рисование не получилось. -->
+          <!-- By the bottom edge on the left: nobody looks there while
+               drawing, and everybody looks there when the drawing failed. -->
           <div
             class="pointer-events-none absolute bottom-4 left-4 z-10 flex h-7 items-center bg-ink px-3"
             aria-live="polite"
@@ -845,18 +881,20 @@
 
         {#if pult && (host || (page > 0 && pages > page))}
           <!--
-            Колонка ведущего — и есть Speaker View: что будет дальше и что про
-            это сказать. Знать это, не заглядывая вперёд на проекторе.
+            The presenter's column is the Speaker View: what comes next and
+            what to say about it. Knowing this without peeking ahead on the
+            projector.
 
-            «Дальше» показывается, только когда следующая страница есть, а
-            заметки — всегда: на последнем слайде говорить ещё нужно, и лента,
-            исчезнувшая именно там, читалась бы как поломка. Заметкам отдана
-            нижняя, большая половина колонки: их читают, подняв голову от
-            экрана, а на эскиз смотрят краем глаза.
+            "Next" is shown only when there is a next page, while the notes
+            are always shown: on the last slide there is still talking to do,
+            and a strip that vanished exactly there would read as a breakage.
+            The notes get the lower, larger half of the column: they are read
+            with the head raised from the screen, while the thumbnail is
+            glanced at from the corner of the eye.
 
-            Ни залу, ни проекции заметки не достаются ни в каком виде — ни
-            пустыми, ни свёрнутыми: то, что «просто пустое», однажды окажется
-            непустым, и увидит это вся аудитория.
+            Neither the audience nor the projection gets the notes in any
+            form, neither empty nor collapsed: what is "just empty" will one
+            day turn out not to be, and the whole audience will see it.
           -->
           <aside class="hidden w-[28%] shrink-0 flex-col gap-2 lg:flex">
             {#if page > 0 && pages > page}
@@ -874,11 +912,12 @@
 {/if}
 
 <!--
-  «На проектор» — одна кнопка на два места: она есть и у ведущего, и у зала, и
-  это не щедрость. Проекцию открывают на ЧУЖОЙ машине — той, что воткнута в
-  проектор, — и человек за ней чаще всего не ведущий: лаборант, студент,
-  кто угодно, кто вошёл в комнату по той же ссылке. Требовать для этого пульт
-  значило бы требовать, чтобы преподаватель шёл к кафедральному ноутбуку.
+  "Project" is one button for two places: both the presenter and the
+  audience have it, and that is not generosity. The projection is opened on
+  SOMEONE ELSE'S machine, the one plugged into the projector, and the person
+  at it is most often not the presenter: a lab assistant, a student, anyone
+  who entered the room by the same link. Requiring the console for this
+  would mean requiring the teacher to walk over to the department laptop.
 -->
 {#snippet projectButton()}
   {#if onproject}

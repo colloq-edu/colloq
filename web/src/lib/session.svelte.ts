@@ -74,11 +74,11 @@ function wsBase(): string {
  * the local CRDT state and every unsynced keystroke with it.
  */
 /**
- * Одни ли это правила — по смыслу, а не по байтам.
+ * Whether these are the same rules — by meaning, not by bytes.
  *
- * Сервер и кэш страницы могут держать одно и то же с разным порядком ключей
- * или с полем, которого в старой строке ещё не было: `readRules` приводит обе
- * стороны к полному набору с умолчаниями, и сравниваются уже они.
+ * The server and the page cache may hold the same thing with a different key
+ * order or with a field the old string did not have yet: `readRules` brings
+ * both sides to the full set with defaults, and those are what is compared.
  */
 function sameRules(a: unknown, b: unknown): boolean {
   const left = readRules(a)
@@ -87,19 +87,21 @@ function sameRules(a: unknown, b: unknown): boolean {
 }
 
 /**
- * Что на закрытом сокете выбрасывается, а не встаёт в очередь.
+ * What is thrown away on a closed socket instead of being queued.
  *
- * Очередь короткая (16, см. controls.ts) и хранит нажатия: запуск ячейки,
- * перезапуск ядра, команду терминалу. Кадры лекции туда не годятся вовсе.
- * Точки чернил живут в мокром штрихе и досылаются сами, когда связь вернётся,
- * а указка — это положение руки секунду назад, и досылать его некуда. Зато
- * пальцем их набирается по десятку в секунду: очередь переполнялась ими
- * досуха и выбрасывала настоящие нажатия, ради которых заведена.
+ * The queue is short (16, see controls.ts) and holds presses: a cell run, a
+ * kernel restart, a command to the terminal. Lecture frames do not belong in
+ * it at all. Ink points live in the wet stroke and are delivered by
+ * themselves when the connection returns, and the laser pointer is the hand's
+ * position a second ago, with nowhere to deliver it to. Yet a finger produces
+ * a dozen of them a second: they filled the queue to the brim and threw out
+ * the real presses it exists for.
  *
- * Вопрос про чернила страницы (`ink:page`) — туда же, и по той же причине:
- * страницу спрашивают на каждую перерисовку, а ответ на вопрос, заданный из
- * офлайна, не нужен никому — переподключение везёт свежую опись, и вопрос
- * задаётся заново уже по ней (components/lecture/ink.ts · `askInkPage`).
+ * The question about a page's ink (`ink:page`) goes here too, for the same
+ * reason: the page is asked for on every redraw, and nobody needs the answer
+ * to a question asked while offline — the reconnect brings a fresh inventory,
+ * and the question is asked anew against it (components/lecture/ink.ts ·
+ * `askInkPage`).
  */
 const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>([
   'ping',
@@ -107,117 +109,123 @@ const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>([
   'ink:page',
   'laser',
   /*
-   * Дополнение и справка — туда же, и по той же причине.
+   * Completion and help go here too, for the same reason.
    *
-   * Их спрашивает редактор на нажатие клавиши: очередь в шестнадцать мест
-   * забивалась бы ими за полторы секунды набора, вытесняя запуск ячейки,
-   * ради которого она заведена. А досылать вопрос о слове, дописанном
-   * минуту назад, некуда: обещание на той стороне давно разрешилось пустым.
+   * The editor asks for them on a keystroke: a sixteen-slot queue would be
+   * filled with them within a second and a half of typing, pushing out the
+   * cell run it exists for. And there is nowhere to deliver a question about a
+   * word finished a minute ago: the promise on this side resolved empty long
+   * ago.
    */
   'complete',
   'inspect',
   /*
-   * Переход к определению — туда же, хотя довод у него свой.
+   * Go-to-definition goes here too, although it has its own argument.
    *
-   * Его зовут осознанно и по одному, очередь он бы не забил. Но ответ на него —
-   * это прыжок экрана: вопрос, досланный при переподключении, приехал бы
-   * ответом через минуту и утащил бы человека из того места, где он к тому
-   * времени работает. Да и ждать этот ответ уже некому — обещание закрыл
-   * `#dropAsked` ещё на обрыве. Ходит он, как и соседи, мимо `send` по живому
-   * сокету (`#ask`), и запись здесь — то место, где это правило сказано
-   * словами: маршрут менялся уже дважды, а правило не менялось ни разу.
+   * It is invoked deliberately and one at a time, it would not fill the queue.
+   * But its answer is a screen jump: a question delivered on reconnect would
+   * arrive as an answer a minute later and drag the person away from wherever
+   * they are working by then. And there is nobody waiting for that answer any
+   * more — `#dropAsked` closed the promise back at the disconnect. Like its
+   * neighbours, it bypasses `send` over the live socket (`#ask`), and this
+   * entry is the place where the rule is put into words: the route has changed
+   * twice already, and the rule has not changed once.
    */
   'define',
 ])
 
-/** Ответ ядра на вопрос о дополнении — ровно то, что показывает редактор. */
+/** The kernel's answer to a completion question — exactly what the editor shows. */
 export type CompleteReply = Extract<ControlServerMessage, { t: 'complete:reply' }>
 export type InspectReply = Extract<ControlServerMessage, { t: 'inspect:reply' }>
 /**
- * Ответ на «где это определено» — единственный из трёх, который считает не
- * ядро, а сам сервер: разбор Python и обход папки семинара (protocol.ts ·
- * `define`). Отсюда и то, что в нём приезжает: место, а не текст.
+ * The answer to "where is this defined" — the only one of the three computed
+ * not by the kernel but by the server itself: parsing Python and walking the
+ * seminar folder (protocol.ts · `define`). Hence what arrives in it: a place,
+ * not text.
  */
 export type DefineReply = Extract<ControlServerMessage, { t: 'define:reply' }>
 
 /**
- * Сколько ждём ответа на вопрос о дополнении.
+ * How long we wait for the answer to a completion question.
  *
- * Столько же, сколько ждёт ядра сервер (kernel/jupyter.ts · SHELL_REQUEST_MS):
- * его отказ по времени должен успеть приехать сюда раньше нашего, иначе на
- * каждый вопрос к занятому ядру здесь оставалась бы висеть запись, которую
- * потом закроет пришедший ответ — к тому времени уже ничей. Полсекунды сверху
- * — на дорогу.
+ * As long as the server waits for the kernel (kernel/jupyter.ts ·
+ * SHELL_REQUEST_MS): its timeout refusal must manage to arrive here before
+ * ours, otherwise for every question to a busy kernel an entry would be left
+ * hanging here, to be closed later by an answer that by then belongs to
+ * nobody. Half a second on top — for the trip.
  *
- * Переходу к определению столько не нужно: его считает сам сервер по файлам, и
- * три секунды ему не срок, а предохранитель — обещание обязано разрешиться даже
- * тогда, когда ответа не будет вовсе.
+ * Go-to-definition does not need that long: the server itself computes it
+ * from the files, and three seconds for it is not a deadline but a fuse — the
+ * promise must resolve even when there is no answer at all.
  */
 const ASK_TIMEOUT_MS = 3000
 
 /**
- * Справке — свой срок, и он длиннее.
+ * Help gets a deadline of its own, and a longer one.
  *
- * У неё две дороги: живое ядро (те же 2,5 с) и статический разбор jedi ВНУТРИ
- * ядра, которому с 20.09 отпущено 2,5 с плюс дорога (server/src/kernel/index.ts
- * · STATIC_INSPECT_WAIT_MS = 3,5 с). Прежние три секунды здесь означали, что
- * клиент бросает трубку раньше, чем сервер успевает ответить: первое наведение
- * на pandas не показывало НИЧЕГО — ни справки, ни причины, — потому что ответ
- * приезжал в закрытую дверь. Полсекунды сверх серверного потолка — на дорогу.
+ * It has two roads: the live kernel (the same 2.5 s) and a static jedi parse
+ * INSIDE the kernel, which since 20 Sep 2026 is given 2.5 s plus the trip
+ * (server/src/kernel/index.ts · STATIC_INSPECT_WAIT_MS = 3.5 s). The former
+ * three seconds here meant the client hung up before the server could answer:
+ * the first hover over pandas showed NOTHING — neither help nor a reason —
+ * because the answer arrived at a closed door. Half a second over the server's
+ * ceiling — for the trip.
  */
 const INSPECT_TIMEOUT_MS = 4000
 
-/** Тот же потолок, что у сервера (control.ts · MAX_COMPLETE_CHARS). */
+/** The same ceiling as the server's (control.ts · MAX_COMPLETE_CHARS). */
 const MAX_ASK_CHARS = 24 * 1024
 
 /**
- * Двадцать четыре килобайта, КОНЧАЮЩИЕСЯ кареткой.
+ * Twenty-four kilobytes ENDING at the caret.
  *
- * Дополняют и объясняют то, что перед ней, — низ ячейки для этого не нужен
- * вовсе, и режется начало: на длинной ячейке подсказка всё равно считается по
- * ближайшим строкам.
+ * Completion and help work on what precedes it — the bottom of the cell is
+ * not needed for that at all, so the beginning is cut: in a long cell the hint
+ * is computed from the nearest lines anyway.
  */
 function headBeforeCursor(code: string, at: number): { code: string; cursor: number; from: number } {
   const head = code.slice(0, at)
   const sent = head.length > MAX_ASK_CHARS ? head.slice(head.length - MAX_ASK_CHARS) : head
-  // `from` тут всегда 0: дополнению и справке номера строк не нужны вовсе, и
-  // поле существует только затем, чтобы обе резки были одной формы.
+  // `from` is always 0 here: completion and help need no line numbers at all,
+  // and the field exists only so that both cuts have the same shape.
   return { code: sent, cursor: sent.length, from: 0 }
 }
 
 /**
- * Окно ВОКРУГ каретки — и это не придирка, а разница между работающим переходом
- * и молча неработающим.
+ * A window AROUND the caret — and this is not nitpicking but the difference
+ * between a working jump and a silently broken one.
  *
- * Обрезать хвост, как у дополнения, здесь нельзя: определение почти всегда
- * стоит НИЖЕ места, откуда по нему щёлкнули. `helper()` в третьей строке при
- * `def helper()` в тридцатой — обычная ячейка; обратный порядок — редкость. На
- * обрезанном по каретку тексте сервер честно ответил бы «не нашлось, где
- * определено», и переход перестал бы работать ровно там, где он нужнее всего —
- * в длинном файле.
+ * Cutting off the tail, as for completion, is not allowed here: the
+ * definition almost always stands BELOW the place it was clicked from.
+ * `helper()` on line three with `def helper()` on line thirty is an ordinary
+ * cell; the reverse order is rare. On text cut at the caret the server would
+ * honestly answer "could not find where it is defined", and the jump would
+ * stop working exactly where it is needed most — in a long file.
  *
- * Поэтому код едет целиком, а потолок срабатывает только на том, что в кадр не
- * влезает (control.ts · MAX_FRAME_BYTES — тридцать два килобайта на всё
- * сообщение). Тогда берётся окно вокруг каретки, и курсор переезжает ровно на
- * столько, сколько срезано слева: разъехавшись на символ, сервер разобрал бы
- * ДРУГОЕ имя — и увёл бы уверенно и не туда.
+ * So the code travels whole, and the ceiling triggers only on what does not
+ * fit into a frame (control.ts · MAX_FRAME_BYTES — thirty-two kilobytes for
+ * the whole message). Then a window around the caret is taken, and the cursor
+ * moves by exactly as much as was cut off on the left: off by one character,
+ * the server would parse a DIFFERENT name — and lead confidently to the wrong
+ * place.
  */
 function windowAroundCursor(
   code: string,
   at: number,
 ): { code: string; cursor: number; from: number } {
   if (code.length <= MAX_ASK_CHARS) return { code, cursor: at, from: 0 }
-  // Каретка посередине окна, но у краёв текста окно прижимается к краю: сдвигать
-  // его за границу значило бы отдать меньше, чем влезает.
+  // The caret sits mid-window, but at the text's edges the window presses
+  // against the edge: moving it past the boundary would send less than fits.
   const half = Math.floor(MAX_ASK_CHARS / 2)
   const start = Math.max(0, Math.min(at - half, code.length - MAX_ASK_CHARS))
   /*
-   * `from` едет вместе с окном, и без него переход врал.
+   * `from` travels with the window, and without it the jump lied.
    *
-   * Сервер считает строки от начала присланного текста, а человек видит их от
-   * начала файла: в `case_cian.py` живого курса (886 КБ) окно — это правило, и
-   * приземление уходило на сотни строк мимо. По этому же числу сервер узнаёт,
-   * что видит не весь исходник, и достаёт целый — он у него есть.
+   * The server counts lines from the start of the text it received, while the
+   * person sees them from the start of the file: in the live course's
+   * `case_cian.py` (886 KB) the window is the rule, and the landing went
+   * hundreds of lines off. By this same number the server learns that it does
+   * not see the whole source, and fetches the whole thing — it has it.
    */
   return { code: code.slice(start, start + MAX_ASK_CHARS), cursor: at - start, from: start }
 }
@@ -226,11 +234,11 @@ export class SessionState {
   /** Not readonly: the room's rules can change while the seminar is running. */
   session: SessionInfo = $state.raw({} as SessionInfo)
   /**
-   * Занятие закончено: комната открыта на чтение, действует преподаватель.
+   * The class is over: the room is open for reading, the teacher acts.
    *
-   * Геттер поверх `session.finishedAt`, потому что время интересно только тем,
-   * кто его показывает, а всем остальным нужен ответ «да или нет» — его и ждёт
-   * `permitsIn` третьим аргументом.
+   * A getter over `session.finishedAt`, because the time interests only those
+   * who show it, while everyone else needs a "yes or no" answer — which is
+   * exactly what `permitsIn` expects as its third argument.
    */
   get finished(): boolean {
     return this.session.finishedAt !== null
@@ -238,40 +246,44 @@ export class SessionState {
   /** True once the server has said the seminar is gone; stops the reconnect loop. */
   gone = $state(false)
   /**
-   * Вкладка разошлась с сервером и больше не пробует сама: словами — почему.
+   * The tab has diverged from the server and no longer retries by itself: in
+   * words — why.
    *
-   * Отказ лечится перезагрузкой с очисткой кэша, и перезагрузок даётся две (см.
-   * lib/refusal.ts). Дальше вкладка стоит на месте и молчит — раньше она
-   * стояла на месте и стучалась: провайдер переподключался сам по своему
-   * отступу и предлагал серверу тот же документ каждые три секунды, до
-   * закрытия вкладки. Измерено на живой комнате: одна вкладка, двенадцать
-   * отказов в минуту, десять минут, а в шапке всё это время — «Reconnecting».
+   * A refusal is cured by a reload with a cache wipe, and two reloads are
+   * allowed (see lib/refusal.ts). After that the tab stands still and stays
+   * quiet — it used to stand still and knock: the provider reconnected by
+   * itself on its own backoff and offered the server the same document every
+   * three seconds, until the tab was closed. Measured on a live room: one tab,
+   * twelve refusals a minute, ten minutes, and "Reconnecting" in the header
+   * all that time.
    */
   stuck = $state<string | null>(null)
   /**
-   * Комната есть, а ключ этого браузера она больше не признаёт.
+   * The room exists, but it no longer recognises this browser's key.
    *
-   * Экран, увидев это, отдаёт человека форме имени: сама себя такая комната не
-   * чинит — имя выбирает человек, а не программа. Запись о прошлой личности к
-   * этому моменту уже стёрта (см. `#diagnose`).
+   * On seeing this, the screen hands the person over to the name form: such a
+   * room does not fix itself — the person chooses the name, not the program.
+   * The record of the former identity has already been erased by then (see
+   * `#diagnose`).
    */
   expired = $state(false)
   /**
-   * Нас удалили с занятия: момент конца бана, или null.
+   * We were removed from the class: the moment the ban ends, or null.
    *
-   * Отдельно от `gone` и от `expired`, потому что это третий разный случай, и
-   * путать их дорого. Комнаты нет — работать негде; ключ протух — назовитесь
-   * заново; бан — комната на месте и ждёт вас завтра, а сейчас вход закрыт
-   * человеком. Каждому из трёх нужны свои слова, и `expired` вдобавок увёл бы
-   * забаненного на форму имени — то есть предложил бы обойти бан переименованием.
+   * Separate from `gone` and from `expired`, because this is a third distinct
+   * case, and mixing them up is costly. No room — nowhere to work; the key went
+   * stale — introduce yourself again; a ban — the room is in place and expects
+   * you tomorrow, and right now a person has closed the entrance. Each of the
+   * three needs its own words, and `expired` would in addition lead a banned
+   * person to the name form — that is, offer to dodge the ban by renaming.
    */
   banned = $state<number | null>(null)
   /**
-   * Часы этого браузера минус часы сервера, в миллисекундах.
+   * This browser's clock minus the server's clock, in milliseconds.
    *
-   * Ноль, пока не ответил первый pong. Отнимается от локального `Date.now()`
-   * везде, где считают от серверной отметки времени — сейчас это секундомер
-   * работающей ячейки.
+   * Zero until the first pong answers. Subtracted from the local `Date.now()`
+   * wherever things are counted from a server timestamp — currently the
+   * stopwatch of a running cell.
    */
   clockSkewMs = $state(0)
   /*
@@ -290,22 +302,24 @@ export class SessionState {
   /** Collab socket health. Editing keeps working while false; the CRDT catches up. */
   collabConnected = $state(false)
   /**
-   * Управляющий сокет открыт — то есть Run, перезапуск и терминал дойдут.
+   * The control socket is open — that is, Run, restart and the terminal will
+   * get through.
    *
-   * Отдельно от `collabConnected`, потому что провода два и поднимаются они
-   * порознь: y-websocket отступает максимум на 2,5 с, наш собственный — до 8 с.
+   * Separate from `collabConnected`, because there are two wires and they come
+   * up separately: y-websocket backs off by 2.5 s at most, our own by up to
+   * 8 s.
    */
   controlConnected = $state(false)
   /**
-   * Комната на связи — по ОБОИМ проводам.
+   * The room is connected — over BOTH wires.
    *
-   * По этому полю гаснут все кнопки управляющего (Run, Restart, терминал) и
-   * зажигается «Reconnecting», а раньше в нём стоял один только сокет
-   * совместной работы. После рестарта сервера он поднимается первым: надпись
-   * гасла, кнопки загорались, нажатия молча уходили в очередь и выполнялись
-   * через несколько секунд — Run All, про который человек уже решил, что он не
-   * сработал. Печатать при этом можно и без связи, но печатанье — это CRDT, и
-   * его никто не гасит.
+   * By this field all control buttons (Run, Restart, the terminal) go dark and
+   * "Reconnecting" lights up, and it used to hold only the collaboration
+   * socket. After a server restart that one comes up first: the label went
+   * out, the buttons lit up, presses silently went into the queue and executed
+   * a few seconds later — a Run All the person had already decided did not
+   * work. Typing works without a connection meanwhile, but typing is the CRDT,
+   * and nobody turns that off.
    */
   readonly connected = $derived(this.collabConnected && this.controlConnected)
   /**
@@ -315,101 +329,106 @@ export class SessionState {
    */
   hydrated = $state(false)
   /**
-   * Список файлов комнаты хоть раз приезжал.
+   * The room's file list has arrived at least once.
    *
-   * «Не спрашивали ещё» и «файлов нет» — разные вещи, и путать их дорого:
-   * вкладки живут по этому списку, и пустой на первом кадре стирал их все.
+   * "Not asked yet" and "there are no files" are different things, and mixing
+   * them up is costly: the tabs live by this list, and an empty one on the
+   * first frame wiped them all.
    */
   filesArrived = $state(false)
   /**
-   * Список показан не целиком: обход папок упёрся в потолок.
+   * The list is not shown in full: the folder walk hit the ceiling.
    *
-   * Признак едет рядом со списком и заменяется каждым кадром — сервер шлёт
-   * `false` явно, так что «уже не обрезано» доезжает так же честно, как
-   * «обрезано». Панель файлов говорит об этом строкой внизу дерева: человек,
-   * не нашедший свой файл, ищет его заново, а про потолок не догадывается.
+   * The flag travels next to the list and is replaced with every frame — the
+   * server sends `false` explicitly, so "no longer truncated" arrives just as
+   * honestly as "truncated". The files panel says so in a line at the bottom
+   * of the tree: a person who did not find their file looks for it again and
+   * does not guess about the ceiling.
    */
   filesTruncated = $state(false)
   /**
-   * Номер списка файлов, который у нас на руках. Ноль — списка нет вовсе.
+   * The number of the file list we have on hand. Zero — no list at all.
    *
-   * Перемена в дереве едет дельтой (`files:delta`), а дельта ложится только на
-   * тот список, из которого её посчитали. Номер — единственный способ это
-   * проверить: не совпал — склеивать нечего, и дерево спрашивается целиком.
-   * Руны здесь не нужно, номер никто не рисует.
+   * A change in the tree travels as a delta (`files:delta`), and a delta lands
+   * only on the list it was computed from. The number is the only way to check
+   * that: no match — nothing to splice, and the whole tree is asked for. No
+   * rune needed here, nobody draws the number.
    */
   #filesRev = 0
   /**
-   * Кто в комнате — целиком заменяемым снимком, и только когда он изменился.
+   * Who is in the room — as a snapshot replaced whole, and only when it
+   * changed.
    *
-   * `$state.raw`, а не глубокая руна: список пересобирается целиком, а
-   * оборачивать пятьсот объектов присутствия в прокси на каждом кадре значит
-   * платить за реактивность, которой никто не пользуется. Что считается
-   * изменением и почему кадр без изменений не должен доходить ни до кого —
-   * в lib/peers.ts.
+   * `$state.raw`, not a deep rune: the list is rebuilt whole, and wrapping five
+   * hundred presence objects in proxies on every frame means paying for
+   * reactivity nobody uses. What counts as a change and why a frame without
+   * changes must reach nobody — see lib/peers.ts.
    */
   peers = $state.raw<readonly Peer[]>([])
   /**
-   * Лицо человека по его id участника — для тех, кто спрашивает «а это кто».
+   * A person's face by their participant id — for those who ask "who is this".
    *
-   * Карта, а не поиск по списку: «кто запускал» спрашивает каждая ячейка с
-   * выводом, и перебор по пятистам вкладкам в двухстах ячейках — это работа,
-   * растущая произведением. Пересчитывается вместе с `peers`, то есть не чаще
-   * раза в тик присутствия.
+   * A map, not a search through the list: every cell with output asks "who ran
+   * it", and a scan over five hundred tabs in two hundred cells is work that
+   * grows as a product. Recomputed together with `peers`, that is, no more than
+   * once per presence tick.
    */
   readonly peersById = $derived(peersById(this.peers))
   files = $state<FileEntry[]>([])
   /**
-   * Ячейка, с которой работают клавиатура и курсор, — якорь выделения.
+   * The cell the keyboard and the cursor work with — the selection's anchor.
    *
-   * Всегда входит в `selection`, пока выделение не пусто. Комната видит именно
-   * её: присутствие отвечает на вопрос «где человек», а он в один момент в
-   * одном месте.
+   * It is always part of `selection` while the selection is not empty. The
+   * room sees exactly this one: presence answers the question "where is the
+   * person", and a person is in one place at a time.
    */
   selectedCellId = $state<string | null>(null)
   /**
-   * Все выделенные ячейки, в порядке документа.
+   * All selected cells, in document order.
    *
-   * Список, а не одна: вопрос оракулу про две ячейки — обычное дело, и до сих
-   * пор его нельзя было задать иначе как словами. Порядок держат те, кто
-   * выделяет: он свой у каждой тетради.
+   * A list, not one: a question to the oracle about two cells is common, and
+   * until now it could only be asked in words. The order is kept by whoever
+   * selects: each notebook has its own.
    */
   selection = $state<string[]>([])
   /**
-   * Файл, открытый у этого человека прямо сейчас, — или `null`.
+   * The file this person has open right now — or `null`.
    *
-   * Тот же путь, что уезжает в присутствие. Хранится ещё и здесь, потому что
-   * панель оракула должна назвать его в строке «особенно»: спрашивают почти
-   * всегда про то, на что смотрят.
+   * The same path that goes into presence. It is also kept here because the
+   * oracle panel must name it in the "especially" line: people almost always
+   * ask about what they are looking at.
    */
   editingPath = $state<string | null>(null)
   /**
-   * Показать вкладку, в которой лежит эта ячейка.
+   * Show the tab that holds this cell.
    *
-   * Ставит экран комнаты — только он знает про вкладки. Ссылка на ячейку
-   * приходит из панели людей и из треда оракула, то есть мимо тетради, и без
-   * этого вела в спрятанную: `scrollIntoView` внутри `display:none` не делает
-   * ничего, и переход выглядел как сломанная кнопка.
+   * Set by the room screen — only it knows about tabs. A link to a cell comes
+   * from the people panel and from the oracle thread, that is, bypassing the
+   * notebook, and without this it led into a hidden one: `scrollIntoView`
+   * inside `display:none` does nothing, and the jump looked like a broken
+   * button.
    */
   showCell: ((cellId: string) => void) | null = null
   lastError = $state<string | null>(null)
   /**
-   * Последний отказ гейта — со временем, чтобы не выдать старый за новый.
+   * The gate's last refusal — with its time, so an old one is not passed off
+   * as new.
    *
-   * Не `$state`: его читает только записка, которую кладут перед перезагрузкой,
-   * и ничего в интерфейсе от него не зависит.
+   * Not `$state`: only the note put aside before a reload reads it, and
+   * nothing in the interface depends on it.
    */
   #refusal: { message: string; at: number } | null = null
   /** Shared terminal lifecycle; 'closed' until somebody opens the drawer. */
   terminalStatus = $state<TerminalStatus>('closed')
   /**
-   * Умеет ли этот инстанс давать личной тетради собственное ядро.
+   * Whether this instance can give a personal notebook its own kernel.
    *
-   * Приезжает первым кадром сокета (`ready`). `true` по умолчанию — так
-   * отвечал бы сервер, который про это поле ещё не знает, и так устроен docker,
-   * то есть всё, кроме брокера. Читает это строка правила «Свои тетради
-   * студентов»: обещать то, чего инстанс не умеет, значит отдать отказ
-   * студенту посреди пары вместо предупреждения преподавателю до неё.
+   * Arrives with the socket's first frame (`ready`). `true` by default — that
+   * is what a server that does not know about this field yet would answer, and
+   * that is how docker works, that is, everything except the broker. The
+   * "Students' personal notebooks" rule row reads it: promising what the
+   * instance cannot do means handing a student a refusal in the middle of a
+   * class instead of warning the teacher before it.
    */
   ownKernels = $state(true)
   /**
@@ -428,81 +447,85 @@ export class SessionState {
   terminalUnread = $state(0)
 
   /**
-   * Документ, который комната смотрит вместе, или `null`.
+   * The document the room is watching together, or `null`.
    *
-   * Приходит с сервера — и в приветственной пачке, и при каждой смене. Живёт в
-   * комнате, а не в присутствии: присутствие исчезает вместе с вкладкой, и
-   * закрытый ноутбук преподавателя убрал бы материал у всех сразу, а
-   * опоздавший не увидел бы ничего, пока преподаватель не пошевелится.
+   * Comes from the server — both in the welcome batch and on every change. It
+   * lives in the room, not in presence: presence disappears with the tab, and
+   * the teacher's closed laptop would take the material away from everyone at
+   * once, while a latecomer would see nothing until the teacher moved.
    */
   board = $state<string | null>(null)
 
   /**
-   * Лекция комнаты: одна страница на проекторе и один человек за пультом.
+   * The room's lecture: one page on the projector and one person at the
+   * console.
    *
-   * `null` — лекции нет. Приходит с сервера в приветственной пачке и при каждой
-   * смене, как и общий экран: опоздавший должен увидеть ту же страницу, что и
-   * зал.
+   * `null` — no lecture. Comes from the server in the welcome batch and on
+   * every change, like the shared screen: a latecomer must see the same page
+   * as the hall.
    */
   lecture = $state<LectureState | null>(null)
   /**
-   * Чернила лекции, все страницы разом.
+   * The lecture's ink, all pages at once.
    *
-   * `$state.raw`, а не глубоко реактивный массив: точки дописываются пачками по
-   * двадцать раз в секунду, и оборачивать каждую в прокси значит платить за
-   * реактивность, которой никто не пользуется — рисует их холст, а не разметка.
-   * Перерисовку заказывает `inkRevision`.
+   * `$state.raw`, not a deeply reactive array: points are appended in batches
+   * twenty times a second, and wrapping each in a proxy means paying for
+   * reactivity nobody uses — a canvas draws them, not markup. `inkRevision`
+   * orders the redraw.
    */
   ink = $state.raw<InkStroke[]>([])
-  /** Счётчик правок чернил: холст перерисовывается по нему, а не по массиву. */
+  /** The ink edit counter: the canvas redraws by it, not by the array. */
   inkRevision = $state(0)
   /**
-   * Указка ведущего или `null`.
+   * The leader's laser pointer, or `null`.
    *
-   * Не хранится нигде: где она была секунду назад — движение руки, а не факт о
-   * лекции. Гаснет сама, когда ведущий перестаёт её двигать.
+   * Stored nowhere: where it was a second ago is a hand movement, not a fact
+   * about the lecture. It goes out by itself when the leader stops moving it.
    */
   laser = $state<{ page: number; x: number; y: number; shape: 'dot' | 'line' } | null>(null)
 
   /**
-   * Заметки спикера к `notesFile`: номер страницы → текст.
+   * Speaker notes for `notesFile`: page number → text.
    *
-   * `$state.raw` и только присваивание целиком, как у чернил и по той же
-   * причине: карту читает лента заметок, а не разметка по ключам, и глубокий
-   * прокси на двухстах страницах речи — плата за реактивность, которой никто не
-   * пользуется. Приходит только хостам; в зале эта карта пуста всегда.
+   * `$state.raw` and only whole assignment, as with ink and for the same
+   * reason: the notes feed reads the map, not markup by key, and a deep proxy
+   * over two hundred pages of speech is a fee for reactivity nobody uses. Only
+   * hosts receive it; in the hall this map is always empty.
    */
   notes = $state.raw<Record<number, string>>({})
   /**
-   * Чьи заметки лежат в `notes`. `null` — ещё не приехали.
+   * Whose notes lie in `notes`. `null` — they have not arrived yet.
    *
-   * Отдельное поле, а не пустая карта, и разница тут дорогая: «заметок к этой
-   * странице нет» и «заметки ещё не приехали» выглядят на экране одинаково —
-   * пустотой, — а значат противоположное. Преподаватель, увидевший пустоту там,
-   * где вчера написал двадцать строк, решит, что потерял их, и решит это
-   * посреди пары.
+   * A separate field, not an empty map, and the difference is costly here:
+   * "there are no notes for this page" and "the notes have not arrived yet"
+   * look the same on screen — empty — but mean opposite things. A teacher who
+   * sees emptiness where they wrote twenty lines yesterday will decide they
+   * lost them, and will decide it in the middle of a class.
    */
   notesFile = $state<string | null>(null)
 
   /**
-   * Консилиум: своя попытка, стопка преподавателя, счётчики — по ячейкам.
+   * The council: one's own attempt, the teacher's stack, the counters — per
+   * cell.
    *
-   * Отдельным объектом, а не полями здесь: сообщений у консилиума столько же,
-   * сколько у всей лекции, и разбирать их в одном `onmessage` с чернилами
-   * значило бы вырастить его ещё вдвое. Шлёт он через тот же `send`, что и
-   * кнопки, — с той же очередью и теми же словами про отсутствие связи.
+   * A separate object, not fields here: the council has as many messages as
+   * the whole lecture, and parsing them in one `onmessage` with the ink would
+   * make it twice as big again. It sends through the same `send` as the
+   * buttons — with the same queue and the same words about a missing
+   * connection.
    */
   readonly council: CouncilState
 
   #control: WebSocket | null = null
   #controlQueue: ControlClientMessage[] = []
   /**
-   * Документ, чьи заметки мы спросили. Защёлка и заодно память о подписке.
+   * The document whose notes we asked for. A latch and also the memory of the
+   * subscription.
    *
-   * Память нужна из-за переподключения: сервер шлёт заметки ТОЛЬКО в ответ на
-   * `notes:open`, в приветственной пачке их нет, — и без переспроса первый же
-   * обрыв оставил бы преподавателя без речи до конца пары, показывая при этом
-   * не ошибку, а пустоту.
+   * The memory is needed because of reconnects: the server sends notes ONLY in
+   * reply to `notes:open`, they are not in the welcome batch — and without
+   * re-asking, the very first disconnect would leave the teacher without their
+   * speech until the end of the class, showing not an error but emptiness.
    */
   #notesWanted: string | null = null
   #reconnectTimer: number | undefined
@@ -510,17 +533,17 @@ export class SessionState {
   #retries = 0
   #disposed = false
   #pingSentAt: number | null = null
-  /** Самый быстрый круг на этом соединении: по нему и берут поправку часов. */
+  /** The fastest round trip on this connection: the clock correction is taken from it. */
   #bestRtt = Number.POSITIVE_INFINITY
   /**
-   * Вопросы ядру о дополнении, которые ещё не разрешились.
+   * Completion questions to the kernel that have not resolved yet.
    *
-   * Номер — свой у каждого, и он же ключ: ответы приходят не в том порядке, в
-   * каком спрашивали, и опоздавший обязан быть узнан по номеру, а не по
-   * «последний вопрос был этот». Обещание разрешается ВСЕГДА — ответом,
-   * таймером или обрывом сокета, — потому что на той стороне его ждёт
-   * автодополнение CodeMirror: неразрешённое означало бы список, который не
-   * появится и не закроется.
+   * Each has its own number, and it is also the key: answers arrive in a
+   * different order than they were asked, and a late one must be recognised by
+   * its number, not by "the last question was this one". The promise ALWAYS
+   * resolves — with an answer, a timer or a socket drop — because CodeMirror's
+   * autocompletion waits for it on the other side: an unresolved one would
+   * mean a list that neither appears nor closes.
    */
   #asked = new Map<number, { settle: (reply: ControlServerMessage | null) => void; timer: number }>()
   #askId = 0
@@ -560,47 +583,48 @@ export class SessionState {
       params: { token: identity.token },
       connect: true,
       /*
-       * Без BroadcastChannel: соседние вкладки одного семинара сходятся через
-       * сервер, как и любые два браузера. Прямой канал между вкладками — это
-       * второй путь, по которому в документ попадает то, что сервер не
-       * принимал: вкладка, только что пересобранная начисто после отказа,
-       * спрашивала соседку и получала от неё обратно ровно те структуры, из-за
-       * которых пересобиралась. Заодно исчезает эхо присутствия, от которого
-       * сервер защищался отдельно (collab/index.ts · ownAwareness).
+       * No BroadcastChannel: neighbouring tabs of one seminar converge through
+       * the server, like any two browsers. A direct channel between tabs is a
+       * second path by which the document receives what the server did not
+       * accept: a tab freshly rebuilt from scratch after a refusal asked its
+       * neighbour and got back from it exactly the structures it was rebuilt
+       * because of. The presence echo, which the server defended against
+       * separately (collab/index.ts · ownAwareness), disappears along with it.
        */
       disableBc: true,
       /*
-       * Потолок отступа — свой у каждой вкладки (lib/controls.ts ·
-       * collabBackoff). По умолчанию он один на всех (2500 мс), и пятьсот
-       * вкладок после перезапуска сервера возвращаются в одну миллисекунду —
-       * снова и снова, потому что отступ у них общий и считается от общего
-       * события.
+       * The backoff ceiling is different in every tab (lib/controls.ts ·
+       * collabBackoff). By default it is the same for everyone (2500 ms), and
+       * five hundred tabs come back in the same millisecond after a server
+       * restart — again and again, because their backoff is shared and counted
+       * from a shared event.
        */
       maxBackoffTime: collabBackoff(),
     })
     syncLocalReplay(this.provider, this.localStore)
     this.awareness = this.provider.awareness
     /*
-     * Серверу — только своё присутствие.
+     * Only one's own presence goes to the server.
      *
-     * Провайдер в `_awarenessUpdateHandler` отсылает ВСЕ изменившиеся clientID
-     * подряд: чужое состояние он применяет сам (`applyAwarenessUpdate` с собой
-     * в origin), awareness сообщает об изменении — и тот же обработчик
-     * отправляет его обратно в сокет, из которого оно приехало. Сервер это эхо
-     * отвергает (`ownAwareness`), но чтобы отвергнуть, разбирает: на стенде с
-     * 500 вкладками им была ровно половина из шестнадцати тысяч кадров
-     * присутствия в секунду.
+     * The provider's `_awarenessUpdateHandler` sends ALL changed clientIDs in a
+     * row: it applies someone else's state itself (`applyAwarenessUpdate` with
+     * itself as the origin), awareness reports the change — and the same
+     * handler sends it back into the socket it came from. The server rejects
+     * this echo (`ownAwareness`), but to reject it, it has to parse it: on a
+     * test bench with 500 tabs it was exactly half of sixteen thousand presence
+     * frames per second.
      *
-     * Обработчик провайдера снимается, свой встаёт на его место и зовёт
-     * снятый — но с кадром, где остался только наш clientID (см.
-     * lib/presence.ts). Кодирование, сокет и BroadcastChannel остаются
-     * провайдерскими: фильтр не повод переписывать протокол.
+     * The provider's handler is removed, ours takes its place and calls the
+     * removed one — but with a frame where only our clientID is left (see
+     * lib/presence.ts). Encoding, the socket and BroadcastChannel remain the
+     * provider's: a filter is no reason to rewrite the protocol.
      *
-     * Соседним вкладкам это ничего не стоит — у каждой свой сокет и своё
-     * присутствие от сервера, а ретрансляция чужих состояний между вкладками
-     * одного браузера только дублировала то, что и так придёт. Заодно перестал
-     * рассылаться уход соседей на обрыве: `removeAwarenessStates` внутри
-     * провайдера — это местная уборка, а не новость о комнате.
+     * This costs neighbouring tabs nothing — each has its own socket and its
+     * own presence from the server, and relaying others' states between tabs
+     * of one browser only duplicated what would arrive anyway. Along with it,
+     * neighbours leaving on a disconnect stopped being broadcast:
+     * `removeAwarenessStates` inside the provider is local cleanup, not news
+     * about the room.
      */
     this.awareness.off('update', this.provider._awarenessUpdateHandler)
     this.awareness.on('update', this.#announceSelf)
@@ -610,11 +634,12 @@ export class SessionState {
       captureTimeout: 400,
     })
     /*
-     * Отмена достаёт до всех тетрадей комнаты, а не только до первой.
+     * Undo reaches all the room's notebooks, not only the first.
      *
-     * Тетради открывают на ходу, и область действия UndoManager приходится
-     * дописывать по мере их появления: без этого Ctrl+Z во второй тетради молча
-     * не делал бы ничего — худший вид отказа, потому что клавиша сработала.
+     * Notebooks are opened on the fly, and the UndoManager's scope has to be
+     * extended as they appear: without this Ctrl+Z in the second notebook would
+     * silently do nothing — the worst kind of refusal, because the key did
+     * work.
      */
     const widen = () => {
       for (const cells of allCellArrays(this.doc)) this.undoManager.addToScope([cells])
@@ -647,15 +672,16 @@ export class SessionState {
     // for everybody. The header falls back to `session.name` for display, and
     // #onSync seeds the document only once the server confirms it is empty.
     /*
-     * И никакого второго запроса за деревом файлов.
+     * And no second request for the file tree.
      *
-     * Здесь стоял `refreshFiles()` — HTTP-запрос за тем же списком, который
-     * управляющий сокет присылает сам сразу после подключения (control.ts ·
-     * приветственная пачка, теперь из кэша комнаты). На вход это давало два
-     * обхода папки вместо одного, а на пятистах вкладках после перезапуска
-     * сервера — пятьсот лишних обходов в те же две секунды, ровно когда все
-     * ждут возврата. Пустой список до первого кадра — не «файлов нет»: это
-     * говорит `filesArrived`.
+     * There used to be `refreshFiles()` here — an HTTP request for the same
+     * list the control socket sends by itself right after connecting
+     * (control.ts · the welcome batch, now from the room's cache). On entry
+     * this meant two folder walks instead of one, and with five hundred tabs
+     * after a server restart — five hundred extra walks in the same two
+     * seconds, exactly when everyone is waiting to get back. An empty list
+     * before the first frame is not "there are no files": `filesArrived` says
+     * that.
      */
     this.#connectControl()
   }
@@ -666,12 +692,12 @@ export class SessionState {
   }
 
   /**
-   * Связь вернулась — снять строку про её отсутствие.
+   * The connection is back — remove the line about its absence.
    *
-   * Зовётся с обоих проводов: строка висит, пока молчит хоть один, и убирать
-   * её должен тот, кто починился последним. The offline notice is about right
-   * now; leaving it up once the room is back would contradict the header, which
-   * has already stopped saying RECONNECTING.
+   * Called from both wires: the line hangs while either one is silent, and it
+   * must be removed by whichever recovered last. The offline notice is about
+   * right now; leaving it up once the room is back would contradict the
+   * header, which has already stopped saying RECONNECTING.
    */
   #backOnline() {
     if (this.connected && this.lastError === OFFLINE_REASON) this.lastError = null
@@ -679,8 +705,8 @@ export class SessionState {
 
   #onSync = (isSynced: boolean) => {
     if (!isSynced) return
-    // Сервер принял этот документ — значит прошлые отказы больше ни о чём не
-    // говорят, и следующий, если он будет, снова получит право на перезагрузку.
+    // The server accepted this document — so past refusals no longer mean
+    // anything, and the next one, if it comes, gets the right to a reload again.
     refusalHealed()
     // Fallback only: the server seeds a fresh document before anyone can connect.
     ensureInitialNotebook(this.doc, this.session.name)
@@ -719,29 +745,30 @@ export class SessionState {
   }
 
   /**
-   * Кадр присутствия наружу — только про себя. Разбор в конструкторе.
+   * An outgoing presence frame — only about oneself. See the constructor.
    *
-   * Обёртка вокруг провайдерского обработчика, а не замена ему: всё, что
-   * дальше кодирования, остаётся протоколом `y-websocket`.
+   * A wrapper around the provider's handler, not a replacement for it:
+   * everything beyond encoding remains the `y-websocket` protocol.
    */
   #announceSelf = (changes: AwarenessChanges, origin: unknown) => {
     const own = ownChanges(changes, this.doc.clientID)
     if (own) this.provider._awarenessUpdateHandler(own, origin)
   }
 
-  /** Пересборка списка людей отложена до конца тика. См. `#schedulePeers`. */
+  /** The people-list rebuild is deferred to the end of the tick. See `#schedulePeers`. */
   #peersTimer: number | undefined
 
   /**
-   * Кадр присутствия приехал — пересобрать людей, но не чаще раза в тик.
+   * A presence frame has arrived — rebuild the people, but no more than once
+   * per tick.
    *
-   * Курсор публикуется на каждое нажатие у каждого из пятисот, и без склейки
-   * пересборка шла сотни раз в секунду: обход всех состояний, сортировка имён и
-   * новый массив, от которого просыпались все читатели `peers` — счётчик в
-   * шапке, панель людей, аватары оракула и поиск «кто запускал» в каждой
-   * смонтированной ячейке. Тик в сотую долю секунды оставляет от этого десять
-   * пересборок в секунду, а `nextPeers` из них пропускает дальше только те, где
-   * правда изменилось нарисованное.
+   * The cursor is published on every keystroke by each of five hundred, and
+   * without coalescing the rebuild ran hundreds of times a second: a walk over
+   * all states, a sort of names and a new array that woke all readers of
+   * `peers` — the counter in the header, the people panel, the oracle avatars
+   * and the "who ran it" lookup in every mounted cell. A hundred-millisecond
+   * tick leaves ten rebuilds a second of that, and `nextPeers` lets through
+   * only those where what is drawn really changed.
    */
   #schedulePeers = () => {
     if (this.#peersTimer !== undefined || this.#disposed) return
@@ -752,8 +779,8 @@ export class SessionState {
   }
 
   #readPeers = () => {
-    // `nextPeers` возвращает ПРЕЖНИЙ массив, если ничего из нарисованного не
-    // изменилось: присвоение того же значения руне не будит никого.
+    // `nextPeers` returns THE PREVIOUS array if nothing drawn has changed:
+    // assigning the same value to a rune wakes nobody.
     this.peers = nextPeers(this.awareness.getStates(), this.awareness.clientID, this.peers)
   }
 
@@ -770,18 +797,20 @@ export class SessionState {
       this.#retries = 0
       this.controlConnected = true
       this.#backOnline()
-      // Новое соединение — новая сеть: прошлый лучший круг про неё ничего не знает.
+      // A new connection is a new network: the previous best round trip knows
+      // nothing about it.
       this.#bestRtt = Number.POSITIVE_INFINITY
       for (const queued of this.#controlQueue.splice(0)) socket.send(JSON.stringify(queued))
       /*
-       * И переспросить заметки — здесь, рядом со сливом очереди.
+       * And re-ask for the notes — here, next to draining the queue.
        *
-       * Подписка не переживает соединение: заметки приходят только в ответ на
-       * `notes:open`, и новый сокет о прошлом вопросе не знает ничего. Своя же
-       * карта при этом не гасится: она уже приезжала, свежая перезапишет её
-       * через круг, а обнулять на каждый моргнувший вайфай значит подставлять
-       * «Заметки загружаются» под нос человеку, который в этот момент читает с
-       * экрана свою следующую фразу.
+       * The subscription does not survive the connection: notes arrive only in
+       * reply to `notes:open`, and a new socket knows nothing about the past
+       * question. Our own map is not cleared meanwhile: it has already arrived,
+       * a fresh one will overwrite it within a round trip, and resetting it on
+       * every Wi-Fi blink means putting "Notes are loading" under the nose of a
+       * person who is reading their next sentence off the screen at that
+       * moment.
        */
       this.#askNotes()
       const beat = () => {
@@ -789,9 +818,9 @@ export class SessionState {
         this.#pingSentAt = Date.now()
         socket.send(JSON.stringify({ t: 'ping' }))
       }
-      // Сразу, а не через двадцать пять секунд: первая проба часов нужна до
-      // первого запуска ячейки, а первый запуск на семинаре — это тот самый,
-      // который смотрит вся комната.
+      // At once, not in twenty-five seconds: the first clock sample is needed
+      // before the first cell run, and the first run at a seminar is the very
+      // one the whole room is watching.
       beat()
       this.#heartbeat = window.setInterval(beat, 25_000)
     }
@@ -808,62 +837,64 @@ export class SessionState {
         return
       }
       if (message.t === 'rules') {
-        // Правила меняются на ходу, и комната обязана узнать сразу: кнопка,
-        // которая только что начала отказывать, без объяснения читается как
-        // поломка, а не как решение преподавателя.
+        // Rules change on the fly, and the room must learn at once: a button
+        // that has just started refusing reads, without explanation, as a
+        // breakage rather than the teacher's decision.
         /*
-         * «Первый кадр» — первый ПО СОКЕТУ, а не «правил ещё не было».
+         * "The first frame" is the first ON THE SOCKET, not "there were no
+         * rules yet".
          *
-         * Раньше первым считался кадр при `session.rules === undefined`, а
-         * такого не бывает: правила у страницы есть с первого кадра — из кэша
-         * или из умолчания OPEN_ROOM, — и приветственная пачка сокета в любой
-         * комнате с неоткрытыми правилами отличалась от них. То есть каждая
-         * перезагрузка страницы говорила «преподаватель изменил, что можно
-         * делать», хотя никто ничего не менял. Сравнение к тому же шло по
-         * JSON.stringify, которому важен порядок ключей.
+         * The first frame used to be the one with `session.rules === undefined`,
+         * and that never happens: the page has rules from the first frame —
+         * from the cache or from the OPEN_ROOM default — and the socket's
+         * welcome batch in any room with non-open rules differed from them. So
+         * every page reload said "the teacher changed what can be done",
+         * although nobody changed anything. On top of that the comparison went
+         * through JSON.stringify, which cares about key order.
          */
         const first = !this.#rulesArrived
         this.#rulesArrived = true
         const changed = !sameRules(this.session.rules, message.rules)
         this.session = { ...this.session, rules: message.rules }
         /*
-         * И сказать словами — один раз, не на приветственной пачке.
+         * And say it in words — once, not on the welcome batch.
          *
-         * Двадцать человек, у которых редакторы вдруг стали «только чтение» без
-         * единой фразы, решат, что сломались их ноутбуки. А та же фраза при
-         * каждом переподключении — это шум, который перестают читать. На
-         * переподключении кадр тоже приветственный, но правила к тому моменту
-         * уже настоящие: если они правда сменились, пока связи не было, сказать
-         * об этом надо.
+         * Twenty people whose editors suddenly became "read-only" without a
+         * single phrase will decide their laptops broke. And the same phrase on
+         * every reconnect is noise people stop reading. On a reconnect the
+         * frame is a welcome one too, but by then the rules are already real:
+         * if they really changed while there was no connection, it has to be
+         * said.
          */
         if (!first && changed) this.rulesChangedAt = Date.now()
-        // Вместе с правилами меняется и то, что человек вправе делать в ячейке,
-        // где он стоит: метка «правит эту» уходит из присутствия сразу, а не
-        // ждёт, пока он щёлкнет куда-нибудь ещё.
+        // Along with the rules, what the person may do in the cell they stand in
+        // changes too: the "editing this" mark leaves presence at once rather
+        // than waiting until they click somewhere else.
         if (changed) this.#announceAnchor()
         return
       }
       if (message.t === 'class') {
         /*
-         * Занятие закончилось — или снова идёт.
+         * The class has ended — or is on again.
          *
-         * Отдельно от правил и рядом с ними: хранимые правила при этом не
-         * меняются, а кнопки гаснут все разом, и без слов это читается как
-         * поломка ноутбука, а не как решение преподавателя.
+         * Separate from the rules and next to them: the stored rules do not
+         * change, but the buttons all go dark at once, and without words that
+         * reads as a broken laptop rather than the teacher's decision.
          *
-         * Защёлка «первый кадр» — та же, что у правил, и по той же причине.
-         * Пока сервер не ответил, карточка комнаты угадывает «занятие идёт»
-         * (App.svelte · knownRoom): угадать строже значит погасить живые
-         * кнопки. Значит в комнате, где пара кончилась вчера, первый же кадр
-         * расходится с угаданным, и открывший ссылку впервые слышал «занятие
-         * закончено» так, будто звонок прозвенел при нём.
+         * The "first frame" latch is the same as for the rules, and for the
+         * same reason. Until the server answers, the room card guesses "the
+         * class is on" (App.svelte · knownRoom): guessing more strictly means
+         * dimming live buttons. So in a room whose class ended yesterday, the
+         * very first frame differs from the guess, and someone opening the
+         * link for the first time heard "the class is over" as if the bell had
+         * rung in front of them.
          *
-         * Защёлка одна на комнату, а не на сокет, — и переподключение остаётся
-         * событием: звонок, прозвеневший, пока связи не было, комната всё-таки
-         * объявит.
+         * There is one latch per room, not per socket — and a reconnect
+         * remains an event: a bell that rang while there was no connection the
+         * room will still announce.
          *
-         * Сравнение по «есть или нет», а не по самому времени: переприсланная
-         * та же отметка — не новость.
+         * The comparison is by "present or not", not by the time itself: the
+         * same timestamp re-sent is not news.
          */
         const first = !this.#classArrived
         this.#classArrived = true
@@ -871,14 +902,15 @@ export class SessionState {
         this.session = { ...this.session, finishedAt: message.finishedAt }
         const changed = wasFinished !== this.finished
         if (!first && changed) this.classChangedAt = Date.now()
-        // И то же самое про звонок: после него не правит никто, а метка — про правку.
+        // And the same about the bell: after it nobody edits, and the mark is
+        // about editing.
         if (changed) this.#announceAnchor()
         /*
-         * А файлы оживают и на первом кадре: метка выше — про слова, которые
-         * говорят один раз, а это починка, и молчать ей незачем. Вкладка файла,
-         * закрытая отказом из-за конца занятия, сама не переподключается
-         * (lib/filedoc.svelte.ts) и без этого осталась бы мёртвой до
-         * перезагрузки страницы.
+         * But files come back to life on the first frame too: the latch above
+         * is about words said once, while this is a repair, and it has no
+         * reason to stay quiet. A file tab closed by a refusal because the
+         * class ended does not reconnect by itself (lib/filedoc.svelte.ts) and
+         * without this would stay dead until a page reload.
          */
         if (changed && !this.finished) reopenRefusedFiles(this.session.id)
         return
@@ -894,38 +926,40 @@ export class SessionState {
         message.t === 'council:kernel' ||
         message.t === 'council:ready'
       ) {
-        // Восемь кадров консилиума — одному разборщику: он знает, кому какой
-        // адресован, и хранит их по ячейкам.
+        // Eight council frames — to one parser: it knows whom each is addressed
+        // to, and keeps them per cell.
         this.council.receive(message)
         return
       }
       if (message.t === 'council:queue') {
         /*
-         * Номер в очереди — числом, а не полным листом. На пятистах ждущих один
-         * досчитавшийся запуск двигал номер у всех и стоил пятисот листов с
-         * текстами попыток (server/src/control.ts · tellQueued).
+         * The queue position — as a number, not a whole sheet. With five
+         * hundred waiting, one finished run moved everyone's number and cost
+         * five hundred sheets with attempt texts (server/src/control.ts ·
+         * tellQueued).
          */
         this.council.mine = withQueuePosition(this.council.mine, message.cellId, message.at)
         return
       }
       if (message.t === 'banned') {
         /*
-         * Нас удалили посреди занятия. Сервер закроет сокет следующим шагом —
-         * дальше комната работать не будет, и делать вид, что будет, нельзя:
-         * сюда, а не в тост, потому что человек упёрся не в ошибку, а в решение.
+         * We were removed in the middle of a class. The server will close the
+         * socket as its next step — the room will not work after that, and
+         * pretending it will is not allowed: here and not into a toast,
+         * because the person ran into a decision, not an error.
          */
         this.#youAreBanned(message.until)
         return
       }
       if (message.t === 'refused') {
-        // Отказ адресован одному человеку и объясняет, где именно его правка
-        // не прошла. Обычный путь — предотвращение; сюда попадают гонка и
-        // подделанный клиент.
+        // A refusal is addressed to one person and explains where exactly their
+        // edit did not get through. The usual path is prevention; a race and a
+        // forged client end up here.
         this.lastError = message.message
-        // И отдельно — для записки, которую человек прочитает уже после
-        // перезагрузки: `lastError` держит ЛЮБУЮ последнюю ошибку и сам не
-        // гаснет (тост закрывают крестиком), так что отказ десятиминутной
-        // давности объяснял бы человеку не то, во что он упёрся сейчас.
+        // And separately — for the note the person will read after the reload:
+        // `lastError` holds ANY last error and does not go out by itself (the
+        // toast is closed with a cross), so a refusal from ten minutes ago would
+        // explain to the person something other than what they just ran into.
         this.#refusal = { message: message.message, at: Date.now() }
         return
       }
@@ -943,34 +977,34 @@ export class SessionState {
         }
       } else if (message.t === 'pong') {
         /*
-         * Поправка к часам браузера, снятая по кругу.
+         * A correction to the browser's clock, taken from the round trip.
          *
-         * `startedAt` на ячейке — серверное время, секундомер тикает здесь.
-         * Без поправки у того, чьи часы спешат на сорок секунд, только что
-         * запущенная ячейка показывает «40.0s», а у того, чьи отстают, —
-         * застывший «0.0s» на работающей ячейке.
+         * `startedAt` on a cell is server time, and the stopwatch ticks here.
+         * Without a correction, for someone whose clock is forty seconds fast a
+         * just-started cell shows "40.0s", and for someone whose clock is slow
+         * — a frozen "0.0s" on a running cell.
          *
-         * Половина круга — обычная оценка: считаем, что ответ шёл столько же,
-         * сколько вопрос. Без усреднения и без выбора минимальной пробы:
-         * ошибка ограничена половиной круга, а это заметно меньше десятой
-         * доли секунды, которую показывает счётчик.
+         * Half the round trip is the usual estimate: we assume the answer took
+         * as long as the question. Without averaging and without picking the
+         * minimal sample: the error is bounded by half the round trip, which is
+         * noticeably less than the tenth of a second the counter shows.
          */
         const sent = this.#pingSentAt
         if (sent !== null) {
           const rtt = Date.now() - sent
           /*
-           * Побеждает лучшая проба, а не последняя.
+           * The best sample wins, not the latest.
            *
-           * Оценка «половина круга» верна ровно настолько, насколько дорога
-           * туда похожа на дорогу обратно. На мобильной сети круг гуляет от
-           * сотни миллисекунд до секунды, и брать каждую новую пробу значит
-           * дёргать поправку на полсекунды в обе стороны — а из неё растёт
-           * секундомер, который в этот момент показывают комнате. Он бы шёл
-           * назад.
+           * The "half the round trip" estimate is right exactly as far as the
+           * way there resembles the way back. On a mobile network the round
+           * trip wanders from a hundred milliseconds to a second, and taking
+           * every new sample means jerking the correction by half a second in
+           * both directions — and the stopwatch shown to the room at that
+           * moment grows out of it. It would run backwards.
            *
-           * Чем короче круг, тем меньше в нём места для перекоса, так что
-           * лучшая проба — самая быстрая. Минимум сбрасывается на каждом новом
-           * соединении: сеть за это время могла стать другой.
+           * The shorter the round trip, the less room it has for skew, so the
+           * best sample is the fastest. The minimum is reset on every new
+           * connection: the network may have become a different one meanwhile.
            */
           if (rtt <= this.#bestRtt) {
             this.#bestRtt = rtt
@@ -984,25 +1018,27 @@ export class SessionState {
         this.filesTruncated = message.truncated === true
         this.#filesRev = message.rev ?? 0
         /*
-         * Файл могли удалить или переписать прямо на занятии: удаляет
-         * преподаватель, а переписать может любая ячейка — `df.to_csv` идёт в
-         * ту же папку. Читалка, оставшаяся на документе, которого нет, — это
-         * пустая область без объяснения. Что список файлов про это доказывает,
-         * а что нет, — в lib/board.ts: по обрезанному зал вылетал из лекции.
+         * A file may be deleted or rewritten right during the class: the
+         * teacher deletes, and any cell can rewrite — `df.to_csv` goes into the
+         * same folder. A reader left on a document that does not exist is an
+         * empty area without explanation. What the file list proves about this
+         * and what it does not is in lib/board.ts: a truncated one used to
+         * throw the hall out of the lecture.
          */
         if (boardGone(this.board, message.files, this.filesTruncated)) this.board = null
       } else if (message.t === 'files:delta') {
         /*
-         * Перемена в дереве — вместо всего дерева.
+         * A change in the tree — instead of the whole tree.
          *
-         * Полный список стоил комнате в пятьсот человек 3.0 МБ на один
-         * заведённый файл (замерено), а правит папку всё подряд: автосохранение
-         * редактора, `df.to_csv` в ячейке, `pip install` в терминале.
+         * The full list cost a room of five hundred people 3.0 MB per new file
+         * (measured), and everything edits the folder: the editor's autosave,
+         * `df.to_csv` in a cell, `pip install` in the terminal.
          *
-         * Склеивается дельта только со списком того номера, из которого её
-         * посчитали. Не совпал — склеивать нечего, и вместо догадки задаётся
-         * вопрос: разрыв бывает, когда вошедший пересчитал дерево за пустую
-         * комнату, и лечится он одним полным кадром, а не испорченной панелью.
+         * A delta is spliced only onto the list of the number it was computed
+         * from. No match — nothing to splice, and instead of a guess a question
+         * is asked: a gap happens when someone entering recomputed the tree for
+         * an empty room, and it is cured by one full frame, not by a spoiled
+         * panel.
          */
         if (this.#filesRev !== message.from) {
           this.send({ t: 'files:ask' })
@@ -1011,43 +1047,47 @@ export class SessionState {
         this.files = applyFilesDelta(this.files, message)
         this.#filesRev = message.rev
         this.filesArrived = true
-        // Дельтами описывается только необрезанное дерево (control.ts ·
-        // deltaFrame), так что обрезка здесь снимается вместе с ней.
+        // Only an untruncated tree is described by deltas (control.ts ·
+        // deltaFrame), so the truncation is lifted here along with it.
         this.filesTruncated = false
         if (boardGone(this.board, this.files, false)) this.board = null
       } else if (message.t === 'board') this.board = message.open
       else if (message.t === 'lecture') {
         const before = this.lecture
         this.lecture = message.state
-        // Лекция кончилась — чернила с ней: сервер их уже забыл.
+        // The lecture has ended — and its ink with it: the server has already
+        // forgotten it.
         if (!message.state) {
           this.ink = []
           this.inkRevision += 1
           this.laser = null
         }
         /*
-         * И опись — тоже, вместе с чернилами и вместе с НОВОЙ лекцией.
+         * And the inventory too — together with the ink and together with a
+         * NEW lecture.
          *
-         * Опись живёт дольше кадра `ink`: она говорит про страницы, которых у
-         * вкладки на руках нет. Лекция кончилась или началась другая — про её
-         * страницы опись прошлой не знает ничего, а пульт считает по ней
-         * листы: два листа предыдущей лекции стояли бы в ленте новой пустыми,
-         * и стрелки водили бы по ним до переподключения. Признак новой —
-         * время начала: перезаход в ту же лекцию приходит с тем же.
+         * The inventory lives longer than an `ink` frame: it speaks of pages
+         * the tab does not have on hand. The lecture ended or another one
+         * began — the previous inventory knows nothing about its pages, while
+         * the console counts sheets by it: two sheets of the previous lecture
+         * would stand empty in the new one's strip, and the arrows would lead
+         * through them until a reconnect. The sign of a new one is its start
+         * time: re-entering the same lecture comes with the same one.
          */
         if (!message.state || message.state.startedAt !== before?.startedAt) {
           noteInkedPages(this, [])
         }
         /*
-         * А заметки — не гасим. Они живут в базе и привязаны к ФАЙЛУ, а не к
-         * лекции: та же речь годится и на второй лекции по тому же документу
-         * через неделю, и на подготовке, когда лекции нет вовсе.
+         * But the notes are not cleared. They live in the database and are tied
+         * to the FILE, not to the lecture: the same speech fits a second
+         * lecture on the same document a week later, and preparation when
+         * there is no lecture at all.
          */
       } else if (message.t === 'notes') {
         /*
-         * Ответ на наш вопрос — и только на последний. Пока карта была в пути,
-         * пульт мог уйти на другой документ, и приехавшая старая перезаписала
-         * бы новую молча.
+         * The answer to our question — and only to the last one. While the map
+         * was on its way, the console may have moved to another document, and
+         * an old one arriving would silently overwrite the new one.
          */
         if (message.file === this.#notesWanted) {
           this.notes = message.notes
@@ -1055,60 +1095,66 @@ export class SessionState {
         }
       } else if (message.t === 'notes:one') {
         /*
-         * Эхо одной правки — своей же или второго преподавателя. Приходит и
-         * тому, кто её сделал: пульт на планшете и ноутбук на кафедре — два
-         * разных сокета одного человека, и второй узнаёт о правке только так.
+         * The echo of a single edit — one's own or a second teacher's. It also
+         * comes to whoever made it: the console on a tablet and the laptop in
+         * the department are two different sockets of one person, and the
+         * second learns about the edit only this way.
          *
-         * До карты эхо не применяем: без неё непонятно, к чему приписывать
-         * страницу, а карта приедет следом и уже с этой правкой внутри.
+         * The echo is not applied before the map: without it, it is unclear
+         * what to attribute the page to, and the map will arrive next with this
+         * edit already inside.
          */
         if (message.file === this.notesFile) {
           const next = { ...this.notes }
-          // Пустая заметка — это её отсутствие, ровно как в базе: строка из
-          // пробелов, оставшаяся в карте, рисует ленту непустой.
+          // An empty note is its absence, just as in the database: a string of
+          // spaces left in the map draws the feed as non-empty.
           if (message.text) next[message.page] = message.text
           else delete next[message.page]
           this.notes = next
         }
       } else if (message.t === 'ink') {
         /*
-         * ПОЛНАЯ замена — сколько бы страниц в кадре ни ехало.
+         * A FULL replacement — however many pages ride in the frame.
          *
-         * Их число решает сервер: приветственная пачка возит текущую страницу,
-         * а остальные называет описью (`ink:pages`) и отдаёт по вопросу. Чем
-         * этот кадр отличается от описи, вкладка не гадает — считать «пришло
-         * всё» по одному ему нельзя, и именно поэтому опись едет отдельным.
+         * The server decides how many: the welcome batch carries the current
+         * page, names the rest in an inventory (`ink:pages`) and hands them out
+         * on request. The tab does not guess how this frame differs from the
+         * inventory — "everything has arrived" cannot be concluded from it
+         * alone, and that is exactly why the inventory travels separately.
          */
         this.ink = message.strokes
         this.inkRevision += 1
       } else if (message.t === 'ink:page') {
         /*
-         * Чернила ОДНОЙ страницы: замена штрихов этой страницы, и только её.
+         * The ink of ONE page: a replacement of that page's strokes, and only
+         * those.
          *
-         * Пустой список — законный ответ «страница чистая», а не потерянный
-         * кадр: без него вкладка, спросившая про чистый лист, ждала бы чернил
-         * до конца лекции. Само правило замены — одной копией, там же, где
-         * вопрос и опись (lecture/ink.ts · `replaceInkPage`).
+         * An empty list is a legitimate answer "the page is clean", not a lost
+         * frame: without it a tab that asked about a clean sheet would wait for
+         * ink until the end of the lecture. The replacement rule itself is a
+         * single copy, in the same place as the question and the inventory
+         * (lecture/ink.ts · `replaceInkPage`).
          */
         this.ink = replaceInkPage(this.ink, message.page, message.strokes)
         this.inkRevision += 1
       } else if (message.t === 'ink:pages') {
         /*
-         * ОПИСЬ исписанных страниц — то, чего в самих чернилах больше нет.
+         * The INVENTORY of inked pages — what the ink itself no longer holds.
          *
-         * Держит её lecture/ink.ts: там же и вопрос про недостающую страницу,
-         * и память о заданных. Счётчик правок двигается вместе с ней потому,
-         * что по нему перерисовываются лента эскизов и счёт чистых листов, а
-         * опись меняет ровно их.
+         * lecture/ink.ts keeps it: the question about a missing page and the
+         * memory of asked ones live there too. The edit counter moves together
+         * with it because the thumbnail strip and the count of clean sheets are
+         * redrawn by it, and the inventory changes exactly those.
          */
         noteInkedPages(this, message.pages)
         this.inkRevision += 1
       } else if (message.t === 'ink:add') {
         /*
-         * Дописать точки к штриху с тем же именем — или завести новый.
+         * Append the points to the stroke with the same name — or start a new
+         * one.
          *
-         * Сервер шлёт только НОВЫЕ точки: штрих в тысячу точек, пересылаемый на
-         * каждую двадцатую, — это гигабайты трафика на лекцию.
+         * The server sends only NEW points: a thousand-point stroke re-sent on
+         * every twentieth point is gigabytes of traffic per lecture.
          */
         const stroke = message.stroke
         const at = this.ink.findIndex((known) => known.id === stroke.id)
@@ -1122,11 +1168,11 @@ export class SessionState {
         const had = this.ink.some((stroke) => stroke.page === message.page)
         this.ink = this.ink.filter((stroke) => stroke.id !== message.id)
         /*
-         * Стёрли последний штрих страницы — она больше не исписана.
+         * The page's last stroke was erased — it is no longer inked.
          *
-         * Только если её чернила у нас были: страница, которой на руках нет,
-         * после этого кадра всё равно неизвестна, и вычёркивать её из описи
-         * значило бы объявить чистой чужую разметку.
+         * Only if we had its ink: a page not on hand is still unknown after
+         * this frame, and striking it from the inventory would mean declaring
+         * someone else's markup clean.
          */
         if (had && !this.ink.some((stroke) => stroke.page === message.page)) {
           this.#forgetInkedPage(message.page)
@@ -1135,9 +1181,10 @@ export class SessionState {
       } else if (message.t === 'ink:clear') {
         const page = message.page
         this.ink = page === null ? [] : this.ink.filter((stroke) => stroke.page !== page)
-        // «Стереть» — про всех, а не про то, что у нас на руках: страница
-        // чиста у зала, и в описи ей места нет. Иначе пульт считал бы по ней
-        // листы до конца лекции, а лента рисовала бы пустой эскиз.
+        // "Erase" is about everyone, not about what we have on hand: the page is
+        // clean for the hall, and it has no place in the inventory. Otherwise
+        // the console would count sheets by it until the end of the lecture,
+        // and the strip would draw an empty thumbnail.
         if (page === null) noteInkedPages(this, [])
         else this.#forgetInkedPage(page)
         this.inkRevision += 1
@@ -1147,19 +1194,20 @@ export class SessionState {
         message.t === 'define:reply'
       ) {
         /*
-         * Ответ находит своего спрашивавшего по номеру — и только его.
+         * The answer finds whoever asked by the number — and only them.
          *
-         * Пока человек печатает, в проводе бывает по три вопроса сразу, и
-         * ответы приходят в любом порядке: ядро, занятое ячейкой, промолчит
-         * на второй и ответит на четвёртый. Без номера редактор показал бы
-         * список к тексту, которого в ячейке уже нет.
+         * While a person types, there can be three questions on the wire at
+         * once, and answers arrive in any order: a kernel busy with a cell
+         * stays silent on the second and answers the fourth. Without a number
+         * the editor would show a list for text no longer in the cell.
          *
-         * Переход к определению разбирается тем же столом. Номер ему нужен не
-         * меньше: щелчок по второму имени, пока не приехал ответ про первое,
-         * увёл бы человека в место, которого он уже не просил. И разрешить его
-         * обещание обязано что-то одно из трёх — этот ответ, таймер или обрыв
-         * (`#dropAsked`): иначе ожидание на той стороне не кончится никогда, и
-         * следующий щелчок по тому же имени не сделает вообще ничего.
+         * Go-to-definition is handled by the same table. It needs the number no
+         * less: a click on a second name before the answer about the first
+         * arrived would take the person somewhere they no longer asked for. And
+         * exactly one of three things must resolve its promise — this answer,
+         * the timer or a drop (`#dropAsked`): otherwise the wait on the other
+         * side never ends, and the next click on the same name does nothing at
+         * all.
          */
         const waiting = this.#asked.get(message.id)
         if (waiting) {
@@ -1171,13 +1219,14 @@ export class SessionState {
       else if (message.t === 'terminal') this.terminalStatus = message.status
       else if (message.t === 'error') this.lastError = message.message
       /*
-       * Умеет ли этот инстанс давать личной тетради своё ядро.
+       * Whether this instance can give a personal notebook its own kernel.
        *
-       * По этому слову строка правила «Личные тетради студентов» говорит правду:
-       * на брокере (k3s) личная тетрадь пока считается без своего ядра вовсе, и
-       * обещать обратное — значит дать преподавателю включить то, что не
-       * работает, и узнать об этом от студента посреди пары. Отсутствие поля —
-       * старый сервер, и тогда прежнее молчание.
+       * By this word the "Students' personal notebooks" rule row tells the
+       * truth: on the broker (k3s) a personal notebook has no kernel of its
+       * own yet at all, and promising otherwise means letting the teacher turn
+       * on something that does not work and learn about it from a student in
+       * the middle of a class. A missing field means an old server, and then
+       * the former silence.
        */
       else if (message.t === 'ready' && message.ownKernels !== undefined) {
         this.ownKernels = message.ownKernels
@@ -1190,20 +1239,22 @@ export class SessionState {
       this.controlConnected = false
       this.#dropAsked()
       /*
-       * Указка не переживает разрыв.
+       * The laser pointer does not survive a disconnect.
        *
-       * Она — положение руки прямо сейчас, и держится ровно тем, что кадры
-       * идут. Оборвалась связь — кадров нет, а красное пятно осталось бы висеть
-       * на слайде до конца лекции, показывая туда, где ведущий был минуту
-       * назад. Гаснет здесь, а не по таймауту: неподвижная указка кадров не
-       * шлёт вовсе, и таймаут погасил бы штатный показ.
+       * It is the hand's position right now, and it is held up exactly by the
+       * frames flowing. The connection dropped — no frames, and the red dot
+       * would stay hanging on the slide until the end of the lecture, pointing
+       * where the leader was a minute ago. It goes out here, not by a timeout:
+       * a motionless pointer sends no frames at all, and a timeout would put
+       * out a normal showing.
        */
       this.laser = null
       if (this.#disposed) return
       /*
-       * Забаненному возвращаться некуда: рукопожатие ему откажут, и «Reconnecting»
-       * под экраном «вас удалили с занятия» — это две надписи, спорящие друг с
-       * другом, плюс стук в дверь раз в восемь секунд до конца дня.
+       * A banned person has nowhere to come back to: the handshake will be
+       * refused, and "Reconnecting" under the "you were removed from the
+       * class" screen is two labels arguing with each other, plus a knock on
+       * the door every eight seconds until the end of the day.
        */
       if (this.banned !== null) return
       /*
@@ -1221,23 +1272,25 @@ export class SessionState {
       }
       this.#retries += 1
       /*
-       * Протухший ключ выглядит как обрыв связи и не проходит сам.
+       * A stale key looks like a dropped connection and does not go away by
+       * itself.
        *
-       * Сервер отказывает в рукопожатии без кода и без слов — сказать их
-       * некуда, соединения ещё нет. Браузер отступает и пробует снова, вечно:
-       * «RECONNECTING» перед человеком, чей ключ просрочен, и никакого способа
-       * это понять. После нескольких неудач спрашиваем сервер обычным
-       * запросом — у него есть, чем ответить.
+       * The server refuses the handshake with no code and no words — there is
+       * nowhere to say them, there is no connection yet. The browser backs off
+       * and tries again, forever: "RECONNECTING" in front of a person whose key
+       * has expired, and no way to understand it. After a few failures we ask
+       * the server with an ordinary request — it has something to answer with.
        *
-       * И спрашиваем не один раз: сервер, которого перезапускают, недоступен и
-       * по HTTP тоже, а `#retries` обнуляется только удачным соединением —
-       * одна проба на четвёртой неудаче попадала ровно в те секунды, когда
-       * ответить некому, и «Reconnecting» после этого крутился молча до конца
-       * дня. Каждая четвёртая — это проба примерно раз в полминуты.
+       * And we ask more than once: a server being restarted is unreachable
+       * over HTTP too, and `#retries` is reset only by a successful connection
+       * — a single probe on the fourth failure landed exactly in the seconds
+       * when there was nobody to answer, and after that "Reconnecting" spun
+       * silently until the end of the day. Every fourth failure means a probe
+       * roughly once every half minute.
        */
       if (this.#retries % 4 === 0) void this.#diagnose()
-      // Отступ с разбросом: почему без него пятьсот вкладок возвращаются в одни
-      // и те же миллисекунды — в lib/controls.ts · reconnectDelay.
+      // A backoff with jitter: why five hundred tabs come back in the same
+      // milliseconds without it is in lib/controls.ts · reconnectDelay.
       const delay = reconnectDelay(this.#retries)
       this.#reconnectTimer = window.setTimeout(() => this.#connectControl(), delay)
     }
@@ -1246,41 +1299,41 @@ export class SessionState {
   }
 
   /**
-   * Нас удалили с занятия — закрыть за собой оба провода.
+   * We were removed from the class — close both wires behind us.
    *
-   * Управляющий сокет закроет сервер, а сокет совместной работы про бан не
-   * знает и продолжал бы проситься на апгрейд каждые 2,5 с до закрытия вкладки:
-   * рукопожатию отказывают, и это ровно тот стук в дверь, ради тишины которого
-   * написан `#roomIsGone` ниже.
+   * The server will close the control socket, but the collaboration socket
+   * knows nothing about the ban and would keep asking for an upgrade every
+   * 2.5 s until the tab closed: the handshake is refused, and that is exactly
+   * the knocking on the door that `#roomIsGone` below was written to silence.
    *
-   * Местная копия НЕ стирается, и это разница с удалённой комнатой: семинар
-   * никуда не делся, человека ждут завтра, и его тетрадь — общая работа
-   * комнаты, а не улика.
+   * The local copy is NOT erased, and that is the difference from a deleted
+   * room: the seminar has not gone anywhere, the person is expected tomorrow,
+   * and their notebook is the room's shared work, not evidence.
    */
   #youAreBanned(until: number): void {
     if (this.banned !== null) return
     this.banned = until
     this.provider.disconnect()
     /*
-     * И отменить уже назначенную попытку управляющего сокета.
+     * And cancel the control socket's already scheduled attempt.
      *
-     * Про бан мы узнаём двумя путями: кадром `banned` по живому сокету и
-     * ответом на `api.me` — а второй приходит уже ПОСЛЕ того, как onclose
-     * назначил следующий заход. Без этой строки вкладка ещё раз стучалась бы в
-     * дверь, которую ей только что закрыли, и получала бы 403 на рукопожатии.
+     * We learn about a ban in two ways: the `banned` frame over a live socket
+     * and the answer to `api.me` — and the second arrives AFTER onclose has
+     * scheduled the next attempt. Without this line the tab would knock once
+     * more on the door just closed to it and get a 403 on the handshake.
      */
     window.clearTimeout(this.#reconnectTimer)
   }
 
   /**
-   * Комнаты больше нет: закрыть за собой всё, что в неё стучится.
+   * The room no longer exists: close behind us everything that knocks on it.
    *
-   * Управляющий сокет останавливает сам себя (`return` до отсчёта попыток), а
-   * вот сокет совместной работы этого не знает и продолжает проситься на
-   * апгрейд каждые 2,5 с до закрытия вкладки — тридцать оставленных открытыми
-   * вкладок класса дают серверу дюжину отказов в секунду за пустой экран
-   * «Этот семинар удалён». Заодно уходит и местная копия: комната удалена, и
-   * кэш, из которого её можно снова смонтировать, — это ложь на диске.
+   * The control socket stops by itself (`return` before counting attempts),
+   * but the collaboration socket does not know this and keeps asking for an
+   * upgrade every 2.5 s until the tab closes — a class's thirty tabs left open
+   * give the server a dozen refusals a second for an empty "This seminar was
+   * deleted" screen. The local copy goes too: the room is deleted, and a
+   * cache from which it could be mounted again is a lie on disk.
    */
   #roomIsGone(): void {
     if (this.gone) return
@@ -1292,21 +1345,23 @@ export class SessionState {
   }
 
   /**
-   * Почему нас не пускают — спросить по HTTP, раз сокет молчит.
+   * Why we are not let in — ask over HTTP, since the socket is silent.
    *
-   * ЧЕТЫРЕ случая, и все четыре надо разделить: комнаты нет (её удалили, пока
-   * мы отступали), вход закрыл преподаватель, ключ не годится (истёк или
-   * подписан другим секретом — сервер перезапустили с новым), сервер просто
-   * недоступен. Последнее — обычный обрыв, и переподключаться правильно;
-   * первые три не пройдут сами.
+   * FOUR cases, and all four must be told apart: the room does not exist (it
+   * was deleted while we were backing off), the teacher closed the entrance,
+   * the key is no good (expired, or signed with another secret — the server
+   * was restarted with a new one), the server is simply unreachable. The last
+   * is an ordinary drop, and reconnecting is right; the first three will not
+   * pass by themselves.
    *
-   * Спрашиваем КЛЮЧОМ (`api.me`), а не безымянным `getSession`. Безымянный
-   * ответ про ключ ничего не знает, и всё, что оставалось, — считать любой
-   * отказ в апгрейде при живом HTTP протухшим ключом. Забаненный после
-   * перезагрузки читал из-за этого «место истекло», его личность стиралась
-   * насовсем, а назавтра он входил в комнату новым участником: попытки
-   * консилиума, авторство в ленте оракула и строка в списке людей оставались за
-   * человеком, которого больше нет, а у преподавателя в списке — дубль имени.
+   * We ask WITH THE KEY (`api.me`), not with an anonymous `getSession`. An
+   * anonymous answer knows nothing about the key, and all that was left was to
+   * count any upgrade refusal with HTTP alive as a stale key. Because of that
+   * a banned person read "the seat has expired" after a reload, their identity
+   * was erased for good, and the next day they entered the room as a new
+   * participant: council attempts, authorship in the oracle feed and the row
+   * in the people list stayed with a person who no longer existed, and the
+   * teacher's list got a duplicate name.
    */
   async #diagnose(): Promise<void> {
     let verdict: EntryVerdict
@@ -1316,29 +1371,32 @@ export class SessionState {
       verdict = verdictOnFailure(err)
     }
 
-    // «Не знаю» — это обрыв: молчим и продолжаем отступать. Разбор всех
-    // четырёх исходов и цена путаницы — в lib/identity.ts · EntryVerdict.
+    // "I don't know" is a drop: stay quiet and keep backing off. The breakdown
+    // of all four outcomes and the cost of mixing them up is in
+    // lib/identity.ts · EntryVerdict.
     if (verdict.why === 'unknown') return
     if (verdict.why === 'gone') return this.#roomIsGone()
     if (verdict.why === 'banned') {
       /*
-       * Вход закрыт человеком. Экран для этого есть, и он ничего не стирает:
-       * семинар на месте, человека ждут завтра — и завтра он должен войти
-       * собой, а не новым участником.
+       * A person has closed the entrance. There is a screen for this, and it
+       * erases nothing: the seminar is in place, the person is expected
+       * tomorrow — and tomorrow they must enter as themselves, not as a new
+       * participant.
        */
       return this.#youAreBanned(verdict.until)
     }
 
     /*
-     * Комната есть, а нас не пускают: дело в ключе. Он лежит в этом браузере
-     * и в комнате больше не действует — молча починиться нельзя, потому что
-     * имя выбирает человек.
+     * The room exists but we are not let in: it is the key. It lies in this
+     * browser and no longer works in the room — it cannot be fixed silently,
+     * because the person chooses the name.
      *
-     * Поэтому запись о том, кем мы здесь были, стирается, и экран говорит об
-     * этом наверх: комната уступает место форме имени. Раньше здесь стояла
-     * строка «перезагрузите страницу и назовитесь заново» — совет, который не
-     * работал: личность оставалась в хранилище, и перезагрузка приводила в ту
-     * же комнату с тем же негодным ключом, и так до ручной чистки браузера.
+     * So the record of who we were here is erased, and the screen reports it
+     * upwards: the room gives way to the name form. There used to be a line
+     * here "reload the page and introduce yourself again" — advice that did
+     * not work: the identity stayed in storage, and the reload led into the
+     * same room with the same bad key, and so on until the browser was cleaned
+     * by hand.
      */
     forgetIdentity(this.session.id)
     this.expired = true
@@ -1346,14 +1404,15 @@ export class SessionState {
 
   send(message: ControlClientMessage) {
     /*
-     * Всё, что сейчас посчитают, стирает память справки.
+     * Anything about to be computed wipes the help memory.
      *
-     * Ответ ядра про имя помнится минуту (lib/signature-help.ts), и это
-     * правильно ровно до того мгновения, когда в ядре что-то выполнили:
-     * `df` стал другим, функция переопределена, импорт наконец прошёл.
-     * Место выбрано одно и самое узкое: запуск ячейки, консилиума и
-     * перезапуск ядра уходят отсюда, кто бы их ни нажал — ячейка, тетрадь,
-     * пульт или командный режим.
+     * The kernel's answer about a name is remembered for a minute
+     * (lib/signature-help.ts), and that is right exactly until the moment
+     * something is executed in the kernel: `df` became different, a function
+     * was redefined, an import finally went through. One place is chosen, and
+     * the narrowest: a cell run, a council run and a kernel restart leave from
+     * here, whoever pressed them — a cell, a notebook, a console or command
+     * mode.
      */
     if (message.t === 'run' || message.t === 'restart' || message.t === 'council:run') forgetHelp()
     if (this.#control?.readyState === WebSocket.OPEN) {
@@ -1371,53 +1430,59 @@ export class SessionState {
   }
 
   /**
-   * Спросить у ядра комнаты, что дописать в этом месте кода.
+   * Ask the room's kernel what to complete at this place in the code.
    *
-   * `null` — «подсказки не будет»: сокет закрыт, право не дано, ядро молчит
-   * или его нет вовсе. Отдельного слова про причину здесь нет намеренно —
-   * показывать его было бы негде и незачем, а редактор на такой ответ
-   * подставляет слова самой ячейки (CodeEditor.svelte · localWords).
+   * `null` — "there will be no hint": the socket is closed, the right is not
+   * given, the kernel is silent or there is none at all. There is deliberately
+   * no separate word about the reason here — there would be nowhere and no
+   * reason to show it, and on such an answer the editor substitutes words
+   * from the cell itself (CodeEditor.svelte · localWords).
    *
-   * Мимо очереди `send`: в ней шестнадцать мест и лежат в ней НАЖАТИЯ. Вопрос
-   * о дополнении уходит только по живому сокету — см. `#askNotes`, там та же
-   * развилка и те же доводы.
+   * Bypassing the `send` queue: it has sixteen slots and holds PRESSES. A
+   * completion question goes only over a live socket — see `#askNotes`, the
+   * same fork and the same arguments are there.
    */
   complete(code: string, cursor: number, cellId?: string): Promise<CompleteReply | null> {
     return this.#ask('complete', code, cursor, cellId) as Promise<CompleteReply | null>
   }
 
-  /** Справка о том, что стоит под кареткой, — теми же правилами, что и выше. */
+  /** Help about what is under the caret — by the same rules as above. */
   inspect(code: string, cursor: number, cellId?: string): Promise<InspectReply | null> {
     return this.#ask('inspect', code, cursor, cellId) as Promise<InspectReply | null>
   }
 
   /**
-   * Одна строка про значение: тип и размер того, что под указателем.
+   * One line about a value: the type and size of what is under the pointer.
    *
-   * Тот же кадр, что у справки, с признаком `brief` — и та же дорога мимо
-   * очереди. Разница в ответе: ядро ради этого не поднимают, статически не
-   * гадают, и `null` означает просто «строки не будет».
+   * The same frame as for help, with the `brief` flag — and the same road
+   * bypassing the queue. The difference is in the answer: the kernel is not
+   * started for it, nothing is guessed statically, and `null` simply means
+   * "there will be no line".
    */
   brief(code: string, cursor: number, cellId?: string): Promise<InspectReply | null> {
     return this.#ask('inspect', code, cursor, cellId, undefined, true) as Promise<InspectReply | null>
   }
 
   /**
-   * Где определено имя под кареткой — третий вопрос той же формы и с той же
-   * дорогой, но отвечает на него не ядро, а сервер.
+   * Where the name under the caret is defined — the third question of the
+   * same shape and on the same road, but it is answered by the server, not
+   * the kernel.
    *
-   * Он разбирает Python сам (shared/python-defs.ts) и ищет по тетрадям комнаты
-   * и по .py-файлам папки семинара. Отсюда две вещи, которых нет у соседей:
-   * переход работает без запущенного ядра — у того, кто только что открыл
-   * тетрадь, — и право здесь не «право запускать», а право читать.
+   * It parses Python itself (shared/python-defs.ts) and searches the room's
+   * notebooks and the .py files of the seminar folder. Hence two things the
+   * neighbours do not have: the jump works without a running kernel — for
+   * someone who has just opened the notebook — and the right here is not "the
+   * right to run" but the right to read.
    *
-   * `path` — файл, в котором щёлкнули, если это не ячейка: от него сервер
-   * считает относительные импорты (`from . import util`). Соседям это поле не
-   * нужно вовсе — они спрашивают ядро, а у ядра свой текущий каталог.
+   * `path` — the file clicked in, if it is not a cell: the server counts
+   * relative imports (`from . import util`) from it. The neighbours do not need
+   * this field at all — they ask the kernel, and the kernel has its own
+   * current directory.
    *
-   * `null` — ответа не будет: сокет закрыт или три секунды вышли. В отличие от
-   * дополнения, тишина здесь человеку видна — жест он сделал осознанно, — и что
-   * ему на это сказать, решает lib/goto.svelte.ts, а не редактор.
+   * `null` — there will be no answer: the socket is closed or the three
+   * seconds ran out. Unlike completion, silence here is visible to the person
+   * — they made the gesture deliberately — and what to tell them is decided by
+   * lib/goto.svelte.ts, not the editor.
    */
   define(
     code: string,
@@ -1429,43 +1494,47 @@ export class SessionState {
   }
 
   /**
-   * Общая половина всех трёх вопросов: номер, потолок текста, таймер, отправка.
+   * The shared half of all three questions: the number, the text ceiling, the
+   * timer, the send.
    *
-   * Потолок в двадцать четыре килобайта стоит и здесь, и на сервере. Здесь —
-   * потому что кадр пульта режется на тридцати двух (control.ts ·
-   * MAX_FRAME_BYTES), и ячейка, которую кто-то догадался наполнить романом,
-   * иначе получила бы на каждую букву не подсказку, а тост «сообщение
-   * слишком длинное».
+   * The twenty-four-kilobyte ceiling stands both here and on the server. Here
+   * — because a console frame is cut at thirty-two (control.ts ·
+   * MAX_FRAME_BYTES), and a cell someone thought to fill with a novel would
+   * otherwise get, on every letter, not a hint but a "message too long" toast.
    *
-   * А вот КАК он режется, у перехода своё: дополнению довольно текста до
-   * каретки, переходу нужен весь — см. `headBeforeCursor` и
-   * `windowAroundCursor`. Это единственная развилка на всю дорогу, и ради неё
-   * дальше стоит одно `kind === 'define'`, а не второй такой же метод: номер,
-   * таймер, запись в `#asked` и разбор обрыва у всех троих обязаны быть одними
-   * и теми же — разойдясь, они дают зависшее обещание, а не видимую ошибку.
+   * But HOW it is cut differs for the jump: completion is satisfied with the
+   * text up to the caret, the jump needs all of it — see `headBeforeCursor`
+   * and `windowAroundCursor`. This is the only fork on the whole road, and for
+   * its sake there is one `kind === 'define'` further on rather than a second
+   * identical method: the number, the timer, the `#asked` entry and the
+   * handling of a drop must be the same for all three — diverging, they give a
+   * hung promise, not a visible error.
    */
   #ask(
     kind: 'complete' | 'inspect' | 'define',
     code: string,
     cursor: number,
     /**
-     * Откуда спрашивают — и это про ПРАВО, а не про разбор.
+     * Where the question comes from — and this is about the RIGHT, not about
+     * parsing.
      *
-     * Свой лист консилиума — единственная ячейка, где право дополнять есть у
-     * студента и в лекционной комнате (control.ts · mayComplete). Без имени
-     * ячейки сервер о ней не знает и отказывает молча: имена в листе приезжали
-     * из слов самой ячейки, а столбцы настоящего `df` — нет.
+     * One's own council sheet is the only cell where a student has the right
+     * to complete even in a lecture room (control.ts · mayComplete). Without
+     * the cell name the server does not know about it and refuses silently:
+     * names in the sheet came from the cell's own words, but the columns of the
+     * real `df` did not.
      */
     cellId?: string,
     /**
-     * Файл, из которого спрашивают, — и это поле есть только у `define`.
+     * The file the question comes from — and only `define` has this field.
      *
-     * Соседи спрашивают ЯДРО, и у него свой текущий каталог; определение ищет
-     * сервер по папке семинара, и `from . import util` значит «рядом с ЭТИМ
-     * файлом» — без пути точка не от чего считается.
+     * The neighbours ask the KERNEL, and it has its own current directory; the
+     * server looks for a definition in the seminar folder, and
+     * `from . import util` means "next to THIS file" — without a path the dot
+     * has nothing to count from.
      */
     path?: string,
-    /** Спрашиваем не справку, а строку про значение — см. `brief`. */
+    /** We ask not for help but for a line about the value — see `brief`. */
     brief?: boolean,
   ): Promise<ControlServerMessage | null> {
     const socket = this.#control
@@ -1484,10 +1553,11 @@ export class SessionState {
       this.#asked.set(id, { settle: resolve, timer })
       try {
         /*
-         * Один литерал вместо ветки на каждое необязательное поле: `cellId` и
-         * `path` бывают порознь, и веток было бы четыре. Свойство со значением
-         * undefined `JSON.stringify` не пишет вовсе, так что на проводе выходит
-         * ровно прежний кадр — без имени ячейки у того, кто его не назвал.
+         * One literal instead of a branch per optional field: `cellId` and
+         * `path` come separately, and there would be four branches.
+         * `JSON.stringify` does not write a property whose value is undefined
+         * at all, so the wire carries exactly the former frame — without a cell
+         * name for whoever did not give one.
          */
         socket.send(
           JSON.stringify({
@@ -1498,14 +1568,15 @@ export class SessionState {
             cellId,
             path,
             brief,
-            // Только у перехода и только когда окно правда резало: у соседей
-            // этого поля нет, и `undefined` в кадр не попадает.
+            // Only for the jump and only when the window really cut: the
+            // neighbours have no such field, and `undefined` does not get into
+            // the frame.
             from: kind === 'define' && sent.from > 0 ? sent.from : undefined,
           }),
         )
       } catch {
-        // Сокет закрылся между проверкой и отправкой — обычная гонка вкладки,
-        // уходящей в фон. Обещание всё равно обязано разрешиться.
+        // The socket closed between the check and the send — the usual race of
+        // a tab going to the background. The promise must resolve anyway.
         this.#asked.delete(id)
         window.clearTimeout(timer)
         resolve(null)
@@ -1514,11 +1585,13 @@ export class SessionState {
   }
 
   /**
-   * Оборвалась связь — разрешить всё, чего мы ждали от ядра.
+   * The connection dropped — resolve everything we were waiting for from the
+   * kernel.
    *
-   * Ответа по мёртвому сокету не будет никогда, а таймер разрешил бы вопрос
-   * через три секунды: всё это время автодополнение в ячейке стояло бы
-   * открытым и пустым. Дешевле сказать «нет» сразу.
+   * There will never be an answer over a dead socket, and the timer would
+   * resolve the question in three seconds: all that time the cell's
+   * autocompletion would stand open and empty. It is cheaper to say "no" at
+   * once.
    */
   #dropAsked(): void {
     const waiting = [...this.#asked.values()]
@@ -1530,20 +1603,21 @@ export class SessionState {
   }
 
   /**
-   * Спросить заметки спикера к документу. Звать можно сколько угодно.
+   * Ask for the speaker notes of a document. May be called as often as you
+   * like.
    *
-   * Защёлка по имени файла, а не по «спрашивали ли уже»: ленту заметок рисует
-   * `$effect`, который перезапускается на каждый повод, а вопрос за вопросом на
-   * один и тот же документ — это карта на двести страниц, приезжающая по
-   * десять раз за минуту. Другой файл проходит защёлку всегда.
+   * A latch on the file name, not on "have we asked already": the notes feed
+   * is drawn by an `$effect` that reruns on every occasion, and question after
+   * question about the same document means a two-hundred-page map arriving
+   * ten times a minute. Another file always passes the latch.
    */
   openNotes(file: string): void {
     if (!file || this.#notesWanted === file) return
     this.#notesWanted = file
     /*
-     * Прежняя карта уходит вместе с прежним файлом: чужая речь под чужими
-     * страницами хуже, чем её отсутствие, а `notesFile = null` — это и есть
-     * «ещё не приехали», по которому лента показывает ожидание.
+     * The previous map leaves with the previous file: someone else's speech
+     * under someone else's pages is worse than none, and `notesFile = null` is
+     * exactly the "not arrived yet" by which the feed shows the wait.
      */
     this.notes = {}
     this.notesFile = null
@@ -1551,13 +1625,13 @@ export class SessionState {
   }
 
   /**
-   * Отправить сам вопрос — только по живому сокету, мимо очереди.
+   * Send the question itself — only over a live socket, bypassing the queue.
    *
-   * В очередь его класть нельзя по двум причинам. Она держит шестнадцать
-   * сообщений и выбрасывает старые — вопрос вытеснил бы чью-то правку; и она
-   * заодно зажигает «нет связи», а подписка, ушедшая в фон, — не то нажатие, о
-   * котором человеку надо рассказывать. Обрыв здесь и так закрыт: `onopen`
-   * переспрашивает сам.
+   * It must not go into the queue for two reasons. The queue holds sixteen
+   * messages and throws out old ones — the question would push out someone's
+   * edit; and it also lights up "no connection", while a subscription gone to
+   * the background is not a press the person needs to be told about. A drop is
+   * covered here anyway: `onopen` re-asks by itself.
    */
   #askNotes(): void {
     const file = this.#notesWanted
@@ -1567,12 +1641,12 @@ export class SessionState {
   }
 
   /**
-   * Вычеркнуть страницу из описи: чернил на ней больше нет.
+   * Strike a page from the inventory: there is no ink on it any more.
    *
-   * Через `inkedPages`, а не правкой списка: опись сервера и страницы на руках
-   * — два источника, и полного нет ни у одного (см. lecture/ink.ts). Берём их
-   * объединение без вычеркнутой страницы — это и есть всё, что вкладка про
-   * исписанное знает после «стереть».
+   * Through `inkedPages`, not by editing the list: the server's inventory and
+   * the pages on hand are two sources, and neither is complete (see
+   * lecture/ink.ts). We take their union without the struck page — that is
+   * all the tab knows about inked pages after "erase".
    */
   #forgetInkedPage(page: number): void {
     noteInkedPages(this, [...inkedPages(this)].filter((known) => known !== page))
@@ -1581,11 +1655,11 @@ export class SessionState {
   /* --------------------------------------------------------------- state */
 
   /**
-   * Выделить одну ячейку — и снять выделение со всех остальных.
+   * Select one cell — and clear the selection from all the others.
    *
-   * `null` снимает выделение совсем: до сих пор такого вызова в продукте не
-   * было ни одного, и выйти из состояния «выбрано» было нельзя до
-   * перезагрузки страницы. Клик мимо ячейки и Escape зовут именно его.
+   * `null` clears the selection entirely: until now the product had not a
+   * single such call, and the "selected" state could not be left until a page
+   * reload. A click outside a cell and Escape call exactly this.
    */
   selectCell(id: string | null) {
     this.selection = id ? [id] : []
@@ -1593,16 +1667,18 @@ export class SessionState {
   }
 
   /**
-   * Добавить ячейку к выделению или убрать её оттуда — Cmd (Ctrl) с кликом.
+   * Add a cell to the selection or remove it from there — Cmd (Ctrl) with a
+   * click.
    *
-   * Вопрос оракулу про две ячейки — обычное дело на семинаре («почему вот это
-   * ломает вот то»), и до сих пор его нельзя было задать иначе как словами.
+   * A question to the oracle about two cells is common at a seminar ("why does
+   * this break that"), and until now it could only be asked in words.
    */
   toggleCell(id: string) {
     if (this.selection.includes(id)) {
       const rest = this.selection.filter((other) => other !== id)
       this.selection = rest
-      // Якорь уходит на последнюю оставшуюся: клавиатуре нужно, откуда шагать.
+      // The anchor moves to the last remaining one: the keyboard needs a place
+      // to step from.
       if (this.selectedCellId === id) this.#setAnchor(rest.at(-1) ?? null)
       return
     }
@@ -1611,11 +1687,12 @@ export class SessionState {
   }
 
   /**
-   * Растянуть выделение до этой ячейки — Shift с кликом или Shift со стрелкой.
+   * Extend the selection up to this cell — Shift with a click or Shift with an
+   * arrow.
    *
-   * Порядок приходит снаружи: он свой у каждой тетради, и знать его здесь
-   * неоткуда. Якорь не двигается — от него и меряется диапазон, пока Shift не
-   * отпустили.
+   * The order comes from outside: each notebook has its own, and there is
+   * nowhere to learn it here. The anchor does not move — the range is measured
+   * from it until Shift is released.
    */
   extendTo(id: string, order: readonly string[]) {
     const from = this.selectedCellId ? order.indexOf(this.selectedCellId) : -1
@@ -1627,12 +1704,12 @@ export class SessionState {
   }
 
   /**
-   * Кого показывать комнате как «правит ячейку 04».
+   * Which cell to show the room as "editing cell 04".
    *
-   * Одну, а не список: присутствие отвечает на вопрос «где человек», а он в
-   * один момент времени в одном месте. Кадр не шлётся, если ничего не
-   * изменилось, — соседние `setViewing` и `setEditing` делают так же, а
-   * `selectCell` до сих пор слал его на каждый повторный клик по той же ячейке.
+   * One, not a list: presence answers the question "where is the person", and
+   * a person is in one place at any one moment. No frame is sent if nothing
+   * changed — the neighbouring `setViewing` and `setEditing` do the same, and
+   * `selectCell` used to send one on every repeated click on the same cell.
    */
   #setAnchor(id: string | null) {
     if (this.selectedCellId === id) return
@@ -1641,16 +1718,16 @@ export class SessionState {
     this.#announceAnchor()
   }
 
-  /** Отписка от ячейки, в которой человек стоит сейчас. */
+  /** The unsubscribe from the cell the person is standing in now. */
   #anchorWatch: (() => void) | null = null
 
   /**
-   * Следить за замком той ячейки, в которой стоят.
+   * Watch the lock of the cell being stood in.
    *
-   * Мелко (`observe`, а не `observeDeep`) и ровно за одной: буквы живут во
-   * вложенном Y.Text, и глубокий наблюдатель на тетради просыпался бы на каждое
-   * нажатие в комнате. Здесь же события считанные — состояние выполнения да
-   * замок, — а нужен из них один: `open`.
+   * Shallow (`observe`, not `observeDeep`) and on exactly one: the letters live
+   * in a nested Y.Text, and a deep observer on the notebook would wake on
+   * every keystroke in the room. Here the events are few — the execution state
+   * and the lock — and only one of them is needed: `open`.
    */
   #watchAnchor() {
     this.#anchorWatch?.()
@@ -1664,23 +1741,27 @@ export class SessionState {
   }
 
   /**
-   * Сказать комнате, в какой ячейке стоит человек, — если он в ней правит.
+   * Tell the room which cell the person is standing in — if they are editing
+   * it.
    *
-   * Выделение и правка разошлись в тот день, когда появился замок: щелчок по
-   * закрытой ячейке — это чтение, а комната узнавала из него, что человек её
-   * печатает. Что можно, спрашивают там же, где и все остальные кнопки, —
-   * `mayEditThisCell` поверх правил сервера; сам выбор при этом остаётся, он
-   * местный и в присутствие не едет (см. lib/presence.ts).
+   * Selecting and editing parted ways the day the lock appeared: a click on a
+   * closed cell is reading, yet the room learned from it that the person was
+   * typing there. What is allowed is asked in the same place as for all the
+   * other buttons — `mayEditThisCell` over the server's rules; the selection
+   * itself stays, it is local and does not go into presence (see
+   * lib/presence.ts).
    *
-   * Зовётся не только на смену якоря: право на ту же самую ячейку меняется под
-   * человеком, когда преподаватель щёлкает замком или кончается занятие, — и
-   * метка обязана уйти вместе с ним, а не дожидаться следующего щелчка.
+   * Called not only when the anchor changes: the right to the very same cell
+   * changes under the person when the teacher clicks the lock or the class
+   * ends — and the mark must leave with it rather than waiting for the next
+   * click.
    */
   #announceAnchor = () => {
     /*
-     * Права спрашиваются у ТЕТРАДИ этой ячейки: в собственной тетради студент
-     * печатает и посреди лекции, и метка «правит здесь» у него должна быть — а
-     * в чужой личной её не должно быть даже при открытой комнате.
+     * The rights are asked of this cell's NOTEBOOK: in their own notebook a
+     * student types even in the middle of a lecture, and they should have the
+     * "editing here" mark — while in someone else's personal notebook they
+     * must not have it even with an open room.
      */
     const id = this.selectedCellId
     const may = permitsIn(this.session.rules, this.me.role, this.finished, {
@@ -1688,9 +1769,9 @@ export class SessionState {
       participantId: this.me.id,
     })
     const next = cellToAnnounce(this.doc, id, may)
-    // Кадр не шлётся, если ничего не изменилось: так же делают соседние
-    // `setViewing` и `setEditing`, и здесь это ещё важнее — зовут отсюда и
-    // наблюдатели, которым до присутствия дела нет.
+    // No frame is sent if nothing changed: the neighbouring `setViewing` and
+    // `setEditing` do the same, and here it matters even more — observers that
+    // do not care about presence call this too.
     const user = this.awareness.getLocalState()?.user as AwarenessUser | undefined
     if ((user?.activeCellId ?? null) === next) return
     this.#patchUser({ activeCellId: next })
@@ -1706,20 +1787,20 @@ export class SessionState {
   }
 
   /**
-   * Где этот человек в документе, который смотрит.
+   * Where this person is in the document they are viewing.
    *
-   * Пишется на каждое перелистывание, и это дороже, чем кажется: присутствие —
-   * самый болтливый провод в продукте, а прокрутка мышью даёт десятки событий в
-   * секунду. Поэтому сюда приходит уже страница, а не пиксель, и вызывающий
-   * обязан звать это только когда страница СМЕНИЛАСЬ.
+   * Written on every page turn, and that costs more than it seems: presence is
+   * the chattiest wire in the product, and scrolling with a mouse gives dozens
+   * of events a second. So what arrives here is already a page, not a pixel,
+   * and the caller must call this only when the page HAS CHANGED.
    */
   setViewing(viewing: { file: string; page: number; y: number } | null) {
     const current = (this.awareness.getLocalState()?.user as AwarenessUser | undefined)?.viewing
     if (
       current?.file === viewing?.file &&
       current?.page === viewing?.page &&
-      // Доля высоты — дробная: сравнивать точно значит слать кадр на каждый
-      // пиксель прокрутки, а присутствие — самый болтливый провод в продукте.
+      // The height share is fractional: comparing exactly means sending a frame
+      // on every pixel of scrolling, and presence is the chattiest wire in the product.
       Math.abs((current?.y ?? 0) - (viewing?.y ?? 0)) < 0.02
     ) {
       return
@@ -1728,12 +1809,12 @@ export class SessionState {
   }
 
   /**
-   * Какой файл этот человек правит прямо сейчас.
+   * Which file this person is editing right now.
    *
-   * Панель файлов рисует по нему точки «кто здесь». Курсоры внутри самого файла
-   * сюда не входят вовсе: они живут в присутствии того документа, который
-   * открыт, и до комнаты не доходят — иначе каждое нажатие в файле стоило бы
-   * кадра присутствия всей комнате.
+   * The files panel draws the "who is here" dots by it. Cursors inside the file
+   * itself are not included at all: they live in the presence of the document
+   * that is open and do not reach the room — otherwise every keystroke in the
+   * file would cost the whole room a presence frame.
    */
   setEditing(path: string | null) {
     this.editingPath = path
@@ -1748,43 +1829,46 @@ export class SessionState {
   }
 
   /**
-   * Когда преподаватель в последний раз менял правила комнаты.
+   * When the teacher last changed the room's rules.
    *
-   * Метка, а не текст: строку рисует комната, и рисует один раз — по этой
-   * метке она сама решает, когда её убрать.
+   * A mark, not text: the room draws the line, and draws it once — by this
+   * mark it decides by itself when to remove it.
    */
   rulesChangedAt = $state(0)
-  /** Приходили ли правила по сокету за жизнь этого состояния. См. разбор `rules`. */
+  /** Whether rules arrived over the socket in this state's lifetime. See the `rules` branch. */
   #rulesArrived = false
-  /** То же про конец занятия: первый кадр — не событие. См. разбор `class`. */
+  /** The same for the end of class: the first frame is no event. See the `class` branch. */
   #classArrived = false
 
   /**
-   * Когда занятие закончили или открыли обратно.
+   * When the class was ended or reopened.
    *
-   * Такая же метка, как у правил, и по той же причине: строку рисует комната —
-   * ей нужен момент, а слова она выберет сама по `finished`.
+   * The same kind of mark as for the rules, and for the same reason: the room
+   * draws the line — it needs the moment, and it chooses the words itself by
+   * `finished`.
    */
   classChangedAt = $state(0)
 
   /**
-   * Сервер отказал в правке и закрыл соединение.
+   * The server refused an edit and closed the connection.
    *
-   * Дальше без пересборки документа этот браузер нем: у него остались структуры
-   * на тактах, которых у сервера нет, и каждый следующий кадр ссылается на них.
-   * Подробности и почему это перезагрузка, а не пересборка на месте, — в
-   * `lib/refusal.ts`.
+   * From here on, without rebuilding the document, this browser is mute: it
+   * is left with structures at clock ticks the server does not have, and every
+   * following frame refers to them. Details, and why this is a reload rather
+   * than an in-place rebuild, are in `lib/refusal.ts`.
    *
-   * Не зависит от управляющего сокета: тот переподключается сам по себе, и если
-   * бы возврат в согласованное состояние держался на его сообщении, один обрыв
-   * оставил бы человека немым навсегда, а заметить это было бы некому.
+   * It does not depend on the control socket: that one reconnects on its own,
+   * and if the return to a consistent state hinged on its message, one drop
+   * would leave the person mute forever, with nobody to notice.
    */
   /**
-   * Снимок всех ячеек всех тетрадей — id и текст, как их видит эта вкладка.
+   * A snapshot of all cells of all notebooks — id and text, as this tab sees
+   * them.
    *
-   * Только для записки об отказе: там это единственный способ не потерять
-   * набранное без связи молча. Дорого — обход тетради и склейка каждого Y.Text,
-   * — и зовётся ровно один раз, перед очисткой кэша.
+   * Only for the refusal note: there it is the only way not to silently lose
+   * what was typed without a connection. Expensive — a walk over the notebook
+   * and joining every Y.Text — and it is called exactly once, before the cache
+   * is cleared.
    */
   #allCells(): RefusedCell[] {
     const snapshot: RefusedCell[] = []
@@ -1802,23 +1886,24 @@ export class SessionState {
     if (this.#disposed || event?.code !== REFUSED_CLOSE) return
     this.#disposed = true
     /*
-     * Первым делом — замолчать. Провайдер после закрытия переподключается сам,
-     * и каждое переподключение предлагает серверу тот же документ с тем же
-     * отказом; пока стирается кэш, это два-три лишних отказа, а если
-     * перезагрузок больше нет — отказ каждые три секунды до закрытия вкладки.
-     * Сюда же не приходит: закрытие по собственной воле приходит без кода.
+     * First of all — go quiet. After a close the provider reconnects by
+     * itself, and every reconnect offers the server the same document with the
+     * same refusal; while the cache is being wiped that is two or three extra
+     * refusals, and if no reloads are left — a refusal every three seconds
+     * until the tab is closed. It does not come back here: a voluntary close
+     * arrives without a code.
      */
     this.provider.disconnect()
-    // Слово в кадре закрытия — сервера, и оно надёжнее текста по второму
-    // проводу: тот может приехать позже закрытия. См. RefusalNote.kind.
+    // The word in the close frame is the server's, and it is more reliable than
+    // text over the second wire: that may arrive after the close. See RefusalNote.kind.
     const stale = event.reason === 'stale'
     const cell = this.selectedCellId ? findCell(this.doc, this.selectedCellId) : null
     const fresh = this.#refusal && Date.now() - this.#refusal.at < 15_000
     stashRefusal({
       sessionId: this.session.id,
       kind: stale ? 'stale' : 'edit',
-      // Свежий отказ — тот, что и закрыл соединение; всё, что старше нескольких
-      // секунд, пришло по другому поводу и объясняло бы не то.
+      // A fresh refusal is the one that closed the connection; anything older than
+      // a few seconds came for another reason and would explain the wrong thing.
       message: fresh
         ? this.#refusal!.message
         : stale
@@ -1826,34 +1911,36 @@ export class SessionState {
           : tr('room.ui.1173'),
       text: cell ? cellSource(cell.cell).toString() : '',
       /*
-       * И весь набранный текст рядом — всех тетрадей комнаты.
+       * And all the typed text next to it — of all the room's notebooks.
        *
-       * Отказ гейта относится к КАДРУ, а кадр после обрыва — это всё, что
-       * человек напечатал без сети: печатать офлайн продукт разрешает
-       * намеренно. Пока в записке лежала одна ячейка (та, где стоял курсор),
-       * правки в остальных уходили вместе с кэшем строкой ниже — молча.
-       * Тетрадь — это килобайты, и сверить их с серверной копией после
-       * перезагрузки дешевле, чем гадать, что именно не доехало (`stillLost`).
+       * The gate's refusal applies to the FRAME, and a frame after a drop is
+       * everything the person typed without the network: the product allows
+       * typing offline on purpose. While the note held a single cell (the one
+       * with the cursor), edits in the others left with the cache one line
+       * below — silently. A notebook is kilobytes, and checking them against
+       * the server's copy after the reload is cheaper than guessing what
+       * exactly did not make it (`stillLost`).
        */
       cells: this.#allCells(),
       at: Date.now(),
     })
     /*
-     * Кэш стирается до перезагрузки: иначе `y-indexeddb` переиграет отказанное
-     * при следующем открытии, и всё начнётся заново.
+     * The cache is wiped before the reload: otherwise `y-indexeddb` would
+     * replay the refused edit on the next open, and it would all start again.
      */
     void this.localStore
       .clear()
       .catch(() => {
-        /* хранилище недоступно — перезагрузка всё равно нужна */
+        /* storage is unavailable — a reload is needed anyway */
       })
       .then(() => {
         /*
-         * И только если это не превращается в круг. Перезагрузка лечит вместе с
-         * очисткой кэша; если очистка не удалась, отказанное переиграется и всё
-         * начнётся заново. Немой браузер плох, вечно перезагружающийся — хуже,
-         * поэтому после двух попыток остаёмся на месте, отключёнными, и
-         * говорим об этом словами. Дальше — рукой человека: `reloadByHand`.
+         * And only if this does not turn into a loop. A reload cures together
+         * with the cache wipe; if the wipe failed, the refused edit is replayed
+         * and it all starts again. A mute browser is bad, one that reloads
+         * forever is worse, so after two attempts we stay put, disconnected,
+         * and say so in words. After that — by the person's hand:
+         * `reloadByHand`.
          */
         if (mayReload()) {
           reloadAfterRefusal()
@@ -1865,7 +1952,7 @@ export class SessionState {
       })
   }
 
-  /** Сообщить о том, что сломалось на этой стороне, тем же способом, что и сервер. */
+  /** Report what broke on this side the same way the server does. */
   showError(message: string) {
     this.lastError = message
   }
@@ -1878,8 +1965,8 @@ export class SessionState {
     this.#disposed = true
     window.clearInterval(this.#heartbeat)
     window.clearTimeout(this.#reconnectTimer)
-    // Придержанный черновик не досылается: сокет закрывается следующей строкой,
-    // а текст остаётся в редакторе автора — он же черновик и есть.
+    // A held draft is not delivered: the socket closes on the next line, and the
+    // text stays in the author's editor — which is the draft anyway.
     this.council.destroy()
     this.#control?.close()
     this.provider.off('status', this.#onStatus)

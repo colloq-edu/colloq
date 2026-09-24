@@ -1,34 +1,35 @@
 /**
- * Разбор того, что преподаватель кладёт в соревнование: таблицы и тетради.
+ * Parsing what the teacher puts into a competition: tables and notebooks.
  *
- * Чистые функции над байтами, без диска и без базы. Здесь они потому, что обе
- * двери — открытые данные и ответы — показывают про файл одно и то же («397
- * строк · id, orders»), и считать это двумя копиями значило бы однажды
- * посчитать строки ответов иначе, чем строки теста: деление на публичную и
- * приватную часть опирается ровно на это число.
+ * Pure functions over bytes, with no disk and no database. They live here
+ * because both doors — the open data and the answers — show the same things
+ * about a file ("397 rows · id, orders"), and counting this with two copies
+ * would mean one day counting the answer rows differently from the test rows:
+ * the split into the public and private part rests on exactly this number.
  */
 
 import { splitByUsage } from '@shared/competitions'
 
-/** Что видно про CSV в карточке файла. */
+/** What is shown about a CSV on the file card. */
 export interface CsvShape {
-  /** Строк ДАННЫХ, без шапки. Именно это число делится на две части. */
+  /** DATA rows, without the header. This is the number that is split into two parts. */
   rows: number
   columns: string[]
 }
 
-/** Нулевой байт в начале — верный признак, что таблицу сюда положили по ошибке. */
+/** A null byte at the start is a sure sign this was put here as a table by mistake. */
 const SNIFF = 8192
 
 /**
- * Пересчитать строки и прочитать шапку.
+ * Count the rows and read the header.
  *
- * Кавычки учитываются: в честном CSV перевод строки внутри `"..."` — часть
- * значения, и наивный `split('\n')` насчитал бы по такому файлу вдвое больше
- * строк, чем есть. Ошибка тихая: доля публичной части считается от этого
- * числа, и «119 из 397» превратилось бы в «238 из 794» без единого отказа.
+ * Quotes are respected: in an honest CSV a line break inside `"..."` is part
+ * of the value, and a naive `split('\n')` would count twice as many rows in
+ * such a file as there are. The error is quiet: the share of the public part
+ * is computed from this number, and "119 of 397" would turn into "238 of 794"
+ * without a single refusal.
  *
- * `null` — это не таблица: пусто или двоичное.
+ * `null` means it is not a table: empty or binary.
  */
 export function csvShape(bytes: Uint8Array): CsvShape | null {
   if (bytes.length === 0) return null
@@ -41,13 +42,13 @@ export function csvShape(bytes: Uint8Array): CsvShape | null {
   let inQuote = false
   let records = 0
   let headerEnd = -1
-  /** Есть ли в текущей записи хоть один байт: хвостовой перевод строки — не запись. */
+  /** Does the current record have any byte yet: a trailing line break is not a record. */
   let started = false
 
   for (let i = 0; i < bytes.length; i++) {
     const byte = bytes[i]
     if (byte === QUOTE) {
-      // Удвоенная кавычка внутри значения — экранированная, а не конец поля.
+      // A doubled quote inside a value is escaped, not the end of the field.
       if (inQuote && bytes[i + 1] === QUOTE) {
         i += 1
         started = true
@@ -58,8 +59,8 @@ export function csvShape(bytes: Uint8Array): CsvShape | null {
       continue
     }
     if (!inQuote && byte === LF) {
-      // Пустая строка — не строка: `pandas.read_csv` их пропускает, и число
-      // под именем файла обязано совпадать с тем, что увидит тетрадь.
+      // An empty line is not a row: `pandas.read_csv` skips them, and the
+      // number under the file name must match what the notebook will see.
       if (started) {
         if (headerEnd < 0) headerEnd = bytes[i - 1] === CR ? i - 1 : i
         else records += 1
@@ -69,7 +70,7 @@ export function csvShape(bytes: Uint8Array): CsvShape | null {
     }
     if (byte !== CR) started = true
   }
-  // Последняя строка без перевода в конце — тоже строка.
+  // A last line without a trailing line break is a row too.
   if (started) {
     if (headerEnd < 0) headerEnd = bytes.length
     else records += 1
@@ -82,7 +83,7 @@ export function csvShape(bytes: Uint8Array): CsvShape | null {
   }
 }
 
-/** Шапка одной строкой: `id, orders` — ровно так она подписана в макете. */
+/** The header as one line: `id, orders` — exactly how the mockup captions it. */
 export function columnsLine(columns: readonly string[]): string {
   return columns.join(', ')
 }
@@ -120,11 +121,11 @@ export function csvUsageSplit(bytes: Uint8Array): { publicRows: number; privateR
 }
 
 /**
- * Разобрать запись CSV на поля.
+ * Split a CSV record into fields.
  *
- * Отдельно от счёта строк: там нужен один проход по байтам всего файла, здесь —
- * одна короткая строка, и склеивать их значило бы держать в памяти разбор
- * двухсот мегабайт ради шапки.
+ * Separate from counting rows: that needs one pass over the bytes of the
+ * whole file, this needs one short line, and merging them would mean holding
+ * in memory a parse of two hundred megabytes for the sake of the header.
  */
 function splitRecord(line: string): string[] {
   const out: string[] = []
@@ -149,17 +150,18 @@ function splitRecord(line: string): string[] {
     field += ch
   }
   out.push(field.trim())
-  // Единственное поле без запятых — это не таблица, а просто строка; пусть так
-  // и выглядит, чем притворяться колонкой с пустым именем.
+  // A single field with no commas is not a table but just a line; let it look
+  // like that rather than pretend to be a column with an empty name.
   return out.length === 1 && out[0] === '' ? [] : out
 }
 
 /**
- * Сколько ячеек в тетради; `null` — это не тетрадь.
+ * How many cells the notebook has; `null` means it is not a notebook.
  *
- * Проверяется здесь, а не в контейнере: файл, который `nbformat` не разберёт,
- * занял бы место в очереди, поднял контейнер и вернулся через минуту с
- * «упала тетрадь» — при том, что участник просто перетащил не тот файл.
+ * Checked here, not in the container: a file that `nbformat` cannot parse
+ * would take a place in the queue, start a container and come back a minute
+ * later with "the notebook crashed" — when the participant simply dragged in
+ * the wrong file.
  */
 export function notebookCells(bytes: Uint8Array): number | null {
   let parsed: unknown
@@ -174,14 +176,14 @@ export function notebookCells(bytes: Uint8Array): number | null {
 }
 
 /**
- * Имя файла без пути.
+ * The file name without the path.
  *
- * Браузер кладёт в форму то, что дала файловая система того, кто перетаскивал:
- * `C:\Users\...\train.csv` из старых сборок Windows и `data/train.csv` из
- * перетаскивания папки. Дальше это имя едет в `data/` контейнера, и участник
- * пишет его в своей тетради — так что сегмент пути в нём это не уязвимость
- * (её ловит якорная файловая система), а файл, которого никто не сможет
- * прочитать.
+ * The browser puts into the form whatever the file system of the person
+ * dragging gave it: `C:\Users\...\train.csv` from old Windows builds and
+ * `data/train.csv` from dragging a folder. This name then travels into the
+ * container's `data/`, and the participant writes it in their notebook — so a
+ * path segment in it is not a vulnerability (the anchored file system catches
+ * that) but a file nobody will be able to read.
  */
 export function baseName(raw: string): string {
   const cut = String(raw ?? '')

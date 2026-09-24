@@ -1,17 +1,17 @@
 /**
- * Меню строки в панели файлов — состав, права и манера.
+ * The row menu in the files panel — contents, permissions and manners.
  *
- * Всё здесь читается из исходников, как в `panels-craft.test.mts`, и по той же
- * причине: состав меню и то, каким правилом гаснет каждый пункт, нельзя
- * проверить ни чистой функцией, ни сокетом — это разметка. А ломается она
- * молча: пункт, погашенный не тем правилом, выглядит ровно так же, как
- * погашенный тем, и человек идёт искать преподавателя, который ничего не
- * запрещал.
+ * Everything here is read from the sources, as in `panels-craft.test.mts`,
+ * and for the same reason: the contents of the menu and the rule by which
+ * each item goes dark cannot be checked with a pure function or a socket —
+ * it is markup. And it breaks silently: an item dimmed by the wrong rule
+ * looks exactly like one dimmed by the right one, and the person goes
+ * looking for a teacher who forbade nothing.
  *
- * Второе, что здесь закреплено, — уроки, купленные на живом стенде. Подложка
- * нижнего листа без своего обработчика, кнопка «⋯» с целью в сорок пикселей,
- * возврат фокуса на строку: каждое из этих мест уже ломалось один раз, и
- * каждое откатывается одной строкой.
+ * The second thing pinned here is lessons bought on a live test stand. A
+ * bottom-sheet backdrop without a handler of its own, a "⋯" button with a
+ * forty-pixel target, returning focus to the row: each of these places has
+ * already broken once, and each rolls back with a single line.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -24,7 +24,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка и код без комментариев: объяснение — не обещание. */
+/** Markup and code without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -32,23 +32,23 @@ function code(source: string): string {
 const FILES = 'web/src/components/panels/FilesPanel.svelte'
 const MENU = 'web/src/components/ui/ContextMenu.svelte'
 
-/** Тело функции от её объявления до следующего объявления того же уровня. */
+/** A function's body from its declaration to the next declaration of the same level. */
 function body(source: string, from: string, to: string): string {
   const at = source.indexOf(from)
-  assert.ok(at > 0, `не нашли ${from}`)
+  assert.ok(at > 0, `could not find ${from}`)
   const end = source.indexOf(to, at)
-  assert.ok(end > at, `не нашли ${to} после ${from}`)
+  assert.ok(end > at, `could not find ${to} after ${from}`)
   return source.slice(at, end)
 }
 
-/* --------------------------------------------------------- состав меню */
+/* ------------------------------------------------------- menu contents */
 
-test('меню файла идёт в одном порядке: открыть, копировать, забрать, изменить', () => {
+test('the file menu goes in one order: open, copy, take, change', () => {
   /*
-   * Порядок не украшение. Первым — то, что делает щелчок (открыть), потом
-   * безобидное (копирование и скачивание), и только последней группой —
-   * необратимое. «Удалить…» стоит внизу и один, за чертой: промах мышью на
-   * строку вверх не должен попадать в него.
+   * The order is not decoration. First what a click does (open), then the
+   * harmless (copying and downloading), and only as the last group — the
+   * irreversible. "Delete…" stands at the bottom and alone, behind a
+   * separator: a mouse slip onto the row above must not land on it.
    */
   const files = code(read(FILES))
   const menu = body(files, 'function fileItems(', 'function folderItems(')
@@ -64,43 +64,45 @@ test('меню файла идёт в одном порядке: открыть,
     'room.files.menu.remove',
   ])
   /*
-   * Черты — три на четыре группы. Первая условная: у двоичного файла «Открыть»
-   * нет вовсе, и черта в самом верху меню была бы чертой, над которой пусто.
+   * Separators — three for four groups. The first is conditional: a binary
+   * file has no "Open" at all, and a separator at the very top of the menu
+   * would be a separator with nothing above it.
    */
   assert.match(menu, /gap: items\.length > 0/)
   assert.equal([...menu.matchAll(/gap: true/g)].length, 2)
 })
 
-test('копируется путь от папки занятия и отдельно — имя', () => {
+test('the path from the class folder is copied, and separately the name', () => {
   const menu = body(code(read(FILES)), 'function fileItems(', 'function folderItems(')
   assert.match(menu, /copyItem\(path, tr\('room\.files\.menu\.copyPath'\)\)/)
   assert.match(menu, /copyItem\(entry\.name, tr\('room\.files\.menu\.copyName'\)\)/)
-  // И ничего третьего: строка для ячейки («pd.read_csv(…)») из меню убрана, а
-  // вместе с ней и весь `snippetFor`.
+  // And nothing third: the line for a cell ("pd.read_csv(…)") was removed
+  // from the menu, and with it the whole `snippetFor`.
   const files = read(FILES)
-  assert.ok(!files.includes('snippetFor'), 'snippetFor вернулся в панель')
-  assert.ok(!files.includes('read_csv'), 'строка для ячейки вернулась в панель')
+  assert.ok(!files.includes('snippetFor'), 'snippetFor is back in the panel')
+  assert.ok(!files.includes('read_csv'), 'the line for a cell is back in the panel')
 })
 
-test('нечего открывать — нет и пункта: у двоичного файла только «Скачать»', () => {
-  // Щелчок по двоичному файлу СКАЧИВАЕТ его (см. `pick`), и «Открыть» рядом со
-  // «Скачать» было бы двумя подписями к одному действию.
+test('nothing to open — no item either: a binary file has only "Download"', () => {
+  // A click on a binary file DOWNLOADS it (see `pick`), and "Open" next to
+  // "Download" would be two captions for one action.
   const menu = body(code(read(FILES)), 'function fileItems(', 'function folderItems(')
   assert.match(menu, /if \(kind !== 'binary'\)/)
 })
 
-test('меню папки заводит внутрь неё, а дублировать папку не даёт', () => {
+test('the folder menu creates things inside it, and does not allow duplicating a folder', () => {
   const folder = body(code(read(FILES)), 'function folderItems(', 'function panelItems(')
   for (const item of ['newFileHere', 'newDirHere', 'newBookHere', 'uploadHere', 'copyPath']) {
-    assert.match(folder, new RegExp(`room\\.files\\.menu\\.${item}`), `нет пункта ${item}`)
+    assert.match(folder, new RegExp(`room\\.files\\.menu\\.${item}`), `item ${item} is missing`)
   }
   assert.match(folder, /startDraftIn\('file', path\)/)
   assert.match(folder, /uploadInto\(path\)/)
-  // Пункт есть, но погашен, и причина — та же фраза, которой отказал бы сервер.
+  // The item is there but dimmed, and the reason is the same phrase the
+  // server would refuse with.
   assert.match(folder, /disabled: true,[\s\S]{0,240}tr\('server\.files\.copyFolder'\)/)
 })
 
-test('пустое место панели предлагает только то, что кладут в папку занятия', () => {
+test('the empty space of the panel offers only what goes into the class folder', () => {
   const panel = body(code(read(FILES)), 'function panelItems(', 'const menuItems')
   const order = [...panel.matchAll(/tr\('(room\.files\.menu\.[a-zA-Z]+)'\)/g)].map((m) => m[1])
   assert.deepEqual(order, [
@@ -109,19 +111,21 @@ test('пустое место панели предлагает только т�
     'room.files.menu.newBook',
     'room.files.menu.upload',
   ])
-  // Ни переименования, ни удаления: у корня папки занятия нет своей строки.
-  assert.ok(!panel.includes('rename'), 'в меню корня попало переименование')
-  assert.ok(!panel.includes('remove'), 'в меню корня попало удаление')
+  // Neither rename nor delete: the root of the class folder has no row of
+  // its own.
+  assert.ok(!panel.includes('rename'), 'rename got into the root menu')
+  assert.ok(!panel.includes('remove'), 'delete got into the root menu')
 })
 
-/* --------------------------------------------------------------- права */
+/* --------------------------------------------------------- permissions */
 
-test('дублирование спрашивает `files`, а переименование и удаление — роль', () => {
+test('duplicating asks `files`, while rename and delete ask the role', () => {
   /*
-   * Копия ДОБАВЛЯЕТ файл, как «новый файл» и как загрузка, — значит правило у
-   * неё то же, `files`. Переименование и удаление УБИРАЮТ прежний путь, и они
-   * преподавательские; исключение одно — своя личная тетрадь. Ровно это же
-   * решает сервер (control.ts · tree:copy, tree:move, tree:remove).
+   * A copy ADDS a file, like "new file" and like an upload — so its rule is
+   * the same, `files`. Rename and delete REMOVE the old path, and they are
+   * the teacher's; the one exception is one's own personal notebook. The
+   * server decides exactly the same (control.ts · tree:copy, tree:move,
+   * tree:remove).
    */
   const files = code(read(FILES))
   assert.match(files, /const mayRename = \$derived\(isHost && may\.files\)/)
@@ -132,10 +136,10 @@ test('дублирование спрашивает `files`, а переимен
   assert.match(menu, /room\.files\.menu\.remove'\),[\s\S]{0,200}disabled: !mayRemove\(path\)/)
 })
 
-test('после звонка фраза про правило уступает фразе про занятие', () => {
-  // `may.filesWhy` после звонка — это уже CLASS_IS_OVER (lib/may.ts), и
-  // «переименовывает преподаватель» посреди законченного занятия отправляет
-  // человека не туда.
+test('after the bell the phrase about the rule gives way to the phrase about the class', () => {
+  // `may.filesWhy` after the bell is already CLASS_IS_OVER (lib/may.ts), and
+  // "the teacher renames" in the middle of a finished class sends the person
+  // the wrong way.
   const files = code(read(FILES))
   assert.match(
     files,
@@ -143,48 +147,49 @@ test('после звонка фраза про правило уступает 
   )
 })
 
-test('дублирование уезжает кадром tree:copy и ничем больше', () => {
+test('duplicating goes out as a tree:copy frame and nothing else', () => {
   const dup = body(code(read(FILES)), 'function duplicate(', '$effect(() => {')
   assert.match(dup, /session\.send\(\{ t: 'tree:copy', path: entry\.path \}\)/)
-  assert.match(dup, /if \(!may\.files\)/, 'право не спрашивают до отправки')
-  // Имя копии здесь не сочиняется: его выбирает сервер.
-  assert.ok(!dup.includes('копия'), 'вкладка сочиняет имя копии сама')
+  assert.match(dup, /if \(!may\.files\)/, 'the permission is not checked before sending')
+  // The copy's name is not made up here: the server chooses it.
+  assert.ok(!dup.includes('копия'), 'the tab makes up the copy\'s name itself')
 })
 
-/* ------------------------------------------------------- манера компонента */
+/* ------------------------------------------------------- component manners */
 
-test('меню — это меню: роли, подпись и возврат фокуса', () => {
+test('the menu is a menu: roles, a label and focus return', () => {
   const menu = code(read(MENU))
   assert.match(menu, /role="menu"/)
   assert.match(menu, /role="menuitem"/)
   assert.match(menu, /aria-label=\{label\}/)
-  // Escape закрывает и помечает ключ съеденным: тем же Escape комната
-  // закрывает ящик терминала.
+  // Escape closes it and marks the key as eaten: the room closes the
+  // terminal drawer with the same Escape.
   assert.match(menu, /event\.key === 'Escape'[\s\S]{0,260}event\.stopPropagation\(\)/)
-  // Фокус возвращается туда, откуда меню позвали.
+  // Focus returns to where the menu was called from.
   assert.match(menu, /if \(back\?\.isConnected\) back\.focus\(\)/)
 })
 
-test('меню живёт над ящиками комнаты и под окнами отказа', () => {
-  // z-40 — ящики, z-50 — пульт правил, z-[96] — меню бана, z-[97] — окно
-  // отказа, z-[100] — «вас удалили». Меню доступа на вкладке стоит на z-[60],
-  // и это меню — там же.
+test('the menu lives above the room\'s drawers and below the refusal windows', () => {
+  // z-40 — drawers, z-50 — the rules console, z-[96] — the ban menu, z-[97]
+  // — the refusal window, z-[100] — "you were removed". The access menu on
+  // the tab stands at z-[60], and this menu is there too.
   assert.match(code(read(MENU)), /z-\[60\]/)
 })
 
-test('меню въезжает и не выезжает: уход анимировать нельзя', () => {
+test('the menu slides in and does not slide out: leaving must not be animated', () => {
   const menu = read(MENU)
-  assert.doesNotMatch(code(menu), /transition:(fly|fade)/, 'двусторонняя директива')
+  assert.doesNotMatch(code(menu), /transition:(fly|fade)/, 'a two-way directive')
   assert.match(menu, /in:fly=/)
   assert.match(menu, /import \{ quintOut \} from 'svelte\/easing'/)
   assert.match(menu, /prefersReducedMotion\(\)/)
 })
 
-test('на пальце меню приходит нижним листом с целями в 44 пикселя', () => {
+test('on a finger the menu comes as a bottom sheet with 44-pixel targets', () => {
   /*
-   * Поповер у пальца закрывается самим пальцем и требует цели в 28 пикселей.
-   * Признак тот же, которым `hoverOnlyWhenSupported` отключает `hover:`
-   * утилиты, — про устройство ввода, а не про ширину окна.
+   * A popover under a finger gets closed by the finger itself and demands
+   * 28-pixel targets. The signal is the same one `hoverOnlyWhenSupported`
+   * uses to switch off `hover:` utilities — about the input device, not the
+   * window width.
    */
   const menu = code(read(MENU))
   assert.match(menu, /matchMedia\('\(hover: none\) and \(pointer: coarse\)'\)/)
@@ -193,49 +198,51 @@ test('на пальце меню приходит нижним листом с �
   assert.match(menu, /env\(safe-area-inset-bottom\)/)
 })
 
-test('подложка нижнего листа ничего не слушает сама', () => {
+test('the bottom sheet backdrop listens to nothing itself', () => {
   /*
-   * Лист открывается ДОЛГИМ нажатием: палец уже на экране, и его подъём
-   * браузер отдаёт как `click` по тому, что под пальцем, — то есть по
-   * подложке. Кнопка на ней закрывала лист ровно в тот миг, когда его открыли
-   * (проверено на стенде). Нажатие мимо ловит общий `pointerdown`.
+   * The sheet opens on a LONG press: the finger is already on the screen,
+   * and the browser hands its lift-off as a `click` on whatever is under the
+   * finger — that is, on the backdrop. A button on it closed the sheet at
+   * the very instant it was opened (checked on the test stand). A tap
+   * outside is caught by the shared `pointerdown`.
    */
   const menu = code(read(MENU))
   const backdrop = body(menu, 'absolute inset-0 bg-canvas/70', '</div>')
-  assert.ok(!backdrop.includes('onclick'), 'подложка снова закрывает лист по click')
+  assert.ok(!backdrop.includes('onclick'), 'the backdrop closes the sheet on click again')
   assert.match(menu, /window\.addEventListener\('pointerdown', away, true\)/)
 })
 
-test('погашенный пункт называет причину строкой, а не только подсказкой', () => {
-  // `title` виден под указателем и не виден пальцем никогда: на телефоне
-  // погашенный пункт оставался бы немым.
+test('a dimmed item states the reason as a line, not only as a tooltip', () => {
+  // `title` is visible under the pointer and never under a finger: on a
+  // phone a dimmed item would stay mute.
   const menu = code(read(MENU))
   assert.match(menu, /data-menu-why/)
   assert.match(menu, /if \(!item\.disabled \|\| !item\.why \|\| out\.includes\(item\.why\)\) continue/)
   assert.match(menu, /title=\{item\.disabled \? \(item\.why \?\? undefined\) : undefined\}/)
 })
 
-/* ------------------------------------------------------------- словарь */
+/* ---------------------------------------------------------- dictionary */
 
-test('каждый ключ меню есть на обоих языках и без кириллицы в английском', () => {
+test('every menu key exists in both languages and without Cyrillic in the English one', () => {
   const used = new Set(
     [...read(FILES).matchAll(/tr\('(room\.files\.menu\.[a-zA-Z]+)'/g)].map((m) => m[1]),
   )
-  assert.ok(used.size >= 20, `ключей меню подозрительно мало: ${used.size}`)
+  assert.ok(used.size >= 20, `suspiciously few menu keys: ${used.size}`)
   for (const key of used) {
     const pair = roomMessages[key]
-    assert.ok(pair, `нет ключа ${key}`)
-    assert.ok(pair.ru && pair.en, `у ${key} не оба языка`)
-    assert.doesNotMatch(String(pair.en), /[А-Яа-яЁё]/, `в английском ${key} кириллица`)
+    assert.ok(pair, `no key ${key}`)
+    assert.ok(pair.ru && pair.en, `${key} does not have both languages`)
+    assert.doesNotMatch(String(pair.en), /[А-Яа-яЁё]/, `Cyrillic in the English ${key}`)
   }
-  // И фраза про папку — из серверного словаря: отказывает ею сервер.
+  // And the phrase about the folder comes from the server dictionary: the
+  // server refuses with it.
   assert.ok(serverMessages['server.files.copyFolder'])
 })
 
-test('строк прежней полосы из трёх значков в словаре не осталось', () => {
-  // «Скопировать строку для ячейки», «Скачать {p0}», «Убрать {p0}» и «Копировать
-  // {p0}» жили только ради значков, которых больше нет. Мёртвый ключ тянется в
-  // сборку каждого экрана комнаты.
+test('no strings of the old three-icon strip are left in the dictionary', () => {
+  // "Copy a line for the cell", "Download {p0}", "Remove {p0}" and "Copy
+  // {p0}" lived only for the sake of icons that are gone. A dead key gets
+  // dragged into the build of every room screen.
   for (const gone of [
     'room.ui.594',
     'room.ui.596',
@@ -244,31 +251,32 @@ test('строк прежней полосы из трёх значков в с�
     'room.extra.273',
     'room.extra.274',
   ]) {
-    assert.ok(!(gone in roomMessages), `ключ ${gone} остался в словаре`)
+    assert.ok(!(gone in roomMessages), `key ${gone} remained in the dictionary`)
   }
 })
 
-test('подсказка про правую кнопку показывается один раз и переживает приватное окно', () => {
+test('the right-click hint is shown once and survives a private window', () => {
   const files = code(read(FILES))
   assert.match(files, /const TIP_KEY = 'colloq\.files\.menuTip'/)
-  // Чтение и запись — обе в try/catch: в приватном окне обращение к хранилищу
-  // бросает, и подсказка не должна ронять панель.
+  // Both reading and writing are in try/catch: in a private window, access
+  // to storage throws, and the hint must not bring the panel down.
   assert.equal([...body(files, 'function tipWasSeen(', '{@render').matchAll(/catch \{/g)].length, 2)
   assert.match(files, /\{#if !tipSeen && listed\}/)
 })
 
-test('кружки присутствия не уходят под «⋯»: место под кнопку отведено заранее', () => {
+test('the presence circles do not go under "⋯": room for the button is reserved in advance', () => {
   const files = code(read(FILES))
   /*
-   * 20.09.2026 с пары: «три точки перекрывают кружочки, видно половину
-   * первого». Кнопка лежит абсолютом у правого края и закрашена, поэтому
-   * полоса кружков обязана кончаться левее неё — и всегда, а не по наведению:
-   * указатель идёт как раз к «⋯», и сдвиг под ним читался бы как поломка.
+   * 20 Sep 2026, from a class: "the three dots cover the circles, half of
+   * the first one is visible". The button lies absolutely positioned at the
+   * right edge and is painted over, so the strip of circles must end to the
+   * left of it — and always, not on hover: the pointer is heading exactly
+   * towards "⋯", and a shift under it would read as a breakage.
    */
   const lane = body(files, '{#if here.length > 0}', '{:else if !entry.dir}')
   assert.match(lane, /class="flex items-center gap-1 pr-\[26px\]"/)
-  assert.doesNotMatch(lane, /group-hover:/, 'кружки не должны двигаться под указателем')
-  // И сама кнопка по-прежнему стоит абсолютом у правого края — иначе отступ
-  // выше отводит место не тому.
+  assert.doesNotMatch(lane, /group-hover:/, 'the circles must not move under the pointer')
+  // And the button itself still stands absolutely positioned at the right
+  // edge — otherwise the padding above reserves room for the wrong thing.
   assert.match(files, /class="absolute inset-y-0 right-0 flex items-center bg-raised/)
 })

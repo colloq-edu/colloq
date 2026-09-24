@@ -1,40 +1,42 @@
 #!/usr/bin/env bash
 #
-# Записи DNS для colloq.ru.
+# DNS records for colloq.ru.
 #
-# Скрипт приводит зону к нужному виду, а не досыпает в неё записи. Разница не
-# косметическая: домен приехал из Рег.ру с парковочными A-записями, и если
-# просто добавить рядом адреса GitHub Pages, посетитель будет попадать то на
-# сайт, то на заглушку — round-robin честно раздаст и то и другое. Поэтому для
-# каждой пары «тип + имя» лишнее удаляется, недостающее создаётся, совпадающее
-# не трогается, и запускать это можно сколько угодно раз подряд.
+# The script brings the zone to the required shape instead of topping it up
+# with records. The difference is not cosmetic: the domain came from Reg.ru
+# with parking A records, and if you simply add the GitHub Pages addresses next
+# to them, a visitor lands now on the site, now on the placeholder: round-robin
+# will honestly hand out both. So for each "type + name" pair the extra is
+# deleted, the missing is created, the matching is left alone, and this can be
+# run any number of times in a row.
 #
-# Главное, ради чего всё: **серое облако везде**. Оранжевое означает, что
-# посетитель идёт на пограничные адреса Cloudflare, а они из России не
-# открываются — лендинг на colloq.sleep3r.ru не грузился ровно до того дня,
-# когда с него сняли проксирование. Апекс colloq.ru приехал проксированным,
-# и это здесь исправляется.
+# The main point of it all: **grey cloud everywhere**. Orange means that the
+# visitor goes to Cloudflare's edge addresses, and those do not open from
+# Russia: the landing page on colloq.sleep3r.ru did not load right up to the
+# day proxying was taken off it. The colloq.ru apex came proxied, and that is
+# fixed here.
 #
-# Токен берётся из .env основного репозитория; нужны Zone:Read и DNS:Edit на
-# зону colloq.ru.
+# The token is taken from the .env of the main repository; it needs Zone:Read
+# and DNS:Edit on the colloq.ru zone.
 #
-# Входа два:
+# There are two entry points:
 #
-#   scripts/dns.sh                       привести всю зону к нужному виду:
-#                                        лендинг, www и *.colloq.ru на ретранслятор
-#   scripts/dns.sh point <имя> <адрес>   одна A-запись: имя → адрес машины
+#   scripts/dns.sh                         bring the whole zone into shape:
+#                                          landing page, www and *.colloq.ru to the relay
+#   scripts/dns.sh point <name> <address>  one A record: name → machine address
 #
-# Второй появился не ради удобства. Его зовёт прямой режим `make host-direct`:
-# машина с белым адресом принимает пару сама, и её имя должно смотреть на неё,
-# а не на ретранслятор. Своей копии этой логики у host.sh нет намеренно —
-# «удалить лишнее, создать недостающее, никогда не оставлять проксирование»
-# написано здесь один раз и здесь же чинится.
+# The second did not appear for convenience. The direct mode `make host-direct`
+# calls it: a machine with a public address takes the class itself, and its
+# name must point at it, not at the relay. host.sh has no copy of this logic on
+# purpose: "delete the extra, create the missing, never leave proxying on" is
+# written here once and is fixed here too.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Режим разбирается до всего остального: в режиме point ни лендинг, ни www, ни
-# звёздочка не трогаются вовсе — иначе `make host-direct` посреди пары
-# переписывал бы записи, о которых его не просили.
+# The mode is parsed before everything else: in point mode neither the landing
+# page, nor www, nor the wildcard is touched at all; otherwise `make
+# host-direct` in the middle of a class would rewrite records it was not asked
+# about.
 MODE=zone
 if [[ "${1:-}" == point ]]; then
   MODE=point
@@ -42,49 +44,53 @@ if [[ "${1:-}" == point ]]; then
   POINT_ADDR=${3:?scripts/dns.sh point <name> <address>}
 fi
 
-# ../.env, а не ../colloq/.env: скрипт приехал из соседнего репозитория, где
-# основной клон лежал рядом. Здесь он лежит выше, и прежний путь не существовал
-# ни в одном клоне — вместо «нет файла» человек читал «нужен токен с Zone:Read»
-# и шёл проверять права токена, который всё это время лежал в .env.
+# ../.env, not ../colloq/.env: the script came from a neighbouring repository,
+# where the main clone lay next to it. Here it lies one level up, and the old
+# path did not exist in any clone: instead of "no file" a person read "a token
+# with Zone:Read is needed" and went off to check the permissions of a token
+# that had been lying in .env all along.
 #
-# Читает файл общий read_env (scripts/lib.sh) — тот же, которым живут host.sh,
-# service.sh и vast.sh.
+# The file is read by the shared read_env (scripts/lib.sh), the same one that
+# host.sh, service.sh and vast.sh rely on.
 #
-# Двумя строками, а не `ENV_FILE=../.env . ./lib.sh`: присваивание перед
-# встроенной командой bash считает временным и после возврата снимает — а
-# read_env зовут потом, и файл настроек ему нужен уже настоящий.
+# Two lines, not `ENV_FILE=../.env . ./lib.sh`: bash treats an assignment in
+# front of a builtin as temporary and removes it on return, while read_env is
+# called later and by then needs the real settings file.
 #
-# COLLOQ_HOME сильнее «этажом выше»: у поставленного через pip colloq этажом
-# выше лежит только каталог приложения (доступный на чтение и сносимый
-# обновлением), а .env с CF_TOKEN — в каталоге состояния. Без переменной всё
-# как было: ../.env, то есть корень репозитория.
+# COLLOQ_HOME wins over "one level up": for colloq installed through pip, one
+# level up holds only the application directory (read-only and wiped by an
+# update), while the .env with CF_TOKEN is in the state directory. Without the
+# variable everything is as before: ../.env, that is, the repository root.
 ENV_FILE="${COLLOQ_HOME:-..}/.env"
 . ./lib.sh
 
 DOMAIN=${DOMAIN:-colloq.ru}
-# Куда смотрят семинары. Тот же адрес, что в RELAY_ADDR у инстансов, и берётся
-# он оттуда же — из .env, а не из прибитой строки.
+# Where the seminars point. The same address as RELAY_ADDR on the instances,
+# and it is taken from the same place: from .env, not from a hard-coded string.
 #
-# Прибитое умолчание здесь было ловушкой: RELAY_ADDR из .env скрипт не читал
-# вовсе, и после переезда ретранслятора любой заход «привести зону в порядок»
-# (а это единственный способ вернуть имя после host-direct) молча возвращал
-# `*.colloq.ru` на старый адрес — то есть уводил все семинары на мёртвую
-# машину. Нет адреса — нет и записи: об этом сказано вслух ниже.
+# The hard-coded default here was a trap: the script did not read RELAY_ADDR
+# from .env at all, and after the relay moved, any run to "put the zone in
+# order" (and that is the only way to get a name back after host-direct)
+# silently returned `*.colloq.ru` to the old address, that is, sent every
+# seminar to a dead machine. No address, no record: this is said out loud
+# below.
 RELAY="${RELAY_ADDR:-$(read_env RELAY_ADDR)}"
-# Чья страница на GitHub Pages — цель CNAME для www.
+# Whose page on GitHub Pages: the CNAME target for www.
 PAGES_HOST=${PAGES_HOST:-colloq-edu.github.io}
 
 if [[ -z "${CF_TOKEN_COLLOQ:-}" ]]; then
-  # `|| true` внутри read_env: файл есть, а строки в нём нет — это «нужен
-  # токен», а не молчаливый выход по set -e без единого слова на экране.
+  # `|| true` inside read_env: the file exists but has no such line; that is
+  # "a token is needed", not a silent exit via set -e without a single word on
+  # the screen.
   CF_TOKEN_COLLOQ=$(read_env CF_TOKEN)
 fi
 : "${CF_TOKEN_COLLOQ:?a token with Zone:Read and DNS:Edit on ${DOMAIN} is needed}"
 
-# Идентификатор зоны лежит в том же .env соседней строкой с токеном, а читался
-# только из окружения. Из-за этого он не использовался никогда: зона искалась
-# запросом, и токену без права листать зоны скрипт отвечал «зона этому токену
-# не видна» — при том что её id был у него под рукой.
+# The zone ID lies in the same .env, on the line next to the token, but it was
+# read only from the environment. Because of that it was never used: the zone
+# was looked up with a request, and to a token without the right to list zones
+# the script answered "this token cannot see the zone", while its id was right
+# at hand.
 if [[ -z "${CF_ZONE_COLLOQ:-}" ]]; then
   CF_ZONE_COLLOQ=$(read_env CF_ZONE)
 fi
@@ -95,23 +101,24 @@ AUTH=(-H "Authorization: Bearer $CF_TOKEN_COLLOQ" -H "content-type: application/
 RED=$'\033[31m'; OFF=$'\033[0m'
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
-# zone_id_for ИМЯ — в какой зоне живёт это имя.
+# zone_id_for NAME: which zone this name lives in.
 #
-# Спрашивать `?name=hse.colloq.ru` бесполезно: такой зоны нет, а Cloudflare
-# отвечает на это не ошибкой, а пустым списком. Поэтому берётся список зон
-# токена и из них самая длинная, которой запрошенное имя заканчивается:
-# для hse.colloq.ru это colloq.ru, и то же правило работает для чужой зоны,
-# если однажды инстанс встанет не под colloq.ru.
+# Asking `?name=hse.colloq.ru` is useless: there is no such zone, and
+# Cloudflare answers that not with an error but with an empty list. So the
+# token's list of zones is taken, and from it the longest one that the
+# requested name ends with: for hse.colloq.ru that is colloq.ru, and the same
+# rule works for someone else's zone, if one day an instance stands outside
+# colloq.ru.
 #
-# И — без параметра status. Его допустимые значения это active, pending и
-# подобные; «all» не из их числа, и Cloudflare на него опять же не ругается,
-# а молча отдаёт пустой список. На этом можно потерять час, решив, что у
-# токена нет доступа.
+# And no status parameter. Its allowed values are active, pending and the
+# like; "all" is not among them, and Cloudflare again does not complain about
+# it but silently returns an empty list. You can lose an hour on this,
+# deciding that the token has no access.
 zone_id_for() {
   local want=$1 id=""
-  # Явно названная зона сильнее поиска — но только если речь о ней же:
-  # CF_ZONE от colloq.ru для имени в чужой зоне это не подсказка, а ошибка,
-  # которая пишет запись не туда.
+  # An explicitly named zone wins over the search, but only if it is that very
+  # zone: CF_ZONE of colloq.ru for a name in someone else's zone is not a hint
+  # but a mistake that writes the record in the wrong place.
   if [[ -n "${CF_ZONE_COLLOQ:-}" && ( "$want" == "$DOMAIN" || "$want" == *".$DOMAIN" ) ]]; then
     printf '%s' "$CF_ZONE_COLLOQ"
     return 0
@@ -134,12 +141,12 @@ print(best_id)' 2>/dev/null || true)
 
 fetch() { curl -s "${AUTH[@]}" "$API/zones/$zone/dns_records?per_page=200"; }
 
-# reconcile ТИП ИМЯ [СОДЕРЖИМОЕ...]
+# reconcile TYPE NAME [CONTENT...]
 #
-# Приводит все записи данного типа с данным именем ровно к перечисленному
-# списку. Пустой список означает «таких записей быть не должно» — так www
-# избавляется от парковочной A, прежде чем стать CNAME: Cloudflare не даст
-# держать CNAME рядом с A на одном имени.
+# Brings all records of the given type with the given name to exactly the
+# listed set. An empty list means "there must be no such records": that is how
+# www gets rid of the parking A before becoming a CNAME, since Cloudflare will
+# not let a CNAME sit next to an A on the same name.
 reconcile() {
   local type=$1 name=$2; shift 2
   local want=("$@")
@@ -149,8 +156,8 @@ reconcile() {
   while read -r id content proxied; do
     [[ -n "${id:-}" ]] || continue
     keep=0
-    # Проксированную запись сохранять нельзя даже с верным адресом: оранжевое
-    # облако и есть то, из-за чего сайт не открывается.
+    # A proxied record must not be kept even with the right address: the orange
+    # cloud is exactly what keeps the site from opening.
     for w in ${want[@]+"${want[@]}"}; do
       [[ "$content" == "$w" && "$proxied" == "0" ]] && keep=1
     done
@@ -182,11 +189,11 @@ print(' '.join(r['content'] for r in json.load(sys.stdin)['result']
     resp=$(curl -s -X POST "${AUTH[@]}" "$API/zones/$zone/dns_records" \
       --data "$(printf '{"type":"%s","name":"%s","content":"%s","ttl":300,"proxied":false}' \
                 "$type" "$name" "$w")")
-    # Ответ проверяется, а не выбрасывается. Раньше он уходил в /dev/null, и
-    # строка «создано» печаталась в том числе тогда, когда Cloudflare отказал —
-    # обычно из-за CNAME на том же имени или токена без DNS:Edit. Для зоны это
-    # означало «сайт почему-то не открылся», а для прямого режима — машину,
-    # которая ждёт сертификат на имя, никуда не указывающее.
+    # The response is checked, not thrown away. It used to go to /dev/null, and
+    # the "created" line was printed even when Cloudflare refused, usually
+    # because of a CNAME on the same name or a token without DNS:Edit. For the
+    # zone that meant "the site somehow did not open", and for the direct mode,
+    # a machine waiting for a certificate for a name that points nowhere.
     if [[ "$resp" == *'"success":true'* || "$resp" == *'"success": true'* ]]; then
       printf '  created   %-5s %-16s -> %s\n' "$type" "$name" "$w"
     else
@@ -196,30 +203,31 @@ print(' '.join(r['content'] for r in json.load(sys.stdin)['result']
   done
 }
 
-# ------------------------------------------------------------- что делаем
+# ------------------------------------------------------------- what we do
 
-# Одна запись: имя → адрес машины. Больше в зоне не трогается ничего.
+# One record: name → machine address. Nothing else in the zone is touched.
 if [[ "$MODE" == point ]]; then
   zone=$(zone_id_for "$POINT_NAME")
   [[ -n "$zone" ]] || die "this token cannot see the zone for ${POINT_NAME} (CF_TOKEN, CF_ZONE in .env)"
-  # Сначала снять CNAME с этого имени, потом ставить A — ровно та же причина,
-  # что у www ниже: Cloudflare не даёт держать их рядом. Случай не выдуманный:
-  # имя, которое когда-то заводил `make tunnel-setup`, держит CNAME на
-  # <id>.cfargotunnel.com, и без этой строки прямой режим на нём отказывал бы
-  # со ссылкой на конфликт записей.
+  # First remove the CNAME from this name, then set the A, for exactly the same
+  # reason as with www below: Cloudflare does not let them sit side by side.
+  # The case is not made up: a name once created by `make tunnel-setup` holds a
+  # CNAME to <id>.cfargotunnel.com, and without this line the direct mode would
+  # fail on it, citing a record conflict.
   reconcile CNAME "$POINT_NAME"
-  # Без проксирования — это здесь главное и единственное. Оранжевое облако
-  # увело бы студентов на пограничные адреса Cloudflare, а они из России не
-  # открываются: семинар стал бы недоступен ровно той аудитории, ради которой
-  # его и выставляют. Прямой режим тем и ценен, что между машиной и залом нет
-  # никого; проксирование вернуло бы посредника, да ещё и закрытого.
+  # No proxying: that is the main and only thing here. The orange cloud would
+  # take the students to Cloudflare's edge addresses, and those do not open
+  # from Russia: the seminar would become unreachable for exactly the audience
+  # it is exposed for. The whole value of direct mode is that there is nobody
+  # between the machine and the room; proxying would bring back a middleman,
+  # and a blocked one at that.
   reconcile A "$POINT_NAME" "$POINT_ADDR"
   exit 0
 fi
 
-# Адрес ретранслятора спрашивается до первой правки зоны, а не перед самой
-# звёздочкой: лендинг и www приводятся в порядок раньше её, и отказ на середине
-# оставил бы зону наполовину переписанной.
+# The relay address is checked before the first change to the zone, not right
+# before the wildcard: the landing page and www are put in order before it, and
+# a refusal halfway would leave the zone half rewritten.
 [[ -n "$RELAY" ]] || die "I do not know where to point *.${DOMAIN}: ../.env has no RELAY_ADDR.
   That is the address of the relay (make relay-setup prints it). For one run it
   can also be named like this: RELAY_ADDR=1.2.3.4 scripts/dns.sh"
@@ -230,17 +238,17 @@ echo "zone ${DOMAIN}: $zone"
 
 echo "landing page on GitHub Pages:"
 reconcile A "$DOMAIN" 185.199.108.153 185.199.109.153 185.199.110.153 185.199.111.153
-# Без AAAA посетитель на чистом IPv6 не откроет сайт вовсе.
+# Without AAAA a visitor on pure IPv6 cannot open the site at all.
 reconcile AAAA "$DOMAIN" 2606:50c0:8000::153 2606:50c0:8001::153 2606:50c0:8002::153 2606:50c0:8003::153
-# Сначала снять парковочную A с www, потом ставить CNAME — иначе Cloudflare
-# откажет: CNAME и A на одном имени не уживаются.
+# First remove the parking A from www, then set the CNAME, otherwise Cloudflare
+# refuses: a CNAME and an A cannot live together on one name.
 reconcile A "www.$DOMAIN"
 reconcile CNAME "www.$DOMAIN" "$PAGES_HOST"
 
 echo "classes on the relay:"
-# Одной звёздочкой, а не именем на каждый университет: поддомены раздаёт frps
-# по общему секрету, и запись в DNS на каждого означала бы самообслуживание
-# на ручном приводе.
+# One wildcard, not a name per university: subdomains are handed out by frps
+# on a shared secret, and a DNS record for each would mean hand-cranked
+# self-service.
 reconcile A "*.$DOMAIN" "$RELAY"
 
 echo

@@ -1,19 +1,19 @@
 /**
- * Правки состава тетради, которые делает сервер, а не браузер.
+ * Edits to a notebook's structure that the server makes, not the browser.
  *
- * Здесь ровно то, что не помещается в правило «вывод пишет только сервер».
- * Перестановка ячейки — единственная клиентская операция, которая по своей
- * природе смешанная: у Y.Array нет перемещения, так что одну из двух соседних
- * ячеек приходится пересоздать клоном, а клон несёт с собой всё, что ячейка
- * напечатала. Переупорядочить тетрадь — не повод выбрасывать вывод; писать
- * чужой вывод из браузера — нельзя. Примирить это в браузере невозможно, и
- * операция переезжает сюда целиком.
+ * This holds exactly what does not fit the rule "only the server writes
+ * output". Moving a cell is the only client operation that is mixed by
+ * nature: Y.Array has no move, so one of the two neighbouring cells has to be
+ * recreated as a clone, and the clone carries along everything the cell
+ * printed. Reordering a notebook is no reason to throw output away; writing
+ * someone else's output from the browser is not allowed. The two cannot be
+ * reconciled in the browser, so the whole operation moves here.
  *
- * Три следствия, и все три нужны: вывод переживает перестановку, ни разу не
- * будучи написанным клиентом; правило «только дописывать» нельзя обойти,
- * переставив чужую ячейку в небытие; и единственная смешанная клиентская
- * транзакция в продукте перестаёт существовать, так что «кадр судится целиком»
- * ничего не стоит.
+ * Three consequences, and all three are needed: output survives a move
+ * without ever being written by a client; the "append only" rule cannot be
+ * bypassed by moving someone else's cell into oblivion; and the only mixed
+ * client transaction in the product ceases to exist, so "a frame is judged as
+ * a whole" costs nothing.
  */
 import * as Y from 'yjs'
 import {
@@ -29,11 +29,13 @@ import {
 const EMPTY: ReadonlySet<string> = new Set()
 
 /**
- * В каких ячейках сейчас стоят курсоры. Источник регистрирует `collab/index.ts`.
+ * Which cells currently have carets in them. The source is registered by
+ * `collab/index.ts`.
  *
- * Через регистрацию, а не импортом: присутствие живёт в сокетах, а этот модуль
- * — тот, куда ходит тест, и тащить за собой базу и сокеты ему незачем. Никто не
- * зарегистрировался — считаем, что курсоров нет.
+ * Through registration rather than an import: presence lives in the sockets,
+ * while this module is the one the test goes to, and it has no reason to drag
+ * the database and sockets along. If nobody has registered, we assume there
+ * are no carets.
  */
 let carets: ((doc: Y.Doc) => ReadonlySet<string>) | null = null
 
@@ -42,13 +44,13 @@ export function onCarets(source: (doc: Y.Doc) => ReadonlySet<string>): void {
 }
 
 /**
- * Записать ключ ячейки, только если он и правда меняется.
+ * Write a cell key only if it really changes.
  *
- * `Y.Map.set` заводит новый элемент даже под тем же значением: это такт в
- * документе, лишний элемент в снимке и серверный update — а серверный update
- * открывает всплеск истории без автора, и правка человека, попавшая в тот же
- * всплеск, подписывалась «the room». Шесть таких записей уходило на каждую
- * добавленную ячейку, которой и менять-то было нечего.
+ * `Y.Map.set` creates a new item even for the same value: that is a tick in
+ * the document, an extra item in the snapshot and a server update — and a
+ * server update opens a history burst with no author, so a person's edit that
+ * landed in the same burst was signed "the room". Six such writes went out for
+ * every added cell, which had nothing to change in the first place.
  */
 function put(cell: YCell, key: string, value: unknown): void {
   if (cell.get(key) === value) return
@@ -56,18 +58,19 @@ function put(cell: YCell, key: string, value: unknown): void {
 }
 
 /**
- * Поменять ячейку местами с соседом.
+ * Swap a cell with its neighbour.
  *
- * Своей транзакции не заводит: оборачивает вызывающий — в `applyOnBehalf`, —
- * потому что у версии в истории должен быть автор, иначе перестановка читается
- * как «комната» и Ctrl+Z у нажавшего до неё не достаёт.
+ * Opens no transaction of its own: the caller wraps it — in `applyOnBehalf` —
+ * because the version in history must have an author, otherwise the move
+ * reads as "the room" and Ctrl+Z of whoever pressed the button cannot reach
+ * it.
  *
- * `false` — не ошибка, а гонка: кнопку нарисовали по документу, который
- * отстаёт от сервера на круг.
+ * `false` is not an error but a race: the button was drawn from a document
+ * that lags one round trip behind the server.
  */
 export function moveInCells(doc: Y.Doc, id: string, direction: -1 | 1): boolean {
-  // В той тетради, где ячейка лежит: комнате их несколько, а «выше» и «ниже»
-  // имеет смысл только внутри одной.
+  // In the notebook where the cell lives: a room has several, and "above" and
+  // "below" only make sense within one.
   const found = findCell(doc, id)
   if (!found) return false
   const cells = found.cells
@@ -76,16 +79,18 @@ export function moveInCells(doc: Y.Doc, id: string, direction: -1 | 1): boolean 
   if (to < 0 || to >= cells.length) return false
 
   /*
-   * Переезжает сосед, а не та ячейка, которую двигают: пересоздание убивает
-   * редактор вместе с курсором, а курсор стоит в той ячейке, на кнопку которой
-   * нажали. Результат перестановки от выбора не зависит.
+   * The neighbour moves, not the cell being moved: recreating a cell kills the
+   * editor along with the caret, and the caret sits in the cell whose button
+   * was pressed. The result of the swap does not depend on the choice.
    *
-   * Но у клона цена дороже курсора, и платит её не нажавший. Нажатия, ушедшие
-   * в старый `Y.Text` за круг до сервера, адресованы удалённой структуре: гейт
-   * их пропускает (запись в надгробие никому не видна), и символы пропадают у
-   * печатающего молча — Ctrl+Z их не вернёт, они лежат в надгробии. Поэтому
-   * если в соседке стоит чей-то курсор, пересоздаётся та, которую двигают: у
-   * неё курсор нажавшего, а нажавший в этот момент нажимает, а не печатает.
+   * But a clone costs more than a caret, and it is not the presser who pays.
+   * Keystrokes that went into the old `Y.Text` a round trip ahead of the
+   * server are addressed to a removed structure: the gate lets them through (a
+   * write into a tombstone is visible to no one), and the characters vanish
+   * silently for the typist — Ctrl+Z will not bring them back, they lie in the
+   * tombstone. So if someone's caret is in the neighbour, the cell being moved
+   * is the one recreated: it holds the presser's caret, and at that moment the
+   * presser is pressing, not typing.
    */
   const busy = carets?.(doc) ?? EMPTY
   if (busy.has(cellId(cells.get(to)))) {
@@ -102,14 +107,14 @@ export function moveInCells(doc: Y.Doc, id: string, direction: -1 | 1): boolean 
 }
 
 /**
- * Погасить состояние выполнения у ячеек, ставших текстом.
+ * Clear the execution state of cells that have become text.
  *
- * «Превратить в текст» стоит в том же тулбаре, что и «стоп», — одно нажатие от
- * работающей ячейки, и не погасить секундомер значит оставить его идти на
- * ячейке, которая больше не ячейка с кодом. Раньше это писал браузер, и это
- * было единственное место, где он писал состояние выполнения; пока оно
- * существовало, правило «вывод и состояние пишет только сервер» имело
- * исключение — то есть не было правилом.
+ * "Convert to text" sits in the same toolbar as "stop", one click away from a
+ * running cell, and not clearing the stopwatch means leaving it ticking on a
+ * cell that is no longer a code cell. The browser used to write this, and it
+ * was the only place where it wrote execution state; while that existed, the
+ * rule "only the server writes output and state" had an exception — that is,
+ * it was not a rule.
  */
 export function resetRetyped(doc: Y.Doc, cellIds: string[]): void {
   for (const id of cellIds) {
@@ -127,51 +132,54 @@ export function resetRetyped(doc: Y.Doc, cellIds: string[]): void {
 }
 
 /**
- * Что сервер помнит об удалённых ячейках — чтобы отмена удаления вернула их
- * целиком.
+ * What the server remembers about deleted cells, so that undoing a deletion
+ * brings them back whole.
  *
- * Иначе Ctrl+Z после удаления посчитавшей ячейки ломался в любой комнате и при
- * любых правилах, и ломался бы молча-и-громко сразу: Yjs отменяет удаление
- * КОПИЕЙ, то есть браузер предлагает серверу новую ячейку, несущую готовый
- * вывод, — а пол комнаты запрещает браузеру писать вывод. Отказать значило бы
- * заставить человека пересобрать документ за обычное Ctrl+Z.
+ * Otherwise Ctrl+Z after deleting a cell that had run broke in every room and
+ * under any rules, and it would break silently and loudly at once: Yjs undoes
+ * a deletion with a COPY, that is, the browser offers the server a new cell
+ * carrying ready-made output — and the room's floor forbids the browser to
+ * write output. Refusing would mean forcing the person to rebuild the document
+ * over an ordinary Ctrl+Z.
  *
- * Поэтому вывод возвращает сервер, из своей записи, а не из того, что прислал
- * браузер: пол остаётся целым — вывод, которого сервер не производил, в
- * документ по-прежнему не попадает, — а жест работает.
+ * So the server returns the output, from its own record rather than from what
+ * the browser sent: the floor stays intact — output the server did not
+ * produce still never gets into the document — and the gesture works.
  */
 interface Remembered {
   at: number
   cell: CellSnapshot
 }
 
-/** По семинару: имя ячейки → чем она была в момент удаления. */
+/** Per seminar: cell name → what it was at the moment of deletion. */
 const graves = new Map<string, Map<string, Remembered>>()
 
 /**
- * Сколько удалений семинар помнит и как долго.
+ * How many deletions a seminar remembers, and for how long.
  *
- * Отмена — жест немедленный: не вспомнил за десять минут — не вспомнит. Потолок
- * в тридцать ячеек держит память конечной на семинаре, где чистят тетрадь.
+ * Undo is an immediate gesture: whoever has not remembered within ten minutes
+ * will not remember. The ceiling of thirty cells keeps memory bounded in a
+ * seminar where people clean up the notebook.
  */
 const GRAVE_TTL_MS = 10 * 60 * 1000
 const GRAVE_MAX = 30
 
-/** Запомнить ячейку перед тем, как принять её удаление. */
+/** Remember a cell before accepting its deletion. */
 export function rememberDeleted(sessionId: string, doc: Y.Doc, cellIds: string[]): void {
   if (cellIds.length === 0) return
   let room = graves.get(sessionId)
   if (!room) graves.set(sessionId, (room = new Map()))
   const now = Date.now()
   for (const id of cellIds) {
-    // По имени, во всех тетрадях комнаты, — как ищет гейт, который эти имена и
-    // назвал. Пока здесь стоял корень `cells`, во второй тетради сервер не
-    // помнил ни одного удаления, и Ctrl+Z по посчитавшей ячейке упирался в
-    // отказ «новая ячейка объявляет себя выполнявшейся».
+    // By name, across all notebooks of the room — the way the gate looks, the
+    // very gate that named these ids. While the root `cells` stood here, the
+    // server remembered not a single deletion in the second notebook, and
+    // Ctrl+Z on a cell that had run hit the refusal "a new cell declares
+    // itself as having run".
     const found = findCell(doc, id)
     if (!found) continue
     const snapshot = readCell(found.cell)
-    // Пустую ячейку помнить незачем — возвращать нечего.
+    // No point remembering an empty cell — there is nothing to return.
     if (snapshot.outputs.length === 0 && snapshot.execCount === null) continue
     room.set(id, { at: now, cell: snapshot })
   }
@@ -186,13 +194,14 @@ export function forgetSession(sessionId: string): void {
 }
 
 /**
- * Привести только что созданные ячейки в согласие с тем, что знает сервер.
+ * Bring freshly created cells in line with what the server knows.
  *
- * Две ветки, и обе обязательны. Ячейка, которую сервер помнит удалённой, —
- * отмена: ей возвращается вывод и состояние ИЗ ЗАПИСИ СЕРВЕРА, а не из кадра.
- * Всякая другая новая ячейка чиста: вывод, который браузер приложил к ней сам,
- * стирается — это ровно та ячейка с готовым `text/html`, которая гасит экран
- * всему семинару, и ровно то поддельное «In [7]», которое незаметнее.
+ * Two branches, and both are mandatory. A cell the server remembers as
+ * deleted is an undo: it gets its output and state back FROM THE SERVER'S
+ * RECORD, not from the frame. Every other new cell is clean: output that the
+ * browser attached to it on its own is erased — this is exactly the cell with
+ * a ready-made `text/html` that blanks the screen for the whole seminar, and
+ * exactly the forged "In [7]", which is less noticeable.
  */
 export function settleFresh(sessionId: string, doc: Y.Doc, cellIds: string[]): void {
   if (cellIds.length === 0) return
@@ -220,18 +229,19 @@ export function settleFresh(sessionId: string, doc: Y.Doc, cellIds: string[]): v
     put(cell, 'runById', remembered?.runById ?? null)
     put(cell, 'ranMs', remembered?.ranMs ?? null)
     /*
-     * И замок снимается. Новая ячейка закрыта всегда — кто бы её ни завёл и
-     * какой бы кадр её ни принёс: право открывать ячейку выдаёт сервер по
-     * управляющему сообщению (control.ts · cell:open), и приехать оно может
-     * только оттуда. Отмена удаления открытой ячейки возвращает её закрытой,
-     * и это честнее отказа: документ цел, а замок ставится нажатием.
+     * And the lock comes off. A new cell is always closed — whoever created it
+     * and whatever frame brought it: the right to open a cell is granted by the
+     * server on a control message (control.ts · cell:open), and it can only
+     * come from there. Undoing the deletion of an open cell brings it back
+     * closed, and that is more honest than a refusal: the document is intact,
+     * and the lock is set with one click.
      */
     if (cell.get('open') != null) cell.set('open', null)
-    // И ручки консилиума с ним: у закрытой ячейки их нет, а «запуск
-    // студентам», приехавший в кадре, — то же самое право, что и замок.
+    // And the council handles go with it: a closed cell has none, and a "run
+    // for students" that arrived in a frame is the same right as the lock.
     if (cell.get('council') != null) cell.set('council', null)
-    // Секундомер и приглашение ко вводу не возвращаются никогда: ядро не
-    // считает эту ячейку и ничего у неё не спрашивает.
+    // The stopwatch and the input prompt never come back: the kernel is not
+    // running this cell and is not asking it anything.
     put(cell, 'startedAt', null)
     if (cell.get('stdin') != null) cell.set('stdin', null)
     if (remembered) room?.delete(id)

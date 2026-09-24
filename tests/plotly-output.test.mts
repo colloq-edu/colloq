@@ -1,16 +1,17 @@
 /**
- * Интерактивный график: что именно доезжает от ядра до комнаты.
+ * An interactive chart: what exactly gets from the kernel to the room.
  *
- * Отказ здесь выглядит не как поломка, а как пустое место: ячейка с
- * `px.histogram(...)` отчитывается «выполнена», а под ней НИЧЕГО. Так оно и
- * было до этой работы, и причина ровно одна — набор от ipykernel с нынешним
- * plotly состоит из ОДНОГО ключа `application/vnd.plotly.v1+json`: ни
- * `text/plain`, ни картинки в нём нет, и выбору представления было не за что
- * зацепиться.
+ * A failure here looks not like breakage but like an empty space: a cell with
+ * `px.histogram(...)` reports "done", and under it there is NOTHING. That is
+ * how it was before this work, and there is exactly one reason — the bundle
+ * from ipykernel with current plotly consists of ONE key,
+ * `application/vnd.plotly.v1+json`: there is neither `text/plain` nor an image
+ * in it, and the choice of representation had nothing to hold on to.
  *
- * Поэтому проверяется не «видно ли график» (это работа браузера и рамки), а
- * что лежит в документе: строка JSON — а у крупной фигуры ссылка вместо неё, —
- * и что мёртвая разметка plotly туда не попадает ни при каких условиях.
+ * So what is checked is not "is the chart visible" (that is the job of the
+ * browser and the frame) but what lies in the document: a JSON string — or,
+ * for a large figure, a reference instead — and that dead plotly markup never
+ * gets there under any conditions.
  */
 import './_env.mts'
 import { beforeEach, test } from 'node:test'
@@ -54,7 +55,7 @@ const outputsOf = (doc: Y.Doc, id: string) => {
   return readCell(found!).outputs
 }
 
-/** Фигура нужного веса: точки настоящие, чтобы разбор её признал. */
+/** A figure of the required weight: real points, so the parser accepts it. */
 function figure(points: number, kind = 'scatter'): string {
   const x = Array.from({ length: points }, (_, i) => i)
   return JSON.stringify({
@@ -63,9 +64,9 @@ function figure(points: number, kind = 'scatter'): string {
   })
 }
 
-/* ------------------------------------------------------- набор от ядра */
+/* ------------------------------------------ the bundle from the kernel */
 
-test('фигура доезжает строкой JSON и лежит в документе как есть', async () => {
+test('a figure arrives as a JSON string and lies in the document as is', async () => {
   const doc = new Y.Doc()
   const id = cellIn(doc)
   const writer = new OutputWriter(doc, id)
@@ -77,19 +78,19 @@ test('фигура доезжает строкой JSON и лежит в док�
   const [output] = outputsOf(doc, id)
   assert.equal(output.kind, 'data')
   if (output.kind !== 'data') return
-  assert.equal(output.data[PLOTLY_MIME], body, 'строка фигуры изменилась по дороге')
-  // Именно строкой: JSON.parse от неё обязан дать ту же фигуру.
+  assert.equal(output.data[PLOTLY_MIME], body, 'the figure string changed on the way')
+  // A string specifically: JSON.parse of it has to give the same figure.
   const parsed = normalizeFigure(JSON.parse(output.data[PLOTLY_MIME]))
-  assert.ok(parsed, 'из документа не читается фигура')
+  assert.ok(parsed, 'no figure can be read from the document')
   assert.equal(parsed.data.length, 1)
 })
 
-test('мёртвая разметка plotly в документ не кладётся', async () => {
+test('dead plotly markup is not put into the document', async () => {
   const doc = new Y.Doc()
   const id = cellIn(doc)
   const writer = new OutputWriter(doc, id)
-  // Рендерер `plotly_mimetype+notebook` шлёт оба: фигуру и сотни килобайт
-  // скрипта, который мы всё равно не исполняем.
+  // The `plotly_mimetype+notebook` renderer sends both: the figure and hundreds
+  // of kilobytes of script that we do not execute anyway.
   const html = `<div id="x" class="plotly-graph-div"></div><script>${'/*'.repeat(5000)}</script>`
   writer.data({ [PLOTLY_MIME]: figure(5), 'text/html': html }, 1)
   writer.dispose()
@@ -98,32 +99,32 @@ test('мёртвая разметка plotly в документ не кладё
   const [output] = outputsOf(doc, id)
   assert.equal(output.kind, 'data')
   if (output.kind !== 'data') return
-  assert.ok(output.data[PLOTLY_MIME], 'фигуру потеряли вместе с разметкой')
-  assert.equal(output.data['text/html'], undefined, 'мёртвый скриптовый HTML попал в документ')
+  assert.ok(output.data[PLOTLY_MIME], 'the figure was lost together with the markup')
+  assert.equal(output.data['text/html'], undefined, 'dead script HTML got into the document')
 })
 
-test('бутстрап рендерера notebook — пять мегабайт скрипта — не попадает никуда', () => {
-  // Отдельный кадр: в нём ОДИН ключ, фигуры рядом нет, и узнаётся он только
-  // по подписи самого plotly. Без этого он ложился бы в документ целиком и
-  // съедал весь бюджет вывода ячейки, ради которой всё затевалось.
+test('the notebook renderer bootstrap — five megabytes of script — goes nowhere', () => {
+  // A separate frame: it has ONE key, there is no figure next to it, and it can
+  // be recognised only by plotly's own signature. Without this it would land in
+  // the document whole and eat the entire output budget of the cell all this was for.
   const bootstrap = `<script>window.PlotlyConfig = {MathJaxConfig: 'local'};${'x'.repeat(200 * 1024)}</script>`
   const kept = withoutDeadPlotlyHtml({ 'text/html': bootstrap })
-  assert.deepEqual(kept, {}, 'бутстрап plotly остался в наборе')
+  assert.deepEqual(kept, {}, 'the plotly bootstrap stayed in the bundle')
 
-  // А обычная разметка — таблица pandas — не трогается ничем.
+  // But ordinary markup — a pandas table — is not touched by anything.
   const table = '<table><tr><td>1</td></tr></table>'
   assert.deepEqual(withoutDeadPlotlyHtml({ 'text/html': table }), { 'text/html': table })
 })
 
-/* ------------------------------------------------------------- вынос */
+/* -------------------------------------------------------- offloading */
 
-test('крупная фигура уезжает на полку, в документе остаётся ссылка', async () => {
+test('a large figure goes to the shelf, and a reference stays in the document', async () => {
   const room = 'plotlyblob1'
   createSession(room, 'График')
   const doc = new Y.Doc()
   const id = cellIn(doc)
   const body = figure(20_000)
-  assert.ok(body.length > 100 * 1024, 'проба слишком лёгкая, вынос не сработает')
+  assert.ok(body.length > 100 * 1024, 'the sample is too light, offloading will not kick in')
 
   const writer = new OutputWriter(doc, id, undefined, room)
   writer.data({ [PLOTLY_MIME]: body }, 1)
@@ -133,20 +134,20 @@ test('крупная фигура уезжает на полку, в докум�
   const [output] = outputsOf(doc, id)
   assert.equal(output.kind, 'data')
   if (output.kind !== 'data') return
-  assert.equal(output.data[PLOTLY_MIME], undefined, 'мегабайты фигуры остались в документе')
+  assert.equal(output.data[PLOTLY_MIME], undefined, 'the figure megabytes stayed in the document')
   const blob = (output.blobs ?? []).find((b) => b.mime === PLOTLY_MIME)
-  assert.ok(blob, 'ссылки на вынесенную фигуру нет')
-  // Байты на полке — тот же JSON, слово в слово: фигура хранится ТЕКСТОМ, а
-  // не base64, и разобрать её как base64 значило бы положить туда мусор.
+  assert.ok(blob, 'there is no reference to the offloaded figure')
+  // The bytes on the shelf are the same JSON, word for word: a figure is stored as
+  // TEXT, not base64, and decoding it as base64 would put garbage there.
   const stored = readBlob(room, blob.sha)
   assert.ok(stored)
   assert.equal(stored.toString('utf8'), body)
-  // И отдаётся она не тем, что сказало ядро, а безобидным application/json.
+  // And it is served not as what the kernel said but as harmless application/json.
   assert.equal(sniffMime(stored), 'application/json')
   assert.equal(spillContentType(PLOTLY_MIME), 'application/json')
 })
 
-test('маленькая фигура на полку не уезжает: за ней был бы второй запрос', async () => {
+test('a small figure does not go to the shelf: fetching it would take a second request', async () => {
   const room = 'plotlyblob2'
   createSession(room, 'График')
   const doc = new Y.Doc()
@@ -160,31 +161,31 @@ test('маленькая фигура на полку не уезжает: за 
   await settle()
 
   const [output] = outputsOf(doc, id)
-  if (output.kind !== 'data') return assert.fail('не запись данных')
+  if (output.kind !== 'data') return assert.fail('not a data entry')
   assert.equal(output.data[PLOTLY_MIME], body)
   assert.equal(output.blobs, undefined)
 })
 
-test('вынос и кодировка перечислены одним набором на продукт', () => {
+test('offloading and encoding are listed in one set for the whole product', () => {
   assert.ok(SPILL_MIMES.has(PLOTLY_MIME))
   assert.ok(SPILL_MIMES.has('image/png'))
-  // Картинка приходит base64, фигура — текстом. Перепутать их значит положить
-  // на полку мусор и показать пустую рамку.
+  // An image arrives as base64, a figure as text. Mixing them up means putting
+  // garbage on the shelf and showing an empty frame.
   assert.equal(spillEncoding('image/png'), 'base64')
   assert.equal(spillEncoding(PLOTLY_MIME), 'utf8')
-  // SVG не выносится: он и так легче картинки, ради которой вынос заведён.
+  // SVG is not offloaded: it is already lighter than the image offloading exists for.
   assert.ok(!SPILL_MIMES.has('image/svg+xml'))
 })
 
-/* ------------------------------------------------------------- потолок */
+/* --------------------------------------------------------- the ceiling */
 
-test('фигура сверх потолка — честная строка, а не обрезанный JSON', async () => {
+test('a figure over the ceiling gets an honest line, not truncated JSON', async () => {
   const room = 'plotlyhuge1'
   createSession(room, 'Много точек')
   const doc = new Y.Doc()
   const id = cellIn(doc)
-  // Не строим настоящий миллион точек: потолок считает знаки, и строка из них
-  // ровно такая же длинная, а тест — на секунду, а не на минуту.
+  // We do not build a real million points: the ceiling counts characters, and a
+  // string of them is just as long, while the test takes a second, not a minute.
   const body = JSON.stringify({
     data: [{ type: 'scattergl', x: [1, 2], y: [1, 2], text: 'z'.repeat(MAX_FIGURE_CHARS) }],
     layout: {},
@@ -196,16 +197,16 @@ test('фигура сверх потолка — честная строка, а
   await settle()
 
   const outs = outputsOf(doc, id)
-  assert.equal(outs.length, 1, 'кроме строки в документ легло что-то ещё')
+  assert.equal(outs.length, 1, 'something besides the line landed in the document')
   assert.equal(outs[0].kind, 'stream')
   if (outs[0].kind !== 'stream') return
   assert.equal(outs[0].name, 'stderr')
   assert.match(outs[0].text, /слишком большой/)
-  // Совет в строке — настоящий выход, а не отговорка.
+  // The advice in the line is a real way out, not an excuse.
   assert.match(outs[0].text, /write_html/)
 })
 
-test('потолок фигуры не отменяет остального набора', async () => {
+test('the figure ceiling does not cancel the rest of the bundle', async () => {
   const room = 'plotlyhuge2'
   createSession(room, 'Много точек')
   const doc = new Y.Doc()
@@ -226,9 +227,9 @@ test('потолок фигуры не отменяет остального н�
   assert.equal(outs[1].data[PLOTLY_MIME], undefined)
 })
 
-/* ---------------------------------------------------------- консилиум */
+/* -------------------------------------------------------- the council */
 
-test('попытка консилиума: фигура до потолка целиком, сверх — та же строка', () => {
+test('a council attempt: a figure under the ceiling goes whole, over it gets the same line', () => {
   const small = new CouncilOutputBuffer()
   const body = figure(50)
   small.data({ [PLOTLY_MIME]: body, 'text/html': '<div></div><script>x</script>' }, 1)
@@ -236,11 +237,11 @@ test('попытка консилиума: фигура до потолка це
   assert.equal(kept.length, 1)
   assert.equal(kept[0].kind, 'data')
   if (kept[0].kind !== 'data') return
-  assert.equal(kept[0].data[PLOTLY_MIME], body, 'фигуру попытки порезали')
-  assert.equal(kept[0].data['text/html'], undefined, 'мёртвый скрипт уехал на карточку')
+  assert.equal(kept[0].data[PLOTLY_MIME], body, 'the attempt figure was cut')
+  assert.equal(kept[0].data['text/html'], undefined, 'the dead script went onto the card')
 
-  // Полки записей у попытки нет и быть не может: её вывод живёт в памяти и
-  // едет хосту сокетом. Значит — либо целиком, либо строкой.
+  // An attempt has no blob shelf and cannot have one: its output lives in memory
+  // and travels to the host over the socket. So it is either whole or a line.
   const big = new CouncilOutputBuffer()
   const huge = JSON.stringify({
     data: [{ x: 'z'.repeat(MAX_ATTEMPT_DATA_CHARS) }],
@@ -254,26 +255,26 @@ test('попытка консилиума: фигура до потолка це
   assert.match(outs[0].text, /слишком большой|too large/)
 })
 
-/* ----------------------------------------------------------- пересказ */
+/* -------------------------------------------------------- the summary */
 
-test('пересказ фигуры: тип, число трасс и число точек', () => {
+test('a figure summary: the type, the number of traces and the number of points', () => {
   const one = normalizeFigure(JSON.parse(figure(37, 'histogram')))
   assert.ok(one)
   assert.deepEqual(figureShape(one), { kind: 'histogram', traces: 1, points: 37 })
 
-  // plotly.py с шестой версии кладёт массивы двоичными: `{dtype, bdata}`.
-  // Длину у них `.length` не спросишь, а оракулу число точек нужно.
+  // Since version six plotly.py stores arrays as binary: `{dtype, bdata}`. Their
+  // length cannot be asked with `.length`, and the oracle needs the number of points.
   const packed = normalizeFigure({
     data: [{ type: 'scattergl', x: { dtype: 'f8', bdata: 'A'.repeat(800) } }],
     layout: {},
   })
   assert.ok(packed)
-  assert.equal(figureShape(packed).points, 75, '800 знаков base64 — это 600 байт, то есть 75 чисел f8')
+  assert.equal(figureShape(packed).points, 75, '800 base64 characters are 600 bytes, that is, 75 f8 numbers')
 })
 
-/* ------------------------------------------------------------- оракул */
+/* --------------------------------------------------------- the oracle */
 
-/** Ячейка внутри документа: без него у неё нет массива выводов. */
+/** A cell inside a document: without one it has no outputs array. */
 function cellWith(output: CellOutput): YCell {
   const doc = new Y.Doc()
   const cell = createCell('code', 'px.histogram(df, x="t")')
@@ -282,19 +283,19 @@ function cellWith(output: CellOutput): YCell {
   return cell
 }
 
-test('оракулу едет пометка о графике, а не мегабайты координат', () => {
+test('the oracle gets a note about the chart, not megabytes of coordinates', () => {
   const cell = cellWith(
     { kind: 'data', data: { [PLOTLY_MIME]: figure(2400, 'histogram') }, execCount: 7 },
   )
   const [rendered] = renderOutputs(cell, 4000)
   assert.match(rendered, /\[plotly figure: histogram, 1 trace, 2400 points\]/)
-  // И ни одной координаты: сто тысяч точек — это два мегабайта, то есть весь
-  // бюджет контекста за одну ячейку.
-  assert.ok(!rendered.includes('"x"'), 'JSON фигуры уехал модели целиком')
-  assert.ok(rendered.length < 200, `пометка на ${rendered.length} знаков — это не пометка`)
+  // And not a single coordinate: a hundred thousand points are two megabytes,
+  // that is, the whole context budget for one cell.
+  assert.ok(!rendered.includes('"x"'), 'the figure JSON went to the model whole')
+  assert.ok(rendered.length < 200, `a note of ${rendered.length} characters is not a note`)
 })
 
-test('вынесенная фигура в контексте — график, а не картинка', () => {
+test('an offloaded figure in the context is a chart, not an image', () => {
   const cell = cellWith({
     kind: 'data',
     data: {},
@@ -302,13 +303,13 @@ test('вынесенная фигура в контексте — график, 
     execCount: 9,
   })
   const [rendered] = renderOutputs(cell, 4000)
-  // Не «KB image»: оракул подсказывал бы про `plt.savefig` там, где plotly.
+  // Not "KB image": the oracle would suggest `plt.savefig` where plotly is used.
   assert.match(rendered, /\[plotly figure, ~1563 KB\]/)
 })
 
-/* -------------------------------------------------- опубликованная страница */
+/* ------------------------------------------------------- the published page */
 
-test('в выгруженном каталоге на месте графика — строка, а не пустота и не JSON', () => {
+test('in the exported directory a line stands where the chart is, not emptiness and not JSON', () => {
   const html = renderStep({
     title: 'Занятие',
     publishedAt: 0,
@@ -333,11 +334,12 @@ test('в выгруженном каталоге на месте графика 
     base: '',
   })
   /*
-   * Статический каталог живёт без сервера, а рамка — это ответ с особым
-   * заголовком. Рисовать фигуру прямо в странице нельзя тем более: чужие
-   * данные и чужой код на origin, где лежат и другие занятия.
+   * The static directory lives without a server, and the frame is a response
+   * with a special header. Drawing the figure right in the page is even less
+   * acceptable: foreign data and foreign code on an origin that holds other
+   * classes too.
    */
   assert.match(html, /интерактивный график plotly/)
-  assert.ok(!html.includes('"scatter"'), 'JSON фигуры уехал в статическую страницу')
-  assert.ok(!html.includes('<iframe'), 'рамка на статической странице не работает и не ставится')
+  assert.ok(!html.includes('"scatter"'), 'the figure JSON went into the static page')
+  assert.ok(!html.includes('<iframe'), 'a frame does not work on a static page and is not placed there')
 })

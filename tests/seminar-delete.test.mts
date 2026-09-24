@@ -1,15 +1,16 @@
 /**
- * Что именно уносит с собой удалённый семинар.
+ * What exactly a deleted seminar takes away with it.
  *
- * Каскад проверялся только со стороны клиента — что кнопка зовёт тот URL, — а
- * порядок шагов был переписан руками в persistence.test («Exactly what the
- * delete route does, in its order»). То есть маршрут можно было переставить
- * местами — снести документ ПОСЛЕ сноса снимка, — и комната воскресала после
- * перезапуска при зелёной сюите.
+ * The cascade was checked only from the client side — that the button calls
+ * that URL — while the order of the steps was copied by hand into
+ * persistence.test ("Exactly what the delete route does, in its order"). So
+ * the route could be reordered — tearing down the document AFTER tearing down
+ * the snapshot — and the room came back to life after a restart with a green
+ * suite.
  *
- * Здесь проверяется сам маршрут: строки, файлы, история, надгробие в курсе и
- * судьба опубликованной страницы — и то, что после ответа снимок не появляется
- * заново.
+ * This checks the route itself: the rows, the files, the history, the
+ * tombstone in the course and the fate of the published page — and that no
+ * snapshot reappears after the response.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -70,7 +71,7 @@ after(() => {
   shutdownCollab()
 })
 
-/** Семинар со всем, что за ним тянется: человек, файл, тетрадь, история, страница. */
+/** A seminar with all that trails it: a person, a file, a notebook, history, a page. */
 function seminarWithEverything(id: string, name: string): void {
   createSession(id, name, 'base')
   upsertParticipant({ id: 'p_1', sessionId: id, name: 'Нина', avatar: null, role: 'participant' })
@@ -92,39 +93,39 @@ function seminarWithEverything(id: string, name: string): void {
 const remove = (id: string, query = '') =>
   fetch(`${base}/api/admin/seminars/${id}${query}`, { method: 'DELETE', headers: { cookie } })
 
-test('удаление уносит строки, файлы и историю, а чтение оставляет', async () => {
+test('deletion takes the rows, the files and the history, but leaves the reading', async () => {
   const id = 'delete-keep'
   seminarWithEverything(id, 'Четвёртая неделя')
   const pub = publicationOf(id)
   assert.ok(pub)
-  // И курс, в котором он состоит: на его месте должно остаться надгробие.
+  // And a course it belongs to: a tombstone has to remain in its place.
   const course = createCourse('Матстат', null, 'Ада')
   assert.ok(setCourseItems(course.id, course.rev, [{ kind: 'seminar', sessionId: id, name: 'Четвёртая неделя', publication: null }]))
 
-  assert.ok(loadDocSnapshot(id), 'снимка не было — проверять нечего')
-  assert.ok(versionCount(id) > 0, 'истории не было — проверять нечего')
+  assert.ok(loadDocSnapshot(id), 'there was no snapshot: nothing to check')
+  assert.ok(versionCount(id) > 0, 'there was no history: nothing to check')
 
   const res = await remove(id)
   assert.equal(res.status, 204)
 
-  assert.equal(getSession(id), null, 'строка семинара пережила удаление')
+  assert.equal(getSession(id), null, 'the seminar row survived the deletion')
   assert.deepEqual(listParticipants(id), [])
-  assert.equal(loadDocSnapshot(id), null, 'снимок тетради остался лежать')
-  assert.equal(versionCount(id), 0, 'история осталась, а в ней вся тетрадь целиком')
-  // Не `sessionDir`: она заводит папку, если её нет, — спрашиваем путь сами.
+  assert.equal(loadDocSnapshot(id), null, 'the notebook snapshot was left behind')
+  assert.equal(versionCount(id), 0, 'the history remained, and the whole notebook is in it')
+  // Not `sessionDir`: it creates the folder if it is missing, so we build the path ourselves.
   assert.equal(
     fs.existsSync(path.join(process.env.WORKSPACE_DIR ?? '', id, 'handout.csv')),
     false,
-    'файлы комнаты остались на диске',
+    'the room files stayed on disk',
   )
-  assert.equal(peekSessionDoc(id), null, 'документ комнаты остался в памяти')
+  assert.equal(peekSessionDoc(id), null, 'the room document stayed in memory')
 
-  // Страница живёт дальше, но уже без комнаты: ссылку у студентов не отозвать.
+  // The page lives on, but without the room: the link cannot be taken back from the students.
   const after = getPublication(pub.id)
-  assert.ok(after, 'чтение стёрли вместе с комнатой')
-  assert.equal(after.sessionId, null, 'страница всё ещё держится за снесённую комнату')
+  assert.ok(after, 'the reading was erased together with the room')
+  assert.equal(after.sessionId, null, 'the page still clings to the demolished room')
 
-  // А в курсе — надгробие со ссылкой на это чтение, а не пропавшая неделя.
+  // And in the course, a tombstone linking to this reading rather than a missing week.
   const now = getCourse(course.id)
   assert.ok(now)
   const [row] = now.items
@@ -133,35 +134,35 @@ test('удаление уносит строки, файлы и историю, 
   assert.equal(row?.kind === 'gone' ? row.publication?.id : null, pub.id)
 })
 
-test('снимок не возвращается после ответа', async () => {
+test('the snapshot does not come back after the response', async () => {
   /*
-   * Тот самый порядок: сокеты закрыты и документ выселен ДО сноса строк, а
-   * ядро гасится после — и всё, что могло воскреснуть, пока оно гасло,
-   * сносится вторым проходом. Если снимок пишется после удаления строк,
-   * комната возвращается на ближайшем перезапуске сервера — с ростером,
-   * которого уже нет.
+   * That very order: the sockets are closed and the document evicted BEFORE the
+   * rows are torn down, and the kernel is shut down afterwards — and whatever
+   * could come back to life while it was shutting down is torn down by a second
+   * pass. If the snapshot is written after the rows are deleted, the room
+   * returns on the next server restart — with a roster that no longer exists.
    */
   const id = 'delete-snapshot'
   seminarWithEverything(id, 'Пятая неделя')
   assert.equal((await remove(id)).status, 204)
 
-  // Полсекунды — больше, чем debounce снимка (persistence.ts).
+  // Half a second is longer than the snapshot debounce (persistence.ts).
   await new Promise<void>((resolve) => setTimeout(resolve, 500))
-  assert.equal(loadDocSnapshot(id), null, 'снимок удалённой комнаты появился заново')
-  assert.equal(versionCount(id), 0, 'лента удалённой комнаты дописалась после ответа')
+  assert.equal(loadDocSnapshot(id), null, 'a snapshot of the deleted room appeared again')
+  assert.equal(versionCount(id), 0, 'the feed of the deleted room got written to after the response')
 })
 
-test('«удалить и чтение» стирает страницу насовсем', async () => {
+test('"delete with the reading" erases the page for good', async () => {
   const id = 'delete-drop'
   seminarWithEverything(id, 'Шестая неделя')
   const pub = publicationOf(id)
   assert.ok(pub)
 
   assert.equal((await remove(id, '?reading=drop')).status, 204)
-  assert.equal(getPublication(pub.id), null, 'страница пережила «удалить и чтение»')
+  assert.equal(getPublication(pub.id), null, 'the page survived "delete with the reading"')
 })
 
-test('удаляет владелец, и только он', async () => {
+test('the owner deletes, and only the owner', async () => {
   const id = 'delete-teacher'
   seminarWithEverything(id, 'Седьмая неделя')
   const teacher = createTeacher({ name: 'Нина', email: 'nina.delete@test.local', role: 'teacher' })
@@ -178,10 +179,10 @@ test('удаляет владелец, и только он', async () => {
     headers: { cookie: `${STAFF_COOKIE}=${value}` },
   })
   assert.equal(res.status, 403)
-  assert.ok(getSession(id), 'семинар удалил не владелец')
+  assert.ok(getSession(id), 'someone other than the owner deleted the seminar')
 })
 
-test('семинара нет — 404, а не бодрое «удалено»', async () => {
+test('no seminar: a 404, not a cheerful "deleted"', async () => {
   const res = await remove('no-such-seminar')
   assert.equal(res.status, 404)
 })

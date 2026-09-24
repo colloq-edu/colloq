@@ -1,56 +1,60 @@
 /**
- * load.mts — выдержит ли ОДИН процесс пятьсот студентов в одной комнате.
+ * load.mts: will ONE process survive five hundred students in one room.
  *
- * perf.mts отвечает на вопрос «быстро ли», когда в комнате двое, и меряет вес
- * бандла. Здесь вопрос другой: что делается с единственным процессом Node,
- * когда по ссылке приходит поток. Стенд заводит СВОЙ семинар, приводит в него N
- * поддельных вкладок — вход через `/join`, оба сокета, начальная синхронизация
- * Yjs, присутствие с именем и цветом, — держит их и меряет:
+ * perf.mts answers the question "is it fast" when there are two people in the
+ * room, and measures the bundle weight. Here the question is different: what
+ * happens to the single Node process when a stream of people comes in by the
+ * link. The harness creates ITS OWN seminar, brings N fake tabs into it (join
+ * through `/join`, both sockets, the initial Yjs sync, presence with a name
+ * and a color), holds them and measures:
  *
- *   1 ВХОД      сколько прошло и сколько отказано, по кодам, и за сколько
- *   2 ПОКОЙ     кадров в секунду и байт на клиента, /api/health и loopLag оттуда
- *   3 ШТОРМ     k печатают по m нажатий в секунду: за сколько правка доезжает
- *   4 ДЕРЕВО    преподаватель заводит файлы: сколько это стоит всем остальным
- *   5 КОНСИЛИУМ N студентов пишут в свой лист при одном пульте: цена стопки
- *   6 ЛЕКЦИЯ    ведущий ведёт пером и указкой: цена кадра всему залу
+ *   1 JOIN      how many got in and how many were refused, by code, and how fast
+ *   2 IDLE      frames per second and bytes per client, /api/health and loopLag from it
+ *   3 STORM     k type m keystrokes per second: how fast an edit arrives
+ *   4 TREE      the teacher creates files: what that costs everyone else
+ *   5 COUNCIL   N students write into their own sheet with one console: the cost of the stack
+ *   6 LECTURE   the host draws with the pen and the pointer: the cost of a frame for the whole room
  *
- * Разделы 4–6 добровольные (по умолчанию их нет) и меряют три РАЗНЫЕ формы
- * рассылки, которых в шторме нет вовсе: дерево — всем на каждое изменение,
- * консилиум — одному пульту от каждого из N, лекция — от одного всем N.
+ * Sections 4–6 are optional (off by default) and measure three DIFFERENT forms
+ * of broadcast that the storm does not have at all: the tree goes to everyone
+ * on every change, the council to one console from each of N, the lecture from
+ * one to all N.
  *
- * В каждом окне рядом стоят CPU и RSS серверного процесса — если стенд запущен
- * на той же машине и его pid назван параметром.
+ * Next to every window stand the CPU and RSS of the server process, if the
+ * harness runs on the same machine and the pid is given as a parameter.
  *
- * Чего он НЕ меряет: он не рисует страницу, не считает ячейки, не запускает
- * ядро и ничего не знает про память браузера. Это нагрузка на сокеты и на цикл
- * событий, и настоящая вкладка поверх этих чисел добавит свою цену.
+ * What it does NOT measure: it does not draw the page, does not compute cells,
+ * does not start a kernel and knows nothing about browser memory. This is load
+ * on the sockets and on the event loop, and a real tab adds a cost of its own
+ * on top of these numbers.
  *
- * По чужому семинару его гонять нельзя — и нечем: комнату он заводит сам и
- * удаляет её в finally, в том числе по Ctrl+C. Пятьсот строк участников,
- * оставленных в чужой базе, оттуда уже не уходят, а в комнате могут сидеть люди.
+ * It must not be run against someone else's seminar, and it has no way to: it
+ * creates the room itself and deletes it in finally, including on Ctrl+C. Five
+ * hundred participant rows left in someone else's database never leave it,
+ * and there may be people sitting in the room.
  *
- * Usage: make load   (или npx tsx scripts/load.mts)
- *   LOAD_BASE_URL     куда стучаться           default http://localhost:3000
- *   LOAD_STUDENTS     сколько студентов        default 500
- *   LOAD_RAMP_SEC     за сколько они входят    default 60
- *   LOAD_IDLE_SEC     окно покоя               default 15
- *   LOAD_TYPISTS      k — сколько печатают     default 20
- *   LOAD_KEYS         m — нажатий в секунду    default 5
- *   LOAD_STORM_SEC    сколько длится шторм     default 20
- *   LOAD_TREE         файлов в секунду в разделе 4 (0 — не гонять) default 0
- *   LOAD_TREE_SEC     сколько длится раздел 4  default 10
- *   LOAD_COUNCIL      сколько студентов пишут в свой лист (0 — не гонять) default 0
- *   LOAD_COUNCIL_EVERY  секунд между снимками одного студента default 2
- *   LOAD_COUNCIL_SEC  сколько длится раздел 5  default 10
- *   LOAD_INK          кадров пера в секунду в разделе 6 (0 — не гонять) default 0
- *   LOAD_INK_SEC      сколько длится раздел 6  default 10
- *   LOAD_SERVER_PID   pid серверного процесса (systemctl show -p MainPID colloq)
- *   LOAD_SETUP_TOKEN  ключ установки, если файла рядом нет (удалённый инстанс)
- *   LOAD_STAFF_COOKIE готовая кука `colloq_staff=...`, если ключа нет вовсе
- *   LOAD_STAFF_JOIN   1 — входить с кукой штата, мимо предела новых участников
- *   LOAD_ECHO         1 — повторять серверу чужое присутствие, как делали
- *                     вкладки до presence.ts · ownChanges (см. ниже) default 0
- *   DATA_DIR          где лежит setup-token    default <repo>/data
+ * Usage: make load   (or npx tsx scripts/load.mts)
+ *   LOAD_BASE_URL     where to connect           default http://localhost:3000
+ *   LOAD_STUDENTS     how many students          default 500
+ *   LOAD_RAMP_SEC     how long they take to join default 60
+ *   LOAD_IDLE_SEC     the idle window            default 15
+ *   LOAD_TYPISTS      k, how many type           default 20
+ *   LOAD_KEYS         m, keystrokes per second   default 5
+ *   LOAD_STORM_SEC    how long the storm lasts   default 20
+ *   LOAD_TREE         files per second in section 4 (0: skip it) default 0
+ *   LOAD_TREE_SEC     how long section 4 lasts   default 10
+ *   LOAD_COUNCIL      how many students write into their sheet (0: skip it) default 0
+ *   LOAD_COUNCIL_EVERY  seconds between one student's snapshots default 2
+ *   LOAD_COUNCIL_SEC  how long section 5 lasts   default 10
+ *   LOAD_INK          pen frames per second in section 6 (0: skip it) default 0
+ *   LOAD_INK_SEC      how long section 6 lasts   default 10
+ *   LOAD_SERVER_PID   pid of the server process (systemctl show -p MainPID colloq)
+ *   LOAD_SETUP_TOKEN  the setup token, if there is no file nearby (a remote instance)
+ *   LOAD_STAFF_COOKIE a ready `colloq_staff=...` cookie, if there is no token at all
+ *   LOAD_STAFF_JOIN   1: join with the staff cookie, past the new-participant limit
+ *   LOAD_ECHO         1: repeat other people's presence to the server, as tabs
+ *                     did before presence.ts · ownChanges (see below) default 0
+ *   DATA_DIR          where setup-token lies     default <repo>/data
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -63,14 +67,22 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import WS, { type RawData } from 'ws'
 import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
-// Потолок попытки — общий с сервером и с клиентом: снимок длиннее возвращается
-// отказом, и стенд, который мерил бы такими, мерил бы отказы, а не стопку.
+// The attempt ceiling is shared with the server and the client: a longer
+// snapshot comes back as a refusal, and a harness that measured with such
+// snapshots would measure refusals, not the stack.
 import { MAX_ATTEMPT_CHARS } from '@shared/notebook'
-// И числительное — оттуда же: «1 штрихов» в отчёте стенда читается как опечатка
-// в самом стенде, а копия правила тернарником уже однажды разошлась (shared/plural.ts).
-import { plural } from '@shared/plural'
 
-/* --------------------------------------------------------------- настройки */
+/**
+ * English plural for the report: "1 stroke", "21 strokes". The report used to
+ * be Russian and borrowed the Russian rule from shared/plural.ts; with English
+ * words that rule prints "21 stroke". "1 strokes" would read as a typo in the
+ * harness itself.
+ */
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many
+}
+
+/* --------------------------------------------------------------- settings */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = (process.env.LOAD_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '')
@@ -88,61 +100,64 @@ const TYPISTS = Math.max(1, Math.round(num('LOAD_TYPISTS', 20)))
 const KEYS = Math.max(1, num('LOAD_KEYS', 5))
 const STORM_SEC = num('LOAD_STORM_SEC', 20)
 /*
- * Дерево файлов — вторая по величине рассылка после присутствия, и до сих пор
- * стенд её не трогал вовсе: он мерил комнату, в которой никто не кладёт
- * файлов. Один `tree:new` — это `broadcastFiles`, то есть ВЕСЬ список файлов
- * комнаты каждому пульту, и стоит он тем дороже, чем больше в комнате файлов.
- * По умолчанию 0: раздел добровольный, потому что он оставляет в комнате
- * файлы, а не только сокеты.
+ * The file tree is the second largest broadcast after presence, and until now
+ * the harness did not touch it at all: it measured a room where nobody puts
+ * files. One `tree:new` is `broadcastFiles`, that is, the WHOLE file list of
+ * the room to every console, and it costs more the more files the room has.
+ * 0 by default: the section is optional because it leaves files in the room,
+ * not just sockets.
  */
 const TREE_PER_SEC = num('LOAD_TREE', 0)
 const TREE_SEC = num('LOAD_TREE_SEC', 10)
 /*
- * Консилиум — единственная рассылка комнаты, которая идёт не всем, а ОДНОМУ.
+ * The council is the only broadcast of the room that goes not to everyone but
+ * to ONE.
  *
- * Снимок каждого пишущего ложится в стопку преподавателя, и платит за неё один
- * сокет: при пятистах пишущих «байт на клиента» останется покойным, а пульт
- * ведущего захлебнётся. Поэтому раздел меряет отдельно входящее пульта, а не
- * среднее по залу. По умолчанию 0 — он, как и дерево, оставляет в комнате
- * ячейку и попытки, а не только сокеты.
+ * Every writer's snapshot lands in the teacher's stack, and one socket pays
+ * for it: with five hundred writers "bytes per client" stays calm, while the
+ * host's console chokes. So the section measures the console's incoming
+ * traffic separately, not the average across the room. 0 by default: like the
+ * tree, it leaves a cell and attempts in the room, not just sockets.
  */
 const COUNCIL = Math.round(num('LOAD_COUNCIL', 0))
 const COUNCIL_EVERY = Math.max(0.1, num('LOAD_COUNCIL_EVERY', 2))
 const COUNCIL_SEC = num('LOAD_COUNCIL_SEC', 10)
 /*
- * Лекция — та же рассылка наоборот: один ведущий, и каждый кадр пера уходит
- * всему залу целиком. Указка при этом склеивается сервером по такту
- * (@shared/lecture · LASER_EVERY_MS), а перо — нет, и раздел показывает
- * разницу: сколько кадров ушло с пульта и сколько байт из-за них получил зал.
+ * The lecture is the same broadcast in reverse: one host, and every pen frame
+ * goes to the whole room. The pointer is merged by the server per tick
+ * (@shared/lecture · LASER_EVERY_MS), the pen is not, and the section shows
+ * the difference: how many frames left the console and how many bytes the
+ * room got because of them.
  */
 const INK_PER_SEC = num('LOAD_INK', 0)
 const INK_SEC = num('LOAD_INK_SEC', 10)
 const SERVER_PID = (process.env.LOAD_SERVER_PID ?? '').trim()
 const STAFF_JOIN = process.env.LOAD_STAFF_JOIN === '1'
 /*
- * Настоящая вкладка чужое присутствие серверу БОЛЬШЕ НЕ ПОВТОРЯЕТ.
+ * A real tab NO LONGER repeats other people's presence to the server.
  *
- * Повторяла: `_awarenessUpdateHandler` в y-websocket шлёт в сокет все
- * изменившиеся clientID, не разбирая, свои они или приехавшие, — и каждый кадр
- * возвращался серверу столько раз, сколько в комнате вкладок. Этого больше
- * нет с обеих сторон: web/src/lib/presence.ts · ownChanges отсеивает чужие
- * clientID перед отправкой, а провайдер поднимается с disableBc
- * (session.svelte.ts), так что соседние вкладки не пересказывают друг другу
- * ещё и это.
+ * It used to: `_awarenessUpdateHandler` in y-websocket sends every changed
+ * clientID into the socket, not telling its own from the ones that arrived,
+ * and every frame came back to the server as many times as there were tabs in
+ * the room. This is gone on both sides: web/src/lib/presence.ts · ownChanges
+ * filters out foreign clientIDs before sending, and the provider comes up with
+ * disableBc (session.svelte.ts), so neighbouring tabs do not retell each other
+ * that as well.
  *
- * Поэтому умолчание — 0. С единицей стенд грузил сервер работой, которой в
- * настоящей комнате нет вовсе: холостой процессор сервера завышался в 2.7
- * раза, и «выдержит ли поток» стенд отвечал про чужую комнату. Единица
- * остаётся ради одного вопроса — сколько стоил бы возврат старого поведения.
+ * Hence the default is 0. With 1 the harness loaded the server with work that
+ * does not exist in a real room at all: the server's idle CPU was overstated
+ * 2.7 times, and the harness answered "will it survive the stream" about
+ * someone else's room. The 1 remains for one question: what bringing back the
+ * old behaviour would cost.
  */
 const ECHO = process.env.LOAD_ECHO === '1'
 
-/** y-websocket'овские метки кадров. Числа — протокол, а не выбор. */
+/** y-websocket frame tags. The numbers are the protocol, not a choice. */
 const MSG_SYNC = 0
 const MSG_AWARENESS = 1
 
 const HEALTH_EVERY_MS = 500
-/** Шаг таймера, которым стенд следит за СВОИМ циклом событий. */
+/** The timer step with which the harness watches ITS OWN event loop. */
 const SELF_TICK_MS = 200
 
 const sleep = (msec: number) => new Promise((r) => setTimeout(r, msec))
@@ -163,13 +178,13 @@ const size = (v: number) =>
         ? `${(v / 1024).toFixed(1)}K`
         : `${Math.round(v)}B`
 
-/** Перцентиль по несортированному, ближайший ранг — как в perf.mts. */
+/** A percentile over unsorted samples, nearest rank, as in perf.mts. */
 function pct(samples: number[], p: number): number {
   if (samples.length === 0) return NaN
   const s = [...samples].sort((a, b) => a - b)
   return s[Math.min(s.length - 1, Math.max(0, Math.ceil((p / 100) * s.length) - 1))]
 }
-/** Math.max(...xs, NaN) — это всегда NaN, поэтому худшее считается отдельно. */
+/** Math.max(...xs, NaN) is always NaN, so the worst is computed separately. */
 const worst = (xs: number[]) => (xs.length === 0 ? NaN : Math.max(...xs))
 
 const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '')
@@ -179,17 +194,19 @@ const say = (s = '') => console.log(s)
 const row = (label: string, value: string, note = '') =>
   say('    ' + pad(label, 22) + pad(value, 45) + (note ? dim(note) : ''))
 
-/* ------------------------------------------------------------- вход в панель */
+/* ------------------------------------------------------ signing in to the panel */
 
 /**
- * Та же дверь, что у e2e.mts и perf.mts: ключ установки с диска, потраченный на
- * вторую свою работу — вход основателем. Незанятый инстанс не занимаем: стенд,
- * ставший владельцем чужой установки, отбирает у преподавателя первый экран.
+ * The same door as in e2e.mts and perf.mts: the setup token from disk, spent
+ * on its second job of its own, signing in as the founder. An unclaimed
+ * instance is not claimed: a harness that became the owner of someone else's
+ * installation takes the first screen away from the teacher.
  *
- * Если ключа рядом нет (стенд гонят по машине через сеть), его можно назвать
- * параметром — LOAD_SETUP_TOKEN, — а если и его нет, то готовую куку
- * LOAD_STAFF_COOKIE. Гадать тут нечего: без штата семинара не завести, а без
- * своего семинара стенду работать не по чему.
+ * If there is no token nearby (the harness is run against a machine over the
+ * network), it can be named as a parameter, LOAD_SETUP_TOKEN, and if there is
+ * none of that either, a ready LOAD_STAFF_COOKIE cookie. There is nothing to
+ * guess here: without staff a seminar cannot be created, and without its own
+ * seminar the harness has nothing to work with.
  */
 let staffCookie = ''
 
@@ -197,7 +214,7 @@ async function signInAsStaff(): Promise<string | null> {
   const given = (process.env.LOAD_STAFF_COOKIE ?? '').trim()
   if (given) {
     staffCookie = given.split(';')[0]
-    return staffCookie.startsWith('colloq_staff=') ? null : 'LOAD_STAFF_COOKIE — это не кука colloq_staff='
+    return staffCookie.startsWith('colloq_staff=') ? null : 'LOAD_STAFF_COOKIE is not a colloq_staff= cookie'
   }
   const tokenFile = resolve(process.env.DATA_DIR ?? join(ROOT, 'data'), 'setup-token')
   let token = (process.env.LOAD_SETUP_TOKEN ?? '').trim()
@@ -205,26 +222,26 @@ async function signInAsStaff(): Promise<string | null> {
     try {
       token = readFileSync(tokenFile, 'utf8').trim()
     } catch {
-      return `ключа установки нет ни в ${tokenFile}, ни в LOAD_SETUP_TOKEN, ни куки в LOAD_STAFF_COOKIE`
+      return `no setup token in ${tokenFile} or in LOAD_SETUP_TOKEN, and no cookie in LOAD_STAFF_COOKIE`
     }
   }
   try {
     const state = (await (await fetch(`${BASE}/api/admin/state`)).json()) as { claimed?: boolean }
-    if (!state?.claimed) return 'этот инстанс ещё никем не занят — займите его в /admin и запустите снова'
+    if (!state?.claimed) return 'nobody has claimed this instance yet — claim it in /admin and run again'
     const res = await fetch(`${BASE}/api/admin/signin/token`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ token }),
     })
-    if (!res.ok) return `вход отклонён (${res.status})`
+    if (!res.ok) return `sign-in refused (${res.status})`
     staffCookie = (res.headers.get('set-cookie') ?? '').split(';')[0]
-    return staffCookie.startsWith('colloq_staff=') ? null : 'куки штата не выдали'
+    return staffCookie.startsWith('colloq_staff=') ? null : 'no staff cookie was issued'
   } catch (err) {
-    return err instanceof Error ? err.message : 'вход не удался'
+    return err instanceof Error ? err.message : 'sign-in failed'
   }
 }
 
-/* ------------------------------------------------- поддельная вкладка (клиент) */
+/* ------------------------------------------------- fake tab (client) */
 
 interface Student {
   n: number
@@ -238,7 +255,7 @@ interface Student {
   collab: WS | null
   control: WS | null
   synced: boolean
-  /** Счётчики окна: обнуляются в начале каждого замера. */
+  /** Window counters: reset at the start of every measurement. */
   frames: number
   bytesIn: number
   echoes: number
@@ -247,12 +264,13 @@ interface Student {
 
 const students: Student[] = []
 /**
- * Вкладка преподавателя — одна на все добровольные разделы и НЕ в `students`.
+ * The teacher's tab: one for all the optional sections and NOT in `students`.
  *
- * Не в списке потому, что окна считают байты на клиента по нему, а вкладка,
- * которая сама же создаёт нагрузку, портила бы среднее; одна потому, что
- * второй вход тем же штатом — это второй ведущий, а лекцию ведёт один
- * (control.ts · handOver), и разделы отбирали бы пульт друг у друга.
+ * Not in the list because the windows compute bytes per client from it, and a
+ * tab that creates the load itself would spoil the average; one because a
+ * second sign-in as the same staff member is a second host, while a lecture
+ * has one host (control.ts · handOver), and the sections would take the
+ * console from each other.
  */
 let teacher: Student | null = null
 let socketErrors = 0
@@ -286,11 +304,11 @@ function raw(ws: WS | null, payload: Uint8Array): void {
   try {
     ws.send(payload)
   } catch {
-    /* сокет уже закрыт — кадр просто не уехал, счёт ведут close и error */
+    /* the socket is already closed: the frame simply did not go out, close and error keep the count */
   }
 }
 
-/** Ячейка ровно того вида, который принимает гейт: те же ключи, что в e2e.mts. */
+/** A cell of exactly the shape the gate accepts: the same keys as in e2e.mts. */
 function newCell(source: string): { cell: Y.Map<unknown>; id: string } {
   const id = 'load_' + Math.random().toString(36).slice(2, 12)
   const cell = new Y.Map<unknown>()
@@ -315,8 +333,9 @@ function makeStudent(
   token: string,
 ): Student {
   const doc = new Y.Doc()
-  // Корневые типы объявляются ДО первого чужого обновления, иначе Yjs не знает
-  // их формы — то же самое делают SessionState и оба соседних скрипта.
+  // The root types are declared BEFORE the first foreign update, otherwise Yjs
+  // does not know their shape; SessionState and both neighbouring scripts do
+  // the same.
   doc.getArray('cells')
   doc.getMap('meta')
   const s: Student = {
@@ -337,16 +356,17 @@ function makeStudent(
     cell: null,
   }
   /*
-   * Локальное состояние присутствия НЕ обнуляется. `Awareness` заводит его
-   * пустым объектом в конструкторе, а `setLocalStateField` при `null` молча не
-   * делает ничего — стенд, обнуливший его «как сервер», держал бы пятьсот
-   * сокетов, о которых комната не знает: ни ростера, ни курсоров, ни рассылки
-   * присутствия, то есть ровно та нагрузка, ради которой всё и затевалось,
-   * не создавалась бы вовсе. Проверяется это ниже, по `online` от сервера.
+   * The local presence state is NOT reset. `Awareness` creates it as an empty
+   * object in the constructor, and `setLocalStateField` silently does nothing
+   * on `null`: a harness that reset it "like the server" would hold five
+   * hundred sockets the room does not know about: no roster, no cursors, no
+   * presence broadcast, that is, exactly the load the whole thing was started
+   * for would not be created at all. This is checked below, by `online` from
+   * the server.
    */
 
   doc.on('update', (update: Uint8Array, origin: unknown) => {
-    // Приехавшее по проводу назад не отправляем: origin выставляет readSyncMessage.
+    // What arrived over the wire is not sent back: readSyncMessage sets origin.
     if (origin === s) return
     const enc = encoding.createEncoder()
     encoding.writeVarUint(enc, MSG_SYNC)
@@ -359,7 +379,7 @@ function makeStudent(
     (changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
       const changed = changes.added.concat(changes.updated, changes.removed)
       if (changed.length === 0) return
-      // Своё присутствие приходит с origin 'local'; всё прочее — эхо (см. ECHO).
+      // Our own presence comes with origin 'local'; everything else is echo (see ECHO).
       const mine = origin === 'local'
       if (!mine) {
         if (!ECHO) return
@@ -385,7 +405,7 @@ function onCollabFrame(s: Student, data: RawData): void {
       case MSG_SYNC: {
         encoding.writeVarUint(enc, MSG_SYNC)
         const kind = syncProtocol.readSyncMessage(dec, enc, s.doc, s)
-        // step2 — ответ сервера на наш step1: с него вкладка синхронизирована.
+        // step2 is the server's answer to our step1: from it the tab is synced.
         if (kind === syncProtocol.messageYjsSyncStep2) s.synced = true
         if (encoding.length(enc) > 1) raw(s.collab, encoding.toUint8Array(enc))
         break
@@ -400,15 +420,17 @@ function onCollabFrame(s: Student, data: RawData): void {
 }
 
 /**
- * Оба сокета — как у вкладки: тетрадь и пульт. Присутствие объявляется на open.
+ * Both sockets, like a tab's: the notebook and the console. Presence is
+ * announced on open.
  *
- * `cookie` — только для преподавателя, и без него его пульт бесправен.
- * Роль решается НА КАЖДОМ запросе (`roleFor`, routes/sessions.ts), а токен,
- * выданный под кукой штата, ведущим намеренно не записан (`tokenHost: role ===
- * 'host' && !staff`): право держится кукой, чтобы уход из штата снимал его
- * тут же. Вкладка эту куку несёт и в upgrade — стенд, который её не нёс,
- * получал по проводу `participant` при `host` в ответе на `/join` и молча
- * упирался в «Открывает ячейки преподаватель».
+ * `cookie` is only for the teacher, and without it the teacher's console has
+ * no rights. The role is decided ON EVERY request (`roleFor`,
+ * routes/sessions.ts), and a token issued under a staff cookie is deliberately
+ * not recorded as host (`tokenHost: role === 'host' && !staff`): the right is
+ * held by the cookie, so that leaving the staff removes it at once. A tab
+ * carries this cookie into the upgrade as well; a harness that did not carry
+ * it got `participant` over the wire with `host` in the `/join` answer, and
+ * silently ran into "Only the teacher may open cells."
  */
 function connect(s: Student, sessionId: string, cookie?: string): void {
   const opts = cookie ? { headers: { cookie } } : undefined
@@ -426,17 +448,19 @@ function connect(s: Student, sessionId: string, cookie?: string): void {
     syncProtocol.writeSyncStep1(enc, s.doc)
     raw(collab, encoding.toUint8Array(enc))
     /*
-     * Имя, цвет и роль — то, из чего комната рисует ростер и курсоры, и именно
-     * этот кадр сервер рассылает всем остальным. Цвет берём выданный сервером
-     * (colorForId), а не свой: браузер тоже берёт его из ответа на /join.
+     * Name, color and role: what the room draws the roster and cursors from,
+     * and exactly the frame the server broadcasts to everyone else. The color
+     * is the one the server issued (colorForId), not our own: the browser also
+     * takes it from the /join answer.
      */
     const user: AwarenessUser = {
       id: s.id,
       name: s.name,
       avatar: null,
       color: s.color,
-      // Роль тоже своя: под LOAD_STAFF_JOIN сервер выдаёт ведущего, и вкладка,
-      // объявившая себя участником, была бы поправлена сервером на каждом кадре.
+      // The role is our own too: under LOAD_STAFF_JOIN the server hands out a
+      // host, and a tab that announced itself a participant would be corrected
+      // by the server on every frame.
       role: s.role,
       activeCellId: null,
     }
@@ -455,7 +479,7 @@ function connect(s: Student, sessionId: string, cookie?: string): void {
   })
 }
 
-/* --------------------------------------------------------------- измерители */
+/* --------------------------------------------------------------- meters */
 
 interface Health {
   ms: number[]
@@ -481,15 +505,17 @@ interface Proc {
 }
 
 /**
- * CPU и RSS серверного процесса — через `ps`, по названному pid.
+ * CPU and RSS of the server process, through `ps`, by the named pid.
  *
- * Не `%cpu`: он усреднён по всей жизни процесса, и сервер, поднятый час назад,
- * покажет тишину под любым штормом. Берём накопленное процессорное время на
- * границах окна и делим на настоящие секунды — это и есть загрузка ЗА окно.
+ * Not `%cpu`: it is averaged over the whole life of the process, and a server
+ * started an hour ago shows calm under any storm. We take the accumulated CPU
+ * time at the window's edges and divide by real seconds: that is the load
+ * DURING the window.
  *
- * Работает, только если стенд запущен на той же машине. Pid называют
- * параметром: угадать его нечем — под systemd это MainPID, под `make run` это
- * ребёнок tsx, — а перепутать процессы значит напечатать чужие числа.
+ * Works only if the harness runs on the same machine. The pid is given as a
+ * parameter: there is nothing to guess it by (under systemd it is MainPID,
+ * under `make run` a child of tsx), and mixing up processes means printing
+ * someone else's numbers.
  */
 function procSample(): Proc | null {
   if (!SERVER_PID) return null
@@ -497,7 +523,7 @@ function procSample(): Proc | null {
     const out = execFileSync('ps', ['-o', 'time=,rss=', '-p', SERVER_PID], { encoding: 'utf8' }).trim()
     const [time, rss] = out.split(/\s+/)
     if (!time || !rss) return null
-    // `[[dd-]hh:]mm:ss[.ff]` — Linux и macOS печатают по-разному, читаем оба.
+    // `[[dd-]hh:]mm:ss[.ff]`: Linux and macOS print it differently, we read both.
     const [days, rest] = time.includes('-') ? time.split('-') : ['0', time]
     let cpuSec = 0
     for (const part of rest.split(':')) cpuSec = cpuSec * 60 + Number(part)
@@ -547,9 +573,9 @@ function beginWindow(): OpenWindow {
     cpu0: procSample(),
     selfLag,
     /*
-     * Задержка СВОЕГО цикла. Пятьсот документов Yjs в одном процессе — это тоже
-     * нагрузка, и если захлебнулся стенд, все числа ниже становятся оценкой
-     * снизу. Сказать об этом честнее, чем напечатать их молча.
+     * The delay of OUR OWN loop. Five hundred Yjs documents in one process are
+     * load too, and if the harness chokes, all the numbers below become a
+     * lower bound. Saying so is more honest than printing them silently.
      */
     selfTimer: setInterval(() => {
       const now = performance.now()
@@ -586,36 +612,36 @@ function endWindow(w: OpenWindow): Window {
 
 function printWindow(w: Window): void {
   const each = Math.max(w.clients, 1)
-  row('кадров в секунду', `${(w.frames / each / w.seconds).toFixed(1)} на клиента`,
-    `${Math.round(w.frames / w.seconds)} всего`)
-  row('входящий', `${size(w.bytesIn / each / w.seconds)}/с на клиента`,
-    `${size(w.bytesIn / w.seconds)}/с всего, после распаковки`)
+  row('frames per second', `${(w.frames / each / w.seconds).toFixed(1)} per client`,
+    `${Math.round(w.frames / w.seconds)} in total`)
+  row('incoming', `${size(w.bytesIn / each / w.seconds)}/s per client`,
+    `${size(w.bytesIn / w.seconds)}/s in total, after decompression`)
   row('/api/health',
-    `p50 ${ms(pct(w.health.ms, 50))} · p95 ${ms(pct(w.health.ms, 95))} · худшее ${ms(worst(w.health.ms))}`,
-    w.health.failed > 0 ? red(`${w.health.failed} проб без ответа`) : `n=${w.health.ms.length}`)
-  row('loopLag сервера',
-    `p50 ${ms(pct(w.health.lag, 50))} · p95 ${ms(pct(w.health.lag, 95))} · худший ${ms(worst(w.health.lag))}`,
-    'столько ждало бы следующее нажатие')
+    `p50 ${ms(pct(w.health.ms, 50))} · p95 ${ms(pct(w.health.ms, 95))} · worst ${ms(worst(w.health.ms))}`,
+    w.health.failed > 0 ? red(`${w.health.failed} probes unanswered`) : `n=${w.health.ms.length}`)
+  row('server loopLag',
+    `p50 ${ms(pct(w.health.lag, 50))} · p95 ${ms(pct(w.health.lag, 95))} · worst ${ms(worst(w.health.lag))}`,
+    'the next keystroke would wait this long')
   if (w.cpuPct !== null && w.rssMb !== null) {
-    row('сервер', `CPU ${w.cpuPct.toFixed(0)}% · RSS ${w.rssMb.toFixed(0)}M`, `pid ${SERVER_PID}`)
+    row('server', `CPU ${w.cpuPct.toFixed(0)}% · RSS ${w.rssMb.toFixed(0)}M`, `pid ${SERVER_PID}`)
   } else {
-    row('сервер', dim('—'), 'CPU и RSS: назовите LOAD_SERVER_PID, и стенд на той же машине')
+    row('server', dim('—'), 'CPU and RSS: name LOAD_SERVER_PID, with the harness on the same machine')
   }
   if (ECHO && w.echoes > 0) {
-    row('эхо присутствия', `${w.echoes} кадров назад`,
-      `${Math.round(w.echoes / w.seconds)}/с чужого — так вкладки вели себя ДО ownChanges`)
+    row('presence echo', `${w.echoes} frames back`,
+      `${Math.round(w.echoes / w.seconds)}/s of foreign ones — how tabs behaved BEFORE ownChanges`)
   }
   if (w.selfLagP95 > 50) {
-    say(red(`    стенд ждал СВОЕГО цикла p95 ${ms(w.selfLagP95)} — числа выше это оценка снизу`))
+    say(red(`    the harness waited for ITS OWN loop p95 ${ms(w.selfLagP95)} — the numbers above are a lower bound`))
   }
 }
 
-/* ------------------------------------------------------------------ семинар */
+/* ------------------------------------------------------------------ seminar */
 
 const problem = await signInAsStaff()
 if (problem) {
-  console.error(red(`не удалось войти штатом: ${problem}`))
-  console.error(dim('семинар заводит только штат, а по чужой комнате стенд гонять нельзя — идти дальше не с чем'))
+  console.error(red(`could not sign in as staff: ${problem}`))
+  console.error(dim('only staff can create a seminar, and the harness must not be run against another room — nothing to go on with'))
   process.exit(1)
 }
 
@@ -628,18 +654,18 @@ const created = (await (
 ).json()) as { session?: { id?: string } }
 const SID: string = created?.session?.id ?? ''
 if (!SID) {
-  console.error(red('семинар не завёлся — а работать стенд умеет только со своей комнатой'))
+  console.error(red('the seminar was not created — and the harness can only work with a room of its own'))
   process.exit(1)
 }
 
-/** Всё, что стенд открыл и завёл, он закрывает и удаляет — в любом исходе. */
+/** Everything the harness opened and created, it closes and deletes, whatever the outcome. */
 let cleaned = false
 async function cleanup(): Promise<void> {
   if (cleaned) return
   cleaned = true
   stopping = true
-  // Вкладка преподавателя — вместе со всеми: она не в `students`, и без этой
-  // строки её два сокета уходили бы только вместе с процессом.
+  // The teacher's tab goes together with everyone: it is not in `students`,
+  // and without this line its two sockets would leave only with the process.
   for (const s of teacher ? [...students, teacher] : students) {
     try {
       s.aw.destroy()
@@ -647,7 +673,7 @@ async function cleanup(): Promise<void> {
       s.control?.terminate()
       s.doc.destroy()
     } catch {
-      /* уже закрыт — уборке всё равно */
+      /* already closed: the cleanup does not care */
     }
   }
   try {
@@ -655,15 +681,16 @@ async function cleanup(): Promise<void> {
       method: 'DELETE',
       headers: { cookie: staffCookie },
     })
-    say(gone.ok ? dim(`  убрано: семинар ${SID} удалён`) : red(`  не удалось удалить ${SID} (HTTP ${gone.status})`))
+    say(gone.ok ? dim(`  cleaned up: seminar ${SID} deleted`) : red(`  could not delete ${SID} (HTTP ${gone.status})`))
   } catch (err) {
-    say(red(`  не удалось удалить ${SID}: ${err instanceof Error ? err.message : String(err)}`))
+    say(red(`  could not delete ${SID}: ${err instanceof Error ? err.message : String(err)}`))
   }
 }
 
 /*
- * Ctrl+C — это тоже исход. Без этого прерванный прогон оставлял бы в чужой базе
- * пятьсот строк участников и комнату, которую никто не заводил руками.
+ * Ctrl+C is an outcome too. Without this an interrupted run would leave five
+ * hundred participant rows in someone else's database and a room that nobody
+ * created by hand.
  */
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
@@ -671,7 +698,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   })
 }
 
-/* -------------------------------------------------------------------- прогон */
+/* -------------------------------------------------------------------- the run */
 
 const okJoinMs: number[] = []
 const refused = new Map<number, number>()
@@ -685,8 +712,9 @@ async function joinAndConnect(n: number): Promise<void> {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        // Штат мимо предела новых участников не считается: сервер пропускает
-        // его без очереди. Умолчание — путь студента, тот, у которого потолок.
+        // Staff is not counted against the new-participant limit: the server
+        // lets it through without queueing. The default is the student's path,
+        // the one with the ceiling.
         ...(STAFF_JOIN ? { cookie: staffCookie } : {}),
       },
       body: JSON.stringify({ name: `Студент ${n}` }),
@@ -698,8 +726,8 @@ async function joinAndConnect(n: number): Promise<void> {
   const text = await res.text()
   if (!res.ok) {
     /*
-     * Отказ — самый быстрый ответ, который есть у двери, и мерить им время
-     * входа значит мерить пустоту. Тот же урок, что записан в perf.mts.
+     * A refusal is the fastest answer the door has, and measuring join time by
+     * it means measuring emptiness. The same lesson as recorded in perf.mts.
      */
     refused.set(res.status, (refused.get(res.status) ?? 0) + 1)
     return
@@ -716,12 +744,12 @@ async function joinAndConnect(n: number): Promise<void> {
 }
 
 /**
- * Сколько человек комната видит присутствием — не сколько сокетов открыто.
+ * How many people the room sees by presence, not how many sockets are open.
  *
- * Это проверка того, что стенд действительно ведёт себя как вкладка: `online`
- * считается по полю `user.id` в awareness (collab/index.ts · onlineParticipantIds),
- * так что число сходится только если имя и цвет доехали. Молчащее соединение
- * даст здесь ноль при пятистах открытых сокетах.
+ * This checks that the harness really behaves like a tab: `online` is counted
+ * by the `user.id` field in awareness (collab/index.ts ·
+ * onlineParticipantIds), so the number matches only if the name and color
+ * arrived. A silent connection gives zero here with five hundred sockets open.
  */
 async function onlineNow(): Promise<number | null> {
   try {
@@ -739,11 +767,11 @@ async function until(label: string, fn: () => boolean, limitMs: number): Promise
     if (fn()) return true
     await sleep(100)
   }
-  say(dim(`    (не дождались: ${label})`))
+  say(dim(`    (gave up waiting: ${label})`))
   return false
 }
 
-/* ---------------------------------------------------------------- шторм набора */
+/* ---------------------------------------------------------------- typing storm */
 
 interface Armed {
   typists: Student[]
@@ -753,9 +781,10 @@ interface Armed {
 }
 
 /**
- * Готовим шторм ДО начала замера: k печатающих заводят по своей ячейке, а
- * наблюдатель — тот, кто не печатает, — вешает на них наблюдателей. Если делать
- * это внутри окна, всплеск от создания ячеек попадёт в кадры покоя.
+ * The storm is prepared BEFORE the measurement starts: k typists create a cell
+ * each, and the observer (the one who does not type) hangs observers on them.
+ * Doing this inside the window would put the burst from creating cells into
+ * the idle frames.
  */
 async function armStorm(): Promise<Armed | null> {
   const live = students.filter((s) => s.collab?.readyState === WS.OPEN && s.synced)
@@ -766,11 +795,11 @@ async function armStorm(): Promise<Armed | null> {
   for (const t of typists) {
     const { cell, id } = newCell(`# ${t.name}\n`)
     t.doc.transact(() => cellsOf(t.doc).push([cell]))
-    // .get() работает только у встроенной ячейки — текст берём после push.
+    // .get() works only on an integrated cell: the text is taken after push.
     t.cell = { id, text: cell.get('source') as Y.Text }
   }
   const arrived = await until(
-    'наблюдатель получил ячейки печатающих',
+    'the observer received the cells of the typists',
     () => typists.every((t) => Boolean(findCell(observer.doc, t.cell!.id))),
     30_000,
   )
@@ -785,7 +814,7 @@ async function armStorm(): Promise<Armed | null> {
     pending.set(id, queue)
     text.observe(() => {
       const str = text.toString()
-      // Метки одной ячейки приходят по порядку — первая в очереди и есть старшая.
+      // The marks of one cell arrive in order: the first in the queue is the oldest.
       while (queue.length > 0 && str.includes(`#${queue[0].seq}#`)) {
         hops.push(performance.now() - queue.shift()!.at)
       }
@@ -801,21 +830,23 @@ interface Storm {
 }
 
 /**
- * Шторм: каждый печатающий вписывает в свою ячейку `#seq#` m раз в секунду, а
- * на соседнем сокете сидит наблюдатель и ждёт ровно эту метку. Оба конца в
- * одном процессе, поэтому часы одни и вычитать нечего.
+ * The storm: every typist writes `#seq#` into their own cell m times a second,
+ * and an observer on a neighbouring socket waits for exactly that mark. Both
+ * ends are in one process, so there is one clock and nothing to subtract.
  *
- * Хвост (последние метки ещё в пути) намеренно остался снаружи: пока он идёт,
- * никто не печатает, и включить его в окно значило бы размазать и кадры, и
- * байты, и темп набора по секундам, в которые ничего не происходило.
+ * The tail (the last marks still on the way) is deliberately left outside:
+ * while it runs, nobody types, and including it in the window would smear the
+ * frames, the bytes and the typing pace over seconds in which nothing
+ * happened.
  */
 async function runStorm(armed: Armed, seconds: number): Promise<Storm> {
   const { typists, pending } = armed
   let seq = 0
   const perSecond = typists.length * KEYS
   /*
-   * Один таймер на всех, по кругу. Настоящая аудитория печатает вразнобой, а не
-   * залпом раз в двести миллисекунд; и пятьсот таймеров стенду ни к чему.
+   * One timer for everyone, round robin. A real audience types unevenly, not
+   * in a volley every two hundred milliseconds; and the harness has no use for
+   * five hundred timers.
    */
   const batch = Math.max(1, Math.ceil(perSecond / 200))
   const every = (1000 * batch) / perSecond
@@ -824,7 +855,7 @@ async function runStorm(armed: Armed, seconds: number): Promise<Storm> {
     for (let i = 0; i < batch; i++) {
       const t = typists[cursor++ % typists.length]
       const mark = ++seq
-      // В очередь ДО вставки: иначе доставка могла бы обогнать собственный старт.
+      // Into the queue BEFORE the insert: otherwise delivery could overtake its own start.
       pending.get(t.cell!.id)!.push({ seq: mark, at: performance.now() })
       t.doc.transact(() => t.cell!.text.insert(t.cell!.text.length, `#${mark}#`))
     }
@@ -836,7 +867,7 @@ async function runStorm(armed: Armed, seconds: number): Promise<Storm> {
   return { typists: typists.length, keysSent: seq, seconds: (performance.now() - at) / 1000 }
 }
 
-/* ------------------------------------------------------------- дерево файлов */
+/* ------------------------------------------------------------- file tree */
 
 interface Tree {
   made: number
@@ -845,23 +876,25 @@ interface Tree {
 }
 
 /**
- * Что пульт преподавателя услышал в ответ.
+ * What the teacher's console heard in reply.
  *
- * Слушатель ОДИН на все разделы и вешается при входе. Вешать его в каждом
- * разделе значило бы складывать обработчики на одном сокете: третий раздел
- * считал бы каждый кадр трижды, а `ws` на одиннадцатом ругался бы утечкой.
- * Отказы копятся числом, а типы кадров — множеством: по нему разделы узнают,
- * что сервер принял лекцию или собрал стопку, не разбирая поток целиком.
+ * There is ONE listener for all the sections, attached at sign-in. Attaching
+ * one in every section would stack handlers on one socket: the third section
+ * would count every frame three times, and `ws` would complain about a leak at
+ * the eleventh. Refusals accumulate as a number, and frame types as a set: by
+ * it the sections learn that the server accepted the lecture or built the
+ * stack, without parsing the whole stream.
  */
 let teacherRefusals = 0
 const teacherHeard = new Set<string>()
 
 /**
- * Вход преподавателя: обычный `/join`, но кукой штата и с ролью на проводе.
+ * The teacher's sign-in: an ordinary `/join`, but with the staff cookie and
+ * with the role on the wire.
  *
- * Заводить файлы, открывать консилиум и вести лекцию может только ведущий
- * (control.ts), а студенты стенда входят по ссылке. Почему эта вкладка не в
- * `students` — у самого объявления `teacher`.
+ * Only the host can create files, open the council and run a lecture
+ * (control.ts), while the harness's students join by the link. Why this tab is
+ * not in `students` is explained at the `teacher` declaration itself.
  */
 async function joinTeacher(): Promise<Student | null> {
   if (!staffCookie) return null
@@ -880,7 +913,7 @@ async function joinTeacher(): Promise<Student | null> {
   const p = body.participant
   if (p.role !== 'host') return null
   const host = makeStudent(0, p.id, p.name, p.color, p.role, body.token)
-  // С кукой: роль на проводе спрашивают у неё, а не у токена (см. `connect`).
+  // With the cookie: the role on the wire is asked of it, not of the token (see `connect`).
   connect(host, SID, staffCookie)
   host.control?.on('message', (data: RawData) => {
     try {
@@ -889,35 +922,37 @@ async function joinTeacher(): Promise<Student | null> {
       teacherHeard.add(msg.t)
       if (msg.t === 'error' || msg.t === 'refused') teacherRefusals++
     } catch {
-      /* пульт шлёт только JSON; всё прочее нас тут не касается */
+      /* the console sends only JSON; anything else is none of our business here */
     }
   })
   const ready = await until(
-    'пульт преподавателя открылся',
-    // И тетрадь: раздел консилиума заводит ячейку в документе, а до step2
-    // отправлять её некуда — сервер такого документа ещё не видел.
+    'the teacher console opened',
+    // And the notebook: the council section creates a cell in the document,
+    // and before step2 there is nowhere to send it: the server has not seen
+    // such a document yet.
     () => host.control?.readyState === WS.OPEN && host.synced,
     15_000,
   )
   return ready ? host : null
 }
 
-/** Один вход на все добровольные разделы: второй отобрал бы пульт у первого. */
+/** One sign-in for all the optional sections: a second would take the console from the first. */
 async function theTeacher(): Promise<Student | null> {
   teacher ??= await joinTeacher()
   return teacher
 }
 
-/** Что сказал пульт за время работы: столько-то отказов. */
+/** What the console said during the work: so many refusals. */
 const refusalsSince = (was: number) => teacherRefusals - was
 
 /**
- * Преподаватель заводит файлы, а комната получает дерево целиком — на каждый.
+ * The teacher creates files, and the room gets the whole tree for each one.
  *
- * Меряется не время создания (оно на диске и никого не ждёт), а цена рассылки:
- * байты и кадры в окне считаются по студентам, которые в это время не делают
- * ничего. Список растёт по ходу раздела нарочно — так видно, что рассылка
- * дорожает вместе с папкой.
+ * What is measured is not the creation time (it is on disk and waits for
+ * nobody) but the cost of the broadcast: bytes and frames in the window are
+ * counted over the students, who are doing nothing at that time. The list
+ * grows during the section on purpose: that shows the broadcast getting more
+ * expensive along with the folder.
  */
 async function runTree(host: Student, seconds: number): Promise<Tree> {
   let made = 0
@@ -925,60 +960,62 @@ async function runTree(host: Student, seconds: number): Promise<Tree> {
   const every = 1000 / Math.max(TREE_PER_SEC, 0.001)
   const at = performance.now()
   const making = setInterval(() => {
-    // Плоская папка нарочно: дерево комнаты рассылается целиком, и стоимость
-    // растёт от числа записей, а не от глубины.
+    // A flat folder on purpose: the room's tree is broadcast whole, and the
+    // cost grows with the number of entries, not with the depth.
     host.control?.send(JSON.stringify({ t: 'tree:new', path: `load-tree/f${++made}.txt` }))
   }, every)
   await sleep(seconds * 1000)
   clearInterval(making)
-  // Папку за собой убираем сразу: семинар удаляется в finally, но раздел
-  // могут гонять и по нескольку раз за прогон.
+  // The folder is cleaned up right away: the seminar is deleted in finally,
+  // but the section may be run several times in one run.
   host.control?.send(JSON.stringify({ t: 'tree:remove', path: 'load-tree' }))
   return { made, refused: refusalsSince(was), seconds: (performance.now() - at) / 1000 }
 }
 
-/* ---------------------------------------------------------------- консилиум */
+/* ---------------------------------------------------------------- council */
 
 interface Council {
   writers: number
   drafts: number
   submits: number
   seconds: number
-  /** Входящее ОДНОГО пульта: стопка идёт ему, а не залу. */
+  /** The incoming traffic of ONE console: the stack goes to it, not to the room. */
   hostFrames: number
   hostBytes: number
   refused: number
 }
 
 /**
- * Преподаватель заводит ячейку и открывает в ней консилиум.
+ * The teacher creates a cell and opens the council in it.
  *
- * Порядок важен и проверяется ожиданием, а не паузой: ячейка едет документом
- * (CRDT), замок — управляющим проводом, и снимок в ячейку, которой сервер ещё
- * не видел, вернулся бы отказом «ячейка закрыта» — стенд намерил бы отказы
- * вместо стопки.
+ * The order matters and is checked by waiting, not by a pause: the cell
+ * travels with the document (CRDT), the lock over the control wire, and a
+ * snapshot into a cell the server has not seen yet would come back with the
+ * refusal "the cell is closed": the harness would measure refusals instead of
+ * the stack.
  */
 async function openCouncilCell(host: Student, writers: Student[]): Promise<string | null> {
   const { cell, id } = newCell('# решение\n')
   host.doc.transact(() => cellsOf(host.doc).push([cell]))
   const arrived = await until(
-    'ячейка консилиума доехала до пишущих',
+    'the council cell reached the writers',
     () => writers.every((s) => Boolean(findCell(s.doc, id))),
     30_000,
   )
   if (!arrived) return null
   host.control?.send(JSON.stringify({ t: 'cell:lock', cellId: id, state: 'council' }))
-  // Замок сервер пишет в саму ячейку (`open: 'council'`), и ждать надо именно
-  // его: пульт подтверждения не шлёт, а без замка права на свой лист нет.
+  // The server writes the lock into the cell itself (`open: 'council'`), and
+  // that is what has to be awaited: the console sends no confirmation, and
+  // without the lock there is no right to one's own sheet.
   const open = await until(
-    'замок консилиума открылся у пишущих',
+    'the council lock opened for the writers',
     () => writers.every((s) => findCell(s.doc, id)?.get('open') === 'council'),
     15_000,
   )
   return open ? id : null
 }
 
-/** Попытка примерно того размера, что пишут на паре: снимок едет ЦЕЛИКОМ. */
+/** An attempt of roughly the size people write in class: the snapshot travels WHOLE. */
 function attemptText(s: Student, round: number): string {
   const body =
     `import numpy as np\n\n# ${s.name}\ndef solve(df):\n` +
@@ -988,13 +1025,14 @@ function attemptText(s: Student, round: number): string {
 }
 
 /**
- * N студентов пишут в свой лист, один пульт собирает стопку.
+ * N students write into their own sheet, one console collects the stack.
  *
- * Снимок уходит на паузу в наборе (~1 с у настоящей вкладки), и цена его не в
- * зале, а у преподавателя: `council:mine` автору и стопка — ведущему. Комната
- * при этом молчит: счётчик сданных едет всем, только когда он СМЕНИЛСЯ, — и
- * ровно поэтому раздел кончается сдачей разом, той самой минутой, когда
- * преподаватель говорит «сдавайте» и счётчик двигается N раз подряд.
+ * A snapshot goes out on a pause in typing (~1 s in a real tab), and its cost
+ * is not in the room but at the teacher's: `council:mine` to the author and
+ * the stack to the host. The room stays silent meanwhile: the submitted
+ * counter goes to everyone only when it CHANGED, and that is exactly why the
+ * section ends with everyone submitting at once, that very minute when the
+ * teacher says "hand it in" and the counter moves N times in a row.
  */
 async function runCouncil(
   host: Student,
@@ -1008,8 +1046,9 @@ async function runCouncil(
   let drafts = 0
   const rounds = new Map<number, number>()
   const perSecond = writers.length / COUNCIL_EVERY
-  // Один таймер по кругу — как в шторме: пятьсот таймеров стенду ни к чему, а
-  // залпом раз в две секунды настоящая аудитория не печатает.
+  // One timer round robin, as in the storm: the harness has no use for five
+  // hundred timers, and a real audience does not type in a volley every two
+  // seconds.
   const batch = Math.max(1, Math.ceil(perSecond / 200))
   const every = (1000 * batch) / perSecond
   let cursor = 0
@@ -1039,12 +1078,12 @@ async function runCouncil(
 }
 
 /**
- * «Сдавайте» — и класс сдаёт разом.
+ * "Hand it in", and the class submits all at once.
  *
- * Отдельным замером, а не хвостом снимков: сдача двигает счётчик, а счётчик
- * идёт ВСЕЙ комнате, то есть это единственный кадр консилиума, за который
- * платят все пятьсот. Растянуто на пару секунд — столько занимает нажатие у
- * класса, которому только что сказали.
+ * A separate measurement, not the tail of the snapshots: a submission moves
+ * the counter, and the counter goes to the WHOLE room, that is, it is the only
+ * council frame all five hundred pay for. Stretched over a couple of seconds:
+ * that is how long the press takes for a class that has just been told.
  */
 async function runCouncilRush(host: Student, writers: Student[], cellId: string): Promise<Council> {
   const was = teacherRefusals
@@ -1055,9 +1094,9 @@ async function runCouncilRush(host: Student, writers: Student[], cellId: string)
   const every = Math.max(1, 2000 / Math.max(writers.length, 1))
   await new Promise<void>((done) => {
     const rushing = setInterval(() => {
-      // Индекс проверяется ДО счётчика: иначе последний тик, на котором сдавать
-      // уже некому, всё равно прибавлял бы себя, и раздел печатал бы на одно
-      // нажатие больше, чем сделал.
+      // The index is checked BEFORE the counter: otherwise the last tick, when
+      // there is nobody left to submit, would still add itself, and the section
+      // would print one press more than it made.
       const s = writers[sent]
       if (!s) {
         clearInterval(rushing)
@@ -1068,8 +1107,8 @@ async function runCouncilRush(host: Student, writers: Student[], cellId: string)
       s.control?.send(JSON.stringify({ t: 'council:submit', cellId }))
     }, every)
   })
-  // Хвост: счётчики и стопка идут дребезгом (BOARD_EVERY_MS), и окно, закрытое
-  // на последнем нажатии, не увидело бы того, за что комната и платит.
+  // The tail: the counters and the stack go out debounced (BOARD_EVERY_MS),
+  // and a window closed at the last press would not see what the room pays for.
   await sleep(1_500)
   return {
     writers: writers.length,
@@ -1082,7 +1121,7 @@ async function runCouncilRush(host: Student, writers: Student[], cellId: string)
   }
 }
 
-/* ------------------------------------------------------------------- лекция */
+/* ------------------------------------------------------------------- lecture */
 
 interface Lecture {
   ink: number
@@ -1093,13 +1132,14 @@ interface Lecture {
 }
 
 /**
- * Лекция на N зрителей: перо и указка с одного пульта.
+ * A lecture for N viewers: the pen and the pointer from one console.
  *
- * Документ заводится пустым файлом с расширением .pdf и не открывается никем:
- * страницу здесь никто не рисует, а серверу для лекции нужен файл, а не его
- * содержимое (control.ts · lecture:start смотрит только `kindOf` и `statPath`).
- * То, что меряется, — цена КАДРА: `ink` уходит залу на каждый, `laser` сервер
- * склеивает по такту, и разница между «послано» и «получено» и есть ответ.
+ * The document is created as an empty file with a .pdf extension and opened
+ * by nobody: nobody draws the page here, and for a lecture the server needs
+ * the file, not its content (control.ts · lecture:start looks only at `kindOf`
+ * and `statPath`). What is measured is the cost of a FRAME: `ink` goes to the
+ * room on every frame, `laser` is merged by the server per tick, and the
+ * difference between "sent" and "received" is the answer.
  */
 async function runLecture(host: Student, seconds: number): Promise<Lecture | null> {
   const was = teacherRefusals
@@ -1107,7 +1147,7 @@ async function runLecture(host: Student, seconds: number): Promise<Lecture | nul
   teacherHeard.delete('lecture')
   host.control?.send(JSON.stringify({ t: 'tree:new', path: file }))
   host.control?.send(JSON.stringify({ t: 'lecture:start', file }))
-  const started = await until('лекция началась', () => teacherHeard.has('lecture'), 15_000)
+  const started = await until('the lecture started', () => teacherHeard.has('lecture'), 15_000)
   if (!started) return null
 
   let ink = 0
@@ -1119,10 +1159,11 @@ async function runLecture(host: Student, seconds: number): Promise<Lecture | nul
   const at = performance.now()
   const drawing = setInterval(() => {
     /*
-     * Один штрих ведётся точками, а не отправляется целиком: так пишет пульт
-     * (InkLayer · SEND_EVERY_MS) и так его видит зал — линией, пока её ведут.
-     * Штрих меняется, не дойдя до потолка точек (shared/lecture.ts), чтобы
-     * раздел мерил рассылку, а не отказ «штрих полон».
+     * One stroke is drawn point by point, not sent whole: that is how the
+     * console writes (InkLayer · SEND_EVERY_MS) and how the room sees it, as a
+     * line while it is being drawn. The stroke changes before reaching the
+     * point ceiling (shared/lecture.ts), so that the section measures the
+     * broadcast, not the "stroke is full" refusal.
      */
     if (points >= 200) {
       id = `load_ink_${++strokes}`
@@ -1143,8 +1184,9 @@ async function runLecture(host: Student, seconds: number): Promise<Lecture | nul
     )
     ink++
     points += 2
-    // Указка идёт тем же движением руки — и тем же тактом с пульта; склеивает
-    // её сервер, и разницу видно в «получено залом».
+    // The pointer follows the same hand movement, at the same tick from the
+    // console; the server merges it, and the difference shows in "received by
+    // the room".
     host.control?.send(JSON.stringify({ t: 'laser', page: 1, x, y, shape: 'line' }))
     laser++
   }, every)
@@ -1156,7 +1198,7 @@ async function runLecture(host: Student, seconds: number): Promise<Lecture | nul
   return { ink, laser, strokes, seconds: (performance.now() - at) / 1000, refused: refusalsSince(was) }
 }
 
-/** Сколько меток не доехало — после паузы, иначе последние сочтутся потерями. */
+/** How many marks did not arrive: after a pause, otherwise the last ones would count as losses. */
 async function drain(armed: Armed): Promise<number> {
   await sleep(2_000)
   let lost = 0
@@ -1164,18 +1206,18 @@ async function drain(armed: Armed): Promise<number> {
   return lost
 }
 
-/* ------------------------------------------------------------------- таблица */
+/* ------------------------------------------------------------------- table */
 
 say()
-say(bold('  colloq load') + dim(`  ${new Date().toISOString()}  ·  ${BASE}  ·  свой семинар ${SID}`))
+say(bold('  colloq load') + dim(`  ${new Date().toISOString()}  ·  ${BASE}  ·  own seminar ${SID}`))
 say(
   dim(
-    `  ${STUDENTS} студентов за ${RAMP_SEC}с · покой ${IDLE_SEC}с · шторм ${STORM_SEC}с (${TYPISTS}×${KEYS}/с)` +
-      (TREE_PER_SEC > 0 ? ` · дерево ${TREE_PER_SEC}/с` : '') +
-      (COUNCIL > 0 ? ` · консилиум ${COUNCIL} раз в ${COUNCIL_EVERY}с` : '') +
-      (INK_PER_SEC > 0 ? ` · лекция ${INK_PER_SEC} кадров/с` : '') +
-      (STAFF_JOIN ? ' · вход кукой штата' : '') +
-      (ECHO ? '' : ' · без эха присутствия'),
+    `  ${STUDENTS} students over ${RAMP_SEC}s · idle ${IDLE_SEC}s · storm ${STORM_SEC}s (${TYPISTS}×${KEYS}/s)` +
+      (TREE_PER_SEC > 0 ? ` · tree ${TREE_PER_SEC}/s` : '') +
+      (COUNCIL > 0 ? ` · council ${COUNCIL} writers every ${COUNCIL_EVERY}s` : '') +
+      (INK_PER_SEC > 0 ? ` · lecture ${INK_PER_SEC} frames/s` : '') +
+      (STAFF_JOIN ? ' · join with the staff cookie' : '') +
+      (ECHO ? '' : ' · no presence echo'),
   ),
 )
 say()
@@ -1186,10 +1228,11 @@ let stormOut: Storm | null = null
 let treeWin: Window | null = null
 let treeOut: Tree | null = null
 /*
- * Цена одного файла — то, что окно дерева приняло СВЕРХ покоя, делённое на
- * число файлов. Без вычитания покоя стенд приписывал дереву всё присутствие
- * комнаты: при 500 вкладках это 2,2 МБ/с независимо от файлов, и «упёрлось:
- * дерево» печаталось даже тогда, когда дельты стоили комнате 100 КБ на файл.
+ * The cost of one file is what the tree window received ABOVE idle, divided by
+ * the number of files. Without subtracting idle the harness charged the tree
+ * with all of the room's presence: with 500 tabs that is 2.2 MB/s regardless
+ * of files, and "bottleneck: tree" was printed even when the deltas cost the
+ * room 100 KB per file.
  */
 function treeCost(win: Window, out: Tree): number {
   const idleRate = idleWin && idleWin.seconds > 0 ? idleWin.bytesIn / idleWin.seconds : 0
@@ -1204,7 +1247,7 @@ let synced = 0
 let exitCode = 0
 
 try {
-  /* 1. ВХОД */
+  /* 1. JOIN */
   const pace = STUDENTS > 1 ? (RAMP_SEC * 1000) / STUDENTS : 0
   const inFlight: Array<Promise<void>> = []
   const rampAt = performance.now()
@@ -1214,104 +1257,104 @@ try {
   }
   await Promise.all(inFlight)
   const rampSec = (performance.now() - rampAt) / 1000
-  await until('все вошедшие синхронизировались', () => students.every((s) => s.synced), 60_000)
+  await until('everyone who joined has synced', () => students.every((s) => s.synced), 60_000)
   synced = students.filter((s) => s.synced).length
 
-  say(bold('  1. ВХОД') + dim('  — POST /api/sessions/:id/join, темпом ramp'))
-  row('вошло', `${students.length} из ${STUDENTS}`, `${synced} прошли начальную синхронизацию Yjs`)
+  say(bold('  1. JOIN') + dim('  — POST /api/sessions/:id/join, at the ramp pace'))
+  row('joined', `${students.length} of ${STUDENTS}`, `${synced} passed the initial Yjs sync`)
   const seen = await onlineNow()
   row(
-    'видит комната',
-    seen === null ? dim('—') : seen >= synced ? green(`${seen}`) : red(`${seen} из ${synced}`),
-    'по присутствию: имя и цвет доехали до ростера',
+    'the room sees',
+    seen === null ? dim('—') : seen >= synced ? green(`${seen}`) : red(`${seen} of ${synced}`),
+    'by presence: the name and color reached the roster',
   )
   const refusals = [...refused.entries()].sort((a, b) => b[1] - a[1])
   row(
-    'отказано',
+    'refused',
     refusals.length === 0 ? green('0') : red(refusals.map(([code, n]) => `${n}×${code}`).join(' · ')),
-    refused.has(429) ? 'предел новых участников на комнату за минуту' : '',
+    refused.has(429) ? 'the limit of new participants per room per minute' : '',
   )
-  if (joinErrors > 0) row('запрос не дошёл', red(String(joinErrors)), 'сеть или очередь сокетов этой машины')
-  row('время ответа', `p50 ${ms(pct(okJoinMs, 50))} · худшее ${ms(worst(okJoinMs))}`,
-    `n=${okJoinMs.length}, только принятые`)
-  row('темп', `${((students.length / Math.max(rampSec, 0.001)) * 60).toFixed(0)} входов в минуту`,
-    `рампа заняла ${rampSec.toFixed(1)}с`)
+  if (joinErrors > 0) row('request did not arrive', red(String(joinErrors)), 'the network or the socket queue of this machine')
+  row('response time', `p50 ${ms(pct(okJoinMs, 50))} · worst ${ms(worst(okJoinMs))}`,
+    `n=${okJoinMs.length}, accepted only`)
+  row('pace', `${((students.length / Math.max(rampSec, 0.001)) * 60).toFixed(0)} joins per minute`,
+    `the ramp took ${rampSec.toFixed(1)}s`)
   if (socketErrors > 0 || closedWith.size > 0) {
-    row('сокеты', red(`${socketErrors} ошибок · закрыты ${[...closedWith].map(([c, n]) => `${n}×${c}`).join(' ') || '—'}`), '')
+    row('sockets', red(`${socketErrors} errors · closed ${[...closedWith].map(([c, n]) => `${n}×${c}`).join(' ') || '—'}`), '')
   }
   say()
 
   if (students.length === 0) {
-    say(red('  никто не вошёл — мерить нечего'))
+    say(red('  nobody joined — nothing to measure'))
     exitCode = 1
   } else {
-    /* 2. ПОКОЙ */
-    say(bold('  2. ПОКОЙ') + dim(`  — ${IDLE_SEC}с, никто не печатает, ${students.length} вкладок держат сокеты`))
+    /* 2. IDLE */
+    say(bold('  2. IDLE') + dim(`  — ${IDLE_SEC}s, nobody types, ${students.length} tabs hold sockets`))
     const idle = beginWindow()
     await sleep(IDLE_SEC * 1000)
     idleWin = endWindow(idle)
     printWindow(idleWin)
     say()
 
-    /* 3. ШТОРМ */
+    /* 3. STORM */
     const armed = await armStorm()
-    say(bold('  3. ШТОРМ') + dim(`  — ${armed?.typists.length ?? 0} печатают по ${KEYS}/с в свою ячейку, ${STORM_SEC}с`))
+    say(bold('  3. STORM') + dim(`  — ${armed?.typists.length ?? 0} type ${KEYS}/s into their own cell, ${STORM_SEC}s`))
     if (!armed) {
-      say(red('    не состоялся: нужно хотя бы два синхронизированных клиента'))
+      say(red('    did not happen: at least two synced clients are needed'))
     } else {
       const win = beginWindow()
       stormOut = await runStorm(armed, STORM_SEC)
       stormWin = endWindow(win)
       const lost = await drain(armed)
       hopSamples = armed.hops
-      row('нажатий', `${stormOut.keysSent}`,
-        `${(stormOut.keysSent / stormOut.seconds).toFixed(0)}/с в комнату из ${armed.typists.length * KEYS} заданных`)
+      row('keystrokes', `${stormOut.keysSent}`,
+        `${(stormOut.keysSent / stormOut.seconds).toFixed(0)}/s into the room of ${armed.typists.length * KEYS} requested`)
       row(
-        'доставка правки',
-        `p50 ${ms(pct(hopSamples, 50))} · p95 ${ms(pct(hopSamples, 95))} · худшее ${ms(worst(hopSamples))}`,
-        `n=${hopSamples.length}` + (lost > 0 ? ` · ${lost} меток не доехало` : ''),
+        'edit delivery',
+        `p50 ${ms(pct(hopSamples, 50))} · p95 ${ms(pct(hopSamples, 95))} · worst ${ms(worst(hopSamples))}`,
+        `n=${hopSamples.length}` + (lost > 0 ? ` · ${lost} marks did not arrive` : ''),
       )
       printWindow(stormWin)
     }
     say()
 
-    /* 4. ДЕРЕВО ФАЙЛОВ */
+    /* 4. FILE TREE */
     if (TREE_PER_SEC > 0) {
       say(
-        bold('  4. ДЕРЕВО') +
-          dim(`  — преподаватель заводит ${TREE_PER_SEC} файлов в секунду, ${TREE_SEC}с`),
+        bold('  4. TREE') +
+          dim(`  — the teacher creates ${TREE_PER_SEC} files per second, ${TREE_SEC}s`),
       )
       const host = await theTeacher()
       if (!host) {
-        say(red('    не состоялся: войти в комнату ведущим не вышло (нужна кука штата)'))
+        say(red('    did not happen: could not join the room as the host (a staff cookie is needed)'))
       } else {
         const win = beginWindow()
         const tree = await runTree(host, TREE_SEC)
         treeWin = endWindow(win)
         treeOut = tree
         row(
-          'заведено файлов',
+          'files created',
           `${tree.made}`,
-          `${(tree.made / tree.seconds).toFixed(1)}/с · столько же рассылок дерева всей комнате` +
-            (tree.refused > 0 ? red(` · ${tree.refused} отказов от пульта`) : ''),
+          `${(tree.made / tree.seconds).toFixed(1)}/s · as many tree broadcasts to the whole room` +
+            (tree.refused > 0 ? red(` · ${tree.refused} refusals from the console`) : ''),
         )
         printWindow(treeWin)
         say(
           dim(
-            '    сравните «входящий» с покоем: это цена одного файла, помноженная на комнату',
+            '    compare "incoming" with idle: that is the cost of one file, multiplied by the room',
           ),
         )
       }
       say()
     }
 
-    /* 5. КОНСИЛИУМ */
+    /* 5. COUNCIL */
     if (COUNCIL > 0) {
       say(
-        bold('  5. КОНСИЛИУМ') +
+        bold('  5. COUNCIL') +
           dim(
-            `  — ${COUNCIL} пишут в свой лист раз в ${COUNCIL_EVERY}с, ${COUNCIL_SEC}с, ` +
-              'потом сдают разом',
+            `  — ${COUNCIL} write into their own sheet every ${COUNCIL_EVERY}s, ${COUNCIL_SEC}s, ` +
+              'then submit all at once',
           ),
       )
       const host = await theTeacher()
@@ -1319,90 +1362,90 @@ try {
         .filter((s) => s.control?.readyState === WS.OPEN && s.synced)
         .slice(0, COUNCIL)
       if (!host) {
-        say(red('    не состоялся: войти в комнату ведущим не вышло (нужна кука штата)'))
+        say(red('    did not happen: could not join the room as the host (a staff cookie is needed)'))
       } else if (writers.length === 0) {
-        say(red('    не состоялся: некому писать — ни одного синхронизированного студента'))
+        say(red('    did not happen: nobody to write — not a single synced student'))
       } else {
         const cellId = await openCouncilCell(host, writers)
         if (!cellId) {
-          say(red('    не состоялся: консилиум в ячейке не открылся'))
+          say(red('    did not happen: the council did not open in the cell'))
         } else {
           const win = beginWindow()
           const council = await runCouncil(host, writers, cellId, COUNCIL_SEC)
           councilWin = endWindow(win)
           councilOut = council
           row(
-            'снимков',
+            'snapshots',
             `${council.drafts}`,
-            `${(council.drafts / council.seconds).toFixed(1)}/с от ${council.writers} ` +
-              `${plural(council.writers, 'пишущего', 'пишущих', 'пишущих')}` +
-              (council.refused > 0 ? red(` · ${council.refused} отказов пульту`) : ''),
+            `${(council.drafts / council.seconds).toFixed(1)}/s from ${council.writers} ` +
+              `${plural(council.writers, 'writer', 'writers')}` +
+              (council.refused > 0 ? red(` · ${council.refused} refusals to the console`) : ''),
           )
           row(
-            'пульту ведущего',
-            `${size(council.hostBytes / council.seconds)}/с · ` +
-              `${(council.hostFrames / council.seconds).toFixed(1)} кадров/с`,
-            `${size(council.hostBytes / Math.max(council.drafts, 1))} на снимок: стопка идёт ему одному`,
+            'to the host console',
+            `${size(council.hostBytes / council.seconds)}/s · ` +
+              `${(council.hostFrames / council.seconds).toFixed(1)} frames/s`,
+            `${size(council.hostBytes / Math.max(council.drafts, 1))} per snapshot: the stack goes to it alone`,
           )
           printWindow(councilWin)
-          say(dim('    зал в это время молчит: счётчик едет всем, только когда он сменился'))
+          say(dim('    the room is silent meanwhile: the counter goes to everyone only when it changed'))
 
           const rushWin = beginWindow()
           const rush = await runCouncilRush(host, writers, cellId)
           const closed = endWindow(rushWin)
           say()
           say(
-            bold('     сдача разом') +
+            bold('     submitting at once') +
               dim(
-                `  — ${rush.submits} ${plural(rush.submits, 'нажатие', 'нажатия', 'нажатий')} ` +
-                  '«Сдать» подряд',
+                `  — ${rush.submits} ${plural(rush.submits, 'press', 'presses')} ` +
+                  'of "Submit" in a row',
               ),
           )
           row(
-            'пульту ведущего',
-            `${size(rush.hostBytes)} за ${rush.seconds.toFixed(1)}с`,
-            `${rush.hostFrames} ${plural(rush.hostFrames, 'кадр', 'кадра', 'кадров')}` +
-              (rush.refused > 0 ? red(` · ${rush.refused} отказов`) : ''),
+            'to the host console',
+            `${size(rush.hostBytes)} in ${rush.seconds.toFixed(1)}s`,
+            `${rush.hostFrames} ${plural(rush.hostFrames, 'frame', 'frames')}` +
+              (rush.refused > 0 ? red(` · ${rush.refused} refusals`) : ''),
           )
           row(
-            'залу',
-            `${size(closed.bytesIn / Math.max(closed.clients, 1))} на клиента`,
-            'счётчик сданных двигается на каждое нажатие — и едет всем',
+            'to the room',
+            `${size(closed.bytesIn / Math.max(closed.clients, 1))} per client`,
+            'the submitted counter moves on every press — and goes to everyone',
           )
         }
       }
       say()
     }
 
-    /* 6. ЛЕКЦИЯ */
+    /* 6. LECTURE */
     if (INK_PER_SEC > 0) {
       say(
-        bold('  6. ЛЕКЦИЯ') +
-          dim(`  — ведущий ведёт пером ${INK_PER_SEC} кадров/с и указкой, ${INK_SEC}с`),
+        bold('  6. LECTURE') +
+          dim(`  — the host draws with the pen at ${INK_PER_SEC} frames/s and with the pointer, ${INK_SEC}s`),
       )
       const host = await theTeacher()
       if (!host) {
-        say(red('    не состоялся: войти в комнату ведущим не вышло (нужна кука штата)'))
+        say(red('    did not happen: could not join the room as the host (a staff cookie is needed)'))
       } else {
         const win = beginWindow()
         const lecture = await runLecture(host, INK_SEC)
         const closed = endWindow(win)
         if (!lecture) {
-          say(red('    не состоялся: лекция не началась (документ или право `board`)'))
+          say(red('    did not happen: the lecture did not start (the document or the `board` right)'))
         } else {
           lectureWin = closed
           lectureOut = lecture
           row(
-            'кадров с пульта',
-            `${lecture.ink} пером · ${lecture.laser} указкой`,
-            `${lecture.strokes} ${plural(lecture.strokes, 'штрих', 'штриха', 'штрихов')}` +
-              (lecture.refused > 0 ? red(` · ${lecture.refused} отказов пульту`) : ''),
+            'frames from the console',
+            `${lecture.ink} pen · ${lecture.laser} pointer`,
+            `${lecture.strokes} ${plural(lecture.strokes, 'stroke', 'strokes')}` +
+              (lecture.refused > 0 ? red(` · ${lecture.refused} refusals to the console`) : ''),
           )
           row(
-            'цена кадра залу',
-            `${size(closed.bytesIn / Math.max(lecture.ink + lecture.laser, 1))} на кадр`,
-            `${closed.clients} ${plural(closed.clients, 'зритель', 'зрителя', 'зрителей')} · ` +
-              'перо уходит каждому, указка склеена тактом сервера',
+            'frame cost to the room',
+            `${size(closed.bytesIn / Math.max(lecture.ink + lecture.laser, 1))} per frame`,
+            `${closed.clients} ${plural(closed.clients, 'viewer', 'viewers')} · ` +
+              'the pen goes to everyone, the pointer is merged by the server tick',
           )
           printWindow(closed)
         }
@@ -1411,7 +1454,7 @@ try {
     }
   }
 
-  /* ------------------------------------------------------- где упёрлось */
+  /* ------------------------------------------------------- where the bottleneck is */
 
   const hops = hopSamples
   const selfP95 = Math.max(idleWin?.selfLagP95 ?? 0, stormWin?.selfLagP95 ?? 0)
@@ -1423,109 +1466,109 @@ try {
   )
   const idlePerClient =
     idleWin && idleWin.clients > 0 ? idleWin.bytesIn / idleWin.clients / idleWin.seconds : NaN
-  /** Первое сработавшее, а не список подозрений: одна строка — один вывод. */
+  /** The first one that fired, not a list of suspicions: one line, one conclusion. */
   const walls: Array<[boolean, string]> = [
     [
       (refused.get(429) ?? 0) > 0,
-      `предел новых участников — ${refused.get(429)} из ${STUDENTS} получили 429 ` +
-        `(MAX_NEW_PARTICIPANTS, server/src/routes/sessions.ts). Растяните рампу LOAD_RAMP_SEC ` +
-        `или пройдите мимо предела кукой штата: LOAD_STAFF_JOIN=1.`,
+      `the new-participant limit — ${refused.get(429)} of ${STUDENTS} got 429 ` +
+        `(MAX_NEW_PARTICIPANTS, server/src/routes/sessions.ts). Stretch the ramp with LOAD_RAMP_SEC ` +
+        `or get past the limit with the staff cookie: LOAD_STAFF_JOIN=1.`,
     ],
     [
       selfP95 > 100,
-      `сам стенд — он ждал своего цикла p95 ${ms(selfP95)}, то есть мерил себя. ` +
-        `Запускайте его с другой машины или убавьте LOAD_STUDENTS.`,
+      `the harness itself — it waited for its own loop p95 ${ms(selfP95)}, that is, it measured itself. ` +
+        `Run it from another machine or lower LOAD_STUDENTS.`,
     ],
     [
       socketErrors > 0 || closedWith.size > 0,
-      `сокеты — ${socketErrors} ошибок, закрытия ${[...closedWith].map(([c, n]) => `${n}×${c}`).join(' ')}. ` +
-        `Смотрите ulimit -n на этой машине и журнал сервера.`,
+      `sockets — ${socketErrors} errors, closes ${[...closedWith].map(([c, n]) => `${n}×${c}`).join(' ')}. ` +
+        `Check ulimit -n on this machine and the server log.`,
     ],
     [
       Number.isFinite(lagP95) && lagP95 > 100,
-      `цикл событий сервера — loopLag p95 ${ms(lagP95)} под штормом: столько же ждёт следующее нажатие.`,
+      `the server event loop — loopLag p95 ${ms(lagP95)} under the storm: the next keystroke waits just as long.`,
     ],
     [
       cpu !== null && cpu > 85,
-      `CPU серверного процесса — ${(cpu ?? 0).toFixed(0)}% под штормом. Кластера нет, второго ядра он не займёт.`,
+      `CPU of the server process — ${(cpu ?? 0).toFixed(0)}% under the storm. There is no cluster, it will not take a second core.`,
     ],
     [
       stormWin !== null && (stormWin.health.failed > 0 || pct(stormWin.health.ms, 95) > 250),
-      `HTTP комнаты — /api/health p95 ${ms(stormWin ? pct(stormWin.health.ms, 95) : NaN)}` +
-        `${stormWin && stormWin.health.failed > 0 ? ` и ${stormWin.health.failed} проб без ответа` : ''}: ` +
-        `столько же ждёт экран входа опоздавшего.`,
+      `room HTTP — /api/health p95 ${ms(stormWin ? pct(stormWin.health.ms, 95) : NaN)}` +
+        `${stormWin && stormWin.health.failed > 0 ? ` and ${stormWin.health.failed} probes unanswered` : ''}: ` +
+        `a latecomer's join screen waits just as long.`,
     ],
     [
       /*
-       * Сто мегабит — обычный аплинк арендованной машины, и упереться в него
-       * можно на одном присутствии: сервер рассылает каждое обновление всем, и
-       * трафик растёт как квадрат числа вкладок.
+       * A hundred megabits is the usual uplink of a rented machine, and it can
+       * be hit on presence alone: the server broadcasts every update to
+       * everyone, and traffic grows as the square of the number of tabs.
        */
       outPerSec > 12 * 1024 * 1024,
-      `исходящий канал сервера — ${size(outPerSec)}/с при ${synced} вкладках, ` +
-        `это уже около ста мегабит на одну рассылку.`,
+      `the server's outgoing channel — ${size(outPerSec)}/s with ${synced} tabs, ` +
+        `that is already about a hundred megabits for one broadcast.`,
     ],
     [
       hops.length > 0 && pct(hops, 95) > 250,
-      `доставка правки — p95 ${ms(pct(hops, 95))}: набор перестал ощущаться местным.`,
+      `edit delivery — p95 ${ms(pct(hops, 95))}: typing no longer feels local.`,
     ],
     [
       /*
-       * Один файл — один список файлов каждому пульту, и список этот растёт.
-       * Мегабайт на один заведённый файл означает, что папка комнаты уже
-       * дороже, чем всё присутствие вместе взятое.
+       * One file means one file list to every console, and that list grows. A
+       * megabyte per created file means the room's folder already costs more
+       * than all the presence put together.
        */
       treeWin !== null && treeOut !== null && treeOut.made > 0 &&
         treeCost(treeWin, treeOut) > 1024 * 1024,
-      `дерево файлов — один заведённый файл стоил комнате ` +
-        `${size(treeWin && treeOut ? treeCost(treeWin, treeOut) : 0)} рассылки сверх покоя: ` +
-        `список уходит целиком и каждому (broadcastFiles, server/src/control.ts).`,
+      `file tree — one created file cost the room ` +
+        `${size(treeWin && treeOut ? treeCost(treeWin, treeOut) : 0)} of broadcast above idle: ` +
+        `the list goes out whole and to everyone (broadcastFiles, server/src/control.ts).`,
     ],
     [
       /*
-       * Стопка идёт ОДНОМУ сокету, и упирается в него не канал комнаты, а
-       * пульт преподавателя: мегабит на снимок при сотне пишущих — это уже
-       * десятки мегабит в один провод, и первым перестанет листать тот, кто
-       * ведёт занятие.
+       * The stack goes to ONE socket, and what hits the wall there is not the
+       * room's channel but the teacher's console: a megabit per snapshot with a
+       * hundred writers is already tens of megabits into one wire, and the
+       * first to stop turning pages will be the one running the class.
        */
       councilOut !== null && councilOut.drafts > 0 &&
         councilOut.hostBytes / councilOut.seconds > 1.5 * 1024 * 1024,
-      `стопка консилиума — пульту ведущего шло ` +
-        `${size((councilOut?.hostBytes ?? 0) / Math.max(councilOut?.seconds ?? 1, 0.001))}/с ` +
-        `от ${councilOut?.writers ?? 0} пишущих: она собирается на каждый снимок и едет ему одному ` +
+      `council stack — the host console got ` +
+        `${size((councilOut?.hostBytes ?? 0) / Math.max(councilOut?.seconds ?? 1, 0.001))}/s ` +
+        `from ${councilOut?.writers ?? 0} writers: it is assembled on every snapshot and goes to it alone ` +
         `(boardOut, server/src/control.ts).`,
     ],
     [
       /*
-       * Кадр пера — самый частый кадр лекции, и он уходит всем: перо на
-       * двадцати пяти кадрах в секунду при пятистах зрителях — это
-       * двенадцать с половиной тысяч отправок в секунду из одного цикла.
+       * A pen frame is the most frequent frame of a lecture, and it goes to
+       * everyone: the pen at twenty-five frames per second with five hundred
+       * viewers is twelve and a half thousand sends per second from one loop.
        */
       lectureWin !== null && lectureOut !== null && lectureOut.ink > 0 &&
         lectureWin.bytesIn / lectureWin.seconds > 12 * 1024 * 1024,
-      `лекция — ${size((lectureWin?.bytesIn ?? 0) / Math.max(lectureWin?.seconds ?? 1, 0.001))}/с ` +
-        `в зал при ${lectureOut?.ink ?? 0} кадрах пера: чернила рассылаются на каждый кадр, ` +
-        `без такта (control.ts · case 'ink').`,
+      `lecture — ${size((lectureWin?.bytesIn ?? 0) / Math.max(lectureWin?.seconds ?? 1, 0.001))}/s ` +
+        `into the room at ${lectureOut?.ink ?? 0} pen frames: ink is broadcast on every frame, ` +
+        `without a tick (control.ts · case 'ink').`,
     ],
   ]
   const wall = walls.find(([hit]) => hit)
   say(
     wall
-      ? red('  Упёрлось: ') + wall[1]
+      ? red('  Bottleneck: ') + wall[1]
       : green(
-          `  Не упёрлось: ${synced} клиентов держались, в покое ${size(idlePerClient)}/с на клиента, ` +
-            `loopLag p95 ${ms(lagP95)}, доставка p95 ${ms(pct(hops, 95))}.`,
+          `  No bottleneck: ${synced} clients held, at idle ${size(idlePerClient)}/s per client, ` +
+            `loopLag p95 ${ms(lagP95)}, delivery p95 ${ms(pct(hops, 95))}.`,
         ),
   )
-  if (badFrames > 0) say(dim(`  ${badFrames} кадров стенд не разобрал — это его беда, а не сервера`))
-  say(dim('  Стенд меряет сокеты и цикл событий: страницу он не рисует и ячейки не считает.'))
+  if (badFrames > 0) say(dim(`  ${badFrames} frames the harness could not parse — its problem, not the server's`))
+  say(dim('  The harness measures sockets and the event loop: it does not draw the page or compute cells.'))
   say()
 } catch (err) {
-  say(red(`  прогон остановился: ${err instanceof Error ? err.message : String(err)}`))
+  say(red(`  the run stopped: ${err instanceof Error ? err.message : String(err)}`))
   exitCode = 1
 } finally {
   await cleanup()
 }
 
-// Живые сокеты и таймеры иначе держали бы цикл открытым.
+// Otherwise live sockets and timers would keep the loop open.
 process.exit(exitCode)

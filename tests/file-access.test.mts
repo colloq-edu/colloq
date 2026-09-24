@@ -32,10 +32,11 @@ before(async () => {
   createSession(ROOM, 'File access', null)
   fs.writeFileSync(path.join(sessionDir(ROOM), 'handout.csv'), 'a,b\n1,2\n')
   /*
-   * Роль решается на каждом запросе и из токена не читается (routes/sessions.ts
-   * · roleFor): «host» в подписи ничего не значит, пока строка участника не
-   * помечена token_host. Это тот единственный путь, где хост-токен и есть весь
-   * credential, — семинар, заведённый прямо против API.
+   * The role is decided on every request and is not read from the token
+   * (routes/sessions.ts · roleFor): "host" in the signature means nothing
+   * until the participant row is marked token_host. This is the only path
+   * where the host token is the whole credential — a seminar created
+   * directly against the API.
    */
   upsertParticipant({
     id: 'p_host',
@@ -47,9 +48,10 @@ before(async () => {
   })
 
   /*
-   * Двери комнаты монтируются приложением (server/src/app.ts), а не одним
-   * роутером: файлы в продукте стоят за проверкой происхождения записи и за
-   * баном на входе, и отказ должен приходить оттуда же, откуда придёт на паре.
+   * The room's doors are mounted by the application (server/src/app.ts), not
+   * by a single router: in the product, files stand behind the write-origin
+   * check and the ban at the entrance, and a refusal must come from the same
+   * place it will come from in class.
    */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -123,10 +125,10 @@ test('only the teacher can remove a file from the room', async () => {
   assert.ok(fs.existsSync(path.join(sessionDir(ROOM), 'theirs.csv')), 'a student deleted it anyway')
 
   /*
-   * И вторая половина сделки, без которой первая ничего не стоит: право,
-   * которое отказывает всем, — не право. Проверка только на 403 студенту
-   * оставляла невидимым сломанное удаление у преподавателя — а он удаляет
-   * датасет ровно затем, чтобы освободилось место.
+   * And the second half of the deal, without which the first is worth
+   * nothing: a permission that refuses everyone is not a permission.
+   * Checking only the 403 for a student left the teacher's broken deletion
+   * invisible — and the teacher deletes a dataset exactly to free up space.
    */
   const asHost = await fetch(`${base}/api/sessions/${ROOM}/file?path=theirs.csv`, {
     method: 'DELETE',
@@ -136,32 +138,32 @@ test('only the teacher can remove a file from the room', async () => {
   assert.equal(
     fs.existsSync(path.join(sessionDir(ROOM), 'theirs.csv')),
     false,
-    'преподаватель нажал «убрать», а файл остался',
+    'the teacher pressed "remove", and the file stayed',
   )
 })
 
-test('удаление не выходит за папку комнаты даже у преподавателя', async () => {
-  // Папка комнаты — весь мир этого маршрута. `..` в пути — это не «убрать
-  // соседний семинар», это отказ.
+test('deletion does not leave the room folder even for the teacher', async () => {
+  // The room folder is this route's whole world. `..` in the path is not
+  // "remove the neighbouring seminar", it is a refusal.
   const outside = path.join(sessionDir(ROOM), '..', 'not-mine.csv')
   fs.writeFileSync(outside, 'чужое\n')
   const res = await fetch(
     `${base}/api/sessions/${ROOM}/file?path=${encodeURIComponent('../not-mine.csv')}`,
     { method: 'DELETE', headers: { authorization: `Bearer ${hostToken()}` } },
   )
-  assert.ok(res.status === 400 || res.status === 404, `путь наружу прошёл как ${res.status}`)
-  assert.ok(fs.existsSync(outside), 'удаление вышло за папку комнаты')
+  assert.ok(res.status === 400 || res.status === 404, `a path outside passed as ${res.status}`)
+  assert.ok(fs.existsSync(outside), 'the deletion went outside the room folder')
   fs.rmSync(outside, { force: true })
 })
 
-test('билет на скачивание из чужого семинара здесь не открывает ничего', async () => {
+test('a download ticket from another seminar opens nothing here', async () => {
   /*
-   * Кросс-комнатный случай, и он единственный тут содержательный: проверка
-   * «session-токен в query не годится» уже стоит выше и отказывает независимо
-   * от комнаты, так что чужим session-токеном этот путь не проверяется вовсе.
-   * Билет подписан на ТУ ЖЕ раздатку, но в другой комнате — если из подписи
-   * когда-нибудь выпадет sessionId, ссылка из одного семинара начнёт открывать
-   * файлы всех остальных.
+   * The cross-room case, and it is the only meaningful one here: the check
+   * "a session token in the query is not accepted" already stands above and
+   * refuses regardless of the room, so this path is not checked with someone
+   * else's session token at all. The ticket is signed for THE SAME handout,
+   * but in another room — should sessionId ever fall out of the signature, a
+   * link from one seminar would start opening the files of all the others.
    */
   const elsewhere = signDownloadToken('some-other-room', 'handout.csv')
   const res = await fetch(
@@ -169,12 +171,13 @@ test('билет на скачивание из чужого семинара з
   )
   assert.equal(res.status, 401)
 
-  // И обратно: билет этой комнаты в чужой комнате тоже никто не примет.
+  // And the other way round: this room's ticket is not accepted in another
+  // room either.
   const mine = signDownloadToken(ROOM, 'handout.csv')
   const there = await fetch(
     `${base}/api/sessions/some-other-room/file?path=handout.csv&token=${encodeURIComponent(mine)}`,
   )
-  assert.ok(there.status === 401 || there.status === 404, `чужая комната ответила ${there.status}`)
+  assert.ok(there.status === 401 || there.status === 404, `the other room answered ${there.status}`)
 })
 
 test('a token for another seminar opens nothing here', async () => {

@@ -1,52 +1,57 @@
 /**
- * «Покажи мне, где это» — один жест на весь семинар.
+ * "Show me where it is" — one gesture for the whole seminar.
  *
- * Мест, откуда хочется прыгнуть к работе, уже несколько: ход в треде оракула
- * называет ячейку, о которой спрашивали; строка в списке людей говорит, что
- * человек правит ячейку 04 или сидит в терминале. Раньше первое умело прыгать
- * само, второе не умело вовсе, и стоило бы им разойтись в мелочи — одно
- * прокручивает по центру, другое к ближайшему краю, — как одна и та же кнопка
- * начала бы вести себя по-разному в зависимости от того, откуда нажали.
+ * There are already several places one wants to jump from to the work: a turn
+ * in the oracle thread names the cell that was asked about; a row in the
+ * people list says a person is editing cell 04 or sitting in the terminal. The
+ * first used to be able to jump by itself, the second could not at all, and
+ * had they diverged in some detail — one scrolls to the centre, the other to
+ * the nearest edge — the same button would start behaving differently
+ * depending on where it was pressed from.
  *
- * Ячейку показывает эта функция: выделение и прокрутка — обычная работа с
- * документом, ради неё незачем будить экран целиком. А терминал и оракул живут
- * в панелях, о которых знает только SessionScreen: туда уходит событие.
+ * This function shows a cell: selection and scrolling are ordinary work with
+ * the document, and there is no point waking the whole screen for it. But the
+ * terminal and the oracle live in panels only SessionScreen knows about: an
+ * event goes there.
  */
 import type { RevealTarget } from './room'
 import type { SessionState } from './session.svelte'
 
-// Тип живёт в room.ts вместе с тем, что его вычисляет: там же он и проверяется
-// тестами, и туда не тянется ни Svelte, ни браузер.
+// The type lives in room.ts together with what computes it: it is also tested
+// there, and neither Svelte nor the browser gets pulled in there.
 export type { RevealTarget }
 
 export const REVEAL_EVENT = 'colloq:reveal'
 
 /**
- * Сколько ждать, пока ячейки по дороге развернутся, и подвести экран ещё раз.
+ * How long to wait for the cells along the way to unfold before bringing the
+ * screen in once more.
  *
- * Чуть больше плавной прокрутки браузера (она укладывается в полсекунды) и
- * заведомо меньше, чем человек успевает начать читать не то.
+ * A little longer than the browser's smooth scroll (it fits into half a
+ * second) and surely less than it takes a person to start reading the wrong
+ * thing.
  */
 const SETTLE_MS = 700
 
 /**
- * Выделить ячейку и подвести к ней экран.
+ * Select a cell and bring the screen to it.
  *
- * По центру, а не к ближайшему краю: это переход по чужой ссылке, а не шаг
- * курсором. Ячейка, к которой подвели впритык к нижней кромке, формально
- * видна и практически незаметна.
+ * To the centre, not to the nearest edge: this is following someone's link,
+ * not a cursor step. A cell brought in flush with the bottom edge is formally
+ * visible and practically unnoticeable.
  *
- * Прокрутка — следующим кадром: выделение может развернуть свёрнутую ячейку,
- * и померить её высоту до перерисовки значит увести экран не туда.
+ * The scroll happens on the next frame: the selection may unfold a collapsed
+ * cell, and measuring its height before the redraw means taking the screen to
+ * the wrong place.
  */
 export function revealCell(session: SessionState, cellId: string): void {
   /*
-   * Сначала показать ТЕТРАДЬ, в которой ячейка, и только потом ячейку.
+   * First show the NOTEBOOK the cell is in, and only then the cell.
    *
-   * Тетрадей в комнате несколько, и все открытые смонтированы: неактивные
-   * спрятаны классом. `scrollIntoView` внутри спрятанного ничего не делает —
-   * переход «покажи, где он» из списка людей или из треда молча выделял
-   * невидимое.
+   * A room has several notebooks, and all the open ones are mounted: inactive
+   * ones are hidden by a class. `scrollIntoView` inside something hidden does
+   * nothing — the "show where they are" jump from the people list or from the
+   * thread silently selected something invisible.
    */
   session.showCell?.(cellId)
   session.selectCell(cellId)
@@ -55,28 +60,30 @@ export function revealCell(session: SessionState, cellId: string): void {
   }
   requestAnimationFrame(() => bring('smooth'))
   /*
-   * И второй подвод — уже без плавности.
+   * And a second approach — this time without smoothness.
    *
-   * Далёкая ячейка в этот момент ещё не построена: вместо неё стоит заглушка
-   * ровно в 240 px (Notebook.svelte · data-cell-deferred). Пока экран едет к
-   * ней, соседи по дороге разворачиваются в настоящие ячейки — с кодом,
-   * выводом и картинками, — и цель уезжает вниз на разницу высот. Переход
-   * через всю тетрадь останавливался в полутора экранах от того, что искали.
+   * A distant cell is not built yet at this moment: a placeholder of exactly
+   * 240 px stands in its place (Notebook.svelte · data-cell-deferred). While
+   * the screen travels to it, the neighbours along the way unfold into real
+   * cells — with code, output and images — and the target drifts down by the
+   * difference in heights. A jump across the whole notebook stopped a screen
+   * and a half short of what was being looked for.
    *
-   * Поправка приходит после того, как ход кончился: трогать `scrollTop`
-   * посреди плавной прокрутки нельзя — браузер считает это чужим
-   * вмешательством и обрывает ход (Notebook.svelte · steering), — и потому же
-   * сама поправка мгновенная, без второго плавного хода поверх первого.
+   * The correction comes after the travel has ended: `scrollTop` must not be
+   * touched in the middle of a smooth scroll — the browser treats it as
+   * outside interference and cuts the travel off (Notebook.svelte ·
+   * steering) — and for the same reason the correction itself is instant,
+   * without a second smooth travel on top of the first.
    */
   setTimeout(() => bring('auto'), SETTLE_MS)
 }
 
 /**
- * Попросить экран показать место.
+ * Ask the screen to show a place.
  *
- * Событие, а не вызов: панели открываются и закрываются в SessionScreen, и
- * прокидывать его состояние вниз через четыре слоя ради одной кнопки — это
- * связать список людей с устройством всей рабочей области.
+ * An event, not a call: panels open and close in SessionScreen, and passing
+ * its state down through four layers for one button would tie the people
+ * list to the layout of the whole workspace.
  */
 export function reveal(target: RevealTarget): void {
   window.dispatchEvent(new CustomEvent<RevealTarget>(REVEAL_EVENT, { detail: target }))

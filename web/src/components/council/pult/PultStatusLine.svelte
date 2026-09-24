@@ -1,20 +1,22 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   /**
-   * Нижняя строка: слева — что сейчас на экране класса, справа — клавиши.
+   * The bottom line: on the left, what is on the class screen now; on the
+   * right, the keys.
    *
-   * Ручки имён здесь больше нет: «подписывать ли на стене» — правило ЯЧЕЙКИ и
-   * живёт в регламенте вместе с остальными тремя (PultRules.svelte). Строка
-   * состояния осталась тем, чем была, — зеркалом зала: что он видит прямо
-   * сейчас и сколько уже.
+   * The names control is no longer here: "whether to caption it on the
+   * wall" is a CELL rule and lives in the rules together with the other
+   * three (PultRules.svelte). The status line stayed what it was — a mirror
+   * of the room: what it sees right now and for how long already.
    *
-   * И молчит, когда о том же говорит полоса «На экране класса» над списком:
-   * два места, повторяющие одно имя в одном окне, — это не подстраховка, а
-   * 32 px, отнятые у списка ради того, что уже написано выше.
+   * And it stays silent when the "On the class screen" strip above the list
+   * says the same thing: two places repeating one name in one window are not
+   * a safety net but 32 px taken away from the list for what is already
+   * written above.
    */
   interface Props {
     onScreen: string | null; inFrame: string; index: number; total: number;
-    /** Полоса «На экране класса» сейчас видна — значит здесь про это молчим. */
+    /** The "On the class screen" strip is up, so this line keeps quiet about it. */
     banner: boolean;
     onclear: () => void; onhelp: () => void
   }
@@ -39,6 +41,6 @@
   .pult-status-shown.shown { color:rgb(var(--positive)); }
   .pult-status-controls { display:flex; align-items:center; gap:20px; flex-shrink:0; }
   .pult-help { display:flex; align-items:center; gap:8px; min-height:28px; font-size:13px; cursor:pointer; }
-  /* На телефоне клавиш нет, а место под подсказку о них — есть у списка. */
+  /* A phone has no keys, but the room for a hint about them belongs to the list. */
   @media(max-width:650px) { .pult-status { display:none; } }
 </style>

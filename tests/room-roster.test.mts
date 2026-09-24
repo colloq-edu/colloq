@@ -1,16 +1,17 @@
 /**
- * Лица в полосе состояния комнаты — и то, на что они НЕ реагируют.
+ * The faces in the room's status bar — and what they do NOT react to.
  *
- * `yCollab` объявляет положение курсора через присутствие на каждое движение
- * выделения. При сотне печатающих это сотни кадров в секунду, и каждый из них
- * пересобирал в шапке массив из всех, кто в комнате, склеивал их имена в
- * подсказку и будил стопку аватаров — на каждом из пятисот клиентов, включая
- * проекцию. От курсора здесь не зависит ничего: полоса рисует имя, метку, цвет
- * и «(you)».
+ * `yCollab` announces the cursor position through presence on every selection
+ * move. With a hundred people typing that is hundreds of frames a second, and
+ * each of them rebuilt the array of everyone in the room in the header, glued
+ * their names into a tooltip and woke the avatar stack — on every one of five
+ * hundred clients, the projection included. Nothing here depends on the
+ * cursor: the bar draws the name, the badge, the colour and "(you)".
  *
- * Ошибка невидимая по определению — картинка правильная, платит за неё главный
- * поток, — поэтому проверяется правило, а не картинка: одинаковый состав
- * обязан давать «то же самое», а любое изменение того, что ВИДНО, — «другое».
+ * The bug is invisible by definition — the picture is right, and the main
+ * thread pays for it — so the rule is checked, not the picture: the same
+ * line-up has to give "the same", and any change to what is VISIBLE has to
+ * give "different".
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -21,23 +22,23 @@ const someone = (id: string, name: string, extra: Partial<Someone['user']> = {})
   isSelf: false,
 })
 
-test('тот же состав — то же самое', () => {
+test('the same line-up is the same', () => {
   const people = [someone('a', 'Ада'), someone('b', 'Борис')]
   const faces = people.map(faceOf)
-  // Новый кадр присутствия: те же люди, другие объекты.
+  // A new presence frame: the same people, different objects.
   const again = [someone('a', 'Ада'), someone('b', 'Борис')]
   assert.equal(sameFaces(faces, again), true)
 })
 
-test('каждое поле, которое видно, ломает совпадение', () => {
+test('every visible field breaks the match', () => {
   const faces = [someone('a', 'Ада')].map(faceOf)
-  assert.equal(sameFaces(faces, [someone('a', 'Аделаида')]), false, 'имя')
-  assert.equal(sameFaces(faces, [someone('a', 'Ада', { avatar: '🐢' })]), false, 'метка')
-  assert.equal(sameFaces(faces, [someone('a', 'Ада', { color: '#654321' })]), false, 'цвет')
-  assert.equal(sameFaces(faces, [someone('b', 'Ада')]), false, 'другой человек с тем же именем')
+  assert.equal(sameFaces(faces, [someone('a', 'Аделаида')]), false, 'name')
+  assert.equal(sameFaces(faces, [someone('a', 'Ада', { avatar: '🐢' })]), false, 'badge')
+  assert.equal(sameFaces(faces, [someone('a', 'Ада', { color: '#654321' })]), false, 'colour')
+  assert.equal(sameFaces(faces, [someone('b', 'Ада')]), false, 'another person with the same name')
 })
 
-test('«(you)» — тоже то, что видно', () => {
+test('"(you)" is something visible too', () => {
   const faces = [someone('a', 'Ада')].map(faceOf)
   const asSelf: Someone = { user: { id: 'a', name: 'Ада', avatar: '🦊', color: '#123456' }, isSelf: true }
   assert.equal(sameFaces(faces, [asSelf]), false)
@@ -45,30 +46,30 @@ test('«(you)» — тоже то, что видно', () => {
   assert.equal(faces[0].title, 'Ада')
 })
 
-test('состав изменился числом или порядком — это другой состав', () => {
+test('a line-up changed in number or order is a different line-up', () => {
   const faces = [someone('a', 'Ада'), someone('b', 'Борис')].map(faceOf)
-  assert.equal(sameFaces(faces, [someone('a', 'Ада')]), false, 'кто-то ушёл')
+  assert.equal(sameFaces(faces, [someone('a', 'Ада')]), false, 'someone left')
   assert.equal(
     sameFaces(faces, [someone('a', 'Ада'), someone('b', 'Борис'), someone('c', 'Вера')]),
     false,
-    'кто-то пришёл',
+    'someone came',
   )
-  assert.equal(sameFaces(faces, [someone('b', 'Борис'), someone('a', 'Ада')]), false, 'порядок')
+  assert.equal(sameFaces(faces, [someone('b', 'Борис'), someone('a', 'Ада')]), false, 'order')
 })
 
-test('пустая комната совпадает с пустой', () => {
+test('an empty room matches an empty room', () => {
   assert.equal(sameFaces([], []), true)
 })
 
-test('подсказка на пятьсот человек не строится целиком', () => {
+test('a tooltip for five hundred people is not built in full', () => {
   const many = Array.from({ length: 500 }, (_, i) => someone(`p${i}`, `Человек ${i}`)).map(faceOf)
   const line = namesLine(many)
-  assert.ok(line.includes('Человек 0'), 'первых не видно вовсе')
+  assert.ok(line.includes('Человек 0'), 'the first ones are not visible at all')
   assert.ok(line.endsWith('и ещё 480'), line.slice(-40))
-  assert.ok(!line.includes('Человек 400'), 'склеили всех пятьсот')
+  assert.ok(!line.includes('Человек 400'), 'all five hundred were glued together')
 })
 
-test('комната на тридцать человек называет всех', () => {
+test('a room of thirty people names everyone', () => {
   const class30 = Array.from({ length: 12 }, (_, i) => someone(`p${i}`, `И${i}`)).map(faceOf)
   const line = namesLine(class30, 20)
   assert.equal(line.split(', ').length, 12)

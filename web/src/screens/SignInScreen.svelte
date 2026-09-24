@@ -66,11 +66,12 @@
 <div class="admin flex h-full">
   <!-- The poster does not depend on anything the server has to say, so it
        paints on the first frame while the cards wait for the instance state.
-       И организацию оно поэтому не подписывает: строка приезжает в карточке
-       семинара, а на этом экране семинара нет — пришлось бы спрашивать её
-       отдельным запросом и надписывать постер второй раз, уже нарисованный.
-       Цена мала: сюда приходят свои — надпись «кто мы» говорит тем, кого
-       позвали по ссылке, а не тем, кто здесь работает. -->
+       That is also why it does not caption the organization: the line comes
+       in the seminar card, and there is no seminar on this screen — it would
+       have to be requested separately and the poster captioned a second time,
+       after it was already drawn. The price is small: the people who come
+       here are our own — a "who we are" caption speaks to those invited by a
+       link, not to those who work here. -->
   <Poster title={tr('room.ui.998')} headline="banner" width="hidden w-5/12 xl:flex"> {tr('room.ui.999')} {#snippet footer()}
       <div class="flex items-start gap-2.5">
         <Icon name="lock" size={14} class="mt-1 shrink-0 text-white/60" />
@@ -191,10 +192,10 @@
           <span class="shrink-0 text-micro font-bold uppercase tracking-label text-muted"> {tr('room.ui.1018')} </span>
         </div>
 
-        <!-- Эта карточка и есть «инстансом уже владеют»: она нарисована в
-             ветке `{:else}` от `{#if !claimed}` выше. До того токен — это то,
-             чем инстанс присваивают, карточкой выше, и второе поле под ту же
-             строку было бы ловушкой, а не восстановлением. -->
+        <!-- This card is exactly "the instance is already owned": it is drawn
+             in the `{:else}` branch of `{#if !claimed}` above. Before that, the
+             token is what claims the instance, in the card above, and a second
+             field for the same string would be a trap, not a recovery. -->
         <form class="flex flex-col gap-3 border-t border-line pt-[18px]" onsubmit={recover}>
           <div class="flex flex-wrap items-baseline gap-2">
             <span class="text-ui font-semibold text-ink">{tr('room.ui.1019')}</span>
@@ -229,13 +230,13 @@
       {/if}
     {:else}
       <!--
-        Сервер не ответил — и раньше здесь не было ничего.
+        The server did not answer — and there used to be nothing here.
 
-        Весь правый столбец висел на `{#if instance}`, а состояние инстанса не
-        читалось, когда вход по ключу проваливался: ключ из ссылки уже потрачен,
-        адресная строка переписана, экран пуст. Отозванный ключ выглядел как
-        белая страница, и по ней нельзя было понять ни что случилось, ни что
-        делать.
+        The whole right column hung on `{#if instance}`, and the instance state
+        was not read when a key sign-in failed: the key from the link already
+        spent, the address bar rewritten, the screen empty. A revoked key
+        looked like a white page, and it told you neither what happened nor
+        what to do.
       -->
       <section class="animate-fade-up flex flex-col gap-5 border border-line p-[26px]">
         <div class="flex flex-col gap-1.5">

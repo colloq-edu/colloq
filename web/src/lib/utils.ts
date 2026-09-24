@@ -91,14 +91,14 @@ const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigat
 export const modKey = isMac ? '⌘' : 'Ctrl'
 
 /**
- * Тот ли это модификатор, которым в коде ходят к определению.
+ * Whether this is the modifier used in code to go to a definition.
  *
- * ⌘ на маке, Ctrl везде ещё — как в любой IDE и как в самом браузере, где этой
- * же парой открывают ссылку в новой вкладке. Разделение платформ тут не
- * педантизм, а размен: ВТОРОЙ модификатор остаётся за выделением ячеек
- * вразбивку (Notebook.svelte · pick), то есть на маке Ctrl+клик по коду
- * по-прежнему набирает ячейки, а не прыгает. Заодно это обходит вторую беду
- * мака: Ctrl+клик там — ещё и вызов контекстного меню.
+ * ⌘ on a Mac, Ctrl everywhere else — as in any IDE and in the browser itself,
+ * where the same pair opens a link in a new tab. Splitting by platform here is
+ * not pedantry but a trade-off: the OTHER modifier stays with picking cells
+ * one by one (Notebook.svelte · pick), so on a Mac Ctrl+click on code still
+ * collects cells instead of jumping. It also sidesteps the Mac's second
+ * trouble: Ctrl+click there also opens the context menu.
  */
 export function isJumpClick(event: { metaKey: boolean; ctrlKey: boolean }): boolean {
   return isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
@@ -129,20 +129,21 @@ export function splitFileName(name: string): { stem: string; ext: string } {
 /* ------------------------------------------------------------- durations */
 
 /**
- * Две длительности, два формата — и это правило, а не недосмотр.
+ * Two durations, two formats — and that is a rule, not an oversight.
  *
- * Живая цифра держит колонку и обновляется пять раз в секунду: у неё десятая
- * доля секунды (по ней и видно, работает ячейка или висит) и ведущий ноль в
- * секундах, иначе ряд дёргается на каждом переходе через десяток. Законченная
- * читается один раз в предложении: ни десятых, ни ведущих нулей — «1m 20s», а
- * не «1m 20.0s».
+ * The live figure holds a column and updates five times a second: it has
+ * tenths of a second (they are what shows whether a cell is working or
+ * hanging) and a leading zero in the seconds, otherwise the row jitters at
+ * every step past a multiple of ten. The finished one is read once, inside a
+ * sentence: no tenths, no leading zeros — "1m 20s", not "1m 20.0s".
  *
- * Обе жили по своим компонентам — `elapsed` в терминале, `spell` в треде
- * оракула, — и третья появилась бы копированием в ту же неделю, когда
- * секундомер понадобился ячейке. Здесь их две, и других не будет.
+ * Both used to live in their own components — `elapsed` in the terminal,
+ * `spell` in the Oracle thread — and a third would have appeared by copying
+ * in the very week a cell needed a stopwatch. Here there are two, and there
+ * will be no others.
  */
 
-/** Живая длительность: «0.0s», «12.3s», «1m 04s», «2h 23m». */
+/** Live duration: "0.0s", "12.3s", "1m 04s", "2h 23m". */
 export function elapsed(since: number, now: number): string {
   const seconds = Math.max(0, now - since) / 1000
   if (seconds < 60) return tr('room.ui.1190', { p0: formatNumber(seconds, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })
@@ -150,16 +151,16 @@ export function elapsed(since: number, now: number): string {
     return tr('room.ui.1191', { p0: Math.floor(seconds / 60), p1: String(Math.floor(seconds % 60)).padStart(2, '0') })
   }
   /*
-   * Часовой разряд — новый.
+   * The hours place is new.
    *
-   * Формат писали для строк терминала, которые заканчиваются. Ячейка, которая
-   * учит модель, не заканчивается: без этого разряда она печатала «143m 07s»,
-   * а это число никто не читает как два часа двадцать три минуты.
+   * The format was written for terminal lines, which finish. A cell that
+   * trains a model does not finish: without this place it printed "143m 07s",
+   * and nobody reads that number as two hours twenty-three minutes.
    */
   return tr('room.ui.1192', { p0: Math.floor(seconds / 3600), p1: String(Math.floor((seconds % 3600) / 60)).padStart(2, '0') })
 }
 
-/** Законченная длительность: «4s», «1m 20s», «2h 23m». Пусто, если её нет. */
+/** Finished duration: "4s", "1m 20s", "2h 23m". Empty if there is none. */
 export function spell(ms: number | null): string {
   if (ms === null) return ''
   const total = Math.round(ms / 1000)
@@ -169,28 +170,30 @@ export function spell(ms: number | null): string {
 }
 
 /**
- * Ниже этого законченную длительность не показывают.
+ * Below this a finished duration is not shown.
  *
- * Под две секунды «thought for 1s» — это строка мебели, сообщающая, что
- * компьютер справился быстро, и к концу пары таких строк сорок. Живой цифры
- * это не касается: она живёт ровно столько, сколько идёт выполнение, и потом
- * исчезает.
+ * Under two seconds, "thought for 1s" is a line of furniture announcing that
+ * the computer coped quickly, and by the end of a class there are forty such
+ * lines. The live figure is not affected: it lives exactly as long as the run
+ * lasts, and then disappears.
  */
 export const NOTICED_MS = 2_000
 
-/* ------------------------------------------------------- вывод ячейки */
+/* -------------------------------------------------------- cell output */
 
 /**
- * Возврат каретки сворачивает строку, а не копит её.
+ * A carriage return collapses the line instead of piling it up.
  *
- * tqdm и pip перерисовывают одну строку через `\r`. Без свёртки ячейка
- * показывает двести копий прогресс-бара, вывод перелезает через порог и
- * прячется под «Show more» — тогда как в Jupyter та же ячейка показывает одну
- * строку. Остаётся последний кадр каждой строки: то же, что делают разбор
- * `\r` в kernel/terminal.ts и `collapseCarriage` в панели терминала.
+ * tqdm and pip redraw one line with `\r`. Without collapsing, a cell shows two
+ * hundred copies of the progress bar, the output climbs over the threshold
+ * and hides under "Show more" — whereas in Jupyter the same cell shows one
+ * line. What remains is the last frame of each line: the same thing the `\r`
+ * handling in kernel/terminal.ts and `collapseCarriage` in the terminal panel
+ * do.
  *
- * Свёртка здесь — про показ. Кадры всё равно приезжают по сети и всё равно
- * тратят потолок вывода ячейки; убрать их у источника может только сервер.
+ * Collapsing here is about display. The frames still travel over the network
+ * and still use up the cell's output cap; only the server can remove them at
+ * the source.
  */
 export function collapseCarriage(text: string): string {
   if (!text.includes('\r')) return text
@@ -205,14 +208,15 @@ export function collapseCarriage(text: string): string {
     .join('\n')
 }
 
-/* ------------------------------------------------- образы окружений */
+/* ----------------------------------------------- environment images */
 
 /**
- * Размер образа и когда он собран — теми же словами в панели и в форме.
+ * Image size and when it was built — in the same words in the panel and in
+ * the form.
  *
- * Обе жили в Environments.svelte, а форма создания семинара стала показывать
- * то же самое. Третья копия появилась бы в ту же неделю — так уже было с
- * длительностями выше.
+ * Both lived in Environments.svelte, and then the seminar creation form began
+ * showing the same thing. A third copy would have appeared in the same week —
+ * that already happened with the durations above.
  */
 export function imageSize(bytes: number | null): string {
   if (bytes === null) return '—'
@@ -220,7 +224,7 @@ export function imageSize(bytes: number | null): string {
   return gb >= 1 ? tr('room.ui.1195', { p0: formatNumber(gb, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : tr('room.ui.1196', { p0: Math.round(bytes / 1e6) })
 }
 
-/** «built 3 days ago», «built 4h ago», «built just now», «never built». */
+/** "built 3 days ago", "built 4h ago", "built just now", "never built". */
 export function builtAgo(ts: number | null, now = Date.now()): string {
   if (ts === null) return tr('room.ui.1197')
   const days = Math.floor((now - ts) / 86_400_000)

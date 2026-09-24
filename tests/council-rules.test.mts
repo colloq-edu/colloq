@@ -1,30 +1,34 @@
 /**
- * Регламент консилиума: предел одного запуска и пауза между своими запусками.
+ * Council rules: the limit on a single run and the pause between one's own
+ * runs.
  *
- * Обе ручки заведены против одной и той же беды, и беда эта не гипотетическая:
- * ядро в комнате одно, очередь к нему общая, и на потоке в пятьсот человек
- * `while True` у одного — это «В очереди: 37» у остальных до конца пары, пока
- * преподаватель не заметит и не нажмёт «Прервать». Очередь из нажимающих
- * «Запустить» после каждой правки — то же самое, только без злого умысла.
+ * Both controls exist against one and the same trouble, and the trouble is
+ * not hypothetical: a room has one kernel, the queue to it is shared, and in a
+ * cohort of five hundred people one person's `while True` means "Queued: 37"
+ * for everyone else until the end of the class, until the teacher notices and
+ * presses "Interrupt". A queue of people pressing "Run" after every edit is
+ * the same thing, only without ill intent.
  *
- * Здесь проверяется ровно то, что ломается молча:
+ * What is checked here is exactly what breaks silently:
  *
- *   — сигнал по пределу достаётся ТОЙ попытке, которая его перебрала, а
- *     следующая в очереди считается как ни в чём не бывало. Это главная
- *     опасность: `interrupt` уходит в Jupyter по HTTP и отвечает не мгновенно,
- *     а очередь за это время успевает взять следующую работу;
- *   — остановленная попытка объясняется словами, а не трейсбеком
- *     `KeyboardInterrupt`: студент читает его как «преподаватель нажал стоп»
- *     или как свою ошибку;
- *   — вывод ДО остановки сохраняется: в нём обычно и виден зациклившийся кусок;
- *   — предел, поменянный посреди запуска, действует на этот же запуск;
- *   — пауза считается от конца СВОЕГО запуска, преподавателя не касается и
- *     приезжает студенту числом (`CouncilMine.nextRunAt`), а не одним отказом.
+ *   — the limit signal goes to THE attempt that exceeded it, and the next one
+ *     in the queue runs as if nothing had happened. This is the main danger:
+ *     `interrupt` goes to Jupyter over HTTP and does not answer instantly,
+ *     and meanwhile the queue manages to pick up the next job;
+ *   — a stopped attempt is explained in words, not with a `KeyboardInterrupt`
+ *     traceback: a student reads that as "the teacher pressed stop" or as
+ *     their own mistake;
+ *   — the output BEFORE the stop is kept: it usually shows the piece that
+ *     looped;
+ *   — a limit changed in the middle of a run applies to that same run;
+ *   — the pause is counted from the end of one's OWN run, does not concern
+ *     the teacher, and reaches the student as a number
+ *     (`CouncilMine.nextRunAt`), not as a lone refusal.
  *
- * Подделка Jupyter вместо настоящего ядра: нужен запуск, который не кончается,
- * пока его не прервут, — живое ядро такого по заказу не делает. Масштаб предела
- * сдвинут тестовым швом (`setCouncilLimitTick`), иначе каждая проверка стоила бы
- * пяти секунд ожидания.
+ * A fake Jupyter instead of a real kernel: we need a run that does not end
+ * until it is interrupted — a live kernel does not do that on demand. The
+ * limit's scale is shifted by a test seam (`setCouncilLimitTick`), otherwise
+ * every check would cost five seconds of waiting.
  */
 import './_env.mts'
 import { guardAnswer } from './_guard.mts'
@@ -34,11 +38,11 @@ import assert from 'node:assert/strict'
 import { WebSocketServer, WebSocket, type RawData } from 'ws'
 import type { ControlClientMessage, ControlServerMessage, CouncilMine } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
-// Ни одного статического импорта серверных модулей: config читает JUPYTER_URL
-// на импорте, а подделка поднимается в before(). Так же устроены kernel.test и
-// control-interrupt.test.
+// Not a single static import of server modules: config reads JUPYTER_URL at
+// import time, and the fake is brought up in before(). kernel.test and
+// control-interrupt.test are built the same way.
 
-/* ---------------------------------------------------------- подделка Jupyter */
+/* -------------------------------------------------------------- fake Jupyter */
 
 const kernels = new Map<string, { alive: boolean }>()
 const byPath = new Map<string, string>()
@@ -46,32 +50,34 @@ let minted = 0
 let http: Server
 let wss: WebSocketServer
 let sockets: WebSocket[] = []
-/** Запросы, на которых подделка сидит: «считается, пока не прервут». */
+/** Requests the fake sits on: "running until interrupted". */
 let held: Array<{ socket: WebSocket; parent: unknown }> = []
-/** Сколько раз комнату просили прервать — по нему видно, что сигнал не штормит. */
+/** How many times the room was asked to interrupt — it shows that the signal does not storm. */
 let interrupts = 0
-/** Ядро не отвечает на прерывание: сигнал приходит, работа считается дальше. */
+/** The kernel does not answer an interrupt: the signal arrives, the job keeps running. */
 let deaf = false
 /**
- * Чем подделка отвечает на вход изоляции (kernel/council-isolation.ts).
+ * What the fake answers to the isolation entry (kernel/council-isolation.ts).
  *
- * `null` — «ядро промолчало»: `user_expressions` пустой, и сервер обязан
- * НЕ запускать попытку. По умолчанию — обычное подтверждение без пропусков,
- * иначе ни одна проверка регламента до запуска бы не добралась.
+ * `null` means "the kernel said nothing": `user_expressions` is empty, and
+ * the server must NOT run the attempt. By default it is an ordinary
+ * confirmation with nothing skipped, otherwise not a single rules check would
+ * get as far as a run.
  */
 let councilReport: Record<string, unknown> | null = {
   ok: true, copied: 2, skipped: [], failed: [], bytes: 0, memory: null, ms: 1,
 }
-/** Сколько раз подделку просили выйти из изоляции — выход обязан быть всегда. */
+/** How many times the fake was asked to leave isolation — the exit must always happen. */
 let isolationExits = 0
 /**
- * Отчёт ВЫХОДА: что после попытки вернуть было нечем.
+ * The EXIT report: what there was no way to restore after the attempt.
  *
- * `null` — обычный случай, хвостов нет. Отличается от входного тем, что его
- * отсутствие ничего не решает: попытка уже посчитана, речь только о приписке.
+ * `null` is the usual case, nothing left behind. It differs from the entry
+ * report in that its absence decides nothing: the attempt has already run,
+ * it is only about a note.
  */
 let councilLeftovers: Record<string, unknown> | null = null
-/** Всё, что доехало до ядра: по нему видно, запускали попытку или нет. */
+/** Everything that reached the kernel: it shows whether the attempt was run or not. */
 let seen: string[] = []
 
 function reply(socket: WebSocket, parent: unknown, msgType: string, content: unknown): void {
@@ -115,23 +121,24 @@ before(async () => {
     if (req.method === 'POST' && /\/interrupt$/.test(url.pathname)) {
       interrupts += 1
       /*
-       * Ядро, глухое к сигналу, — не выдумка подделки.
+       * A kernel deaf to the signal is not the fake's invention.
        *
-       * Python, ушедший в C (`np.linalg.inv` на матрице не того размера),
-       * SIGINT не видит до возврата в интерпретатор. Сервер шлёт два сигнала и
-       * замолкает; до сих пор на этом наступала тишина — попытка навсегда
-       * «считается», насос стоит, очередь замерзает, и не узнавал об этом
-       * никто. Здесь подделка просто не отпускает ждущий запрос, а ответ на
-       * сам POST отдаёт как обычно: ровно то, что видит сервер.
+       * Python gone into C (`np.linalg.inv` on a matrix of the wrong size)
+       * does not see SIGINT until it returns to the interpreter. The server
+       * sends two signals and falls silent; until now silence set in right
+       * there — the attempt "runs" forever, the pump stands, the queue
+       * freezes, and nobody found out. Here the fake simply does not release
+       * the waiting request, and answers the POST itself as usual: exactly
+       * what the server sees.
        */
       if (deaf) {
         setTimeout(() => res.writeHead(204).end(), 120)
         return
       }
       /*
-       * Ровно то, что делает настоящее ядро: ждущий запрос падает
-       * `KeyboardInterrupt` с трейсбеком. Именно этот трейсбек и не должен
-       * доехать до карточки студента.
+       * Exactly what a real kernel does: the waiting request fails with a
+       * `KeyboardInterrupt` and a traceback. It is exactly this traceback that
+       * must not reach the student's card.
        */
       for (const { socket, parent } of held.splice(0)) {
         reply(socket, parent, 'error', {
@@ -147,12 +154,14 @@ before(async () => {
         reply(socket, parent, 'status', { execution_state: 'idle' })
       }
       /*
-       * Ответ на сам POST — с задержкой, и это не украшение подделки.
+       * The answer to the POST itself comes with a delay, and that is not a
+       * decoration of the fake.
        *
-       * Ровно на нём стоит граница очереди: сервер кладёт это обещание в
-       * `beforeNext`, и следующая работа не начинается, пока прерывание не
-       * отстоялось (kernel/index.ts · stopRunningJob). Отвечать мгновенно
-       * значило бы проверять код, из которого границу можно убрать, не заметив.
+       * The queue boundary rests exactly on it: the server puts this promise
+       * into `beforeNext`, and the next job does not start until the
+       * interrupt has settled (kernel/index.ts · stopRunningJob). Answering
+       * instantly would mean testing code from which the boundary could be
+       * removed without anyone noticing.
        */
       setTimeout(() => res.writeHead(204).end(), 120)
       return
@@ -175,20 +184,22 @@ before(async () => {
         const code = msg.content.code
         seen.push(code)
         /*
-         * Метки ищутся только в коде ячейки: служебный запрос (`silent`) —
-         * это исходник изоляции, и в его комментариях встречаются любые
-         * слова. Соседняя сюита на этом уже попалась: «OOM-killer» в
-         * комментарии подделка прочла как «ячейка убила ядро».
+         * Markers are looked for only in cell code: a service request
+         * (`silent`) is the isolation source, and any words occur in its
+         * comments. A neighbouring suite has already been caught by this:
+         * the fake read "OOM-killer" in a comment as "the cell killed the
+         * kernel".
          */
         const service = (msg.content as { silent?: boolean }).silent === true
         reply(ws, msg.header, 'status', { execution_state: 'busy' })
         reply(ws, msg.header, 'execute_input', { code, execution_count: 1 })
         /*
-         * HANG — попытка, которая не кончается сама. Печатает строку и садится
-         * ждать: без этой строки проверить «вывод до остановки сохранён» было
-         * бы нечем. Всё остальное, включая вход и выход изоляции вокруг
-         * попытки (council-isolation.ts), отвечает сразу — иначе очередь
-         * встала бы ещё до запуска.
+         * HANG is an attempt that does not end by itself. It prints a line and
+         * sits waiting: without that line there would be nothing to check
+         * "the output before the stop is kept" with. Everything else,
+         * including the isolation entry and exit around the attempt
+         * (council-isolation.ts), answers at once — otherwise the queue would
+         * stall before the run.
          */
         if (!service && code.includes('HANG')) {
           reply(ws, msg.header, 'stream', { name: 'stdout', text: 'считаю…\n' })
@@ -199,9 +210,10 @@ before(async () => {
           reply(ws, msg.header, 'stream', { name: 'stdout', text: 'готово\n' })
         }
         /*
-         * REFUSE и STARVE — два исхода, которые настоящее ядро выдаёт из
-         * самой изоляции: отказ на `exit()` (он гасил бы ядро всей комнате) и
-         * `MemoryError` из-под потолка памяти, поставленного входом.
+         * REFUSE and STARVE are two outcomes that a real kernel produces from
+         * the isolation itself: a refusal on `exit()` (it would shut down the
+         * kernel for the whole room) and a `MemoryError` from under the memory
+         * ceiling set by the entry.
          */
         if (!service && code.includes('REFUSE')) {
           reply(ws, msg.header, 'error', {
@@ -218,9 +230,10 @@ before(async () => {
           })
         }
         /*
-         * Вход и выход изоляции отчитываются `user_expressions` — настоящее
-         * ядро отвечает ими даже на молчаливый запрос, и без этой ветки сервер
-         * справедливо отказался бы запускать хоть одну попытку.
+         * The isolation entry and exit report through `user_expressions` — a
+         * real kernel answers with them even to a silent request, and without
+         * this branch the server would rightly refuse to run a single
+         * attempt.
          */
         const expressions = (msg.content as { user_expressions?: Record<string, string> })
           .user_expressions
@@ -228,10 +241,10 @@ before(async () => {
         const leaving = code.includes('.leave(globals())')
         if (leaving) isolationExits += 1
         /*
-         * Установка защиты от опасных команд приходит той же дорогой и тем же
-         * ключом, и без подтверждения сервер не запускает ни одной ячейки
-         * (kernel/index.ts · ensureGuard). Ответ общий на все подделки ядра —
-         * tests/_guard.mts.
+         * Installing the guard against dangerous commands comes the same way
+         * and with the same key, and without a confirmation the server runs
+         * no cell at all (kernel/index.ts · ensureGuard). The answer is shared
+         * by all kernel fakes — tests/_guard.mts.
          */
         const guard = guardAnswer(code)
         const answer = guard ?? (leaving ? councilLeftovers : councilReport)
@@ -262,14 +275,15 @@ before(async () => {
   process.env.JUPYTER_URL = `http://127.0.0.1:${port}`
   process.env.JUPYTER_TOKEN = 'fake'
   const { setCouncilLimitTick } = await import('../server/src/kernel/index.js')
-  // Секунда предела — пятьдесят миллисекунд: сюита проверяет поведение, а не
-  // терпение. Повтор сигнала при этом тоже ускоряется, см. LIMIT_RETRY_TICKS.
+  // A second of limit is fifty milliseconds: the suite tests behaviour, not
+  // patience. The signal retry speeds up too, see LIMIT_RETRY_TICKS.
   setCouncilLimitTick(50)
 })
 
 afterEach(() => {
-  // Зависший запрос не переживает свой тест: комната у каждого своя, а
-  // досиживать его некому — упавшее утверждение иначе роняло бы весь хвост.
+  // A hung request does not outlive its test: each test has its own room,
+  // and there is nobody to sit it out — a failed assertion would otherwise
+  // bring down the whole tail.
   for (const { socket, parent } of held.splice(0)) {
     reply(socket, parent, 'execute_reply', { status: 'ok', execution_count: 1 })
     reply(socket, parent, 'status', { execution_state: 'idle' })
@@ -294,7 +308,7 @@ after(async () => {
   await new Promise<void>((resolve) => http.close(() => resolve()))
 })
 
-/* ------------------------------------------------------------------ комната */
+/* --------------------------------------------------------------------- room */
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 async function until(what: () => boolean | Promise<boolean>, ms = 5000): Promise<boolean> {
@@ -322,7 +336,7 @@ interface Room {
 
 let seq = 0
 
-/** Ровно то, что читают `send` и `handleControlSocket`: состояние, приём, подписки. */
+/** Exactly what `send` and `handleControlSocket` read: the state, receiving, subscriptions. */
 async function join(
   sessionId: string,
   participantId: string,
@@ -375,7 +389,7 @@ async function room(): Promise<Room> {
   }
 }
 
-/** Сказать в провод и вернуть текст отказа, если он был. */
+/** Say something into the wire and return the refusal text, if there was one. */
 async function say(at: Room, who: Person, message: ControlClientMessage): Promise<string | null> {
   const { dispatch } = await import('../server/src/control.js')
   const before = who.heard.length
@@ -416,23 +430,23 @@ async function runOf(at: Room, who: Person) {
   return attemptOf(at.id, at.cell, who.payload.participantId)?.run ?? null
 }
 
-/* --------------------------------------------------------------- санитайзер */
+/* ---------------------------------------------------------------- sanitizer */
 
-test('мусор в ручках регламента не доезжает до документа', async () => {
+test('garbage in the rules controls does not reach the document', async () => {
   const { DEFAULT_COUNCIL, readCouncilSettings } = await import('../shared/notebook.js')
 
-  // Чистая половина: чтение ячейки, в которой уже лежит что угодно.
+  // The pure half: reading a cell that already holds anything at all.
   assert.deepEqual(readCouncilSettings({ runLimitSec: 'долго', rerunPauseSec: [] }), DEFAULT_COUNCIL)
   assert.equal(readCouncilSettings({ runLimitSec: 1.5 }).runLimitSec, DEFAULT_COUNCIL.runLimitSec)
   assert.equal(readCouncilSettings({ runLimitSec: 0 }).runLimitSec, DEFAULT_COUNCIL.runLimitSec)
   assert.equal(readCouncilSettings({ runLimitSec: 99999 }).runLimitSec, DEFAULT_COUNCIL.runLimitSec)
-  // `null` — не «поля нет», а осознанный выбор преподавателя.
+  // `null` is not "no field" but a deliberate choice of the teacher.
   assert.equal(readCouncilSettings({ runLimitSec: null }).runLimitSec, null)
   assert.equal(readCouncilSettings({ rerunPauseSec: 0 }).rerunPauseSec, 0)
   assert.equal(readCouncilSettings({ rerunPauseSec: -5 }).rerunPauseSec, 0)
 
-  // И вторая половина: то же самое проводом. Негодное значение отбрасывается —
-  // прежняя ручка остаётся, а не подменяется умолчанием.
+  // And the second half: the same over the wire. An invalid value is dropped
+  // — the previous control stays, instead of being replaced by the default.
   const at = await room()
   assert.equal(await council(at, { runLimitSec: 5, rerunPauseSec: 15 }), null)
   assert.deepEqual(await knobs(at), {
@@ -442,18 +456,18 @@ test('мусор в ручках регламента не доезжает до
     rerunPauseSec: 15,
   })
   assert.equal(await council(at, { runLimitSec: 99999, rerunPauseSec: 'чуть-чуть' }), null)
-  assert.equal((await knobs(at))!.runLimitSec, 5, 'предел вне границ сбросил ручку')
-  assert.equal((await knobs(at))!.rerunPauseSec, 15, 'мусор сбросил паузу')
+  assert.equal((await knobs(at))!.runLimitSec, 5, 'a limit out of bounds reset the control')
+  assert.equal((await knobs(at))!.rerunPauseSec, 15, 'garbage reset the pause')
   assert.equal(await council(at, { runLimitSec: null }), null)
-  assert.equal((await knobs(at))!.runLimitSec, null, '«без предела» не доехало')
+  assert.equal((await knobs(at))!.runLimitSec, null, '"uncapped" did not arrive')
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-/* ------------------------------------------------------------ предел запуска */
+/* ----------------------------------------------------------------- run limit */
 
-test('запуск сверх предела останавливает сервер — и следующий в очереди этого не замечает', async () => {
+test('a run over the limit is stopped by the server — and the next one in the queue does not notice', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: 1 }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'HANG' }), null)
@@ -462,42 +476,44 @@ test('запуск сверх предела останавливает серв
     null,
   )
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
-  // Вторая попытка встаёт в очередь ЗА первой — ровно та расстановка, при
-  // которой поздний SIGINT попадал в чужую работу.
+  // The second attempt queues up BEHIND the first — exactly the arrangement
+  // in which a late SIGINT used to hit someone else's job.
   assert.equal(await say(at, at.masha, { t: 'council:run', cellId: at.cell }), null)
 
   assert.ok(
     await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'error', 4000),
-    'предел не сработал',
+    'the limit did not fire',
   )
 
   const stopped = await runOf(at, at.petya)
-  assert.equal(stopped?.timedOut, 1, 'на попытке не отмечен сработавший предел')
+  assert.equal(stopped?.timedOut, 1, 'the attempt does not record that the limit fired')
   assert.equal(stopped?.state, 'error')
   const outputs = stopped?.outputs ?? []
-  assert.equal(outputs[0]?.kind, 'stream', 'вывод до остановки пропал')
+  assert.equal(outputs[0]?.kind, 'stream', 'the output before the stop is lost')
   assert.match(String((outputs[0] as { text: string }).text), /считаю/)
   const failure = outputs.find((o) => o.kind === 'error') as
     | { ename: string; evalue: string; traceback: string[] }
     | undefined
-  assert.equal(failure?.ename, '', 'перед русской фразой снова английское имя исключения')
+  assert.equal(failure?.ename, '', 'the English exception name is back in front of the Russian phrase')
   assert.match(failure!.evalue, /Остановлено/)
-  assert.deepEqual(failure!.traceback, [], 'трейсбек прерывания остался на карточке')
+  assert.deepEqual(failure!.traceback, [], 'the interrupt traceback stayed on the card')
   assert.equal(
     JSON.stringify(outputs).includes('KeyboardInterrupt'),
     false,
-    'студент читает про клавиатуру, которую никто не нажимал',
+    'the student reads about a keyboard nobody pressed',
   )
 
   /*
-   * Отметка доезжает обоим, кому попытка видна, и переживает перезапуск.
+   * The mark reaches both people the attempt is visible to, and survives a
+   * restart.
    *
-   * Автору — листом (`council:mine`), пульту — дельтой стопки; в базе она лежит
-   * внутри `run_json`, то есть кадром из прошлой жизни сервера её не потерять.
-   * Список работ и очередь пульта читают именно её, а не разбирают вывод: в
-   * стопке вывода часто и нет вовсе (`outputsOmitted`).
+   * The author gets it with the sheet (`council:mine`), the console with a
+   * stack delta; in the database it lies inside `run_json`, so a frame from
+   * the server's previous life cannot lose it. The work list and the console
+   * queue read exactly it instead of parsing the output: often there is no
+   * output in the stack at all (`outputsOmitted`).
    */
-  assert.equal(lastMine(at.petya, at.cell)?.run?.timedOut, 1, 'автор не узнал причину остановки')
+  assert.equal(lastMine(at.petya, at.cell)?.run?.timedOut, 1, 'the author did not learn the reason for the stop')
   assert.ok(
     await until(
       () =>
@@ -510,26 +526,27 @@ test('запуск сверх предела останавливает серв
         ),
       2000,
     ),
-    'в стопку преподавателя причина остановки не поехала',
+    'the reason for the stop did not reach the teacher\'s stack',
   )
   const { resetCouncilCache } = await import('../server/src/council.js')
   resetCouncilCache(at.id)
-  assert.equal((await runOf(at, at.petya))?.timedOut, 1, 'отметка не пережила чтение из базы')
+  assert.equal((await runOf(at, at.petya))?.timedOut, 1, 'the mark did not survive reading from the database')
 
-  // И главное: соседняя попытка досчиталась сама, а не получила чужой сигнал.
+  // And the main thing: the neighbouring attempt ran to completion by itself
+  // instead of receiving someone else's signal.
   assert.ok(
     await until(async () => ((await runOf(at, at.masha))?.state ?? '') === 'ok', 4000),
-    'следующая в очереди попытка не досчиталась',
+    'the next attempt in the queue did not complete',
   )
   const next = await runOf(at, at.masha)
-  assert.equal(next?.timedOut, undefined, 'сигнал по пределу достался следующей работе')
+  assert.equal(next?.timedOut, undefined, 'the limit signal went to the next job')
   assert.equal(next?.outputs.some((o) => o.kind === 'error'), false)
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('запуск в пределах не трогают, и будильник за ним не остаётся', async () => {
+test('a run within the limit is not touched, and no alarm is left behind it', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: 2 }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
@@ -538,40 +555,40 @@ test('запуск в пределах не трогают, и будильни�
   const done = await runOf(at, at.petya)
   assert.equal(done?.timedOut, undefined)
   /*
-   * Будильник, переживший свою попытку, — это сигнал в следующую работу
-   * очереди. Проверяется он единственным честным способом: подождать дольше
-   * предела и убедиться, что ядро никто не прерывал.
+   * An alarm that outlived its attempt is a signal into the next job in the
+   * queue. It is checked in the only honest way: wait longer than the limit
+   * and make sure nobody interrupted the kernel.
    */
   await wait(2 * 50 + 120)
-  assert.equal(interrupts, 0, 'будильник досчитал уже после конца запуска')
+  assert.equal(interrupts, 0, 'the alarm fired after the run had already ended')
   assert.equal((await runOf(at, at.petya))?.state, 'ok')
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('«без предела» не прерывает никогда', async () => {
+test('"uncapped" never interrupts', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'HANG' }), null)
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
   assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'running', 4000))
-  // Дольше умолчания (30 «секунд» по ускоренным часам): молчание здесь значит
-  // «предела нет», а не «предел ещё не подошёл».
+  // Longer than the default (30 "seconds" by the sped-up clock): silence here
+  // means "there is no limit", not "the limit has not come yet".
   await wait(30 * 50 + 150)
-  assert.equal(interrupts, 0, 'попытку прервали там, где предела нет')
+  assert.equal(interrupts, 0, 'the attempt was interrupted where there is no limit')
   assert.equal((await runOf(at, at.petya))?.state, 'running')
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('преподавательский запуск чужой попытки предел тоже касается', async () => {
+test('the limit applies to the teacher running someone else\'s attempt too', async () => {
   const at = await room()
   assert.equal(await council(at, { runLimitSec: 1 }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'HANG' }), null)
-  // Ручка запуска студентам выключена: нажимает преподаватель, и это тот самый
-  // случай, в котором «предел не про меня» стоило бы всей комнате.
+  // The students' run control is off: the teacher presses, and this is the
+  // very case in which "the limit is not about me" would cost the whole room.
   assert.equal(
     await say(at, at.teacher, {
       t: 'council:run',
@@ -582,7 +599,7 @@ test('преподавательский запуск чужой попытки 
   )
   assert.ok(
     await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'error', 4000),
-    'запуск преподавателя не остановился по пределу',
+    'the teacher\'s run did not stop at the limit',
   )
   assert.equal((await runOf(at, at.petya))?.timedOut, 1)
   assert.equal((await runOf(at, at.petya))?.by, 'host')
@@ -591,9 +608,10 @@ test('преподавательский запуск чужой попытки 
   closeControlRoom(at.id)
 })
 
-test('предел, поменянный посреди запуска, действует на этот же запуск', async () => {
+test('a limit changed in the middle of a run applies to that same run', async () => {
   const at = await room()
-  // Начали без предела: попытка висит и висела бы до конца пары.
+  // Started without a limit: the attempt hangs and would hang until the end
+  // of the class.
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'HANG' }), null)
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
@@ -602,30 +620,30 @@ test('предел, поменянный посреди запуска, дейс
   assert.equal(interrupts, 0)
 
   /*
-   * Преподаватель ставит предел, ГЛЯДЯ на зависший цикл. Считается он от начала
-   * этой попытки, а она идёт уже дольше — значит, срабатывает сразу, а не через
-   * секунду после нажатия.
+   * The teacher sets the limit WHILE LOOKING at the hung loop. It is counted
+   * from the start of this attempt, which has been going on longer already —
+   * so it fires at once, not a second after the press.
    */
   assert.equal(await council(at, { runLimitSec: 1 }), null)
   assert.ok(
     await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'error', 4000),
-    'новый предел не достал идущую попытку',
+    'the new limit did not reach the running attempt',
   )
   assert.equal((await runOf(at, at.petya))?.timedOut, 1)
-  assert.equal(interrupts, 1, 'сигнал ушёл не один раз')
+  assert.equal(interrupts, 1, 'the signal went out more than once')
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('новый предел достаёт и тех, кто уже стоит в очереди', async () => {
+test('a new limit also reaches those already standing in the queue', async () => {
   const at = await room()
   /*
-   * Предел записан в работу при постановке в очередь: ядро документа не читает.
-   * Преподаватель снимает «без предела», глядя на вставшую очередь, — и если
-   * новое число получила только идущая попытка, следующая за ней зависает уже
-   * без предела вовсе, и очередь стоит снова, теперь под регламентом, который
-   * это запрещает.
+   * The limit is written into the job when it is queued: the kernel does not
+   * read the document. The teacher removes "uncapped" while looking at the
+   * stalled queue — and if only the running attempt got the new number, the
+   * one after it hangs with no limit at all, and the queue stands again, now
+   * under rules that forbid it.
    */
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
   for (const who of [at.petya, at.masha]) {
@@ -638,11 +656,11 @@ test('новый предел достаёт и тех, кто уже стоит
   assert.equal(await council(at, { runLimitSec: 1 }), null)
   assert.ok(
     await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'error', 4000),
-    'новый предел не достал идущую попытку',
+    'the new limit did not reach the running attempt',
   )
   assert.ok(
     await until(async () => ((await runOf(at, at.masha))?.state ?? '') === 'error', 4000),
-    'ждавшая в очереди попытка пошла без предела',
+    'the attempt waiting in the queue went without a limit',
   )
   assert.equal((await runOf(at, at.masha))?.timedOut, 1)
 
@@ -650,29 +668,31 @@ test('новый предел достаёт и тех, кто уже стоит
   closeControlRoom(at.id)
 })
 
-/* --------------------------------------------------------- пауза между своими */
+/* ----------------------------------------------- pause between one's own runs */
 
-test('пауза не пускает студента в очередь снова — и не касается преподавателя', async () => {
+test('the pause does not let a student back into the queue — and does not concern the teacher', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: null, rerunPauseSec: 30 }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
   assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 4000))
 
-  // Отсчёт приехал автору вместе с концом его запуска: на месте кнопки должен
-  // стоять он, а не кнопка, которая отвечает отказом.
+  // The countdown reached the author together with the end of their run: it
+  // must stand in the button's place, not a button that answers with a
+  // refusal.
   const mine = lastMine(at.petya, at.cell)
-  assert.ok(mine, 'лист автору не уехал')
-  assert.ok(typeof mine!.nextRunAt === 'number', 'в листе нет отсчёта до следующего запуска')
-  assert.ok(mine!.nextRunAt! > Date.now(), 'отсчёт уже в прошлом')
+  assert.ok(mine, 'the sheet did not reach the author')
+  assert.ok(typeof mine!.nextRunAt === 'number', 'the sheet has no countdown to the next run')
+  assert.ok(mine!.nextRunAt! > Date.now(), 'the countdown is already in the past')
   assert.ok(mine!.nextRunAt! <= Date.now() + 30_000)
 
-  // Своё нажатие — отказ словами и с числом.
+  // Their own press — a refusal in words and with a number.
   const refused = await say(at, at.petya, { t: 'council:run', cellId: at.cell })
   assert.match(refused ?? '', /Следующий запуск/)
   assert.match(refused ?? '', /\d+ с|мин/)
 
-  // А преподаватель запускает ту же попытку тут же: пауза — про автора.
+  // While the teacher runs the same attempt right away: the pause is about
+  // the author.
   assert.equal(
     await say(at, at.teacher, {
       t: 'council:run',
@@ -680,14 +700,14 @@ test('пауза не пускает студента в очередь снов
       participantId: at.petya.payload.participantId,
     }),
     null,
-    'пауза автора остановила преподавателя',
+    'the author\'s pause stopped the teacher',
   )
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('пауза спрашивается на просьбе, а не на одобрении', async () => {
+test('the pause is checked on the request, not on the approval', async () => {
   const at = await room()
   assert.equal(
     await council(at, { studentRun: 'request', runLimitSec: null, rerunPauseSec: 30 }),
@@ -711,28 +731,29 @@ test('пауза спрашивается на просьбе, а не на од
   assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 4000))
 
   /*
-   * Одобренная просьба — тоже свой запуск: время ядра потрачено на этого
-   * человека, а «одобрить» нажал преподаватель только потому, что его попросили.
-   * Без этого режим «по просьбе» — единственный, где паузы нет вовсе.
+   * An approved request is one's own run too: kernel time was spent on this
+   * person, and the teacher pressed "approve" only because they were asked
+   * to. Without this, the "on request" mode would be the only one with no
+   * pause at all.
    */
   const refused = await say(at, at.petya, { t: 'council:run:request', cellId: at.cell })
   assert.match(refused ?? '', /Следующий запуск/)
   const again = attemptOf(at.id, at.cell, at.petya.payload.participantId)?.runRequest
-  assert.equal(again ?? null, null, 'просьба встала в очередь сквозь паузу')
+  assert.equal(again ?? null, null, 'the request got into the queue through the pause')
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('пауза 0 не отказывает никому и отсчёта в лист не кладёт', async () => {
+test('pause 0 refuses nobody and puts no countdown into the sheet', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
   assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 4000))
-  assert.equal(lastMine(at.petya, at.cell)?.nextRunAt ?? null, null, 'отсчёт там, где паузы нет')
+  assert.equal(lastMine(at.petya, at.cell)?.nextRunAt ?? null, null, 'a countdown where there is no pause')
 
-  // Правка текста — и сразу новый запуск: ничем не хуже первого.
+  // Edit the text — and a new run right away: no worse than the first.
   assert.equal(
     await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT  # ещё' }),
     null,
@@ -741,35 +762,35 @@ test('пауза 0 не отказывает никому и отсчёта в �
   assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 4000))
 
   /*
-   * И обратный ход: ручку включили после того, как запуск уже кончился, — она
-   * действует и на него. Срок не хранится, он считается из конца прошлого
-   * запуска и ТЕКУЩЕЙ паузы.
+   * And the reverse: the control was turned on after the run had already
+   * ended — and it applies to that run too. The deadline is not stored; it is
+   * computed from the end of the previous run and the CURRENT pause.
    */
   const { nextRunAtFor } = await import('../server/src/council.js')
   const who = at.petya.payload.participantId
   assert.equal(nextRunAtFor(at.id, at.cell, who, 0), null)
   assert.ok((nextRunAtFor(at.id, at.cell, who, 60) ?? 0) > Date.now())
-  // И ручку, снятую преподавателем, никто не переживает.
+  // And a control removed by the teacher is outlived by nobody.
   assert.equal(nextRunAtFor(at.id, at.cell, who, 0), null)
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-/* ------------------------------------------------------ личные копии данных */
+/* -------------------------------------------------- personal copies of data */
 
 /**
- * Вход не подтвердился — попытка не запускается вовсе.
+ * The entry was not confirmed — the attempt does not run at all.
  *
- * Это не осторожность, а единственный честный исход. Отчёт входа
- * (kernel/council-isolation.ts) — единственное, по чему сервер знает, чьи
- * сейчас данные в ядре; молчание означает «неизвестно», и запуск на общих
- * объектах ровно здесь и стоил бы пары: студент получил бы правильный на вид
- * ответ, испортив `data` всей группе. Поэтому вместо запуска — одна строка без
- * трейсбека, а выход отрабатывает всё равно: вход мог успеть подменить
- * привязки и упасть после.
+ * This is not caution but the only honest outcome. The entry report
+ * (kernel/council-isolation.ts) is the only thing by which the server knows
+ * whose data is in the kernel right now; silence means "unknown", and a run
+ * on shared objects would cost the class exactly here: the student would get
+ * a correct-looking answer while corrupting `data` for the whole group. So
+ * instead of a run there is one line without a traceback, and the exit runs
+ * anyway: the entry may have managed to swap bindings and fail after that.
  */
-test('вход без подтверждения не пускает попытку в ядро и говорит об этом одной строкой', async () => {
+test('an entry without confirmation does not let the attempt into the kernel and says so in one line', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
@@ -779,23 +800,25 @@ test('вход без подтверждения не пускает попыт�
 
   assert.ok(
     await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'error', 4000),
-    'попытка не кончилась отказом',
+    'the attempt did not end with a refusal',
   )
   const run = await runOf(at, at.petya)
   const outputs = run?.outputs ?? []
-  assert.equal(outputs.length, 1, 'к отказу прицепился чужой вывод')
+  assert.equal(outputs.length, 1, 'someone else\'s output got attached to the refusal')
   const failure = outputs[0] as { kind: string; ename: string; evalue: string; traceback: string[] }
   assert.equal(failure.kind, 'error')
   assert.match(failure.evalue, /Не удалось подготовить личные копии/)
-  // Без трейсбека: кадры `<colloq-council>` — не код студента и ему не помогут.
+  // No traceback: `<colloq-council>` frames are not the student's code and
+  // will not help them.
   assert.deepEqual(failure.traceback, [])
-  assert.doesNotMatch(failure.evalue, /\n/, 'отказ перестал быть одной строкой')
+  assert.doesNotMatch(failure.evalue, /\n/, 'the refusal is no longer a single line')
 
-  // Текст попытки до ядра не доехал — а выход отработал.
-  assert.ok(!seen.some((code) => code.includes('PRINT')), 'попытка всё-таки исполнилась')
-  assert.ok(isolationExits > exitsBefore, 'выход не выполнили после неудачного входа')
+  // The attempt's text did not reach the kernel — but the exit ran.
+  assert.ok(!seen.some((code) => code.includes('PRINT')), 'the attempt was executed after all')
+  assert.ok(isolationExits > exitsBefore, 'the exit was not run after a failed entry')
 
-  // И очередь этим не сломана: следующая попытка при живом входе считается.
+  // And the queue is not broken by this: the next attempt runs when the entry
+  // is alive.
   councilReport = { ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 }
   assert.equal(
     await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT # снова' }),
@@ -804,7 +827,7 @@ test('вход без подтверждения не пускает попыт�
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
   assert.ok(
     await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 4000),
-    'очередь встала после одного отказа входа',
+    'the queue stalled after one entry refusal',
   )
 
   const { closeControlRoom } = await import('../server/src/control.js')
@@ -812,14 +835,15 @@ test('вход без подтверждения не пускает попыт�
 })
 
 /**
- * Что осталось общим, названо в начале вывода — до первой строки самой попытки.
+ * What stayed shared is named at the start of the output — before the first
+ * line of the attempt itself.
  *
- * Молчаливая половинчатая изоляция хуже прежней дыры: студент, привыкший, что
- * данные у него свои, на большой таблице испортил бы их всем и не узнал об
- * этом. Строка стоит первой, потому что читают её вместе с ответом, и в ней
- * сразу написано, что делать.
+ * Silent half-isolation is worse than the old hole: a student used to their
+ * data being their own would corrupt it for everyone on a big table and never
+ * find out. The line comes first because it is read together with the
+ * answer, and it says right away what to do.
  */
-test('переменная, не влезшая в бюджет копий, названа строкой перед выводом попытки', async () => {
+test('a variable that did not fit the copy budget is named in a line before the attempt\'s output', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
@@ -837,15 +861,15 @@ test('переменная, не влезшая в бюджет копий, на
   const outputs = (await runOf(at, at.petya))?.outputs ?? []
   const first = outputs[0] as { kind: string; name: string; text: string }
   assert.equal(first.kind, 'stream')
-  assert.equal(first.name, 'stderr', 'предупреждение ушло в stdout, к ответу')
+  assert.equal(first.name, 'stderr', 'the warning went to stdout, next to the answer')
   assert.match(first.text, /Переменная `big` \(1,2 ГБ\)/)
   assert.match(first.text, /big = big\.copy\(\)/)
-  // Неудачная копия — то же предупреждение, только без размера.
+  // A failed copy is the same warning, only without the size.
   assert.match(first.text, /Переменную `conn`/)
-  // А вывод самой попытки идёт следом и не потерян.
+  // And the attempt's own output follows and is not lost.
   assert.ok(
     outputs.some((o) => o.kind === 'stream' && /готово/.test((o as { text: string }).text)),
-    'вывод попытки пропал за предупреждением',
+    'the attempt\'s output disappeared behind the warning',
   )
 
   const { closeControlRoom } = await import('../server/src/control.js')
@@ -853,14 +877,16 @@ test('переменная, не влезшая в бюджет копий, на
 })
 
 /**
- * `exit()` в попытке гасил бы ядро ВСЕЙ комнате — и об этом говорят словами.
+ * `exit()` in an attempt would shut down the kernel for the WHOLE room — and
+ * this is said in words.
  *
- * В ipykernel `exit`/`quit` идут в `shell.ask_exit()`, то есть в конец
- * процесса; воспроизведено на живом ядре — после такой попытки `data` нет ни у
- * кого. Изоляция подменяет `ask_exit` отказом, и на карточку он должен лечь
- * одной человеческой строкой: кадры `<colloq-council>` — не код студента.
+ * In ipykernel `exit`/`quit` go to `shell.ask_exit()`, that is, to the end of
+ * the process; reproduced on a live kernel — after such an attempt nobody has
+ * `data`. The isolation replaces `ask_exit` with a refusal, and it must land
+ * on the card as one human line: `<colloq-council>` frames are not the
+ * student's code.
  */
-test('отказ изоляции ложится на карточку одной строкой, без трейсбека', async () => {
+test('an isolation refusal lands on the card as one line, without a traceback', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'REFUSE' }), null)
@@ -871,19 +897,20 @@ test('отказ изоляции ложится на карточку одно�
   const failure = outputs.find((o) => o.kind === 'error') as
     | { ename: string; evalue: string; traceback: string[] }
     | undefined
-  assert.equal(failure?.ename, '', 'перед фразой про общее ядро осталось имя исключения')
+  assert.equal(failure?.ename, '', 'the exception name is still in front of the phrase about the shared kernel')
   assert.match(failure!.evalue, /нельзя завершать ядро/)
-  assert.deepEqual(failure!.traceback, [], 'кадры служебного модуля доехали до студента')
+  assert.deepEqual(failure!.traceback, [], 'frames of the service module reached the student')
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
 /**
- * MemoryError под потолком — это спасённое занятие, и сказать об этом надо
- * числом: студент должен понять, что упал ОН, а не комната.
+ * A MemoryError under the ceiling is a class saved, and it has to be said
+ * with a number: the student must understand that it was THEY who fell over,
+ * not the room.
  */
-test('нехватка памяти объясняется строкой с тем объёмом, который был отведён', async () => {
+test('running out of memory is explained by a line with the amount that was allotted', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'STARVE' }), null)
@@ -895,7 +922,8 @@ test('нехватка памяти объясняется строкой с т�
   assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'error', 4000))
 
   const outputs = (await runOf(at, at.petya))?.outputs ?? []
-  // Трейсбек настоящей ошибки остаётся: в нём строка, на которой не хватило.
+  // The real error's traceback stays: it has the line on which memory ran
+  // out.
   const failure = outputs.find((o) => o.kind === 'error') as { ename: string } | undefined
   assert.equal(failure?.ename, 'MemoryError')
   const note = outputs.at(-1) as { kind: string; name: string; text: string }
@@ -910,10 +938,10 @@ test('нехватка памяти объясняется строкой с т�
 })
 
 /**
- * Поток, оставленный попыткой, переживает её и продолжает считать в общем
- * ядре. Остановить его в Python нечем — значит надо назвать.
+ * A thread left by an attempt outlives it and keeps running in the shared
+ * kernel. There is no way to stop it in Python — so it has to be named.
  */
-test('оставленные попыткой потоки названы в конце её вывода', async () => {
+test('threads left by the attempt are named at the end of its output', async () => {
   const at = await room()
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
@@ -923,10 +951,10 @@ test('оставленные попыткой потоки названы в к�
 
   const outputs = (await runOf(at, at.petya))?.outputs ?? []
   const text = outputs.map((o) => (o.kind === 'stream' ? (o as { text: string }).text : '')).join('')
-  assert.match(text, /готово/, 'вывод попытки пропал за приписками')
+  assert.match(text, /готово/, 'the attempt\'s output disappeared behind the notes')
   assert.match(text, /остались работать 2 потока/)
   assert.match(text, /Дочерние процессы/)
-  // Приписки — в хвосте, после вывода самой попытки.
+  // The notes are at the tail, after the attempt's own output.
   const first = outputs[0] as { text: string }
   assert.match(first.text, /готово/)
 
@@ -934,27 +962,27 @@ test('оставленные попыткой потоки названы в к�
   closeControlRoom(at.id)
 })
 
-/* ------------------------------------------------- очередь у ТЕТРАДИ, а не у ячейки */
+/* ------------------------------- the queue belongs to the NOTEBOOK, not to the cell */
 
 /**
- * Очередь у тетради ОДНА и общая: в ней вперемешку стоят обычные ячейки и
- * попытки всех ячеек консилиума. Предел регламента сторожил только попытки — и
- * один `while True` в обычной ячейке держал весь консилиум до конца пары.
- * Преподаватель, выставивший «все по очереди» и предел 30 с, читал это как
- * «предел не работает», и был прав: правило, которое отсекает одну очередь из
- * двух, не отсекает ничего.
+ * A notebook has ONE queue, and it is shared: plain cells and attempts from
+ * all council cells stand in it mixed together. The rules limit guarded only
+ * attempts — and a single `while True` in a plain cell held the whole council
+ * until the end of the class. A teacher who had set "everyone in turn" and a
+ * 30 s limit read this as "the limit does not work", and was right: a rule
+ * that cuts off one queue out of two cuts off nothing.
  *
- * Здесь проверяется то, что из этого вышло:
- *   — у обычной ячейки есть свой предел, правило комнаты, и он освобождает
- *     очередь попыток;
- *   — пульт видит, ЧЬЯ работа держит очередь, и прерывает именно её;
- *   — один человек держит в очереди тетради один запуск, а не по одному на
- *     каждую ячейку консилиума;
- *   — снятый запуск объясняется автору словом;
- *   — ядро, глухое к двум сигналам, перестаёт молчать.
+ * What is checked here is what came out of it:
+ *   — a plain cell has a limit of its own, a room rule, and it frees the
+ *     attempts queue;
+ *   — the console sees WHOSE job holds the queue, and interrupts exactly it;
+ *   — one person holds one run in the notebook's queue, not one per council
+ *     cell;
+ *   — a dropped run is explained to its author in words;
+ *   — a kernel deaf to two signals stops being silent.
  */
 
-/** Ещё одна ячейка в тетради комнаты — та самая «обычная», что держит очередь. */
+/** One more cell in the room's notebook — that very "plain" one that holds the queue. */
 async function cellWith(at: Room, text: string): Promise<string> {
   const { getSessionDoc } = await import('../server/src/collab/index.js')
   const { cellId, createCell, getCells } = await import('../shared/notebook.js')
@@ -964,7 +992,7 @@ async function cellWith(at: Room, text: string): Promise<string> {
   return cellId(cell)
 }
 
-/** Вывод обычной ячейки — так же, как его читает комната. */
+/** A plain cell's output — the same way the room reads it. */
 async function cellText(at: Room, id: string): Promise<{ ename: string; evalue: string; traceback: string[] }[]> {
   const { getSessionDoc } = await import('../server/src/collab/index.js')
   const { findCell, readCell } = await import('../shared/notebook.js')
@@ -973,13 +1001,13 @@ async function cellText(at: Room, id: string): Promise<{ ename: string; evalue: 
   return readCell(found.cell).outputs.filter((o) => o.kind === 'error') as never
 }
 
-/** Правило комнаты «ячейка останавливается сама через N» — на живой комнате. */
+/** The room rule "a cell stops by itself after N" — on a live room. */
 async function roomLimit(at: Room, seconds: number | null): Promise<void> {
   const { setRules, storedRules } = await import('../server/src/db.js')
   setRules(at.id, { ...storedRules(at.id), cellLimitSec: seconds })
 }
 
-/** Последний кадр «чем занято ядро тетради», приехавший пульту. */
+/** The last "what the notebook's kernel is busy with" frame that reached the console. */
 function lastKernel(who: Person, cellId: string) {
   for (let i = who.heard.length - 1; i >= 0; i--) {
     const m = who.heard[i]
@@ -988,52 +1016,53 @@ function lastKernel(who: Person, cellId: string) {
   return null
 }
 
-test('обычная ячейка останавливается по правилу комнаты — и очередь попыток идёт дальше', async () => {
+test('a plain cell stops by the room rule — and the attempts queue moves on', async () => {
   const at = await room()
   await roomLimit(at, 1)
   const hang = await cellWith(at, 'HANG')
   assert.equal(await council(at, { studentRun: true, runLimitSec: 1 }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
 
-  // Ровно расстановка из жалобы: впереди обычная ячейка без конца, за ней —
-  // попытка, у которой предел есть и до сих пор ничего не значил.
+  // Exactly the arrangement from the complaint: in front, a plain cell with
+  // no end, behind it an attempt whose limit until now meant nothing.
   assert.equal(await say(at, at.teacher, { t: 'run', cellId: hang }), null)
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
 
   assert.ok(
     await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 6000),
-    'очередь попыток так и стоит за обычной ячейкой',
+    'the attempts queue is still standing behind the plain cell',
   )
 
   /*
-   * И сама ячейка объяснена одной строкой, без трейсбека про клавиатуру: её
-   * читают как «кто-то нажал стоп», а нажимал регламент.
+   * And the cell itself is explained in one line, without a traceback about
+   * the keyboard: it gets read as "someone pressed stop", while it was the
+   * rules that pressed it.
    */
   const errors = await cellText(at, hang)
-  assert.equal(errors.length, 1, 'ячейка осталась без объяснения (или их два)')
-  assert.equal(errors[0].ename, '', 'перед русской фразой английское имя исключения')
+  assert.equal(errors.length, 1, 'the cell was left without an explanation (or has two)')
+  assert.equal(errors[0].ename, '', 'the English exception name is in front of the Russian phrase')
   assert.match(errors[0].evalue, /Остановлено/)
-  assert.deepEqual(errors[0].traceback, [], 'трейсбек прерывания остался в ячейке')
+  assert.deepEqual(errors[0].traceback, [], 'the interrupt traceback stayed in the cell')
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('без правила комнаты обычная ячейка не трогается — и это прежнее поведение', async () => {
+test('without the room rule a plain cell is not touched — and that is the old behaviour', async () => {
   const at = await room()
   await roomLimit(at, null)
   const hang = await cellWith(at, 'HANG')
   assert.equal(await say(at, at.teacher, { t: 'run', cellId: hang }), null)
-  // Дольше любого предела этой сюиты: будильника быть не должно вовсе.
+  // Longer than any limit in this suite: there must be no alarm at all.
   await wait(12 * 50)
-  assert.equal(interrupts, 0, 'ячейку прервали в комнате, где предел не включали')
+  assert.equal(interrupts, 0, 'the cell was interrupted in a room where the limit was not turned on')
   assert.deepEqual(await cellText(at, hang), [])
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('пульт видит, чья работа держит очередь, и прерывает именно её', async () => {
+test('the console sees whose job holds the queue and interrupts exactly it', async () => {
   const at = await room()
   await roomLimit(at, null)
   const hang = await cellWith(at, 'HANG')
@@ -1043,34 +1072,34 @@ test('пульт видит, чья работа держит очередь, и
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
 
   /*
-   * Пульт открыт на ячейке консилиума, а ядро держит ЧУЖАЯ обычная ячейка.
-   * Раньше он честно писал «в этой ячейке сейчас ничего не выполняется» рядом
-   * с «в очереди: 1» и прятал кнопку «Прервать» — в единственную минуту, когда
-   * она нужна.
+   * The console is open on a council cell, while the kernel is held by
+   * SOMEONE ELSE's plain cell. It used to honestly write "no code is running
+   * in this cell" next to "Queued: 1" and hid the "Interrupt" button — in the
+   * one minute when it is needed.
    */
   assert.ok(
     await until(() => lastKernel(at.teacher, at.cell)?.busy?.kind === 'cell', 4000),
-    'пульт не узнал, что ядро занято обычной ячейкой',
+    'the console did not learn that the kernel is busy with a plain cell',
   )
   const seen = lastKernel(at.teacher, at.cell)!
-  assert.equal(seen.busy?.here, false, 'чужую работу выдали за попытку этой ячейки')
-  assert.equal(seen.busy?.name, 'Ада', 'не сказано, кто запустил')
-  assert.ok(seen.busy!.index !== null, 'номер ячейки не назван')
-  assert.ok(seen.queued >= 1, 'очередь тетради посчитана по одной ячейке')
+  assert.equal(seen.busy?.here, false, 'someone else\'s job was passed off as this cell\'s attempt')
+  assert.equal(seen.busy?.name, 'Ада', 'it is not said who started it')
+  assert.ok(seen.busy!.index !== null, 'the cell number is not named')
+  assert.ok(seen.queued >= 1, 'the notebook queue was counted for one cell')
 
-  // Кнопка «Прервать» пульта называет СВОЮ ячейку — и обязана остановить то,
-  // что держит очередь на самом деле.
+  // The console's "Interrupt" button names ITS OWN cell — and must stop what
+  // actually holds the queue.
   assert.equal(await say(at, at.teacher, { t: 'interrupt', cellId: at.cell }), null)
   assert.ok(
     await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 6000),
-    'нажатие «Прервать» не достало до чужой работы',
+    'pressing "Interrupt" did not reach someone else\'s job',
   )
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('один запуск на человека в очереди тетради — второе нажатие называет номер', async () => {
+test('one run per person in the notebook queue — a second press names the position', async () => {
   const at = await room()
   await roomLimit(at, null)
   const second = await cellWith(at, '# второй консилиум')
@@ -1079,28 +1108,30 @@ test('один запуск на человека в очереди тетрад
     await say(at, at.teacher, { t: 'cell:lock', cellId: second, state: 'council', settings: { studentRun: true, runLimitSec: null } as never }),
     null,
   )
-  // Ядро занимает чужая бесконечная попытка: очередь стоит, и в ней копятся.
+  // The kernel is occupied by someone else's endless attempt: the queue
+  // stands, and people pile up in it.
   assert.equal(await say(at, at.masha, { t: 'council:draft', cellId: at.cell, text: 'HANG' }), null)
   assert.equal(await say(at, at.masha, { t: 'council:run', cellId: at.cell }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
   assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: second, text: 'PRINT' }), null)
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
 
-  // Вторая ячейка, тот же человек, та же тетрадь — и то же общее ядро.
+  // A second cell, the same person, the same notebook — and the same shared
+  // kernel.
   const refused = await say(at, at.petya, { t: 'council:run', cellId: second })
-  assert.ok(refused, 'человек занял очередь общего ядра дважды')
+  assert.ok(refused, 'the person took the shared kernel\'s queue twice')
   assert.match(refused!, /уже стоит в очереди этой тетради/)
-  assert.match(refused!, /\d/, 'отказ не назвал номер в очереди')
+  assert.match(refused!, /\d/, 'the refusal did not name the queue position')
 
   const { councilQueuePositions } = await import('../server/src/kernel/index.js')
   const mine = councilQueuePositions(at.id).filter((q) => q.participantId === at.petya.payload.participantId)
-  assert.equal(mine.length, 1, 'в очереди тетради осталось больше одной его работы')
+  assert.equal(mine.length, 1, 'more than one of their jobs is left in the notebook queue')
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('«снять запуск» убирает работу из очереди и говорит об этом автору', async () => {
+test('"take the run out of the queue" removes the job from the queue and tells the author', async () => {
   const at = await room()
   await roomLimit(at, null)
   assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
@@ -1112,33 +1143,34 @@ test('«снять запуск» убирает работу из очеред�
   const { councilQueuePosition } = await import('../server/src/kernel/index.js')
   assert.ok(
     await until(() => councilQueuePosition(at.id, at.cell, at.petya.payload.participantId) !== null, 3000),
-    'запуск не встал в очередь',
+    'the run did not get into the queue',
   )
 
-  // Снимает работу, а не человека: до этого единственной кнопкой у чужой
-  // записи было «удалить с занятия».
+  // It takes off the job, not the person: until now the only button on
+  // someone else's entry was "remove from class".
   const said = await say(at, at.teacher, {
     t: 'council:run:drop',
     cellId: at.cell,
     participantId: at.petya.payload.participantId,
   })
-  assert.equal(said, null, 'преподавателю отказали в снятии чужого запуска')
+  assert.equal(said, null, 'the teacher was refused dropping someone else\'s run')
   assert.equal(councilQueuePosition(at.id, at.cell, at.petya.payload.participantId), null)
-  assert.equal(lastMine(at.petya, at.cell)?.run, null, 'запуск остался на карточке автора')
+  assert.equal(lastMine(at.petya, at.cell)?.run, null, 'the run stayed on the author\'s card')
 
-  // И автор услышал об этом словом: молча исчезнувший запуск — это поломка.
+  // And the author heard about it in words: a run that vanished silently is a
+  // breakage.
   const heard = at.petya.heard.filter((m) => m.t === 'error').at(-1)
-  assert.ok(heard && heard.t === 'error', 'автору не сказали ни слова')
+  assert.ok(heard && heard.t === 'error', 'the author was not told a word')
   assert.match(heard.message, /снял ваш запуск/)
 
-  // Человек при этом на занятии и запускать может снова.
+  // The person is still in the class meanwhile and can run again.
   assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)
 })
 
-test('ядро не ответило на два сигнала — очередь не замерзает молча', async () => {
+test('the kernel did not answer two signals — the queue does not freeze silently', async () => {
   const at = await room()
   await roomLimit(at, null)
   assert.equal(await council(at, { studentRun: true, runLimitSec: 1 }), null)
@@ -1148,20 +1180,22 @@ test('ядро не ответило на два сигнала — очеред
 
   assert.ok(
     await until(() => lastKernel(at.teacher, at.cell)?.busy?.stuck === true, 6000),
-    'преподаватель так и не узнал, что ядро глухо к прерыванию',
+    'the teacher never learned that the kernel is deaf to interrupts',
   )
   const seen = lastKernel(at.teacher, at.cell)!
   assert.equal(seen.busy?.kind, 'attempt')
-  assert.equal(seen.busy?.here, true, 'своя попытка выдана за чужую работу')
+  assert.equal(seen.busy?.here, true, 'their own attempt was passed off as someone else\'s job')
 
   /*
-   * И сигналов при этом ровно два: SIGINT в тугом цикле раз в секунду — шторм
-   * запросов к Jupyter до конца пары, который всё равно не поможет.
+   * And there are exactly two signals: SIGINT in a tight loop once a second
+   * is a storm of requests to Jupyter until the end of the class, which would
+   * not help anyway.
    */
   await wait(8 * 50)
-  assert.equal(interrupts, 2, 'сервер штормит ядро сигналами')
+  assert.equal(interrupts, 2, 'the server storms the kernel with signals')
 
-  // Строка о том же — в журнале ядра, где комната читает про своё ядро.
+  // A line about the same in the kernel log, where the room reads about its
+  // kernel.
   const { getSessionDoc } = await import('../server/src/collab/index.js')
   const { getTerminal } = await import('../shared/notebook.js')
   const log = getTerminal(getSessionDoc(at.id).doc)

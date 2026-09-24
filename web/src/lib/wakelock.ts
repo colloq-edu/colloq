@@ -1,51 +1,51 @@
 /**
- * Экран, который не гаснет.
+ * A screen that does not go dark.
  *
- * Автоблокировка iPad по умолчанию — две минуты. Преподаватель, который две
- * минуты говорит и не трогает планшет, получает чёрный пульт посреди фразы, а
- * ноутбук у проектора — заставку поверх слайда. Раньше от этого не было
- * защиты вовсе: во всём проекте не было ни одного упоминания wakeLock.
+ * iPad auto-lock defaults to two minutes. A teacher who talks for two minutes
+ * without touching the tablet gets a black console mid-sentence, and the
+ * laptop at the projector gets a screensaver over the slide. Before, there
+ * was no protection from this at all: the whole project did not mention
+ * wakeLock once.
  *
- * Три особенности API, из-за которых он вынесен сюда, а не написан в двух
- * строках в месте вызова:
+ * Three quirks of the API are why it lives here rather than being written in
+ * two lines at the call site:
  *
- *  1. Его может не быть. `navigator.wakeLock` существует только в защищённом
- *     контексте и только с Safari 16.4 — открытая в аудитории по
- *     `http://192.168.x.x` страница не имеет самого объекта. Поэтому проверка
- *     `'wakeLock' in navigator`, а не try/catch: «нет вовсе» и «отказали» —
- *     разные вещи, и говорить о них надо разное.
- *  2. Блокировка отпускается САМА, как только вкладка ушла в фон —
- *     переключились на почту, свернули, положили планшет в Split View, — и
- *     обратно не возвращается. Единственный способ пережить это — просить
- *     заново по `visibilitychange`.
- *  3. Отказать могут по причинам, о которых страница не узнает: режим
- *     энергосбережения, низкий заряд. Отказ — обычное дело, а не ошибка, и
- *     наружу он уходит состоянием, а не исключением: экран, который упал
- *     из-за того, что ему не дали не гаснуть, — это хуже, чем экран, который
- *     гаснет.
+ *  1. It may be missing. `navigator.wakeLock` exists only in a secure context
+ *     and only since Safari 16.4 — a page opened in a lecture hall via
+ *     `http://192.168.x.x` does not have the object at all. Hence the check
+ *     `'wakeLock' in navigator`, not try/catch: "not there at all" and
+ *     "refused" are different things, and they call for different words.
+ *  2. The lock is released BY ITSELF as soon as the tab goes to the
+ *     background — switched to mail, minimized, put the tablet into Split
+ *     View — and it does not come back. The only way to survive that is to
+ *     ask again on `visibilitychange`.
+ *  3. It may be refused for reasons the page will never learn: low power
+ *     mode, low battery. A refusal is routine, not an error, and it leaves as
+ *     a state, not an exception: a screen that crashed because it was not
+ *     allowed to stay on is worse than a screen that goes dark.
  *
- * Голос тот же, что у `fullscreen.ts`: спросить, попросить, отпустить. Рун
- * здесь нет намеренно (файл не `.svelte.ts`) — состояние возвращается обратным
- * вызовом, и владеет им тот, кто его показывает.
+ * The voice is the same as in `fullscreen.ts`: check, request, release. There
+ * are deliberately no runes here (the file is not `.svelte.ts`) — the state is
+ * returned through a callback, and whoever shows it owns it.
  */
 
-/** `on` — держим; `refused` — попросили и не дали; `unavailable` — нечего просить. */
+/** `on` — holding; `refused` — asked and denied; `unavailable` — nothing to ask for. */
 export type WakeState = 'on' | 'refused' | 'unavailable'
 
-/** Умеет ли этот браузер вообще держать экран включённым. */
+/** Whether this browser can keep the screen on at all. */
 export function canKeepAwake(): boolean {
   return typeof navigator !== 'undefined' && 'wakeLock' in navigator
 }
 
 /**
- * Держать экран, пока не позовут возврат.
+ * Keep the screen on until the returned function is called.
  *
- * `report` зовётся при каждой смене состояния, в том числе повторно с тем же
- * значением после возвращения из фона: показывающий обязан быть готов к
- * присваиванию того же самого.
+ * `report` is called on every state change, including again with the same
+ * value after coming back from the background: whoever shows it must be
+ * ready to be assigned the same thing.
  *
- * Возвращённая функция отпускает блокировку и снимает слушатель. Звать её
- * можно сколько угодно раз.
+ * The returned function releases the lock and removes the listener. It can
+ * be called any number of times.
  */
 export function keepAwake(report: (state: WakeState) => void): () => void {
   if (!canKeepAwake()) {
@@ -56,14 +56,16 @@ export function keepAwake(report: (state: WakeState) => void): () => void {
   let wanted = true
   let held: WakeLockSentinel | null = null
   /*
-   * Повтор после отказа — по таймеру, а не только по возвращению во вкладку.
+   * A retry after a refusal runs on a timer, not only on returning to the tab.
    *
-   * Отпустить блокировку агент может в любой момент и при ВИДИМОЙ странице:
-   * упал заряд, включился режим энергосбережения. Тогда `visibilitychange` не
-   * случится вовсе, и без этого таймера пульт до конца пары утверждал бы, что
-   * планшет не заснёт, — а он засыпает через две минуты речи без касаний.
-   * Минута, потому что причина проходит сама (планшет поставили на зарядку), а
-   * просить чаще значит ничего не менять и жечь тот же заряд.
+   * The user agent can release the lock at any moment, even with the page
+   * VISIBLE: the battery dropped, low power mode came on. Then
+   * `visibilitychange` never happens, and without this timer the console
+   * would claim until the end of the class that the tablet will not sleep —
+   * while it falls asleep after two minutes of talking without a touch. A
+   * minute, because the cause goes away by itself (the tablet was put on the
+   * charger), and asking more often changes nothing and burns the same
+   * battery.
    */
   const RETRY_MS = 60_000
   let retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -77,24 +79,25 @@ export function keepAwake(report: (state: WakeState) => void): () => void {
   }
 
   const ask = async (): Promise<void> => {
-    // Просить, пока страницу не видно, бессмысленно — браузер откажет, и мы
-    // объявили бы «экран может погаснуть» ровно в тот момент, когда он и так
-    // погашен. Вернутся к вкладке — попросим снова, ниже.
+    // Asking while the page is hidden is pointless — the browser will refuse,
+    // and we would announce "the screen may go dark" exactly when it is dark
+    // anyway. When they come back to the tab, we ask again, below.
     if (!wanted || held !== null || document.visibilityState !== 'visible') return
     try {
       const next = await navigator.wakeLock.request('screen')
       if (!wanted) {
-        // Пока ждали, из пульта уже ушли. Отпускаем сразу, иначе эта
-        // блокировка пережила бы экран, ради которого её брали.
+        // While we waited, the console was already left. Release at once,
+        // otherwise this lock would outlive the screen it was taken for.
         void next.release().catch(() => {})
         return
       }
       held = next
       /*
-       * Отпустил браузер — не мы. При уходе в ФОН молчим: экран и так погашен,
-       * а вернутся к вкладке — попросим снова по `visibilitychange`. А вот
-       * отпущенная при ВИДИМОЙ странице блокировка — это отказ, и молчать о нём
-       * нельзя: показывающий продолжал бы обещать, что экран не гаснет.
+       * The browser released it — not us. On going to the BACKGROUND we stay
+       * silent: the screen is dark anyway, and when they return to the tab we
+       * ask again on `visibilitychange`. But a lock released while the page is
+       * VISIBLE is a refusal, and we must not keep quiet about it: whoever
+       * shows the state would go on promising that the screen stays on.
        */
       next.addEventListener('release', () => {
         if (held !== next) return
@@ -130,28 +133,30 @@ export function keepAwake(report: (state: WakeState) => void): () => void {
 }
 
 /*
- * ВЗЯТЬ ПУЛЬТ — один жест, два разрешения.
+ * TAKE THE CONSOLE — one gesture, two permissions.
  *
- * И полный экран, и «не гаснуть» браузер даёт только из живого касания: из
- * эффекта после навигации первый молча отклоняется, а второй — чаще всего
- * тоже (Safari просит и его по жесту). Поэтому экран-ложе «Коснитесь, чтобы
- * взять пульт» в одном обработчике зовёт `goFullscreen`, а следом
- * `keepAwake`, и импортирует оба ОТСЮДА: два входа из двух модулей ради одного
- * нажатия — ровно та щель, в которой один из них забывают.
+ * The browser grants both fullscreen and "stay awake" only from a live touch:
+ * from an effect after navigation the first is silently rejected, and the
+ * second most often too (Safari wants a gesture for it as well). So the
+ * "Tap to take the console" landing screen calls `goFullscreen` and then
+ * `keepAwake` in one handler, and imports both FROM HERE: two entry points
+ * from two modules for a single tap is exactly the gap where one of them gets
+ * forgotten.
  *
- * Сам механизм полного экрана остаётся в `fullscreen.ts`: он общий с
- * проекцией, а проекции спать не запрещают — у ноутбука у проектора свои
- * настройки, и трогать их из браузера незачем. Здесь только переходник, и
- * он отвечает НЕ «пустотой», а «получилось ли»: пульт после отказа показывает
- * полосу «Во весь экран ▸» и должен знать, показывать ли её снова.
+ * The fullscreen mechanism itself stays in `fullscreen.ts`: it is shared with
+ * the projection, and the projection is not forbidden to sleep — the laptop at
+ * the projector has its own settings, and there is no reason to touch them
+ * from the browser. Here there is only an adapter, and it answers NOT with
+ * "nothing" but with "did it work": after a refusal the console shows a
+ * "Fullscreen ▸" strip and has to know whether to show it again.
  */
 import { fullscreenNow, goFullscreen as enter } from './fullscreen'
 
 export { fullscreenPossible } from './fullscreen'
 
 /**
- * Развернуть узел во весь экран. `true` — развернули; `false` — отказали или
- * негде (iPhone), и пульт продолжает жить в окне.
+ * Expand a node to full screen. `true` — expanded; `false` — refused or not
+ * possible (iPhone), and the console goes on living in a window.
  */
 export async function goFullscreen(node: Element): Promise<boolean> {
   await enter(node as HTMLElement)

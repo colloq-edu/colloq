@@ -1,39 +1,42 @@
 /**
- * Сколько device-пикселей можно потратить на один лист PDF.
+ * How many device pixels a single PDF page may spend.
  *
- * Буфер холста растёт КВАДРАТИЧНО от масштаба, а масштаб в читалке — это
- * ширина колонки: на 300% лист A4 в колонке 1400 px просят нарисовать
- * 8400×11900 ≈ 100 Мпикс — четыреста мегабайт на страницу. Наблюдатель держит
- * нарисованными соседние листы (`rootMargin: '1200px'`), то есть три-четыре
- * таких сразу.
+ * The canvas buffer grows QUADRATICALLY with scale, and scale in the reader is
+ * the column width: at 300% an A4 page in a 1400 px column asks to be drawn at
+ * 8400×11900 ≈ 100 Mpx — four hundred megabytes per page. The observer keeps
+ * the neighbouring pages drawn (`rootMargin: '1200px'`), that is, three or four
+ * of those at once.
  *
- * Бюджет памяти холстов на iPad один НА ПРОЦЕСС, и переполнив его, WebKit
- * начинает отдавать холсты прозрачными — причём произвольные, не обязательно
- * те, что его переполнили: обнулиться может лист идущей лекции в соседней
- * вкладке. Отпускания невидимых листов (`release`) для этого мало: на 250–300%
- * бюджет выбирают уже те два-три, что видны.
+ * On iPad the canvas memory budget is one PER PROCESS, and once it overflows,
+ * WebKit starts handing canvases back transparent — arbitrary ones, not
+ * necessarily those that overflowed it: the page of a running lecture in a
+ * neighbouring tab can be blanked. Releasing invisible pages (`release`) is not
+ * enough for this: at 250–300% the two or three visible ones already use up the
+ * budget.
  *
- * Поэтому плотность экрана здесь — не право, а пожелание: если с ней лист не
- * влезает в бюджет, множитель опускается ровно настолько, чтобы влез. На 300%
- * страница от этого мутнеет — но мутная страница читается, а пустая нет.
+ * So screen density here is a wish, not an entitlement: if the page does not
+ * fit into the budget with it, the multiplier is lowered just enough for it to
+ * fit. At 300% the page gets blurrier as a result — but a blurry page can be
+ * read, and an empty one cannot.
  */
 
 /**
- * Площадь холста, за которую заходить нельзя.
+ * The canvas area that must never be exceeded.
  *
- * 16 Мпикс — это 4096×4096, историческая планка Safari на устройствах, где
- * бюджет меньше всего; 64 МБ буфера на лист.
+ * 16 Mpx is 4096×4096, Safari's historical limit on the devices with the
+ * smallest budget; 64 MB of buffer per page.
  */
 export const MAX_CANVAS_PX = 16_000_000
 
-/** И сторона: у длинной узкой страницы площадь ещё в норме, а сторона — нет. */
+/** And the side: a long narrow page may be fine by area but not by side. */
 export const MAX_CANVAS_SIDE = 8192
 
 /**
- * Множитель плотности для листа шириной `width` и высотой `height` в CSS-пикселях.
+ * Density multiplier for a page `width` wide and `height` tall in CSS pixels.
  *
- * Возвращает `density`, пока лист влезает в бюджет, и меньше — когда нет.
- * Никогда не больше запрошенного: резкость сверх плотности экрана не видна.
+ * Returns `density` while the page fits into the budget, and less when it does
+ * not. Never more than requested: sharpness beyond the screen density cannot be
+ * seen.
  */
 export function fits(width: number, height: number, density: number): number {
   const w = Math.max(1, width)

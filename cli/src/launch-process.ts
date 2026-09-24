@@ -20,11 +20,12 @@ export class Processes {
     private log?: number,
   ) {}
   /**
-   * onLine — слушатель строк stdout ребёнка: вернул true — строка его, и на
-   * экран она не идёт (в журнал идёт всё как есть). Так супервизор слышит
-   * строку-метку host.sh под --share, не показывая её человеку. Без
-   * слушателя поток идёт кусками, как шёл: построчная буферизация нужна
-   * только тому, кто просил.
+   * onLine is a listener for the child's stdout lines: if it returns true, the
+   * line is its own and does not go to the screen (everything goes to the log
+   * as is). This is how the supervisor hears the marker line of host.sh under
+   * --share without showing it to the person. Without a listener the stream
+   * goes in chunks, as it did: line buffering is needed only by the one who
+   * asked for it.
    */
   start(
     name: string,
@@ -54,8 +55,8 @@ export class Processes {
           if (!quiet) target.write(chunk)
           return
         }
-        // Декодер, а не toString: буква из двух байт, разрезанная между
-        // кусками, иначе превратилась бы в два знака вопроса.
+        // A decoder, not toString: a two-byte letter split between chunks
+        // would otherwise turn into two question marks.
         const text = lines.rest + lines.decoder.write(chunk)
         const parts = text.split('\n')
         lines.rest = parts.pop() ?? ''

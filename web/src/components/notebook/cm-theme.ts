@@ -255,26 +255,28 @@ const theme = EditorView.theme({
   },
 
   /*
-   * Справка: сигнатура ЦЕЛИКОМ и документация под ней, в окне с прокруткой.
+   * Help: the signature IN FULL and the documentation under it, in a scrolling
+   * window.
    *
-   * Правил несколько, потому что и узлов несколько. У справки по наведению
-   * `hoverTooltip` заводит СВОЙ узел-хозяин (`.cm-tooltip.cm-tooltip-hover`) и
-   * кладёт в него то, что вернул источник: позиционирование, рамка и слой
-   * живут на хозяине, размеры и шрифт — на нашем содержимом. У справки,
-   * закреплённой Shift+Tab, хозяина нет вовсе — `cm-tooltip` навешивается на
-   * НАШ узел, — поэтому слой ему задан отдельной строкой. Написанное одним
-   * слитным селектором не совпадало ни с чем: подсказка выезжала во всю ширину
-   * окна, без полей и без переносов. Проверено на живом ядре, а не на глаз.
+   * There are several rules because there are several nodes. For hover help,
+   * `hoverTooltip` creates ITS OWN host node (`.cm-tooltip.cm-tooltip-hover`)
+   * and puts into it whatever the source returned: positioning, border and
+   * layer live on the host, sizes and font on our content. Help pinned with
+   * Shift+Tab has no host at all — `cm-tooltip` is put on OUR node — so its
+   * layer is set on a separate line. Written as one combined selector, it
+   * matched nothing: the tooltip slid out across the full width of the window,
+   * with no padding and no wrapping. Checked on a live kernel, not by eye.
    *
-   * Слой — НИЖЕ тулбара ячейки, и это не вкусовщина. У всех подсказок
-   * CodeMirror z-index 500 (его базовая тема), у ряда кнопок над ячейкой — 10
-   * (CellView.svelte). Справка, выехавшая под последнюю строку, попадает ровно
-   * на тулбар следующей ячейки и закрывала бы собой «запустить» и
-   * «остановить» — кнопки, до которых человек в этот момент и тянется.
-   * Подсказка — это подсказка; кнопка, которой не видно, — поломка.
+   * The layer is BELOW the cell toolbar, and this is not a matter of taste. All
+   * CodeMirror tooltips have z-index 500 (from its base theme), the row of
+   * buttons above a cell has 10 (CellView.svelte). Help that slides out below
+   * the last line lands exactly on the next cell's toolbar and would cover
+   * "run" and "stop" — the very buttons the person is reaching for at that
+   * moment. A tooltip is a tooltip; a button that cannot be seen is a breakage.
    *
-   * Списку дополнения этот слой не отдаём: он висит под кареткой, в него
-   * целятся мышью, и уехать под чужую кнопку он не может.
+   * The completion list does not get this layer: it hangs under the caret,
+   * people aim at it with the mouse, and it cannot slide under another cell's
+   * button.
    */
   '.cm-tooltip.cm-tooltip-hover': {
     zIndex: '5',
@@ -285,16 +287,17 @@ const theme = EditorView.theme({
   },
   '.cm-signature': {
     /*
-     * Ширина задана, а не выведена из текста. У сигнатуры и у документации
-     * разная естественная ширина — первая длинная и узкая, вторая абзацами, —
-     * и окно, подстраивающееся под содержимое, прыгало бы с имени на имя. 640
-     * — ширина, на которой строка docstring читается без бегания глазами; 92vw
-     * — то же на телефоне, где ширины просто нет.
+     * The width is set, not derived from the text. The signature and the
+     * documentation have different natural widths — the first long and narrow,
+     * the second in paragraphs — and a window adjusting to its content would
+     * jump from name to name. 640 is the width at which a docstring line reads
+     * without the eyes running back and forth; 92vw is the same on a phone,
+     * where there simply is no width.
      */
     width: 'min(640px, 92vw)',
     maxWidth: '100%',
     boxSizing: 'border-box',
-    /* Якорь для тени «есть ещё» — она стоит по нижнему краю окна. */
+    /* Anchor for the "more below" shadow along the window's bottom edge. */
     position: 'relative',
     fontFamily: 'var(--font-mono)',
     fontSize: '13px',
@@ -302,24 +305,24 @@ const theme = EditorView.theme({
     color: 'rgb(var(--ink))',
   },
   /*
-   * ОДНА прокрутка на сигнатуру и документацию вместе — довод записан рядом с
-   * разметкой (CodeEditor.svelte · signatureDom). 45vh — чтобы справка не
-   * закрывала собой ячейку, о которой её спросили; 420 — чтобы на большом
-   * мониторе она не превращалась в половину экрана.
+   * ONE scroll for the signature and the documentation together — the argument
+   * is written next to the markup (CodeEditor.svelte · signatureDom). 45vh so
+   * that the help does not cover the cell it was asked about; 420 so that on a
+   * big monitor it does not turn into half the screen.
    *
-   * `overscroll-behavior: contain` — про колесо, докрученное до конца: без него
-   * прокрутка продолжалась бы НА ТЕТРАДИ, и справка уезжала бы из-под
-   * указателя вместе с ячейкой.
+   * `overscroll-behavior: contain` is about a wheel scrolled all the way to the
+   * end: without it the scrolling would continue ON THE NOTEBOOK, and the help
+   * would slide away from under the pointer together with the cell.
    */
   '.cm-signature-body': {
     maxHeight: 'min(45vh, 420px)',
     overflow: 'auto',
     overscrollBehavior: 'contain',
     padding: '7px 11px',
-    /* Текст справки выделяют мышью и копируют — это ответ, а не украшение. */
+    /* Help text gets selected and copied: it is an answer, not decoration. */
     userSelect: 'text',
   },
-  /* Справка pandas бывает шире монитора — переносим, а не растягиваем. */
+  /* pandas help can be wider than the monitor — wrap it, do not stretch. */
   '.cm-signature-sig': {
     margin: '0',
     fontFamily: 'inherit',
@@ -329,21 +332,23 @@ const theme = EditorView.theme({
     overflowWrap: 'anywhere',
   },
   /*
-   * Длинная сигнатура — потоком, а не столбиком.
+   * A long signature — as a flow, not as a column.
    *
-   * IPython печатает по параметру на строку: у `sns.lmplot` это сорок три
-   * строки, то есть всё окно, и документация уезжает за три экрана прокрутки.
-   * Здесь текст течёт, как обычный абзац, и рвётся только по пробелу МЕЖДУ
-   * параметрами — сам параметр неразрывен (`.cm-signature-param`), потому что
-   * ищут в сигнатуре имя, а разорванное пополам имя не ищется.
+   * IPython prints one parameter per line: for `sns.lmplot` that is forty-three
+   * lines, that is, the whole window, and the documentation ends up three
+   * screens of scrolling away. Here the text flows like an ordinary paragraph
+   * and breaks only at a space BETWEEN parameters — a parameter itself is
+   * unbreakable (`.cm-signature-param`), because people look for a name in a
+   * signature, and a name torn in half cannot be found.
    *
-   * Висячий отступ — чтобы перенесённые строки не начинались там же, где имя
-   * вызываемого: два знака вправо, и глаз видит, где кончилось `sns.lmplot(`
-   * и пошли параметры. `text-indent` отрицательный ровно на ту же величину,
-   * так что первая строка остаётся на месте.
+   * A hanging indent, so that wrapped lines do not start where the callee's
+   * name does: two characters to the right, and the eye sees where
+   * `sns.lmplot(` ended and the parameters began. `text-indent` is negative by
+   * exactly the same amount, so the first line stays in place.
    *
-   * `overflowWrap` возвращается к обычному: у `.cm-signature-sig` он `anywhere`
-   * ради монолитной строки pandas, а здесь рвать слова не нужно и вредно.
+   * `overflowWrap` goes back to normal: on `.cm-signature-sig` it is `anywhere`
+   * for the sake of the monolithic pandas line, while here breaking words is
+   * unnecessary and harmful.
    */
   '.cm-signature-flow': {
     whiteSpace: 'normal',
@@ -356,21 +361,24 @@ const theme = EditorView.theme({
     whiteSpace: 'nowrap',
   },
   /*
-   * Умолчание и аннотация — приглушённым.
+   * Default and annotation — muted.
    *
-   * Читают имя: в `x_estimator=None` глаз ищет `x_estimator`, а `=None` надо
-   * видеть, но не читать. Одним цветом всё это превращается в сплошную
-   * простыню, в которой имена приходится выискивать.
+   * People read the name: in `x_estimator=None` the eye looks for
+   * `x_estimator`, while `=None` has to be visible but not read. In a single
+   * colour all of this turns into a solid sheet in which the names have to be
+   * hunted for.
    */
   '.cm-signature-default': {
     color: 'rgb(var(--muted))',
   },
   /*
-   * Карточка модуля: имя с версией крупно, род приглушённо, описание строкой.
+   * The module card: the name with its version large, the kind muted, the
+   * description as a line.
    *
-   * Моноширинным — как и всё остальное в окне: `matplotlib.pyplot` это имя из
-   * кода, и набирать его пропорциональным значило бы сделать вид, что это
-   * проза. Описание и ссылка — тем же шрифтом, но тише: их читают один раз.
+   * Monospaced — like everything else in the window: `matplotlib.pyplot` is a
+   * name from code, and setting it in a proportional font would mean pretending
+   * that it is prose. The description and the link are in the same font, but
+   * quieter: they are read once.
    */
   '.cm-signature-title': {
     fontSize: '13px',
@@ -397,8 +405,8 @@ const theme = EditorView.theme({
     overflowWrap: 'anywhere',
   },
   /*
-   * Ссылка подчёркнута и цветом ключевого слова — тем же, каким в этой теме
-   * нарисована ссылка в markdown: в одном окне у ссылки один вид.
+   * The link is underlined and in the keyword colour — the same one this theme
+   * draws a markdown link in: within one window a link has one look.
    */
   '.cm-signature-docs a': {
     color: syn('keyword'),
@@ -412,9 +420,10 @@ const theme = EditorView.theme({
     color: 'rgb(var(--faint))',
   },
   /*
-   * Документация — тем же моноширинным, и это не лень. Внутри docstring живут
-   * примеры `>>> df.head()` вместе с их выводом: таблицы pandas выровнены
-   * пробелами, и пропорциональный шрифт превратил бы их в кашу.
+   * The documentation is in the same monospace, and that is not laziness.
+   * Docstrings contain examples like `>>> df.head()` together with their
+   * output: pandas tables are aligned with spaces, and a proportional font
+   * would turn them into mush.
    */
   '.cm-signature-doc': {
     margin: '7px 0 0',
@@ -426,12 +435,13 @@ const theme = EditorView.theme({
     color: 'rgb(var(--muted))',
   },
   /*
-   * «Есть ещё»: тень по нижнему краю, пока не докручено до конца.
+   * "There is more": a shadow along the bottom edge until scrolled to the end.
    *
-   * Нужна потому, что полосы прокрутки в macOS не видно, пока её не трогают:
-   * без этой тени окно выглядит законченным ровно там, где текст обрезан, и
-   * половина справки не существует для того, кто не догадался крутить.
-   * Сквозная для мыши — целятся в текст под ней, а не в неё.
+   * Needed because on macOS the scrollbar is invisible until it is touched:
+   * without this shadow the window looks finished exactly where the text is cut
+   * off, and half of the help does not exist for anyone who did not think to
+   * scroll. Transparent to the mouse — people aim at the text under it, not at
+   * the shadow.
    */
   '.cm-signature-more': {
     position: 'absolute',
@@ -449,19 +459,21 @@ const theme = EditorView.theme({
     opacity: '1',
   },
   /*
-   * Причина, по которой справки нет, — одной строкой и без окна.
+   * The reason there is no help — in one line and without a window.
    *
-   * Ширина здесь своя: «Ядро запускается» занимает треть строки, и растянуть
-   * под это шестисотпиксельное окно значило бы сказать шёпотом в мегафон.
+   * The width here is its own: "The kernel is starting" takes a third of a
+   * line, and stretching the six-hundred-pixel window for it would be
+   * whispering into a megaphone.
    */
   /*
-   * Три точки у временной причины: «жду ответа, он будет».
+   * Three dots on a temporary reason: "waiting for an answer, it will come".
    *
-   * Дышат прозрачностью, и это не украшение, а обещание. Остановленный
-   * указатель — ложь о системе (политика продукта у спиннеров, index.css), а
-   * правило `prefers-reduced-motion` этого продукта убирает ПЕРЕЕЗДЫ и прямо
-   * оставляет цвет и прозрачность: здесь не двигается ничего, только гаснет и
-   * загорается. Сдвиг фаз — чтобы читалось как счёт, а не как мигание.
+   * They breathe through opacity, and that is not decoration but a promise. A
+   * stopped indicator is a lie about the system (the product's policy on
+   * spinners, index.css), and this product's `prefers-reduced-motion` rule
+   * removes MOVEMENT and explicitly keeps colour and opacity: nothing moves
+   * here, it only dims and lights up again. The phase shift is there so that it
+   * reads as counting, not as blinking.
    */
   '.cm-signature-wait': {
     display: 'inline-flex',
@@ -483,13 +495,14 @@ const theme = EditorView.theme({
     '50%': { opacity: '1' },
   },
   /*
-   * Строка про значение: `apartments · DataFrame · 1 460 × 81`.
+   * A line about a value: `apartments · DataFrame · 1 460 × 81`.
    *
-   * Та же плашка, что у строки-причины, и это решение: про переменную
-   * спрашивают «что это и какого размера», а не «расскажи всё» — окно с
-   * прокруткой и документацией здесь было бы тем самым «вагоном текста», на
-   * который владелец и пожаловался. Имя приглушено, тип выделен, остальное
-   * тише: глаз идёт по строке слева направо и на типе останавливается.
+   * The same pill as the reason line, and that is a decision: about a variable
+   * people ask "what is it and how big", not "tell me everything" — a window
+   * with scrolling and documentation here would be the very "ton of text" the
+   * owner complained about. The name is muted, the type stands out, the rest is
+   * quieter: the eye goes along the line from left to right and stops at the
+   * type.
    */
   '.cm-signature-brief': {
     width: 'auto',
@@ -517,23 +530,26 @@ const theme = EditorView.theme({
     padding: '5px 10px',
     fontSize: '12px',
     color: 'rgb(var(--muted))',
-    /* Строка и точки на одной линии: точки — часть фразы, а не значок сбоку. */
+    /* Text and dots on one line: the dots are part of the phrase, not an icon
+       on the side. */
     display: 'flex',
     alignItems: 'center',
   },
 
   /*
-   * Имя, по которому сейчас уйдут к определению: ⌘/Ctrl зажат, указатель на нём.
+   * The name that is about to be followed to its definition: ⌘/Ctrl is held,
+   * the pointer is on it.
    *
-   * Подчёркивание, а не цвет. Цвет тут уже занят — он говорит, ЧТО это за
-   * слово (`syn-fn`, `syn-type`, `syn-text`), и перекрасить имя под указателем
-   * значило бы на полсекунды солгать о его роли. Подчёркивание же ничего не
-   * занимает и читается однозначно: тем же жестом и с тем же видом открывают
-   * ссылку в самом браузере. Хвоя подчёркивания — цвет ключевого слова, им же
-   * в этой теме нарисована ссылка в markdown.
+   * An underline, not a colour. Colour is already taken here — it says WHAT
+   * kind of word this is (`syn-fn`, `syn-type`, `syn-text`), and recolouring
+   * the name under the pointer would mean lying about its role for half a
+   * second. An underline takes nothing and reads unambiguously: a link in the
+   * browser itself is opened with the same gesture and looks the same. The
+   * underline's colour is the keyword colour, the same one this theme draws
+   * markdown links in.
    *
-   * `cursor: pointer` — вторая половина того же обещания: под указателем не
-   * текст, который выделяют, а место, куда ведут.
+   * `cursor: pointer` is the second half of the same promise: under the pointer
+   * is not text to be selected but a place one is taken to.
    */
   '.cm-goto': {
     textDecoration: 'underline',
@@ -544,24 +560,26 @@ const theme = EditorView.theme({
   },
 
   /*
-   * Строка, на которую переход привёл.
+   * The line that a jump has led to.
    *
-   * Цвет — тот же, что у найденного поиском (`.cm-searchMatch` выше), и это не
-   * совпадение: человек спросил «где это определено» и смотрит на ответ, то
-   * есть на найденное. Второй краски для той же мысли заводить незачем, а
-   * запретная здесь одна — бирюза запуска: подсвеченная строка не должна
-   * читаться как считающаяся.
+   * The colour is the same as for a search match (`.cm-searchMatch` above), and
+   * that is no coincidence: the person asked "where is this defined" and is
+   * looking at the answer, that is, at what was found. There is no reason to
+   * introduce a second paint for the same thought, and the only forbidden one
+   * here is the run cyan: a highlighted line must not read as one that is
+   * running.
    *
-   * Гаснет сама. Две секунды держится и уходит в прозрачность — ровно столько
-   * же отмеряет `LANDING_MS` в CodeEditor.svelte, где украшение потом
-   * снимается совсем; числа обязаны совпадать, иначе подсветка либо мигнёт
-   * дважды, либо оборвётся на середине.
+   * It fades by itself. It holds for two seconds and goes transparent — exactly
+   * the time that `LANDING_MS` measures out in CodeEditor.svelte, where the
+   * decoration is later removed entirely; the numbers must match, otherwise the
+   * highlight either blinks twice or is cut off halfway.
    *
-   * Блока `prefers-reduced-motion` здесь нет намеренно. Правило продукта
-   * (index.css) убирает ПЕРЕЕЗДЫ и прямо оставляет цвет и прозрачность: они
-   * ничего не смещают. А техника этой подсветки такова, что снять анимацию
-   * значит снять и саму подсветку — фона у правила нет, он весь в кадрах, — то
-   * есть отнять у человека единственный ответ на вопрос «куда меня привели».
+   * There is deliberately no `prefers-reduced-motion` block here. The product's
+   * rule (index.css) removes MOVEMENT and explicitly keeps colour and opacity:
+   * they do not shift anything. And this highlight is built so that removing
+   * the animation means removing the highlight itself — the rule has no
+   * background, it is all in the keyframes — that is, taking away from the
+   * person the only answer to the question "where have I been taken".
    */
   '.cm-landed': {
     borderRadius: '2px',

@@ -1,23 +1,25 @@
 <script module lang="ts">
   /**
-   * Вкладка списка переживает перемонтаж окна — и только она.
+   * The list tab survives the window's remount — and only the tab does.
    *
-   * Смена ячейки монтирует пульт заново ({#key councilCell} в SessionScreen), и
-   * это намеренно: перемонтаж гасит девять состояний окна разом — прочитанное,
-   * черновики писем, набор «новых», придержанные сдачи, момент заморозки,
-   * снимок списка, момент открытия, раскрытое и курсор. Всё перечисленное
-   * ПРИВЯЗАНО К ЛЮДЯМ этой ячейки, и утащить его в следующую значило бы
-   * написать письмо не тому.
+   * Switching cells mounts the console anew ({#key councilCell} in
+   * SessionScreen), and on purpose: the remount clears nine window states at
+   * once — what was read, letter drafts, the "new" set, held submissions, the
+   * freeze moment, the list snapshot, the moment of opening, what was
+   * expanded, and the cursor. Everything listed is TIED TO THE PEOPLE of this
+   * cell, and dragging it into the next one would mean writing a letter to
+   * the wrong person.
    *
-   * Вкладка — единственное, что к ячейке не привязано: «я сейчас разбираю
-   * сданное» или «я слежу за теми, кто пишет» — это способ вести пару, а не
-   * свойство ячейки, и заново выбирать его на каждом переключении значит
-   * терять место, куда смотришь. Поэтому она живёт в module-переменной: та
-   * переживает перемонтаж и умирает вместе с окном, чего и хотелось.
+   * The tab is the only thing not tied to the cell: "I am reviewing what was
+   * submitted now" or "I am watching those who are writing" is a way of
+   * running a class, not a property of a cell, and choosing it anew on every
+   * switch means losing the place you are looking at. So it lives in a
+   * module variable: that survives the remount and dies with the window,
+   * which is what was wanted.
    *
-   * Отбор (чипы) остаётся сбрасываемым, как и был: его числа считаны по ЭТОЙ
-   * ячейке («Без оценки 9»), и перенесённый в соседнюю он обещал бы отбор,
-   * которому там может не соответствовать никто.
+   * The filter (chips) stays resettable, as it was: its numbers are counted
+   * for THIS cell ("Ungraded 9"), and carried into a neighbouring cell it
+   * would promise a filter that nobody there may match.
    */
   let lastTab: 'submitted' | 'writing' | 'all' = 'submitted'
 </script>
@@ -91,15 +93,17 @@
   interface Props {
     cellId: string
     /**
-     * Перейти на другую ячейку консилиума — В ЭТОМ ЖЕ ОКНЕ.
+     * Go to another council cell — IN THIS SAME WINDOW.
      *
-     * Адресом, а не присваиванием: окно одно на комнату (`pultWindowName`), и
-     * его адрес обязан называть ту ячейку, которую видно, — иначе ссылка «на
-     * телефон» уведёт в другую, а перезагрузка окна вернёт не туда, где были.
-     * Заодно «назад» возвращает к прошлой ячейке, ничего для этого не зная.
+     * By address, not by assignment: there is one window per room
+     * (`pultWindowName`), and its address must name the cell that is visible
+     * — otherwise the "to phone" link would lead to another one, and
+     * reloading the window would return somewhere other than where you were.
+     * As a bonus, "back" returns to the previous cell without knowing
+     * anything about it.
      */
     onpick: (cellId: string) => void
-    /** Возврат в тетрадь: закрыть отдельное окно или перейти по адресу комнаты. */
+    /** Back to the notebook: close the separate window or go to the room's address. */
     onexit: () => void
   }
 
@@ -117,34 +121,38 @@
   })
   const presenceKnown = $derived(session.connected && rosterReady)
 
-  /* ------------------------------------------------------------ окно */
+  /* ---------------------------------------------------------- window */
 
-  // Стук соседнему окну: по нему кнопка под ячейкой знает, что окно живо.
+  // A knock to the neighbouring window: by it the button under the cell knows
+  // that the window is alive.
   $effect(() => announcePult(session.session.id, cellId))
 
   /**
-   * Место окна — на комнату, лучшим усилием.
+   * The window's place — per room, on a best-effort basis.
    *
-   * События «окно передвинули» у браузера нет; `resize` ловит только размер, а
-   * переезд на второй монитор — ничего. Раз в секунду — достаточно точно для
-   * того, чтобы второй раз открыться туда же, и дёшево: четыре чтения.
+   * The browser has no "window moved" event; `resize` catches only the size,
+   * and a move to a second monitor catches nothing. Once a second is
+   * accurate enough to open in the same place the second time, and cheap:
+   * four reads.
    *
-   * НО ТОЛЬКО ИЗ СВОЕГО ОКНА. Пульт открывают не только кнопкой: ссылку на него
-   * вставляют в адресную строку, шлют себе на телефон, оставляют во вкладке. В
-   * таком пульте `outerWidth/Height` — это размер ЧУЖОГО окна целиком, и
-   * записанный однажды, он просил у следующего `window.open` попап во весь
-   * экран из точки 0,0 — то есть окно, не отличимое от вкладки. Один такой
-   * заход отравлял память навсегда: каждое следующее открытие её подтверждало.
+   * BUT ONLY FROM OUR OWN WINDOW. The console is opened not only by the
+   * button: its link is pasted into the address bar, sent to one's phone,
+   * left in a tab. In such a console `outerWidth/Height` is the size of
+   * SOMEONE ELSE'S whole window, and once written it asked the next
+   * `window.open` for a full-screen popup from point 0,0 — that is, a window
+   * indistinguishable from a tab. One such visit poisoned the memory for
+   * good: every following opening confirmed it.
    *
-   * Признак своего окна — `window.opener`: его ставит тот же `window.open`,
-   * который просил это место. Второй заслон (место во весь экран) стоит внутри
-   * `savePultPlace` — на случай, когда окно наше, а развернули его руками.
+   * The sign of our own window is `window.opener`: it is set by the same
+   * `window.open` that asked for this place. A second barrier (a full-screen
+   * place) sits inside `savePultPlace` — for when the window is ours but was
+   * maximised by hand.
    */
   const ownWindow = (): boolean => {
     try {
       return Boolean(window.opener)
     } catch {
-      // Opener с другого происхождения читать нельзя — но он есть.
+      // An opener from another origin cannot be read — but it is there.
       return true
     }
   }
@@ -163,28 +171,29 @@
     return () => clearInterval(timer)
   })
 
-  /** Живые часы окна: счётчики «считает 3,1 с» и «в кадре 1:40». */
+  /** The window's live clock: the "running 3.1 s" and "in frame 1:40" counters. */
   let now = $state(Date.now())
   $effect(() => {
     const timer = setInterval(() => (now = Date.now()), 1000)
     return () => clearInterval(timer)
   })
 
-  /* ----------------------------------------------------------- телефон */
+  /* ------------------------------------------------------------- phone */
 
   /**
-   * Узкое окно — два экрана вместо двух колонок.
+   * A narrow window — two screens instead of two columns.
    *
-   * Пульт пробовали с телефона на паре 19.09: «пролистать список всех
-   * студентов невозможно». Две колонки в 390 px шириной — это список высотой в
-   * половину строки под шапкой, вкладками, полосой, счётчиками, поиском и
-   * чипами. Мессенджер в этом месте устроен одинаково везде и не зря: сперва
-   * список во весь экран, нажатие открывает разговор во весь экран, назад
-   * возвращает к списку.
+   * The console was tried from a phone in the 19 Sep 2026 class: "it is
+   * impossible to scroll the list of all students". Two columns 390 px wide
+   * are a list half a row tall under the header, the tabs, the strip, the
+   * counters, the search and the chips. A messenger is built the same way
+   * everywhere here, and for a reason: first a full-screen list, a press
+   * opens a full-screen conversation, back returns to the list.
    *
-   * Порог тот же, что у остальных правил узкого окна (650 px), и читается он
-   * через matchMedia, а не по ширине из resize: у `matchMedia` тот же порог,
-   * что в CSS, и разойтись им нельзя.
+   * The threshold is the same as for the other narrow-window rules (650 px),
+   * and it is read through matchMedia, not from the width in resize:
+   * `matchMedia` has the same threshold as the CSS, and the two cannot drift
+   * apart.
    */
   let phone = $state(false)
   $effect(() => {
@@ -197,13 +206,14 @@
   let phonePane = $state<'list' | 'work'>('list')
 
   /**
-   * Системный «назад» возвращает к списку, а не закрывает пульт.
+   * The system "back" returns to the list rather than closing the console.
    *
-   * Адрес при этом не меняется: маршрут пульта — это ячейка (routes.ts), а не
-   * то, на что в ней смотрят, и заводить под экран работы второй адрес значило
-   * бы, что ссылка на пульт иногда открывается списком, а иногда чужой
-   * работой. Поэтому запись истории своя, с тем же адресом и пометкой в
-   * состоянии; жест «назад» её снимает, `popstate` возвращает список.
+   * The address does not change: the console's route is the cell
+   * (routes.ts), not what is being looked at in it, and giving the work
+   * screen a second address would mean the console link sometimes opens as
+   * the list and sometimes as someone's work. So the history entry is our
+   * own, with the same address and a mark in the state; the "back" gesture
+   * removes it, and `popstate` brings the list back.
    */
   function toWork(): void {
     if (!phone || phonePane === 'work') return
@@ -212,8 +222,9 @@
   }
   function toList(): void {
     if (phonePane !== 'work') return
-    // Через историю, а не присваиванием: иначе запись о работе осталась бы в
-    // стопке, и следующий «назад» уводил бы из пульта через пустой шаг.
+    // Through history, not by assignment: otherwise the work entry would stay
+    // in the stack, and the next "back" would leave the console via an empty
+    // step.
     history.back()
   }
   $effect(() => {
@@ -222,7 +233,7 @@
     return () => window.removeEventListener('popstate', back)
   })
 
-  /* --------------------------------------------------------- комната */
+  /* ------------------------------------------------------------ room */
 
   const board = $derived(session.council.boards[cellId] ?? null)
   const shown = $derived(session.council.shown[cellId] ?? null)
@@ -230,8 +241,9 @@
   const names = $derived(settings.namesOnProjector)
   const attempts = $derived(board?.attempts ?? [])
   const variants = $derived(variantNumbers(attempts))
-  // Стопка отвечает про ЭТУ ячейку, кадр ядра — про очередь всей тетради: без
-  // второго пульт писал «здесь ничего не выполняется» рядом с «в очереди: 12».
+  // The pile answers for THIS cell, the kernel frame for the queue of the
+  // whole notebook: without the latter the console wrote "nothing is running
+  // here" next to "in the queue: 12".
   const kernel = $derived(kernelView(attempts, session.council.kernels[cellId] ?? null))
   const counts = $derived(board?.counts ?? { attempts: 0, submitted: 0, writing: 0, groups: 0 })
   const offline = $derived(!session.connected)
@@ -239,23 +251,27 @@
 
 
   /**
-   * Где ячейки стоят в документе: номер и тетрадь, по id.
+   * Where the cells stand in the document: number and notebook, by id.
    *
-   * Номер живой — ячейки переставляют и удаляют прямо во время консилиума, — а
-   * тетрадь нужна списку выбора: номера уникальны ВНУТРИ тетради, и две «ячейки
-   * 03» из разных файлов иначе не различить.
+   * The number is live — cells are reordered and deleted right during a
+   * council — and the notebook is needed by the picker: numbers are unique
+   * WITHIN a notebook, and two "cell 03"s from different files could not
+   * otherwise be told apart.
    *
-   * Обход коалесцируется: `afterTransaction` приходит на каждое нажатие клавиши
-   * в комнате, а обойти все тетради — это все их ячейки. Задержка в треть
-   * секунды в номере ячейки не видна никому, а тридцати обходов в секунду на
-   * полном классе не случается.
+   * The walk is coalesced: `afterTransaction` arrives on every keystroke in
+   * the room, and walking all the notebooks means all their cells. A delay
+   * of a third of a second in a cell number is visible to nobody, and thirty
+   * walks a second with a full class do not happen.
    */
   interface CellPlace {
     index: number
     book: string
-    /** Название задания — первая строка ячейки или заголовок markdown над ней. */
+    /** The task name — the cell's first line or the markdown heading above it. */
     title: string
-    /** Замок ячейки в ДОКУМЕНТЕ: он приезжает своим каналом, раньше или позже сокета. */
+    /**
+     * The cell's lock in the DOCUMENT: it arrives by its own channel, before
+     * or after the socket.
+     */
     council: boolean
   }
   let places = $state.raw<ReadonlyMap<string, CellPlace>>(new Map())
@@ -271,16 +287,18 @@
       for (const { name, cells } of lists) {
         const all = cells.toArray()
         /*
-         * Заголовок ближайшей markdown-ячейки ВЫШЕ — на случай, когда ячейка
-         * начинается кодом. Условие задачи в тетради чаще стоит отдельной
-         * ячейкой над кодом, чем комментарием внутри него, и «imp =
-         * clf.feature_importances_» в меню хуже честной «ячейки 03».
+         * The heading of the nearest markdown cell ABOVE — for when a cell
+         * starts with code. A task statement in a notebook more often stands
+         * as a separate cell above the code than as a comment inside it, and
+         * "imp = clf.feature_importances_" in the menu is worse than an
+         * honest "cell 03".
          *
-         * Текст читается у всех ячеек, а не только у консилиумных: какие из них
-         * консилиумные, знает не документ, а стопки, и спрашивать их отсюда
-         * значило бы пересобирать этот обход на каждый кадр сети. Обход и так
-         * сгущён до раза в треть секунды, а первые строки — это то, что Y.Text
-         * и без того держит в памяти.
+         * The text is read for all cells, not only council ones: which of
+         * them are council cells is known not by the document but by the
+         * piles, and asking them from here would mean rebuilding this walk on
+         * every network frame. The walk is already thinned to once every
+         * third of a second, and the first lines are what Y.Text keeps in
+         * memory anyway.
          */
         let above = ''
         for (let at = 0; at < all.length; at += 1) {
@@ -314,13 +332,14 @@
     }
   })
   /**
-   * Ячейки консилиума комнаты — список за номером в шапке.
+   * The room's council cells — the list behind the number in the header.
    *
-   * Источник — стопки (`session.council.boards`): сервер везёт преподавателю
-   * стопку по КАЖДОЙ ячейке, где консилиум идёт или где остались попытки
-   * (control.ts · councilWelcome), и всё, что нужно строке меню, уже здесь.
-   * Ячейка, с которой консилиум сняли, из списка не уходит — у неё пометка
-   * «просмотр»: сданное смотрят до конца занятия.
+   * The source is the piles (`session.council.boards`): the server sends the
+   * teacher a pile for EVERY cell where a council is going on or where
+   * attempts remain (control.ts · councilWelcome), and everything a menu row
+   * needs is already here. A cell whose council was taken off does not leave
+   * the list — it gets a "review only" mark: submitted work is looked at
+   * until the end of the class.
    */
   const cells = $derived<PultCellRow[]>(
     pultCells(
@@ -339,11 +358,13 @@
   )
 
   /**
-   * Сторож приветственной пачки: ждать первый кадр — но не вечно.
+   * A watchman for the welcome batch: wait for the first frame — but not
+   * forever.
    *
-   * Признака могло и не прийти вовсе (сервер постарше кадра `council:ready`,
-   * потерянный кадр), и тогда пульт стоял бы под заставкой до перезагрузки.
-   * Через WELCOME_WAIT_MS ожидание кончается, и окно показывает то, что знает.
+   * The signal might not arrive at all (a server older than the
+   * `council:ready` frame, a lost frame), and then the console would stand
+   * under the splash until a reload. After WELCOME_WAIT_MS the wait ends,
+   * and the window shows what it knows.
    */
   let waited = $state(false)
   $effect(() => {
@@ -351,15 +372,16 @@
     return () => clearTimeout(timer)
   })
   /**
-   * Жду · нет её · вот она — вместо одного `board === null`.
+   * Waiting · not there · here it is — instead of a single `board === null`.
    *
-   * Окно рисуется раньше первого кадра стопки, и `null` значил сразу два разных
-   * факта: «кадр ещё едет» и «консилиума тут нет». Пульт выбирал второе и на
-   * каждой перезагрузке успевал мигнуть «ячейка не в консилиуме» ровно между
-   * заставкой приложения и собой. Правило целиком — council.svelte.ts ·
-   * boardPhase; сюда сходятся четыре его входа, в том числе замок из ДОКУМЕНТА:
-   * CRDT и сокет — разные каналы, и документ, уже знающий про консилиум, спорит
-   * с молчанием сокета.
+   * The window is drawn before the pile's first frame, and `null` meant two
+   * different facts at once: "the frame is still on its way" and "there is
+   * no council here". The console chose the latter and on every reload
+   * managed to flash "the cell is not in a council" right between the app's
+   * splash and itself. The whole rule is in council.svelte.ts · boardPhase;
+   * its four inputs meet here, including the lock from the DOCUMENT: the
+   * CRDT and the socket are different channels, and a document that already
+   * knows about the council argues with the socket's silence.
    */
   const phase = $derived(
     boardPhase({
@@ -370,15 +392,16 @@
     }),
   )
 
-  /* -------------------------------------------------- состояние экрана */
+  /* ------------------------------------------------------ screen state */
 
   /**
-   * Вкладка списка и отбор внутри неё.
+   * The list tab and the filter within it.
    *
-   * Отбор — СВОЙ У КАЖДОЙ вкладки: «Без оценки» и «Молчат» отвечают на разные
-   * вопросы, и один чип на три стопки означал бы, что переключение вкладки
-   * молча меняет ещё и отбор. Вкладка начинается с той, на которой её оставили
-   * в прошлой ячейке (module-переменная `lastTab` выше), отбор — всегда с «Все».
+   * EACH tab has its OWN filter: "Ungraded" and "Silent" answer different
+   * questions, and one chip for three piles would mean that switching tabs
+   * silently changes the filter too. The tab starts from the one it was left
+   * on in the previous cell (the `lastTab` module variable above), the
+   * filter always from "All".
    */
   let listTab = $state<PultTab>(lastTab)
   $effect(() => {
@@ -389,37 +412,42 @@
   let search = $state('')
   let searching = $state(false)
   let cursor = $state<string | null>(null)
-  /** Пришли с клавиатуры: только тогда у строки кольцо фокуса. */
+  /** Came from the keyboard: only then does a row get a focus ring. */
   let keyboard = $state(false)
-  /** Чьи строки уже открывали: точка непрочитанного гаснет и не возвращается. */
+  /** Whose rows have been opened: the unread dot goes out and does not come back. */
   let seen = $state.raw<ReadonlySet<string>>(new Set())
   let tab = $state<PultView>('work')
   /**
-   * Какой экран показан на телефоне; на широком окне видны оба.
+   * Which screen is shown on a phone; on a wide window both are visible.
    *
-   * Очередь и оракул рисуются поверх слоя «список/работа» целиком, поэтому вне
-   * вкладки работ экран всегда «список»: иначе после возврата из очереди
-   * открывалась бы чужая работа без планки, которой её закрывают.
+   * The queue and the oracle are drawn over the whole "list/work" layer, so
+   * outside the work tab the screen is always "list": otherwise coming back
+   * from the queue would open someone's work without the bar it is closed
+   * with.
    */
   const pane = $derived(!phone ? 'both' : tab === 'work' ? phonePane : 'list')
   let helpOpen = $state(false)
   /**
-   * Лист регламента: на каком правиле открыт и куда вернуть фокус.
+   * The rules sheet: which rule it is open on and where to return focus.
    *
-   * Правило хранится вместе с признаком «открыт», потому что лист всегда
-   * открывают РАДИ правила — из предложения в шапке, из строки запуска, с
-   * клавиши; строка этого правила подсвечена, и на ней же стоит фокус.
-   * Возвращающий элемент запоминается самим открывающим: кнопка в шапке и
-   * ссылка «предел 30 с» в работе — разные места, и «вернуть фокус туда, где
-   * он был» значит именно туда, а не на первую попавшуюся.
+   * The rule is stored together with the "open" flag, because the sheet is
+   * always opened FOR a rule — from the sentence in the header, from the run
+   * line, from a key; that rule's row is highlighted, and focus stands on
+   * it. The element to return to is remembered by whoever opens it: the
+   * button in the header and the "limit 30 s" link in the work are
+   * different places, and "return focus to where it was" means exactly
+   * there, not to the first one that comes along.
    */
   let rulesOpen = $state(false)
   let rulesRule = $state<PultRule>('studentRun')
-  /** Предложение в шапке и числа под пределом — по требованию: лист чаще закрыт. */
+  /** The header sentence and limit stats — on demand: the sheet is mostly closed. */
   const sentence = $derived(rulesSentence(settings))
   const stats = $derived(runStats(attempts))
   let rulesBack: HTMLElement | null = null
-  /** Высота шапки: от её низа падает лист. Меняется от ширины окна и длины имени. */
+  /**
+   * The header's height: the sheet drops from its bottom. It changes with
+   * the window width and the length of the name.
+   */
   let headHeight = $state(0)
   let focus = $state<PultFocus>('list')
   type ReplyDraft = { text: string; fromOracle: boolean }
@@ -433,15 +461,16 @@
     if (!cursor || !current) return
     replyDrafts[cursor] = { text: reply, fromOracle: replyFromOracle, ...patch }
   }
-  /** Момент открытия пульта: всё, что сдано раньше, непрочитанным не считается. */
+  /** When the console opened: anything submitted earlier does not count as unread. */
   const openedAt = Date.now()
 
   /**
-   * Придержанные сдачи.
+   * Held submissions.
    *
-   * `frozenAt` — момент, с которого список перестал впускать новых: он ставится
-   * не по таймеру, а по первому же прибытию, случившемуся, пока человек читает.
-   * `null` — список открыт, всё попадает сразу.
+   * `frozenAt` is the moment from which the list stopped letting new ones
+   * in: it is set not by a timer but by the very first arrival that happens
+   * while the person is reading. `null` — the list is open, everything goes
+   * in at once.
    */
   let frozenAt = $state<number | null>(null)
   let held = $state.raw<ReadonlySet<string>>(new Set())
@@ -449,14 +478,16 @@
   const unread = $derived(unreadIds(attempts, openedAt, seen))
 
   /**
-   * Набор строк отбора «новые» — тот, что НЕ ТАЕТ под курсором.
+   * The set of rows for the "new" filter — the one that does NOT MELT under
+   * the cursor.
    *
-   * Точка непрочитанного гаснет, как только строку открыли. Если бы отбор
-   * «новые» читал живой набор, он вычёркивал бы строку ровно в тот момент,
-   * когда её начали читать: курсор переезжает на следующую, гасит и её, —
-   * и список опустошает сам себя за секунду, пока человек смотрит на первую
-   * работу. Поэтому пока чип нажат, набор только пополняется, а очищается
-   * при выходе из отбора: вернулись в «новые» — снова те, кто сдал с тех пор.
+   * The unread dot goes out as soon as a row is opened. If the "new" filter
+   * read the live set, it would strike out a row exactly when someone began
+   * reading it: the cursor moves to the next one and puts that out too — and
+   * the list empties itself within a second while the person looks at the
+   * first piece of work. So while the chip is pressed the set only grows,
+   * and it is cleared on leaving the filter: back in "new", it is again
+   * those who submitted since then.
    */
   let newPool = $state.raw<ReadonlySet<string>>(new Set())
   $effect(() => {
@@ -485,7 +516,7 @@
       now,
     }),
   )
-  /** Числа на вкладках и в чипах — тем же ситом, каким список и отбирает. */
+  /** Numbers on the tabs and chips — by the same sieve the list filters with. */
   const tabs = $derived(tabCounts(attempts))
   const chips = $derived(filterCounts(attempts, listTab, filter === 'new' ? newPool : unread, now))
   const ids = $derived(selectable(rows))
@@ -495,11 +526,12 @@
   const place = $derived(cursor === null ? 0 : ids.indexOf(cursor) + 1)
 
   /**
-   * Курсор всегда стоит на живой строке.
+   * The cursor always stands on a live row.
    *
-   * Сменили отбор, автора убрали из комнаты, группу свернули — строки под
-   * курсором больше нет, и правая колонка показывала бы работу, которой в
-   * списке не видно. Переносим на первую; пустой список оставляет пустой курсор.
+   * The filter changed, the author was removed from the room, a group was
+   * collapsed — the row under the cursor is gone, and the right column would
+   * show a piece of work not visible in the list. Move to the first one; an
+   * empty list leaves an empty cursor.
    */
   $effect(() => {
     const list = ids
@@ -520,10 +552,11 @@
   })
 
   /**
-   * Держать ли новые сдачи.
+   * Whether to hold new submissions.
    *
-   * Полоса появляется, когда список прокручен или курсор не на первой строке.
-   * Под курсором строка не двигается никогда — даже если её автор сдал заново.
+   * The strip appears when the list is scrolled or the cursor is not on the
+   * first row. The row under the cursor never moves — even if its author
+   * submitted again.
    */
   let scrolled = $state(false)
   let standing = $state.raw<ReadonlySet<string>>(new Set())
@@ -561,28 +594,30 @@
   }
 
   /**
-   * Вывод открытой работы, не поехавший со стопкой, — попросить отдельно.
+   * The open work's output that did not come with the pile — ask for it
+   * separately.
    *
-   * Память о том, что уже спрашивали, живёт в `CouncilState.wantOutputs`: полный
-   * кадр стопки её обнуляет, и вторая копия правила разошлась бы с первой на
-   * первом же переподключении.
+   * The memory of what has already been asked for lives in
+   * `CouncilState.wantOutputs`: a full pile frame resets it, and a second
+   * copy of the rule would diverge from the first on the very first
+   * reconnect.
    */
   $effect(() => {
     const attempt = current
     if (attempt?.run?.outputsOmitted) session.council.wantOutputs(cellId, attempt.participantId)
   })
 
-  /* ----------------------------------------------------------- действия */
+  /* ------------------------------------------------------------ actions */
 
   function open(participantId: string): void {
     cursor = participantId
     keyboard = false
     tab = 'work'
-    // На телефоне открыть работу — значит перейти на её экран целиком.
+    // On a phone, opening a piece of work means going to its full screen.
     toWork()
   }
 
-  /** Стрелки ‹ › на телефоне: по ленте, как j и k на клавиатуре. */
+  /** The ‹ › arrows on a phone: through the feed, like j and k on a keyboard. */
   function step(delta: 1 | -1): void {
     const next = moveCursor(rows, cursor, delta)
     if (next !== null) cursor = next
@@ -591,8 +626,8 @@
   function show(participantId: string | null = cursor): void {
     if (disabled || participantId === null) return
     const attempt = attempts.find((one) => one.participantId === participantId)
-    // Черновик классу не показывают: человек ещё пишет, и на стене окажется
-    // половина мысли, за которую он не отвечает.
+    // A draft is not shown to the class: the person is still writing, and the
+    // wall would get half a thought they do not answer for.
     if (!attempt || attempt.submittedAt === null) return
     session.council.show(cellId, participantId)
   }
@@ -613,18 +648,19 @@
   }
 
   /**
-   * Перезапуск ядра — ядра ТОЙ тетради, в которой стоит эта ячейка.
+   * Restarting the kernel — the kernel of THE notebook this cell is in.
    *
-   * Ядро на тетрадь, а не на комнату (kernel/index.ts), и перезапуск из пульта
-   * обязан попасть в то же, что считает попытки этой ячейки: иначе он унёс бы
-   * переменные у соседней тетради, которой ничего не мешало.
+   * A kernel per notebook, not per room (kernel/index.ts), and a restart
+   * from the console must hit the same one that runs this cell's attempts:
+   * otherwise it would wipe the variables of a neighbouring notebook that
+   * nothing was wrong with.
    */
   function restartKernel(): void {
     if (disabled) return
     session.send({ t: 'restart', book: rootOfCell(session.doc, cellId) ?? undefined })
   }
 
-  /** Снять ждущий запуск с очереди — не трогая человека и его текст. */
+  /** Take a waiting run out of the queue — not touching the person or their text. */
   function dropRun(attempt: CouncilAttempt): void {
     if (disabled || attempt.run?.state !== 'queued') return
     session.council.dropRun(cellId, attempt.participantId)
@@ -653,12 +689,13 @@
   }
 
   /**
-   * Правило регламента — тем же кадром, что и замок ячейки.
+   * A rules setting — in the same frame as the cell's lock.
    *
-   * Кадра «настройка консилиума» нет и не будет: ручки едут `cell:lock` вместе
-   * с положением замка (council.svelte.ts · lock), и сервер кладёт их в ту же
-   * версию истории. Повторное нажатие по уже выбранному не отправляется: это
-   * не событие, а лишняя версия на каждый щелчок.
+   * There is no "council setting" frame and there will not be one: the
+   * controls travel in `cell:lock` together with the lock position
+   * (council.svelte.ts · lock), and the server puts them into the same
+   * history version. Pressing an already chosen value again is not sent: it
+   * is not an event but an extra version on every click.
    */
   function setRule(patch: Partial<CouncilSettings>): void {
     if (disabled) return
@@ -679,20 +716,23 @@
     rulesOpen = false
     const back = rulesBack
     rulesBack = null
-    // Кнопка могла исчезнуть вместе со своим куском предложения: запретили
-    // студентам запускать — «повтор …» ушёл из строки. Тогда фокус принимает
-    // имя регламента: оно есть при любой ширине и в любом состоянии.
+    // The button may have disappeared together with its piece of the
+    // sentence: students were forbidden to run — "repeat …" left the line.
+    // Then focus goes to the rules' name: it is there at any width and in any
+    // state.
     void tick().then(() =>
       (back?.isConnected ? back : document.querySelector<HTMLElement>('[data-pult-rules-open]'))?.focus(),
     )
   }
 
   /**
-   * Письмо — АВТОРУ ОТКРЫТОЙ РАБОТЫ, и адресата у него больше нет другого.
+   * A letter goes to THE AUTHOR OF THE OPEN WORK, and it has no other
+   * recipient any more.
    *
-   * Рядом стояла кнопка «Всем N»: то же письмо уходило всей группе одинаковых
-   * ответов, и к ней прилагался черновик от оракула. Группировка ушла из пульта
-   * целиком (20.09), а с ней и письмо группе: замены ему не придумывали.
+   * There used to be an "Everyone N" button next to it: the same letter went
+   * to the whole group of identical answers, with an oracle draft attached.
+   * Grouping left the console entirely (20 Sep 2026), and the group letter
+   * went with it: no replacement was invented.
    */
   function sendReply(): void {
     const text = reply.trim()
@@ -702,11 +742,12 @@
   }
 
   /**
-   * Удалить автора работы или записи очереди с занятия.
+   * Remove the author of a piece of work or of a queue entry from the class.
    *
-   * Спрашивает общее меню бана (components/panels/BanMenu.svelte) — оно живёт
-   * в этом же окне и перечисляет последствия. Имя и id берутся из попытки и
-   * при выключенных именах: «Вариант 12» удалять нельзя, удаляют человека.
+   * The shared ban menu asks (components/panels/BanMenu.svelte) — it lives
+   * in this same window and lists the consequences. The name and id are
+   * taken from the attempt even with names off: "Answer 12" cannot be
+   * removed, a person is.
    */
   function remove(attempt: CouncilAttempt, event: MouseEvent): void {
     if (disabled) return
@@ -714,10 +755,11 @@
   }
 
   /**
-   * Оракул о классе — через тот же маршрут, что и в тетради.
+   * The oracle about the class — through the same route as in the notebook.
    *
-   * `question` — свободный вопрос о состоянии класса; без него сервер готовит
-   * прежнюю сводку по решениям (server/src/routes/council.ts).
+   * `question` is a free-form question about the state of the class;
+   * without it the server prepares the old summary of solutions
+   * (server/src/routes/council.ts).
    */
   async function askOracle(
     stop: boolean,
@@ -733,11 +775,12 @@
     }
   }
 
-  /* ---------------------------------------------------------- клавиши */
+  /* ------------------------------------------------------------- keys */
 
   /**
-   * Где стоит фокус, по элементу под ним: поле ответа — его клавиши, поиск —
-   * стрелки продолжают ходить по списку, кнопка — Enter нажимает кнопку.
+   * Where the focus is, by the element under it: the reply field — its own
+   * keys; the search — the arrows keep moving through the list; a button —
+   * Enter presses the button.
    */
   function where(target: EventTarget | null): PultFocus {
     const node = target instanceof HTMLElement ? target : null
@@ -760,10 +803,11 @@
       return
     }
     /*
-     * Открытый лист забирает клавиатуру целиком.
+     * An open sheet takes the keyboard entirely.
      *
-     * Иначе j и k ходили бы по списку за затемнением, а Esc закрывал бы заодно
-     * поиск — и лист. Внутри листа своя жизнь: Tab по кругу, пробел на кнопке.
+     * Otherwise j and k would move through the list behind the dimming, and
+     * Esc would close the search along with the sheet. Inside the sheet life
+     * is its own: Tab cycles, space presses a button.
      */
     if (rulesOpen) {
       if (event.key === 'Escape') {
@@ -782,7 +826,8 @@
     const inOverlay = event.target instanceof HTMLElement && Boolean(event.target.closest('[role=menu], [role=dialog], [role=alertdialog]'))
     if (action === null || !pultShortcutAllowed(action, tab, inNavigation, inOverlay)) return
     if (action === 'send') {
-      // Отправку разбирает само поле: ⌘↵ внутри textarea уже перехвачен там.
+      // Sending is handled by the field itself: ⌘↵ inside the textarea is
+      // already caught there.
       return
     }
     event.preventDefault()
@@ -796,14 +841,16 @@
         void scrollToCursor(at !== 'search')
         return
       /*
-       * Соседняя ячейка — ТЕМ ЖЕ переходом, что выбор из меню.
+       * A neighbouring cell — by THE SAME transition as a choice from the
+       * menu.
        *
-       * То есть адресом (`onpick`), а не присваиванием: окно одно на комнату, и
-       * его адрес обязан называть ту ячейку, которую видно, — иначе ссылка «на
-       * телефон» уведёт в другую, а перезагрузка вернёт не туда, где были.
-       * Порядок — тот же, что в меню (`cells`), и на краях ничего не
-       * происходит: заворачивать по кругу значит увести пульт с первой ячейки
-       * на последнюю, ничем об этом не сказав.
+       * That is, by address (`onpick`), not by assignment: there is one
+       * window per room, and its address must name the cell that is visible
+       * — otherwise the "to phone" link would lead to another one, and a
+       * reload would return somewhere other than where you were. The order
+       * is the same as in the menu (`cells`), and nothing happens at the
+       * edges: wrapping around would take the console from the first cell to
+       * the last without saying so.
        */
       case 'nextCell':
       case 'prevCell': {
@@ -835,8 +882,9 @@
         helpOpen = !helpOpen
         return
       case 'rules':
-        // С клавиши — всегда с первого правила: у «п» нет значения, по
-        // которому нажали, и «где-то там, где были в прошлый раз» — не ответ.
+        // From a key, always from the first rule: "g" has no value it was
+        // pressed on, and "somewhere around where we were last time" is not
+        // an answer.
         openRules('studentRun')
         return
       case 'escape':
@@ -849,7 +897,7 @@
     }
   }
 
-  /** Строка под курсором не должна оказаться у самого края списка. */
+  /** The row under the cursor must not end up at the very edge of the list. */
   async function scrollToCursor(moveFocus = true): Promise<void> {
     await tick()
     if (cursor === null) return
@@ -864,8 +912,8 @@
 
 {#if !host}
   <!--
-    Отказ, а не пустой пульт. Ссылка на окно уезжает в чат так же легко, как
-    любая другая, а за ней лежат чужие работы целиком.
+    A refusal, not an empty console. A link to the window goes into a chat as
+    easily as any other, and behind it lie other people's work in full.
   -->
   <div class="flex h-full w-full flex-col items-center justify-center gap-2 bg-canvas px-10 text-center">
     <p class="text-title font-bold text-ink">{tr('room.ui.1357')}</p>
@@ -873,10 +921,11 @@
   </div>
 {:else if board === null || phase !== 'ready'}
   <!--
-    «Жду» и «нет» — две разные картинки, и раньше на месте обеих стояла вторая.
-    Пока стопка в пути, здесь та же заставка, что у комнаты (Splash), а не
-    приговор «ячейка не в консилиуме»: окно рисуется раньше первого кадра сети,
-    и приговор успевал мигнуть на каждой перезагрузке пульта.
+    "Waiting" and "no" are two different pictures, and the second used to
+    stand in place of both. While the pile is on its way, the same splash as
+    the room's (Splash) stands here, not the verdict "the cell is not in a
+    council": the window is drawn before the first network frame, and the
+    verdict managed to flash on every reload of the console.
   -->
   {#if phase === 'waiting'}
     <div class="flex h-full w-full bg-canvas"><Splash size="pane" label={tr('room.pult.v3.loading')} /></div>
@@ -963,9 +1012,9 @@
       <div class="pult-work-pane">
           {#if phone && phonePane === 'work'}
             <!--
-              Планка экрана работы: назад к списку, чьё это, и стрелки по ленте.
-              Имя стоит здесь, а не в шапке работы: на 390 px два имени подряд —
-              это строка, отнятая у кода.
+              The work screen's bar: back to the list, whose it is, and arrows
+              through the feed. The name stands here, not in the work header:
+              at 390 px two names in a row are a line taken away from the code.
             -->
             <div class="phone-bar">
               <button type="button" class="phone-back" onclick={toList}>
@@ -1054,13 +1103,14 @@
 
 <style>
   /*
-   * Бюджет постоянной обвязки — 176 px из 650.
+   * The budget for the permanent frame is 176 px of 650.
    *
-   * Было 290: шапка в три строки, вкладки по 48 px с полями по 12, полоса
-   * «на экране» в два ряда и строка состояния. В окне 900×650 это почти
-   * половина высоты под то, что за пару не меняется, — а меняются в нём
-   * список слева и работа справа, и им оставалось две с половиной строки и
-   * панель, уезжающая под сгиб.
+   * It was 290: a three-line header, 48 px tabs with 12 px padding, a
+   * two-row "on screen" strip and the status line. In a 900×650 window that
+   * is almost half the height for what does not change during a class —
+   * while what changes in it is the list on the left and the work on the
+   * right, and they were left two and a half rows and a panel sliding below
+   * the fold.
    */
   .pult-root { overflow:hidden; }
   .pult-head { flex-shrink:0; }
@@ -1072,35 +1122,37 @@
   .pult-pending-link { min-height:32px; padding:6px 10px; margin-left:auto; background:rgb(var(--warning)/.1); border:1px solid rgb(var(--warning)/.35); color:rgb(var(--warning)); font-size:13px; font-weight:600; white-space:nowrap; cursor:pointer; }
   .pult-nav-status { margin-left:auto; font-size:13px; color:rgb(var(--muted)); white-space:nowrap; }
   .pult-work-layout { display:flex; min-height:0; flex:1; }
-  /* 336 — ширина, на которой «Запуск выполнен · 1,2 с · 17:24» стоит в строке
-     целиком: ради этой третьей строчки список и расширен. */
+  /* 336 is the width at which the Russian "Execution completed · 1.2 s ·
+     17:24" fits in the row whole: the list was widened for the sake of this
+     third line. */
   .pult-sidebar { display:flex; flex-direction:column; min-height:0; width:336px; flex-shrink:0; border-right:1px solid rgb(var(--line)); background:rgb(var(--surface)); }
   /*
-   * Панель работы не прокручивается целиком НИКОГДА.
+   * The work panel NEVER scrolls as a whole.
    *
-   * Здесь стояло `@media(max-height:700px){ overflow-y:auto }` вместе с
-   * `min-height:650px` у самой работы — то есть в невысоком окне панель
-   * становилась длинной страницей, и поле ответа с четырьмя действиями лежало
-   * под сгибом. Прокручивается ровно одна зона — код с выводом (PultWork ·
-   * .work-content), а шапка автора и док общения прибиты к своим кромкам.
+   * There used to be `@media(max-height:700px){ overflow-y:auto }` together
+   * with `min-height:650px` on the work itself — that is, in a short window
+   * the panel became a long page, and the reply field with the four actions
+   * lay below the fold. Exactly one zone scrolls — the code with its output
+   * (PultWork · .work-content), while the author header and the
+   * communication dock are pinned to their edges.
    */
   .pult-work-pane { display:flex; flex-direction:column; min-height:0; min-width:0; flex:1; }
   /*
-   * Единственная высота, на которой три зоны не складываются: окно ниже
-   * 480 px — это половина ноутбучного экрана, там доку с кодом и шапкой места
-   * нет физически. Здесь панель снова становится страницей — лучше прокрутка,
-   * чем раздавленные в ноль кнопки.
+   * The only height at which the three zones do not fit together: a window
+   * under 480 px is half a laptop screen, and there is physically no room
+   * for the dock with the code and the header. Here the panel becomes a page
+   * again — scrolling is better than buttons crushed to nothing.
    */
   @media(max-height:479px) { .pult-work-pane { overflow-y:auto; } }
-  /* Планка экрана работы на телефоне: назад, имя, место в ленте, стрелки. */
+  /* The work screen's bar on a phone: back, name, place in the feed, arrows. */
   .phone-bar { display:none; align-items:center; gap:8px; flex-shrink:0; min-height:44px; padding:4px 8px 4px 4px; border-bottom:1px solid rgb(var(--line)); background:rgb(var(--surface)); }
   .phone-back { display:flex; align-items:center; gap:4px; flex-shrink:0; min-height:40px; padding:6px 8px; color:rgb(var(--primary)); font-size:15px; font-weight:600; cursor:pointer; }
   .phone-title { min-width:0; flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:15px; font-weight:700; }
   .phone-place { flex-shrink:0; color:rgb(var(--muted)); font-size:13px; font-variant-numeric:tabular-nums; }
   .phone-step { display:flex; align-items:center; justify-content:center; width:40px; min-height:40px; flex-shrink:0; border:1px solid rgb(var(--line)); background:rgb(var(--canvas)); font-size:18px; cursor:pointer; }
   .phone-step:disabled { opacity:.4; cursor:default; }
-  /* Тот же воздух, что у шапки: на большом мониторе плотность 650-пиксельного
-     окна выглядит скупостью, а высоты там не жалко. */
+  /* The same air as the header's: on a big monitor the density of a
+     650-pixel window looks stingy, and there is height to spare there. */
   @media(min-width:1200px) and (min-height:800px) {
     .pult-nav { min-height:52px; padding-block:8px; }
     .pult-view-tab { min-height:38px; padding:8px 14px; font-size:15px; }
@@ -1109,12 +1161,13 @@
   @media(max-width:860px) { .pult-sidebar { width:280px; } .pult-view-tab { padding:6px 9px; } }
   @media(max-width:650px) {
     /*
-     * Телефон: два экрана, а не две колонки.
+     * Phone: two screens, not two columns.
      *
-     * Список во весь экран, работа во весь экран, между ними — нажатие и жест
-     * «назад». Пока открыта работа, шапка, вкладки и полоса «на экране»
-     * уходят: их место — это та самая высота, которой не хватало доку общения
-     * и коду. Вернуться к ним — один жест.
+     * A full-screen list, a full-screen work view, and between them a press
+     * and the "back" gesture. While a piece of work is open, the header, the
+     * tabs and the "on screen" strip go away: their room is exactly the
+     * height the communication dock and the code were missing. Getting back
+     * to them is one gesture.
      */
     .pult-root { height:100dvh; }
     .pult-nav-status, .pult-pending-link { display:none; }

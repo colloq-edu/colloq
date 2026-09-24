@@ -1,31 +1,32 @@
 /**
- * Лист консилиума глазами студента: одна ячейка, пять состояний, одна клавиша
- * на сдачу.
+ * The council sheet through a student's eyes: one cell, five states, one key
+ * for submitting.
  *
- * Каждая проверка здесь — про обещание, которого разметка не держала.
+ * Every check here is about a promise the markup did not keep.
  *
- * Первое — «одна ячейка». Над своим листом стоял общий текст только чтением
- * («Общая ячейка · видна всей группе»), а под листом — вывод ОБЩЕЙ ячейки: у
- * человека, который пишет свой ответ, на экране было два блока кода и два
- * вывода, и который из них его — приходилось решать по подписи.
+ * The first is "one cell". Above one's own sheet stood the shared text,
+ * read-only ("Shared cell · visible to the whole group"), and under the sheet
+ * the output of the SHARED cell: a person writing their own answer had two
+ * code blocks and two outputs on screen, and which of them was theirs had to
+ * be decided by the caption.
  *
- * Второе — отметка. `CouncilMine.correct` приезжал автору с первого дня
- * консилиума и не рисовался нигде: преподаватель ставил галочку, она доезжала
- * и умирала в объекте. «Верно» и «есть ошибка» — это то, ради чего попытку и
- * сдают.
+ * The second is the mark. `CouncilMine.correct` reached the author from the
+ * council's first day and was drawn nowhere: the teacher set a tick, it
+ * arrived and died inside the object. "Correct" and "there is an error" are
+ * what an attempt gets submitted for.
  *
- * Третье — клавиши. ⇧↵ на листе СДАВАЛ: запуска у студента тогда не было, и
- * пальцам, привыкшим к «выполнить и дальше», надо было куда-то попадать.
- * Запуск появился (ручка `studentRun`), и ⇧↵ остался сдающим — то есть каждый
- * второй запуск уходил преподавателю насовсем. Сдаёт теперь ровно одно
- * сочетание, и оно нарочно неудобное.
+ * The third is the keys. ⇧↵ on the sheet SUBMITTED: students had no run back
+ * then, and fingers used to "run and move on" had to land somewhere. Running
+ * appeared (the `studentRun` control), and ⇧↵ stayed a submit — that is,
+ * every second run went to the teacher for good. Now exactly one combination
+ * submits, and it is deliberately awkward.
  *
- * Четвёртое — заготовка. Стёртый каркас преподавателя переставало быть где
- * взять: приходилось диктовать вслух.
+ * The fourth is the stub. Once the teacher's scaffold was erased there was
+ * nowhere to get it back from: it had to be dictated out loud.
  *
- * Разметка читается из компонента, как в `panels-craft.test.mts` и
- * `council-stack-craft.test.mts`: тесты про Svelte-шаблон здесь читают
- * шаблон, а не рендерят его.
+ * The markup is read from the component, as in `panels-craft.test.mts` and
+ * `council-stack-craft.test.mts`: tests about a Svelte template here read
+ * the template rather than render it.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -37,7 +38,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка без комментариев: объяснение — не обещание. */
+/** Markup without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -45,132 +46,141 @@ function code(source: string): string {
 const CELL = code(read('web/src/components/notebook/CellView.svelte'))
 const EDITOR = code(read('web/src/components/notebook/CodeEditor.svelte'))
 
-/** Свой лист — от `{#if ownSheet && sheet}` до общей ветки редактора. */
+/** One's own sheet — from `{#if ownSheet && sheet}` to the editor's shared branch. */
 const SHEET = CELL.slice(CELL.indexOf('{#if ownSheet && sheet}'), CELL.indexOf('{:else if showEditor}'))
 
-/* ------------------------------------------------------------ одна ячейка */
+/* --------------------------------------------------------------- one cell */
 
-test('над листом нет второй ячейки: общий текст студенту не рисуется', () => {
-  assert.notEqual(SHEET, '', 'лист вообще есть')
-  assert.doesNotMatch(SHEET, /<Code\b/, 'общий код над листом остался')
-  assert.doesNotMatch(CELL, /import Code from/, 'компонент импортируется впустую')
-  // Ключи «Общая ячейка» и «видна всей группе» жили только в этом блоке: они
-  // не должны просто перестать использоваться — их больше нет в каталоге.
+test('there is no second cell above the sheet: the shared text is not drawn for the student', () => {
+  assert.notEqual(SHEET, '', 'the sheet exists at all')
+  assert.doesNotMatch(SHEET, /<Code\b/, 'the shared code above the sheet remained')
+  assert.doesNotMatch(CELL, /import Code from/, 'the component is imported for nothing')
+  // The keys "Shared cell" and "visible to the whole group" lived only in
+  // this block: they must not just fall out of use — they are gone from the
+  // catalogue.
   const catalog = read('shared/locales/room.ts')
   assert.doesNotMatch(catalog, /"room\.ui\.347"/)
   assert.doesNotMatch(catalog, /"room\.ui\.348"/)
 })
 
-test('вывод общей ячейки у студента в консилиуме не рисуется', () => {
+test('the shared cell\'s output is not drawn for a student in a council', () => {
   assert.match(
     CELL,
     /\{#if isCode && !ownSheet && \(outputs\.current\.length > 0 \|\| outputFloor > 0\)\}/,
-    'общий вывод остался под своим листом',
+    'the shared output remained under one\'s own sheet',
   )
-  // А свой — рисуется, и ровно один раз: из `attemptRun`, а не из `mine.run`
-  // напрямую, иначе стёртый возвратом вывод возвращался бы сам.
-  assert.equal(SHEET.match(/<CellOutputs\b/g)?.length, 1, 'вывод попытки рисуется не один раз')
+  // While one's own is drawn, and exactly once: from `attemptRun`, not from
+  // `mine.run` directly, otherwise output wiped by a restore would come back
+  // by itself.
+  assert.equal(SHEET.match(/<CellOutputs\b/g)?.length, 1, 'the attempt output is drawn more than once')
   assert.match(SHEET, /outputs=\{attemptRun\.outputs\}/)
 })
 
-/* ---------------------------------------------------------------- клавиши */
+/* ------------------------------------------------------------------- keys */
 
-test('⇧↵ на листе считает, сдаёт только ⌘⇧↵', () => {
-  // В редакторе появилось отдельное сочетание — и только оно зовёт onsubmit.
+test('⇧↵ on the sheet runs, only ⌘⇧↵ submits', () => {
+  // The editor got a separate combination — and only it calls onsubmit.
   assert.match(EDITOR, /\{ key: 'Mod-Shift-Enter', preventDefault: true, run: \(\) => fire\(handlers\.onsubmit\) \}/)
   assert.match(EDITOR, /\{ key: 'Shift-Enter', preventDefault: true, run: \(\) => fire\(handlers\.onrunstep\) \}/)
   assert.match(EDITOR, /\{ key: 'Mod-Enter', preventDefault: true, run: \(\) => fire\(handlers\.onrun\) \}/)
-  // На листе ⇧↵ и ⌘↵ ведут в одну функцию запуска, а сдача — в свою.
+  // On the sheet ⇧↵ and ⌘↵ lead to one run function, and submitting to its
+  // own.
   assert.match(SHEET, /onrunstep=\{sheetRunKey\}/)
   assert.match(SHEET, /onrun=\{sheetRunKey\}/)
   assert.match(SHEET, /onsubmit=\{submitFromKey\}/)
-  // Ни одна клавиша запуска не заведена на сдачу — та самая беда, с которой
-  // всё началось.
+  // Not a single run key is wired to submitting — the very trouble
+  // everything started with.
   assert.doesNotMatch(SHEET, /onrunstep=\{[^}]*submitAttempt/)
   assert.doesNotMatch(SHEET, /onrun=\{[^}]*submitAttempt/)
-  // Alt+Enter в листе не делает ничего: обработчик не передан вовсе, а
-  // `preventDefault` в биндинге не даёт ему вставить перевод строки.
+  // Alt+Enter on the sheet does nothing: no handler is passed at all, and
+  // `preventDefault` in the binding keeps it from inserting a line break.
   assert.doesNotMatch(SHEET, /onrunandadd=/)
-  // Сдача с клавиатуры видна: кнопка моргает, потому что «сдано» приезжает
-  // эхом сервера и не мгновенно.
+  // Submitting from the keyboard is visible: the button blinks, because
+  // "submitted" arrives as the server's echo and not instantly.
   const submit = CELL.slice(CELL.indexOf('function submitFromKey'), CELL.indexOf('function submitFromKey') + 500)
   assert.match(submit, /submitFlash = true/)
 })
 
-test('запуск и запрос — одна кнопка и одно ожидание', () => {
+test('run and request are one button and one wait', () => {
   const footer = SHEET.slice(SHEET.indexOf('<span class="ml-auto flex'))
-  // Одна кнопка с одним словом на обе ручки — и та же функция, что у клавиши.
-  assert.match(footer, /onclick=\{sheetRunKey\}/, 'кнопка и клавиша разошлись')
-  assert.equal(footer.match(/tr\('room\.ui\.73'\)/g)?.length, 1, 'кнопок запуска в подвале не одна')
-  // Про «запрос» студенту больше не рассказывают: ни кнопкой, ни часами, ни
-  // словом «отправляю».
+  // One button with one word for both controls — and the same function as
+  // the key.
+  assert.match(footer, /onclick=\{sheetRunKey\}/, 'the button and the key diverged')
+  assert.equal(footer.match(/tr\('room\.ui\.73'\)/g)?.length, 1, 'there is more than one run button in the footer')
+  // The student is no longer told about the "request": not by a button, not
+  // by a clock, not by the word "sending".
   for (const key of ['363', '362', '1237']) {
-    assert.doesNotMatch(footer, new RegExp(`room\\.ui\\.${key}`), `в подвале осталось room.ui.${key}`)
-    assert.doesNotMatch(read('shared/locales/room.ts'), new RegExp(`"room\\.ui\\.${key}"`), `ключ ${key} остался в каталоге`)
+    assert.doesNotMatch(footer, new RegExp(`room\\.ui\\.${key}`), `room.ui.${key} remained in the footer`)
+    assert.doesNotMatch(read('shared/locales/room.ts'), new RegExp(`"room\\.ui\\.${key}"`), `key ${key} remained in the catalogue`)
   }
-  // Ожидание одно на обе ручки, и номер в нём — необязательный.
+  // The wait is one for both controls, and the number in it is optional.
   assert.match(footer, /\{#if runWaiting\}/)
   assert.match(footer, /mine\?\.queue != null\s*\?\s*tr\('room\.ui\.1236', \{ p0: mine\.queue \}\)\s*:\s*tr\('room\.ui\.1260'\)/)
   assert.equal(translate('ru', 'room.ui.1260'), 'В очереди')
-  // Отмена рисуется только там, где ей есть что снять: кадра «убрать из
-  // очереди ядра» в протоколе нет, `council:run:cancel` снимает запрос.
+  // Cancelling is drawn only where it has something to take off: the
+  // protocol has no "remove from the kernel queue" frame,
+  // `council:run:cancel` takes off a request.
   assert.match(CELL, /const mayCancelRun = \$derived\(requestPending && mayRequestRun\)/)
   assert.match(footer, /\{#if mayCancelRun\}/)
   assert.match(read('shared/protocol.ts'), /t: 'council:run:cancel'; cellId: string; requestId: string/)
-  // Отказ говорит словами и не поминает запрос; разошедшийся текст молчит.
+  // The refusal speaks in words and does not mention the request; a diverged
+  // text stays silent.
   assert.match(translate('ru', 'room.ui.364'), /^Преподаватель не запустил/)
-  assert.doesNotMatch(footer, /room\.ui\.365/, 'о разошедшемся тексте снова говорят')
+  assert.doesNotMatch(footer, /room\.ui\.365/, 'the diverged text is talked about again')
 })
 
-test('у черновика нет чипа, а подсказка под кнопками — только про сдачу', () => {
+test('a draft has no chip, and the hint under the buttons is only about submitting', () => {
   const footer = SHEET.slice(SHEET.indexOf('<span class="ml-auto flex'))
-  assert.match(footer, /\{#if sheetState !== 'draft'\}/, 'чип рисуется и в черновике')
+  assert.match(footer, /\{#if sheetState !== 'draft'\}/, 'the chip is drawn for a draft too')
   const catalog = read('shared/locales/room.ts')
-  assert.doesNotMatch(catalog, /"room\.ui\.1223"/, '«Черновик · сохраняется» остался в каталоге')
-  assert.doesNotMatch(catalog, /"room\.ui\.1253"/, 'короткий «Черновик» остался в каталоге')
+  assert.doesNotMatch(catalog, /"room\.ui\.1223"/, '"Draft · saving" remained in the catalogue')
+  assert.doesNotMatch(catalog, /"room\.ui\.1253"/, 'the short "Draft" remained in the catalogue')
   assert.equal(translate('ru', 'room.ui.357'), '⌘⇧↵ — сдать')
-  // Счёт класса при этом остаётся — он в подписи под чипом, а не в подвале.
+  // The class count stays meanwhile — it is in the caption under the chip,
+  // not in the footer.
   const head = SHEET.slice(SHEET.indexOf("tr('room.ui.34')"), SHEET.indexOf('<CodeEditor'))
   assert.match(head, /countLine\(count\)/)
   assert.match(head, /tr\('room\.ui\.1222'\)/)
 })
 
-test('при выключенной ручке ⇧↵ не сдаёт, а говорит словами и гаснет', () => {
+test('with the control off ⇧↵ does not submit but says so in words and fades', () => {
   const key = CELL.slice(CELL.indexOf('function sheetRunKey'), CELL.indexOf('$effect(() => () => window.clearTimeout(runHintTimer))'))
-  assert.match(key, /requestAttemptRun\(\)/, 'по запросу — просит')
-  assert.match(key, /runAttempt\(\)/, 'при включённой ручке — считает')
-  assert.doesNotMatch(key, /submitAttempt/, 'клавиша запуска сдаёт')
-  assert.match(key, /runHint = true/, 'молчит там, где ничего не делает')
+  assert.match(key, /requestAttemptRun\(\)/, 'on request — it asks')
+  assert.match(key, /runAttempt\(\)/, 'with the control on — it runs')
+  assert.doesNotMatch(key, /submitAttempt/, 'the run key submits')
+  assert.match(key, /runHint = true/, 'it is silent where it does nothing')
   assert.match(CELL, /const RUN_HINT_MS = 2000/)
   assert.match(SHEET, /\{#if runHint\}/)
   assert.match(SHEET, /tr\('room\.ui\.1231'\)/)
   assert.match(translate('ru', 'room.ui.1231'), /запускает преподаватель/)
-  // Подсказка стоит у подвала, а не в тосте: тост уезжает в угол экрана.
+  // The hint stands by the footer, not in a toast: a toast drifts into the
+  // corner of the screen.
   assert.doesNotMatch(CELL.slice(CELL.indexOf('function sheetRunKey'), CELL.indexOf('function sheetRunKey') + 600), /showError/)
 })
 
-/* --------------------------------------------------------------- отметка */
+/* ------------------------------------------------------------------ mark */
 
-test('«верно» и «есть ошибка» доходят до автора — цветом, словом и кнопкой', () => {
+test('"correct" and "there is an error" reach the author — by colour, word and button', () => {
   const at = CELL.indexOf('const sheetState = $derived(')
   const state = CELL.slice(at, CELL.indexOf('const reviewedAt', at))
   assert.match(state, /mine\?\.correct === true/)
   assert.match(state, /mine\?\.correct === false/)
-  // Три таблицы состояния — чип, полоса и слова — обязаны знать одни и те же
-  // пять имён: разошлись бы, и состояние без цвета (или без слова) выглядело
-  // бы как «ничего не произошло».
+  // Three state tables — the chip, the stripe and the words — must know the
+  // same five names: if they diverged, a state without a colour (or without
+  // a word) would look like "nothing happened".
   for (const table of ['SHEET_CHIP', 'SHEET_RULE']) {
     const block = CELL.slice(CELL.indexOf(`const ${table} = {`), CELL.indexOf('} as const', CELL.indexOf(`const ${table} = {`)))
     for (const name of ['edited', 'correct', 'wrong', 'submitted', 'draft']) {
-      assert.match(block, new RegExp(`\\b${name}:`), `${table} не знает ${name}`)
+      assert.match(block, new RegExp(`\\b${name}:`), `${table} does not know ${name}`)
     }
   }
-  // Черновик стоит в обеих таблицах пустой строкой: у него нет ни своего
-  // цвета полосы, ни чипа, и обе таблицы обязаны это СКАЗАТЬ, а не умолчать —
-  // иначе `SHEET_CHIP[sheetState]` однажды вернёт undefined в класс.
+  // A draft stands in both tables as an empty string: it has neither a
+  // stripe colour nor a chip of its own, and both tables must SAY so rather
+  // than stay silent — otherwise `SHEET_CHIP[sheetState]` will one day
+  // return undefined into a class.
   for (const table of ['SHEET_CHIP', 'SHEET_RULE']) {
     const block = CELL.slice(CELL.indexOf(`const ${table} = {`), CELL.indexOf('} as const', CELL.indexOf(`const ${table} = {`)))
-    assert.match(block, /draft: '',/, `${table} даёт черновику своё оформление`)
+    assert.match(block, /draft: '',/, `${table} gives the draft its own styling`)
   }
   assert.match(CELL, /correct: 'border-positive'/)
   assert.match(CELL, /wrong: 'border-danger'/)
@@ -178,62 +188,64 @@ test('«верно» и «есть ошибка» доходят до автор
   assert.match(SHEET, /tr\('room\.ui\.1226'\)/)
   assert.match(translate('ru', 'room.ui.1225'), /Верно/)
   assert.match(translate('ru', 'room.ui.1226'), /Есть ошибка/)
-  // После «есть ошибки» второстепенная кнопка названа по делу — она ведёт к
-  // выходу, а не повторяет беду.
+  // After "there is an error" the secondary button is named by what it does
+  // — it leads to the way out instead of repeating the trouble.
   assert.match(SHEET, /sheetState === 'wrong'\s*\?\s*tr\('room\.ui\.1248'\)/)
   assert.match(translate('ru', 'room.ui.1248'), /Исправить/)
 })
 
-test('правка отменённой отметки оставляет её памятью, а не состоянием', () => {
+test('editing after a mark was cancelled keeps it as a memory, not as a state', () => {
   const at = CELL.indexOf('const sheetState = $derived(')
   const state = CELL.slice(at, CELL.indexOf('const reviewedAt', at))
-  assert.match(state, /submittedAt === null && mine\?\.correct != null/, 'снятая отметка не возвращает в набор')
-  assert.match(CELL, /edited: ''/, 'полоса правки берёт цвет отметки, которой больше нет')
+  assert.match(state, /submittedAt === null && mine\?\.correct != null/, 'a removed mark does not return to typing')
+  assert.match(CELL, /edited: ''/, 'the edit stripe takes the colour of a mark that is no longer there')
   assert.match(SHEET, /tr\('room\.ui\.1247'\)/)
   assert.match(translate('ru', 'room.ui.1247'), /было:/)
 })
 
-test('у сданной попытки нет кнопок запуска, а текст не приглушён', () => {
+test('a submitted attempt has no run buttons, and its text is not dimmed', () => {
   const footer = SHEET.slice(SHEET.indexOf('<span class="ml-auto flex'))
-  assert.match(footer, /\{#if submittedAt === null\}[\s\S]*?tr\('room\.ui\.73'\)/, 'запуск не спрятан под сдачей')
-  assert.doesNotMatch(SHEET, /opacity-60/, 'сданный код выцвел')
+  assert.match(footer, /\{#if submittedAt === null\}[\s\S]*?tr\('room\.ui\.73'\)/, 'the run is not hidden under the submission')
+  assert.doesNotMatch(SHEET, /opacity-60/, 'the submitted code faded')
 })
 
-/* ---------------------------------------------------------------- подвал */
+/* ---------------------------------------------------------------- footer */
 
-test('подвал держится одной полосой: счёт в подписи, действия одной группой', () => {
-  // Счёт класса — сведение о комнате, и стоит он в шапке рядом с подписью, а
-  // не в подвале: там он спорил за место с кнопками, и на узкой колонке вниз
-  // уезжали они.
+test('the footer holds as one strip: the count in the caption, the actions in one group', () => {
+  // The class count is information about the room, and it stands in the
+  // header next to the caption, not in the footer: there it fought the
+  // buttons for space, and on a narrow column they were the ones pushed down.
   const head = SHEET.slice(SHEET.indexOf("tr('room.ui.34')"), SHEET.indexOf('<CodeEditor'))
-  assert.match(head, /countLine\(count\)/, 'счёт не переехал в шапку')
+  assert.match(head, /countLine\(count\)/, 'the count did not move to the header')
   const footer = SHEET.slice(SHEET.indexOf('<span class="ml-auto flex'))
-  assert.doesNotMatch(footer, /countLine\(count\)/, 'в подвале осталась копия счёта')
-  // Чип и кнопки — в одном флексе, который переносится целиком и вправо.
+  assert.doesNotMatch(footer, /countLine\(count\)/, 'a copy of the count remained in the footer')
+  // The chip and the buttons are in one flex that wraps as a whole and to
+  // the right.
   assert.match(SHEET, /<span class="ml-auto flex flex-wrap items-center justify-end/)
-  // И чип ужимается раньше, чем что-нибудь переносится.
+  // And the chip shrinks before anything wraps.
   assert.match(SHEET, /tr\(tightFooter \? 'room\.ui\.1252' : 'room\.ui\.1224'/)
   assert.match(CELL, /const tightFooter = \$derived\(footerWidth > 0 && footerWidth < 460\)/)
   assert.match(CELL, /bind:clientWidth=\{footerWidth\}/)
   assert.match(translate('ru', 'room.ui.1252'), /^Сдано \{p0\}$/)
 })
 
-test('чужая каретка в общей ячейке не приписывается своему листу', () => {
+test('someone else\'s caret in the shared cell is not attributed to one\'s own sheet', () => {
   const at = CELL.indexOf('const editingHere = $derived.by(')
   const block = CELL.slice(at, at + 400)
-  assert.match(block, /if \(ownSheet\) return null/, 'строка присутствия висит под чужим листом')
+  assert.match(block, /if \(ownSheet\) return null/, 'the presence line hangs under someone else\'s sheet')
 })
 
-/* --------------------------------------------------- ядро и оракул в листе */
+/* ---------------------------------- the kernel and the oracle in the sheet */
 
-test('свой лист спрашивает ядро — и называет себя, чтобы право нашлось', () => {
-  // Без имени ячейки сервер не отличает лист консилиума от обычной ячейки
-  // (control.ts · mayComplete) и в лекционной комнате отказывает молча: имена
-  // приезжали из слов самой ячейки, а столбцы настоящего `df` — нет.
+test('one\'s own sheet asks the kernel — and names itself so that the permission is found', () => {
+  // Without the cell name the server cannot tell a council sheet from a
+  // plain cell (control.ts · mayComplete) and in a lecture room refuses
+  // silently: names came from the words of the cell itself, but the columns
+  // of the real `df` did not.
   assert.match(SHEET, /complete=\{\(code, cursor\) => session\.complete\(code, cursor, id\)\}/)
   assert.match(SHEET, /inspect=\{\(code, cursor\) => session\.inspect\(code, cursor, id\)\}/)
-  // И обычная ячейка называет себя тем же способом: правило для неё не
-  // изменилось, но спрашивают обе одинаково.
+  // And a plain cell names itself the same way: the rule for it has not
+  // changed, but both ask in the same way.
   assert.equal(CELL.match(/session\.complete\(code, cursor, id\)/g)?.length, 2)
   assert.match(
     read('web/src/lib/session.svelte.ts'),
@@ -242,78 +254,87 @@ test('свой лист спрашивает ядро — и называет с
   assert.match(read('shared/protocol.ts'), /t: 'complete'; id: number; code: string; cursor: number; cellId\?: string/)
 })
 
-test('подсказка оракула — по упавшему запуску, тихой кнопкой и своим путём', () => {
+test('the oracle hint — on a failed run, with a quiet button and by its own path', () => {
   assert.match(CELL, /const mayHint = \$derived\(/)
-  assert.match(CELL, /mine\?\.run\?\.state === 'error'/, 'подсказку дают не по упавшему запуску')
+  assert.match(CELL, /mine\?\.run\?\.state === 'error'/, 'the hint is not given on a failed run')
   assert.match(SHEET, /onclick=\{\(\) => session\.council\.askHint\(id\)\}/)
   assert.match(SHEET, /tr\('room\.ui\.1262'\)/)
   assert.match(SHEET, /tr\('room\.ui\.1263'\)/)
   assert.equal(translate('ru', 'room.ui.1262'), 'Подсказка оракула')
   assert.equal(translate('ru', 'room.ui.1263'), 'Оракул думает…')
-  // Пока думает — кнопка погашена: второе нажатие это второй вопрос из лимита.
+  // While it thinks, the button is dark: a second press is a second question
+  // from the limit.
   assert.match(SHEET, /disabled=\{hint\?\.asking \|\| !mayHint\}/)
-  // Отказ виден на месте, а не только тостом в углу.
+  // The refusal is visible in place, not only as a toast in the corner.
   assert.match(SHEET, /\{#if hint\?\.error\}/)
-  // Путь свой, не общая лента: `/ai/ask` пишет в тред, который читает класс.
+  // Its own path, not the shared feed: `/ai/ask` writes into the thread the
+  // class reads.
   const client = read('web/src/lib/council.svelte.ts')
   assert.match(client, /this\.#send\(\{ t: 'council:hint', cellId \}\)/)
-  // Ни одного REST-вызова в листе: общий тред комнаты (`/ai/ask`) читает весь
-  // класс, а тексты консилиума видят двое.
-  assert.doesNotMatch(SHEET, /\bapi\./, 'лист ходит к модели через общую ленту')
-  // Письмо оракула отличимо от письма преподавателя — и у автора, и в стопке.
+  // Not a single REST call in the sheet: the room's shared thread
+  // (`/ai/ask`) is read by the whole class, while council texts are seen by
+  // two.
+  assert.doesNotMatch(SHEET, /\bapi\./, 'the sheet goes to the model through the shared feed')
+  // An oracle letter is distinguishable from a teacher letter — both for the
+  // author and in the stack.
   assert.match(SHEET, /letter\.to === 'oracle' \? tr\('room\.ui\.1261'\) : tr\('room\.ui\.1251'\)/)
   assert.match(read('web/src/components/council/pult/PultLetters.svelte'), /letter\.to === 'oracle'/)
 })
 
-test('«переписать ячейку» закрыто там, где ячейку не правят, а копия — нигде', () => {
-  // Действие спрашивает у ячейки, а не только у правила комнаты: в лекции и в
-  // общей ячейке консилиума предложение с кнопкой «Применить» участнику
-  // некуда применить, а вопрос из лимита комнаты он бы уже потратил.
+test('"rewrite the cell" is closed where the cell is not edited, and copying is closed nowhere', () => {
+  // The action asks the cell, not only the room rule: in a lecture and in
+  // the shared cell of a council a participant has nowhere to apply a
+  // suggestion with an "Apply" button, and they would already have spent a
+  // question from the room's limit.
   assert.match(CELL, /const mayPatchHere = \$derived\(mayEdit && \(leads \|\| !inCouncil\)\)/)
   assert.match(CELL, /const mayRewrite = \$derived\(may\.ask && rewriteReady && mayPatchHere\)/)
-  // Кнопка на месте, но погашена — с причиной в подсказке. Исчезать ей нельзя:
-  // тулбар у всех ячеек один, и пропавшая кнопка читается как поломка.
-  assert.doesNotMatch(CELL, /\{#if mayPatchHere\}\s*<button/, 'кнопку оракула спрятали вместо того, чтобы погасить')
+  // The button is in place but dark — with the reason in a tooltip. It must
+  // not disappear: the toolbar is the same for all cells, and a missing
+  // button reads as a breakage.
+  assert.doesNotMatch(CELL, /\{#if mayPatchHere\}\s*<button/, 'the oracle button was hidden instead of being dimmed')
   assert.match(CELL, /aria-label=\{tr\('room\.ui\.344'\)\}[\s\S]{0,80}?disabled=\{!mayRewrite\}/)
-  // И «Принять» под самой ячейкой — тем же правилом: оно правит общую тетрадь.
+  // And "Accept" under the cell itself — by the same rule: it edits the
+  // shared notebook.
   assert.match(CELL, /if \(!mayPatchHere\) \{\s*session\.showError\(patchWhy/)
-  assert.equal(CELL.match(/disabled=\{!mayPatchHere\}/g)?.length, 2, 'оба «принять» в ячейке закрыты не одинаково')
+  assert.equal(CELL.match(/disabled=\{!mayPatchHere\}/g)?.length, 2, 'the two "accept" buttons in the cell are not closed the same way')
 
-  // «Применить» в ленте — то же правило, и оно тоже про ячейку: предложение
-  // могло приехать до того, как щёлкнул замок.
+  // "Apply" in the feed is the same rule, and it is about the cell too: the
+  // suggestion may have arrived before the lock clicked.
   const turn = code(read('web/src/components/panels/ChatTurn.svelte'))
   assert.match(turn, /const mayApply = \$derived\(/)
   assert.match(turn, /cellLockHere !== 'council' \|\| session\.me\.role === 'host'/)
-  assert.equal(turn.match(/disabled=\{!mayApply\}/g)?.length, 2, 'оба «применить» закрыты не одинаково')
-  assert.doesNotMatch(turn, /disabled=\{!may\.edit\}/, 'осталась проверка правила комнаты вместо ячейки')
+  assert.equal(turn.match(/disabled=\{!mayApply\}/g)?.length, 2, 'the two "apply" buttons are not closed the same way')
+  assert.doesNotMatch(turn, /disabled=\{!may\.edit\}/, 'the room rule check remained instead of the cell one')
 
-  // А копия — всегда: кода предложения в ответе нет вовсе (`omit`), и там, где
-  // применить нельзя, унести из панели было нечего.
+  // While copying is always there: the answer has no suggestion code at all
+  // (`omit`), and where applying is not allowed there was nothing to take
+  // away from the panel.
   assert.match(turn, /onclick=\{\(\) => void copyPatch\(\)\}/)
   assert.doesNotMatch(
     turn.slice(turn.indexOf('void copyPatch()') - 400, turn.indexOf('void copyPatch()')),
     /disabled=/,
-    'копию закрыли вместе с правкой',
+    'the copy was closed together with the edit',
   )
   assert.equal(translate('ru', 'room.ui.1267'), 'Скопировать')
 
-  // И в тулбаре ячейки: слот копии копирует текст ячейки в буфер — у всех и
-  // не гаснет. Копии ячейки в тетрадь за этим значком больше нет: 19.09.2026
-  // студенты принимали его за «скопировать» и плодили ячейки в общей тетради.
+  // And in the cell toolbar: the copy slot copies the cell text to the
+  // clipboard — for everyone, and it does not go dark. There is no more
+  // copying of the cell into the notebook behind this icon: on 19 Sep 2026
+  // students took it for "copy" and multiplied cells in the shared notebook.
   assert.match(CELL, /data-cell-copy\s+onclick=\{\(\) => void copySource\(\)\}/)
-  assert.doesNotMatch(CELL, /duplicateCell/, 'копия ячейки в тетрадь вернулась в тулбар')
+  assert.doesNotMatch(CELL, /duplicateCell/, 'copying the cell into the notebook is back in the toolbar')
   assert.doesNotMatch(
     CELL.slice(CELL.indexOf('void copySource()') - 300, CELL.indexOf('void copySource()')),
     /disabled=/,
-    'копию в буфер погасили вместе с копией в тетрадь',
+    'copying to the clipboard was dimmed together with copying into the notebook',
   )
-  assert.doesNotMatch(CELL, /disabled=\{!may\.add\}/, 'слот копии всё ещё гаснет по правилу структуры')
+  assert.doesNotMatch(CELL, /disabled=\{!may\.add\}/, 'the copy slot still goes dark by the structure rule')
   assert.equal(translate('ru', 'room.ui.1900'), 'Скопировать текст ячейки')
 })
 
-/* ------------------------------------------------------------- заготовка */
+/* ------------------------------------------------------------------ stub */
 
-test('заготовку преподавателя можно вернуть — с переспросом на месте', () => {
+test('the teacher\'s stub can be brought back — with a confirmation in place', () => {
   assert.match(CELL, /function stubText\(\): string \{\s*return mine\?\.seed \?\? liveText\.current/)
   assert.match(CELL, /const mayRestore = \$derived\(mayAttempt && submittedAt === null && sheetText !== stubText\(\)\)/)
   assert.match(SHEET, /onclick=\{\(\) => \(restoreAsking = true\)\}/)
@@ -323,13 +344,15 @@ test('заготовку преподавателя можно вернуть �
   assert.match(SHEET, /tr\('room\.ui\.1234'\)/)
   assert.match(SHEET, /tr\('room\.ui\.1235'\)/)
   assert.match(translate('ru', 'room.ui.1233'), /Вернуть исходную ячейку\?/)
-  // Окна браузера здесь нет: ответ виден в самом листе, который заменят.
+  // No browser dialog here: the answer is visible in the very sheet that will
+  // be replaced.
   const restore = CELL.slice(CELL.indexOf('function restoreStub'), CELL.indexOf('function resubmitAttempt'))
   assert.doesNotMatch(restore, /window\.confirm/)
-  // Возврат уезжает на сервер и ложится в отмену: происхождение обычное, а не
-  // SEED — иначе у преподавателя остался бы стёртый текст.
+  // The restore goes to the server and lands in undo: the origin is the
+  // ordinary one, not SEED — otherwise the teacher would be left with erased
+  // text.
   assert.match(restore, /current\.doc\.transact\(\(\) => replaceText\(current\.text, stubText\(\)\)\)/)
   assert.doesNotMatch(restore, /, SEED\)/)
-  // И уносит вывод той попытки, текст которой заменили.
+  // And it takes away the output of the attempt whose text was replaced.
   assert.match(restore, /clearedRunAt = untrack\(\(\) => mine\?\.run\?\.startedAt \?\? null\)/)
 })

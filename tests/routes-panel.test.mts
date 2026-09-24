@@ -1,19 +1,21 @@
 /**
- * Двери панели: право, ответ и мерка.
+ * The panel's doors: the right, the answer and the measure.
  *
- * Четыре разных промаха одной природы — маршрут делает не то, что обещает
- * снаружи:
+ * Four different misses of one nature — a route does something other than what
+ * it promises from the outside:
  *
- *  - Build отвечал «202 Accepted» только когда сборка целиком заканчивалась,
- *    то есть через минуты; вкладка всё это время держала строку занятой, живого
- *    журнала не открывала и не давала нажать Cancel на своей же сборке.
- *  - курс стирал любой преподаватель одним запросом — при том что удаление
- *    семинара и «стереть страницу» владельческие, и ровно по той причине,
- *    которая к курсу подходит ещё лучше: `/c/slug` раздают всему потоку.
- *  - публикация с повторяющимся адресом шага молча теряла шаг, а `seq: 0` —
- *    адрес, зарезервированный за последней страницей, — уезжал в транзакцию.
- *  - PATCH преподавателя обещал в комментарии необязательные поля и требовал
- *    имя с адресом вместе.
+ *  - Build answered "202 Accepted" only once the whole build had finished,
+ *    that is, minutes later; all that time the tab kept the row busy, did not
+ *    open the live log and would not let you press Cancel on your own build.
+ *  - any teacher could erase a course with one request — even though deleting
+ *    a seminar and "erase the page" belong to the owner, for exactly the
+ *    reason that fits a course even better: `/c/slug` is handed out to the
+ *    whole cohort.
+ *  - a publication with a repeated step address silently lost a step, and
+ *    `seq: 0` — the address reserved for the last page — went into the
+ *    transaction.
+ *  - the teacher PATCH promised optional fields in its comment and required
+ *    the name and the email together.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -39,7 +41,7 @@ let server: http.Server
 let ownerCookie = ''
 let teacherCookie = ''
 
-/** Сборка, которая не кончается, пока её не отпустят: настоящая ходит в docker. */
+/** A build that does not finish until it is released: the real one goes to docker. */
 let releaseBuild: (() => void) | null = null
 let buildsStarted = 0
 
@@ -92,32 +94,32 @@ after(() => {
   shutdownCollab()
 })
 
-/* ------------------------------------------------------------------ сборка */
+/* ------------------------------------------------------------------- build */
 
-test('Build отвечает сразу, а не когда соберётся', async () => {
+test('Build answers at once, not when the build is done', async () => {
   const res = await fetch(`${base}/api/admin/environments/base/build`, {
     method: 'POST',
     headers: { cookie: ownerCookie },
   })
   assert.equal(res.status, 202)
-  // Ответ пришёл, сборка идёт: именно в этом промежутке вкладка открывает
-  // живой журнал и держит рабочей кнопку Cancel.
+  // The answer has arrived and the build is running: exactly in this interval
+  // the tab opens the live log and keeps the Cancel button working.
   assert.equal(buildsStarted, 1)
-  assert.ok(releaseBuild, 'сборку успели закончить до ответа')
+  assert.ok(releaseBuild, 'the build managed to finish before the answer')
   releaseBuild?.()
   releaseBuild = null
 })
 
-/* -------------------------------------------------------------------- курс */
+/* ------------------------------------------------------------------ course */
 
-test('курс стирает владелец, и только он', async () => {
+test('a course is erased by the owner, and only the owner', async () => {
   const course = createCourse('Матстат', null, 'Ада')
   const asTeacher = await fetch(`${base}/api/admin/courses/${course.id}`, {
     method: 'DELETE',
     headers: { cookie: teacherCookie },
   })
-  assert.equal(asTeacher.status, 403, 'курс стёр не владелец')
-  assert.ok(getCourse(course.id), 'курс всё-таки удалили')
+  assert.equal(asTeacher.status, 403, 'someone other than the owner erased the course')
+  assert.ok(getCourse(course.id), 'the course was deleted after all')
 
   const asOwner = await fetch(`${base}/api/admin/courses/${course.id}`, {
     method: 'DELETE',
@@ -127,7 +129,7 @@ test('курс стирает владелец, и только он', async () 
   assert.equal(getCourse(course.id), null)
 })
 
-test('курса нет — 404, а не «удалено»', async () => {
+test('no course: a 404, not "deleted"', async () => {
   const res = await fetch(`${base}/api/admin/courses/c_nope`, {
     method: 'DELETE',
     headers: { cookie: ownerCookie },
@@ -135,7 +137,7 @@ test('курса нет — 404, а не «удалено»', async () => {
   assert.equal(res.status, 404)
 })
 
-/* -------------------------------------------------------------- публикация */
+/* -------------------------------------------------------------- publishing */
 
 const publish = (id: string, steps: unknown[]) =>
   fetch(`${base}/api/admin/seminars/${id}/publish`, {
@@ -144,41 +146,41 @@ const publish = (id: string, steps: unknown[]) =>
     body: JSON.stringify({ steps }),
   })
 
-test('шаг с занятым адресом назван вслух, а не потерян молча', async () => {
+test('a step with a taken address is named out loud, not lost in silence', async () => {
   const id = 'publish-dupes'
   createSession(id, 'Семинар с шагами', null)
   const res = await publish(id, [
     { seq: 5, label: 'первый' },
     { seq: 5, label: 'второй' },
   ])
-  assert.equal(res.status, 200, 'повтор адреса уронил транзакцию')
+  assert.equal(res.status, 200, 'a repeated address brought down the transaction')
   const body = (await res.json()) as { skipped: SkippedStep[] }
   assert.ok(
     body.skipped.some((s) => s.seq === 5 && s.reason === 'duplicate'),
-    'второй шаг с тем же адресом исчез без слова',
+    'the second step with the same address vanished without a word',
   )
 })
 
-test('нулевой и дробный адрес шага — отказ словами', async () => {
+test('a zero or fractional step address gets a refusal in words', async () => {
   const id = 'publish-zero'
   createSession(id, 'Семинар с нулём', null)
   for (const seq of [0, -3, 1.5]) {
     const res = await publish(id, [{ seq, label: 'шаг' }])
-    assert.equal(res.status, 400, `seq=${seq} приняли`)
+    assert.equal(res.status, 400, `seq=${seq} was accepted`)
     const body = (await res.json()) as { error?: string }
     assert.match(body.error ?? '', /номер версии для шага: целое число больше нуля/)
   }
 })
 
-/* ------------------------------------------------------------ вид курса */
+/* ------------------------------------------------------ the course view */
 
-test('панель и публичная страница показывают один и тот же курс', async () => {
+test('the panel and the public page show the same course', async () => {
   /*
-   * Сборка «курс с живыми именами» была написана дважды — в маршруте и в
-   * выгрузке на сайт — и уже разошлась: выгрузка подставляла имя записи, если
-   * комнаты не стало, а маршрут возвращал строку как есть, вместе с устаревшей
-   * ссылкой на чтение. Один и тот же курс выглядел по-разному в зависимости от
-   * того, каким адресом его открыли.
+   * Building "a course with live names" was written twice — in the route and in
+   * the site export — and had already diverged: the export substituted the
+   * entry's name if the room was gone, while the route returned the row as is,
+   * together with a stale link to the reading. The same course looked different
+   * depending on which address it was opened at.
    */
   const id = 'course-view-room'
   createSession(id, 'Неделя 1', null)
@@ -193,20 +195,20 @@ test('панель и публичная страница показывают �
     headers: { cookie: ownerCookie },
   })
   const fromPanel = (await panel.json()) as { course: { items: { name: string }[] } }
-  assert.equal(fromPanel.course.items[0]?.name, 'Неделя 1', 'панель показала имя из записи')
+  assert.equal(fromPanel.course.items[0]?.name, 'Неделя 1', 'the panel showed the name from the entry')
 
   const open = await fetch(`${base}/api/c/${course.id}`)
   const fromPublic = (await open.json()) as {
     course: { items: { name: string; sessionId?: string }[] }
   }
   assert.equal(fromPublic.course.items[0]?.name, 'Неделя 1')
-  // И идентификатор комнаты наружу по-прежнему не уходит.
+  // And the room id still does not leak out.
   assert.equal(fromPublic.course.items[0]?.sessionId, '')
 })
 
-/* ------------------------------------------------------------- список штата */
+/* ----------------------------------------------------------- the staff list */
 
-test('имя правится без адреса: поля правда необязательные', async () => {
+test('the name is edited without the email: the fields really are optional', async () => {
   const person = createTeacher({ name: 'Иваннов', email: 'ivanov@test.local', role: 'teacher' })
   assert.ok(person)
   const res = await fetch(`${base}/api/admin/teachers/${person.id}`, {
@@ -214,14 +216,14 @@ test('имя правится без адреса: поля правда нео�
     headers: { cookie: ownerCookie, 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'Иванов' }),
   })
-  assert.equal(res.status, 200, 'опечатку в фамилии всё ещё лечат удалением')
+  assert.equal(res.status, 200, 'a typo in a surname is still cured by deletion')
   const after = getTeacher(person.id)
   assert.equal(after?.name, 'Иванов')
-  assert.equal(after?.email, 'ivanov@test.local', 'адрес поехал вслед за именем')
-  assert.equal(after?.role, 'teacher', 'роль поехала вслед за именем')
+  assert.equal(after?.email, 'ivanov@test.local', 'the email changed along with the name')
+  assert.equal(after?.role, 'teacher', 'the role changed along with the name')
 })
 
-test('адрес правится без имени', async () => {
+test('the email is edited without the name', async () => {
   const person = createTeacher({ name: 'Пётр', email: 'petr.old@test.local', role: 'teacher' })
   assert.ok(person)
   const res = await fetch(`${base}/api/admin/teachers/${person.id}`, {
@@ -235,9 +237,9 @@ test('адрес правится без имени', async () => {
   assert.equal(after?.name, 'Пётр')
 })
 
-/* ------------------------------------------------------------------ импорт */
+/* ------------------------------------------------------------------ import */
 
-test('импорт считает потолок комнаты, а не только размер файла', () => {
+test('the import counts the room ceiling, not just the file size', () => {
   const tunable: { maxSessionBytes: number } = config
   const was = tunable.maxSessionBytes
   tunable.maxSessionBytes = 100
@@ -254,8 +256,8 @@ test('импорт считает потолок комнаты, а не тол�
       entry('week2.csv', 60),
       entry('notes.txt', 10),
     ])
-    // Первый влезает, второй — нет, а третий влезает в остаток: потолок
-    // считается суммой, а не «отсекаем всё после первого лишнего».
+    // The first fits, the second does not, and the third fits into what is left:
+    // the ceiling is a sum, not "cut everything after the first one that does not fit".
     assert.deepEqual(
       files.map((f) => f.name),
       ['week1.csv', 'notes.txt'],

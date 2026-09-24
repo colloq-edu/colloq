@@ -31,15 +31,16 @@ import { tr } from './i18n.js'
  *   ranMs     number | null           how long the last SETTLED run took. Also
  *                                     the kernel's; an interrupted run leaves
  *                                     it null, because it has no finish time
- *   open      true | 'council' | null  замок лекции, три положения: нет поля,
- *                                     false или null — закрытая; true —
- *                                     открытая всем; 'council' — консилиум:
- *                                     у каждого свой лист, общий текст закрыт
- *                                     как в закрытой (см. cellLock)
- *   council   CouncilSettings | null  ручки консилиума: запуск студентам и
- *                                     имена на проекторе. Имеют смысл только
- *                                     при open === 'council'; нет поля —
- *                                     умолчания (DEFAULT_COUNCIL)
+ *   open      true | 'council' | null  the lecture lock, three positions: no
+ *                                     field, false or null — closed; true —
+ *                                     open to everyone; 'council' — a council:
+ *                                     everyone has their own sheet, the shared
+ *                                     text is closed as in a closed cell (see
+ *                                     cellLock)
+ *   council   CouncilSettings | null  the council's knobs: runs for students
+ *                                     and names on the projector. Meaningful
+ *                                     only when open === 'council'; no field
+ *                                     means the defaults (DEFAULT_COUNCIL)
  *
  * `stdin`, `startedAt` and `ranMs` are written only by the server and are
  * display-only: nothing in this product may gate a control on them. The list
@@ -47,20 +48,21 @@ import { tr } from './i18n.js'
  * documented nowhere, which is exactly how it came to be missing from cloneCell
  * and to vanish whenever a neighbouring cell moved.
  *
- * `open` тоже пишет только сервер — по управляющему сообщению преподавателя, —
- * но, в отличие от трёх верхних, на нём как раз ДЕРЖИТСЯ право: в лекции
- * комната печатает и запускает ровно в открытых ячейках (shared/rules.ts ·
- * mayEditCell). Поэтому кадр из браузера, приносящий это поле, гейт отвергает
- * так же, как отвергает поддельный вывод: замок, который можно принести с
- * собой, — не замок.
+ * `open` is also written only by the server — on the teacher's control
+ * message — but unlike the three above, a right DOES rest on it: in a lecture
+ * the room types and runs in exactly the open cells (shared/rules.ts ·
+ * mayEditCell). So the gate rejects a frame from a browser that brings this
+ * field just as it rejects forged output: a lock you can bring along with you
+ * is not a lock.
  *
- * Третье положение замка — `'council'` — нарочно живёт в ТОМ ЖЕ ключе, а не
- * рядом: у замка одно положение, и двум полям пришлось бы договариваться,
- * какое из них главнее, когда оба выставлены. Для гейта консилиум — закрытая
- * ячейка: `isCellOpen` отвечает строго `=== true`, так что общий Y.Text в
- * консилиуме студент не трогает, а свою попытку шлёт снимком по управляющему
- * сокету (protocol.ts · council:draft). `council` — ручки того же положения, и
- * они серверные по той же причине: «запуск студентам» — право, а не показания.
+ * The lock's third position — `'council'` — deliberately lives in THE SAME
+ * key rather than next to it: a lock has one position, and two fields would
+ * have to agree on which of them wins when both are set. To the gate a
+ * council is a closed cell: `isCellOpen` answers strictly `=== true`, so in a
+ * council a student does not touch the shared Y.Text and sends their attempt
+ * as a snapshot over the control socket (protocol.ts · council:draft).
+ * `council` holds the knobs of that same position, and they are server-side
+ * for the same reason: "runs for students" is a right, not a readout.
  *
  * An output Y.Map holds:
  *   kind      'stream' | 'data' | 'error'
@@ -75,79 +77,84 @@ export const META_KEY = 'meta'
 export const CHAT_KEY = 'chat'
 export const TERMINAL_KEY = 'terminal'
 
-/* ----------------------------------------------------------------- тетради */
+/* --------------------------------------------------------------- notebooks */
 
 /**
- * Тетрадей в комнате несколько, и каждая — файл.
+ * A room has several notebooks, and each is a file.
  *
- * Была одна и была вшита в документ корнем `cells`. Это оказалось не свойством
- * семинара, а ограничением: на паре открывают прошлую тетрадь рядом с нынешней,
- * разбирают чужое решение, показывают заготовку. Тетрадь — такой же файл, как
- * .py и .csv, просто открывается она ячейками.
+ * There used to be one, sewn into the document as the `cells` root. That
+ * turned out to be not a property of a seminar but a limitation: in class
+ * people open last week's notebook next to this one, go over someone else's
+ * solution, show a template. A notebook is a file just like .py and .csv, it
+ * just opens as cells.
  *
- * Каждая тетрадь — свой корень в документе комнаты, а не свой документ. Это
- * решение, и вот его цена и выгода. Выгода: снимок в базе, запрет по правилам и
- * кеш в браузере работают для всех тетрадей ровно так же, как работали для
- * одной, — эти три машины не тронуты. Цена: тетрадь, открытая один раз, остаётся
- * в документе комнаты насовсем, даже если файл потом убрали; снимок растёт.
+ * Each notebook is its own root in the room's document, not its own document.
+ * That is a decision, and here are its price and its gain. The gain: the
+ * snapshot in the database, the rules gate and the browser cache work for all
+ * notebooks exactly as they did for one — those three machines are untouched.
+ * The price: a notebook opened once stays in the room's document for good,
+ * even if the file is later removed; the snapshot grows.
  *
- * Четвёртая машина, историю версий, эта цена не покрывает, и здесь стояло
- * обратное. `collab/history` читает, описывает и возвращает ровно корень
- * `cells` — там это названо прибитым намеренно, — так что правок в остальных
- * тетрадях лента не показывает и «вернуть версию» их не трогает. Отсюда и
- * `removeBook`: стирать ячейки, которые нечем вернуть, он не берётся.
+ * The fourth machine, version history, is not covered by this price, and the
+ * opposite used to be written here. `collab/history` reads, describes and
+ * restores exactly the `cells` root — it says there that this is pinned on
+ * purpose — so the timeline does not show edits in the other notebooks and
+ * "restore version" does not touch them. Hence `removeBook`: it does not
+ * undertake to erase cells there is no way to bring back.
  *
- * Корень первой тетради — по-прежнему `cells`, и это не косметика: у комнат,
- * которые уже идут, в этом корне лежит вся история версий и весь кеш в
- * браузерах. Переименовать корень значило бы обнулить и то и другое молча.
+ * The first notebook's root is still `cells`, and that is not cosmetic: rooms
+ * already running keep their whole version history and the whole browser
+ * cache in that root. Renaming the root would silently wipe both.
  */
 export const BOOKS_KEY = 'books'
 const BOOK_PREFIX = 'nb:'
 
-/** Как зовётся тетрадь комнаты, пока её не переименовали. */
+/** What the room's notebook is called until it is renamed. */
 export const DEFAULT_BOOK = 'Тетрадь.ipynb'
 /** Only new material receives the current locale's name; stored paths are never renamed. */
 export function defaultBookName(): string { return tr('server.defaultNotebook') }
 
 export interface Book {
-  /** Путь файла в папке семинара. */
+  /** The file's path in the seminar folder. */
   path: string
-  /** Имя корня в документе. У первой тетради — `cells`. */
+  /** The root's name in the document. For the first notebook it is `cells`. */
   root: string
 }
 
 /**
- * Корень для новой тетради — свой у каждой и ни из чего не выводимый.
+ * The root for a new notebook — its own for each, and derived from nothing.
  *
- * Выводился из пути (`nb:` + путь), а путь тетради — не имя, а адрес: он
- * освобождается. Переименовать разбор в архивный и положить на прежнее имя
- * новый файл — привычка раз в пару недель, и корень у обеих выходил один. Две
- * записи делили один Y.Array: загруженный файл не читался вовсе, правки шли в
- * обе вкладки, проекция затирала им же загруженные байты на диске, а убрать
- * «лишнюю» значило опустошить обе — и вернуть нечем, истории версий у корня
- * `nb:` нет.
+ * It used to be derived from the path (`nb:` + path), and a notebook's path is
+ * not a name but an address: it gets freed. Renaming a review notebook to an
+ * archive name and putting a new file under the old name is a habit every
+ * couple of weeks, and both came out with the same root. Two entries shared
+ * one Y.Array: the uploaded file was not read at all, edits went into both
+ * tabs, the projection overwrote the very bytes it had just uploaded to disk,
+ * and removing the "extra" one meant emptying both — with no way back, since
+ * an `nb:` root has no version history.
  *
- * `cells` достаётся первой тетради, и только пока комната ни одной не заводила
- * (флажок `booksSeeded` ставит `ensureInitialNotebook`). Комнате, где тетрадь
- * убрали НАМЕРЕННО, новую на этот корень сажать нельзя: возврат версии пишет в
- * `cells` прибито и вписал бы в чужой файл ячейки прежней тетради комнаты.
+ * `cells` goes to the first notebook, and only while the room has never
+ * created one (the `booksSeeded` flag is set by `ensureInitialNotebook`). A
+ * room where a notebook was removed ON PURPOSE must not get a new one on this
+ * root: restoring a version writes to `cells`, pinned, and would put the
+ * cells of the room's former notebook into someone else's file.
  */
 export function rootForNewBook(doc: Y.Doc): string {
   const fresh = bookList(doc).length === 0 && !getMeta(doc).get('booksSeeded')
   return fresh ? CELLS_KEY : BOOK_PREFIX + newId('b')
 }
 
-/** Этот корень — тетрадь? Нужен разбору правок: см. collab/gate.ts. */
+/** Is this root a notebook? The edit parser needs it: see collab/gate.ts. */
 export function isBookRoot(root: string): boolean {
   return root === CELLS_KEY || root.startsWith(BOOK_PREFIX)
 }
 
 /**
- * Тетради комнаты по порядку.
+ * The room's notebooks, in order.
  *
- * Пустой список у комнаты, которая ещё не завела ни одной, — и у всякой
- * комнаты, созданной до появления этого списка. Второй случай чинится при
- * первом же открытии: см. `ensureInitialNotebook`.
+ * An empty list for a room that has not created one yet — and for every room
+ * created before this list existed. The second case is fixed on the very
+ * first open: see `ensureInitialNotebook`.
  */
 export function bookList(doc: Y.Doc): Book[] {
   const raw = getMeta(doc).get(BOOKS_KEY)
@@ -171,21 +178,22 @@ function booksArray(doc: Y.Doc): Y.Array<Y.Map<any>> {
   return made
 }
 
-/** Тетрадь по пути — или `null`, если такого файла комната тетрадью не считает. */
+/** The notebook at a path — or `null` if the room does not consider that file a notebook. */
 export function bookAt(doc: Y.Doc, path: string): Book | null {
   return bookList(doc).find((book) => book.path === path) ?? null
 }
 
-/** Ячейки тетради по её корню. */
+/** A notebook's cells by its root. */
 export function bookCells(doc: Y.Doc, root: string): Y.Array<YCell> {
   return doc.getArray<YCell>(root)
 }
 
 /**
- * В какой тетради лежит эта ячейка — имя её корня.
+ * Which notebook this cell lives in — the name of its root.
  *
- * `null` — ячейки в комнате нет вовсе. Нужно там, где по ячейке надо найти её
- * лист: добавить соседку, продублировать, вставить ответ оракула рядом.
+ * `null` means the cell is not in the room at all. Needed wherever a cell's
+ * sheet has to be found from the cell: adding a neighbor, duplicating,
+ * inserting the oracle's answer next to it.
  */
 export function rootOfCell(doc: Y.Doc, id: string): string | null {
   const found = findCell(doc, id)
@@ -197,31 +205,31 @@ export function rootOfCell(doc: Y.Doc, id: string): string | null {
   }
 }
 
-/** Ячейки тетради по пути. Пустой массив, если тетради нет. */
+/** A notebook's cells by path. An empty array if there is no such notebook. */
 export function cellsAt(doc: Y.Doc, path: string): Y.Array<YCell> | null {
   const book = bookAt(doc, path)
   return book ? bookCells(doc, book.root) : null
 }
 
-/** Корень тетради комнаты — первой в списке. */
+/** The root of the room's notebook — the first in the list. */
 export function mainRoot(doc: Y.Doc): string {
   return bookList(doc)[0]?.root ?? CELLS_KEY
 }
 
-/** Все тетради комнаты со своими ячейками — для проходов, которые касаются всех. */
+/** All the room's notebooks with their cells — for passes that concern all of them. */
 export function allBooks(doc: Y.Doc): { book: Book; cells: Y.Array<YCell> }[] {
   return bookList(doc).map((book) => ({ book, cells: bookCells(doc, book.root) }))
 }
 
 /**
- * Все массивы ячеек в документе — включая тот случай, когда списка тетрадей ещё
- * нет.
+ * All the cell arrays in the document — including the case when there is no
+ * notebook list yet.
  *
- * Списка нет ровно у двух документов: у комнаты, открытой впервые после
- * появления нескольких тетрадей (список припишут через мгновение), и у
- * документа в тесте, собранного руками из одного корня. Оба обязаны вести себя
- * как комната с одной тетрадью, иначе проверки, которые ходят по всем тетрадям,
- * молча перестают что-либо проверять.
+ * Exactly two documents have no list: a room opened for the first time after
+ * multiple notebooks appeared (the list gets added a moment later), and a
+ * test document built by hand from a single root. Both must behave like a
+ * room with one notebook, otherwise the checks that go over all notebooks
+ * silently stop checking anything.
  */
 export function allCellArrays(doc: Y.Doc): Y.Array<YCell>[] {
   const books = allBooks(doc)
@@ -230,11 +238,11 @@ export function allCellArrays(doc: Y.Doc): Y.Array<YCell>[] {
 }
 
 /**
- * Записать тетрадь в список.
+ * Record a notebook in the list.
  *
- * Идемпотентно: путь, который уже там есть, возвращается как есть. Иначе две
- * вкладки, открывшие один файл одновременно, завели бы две тетради на один
- * путь, и половина комнаты печатала бы во вторую.
+ * Idempotent: a path already there is returned as is. Otherwise two tabs that
+ * opened one file at the same moment would create two notebooks for one
+ * path, and half the room would be typing into the second.
  */
 export function addBook(doc: Y.Doc, path: string, root?: string): Book {
   const existing = bookAt(doc, path)
@@ -247,7 +255,7 @@ export function addBook(doc: Y.Doc, path: string, root?: string): Book {
   return made
 }
 
-/** Тетрадь переехала вместе с файлом: корень остаётся тем же, меняется путь. */
+/** The notebook moved along with its file: the root stays the same, the path changes. */
 export function renameBook(doc: Y.Doc, from: string, to: string): void {
   const list = booksArray(doc)
   for (let i = 0; i < list.length; i++) {
@@ -257,23 +265,24 @@ export function renameBook(doc: Y.Doc, from: string, to: string): void {
 }
 
 /**
- * Убрать тетрадь из комнаты.
+ * Remove a notebook from the room.
  *
- * Из списка — всегда, и этого довольно, чтобы её не стало: и `allBooks`, и
- * `findCell`, и гейт ходят по списку, так что брошенный корень `nb:` не видит
- * никто.
+ * From the list — always, and that is enough for it to be gone: `allBooks`,
+ * `findCell` and the gate all go by the list, so nobody sees an abandoned
+ * `nb:` root.
  *
- * Ячейки стираются ровно у тетради КОМНАТЫ (корень `cells`). Её и читают «по
- * старой памяти» — история версий смотрит прямо в этот корень, — и она же
- * единственная, которую возврат версии умеет вернуть целиком, так что стирание
- * здесь обратимо.
+ * Cells are erased only for the ROOM's notebook (the `cells` root). It is the
+ * one read "from old memory" — version history looks straight into this root
+ * — and it is also the only one a version restore can bring back whole, so
+ * erasing here is reversible.
  *
- * У остальных тетрадей ячейки остаются. Истории версий у их корней нет, и
- * стереть их значило бы потерять час работы пары необратимо — от одного щелчка
- * по файлу в дереве, в том числе непреднамеренного: файл убрали мимо панели,
- * папку с тетрадью переименовали. Цена — снимок, который не уменьшается; она
- * названа в шапке этого раздела и уже уплачена тем, что корень в Yjs всё равно
- * не выкинуть.
+ * The other notebooks keep their cells. Their roots have no version history,
+ * and erasing them would mean losing an hour of a class's work irreversibly —
+ * from a single click on a file in the tree, including an unintended one: the
+ * file was removed behind the panel's back, the folder with the notebook was
+ * renamed. The price is a snapshot that does not shrink; it is named in the
+ * header of this section and is already paid anyway, since a root cannot be
+ * thrown out of Yjs.
  */
 export function removeBook(doc: Y.Doc, path: string): void {
   const list = booksArray(doc)
@@ -291,75 +300,76 @@ export function removeBook(doc: Y.Doc, path: string): void {
 export type CellType = 'code' | 'markdown'
 export type CellState = 'idle' | 'queued' | 'running' | 'ok' | 'error'
 /**
- * Что с ядром тетради — глазами комнаты.
+ * What is going on with a notebook's kernel — as the room sees it.
  *
- * `off` — ядра НЕТ и никто его не поднимает: комнату только открыли, сервер
- * перезапустили, ядро убрали по простою, занятие кончилось. Заведено 20.09,
- * потому что до этого такое состояние показывалось как `starting`: свежая
- * комната писала «ЗАПУСК python3» и висела так часами, ничего не запуская.
- * Ядро поднимается лениво — первым Run (и, с 19.09, первым наведением за
- * справкой), — и честное слово об этом стоит ровно столько же, сколько
- * неверное.
+ * `off` — there is NO kernel and nobody is bringing it up: the room was just
+ * opened, the server was restarted, the kernel was removed for idleness, the
+ * class ended. Introduced on 20 Sep 2026, because before that this state was
+ * shown as `starting`: a fresh room said "STARTING python3" and hung like
+ * that for hours, starting nothing. The kernel comes up lazily — on the first
+ * Run (and, since 19 Sep 2026, on the first hover for help) — and an honest
+ * word about that costs exactly as much as a wrong one.
  *
- * `starting` осталось тем, чем должно быть: подъём ИДЁТ прямо сейчас.
- * `dead` — настоящая смерть (OOM, падение, не поднялось), у неё своя красная
- * плашка и кнопка; штатное засыпание по простою красной тревогой быть не
- * должно.
+ * `starting` stayed what it should be: coming up IS happening right now.
+ * `dead` is a real death (OOM, crash, failed to come up); it has its own red
+ * badge and button; a routine doze-off for idleness must not be a red alarm.
  */
 export type KernelStatus = 'off' | 'starting' | 'idle' | 'busy' | 'restarting' | 'dead'
 
 /**
- * Что показать старой вкладке вместо нового слова.
+ * What to show an old tab instead of the new word.
  *
- * Вкладка, открытая до 20.09, читает только прежний ключ `meta.kernelStatus` и
- * рисует состояние по таблице, в которой `off` нет: незнакомое значение дало
- * бы ей `undefined` и пустую плашку (а в шапке — ошибку на `kernel.label`).
- * Поэтому в ПРЕЖНИЙ ключ вместо `off` едет `idle`: старая вкладка покажет
- * «ГОТОВО», и это не ложь в её словаре — Run в такой комнате работает и
- * поднимает ядро сам. Правда целиком лежит в новом ключе
- * (`meta.kernels[root].status`), который старая вкладка не читает.
+ * A tab opened before 20 Sep 2026 reads only the old `meta.kernelStatus` key
+ * and draws the state from a table that has no `off`: an unfamiliar value
+ * would give it `undefined` and an empty badge (and in the header, an error
+ * on `kernel.label`). So the OLD key gets `idle` instead of `off`: the old
+ * tab shows "IDLE", and that is not a lie in its vocabulary — Run in such a
+ * room works and brings the kernel up by itself. The whole truth lies in the
+ * new key (`meta.kernels[root].status`), which the old tab does not read.
  */
 export function legacyKernelStatus(status: KernelStatus): Exclude<KernelStatus, 'off'> {
   return status === 'off' ? 'idle' : status
 }
 export type StreamName = 'stdout' | 'stderr'
 
-/* ------------------------------------------------------------ ядра тетрадей */
+/* --------------------------------------------------------- notebook kernels */
 
 /**
- * Состояние ядер по тетрадям: корень → что с ним происходит.
+ * Kernel state per notebook: root → what is happening with it.
  *
- * У каждой тетради своё ядро и своя очередь (server/src/kernel/index.ts), и
- * комната обязана видеть это по тетрадям: лекция считает, семинар готов, и
- * одна плашка на двоих врала бы обоим. Карта живёт в `meta`, как и всё
- * остальное, что пишет сервер, — значит, доезжает тем же sync и попадает в
- * снимок.
+ * Every notebook has its own kernel and its own queue
+ * (server/src/kernel/index.ts), and the room must see it per notebook: the
+ * lecture is computing, the seminar is ready, and one badge for both would
+ * lie to both. The map lives in `meta`, like everything else the server
+ * writes — so it arrives by the same sync and gets into the snapshot.
  *
- * Старые ключи `kernelStatus`, `runningCell`, `queue` и `kernelProblem` рядом
- * НЕ убраны и продолжают зеркалить ядро тетради `cells`. Причин три, и все три
- * настоящие: вкладка, открытая до выкатки, читает только их; история версий
- * хранит снимки, в которых есть только они; и сброс зависшего состояния
- * (`clearStaleWork`) чинит обе записи сразу. Зеркало пишет одно место —
- * `setStatus`/`syncQueue`/`setKernelProblem` в kernel/index.ts.
+ * The old keys `kernelStatus`, `runningCell`, `queue` and `kernelProblem` next
+ * to it are NOT removed and keep mirroring the kernel of the `cells` notebook.
+ * There are three reasons, and all three are real: a tab opened before the
+ * rollout reads only them; version history keeps snapshots that have only
+ * them; and resetting a stuck state (`clearStaleWork`) repairs both records
+ * at once. One place writes the mirror —
+ * `setStatus`/`syncQueue`/`setKernelProblem` in kernel/index.ts.
  */
 export const KERNELS_KEY = 'kernels'
 
-/** Поля одной записи карты — те же слова, что у старых ключей. */
+/** The fields of one map entry — the same words as the old keys. */
 export const KERNEL_STATUS_FIELD = 'status'
 export const KERNEL_RUNNING_FIELD = 'runningCell'
 export const KERNEL_QUEUE_FIELD = 'queue'
 
-/** Карта ядер, если она в документе есть. Читателям — без создания. */
+/** The kernel map, if the document has one. For readers — without creating it. */
 export function kernelsMap(doc: Y.Doc): Y.Map<any> | null {
   const raw = getMeta(doc).get(KERNELS_KEY)
   return raw instanceof Y.Map ? (raw as Y.Map<any>) : null
 }
 
 /**
- * Запись одной тетради в карте — заводя её, если надо.
+ * One notebook's entry in the map — creating it if needed.
  *
- * Только для сервера и только внутри транзакции: клиенту `meta` закрыта гейтом
- * (collab/gate.ts), и карта ядер закрыта тем же правилом, что и `kernelStatus`.
+ * For the server only, and only inside a transaction: `meta` is closed to
+ * clients by the gate (collab/gate.ts), and the kernel map is closed by the
+ * same rule as `kernelStatus`.
  */
 export function kernelEntry(doc: Y.Doc, root: string): Y.Map<any> {
   const meta = getMeta(doc)
@@ -376,7 +386,7 @@ export function kernelEntry(doc: Y.Doc, root: string): Y.Map<any> {
   return entry as Y.Map<any>
 }
 
-/** Что комната знает про ядро одной тетради. Пусто — его ещё не поднимали. */
+/** What the room knows about one notebook's kernel. Empty — it has not been brought up yet. */
 export interface BookKernel {
   status: KernelStatus
   runningCell: string | null
@@ -384,12 +394,13 @@ export interface BookKernel {
 }
 
 /**
- * Состояние ядра одной тетради — одним вопросом и с запасным ответом.
+ * The state of one notebook's kernel — as one question, with a fallback
+ * answer.
  *
- * Карты нет вовсе (комната со старым снимком, документ из теста) — отвечаем
- * по старым ключам, но ТОЛЬКО для тетради `cells`: у остальных в старой записи
- * нет ничего, и приписывать им чужое состояние значило бы показать «выполняется»
- * тетради, в которой никто ничего не запускал.
+ * No map at all (a room with an old snapshot, a document from a test) — we
+ * answer from the old keys, but ONLY for the `cells` notebook: the others
+ * have nothing in the old record, and attributing someone else's state to
+ * them would show "running" for a notebook in which nobody ran anything.
  */
 export function bookKernel(doc: Y.Doc, root: string): BookKernel {
   const entry = kernelsMap(doc)?.get(root)
@@ -401,7 +412,7 @@ export function bookKernel(doc: Y.Doc, root: string): BookKernel {
       queue: queue instanceof Y.Array ? (queue.toArray() as string[]) : [],
     }
   }
-  // Записи нет вовсе — ядра этой тетради не поднимали: `off`, а не «запускается».
+  // No entry at all — this notebook's kernel was never brought up: `off`, not "starting".
   if (root !== CELLS_KEY) return { status: 'off', runningCell: null, queue: [] }
   const meta = getMeta(doc)
   const queue = meta.get('queue')
@@ -419,17 +430,18 @@ export interface StreamOutput {
 }
 
 /**
- * Крупный кусок вывода, вынесенный из документа наружу.
+ * A large piece of output, moved out of the document.
  *
- * Картинка на двести килобайт — это 270 КБ base64 в документе, который целиком
- * едет каждому вошедшему и целиком переписывается в каждый снимок и ключевой
- * кадр истории. Здесь вместо неё стоит ссылка на полторы сотни байт, а байты
- * лежат по хэшу рядом с комнатой (server/src/blobs.ts) и раздаются с вечным
- * кэшем (`/api/sessions/:id/blobs/:sha`).
+ * A two-hundred-kilobyte picture is 270 KB of base64 in a document that
+ * travels whole to everyone who comes in and is rewritten whole into every
+ * snapshot and history keyframe. Here a link of about a hundred and fifty
+ * bytes stands in its place, and the bytes lie by hash next to the room
+ * (server/src/blobs.ts) and are served with an eternal cache
+ * (`/api/sessions/:id/blobs/:sha`).
  *
- * `mime` — тот, что прислало ядро: он нужен тому, кто будет эти байты
- * показывать или вкладывать обратно (публикация, экспорт). Content-Type ответа
- * из него НЕ берётся — его сервер определяет по самим байтам.
+ * `mime` is the one the kernel sent: whoever will show these bytes or embed
+ * them back (publishing, export) needs it. The response's Content-Type is NOT
+ * taken from it — the server determines that from the bytes themselves.
  */
 export interface OutputBlob {
   sha: string
@@ -442,11 +454,12 @@ export interface DataOutput {
   kind: 'data'
   data: Record<string, string>
   /**
-   * Части набора, которых в `data` нет: они вынесены по ссылке.
+   * Parts of the bundle that are not in `data`: they were moved out by link.
    *
-   * Список, а не поле: набор от одного `display_data` несёт и png, и svg, и
-   * text/plain разом, и вынесенным может оказаться не одно из них. Старые
-   * документы поля не имеют вовсе — там всё лежит в `data`, и так и читается.
+   * A list, not a field: the bundle from one `display_data` carries png, svg
+   * and text/plain at once, and more than one of them may end up moved out.
+   * Old documents do not have the field at all — everything lies in `data`
+   * there, and is read that way.
    */
   blobs?: OutputBlob[]
   execCount: number | null
@@ -483,83 +496,90 @@ export interface CellSnapshot {
    */
   stdin: { prompt: string; password: boolean } | null
   /**
-   * Ячейку открыл преподаватель: в закрытой тетради лекции она одна принимает
-   * набор и запуск.
+   * The teacher opened the cell: in a closed lecture notebook it alone
+   * accepts typing and runs.
    *
-   * Необязательное поле, потому что необязателен и ключ в документе: у ячейки,
-   * которой замок не касался, его нет вовсе, и снимок девятинедельной давности
-   * читается без него. `readCell` всё равно кладёт сюда boolean — читать его
-   * через `!== false` нельзя, читать надо через истину.
+   * An optional field, because the key in the document is optional too: a
+   * cell the lock never touched has no such key at all, and a nine-week-old
+   * snapshot reads without it. `readCell` puts a boolean here anyway — it must
+   * not be read via `!== false`, it has to be read via truth.
    */
   open?: boolean
   /**
-   * Положение замка целиком — то, что рисует полоса режима и чип ячейки.
+   * The lock's position in full — what the mode strip and the cell chip draw.
    *
-   * `open` выше остаётся булевым ради всех, кто читает снимок как «можно ли
-   * печатать»: консилиум для них закрытая ячейка, и это правда. Здесь же
-   * различаются все три положения. Необязательное по тому же доводу, что и
-   * `open`: старые снимки его не знают.
+   * `open` above stays boolean for the sake of everyone who reads a snapshot
+   * as "may one type here": for them a council is a closed cell, and that is
+   * true. Here, though, all three positions are distinguished. Optional by the
+   * same argument as `open`: old snapshots do not know it.
    */
   lock?: CellLock
-  /** Ручки консилиума — с подставленными умолчаниями; `null` вне консилиума. */
+  /** The council's knobs — with defaults filled in; `null` outside a council. */
   council?: CouncilSettings | null
 }
 
 /**
- * Три положения замка ячейки.
+ * The three positions of a cell's lock.
  *
- *   closed  — обычная ячейка лекции: печатает и запускает преподаватель
- *   open    — открыта всем: комната печатает в общий текст
- *   council — консилиум: у каждого свой лист, общий текст закрыт, а попытки
- *             живут на сервере и видны преподавателю (protocol.ts · council:*)
+ *   closed  — an ordinary lecture cell: the teacher types and runs
+ *   open    — open to everyone: the room types into the shared text
+ *   council — a council: everyone has their own sheet, the shared text is
+ *             closed, and the attempts live on the server, visible to the
+ *             teacher (protocol.ts · council:*)
  *
- * В документе хранится не это имя, а ключ `open` (true | 'council' | null);
- * имя — для проводов и интерфейса, где «false» ничего не объясняет.
+ * The document stores not this name but the `open` key
+ * (true | 'council' | null); the name is for the wires and the interface,
+ * where "false" explains nothing.
  */
 export type CellLock = 'closed' | 'open' | 'council'
 
 /**
- * Ручки консилиума на одной ячейке.
+ * The council's knobs on one cell.
  *
- *   studentRun       — false: запускает преподаватель; true: студент сам;
- *                      request: студент просит одобрить конкретную версию кода.
- *                      По умолчанию false. Все запуски идут в ядро ТОЙ
- *                      тетради, где стоит ячейка консилиума.
- *   namesOnProjector — имя автора показанной попытки: ВКЛ по умолчанию.
- *                      Выключенная, она подписывает показанное решение номером
- *                      варианта («Вариант 12») — и одинаково везде: в тетради у
- *                      всех, в проекторной полосе и в плашке у преподавателя.
- *                      Читает её сервер, когда собирает `CouncilShown`
- *                      (server/src/council.ts · shownFor): имя, доехавшее до
- *                      чужого браузера, считается показанным, поэтому при
- *                      выключенной ручке его в кадре нет вовсе. Автор у себя
- *                      всё равно видит «ваш вариант на экране» — про себя он и
- *                      так знает.
- *   runLimitSec      — предел ОДНОГО запуска попытки в секундах; `null` — без
- *                      предела. Ядро у тетради одно, и очередь на весь поток
- *                      стоит за тем, что считается: `while True` у одного — это
- *                      «В очереди: 37» у остальных до конца пары, пока
- *                      преподаватель не заметит и не нажмёт «Прервать». Предел
- *                      нажимает её сам: сервер прерывает запуск, попытка
- *                      получает отметку `CouncilRun.timedOut`, очередь идёт
- *                      дальше. Касается всех запусков попыток — и тех, что
- *                      запустил преподаватель: жирный код не становится легче
- *                      оттого, кто нажал. Умолчание 30 с: попытка консилиума —
- *                      несколько строк, обычный запуск идёт доли секунды.
- *   rerunPauseSec    — сколько секунд студент ждёт после конца СВОЕГО запуска,
- *                      прежде чем встать в очередь снова (и самозапуск, и
- *                      просьба); 0 — сразу. На потоке в пятьсот человек очередь
- *                      из нажимающих «Запустить» после каждой правки не
- *                      кончается никогда. Преподавателя пауза не касается.
+ *   studentRun       — false: the teacher runs; true: the student runs by
+ *                      themselves; request: the student asks for approval of
+ *                      a specific version of the code. Default false. All
+ *                      runs go into the kernel of THE notebook the council
+ *                      cell is in.
+ *   namesOnProjector — the author's name on a shown attempt: ON by default.
+ *                      Turned off, it labels the shown solution with a
+ *                      variant number ("Answer 12") — the same everywhere: in
+ *                      everyone's notebook, in the projector strip and in the
+ *                      teacher's badge. The server reads it when it assembles
+ *                      `CouncilShown` (server/src/council.ts · shownFor): a
+ *                      name that reached someone else's browser counts as
+ *                      shown, so with the knob off it is not in the frame at
+ *                      all. The author still sees "your answer is on the
+ *                      screen" on their side — they know about themselves
+ *                      anyway.
+ *   runLimitSec      — the limit of ONE run of an attempt, in seconds; `null`
+ *                      means no limit. A notebook has one kernel, and the
+ *                      queue for the whole cohort stands behind whatever is
+ *                      computing: one person's `while True` is "In queue: 37"
+ *                      for everyone else until the end of class, until the
+ *                      teacher notices and presses "Interrupt". The limit
+ *                      presses it by itself: the server interrupts the run,
+ *                      the attempt gets the `CouncilRun.timedOut` mark, the
+ *                      queue moves on. It applies to all attempt runs —
+ *                      including those the teacher started: heavy code does
+ *                      not get lighter depending on who pressed. Default
+ *                      30 s: a council attempt is a few lines, an ordinary
+ *                      run takes a fraction of a second.
+ *   rerunPauseSec    — how many seconds a student waits after the end of
+ *                      THEIR OWN run before queuing again (both a self-run
+ *                      and a request); 0 — right away. With a cohort of five
+ *                      hundred, a queue of people pressing "Run" after every
+ *                      edit never ends. The pause does not apply to the
+ *                      teacher.
  */
 export interface CouncilSettings {
   /** false: teacher only; true: direct student runs; request: teacher approval. */
   studentRun: boolean | 'request'
-  /** Имя автора показанной попытки или «Вариант N» — см. заметку выше. */
+  /** The shown attempt's author's name or "Answer N" — see the note above. */
   namesOnProjector: boolean
-  /** Предел одного запуска, с; `null` — без предела. См. заметку выше. */
+  /** The limit of one run, s; `null` — no limit. See the note above. */
   runLimitSec: number | null
-  /** Пауза между запусками одного студента, с; 0 — нет. См. заметку выше. */
+  /** The pause between one student's runs, s; 0 — none. See the note above. */
   rerunPauseSec: number
 }
 
@@ -571,48 +591,53 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
 }
 
 /**
- * Что предлагает лист «Регламент» в пульте. Сервер принимает любое целое в
- * границах ниже, а не только эти числа: список — про интерфейс, а не про право.
+ * What the "Rules" sheet in the console offers. The server accepts any integer
+ * within the bounds below, not only these numbers: the list is about the
+ * interface, not about the right.
  */
 export const COUNCIL_RUN_LIMITS: readonly (number | null)[] = [5, 15, 30, 60, 300, null]
 export const COUNCIL_RERUN_PAUSES: readonly number[] = [0, 15, 30, 60, 120]
-/** Границы, в которых сервер принимает предел запуска и паузу. */
+/** The bounds within which the server accepts the run limit and the pause. */
 export const COUNCIL_RUN_LIMIT_MAX = 3600
 export const COUNCIL_RERUN_PAUSE_MAX = 3600
 
 /**
- * Сколько черновик стоит без единой правки, прежде чем считаться «застрявшим».
+ * How long a draft sits without a single edit before it counts as "stuck".
  *
- * Пять минут: лист открыт, в нём ничего не происходит. Число живёт ЗДЕСЬ, а не
- * у каждого, кто им пользуется: по нему оракул называет застрявших в сводке для
- * преподавателя (server/src/ai/council.ts · silent), а пульт красит строку
- * «молчит 7 мин» и считает чип «Молчат N» во вкладке «Пишут». Разойдясь, две
- * копии дали бы человека, который в сводке застрял, а в списке пишет, —
- * и спор был бы о том, какая из двух цифр настоящая.
+ * Five minutes: the sheet is open, nothing is happening in it. The number
+ * lives HERE, not with each of its users: by it the oracle names the stuck
+ * ones in the summary for the teacher (server/src/ai/council.ts · silent), and
+ * the console colors the "silent for 7 min" row and counts the "Silent N" chip
+ * in the "Writing" tab. Once apart, two copies would give a person who is
+ * stuck in the summary and writing in the list — and the argument would be
+ * about which of the two numbers is real.
  */
 export const COUNCIL_SILENCE_MS = 5 * 60_000
 
 /**
- * Что консилиум обещает про изоляцию попыток — и чего не обещает.
+ * What the council promises about isolating attempts — and what it does not.
  *
- * Ядро у тетради одно, и попытки его делят: попытка видит `df`, `np` и всё,
- * что преподаватель подготовил в общей ячейке ЭТОГО листа, — иначе консилиум
- * был бы бесполезен. Соседних тетрадей занятия это не касается вовсе: у них
- * свои ядра и свои переменные. Но данные каждая попытка получает СВОИ: сервер
- * подменяет привязки личными копиями перед попыткой и возвращает пространство
- * имён после неё (server/src/kernel/council-isolation.ts), так что ни
- * `secret = 42`, ни `data = data.dropna()`, ни `df.drop(..., inplace=True)` у
- * одного не доходят до следующего.
+ * A notebook has one kernel, and the attempts share it: an attempt sees `df`,
+ * `np` and everything the teacher prepared in a shared cell of THIS sheet —
+ * otherwise the council would be useless. The class's other notebooks are
+ * not affected at all: they have their own kernels and their own variables.
+ * But each attempt gets data OF ITS OWN: the server swaps the bindings for
+ * personal copies before the attempt and restores the namespace after it
+ * (server/src/kernel/council-isolation.ts), so neither `secret = 42`, nor
+ * `data = data.dropna()`, nor `df.drop(..., inplace=True)` from one person
+ * reaches the next.
  *
- * Тем же входом закрыты и два способа кончить занятие всем сразу: `exit()` в
- * ядре Jupyter завершает процесс (переменные теряют все, кто работает в этой
- * тетради), а жадная попытка звала OOM-killer на её ядро. Первое отвечает
- * отказом, второму поставлен потолок памяти.
+ * The same entry point closes two ways to end the class for everyone at
+ * once: `exit()` in a Jupyter kernel ends the process (everyone working in
+ * this notebook loses their variables), and a greedy attempt called the
+ * OOM-killer on its kernel. The first is answered with a refusal, the second
+ * gets a memory ceiling.
  *
- * Общими остаются файлы на диске, модули, которые попытка импортировала, и то,
- * что скопировать не вышло — слишком большое или не того типа; об этом попытка
- * читает строкой в собственном выводе. Одна строка на всех местах, где об этом
- * говорят: подсказка ручки studentRun, полоса консилиума, README.
+ * What stays shared is the files on disk, the modules the attempt imported,
+ * and whatever could not be copied — too big or of the wrong type; the
+ * attempt reads about that as a line in its own output. One string for every
+ * place where this is said: the hint of the studentRun knob, the council
+ * strip, the README.
  */
 export const COUNCIL_SHARED_KERNEL_NOTE = 'server.councilSharedKernel'
 
@@ -644,40 +669,40 @@ export type YOutput = Y.Map<any>
 export type ChatState = 'streaming' | 'done' | 'error'
 
 /**
- * Что оракул делал сам, шаг за шагом.
+ * What the oracle did by itself, step by step.
  *
- * Лента шагов живёт в документе рядом с ответом, а не в логах сервера, и это
- * то же решение, что и у самого треда: комната должна видеть, что именно
- * произошло с её файлами, а не читать про это в пересказе. Из неё же считается
- * отмена — по ней видно, чего касались.
+ * The step feed lives in the document next to the answer, not in the server
+ * logs, and it is the same decision as for the thread itself: the room must
+ * see what exactly happened to its files, not read a retelling of it. Undo is
+ * also computed from it — it shows what was touched.
  *
- * `read` в ленте нужен не меньше правок: «оракул поменял train.py» без «оракул
- * сначала прочитал src/model.py» читается как угадывание.
+ * `read` in the feed is needed no less than edits: "the oracle changed
+ * train.py" without "the oracle first read src/model.py" reads as guessing.
  */
 export type StepKind = 'read' | 'write' | 'new' | 'run' | 'note'
 
 export interface AgentStep {
   kind: StepKind
-  /** Файл, которого шаг касался. Для `run` — что запускали. */
+  /** The file the step touched. For `run` — what was run. */
   target: string
-  /** Строк прибавилось и убавилось; только у правок. */
+  /** Lines added and removed; edits only. */
   added: number
   removed: number
-  /** Код выхода; только у запуска. `null` — не дождались. */
+  /** The exit code; runs only. `null` — did not wait for it. */
   exit: number | null
-  /** Короткая выжимка: хвост вывода, первые строки правки, причина отказа. */
+  /** A short digest: the tail of the output, the first lines of an edit, the reason for a refusal. */
   note: string
   /**
-   * Когда шаг записали, по часам сервера.
+   * When the step was recorded, by the server's clock.
    *
-   * Необязательно на чтении, и это не небрежность: ленты ходов, записанных до
-   * появления поля, лежат в снимках комнат и приезжают без него. Панель рисует
-   * промежуток между шагами только там, где время есть у обоих соседей.
+   * Optional on read, and that is not sloppiness: feeds of turns recorded
+   * before the field existed lie in room snapshots and arrive without it. The
+   * panel draws the gap between steps only where both neighbors have a time.
    */
   at?: number
 }
 
-/** Отменяемость хода: у обычного вопроса её нет вовсе. */
+/** Whether a turn can be undone: an ordinary question has no such thing at all. */
 export type UndoState = 'none' | 'available' | 'done'
 
 /**
@@ -698,7 +723,7 @@ export interface ChatSnapshot {
   question: string
   action: string | null
   cellId: string | null
-  /** Ячейки, о которых спрашивали. Пусто у ходов, записанных до выделения нескольких. */
+  /** The cells asked about. Empty for turns recorded before multi-cell selection existed. */
   cellIds: string[]
   createdAt: number
   answer: string
@@ -740,15 +765,16 @@ export interface ChatSnapshot {
    */
   thoughtMs: number | null
   /**
-   * Спрашивали или просили сделать.
+   * Asked a question, or asked for something to be done.
    *
-   * Разные вещи, и в ленте они выглядят по-разному: у вопроса есть ответ, у
-   * поручения — ещё и список того, что случилось с файлами комнаты.
+   * Different things, and they look different in the feed: a question has an
+   * answer, an assignment also has a list of what happened to the room's
+   * files.
    */
   mode: 'ask' | 'agent'
   steps: AgentStep[]
   undo: UndoState
-  /** Кто отменил ход, для строки, которую тред показывает потом. */
+  /** Who undid the turn, for the line the thread shows afterwards. */
   undoBy: string | null
 }
 
@@ -779,10 +805,10 @@ export function createChatEntry(input: {
   entry.set('action', input.action ?? null)
   entry.set('cellId', input.cellId ?? null)
   /*
-   * Ячейки, на которых просили сосредоточиться, — отдельно от той, к которой
-   * ход ПРИВЯЗАН. Привязка одна: предложение переписывает один текст, у него
-   * одна база и одно решение на всех. Список — про то, о чём спрашивали, и
-   * тред называет его словами.
+   * The cells one asked to focus on — separately from the one the turn is
+   * ATTACHED to. The attachment is one: a proposal rewrites one text, it has
+   * one base and one decision for everyone. The list is about what was asked
+   * about, and the thread names it in words.
    */
   entry.set('cellIds', input.cellIds ?? [])
   entry.set('createdAt', Date.now())
@@ -801,7 +827,7 @@ export function createChatEntry(input: {
   return entry
 }
 
-/** Лента шагов этого хода. Пустая у всего, что не «сделать». */
+/** This turn's step feed. Empty for everything that is not "do". */
 export function chatSteps(entry: YChatEntry): Y.Array<Y.Map<any>> {
   const current = entry.get('steps')
   if (current instanceof Y.Array) return current
@@ -811,11 +837,11 @@ export function chatSteps(entry: YChatEntry): Y.Array<Y.Map<any>> {
 }
 
 /**
- * Дописать шаг.
+ * Append a step.
  *
- * Каждый шаг — отдельная запись, а не перезапись всей ленты: комната смотрит на
- * неё, пока оракул работает, и переписывание целиком дёргало бы список на
- * каждый шаг.
+ * Each step is a separate entry, not a rewrite of the whole feed: the room
+ * watches it while the oracle works, and rewriting it whole would jerk the
+ * list on every step.
  */
 export function addStep(entry: YChatEntry, step: AgentStep): void {
   const row = new Y.Map<any>()
@@ -825,8 +851,8 @@ export function addStep(entry: YChatEntry, step: AgentStep): void {
   row.set('removed', step.removed)
   row.set('exit', step.exit)
   row.set('note', step.note)
-  // Время пишет сервер, а не вызывающий: часы у шага должны быть одни на всю
-  // ленту, иначе «сколько занял запуск» считается по двум разным источникам.
+  // The server writes the time, not the caller: a step's clock must be one for
+  // the whole feed, otherwise "how long the run took" comes from two sources.
   row.set('at', step.at ?? Date.now())
   chatSteps(entry).push([row])
 }
@@ -859,18 +885,19 @@ function readStep(row: unknown): AgentStep | null {
  * while the answer was being written.
  */
 /**
- * Заменить текст, не переписывая его целиком.
+ * Replace a text without rewriting it whole.
  *
- * `delete(0, length)` с последующим `insert(0, next)` — это «весь текст исчез,
- * появился другой». Для CRDT так и есть: у всех, кто стоял в этой ячейке,
- * курсор уезжает в начало, выделение пропадает, а сосед, печатавший в конце
- * файла, обнаруживает свою строку посреди чужой. Между тем «принять правку» и
- * «вернуть версию» меняют обычно несколько строк из сорока.
+ * `delete(0, length)` followed by `insert(0, next)` means "all the text
+ * vanished, a different one appeared". For a CRDT that is exactly so: for
+ * everyone who stood in this cell the caret jumps to the beginning, the
+ * selection disappears, and a neighbor who was typing at the end of the file
+ * finds their line in the middle of someone else's. Meanwhile "accept an
+ * edit" and "restore a version" usually change a few lines out of forty.
  *
- * Общее начало и общий конец остаются нетронутыми, переписывается середина.
- * Это не полноценный diff — вставка в начало файла, повторяющая его конец, всё
- * ещё перепишет много лишнего, — но там, где текст правят, а не сочиняют
- * заново, курсоры стоят на месте.
+ * The common head and the common tail are left untouched, the middle is
+ * rewritten. This is not a full diff — an insertion at the start of a file
+ * that repeats its end will still rewrite a lot of extra — but where text is
+ * being edited rather than composed anew, carets stay in place.
  */
 export function replaceText(text: Y.Text, next: string): void {
   const before = text.toString()
@@ -898,12 +925,13 @@ export function acceptPatch(doc: Y.Doc, entry: YChatEntry, byName: string): bool
   if (entry.get('patchState') !== 'open') return false
 
   /*
-   * По всем тетрадям, а не по первой.
+   * Across all notebooks, not the first one.
    *
-   * Ячейку ищут по имени и не зная тетради — так работает `findCell`, так
-   * работают ядро и оракул. Здесь поиск был свой и только по первой: ячейка во
-   * второй открытой тетради получала законное на вид предложение, а «принять»
-   * молча возвращало false — кнопка нажималась и не делала ничего.
+   * A cell is found by name without knowing its notebook — that is how
+   * `findCell` works, and so do the kernel and the oracle. The search here
+   * used to be its own and covered only the first notebook: a cell in the
+   * second open notebook got a legitimate-looking proposal, and "accept"
+   * silently returned false — the button pressed and did nothing.
    */
   const target = findCell(doc, cellId)?.cell ?? null
   if (!target) return false
@@ -952,8 +980,8 @@ export function patchIsStale(doc: Y.Doc, entry: YChatEntry): boolean {
   const base = entry.get('patchBase')
   const cellId = entry.get('cellId')
   if (typeof base !== 'string' || typeof cellId !== 'string') return false
-  // По всем тетрадям — по той же причине, что и в `acceptPatch`: иначе
-  // предложение для ячейки во второй тетради никогда не считалось устаревшим.
+  // Across all notebooks — for the same reason as in `acceptPatch`: otherwise
+  // a proposal for a cell in the second notebook never counted as stale.
   const found = findCell(doc, cellId)
   if (!found) return false
   const source = found.cell.get('source')
@@ -1034,8 +1062,8 @@ export function readChatEntry(entry: YChatEntry): ChatSnapshot {
      */
     reasoning: readText(entry.get('reasoning')),
     thoughtMs: (entry.get('thoughtMs') as number | null) ?? null,
-    // Всё, чего не было у ходов, записанных до режима «сделать»: тред недельной
-    // давности обязан читаться, а не падать на отсутствующем поле.
+    // Everything that turns recorded before "do" mode lacked: a week-old
+    // thread must read, not crash on a missing field.
     mode: entry.get('mode') === 'agent' ? 'agent' : 'ask',
     steps: readSteps(entry.get('steps')),
     undo: (entry.get('undo') as UndoState) ?? 'none',
@@ -1053,15 +1081,17 @@ function readSteps(value: unknown): AgentStep[] {
   return out
 }
 
-/* ------------------------------------------------- перечитывание по кадру */
+/* ---------------------------------------------------- rereading per frame */
 
 /**
- * Какие строки массива задел этот кадр — или `null`, если задет сам массив.
+ * Which rows of the array this frame touched — or `null` if the array itself
+ * was touched.
  *
- * `observeDeep` приносит события с путём от корня наблюдения: у события самого
- * массива путь пуст (вставили или удалили строку — порядок сменился, и номера
- * поехали), у события карточки путь `[номер]`, у текста внутри неё —
- * `[номер, 'answer']`. Первого элемента хватает, чтобы назвать строку.
+ * `observeDeep` delivers events with a path from the observed root: the
+ * array's own event has an empty path (a row was inserted or deleted — the
+ * order changed and the indexes shifted), a card's event has the path
+ * `[index]`, the text inside it `[index, 'answer']`. The first element is
+ * enough to name the row.
  */
 export function changedRows(events: readonly Y.YEvent<any>[]): Set<number> | null {
   const rows = new Set<number>()
@@ -1074,22 +1104,24 @@ export function changedRows(events: readonly Y.YEvent<any>[]): Set<number> | nul
 }
 
 /**
- * Перечитать только то, что изменилось, — и сохранить прежние снимки остальных.
+ * Reread only what changed — and keep the previous snapshots of the rest.
  *
- * Лента оракула и расшифровка терминала растут дописыванием в Y.Text ВНУТРИ
- * строки: на каждый кусочек ответа приходит кадр, а `array.map(read)` на нём
- * читает весь тред целиком — `toString()` каждого ответа, каждого рассуждения
- * и каждого шага. Это O(длины треда) на токен, у каждого, у кого открыта
- * панель, и на длинном ответе в сотню ходов оно и есть главная работа вкладки.
+ * The oracle feed and the terminal transcript grow by appending to a Y.Text
+ * INSIDE a row: every piece of the answer brings a frame, and
+ * `array.map(read)` on it reads the whole thread — `toString()` of every
+ * answer, every reasoning and every step. That is O(thread length) per token,
+ * for everyone who has the panel open, and on a long answer in a
+ * hundred-turn thread it is the tab's main work.
  *
- * Здесь тот же приём, что у `settle` в yreactive: неизменившиеся снимки
- * отдаются ТЕМИ ЖЕ объектами, поэтому производные значения строки (диффы,
- * разбор markdown, роль автора) не пересчитываются, а `{#each}` не трогает их
- * узлы. Когда трогать нечего — возвращается тот же массив, чтобы вызывающий,
- * сравнивающий по ссылке, не писал новое значение на каждый кадр.
+ * Here is the same trick as `settle` in yreactive: unchanged snapshots are
+ * returned as THE SAME objects, so a row's derived values (diffs, markdown
+ * parsing, the author's role) are not recomputed, and `{#each}` does not
+ * touch their nodes. When there is nothing to touch, the same array is
+ * returned, so that a caller comparing by reference does not write a new
+ * value on every frame.
  *
- * `events === null` (первое чтение) и всякое сомнение — полный перечит:
- * ошибиться в сторону лишней работы можно, в сторону устаревшего снимка нет.
+ * `events === null` (the first read) and any doubt mean a full reread: one
+ * may err towards extra work, never towards a stale snapshot.
  */
 export function rereadRows<Row extends Y.Map<any>, Snapshot>(
   previous: readonly Snapshot[],
@@ -1194,12 +1226,12 @@ export function readTerminalLine(line: YTerminalLine): TerminalLineSnapshot {
 /* ----------------------------------------------------------------- cells */
 
 /**
- * Ячейки ТЕТРАДИ КОМНАТЫ — первой из списка.
+ * The cells of the ROOM'S NOTEBOOK — the first in the list.
  *
- * То, что раньше значило «ячейки», и там, где смысл именно такой, оно осталось:
- * история версий, публикация и контекст оракула про комнату, а не про любой
- * файл, который в ней открыли. Всё, что должно работать с любой тетрадью,
- * зовёт `bookCells` или `allBooks`.
+ * What "cells" used to mean, and where that is the intended meaning it
+ * stayed: version history, publishing and the oracle's context are about the
+ * room, not about any file opened in it. Everything that must work with any
+ * notebook calls `bookCells` or `allBooks`.
  */
 export function getCells(doc: Y.Doc): Y.Array<YCell> {
   const first = bookList(doc)[0]
@@ -1251,33 +1283,36 @@ export function cellType(cell: YCell): CellType {
 }
 
 /**
- * Открыта ли ячейка — то есть печатает и запускает в ней вся комната.
+ * Whether the cell is open — that is, the whole room types and runs in it.
  *
- * Строго по истине: нет ключа, `false`, `null`, строка «нет» — всё это
- * закрытая ячейка. Замок обязан быть выключен по умолчанию, потому что по
- * умолчанию его в документе просто нет: тетрадь, написанная до лекций, и
- * ячейка, которой преподаватель не касался, — один и тот же случай.
+ * Strictly by truth: no key, `false`, `null`, the string "no" — all of that is
+ * a closed cell. The lock must be off by default, because by default it simply
+ * is not in the document: a notebook written before lectures existed and a
+ * cell the teacher never touched are one and the same case.
  *
- * Право из этого поля выводит не оно само, а `mayEditCell`/`mayRunCell`
- * (shared/rules.ts): открытая ячейка даёт текст и запуск, и ничего сверх.
+ * The right is derived from this field not by the field itself but by
+ * `mayEditCell`/`mayRunCell` (shared/rules.ts): an open cell gives text and
+ * runs, and nothing beyond that.
  */
 export function isCellOpen(cell: YCell): boolean {
   return cell.get('open') === true
 }
 
 /**
- * Консилиум ли на ячейке — то есть у каждого свой лист, а общий текст закрыт.
+ * Whether the cell holds a council — that is, everyone has their own sheet,
+ * and the shared text is closed.
  *
- * Отдельно от `isCellOpen` и не через него: для гейта и `mayEditCell`
- * консилиум — закрытая ячейка, и они про него знать не должны. Спрашивают
- * этим только те, кто рисует консилиум и кто принимает попытки (control.ts ·
- * council:draft): попытка в ячейку без консилиума — отказ.
+ * Separate from `isCellOpen`, and not through it: to the gate and to
+ * `mayEditCell` a council is a closed cell, and they must not know about it.
+ * Only those who draw the council and those who accept attempts ask this
+ * (control.ts · council:draft): an attempt into a cell without a council is
+ * refused.
  */
 export function isCellCouncil(cell: YCell): boolean {
   return cell.get('open') === 'council'
 }
 
-/** Положение замка одним словом — для полосы режима, чипа и проводов. */
+/** The lock's position as one word — for the mode strip, the chip and the wires. */
 export function cellLock(cell: YCell): CellLock {
   const raw: unknown = cell.get('open')
   if (raw === true) return 'open'
@@ -1285,7 +1320,7 @@ export function cellLock(cell: YCell): CellLock {
   return 'closed'
 }
 
-/** Значение ключа `open` для положения замка — то, что пишет сервер. */
+/** The value of the `open` key for a lock position — what the server writes. */
 export function openValueFor(lock: CellLock): true | 'council' | null {
   if (lock === 'open') return true
   if (lock === 'council') return 'council'
@@ -1293,18 +1328,21 @@ export function openValueFor(lock: CellLock): true | 'council' | null {
 }
 
 /**
- * Ручки консилиума из чего угодно — с умолчаниями на каждое поле отдельно.
+ * The council's knobs from anything — with a default for each field
+ * separately.
  *
- * Как `readRules`: ручка, добавленная завтра, у вчерашней ячейки отсутствует,
- * и отсутствовать она должна своим умолчанием, а не ломать чтение соседней.
+ * Like `readRules`: a knob added tomorrow is missing on yesterday's cell, and
+ * it must be missing as its default, not break reading of the neighboring
+ * one.
  */
 export function readCouncilSettings(raw: unknown): CouncilSettings {
   const from = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
   /*
-   * Предел: `null` — «без предела», и это осознанный выбор преподавателя, а не
-   * отсутствие поля. Поля нет вовсе (ячейка из вчерашней версии) — умолчание:
-   * иначе обновление сервера молча сняло бы предел со всех открытых консилиумов.
-   * Мусор — тоже умолчание, а не «без предела»: безопасная сторона здесь одна.
+   * The limit: `null` means "no limit", and that is the teacher's conscious
+   * choice, not a missing field. No field at all (a cell from yesterday's
+   * version) means the default: otherwise a server update would silently lift
+   * the limit from every open council. Garbage also means the default, not "no
+   * limit": there is only one safe side here.
    */
   const limit = from.runLimitSec
   const runLimitSec =
@@ -1326,32 +1364,35 @@ export function readCouncilSettings(raw: unknown): CouncilSettings {
   }
 }
 
-/** Ручки консилиума на ячейке. Вне консилиума — `null`: ручек у закрытой двери нет. */
+/** The council's knobs on the cell. Outside a council — `null`: a closed door has no knobs. */
 export function councilSettingsOf(cell: YCell): CouncilSettings | null {
   return isCellCouncil(cell) ? readCouncilSettings(cell.get('council')) : null
 }
 
 /**
- * Сколько знаков помещается в попытку консилиума.
+ * How many characters fit into a council attempt.
  *
- * Попытка — это ячейка, а не файл: сотни строк в ней не бывает. Потолок здесь,
- * а не только на сервере, ровно по доводу `allows`: отказ сервера и счётчик
- * под листом должны говорить одно и то же. Клиент, не знающий числа, шлёт
- * снимок на каждую паузу в наборе и получает отказ на каждую — тост раз в
- * секунду вместо одной строки «9 012 из 8 000».
+ * An attempt is a cell, not a file: it never has hundreds of lines. The
+ * ceiling is here, not only on the server, by exactly the `allows` argument:
+ * the server's refusal and the counter under the sheet must say the same
+ * thing. A client that does not know the number sends a snapshot at every
+ * pause in typing and gets a refusal for each — a toast every second instead
+ * of one line "9,012 of 8,000".
  */
 export const MAX_ATTEMPT_CHARS = 8000
 
 /**
- * Ключ группы одинаковых решений: текст попытки без пробелов, пустых строк и
- * комментариев.
+ * The key of a group of identical solutions: the attempt's text without
+ * spaces, empty lines and comments.
  *
- * Здесь, а не на сервере и не в пульте: группы считает сервер (для оракула и
- * `CouncilAttempt.groupKey`), а пульт по ним рисует стопку и полосу — и два
- * разных «одинаково» дали бы стопку, в которой «так же ещё 311» не сходится с
- * шириной сегмента. Нарочно грубо: `#` внутри строки считается началом
- * комментария только вне кавычек, и на этом точность кончается — цель не
- * разобрать Python, а склеить `x=1` с `x = 1  # ответ`.
+ * Here, not on the server and not in the console: the groups are computed by
+ * the server (for the oracle and `CouncilAttempt.groupKey`), and the console
+ * draws the stack and the strip from them — and two different notions of
+ * "identical" would give a stack in which "311 others answered the same" does
+ * not match the width of the segment. Deliberately crude: `#` inside a line
+ * counts as the start of a comment only outside quotes, and that is where the
+ * precision ends — the goal is not to parse Python but to glue `x=1` together
+ * with `x = 1  # answer`.
  */
 export function normalizeAttempt(text: string): string {
   const lines: string[] = []
@@ -1419,29 +1460,31 @@ export function cloneCell(cell: YCell): YCell {
   copy.set('runBy', cell.get('runBy') ?? null)
   copy.set('runById', cell.get('runById') ?? null)
   /*
-   * Всё, что ключ забыл здесь, пропадает при перестановке соседа.
+   * Every key forgotten here vanishes when a neighbor is reordered.
    *
-   * `moveCell` пересоздаёт клоном не ту ячейку, которую двигают, а соседнюю —
-   * так что подвинуть ячейку 5, пока считается ячейка 6, значит пересобрать
-   * шестую целиком. Ключ, не переписанный сюда, исчезает у неё посреди
-   * выполнения: с `startedAt` это остановившийся секундомер на работающей
-   * ячейке, а с `stdin` — форма ввода, пропавшая у всей комнаты, пока ядро
-   * ждёт ответа. Второе лежало здесь ненайденным ровно потому, что список
-   * ключей в шапке файла его не называл.
+   * `moveCell` recreates as a clone not the cell being moved but the
+   * neighboring one — so moving cell 5 while cell 6 is computing means
+   * rebuilding the sixth whole. A key not copied over here disappears from it
+   * in the middle of a run: with `startedAt` that is a stopped stopwatch on a
+   * working cell, and with `stdin` an input form that vanishes for the whole
+   * room while the kernel waits for an answer. The second lay here
+   * undiscovered precisely because the list of keys in the file header did
+   * not name it.
    */
   copy.set('stdin', cell.get('stdin') ?? null)
   copy.set('startedAt', cell.get('startedAt') ?? null)
   copy.set('ranMs', cell.get('ranMs') ?? null)
   /*
-   * Замок переезжает вместе с ячейкой — и это тот же довод, что абзацем выше,
-   * но с ценой подороже секундомера: перестановка соседа захлопывала бы ячейку,
-   * в которой комната печатает, посреди набора. Ключ пишется только когда он
-   * есть: у закрытой ячейки его в документе нет, и заводить его на каждой
-   * перестановке незачем.
+   * The lock moves together with the cell — the same argument as in the
+   * paragraph above, but at a higher price than the stopwatch: reordering a
+   * neighbor would slam shut a cell the room is typing in, mid-typing. The
+   * key is written only when it exists: a closed cell does not have it in the
+   * document, and there is no reason to create it on every reorder.
    */
   if (cell.get('open') != null) copy.set('open', cell.get('open'))
-  // И ручки консилиума — ровно по тому же доводу: ячейка, у которой при
-  // перестановке соседа включился бы запуск студентам, хуже захлопнувшейся.
+  // And the council's knobs — by exactly the same argument: a cell that turned
+  // on runs for students when a neighbor was reordered is worse than one that
+  // slammed shut.
   if (cell.get('council') != null) copy.set('council', cell.get('council'))
   return copy
 }
@@ -1462,15 +1505,16 @@ function cloneOutput(output: YOutput): YOutput {
 }
 
 /**
- * Ячейка по имени — в какой бы тетради комнаты она ни лежала.
+ * A cell by name — whichever of the room's notebooks it is in.
  *
- * Именно так вся работа с одной ячейкой остаётся не знающей про тетради: ядру,
- * оракулу и управляющему сокету достаточно имени, и ни одному из них не
- * приходится таскать с собой путь файла. Имя ячейки в комнате одно —
- * это чинится отдельно, см. проверку на двойников в collab/index.ts.
+ * This is exactly how all the work with a single cell stays unaware of
+ * notebooks: the kernel, the oracle and the control socket need only the
+ * name, and none of them has to carry a file path around. A cell's name is
+ * unique in the room — that is enforced separately, see the duplicate check
+ * in collab/index.ts.
  *
- * Проход по всем тетрадям стоит столько же, сколько стоил проход по одной,
- * пока тетрадь была одна, и растёт линейно от числа открытых.
+ * A pass over all notebooks costs as much as the pass over one cost while
+ * there was one notebook, and grows linearly with the number open.
  */
 export function findCell(
   doc: Y.Doc,
@@ -1508,11 +1552,13 @@ export function readOutput(output: YOutput): CellOutput | null {
 }
 
 /**
- * Обратная к `readOutput`: вывод из снимка обратно в документ.
+ * The inverse of `readOutput`: an output from a snapshot back into the
+ * document.
  *
- * Нужна там, где вывод в документ возвращает сервер по своей памяти, а не
- * копирует то, что прислал браузер: отмена удаления ячейки. Форма — та же, что
- * пишет ядро (`kernel/outputs.ts`), иначе на экране будет чужая.
+ * Needed where the server puts output back into the document from its own
+ * memory rather than copying what a browser sent: undoing a cell deletion.
+ * The shape is the same one the kernel writes (`kernel/outputs.ts`),
+ * otherwise the screen would show a different one.
  */
 export function writeOutput(output: CellOutput): YOutput {
   const map = new Y.Map<any>()
@@ -1563,11 +1609,11 @@ export function readNotebook(doc: Y.Doc): CellSnapshot[] {
   return getCells(doc).map(readCell)
 }
 
-/** Что пришлось вернуть в покой — по видам работы, а не одним числом. */
+/** What had to be put back to rest — by kind of work, not as one number. */
 export interface StaleWork {
-  /** Ячейки, снятые с «работает» и «в очереди». */
+  /** Cells taken off "running" and "queued". */
   cells: number
-  /** Оборванные посреди ответа ходы оракула. */
+  /** Oracle turns cut off mid-answer. */
   turns: number
 }
 
@@ -1585,16 +1631,17 @@ export interface StaleWork {
  * three lines before the crash really did print them, and deleting them would
  * hide the only evidence of how far it got.
  *
- * Считает ДВА числа, а не одно, и это не педантизм. Вызывающий пишет по нему в
- * журнал ядра строку про ЯЧЕЙКИ («were put back to rest»), а под одним
- * счётчиком туда попадал и оборванный ход оракула: перезапуск посреди ответа,
- * ни одной считавшейся ячейки — и комната читает, что её работу отменили.
- * Тот же вид лжи, от которого этот файл отдельно бережёт `startedAt` ниже.
+ * It counts TWO numbers, not one, and that is not pedantry. The caller writes
+ * a kernel log line about CELLS from it ("were put back to rest"), and under
+ * a single counter an interrupted oracle turn got in there too: a restart in
+ * the middle of an answer, not a single computing cell — and the room reads
+ * that its work was cancelled. The same kind of lie this file separately
+ * guards `startedAt` against below.
  */
 export function clearStaleWork(doc: Y.Doc): StaleWork {
   const meta = getMeta(doc)
-  // По всем тетрадям, а не по одной: очередь у комнаты общая, и ячейка,
-  // застрявшая в «работает», может стоять в любой из открытых.
+  // Across all notebooks, not one: the room's queue is shared, and a cell stuck
+  // in "running" can be in any of the open ones.
   const cells = allCellArrays(doc).flatMap((array) => array.toArray())
   let cleared = 0
   let turns = 0
@@ -1607,27 +1654,27 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
     if (meta.get('runningCell') != null) meta.set('runningCell', null)
 
     /*
-     * Процесса нет — значит `off`, а не `idle` и не «запускается».
+     * No process means `off`, not `idle` and not "starting".
      *
-     * Эта функция проходит при подъёме комнаты в память, то есть после
-     * перезапуска сервера: в документе лежит то, что было записано ДО него, а
-     * ядер у нового процесса нет ни одного. `idle` («ГОТОВО») и `starting`
-     * («ЗАПУСК») тут одинаково неправда — первое обещает живой Python, второе
-     * обещает, что он вот-вот будет. В прежний ключ уезжает совместимое слово
-     * (см. `legacyKernelStatus`).
+     * This function runs when a room is brought into memory, that is, after a
+     * server restart: the document holds what was written BEFORE it, and the
+     * new process has no kernels at all. `idle` ("IDLE") and `starting`
+     * ("STARTING") are equally untrue here — the first promises a live
+     * Python, the second promises that it is about to be. The old key gets
+     * the compatible word (see `legacyKernelStatus`).
      */
     const status = meta.get('kernelStatus')
     if (status !== undefined && status !== 'dead')
       meta.set('kernelStatus', legacyKernelStatus('off'))
 
     /*
-     * И то же самое по тетрадям.
+     * And the same per notebook.
      *
-     * Ядер у комнаты столько, сколько тетрадей (server/src/kernel/index.ts), и
-     * каждое оставляет за собой свою запись. Починить прежние ключи и не
-     * тронуть карту значило бы вылечить то, что видит старая вкладка, и
-     * оставить «выполняется» навсегда во всех остальных — то есть ровно ту
-     * тихую беду, от которой эта функция и стоит.
+     * A room has as many kernels as notebooks (server/src/kernel/index.ts),
+     * and each leaves its own entry behind. Repairing the old keys without
+     * touching the map would mean curing what the old tab sees and leaving
+     * "running" forever in all the others — exactly the quiet trouble this
+     * function exists to prevent.
      */
     const kernels = meta.get(KERNELS_KEY)
     if (kernels instanceof Y.Map) {
@@ -1649,25 +1696,27 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
         cleared++
       }
       /*
-       * Секундомер гасится у каждой ячейки, и это не считается за сброс.
+       * The stopwatch is turned off on every cell, and that does not count as
+       * a reset.
        *
-       * `cleared` уходит в строку, которую комната читает в журнале ядра —
-       * «Cells that were running or queued were put back to rest». Прибавить
-       * сюда ячейку, у которой только протухшая отметка времени, значит
-       * сказать классу, что их работу отменили, когда ничего не отменяли.
+       * `cleared` goes into the line the room reads in the kernel log —
+       * "Cells that were running or queued were put back to rest". Adding to
+       * it a cell that only has a stale timestamp means telling the class
+       * their work was cancelled when nothing was cancelled.
        *
-       * Нестрогое `!= null`: в тетради, записанной до появления этого ключа,
-       * он `undefined`, и строгая проверка переписывала бы каждую ячейку при
-       * каждом открытии комнаты — то есть открывала бы всплеск истории и
-       * будила запись на диск на ровном месте.
+       * Loose `!= null`: in a notebook written before this key existed it is
+       * `undefined`, and a strict check would rewrite every cell on every
+       * room open — that is, it would open a history burst and wake up a disk
+       * write out of nothing.
        */
       if (cell.get('startedAt') != null) cell.set('startedAt', null)
-      // И вопрос ядра: форма ответа, за которой уже никого нет, — это поле
-      // ввода, чей «Send» уходит в пустоту, и убрать его с экрана нечем.
+      // And the kernel's question: an answer form with nobody behind it any
+      // more is an input field whose "Send" goes into the void, and there is
+      // no way to remove it from the screen.
       if (cell.get('stdin') != null) cell.set('stdin', null)
-      // `ranMs` не трогаем: это измеренный факт с одних серверных часов, и
-      // перезапуск не делает его неправдой. Стереть — значит убрать «· 4s»
-      // из всей тетради при каждом обновлении сервера.
+      // `ranMs` is left alone: it is a measured fact from a single server
+      // clock, and a restart does not make it untrue. Erasing it would remove
+      // "· 4s" from the whole notebook on every server update.
     }
 
     /*
@@ -1677,8 +1726,9 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
      * rest of the seminar — and, because the newest turn is the one the panel
      * follows, it turned at the bottom of everybody's screen.
      *
-     * Считается отдельно от ячеек: ход оракула уже сказал о себе сам — прямо в
-     * треде, словами, — и приписывать его к строке про ячейки незачем.
+     * Counted separately from cells: an oracle turn has already spoken for
+     * itself — right in the thread, in words — and there is no reason to add
+     * it to the line about cells.
      */
     for (const entry of getChat(doc)) {
       if (entry.get('state') !== 'streaming') continue
@@ -1697,11 +1747,12 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
 }
 
 /**
- * То же самое, одним числом — сколько ЯЧЕЕК вернулось в покой.
+ * The same thing, as one number — how many CELLS were put back to rest.
  *
- * Имя, под которым это звали всегда, и звать его дальше правильно там, где
- * решают, объяснять ли комнате строкой про ячейки. Оборванные ходы оракула
- * сюда не входят намеренно: за подробностями — `clearStaleWork`.
+ * The name this has always gone by, and it is right to keep calling it where
+ * the question is whether to explain things to the room with a line about
+ * cells. Interrupted oracle turns are deliberately not included: for the
+ * details, see `clearStaleWork`.
  */
 export function clearStaleExecution(doc: Y.Doc): number {
   return clearStaleWork(doc).cells
@@ -1716,37 +1767,40 @@ export function ensureInitialNotebook(doc: Y.Doc, title?: string): boolean {
   let seeded = false
   doc.transact(() => {
     /*
-     * `has`, а не значение: пустой заголовок — это не «документа нет».
+     * `has`, not the value: an empty title is not "there is no document".
      *
-     * Хост, стерший имя в шапке, оставляет в документе ''. По значению условие
-     * снова истинно, и эту же функцию зовёт КАЖДЫЙ браузер на каждом sync —
-     * значит, заголовок писал бы студент, а гейт заголовок не-хосту отказывает:
-     * 4403, очистка кэша, перезагрузка, снова sync, снова запись. Круг, из
-     * которого вкладка выходит только когда хост допечатает имя.
+     * A host who erased the name in the header leaves '' in the document. By
+     * value the condition is true again, and this very function is called by
+     * EVERY browser on every sync — so a student would write the title, and
+     * the gate refuses the title to a non-host: 4403, cache cleared, reload,
+     * sync again, write again. A loop the tab gets out of only when the host
+     * finishes typing the name.
      */
     if (title && !meta.has('title')) meta.set('title', title)
     /*
-     * Состояние ядра здесь НЕ засевается вовсе, и это правка 20.09.
+     * The kernel state is NOT seeded here at all, and that is the fix of
+     * 20 Sep 2026.
      *
-     * Стояло `starting`, и это было «ЗАПУСК python3» в шапке свежей комнаты —
-     * навсегда, до первого Run: ядро поднимается лениво, то есть у комнаты,
-     * которую только открыли, его нет и никто его не поднимает. Ровно та
-     * жалоба, с которой пришли. Пустой ключ читается как `off` («не
-     * запущено») — и это правда; первое же слово сервера его перепишет.
+     * It used to be `starting`, and that was "STARTING python3" in the header
+     * of a fresh room — forever, until the first Run: the kernel comes up
+     * lazily, that is, a room that was just opened has none and nobody is
+     * bringing one up. Exactly the complaint people came with. An empty key
+     * reads as `off` ("not running") — and that is true; the server's very
+     * first word will overwrite it.
      */
     /*
-     * Список тетрадей — первым делом, и он же миграция.
+     * The notebook list comes first, and it is also the migration.
      *
-     * У комнаты, которая шла до появления нескольких тетрадей, ячейки лежат в
-     * корне `cells` и списка нет вовсе. Здесь ей приписывают ровно одну запись,
-     * указывающую на тот же самый корень: ни одна ячейка не двигается, кеш в
-     * браузерах и история версий остаются теми же. Файл на диске появится
-     * следом — его пишет проекция, см. collab/books.ts.
+     * A room that ran before multiple notebooks existed keeps its cells in the
+     * `cells` root and has no list at all. Here it gets exactly one entry,
+     * pointing at that very root: no cell moves, the browser cache and version
+     * history stay the same. The file on disk appears next — the projection
+     * writes it, see collab/books.ts.
      */
     /*
-     * Флажок, а не пустота списка: комната, где тетрадь убрали НАМЕРЕННО, при
-     * следующем открытии получала её обратно вместе со всеми ячейками —
-     * удаление отменялось само, стоило перезапустить сервер.
+     * A flag, not an empty list: a room where a notebook was removed ON
+     * PURPOSE got it back with all its cells on the next open — the deletion
+     * undid itself as soon as the server restarted.
      */
     if (!meta.get('booksSeeded')) {
       meta.set('booksSeeded', true)

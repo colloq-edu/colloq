@@ -97,35 +97,35 @@ test('reading a turn never writes to the document', () => {
   assert.equal(snapshot.thoughtMs, null)
 })
 
-/* ------------------------------------------------ ячейки бывают не только с кодом */
+/* -------------------------------------------------- cells are not only code cells */
 
-test('переписывание текстовой ячейки берёт markdown-заграждение', () => {
+test('rewriting a text cell takes the markdown fence', () => {
   /*
-   * Ровно та ошибка, из-за которой предложение для текстовой ячейки не
-   * рождалось вовсе: набор языков знал только про Python, ответ приходил
-   * помеченным markdown, и патч не извлекался — запрос уходил, ответ ложился
-   * в тред, а под ячейкой не появлялось ничего. Со стороны комнаты это
-   * выглядело так, будто правка работает только для кода.
+   * Exactly the bug that kept a suggestion for a text cell from being born at
+   * all: the set of languages knew only about Python, the answer came marked
+   * as markdown, and the patch was not extracted: the request went out, the
+   * answer landed in the thread, and nothing appeared under the cell. From
+   * the room's side it looked as if editing worked only for code.
    */
   const answer = 'Сокращаю до одной строки.\n\n```markdown\n# Привет\n```'
   assert.equal(lastCodeBlock(answer, 'markdown'), '# Привет')
-  assert.equal(lastCodeBlock(answer, 'code'), null, 'кодовая ячейка не должна принять markdown')
+  assert.equal(lastCodeBlock(answer, 'code'), null, 'a code cell must not accept markdown')
 })
 
-test('текстовой ячейке годится и md, и голое заграждение', () => {
-  // Модель, которую попросили «дать целиком новый текст», пишет ``` куда чаще,
-  // чем ```markdown, и отказ от голого заграждения выбросил бы большую часть
-  // предложений, которые комната вообще видит.
+test('a text cell accepts both md and a bare fence', () => {
+  // A model asked to "give a whole new text" writes ``` far more often than
+  // ```markdown, and rejecting the bare fence would throw away most of the
+  // suggestions the room ever sees.
   assert.equal(lastCodeBlock('вот:\n\n```md\nтекст\n```', 'markdown'), 'текст')
   assert.equal(lastCodeBlock('вот:\n\n```\nтекст\n```', 'markdown'), 'текст')
 })
 
-test('кодовой ячейке не подсовывают пример на другом языке', () => {
+test('a code cell is not handed an example in another language', () => {
   const answer = 'В оболочке:\n\n```bash\npip install torch\n```'
   assert.equal(lastCodeBlock(answer, 'code'), null)
   assert.equal(lastCodeBlock(answer, 'markdown'), null)
 })
 
-test('по умолчанию извлекается код — так зовут почти все', () => {
+test('code is extracted by default: that is how almost every caller calls it', () => {
   assert.equal(lastCodeBlock('```python\nx = 1\n```'), 'x = 1')
 })

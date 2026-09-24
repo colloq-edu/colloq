@@ -1,13 +1,13 @@
 /**
- * Переподключение — не правка, и гейт обязан его пережить.
+ * A reconnect is not an edit, and the gate must survive it.
  *
- * Браузер при каждом входе предлагает серверу всё, чего у того нет (step2), и
- * в это «всё» входит ВЕСЬ набор удалений документа — навсегда, потому что
- * набор удалений не убывает. Две поломки здесь стоили живой комнате вечера:
- * обход удалённого по одному такту упирался в потолок после девяти вычищенных
- * лент оракула, а нажатия с дырой перед ними подвисали в документе и катались
- * в каждом step2 туда и обратно. Обе видны только на настоящем объёме, поэтому
- * числа ниже — с той комнаты.
+ * On every entry the browser offers the server everything the server does not
+ * have (step2), and this "everything" includes the document's ENTIRE delete
+ * set — forever, because the delete set never shrinks. Two breakages here cost
+ * a live room an evening: walking the deleted content one clock at a time hit
+ * the cap after nine cleared Oracle feeds, and keystrokes with a gap before
+ * them hung in the document and travelled back and forth in every step2. Both
+ * show only at real volume, so the numbers below come from that room.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -24,14 +24,14 @@ import { createChatEntry, getCells, getChat } from '../shared/notebook.js'
 
 after(() => shutdownCollab())
 
-/** Вкладка, синхронная с сервером. */
+/** A tab in sync with the server. */
 function tabOf(server: Y.Doc): Y.Doc {
   const tab = new Y.Doc()
   Y.applyUpdate(tab, Y.encodeStateAsUpdate(server))
   return tab
 }
 
-/** То, что вкладка предложит серверу при входе. */
+/** What the tab will offer the server on entry. */
 function step2(tab: Y.Doc, server: Y.Doc): Uint8Array {
   return Y.encodeStateAsUpdate(tab, Y.encodeStateVector(server))
 }
@@ -41,10 +41,11 @@ function sourceOf(doc: Y.Doc, i: number): Y.Text {
 }
 
 /**
- * Кадр с дырой: вкладка напечатала «a» и «b», а серверу отдаёт только «b».
- * Так выглядит нажатие, пришедшее следом за отказанным кадром того же клиента.
- * «b» ставится в конец текста, чтобы ссылалась она на то, что сервер знает, —
- * иначе отказ пришёл бы раньше и по другой причине.
+ * A frame with a gap: the tab typed "a" and "b" but gives the server only
+ * "b". That is what a keystroke looks like when it arrives right after a
+ * refused frame of the same client. "b" is put at the end of the text so that
+ * it refers to something the server knows — otherwise the refusal would come
+ * earlier and for another reason.
  */
 function holed(server: Y.Doc): { tab: Y.Doc; frame: Uint8Array } {
   const tab = tabOf(server)
@@ -55,16 +56,17 @@ function holed(server: Y.Doc): { tab: Y.Doc; frame: Uint8Array } {
   return { tab, frame: Y.encodeStateAsUpdate(tab, afterA) }
 }
 
-/* -------------------------------------------------------- набор удалений */
+/* ------------------------------------------------------------ delete set */
 
-test('вычищенная лента не запирает комнату: переподключение проходит', () => {
+test('a cleared feed does not lock the room: the reconnect goes through', () => {
   createSession('walk-gc', 'Лента', null)
   const { doc: server } = getSessionDoc('walk-gc')
   /*
-   * Один ответ оракула на сто пятьдесят тысяч знаков, вычищенный баном. После
-   * удаления записи её текст собирается в мусор одним куском такой же длины, и
-   * обход «по такту» стоил бы здесь полтора потолка MAX_WALK. На живой комнате
-   * таких кусков было 432 на 122 тысячи тактов.
+   * One Oracle answer of a hundred and fifty thousand characters, cleared by
+   * a ban. After the entry is deleted, its text is garbage-collected into one
+   * piece of the same length, and walking "by clock" would cost one and a half
+   * MAX_WALK caps here. In the live room there were 432 such pieces over 122
+   * thousand clocks.
    */
   const entry = createChatEntry({ participantId: 'p_x', name: 'X', color: '#000', question: 'q' })
   server.transact(() => {
@@ -79,26 +81,27 @@ test('вычищенная лента не запирает комнату: пе
     .ds
   let span = 0
   for (const ranges of ds.clients.values()) for (const r of ranges) span += r.len
-  assert.ok(span >= 150_000, `набор удалений мал для проверки: ${span}`)
+  assert.ok(span >= 150_000, `the delete set is too small for the check: ${span}`)
 
   const judged = classify(server, frame, MAX_SYNC_STEP2_BYTES)
   assert.equal(judged.ok, true, judged.ok ? '' : `${judged.why} (${judged.path})`)
-  if (judged.ok) assert.deepEqual(judged.verdicts, [], 'синхронная вкладка что-то «делает»')
+  if (judged.ok) assert.deepEqual(judged.verdicts, [], 'an in-sync tab is "doing" something')
 })
 
-test('большая комната переподключается и тогда, когда вкладка предлагает весь документ', () => {
+test('a big room reconnects even when the tab offers the whole document', () => {
   /*
-   * Потолок обхода был постоянным — сто тысяч шагов, — а набор удалений
-   * проходится по структуре и растёт с каждым занятием. На живой комнате
-   * zxrrsac6 (35 тыс. структур) синхронная вкладка стоила 55 тыс. шагов, а
-   * вкладка, заново предложившая весь документ, — больше ста, и получала
-   * «кадр слишком велик» при каждом входе. Здесь та же форма: сорок тысяч
-   * нажатий в начало текста (так они не склеиваются в одну структуру), и
-   * половина из них стёрта.
+   * The walk cap was constant — a hundred thousand steps — while the delete
+   * set is walked by structure and grows with every class. In the live room
+   * zxrrsac6 (35 thousand structs) an in-sync tab cost 55 thousand steps, and
+   * a tab that offered the whole document anew cost more than a hundred
+   * thousand, and got "frame too large" on every entry. Here is the same
+   * shape: forty thousand keystrokes at the start of the text (this way they
+   * do not merge into one struct), and half of them erased.
    */
   createSession('walk-big', 'Большая', null)
-  // Копия без наблюдателей комнаты: сорок тысяч транзакций через историю и
-  // запись на диск шли бы минутами, а гейту нужен только сам документ.
+  // A copy without the room's observers: forty thousand transactions through
+  // history and disk writes would take minutes, and the gate needs only the
+  // document itself.
   const server = tabOf(getSessionDoc('walk-big').doc)
   const text = sourceOf(server, 1)
   for (let i = 0; i < 40_000; i++) server.transact(() => text.insert(0, 'x'), 'server')
@@ -107,22 +110,23 @@ test('большая комната переподключается и тогд
   const tab = tabOf(server)
   const judged = classify(server, Y.encodeStateAsUpdate(tab), MAX_SYNC_STEP2_BYTES)
   assert.equal(judged.ok, true, judged.ok ? '' : `${judged.why} (${judged.path})`)
-  if (judged.ok) assert.deepEqual(judged.verdicts, [], 'синхронная вкладка что-то «делает»')
+  if (judged.ok) assert.deepEqual(judged.verdicts, [], 'an in-sync tab is "doing" something')
 })
 
-/* ------------------------------------------------------------------ дыры */
+/* ------------------------------------------------------------------ gaps */
 
-test('кадр с дырой в нажатиях — отказ, а не подвисание', () => {
+test('a frame with a gap in keystrokes is refused, not left hanging', () => {
   createSession('walk-hole', 'Дыра', null)
   const { doc: server } = getSessionDoc('walk-hole')
   const { frame } = holed(server)
 
-  // Вот что делал бы Yjs без отказа: принял бы и повесил навсегда.
+  // This is what Yjs would do without the refusal: accept it and leave it
+  // hanging forever.
   const naive = tabOf(server)
   Y.applyUpdate(naive, frame)
   assert.ok(
     (naive.store as unknown as { pendingStructs: unknown }).pendingStructs,
-    'кадр без дыры — проверка ничего не проверяет',
+    'the frame has no gap — the check checks nothing',
   )
 
   const judged = classify(server, frame)
@@ -130,7 +134,7 @@ test('кадр с дырой в нажатиях — отказ, а не под�
   if (!judged.ok) assert.match(judged.why, /продолжает нажатия/)
 })
 
-test('подряд идущие нажатия — не дыра', () => {
+test('consecutive keystrokes are not a gap', () => {
   createSession('walk-run', 'Подряд', null)
   const { doc: server } = getSessionDoc('walk-run')
   const tab = tabOf(server)
@@ -145,11 +149,11 @@ test('подряд идущие нажатия — не дыра', () => {
   assert.equal(judged.ok, true, judged.ok ? '' : `${judged.why} (${judged.path})`)
 })
 
-test('подвисшее у вкладки в кэше — отказ при входе, и только он', () => {
+test('content left hanging in the tab cache is refused on entry, and only that', () => {
   /*
-   * Вкладка, получившая от прежнего сервера step2 с подвисшим, держит его у
-   * себя и предлагает обратно. Yjs записывает такую разницу с явным пропуском
-   * (Skip) — это та же дыра, и ответ тот же.
+   * A tab that got a step2 with hanging content from the previous server keeps
+   * it and offers it back. Yjs writes such a difference with an explicit gap
+   * (Skip) — it is the same hole, and the answer is the same.
    */
   createSession('walk-skip', 'Пропуск', null)
   const { doc: server } = getSessionDoc('walk-skip')
@@ -161,12 +165,13 @@ test('подвисшее у вкладки в кэше — отказ при в�
   if (!judged.ok) assert.match(judged.why, /пропуском|продолжает нажатия/)
 })
 
-/* ---------------------------------------------------------------- снимок */
+/* -------------------------------------------------------------- snapshot */
 
-test('подвисшее в снимке выбрасывается при подъёме, и снимок переписывается чистым', () => {
+test('hanging content in a snapshot is thrown away on load, and the snapshot is rewritten clean', () => {
   createSession('walk-pending', 'Снимок', null)
   const seed = getSessionDoc('walk-pending').doc
-  // Снимок, как его записал бы сервер до проверки дыр: документ плюс подвисшее.
+  // A snapshot as the server would have written it before gaps were checked:
+  // the document plus the hanging content.
   const dirty = tabOf(seed)
   Y.applyUpdate(dirty, holed(seed).frame)
   assert.ok((dirty.store as unknown as { pendingStructs: unknown }).pendingStructs)
@@ -177,24 +182,25 @@ test('подвисшее в снимке выбрасывается при по�
   assert.equal(
     (server.store as unknown as { pendingStructs: unknown }).pendingStructs,
     null,
-    'подвисшее поднялось вместе с комнатой',
+    'the hanging content came up together with the room',
   )
-  // Вкладке от такого сервера достаётся чистый документ — и её step2 пуст.
+  // A tab gets a clean document from such a server — and its step2 is empty.
   const judged = classify(server, step2(tabOf(server), server), MAX_SYNC_STEP2_BYTES)
   assert.equal(judged.ok, true)
 
-  // И на диск ложится уже чистое — иначе каждый перезапуск поднимал бы мусор.
+  // And what goes to disk is already clean — otherwise every restart would
+  // bring the garbage back up.
   flushPersistence('walk-pending')
   const again = new Y.Doc()
   Y.applyUpdate(again, loadDocSnapshot('walk-pending')!)
   assert.equal(
     (again.store as unknown as { pendingStructs: unknown }).pendingStructs,
     null,
-    'снимок на диске всё ещё несёт подвисшее',
+    'the snapshot on disk still carries hanging content',
   )
 })
 
-/* ---------------------------------------------------------------- сокет */
+/* --------------------------------------------------------------- socket */
 
 interface Fake {
   ws: WebSocket
@@ -202,7 +208,7 @@ interface Fake {
   closedWith: { code?: number; reason?: string } | null
 }
 
-/** Ровно то, что читает handleCollabSocket, — и слово, с которым закрыли. */
+/** Exactly what handleCollabSocket reads — and the word it was closed with. */
 function socket(): Fake {
   const handlers = new Map<string, ((...args: unknown[]) => void)[]>()
   const out: Fake = {
@@ -239,7 +245,7 @@ function syncFrame(write: (encoder: encoding.Encoder) => void): Buffer {
   return Buffer.from(encoding.toUint8Array(encoder))
 }
 
-test('отказ первой синхронизации закрывает сокет словом «stale», отказ правке — правилом', () => {
+test('a refused first sync closes the socket with the word "stale", a refused edit with the rule', () => {
   createSession('walk-word', 'Слово', null)
   const { doc: server } = getSessionDoc('walk-word')
   const warned: string[] = []
@@ -269,8 +275,9 @@ test('отказ первой синхронизации закрывает со
   } finally {
     console.warn = original
   }
-  // Журналу — причина гейта словами и с путём, а не одна общая фраза про кэш.
+  // The journal gets the gate's reason in words and with the path, not one
+  // generic phrase about the cache.
   const line = warned.find((w) => w.includes('[gate walk-word]'))
-  assert.ok(line, 'отказ не попал в журнал')
+  assert.ok(line, 'the refusal did not make it to the journal')
   assert.match(line!, /продолжает нажатия.*\(cells#\d+\)/)
 })

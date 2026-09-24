@@ -1,19 +1,21 @@
 /**
- * Занятие в сети: colloq host — единственная команда группы.
+ * A class online: colloq host is the group's only command.
  *
- * В первой половине файла не запускается ни один процесс и не читается ни один
- * настоящий файл: исполнитель подменён массивом вызовов, файловая система —
- * картой в памяти, вывод — массивом строк. Проверяется ровно то, за что
- * отвечает группа: какая строка уходит в scripts/host.sh, что случается с
- * плохим именем и кто спрашивает перед опасным действием.
+ * In the first half of the file no process is started and no real file is
+ * read: the executor is replaced by an array of calls, the file system by an
+ * in-memory map, output by an array of lines. What is checked is exactly what
+ * the group is responsible for: which line goes to scripts/host.sh, what
+ * happens to a bad name, and who asks before a dangerous action.
  *
- * Вторая половина (в конце файла) читает настоящие scripts/host.sh, scripts/lib.sh
- * и scripts/pack.mts: строка может уходить верная, а на другом её конце не быть
- * ни скрипта, ни каталога состояния, — и увидеть это подставным исполнителем
- * нельзя. Почему это отдельная проверка, сказано там же.
+ * The second half (at the end of the file) reads the real scripts/host.sh,
+ * scripts/lib.sh and scripts/pack.mts: the line may go out right while there
+ * is neither the script nor the state directory at its other end — and a
+ * stand-in executor cannot see that. Why this is a separate check is
+ * explained there.
  *
- * Общее (уникальность имён, --dry-run без запусков, вопрос у каждой опасной
- * команды) стережёт tests/cli-core.test.mts — здесь не дублируем.
+ * The shared parts (unique names, --dry-run without launches, a question for
+ * every destructive command) are guarded by tests/cli-core.test.mts — we do
+ * not duplicate them here.
  */
 import './_cli.mjs'
 import { test } from 'node:test'
@@ -55,22 +57,22 @@ type Harness = {
 }
 
 type Options = {
-  /** Правка карты файлов: null — файла нет вовсе (так проверяется отсутствие .env). */
+  /** File map edits: null means no such file (how a missing .env is tested). */
   files?: Record<string, string | null>
   answer?: string
   tty?: boolean
-  /** Что отвечает подставной capture: сюда ходит docker ps. */
+  /** What the stand-in capture answers: docker ps goes here. */
   capture?: (cmd: string, args: string[]) => { code: number; stdout: string; stderr: string }
   /**
-   * Поставленный пакет или исходники. На поведение host это влиять не должно —
-   * ради этого поле и оставлено: проверить, что не влияет.
+   * Installed package or sources. This must not affect how host behaves — the
+   * field is kept precisely to check that it does not.
    */
   dist?: boolean
-  /** Каталог состояния. Умолчание — корень приложения, как в исходниках. */
+  /** The state directory. Defaults to the app root, as in the sources. */
   home?: string
 }
 
-/** Тот же образец, что в cli-core: ни одного настоящего процесса и файла. */
+/** The same pattern as in cli-core: not a single real process or file. */
 async function run(argv: string[], opts: Options = {}): Promise<Harness> {
   const out: string[] = []
   const err: string[] = []
@@ -115,35 +117,37 @@ async function run(argv: string[], opts: Options = {}): Promise<Harness> {
   return { code, out, err, calls, envs, asked }
 }
 
-/** Идёт одна комната: docker ps отвечает одной строкой. */
+/** One room is running: docker ps answers with one line. */
 const oneRoom: Options['capture'] = (cmd) =>
   cmd === 'docker'
     ? { code: 0, stdout: 'c0ffee\n', stderr: '' }
     : { code: 1, stdout: '', stderr: '' }
 
-/** Запуски без чтений: capture (docker ps) сюда не считается. */
+/** Launches without reads: capture (docker ps) does not count here. */
 function spawned(result: Harness): Call[] {
   return result.calls.filter((call) => call[0] !== 'capture')
 }
 
 /* ------------------------------------------------------------------ host */
 
-test('host: имя уходит скрипту переменной, --direct добавляет COLLOQ_DIRECT=1', async () => {
+test('host: the name goes to the script as a variable, --direct adds COLLOQ_DIRECT=1', async () => {
   const relay = await run(['host', 'hse.colloq.ru', '--dry-run'])
   assert.equal(relay.code, 0)
-  // COLLOQ_HOME впереди — это каталог состояния: .env, расписка занятия и
-  // .colloq.pid лежат там, а не рядом со скриптом. В исходниках это тот же
-  // каталог, и строка от переменной не меняется ничем, кроме честности.
+  // COLLOQ_HOME in front is the state directory: .env, the class receipt and
+  // .colloq.pid live there, not next to the script. In the sources it is the
+  // same directory, and the variable changes nothing in the line except its
+  // honesty.
   assert.deepEqual(relay.out, ['COLLOQ_HOME=/repo COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh'])
   assert.deepEqual(spawned(relay), [])
 
-  // Порядок — как в цели host-direct и в шапке host.sh: строку копируют.
+  // The order is as in the host-direct target and in the host.sh header:
+  // people copy this line.
   const direct = await run(['host', 'hse.colloq.ru', '--direct', '--dry-run'])
   assert.deepEqual(direct.out, [
     'COLLOQ_HOME=/repo COLLOQ_DIRECT=1 COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh',
   ])
 
-  // Без имени — быстрый туннель: имя скрипту не выдумывается.
+  // Without a name it is a quick tunnel: no name is made up for the script.
   const quick = await run(['host', '--dry-run'])
   assert.deepEqual(quick.out, ['COLLOQ_HOME=/repo ./scripts/host.sh'])
 
@@ -151,10 +155,11 @@ test('host: имя уходит скрипту переменной, --direct д
   assert.deepEqual(alias.out, ['COLLOQ_HOME=/repo COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh'])
 })
 
-test('host: из колеса и из исходников — одна и та же строка, make не зовётся никогда', async () => {
-  // Прежде в исходниках уходило `make host HOST=…`, а в колесе — сам скрипт:
-  // две ветки, и проверенной на машине автора была не та, что у
-  // преподавателя. Теперь ветка одна, и ctx.dist её не трогает.
+test('host: the same line from the wheel and from the sources, and make is never called', async () => {
+  // Previously the sources sent `make host HOST=…` while the wheel ran the
+  // script itself: two branches, and the one checked on the author's machine
+  // was not the one the teacher had. Now there is one branch, and ctx.dist
+  // does not touch it.
   for (const argv of [
     ['host', 'hse.colloq.ru'],
     ['host', 'hse.colloq.ru', '--direct'],
@@ -168,15 +173,16 @@ test('host: из колеса и из исходников — одна и та 
   }
 })
 
-test('host: пары ВИДА=ЗНАЧЕНИЕ больше не разбираются — отказ, а не молчаливая подстановка', async () => {
-  // HOST=… на месте имени — это имя, и в DNS оно не годится.
+test('host: KEY=VALUE pairs are no longer parsed — a refusal, not a silent substitution', async () => {
+  // HOST=… in place of the name is a name, and it is no good for DNS.
   const asName = await run(['host', 'HOST=hse.colloq.ru', '--dry-run'])
   assert.equal(asName.code, 2)
   assert.deepEqual(spawned(asName), [])
   assert.deepEqual(asName.out, [])
   assert.match(asName.err.join('\n'), /will not do/)
 
-  // PORT=3001 после имени — лишний аргумент, и скрипту он окружением не уходит.
+  // PORT=3001 after the name is an extra argument, and it does not go to the
+  // script as environment.
   const extra = await run(['host', 'hse.colloq.ru', 'PORT=3001', '--dry-run'])
   assert.equal(extra.code, 2)
   assert.deepEqual(spawned(extra), [])
@@ -184,21 +190,21 @@ test('host: пары ВИДА=ЗНАЧЕНИЕ больше не разбира�
   assert.match(extra.err.join('\n'), /extra argument: PORT=3001/)
 })
 
-test('host: прямой режим без имени — отказ об употреблении, ничего не запущено', async () => {
+test('host: direct mode without a name is a usage refusal, nothing is started', async () => {
   const result = await run(['host', '--direct', '--yes'], { tty: true })
   assert.equal(result.code, 2)
   assert.deepEqual(spawned(result), [])
   assert.match(result.err.join('\n'), /direct mode needs a name/)
   assert.match(result.err.join('\n'), /colloq host class\.example\.org --direct/)
 
-  // И под --dry-run тоже: строка с пустым COLLOQ_HOSTNAME была бы ложью о
-  // том, что выполнится.
+  // Under --dry-run too: a line with an empty COLLOQ_HOSTNAME would lie about
+  // what is going to run.
   const dry = await run(['host', '--direct', '--dry-run'])
   assert.equal(dry.code, 2)
   assert.deepEqual(dry.out, [])
 })
 
-test('host: имя не из латиницы — отказ, до скрипта дело не доходит', async () => {
+test('host: a name not in Latin letters is refused before it gets to the script', async () => {
   for (const name of [
     'ХСЕ.colloq.ru',
     'Hse.colloq.ru',
@@ -214,13 +220,13 @@ test('host: имя не из латиницы — отказ, до скрипт�
   }
 })
 
-test('host: вопрос не задаётся раньше проверки — плохое имя даёт код 2, а не 3', async () => {
+test('host: the question is not asked before the check, so a bad name gives code 2, not 3', async () => {
   for (const argv of [
     ['host', 'ХСЕ.colloq.ru', '--direct'],
     ['host', '--direct'],
   ]) {
-    // Ни терминала, ни --yes: каркас спросил бы и отказал с кодом 3 — но
-    // check срабатывает раньше вопроса.
+    // Neither a terminal nor --yes: the framework would ask and refuse with
+    // code 3 — but check fires before the question.
     const result = await run(argv)
     assert.equal(result.code, 2, argv.join(' '))
     assert.deepEqual(spawned(result), [], argv.join(' '))
@@ -228,7 +234,7 @@ test('host: вопрос не задаётся раньше проверки —
   }
 })
 
-test('host --direct: вопрос называет цену, «нет» — код 4 и «отменено»', async () => {
+test('host --direct: the question names the cost; "no" gives code 4 and "cancelled"', async () => {
   const no = await run(['host', 'hse.colloq.ru', '--direct'], { tty: true, answer: 'n' })
   assert.equal(no.code, 4)
   assert.deepEqual(spawned(no), [])
@@ -245,7 +251,7 @@ test('host --direct: вопрос называет цену, «нет» — ко
   })
 })
 
-test('host --direct --yes: вопроса нет вовсе', async () => {
+test('host --direct --yes: no question at all', async () => {
   const result = await run(['host', 'hse.colloq.ru', '--direct', '--yes'], { tty: true })
   assert.equal(result.code, 0)
   assert.deepEqual(result.asked, [])
@@ -253,7 +259,7 @@ test('host --direct --yes: вопроса нет вовсе', async () => {
   assert.equal(result.envs[0]?.COLLOQ_DIRECT, '1')
 })
 
-test('host: туннель молчит, пока нет занятия, и спрашивает, когда оно идёт', async () => {
+test('host: the tunnel stays quiet while no class is running, and asks when one is', async () => {
   const quiet = await run(['host', 'hse.colloq.ru'], { tty: true, answer: 'n' })
   assert.equal(quiet.code, 0)
   assert.deepEqual(quiet.asked, [])
@@ -265,24 +271,25 @@ test('host: туннель молчит, пока нет занятия, и сп
   assert.deepEqual(spawned(busy), [])
   assert.match(busy.asked[0] ?? '', /publish hse\.colloq\.ru\? 1 room is running/)
 
-  // Без имени вопрос называет занятие целиком, а не пустое место.
+  // Without a name the question names the class as a whole, not an empty spot.
   const quick = await run(['host'], { tty: true, answer: 'n', capture: oneRoom })
   assert.equal(quick.code, 4)
   assert.match(quick.asked[0] ?? '', /publish the class\? 1 room is running/)
 })
 
-test('host: шапка называет транспорт, и она одна; под ней — две строки о периметре', async () => {
+test('host: the header names the transport, and there is one; under it, two lines about the perimeter', async () => {
   const relay = await run(['host', 'hse.colloq.ru', '--yes'], { tty: true })
-  // Шапка одна, а под ней — две строки о периметре: комната — укреплённый
-  // контейнер без доступа к домашней сети, а ссылка всё равно дверь к коду на
-  // этом компьютере. Те же слова говорит colloq doctor (PERIMETER в
-  // cli/src/commands/host.ts).
+  // One header, and under it two lines about the perimeter: a room is a
+  // hardened container with no access to the home network, and the link is
+  // still a door to code on this computer. colloq doctor says the same words
+  // (PERIMETER in cli/src/commands/host.ts).
   assert.equal(relay.out[0], 'publishing hse.colloq.ru through the relay: keep this window open')
   assert.equal(relay.out.length, 3)
   assert.match(relay.out[1] ?? '', /hardened container per room, cut off from your home network/)
   assert.match(relay.out[2] ?? '', /the link is a door: anyone who has it runs code in a sandbox/)
   assert.match(relay.out[2] ?? '', /keep it for your class; Ctrl\+C closes it/)
-  // Прежние слова были правдой до укрепления комнат, и вернуться им нельзя.
+  // The old words were true before rooms were hardened, and they must not
+  // come back.
   assert.doesNotMatch(relay.out.join('\n'), /without production limits|privileges are not dropped/)
 
   const cloud = await run(['host', 'class.example.ru', '--yes'], { tty: true })
@@ -298,7 +305,7 @@ test('host: шапка называет транспорт, и она одна; 
   )
   assert.equal(direct.out.length, 3)
 
-  // Секреты из .env в вывод не попадают ни строкой.
+  // Not a single line of secrets from .env gets into the output.
   for (const result of [relay, cloud, quick, direct]) {
     const text = [...result.out, ...result.err].join('\n')
     assert.equal(text.includes('very-secret-token'), false)
@@ -306,20 +313,20 @@ test('host: шапка называет транспорт, и она одна; 
   }
 })
 
-test('host: нет .env — код 3, назван путь и выполнимый совет, один и тот же везде', async () => {
+test('host: no .env gives code 3, names the path and a workable hint, the same everywhere', async () => {
   const source = await run(['host', 'hse.colloq.ru', '--yes'], {
     tty: true,
     files: { '/repo/.env': null },
   })
   assert.equal(source.code, 3)
   assert.deepEqual(spawned(source), [])
-  // Путь целиком, а не «нет .env»: корня два, и человеку нужно знать, в каком
-  // из них файла не хватает.
+  // The full path, not "no .env": there are two roots, and a person needs to
+  // know which one lacks the file.
   assert.match(source.err.join('\n'), /no \/repo\/\.env/)
-  // Совет должен быть выполнимым. Прежний — «cp .env.example .env» — врал
-  // дважды: путь относительный (то есть в текущем каталоге человека), а
-  // .env.example у поставленного пакета нет вовсе. Заводит .env colloq start,
-  // и из исходников так же, поэтому совет один.
+  // The hint must be workable. The old one, "cp .env.example .env", lied
+  // twice: the path is relative (that is, in the person's current directory),
+  // and an installed package has no .env.example at all. .env is created by
+  // colloq start, from the sources as well, so there is one hint.
   assert.match(source.err.join('\n'), /colloq start creates it on the first run/)
   assert.doesNotMatch(source.err.join('\n'), /\.env\.example/)
 
@@ -336,9 +343,10 @@ test('host: нет .env — код 3, назван путь и выполним�
   assert.doesNotMatch(packaged.err.join('\n'), /\.env\.example/)
 })
 
-test('host: нет .env, но --dry-run — строка печатается, проверка .env не нужна', async () => {
-  // --dry-run только показывает, что выполнится, и ничего не читает сверх
-  // аргументов: отказ за отсутствующий .env здесь был бы отказом зря.
+test('host: no .env but --dry-run: the line is printed, no .env check is needed', async () => {
+  // --dry-run only shows what would run and reads nothing beyond the
+  // arguments: refusing over a missing .env here would be a refusal for
+  // nothing.
   const result = await run(['host', 'hse.colloq.ru', '--dry-run'], {
     files: { '/repo/.env': null },
   })
@@ -348,19 +356,20 @@ test('host: нет .env, но --dry-run — строка печатается, �
   ])
 })
 
-/* -------------------------------------------------- host у поставленного colloq */
+/* -------------------------------------------------- host in an installed colloq */
 
 /**
- * Два корня: приложение отдельно, состояние отдельно.
+ * Two roots: the app separate, the state separate.
  *
- * У поставленного через pip colloq каталог приложения лежит внутри пакета
- * (только чтение, сносится обновлением), а .env, расписка занятия и .colloq.pid
- * — в ~/.colloq. Скрипту надо сказать, где состояние, иначе он поищет его
- * рядом с собой и опубликует адрес в файл, которого никто не читает.
+ * In a colloq installed through pip the app directory lives inside the package
+ * (read-only, wiped by an update), while .env, the class receipt and
+ * .colloq.pid are in ~/.colloq. The script has to be told where the state is,
+ * otherwise it looks for it next to itself and publishes the address into a
+ * file nobody reads.
  */
 const PACKAGED: Options = { dist: true, home: '/home/.colloq' }
 
-test('host: скрипт запускается по-настоящему и знает каталог состояния', async () => {
+test('host: the script really runs and knows the state directory', async () => {
   const result = await run(['host', 'hse.colloq.ru', '--yes'], {
     ...PACKAGED,
     tty: true,
@@ -372,36 +381,37 @@ test('host: скрипт запускается по-настоящему и з�
     COLLOQ_HOME: '/home/.colloq',
     COLLOQ_HOSTNAME: 'hse.colloq.ru',
   })
-  // Настройки прочитаны из каталога состояния: RELAY_DOMAIN оттуда, и шапка
-  // называет ретранслятор, а не Cloudflare.
+  // The settings were read from the state directory: RELAY_DOMAIN comes from
+  // there, and the header names the relay, not Cloudflare.
   assert.match(result.out[0] ?? '', /through the relay/)
 })
 
-test('host: в исходниках корень состояния назван так же, хотя и совпадает с приложением', async () => {
-  // Развилки «когда корни совпадают, не посылаем» нет намеренно: её пришлось
-  // бы не забыть повторить в следующей команде. Тем же правилом живут copies и
-  // link (cli/src/commands/local.ts · stateEnv).
+test('host: in the sources the state root is named the same way, even though it matches the app', async () => {
+  // There is deliberately no "do not send when the roots match" fork: someone
+  // would have to remember to repeat it in the next command. copies and link
+  // live by the same rule (cli/src/commands/local.ts · stateEnv).
   const result = await run(['host', '--yes'], { tty: true })
   assert.deepEqual(spawned(result), [['./scripts/host.sh']])
   assert.deepEqual(result.envs[0], { COLLOQ_HOME: '/repo' })
 })
 
-/* ------------------------------------------------------- состав группы */
+/* -------------------------------------------------------- group makeup */
 
-test('в группе одна команда — host; мастерская отсюда не зовётся', () => {
-  // Ретранслятор, DNS, именованный туннель и стенд ставят и правят чужие
-  // машины и зону: это Makefile и scripts/, обёртки над ними в CLI нет.
+test('the group has one command, host; the workshop is not called from here', () => {
+  // The relay, DNS, a named tunnel and the test bench install and change other
+  // machines and the zone: that is the Makefile and scripts/, and the CLI has
+  // no wrapper over them.
   const group = registry.filter((command) => command.group === 'host')
   assert.deepEqual(
     group.map((command) => command.name),
     ['host'],
   )
-  // Второе имя у host одно — public; прямой режим живёт флагом --direct, а не
-  // отдельной командой host-direct.
+  // host has one other name, public; direct mode lives as the --direct flag,
+  // not as a separate host-direct command.
   assert.deepEqual(group[0]?.aliases, ['public'])
 })
 
-test('прежние имена мастерской — «нет такой команды», и ничего не запущено', async () => {
+test('old workshop names get "no such command", and nothing is started', async () => {
   for (const argv of [
     ['host-direct', 'hse.colloq.ru'],
     ['tunnel', 'setup', 'class.example.ru'],
@@ -416,23 +426,23 @@ test('прежние имена мастерской — «нет такой к�
   }
 })
 
-/* ------------------------------------------- скрипты, которыми это и делается */
+/* -------------------------------------------- the scripts that actually do it */
 
 /**
- * Вторая половина файла — про то, чего подставным исполнителем не увидеть.
+ * The second half of the file is about what a stand-in executor cannot see.
  *
- * Выше ни один процесс не запускается и ни один настоящий файл не читается:
- * проверяется, ЧТО уходит в скрипт. Здесь проверяется то, что
- * лежит на другом конце этой строки, — и увидеть это можно только в настоящих
- * файлах. Находка была ровно там: строка уходила верная, а скрипта в пакете не
- * было вовсе, и `colloq host` умирал кодом 127 на единственной команде,
- * которой класс получает ссылку.
+ * Above, no process is started and no real file is read: what is checked is
+ * WHAT goes to the script. Here what is checked is what lies at the other end
+ * of that line — and it can only be seen in the real files. That is exactly
+ * where the finding was: the line went out right, but the script was not in
+ * the package at all, and `colloq host` died with code 127 on the only command
+ * by which the class gets its link.
  */
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const hostSh = fs.readFileSync(path.join(repo, 'scripts/host.sh'), 'utf8')
 const packMts = fs.readFileSync(path.join(repo, 'scripts/pack.mts'), 'utf8')
 
-/** Строки без комментариев: про эти решения комментарии как раз и рассказывают. */
+/** Lines without comments: it is the comments that tell about these decisions. */
 function code(text: string, mark = '#'): string {
   return text
     .split('\n')
@@ -440,21 +450,21 @@ function code(text: string, mark = '#'): string {
     .join('\n')
 }
 
-/** Какие scripts/* этот скрипт зовёт (по строкам кода, не по рассказам о них). */
+/** Which scripts/* this script calls (by code lines, not by stories about them). */
 function invoked(text: string): Set<string> {
   return new Set([...code(text).matchAll(/\bscripts\/([A-Za-z0-9._-]+)/g)].map((hit) => hit[1]!))
 }
 
-/** Что scripts/pack.mts кладёт в колесо: ключи SCRIPTS. */
+/** What scripts/pack.mts puts into the wheel: the SCRIPTS keys. */
 const packedScripts = new Set(
   [...packMts.matchAll(/^\s*'([A-Za-z0-9._-]+\.(?:sh|py))':/gm)].map((hit) => hit[1]!),
 )
 
-test('в колесо едет всё, что скрипты зовут, — и ничего из этого не забыто', () => {
-  // Замыкание, а не список глазами: host.sh сорсит lib.sh, backup и restore
-  // зовут cluster.sh и своих помощников на python. Пропусти одного — и отказ
-  // придёт кодом 127 на машине преподавателя, а не здесь.
-  assert.ok(packedScripts.has('host.sh'), 'scripts/host.sh не едет в колесо')
+test('everything the scripts call goes into the wheel, and none of it is forgotten', () => {
+  // A closure, not a list checked by eye: host.sh sources lib.sh, backup and
+  // restore call cluster.sh and their python helpers. Miss one, and the
+  // failure comes as code 127 on the teacher's machine, not here.
+  assert.ok(packedScripts.has('host.sh'), 'scripts/host.sh does not go into the wheel')
   const seen = new Set<string>()
   const queue = [...packedScripts]
   while (queue.length) {
@@ -463,62 +473,63 @@ test('в колесо едет всё, что скрипты зовут, — и 
     seen.add(name)
     const text = fs.readFileSync(path.join(repo, 'scripts', name), 'utf8')
     for (const needed of invoked(text)) {
-      if (needed.endsWith('.mts')) continue // их не копируют, а собирают — см. ниже
+      if (needed.endsWith('.mts')) continue // these are built, not copied — see below
       assert.ok(
         packedScripts.has(needed),
-        `scripts/${name} зовёт scripts/${needed}, а в колесо тот не едет`,
+        `scripts/${name} calls scripts/${needed}, which does not go into the wheel`,
       )
       queue.push(needed)
     }
   }
 })
 
-test('расписку внешнего адреса host.sh зовёт бандлом, а исходник — только рядом с репозиторием', () => {
-  // tsx в дистрибутиве нет вовсе: `node --import tsx` падал там ещё до первой
-  // строки, и локальная сессия оставалась без адреса. Та же развилка, что у
-  // супервизора в cli/src/commands/local.ts.
+test('host.sh calls the public address lease as a bundle, and the source only next to the repository', () => {
+  // The distribution has no tsx at all: `node --import tsx` failed there
+  // before the first line, and the local session was left without an address.
+  // The same fork as the supervisor has in cli/src/commands/local.ts.
   const bundle = 'cli/public-url-lease.mjs'
   assert.match(code(hostSh), new RegExp(`\\[ -f ${bundle.replace('/', '\\/')} \\]`))
   assert.match(code(hostSh), /node --import tsx scripts\/public-url-lease\.mts/)
-  // И бандл действительно собирается — тем же именем, иначе развилка молча
-  // уходила бы в ветку tsx.
+  // And the bundle really is built, under the same name; otherwise the fork
+  // would silently take the tsx branch.
   assert.match(packMts, /entryPoints: \[path\.join\(root, 'scripts\/public-url-lease\.mts'\)\]/)
   assert.match(packMts, new RegExp(`outfile: path\\.join\\(appDir, '${bundle}'\\)`))
-  // Развилка — массивом, а не функцией: сторож адреса уходит в фон, и в $!
-  // должен оказаться номер самого node. У функции там был бы номер
-  // подоболочки, cleanup убил бы её, а сторож остался бы сиротой и ещё три
-  // секунды продлевал аренду адреса, который мы только что отдали.
+  // The fork is an array, not a function: the address watcher goes into the
+  // background, and $! must hold the pid of node itself. With a function it
+  // would hold the subshell's pid, cleanup would kill that, and the watcher
+  // would be left an orphan, renewing for three more seconds the lease on an
+  // address we had just given up.
   assert.match(code(hostSh), /^\s*LEASE=\(node /m)
   assert.match(code(hostSh), /"\$\{LEASE\[@\]\}" watch .* &$/m)
 })
 
-test('состояние скрипты ищут в каталоге состояния, а не рядом с собой', () => {
+test('scripts look for state in the state directory, not next to themselves', () => {
   const body = code(hostSh)
-  // Расписка занятия и pid-файл — от корня состояния. Прежние умолчания были
-  // относительными, то есть «рядом со скриптом».
+  // The class receipt and the pid file hang off the state root. The old
+  // defaults were relative, that is, "next to the script".
   assert.match(body, /SESSION_RECEIPT="\$COLLOQ_STATE_ROOT\/\.colloq\/local-session\.json"/)
   assert.match(body, /PIDFILE="\$\{PIDFILE:-\$COLLOQ_STATE_ROOT\/\.colloq\.pid\}"/)
-  assert.equal(/\$\{PIDFILE:-\.colloq\.pid\}/.test(body), false, 'pid-файл снова ищется у себя')
+  assert.equal(/\$\{PIDFILE:-\.colloq\.pid\}/.test(body), false, 'the pid file is looked up locally again')
   assert.equal(
     /\[ -f \.colloq\/local-session\.json \]/.test(body),
     false,
-    'расписка занятия снова ищется у себя',
+    'the class receipt is looked up locally again',
   )
-  // PUBLIC_URL пишется в тот .env, который читает colloq link, — иначе после
-  // «успешной» публикации он продолжал бы говорить «наружу не выставлен».
+  // PUBLIC_URL is written into the .env that colloq link reads — otherwise
+  // after a "successful" publication it would keep saying "not published".
   const setter = /^set_public_url\(\) \{$[\s\S]*?^\}$/m.exec(hostSh)![0]
   assert.match(setter, /"\$ENV_FILE"/)
   assert.equal(
     /(^|\s)\.env(\s|$)/m.test(code(setter)),
     false,
-    'set_public_url снова пишет в ./.env',
+    'set_public_url writes to ./.env again',
   )
 })
 
-test('lib.sh: корень состояния — COLLOQ_HOME, а без него прежний каталог', () => {
-  // Единственное место этого файла, где запускается процесс: свойство
-  // проверяется на настоящем bash, потому что вся его суть — в подстановке
-  // оболочки. Проверять её чтением значило бы проверять свою же догадку.
+test('lib.sh: the state root is COLLOQ_HOME, and without it the old directory', () => {
+  // The only place in this file where a process is started: the property is
+  // checked on real bash, because its whole point lies in shell substitution.
+  // Checking it by reading would mean checking one's own guess.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-state-'))
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'PORT=3999\n')
@@ -531,11 +542,13 @@ test('lib.sh: корень состояния — COLLOQ_HOME, а без нег�
             ? { PATH: process.env.PATH ?? '' }
             : { PATH: process.env.PATH ?? '', COLLOQ_HOME: home },
       })
-    // Названный каталог состояния сильнее того, где стоит скрипт: у
-    // поставленного colloq это разные каталоги, и .env есть только в первом.
+    // A named state directory beats the one the script is in: for an
+    // installed colloq these are different directories, and only the first
+    // has .env.
     assert.equal(ask(repo, dir), '3999')
-    // Без переменной — как было: текущий каталог, в который скрипты переходят
-    // сами (тот самый каталог над scripts/). В репозитории это он и есть.
+    // Without the variable, as before: the current directory the scripts cd
+    // into themselves (the very directory above scripts/). In the repository
+    // that is exactly it.
     assert.equal(ask(dir), '3999')
     assert.equal(ask(os.tmpdir()), '')
   } finally {

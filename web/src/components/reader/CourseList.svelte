@@ -1,9 +1,9 @@
 <!--
-  Страница курса — единственный адрес Colloq, который человек сохраняет в
-  закладки. Один семинар в строку, в том порядке, в каком их вели.
+  The course page — the only Colloq address people bookmark. One seminar per
+  row, in the order they were taught.
 
-  Документ, а не афиша: одна колонка, тонкие линейки, никаких карточек. Смотрят
-  на неё двенадцать раз за семестр, и каждый раз ищут одну строку.
+  A document, not a poster: one column, thin rules, no cards. People look at it
+  twelve times a semester, and every time they are looking for one row.
 -->
 <script lang="ts">
   import { tr, getLocale } from '@shared/i18n'
@@ -20,15 +20,17 @@
   const shortDate = (at: number): string =>
     new Date(at).toLocaleDateString(getLocale(), { day: 'numeric', month: 'long' })
 
-  /* Число опубликованных шагов с общим правилом множественного числа. */
+  /* Number of published steps, with the shared plural rule. */
   const steps = (n: number): string => `${n} ${plural(n, tr('room.ui.713'), tr('room.ui.714'), tr('room.ui.715'))}`
 
-  /* Тот же адрес, что и на выгруженной странице курса: имя, если его выбрали. */
+  /* The same address as on the exported course page: the name, if one was
+     chosen. */
   const href = (pub: { id: string; slug: string | null }): string => `/p/${pub.slug ?? pub.id}`
 </script>
 
-<!-- Стрелка строки, по которой можно пройти. Один раз, потому что таких строк
-     две: живой семинар и закрытая комната с оставшимся чтением. -->
+<!-- The arrow of a row that can be followed. Defined once, because there are
+     two such rows: a live seminar and a closed room that still has its
+     reading. -->
 {#snippet chevron()}
   <span class="w-4 shrink-0 text-accent" aria-hidden="true">
     <svg width="7" height="12" viewBox="0 0 7 12" fill="none">
@@ -52,13 +54,14 @@
       <p class="mt-3.5 max-w-[560px] text-ui-lg leading-relaxed text-muted">{course.blurb}</p>
     {/if}
     <!--
-      Тот же адрес, что диктуют вслух и печатают на выгруженной странице.
+      The same address that is dictated out loud and printed on the exported
+      page.
 
-      Здесь стоял `course.id` — восемь случайных букв, — хотя имя курса у вида
-      есть, панель копирует и диктует именно его (admin/screens/Courses.svelte),
-      а статическая страница печатает `slug ?? id` (publish/render.ts). Работают
-      оба адреса, но «сохраните эту страницу» под строкой, которой не было на
-      доске, читается как чужая.
+      This used to be `course.id` — eight random letters — even though the view
+      has the course name, the panel copies and dictates exactly that name
+      (admin/screens/Courses.svelte), and the static page prints `slug ?? id`
+      (publish/render.ts). Both addresses work, but "save this page" under a
+      line that was not on the board reads as someone else's page.
     -->
     <p class="mt-4 font-mono text-2xs text-muted">
       {location.host}/c/{course.slug ?? course.id}
@@ -69,11 +72,11 @@
         {@const ordinal = String(index + 1).padStart(2, '0')}
         {#if item.kind === 'gone' && item.publication}
           <!--
-            Надгробие, за которым осталось чтение: удаление семинара по
-            умолчанию сохраняет опубликованную страницу — ссылку у студентов не
-            отозвать. Без этой строки-ссылки страница жива и открывается по
-            прямому адресу, а с курса — единственного адреса, который классу
-            вообще дают, — до неё не дойти.
+            A tombstone with the reading left behind it: deleting a seminar
+            keeps the published page by default — a link cannot be taken back
+            from students. Without this link row the page is alive and opens by
+            its direct address, but from the course — the only address the class
+            is given at all — there is no way to reach it.
           -->
           {@const closed = item.publication}
           <li class="border-b border-line">
@@ -88,9 +91,10 @@
             </button>
           </li>
         {:else if item.kind === 'gone'}
-          <!-- Надгробие. Строка остаётся: курс, из которого молча пропала
-               четвёртая неделя, сломан для того, кто на ней сидел, а номера
-               остальных уезжают и перестают совпадать с расписанием. -->
+          <!-- A tombstone. The row stays: a course from which the fourth week
+               silently disappeared is broken for whoever attended it, and the
+               numbers of the other rows shift and stop matching the
+               timetable. -->
           <li class="flex items-baseline gap-6 border-b border-line py-5">
             <span class="w-[34px] shrink-0 font-mono text-ui text-faint">{ordinal}</span>
             <span class="min-w-0 flex-1 text-title text-muted">{item.name}</span>
@@ -114,18 +118,19 @@
           </li>
         {:else if item.kind === 'planned'}
           <!--
-            Тема, которую ещё не вели. Строка нужна, чтобы страница курса была
-            планом семестра с первой недели: иначе в сентябре она пуста, а
-            завести тридцать комнат вперёд — это тридцать ссылок в пустые
-            тетради за три месяца до занятия.
+            A topic that has not been taught yet. The row is needed so that the
+            course page is the semester plan from the first week: otherwise it
+            is empty in September, and creating thirty rooms in advance means
+            thirty links to empty notebooks three months before the class.
           -->
           <li class="flex items-baseline gap-6 border-b border-line py-5">
             <span class="w-[34px] shrink-0 font-mono text-ui text-faint">{ordinal}</span>
             <span class="min-w-0 flex-1 text-title text-muted">{item.name}</span>
-            <!-- Неделю теперь набирают руками в панели, до сорока знаков, и в
-                 одну строку на телефоне она забирала всю ширину: тема сжималась
-                 до слова в строке, а неделя ложилась поверх неё. Короткая
-                 («14–20 сен») по-прежнему не переносится — ей хватает 45%. -->
+            <!-- The week is now typed by hand in the panel, up to forty
+                 characters, and on a single line on a phone it took the whole
+                 width: the topic shrank to one word per line, and the week lay
+                 on top of it. A short one ("14–20 Sep") still does not wrap —
+                 45% is enough for it. -->
             <span class="max-w-[45%] shrink-0 break-words text-right text-ui text-muted">{item.when}</span>
             <span class="w-4 shrink-0"></span>
           </li>
@@ -141,9 +146,9 @@
     </ol>
 
     <!--
-      Обещание, а не подпись. В первую неделю на странице одна строка, и эта
-      фраза несёт её целиком: иначе курс из одного семинара читается как
-      сломанный.
+      A promise, not a caption. In the first week the page has one row, and this
+      sentence carries it entirely: otherwise a course of one seminar reads as
+      broken.
     -->
     <p class="mt-9 text-ui text-muted"> {tr('room.ui.712')} </p>
   </div>

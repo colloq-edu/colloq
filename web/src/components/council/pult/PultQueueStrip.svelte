@@ -10,9 +10,12 @@
 
   interface Props {
     kernel: KernelView
-    /** Регламент ячейки: отсюда очередь знает предел запуска. Меняют его в листе. */
+    /** The cell's rules give the queue its run limit; they are changed in the sheet. */
     settings: CouncilSettings
-    /** Вся стопка — ради секции «Остановлены сами»: её работы уже не в очереди. */
+    /**
+     * The whole pile, for the "Stopped by the limit" section: that work is no
+     * longer in the queue.
+     */
     attempts: readonly CouncilAttempt[]
     names: boolean
     now: number
@@ -21,13 +24,13 @@
     disabled: boolean
     ontoggle: () => void
     oninterrupt: () => void
-    /** Перезапуск ядра ТЕТРАДИ — последнее средство, когда ядро глухо к сигналу. */
+    /** Restart the NOTEBOOK's kernel — a last resort when it is deaf to the signal. */
     onrestart: () => void
     onapprove: (attempt: CouncilAttempt) => void
     ondecline: (attempt: CouncilAttempt) => void
     onapproveall: () => void
     onopen: (participantId: string) => void
-    /** Снять ждущий запуск с очереди — не трогая человека. */
+    /** Take a waiting run out of the queue — without touching the person. */
     ondrop: (attempt: CouncilAttempt) => void
     onremove: (attempt: CouncilAttempt, event: MouseEvent) => void
   }
@@ -35,49 +38,50 @@
   let { kernel, settings, attempts, names, now, disabled, oninterrupt, onrestart, onapprove, ondecline, onapproveall, onopen, ondrop, onremove }: Props = $props()
   const running = $derived(kernel.running)
   /**
-   * Чужая работа, которая держит очередь, — и `null`, когда её нет.
+   * Someone else's work holding the queue — and `null` when there is none.
    *
-   * «Чужая» — это либо обычная ячейка тетради, либо попытка СОСЕДНЕЙ ячейки
-   * консилиума. Своя попытка (`here`) сюда не попадает: её рисует карточка
-   * ниже, со всеми подробностями стопки.
+   * "Someone else's" is either an ordinary notebook cell or an attempt from a
+   * NEIGHBOURING council cell. An attempt of our own (`here`) does not get
+   * here: the card below draws it, with all the details of the pile.
    */
   const elsewhere = $derived(kernel.book?.busy && !kernel.book.busy.here ? kernel.book.busy : null)
   const busy = $derived(kernelIsBusy(kernel))
-  /** Два сигнала ушли, а работа считается: очередь стоит, и её не сдвинуть. */
+  /** Two signals sent, the work still runs: the queue is stuck and will not move. */
   const stuck = $derived(kernel.book?.busy?.stuck === true)
   const startedAt = $derived(running?.run?.startedAt ?? kernel.book?.busy?.startedAt ?? 0)
   const elapsed = $derived(busy ? Math.max(now - startedAt, 0) : 0)
   /**
-   * Под каким пределом идёт то, что считается.
+   * Which limit the running work runs under.
    *
-   * У своей попытки — регламент ячейки, у чужой работы — то, что приехало с
-   * кадром ядра: у соседней ячейки консилиума свой регламент, у обычной ячейки
-   * — предел комнаты (rules.ts · cellLimitSec), и оба могут отличаться от
-   * здешнего. Показывать чужому запуску наш предел значило бы рисовать полосу,
-   * которая ничего не сторожит.
+   * For our own attempt it is the cell's rules; for someone else's work it
+   * is what came with the kernel frame: a neighbouring council cell has its
+   * own rules, an ordinary cell has the room's limit (rules.ts ·
+   * cellLimitSec), and both can differ from ours. Showing our limit for
+   * someone else's run would mean drawing a bar that guards nothing.
    */
   const limitSec = $derived(elsewhere ? elsewhere.limitSec : settings.runLimitSec)
   const limitMs = $derived(limitSec === null ? null : limitSec * 1000)
-  /** Предел вышел, а запуск идёт: SIGINT не взял, и дальше — только руками. */
+  /** Past the limit and still running: SIGINT did not take; from here, by hand only. */
   const overLimit = $derived(limitMs !== null && elapsed >= limitMs)
   const stopped = $derived(timedOutAttempts(attempts))
   const who = (attempt: CouncilAttempt): string => names ? attempt.name : tr('room.pult.v2.queue.anonymous')
-  /** Имя из кадра ядра — под той же ручкой имён, что и строки стопки. */
+  /** A name from the kernel frame — under the same names switch as the pile rows. */
   const whoBusy = (name: string): string => names ? name : tr('room.pult.v2.queue.anonymous')
   const firstLine = (text: string): string => text.split('\n').find((line) => line.trim()) ?? ''
 
   /**
-   * Меню строки очереди — и повод, ради которого оно заведено.
+   * The queue row's menu — and the reason it was introduced.
    *
-   * В строке стояла одна кнопка, и та — «убрать с занятия». То есть
-   * единственным, что преподаватель мог сделать с чужим запуском, было выгнать
-   * автора: несоразмерно настолько, что этим не пользовались. Теперь строка —
-   * кнопка, открывающая работу, а опасное действие ушло под «⋯» и стоит рядом
-   * со своим соразмерным соседом — «снять запуск».
+   * The row had one button, and it was "remove from class". That is, the
+   * only thing a teacher could do with someone else's run was to throw out
+   * its author: so disproportionate that nobody used it. Now the row is a
+   * button that opens the work, and the dangerous action moved under "⋯",
+   * next to its proportionate neighbour — "take the run out of the queue".
    *
-   * Общее меню комнаты (components/ui/ContextMenu.svelte), а не своё: оно уже
-   * умеет клавиатуру, кромки окна и нижний лист на пальце, и вторая копия
-   * этого разошлась бы с первой.
+   * The room's shared menu (components/ui/ContextMenu.svelte), not one of
+   * its own: it already handles the keyboard, the window edges and the
+   * bottom sheet under a finger, and a second copy of that would diverge
+   * from the first.
    */
   let menuAt = $state<{ x: number; y: number } | null>(null)
   let menuFor = $state<CouncilAttempt | null>(null)
@@ -97,9 +101,9 @@
           {
             label: tr('room.pult.v3.queue.drop'),
             icon: 'x',
-            // Считающуюся отсюда не достать: строка ушла в ядро, и останавливает
-            // её «Прервать». Пункт при этом остаётся видимым и говорит почему —
-            // погашенный без причины читается как поломка.
+            // A running one cannot be reached from here: the row has gone into
+            // the kernel, and "Interrupt" stops it. The item stays visible and
+            // says why — greyed out without a reason reads as breakage.
             disabled: disabled || menuFor.run?.state !== 'queued',
             why: menuFor.run?.state === 'running' ? tr('room.pult.v3.queue.dropRunning') : undefined,
             run: () => menuFor && ondrop(menuFor),
@@ -113,8 +117,8 @@
             run: () => {
               const attempt = menuFor
               if (!attempt || !menuBack) return
-              // Меню бана встаёт у той же кнопки «⋯», по которой нажали:
-              // координаты нужны ему настоящие, а события к этому моменту уже нет.
+              // The ban menu opens at the same "⋯" button that was pressed:
+              // it needs real coordinates, and the event is gone by now.
               const box = menuBack.getBoundingClientRect()
               onremove(attempt, new MouseEvent('click', { clientX: box.left, clientY: box.bottom }))
             },
@@ -128,9 +132,9 @@
     <header class="queue-heading">
       <div>
         <h2>{tr('room.pult.v2.queue.title')}</h2>
-        <!-- Очередь — у ТЕТРАДИ, а не у ячейки, и подпись обязана это сказать:
-             иначе «в очереди 3» читается как три минуты ожидания, когда впереди
-             стоит десяток чужих ячеек. -->
+        <!-- The queue belongs to the NOTEBOOK, not the cell, and the caption
+             has to say so: otherwise "3 in the queue" reads as three minutes
+             of waiting when a dozen other cells stand ahead. -->
         <p>{tr(kernel.book ? 'room.pult.v3.queue.scopeBook' : 'room.pult.v2.queue.scope')}</p>
       </div>
       <p class="queue-counts">
@@ -151,10 +155,10 @@
               {tr('room.pult.v2.queue.current')}
             {:else if elsewhere}
               <!--
-                Чужая работа названа тем, что она есть: номером ячейки или
-                соседней ячейкой консилиума. Раньше на этом месте стояло «в этой
-                ячейке ничего не выполняется» — правда про ячейку и ложь про
-                очередь, из-за которой преподаватель ждал непонятно чего.
+                Someone else's work is named for what it is: a cell number or a
+                neighbouring council cell. This spot used to say "No code is
+                running in this cell" — true about the cell and a lie about the
+                queue, which left the teacher waiting for who knows what.
               -->
               {elsewhere.kind === 'cell'
                 ? (elsewhere.index === null
@@ -167,28 +171,30 @@
           </span>
           <div class="running-author">
             {#if running && names}<Avatar name={running.name} color={running.color} avatar={running.avatar} size="md" />{/if}
-            <!-- Час запуска с секундами: за минуту их бывает три, и «17:24» у
-                 всех трёх не отличает их друг от друга. -->
+            <!-- The run's time with seconds: there can be three in a minute,
+                 and "17:24" on all three does not tell them apart. -->
             <strong>{running ? who(running) : whoBusy(elsewhere?.name ?? '')}</strong><span class="running-time">{tr('room.pult.v3.queueRunning', { time: pultClock(startedAt, true), duration: spell(elapsed) })}</span>
           </div>
           {#if elsewhere}
             <p class="running-hold">{tr('room.pult.v3.queue.holds')}</p>
           {/if}
           <!--
-            Предел — там, где он срабатывает.
-            Полоса отвечает на единственный вопрос к чужому запуску, идущему
-            перед всем классом: ждать его или прерывать. Она же и ловит случай,
-            когда ждать бессмысленно: время вышло, а запуск идёт — значит
-            остановка не взяла, и дальше поможет только рука.
+            The limit — where it takes effect.
+            The bar answers the only question about someone else's run going
+            on in front of the whole class: wait for it or interrupt it. It also
+            catches the case where waiting is pointless: time is up but the run
+            goes on — so the stop did not take, and from here only a hand will
+            help.
           -->
           {#if limitMs !== null}
             <div class="running-limit">
               <span class="limit-track" aria-hidden="true">
                 <span class="limit-fill" class:over={overLimit} style:width={`${Math.min(100, (elapsed / limitMs) * 100)}%`}></span>
               </span>
-              <!-- Когда ниже стоит панель «ядро не отвечает», подпись у полосы
-                   молчит: она говорила бы то же самое вдвое короче и вдвое
-                   слабее, а два предупреждения об одном читаются как два. -->
+              <!-- When the "kernel is not answering" panel stands below, the
+                   bar's caption stays silent: it would say the same thing half
+                   as long and half as strong, and two warnings about one thing
+                   read as two. -->
               {#if !stuck}
                 <span class="limit-note" class:over={overLimit}>
                   {overLimit
@@ -199,13 +205,15 @@
             </div>
           {/if}
           <!--
-            Ядро глухо к прерыванию — и это говорится словами, а не полосой.
+            The kernel is deaf to the interrupt — and that is said in words, not
+            with a bar.
 
-            Сервер шлёт два сигнала и замолкает: SIGINT в тугом цикле раз в
-            секунду — шторм запросов к Jupyter без единого шанса помочь. С этой
-            секунды очередь тетради стоит намертво, и до сих пор об этом не
-            узнавал никто. Цена перезапуска названа рядом с кнопкой, а не в
-            подтверждении: решение принимают до нажатия.
+            The server sends two signals and goes quiet: SIGINT into a tight
+            loop once a second is a storm of requests to Jupyter without a
+            single chance of helping. From that second the notebook's queue is
+            dead stuck, and until now nobody found out about it. The cost of a
+            restart is named next to the button, not in a confirmation: the
+            decision is made before the press.
           -->
           {#if stuck}
             <div class="running-stuck" data-pult-stuck>
@@ -215,21 +223,22 @@
           {/if}
         </div>
         <div class="running-actions">
-          <!-- Кнопка есть в ЛЮБОМ занятом состоянии: прерывает то, что держит
-               очередь сейчас, — свою попытку, чужую попытку или ячейку. Раньше
-               она жила внутри ветки своей попытки, то есть пропадала ровно
-               тогда, когда была нужна. -->
+          <!-- The button is there in ANY busy state: it interrupts whatever
+               holds the queue now — our attempt, someone else's attempt or a
+               cell. It used to live inside our attempt's branch, that is, it
+               disappeared exactly when it was needed. -->
           <button type="button" class="pult-button pult-button--danger" {disabled} onclick={oninterrupt}>{tr('room.pult.v2.queue.interrupt')}</button>
           {#if stuck}
             <button type="button" class="pult-button pult-button--danger" {disabled} data-pult-restart
               onclick={onrestart}>{tr('room.pult.v3.queue.restart')}</button>
           {/if}
           <!--
-            «Удалить с занятия» отсюда ушло вместе с такой же кнопкой из строк
-            очереди: снять человека с пары и остановить его запуск — разные по
-            весу вещи, и стоять рядом одинаковыми кнопками они не должны.
-            Остановка — слева, а человек снимается из меню строки, где рядом
-            лежит соразмерное «снять запуск».
+            "Remove from class" left here together with the same button in the
+            queue rows: taking a person out of the class and stopping their run
+            are things of different weight, and they must not stand side by
+            side as identical buttons. Stopping is on the left, and the person
+            is removed from the row menu, next to the proportionate "take the
+            run out of the queue".
           -->
         </div>
       {:else}
@@ -257,17 +266,17 @@
               </span>
               <div class="attempt-copy">
                 <strong>{who(attempt)}</strong>
-                <!-- С какого времени ждёт — словом, а не только в подсказке:
-                     по нему решают, кого пускать первым. -->
+                <!-- Since when they have been waiting — in words, not only in a
+                     tooltip: it decides whom to let in first. -->
                 <span class="request-time">{tr('room.pult.v2.queue.waiting', { duration: spell(Math.max(now - attempt.runRequest!.requestedAt, 0)) })} · {tr('room.pult.v3.queueSince', { time: pultClock(attempt.runRequest!.requestedAt) })}</span>
               </div>
               {#if reason}<span class="request-reason pult-meta">{reason}</span>{/if}
               <div class="row-actions">
                 <button type="button" class="pult-button pult-button--primary" {disabled} onclick={() => onapprove(attempt)}>{tr('room.pult.v2.queue.allow')}</button>
                 <button type="button" class="pult-button" {disabled} onclick={() => ondecline(attempt)}>{tr('room.pult.v2.queue.decline')}</button>
-                <!-- «Удалить с занятия» ушло под «⋯» тем же доводом, что и в
-                     строках очереди: рядом с «Разрешить» и «Отклонить» оно
-                     читалось как третий равный ответ на просьбу. -->
+                <!-- "Remove from class" moved under "⋯" by the same argument as
+                     in the queue rows: next to "Approve" and "Decline" it read
+                     as a third equal answer to the request. -->
                 <button type="button" class="pult-icon-button" {disabled} data-menu-button data-pult-more
                   aria-label={tr('room.pult.v3.queue.rowMenu')} onclick={(event) => openMenu(attempt, event)}>
                   <Icon name="more" size={16} />
@@ -288,14 +297,15 @@
           {#each kernel.queued as attempt, at (attempt.participantId)}
             <li class="queued-row">
               <!--
-                Строка — кнопка, открывающая работу.
+                The row is a button that opens the work.
 
-                До этого по чужому запуску нельзя было нажать вовсе: видны были
-                первые строки кода, а единственное доступное действие — удалить
-                автора с занятия. Решать по трём строкам, кого выгнать, —
-                несоразмерно, и преподаватель на паре сказал об этом прямо.
-                Теперь нажатие ведёт на вкладку «Работы» с курсором на этом
-                человеке, то есть к полному тексту и выводу.
+                Before this someone else's run could not be pressed at all: the
+                first lines of code were visible, and the only available action
+                was to remove the author from the class. Deciding by three
+                lines whom to throw out is disproportionate, and a teacher said
+                so plainly in class. Now a press leads to the "Work" tab with
+                the cursor on this person, that is, to the full text and
+                output.
               -->
               <button type="button" class="queued-open" data-pult-queued-open
                 aria-label={tr('room.pult.v3.queue.openRow', { name: who(attempt) })}
@@ -306,8 +316,9 @@
                 </span>
                 <span class="queued-copy">
                   <strong class="queued-author">{who(attempt)}</strong>
-                  <!-- Сколько ждёт — числом, а не только часом постановки: «в
-                       очереди 4» без движения не отвечает, идёт ли она вообще. -->
+                  <!-- How long they have been waiting — as a number, not only
+                       the time they were queued: "4 in the queue" without
+                       movement does not answer whether it is moving at all. -->
                   <span class="pult-meta queued-since">{tr('room.pult.v3.queue.waitingFor', { duration: spell(Math.max(now - attempt.run!.startedAt, 0)) })} · {tr('room.pult.v3.queueSince', { time: pultClock(attempt.run!.startedAt) })}</span>
                 </span>
                 <code>{firstLine(attempt.text)}</code>
@@ -324,12 +335,12 @@
     </section>
 
     <!--
-      Последняя секция — те, кого очередь обогнала.
-      Их в очереди уже нет, и в ленте работ они стоят обычными строками, но
-      вопрос «почему у половины класса нет вывода» задают именно здесь, глядя
-      на очередь. Слева — предел, который сработал: он мог с тех пор
-      поменяться, и число говорит про СВОЙ запуск, а не про сегодняшнее
-      правило.
+      The last section — those the queue left behind.
+      They are no longer in the queue, and in the work feed they stand as
+      ordinary rows, but the question "why does half the class have no output"
+      is asked exactly here, looking at the queue. On the left is the limit
+      that fired: it may have changed since, and the number is about THAT
+      run, not about today's rule.
     -->
     {#if stopped.length > 0}
       <section class="stopped-section" aria-label={tr('room.pult.v2.queue.stoppedTitle', { count: stopped.length })}>
@@ -358,8 +369,9 @@
   </div>
 </div>
 
-<!-- Меню строки: общее на всю комнату, чтобы клавиатура, кромки окна и нижний
-     лист на пальце были здесь те же, что в дереве файлов. -->
+<!-- The row menu: shared by the whole room, so that the keyboard, the window
+     edges and the bottom sheet under a finger are the same here as in the
+     file tree. -->
 <ContextMenu
   at={menuAt}
   label={tr('room.pult.v3.queue.rowMenu')}
@@ -378,9 +390,10 @@
   .queue-counts { flex-shrink: 0; }
   .running-card { display: flex; align-items: center; gap: 16px; margin: 20px 0 24px; padding: 18px 20px; border-left: 4px solid rgb(var(--line)); background: rgb(var(--raised)); }
   .running-card.is-running { border-left-color: rgb(var(--accent)); }
-  /* Значок у ВЕРХНЕЙ строки карточки, а не по её середине: карточка растёт
-     полосой предела и панелью «ядро не отвечает», и центрированный треугольник
-     уезжал к ним, будто относится к ним, а не к имени. */
+  /* The icon sits at the card's TOP line, not its middle: the card grows with
+     the limit bar and the "kernel is not answering" panel, and a centred
+     triangle drifted towards them, as if it belonged to them and not to the
+     name. */
   .running-icon { flex-shrink: 0; align-self: flex-start; width: 32px; color: rgb(var(--accent-text)); font-size: 26px; line-height: 32px; }
   .running-copy { flex: 1; min-width: 0; }
   .running-label { color: rgb(var(--accent-text)); font-size: 14px; line-height: 20px; font-weight: 600; }
@@ -404,8 +417,8 @@
   .empty-copy { color: rgb(var(--muted)); font-size: 14px; line-height: 20px; }
   .queued-section { margin-top: 24px; }
   .queued-row { display: flex; align-items: center; gap: 8px; padding: 0; border-top: 1px solid rgb(var(--line)); }
-  /* Строка-кнопка занимает всю ширину, кроме слота «⋯»: нажатие мимо текста —
-     тоже нажатие по работе, и промахнуться некуда. */
+  /* The row button takes the full width except the "⋯" slot: a press beside
+     the text is a press on the work too, and there is nowhere to miss. */
   .queued-open { display: flex; flex: 1; align-items: center; gap: 16px; min-width: 0; padding: 12px 0; text-align: left; cursor: pointer; }
   .queued-open:hover { background: rgb(var(--surface)); }
   .queued-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; width: 210px; flex-shrink: 0; }
@@ -418,8 +431,8 @@
   .stuck-title { color: rgb(var(--danger)); font-size: 14px; line-height: 20px; font-weight: 700; }
   .stuck-why { margin-top: 2px; color: rgb(var(--muted)); font-size: 13px; line-height: 18px; }
   .queue-position { width: 24px; flex-shrink: 0; color: rgb(var(--muted)); font-size: 15px; font-variant-numeric: tabular-nums; }
-  /* Имя внутри своего столбика: ширину держит `.queued-copy`, где под ним
-     стоит вторая строка со сроком ожидания. */
+  /* The name within its own column: the width is held by `.queued-copy`, with
+     the second line showing the waiting time under it. */
   .queued-author { width: 100%; }
   .queued-since { display: block; }
   code { min-width: 0; color: rgb(var(--muted)); font-family: var(--font-mono); font-size: 14px; line-height: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

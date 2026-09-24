@@ -2,17 +2,18 @@ import { competitionCapabilities } from './competitions/capabilities.js'
 import {tr} from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, loadRuntimeCatalog, runtimeDefaultEnvironment } from './kernel/runtime-client.js'
 /**
- * Приложение целиком: middleware, маршруты, статика — и ничего про процесс.
+ * The whole application: middleware, routes, static files — and nothing about
+ * the process.
  *
- * Жило в index.ts вперемешку с сокетами и сигналами, и это стоило покрытия:
- * импортировать index.ts значит поднять сервер на порту, поэтому тесты
- * собирали свой express и КОПИРОВАЛИ в него порядок middleware — «тот же
- * порядок, что в index.ts», говорил комментарий над копией. Копия порядка не
- * ловит расхождения с оригиналом; она их повторяет. Здесь порядок один, его
- * монтируют и продукт, и тест.
+ * It lived in index.ts mixed with sockets and signals, and that cost coverage:
+ * importing index.ts means starting the server on a port, so the tests built
+ * their own express and COPIED the middleware order into it — "the same order
+ * as in index.ts", said the comment above the copy. A copy of the order does
+ * not catch divergence from the original; it repeats it. Here there is one
+ * order, and both the product and the test mount it.
  *
- * Сокеты, `listen`, сигналы и уборка остаются в index.ts: у процесса своя
- * жизнь, и она не должна начинаться от одного `import`.
+ * Sockets, `listen`, signals and cleanup stay in index.ts: the process has a
+ * life of its own, and it must not start from a single `import`.
  */
 import path from 'node:path'
 import zlib from 'node:zlib'
@@ -246,13 +247,13 @@ function compression(req: Request, res: Response, next: NextFunction): void {
 /* ------------------------------------------------------------------ http */
 
 /*
- * Одно приложение на процесс, собранное при загрузке модуля.
+ * One application per process, assembled when the module loads.
  *
- * Фабрикой оно быть не может по-честному: маршрутизаторы ниже держат состояние
- * инстанса — базу, ядра, окружения, — и второй экземпляр рядом был бы не
- * «ещё одним приложением», а вторым владельцем тех же таблиц. Кому нужен
- * настоящий порядок middleware — тесты, стенд, `http.createServer` — берут
- * этот.
+ * It cannot honestly be a factory: the routers below hold the instance's state
+ * — the database, kernels, environments — and a second instance next to it
+ * would not be "one more application" but a second owner of the same tables.
+ * Whoever needs the real middleware order — tests, the test harness,
+ * `http.createServer` — takes this one.
  */
 export const app = express()
 app.disable('x-powered-by')
@@ -266,24 +267,26 @@ app.use(compression)
 app.use(express.json({ limit: '1mb' }))
 
 /**
- * Готов ли Python, которым будет пользоваться комната, — а не тот, что рядом.
+ * Whether the Python the room will use is ready — not the one next door.
  *
- * При изоляции (KERNEL_ISOLATION=auto и живой docker) у каждой комнаты свой
- * контейнер из образа `colloq-kernel:<окружение>`, и общего ядра compose не
- * трогает никто. Здоровье спрашивало именно его: несобранный образ активного
- * окружения давал зелёный ответ над инстансом, где не поднимется ни одна
- * комната, а упавшее ядро compose — красный над инстансом, где всё работает.
+ * With isolation (KERNEL_ISOLATION=auto and a live docker) every room has its
+ * own container from the `colloq-kernel:<environment>` image, and nobody
+ * touches the shared compose kernel. Health asked exactly about that one: an
+ * unbuilt image of the active environment gave a green answer over an instance
+ * where not a single room would start, and a crashed compose kernel a red one
+ * over an instance where everything works.
  *
- * Ответ кэшируется на те же пять секунд, что и проба Jupyter: `docker image
- * inspect` — это процесс, а зонд ходит сюда раз в секунду.
+ * The answer is cached for the same five seconds as the Jupyter probe: `docker
+ * image inspect` is a process, and the probe comes here once a second.
  *
- * И кэша мало: он пишется, только когда проверка ВЕРНУЛАСЬ. Пока docker жив,
- * это доли секунды; когда демон завис — восемь секунд таймаута на каждое
- * окружение, и всё это время кэш пуст, а зонд стучит раз в секунду. Каждый
- * следующий запрос запускал ту же пачку `docker image inspect` заново, и на
- * машине, где идёт пара, накапливались десятки процессов — ровно тогда, когда
- * ей и без того плохо. Поэтому здесь ещё и проверка в полёте: пришедший вторым
- * ждёт чужой ответ, а не заводит свой.
+ * And a cache is not enough: it is written only when the check has RETURNED.
+ * While docker is alive, that takes fractions of a second; when the daemon
+ * hangs — eight seconds of timeout per environment, and all that time the cache
+ * is empty while the probe knocks once a second. Every next request started
+ * the same batch of `docker image inspect` again, and on the machine where a
+ * class was going on, dozens of processes piled up — exactly when it was
+ * already struggling. So there is also an in-flight check here: whoever comes
+ * second waits for the other's answer instead of starting their own.
  */
 let kernelProbe: { at: number; ok: boolean; reason: string | null } | null = null
 let kernelProbing: Promise<{ ok: boolean; reason: string | null }> | null = null
@@ -292,8 +295,8 @@ async function kernelHealth(): Promise<{ ok: boolean; reason: string | null }> {
   const now = Date.now()
   if (kernelProbe && now - kernelProbe.at < 5000)
     return { ok: kernelProbe.ok, reason: kernelProbe.reason }
-  // Не `await` до этой строки: между стартом проверки и её регистрацией не
-  // должно быть ни одной точки, где второй запрос увидит «никто не проверяет».
+  // No `await` before this line: between starting the check and registering it
+  // there must be no point where a second request sees "nobody is checking".
   if (kernelProbing) return kernelProbing
   const probe = probeKernel().finally(() => {
     kernelProbing = null
@@ -303,14 +306,16 @@ async function kernelHealth(): Promise<{ ok: boolean; reason: string | null }> {
 }
 
 /**
- * Чем отделены друг от друга ядра комнат — для того, кто открывает дверь наружу.
+ * What separates the rooms' kernels from each other — for whoever opens the
+ * door to the outside.
  *
- * Публиковать занятие в интернет можно только тогда, когда у каждой комнаты
- * свой контейнер (решение автора): scripts/host.sh и супервизор colloq
- * (cli/src/launch-share.ts) спрашивают об этом здесь, а не угадывают по .env.
- * Ответ — не настройка, а факт: поле ставится, только когда проверка ядра
- * прошла, то есть requireKernelIsolation не отказал, а демон docker или
- * брокер ответили (probeKernel). Бэкенд test изоляции не даёт вовсе — null.
+ * A class may be published to the internet only when every room has its own
+ * container (the author's decision): scripts/host.sh and the colloq supervisor
+ * (cli/src/launch-share.ts) ask about it here rather than guessing from .env.
+ * The answer is not a setting but a fact: the field is set only when the kernel
+ * check passed, that is, requireKernelIsolation did not refuse and the docker
+ * daemon or the broker answered (probeKernel). The test backend gives no
+ * isolation at all — null.
  */
 function roomIsolation(kernelOk: boolean): 'docker' | 'broker' | null {
   if (!kernelOk) return null
@@ -323,8 +328,9 @@ function roomIsolation(kernelOk: boolean): 'docker' | 'broker' | null {
 }
 
 async function probeKernel(): Promise<{ ok: boolean; reason: string | null }> {
-  // Общее ядро compose кэша не заводит: у `jupyterReachable` он свой, на те же
-  // пять секунд, и второй копии здесь взяться неоткуда.
+  // The shared compose kernel gets no cache here: `jupyterReachable` has its
+  // own, for the same five seconds, and there is nowhere for a second copy to
+  // come from.
   try {
     requireKernelIsolation()
     if (kernelBackend() === 'test') return jupyterReachable()
@@ -346,8 +352,8 @@ async function probeKernel(): Promise<{ ok: boolean; reason: string | null }> {
   let ok = false
   let reason: string | null = null
   try {
-    // builtAt, а не state: «правили список после сборки» — это повод пересобрать,
-    // а не причина отказаться начинать пару на прежнем образе.
+    // builtAt, not state: "the list was edited after the build" is a reason to
+    // rebuild, not a reason to refuse to start a class on the previous image.
     const environment = (await listEnvironments()).find((env) => env.name === active)
     ok = !!environment && environment.builtAt !== null
     if (!environment) reason = `There is no environment called "${active}"`
@@ -362,13 +368,14 @@ async function probeKernel(): Promise<{ ok: boolean; reason: string | null }> {
 }
 
 /*
- * «Здоров» значит «здесь можно вести семинар».
+ * "Healthy" means "a seminar can be run here".
  *
- * Раньше значило «процесс отвечает», и этого хватало, чтобы host.sh и
- * `make status` напечатали «Colloq доступен по ссылке» над инстансом, где
- * Docker выключен со вчера: комната открывается, ссылка работает, а первый Run
- * через семьдесят секунд отвечает KERNEL DEAD. Проверяются база, Python и
- * доступ к файлам: без него нельзя ни открыть тетрадь, ни запустить ядро.
+ * It used to mean "the process answers", and that was enough for host.sh and
+ * `make status` to print "Colloq is available at the link" over an instance
+ * where Docker had been off since yesterday: the room opens, the link works,
+ * and the first Run answers KERNEL DEAD seventy seconds later. The database,
+ * Python and file access are checked: without the last, neither a notebook can
+ * be opened nor a kernel started.
  */
 app.get('/api/livez', (_req,res)=>{res.setHeader('Cache-Control','no-store');res.json({ok:true})})
 
@@ -405,35 +412,37 @@ app.get('/api/health', (_req, res) => {
       const ok = dbOk && kernel.ok && workspaceOk
       res.setHeader('Cache-Control', 'no-store')
       res.setHeader('Server-Timing', `loop;dur=${loopLagMs.toFixed(3)}`)
-      // 503, а не 200 с полем: зонды смотрят на код, и только код заставляет
-      // скрипт остановиться вместо того, чтобы напечатать ссылку.
+      // 503, not 200 with a field: probes look at the code, and only the code
+      // makes a script stop instead of printing the link.
       res.status(ok ? 200 : 503).json({
         ok,
         reason,
         kernel: kernel.ok,
         capabilities,
-        // docker | broker | null — у каждой ли комнаты свой контейнер (roomIsolation).
+        // docker | broker | null — whether every room has its own container (roomIsolation).
         isolation: roomIsolation(kernel.ok),
         database: dbOk,
         workspace: workspaceOk,
         uptimeMs: Date.now() - STARTED_AT,
         loopLagMs: Number(loopLagMs.toFixed(3)),
         /*
-         * Адрес, который сервер сейчас пишет в ссылки, — вслух.
+         * The address the server is currently writing into links — out loud.
          *
-         * `config.publicUrl` — геттер: он перечитывает .env не чаще раза в две
-         * секунды, и до этой строки узнать, доехал ли новый адрес, было нечем.
-         * `scripts/host.sh` под WHO=service ставил на это место `sleep 3` —
-         * единственный сон в скрипте, поставленный не потому, что чего-то
-         * ждут, а потому, что спросить было некого.
+         * `config.publicUrl` is a getter: it re-reads .env at most once every
+         * two seconds, and before this line there was no way to learn whether
+         * the new address had arrived. `scripts/host.sh` under WHO=service put
+         * a `sleep 3` in this place — the only sleep in the script put there
+         * not because something was being waited for, but because there was
+         * nobody to ask.
          */
         publicUrl: config.publicUrl,
         localRunId: process.env.COLLOQ_LOCAL_SESSION === '1' ? process.env.COLLOQ_LOCAL_RUN_ID ?? null : null,
         /*
-         * Какая версия отвечает. Разбор неполадок начинается с вопроса «какой
-         * у вас выпуск», и до этого поля ответить было нечем: ни сервер, ни
-         * образ числа не знали. Здесь, а не в /api/livez: livez — пульс для
-         * зонда k3s, его тело никто не читает.
+         * Which version is answering. Troubleshooting starts with the question
+         * "which release do you have", and before this field there was nothing
+         * to answer it with: neither the server nor the image knew the number.
+         * Here, not in /api/livez: livez is a pulse for the k3s probe, and
+         * nobody reads its body.
          */
         version: COLLOQ_VERSION,
       })
@@ -441,38 +450,40 @@ app.get('/api/health', (_req, res) => {
   })
 })
 /*
- * Ничего с чужой страницы не пишет — нигде, а не только в панель.
+ * Nothing from a foreign page writes — anywhere, not only to the panel.
  *
- * Печенье выдаётся с sameSite: 'lax', и браузер не приложит его к межсайтовому
- * POST — но это правило браузера, а не сервера, и держится оно до первой машины
- * со старым браузером или расширением, которое решает за него.
+ * The cookie is issued with sameSite: 'lax', and the browser will not attach it
+ * to a cross-site POST — but that is the browser's rule, not the server's, and
+ * it holds until the first machine with an old browser or an extension that
+ * decides for it.
  *
- * Проверка стояла под `/api/admin`, хотя тем же `colloq_staff` авторизуются
- * записи и вокруг: создание семинара, загрузка и удаление файлов комнаты,
- * прерывание и перезапуск ядра, выдача пульта. Там держал один SameSite —
- * ровно то правило браузера, ради недоверия к которому проверка и заведена.
- * Поэтому она на всём `/api`: помнить о ней на каждом новом маршруте дороже,
- * чем поставить один раз на входе.
+ * The check sat under `/api/admin`, although the same `colloq_staff` also
+ * authorizes the writes around it: creating a seminar, uploading and deleting
+ * room files, interrupting and restarting the kernel, handing out the console.
+ * There only SameSite held — exactly the browser rule this check was introduced
+ * to not rely on. So it is on all of `/api`: remembering it on every new route
+ * costs more than putting it once at the entrance.
  *
- * GET/HEAD/OPTIONS не трогаем: читать с чужой страницы всё равно нечего —
- * CORS-заголовков сервер не ставит, и ответ туда не попадёт. Запрос без Origin
- * — это curl или сам сервер (`make host` ходит в собственный API), и им
- * отказывать нельзя; проверяется только присланный.
+ * GET/HEAD/OPTIONS are left alone: there is nothing to read from a foreign
+ * page anyway — the server sets no CORS headers, and the response will not get
+ * there. A request without Origin is curl or the server itself (`make host`
+ * calls its own API), and those must not be refused; only an Origin that was
+ * sent is checked.
  */
 app.use('/api', (req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next()
   sameOrigin(req, res, next)
 })
 /*
- * Печенье штата продлевается работой — здесь, а не в `requireStaff`.
+ * The staff cookie is extended by activity — here, not in `requireStaff`.
  *
- * Месяц отсчитывался от входа и не двигался ни одним маршрутом, так что на
- * тридцать первый день преподаватель посреди пары становился участником своей
- * комнаты (см. `slideStaffCookie`). Продлевает ЛЮБОЙ запрос к API, а не только
- * панельный: половина работы идёт мимо панели — комната, файлы, ядро.
+ * The month counted from sign-in and no route moved it, so on the thirty-first
+ * day a teacher in the middle of a class became a participant in their own
+ * room (see `slideStaffCookie`). ANY request to the API extends it, not only a
+ * panel one: half of the work bypasses the panel — the room, files, the kernel.
  *
- * После проверки происхождения: продлевать по запросу, который мы только что
- * решили не выполнять, — значит держать подпись живой чужой страницей.
+ * After the origin check: extending on a request we have just decided not to
+ * serve would mean keeping the signature alive through a foreign page.
  */
 app.use('/api', (req, res, next) => {
   slideStaffCookie(req, res)
@@ -487,55 +498,60 @@ app.use(instanceResourcesRoutes())
 app.use(adminInstanceRoutes())
 app.use(courseRoutes())
 app.use(adminEnvironmentRoutes())
-// Панель соревнований — рядом с остальными админскими дверями и по тому же
-// праву; участникам отвечает своя половина ниже (routes/competitions.ts).
+// The competitions panel — next to the other admin doors and under the same
+// right; participants are answered by their own half below
+// (routes/competitions.ts).
 app.use(adminCompetitionRoutes())
 app.use(adminImportRoutes())
 app.use(sessionRoutes())
-// Двери бана — сразу за входом: они про тех же людей и живут по тому же праву
-// (routes/bans.ts), а проверку, которую они заводят, делает bans.ts на входе.
+// The ban doors — right behind sign-in: they are about the same people and live
+// under the same right (routes/bans.ts), and the check they set up is done by
+// bans.ts at the entrance.
 app.use(banRoutes())
 app.use(historyRoutes())
 app.use(activityRoutes())
 app.use(fileRoutes())
-// Картинки вывода лежат рядом с комнатой, а не в её документе (server/blobs.ts).
+// Output images live next to the room, not in its document (server/blobs.ts).
 app.use(blobRoutes())
-// Рамка графика plotly: единственный ответ со своей политикой — и без
-// удостоверения, потому что охранять в ней нечего (routes/plotly.ts).
+// The plotly chart frame: the only response with its own policy — and without
+// credentials, because there is nothing in it to guard (routes/plotly.ts).
 app.use(plotlyRoutes())
 app.use(aiRoutes())
-// Консилиум — за оракулом: его единственная REST-дверь спрашивает ту же модель
-// и тратит тот же лимит вопросов комнаты (routes/council.ts).
+// The council goes after the oracle: its only REST door asks the same model and
+// spends the same room question limit (routes/council.ts).
 app.use(councilRoutes())
-// Соревнования — своя половина продукта и своё удостоверение: `/api/k`
-// спрашивает печенье участника, а не преподавателя (routes/competitions.ts).
+// Competitions are their own half of the product with their own credentials:
+// `/api/k` asks for the participant cookie, not the teacher's
+// (routes/competitions.ts).
 app.use(competitionRoutes())
 app.use(dependencyRoutes())
 
 app.use('/api', (_req, res) => res.status(404).json({ error: tr('common.notFound') }))
 
-/* ------------------------------------------------------------- индексация */
+/* ------------------------------------------------------------- indexing */
 
 /*
- * Что закрыто от поисковика — одним решением на все носители.
+ * What is closed to search engines — one decision for every channel.
  *
- * Комната открывается по персональной ссылке и живёт часы, а страница входа в
- * панель — это форма с почтой на молодом домене: для робота поисковика ровно
- * то, чем торгуют фишеры. Google однажды пометил colloq.ru целиком как
- * опасный, и красный экран увидели бы студенты на каждом семинарском адресе.
+ * A room opens by a personal link and lives for hours, and the panel sign-in
+ * page is a form with an email field on a young domain: to a search robot,
+ * exactly what phishers trade in. Google once flagged all of colloq.ru as
+ * dangerous, and students would have seen the red screen on every seminar
+ * address.
  *
- * Про опубликованные страницы решает не этот файл: решение записано одной
- * копией в `shared/publish.ts` (`PUBLIC_PAGES_INDEXED`), и тем же оно правит
- * `<meta name="robots">` у выгрузки на Pages (publish/render.ts). Пока правило
- * жило в комментариях по обе стороны, они успели разойтись: статика ставила
- * `noindex`, а здесь было написано, что публикации «индексируются как раньше:
- * их для того и публикуют», — одна и та же страница вела себя по-разному в
- * зависимости от того, каким адресом её открыли. Лендинг открыт и остаётся
- * открыт.
+ * Published pages are not decided by this file: the decision is written down in
+ * one copy in `shared/publish.ts` (`PUBLIC_PAGES_INDEXED`), and the same one
+ * governs `<meta name="robots">` in the Pages export (publish/render.ts). While
+ * the rule lived in comments on both sides, they managed to drift apart: the
+ * static side set `noindex`, while here it was written that publications "are
+ * indexed as before: that is what they are published for" — one and the same
+ * page behaved differently depending on the address it was opened by. The
+ * landing page is open and stays open.
  *
- * Снаружи блока статики, хотя раньше жило внутри: индексация — это политика
- * инстанса, а не свойство собранного фронтенда. В прямом режиме и в разработке
- * STATIC_DIR пуст, и вместе со статикой пропадали и robots.txt, и заголовок.
+ * Outside the static block, although it used to live inside: indexing is an
+ * instance policy, not a property of the built frontend. In direct mode and in
+ * development STATIC_DIR is empty, and together with the static files both
+ * robots.txt and the header disappeared.
  */
 const NOINDEX_PATHS = PUBLIC_PAGES_INDEXED
   ? ['/s/', '/admin']
@@ -545,21 +561,20 @@ const NOINDEX = new RegExp(
 )
 
 /*
- * Свой robots.txt — на случай, когда ретранслятора перед нами нет.
+ * Our own robots.txt — for when there is no relay in front of us.
  *
- * За ретранслятором такой же отдаёт он сам, до туннеля; в прямом режиме
- * (`make host-direct`) его некому отдать, кроме нас.
+ * Behind the relay, the relay serves the same one itself, before the tunnel; in
+ * direct mode (`make host-direct`) there is nobody to serve it but us.
  */
 /*
- * Разворачиватели ссылок — не поисковики, и им можно всё.
+ * Link unfurlers are not search engines, and they are allowed everything.
  *
- * Telegram (представляется ещё и Twitterbot), WhatsApp, iMessage, Slack и
- * Discord перед тем, как собрать карточку, читают robots.txt и смотрят на
- * X-Robots-Tag; закрытый адрес они оставляют голой ссылкой — так и было с
- * комнатами до 12.09.2026. Индексировать они ничего не индексируют: берут из
- * `<head>` имя занятия и картинку (link-preview.ts) и уходят. Тот же список
- * стоит в robots.txt ретранслятора (scripts/relay-setup.sh) — он отвечает до
- * туннеля.
+ * Telegram (which also introduces itself as Twitterbot), WhatsApp, iMessage,
+ * Slack and Discord read robots.txt and look at X-Robots-Tag before building a
+ * card; a closed address they leave as a bare link — that is how it was with
+ * rooms until 12 Sep 2026. They index nothing: they take the class name and the
+ * picture from `<head>` (link-preview.ts) and leave. The same list is in the
+ * relay's robots.txt (scripts/relay-setup.sh) — it answers before the tunnel.
  */
 export const LINK_PREVIEW_AGENTS = [
   'TelegramBot',
@@ -578,9 +593,9 @@ export function isLinkPreviewAgent(userAgent: string | undefined): boolean {
 }
 
 /*
- * Картинка карточки комнаты — см. og-card.ts. Час в кэше: за ней приходят
- * мессенджеры, и приходят они по адресу с версией (link-preview.ts), так что
- * переименование комнаты меняет адрес, а не ждёт истечения.
+ * The room card picture — see og-card.ts. An hour in cache: messengers come for
+ * it, and they come by an address with a version (link-preview.ts), so renaming
+ * the room changes the address rather than waiting for expiry.
  */
 app.get('/og/rooms/:id.png', (req, res, next) => {
   const session = getSession(req.params.id)
@@ -607,10 +622,10 @@ app.get('/robots.txt', (_req, res) => {
 })
 
 /*
- * Заголовок, а не только `Disallow`: закрытый в robots.txt адрес поисковик всё
- * равно вправе показать в выдаче по чужой ссылке — `noindex` это уже ответ, а
- * не просьба не заходить. Разворачивателю ссылок заголовок не ставится — см.
- * LINK_PREVIEW_AGENTS.
+ * A header, not only `Disallow`: a search engine is still entitled to show an
+ * address closed in robots.txt in its results via someone else's link —
+ * `noindex` is already an answer, not a request not to visit. Link unfurlers do
+ * not get the header — see LINK_PREVIEW_AGENTS.
  */
 app.use((req, res, next) => {
   if (NOINDEX.test(req.path) && !isLinkPreviewAgent(req.headers['user-agent'])) {
@@ -624,21 +639,22 @@ if (config.staticDir) {
   app.use(precompressedStatic(staticDir))
   const indexFile = path.join(staticDir, 'index.html')
   /*
-   * Одна и та же страница на всю аудиторию, собранная один раз.
+   * One and the same page for the whole audience, built once.
    *
-   * Байты, ETag и обе кодировки держит frontend-html.ts — там же написано,
-   * почему. Здесь остаётся то, что зависит от запроса: метка устройства,
-   * выбор кодировки и ответ «у вас уже есть».
+   * The bytes, the ETag and both encodings are held by frontend-html.ts — the
+   * reasons are written there too. What stays here is what depends on the
+   * request: the device mark, the choice of encoding and the "you already have
+   * it" answer.
    *
-   * Content-Encoding ставится своей рукой, и это не мелочь: сжимающий
-   * middleware выше (worthCompressing) видит заголовок и не трогает ответ —
-   * иначе готовые байты уехали бы в brotli второй раз.
+   * Content-Encoding is set by hand, and that is not a trifle: the compressing
+   * middleware above (worthCompressing) sees the header and leaves the response
+   * alone — otherwise the ready bytes would go into brotli a second time.
    */
   const sendFrontend = (req: Request, res: Response, next: NextFunction): void => {
     markDevice(req, res)
     const language = getInstanceLanguage()
-    // Заголовок вкладки и карточка ссылки — по адресу: у комнаты своё имя
-    // (link-preview.ts), у всего остального — общая карточка Colloq.
+    // The tab title and the link card go by address: a room has its own name
+    // (link-preview.ts), everything else gets the general Colloq card.
     void linkPreview(req.path, language, staticDir)
       .then((extras) => frontendPage(indexFile, language, extras))
       .then((page) => {
@@ -646,9 +662,10 @@ if (config.staticDir) {
       res.setHeader('Content-Language', language)
       res.setHeader('ETag', page.etag)
       res.vary('Accept-Encoding')
-      // Вернувшийся студент открывает комнату второй раз за пару: тело не
-      // нужно ни ему, ни сокету. Язык инстанса входит в ETag, поэтому смена
-      // языка в панели сама отменяет все выданные.
+      // A returning student opens the room a second time during a class: the
+      // body is needed neither by them nor by the socket. The instance language
+      // is part of the ETag, so changing the language in the panel invalidates
+      // every one handed out.
       if (etagMatches(req.headers['if-none-match'], page.etag)) {
         res.status(304).end()
         return
@@ -664,16 +681,17 @@ if (config.staticDir) {
   }
   app.get('/index.html', sendFrontend)
   /*
-   * Версионное — это `assets/`, и только оно.
+   * Versioned is `assets/`, and only that.
    *
-   * Vite штампует хэш в имя всего, что собирает, и складывает это в assets/;
-   * всё остальное в dist приезжает из web/public как есть, под именем, которое
-   * выбрал человек. Рядом с проверкой каталога стоял регэксп «дефис и восемь
-   * знаков» — и `hse-sans-400.woff2` попадал под него («-sans-400»), хотя
-   * никакого хэша в имени нет. Шрифт института уходил с `immutable` на год:
-   * заменить начертание или сам шрифт под тем же именем и дождаться этого у
-   * вернувшихся браузеров было нельзя — до очистки кэша руками. Каталог
-   * отвечает на тот же вопрос и не ошибается.
+   * Vite stamps a hash into the name of everything it builds and puts it into
+   * assets/; everything else in dist comes from web/public as is, under the
+   * name a person chose. Next to the directory check there was a regexp "a
+   * hyphen and eight characters" — and `hse-sans-400.woff2` matched it
+   * ("-sans-400"), although there is no hash in the name. The institute's font
+   * went out with `immutable` for a year: replacing a face or the font itself
+   * under the same name and seeing it reach returning browsers was impossible —
+   * until someone cleared the cache by hand. The directory answers the same
+   * question and does not get it wrong.
    */
 
   // index: false so every navigation falls through to the SPA handler below and
@@ -701,38 +719,42 @@ if (config.staticDir) {
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/')) return next()
     /*
-     * Метка устройства ставится здесь — на отдаче самой страницы.
+     * The device mark is set here — when the page itself is served.
      *
-     * Это единственный ответ, который наверняка едет в браузер, а не в fetch:
-     * ставить куку на API-запрос значило бы не поставить её тем, кому страницу
-     * отдал не этот процесс. Метка переживает чистку хранилища и перезаход, но
-     * не инкогнито — и большего от неё не ждут (server/src/bans.ts).
+     * This is the only response that is sure to go to the browser rather than
+     * to fetch: setting the cookie on an API request would mean not setting it
+     * for those whose page was served by a different process. The mark
+     * survives clearing storage and rejoining, but not incognito — and nothing
+     * more is expected of it (server/src/bans.ts).
      */
     sendFrontend(req, res, next)
   })
 }
 
 /**
- * Клиент ушёл, не дослушав.
+ * The client left without listening to the end.
  *
- * `res.sendFile` на оборванном запросе отдаёт Error('Request aborted') с
- * `code: 'ECONNABORTED'` и без статуса (express, response.js: sendfile), а
- * body-parser на оборванном теле — ошибку с `type: 'request.aborted'`. Обе
- * доезжали до ветки «internal error» ниже и печатали стек на четыре строки.
- * Это студент, закрывший вкладку до конца загрузки: на потоке в пятьсот
- * человек таких строк сотни, и настоящая поломка тонет между ними.
+ * `res.sendFile` on an aborted request gives Error('Request aborted') with
+ * `code: 'ECONNABORTED'` and no status (express, response.js: sendfile), and
+ * body-parser on an aborted body gives an error with `type: 'request.aborted'`.
+ * Both reached the "internal error" branch below and printed a four-line stack.
+ * This is a student who closed the tab before the load finished: on a cohort
+ * of five hundred there are hundreds of such lines, and a real breakage drowns
+ * among them.
  */
 function clientLeft(err: unknown, res: Response): boolean {
   const failed = err as { code?: unknown; type?: unknown } | null
-  // Эти два кода рождаются ровно там и только там: `ECONNABORTED` — в sendfile
-  // самого express, `request.aborted` — в body-parser. Спутать их не с чем.
+  // These two codes are born exactly there and only there: `ECONNABORTED` in
+  // express's own sendfile, `request.aborted` in body-parser. They cannot be
+  // mistaken for anything.
   if (failed?.code === 'ECONNABORTED' || failed?.type === 'request.aborted') return true
   /*
-   * А вот ECONNRESET и EPIPE сами по себе ничего не значат: тем же кодом
-   * отвечает оборвавшееся ИСХОДЯЩЕЕ соединение — к ядру, к оракулу, — и
-   * молчаливо проглотить такую значило бы спрятать настоящую поломку сервера
-   * за словами про ушедшего студента. Поэтому у них спрашивают ещё и сокет:
-   * если писать уже некуда, ушёл действительно клиент.
+   * ECONNRESET and EPIPE, on the other hand, mean nothing by themselves: an
+   * OUTGOING connection that broke off — to the kernel, to the oracle — answers
+   * with the same code, and silently swallowing one would hide a real server
+   * breakage behind words about a student who left. So they also ask the
+   * socket: if there is nowhere left to write, it really was the client who
+   * left.
    */
   if (failed?.code === 'ECONNRESET' || failed?.code === 'EPIPE') return !res.writable
   return false
@@ -741,18 +763,21 @@ function clientLeft(err: unknown, res: Response): boolean {
 app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
   if (res.headersSent) return next(err)
   /*
-   * Оборванный запрос не пишется в журнал вовсе — только в счётчик минуты.
+   * An aborted request is not written to the log at all — only to the
+   * per-minute counter.
    *
-   * Из двух разрешённых вариантов («одна спокойная строка» или «молча») выбран
-   * второй: сервер тут ничего не делал и делать не может, а число ушедших
-   * посреди загрузки всё равно видно в сводке строкой `aborted N` — там оно
-   * даже полезнее, потому что рядом стоит, сколько в эту минуту было людей.
-   * Отвечать тоже некому: сокета уже нет, и `res.status(500)` уходил в пустоту.
+   * Of the two allowed options ("one calm line" or "silently") the second was
+   * chosen: the server did nothing here and can do nothing, and the number of
+   * people who left mid-load is visible in the summary anyway as an `aborted N`
+   * line — it is even more useful there, because next to it stands how many
+   * people there were in that minute. There is nobody to answer either: the
+   * socket is already gone, and `res.status(500)` went into the void.
    */
   if (clientLeft(err, res)) {
     tally('aborted')
-    // Своя сторона всё равно закрывается: на живом сокете это пустой ответ, на
-    // мёртвом — ничего, а висящий без ответа запрос express не разбирает сам.
+    // Our side is closed anyway: on a live socket this is an empty response, on
+    // a dead one nothing, and express does not clean up a request left hanging
+    // without an answer by itself.
     res.end()
     return
   }
@@ -762,14 +787,15 @@ app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
     return res.status(400).json({ error: tr('common.badJson') })
   }
   /*
-   * Отказ клиенту — это отказ клиенту, а не поломка сервера.
+   * A refusal to the client is a refusal to the client, not a server breakage.
    *
-   * body-parser отвергает слишком большое тело ошибкой с `status: 413`
-   * (`entity.too.large`), а неизвестную кодировку — с 415, и ни та ни другая не
-   * SyntaxError: обе доезжали до ветки ниже, то есть до 500 «internal error» и
-   * стека в журнале. Преподаватель, импортирующий тетрадь с картинками, видел
-   * «The server failed» вместо «слишком большой файл», а журнал — испуг на
-   * ровном месте. 4xx с внятной строкой отдаём как есть; 5xx оставляем ниже.
+   * body-parser rejects a body that is too large with an error with
+   * `status: 413` (`entity.too.large`), and an unknown encoding with 415, and
+   * neither of them is a SyntaxError: both reached the branch below, that is, a
+   * 500 "internal error" and a stack in the log. A teacher importing a notebook
+   * with pictures saw "The server failed" instead of "the file is too large",
+   * and the log a scare out of nothing. 4xx with a clear line is given back as
+   * is; 5xx is left to the branch below.
    */
   const failed = err as { status?: unknown; statusCode?: unknown; type?: unknown } | null
   const status = failed?.status ?? failed?.statusCode
@@ -779,8 +805,9 @@ app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
       .status(status)
       .json({ error: status === 413 ? tr('common.bodyTooLarge') : tr('common.badRequest') })
   }
-  // Со стеком и с путём: без них строка в журнале говорит «что-то сломалось»
-  // и не говорит где — а именно за этим в журнал и лезут.
+  // With the stack and the path: without them a log line says "something broke"
+  // and does not say where — and that is exactly what people go into the log
+  // for.
   console.error(
     `[http] unhandled error on ${req.method} ${req.originalUrl}:`,
     err instanceof Error ? (err.stack ?? err.message) : err,

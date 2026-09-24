@@ -1,14 +1,15 @@
 /**
- * Оболочка: адреса, по которым сюда попадают, и то, что браузер помнит между
- * заходами.
+ * The shell: the addresses by which people get here, and what the browser
+ * remembers between visits.
  *
- * Здесь нет ни экранов, ни сокетов — только три функции, у которых общая
- * особенность: сломавшись, они не роняют сборку, а тихо меняют то, куда
- * человек попал. Регулярка, переставшая узнавать ключ пульта, высаживает
- * планшет на экран входа с живым ключом в адресной строке — на проекторе;
- * карта личностей, потерявшая запись, отправляет студента называться заново
- * посреди пары. Ни то, ни другое ни один тест до сих пор не ловил: tests/
- * identity и tests/persistence, вопреки именам, проверяют сервер.
+ * There are no screens or sockets here — only three functions that have one
+ * thing in common: when they break, they do not fail the build but quietly
+ * change where a person ends up. A regex that stopped recognizing the console
+ * key drops the tablet onto the entry screen with a live key in the address
+ * bar — on the projector; an identity map that lost an entry sends a student
+ * to introduce themselves again in the middle of class. Until now no test
+ * caught either: tests/identity and tests/persistence, despite their names,
+ * test the server.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -24,8 +25,8 @@ import {
 } from '../web/src/lib/persistence.svelte.js'
 
 /*
- * Хранилище браузера, которого в Node нет. Модули читают его только внутри
- * функций, поэтому подделки, поставленной до первого теста, достаточно.
+ * Browser storage, which Node does not have. The modules read it only inside
+ * functions, so a fake installed before the first test is enough.
  */
 class MemoryStorage {
   #map = new Map<string, string>()
@@ -46,16 +47,16 @@ class MemoryStorage {
 const storage = new MemoryStorage()
 Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true })
 
-/* --------------------------------------------------------------- адреса */
+/* ------------------------------------------------------------ addresses */
 
-test('ссылка на семинар — это комната и ничего больше', () => {
+test('a seminar link is the room and nothing more', () => {
   assert.deepEqual(readRoomRoute('/s/kf3n8q2p'), {
     id: 'kf3n8q2p',
     mode: 'room',
     handoffKey: null,
     cellId: null,
   })
-  // Косая черта на конце — та же ссылка: её дописывают почтовые клиенты.
+  // A trailing slash is the same link: mail clients append it.
   assert.deepEqual(readRoomRoute('/s/kf3n8q2p/'), {
     id: 'kf3n8q2p',
     mode: 'room',
@@ -64,11 +65,12 @@ test('ссылка на семинар — это комната и ничего
   })
 })
 
-test('пульт консилиума — та же комната и одна её ячейка', () => {
+test('the council console is the same room and one of its cells', () => {
   /*
-   * Ячейка стоит В АДРЕСЕ, а не в состоянии окна: пульт открывают отдельным
-   * окном, окно переживает перезагрузку, и после неё оно обязано вернуться к
-   * той же стопке. Консилиумных ячеек в тетради бывает несколько.
+   * The cell is IN THE ADDRESS, not in the window state: the console is
+   * opened as a separate window, the window survives a reload, and after it
+   * the window must return to the same stack. A notebook can have several
+   * council cells.
    */
   assert.deepEqual(readRoomRoute('/s/kf3n8q2p/council/cell-04'), {
     id: 'kf3n8q2p',
@@ -77,48 +79,50 @@ test('пульт консилиума — та же комната и одна �
     cellId: 'cell-04',
   })
   assert.equal(readRoomRoute('/s/kf3n8q2p/council/cell-04/')?.cellId, 'cell-04')
-  // Без ячейки это не пульт консилиума, а несуществующий адрес: показывать
-  // стопку наугад — значит однажды показать не ту.
+  // Without a cell this is not the council console but a nonexistent
+  // address: showing a stack at random means one day showing the wrong one.
   assert.equal(readRoomRoute('/s/kf3n8q2p/council'), null)
   assert.equal(readRoomRoute('/s/kf3n8q2p/council/'), null)
-  // Ячейка чужого алфавита адресом не притворяется.
+  // A cell in a foreign alphabet does not pass for an address.
   assert.equal(readRoomRoute('/s/kf3n8q2p/council/../secret'), null)
-  // У остальных экранов ячейки нет вовсе.
+  // The other screens have no cell at all.
   assert.equal(readRoomRoute('/s/kf3n8q2p/pult')?.cellId, null)
   assert.equal(readRoomRoute('/s/kf3n8q2p')?.cellId, null)
 })
 
-test('проекция и пульт — та же комната, другой экран', () => {
+test('the projection and the console are the same room, a different screen', () => {
   assert.equal(readRoomRoute('/s/kf3n8q2p/screen')?.mode, 'screen')
   assert.equal(readRoomRoute('/s/kf3n8q2p/pult')?.mode, 'pult')
   assert.equal(readRoomRoute('/s/kf3n8q2p/screen')?.id, 'kf3n8q2p')
 })
 
-test('ключ пульта, подписанный сервером, узнаётся целиком', () => {
+test('a console key signed by the server is recognized in full', () => {
   /*
-   * Тот самый случай, ради которого этот файл и заведён: алфавит ключа задаёт
-   * `signHandoffToken` (base64url через точки), а узнаёт его регулярка здесь.
-   * Разойтись они умеют молча — планшет тогда попадает на экран входа, а ключ
-   * остаётся в адресной строке.
+   * The very case this file was set up for: the key's alphabet is defined by
+   * `signHandoffToken` (base64url joined by dots), and the regex here
+   * recognizes it. They can drift apart silently — the tablet then lands on
+   * the entry screen, and the key stays in the address bar.
    */
   const key = signHandoffToken('kf3n8q2p', 'p-123', 'teacher@example.edu')
   const route = readRoomRoute(`/s/kf3n8q2p/t/${key}`)
   assert.equal(route?.handoffKey, key, key)
   assert.equal(route?.mode, 'room')
-  // И без штатной куки — ключ тогда короче, но того же алфавита.
+  // And without the staff cookie — the key is shorter then, but of the same
+  // alphabet.
   const plain = signHandoffToken('kf3n8q2p', 'p-123')
   assert.equal(readRoomRoute(`/s/kf3n8q2p/t/${plain}`)?.handoffKey, plain, plain)
 })
 
-test('ключ — хвост к ЛЮБОМУ экрану, а не пятый экран', () => {
+test('the key is a suffix to ANY screen, not a fifth screen', () => {
   /*
-   * «Хочется, чтобы пульт консилиума работал по типу пульта лекции: легко
-   * скопировать ссылку, чтобы она содержала преподавательский токен, открыть её
-   * на телефоне и смотреть всё там» — 20.09.
+   * "I'd like the council console to work like the lecture console: easy to
+   * copy a link that contains the teacher token, open it on the phone and
+   * watch everything there" — 20 Sep 2026.
    *
-   * Пока `/t/<ключ>` стоял в одной альтернации с `pult` и `council/:cell`,
-   * ссылки `/s/:id/council/:cell/t/<ключ>` не существовало вовсе, и куда вести
-   * после обмена, решал не адрес, а захардкоженная строка в App.
+   * While `/t/<key>` sat in one alternation with `pult` and `council/:cell`,
+   * the link `/s/:id/council/:cell/t/<key>` did not exist at all, and where to
+   * go after the exchange was decided not by the address but by a hard-coded
+   * string in App.
    */
   const key = signHandoffToken('kf3n8q2p', 'p-123')
   const council = readRoomRoute(`/s/kf3n8q2p/council/cell-04/t/${key}`)
@@ -131,18 +135,19 @@ test('ключ — хвост к ЛЮБОМУ экрану, а не пятый �
   const screen = readRoomRoute(`/s/kf3n8q2p/screen/t/${key}`)
   assert.equal(screen?.mode, 'screen')
   assert.equal(screen?.handoffKey, key)
-  // Косая черта на конце — тот же адрес.
+  // A trailing slash is the same address.
   assert.equal(readRoomRoute(`/s/kf3n8q2p/council/cell-04/t/${key}/`)?.cellId, 'cell-04')
-  // «council/t/<ключ>» ячейкой не притворяется: ячейки там нет.
+  // "council/t/<key>" does not pass for a cell: there is no cell there.
   assert.equal(readRoomRoute(`/s/kf3n8q2p/council/t/${key}`), null)
 })
 
-test('после обмена высаживает туда, куда вела ссылка', () => {
+test('after the exchange it lands where the link pointed', () => {
   /*
-   * Адрес заменяется сразу после обмена (ключ одноразовый, а строка переживает
-   * и вкладку, и снимок экрана), и замена обязана назвать ТОТ ЖЕ экран. Иначе
-   * ссылка на пульт консилиума высаживала бы на пульт лекции, как было до
-   * 20.09, — то есть открывала бы не то, на что её давали.
+   * The address is replaced right after the exchange (the key is single-use,
+   * and the string survives both the tab and a screenshot), and the
+   * replacement must name THE SAME screen. Otherwise a link to the council
+   * console would land on the lecture console, as it did before 20 Sep 2026 —
+   * that is, it would open something other than what it was given for.
    */
   assert.equal(
     handoffLanding({ id: 'kf3n8q2p', mode: 'council', cellId: 'cell-04' }),
@@ -150,40 +155,41 @@ test('после обмена высаживает туда, куда вела �
   )
   assert.equal(handoffLanding({ id: 'kf3n8q2p', mode: 'screen', cellId: null }), '/s/kf3n8q2p/screen')
   assert.equal(handoffLanding({ id: 'kf3n8q2p', mode: 'pult', cellId: null }), '/s/kf3n8q2p/pult')
-  // Голый `/s/:id/t/<ключ>` — ссылка пульта лекции, выданная до того, как ключ
-  // стал хвостом к экрану: она ведёт на пульт, а не в комнату.
+  // A bare `/s/:id/t/<key>` is a lecture console link issued before the key
+  // became a suffix to a screen: it leads to the console, not to the room.
   assert.equal(handoffLanding({ id: 'kf3n8q2p', mode: 'room', cellId: null }), '/s/kf3n8q2p/pult')
 })
 
-test('чужие адреса комнатой не притворяются', () => {
+test('other addresses do not pass for a room', () => {
   for (const path of ['/', '/admin', '/admin/seminars', '/c/ml-2026', '/p/x9tb4kwm', '/s/']) {
     assert.equal(readRoomRoute(path), null, path)
   }
-  // Хвост, которого не бывает: четыре экрана — это весь список.
+  // A suffix that does not exist: four screens is the whole list.
   assert.equal(readRoomRoute('/s/kf3n8q2p/notes'), null)
 })
 
-test('курс и публикация — свои адреса, не выводимые из адреса комнаты', () => {
+test('a course and a publication have their own addresses, not derived from the room address', () => {
   assert.equal(readCourseId('/c/ml-2026'), 'ml-2026')
   assert.equal(readCourseId('/c/ml-2026/'), 'ml-2026')
   assert.equal(readCourseId('/s/kf3n8q2p'), null)
   assert.deepEqual(readPublicRoute('/p/x9tb4kwm'), { id: 'x9tb4kwm', step: null })
   assert.deepEqual(readPublicRoute('/p/x9tb4kwm/3'), { id: 'x9tb4kwm', step: 3 })
-  // «Шаг с конца» не умеет ни `readStep`, ни рельса, ни выгрузка, и ссылок с
-  // минусом никто не порождает: такой адрес — не шаг, а мусор, и маршрутизатор
-  // больше не выдаёт его за шаг.
+  // A "step from the end" is supported by neither `readStep`, nor the rail,
+  // nor the export, and nothing produces links with a minus: such an address
+  // is not a step but garbage, and the router no longer passes it off as a
+  // step.
   assert.equal(readPublicRoute('/p/x9tb4kwm/-1'), null)
   assert.equal(readPublicRoute('/c/ml-2026'), null)
 })
 
-test('панель узнаётся по своему префиксу, а не по началу слова', () => {
+test('the panel is recognized by its prefix, not by the start of a word', () => {
   assert.equal(isAdminPath('/admin'), true)
   assert.equal(isAdminPath('/admin/teachers'), true)
   assert.equal(isAdminPath('/administrators'), false)
   assert.equal(isAdminPath('/s/kf3n8q2p'), false)
 })
 
-/* ------------------------------------------------------------- личности */
+/* ----------------------------------------------------------- identities */
 
 const IDENTITY = {
   sessionId: 'kf3n8q2p',
@@ -195,7 +201,7 @@ const IDENTITY = {
   role: 'participant' as const,
 }
 
-test('личность помнится по комнатам и стирается по одной', () => {
+test('an identity is remembered per room and erased one at a time', () => {
   storage.clear()
   saveIdentity(IDENTITY)
   saveIdentity({ ...IDENTITY, sessionId: 'other', participantId: 'p-2' })
@@ -204,29 +210,30 @@ test('личность помнится по комнатам и стирает�
   assert.equal(loadIdentity('other')?.participantId, 'p-2')
 
   forgetIdentity('kf3n8q2p')
-  // Ключ комнаты больше не годится — но соседний семинар тут ни при чём.
+  // The room's key is no longer valid — but the neighbouring seminar has
+  // nothing to do with it.
   assert.equal(loadIdentity('kf3n8q2p'), null)
   assert.equal(loadIdentity('other')?.participantId, 'p-2')
-  // Имя остаётся: назваться придётся заново, набирать — нет.
+  // The name stays: one has to introduce oneself again, but not retype it.
   assert.equal(loadProfile().name, 'Ада')
 })
 
-test('забыть то, чего нет, — не ошибка', () => {
+test('forgetting what is not there is not an error', () => {
   storage.clear()
   forgetIdentity('kf3n8q2p')
   assert.equal(loadIdentity('kf3n8q2p'), null)
 })
 
-test('испорченная запись — это «никого не помним», а не падение на входе', () => {
+test('a corrupted entry means "we remember no one", not a crash at the entrance', () => {
   storage.clear()
   storage.setItem('colloq.identity.v1', '{not json')
   assert.equal(loadIdentity('kf3n8q2p'), null)
-  // И поверх мусора всё ещё можно записаться.
+  // And one can still write over the garbage.
   saveIdentity(IDENTITY)
   assert.equal(loadIdentity('kf3n8q2p')?.token, 'token-1')
 })
 
-/* ---------------------------------------------------------- карточка комнаты */
+/* ----------------------------------------------------------------- room card */
 
 const ROOM = {
   id: 'kf3n8q2p',
@@ -239,7 +246,7 @@ const ROOM = {
   institution: 'HSE University · Faculty of Computer Science',
 }
 
-test('карточка комнаты переживает заход и обновляется с переименованием', () => {
+test('the room card survives a visit and is updated on rename', () => {
   storage.clear()
   assert.equal(recallSessionInfo('kf3n8q2p'), null)
 
@@ -253,11 +260,11 @@ test('карточка комнаты переживает заход и обн�
   assert.equal(recallSessionInfo('kf3n8q2p'), null)
 })
 
-test('правила и публикация обновляются в карточке так же, как имя', () => {
+test('rules and publication are updated in the card the same way as the name', () => {
   /*
-   * Первый кадр комнаты рисуется по этой карточке, и правило, оставшееся в
-   * ней с прошлого семестра, включает кнопки, которых человеку уже нельзя.
-   * Проверка сравнением по имени пропускала ровно это.
+   * The room's first frame is drawn from this card, and a rule left in it
+   * since last semester enables buttons the person is no longer allowed. A
+   * check comparing by name let exactly this slip through.
    */
   storage.clear()
   rememberSessionInfo(ROOM)
@@ -270,12 +277,13 @@ test('правила и публикация обновляются в карт�
   assert.equal(recallSessionInfo('kf3n8q2p')?.published?.id, 'x9tb4kwm')
 })
 
-test('карточка, записанная до строки организации, читается без неё', () => {
+test('a card written before the organization line is read without it', () => {
   /*
-   * Строка появилась позже карточек, уже лежащих в браузерах, и в старой её
-   * просто нет. `undefined` доехал бы до вёрстки, где рядом с логотипом висела
-   * бы разделительная линейка ни с чем, — то же место, где `finishedAt` рядом
-   * гасил живую комнату. Незнание здесь означает «организация не задана».
+   * The line appeared later than the cards already sitting in browsers, and
+   * the old one simply does not have it. `undefined` would make it to the
+   * layout, where a separator would hang next to the logo with nothing beside
+   * it — the same place where a neighbouring `finishedAt` once put out a live
+   * room. Not knowing here means "no organization set".
    */
   storage.clear()
   const old: Record<string, unknown> = { ...ROOM }
@@ -284,7 +292,7 @@ test('карточка, записанная до строки организа�
   assert.equal(recallSessionInfo('kf3n8q2p')?.institution, '')
 })
 
-test('испорченное хранилище — комната просто неизвестна', () => {
+test('corrupted storage — the room is simply unknown', () => {
   storage.clear()
   storage.setItem('colloq.room.v1', 'null}')
   assert.equal(recallSessionInfo('kf3n8q2p'), null)

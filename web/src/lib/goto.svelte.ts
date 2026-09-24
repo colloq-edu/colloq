@@ -1,20 +1,20 @@
 /**
- * Переход к определению: спросить, доехать, а если некуда — сказать.
+ * Go to definition: ask, get there, and if there is nowhere to go — say so.
  *
- * Жест живёт в редакторе (components/notebook/CodeEditor.svelte), поиск — на
- * сервере (server/src/definitions.ts), а между ними стоит это: один модуль,
- * который знает, что делать с ответом. Держать эту работу в редакторе нельзя —
- * он про текст ячейки и ничего не знает ни про вкладки, ни про соседние
- * тетради; держать в экране комнаты — значит связать редактор кода с
- * устройством всей рабочей области.
+ * The gesture lives in the editor (components/notebook/CodeEditor.svelte), the
+ * lookup on the server (server/src/definitions.ts), and between them stands
+ * this: one module that knows what to do with the answer. This work cannot be
+ * kept in the editor — it is about the cell's text and knows nothing about
+ * tabs or neighbouring notebooks; keeping it in the room screen would tie the
+ * code editor to the layout of the whole workspace.
  *
- * ПРИЗЕМЛЕНИЕ — не событие, а состояние, и это несущее решение. Ячейка, к
- * которой ведут, может быть ещё не построена: тетрадь строит `CellView` только
- * рядом с экраном, а вместо далёких ставит заглушку в 240 px
- * (Notebook.svelte · data-cell-deferred). Событие, посланное такой ячейке,
- * слушать некому — оно уходит в никуда, и переход молча не доезжает. Метка
- * лежит здесь и ждёт: ячейка, построенная через кадр после прокрутки, читает
- * её сама и подсвечивает строку, будто ждали её.
+ * LANDING is not an event but a state, and that is a load-bearing decision.
+ * The cell being led to may not be built yet: the notebook builds `CellView`
+ * only near the screen and puts a 240 px placeholder in place of distant ones
+ * (Notebook.svelte · data-cell-deferred). An event sent to such a cell has
+ * nobody listening — it goes nowhere, and the jump silently fails to arrive.
+ * The mark lies here and waits: a cell built a frame after the scroll reads it
+ * by itself and highlights the line, as if it had been waiting for it.
  */
 
 import { tr } from '@shared/i18n'
@@ -22,18 +22,19 @@ import type { DefinitionHit, DefinitionMiss } from '@shared/protocol'
 import { reveal, revealCell } from './reveal'
 import type { SessionState } from './session.svelte'
 
-/** Куда смотреть внутри документа, к которому привели. */
+/** Where to look inside the document one was led to. */
 export interface Landing {
-  /** Строка, считая с единицы. */
+  /** The line, counting from one. */
   line: number
-  /** Колонка, считая с нуля. */
+  /** The column, counting from zero. */
   column: number
   /**
-   * Номер перехода.
+   * The jump number.
    *
-   * Без него второй переход НА ТУ ЖЕ строку не виден: поля те же, значение
-   * `$derived` не меняется, и подсветка не мигает. А повторный переход — это
-   * обычное дело: человек ушёл читать, вернулся и щёлкнул снова.
+   * Without it a second jump TO THE SAME line is invisible: the fields are the
+   * same, the `$derived` value does not change, and the highlight does not
+   * blink. And a repeated jump is common: the person went off to read, came
+   * back and clicked again.
    */
   seq: number
 }
@@ -44,15 +45,15 @@ let inFile = $state<(Landing & { path: string }) | null>(null)
 let stale: ReturnType<typeof setTimeout> | null = null
 
 /**
- * Сколько метка ждёт своего документа — и почему она вообще перестаёт ждать.
+ * How long the mark waits for its document — and why it stops waiting at all.
  *
- * Ждать её заставляет виртуализация: ячейка, к которой ведут, строится через
- * кадр после прокрутки, и событие, посланное до этого, слушать было бы некому.
- * Но метка — это состояние, и, оставшись висеть, она срабатывает СНОВА при
- * каждой новой постройке той же ячейки: человек через полчаса прокручивает
- * мимо неё, а каретка сама прыгает внутрь и уводит фокус из того места, где он
- * работал. Четыре секунды — заведомо больше кадра и заведомо меньше, чем живёт
- * внимание к переходу.
+ * Virtualisation is what makes it wait: the cell being led to is built a frame
+ * after the scroll, and an event sent before that would have nobody
+ * listening. But the mark is a state, and if left hanging it fires AGAIN on
+ * every new build of that same cell: half an hour later the person scrolls
+ * past it, and the caret jumps inside by itself and takes focus away from
+ * where they were working. Four seconds is surely more than a frame and
+ * surely less than attention to a jump lasts.
  */
 const WAITS_MS = 4000
 
@@ -65,24 +66,25 @@ function expire(): void {
   }, WAITS_MS)
 }
 
-/** Метка для этой ячейки — или ничего. Читается из `$derived` в CellView. */
+/** The mark for this cell — or nothing. Read from a `$derived` in CellView. */
 export function landingInCell(cellId: string): Landing | null {
   const now = inCell
   return now && now.cellId === cellId ? now : null
 }
 
-/** То же для файла: читается там, где строится редактор файла. */
+/** The same for a file: read where the file editor is built. */
 export function landingInFile(path: string): Landing | null {
   const now = inFile
   return now && now.path === path ? now : null
 }
 
 /**
- * Снять метки.
+ * Clear the marks.
  *
- * Зовётся, когда человек сам поставил каретку или начал печатать: подсветка —
- * это «вот куда я тебя привёл», и после первого же собственного движения она
- * превращается в непонятную полосу посреди кода.
+ * Called when the person placed the caret themselves or started typing: the
+ * highlight means "this is where I brought you", and after the very first
+ * movement of one's own it turns into a puzzling bar in the middle of the
+ * code.
  */
 export function clearLanding(): void {
   if (stale !== null) clearTimeout(stale)
@@ -91,13 +93,14 @@ export function clearLanding(): void {
   inFile = null
 }
 
-/** Слова, которыми объясняется «некуда». */
+/** The words that explain "nowhere to go". */
 function words(miss: DefinitionMiss): string | null {
   switch (miss.why) {
     /*
-     * Под указателем не было имени — значит и подчёркивания не было, и жеста
-     * человек не делал: щёлкнул с зажатым модификатором по пробелу или по
-     * строке. Сказать тут нечего, и говорить не надо.
+     * There was no name under the pointer — so there was no underline either,
+     * and the person made no gesture: they clicked with the modifier held on a
+     * space or on a string. There is nothing to say here, and nothing should
+     * be said.
      */
     case 'nothing':
       return null
@@ -105,17 +108,18 @@ function words(miss: DefinitionMiss): string | null {
       return tr('room.goto.unknown', { name: miss.name })
     case 'outside':
       /*
-       * Щёлкнули по самому названию модуля — говорим про модуль, а не про имя
-       * в нём. Иначе выходит «pandas приходит из pandas»: формально верно и
-       * читается как сбой.
+       * They clicked on the module name itself — we talk about the module, not
+       * about a name in it. Otherwise it comes out as "pandas comes from
+       * pandas": formally true, and it reads as a glitch.
        */
       return miss.name === miss.module
         ? tr('room.goto.outsideModule', { module: miss.module })
         : tr('room.goto.outside', { name: miss.name, module: miss.module })
     case 'opaque':
       /*
-       * Пустой `owner` — цепочка от ВЫРАЖЕНИЯ: `df[["a"]].head`, `f(x).head`.
-       * Имени, о котором можно говорить, там нет вовсе, и назвать его нечем.
+       * An empty `owner` — a chain off an EXPRESSION: `df[["a"]].head`,
+       * `f(x).head`. There is no name there to talk about at all, and nothing
+       * to call it by.
        */
       return miss.owner
         ? tr('room.goto.opaque', { owner: miss.owner })
@@ -123,7 +127,7 @@ function words(miss: DefinitionMiss): string | null {
   }
 }
 
-/** Привести туда, где это определено. */
+/** Bring the person to where this is defined. */
 function land(session: SessionState, hit: DefinitionHit): void {
   seq += 1
   const landing = { line: hit.line, column: hit.column, seq }
@@ -131,14 +135,14 @@ function land(session: SessionState, hit: DefinitionHit): void {
     inFile = null
     inCell = { ...landing, cellId: hit.cellId }
     /*
-     * Экран ведёт `revealCell`, а не сам редактор.
+     * The screen is moved by `revealCell`, not by the editor itself.
      *
-     * У ячейки нет своего скроллера (`.cm-scroller { overflow: visible }` в
-     * CodeEditor.svelte), поэтому `EditorView.scrollIntoView` пошёл бы вверх по
-     * предкам и подвинул `<main>` — то есть оборвал бы плавный ход тетради на
-     * полпути: браузер считает правку `scrollTop` посреди прокрутки чужим
-     * вмешательством (Notebook.svelte · steering). Ячейку везёт тетрадь, а
-     * редактор только подсвечивает строку.
+     * A cell has no scroller of its own (`.cm-scroller { overflow: visible }` in
+     * CodeEditor.svelte), so `EditorView.scrollIntoView` would go up through
+     * the ancestors and move `<main>` — that is, cut off the notebook's smooth
+     * travel halfway: the browser treats a `scrollTop` edit in the middle of a
+     * scroll as outside interference (Notebook.svelte · steering). The notebook
+     * carries the cell, and the editor only highlights the line.
      */
     expire()
     revealCell(session, hit.cellId)
@@ -148,17 +152,17 @@ function land(session: SessionState, hit: DefinitionHit): void {
     inCell = null
     inFile = { ...landing, path: hit.path }
     expire()
-    // Вкладки знает только экран комнаты — туда и уходит просьба открыть файл.
+    // Only the room screen knows the tabs — so the request to open the file goes there.
     reveal({ where: 'file', path: hit.path })
   }
 }
 
 /**
- * Спросить, где определено то, что под указателем, и уйти туда.
+ * Ask where what is under the pointer is defined, and go there.
  *
- * `from` — откуда спрашивают: имя ячейки или путь файла. Сервер по нему считает
- * и порядок поиска (своя тетрадь раньше чужих), и относительные импорты
- * (`from . import util` — рядом с ЭТИМ файлом).
+ * `from` — where the question comes from: a cell id or a file path. By it the
+ * server computes both the search order (one's own notebook before others)
+ * and relative imports (`from . import util` — next to THIS file).
  */
 export async function jumpToDefinition(
   session: SessionState,
@@ -168,9 +172,10 @@ export async function jumpToDefinition(
 ): Promise<void> {
   const reply = await session.define(code, cursor, from.cellId, from.path)
   /*
-   * Ответа нет вовсе — сокет закрыт или сервер не успел. Молчание здесь
-   * законно и об этом же говорит вся комната: рядом уже висит строка «нет
-   * связи», и второй тост про то же самое ничего не добавит.
+   * No answer at all — the socket is closed or the server did not make it in
+   * time. Silence is legitimate here, and the whole room already says the same:
+   * a "no connection" line is already hanging nearby, and a second toast about
+   * the same thing would add nothing.
    */
   if (!reply) return
   if (reply.hit) {

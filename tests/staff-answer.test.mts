@@ -1,44 +1,45 @@
 /**
- * «Не штат ли это?» — и цена неправильного «нет».
+ * "Is this staff?" — and the price of a wrong "no".
  *
- * Метка в localStorage ничего не разрешает: она говорит только, что этот
- * браузер когда-то подписывался в панели, и что поэтому стоит СПРОСИТЬ. Ответ
- * даёт сервер. Но экран входа и роутер спрашивали его по-своему, с разными
- * правилами снятия метки: один снимал её на любой сбой — включая оборванный
- * вайфай и пятисотку при перезапуске сервера, — второй только на явный отказ.
+ * The mark in localStorage permits nothing: it only says that this browser
+ * once signed in to the panel, and that it is therefore worth ASKING. The
+ * server gives the answer. But the entry screen and the router asked it each
+ * in their own way, with different rules for removing the mark: one removed
+ * it on any failure — including dropped Wi-Fi and a 500 during a server
+ * restart — the other only on an explicit refusal.
  *
- * Снятая по ошибке метка тихая: преподаватель со следующего захода получает
- * форму «как вас зовут» вместо своей комнаты, и вернуть её может только
- * повторный вход в панель. Правило теперь одно и общее: «нет» — это ответ
- * сервера, «не знаю» метку не трогает.
+ * A mark removed by mistake is silent: from the next visit on, the teacher
+ * gets the "what is your name" form instead of their room, and only signing
+ * in to the panel again can bring it back. The rule is now one and shared:
+ * "no" is the server's answer, "don't know" leaves the mark alone.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readStaffAnswer } from '../web/src/screens/staff.js'
 
-test('подписан — и вот имя, под которым', () => {
+test('signed in — and here is the name it is under', () => {
   assert.deepEqual(readStaffAnswer(200, 'Ада Лавлейс'), { kind: 'staff', name: 'Ада Лавлейс' })
 })
 
-test('печенья нет или её отозвали — это «нет»', () => {
+test('no cookie, or it was revoked — that is a "no"', () => {
   assert.deepEqual(readStaffAnswer(401, null), { kind: 'no' })
   assert.deepEqual(readStaffAnswer(403, null), { kind: 'no' })
 })
 
-test('ответ без имени — тоже «нет»: войти под ним нечем', () => {
+test('an answer without a name is also a "no": there is nothing to sign in under', () => {
   assert.deepEqual(readStaffAnswer(200, null), { kind: 'no' })
 })
 
-test('сервера не слышно — это «не знаю», и метка остаётся', () => {
-  // 0 — упавший fetch (api.ts так и собирает ApiError), остальное — сервер,
-  // которого перезапускают, и прокси перед ним.
+test('the server cannot be heard — that is "do not know", and the mark stays', () => {
+  // 0 is a failed fetch (that is how api.ts builds ApiError), the rest are a
+  // server being restarted and the proxy in front of it.
   for (const status of [0, 500, 502, 503, 504]) {
     assert.deepEqual(readStaffAnswer(status, null), { kind: 'unknown' }, String(status))
   }
 })
 
-test('чужой 404 от прокси не снимает метку', () => {
-  // Тот же слой, что подделывает «комнаты нет»: под /api/admin/me он тоже
-  // отвечает 404, и штат бы молча разжаловали в участники.
+test('a foreign 404 from a proxy does not remove the mark', () => {
+  // The same layer that fakes "the room is gone": under /api/admin/me it also
+  // answers 404, and staff would silently be demoted to participants.
   assert.deepEqual(readStaffAnswer(404, null), { kind: 'unknown' })
 })

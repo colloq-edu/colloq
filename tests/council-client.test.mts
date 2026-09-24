@@ -1,14 +1,16 @@
 /**
- * Консилиум на клиенте: очередь черновиков и разбор кадров сокета.
+ * The council on the client: the draft queue and parsing socket frames.
  *
- * Проверяется то, из-за чего такие очереди врут молча: два быстрых нажатия —
- * одна отправка; «Сдать» до истечения паузы уносит свежий текст, а не прошлый;
- * закрытый консилиум не досылает придержанное. И разбор кадров: оракул,
- * приехавший раньше стопки, не теряется, а стопка ячейки, которую не трогали,
- * остаётся той же ссылкой — на этом стоит перерисовка одной ячейки, а не всех.
+ * What is checked is what makes such queues lie silently: two quick presses
+ * are one send; "Submit" before the pause runs out takes the fresh text, not
+ * the previous one; a closed council does not send what was held back. And
+ * frame parsing: an oracle answer that arrives before the stack is not lost,
+ * and the stack of a cell that was not touched stays the same reference —
+ * re-rendering one cell rather than all of them rests on that.
  *
- * Компилятора Svelte здесь нет: `$state` — подделка, возвращающая значение как
- * есть (как в tests/panels.test.mts). Реактивность не проверяется — арифметика.
+ * There is no Svelte compiler here: `$state` is a fake that returns the value
+ * as is (as in tests/panels.test.mts). Reactivity is not checked — the
+ * arithmetic is.
  */
 import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
@@ -37,9 +39,9 @@ const {
   withPatch,
 } = await import('../web/src/lib/council.svelte.js')
 
-/* ------------------------------------------------------------ черновики */
+/* --------------------------------------------------------------- drafts */
 
-test('очередь черновиков: последний текст побеждает, одна отправка на паузу', () => {
+test('the draft queue: the last text wins, one send per pause', () => {
   mock.timers.enable({ apis: ['setTimeout'] })
   try {
     const sent: [string, string][] = []
@@ -48,7 +50,7 @@ test('очередь черновиков: последний текст поб�
     mock.timers.tick(500)
     outbox.hold('c1', 'x = 1')
     mock.timers.tick(500)
-    // Пауза считается от последнего нажатия: первое ещё не уехало.
+    // The pause counts from the last keystroke: the first has not gone out yet.
     assert.deepEqual(sent, [])
     mock.timers.tick(300)
     assert.deepEqual(sent, [['c1', 'x = 1']])
@@ -58,7 +60,7 @@ test('очередь черновиков: последний текст поб�
   }
 })
 
-test('flush уносит придержанное сразу и один раз; пустая очередь молчит', () => {
+test('flush sends what was held back at once and only once; an empty queue stays silent', () => {
   mock.timers.enable({ apis: ['setTimeout'] })
   try {
     const sent: string[] = []
@@ -73,7 +75,7 @@ test('flush уносит придержанное сразу и один раз;
   }
 })
 
-test('drop забывает текст без отправки; clear снимает все таймеры', () => {
+test('drop forgets the text without sending; clear removes all timers', () => {
   mock.timers.enable({ apis: ['setTimeout'] })
   try {
     const sent: string[] = []
@@ -90,7 +92,7 @@ test('drop забывает текст без отправки; clear снима
   }
 })
 
-/* ------------------------------------------------------------- состояние */
+/* ----------------------------------------------------------------- state */
 
 const MINE: CouncilMine = {
   text: 'x = 1',
@@ -125,7 +127,7 @@ function board(): CouncilBoard {
   }
 }
 
-test('«Сдать» сначала досылает свежий снимок, потом сдаёт', () => {
+test('"Submit" first sends the fresh snapshot, then submits', () => {
   mock.timers.enable({ apis: ['setTimeout'] })
   try {
     const wire: { t: string; text?: string }[] = []
@@ -139,14 +141,14 @@ test('«Сдать» сначала досылает свежий снимок, 
     )
     assert.equal(wire[0].text, 'x = 2')
     mock.timers.tick(5_000)
-    // Таймер снят вместе с flush: второго снимка нет.
+    // The timer went away with the flush: there is no second snapshot.
     assert.equal(wire.length, 2)
   } finally {
     mock.timers.reset()
   }
 })
 
-test('закрытый консилиум (mine.closed) роняет придержанный снимок', () => {
+test('a closed council (mine.closed) drops the held-back snapshot', () => {
   mock.timers.enable({ apis: ['setTimeout'] })
   try {
     const wire: { t: string }[] = []
@@ -161,20 +163,20 @@ test('закрытый консилиум (mine.closed) роняет приде�
   }
 })
 
-test('оракул, приехавший раньше стопки, ложится в неё, когда она приезжает', () => {
+test('an oracle that arrives before the stack goes into it when the stack arrives', () => {
   const council = new CouncilState(() => {})
   council.receive({ t: 'council:oracle', cellId: 'c1', oracle: ORACLE })
   assert.equal('c1' in council.boards, false)
   council.receive({ t: 'council:board', cellId: 'c1', board: board() })
   assert.equal(council.boards.c1?.oracle?.state, 'ready')
-  // Стопка со своим оракулом сильнее раннего: она свежее.
+  // A stack with its own oracle beats the early one: it is fresher.
   const later: CouncilBoard = { ...board(), oracle: { ...ORACLE, basedOn: 4 } }
   council.receive({ t: 'council:oracle', cellId: 'c2', oracle: ORACLE })
   council.receive({ t: 'council:board', cellId: 'c2', board: later })
   assert.equal(council.boards.c2?.oracle?.basedOn, 4)
 })
 
-test('оракул поверх стопки меняет только оракула; чужая стопка — та же ссылка', () => {
+test("an oracle on top of a stack changes only the oracle; another cell's stack stays the same reference", () => {
   const council = new CouncilState(() => {})
   council.receive({ t: 'council:board', cellId: 'c1', board: board() })
   council.receive({ t: 'council:board', cellId: 'c2', board: board() })
@@ -185,7 +187,7 @@ test('оракул поверх стопки меняет только орак�
   assert.equal(council.boards.c2, untouched)
 })
 
-test('счётчик кладётся по ячейке, соседний не трогается', () => {
+test('a counter is stored per cell, the neighbouring one is left alone', () => {
   const council = new CouncilState(() => {})
   council.receive({ t: 'council:count', cellId: 'c1', submitted: 1, total: 5 })
   const first = council.counts.c1
@@ -194,7 +196,7 @@ test('счётчик кладётся по ячейке, соседний не �
   assert.deepEqual(council.counts.c2, { submitted: 3, total: 3 })
 })
 
-test('«что на экране» кладётся по ячейке, а null — это «убрали», а не «не было»', () => {
+test('"what is on screen" is stored per cell, and null means "removed", not "never was"', () => {
   const council = new CouncilState(() => {})
   const shown = {
     participantId: 'p_2',
@@ -211,13 +213,13 @@ test('«что на экране» кладётся по ячейке, а null �
   }
   council.receive({ t: 'council:shown', cellId: 'c1', shown })
   assert.equal(council.shown.c1?.name, 'Петя')
-  assert.equal(council.shown.c2, undefined, 'плашка уехала в соседнюю ячейку')
+  assert.equal(council.shown.c2, undefined, 'the banner went to the neighbouring cell')
   council.receive({ t: 'council:shown', cellId: 'c1', shown: null })
   assert.equal(council.shown.c1, null)
-  assert.ok('c1' in council.shown, 'ключ пропал вместе с плашкой')
+  assert.ok('c1' in council.shown, 'the key vanished along with the banner')
 })
 
-test('«убрать с экрана» — одно сообщение без адресата: на экране всегда один', () => {
+test('"remove from screen" is one message without an addressee: there is always one on screen', () => {
   const wire: unknown[] = []
   const council = new CouncilState((message) => wire.push(message))
   council.show('c1', 'p_2')
@@ -228,7 +230,7 @@ test('«убрать с экрана» — одно сообщение без а
   ])
 })
 
-test('вывод для проектора: строки, хвост отрезан, картинок нет', () => {
+test('output for the projector: lines, the tail cut off, no images', () => {
   const run = {
     state: 'ok',
     execCount: 1,
@@ -243,12 +245,13 @@ test('вывод для проектора: строки, хвост отрез�
   } as unknown as CouncilRun
   assert.deepEqual(shownOutputLines(run, 4), ['первая', 'вторая', 'третья', 'ValueError: плохо'])
   assert.deepEqual(shownOutputLines(run, 2), ['первая', 'вторая'])
-  assert.deepEqual(shownOutputLines(null), [], 'запуска не было — и строк нет')
-  // Картинка в ленту проектора не едет: там на неё нет ни места, ни повода.
+  assert.deepEqual(shownOutputLines(null), [], 'no run, no lines')
+  // An image does not go into the projector feed: there is neither room nor
+  // reason for it there.
   assert.ok(!shownOutputLines(run, 9).some((line) => line.includes('AAAA')))
 })
 
-test('замок и ручки — одним сообщением cell:lock', () => {
+test('the lock and the knobs go in one cell:lock message', () => {
   const wire: unknown[] = []
   const council = new CouncilState((message) => wire.push(message))
   council.lock('c1', 'council')
@@ -261,7 +264,7 @@ test('замок и ручки — одним сообщением cell:lock', (
   ])
 })
 
-test('запуск своей попытки идёт без participantId и после снимка', () => {
+test("running one's own attempt goes without participantId and after the snapshot", () => {
   mock.timers.enable({ apis: ['setTimeout'] })
   try {
     const wire: Record<string, unknown>[] = []
@@ -280,9 +283,9 @@ test('запуск своей попытки идёт без participantId и п
   }
 })
 
-/* ----------------------------------------------------------------- слова */
+/* ----------------------------------------------------------------- words */
 
-test('полоса режима: числительные и пропуск пустых кусков', () => {
+test('the mode strip: numerals and skipping empty pieces', () => {
   assert.equal(
     councilStripText({ attempts: 487, submitted: 446, writing: 41, groups: 6 }),
     '487 попыток · 446 сдали · 41 черновик · 6 разных ответов',
@@ -297,7 +300,7 @@ test('полоса режима: числительные и пропуск пу
   )
 })
 
-test('«N сдали из M», очередь и подпись под выводом', () => {
+test('"N of M submitted", the queue and the caption under the output', () => {
   assert.equal(countLine({ submitted: 446, total: 487 }), '446 сдали из 487')
   assert.equal(countLine({ submitted: 1, total: 1 }), '1 сдал из 1')
   assert.equal(queueWords(37), 'вы 37-й в очереди')
@@ -316,7 +319,7 @@ test('«N сдали из M», очередь и подпись под выво�
   assert.equal(ranByLine({ ...run, state: 'queued' }, spell), 'в очереди на запуск')
 })
 
-/* ---------------------------------------------------------------- дельты */
+/* ---------------------------------------------------------------- deltas */
 
 function attemptOf(id: string, text: string): CouncilAttempt {
   return {
@@ -336,7 +339,7 @@ function attemptOf(id: string, text: string): CouncilAttempt {
   }
 }
 
-test('дельта стопки: заменяет своих, добавляет новых, убирает removed, числа из кадра', () => {
+test('a stack delta replaces its own, adds new ones, drops removed, takes numbers from the frame', () => {
   const council = new CouncilState(() => {})
   const full: CouncilBoard = {
     ...board(),
@@ -365,8 +368,9 @@ test('дельта стопки: заменяет своих, добавляет
   )
   assert.equal(after.counts.writing, 3)
   assert.equal(after.settings.studentRun, true)
-  assert.equal(council.boards.c2, untouched, 'дельта одной ячейки перерисовала соседнюю')
-  // Дельта по ячейке без стопки — некуда: стопка из одного человека за весь класс хуже пустой.
+  assert.equal(council.boards.c2, untouched, "one cell's delta re-rendered the neighbouring one")
+  // A delta for a cell without a stack has nowhere to go: a stack of one person
+  // standing for the whole class is worse than an empty one.
   council.receive({
     t: 'council:patch',
     cellId: 'c9',
@@ -379,7 +383,7 @@ test('дельта стопки: заменяет своих, добавляет
   assert.equal('c9' in council.boards, false)
 })
 
-test('withPatch оставляет оракула и не трогает попытки, которых кадр не называл', () => {
+test('withPatch keeps the oracle and leaves alone the attempts the frame did not name', () => {
   const before: CouncilBoard = { ...board(), oracle: ORACLE, attempts: [attemptOf('a', 'x')] }
   const after = withPatch(before, {
     t: 'council:patch',
@@ -391,22 +395,23 @@ test('withPatch оставляет оракула и не трогает поп�
     settings: before.settings,
   })
   assert.equal(after.oracle, ORACLE)
-  assert.equal(after.attempts[0], before.attempts[0], 'нетронутая попытка — та же ссылка')
+  assert.equal(after.attempts[0], before.attempts[0], 'an untouched attempt is the same reference')
   assert.equal(after.lock, 'closed')
 })
 
-/* ------------------------------------------------------------ свой лист */
+/* ------------------------------------------------------ one's own sheet */
 
-test('лист заводится со своей попытки, а пустая строка от сервера — не попытка', () => {
+test("a sheet starts from one's own attempt, and an empty string from the server is not an attempt", () => {
   assert.equal(sheetSeed('x = 1', '# задание'), 'x = 1')
-  // `council:mine` с text '' при открытом консилиуме — «попытки ещё нет»: задание остаётся.
+  // `council:mine` with text '' in an open council means "no attempt yet": the
+  // task stays.
   assert.equal(sheetSeed('', '# задание'), '# задание')
   assert.equal(sheetSeed(null, '# задание'), '# задание')
   assert.equal(sheetSeed(undefined, '# задание'), '# задание')
   assert.equal(sheetSeed('', ''), '')
 })
 
-test('withOracle не трогает остальное', () => {
+test('withOracle leaves everything else alone', () => {
   const before = board()
   const after = withOracle(before, ORACLE)
   assert.equal(after.oracle, ORACLE)
@@ -414,7 +419,7 @@ test('withOracle не трогает остальное', () => {
   assert.equal(before.oracle, null)
 })
 
-test('запрос запуска отправляет свежий черновик раньше запроса; решения привязаны к id', () => {
+test('a run request sends the fresh draft before the request; decisions are tied to the id', () => {
   mock.timers.enable({ apis: ['setTimeout'] })
   try {
     const wire: unknown[] = []
@@ -432,13 +437,13 @@ test('запрос запуска отправляет свежий чернов
       { t: 'council:run:approve', cellId: 'c1', participantId: 'p1', requestId: 'r2' },
       { t: 'council:run:decline', cellId: 'c1', participantId: 'p2', requestId: 'r3' },
     ])
-    assert.deepEqual(council.mine, {}, 'отправка не выдаёт запрос за принятый')
+    assert.deepEqual(council.mine, {}, 'sending does not pass the request off as accepted')
   } finally {
     mock.timers.reset()
   }
 })
 
-test('запрос и отказ приходят в mine и patch независимо от сдачи и запуска', () => {
+test('a request and a refusal arrive in mine and patch regardless of submitting and running', () => {
   const council = new CouncilState(() => {})
   const pending = { id: 'r1', requestedAt: 12, status: 'pending' as const }
   const a = attemptOf('a', 'x')
@@ -459,9 +464,10 @@ test('запрос и отказ приходят в mine и patch незави�
   }
 })
 
-test('список запросов включает все 100 черновиков и сданных, без отказов и завершённых', async () => {
-  // Список ждущих собирает пульт (`kernelView`): прежняя `pendingRunRequests`
-  // жила в стопке под ячейкой и уехала вместе с ней — правило осталось то же.
+test('the request list includes all 100 drafts and submitted ones, without refusals and finished ones', async () => {
+  // The pending list is built by the console (`kernelView`): the old
+  // `pendingRunRequests` lived in the stack under the cell and moved out with
+  // it — the rule stayed the same.
   const { kernelView } = await import('../web/src/lib/council-pult.js')
   const attempts: CouncilAttempt[] = Array.from({ length: 100 }, (_, i) => ({
     ...attemptOf(`p${i}`, String(i)),
@@ -476,10 +482,10 @@ test('список запросов включает все 100 черновик
   assert.equal(requests.filter((a) => a.submittedAt === null).length, 50)
   assert.equal(requests[0].participantId, 'p99')
   assert.equal(requests[99].participantId, 'p0')
-  assert.deepEqual(attempts, before, 'порядок общей стопки не изменяется')
+  assert.deepEqual(attempts, before, 'the order of the shared stack does not change')
 })
 
-test('все три режима запуска уходят в настройки без приведения к boolean', () => {
+test('all three run modes go into the settings without being cast to boolean', () => {
   const wire: unknown[] = []
   const council = new CouncilState((message) => wire.push(message))
   for (const studentRun of [false, 'request', true] as const) council.lock('c1', 'council', { studentRun })
@@ -488,16 +494,17 @@ test('все три режима запуска уходят в настройк
   })))
 })
 
-/* ------------------------------------------------ метки людей в ответе */
+/* ------------------------------------------ people labels in an answer */
 
 /**
- * Оракул о классе называет людей метками `S1…SN` — других имён он не знает
- * (server/src/ai/council.ts). Пульт рисует на месте метки чип с именем, и
- * ломается это молча: наивная замена подстроки съела бы `S7` внутри `CSS7` и
- * подменила бы начало `S70` чужим человеком. Класс из семидесяти — обычное
- * дело, и преподаватель открыл бы не ту работу, ничего не заметив.
+ * The Oracle's answer about the class names people by labels `S1…SN` — it
+ * knows no other names (server/src/ai/council.ts). The console draws a chip
+ * with the name in place of a label, and this breaks silently: a naive
+ * substring replacement would eat `S7` inside `CSS7` and swap the start of
+ * `S70` for someone else. A class of seventy is nothing unusual, and the
+ * teacher would open the wrong work without noticing anything.
  */
-test('метки в ответе становятся людьми только по словарю и только целым словом', async () => {
+test('labels in an answer become people only through the dictionary and only as whole words', async () => {
   const { splitAnswer } = await import('../web/src/lib/council-oracle-answer.js')
   const people = { S7: 'p_seven', S2: 'p_two' }
 
@@ -513,12 +520,13 @@ test('метки в ответе становятся людьми только 
     { kind: 'person', label: 'S2', participantId: 'p_two' },
   ])
 
-  // Ни `CSS7`, ни `S70` метками не являются: первое — не отдельное слово,
-  // второго нет в словаре этого ответа.
+  // Neither `CSS7` nor `S70` is a label: the first is not a separate word, the
+  // second is not in this answer's dictionary.
   for (const text of ['правило CSS7 сломано', 'у S70 всё хорошо', 'смотрите S7x']) {
     assert.deepEqual(splitAnswer(text, people), [{ kind: 'text', text }], text)
   }
-  // Метки прошлого ответа остаются текстом: нумерация живёт один вопрос.
+  // Labels from a previous answer stay text: the numbering lives for one
+  // question.
   assert.deepEqual(splitAnswer('а S9 кто?', people), [{ kind: 'text', text: 'а S9 кто?' }])
   assert.deepEqual(splitAnswer('', people), [])
   assert.deepEqual(splitAnswer('S7', people), [

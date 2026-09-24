@@ -1,15 +1,15 @@
 /**
- * Уровень размышлений, запомненный в браузере.
+ * The reasoning effort, remembered in the browser.
  *
- * Не правило комнаты и не настройка человека на сервере: это то же самое, что
- * «Спросить/Сделать» рядом с полем — выбор, который держится между вопросами и
- * никого, кроме этой вкладки, не касается. Правил у комнаты и так больше, чем
- * помещается на экран, а человек, поставивший «сразу», хочет его на сегодня, а
- * не на весь семинар.
+ * Not a room rule and not a person's setting on the server: it is the same as
+ * "Ask/Do" next to the field — a choice that holds between questions and
+ * concerns nobody but this tab. The room has more rules than fit on the
+ * screen already, and a person who set "right away" wants it for today, not
+ * for the whole seminar.
  *
- * `null` — «как на инстансе»: тогда в запрос не уходит ни поля `effort`, ни
- * чего-либо ещё, и чужие инстансы ведут себя ровно как до этой ручки. Оно же
- * и есть умолчание.
+ * `null` — "as on the instance": then neither an `effort` field nor anything
+ * else goes into the request, and other instances behave exactly as before
+ * this knob. It is also the default.
  */
 import type { ReasoningEffort } from '@shared/admin'
 import { isReasoningEffort } from '@shared/admin'
@@ -17,9 +17,9 @@ import { isReasoningEffort } from '@shared/admin'
 const KEY = 'colloq.oracle.effort'
 
 /**
- * Что выбрано в этом браузере. Любая ошибка чтения — «как на инстансе»:
- * приватное окно, запрещённые данные сайта и чужая строка в ключе не должны
- * мешать спросить.
+ * What is chosen in this browser. Any read error means "as on the instance":
+ * a private window, blocked site data and a foreign string in the key must
+ * not get in the way of asking.
  */
 export function rememberedEffort(): ReasoningEffort | null {
   try {
@@ -30,12 +30,12 @@ export function rememberedEffort(): ReasoningEffort | null {
   }
 }
 
-/** Запомнить выбор; `null` стирает строку — вернулись к умолчанию инстанса. */
+/** Remember the choice; `null` erases the entry — back to the instance default. */
 export function rememberEffort(effort: ReasoningEffort | null): void {
   try {
     if (effort === null) localStorage.removeItem(KEY)
     else localStorage.setItem(KEY, effort)
   } catch {
-    /* запомнить не вышло — выбор всё равно действует до закрытия вкладки */
+    /* could not remember it — the choice still holds until the tab closes */
   }
 }

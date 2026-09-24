@@ -1,14 +1,16 @@
 /**
- * Слова и числа страниц участника (P1–P4) — без браузера.
+ * Words and numbers of the entrant pages (P1–P4), without a browser.
  *
- * Всё, что здесь проверяется, на экране выглядит одинаково правдоподобно при
- * любом ответе: «0.046» вместо «0.0455» — это другое место в лидерборде,
- * «1 ч» вместо «1 ч 12 мин» — это пропущенный дедлайн, зелёный этап вместо
- * текущего — это «где оно стоит?» вместо «оно идёт». Поймать такое глазами
- * нельзя, поэтому каждое правило стоит своей строкой.
+ * Everything checked here looks equally plausible on screen whatever the
+ * answer: "0.046" instead of "0.0455" is a different place on the
+ * leaderboard, "1 h" instead of "1 h 12 min" is a missed deadline, a green
+ * stage instead of the current one is "where is it stuck?" instead of "it is
+ * running". None of that can be caught by eye, so every rule gets a line of
+ * its own.
  *
- * Английский проверяется наравне с русским: каталог обязан вести обе стороны,
- * и `{count}` в двух языках выбирает форму разными правилами.
+ * English is checked on a par with Russian: the catalog must carry both
+ * sides, and `{count}` picks the form by different rules in the two
+ * languages.
  */
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -53,7 +55,7 @@ const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 
-/** Двадцатое сентября, 18:40 по часам читателя — время всех подписей ниже. */
+/** 20 September, 18:40 on the reader's clock: the time of every caption below. */
 const NOW = new Date(2026, 8, 20, 18, 40, 0).getTime()
 
 function submission(patch: Partial<EntrantSubmission> = {}): EntrantSubmission {
@@ -93,31 +95,35 @@ function live(patch: Partial<SubmissionLive> = {}): SubmissionLive {
   }
 }
 
-/* ------------------------------------------------------------------ число */
+/* ----------------------------------------------------------------- number */
 
-test('метрика держит значащие цифры, а не число знаков', () => {
+test('the metric keeps significant digits, not a number of decimals', () => {
   assert.equal(formatScore(0.0455), '0.0455')
   assert.equal(formatScore(0.7034), '0.7034')
-  // Тысячи рублей RMSE: четыре знака после точки тут — шум, который ломает колонку.
+  // An RMSE in thousands of roubles: four decimals here are noise that breaks
+  // the column.
   assert.equal(formatScore(1234.5), '1234.50')
   assert.equal(formatScore(-0.5), '-0.5000')
   assert.equal(formatScore(0), '0.0000')
-  // Миллионные доли и миллионы — экспонентой: иначе это «0.0000» и «1200000.00».
+  // Millionths and millions go exponential: otherwise they are "0.0000" and
+  // "1200000.00".
   assert.equal(formatScore(0.0000012), '1.20e-6')
   assert.equal(formatScore(2_500_000), '2.50e+6')
-  // Числа, которого нет, быть не должно: метрика, поделившая на ноль, не упала.
+  // A number that does not exist must not be shown: a metric that divided by
+  // zero did not crash.
   assert.equal(formatScore(Number.NaN), '—')
   assert.equal(formatScore(Number.POSITIVE_INFINITY), '—')
   assert.equal(formatScore(null), '—')
   assert.equal(formatScore(undefined), '—')
 })
 
-test('место — порядковым, и в английском по его собственным правилам', () => {
+test('a place is an ordinal, and in English by its own rules', () => {
   assert.equal(ordinalPlace(7), '7-й')
   assert.equal(ordinalPlace(11), '11-й')
   assert.equal(scoreWithPlace(0.0412, 1), '0.0412 · 1-й')
   assert.equal(scoreWithPlace(0.0412, null), '0.0412')
-  // На P1 порядок обратный: человек ищет в карточке своё МЕСТО, а не число.
+  // On P1 the order is reversed: a person looks for their PLACE on the card,
+  // not the score.
   assert.equal(placeWithScore(7, 0.0455), '7-й · 0.0455')
   assert.equal(placeWithScore(null, 0.0455), '0.0455')
   setLocaleResolver(() => 'en')
@@ -131,16 +137,16 @@ test('место — порядковым, и в английском по ег�
   assert.equal(ordinalPlace(21), '21st')
 })
 
-test('метрика со стрелкой — знак направления, а не перевод', () => {
+test('the arrow on a metric is a direction sign, not a translation', () => {
   assert.equal(metricArrow('MAPE', 'lower'), 'MAPE ↓')
   assert.equal(metricArrow('ROC AUC', 'higher'), 'ROC AUC ↑')
   setLocaleResolver(() => 'en')
   assert.equal(metricArrow('MAPE', 'lower'), 'MAPE ↓')
 })
 
-/* ------------------------------------------------------------------ время */
+/* ------------------------------------------------------------------- time */
 
-test('законченная длительность: секунды, минуты с секундами, часы без секунд', () => {
+test('a finished duration: seconds, minutes with seconds, hours without seconds', () => {
   assert.equal(spellDuration(41_000), '41 с')
   assert.equal(spellDuration(171_000), '2 мин 51 с')
   assert.equal(spellDuration(6 * MINUTE), '6 мин')
@@ -150,7 +156,7 @@ test('законченная длительность: секунды, мину�
   assert.equal(spellDuration(171_000), '2 min 51 s')
 })
 
-test('остаток до дедлайна: два разряда словами и часами', () => {
+test('time left until the deadline: two units in words and as a clock', () => {
   assert.equal(remainingWords(6 * DAY + 4 * HOUR + 12 * MINUTE), '6 дн 4 ч')
   assert.equal(remainingWords(HOUR + 12 * MINUTE), '1 ч 12 мин')
   assert.equal(remainingWords(12 * MINUTE), '12 мин')
@@ -163,22 +169,23 @@ test('остаток до дедлайна: два разряда словами
   assert.equal(remainingClock(-1), '00:00')
 })
 
-test('секундомер прогона идёт минутами, а часы появляются, только если нужны', () => {
+test("a run's stopwatch counts in minutes, and hours appear only when needed", () => {
   assert.equal(elapsedClock(72_000), '01:12')
   assert.equal(elapsedClock(600_000), '10:00')
   assert.equal(elapsedClock(0), '00:00')
   assert.equal(elapsedClock(3 * HOUR + 4 * MINUTE + 5000), '3:04:05')
 })
 
-test('дедлайн горит за шесть часов, и ни минутой раньше', () => {
+test('the deadline lights up six hours ahead, and not a minute earlier', () => {
   assert.equal(deadlineUrgent(NOW + URGENT_MS - MINUTE, NOW), true)
   assert.equal(deadlineUrgent(NOW + URGENT_MS + MINUTE, NOW), false)
-  // Прошедший дедлайн не тревога, а факт: он уже ничем не поможет.
+  // A passed deadline is not an alarm but a fact: it can no longer help
+  // anyone.
   assert.equal(deadlineUrgent(NOW - MINUTE, NOW), false)
   assert.equal(deadlineUrgent(null, NOW), false)
 })
 
-test('подпись под таймером различает «сегодня» и дату', () => {
+test('the caption under the timer distinguishes "today" from a date', () => {
   const todayAt21 = new Date(2026, 8, 20, 21, 0).getTime()
   const later = new Date(2026, 8, 27, 23, 59).getTime()
   assert.equal(deadlineNote(todayAt21, NOW), `сегодня до ${clockOf(todayAt21)}`)
@@ -188,7 +195,7 @@ test('подпись под таймером различает «сегодня
   assert.equal(dateOf(later), '27.09')
 })
 
-test('«Сегодня в 18:40», «Вчера в 22:14», дата — раньше', () => {
+test('"Today at 18:40", "Yesterday at 22:14", and a date before that', () => {
   const yesterday = new Date(2026, 8, 19, 22, 14).getTime()
   const older = new Date(2026, 8, 13, 20, 5).getTime()
   assert.equal(whenWords(NOW, NOW), `Сегодня в ${clockOf(NOW)}`)
@@ -198,9 +205,9 @@ test('«Сегодня в 18:40», «Вчера в 22:14», дата — ран�
   assert.equal(sameDay(NOW, NOW + DAY), false)
 })
 
-/* ------------------------------------------------------------ полоса этапов */
+/* -------------------------------------------------------------- stage strip */
 
-test('полоса этапов красит пройденное, текущее и будущее', () => {
+test('the stage strip colours what is done, current and ahead', () => {
   const running = stageStrip('running', 'notebook')
   assert.deepEqual(
     running.map((cell) => cell.position),
@@ -214,31 +221,33 @@ test('полоса этапов красит пройденное, текуще�
     'ПРОВЕРКА CSV',
     'ОЦЕНКА',
   ])
-  // Дошедшая до числа зелена целиком: «ОЦЕНКА» у неё пройдена, а не идёт.
+  // One that reached a score is green all over: its "scoring" stage is done,
+  // not running.
   assert.deepEqual(
     stageStrip('scored', 'score').map((cell) => cell.position),
     ['done', 'done', 'done', 'done', 'done', 'done'],
   )
-  // Упавшая оставляет текущим тот этап, на котором умерла: там и причина.
+  // A failed one keeps current the stage where it died: that is where the
+  // reason is.
   assert.deepEqual(
     stageStrip('notebookFailed', 'notebook').map((cell) => cell.position),
     ['done', 'done', 'done', 'current', 'ahead', 'ahead'],
   )
 })
 
-test('полоса прогресса считает ячейками, а без них — этапами, и никогда не нулём', () => {
+test('the progress bar counts in cells, and without them in stages, but never shows zero', () => {
   assert.equal(runProgress(live({ cellsDone: 9, cellsTotal: 14 })), 63)
   assert.equal(runProgress(live({ cellsDone: 0, cellsTotal: 14 })), 5)
   assert.equal(runProgress(live({ cellsDone: 14, cellsTotal: 14 })), 95)
-  // Число ячеек ещё неизвестно — полоса показывает этап, а не ноль: ноль под
-  // словом «ВЫПОЛНЯЕТСЯ» читается как «висит».
+  // The number of cells is not known yet — the bar shows the stage, not zero:
+  // zero under the word "RUNNING" reads as "stuck".
   assert.equal(runProgress(live({ stage: 'queue', cellsTotal: 0 })), 33)
   assert.equal(runProgress(live({ stage: 'score', cellsTotal: 0 })), 100)
 })
 
-/* ---------------------------------------------------------------- очередь */
+/* ------------------------------------------------------------------ queue */
 
-test('место в очереди — словом до десятого и числом дальше', () => {
+test('a queue place is a word up to the tenth and a number after that', () => {
   assert.equal(queueOrdinal(1), 'Первая')
   assert.equal(queueOrdinal(3), 'Третья')
   assert.equal(queueOrdinal(10), 'Десятая')
@@ -248,17 +257,18 @@ test('место в очереди — словом до десятого и ч�
   assert.equal(queueOrdinal(11), '11th')
 })
 
-test('подпись ждущей посылки называет только СВОЮ посылку впереди', () => {
+test("a waiting submission's caption names only one's OWN submission ahead", () => {
   assert.equal(
     queueNote({ place: 3, aheadNumber: 12, paused: false }),
     'Третья в очереди · запуск после завершения посылки #12',
   )
-  // Телефон короче на одно слово — так в макете P4.
+  // The phone version is one word shorter — as in mockup P4.
   assert.equal(
     queueNote({ place: 3, aheadNumber: 12, paused: false, short: true }),
     'Третья в очереди · запуск после посылки #12',
   )
-  // Впереди чужие: их номера участнику не показывают вовсе.
+  // Other people's are ahead: their numbers are not shown to the entrant at
+  // all.
   assert.equal(queueNote({ place: 3, aheadNumber: null, paused: false }), 'Третья в очереди')
   assert.equal(
     queueNote({ place: 1, aheadNumber: null, paused: true }),
@@ -266,9 +276,9 @@ test('подпись ждущей посылки называет только �
   )
 })
 
-/* ------------------------------------------------------- строки посылок */
+/* ------------------------------------------------------ submission rows */
 
-test('первая фраза отказа уходит в заголовок, остальное — в подпись', () => {
+test("a refusal's first sentence goes into the title, the rest into the caption", () => {
   const { head, rest } = splitError(
     'Не для всех строк test.csv есть прогноз. В submission.csv 391 строка вместо 397. Добавьте недостающие прогнозы.',
   )
@@ -281,7 +291,7 @@ test('первая фраза отказа уходит в заголовок, �
   assert.deepEqual(splitError(null), { head: '', rest: '' })
 })
 
-test('идущая посылка: ячейка, время отправки и ожидание в очереди', () => {
+test('a running submission: the cell, the time sent and the wait in the queue', () => {
   const words = rowWords({
     submission: submission({ state: 'running', stage: 'notebook', cellsDone: 9, cellsTotal: 14, publicScore: null, durationMs: null }),
     live: live({ startedAt: NOW - 72_000, cellsDone: 9, cellsTotal: 14 }),
@@ -296,7 +306,7 @@ test('идущая посылка: ячейка, время отправки и 
   )
 })
 
-test('идущая посылка на телефоне: одна фраза вместо полосы этапов', () => {
+test('a running submission on a phone: one sentence instead of the stage strip', () => {
   const words = rowWords({
     submission: submission({ state: 'running', cellsDone: 9, cellsTotal: 14 }),
     live: live({ startedAt: NOW - 72_000 }),
@@ -308,7 +318,7 @@ test('идущая посылка на телефоне: одна фраза в�
   assert.deepEqual(words.lines, ['Выполняется ячейка 9 из 14'])
 })
 
-test('нехватка ресурсов объясняется в ожидающей посылке без ложной оценки времени', () => {
+test('a lack of resources is explained on a waiting submission without a false time estimate', () => {
   const words = rowWords({
     submission: submission({ state: 'queued' }),
     live: live({ resourcePending: true, etaMs: 42_000 }),
@@ -321,7 +331,7 @@ test('нехватка ресурсов объясняется в ожидающ
   assert.match(words.lines.join(' '), /очереди/)
 })
 
-test('готовая посылка: лучшая — без слова «выполнена», прочие — с ним', () => {
+test('a finished submission: the best one without the word "completed", the others with it', () => {
   const best = rowWords({ submission: submission(), live: null, best: true, paused: false, now: NOW })
   assert.equal(best.lines[0], `Сегодня в ${clockOf(NOW - 3 * MINUTE)} · 2 мин 51 с · лучший результат`)
   const plain = rowWords({
@@ -332,12 +342,12 @@ test('готовая посылка: лучшая — без слова «вып
     now: NOW,
   })
   assert.equal(plain.lines[0], `Сегодня в ${clockOf(NOW - 3 * MINUTE)} · выполнена за 1 мин 12 с`)
-  // Телефон длительности не показывает вовсе — так в макете P4.
+  // The phone does not show the duration at all — as in mockup P4.
   const phone = rowWords({ submission: submission(), live: null, best: true, paused: false, now: NOW, phone: true })
   assert.equal(phone.lines[0], `Сегодня в ${clockOf(NOW - 3 * MINUTE)} · лучший результат`)
 })
 
-test('упавшая тетрадь называет ячейку и время, отвергнутый ответ — причину', () => {
+test('a failed notebook names the cell and the time, a rejected answer names the reason', () => {
   const failed = rowWords({
     submission: submission({
       state: 'notebookFailed',
@@ -375,13 +385,14 @@ test('упавшая тетрадь называет ячейку и время,
     paused: false,
     now: NOW,
   })
-  // Заголовок — причина, а не имя файла: участнику важнее, чем ответ не подошёл.
+  // The title is the reason, not the file name: to the entrant it matters more
+  // why the answer did not fit.
   assert.equal(rejected.title, 'Не для всех строк test.csv есть прогноз.')
   assert.ok(rejected.lines[0].includes('naive_week.ipynb'))
   assert.equal(rejected.lines[1], 'В submission.csv 391 строка вместо 397.')
 })
 
-test('упавшая метрика — фраза про проверяющий код, а не обвинение участнику', () => {
+test('a failed metric gets a sentence about the checking code, not an accusation of the entrant', () => {
   const words = rowWords({
     submission: submission({ state: 'metricFailed', publicScore: null }),
     live: null,
@@ -393,7 +404,7 @@ test('упавшая метрика — фраза про проверяющий
   assert.match(words.lines[1], /Проверяющий код упал/)
 })
 
-test('снятая посылка говорит, что сняли её вы', () => {
+test('a cancelled submission says that you cancelled it', () => {
   const words = rowWords({
     submission: submission({ state: 'cancelled', publicScore: null, durationMs: null }),
     live: null,
@@ -404,7 +415,7 @@ test('снятая посылка говорит, что сняли её вы', 
   assert.match(words.lines[0], /снята вами$/)
 })
 
-test('ждущая посылка берёт подпись из очереди', () => {
+test('a waiting submission takes its caption from the queue', () => {
   const words = rowWords({
     submission: submission({ state: 'queued', stage: 'queue', publicScore: null, durationMs: null }),
     live: live({ place: 3, etaMs: 6 * MINUTE, aheadNumber: 12 }),
@@ -415,9 +426,9 @@ test('ждущая посылка берёт подпись из очереди'
   assert.equal(words.lines[0], 'Третья в очереди · запуск после завершения посылки #12')
 })
 
-/* --------------------------------------------------------------- места */
+/* -------------------------------------------------------------- places */
 
-test('в таблице места считают людей, а базовое решение встаёт туда, где стоит', () => {
+test('places in the table count people, and the baseline stands where it ranks', () => {
   const rows = [
     { baseline: false, name: 'Марфа' },
     { baseline: false, name: 'Платон' },
@@ -433,8 +444,9 @@ test('в таблице места считают людей, а базовое 
       ['Тимур', 3],
     ],
   )
-  // Бейзлайн впереди всех — места не занимает вовсе: «1» у него рядом с «1» у
-  // человека читается как ничья, которой нет, а шапка при этом говорит «1 из 2».
+  // A baseline ahead of everyone takes no place at all: its "1" next to a
+  // person's "1" reads as a tie that does not exist, while the header says
+  // "1 of 2".
   assert.deepEqual(
     boardPlaces([
       { baseline: true, name: 'Базовое решение' },
@@ -447,9 +459,9 @@ test('в таблице места считают людей, а базовое 
   )
 })
 
-/* ------------------------------------------------------- файлы и аватары */
+/* ----------------------------------------------------- files and avatars */
 
-test('размер файла: байты, килобайты, мегабайты с одной десятой до десяти', () => {
+test('file size: bytes, kilobytes, megabytes with one decimal below ten', () => {
   assert.equal(fileSize(512), '512 Б')
   assert.equal(fileSize(6 * 1024), '6 КБ')
   assert.equal(fileSize(212 * 1024), '212 КБ')
@@ -459,9 +471,9 @@ test('размер файла: байты, килобайты, мегабайт�
   assert.equal(fileSize(6 * 1024), '6 KB')
 })
 
-test('кружок участника: цвет из имени, буква из имени, имя — сокращением', () => {
+test("the entrant's circle: colour from the name, letter from the name, the name shortened", () => {
   assert.ok(AVATAR_TINTS.includes(avatarTint('Тимур Ахметов')))
-  // Один и тот же человек — один и тот же цвет на всех устройствах.
+  // The same person gets the same colour on every device.
   assert.equal(avatarTint('Тимур Ахметов'), avatarTint('Тимур Ахметов'))
   assert.notEqual(avatarTint('Тимур Ахметов'), avatarTint('Марфа Соколова'))
   assert.equal(avatarLetter('тимур'), 'Т')

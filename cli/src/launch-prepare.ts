@@ -12,33 +12,37 @@ import { capture, Processes } from './launch-process.js'
 import { readJson, writeJson } from './launch-state.js'
 
 /**
- * Одно звено цепочки окружений: один образ colloq-kernel:<имя>.
+ * One link of the chain of environments: one colloq-kernel:<name> image.
  *
- * Когда строим из самого каталога приложения и рядом есть Makefile (viaMake
- * ниже, причина — у вычисления в prepare), зовём `make env-build` — ту самую
- * цель, которой собирают окружения руками, чтобы сборка из CLI и сборка из
- * терминала не разъехались.
+ * When we build from the application directory itself and there is a
+ * Makefile next to it (viaMake below; the reason is at its computation in
+ * prepare), we call `make env-build`, the very target environments are built
+ * with by hand, so that the build from the CLI and the build from the
+ * terminal do not drift apart.
  *
- * Иначе собирает прямой docker. В дистрибутиве Makefile нет, и docker compose
- * тоже нет на что натравить:
- * docker-compose.yml — файл репозитория. Зато собирается там ровно одно и
- * то же, и это видно построчно: цель `kernel` в docker-compose.yml берёт
- * контекст ./kernel и передаёт два аргумента — KERNEL_ENV (какой лист
- * окружения копировать) и PARENT (поверх чего класть слой), — а тег ставит
- * colloq-kernel:<имя>. Здесь это сказано прямым вызовом docker.
+ * Otherwise plain docker builds. A distribution has no Makefile, and there is
+ * nothing to point docker compose at either:
+ * docker-compose.yml is a file of the repository. But exactly the same thing
+ * gets built there, and it can be seen line by line: the `kernel` target in
+ * docker-compose.yml takes the ./kernel context and passes two arguments,
+ * KERNEL_ENV (which environment sheet to copy) and PARENT (what to put the
+ * layer on top of), and sets the tag colloq-kernel:<name>. Here this is said
+ * with a direct docker call.
  *
- * Родителя не передаём вовсе, когда его нет: умолчание живёт в самом
- * kernel/Dockerfile (ARG PARENT=python:3.11-slim-bookworm), и второй копии
- * имени базового образа заводить нельзя — разъедутся. Тот же выбор и по той
- * же причине сделан на стороне сервера: server/src/environments.ts ·
- * buildCommand, там этот же прямой вызов собран для панели.
+ * We do not pass a parent at all when there is none: the default lives in
+ * kernel/Dockerfile itself (ARG PARENT=python:3.11-slim-bookworm), and a
+ * second copy of the base image name must not be created: they would drift
+ * apart. The same choice, for the same reason, is made on the server side:
+ * server/src/environments.ts · buildCommand, where this same direct call is
+ * assembled for the panel.
  *
- * BUILDKIT_PROGRESS=plain — тоже оттуда: вывод уходит и в терминал, и в
- * .colloq.log построчно, а «красивый» прогресс перерисовывает себя каретками
- * и в журнале превращается в кашу.
+ * BUILDKIT_PROGRESS=plain comes from there too: the output goes both to the
+ * terminal and to .colloq.log line by line, while the "pretty" progress
+ * redraws itself with carriage returns and turns into mush in the log.
  *
- * buildRoot — не корень приложения, а корень СБОРКИ: он же контекст docker.
- * Их разводит kernelRoot ниже, когда у человека есть свои окружения.
+ * buildRoot is not the application root but the BUILD root: it is also the
+ * docker context. kernelRoot below separates them when the person has
+ * environments of their own.
  */
 async function buildKernelImage(
   processes: Processes,
@@ -74,22 +78,23 @@ async function buildKernelImage(
 }
 
 /**
- * Корень сборки ядра: привезённое плюс своё, в одном каталоге.
+ * The kernel build root: what was shipped plus one's own, in one directory.
  *
- * Окружения живут в двух местах. Привезённые (base, cv, gpu) лежат рядом с
- * приложением и только читаются — у поставленного пакета это site-packages,
- * куда писать нельзя вовсе. Свои человек заводит `colloq env new`, и они
- * ложатся в COLLOQ_HOME.
+ * Environments live in two places. The shipped ones (base, cv, gpu) lie next
+ * to the application and are only read: for an installed package that is
+ * site-packages, which cannot be written to at all. A person creates their
+ * own with `colloq env new`, and they go into COLLOQ_HOME.
  *
- * Разводить эти два места по всему запуску — по отпечатку, по цепочке
- * наследования, по контексту `docker build` — значит протащить развилку в
- * четыре разных места и однажды забыть про одно. Поэтому развилка ровно здесь:
- * перед сборкой каталог ядра собирается заново в состоянии, а дальше всё
- * работает как раньше, с ОДНИМ корнем. Своё имя перебивает привезённое:
- * человек вправе переопределить `cv` под свой курс.
+ * Keeping these two places apart throughout the start (in the fingerprint, in
+ * the inheritance chain, in the `docker build` context) means dragging the
+ * fork into four different places and one day forgetting one of them. So the
+ * fork is right here: before the build the kernel directory is assembled anew
+ * in the state, and from then on everything works as before, with ONE root.
+ * One's own name overrides a shipped one: a person is entitled to redefine
+ * `cv` for their course.
  *
- * В репозитории склеивать нечего (состояние и есть репозиторий) — там
- * возвращается сам корень, и не копируется ни байта.
+ * In the repository there is nothing to merge (the state is the repository):
+ * the root itself is returned there, and not a byte is copied.
  */
 function kernelRoot(root: string, home: string): string {
   const own = path.join(home, 'environments')
@@ -97,10 +102,10 @@ function kernelRoot(root: string, home: string): string {
   const staged = path.join(home, '.colloq/kernel-build')
   const to = path.join(staged, 'kernel')
   fs.rmSync(staged, { recursive: true, force: true })
-  // preserveTimestamps: копия обязана сохранить время правки. По нему в первый
-  // раз (когда отметки о сборке ещё нет) решается, свежий ли образ, — и без
-  // этого каждая склейка выглядела бы как «исходники только что изменились» и
-  // стоила бы преподавателю лишней пересборки перед парой.
+  // preserveTimestamps: the copy must keep the modification time. The first
+  // time (when there is no build mark yet) it decides whether the image is
+  // fresh, and without it every merge would look like "the sources have just
+  // changed" and cost the teacher an extra rebuild before class.
   const keep = { recursive: true, preserveTimestamps: true } as const
   fs.cpSync(path.join(root, 'kernel'), to, keep)
   const into = path.join(to, 'environments')
@@ -118,43 +123,49 @@ export async function prepare(
 ): Promise<void> {
   const { root, home, env, kernelEnv, dist } = config
   /*
-   * Всё, что касается ядра, считается от СКЛЕЕННОГО корня: там и привезённые
-   * окружения, и заведённые человеком. См. kernelRoot — развилка только там.
+   * Everything about the kernel is computed from the MERGED root: it has both
+   * the shipped environments and the ones the person created. See kernelRoot:
+   * the fork is only there.
    */
   const kernelFrom = kernelRoot(root, home)
   /*
-   * Кому доверить сборку звена — make или прямому docker.
+   * Whom to trust with building a link: make or plain docker.
    *
-   * Признак здесь тот же, по которому выше склеивались каталоги: совпал ли
-   * корень СБОРКИ с каталогом приложения. Цель `env-build` никакого buildRoot не
-   * знает вовсе: она читает $(ENV_DIR) рядом с самим Makefile и строит по
-   * контексту ./kernel того же дерева, — значит доверять ей можно ровно тогда,
-   * когда склеивать было нечего и kernelRoot вернул сам root.
+   * The criterion here is the same one by which the directories were merged
+   * above: whether the BUILD root coincides with the application directory.
+   * The `env-build` target knows nothing of any buildRoot: it reads $(ENV_DIR)
+   * next to the Makefile itself and builds from the ./kernel context of the
+   * same tree, so it can be trusted exactly when there was nothing to merge and
+   * kernelRoot returned root itself.
    *
-   * Стояло по dist — и в зазоре между двумя разными развилками ломалось:
-   * рабочее дерево (то есть !dist), запущенное с COLLOQ_HOME=~/классА, склеивало
-   * окружения в <home>/.colloq/kernel-build и тут же звало make, который склейки не
-   * видит. Занятие падало на «Нет <имя>.txt», а если имя совпало с привезённым —
-   * молча собирался ПРИВЕЗЁННЫЙ список вместо своего, то есть ровно то
-   * «переопределить cv под свой курс», ради которого склейка и заведена.
+   * It used to go by dist, and broke in the gap between two different forks: a
+   * working tree (that is, !dist) started with COLLOQ_HOME=~/classA merged the
+   * environments into <home>/.colloq/kernel-build and right away called make,
+   * which does not see the merge. The class fell over on "No <name>.txt", and
+   * if the name matched a shipped one, the SHIPPED list was built silently
+   * instead of one's own, which is exactly the "redefine cv for one's course"
+   * the merge was introduced for.
    *
-   * dist в условии остаётся вторым слагаемым по единственной причине: у
-   * установленного colloq без своих окружений склеивать тоже нечего и kernelFrom
-   * равен root, но Makefile в пакет не едет, и звать там нечего.
+   * dist stays in the condition as the second term for a single reason: for
+   * an installed colloq without environments of its own there is nothing to
+   * merge either and kernelFrom equals root, but the Makefile does not travel
+   * into the package, and there is nothing to call there.
    */
   const viaMake = !dist && kernelFrom === root
   /*
-   * Требования COLLOQ_UNSAFE_DEV_FILES здесь больше нет.
+   * The COLLOQ_UNSAFE_DEV_FILES requirement is gone from here.
    *
-   * Стояло: на всём, что не Linux, запуск отказывал, пока в .env не появится
-   * строка со словом UNSAFE. Для преподавателя с макбуком это был тупик в два
-   * шага — сначала отказ про файл, которого ещё нет, потом предложение самому
-   * вписать в него «небезопасно». Чинится это в файловом слое (server ·
-   * secure-files.ts), а не распиской в конфиге: путь без Linux-обхода
-   * дескрипторов должен быть либо годным, либо отсутствовать.
+   * It used to be: on anything that is not Linux, the start refused until a
+   * line with the word UNSAFE appeared in .env. For a teacher with a MacBook
+   * this was a two-step dead end: first a refusal about a file that does not
+   * exist yet, then an offer to write "unsafe" into it oneself. This is fixed
+   * in the file layer (server · secure-files.ts), not with a receipt in the
+   * config: a path without the Linux descriptor workaround must be either
+   * sound or absent.
    *
-   * Проверка живости Docker остаётся: без него ядро занятия не поднимется
-   * вовсе, и сказать об этом лучше сейчас, чем через полторы минуты сборки.
+   * The Docker liveness check stays: without it the class kernel will not come
+   * up at all, and it is better to say so now than after a minute and a half
+   * of building.
    */
   if ((await capture(root, env, 'docker', ['info', '--format', '{{.ServerVersion}}'])).code !== 0)
     throw new Error('Docker is not responding. Start Docker and run colloq run again.')
@@ -190,9 +201,10 @@ export async function prepare(
   // ancestor explicitly before building its descendants against that image.
   for (const item of chain) {
     let image = await inspect(item.name)
-    // Отметка про собранный образ — про эту МАШИНУ (образы живут в её docker),
-    // а не про приложение, поэтому home. Каталог установленного приложения
-    // вообще может быть закрыт на запись, и писать туда нам нечего.
+    // The mark about the built image is about this MACHINE (images live in its
+    // docker), not about the application, hence home. The directory of an
+    // installed application may well be closed for writing, and we have
+    // nothing to write there.
     const marker = path.join(home, `.colloq/kernel-${item.name}.json`)
     const stamp = readJson<KernelStamp>(marker)
     const freshImage =
@@ -208,9 +220,10 @@ export async function prepare(
       : freshImage
     if (!image || ancestorRebuilt || !current) {
       /*
-       * Лог docker build — в журнал, на экран только начало и конец: сотня
-       * строк «#7 CACHED» преподавателю ничего не говорит, а при сбое хвост
-       * журнала покажет launch.ts. Под make dev лог остаётся на экране.
+       * The docker build log goes to the log file, and only the start and the
+       * end reach the screen: a hundred "#7 CACHED" lines tell the teacher
+       * nothing, and on a failure launch.ts shows the tail of the log. Under
+       * make dev the log stays on the screen.
        */
       const quiet = options.action !== 'dev'
       const began = Date.now()
@@ -235,16 +248,17 @@ export async function prepare(
   if (stopped()) throw new Error('Launch cancelled.')
   if (options.action === 'dev') return
   /*
-   * Дистрибутив принимается как есть.
+   * A distribution is accepted as is.
    *
-   * Отпечаток исходников (launch-config.ts · fingerprint) отвечает на вопрос
-   * «разошлась ли сборка с кодом» — вопрос разработчика. У установленного
-   * приложения исходников нет вовсе: отпечаток считался бы по пустому месту,
-   * совпал бы сам с собой и всё равно ничего бы не значил, а `npm run build`
-   * звать нечем — ни npm, ни node_modules сборки, ни web/src в пакете нет.
+   * The source fingerprint (launch-config.ts · fingerprint) answers the
+   * question "has the build drifted from the code", a developer's question.
+   * An installed application has no sources at all: the fingerprint would be
+   * computed over an empty place, would match itself and still mean nothing,
+   * and there is nothing to call `npm run build` with: the package has no npm,
+   * no build node_modules, no web/src.
    *
-   * Поэтому единственное, что проверяется, — что приложение на месте. Скажем
-   * об этом сразу, а не запустим node на отсутствующем файле.
+   * So the only thing checked is that the application is in place. We say so
+   * right away rather than start node on a missing file.
    */
   if (dist) {
     for (const required of ['web/dist/index.html', 'server/dist/server.js'])
@@ -255,11 +269,11 @@ export async function prepare(
     return
   }
   /*
-   * Отметка про сборку — про ЭТО дерево исходников, поэтому она остаётся рядом
-   * с ним, а не в каталоге занятия. Сюда доходят только из рабочего дерева
-   * (у дистрибутива выше стоит return), и оно по определению пишется. Заодно
-   * переезд COLLOQ_HOME на новый класс не выглядит как «сборка устарела» и не
-   * стоит преподавателю лишних трёх минут перед парой.
+   * The build mark is about THIS source tree, so it stays next to it, not in
+   * the class directory. Only a working tree gets here (a distribution hits the
+   * return above), and it is writable by definition. Also, moving COLLOQ_HOME
+   * to a new class does not look like "the build is out of date" and does not
+   * cost the teacher an extra three minutes before class.
    */
   const file = path.join(root, '.colloq/build.json')
   if (options.build || !buildIsCurrent(root, readJson<BuildStamp>(file), options.fast)) {

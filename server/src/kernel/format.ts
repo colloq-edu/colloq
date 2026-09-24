@@ -40,11 +40,12 @@ export interface FormatOutcome {
   /** Cells black refused — a magic, a shell line, or code mid-sentence. */
   skipped: number
   /**
-   * Ячейки, которые правили, пока работал black; они входят и в `skipped`.
+   * Cells that were edited while black was running; they are counted in
+   * `skipped` too.
    *
-   * Отдельным числом, потому что причина у них другая, и сказать про них надо
-   * другое: их не «оставили как были», их не тронули, чтобы не стереть
-   * набранное.
+   * A separate number, because their reason is different and the message
+   * about them has to be different: they were not "left as they were", they
+   * were left untouched so as not to erase what had been typed.
    */
   edited: number
   /** Cells that were already in shape. */
@@ -114,8 +115,9 @@ export async function formatNotebook(
   book?: string,
 ): Promise<FormatOutcome> {
   const { doc } = getSessionDoc(sessionId)
-  // Форматируют ту тетрадь, в тулбаре которой нажали, а не всю комнату:
-  // переписать чужой лист по нажатию в своём — не то, что обещает кнопка.
+  // Format the notebook whose toolbar was clicked, not the whole room:
+  // rewriting someone else's sheet on a click in your own is not what the
+  // button promises.
   const cells = (book ? cellsAt(doc, book) : null) ?? getCells(doc)
 
   const targets: { cell: YCell; text: string }[] = []
@@ -183,14 +185,16 @@ export async function formatNotebook(
       const source = target.cell.get('source') as Y.Text | undefined
       if (!source) return
       /*
-       * Текст перечитывается здесь, внутри той же транзакции, что и замена.
+       * The text is re-read here, inside the same transaction as the
+       * replacement.
        *
-       * Между снимком и этой строкой — круг до ядра: если оно занято ячейкой,
-       * запрос стоит в его очереди до конца этой ячейки. Всё, что за это время
-       * напечатали в форматируемые ячейки, лежит уже здесь, а замена целиком
-       * стёрла бы его без следа — чужой origin `format` под Ctrl+Z у автора не
-       * отменяется. Ячейку, которая разошлась со снимком, не трогаем: пусть
-       * останется неотформатированной, но написанной.
+       * Between the snapshot and this line lies a round trip to the kernel: if
+       * it is busy with a cell, the request waits in its queue until that cell
+       * is done. Everything typed into the cells being formatted in the
+       * meantime is already here, and a wholesale replacement would erase it
+       * without a trace: someone else's `format` origin is not undone by the
+       * author's Ctrl+Z. A cell that has drifted from the snapshot is left
+       * alone: let it stay unformatted, but written.
        */
       if (source.toString() !== target.text) {
         skipped += 1

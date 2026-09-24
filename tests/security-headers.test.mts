@@ -45,29 +45,29 @@ test('a text cell may not put a form in the notebook', () => {
 })
 
 /*
- * По исходнику, а не по поведению, и это осознанно: markdown() зовёт
- * document.createElement и грузит dompurify динамическим импортом, то есть
- * нужен браузер, которого в этой сюите нет. А потеря списка — это одна строка
- * в одном месте, и такую строку видно чтением.
+ * From the source, not from behaviour, and on purpose: markdown() calls
+ * document.createElement and loads dompurify through a dynamic import, so it
+ * needs a browser, which this suite does not have. And losing the list is one
+ * line in one place, and a line like that can be seen by reading.
  */
 test('the one place that renders a note still hands the sanitizer the list', () => {
   const source = read('web/src/lib/render.svelte.ts')
   const from = source.indexOf('markdown(source)')
   const to = source.indexOf('ansi(text)')
-  // Читается кусок между двумя рендерерами — если их переименуют, тест обязан
-  // сказать об этом словами, а не молча проверить пустую строку.
-  assert.ok(from >= 0 && to > from, 'markdown() больше не там, где её ищет этот тест')
+  // The slice between the two renderers is read: if they get renamed, the test
+  // has to say so in words rather than silently check an empty string.
+  assert.ok(from >= 0 && to > from, 'markdown() is no longer where this test looks for it')
   const markdown = source.slice(from, to)
-  assert.ok(markdown.includes('DOMPurify.sanitize('), 'заметка больше не санируется вовсе')
+  assert.ok(markdown.includes('DOMPurify.sanitize('), 'the note is no longer sanitized at all')
   assert.ok(
     markdown.includes('FORBID_TAGS: MARKDOWN_FORBIDDEN_TAGS'),
-    'markdown() рисует заметку без общего списка запрещённых тегов',
+    'markdown() renders the note without the shared list of forbidden tags',
   )
 })
 
 test('there is exactly one policy, in one file', () => {
-  // Второй путь рендера — это как список и терялся: три компонента несли по
-  // своей копии политики, и одна из них отставала.
+  // A second render path is exactly how the list got lost: three components each
+  // carried their own copy of the policy, and one of them fell behind.
   const users = ['web/src/lib/render.svelte.ts']
   const roots = ['web/src/lib', 'web/src/components', 'web/src/admin']
   const offenders: string[] = []
@@ -82,7 +82,7 @@ test('there is exactly one policy, in one file', () => {
   }
   for (const dir of roots) walk(dir)
   const named = offenders.join('\n  ')
-  assert.deepEqual(offenders, [], `санитайзер зовут мимо общей политики:\n  ${named}`)
+  assert.deepEqual(offenders, [], `the sanitizer is called bypassing the shared policy:\n  ${named}`)
 })
 
 test('nothing a note legitimately uses is on the list', () => {

@@ -1,23 +1,25 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   /**
-   * Всё, что есть в комнате, — одной клавишей.
+   * Everything the room has — with one key.
    *
-   * До сих пор клавиатура покрывала только тетрадь (командный режим, стрелки,
-   * ⇧↵) и терминал; панели, вкладки, переход к ячейке и строка оракула жили
-   * только под мышью. Преподаватель, ведущий пару с клавиатуры, за каждым таким
-   * действием тянулся к трекпаду — а это те самые секунды, в которые в
-   * аудитории молчат.
+   * Until now the keyboard covered only the notebook (command mode, arrows, ⇧↵)
+   * and the terminal; panels, tabs, jumping to a cell and the oracle's input
+   * line lived only under the mouse. A teacher running a class from the
+   * keyboard reached for the trackpad for every such action — and those are
+   * exactly the seconds during which the classroom sits in silence.
    *
-   * Палитра — не второе меню, а один список того, что комната уже умеет: её
-   * строки зовут те же самые функции, что и кнопки. Поэтому она и не знает
-   * ничего о комнате: список ей приносят готовым, снимком на момент открытия.
-   * Снимок — намеренно: пока человек читает список, ячейки не должны
-   * переставляться под курсором выбора от чужого нажатия.
+   * The palette is not a second menu but a single list of what the room can
+   * already do: its rows call the very same functions as the buttons. That is
+   * also why it knows nothing about the room: the list is brought to it
+   * ready-made, as a snapshot taken when it opens. A snapshot on purpose: while
+   * a person reads the list, cells must not rearrange themselves under the
+   * selection cursor because of someone else's keypress.
    *
-   * Ничего не анимируется. Это поверхность, которую открывают десятки раз за
-   * пару, и любое движение на открытии превращается в задержку между клавишей
-   * и первой буквой запроса (Raycast не анимирует ровно поэтому).
+   * Nothing is animated. This is a surface that is opened dozens of times per
+   * class, and any motion on opening turns into a delay between the key and the
+   * first letter of the query (Raycast does not animate for exactly this
+   * reason).
    */
   import Icon from '@/components/ui/Icon.svelte'
   import { groupHeads, matchItems, type PaletteItem } from '@/components/ui/palette'
@@ -34,10 +36,10 @@
   let field = $state<HTMLInputElement | null>(null)
   let listBox = $state<HTMLElement | null>(null)
 
-  /** Правило отбора и порядка живёт в palette.ts — там его и проверяют. */
+  /** Filtering and order live in palette.ts — and are tested there. */
   const shown = $derived(matchItems(items, query))
 
-  // Набранная буква выбрасывает прежний выбор: строка под ним уже другая.
+  // A typed letter resets the choice: the row under it is a different one now.
   $effect(() => {
     void query
     cursor = 0
@@ -49,7 +51,7 @@
     field?.focus()
   })
 
-  /** Держать выбранную строку на виду — без плавности: это шаг, а не поездка. */
+  /** Keep the chosen row in view, with no smoothing: a step, not a ride. */
   $effect(() => {
     const id = active?.id
     if (!id || !listBox) return
@@ -58,8 +60,8 @@
 
   function choose(item: PaletteItem | null): void {
     if (!item) return
-    // Сначала закрыть, потом сделать: половина действий открывает панель или
-    // ставит фокус, и палитра, ещё стоящая поверх, отняла бы его обратно.
+    // Close first, then act: half of the actions open a panel or set focus, and
+    // a palette still standing on top would take it back.
     onclose()
     item.run()
   }
@@ -93,12 +95,13 @@
 </script>
 
 <!--
-  Слой выше пульта и проекции (z-[95]/z-[90]) палитре не нужен сам по себе:
-  она живёт только в комнате. Но выше выдвижных панелей (z-40) и окна отказа
-  она быть обязана — из палитры эти панели и открывают, а окно отказа с тех
-  пор поднялось над пультом (z-[97], SessionScreen), и палитра поехала за ним.
-  Выше терминальных плашек комнаты (z-[100]) не поднимается ничто: там
-  открывать уже нечего.
+  The palette does not need a layer above the console and the projection
+  (z-[95]/z-[90]) for its own sake: it lives only in the room. But it has to be
+  above the sliding panels (z-40) and the refusal window — those panels are
+  opened from the palette, and the refusal window has since risen above the
+  console (z-[97], SessionScreen), so the palette followed it. Nothing rises
+  above the room's final-state overlays (z-[100]): at that point there is
+  nothing left to open.
 -->
 <div
   class="fixed inset-0 z-[98] flex justify-center bg-brand/30 px-4 pt-[12vh]"
@@ -107,8 +110,9 @@
     if (event.target === event.currentTarget) onclose()
   }}
 >
-  <!-- tabindex, чтобы окно могло принять фокус, если поле ввода его отдало:
-       клавиши разбираются здесь, а всплывают они от того, что в фокусе. -->
+  <!-- tabindex, so that the window can take focus if the input field gives
+       it up: keys are handled here, and they bubble up from whatever has
+       focus. -->
   <div
     class="flex max-h-[70vh] w-full max-w-[560px] flex-col border border-line bg-raised shadow-pop focus:outline-none"
     role="dialog"
@@ -138,8 +142,8 @@
             {headings[index]}
           </p>
         {/if}
-        <!-- 36px: строку выбирают пальцем на планшете с пультом в другой руке,
-             и 24px — нижняя граница, а не цель. -->
+        <!-- 36px: a row is picked with a finger on a tablet, with the console
+             in the other hand, and 24px is the lower limit, not the target. -->
         <button
           type="button"
           data-row={item.id}

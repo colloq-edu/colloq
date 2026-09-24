@@ -1,35 +1,36 @@
 /**
- * Место, которое ячейка не отдаёт, пока считает.
+ * The room a cell does not give up while it computes.
  *
- * Перезапуск ячейки с выводом выглядел как рывок: вывод стирается в момент
- * старта, блок исчезает, ячейка схлопывается — а через мгновение вырастает
- * обратно. В классическом Jupyter так же, и это не оправдание: на экране
- * ничего не изменилось по существу, а страница дважды поехала.
+ * Rerunning a cell with output looked like a jerk: the output is wiped at the
+ * start, the block disappears, the cell collapses — and a moment later grows
+ * back. Classic Jupyter does the same, and that is no excuse: nothing changed
+ * on screen in substance, yet the page moved twice.
  *
- * Держать прошлый вывод, пока не придёт новый, — соблазнительный ход, и он
- * отвергнут: на проекторе прошлое число, выглядящее свежим, хуже любого
- * рывка. Поэтому вывод по-прежнему стирается сразу, а вот ВЫСОТА остаётся.
- * Область не сжимается, пока в неё нечего положить, и разжимается ровно один
- * раз — когда содержимое появилось.
+ * Keeping the previous output until the new one arrives is a tempting move,
+ * and it was rejected: on a projector an old number that looks fresh is worse
+ * than any jerk. So the output is still wiped at once, but the HEIGHT stays.
+ * The area does not shrink while there is nothing to put into it, and it
+ * releases exactly once — when the content appears.
  *
- * Ячейка, у которой вывода не было, не резервирует ничего: нажатие Run не
- * может заставить ячейку вырасти. Это пол, а не обещание, — область без
- * собственных границ, которая просто ещё не успела сжаться.
+ * A cell that had no output reserves nothing: pressing Run cannot make a cell
+ * grow. It is a floor, not a promise — an area with no bounds of its own that
+ * simply has not had time to shrink yet.
  *
- * Модуль чистый и без DOM: сюда же ходит тест. Импортов из `@/` здесь нет —
- * этот путь знает сборщик и не знает tsx.
+ * The module is pure and has no DOM: a test comes here too. There are no
+ * imports from `@/` here — the bundler knows that path and tsx does not.
  */
 import type { CellState } from '@shared/notebook'
 
 /**
- * Что область занимала в прошлый раз — и чем это было.
+ * What the area took up last time — and what it was.
  *
- * `fromError` не украшение: место резервируют в расчёте на то, что новый вывод
- * окажется примерно того же размера. Для ячейки, которую перезапускают без
- * изменений, это верно. Для ячейки, которая упала, — неверно ровно наоборот:
- * её перезапускают, ПОТОМУ ЧТО в ней что-то поменяли, и ждать трейсбека того
- * же роста нет никаких оснований. А трейсбеки высокие, так что ошибка тут
- * дороже всего: полтысячи пикселей пустоты в расчёте на то, чего не будет.
+ * `fromError` is not decoration: room is reserved on the assumption that the
+ * new output will be about the same size. For a cell rerun without changes
+ * that holds. For a cell that failed it is exactly the opposite: it is rerun
+ * BECAUSE something in it was changed, and there is no reason to expect a
+ * traceback of the same height. And tracebacks are tall, so a mistake here
+ * costs the most: half a thousand pixels of emptiness reserved for what will
+ * not come.
  */
 export interface Held {
   px: number
@@ -39,21 +40,22 @@ export interface Held {
 export const NO_HELD: Held = { px: 0, fromError: false }
 
 export interface SeatInput {
-  /** Настоящее состояние выполнения, а не то, что рисуют: это про раскладку. */
+  /** The real execution state, not what is drawn: this is about layout. */
   running: boolean
-  /** Сколько выводов сейчас в документе. */
+  /** How many outputs are in the document now. */
   outputs: number
-  /** Сколько картинок ещё не сообщили свой размер. */
+  /** How many images have not reported their size yet. */
   pendingImages: number
   held: Held
 }
 
-/** Пол в пикселях: сколько места область не отдаёт прямо сейчас. */
+/** The floor in pixels: how much room the area does not give up right now. */
 export function outputSeat(input: SeatInput): number {
   if (!input.running) return 0
-  // Упавший вывод места не держит: см. Held.fromError.
+  // A failed output holds no room: see Held.fromError.
   if (input.held.fromError) return 0
-  // Держим, пока показывать нечего — и пока показанное ещё не обмерилось.
+  // Hold while there is nothing to show — and while what is shown has not been
+  // measured yet.
   if (input.outputs === 0 || input.pendingImages > 0) return input.held.px
   return 0
 }
@@ -62,48 +64,47 @@ export interface RatchetInput {
   running: boolean
   outputs: number
   pendingImages: number
-  /** Сколько область намерила собой сейчас. */
+  /** How much the area measured itself at just now. */
   measured: number
-  /** Есть ли среди того, что намерили, трейсбек. */
+  /** Whether what was measured includes a traceback. */
   hasError: boolean
 }
 
 /**
- * Новая запомненная высота.
+ * The new remembered height.
  *
- * Две проверки внутри — несущие, и обе ловят молчаливую беду.
+ * Both checks inside are load-bearing, and both catch a silent failure.
  *
- * `outputs > 0` (а не `measured > 0`): пустая область меряет собственные
- * отступы — десяток пикселей, — и записать их значило бы затереть
- * девятисотпиксельный резерв своей же пустотой. В следующий раз ячейка не
- * зарезервировала бы ничего.
+ * `outputs > 0` (not `measured > 0`): an empty area measures its own padding
+ * — a dozen pixels — and writing that down would overwrite a nine-hundred-pixel
+ * reserve with its own emptiness. Next time the cell would reserve nothing.
  *
- * `pendingImages === 0`: только что созданный `<img>` с data-URI до
- * раскодирования имеет нулевую высоту. Запомнить её — то же самое, только
- * тише: график в девятьсот пикселей запомнился бы как восемь.
+ * `pendingImages === 0`: a freshly created `<img>` with a data URI has zero
+ * height until it is decoded. Remembering that is the same thing, only
+ * quieter: a nine-hundred-pixel plot would be remembered as eight.
  */
 export function nextHeld(held: Held, input: RatchetInput): Held {
   if (input.outputs > 0 && input.pendingImages === 0 && input.measured > 0) {
     return { px: input.measured, fromError: input.hasError }
   }
-  // Вывод убрали руками и ничего не запускают — забыть, иначе следующий запуск
-  // зарезервирует место под то, чего в ячейке давно нет.
+  // The output was cleared by hand and nothing is running — forget it, otherwise
+  // the next run would reserve room for what has long been gone from the cell.
   if (input.outputs === 0 && !input.running) return NO_HELD
   return held
 }
 
 /**
- * Результат, у которого отняли номер выполнения.
+ * A result whose execution number has been taken away.
  *
- * Держать прошлый вывод во время выполнения мы отказались, так что помечать
- * нечего — кроме четырёх случаев, когда настоящий результат остаётся на экране,
- * а выполнения, которое за него отвечает, больше нет: перезапуск ядра, возврат
- * версии, смерть ядра под ячейкой, которая только стояла в очереди, и старая
- * тетрадь в той же форме.
+ * We refused to keep the previous output during execution, so there is
+ * nothing to mark — except four cases where a real result stays on screen
+ * while the execution responsible for it no longer exists: a kernel restart,
+ * a version restore, the kernel dying under a cell that was only queued, and
+ * an old notebook in the same shape.
  *
- * `state === 'idle'` отсекает то, что пометить было бы неправдой: выполнение,
- * ядро которого умерло до execute_input, кончается 'error' со свежим
- * трейсбеком и без номера — но оно происходило.
+ * `state === 'idle'` cuts off what would be untrue to mark: an execution whose
+ * kernel died before execute_input ends in 'error' with a fresh traceback and
+ * no number — but it did take place.
  */
 export function unnumberedResult(input: {
   state: CellState
@@ -114,32 +115,35 @@ export function unnumberedResult(input: {
 }
 
 /**
- * Метка выполнения — то, что стоит в поле под номером ячейки.
+ * The execution mark — what stands in the gutter under the cell number.
  *
- * Вопрос «а она вообще запускалась?» задают на каждом семинаре вслух, и
- * ответить на него по экрану было нельзя: в поле стоит НОМЕР ПО ПОРЯДКУ, он
- * одинаков у посчитанной и у нетронутой, а строка `Out [n]` рисовалась только
- * под выводом — то есть у половины тетради (импорты, чтение файла,
- * определения функций) не рисовалась вовсе.
+ * The question "has it even been run?" is asked out loud at every seminar,
+ * and it could not be answered from the screen: the gutter shows the ORDINAL
+ * NUMBER, which is the same for a computed cell and an untouched one, and the
+ * `Out [n]` line was drawn only under output — that is, for half of the
+ * notebook (imports, reading a file, function definitions) it was not drawn
+ * at all.
  *
- * Форма — Jupyter: пустые скобки против скобок с числом. Не потому, что «как
- * у всех», а потому, что это единственная запись, которую класс уже умеет
- * читать, и она отвечает сразу на два вопроса — считалась ли и в каком
- * порядке. Второе не менее важно: ячейка, посчитанная раньше той, что стоит
- * выше неё, иначе не видна никак, а именно из-за неё «у меня не работает».
+ * The form is Jupyter's: empty brackets versus brackets with a number. Not
+ * because "everyone does it" but because it is the only notation the class
+ * already knows how to read, and it answers two questions at once — whether
+ * it ran and in what order. The second matters no less: a cell computed
+ * before the one standing above it is otherwise not visible at all, and it is
+ * exactly the cause of "it doesn't work for me".
  *
- * Считается по документу, а не по этой вкладке: и `execCount`, и состояние —
- * общая правда комнаты, так что вошедший к середине пары видит то же, что все.
+ * Computed from the document, not from this tab: both `execCount` and the
+ * state are the room's shared truth, so someone who joined mid-class sees the
+ * same as everyone.
  */
 export interface RunMark {
-  /** Ровно три знака моноширинного: скобки держат общую вертикаль. */
+  /** Exactly three monospace characters: the brackets keep a common vertical line. */
   label: string
   tone: 'idle' | 'busy' | 'done' | 'error' | 'lost'
 }
 
 /**
- * `null` — метки нет вовсе: у заметки не бывает запуска, и пустые скобки под
- * её номером обещали бы кнопку, которой у неё нет.
+ * `null` — no mark at all: a note never runs, and empty brackets under its
+ * number would promise a button it does not have.
  */
 export function runMark(input: {
   type: 'code' | 'markdown'
@@ -149,17 +153,17 @@ export function runMark(input: {
   running: boolean
 }): RunMark | null {
   if (input.type !== 'code') return null
-  // Звёздочка — и у считающей, и у стоящей в очереди: номер даст ядро, когда
-  // дойдёт, и до тех пор его нет ни у той, ни у другой.
+  // An asterisk for both the computing one and the queued one: the kernel will
+  // give the number when it gets there, and until then neither has one.
   if (input.running || input.state === 'queued') return { label: '[*]', tone: 'busy' }
   if (input.execCount !== null) {
     return { label: `[${input.execCount}]`, tone: input.state === 'error' ? 'error' : 'done' }
   }
   /*
-   * Считалась, а номера нет: ядро перезапускали, вернули версию, или ячейка
-   * пустая — у пустой Jupyter номера не выдаёт вовсе. Прочерк, а не пустые
-   * скобки: вывод на экране настоящий, и говорить «не запускалась» над ним
-   * значит спорить с тем, что человек видит.
+   * It ran, but there is no number: the kernel was restarted, a version was
+   * restored, or the cell is empty — Jupyter gives an empty cell no number at
+   * all. A dash, not empty brackets: the output on screen is real, and saying
+   * "not run" above it would mean arguing with what the person sees.
    */
   if (input.outputs > 0 || input.state === 'ok' || input.state === 'error') {
     return { label: '[—]', tone: input.state === 'error' ? 'error' : 'lost' }
@@ -168,17 +172,17 @@ export function runMark(input: {
 }
 
 /**
- * Ключ вывода для `{#each}`.
+ * The output key for `{#each}`.
  *
- * По номеру места мало: `clear_output(wait=True)` заменяет N записей на M в
- * одной транзакции, и место 0, где лежал трейсбек на девятьсот пикселей,
- * становится графиком на двести — внутри тех же обёрток, с прежним
- * запомненным `heights[0]`. График рисуется подрезанным, под ним висит
- * «Show more», которого не за что нажать.
+ * The slot number is not enough: `clear_output(wait=True)` replaces N entries
+ * with M in one transaction, and slot 0, where a nine-hundred-pixel traceback
+ * lay, becomes a two-hundred-pixel plot — inside the same wrappers, with the
+ * previously remembered `heights[0]`. The plot is drawn cut off, and under it
+ * hangs a "Show more" that there is no reason to press.
  *
- * MIME в ключ намеренно не входит: выбор MIME зависит от того, доехал ли
- * кусок с рендерерами, и ключ по нему перебрал бы все выводы в тетради в тот
- * момент, когда они загрузились.
+ * The MIME type is deliberately not part of the key: the MIME choice depends
+ * on whether the renderers chunk has arrived, and a key based on it would
+ * re-create every output in the notebook the moment they loaded.
  */
 export function outputKey(index: number, output: { kind: string; name?: string }): string {
   return `${index}:${output.kind}:${output.kind === 'stream' ? (output.name ?? '') : ''}`

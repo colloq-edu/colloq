@@ -1,26 +1,28 @@
-# Описание воркера-зеркала colloq.cc.
+# Description of the colloq.cc mirror worker.
 #
-# Файл лежит здесь не ради самого wrangler: выкладывает воркер соседний
-# deploy.sh голым curl, потому что npx wrangler тянет из сети полсотни пакетов,
-# а зеркало чинят обычно ровно тогда, когда с сетью и так плохо.
+# The file is here not for the sake of wrangler itself: the worker is uploaded
+# by the deploy.sh next to it with plain curl, because npx wrangler pulls fifty
+# packages from the network, and the mirror usually gets fixed exactly when the
+# network is bad anyway.
 #
-# Но единственным источником правды про имя, дату совместимости и маршруты
-# остаётся этот файл: deploy.sh читает значения ОТСЮДА (sed по трём строкам),
-# а не носит свою копию. Иначе правка маршрута в одном месте молча разъезжалась
-# бы со вторым, и `wrangler deploy` с чужой машины возвращал бы зеркало к
-# прежним настройкам.
+# But this file remains the single source of truth for the name, the
+# compatibility date and the routes: deploy.sh reads the values FROM HERE (sed
+# over three lines) instead of carrying its own copy. Otherwise a route edit in
+# one place would silently drift from the other, and `wrangler deploy` from
+# another machine would return the mirror to the old settings.
 
 name = "colloq-cc-mirror"
 main = "worker.js"
 compatibility_date = "2025-09-19"
 
-# Воркер не должен получить ещё и адрес вида *.workers.dev: третья копия сайта
-# для поисковика тут так же лишняя, как www.
+# The worker must not also get an address like *.workers.dev: a third copy of
+# the site is as superfluous for search engines here as www.
 workers_dev = false
 
-# Оба имени зеркала ведут в воркер. www он тут же разворачивает на апекс — то
-# есть маршрут www нужен именно для того, чтобы было кому ответить редиректом.
-# zone_name, а не zone_id: идентификатор зоны ничего не говорит читателю.
+# Both names of the mirror lead to the worker. www it redirects to the apex
+# right away, that is, the www route is needed precisely so that there is
+# someone to answer with the redirect. zone_name, not zone_id: a zone id tells
+# the reader nothing.
 [[routes]]
 pattern = "colloq.cc/*"
 zone_name = "colloq.cc"

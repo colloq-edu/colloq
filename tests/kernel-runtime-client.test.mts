@@ -26,13 +26,15 @@ test('production requires the broker and cannot select development/test executio
   assert.throws(()=>selectKernelBackend({KERNEL_BACKEND:'mystery'}),/backend/i)
   assert.equal(selectKernelBackend({NODE_ENV:'test',KERNEL_BACKEND:'test'}),'test')
   /*
-   * Тестовый сервер БЕЗ явного выбора не берёт docker: уборщик простоя ходит
-   * по меткам контейнеров через `docker ps -a` и видит комнаты чужого живого
-   * сервера на той же машине. 20.09.2026 так поднятый стенд оказался рядом с
-   * идущим занятием — цена ошибки — сброшенные переменные у всего класса.
+   * A test server WITHOUT an explicit choice does not take docker: the idle
+   * sweeper walks container labels through `docker ps -a` and sees the rooms
+   * of another live server on the same machine. On 20 Sep 2026 a test stand
+   * started this way ended up next to a class in progress — the cost of the
+   * mistake is wiped variables for the whole class.
    */
   assert.equal(selectKernelBackend({NODE_ENV:'test'}),'test')
-  // А разработка по-прежнему берёт docker, и явный выбор под NODE_ENV=test уважается.
+  // Development still takes docker, and an explicit choice under
+  // NODE_ENV=test is respected.
   assert.equal(selectKernelBackend({NODE_ENV:'development'}),'docker')
   assert.equal(selectKernelBackend({NODE_ENV:'test',KERNEL_BACKEND:'docker'}),'docker')
   assert.throws(()=>requireKernelIsolation({NODE_ENV:'production',KERNEL_ISOLATION:'off'}),/isolation/i)
@@ -107,7 +109,7 @@ test('permanent retirement is explicit; idle stop remains reopenable', async()=>
 })
 
 test('room memory rides the ensure intent and a live resize is a PATCH of memory alone', async()=>{
-  // 18.09: форма обещала память, а брокеру она не доезжала вовсе.
+  // 18 Sep 2026: the form promised memory, but it never reached the broker.
   const seen:Array<{method?:string;url?:string;body:string}>=[]
   let reply:unknown=endpoint
   const remote=await fixture(async(req,res)=>{
@@ -138,8 +140,9 @@ test('room memory rides the ensure intent and a live resize is a PATCH of memory
 })
 
 test('a live CPU change is a PATCH of cores alone, and the broker answer is checked', async()=>{
-  // До 18.09 ядра на k3s в живую комнату не ехали вовсе: пул отвечал pending,
-  // а Pod сносился на следующем подъёме вместе с переменными семинара.
+  // Until 18 Sep 2026, cores on k3s never reached a live room at all: the pool
+  // answered pending, and the Pod was torn down on the next start together
+  // with the seminar's variables.
   const seen:Array<{method?:string;url?:string;body:string}>=[]
   let reply:unknown={outcome:'applied',cpus:6}
   const remote=await fixture(async(req,res)=>{
@@ -152,7 +155,7 @@ test('a live CPU change is a PATCH of cores alone, and the broker answer is chec
     assert.deepEqual(await client.resize('seminar_1',{cpus:6}),{outcome:'applied',cpus:6})
     assert.equal(seen[0].method,'PATCH'); assert.equal(seen[0].url,'/v1/rooms/seminar_1')
     assert.deepEqual(JSON.parse(seen[0].body),{cpus:6},'memory that was not asked for is not sent')
-    // Умолчание брокера может быть дробным (RUNTIME_KERNEL_CPU=1500m).
+    // The broker's default can be fractional (RUNTIME_KERNEL_CPU=1500m).
     reply={outcome:'applied',cpus:1.5}
     assert.deepEqual(await client.resize('seminar_1',{cpus:null}),{outcome:'applied',cpus:1.5})
     assert.deepEqual(JSON.parse(seen[1].body),{cpus:null})
@@ -189,12 +192,14 @@ test('an unschedulable room reaches the app as a word and numbers, and the room 
     await assert.rejects(()=>client.ensure('r1','base',revision),(err:any)=>{
       assert.equal(err.status,503)
       assert.deepEqual(err.failure,{unschedulable:'memory',memoryMb:6144,cpus:2})
-      // Это текст для всей комнаты: без устройства сервера и без слов брокера.
+      // This text is for the whole room: no server internals and none of the
+      // broker's words.
       assert.match(err.message,/teacher can see why/)
       assert.doesNotMatch(err.message,/allocatable|Pod|memory/i)
       return true
     })
-    // Не то слово или не те числа — не отказ планировщика, а обычная ошибка брокера.
+    // The wrong word or the wrong numbers are not a scheduler refusal but an
+    // ordinary broker error.
     reply={error:'Room startup timed out: Pending',unschedulable:'disk',memoryMb:6144}
     await assert.rejects(()=>client.ensure('r1','base',revision),(err:any)=>
       err.failure===undefined && /timed out/.test(err.message))

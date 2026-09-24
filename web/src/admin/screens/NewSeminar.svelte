@@ -46,17 +46,17 @@
 
   let name = $state('')
   /*
-   * Три двери, а не флаг.
+   * Three doors, not a flag.
    *
-   * Было `fromGithub: boolean` — ровно два состояния, и третье в него не
-   * помещается. Перечисление, потому что дверей теперь три и когда-нибудь
-   * может стать четыре.
+   * It used to be `fromGithub: boolean` — exactly two states, and a third
+   * does not fit into it. An enum, because there are three doors now and one
+   * day there may be four.
    */
   let source = $state<'blank' | 'file' | 'github'>('blank')
   const fromGithub = $derived(source === 'github')
   let githubUrl = $state('')
 
-  /** Выбранная тетрадь: имя для заголовка, ячейки для сервера — без выводов. */
+  /** The chosen notebook: name for the title, cells for the server — no outputs. */
   let notebook = $state<{
     filename: string
     cells: { cell_type: unknown; source: unknown }[]
@@ -66,28 +66,32 @@
   let picker = $state<HTMLInputElement | null>(null)
   let dragging = $state(false)
   /**
-   * Предел загрузки — тот, что у сервера, а не копия его умолчания.
+   * The upload limit — the server's, not a copy of its default.
    *
-   * Здесь стояло собственное 50: оператор, поднявший `MAX_UPLOAD_MB` до 200 или
-   * опустивший до 20, читал на экране чужое число, а правду узнавал файлом,
-   * который не доехал — уже ПОСЛЕ того, как комната создана. `null` значит «не
-   * знаю»: сборка сервера постарше поля не присылает, и тогда экран о пределе
-   * молчит, а не выдумывает его.
+   * There used to be our own 50 here: an operator who raised `MAX_UPLOAD_MB`
+   * to 200 or lowered it to 20 read someone else's number on the screen and
+   * learned the truth from a file that did not arrive — AFTER the room had
+   * been created. `null` means "don't know": an older server build does not
+   * send the field, and then the screen says nothing about the limit rather
+   * than inventing one.
    */
   const maxUploadBytes = $derived(adminAuth.state?.maxUploadBytes ?? null)
 
   /*
-   * Три двери доходят до 182px — ровно как в макете — но могут сжаться до
-   * 168px и перенестись по доступной ширине колонки. Так третья дверь не
-   * уезжает под обрезанный край, когда подпись Section ещё стоит слева.
+   * The three doors grow up to 182px — exactly as in the mockup — but can
+   * shrink to 168px and wrap to the available column width. That way the
+   * third door does not slide under the clipped edge while the Section
+   * caption still stands on the left.
    */
   /*
-   * Потолок в 182px — мерка ряда из трёх дверей, а ряда на телефоне нет.
+   * The 182px cap is the measure of a row of three doors, and on a phone
+   * there is no row.
    *
-   * На 390px двери уже вставали в столбик, но каждая шириной в свои 182 из
-   * 250 доступных: справа оставалось мёртвое поле, а подписи ломались надвое
-   * («ПУСТАЯ / ТЕТРАДЬ»). Ниже 640 потолок снимается, и дверь просит всю
-   * ширину — столбик становится столбиком нарочно, а не по остатку.
+   * At 390px the doors already stacked into a column, but each at its own
+   * 182 of the 250 available: a dead margin stayed on the right, and the
+   * captions broke in two (the Russian "BLANK / NOTEBOOK"). Below 640 the cap
+   * is lifted and a door asks for the full width — the column becomes a
+   * column on purpose, not by what is left over.
    */
   const DOOR =
     'flex min-w-[168px] max-w-[182px] flex-1 basis-[168px] flex-col gap-2.5 border p-3.5 text-left ' +
@@ -98,12 +102,13 @@
   const CAP = 'text-2xs font-bold uppercase tracking-label'
 
   /**
-   * Прочитать тетрадь и посчитать, что в ней.
+   * Read the notebook and count what is in it.
    *
-   * Разбор здесь только ради двух чисел на карточке — сколько ячеек и как
-   * назвать семинар. Настоящий разбор делает сервер тем же кодом, которым
-   * разбирает импорт с GitHub: два парсера, расходящиеся во мнениях о том,
-   * что такое ячейка, — это способ однажды потерять половину чужой тетради.
+   * Parsing here is only for two numbers on the card — how many cells and
+   * what to call the seminar. The real parsing is done by the server with
+   * the same code it uses for a GitHub import: two parsers that disagree
+   * about what a cell is are a way to lose half of someone's notebook one
+   * day.
    */
   async function takeNotebook(file: File | null): Promise<void> {
     if (!file) return
@@ -120,13 +125,14 @@
         return
       }
       /*
-       * Тип и текст — и ничего больше.
+       * Type and text — and nothing else.
        *
-       * Выводы сервер выбрасывает всё равно, но тело запроса ограничено 1 МБ, а
-       * прогнанная тетрадь с парой графиков — это мегабайты base64: она не
-       * доезжала вовсе, и дверь отвечала «internal error» на файл, про который
-       * карточка тут же обещала «outputs are dropped». Настоящий разбор
-       * по-прежнему на сервере, тем же кодом, что и импорт с GitHub.
+       * The server throws outputs away anyway, but the request body is capped
+       * at 1 MB, and a notebook that has been run with a couple of plots is
+       * megabytes of base64: it did not arrive at all, and the door answered
+       * "internal error" for a file about which the card right there promised
+       * "outputs are dropped". The real parsing is still on the server, with
+       * the same code as the GitHub import.
        */
       notebook = {
         filename: file.name,
@@ -142,36 +148,38 @@
     }
   }
 
-  /* ------------------------------------------------------------ материалы */
+  /* ------------------------------------------------------------ materials */
 
   /**
-   * Всё, что комната откроет с первой минуты.
+   * Everything the room will open with from the first minute.
    *
-   * Лежит здесь до нажатия Create и уезжает после: загрузка требует
-   * существующего семинара. Тетрадь, выбранная как источник, в этот список не
-   * попадает — она станет самим документом комнаты, а не файлом рядом с ним.
+   * It sits here until Create is pressed and goes out after: an upload needs
+   * an existing seminar. The notebook chosen as the source is not in this
+   * list — it will become the room's document itself, not a file next to it.
    */
   let materials = $state<File[]>([])
 
   const materialBytes = $derived(materials.reduce((sum, f) => sum + f.size, 0))
 
-  /** Что не влезло в предел сервера — словами, до нажатия Create. */
+  /** What did not fit the server's limit — in words, before Create is pressed. */
   let oversizedText = $state<(() => string | null) | null>(null)
   const oversized = $derived(oversizedText?.() ?? null)
 
   function addMaterials(list: FileList | File[] | null): void {
     const picked = Array.from(list ?? [])
     if (picked.length === 0) return
-    // По имени, а не по ссылке: один и тот же файл, выбранный дважды, — это
-    // один файл, и вторая строка в списке была бы враньём.
+    // By name, not by reference: the same file chosen twice is one file, and
+    // a second row in the list would be a lie.
     const have = new Set(materials.map((f) => f.name))
     const fresh = picked.filter((f) => !have.has(f.name))
     /*
-     * Слишком большой файл отсекается здесь, а не загрузкой после создания.
+     * A file that is too big is cut off here, not by the upload after
+     * creation.
      *
-     * Загрузка идёт, когда комната уже есть, и отказ там звучит как «семинар
-     * создан, но датасет не доехал»: комната без материала, и преподаватель
-     * идёт докладывать его руками из комнаты. Здесь его ещё можно заменить.
+     * The upload runs when the room already exists, and a refusal there
+     * sounds like "the seminar was created but the dataset did not arrive": a
+     * room without its material, and the teacher goes to add it by hand from
+     * inside the room. Here it can still be replaced.
      */
     const { taken, refused } = splitBySize(fresh, maxUploadBytes ?? 0)
     oversizedText = () => (refused.length === 0 || maxUploadBytes === null
@@ -182,7 +190,7 @@
     materials = [...materials, ...taken]
   }
 
-  /** Возвращает имена тех, кто не доехал. */
+  /** Returns the names of the files that did not arrive. */
   async function uploadMaterials(sessionId: string): Promise<string[]> {
     const failed: string[] = []
     for (const file of materials) {
@@ -196,18 +204,18 @@
   }
 
   /**
-   * Тетрадь ли это.
+   * Whether this is a notebook.
    *
-   * Функцией, а не регуляркой по месту: в разметке Svelte выражение,
-   * начинающееся с `{/`, читается как закрывающий тег блока, и `{/\.ipynb$/…}`
-   * ломает разбор шаблона целиком — с сообщением про непарный блок, которое
-   * никуда не указывает.
+   * A function, not an inline regex: in Svelte markup an expression starting
+   * with `{/` reads as a block's closing tag, and `{/\.ipynb$/…}` breaks
+   * template parsing entirely — with a message about an unpaired block that
+   * points nowhere.
    */
   function isNotebook(filename: string): boolean {
     return /\.ipynb$/i.test(filename)
   }
 
-  /** `01_HSE_Intro_to_Python.ipynb` → «HSE Intro to Python». */
+  /** `01_HSE_Intro_to_Python.ipynb` → "HSE Intro to Python". */
   function tidyName(filename: string): string {
     const bare = filename.replace(/\.ipynb$/i, '').replace(/^[0-9]+[-_. ]*/, '')
     return bare.replace(/[-_]+/g, ' ').trim()
@@ -215,22 +223,23 @@
   let environment = $state('')
   let environments = $state<AdminEnvironment[] | null>(null)
   /**
-   * Своего контейнера у комнаты не будет: сервер не видит docker или изоляцию
-   * выключили, и все семинары сидят в одном ядре compose. Тогда выбор ниже —
-   * не выбор, и сказать об этом надо здесь, а не в журнале ядра посреди пары.
+   * The room will not get its own container: the server cannot see docker or
+   * isolation was switched off, and all seminars sit in one compose kernel.
+   * Then the choice below is not a choice, and that has to be said here, not
+   * in the kernel log in the middle of a class.
    */
   let gpuCapacityKnown = $state(true)
   /**
-   * Срезы видеокарты: сколько их всего и сколько свободно прямо сейчас.
+   * GPU slices: how many there are in total and how many are free right now.
    *
-   * Нужны здесь, а не только на экране окружений: комната на GPU-окружении
-   * берёт срез на всё время жизни своего контейнера, и когда свободных нет,
-   * сказать об этом надо ДО создания — иначе преподаватель узнает это первым
-   * запуском ячейки посреди пары.
+   * Needed here, not only on the environments screen: a room on a GPU
+   * environment takes a slice for the whole life of its container, and when
+   * none are free that has to be said BEFORE creation — otherwise the
+   * teacher learns it from the first cell run in the middle of a class.
    */
   let gpus = $state<{ total: number; free: number }>({ total: 0, free: 0 })
 
-  /** Просит ли выбранное окружение срез видеокарты — по его файлу, не по имени. */
+  /** Does the chosen environment ask for a GPU slice — by its file, not by name. */
   const chosenGpu = $derived(
     environments?.find((e: AdminEnvironment) => e.name === environment)?.gpu ?? false,
   )
@@ -239,18 +248,19 @@
   let rules = $state<RoomRules>({ ...OPEN_ROOM })
 
   /*
-   * Какое это занятие — и почему рядом с правилами живут ДВА значения.
+   * What kind of class this is — and why TWO values live next to the rules.
    *
-   * `mode` — то, что выбрал человек; `rules` — то, что он потом подкрутил.
-   * Выбор режима переписывает правила его пресетом, так что таблица ниже сразу
-   * показывает правду, а не обещание; дальше любую строку можно поменять
-   * руками, и режим при этом остаётся выбранным. В теле запроса едет и то и
-   * другое, и сервер кладёт правила ПОВЕРХ пресета — то есть получается ровно
-   * то, что нарисовано на экране, каким бы путём туда ни пришли.
+   * `mode` is what the person chose; `rules` is what they tweaked
+   * afterwards. Choosing a mode overwrites the rules with its preset, so the
+   * table below shows the truth right away, not a promise; after that any
+   * row can be changed by hand, and the mode stays selected. Both travel in
+   * the request body, and the server lays the rules ON TOP of the preset —
+   * so the result is exactly what is drawn on the screen, whichever way it
+   * got there.
    *
-   * Одним `isLectureRoom(rules)` это не выражается: лекция, у которой отпустили
-   * одну строку, перестала бы совпадать с пресетом, и карточка гасла бы, хотя
-   * комната лекционная.
+   * A single `isLectureRoom(rules)` cannot express this: a lecture with one
+   * row relaxed would stop matching the preset, and the card would go dark
+   * even though the room is a lecture.
    */
   let mode = $state<'lab' | 'lecture' | 'council'>('lab')
 
@@ -260,8 +270,8 @@
   }
 
   /*
-   * Две двери в комнату. Слова — с макета: карточка обязана сказать, что
-   * человек получит, а не как это называется внутри.
+   * Two doors into the room. The words come from the mockup: a card has to
+   * say what the person will get, not what it is called internally.
    */
   const MODES: {
     value: 'lab' | 'lecture' | 'council'
@@ -296,18 +306,18 @@
   ])
 
   /**
-   * Чем располагает машина — и сколько из этого просит комната.
+   * What the machine has — and how much of it the room asks for.
    *
-   * Читается здесь, а не на экране окружений, ровно потому, что решение
-   * принимается здесь: 13.09 ядро семинара убили по памяти шестнадцать раз
-   * подряд, и числа, по которым это можно было предвидеть, знал только тот, у
-   * кого есть ssh. `null` — «ещё не знаем»: выдуманная подсказка хуже
-   * отсутствующей.
+   * Read here and not on the environments screen precisely because the
+   * decision is made here: on 13 Sep 2026 a seminar's kernel was killed for
+   * memory sixteen times in a row, and the numbers that could have predicted
+   * it were known only to whoever had ssh. `null` means "don't know yet": an
+   * invented hint is worse than a missing one.
    */
   let resources = $state<InstanceResources | null>(null)
-  /** Сколько памяти задали ЭТОЙ комнате; null — как у окружения. */
+  /** How much memory was set for THIS room; null — same as the environment. */
   let memoryMb = $state<number | null>(null)
-  /** Сколько ядер задали ЭТОЙ комнате; null — как у инстанса. */
+  /** How many cores were set for THIS room; null — same as the instance. */
   let cpus = $state<number | null>(null)
 
   let preview = $state<ImportPreview | null>(null)
@@ -319,27 +329,28 @@
   const error = $derived(errorText?.() ?? null)
 
   /**
-   * Настройки оракула на инстансе — потолок, выше которого комната не поднимется.
+   * The instance's oracle settings — the ceiling a room cannot rise above.
    *
-   * Карточки ниже рисовались всегда, а сервер клампит (`oracleModeIn`): на
-   * инстансе в режиме hints выбранное здесь «Full answers» молча превращалось в
-   * hints, и на паре преподаватель обнаруживал, что оракул не пишет код. Это
-   * ровно то, что запрещает правило честности в шапке файла: контрол, который
-   * выглядит настройкой, обязан ею быть.
+   * The cards below were always drawn, while the server clamps
+   * (`oracleModeIn`): on an instance in hints mode, "Full answers" chosen
+   * here silently turned into hints, and in class the teacher discovered
+   * that the oracle does not write code. That is exactly what the honesty
+   * rule in the file header forbids: a control that looks like a setting has
+   * to be one.
    *
-   * `null` — «ещё не знаем» (чтение не доехало): тогда экран не гасит ничего.
-   * Выдуманный потолок хуже отсутствующего.
+   * `null` means "don't know yet" (the read did not arrive): then the screen
+   * greys out nothing. An invented ceiling is worse than a missing one.
    */
   let instanceOracle = $state<OracleSettings | null>(null)
   const ceiling = $derived(instanceOracle ? oracleCeiling(instanceOracle) : null)
 
   /*
-   * Потолок приехал позже нажатия — опускаем выбор до него.
+   * The ceiling arrived after the press — lower the choice to it.
    *
-   * Настройки читаются в onMount, а карточки нажимаются сразу: между тем и
-   * другим успевает пройти щелчок по «Full answers», и он остался бы выбранным
-   * на погашенной карточке, а в теле запроса уехал бы `oracle: 'full'` — то
-   * самое молчаливое расхождение, ради которого потолок и читается.
+   * The settings are read in onMount, but the cards can be pressed right
+   * away: a click on "Full answers" can happen in between, and it would stay
+   * selected on a greyed-out card, while `oracle: 'full'` went out in the
+   * request body — the very silent mismatch the ceiling is read to prevent.
    */
   $effect(() => {
     const cap = ceiling
@@ -347,18 +358,20 @@
   })
 
   /*
-   * Три чтения, и у каждого свой флаг «ещё едет».
+   * Three reads, and each has its own "still on the way" flag.
    *
-   * Одного `null` на «не знаем» и «не узнали» не хватает: до ответа раздел
-   * обязан показать заглушку и не пускать к кнопке, после отказа — сказать об
-   * отказе и всё-таки пустить. Флаг гаснет и на успехе, и на отказе: ждать
-   * второго ответа от того, кто уже ответил «нет», нечего.
+   * One `null` for both "don't know" and "could not find out" is not enough:
+   * before the answer the section must show a placeholder and keep the
+   * button out of reach, after a refusal it must say so and still let you
+   * through. The flag goes off on success and on refusal alike: there is no
+   * point waiting for a second answer from someone who has already said
+   * "no".
    */
   let environmentsLoading = $state(true)
   let oracleLoading = $state(true)
   let resourcesLoading = $state(true)
 
-  /** Хоть что-то из решающего ещё в пути — форма не знает, что отправит. */
+  /** Something decisive is still in flight — the form cannot know what it sends. */
   const settling = $derived(environmentsLoading || oracleLoading || resourcesLoading)
 
   onMount(() => {
@@ -372,15 +385,16 @@
       })
       .catch(() => (environments = []))
       .finally(() => (environmentsLoading = false))
-    // Читается любым преподавателем (GET /api/admin/oracle · requireStaff);
-    // ключ приезжает замаскированным.
+    // Readable by any teacher (GET /api/admin/oracle · requireStaff); the key
+    // arrives masked.
     void adminApi
       .oracle()
       .then((settings: OracleSettings) => (instanceOracle = settings))
       .catch(() => (instanceOracle = null))
       .finally(() => (oracleLoading = false))
-    // Машина. Тем же правилом, что и потолок оракула: не доехало — раздел
-    // молчит о числах, а не показывает выдуманные.
+    // The machine. By the same rule as the oracle ceiling: if it did not
+    // arrive, the section says nothing about numbers rather than showing
+    // invented ones.
     void adminApi
       .resources()
       .then((r: InstanceResources) => (resources = r))
@@ -424,24 +438,27 @@
   })
 
   /**
-   * Комната, которая уже есть.
+   * A room that already exists.
    *
-   * Материалы уезжают после её создания, и когда один файл не доехал, экран
-   * оставался прежним: те же поля, активная кнопка «Create seminar» — и
-   * естественное второе нажатие заводило второй такой же семинар, с тем же
-   * именем и той же тетрадью. Ссылка в чат уходила от дубликата.
+   * Materials go out after it has been created, and when one file did not
+   * arrive, the screen stayed as it was: the same fields, an active "Create
+   * seminar" button — and the natural second press created a second,
+   * identical seminar, with the same name and the same notebook. The link
+   * sent to the chat was the duplicate's.
    */
   let created = $state<string | null>(null)
 
   /*
-   * Пока читаются окружение, потолок оракула и ресурсы — кнопка не нажимается.
+   * While the environment, the oracle ceiling and the resources are being
+   * read, the button cannot be pressed.
    *
-   * Не из вежливости к заглушкам: в теле запроса уезжает ВСЁ, что нарисовано на
-   * экране, — окружение, режим оракула, память и ядра. Нажатие на первом кадре
-   * заводило комнату на пустом окружении и с режимом оракула, который через миг
-   * опустится под потолок инстанса ($effect ниже), то есть с настройками,
-   * которых никто не выбирал. Ответы приходят одним походом на сервер, так что
-   * ждать приходится ровно один круг.
+   * Not out of politeness to the placeholders: EVERYTHING drawn on the screen
+   * goes out in the request body — the environment, the oracle mode, memory
+   * and cores. A press on the first frame created a room on an empty
+   * environment and with an oracle mode that a moment later would drop under
+   * the instance ceiling ($effect below), that is, with settings nobody
+   * chose. The answers come back in one trip to the server, so the wait is
+   * exactly one round.
    */
   const canCreate = $derived(
     !busy &&
@@ -487,31 +504,33 @@
               })
 
       /*
-       * Материалы уезжают после того, как комната появилась.
+       * Materials go out after the room has appeared.
        *
-       * Загрузка требует существующего семинара — файлы кладутся в его
-       * каталог, — а черновик комнаты ради этого заводить дороже, чем оно
-       * стоит. Плата известная и небольшая: если файл не доехал, комната уже
-       * есть, и об этом говорят вслух вместо того, чтобы делать вид, что
-       * ничего не создано.
+       * An upload needs an existing seminar — the files are put into its
+       * directory — and creating a draft room for that costs more than it is
+       * worth. The price is known and small: if a file did not arrive, the
+       * room already exists, and that is said out loud instead of pretending
+       * that nothing was created.
        */
       created = seminar.id
       /*
-       * Память — вдогонку, и только у дверей импорта.
+       * Memory comes as a follow-up, and only for the import doors.
        *
-       * Пустая комната уносит число в теле создания. Импорт с GitHub и с диска
-       * — чужие двери (routes/admin-import.ts), и добавлять им поле ради одного
-       * числа значило бы менять разбор тетради там, где его никто не просил.
-       * Семинар уже создан, лимит на живую комнату применяется тем же PATCH,
-       * что и в настройках, — цена одного лишнего запроса на создание.
+       * A blank room carries the number in the creation body. Import from
+       * GitHub and from disk are other doors (routes/admin-import.ts), and
+       * adding a field to them for one number would mean changing notebook
+       * parsing where nobody asked for it. The seminar has already been
+       * created, and the limit is applied to the live room with the same
+       * PATCH as in the settings — at the cost of one extra request per
+       * creation.
        */
       if ((memoryMb !== null || cpus !== null) && source !== 'blank') {
         try {
           await adminApi.updateSeminar(seminar.id, { memoryMb, cpus })
         } catch {
-          /* Комната есть и работает на умолчании окружения; молчать об этом
-             нельзя ровно настолько же, насколько нельзя из-за этого отменять
-             создание — поэтому строка ниже, а не отказ. */
+          /* The room exists and runs on the environment's default; staying
+             silent about that is as wrong as cancelling the creation because
+             of it — hence a line below, not a refusal. */
           errorText = () => tr('admin.resources.notApplied')
         }
       }
@@ -540,9 +559,10 @@
   ])
 
   /*
-   * И сцепки — проверенные факты об этом коде, а не оговорки. Правило честности
-   * к ним относится ровно так же, как к переключателям. (Числом их здесь не
-   * называют: массив рос и убывал, а слово «три» оставалось.)
+   * And the couplings — verified facts about this code, not disclaimers. The
+   * honesty rule applies to them exactly as it does to the switches. (Their
+   * number is not stated here: the array grew and shrank, while the word
+   * "three" stayed.)
    */
   const COUPLINGS: { what: string; why: string; when: (r: RoomRules) => boolean }[] = $derived([
     {
@@ -567,8 +587,9 @@
   <button type="button" class="btn-ghost" onclick={() => ondone(created ?? undefined)}>
     {created ? tr("admin.close") : tr("admin.cancel")}
   </button>
-  <!-- Комната уже создана — предлагать «создать» ещё раз значит предлагать
-       дубликат. Кнопка ведёт туда, где эта комната уже лежит, со ссылкой. -->
+  <!-- The room has already been created — offering "create" again means
+       offering a duplicate. The button leads to where this room already is,
+       with its link. -->
   {#if created}
     <button type="button" class="btn-primary" onclick={() => ondone(created ?? undefined)}>
       {tr("admin.back.to.seminars")}
@@ -685,21 +706,21 @@
             github.com/…/week02
           </span>
           <!--
-            Про «публичный» сказано здесь, а не в сообщении об ошибке.
+            "Public" is said here, not in the error message.
 
-            GitHub отвечает анонимному запросу к приватному репозиторию 404, а
-            не 403 — иначе по коду ответа перебирали бы чужие названия. Ошибка
-            называет обе причины, но узнать об этом до того, как вставишь
-            ссылку, лучше, чем после.
+            GitHub answers an anonymous request for a private repository with
+            404, not 403 — otherwise people would enumerate other people's
+            repository names by response code. The error names both reasons,
+            but learning this before you paste the link is better than after.
           -->
           <span class="text-2xs leading-tight text-muted">{tr("admin.public.repositories.only")}</span>
         </button>
       </div>
 
       <!--
-        Настоящий input лежит скрытым: у нативного «выберите файл» вид,
-        который нельзя привести к остальному экрану, а дверь должна выглядеть
-        дверью. Нажатие на карточку открывает его.
+        The real input is hidden: the native "choose file" has a look that
+        cannot be matched to the rest of the screen, and a door should look
+        like a door. Pressing the card opens it.
       -->
       <input
         bind:this={picker}
@@ -741,10 +762,11 @@
               <span class="font-mono">{f.name}</span>
             {/each}
           </div>
-          <!-- И то, что не приедет: сумма файлов ограничена потолком комнаты
-               (server/src/routes/admin-import.ts · withinRoomBudget), и остаток
-               отсекается ещё до её создания. Своей строкой, а не ещё одним
-               именем в ряду привезённых, где оно читалось бы как «тоже едет». -->
+          <!-- And what will not arrive: the total of the files is capped by
+               the room's ceiling (server/src/routes/admin-import.ts ·
+               withinRoomBudget), and the rest is cut off before the room is
+               even created. On its own line, not as one more name in the row
+               of what is brought, where it would read as "also coming". -->
           {#if preview.skipped.length > 0}
             <div class="mt-1.5 flex flex-wrap items-center gap-2 text-2xs text-warning">
               <span>
@@ -765,34 +787,37 @@
     description={tr("admin.the.python.environment.for.this.seminar.it.is.selected.when.the.s")}
   >
     <!--
-      Не строка со списком, а карточка с содержимым.
+      Not a line with a dropdown, but a card with contents.
 
-      Раньше здесь стоял `<select>`, и выбор был выбором имени: `cv-torch-2.1`
-      против `nlp-hf` — два слова, за которыми для человека, не собиравшего эти
-      образы, не стоит ничего. Всё нужное сервер отдаёт и так: список пакетов,
-      размер образа, когда собран. Показать это дешевле, чем объяснять словами,
-      и честнее, чем не показывать.
+      There used to be a `<select>` here, and the choice was a choice of name:
+      `cv-torch-2.1` against `nlp-hf` — two words with nothing behind them for
+      someone who did not build these images. The server already sends
+      everything needed: the package list, the image size, when it was built.
+      Showing it is cheaper than explaining in words, and more honest than not
+      showing it.
 
-      Версия Python — оттуда же, из ответа сервера: он читает её из шапки файла
-      окружения и из самого собранного образа (PYTHON_VERSION в его
-      конфигурации). Раньше её здесь не было именно потому, что придумывать её
-      этот экран не вправе; теперь она известна — и это первое, о чём
-      спрашивают, принося тетрадь с чужого ноутбука. Пустая строка значит «не
-      знаем» (так отвечает опубликованный каталог), и тогда её просто нет.
+      The Python version comes from the same place, the server's response: it
+      reads it from the environment file's header and from the built image
+      itself (PYTHON_VERSION in its config). It was missing here precisely
+      because this screen has no right to invent it; now it is known — and it
+      is the first thing people ask about when they bring a notebook from
+      someone else's laptop. An empty string means "don't know" (that is how
+      the published catalog answers), and then it is simply not shown.
     -->
     {#if environmentsLoading}
       <!--
-        Список ещё едет.
+        The list is still on its way.
 
-        Заглушка повторяет карточку выбранного окружения — рамку, кружок,
-        строку имени — и ряд «или выбрать» под ней, потому что через мгновение
-        здесь встанет ровно это. Пустая строка «на чём работает инстанс» на её
-        месте была ответом на вопрос, которого никто не задавал: она значит
-        «окружений нет», а их просто ещё не принесли.
+        The placeholder repeats the chosen environment's card — the frame, the
+        dot, the name line — and the "or choose" row under it, because in a
+        moment exactly that will stand here. An empty "whatever this instance
+        runs" line in its place answered a question nobody asked: it means
+        "there are no environments", when they simply have not been brought
+        yet.
 
-        Ряда пакетов в заглушке нет намеренно: он есть не у всякого окружения,
-        и обещать его каждому значит уронить карточку на тридцать пикселей там,
-        где пакеты не перечислены.
+        The placeholder has no package row on purpose: not every environment
+        has one, and promising it to each would make the card jump by thirty
+        pixels where no packages are listed.
       -->
       <div
         role="status"
@@ -801,9 +826,10 @@
         class="flex flex-col gap-2.5"
       >
         <div class="flex flex-col border border-line">
-          <!-- 45px — это те же py-3 вокруг строки имени в 21px (font-mono
-               text-code-lg). Полоски внутри тоньше букв, поэтому высоту держит
-               ряд, а не они: иначе карточка приезжает на семь пикселей ниже. -->
+          <!-- 45px is the same py-3 around a 21px name line (font-mono
+               text-code-lg). The bars inside are thinner than the letters, so
+               the row holds the height, not them: otherwise the card comes
+               out seven pixels shorter. -->
           <div class="flex h-[45px] items-center gap-3 px-3.5">
             <Skeleton width="0.5rem" height="0.5rem" radius="0" />
             <Skeleton width="9rem" height="0.85rem" />
@@ -870,8 +896,8 @@
           </div>
         {/if}
 
-        <!-- Остальные окружения одной строкой: несобранное среди них помечено, -->
-        <!-- и выбрать его нельзя — комната на нём не поднимется. -->
+        <!-- The other environments in one row: an unbuilt one is marked, -->
+        <!-- and it cannot be chosen — a room will not start on it. -->
         {#if environments.length > 1}
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-micro font-bold uppercase tracking-label text-faint">{tr("admin.or.choose")}</span>
@@ -907,12 +933,14 @@
     {/if}
 
     <!--
-      Сцепка того же рода, что и в «The room», и с тем же правилом честности:
-      предупредить, но не запрещать. Срез может освободиться к паре — чужую
-      комнату закроют, её контейнер уберут, — а вот молчать нельзя: без
-      свободного среза ядро этой комнаты откажется подняться, и услышать это
-      первым Run посреди занятия хуже всего. Под общим ядром выбор окружения
-      и так ни на что не влияет, и пугать картами там нечем.
+      A coupling of the same kind as in "The room", and with the same honesty
+      rule: warn, but do not forbid. A slice may free up by the time of the
+      class — someone else's room gets closed, its container removed — but
+      staying silent is not an option: without a free slice this room's
+      kernel will refuse to start, and hearing that from the first Run in the
+      middle of a class is the worst way. Under a shared kernel the choice of
+      environment affects nothing anyway, so there is nothing about GPUs to
+      warn of there.
     -->
     {#if chosenGpu && gpuCapacityKnown && gpus.free === 0}
       <div class="mt-2.5 flex items-start gap-2.5 border-l-2 border-warning bg-warning/[0.07] px-3.5 py-2.5">
@@ -931,13 +959,14 @@
   </Section>
 
   <!--
-    Ресурсы — сразу под окружением, и это не вкусовщина.
+    Resources come right under the environment, and that is not a matter of
+    taste.
 
-    Умолчание памяти зависит от выбранного окружения (окружение с GPU просит
-    шестнадцать гигабайт против четырёх), так что читать подсказку «по
-    умолчанию для окружения X — K ГБ» имеет смысл только после того, как X
-    выбран. Тот же компонент стоит в настройках существующего занятия: одна
-    настройка, названная и посчитанная одинаково в обоих местах.
+    The memory default depends on the chosen environment (a GPU environment
+    asks for sixteen gigabytes against four), so reading the hint "the default
+    for environment X is K GB" only makes sense once X has been chosen. The
+    same component sits in an existing class's settings: one setting, named
+    and computed the same way in both places.
   -->
   <Section title={tr('admin.resources.title')} description={tr('admin.resources.description')}>
     <Resources
@@ -952,21 +981,23 @@
   </Section>
 
   <!--
-    Материалы, прикреплённые до того, как комната открылась.
+    Materials attached before the room opened.
 
-    Здесь же лежит ответ на вопрос «а если семинар — это несколько тетрадей».
-    Единицей сделан МАТЕРИАЛ, а не тетрадь: семинар несёт список файлов, и
-    ровно один из них — живой документ, который правят вместе. Остальные
-    тетради студент открывает и скачивает как файлы.
+    This is also where the answer to "what if a seminar is several notebooks"
+    lives. The unit is the MATERIAL, not the notebook: a seminar carries a
+    list of files, and exactly one of them is the live document that is
+    edited together. The student opens and downloads the other notebooks as
+    files.
 
-    Сегодня это стоит ноль: живая тетрадь — тот самый единственный Yjs-документ,
-    который уже есть, а остальное лежит в /workspace обычными файлами. Завтра,
-    когда живую тетрадь захочется переключать на ходу, менять придётся один
-    указатель, а не модель данных.
+    Today this costs nothing: the live notebook is that single Yjs document
+    that already exists, and the rest sits in /workspace as ordinary files.
+    Tomorrow, when someone wants to switch the live notebook on the fly, one
+    pointer will have to change, not the data model.
 
-    Чего здесь намеренно нет: переключателя «сделать живой» между несколькими
-    .ipynb. Сервер этого пока не умеет, а рисовать настройку, которой нет, —
-    ровно то, что запрещает правило честности в шапке этого файла.
+    What is deliberately not here: a "make live" switch between several
+    .ipynb files. The server cannot do that yet, and drawing a setting that
+    does not exist is exactly what the honesty rule in this file's header
+    forbids.
   -->
   <Section
     title={tr("admin.materials")}
@@ -984,9 +1015,9 @@
       {/if}
 
       <!--
-        Тетрадь-источник стоит первой строкой и снять её нельзя: она станет
-        самим документом комнаты, а не файлом рядом с ним. Именно это и говорит
-        чип LIVE — «вот эту правят вместе».
+        The source notebook stands as the first row and cannot be removed: it
+        will become the room's document itself, not a file next to it. That is
+        exactly what the LIVE chip says — "this is the one edited together".
       -->
       {#if notebook}
         <div class="flex items-center gap-3 border-b border-line border-l-[3px] border-l-accent bg-surface py-2.5 pl-2 pr-2">
@@ -1059,8 +1090,9 @@
         <Icon name="upload" size={15} class="shrink-0 text-faint" />
         <span class="text-2xs text-muted">
           {tr("admin.drop.notebooks.data.or.slides.or")} <span class="text-accent-text underline decoration-line underline-offset-2">{tr("admin.browse")}</span>.
-          <!-- Число — с сервера. Пока его нет, предложение обрывается на точке:
-               предел, названный наугад, хуже неназванного. -->
+          <!-- The number comes from the server. Until it is there, the
+               sentence ends at the full stop: a limit named at random is
+               worse than an unnamed one. -->
           {#if maxUploadBytes !== null}{tr("admin.up.to")} {uploadMb(maxUploadBytes)} {tr("admin.mb.each")}{/if}
         </span>
         <input
@@ -1093,9 +1125,10 @@
   >
     <div class="flex flex-col gap-4">
       <!--
-        Режим стоит ПЕРЕД таблицей правил, а не в ней: это набор правил разом, и
-        читать его надо до того, как разглядывать восемь строк по одной. Выбор
-        переписывает таблицу под собой — карточка ничего не обещает, она ставит.
+        The mode stands BEFORE the rules table, not in it: it is a set of
+        rules at once, and it has to be read before looking at the eight rows
+        one by one. The choice rewrites the table beneath it — the card
+        promises nothing, it sets.
       -->
       <div class="flex flex-col gap-2.5">
         <div class="flex flex-wrap gap-2.5">
@@ -1125,8 +1158,8 @@
         <p class="text-2xs text-muted">{tr("admin.you.can.change.the.mode.on.the.seminar.page")}</p>
       </div>
 
-      <!-- «Как у занятия» называет число, которое форма только что выбрала
-           выше, а список не предлагает того, чего машина не даст. -->
+      <!-- "As for the class" names the number the form has just chosen above,
+           and the list offers nothing the machine will not give. -->
       <RoomRulesRows
         {rules}
         instance={instanceOracle}
@@ -1140,11 +1173,11 @@
       />
 
       <!--
-        Сцепки, напечатанные здесь, а не спрятанные в коде. Каждая — про
-        то, где переключатель выше значит меньше, чем кажется; правило чести то
-        же, что и у самих переключателей: не обещать того, чего продукт не
-        держит. Показываются только когда относятся к делу — комната, которую
-        никто не ужимал, не видит ни одной.
+        Couplings, printed here rather than hidden in the code. Each is about
+        where a switch above means less than it seems; the honour rule is the
+        same as for the switches themselves: do not promise what the product
+        does not hold. They are shown only when relevant — a room nobody has
+        restricted sees none of them.
       -->
       {#each COUPLINGS.filter((c) => c.when(rules)) as note (note.what)}
         <div class="flex items-start gap-2.5 border-l-2 border-warning bg-warning/[0.07] px-3.5 py-2.5">
@@ -1175,8 +1208,8 @@
     <div class="flex flex-col gap-3">
       <div class="flex flex-wrap gap-1.5">
         {#each ORACLE as option (option.value)}
-          <!-- Выше потолка инстанса — не выбор, а обещание. Такая карточка
-               гаснет и говорит, чем она станет на самом деле. -->
+          <!-- Above the instance ceiling it is not a choice but a promise.
+               Such a card greys out and says what it will actually become. -->
           {@const over = ceiling ? oracleOverCeiling(option.value, ceiling.mode) : false}
           <button
             type="button"
@@ -1214,15 +1247,17 @@
    * than in index.css because nothing else uses them; promote them the day a
    * second screen needs one.
    *
-   * `.tab-btn`/`.tab-on` стояли здесь третьими и не были нужны ни одному
-   * элементу: полоса вкладок этого экрана давно нарисована классами Tailwind
-   * по месту. Компилятор выкидывал их с предупреждением на каждой сборке.
+   * `.tab-btn`/`.tab-on` stood here as a third and were not needed by a
+   * single element: this screen's tab strip has long been drawn with inline
+   * Tailwind classes. The compiler dropped them with a warning on every
+   * build.
    */
   /*
-   * Карточка режима — тот же орган, что и `.oracle-card`: радиокнопка ростом с
-   * абзац. Отдельным классом, а не вариантом оракульской, по одной причине: у
-   * неё внутри три этажа с разным весом, и `min-width: 170px` оракульской
-   * схлопнул бы их в колонку на первом же ноутбуке.
+   * The mode card is the same organ as `.oracle-card`: a radio button the
+   * height of a paragraph. A separate class rather than a variant of the
+   * oracle one, for one reason: it has three storeys of different weight
+   * inside, and the oracle card's `min-width: 170px` would collapse them into
+   * a column on the very first laptop.
    */
   .mode-card {
     display: flex;
@@ -1253,7 +1288,7 @@
     color: rgb(var(--ink));
   }
 
-  /* Кружок радиокнопки: пустой обод, залитый белым у выбранной. */
+  /* The radio dot: an empty ring, filled with white on the selected card. */
   .mode-dot {
     flex-shrink: 0;
     width: 9px;
@@ -1278,11 +1313,12 @@
   }
 
   /*
-   * Три этажа карточки — три голоса, и на залитой они не белые все разом:
-   * сплошной белый на брендовом синем превращает абзац в заголовок. Цифры
-   * взяты с макета и держат контраст на этом фоне (8:1 и 6.6:1); прозрачностью
-   * этого не добиться — она гасит и светлую карточку, где muted и faint уже
-   * стоят на своём пределе.
+   * The card's three storeys are three voices, and on the filled card they
+   * are not all white at once: solid white on the brand blue turns a
+   * paragraph into a heading. The values are taken from the mockup and hold
+   * contrast on this background (8:1 and 6.6:1); opacity cannot achieve this
+   * — it also dims the light card, where muted and faint are already at
+   * their limit.
    */
   .mode-facts {
     color: rgb(var(--faint));
@@ -1296,8 +1332,8 @@
     color: #a8b8e4;
   }
 
-  /* Последняя строка лекции — про ячейки, которые она всё-таки открывает. Ради
-     неё замок и написан, поэтому она одна и звучит в полный голос. */
+  /* The lecture's last line is about the cells it does open after all. The
+     lock is drawn for its sake, so it alone speaks at full voice. */
   .mode-on .mode-facts span:last-child {
     color: #fff;
   }
@@ -1329,8 +1365,9 @@
   }
 
   /*
-   * Выше потолка инстанса. Пунктир — тот же язык, что и у «чтения окружения» на
-   * экране оракула: рамка, которая выглядит полем и не отвечает, хуже подписи.
+   * Above the instance ceiling. The dashed border is the same language as the
+   * "environment read" on the oracle screen: a frame that looks like a field
+   * and does not respond is worse than a caption.
    */
   .oracle-card:disabled {
     color: rgb(var(--faint));

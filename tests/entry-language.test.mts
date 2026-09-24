@@ -53,9 +53,9 @@ test('the real lazy loader registers each area\'s own copy before evaluation', (
   // Fresh process: importing the complete test catalog above must not make
   // this pass by having already populated the browser's runtime registry.
   //
-  // Области спрашиваются по очереди в ОДНОМ процессе намеренно: реестр общий,
-  // и «комната зарегистрировала панель» — это ровно та ошибка, которую эта
-  // проверка обязана поймать.
+  // The areas are asked in turn in ONE process on purpose: the registry is
+  // shared, and "the room registered the panel" is exactly the mistake this
+  // check must catch.
   const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     import { tr, messages, hasTranslation } from './shared/i18n-runtime.ts';

@@ -42,17 +42,17 @@
    * argument reaches the link before it reaches the person.
    */
   /*
-   * Ниже 640 полос нет — есть карточка.
+   * Below 640 there are no lanes — there is a card.
    *
-   * Пять полос держат 600px минимума, и на 390px реестр уезжал вбок в
-   * прокрутку страницы: за краем оставались «Ссылка для входа», «Последний
-   * вход» и обе кнопки — копирование ссылки (492…524) и меню строки (652…684)
-   * при экране в 390. Измерено на стенде.
+   * Five lanes hold a 600px minimum, and at 390px the register slid sideways
+   * into page scroll: "Sign-in link", "Last seen" and both buttons — copying
+   * the link (492…524) and the row menu (652…684) — stayed past the edge on a
+   * 390 screen. Measured on the test bench.
    *
-   * `order-1` тут — вторая и следующие строки карточки: человек и меню
-   * остаются в первой (`order` по умолчанию), роль, ссылка и последний вход
-   * уходят под них, каждая во всю ширину. Ширина первой строки отмерена под
-   * кнопку меню — 44px, — и оба числа обязаны сходиться.
+   * `order-1` here means the card's second and following lines: the person
+   * and the menu stay on the first (default `order`), while role, link and
+   * last seen move under them, each full width. The first line's width is
+   * measured for the menu button — 44px — and the two numbers must agree.
    */
   const PHONE_LANE = 'max-[640px]:order-1 max-[640px]:w-full max-[640px]:min-w-0 max-[640px]:pr-0'
   const COL_ROLE = `w-[168px] min-w-[110px] pr-4 ${PHONE_LANE}`
@@ -68,14 +68,15 @@
   const MASKED = `${location.host}${SIGN_IN_PATH}${'·'.repeat(12)}`
 
   /**
-   * Ссылка входа — от адреса, который коллега сможет открыть.
+   * The sign-in link — built from an address a colleague can open.
    *
-   * Сервер строит её из PUBLIC_URL, и PUBLIC_URL, оставленный на localhost,
-   * отдаёт в чат ссылку, которую не открыть ни с одной другой машины; маска в
-   * строке при этом рисуется от `location.host`, то есть форма и содержимое
-   * расходятся. Для ссылки семинара это правило уже написано и измерено
-   * (lib/seminar-link.ts) — начало адреса берётся у него же, чтобы правило
-   * осталось одним на две ссылки, а путь остаётся серверным: в нём ключ.
+   * The server builds it from PUBLIC_URL, and a PUBLIC_URL left on localhost
+   * hands the chat a link that cannot be opened from any other machine;
+   * meanwhile the mask in the row is drawn from `location.host`, so the form
+   * and the content diverge. For the seminar link this rule is already
+   * written and measured (lib/seminar-link.ts) — the start of the address is
+   * taken from there too, so the rule stays one for both links, while the
+   * path stays the server's: the key is in it.
    */
   function reachable(signInUrl: string): string {
     try {
@@ -83,7 +84,7 @@
       const link = new URL(signInUrl)
       return `${chosen.origin}${link.pathname}${link.search}`
     } catch {
-      // PUBLIC_URL задаёт оператор, и это может быть что угодно.
+      // The operator sets PUBLIC_URL, and it can be anything at all.
       return signInUrl
     }
   }
@@ -131,18 +132,18 @@
   let menuId = $state<string | null>(null)
   let roleBusy = $state<string | null>(null)
   /**
-   * Правка имени и адреса, открытая полосой прямо в строке.
+   * Editing the name and address, opened as a band right in the row.
    *
-   * Раньше опечатка в фамилии лечилась только «удалить и завести заново»: новая
-   * ссылка, потерянное авторство семинаров и выброшенный из панели человек ради
-   * одной буквы. Черновик держится отдельно от `teachers`, чтобы брошенная
-   * правка не перекрашивала строку.
+   * A typo in a surname used to be cured only by "delete and create again": a
+   * new link, lost authorship of seminars and a person thrown out of the
+   * panel for the sake of one letter. The draft is kept apart from
+   * `teachers`, so an abandoned edit does not repaint the row.
    */
   let newSetupToken = $state<string | null>(null)
   let setupTokenErrorText = $state<(() => string | null) | null>(null)
   const setupTokenError = $derived(setupTokenErrorText?.() ?? null)
   let rotatingSetup = $state(false)
-  /** Показан один раз — значит его должно быть чем взять, не выделяя мышью. */
+  /** Shown once — so it must be copyable without selecting it with the mouse. */
   let copiedSetup = $state(false)
   let copiedSetupTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -174,8 +175,9 @@
    */
   function report(cause: unknown): string {
     if (cause instanceof AdminApiError) {
-      // С причиной: печенье сюда доехало и его отвергли — ссылку ротировали или
-      // из штата сняли. Экран входа скажет именно это, а не про cookies.
+      // With a reason: the cookie arrived here and was rejected — the link was
+      // rotated or the person removed from the staff. The sign-in screen will
+      // say exactly that, not something about cookies.
 
       return cause.message
     }
@@ -195,9 +197,10 @@
   }
 
   /*
-   * Число в боковой навигации — отсюда, как у семинаров и курсов: шелл
-   * спрашивает список сам только пока не знает его, а после добавленного или
-   * удалённого человека правду знает этот экран.
+   * The number in the side navigation comes from here, as for seminars and
+   * courses: the shell asks for the list itself only while it does not know
+   * it, and after a person is added or removed it is this screen that knows
+   * the truth.
    */
   let loaded = $state(false)
   $effect(() => {
@@ -293,7 +296,7 @@
       clearTimeout(copiedSetupTimer)
       copiedSetupTimer = setTimeout(() => (copiedSetup = false), 2200)
     } catch {
-      // Небезопасное происхождение — обычный способ хостить это самому.
+      // An insecure origin — the usual way to host this yourself.
       setupTokenErrorText = () => (tr("admin.could.not.copy.the.token.select.it.and.copy.it.manually"))
     }
   }
@@ -325,7 +328,8 @@
       const updated = await adminApi.updateTeacher(draft.id, { name, email })
       put(updated)
       editing = null
-      // Своё имя стоит в шапке панели — оболочка узнаёт его от сервера.
+      // Your own name is in the panel header — the shell learns it from the
+      // server.
       if (updated.id === me?.id) void adminAuth.refresh()
     } catch (cause: unknown) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
@@ -378,8 +382,8 @@
       confirming = null
       if (reveal?.teacherId === t.id) reveal = null
       // They removed themselves: the server has already cleared the cookie in
-      // this browser, so the panel must stop pretending otherwise. И сказать об
-      // этом надо тем же, чем это было, — своим решением, а не сбоем печенья.
+      // this browser, so the panel must stop pretending otherwise. And it has
+      // to be told as what it was — their own decision, not a cookie failure.
       if (t.id === me?.id) void adminAuth.refresh('removed-self')
     } catch (cause: unknown) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
@@ -472,11 +476,12 @@
 {/snippet}
 
 <!--
-  Та же подпись, но внутри карточки и только на телефоне.
+  The same caption, but inside the card and only on a phone.
 
-  Шапка полос там спрятана, а «никогда» или замаскированная строка точек без
-  подписи не говорят, чего они «никогда» и что это за точки. Слова берутся те
-  же, что у шапки, — полоса и её подпись не должны расходиться.
+  The lanes' header is hidden there, and "never" or a masked row of dots
+  without a caption does not say what is "never" or what the dots are. The
+  words are the same as in the header — a lane and its caption must not
+  diverge.
 -->
 {#snippet lane(text: string)}
   <span class="mb-1 hidden max-[640px]:block">{@render eyebrow(text)}</span>
@@ -540,8 +545,8 @@
     should never need scrolling to read.
   -->
   <div class="min-w-[600px] max-[640px]:min-w-0">
-  <!-- Шапка полос уходит вместе с полосами: подписи переезжают в сами
-       карточки, теми же словами (см. `lane` ниже). -->
+  <!-- The lanes' header goes away together with the lanes: the captions move
+       into the cards themselves, in the same words (see `lane` below). -->
   <div class="sticky top-0 z-10 flex h-9 items-center border-b border-line bg-canvas max-[640px]:hidden">
     <div class={COL_PERSON}>{@render eyebrow(tr("admin.person.1127"))}</div>
     <div class={COL_ROLE}>{@render eyebrow(tr("admin.role.1128"))}</div>
@@ -854,33 +859,35 @@
   </div>
 
   <!--
-    Токен установки — четвёртая дверь в панель, о которой этот экран молчал.
+    The setup token is the fourth door into the panel, and this screen said
+    nothing about it.
 
-    Он подписывает вошедшего как самого старого владельца и печатается `make
-    host` при каждом запуске: он есть в истории терминала, на снимках проектора
-    и в переписке, куда его пересылали. Отозвать его было нечем — а «rotate it
-    when someone leaves» выше относилось к ссылкам преподавателей и про эту
-    дверь не говорило ничего.
+    It signs whoever comes in as the longest-standing owner and is printed by
+    `make host` on every run: it is in the terminal history, in projector
+    screenshots and in the chats it was forwarded to. There was no way to
+    revoke it — and "rotate it when someone leaves" above referred to
+    teachers' links and said nothing about this door.
   -->
   {#if isOwner}
     <!--
-      `basis-full` ниже 640, и без него абзац был шириной в слово.
+      `basis-full` below 640, and without it the paragraph was one word wide.
 
-      `flex-1` — это `flex-basis: 0`, то есть текст просит НОЛЬ ширины и растёт
-      в остаток. Кнопка рядом стоит `shrink-0` и на 390px забирала 230 из 250:
-      переноса не случалось (нулю хватает любого места), текст получал восемь
-      пикселей и складывался в колонку по слову, а заглавная подпись «Токен
-      настройки», шире этих восьми, печаталась поверх кнопки. Просьба о полной
-      ширине переносит кнопку вниз — там ей и место.
+      `flex-1` is `flex-basis: 0`, that is, the text asks for ZERO width and
+      grows into the rest. The button next to it is `shrink-0` and at 390px
+      took 230 of 250: no wrap happened (zero fits in any space), the text got
+      eight pixels and folded into a column a word per line, and the capital
+      "Setup token" caption, wider than those eight, printed over the button.
+      Asking for the full width moves the button down — which is where it
+      belongs.
     -->
     <div class="flex flex-wrap items-start gap-3 border-t border-line-soft py-3.5">
       <div class="min-w-0 max-w-[600px] flex-1 max-[640px]:basis-full">
         {@render eyebrow(tr("admin.setup.token"))}
         <!--
-          Печатает токен `make host`, читая его из файла, — не сервер: тот
-          молчит, как только у инстанса появился владелец, а этот блок виден
-          только владельцу. Обещание «следующий запуск его напечатает» было
-          верно ровно там, где его никто не читает.
+          The token is printed by `make host`, reading it from the file — not
+          by the server: the server goes quiet as soon as the instance has an
+          owner, and this block is visible only to the owner. The promise "the
+          next run will print it" was true exactly where nobody reads it.
         -->
         <p class="mt-1.5 text-2xs text-muted">
           {tr("admin.the.setup.token.signs.anyone.holding.it.in.as.the.longest.standin")}
@@ -916,8 +923,8 @@
     </div>
   {/if}
 
-  <!-- Тот же разговор, что у токена выше: две колонки с зазором в 56px — это
-       разговор о столе. На телефоне они встают друг под друга. -->
+  <!-- The same story as with the token above: two columns with a 56px gap are
+       a story about a desktop. On a phone they stack under each other. -->
   <div
     class="flex flex-wrap items-start gap-14 border-t border-line-soft pt-5
            max-[640px]:gap-x-0 max-[640px]:gap-y-6"

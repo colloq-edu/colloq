@@ -1,15 +1,17 @@
 /**
- * «Комнаты нет» — и чем оно отличается от «сервера не слышно».
+ * "The room is gone" — and how it differs from "the server can't be heard".
  *
- * По этому различию клиент делает необратимое: стирает базу y-indexeddb этой
- * комнаты вместе со всем, что человек напечатал офлайн, гасит личность и пишет
- * «Этот семинар удалён». Пока признаком был голый код 404, любой слой перед
- * бэкендом — ретранслятор без подключённого frpc, статика, раздающая
- * index.html на всё подряд, неверный upstream — превращал перебой связи в
- * стирание кэша у всего класса разом.
+ * On this difference the client does something irreversible: it wipes this
+ * room's y-indexeddb database together with everything the person typed
+ * offline, drops the identity and writes "This seminar has been deleted".
+ * While the sign was a bare 404 code, any layer in front of the backend — a
+ * relay with no frpc connected, static hosting that serves index.html for
+ * everything, a wrong upstream — turned a connection glitch into wiping the
+ * cache for the whole class at once.
  *
- * Проверяется здесь, а не в браузере, ровно потому, что отказывает молча: с
- * точки зрения экрана обе ветки выглядят как «сервер ответил 404».
+ * It is checked here, not in the browser, precisely because it fails
+ * silently: from the screen's point of view both branches look like "the
+ * server answered 404".
  */
 import { test } from 'node:test'
 import { setLocaleResolver } from '../shared/i18n.js'
@@ -17,15 +19,15 @@ import assert from 'node:assert/strict'
 import { SESSION_MISSING, saysSessionMissing } from '../shared/protocol.js'
 import { ApiError, statusMessage } from '../web/src/lib/api.js'
 
-test('сервер сказал словами — комнаты правда нет', () => {
+test('the server said it in words — the room really is gone', () => {
   assert.equal(saysSessionMissing(new ApiError(SESSION_MISSING, 404)), true)
 })
 
-test('чужой 404 без тела — это обрыв связи, а не приговор комнате', () => {
+test('a foreign 404 without a body is a lost connection, not a verdict on the room', () => {
   /*
-   * Так его собирает api.ts, когда тела нет или оно не JSON: ретранслятор
-   * отдаёт свою страницу, HTTP/2 не несёт строки состояния, и до экрана
-   * доезжает «Not found (404)».
+   * This is how api.ts builds it when there is no body or it is not JSON: the
+   * relay serves its own page, HTTP/2 carries no status line, and what reaches
+   * the screen is "Not found (404)".
    */
   try {
     for (const [locale, expected] of [
@@ -45,19 +47,19 @@ test('чужой 404 без тела — это обрыв связи, а не �
   }
 })
 
-test('чужие слова с нашим кодом тоже не считаются', () => {
+test('foreign words with our code do not count either', () => {
   for (const words of ['Not Found', 'session gone', 'not found', '', 'SESSION NOT FOUND']) {
     assert.equal(saysSessionMissing(new ApiError(words, 404)), false, words)
   }
 })
 
-test('наши слова с чужим кодом не считаются тем более', () => {
+test('our words with a foreign code count even less', () => {
   for (const status of [0, 400, 403, 410, 500, 502, 503]) {
     assert.equal(saysSessionMissing(new ApiError(SESSION_MISSING, status)), false, String(status))
   }
 })
 
-test('сеть отвалилась — ApiError с кодом 0, и комната цела', () => {
+test('the network dropped — ApiError with code 0, and the room is intact', () => {
   const offline = new ApiError(
     'Could not reach the server — check the connection and try again.',
     0,
@@ -65,14 +67,15 @@ test('сеть отвалилась — ApiError с кодом 0, и комна�
   assert.equal(saysSessionMissing(offline), false)
 })
 
-test('что угодно другое не роняет проверку', () => {
+test('anything else does not break the check', () => {
   for (const value of [null, undefined, 'session not found', 404, {}, new Error('boom'), []]) {
     assert.equal(saysSessionMissing(value), false, String(value))
   }
 })
 
-test('строка отказа — одна на сервер и клиент', () => {
-  // Ровно та, которую кладут маршруты в тело: разойдись они, клиент перестал
-  // бы узнавать удалённую комнату и крутил бы «Reconnecting» вечно.
+test('the refusal string is one for the server and the client', () => {
+  // Exactly the one the routes put in the body: if they diverged, the client
+  // would stop recognizing a deleted room and would spin "Reconnecting"
+  // forever.
   assert.equal(SESSION_MISSING, 'session not found')
 })

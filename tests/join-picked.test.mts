@@ -1,20 +1,21 @@
 /**
- * Ткнули в ежа — вошли ежом.
+ * Tapped the hedgehog — joined as the hedgehog.
  *
- * Судья уникальности меток — сервер: занятую он подменяет свободной, иначе
- * класс, открывший ссылку в одну минуту, расходится с одинаковыми зверями (у
- * пары одинаковый курсор в тетради, а цвет их не различает — он минтуется из
- * id). Отличить выданную экраном метку от ткнутой пальцем по телу /join было
- * нечем, и подменялись обе: человек нажимал на ежа и оказывался выдрой — без
- * единого слова, потому что карточка входа к этому моменту уже уехала в
- * комнату.
+ * The server is the judge of mark uniqueness: it replaces a taken mark with a
+ * free one, otherwise a class that opened the link within one minute ends up
+ * with identical animals (a pair gets the same cursor in the notebook, and
+ * the colour does not tell them apart — it is minted from the id). There was
+ * nothing in the /join body to tell a mark handed out by the screen from one
+ * tapped with a finger, and both were replaced: a person tapped the hedgehog
+ * and turned out to be an otter — without a single word, because by then the
+ * join card had already gone off into the room.
  *
- * Здесь проверяется договор, которым эта разница передаётся, и вторая половина
- * того же обещания: подборщик рисует занятые метки занятыми — по списку,
- * прочитанному в момент его открытия, а не при монтировании формы.
+ * What is checked here is the contract that carries this difference, and the
+ * second half of the same promise: the picker draws taken marks as taken — by
+ * the list read at the moment it opens, not when the form mounts.
  *
- * Читается прямо из файлов, как в `screens-craft.test.mts`: тест со своей
- * копией правила проходит вечно, пока экран уезжает.
+ * It is read straight from the files, as in `screens-craft.test.mts`: a test
+ * with its own copy of the rule passes forever while the screen drifts away.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -25,12 +26,12 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка без комментариев: объяснение — не обещание. */
+/** Markup without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
-/** Где перенесена строка, решает форматтер, а не тест. */
+/** Where a line is wrapped is up to the formatter, not the test. */
 function flat(source: string): string {
   return code(source).replace(/\s+/g, ' ')
 }
@@ -39,73 +40,73 @@ const JOIN = 'web/src/screens/JoinScreen.svelte'
 const PICKER = 'web/src/components/join/MarkPicker.svelte'
 const PROTOCOL = 'shared/protocol.ts'
 
-/* ------------------------------------------------- признак выбора руками */
+/* ------------------------------------------------- picked-by-hand flag */
 
-test('в теле /join едет признак «выбрано руками»', () => {
+test('the /join body carries the "picked by hand" flag', () => {
   const protocol = code(read(PROTOCOL))
   const request = protocol.slice(
     protocol.indexOf('interface JoinRequest'),
     protocol.indexOf('interface JoinResponse'),
   )
-  assert.match(request, /picked\?: boolean/, 'серверу нечем отличить выбранную метку от выданной')
+  assert.match(request, /picked\?: boolean/, 'the server has nothing to tell a picked mark from a handed-out one')
 })
 
-test('экран входа этот признак действительно посылает', () => {
+test('the join screen really sends this flag', () => {
   const join = flat(read(JOIN))
   assert.match(
     join,
     /api\.join\(session\.id, \{ name: who, avatar: mark, picked,/,
-    'метка уходит на сервер без признака выбора — подменят и её',
+    'the mark goes to the server without the picked flag — it will be replaced too',
   )
 })
 
-/* ---------------------------------------------------- свежесть занятости */
+/* ---------------------------------------------------- fresh occupancy */
 
-test('подборщик открывается вместе с перечитыванием комнаты', () => {
+test('the picker opens together with a re-read of the room', () => {
   const join = flat(read(JOIN))
-  assert.match(join, /onclick=\{openPicker\}/, '«Change» снова открывает подборщик напрямую')
+  assert.match(join, /onclick=\{openPicker\}/, '"Change" opens the picker directly again')
   assert.doesNotMatch(
     join,
     /onclick=\{\(\) => \(picking = true\)\}/,
-    'осталось открытие без чтения',
+    'an open without a read is still there',
   )
   assert.match(
     join,
     /function openPicker\(\): void \{ picking = true void readRoom\(\)/,
-    'сетка рисуется по ростеру минутной давности',
+    'the grid is drawn from a roster a minute old',
   )
 })
 
-test('чтение комнаты идёт через общее правило выбора метки', () => {
-  // markToClaim — единственная копия правила (components/join/pick.ts): своё
-  // пересчитываем, выбранное руками не трогаем. Вторая копия здесь разъехалась
-  // бы с той, на которой стоят тесты.
+test('reading the room goes through the shared mark-choice rule', () => {
+  // markToClaim is the only copy of the rule (components/join/pick.ts): what
+  // we handed out is recomputed, what was picked by hand is left alone. A
+  // second copy here would drift apart from the one the tests stand on.
   const join = flat(read(JOIN))
   assert.match(
     join,
     /async function readRoom\(\)[\s\S]*mark = markToClaim\(mark, picked, taken, profile\.avatar\)/,
-    'у чтения комнаты завелась своя копия правила',
+    'reading the room has grown its own copy of the rule',
   )
 })
 
-/* ---------------------------------------------------------- своя плитка */
+/* ---------------------------------------------------------- own tile */
 
-test('своя метка остаётся своей, даже когда её успели занять', () => {
+test('your own mark stays yours even when someone has taken it meanwhile', () => {
   const picker = flat(read(PICKER))
   const grid = picker.slice(picker.indexOf('role="radiogroup"'))
-  // Ростер перечитывается при открытии подборщика, и выбранный руками зверь
-  // может приехать сюда уже занятым. Серым он тогда становиться не должен:
-  // «где мой» на сорока плитках без рамки не читается.
+  // The roster is re-read when the picker opens, and the animal picked by
+  // hand may arrive here already taken. It must not turn grey then: "which
+  // one is mine" cannot be read on forty tiles without the border.
   assert.match(
     grid,
     /\{selected \? 'border-accent[^']*' : held \?/,
-    'занятость перекрашивает собственную метку и рамка теряется',
+    'being taken recolours your own mark and the border is lost',
   )
   assert.match(
     grid,
     /held && !selected \? 'opacity-25'/,
-    'свой же зверь гаснет до четверти видимости',
+    'your own animal fades to a quarter of its visibility',
   )
-  // И при этом точка носителя остаётся: рядом с вами его носит кто-то ещё.
-  assert.match(grid, /\{#if held\}/, 'точка носителя пропала вместе с серым')
+  // And the wearer's dot still stays: someone else is wearing it next to you.
+  assert.match(grid, /\{#if held\}/, 'the dot of the wearer vanished along with the grey')
 })

@@ -50,16 +50,17 @@ data_release() {
   if [ -f "$STATE/recovery/release.json" ]; then printf '%s\n' "$STATE/recovery/release.json";
   else printf '%s\n' "$STATE/releases/current.json"; fi
 }
-# Файл оператора, по которому рендерится брокер: новый --env-file или
-# config.env прошлой установки — тот же выбор, что делает prepare. Из него
-# брокер получает RUNTIME_KERNEL_MEMORY[_MAX]; без этого память комнат по
-# умолчанию задавалась только правкой Deployment, и update её стирал.
+# The operator's file the broker is rendered from: a new --env-file or the
+# config.env of the previous installation, the same choice prepare makes. From
+# it the broker gets RUNTIME_KERNEL_MEMORY[_MAX]; without that, the default
+# room memory could be set only by editing the Deployment, and update wiped it.
 operator_env() {
   if [ -n "$ENV_FILE" ]; then printf '%s\n' "$ENV_FILE"
   elif [ -r "$STATE/config.env" ]; then printf '%s\n' "$STATE/config.env"; fi
 }
-# Проверить эти числа, пока ничего не остановлено: иначе плохое значение
-# всплыло бы после бэкапа и остановки комнат — или CrashLoop-ом брокера.
+# Check these numbers while nothing is stopped yet: otherwise a bad value would
+# surface after the backup and the stopping of the rooms, or as a broker
+# CrashLoop.
 check_operator_env() {
   local file
   file="$(operator_env)"
@@ -464,11 +465,12 @@ lines = file.read_text().splitlines() if file.exists() else []
 current = next((x[11:] for x in reversed(lines) if x.startswith('PUBLIC_URL=')), None)
 if current == url:
     raise SystemExit(3)
-# --if-current: снять адрес может только тот, кто его ставил. scripts/host.sh
-# на выходе возвращает localhost, и без этой сверки его уборка затирала адрес,
-# который за это время поставил кто-то другой (второй туннель, оператор руками),
-# — живая ссылка молча превращалась в localhost. Сверка стоит здесь, под замком
-# состояния, рядом с записью: сверить снаружи и записать потом — это гонка.
+# --if-current: only whoever set the address may take it down. scripts/host.sh
+# returns localhost on exit, and without this check its cleanup overwrote an
+# address that someone else had set in the meantime (a second tunnel, the
+# operator by hand): a live link silently turned into localhost. The check
+# stands here, under the state lock, next to the write: checking outside and
+# writing later is a race.
 expected = os.environ.get('EXPECT_URL') or ''
 if expected and current != expected:
     raise SystemExit(4)

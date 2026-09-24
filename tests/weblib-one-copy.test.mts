@@ -1,16 +1,18 @@
 /**
- * Одно правило — одна копия: где на клиенте их было две.
+ * One rule — one copy: where the client had two.
  *
- * Монограмма человека считалась дважды и по-разному: лента версий брала первую
- * и ВТОРУЮ буквы, аватар и список людей — первую и ПОСЛЕДНЮЮ. «Иван Петрович
- * Сидоров» получался «ИП» в одном углу экрана и «ИС» в другом — один человек,
- * один экран, две монограммы, и ни одна из них не выглядит ошибкой.
+ * A person's monogram was computed twice and differently: the version feed
+ * took the first and SECOND letters, the avatar and the people list the first
+ * and LAST. "Иван Петрович Сидоров" came out as "ИП" in one corner of the
+ * screen and "ИС" in the other — one person, one screen, two monograms, and
+ * neither of them looks like a mistake.
  *
- * Полоса режима консилиума складывалась тремя способами: `councilStripText`
- * (с тестом и без единого вызова), разметка консоли руками и счётчики сервера.
- * Здесь проверяется, что у функции есть чем ответить на оба вопроса — и про
- * счёт сервера, и про то, что человек может пересчитать глазами, — и что её
- * по-прежнему кто-то зовёт: функция с тестом и без вызова — это и был дефект.
+ * The council mode bar was assembled in three ways: `councilStripText` (with
+ * a test and without a single call), the console markup by hand and the
+ * server's counters. Here we check that the function has something to answer
+ * both questions with — about the server's count and about what a person can
+ * count by eye — and that someone still calls it: a function with a test and
+ * no call was exactly the defect.
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -20,46 +22,49 @@ import { initials } from '../web/src/lib/utils.js'
 import { initialsOf } from '../web/src/lib/history.js'
 import { councilStripText } from '../web/src/lib/council.svelte.js'
 
-test('монограмма в ленте версий — та же, что на аватаре', () => {
+test('the monogram in the version feed is the same as on the avatar', () => {
   for (const name of ['Иван Петрович Сидоров', 'Ада Лавлейс', 'Пётр', 'Anna Maria de la Cruz']) {
-    assert.equal(initialsOf(name), initials(name), `${name}: два разных кружка на одном экране`)
+    assert.equal(initialsOf(name), initials(name), `${name}: two different circles on one screen`)
   }
 })
 
-test('у записи без автора монограммы нет: это комната, а не неизвестный человек', () => {
-  // `initials` отвечает «?» — «кто-то, кого мы не знаем»; лента рисует точку,
-  // и это другое утверждение: никто, потому что писал не человек.
+test('an entry without an author has no monogram: it is the room, not an unknown person', () => {
+  // `initials` answers "?" — "someone we do not know"; the feed draws a dot,
+  // and that is a different statement: nobody, because it was not a person
+  // who wrote it.
   assert.equal(initialsOf(null), '')
   assert.equal(initialsOf('   '), '')
   assert.equal(initials(''), '?')
 })
 
-test('полоса консилиума считает группы по тому, что на экране, а не только по серверу', () => {
+test('the council bar counts groups by what is on the screen, not only by the server', () => {
   const counts = { attempts: 487, submitted: 446, writing: 41, groups: 6 }
   assert.equal(
     councilStripText(counts),
     '487 попыток · 446 сдали · 41 черновик · 6 разных ответов',
   )
-  // Стопка сгруппировала то, что ей доехало, — в полосе должно стоять это.
+  // The stack grouped what reached it — that is what must be in the bar.
   assert.equal(
     councilStripText(counts, 2),
     '487 попыток · 446 сдали · 41 черновик · 2 разных ответа',
   )
 })
 
-test('полосу режима кто-то рисует: функция без единого вызова — это и был дефект', () => {
-  // Консоль переехала в окно пульта, и полоса вместе с ней — в полосу отбора.
+test('someone draws the mode bar: a function without a single call was exactly the defect', () => {
+  // The console moved into the pult window, and the bar went with it — into
+  // the filter bar.
   const filters = readFileSync(
     resolve(import.meta.dirname, '..', 'web/src/components/council/pult/PultFilters.svelte'),
     'utf8',
   )
-  // Нулём, а не числом групп: группировку из пульта убрали целиком (20.09), и
-  // «6 разных ответов» в подписи к списку осталось бы последним её следом —
-  // числом, которого в самом списке не пересчитать глазами.
+  // With zero, not the number of groups: grouping was removed from the pult
+  // entirely (20 Sep 2026), and "6 different answers" in the list caption
+  // would remain its last trace — a number that cannot be counted by eye in
+  // the list itself.
   assert.match(filters, /councilStripText\(counts, 0\)/)
 })
 
-test('нечего сказать — не говорим: ни «0 черновиков», ни «0 разных ответов»', () => {
+test('nothing to say — we say nothing: neither "0 drafts" nor "0 different answers"', () => {
   assert.equal(
     councilStripText({ attempts: 2, submitted: 0, writing: 2, groups: 0 }, 0),
     '2 попытки · 0 сдали · 2 черновика',

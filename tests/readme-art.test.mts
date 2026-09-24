@@ -1,12 +1,12 @@
 /**
- * Анимации сцен: то, что нельзя увидеть глазами на одном кадре.
+ * Scene animations: what the eye cannot see in a single frame.
  *
- * Сцены рисует scripts/readme-art.mts, и смотреть их надо в браузере — верстку
- * и петлю проверяет человек. Здесь остаётся то, что глаз пропускает: что файлы
- * на диске совпадают с тем, что печатает генератор (иначе «make readme-art»
- * забыли), что в них нет ничего, чего <img> на GitHub не покажет, и что языки
- * не перемешались — русская сцена с английской подписью выглядит рабочей и
- * молча врёт.
+ * The scenes are drawn by scripts/readme-art.mts, and they have to be viewed in
+ * a browser — a person checks the layout and the loop. What stays here is what
+ * the eye misses: that the files on disk match what the generator prints
+ * (otherwise somebody forgot "make readme-art"), that they hold nothing an
+ * <img> on GitHub will not show, and that the languages did not get mixed up —
+ * a Russian scene with an English caption looks like it works and silently lies.
  */
 import './_env.mts'
 import { readFileSync } from 'node:fs'
@@ -24,23 +24,23 @@ const THEMES = ['light', 'dark'] as const
 
 const files = renderAll()
 
-/** Все имена, на которые ссылаются README и лендинг. Меняются — ломаются ссылки. */
+/** Every name the README and the landing page link to. Change them and the links break. */
 const expected = SLUGS.flatMap((slug) =>
   LANGS.flatMap((lang) => THEMES.map((theme) => sceneFile(slug, lang, theme))),
 )
 
-test('генератор печатает все двадцать файлов под ожидаемыми именами', () => {
+test('the generator prints all twenty files under the expected names', () => {
   assert.deepEqual([...files.keys()].sort(), [...expected].sort())
 })
 
-test('генератор детерминирован: второй прогон байт в байт совпадает с первым', () => {
+test('the generator is deterministic: a second run matches the first byte for byte', () => {
   const again = renderAll()
   for (const name of expected) assert.equal(again.get(name), files.get(name), name)
 })
 
-test('файлы на диске совпадают с тем, что печатает генератор', () => {
-  // Каталога два: README читает .github/assets/readme, лендинг раздаётся из
-  // site/ и до .github/ не дотягивается. Копии обязаны быть одинаковыми.
+test('the files on disk match what the generator prints', () => {
+  // There are two directories: the README reads .github/assets/readme, the landing
+  // page is served from site/ and cannot reach .github/. The copies have to be identical.
   for (const dir of OUT_DIRS) {
     for (const name of expected) {
       const path = join(dir, name)
@@ -48,38 +48,38 @@ test('файлы на диске совпадают с тем, что печат
       try {
         disk = readFileSync(path, 'utf8')
       } catch {
-        assert.fail(`нет файла ${path.slice(ROOT.length + 1)} — прогоните make readme-art`)
+        assert.fail(`missing file ${path.slice(ROOT.length + 1)}: run make readme-art`)
       }
       assert.equal(
         disk,
         files.get(name),
-        `${path.slice(ROOT.length + 1)} отстал от генератора — прогоните make readme-art`,
+        `${path.slice(ROOT.length + 1)} is behind the generator: run make readme-art`,
       )
     }
   }
 })
 
-test('каждая сцена проходит проверки, с которыми её покажет <img> на GitHub', () => {
+test('every scene passes the checks it needs for an <img> on GitHub to show it', () => {
   for (const [name, svg] of files) assert.deepEqual(complaints(name, svg), [], name)
 })
 
-test('у каждой сцены свой язык в корне и подпись на нём же', () => {
+test('every scene has its language at the root and a caption in that language', () => {
   const CYR = /[А-Яа-яЁё]/
   for (const [name, svg] of files) {
     const lang = name.includes('-ru-') ? 'ru' : 'en'
-    assert.match(svg, new RegExp(`<svg[^>]*\\slang="${lang}"`), `${name}: нет lang="${lang}"`)
+    assert.match(svg, new RegExp(`<svg[^>]*\\slang="${lang}"`), `${name}: no lang="${lang}"`)
     const title = /<title[^>]*>([^<]*)<\/title>/.exec(svg)?.[1] ?? ''
     const desc = /<desc[^>]*>([^<]*)<\/desc>/.exec(svg)?.[1] ?? ''
-    assert.ok(title && desc, `${name}: сцена без <title>/<desc>`)
+    assert.ok(title && desc, `${name}: a scene without <title>/<desc>`)
     for (const [what, text] of [['title', title], ['desc', desc]] as const) {
-      assert.equal(CYR.test(text), lang === 'ru', `${name}: ${what} не на языке сцены — ${text}`)
+      assert.equal(CYR.test(text), lang === 'ru', `${name}: ${what} is not in the scene's language — ${text}`)
     }
   }
 })
 
 /**
- * Латиница, которой в русской сцене место: это не подписи, а код и имена
- * форматов. Питон остаётся Питоном на обоих языках.
+ * Latin words that belong in a Russian scene: they are not captions but code
+ * and format names. Python stays Python in both languages.
  */
 const CODE_WORDS = new Set([
   'csv', // "scores.csv"
@@ -101,11 +101,11 @@ const CODE_WORDS = new Set([
   'shape', // df.shape
 ])
 
-/** Слова из видимого текста сцены: <style> и сущности не в счёт. */
+/** Words from the visible text of a scene: <style> and entities do not count. */
 function visibleWords(svg: string): Set<string> {
   const text = svg
     .replace(/<style>[\s\S]*?<\/style>/g, '')
-    .replace(/&[a-z]+;/g, ' ') // &quot; — это кавычка в коде, а не слово
+    .replace(/&[a-z]+;/g, ' ') // &quot; is a quote in code, not a word
   const out = new Set<string>()
   for (const chunk of text.matchAll(/>([^<>]+)</g)) {
     for (const word of chunk[1].split(/[^A-Za-z]+/)) {
@@ -115,24 +115,24 @@ function visibleWords(svg: string): Set<string> {
   return out
 }
 
-test('в русских сценах не осталось английских подписей', () => {
+test('no English captions are left in the Russian scenes', () => {
   const english = new Set<string>()
   for (const [name, svg] of files) {
     if (name.includes('-ru-')) continue
     for (const word of visibleWords(svg)) if (!CODE_WORDS.has(word)) english.add(word)
   }
-  assert.ok(english.size > 100, 'словарь английских подписей собрался подозрительно маленьким')
+  assert.ok(english.size > 100, 'the dictionary of English captions came out suspiciously small')
   for (const [name, svg] of files) {
     if (!name.includes('-ru-')) continue
     const left = [...visibleWords(svg)].filter((w) => english.has(w))
-    assert.deepEqual(left, [], `${name}: английские подписи на месте — ${left.join(', ')}`)
+    assert.deepEqual(left, [], `${name}: English captions still in place — ${left.join(', ')}`)
   }
 })
 
-test('в английских сценах нет кириллицы', () => {
+test('there is no Cyrillic in the English scenes', () => {
   for (const [name, svg] of files) {
     if (name.includes('-ru-')) continue
     const found = /[А-Яа-яЁё]+/.exec(svg)
-    assert.equal(found, null, `${name}: кириллица в английской сцене — ${found?.[0]}`)
+    assert.equal(found, null, `${name}: Cyrillic in an English scene — ${found?.[0]}`)
   }
 })

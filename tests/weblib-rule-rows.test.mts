@@ -1,20 +1,22 @@
 /**
- * Подписи правил комнаты: единственное место, где преподаватель читает, что
- * означает каждый переключатель.
+ * The room rule labels: the only place where the teacher reads what each
+ * switch means.
  *
- * `RULE_ROWS` — чистый TypeScript без Svelte, и до сих пор его не проверял
- * никто. А ломается он именно молча: правило, у которого нет строки, просто
- * исчезает из панели (значение при этом действует, и никто об этом не узнает);
- * значение, которого нет в `readRules`, рисуется кнопкой, которая после нажатия
- * тихо возвращается на умолчание — то есть переключатель, обещающий не то.
+ * `RULE_ROWS` is plain TypeScript without Svelte, and until now nobody tested
+ * it. And it breaks exactly silently: a rule without a row simply disappears
+ * from the panel (the value keeps working, and nobody will find out); a value
+ * that `readRules` does not have is drawn as a button that quietly goes back
+ * to the default after being pressed — that is, a switch that promises the
+ * wrong thing.
  *
- * Отсюда три проверки: каждое правило комнаты названо где-то (или названо
- * здесь, что оно живёт не в этой панели), каждый вариант доживает до `readRules`
- * нетронутым, и у каждой строки есть слова.
+ * Hence three checks: every room rule is named somewhere (or it is stated
+ * here that it lives outside this panel), every option survives `readRules`
+ * untouched, and every row has words.
  *
- * И четвёртая, про язык этих слов: список рисует не только панель, но и пульт
- * правил внутри комнаты, поэтому перевод «заодно с панелью» — это два имени у
- * одной настройки (решение — в шапке web/src/components/RoomRulesRows.svelte).
+ * And a fourth, about the language of these words: the list is drawn not only
+ * by the panel but also by the rules console inside the room, so translating
+ * "along with the panel" means two names for one setting (the decision is in
+ * the header of web/src/components/RoomRulesRows.svelte).
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -23,53 +25,55 @@ import { OPEN_ROOM, readRules, type RoomRules } from '../shared/rules.js'
 import { LIMITS } from '../shared/admin.js'
 
 /**
- * Правила, у которых в этой панели строки нет — и почему.
+ * Rules that have no row in this panel — and why.
  *
- * Список, а не молчание: правило, выпавшее из панели по недосмотру, выглядит
- * ровно так же, как правило, которое решили спрашивать в другом месте, и
- * отличить их можно только словами.
+ * A list, not silence: a rule that fell out of the panel by oversight looks
+ * exactly like a rule that was decided to be asked elsewhere, and the two can
+ * only be told apart by words.
  */
 const ELSEWHERE: Record<string, string> = {
-  // Режим оракула — карточки на экране создания семинара (NewSeminar.svelte),
-  // потому что он выбирается вместе с моделью и потолком инстанса.
-  oracle: 'карточки оракула при создании семинара',
-  // Модель — там же и рядом: это имя, а не переключатель.
-  model: 'выбор модели при создании семинара',
-  // Доступ к ОТДЕЛЬНОЙ тетради — меню на её вкладке (reader/TabStrip.svelte):
-  // это не настройка комнаты, а свойство одной тетради, и спрашивают его там,
-  // где на эту тетрадь смотрят. В панели за него отвечает строка `ownBooks` —
-  // что получает тетрадь, которую студент заведёт себе сам.
-  books: 'меню «Доступ» на вкладке тетради',
+  // The Oracle mode — cards on the seminar creation screen
+  // (NewSeminar.svelte), because it is chosen together with the model and the
+  // instance cap.
+  oracle: 'the Oracle cards when creating a seminar',
+  // The model — in the same place, right next to it: it is a name, not a
+  // switch.
+  model: 'the model choice when creating a seminar',
+  // Access to a SINGLE notebook — the menu on its tab (reader/TabStrip.svelte):
+  // it is not a room setting but a property of one notebook, and it is asked
+  // where that notebook is looked at. In the panel the `ownBooks` row answers
+  // for it — what a notebook that a student creates for themselves gets.
+  books: 'the "Access" menu on the notebook tab',
   /*
-   * Сколько железа отдано личным тетрадям — блок, раскрывающийся ПОД строкой
-   * `ownBooks`, когда она включена (RoomRulesRows.svelte · own-res). Своей
-   * строки у него нет намеренно: это не двенадцатое право комнаты, а
-   * подробность одного правила, и спрашивают её там же и тогда же, когда
-   * человек это правило включает.
+   * How much hardware is given to personal notebooks — a block that unfolds
+   * UNDER the `ownBooks` row when it is on (RoomRulesRows.svelte · own-res). It
+   * has no row of its own on purpose: it is not a twelfth room right but a
+   * detail of one rule, and it is asked there and then, when the person turns
+   * that rule on.
    */
-  ownMemoryMb: 'блок «Ресурсы на все личные тетради» под строкой «Личные тетради студентов»',
-  ownCpus: 'там же, рядом с памятью',
+  ownMemoryMb: 'the "Resources for all personal notebooks" block under the "Students’ personal notebooks" row',
+  ownCpus: 'in the same place, next to the memory',
 }
 
-test('у каждого правила комнаты есть строка — или сказано, где его спрашивают', () => {
+test('every room rule has a row — or it is stated where it is asked', () => {
   const named = new Set(RULE_ROWS.map((row) => row.key as string))
   for (const key of Object.keys(OPEN_ROOM) as (keyof RoomRules)[]) {
     assert.ok(
       named.has(key) || key in ELSEWHERE,
-      `правило ${key} не названо нигде: панель молчит, а правило действует`,
+      `rule ${key} is named nowhere: the panel is silent, yet the rule is in effect`,
     )
   }
   for (const key of Object.keys(ELSEWHERE)) {
-    assert.equal(named.has(key), false, `${key} назван и здесь, и в списке исключений`)
+    assert.equal(named.has(key), false, `${key} is named both here and in the exception list`)
   }
 })
 
-test('строка на каждое правило одна: две спорили бы друг с другом', () => {
+test('there is one row per rule: two would argue with each other', () => {
   const keys = RULE_ROWS.map((row) => row.key as string)
-  assert.equal(new Set(keys).size, keys.length, 'правило названо дважды')
+  assert.equal(new Set(keys).size, keys.length, 'a rule is named twice')
 })
 
-test('каждый вариант переключателя доживает до readRules нетронутым', () => {
+test('every switch option survives readRules untouched', () => {
   for (const row of RULE_ROWS) {
     if (row.kind !== 'choice') continue
     for (const option of row.options) {
@@ -77,116 +81,120 @@ test('каждый вариант переключателя доживает д
       assert.equal(
         read[row.key],
         option.value,
-        `«${row.title}» предлагает ${option.value}, а комната читает ${String(read[row.key])}`,
+        `"${row.title}" offers ${option.value}, but the room reads ${String(read[row.key])}`,
       )
     }
   }
 })
 
-test('умолчание комнаты названо среди вариантов — иначе панель не покажет, что стоит', () => {
+test('the room default is named among the options — otherwise the panel will not show what is set', () => {
   for (const row of RULE_ROWS) {
     if (row.kind !== 'choice') continue
     const now = (OPEN_ROOM as unknown as Record<string, unknown>)[row.key]
     assert.ok(
       row.options.some((option) => option.value === now),
-      `у «${row.title}» нет варианта под умолчание ${String(now)}`,
+      `"${row.title}" has no option for the default ${String(now)}`,
     )
   }
 })
 
-test('у каждой строки есть и название, и объяснение, и подписи у вариантов', () => {
+test('every row has a title, an explanation and labels for its options', () => {
   for (const row of RULE_ROWS) {
-    assert.ok(row.title.trim().length > 0, `${row.key} без названия`)
-    assert.ok(row.note.trim().length > 20, `${row.key}: подпись ничего не объясняет`)
+    assert.ok(row.title.trim().length > 0, `${row.key} has no title`)
+    assert.ok(row.note.trim().length > 20, `${row.key}: the note explains nothing`)
     if (row.kind !== 'choice') continue
-    assert.ok(row.options.length >= 2, `${row.key}: переключатель с одним положением`)
+    assert.ok(row.options.length >= 2, `${row.key}: a switch with a single position`)
     for (const option of row.options) {
-      assert.ok(option.label.trim().length > 0, `${row.key}: вариант без подписи`)
+      assert.ok(option.label.trim().length > 0, `${row.key}: an option without a label`)
     }
   }
 })
 
 /*
- * Числовые строки бывают двух видов, и это не небрежность.
+ * Numeric rows come in two kinds, and this is not sloppiness.
  *
- * У потолков оракула за спиной стоит настройка ИНСТАНСА: пустое поле значит
- * «как на сервере», и подпись обязана назвать серверное число. У предела ячейки
- * (`cellLimitSec`) серверного числа нет вовсе — пустое поле значит «без
- * предела», — и выдуманная строка «как на сервере: —» отвечала бы на вопрос,
- * которого никто не задавал. Поэтому `atInstance` необязательна, а список
- * строк без инстанса — здесь, списком, а не молчанием: строка, потерявшая
- * подсказку по недосмотру, выглядит так же, как строка, которой она не
- * положена.
+ * The Oracle caps have an INSTANCE setting behind them: an empty field means
+ * "as on the server", and the note must name the server's number. The cell
+ * limit (`cellLimitSec`) has no server number at all — an empty field means
+ * "no limit" — and a made-up line "as on the server: —" would answer a
+ * question nobody asked. So `atInstance` is optional, and the list of rows
+ * without an instance is here, as a list, not silence: a row that lost its
+ * hint by oversight looks the same as a row that is not supposed to have one.
  */
 const NO_INSTANCE: Record<string, string> = {
-  cellLimitSec: 'предел ячейки: у инстанса такого числа нет, пусто значит «без предела»',
+  cellLimitSec: 'cell limit: the instance has no such number, empty means "no limit"',
 }
 
-test('числовые строки меряются той же линейкой, что и настройка инстанса', () => {
+test('numeric rows are measured with the same ruler as the instance setting', () => {
   for (const row of RULE_ROWS) {
     if (row.kind !== 'limit') continue
-    assert.ok(row.unit.trim().length > 0, `${row.key}: число осталось голым`)
+    assert.ok(row.unit.trim().length > 0, `${row.key}: the number was left bare`)
     if (NO_INSTANCE[row.key]) {
       assert.equal(row.atInstance, undefined, `${row.key}: ${NO_INSTANCE[row.key]}`)
-      assert.ok(row.min >= 1, `${row.key}: ноль секунд — это «останавливать сразу»`)
-      assert.ok(row.max > row.min, `${row.key}: линейка без длины`)
+      assert.ok(row.min >= 1, `${row.key}: zero seconds means "stop right away"`)
+      assert.ok(row.max > row.min, `${row.key}: a ruler with no length`)
       continue
     }
     const ceiling = LIMITS[row.key as keyof typeof LIMITS]
-    assert.ok(ceiling, `${row.key}: у комнаты есть поле, а у инстанса линейки нет`)
-    assert.ok(row.min >= ceiling.min, `${row.key}: комната просит меньше, чем умеет инстанс`)
-    assert.equal(row.max, ceiling.max, `${row.key}: комната просит больше, чем умеет инстанс`)
-    // Ноль — не число, а особое состояние, и подпись обязана сказать словами
-    // какое: «0 в час» рядом с полем ввода — это загадка, а не подсказка.
-    assert.doesNotMatch(row.atInstance!(0), /^0/, `${row.key}: ноль показан числом`)
-    assert.match(row.atInstance!(5), /5/, `${row.key}: значение инстанса не названо`)
+    assert.ok(ceiling, `${row.key}: the room has a field, but the instance has no ruler`)
+    assert.ok(row.min >= ceiling.min, `${row.key}: the room asks for less than the instance can do`)
+    assert.equal(row.max, ceiling.max, `${row.key}: the room asks for more than the instance can do`)
+    // Zero is not a number but a special state, and the note must say in
+    // words which one: "0 per hour" next to an input field is a riddle, not a
+    // hint.
+    assert.doesNotMatch(row.atInstance!(0), /^0/, `${row.key}: zero is shown as a number`)
+    assert.match(row.atInstance!(5), /5/, `${row.key}: the instance value is not named`)
   }
 })
 
-test('край линейки принимается комнатой, а за краем — зажимается', () => {
+test('the edge of the ruler is accepted by the room, and beyond the edge it is clamped', () => {
   for (const row of RULE_ROWS) {
     if (row.kind !== 'limit') continue
     const read = readRules({ [row.key]: row.max }) as unknown as Record<string, unknown>
-    assert.equal(read[row.key], row.max, `${row.key}: панель предлагает край, а комната его режет`)
+    assert.equal(read[row.key], row.max, `${row.key}: the panel offers the edge, but the room cuts it`)
     const over = readRules({ [row.key]: row.max + 1 }) as unknown as Record<string, unknown>
     /*
-     * За краем — по-разному, и разница осмысленная. Потолок оракула зажимается:
-     * «меньше, чем просили» здесь безопасная сторона. Предел ячейки падает в
-     * `null`, то есть «без предела»: безопасная сторона у него ровно обратная —
-     * оборвать чужой разбор из-за мусора в поле хуже, чем не оборвать.
+     * Beyond the edge it differs, and the difference is meaningful. The Oracle
+     * cap is clamped: "less than asked for" is the safe side here. The cell
+     * limit falls to `null`, that is, "no limit": its safe side is exactly the
+     * opposite — cutting off someone's walkthrough because of garbage in a
+     * field is worse than not cutting it off.
      */
     assert.equal(
       over[row.key],
       NO_INSTANCE[row.key] ? null : row.max,
-      `${row.key}: комната приняла число за краем линейки`,
+      `${row.key}: the room accepted a number beyond the edge of the ruler`,
     )
   }
 })
 
 /*
- * Язык подписей — язык комнаты, и меняется он только вместе с ней.
+ * The language of the labels is the room's language, and it changes only
+ * together with it.
  *
- * Половинчатый перевод не падает и не рисует ничего криво: он просто называет
- * правило в панели одним словом, а в комнате другим, и преподаватель, закрывший
- * тетрадь из панели, ищет в комнате переключатель, которого там нет. Проверка
- * грубая нарочно — буква кириллицы в каждой видимой строке: тонкая ловила бы
- * стиль, а поймать надо ровно один случай — «перевели панель, комнату забыли».
- * Если язык комнаты однажды сменят, эти строки поедут вместе с ней и одним
- * куском, и тогда меняется этот тест, а не половина массива.
+ * A half-done translation does not fail and does not draw anything crooked:
+ * it simply names the rule with one word in the panel and with another in the
+ * room, and a teacher who closed the notebook from the panel looks in the room
+ * for a switch that is not there. The check is crude on purpose — a Cyrillic
+ * letter in every visible line: a fine one would catch style, but what must be
+ * caught is exactly one case — "they translated the panel and forgot the
+ * room". If the room's language is changed one day, these lines will move
+ * together with it and in one piece, and then this test changes, not half of
+ * the array.
  */
 const ROOM_LANGUAGE = /[А-Яа-яЁё]/
 
-test('подписи правил остаются в языке комнаты — панель не переводит их отдельно', () => {
+test('the rule labels stay in the language of the room — the panel does not translate them separately', () => {
   for (const row of RULE_ROWS) {
-    const twoNames = `«${row.title}» переведено отдельно от комнаты: у правила ${row.key} стало два имени`
+    const twoNames = `"${row.title}" was translated separately from the room: rule ${row.key} now has two names`
     assert.match(row.title, ROOM_LANGUAGE, twoNames)
     assert.match(row.note, ROOM_LANGUAGE, twoNames)
     if (row.kind === 'choice') {
       for (const option of row.options) assert.match(option.label, ROOM_LANGUAGE, twoNames)
     } else {
       assert.match(row.unit, ROOM_LANGUAGE, twoNames)
-      // Ноль называется словами, и эти слова тоже читают в комнате. У строки
-      // без инстанса называть нечего — см. NO_INSTANCE.
+      // Zero is named in words, and those words are read in the room too. A
+      // row without an instance has nothing to name — see NO_INSTANCE.
       if (row.atInstance) assert.match(row.atInstance(0), ROOM_LANGUAGE, twoNames)
     }
   }

@@ -1,15 +1,15 @@
 /**
- * Решения, которые панель соревнований принимает по числам, а не по запросу.
+ * Decisions the competitions panel makes by numbers rather than by request.
  *
- * Чистые функции: ни базы, ни диска, ни express. Сюда вынесено всё, у чего
- * есть правильный и неправильный ответ, — готовность к открытию, оценка
- * ожидания в очереди, сводка без базового решения, — потому что проверять их
- * через HTTP значит проверять заодно печенье, маршрутизацию и JSON, а падать
- * они будут молча и по одному числу.
+ * Pure functions: no database, no disk, no express. Everything that has a
+ * right and a wrong answer is moved here — readiness to open, the queue wait
+ * estimate, the summary without the baseline solution — because checking them
+ * over HTTP means also checking the cookie, routing and JSON, and they will
+ * fail silently and by a single number.
  *
- * Слов здесь нет: отказ называется причиной (`OpenRefusal`), а фразу к ней
- * подбирает тот, кто отвечает, — по-русски или по-английски, смотря чей
- * инстанс.
+ * There are no words here: a refusal is named by its reason (`OpenRefusal`),
+ * and the sentence for it is picked by whoever answers — in Russian or in
+ * English, depending on whose instance it is.
  */
 import { ENVIRONMENT_NAME } from '@shared/admin'
 import {
@@ -26,30 +26,32 @@ import {
 } from '@shared/competitions'
 import type { CompetitionCounts, CompetitionInput, OpenRefusal } from '@shared/competitions-api'
 
-/** Всё, чем решается «можно ли открывать». */
+/** Everything that decides "may it be opened". */
 export interface Readiness {
   openFiles: number
   hiddenFiles: number
   metricCode: string
-  /** Есть ли на диске сэмпл-тетрадь. */
+  /** Whether the sample notebook is on disk. */
   baseline: boolean
-  /** Чем кончился её последний заход; null — не проверялась. */
+  /** How its last run ended; null means it has not been checked. */
   baselineState: SubmissionState | null
   privateRelease: 'auto' | 'manual'
   deadlineAt: number | null
 }
 
 /**
- * Почему соревнование ещё нельзя открыть; `null` — можно.
+ * Why the competition cannot be opened yet; `null` means it can.
  *
- * Порядок проверок — порядок секций в редакторе (данные, ответы, метрика,
- * сэмпл-тетрадь, сроки): человек чинит то, что названо первым, и должен идти
- * по форме сверху вниз, а не прыгать по ней за каждым следующим отказом.
+ * The order of checks is the order of sections in the editor (data, answers,
+ * metric, sample notebook, dates): a person fixes what is named first, and
+ * should go down the form from top to bottom rather than jump around it after
+ * each next refusal.
  *
- * Главное здесь — предпоследняя строка. «Сэмпл-тетрадь загружена» и
- * «сэмпл-тетрадь прошла весь путь до числа» — разные вещи, и открывать
- * соревнование можно только по второй: задача, которая не решается даже
- * автором, — это сто человек, безуспешно ищущих ошибку у себя.
+ * The main thing here is the second-to-last line. "The sample notebook is
+ * uploaded" and "the sample notebook went all the way to a number" are
+ * different things, and the competition may be opened only on the second: a
+ * task that not even its author can solve means a hundred people searching in
+ * vain for a mistake in their own work.
  */
 export function openRefusal(r: Readiness): OpenRefusal | null {
   if (r.openFiles === 0) return 'noData'
@@ -57,46 +59,48 @@ export function openRefusal(r: Readiness): OpenRefusal | null {
   if (r.metricCode.trim().length === 0) return 'noMetric'
   if (!r.baseline) return 'noBaseline'
   if (r.baselineState !== 'scored') return 'baselineNotChecked'
-  // Приватный лидерборд открывает дедлайн — без даты открывать его нечему, и
-  // итога у соревнования не будет вовсе.
+  // The private leaderboard is opened by the deadline — without a date there
+  // is nothing to open it, and the competition will have no final result.
   if (r.privateRelease === 'auto' && r.deadlineAt === null) return 'noDeadline'
   return null
 }
 
 /**
- * Можно ли пересчитать метрику этой посылки, не запуская тетрадь заново.
+ * Whether this submission's metric can be recomputed without running the
+ * notebook again.
  *
- * Пересчёт читает `submission.csv`, снятый прошлым прогоном, — значит годится
- * всё, что до него дошло: и удачная посылка, и отвергнутая метрикой (после
- * правки кода тот же ответ может оказаться принятым), и упавшая на самой
- * метрике. Упавшая тетрадь, убитая по времени или по памяти ответа не
- * оставила, и «пересчитать» для неё означало бы исполнить заново — другое
- * действие с другой ценой.
+ * Rescoring reads the `submission.csv` taken by the previous run — so anything
+ * that got that far will do: a successful submission, one rejected by the
+ * metric (after the code is fixed the same answer may turn out to be
+ * accepted), and one that failed in the metric itself. A notebook that
+ * crashed or was killed for time or memory left no answer, and "rescore"
+ * would mean executing it again — a different action at a different price.
  */
 export function rescorable(state: SubmissionState): boolean {
   return state === 'scored' || state === 'rejected' || state === 'metricFailed'
 }
 
-/* ----------------------------------------------------------- оценка ждущих */
+/* ---------------------------------------------------------- wait estimates */
 
 export interface QueueTiming {
-  /** Сколько осталось каждому идущему прогону, мс. */
+  /** How much time each running run has left, ms. */
   runningLeftMs: readonly number[]
-  /** Сколько в среднем идёт посылка; null — мерить не по чему. */
+  /** Average submission duration; null means there is nothing to measure by. */
   averageMs: number | null
   slots: number
 }
 
 /**
- * «≈ 3 мин» для каждой ждущей посылки, по порядку очереди.
+ * "≈ 3 min" for each waiting submission, in queue order.
  *
- * Считается расстановкой по свободным местам, а не умножением номера на
- * среднее: при двух исполнителях пятый в очереди ждёт вдвое меньше, и число,
- * посчитанное без этого, врёт ровно вдвое — причём в большую сторону, то есть
- * человек уходит с экрана, решив, что успеет сходить за кофе.
+ * Computed by assigning to free slots, not by multiplying the position by the
+ * average: with two executors the fifth in the queue waits half as long, and a
+ * number computed without this lies by exactly a factor of two — upward, at
+ * that, so the person leaves the screen thinking they have time to go for a
+ * coffee.
  *
- * `null` — когда среднего ещё нет: первая посылка соревнования ждёт неизвестно
- * сколько, и «≈ 0 мин» было бы обещанием, а не оценкой.
+ * `null` when there is no average yet: the first submission of a competition
+ * waits who knows how long, and "≈ 0 min" would be a promise, not an estimate.
  */
 export function waitEtas(count: number, timing: QueueTiming): (number | null)[] {
   if (count <= 0) return []
@@ -114,9 +118,9 @@ export function waitEtas(count: number, timing: QueueTiming): (number | null)[] 
   return out
 }
 
-/* --------------------------------------------------------------- сводки */
+/* ------------------------------------------------------------ summaries */
 
-/** Что известно про посылку счёту дня и средней длительности. */
+/** What is known about a submission for the day's count and the average duration. */
 export interface DoneEntry {
   acceptedAt: number
   state: SubmissionState
@@ -124,13 +128,14 @@ export interface DoneEntry {
 }
 
 /**
- * «сегодня исполнено 37, в среднем 2 мин 40 с».
+ * "37 executed today, 2 min 40 s on average".
  *
- * Днём считается день ПРИНЯТИЯ посылки, а не окончания прогона: времени
- * окончания у посылки нет, есть длительность, и восстанавливать по ней момент
- * значило бы прибавлять к принятию ещё и неизвестное ожидание в очереди.
- * Расходятся эти два дня только у посылки, принятой до полуночи и досчитанной
- * после, — одна строка в сутки, и она не стоит выдуманного времени.
+ * The day that counts is the day the submission was ACCEPTED, not the day its
+ * run ended: a submission has no end time, it has a duration, and
+ * reconstructing the moment from it would mean adding the unknown wait in the
+ * queue to the acceptance time as well. The two days differ only for a
+ * submission accepted before midnight and finished after — one row a day, and
+ * it is not worth a made-up time.
  */
 export function executedToday(
   entries: readonly DoneEntry[],
@@ -149,7 +154,7 @@ export function executedToday(
   }
 }
 
-/** Медиана — «Медиана исполнения 2 мин 40 с» в сводке A3. */
+/** The median — "Median run time 2 min 40 s" in the A3 summary. */
 export function medianOf(values: readonly number[]): number | null {
   const sorted = [...values].filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
   if (sorted.length === 0) return null
@@ -160,13 +165,15 @@ export function medianOf(values: readonly number[]): number | null {
 }
 
 /**
- * Сводка без базового решения.
+ * The summary without the baseline solution.
  *
- * Сэмпл-тетрадь записана обычной посылкой обычного (служебного) участника —
- * иначе её незачем было бы исполнять тем же путём, которым исполняются
- * посылки, и «проверено» ничего бы не доказывало. Но в строке «УЧАСТНИКИ 28» и
- * в сводке «ПОСЫЛОК 143» её быть не должно: это числа про класс, и лишняя
- * единица в них — та самая мелочь, по которой перестают верить всему экрану.
+ * The sample notebook is recorded as an ordinary submission of an ordinary
+ * (service) participant — otherwise there would be no point in executing it
+ * along the same path submissions are executed on, and "checked" would prove
+ * nothing. But it must not be in the "PARTICIPANTS 28" line or in the
+ * "SUBMISSIONS 143" summary: these are numbers about the class, and an extra
+ * one in them is exactly the kind of trifle that makes people stop trusting
+ * the whole screen.
  */
 export function withoutBaseline(
   counts: CompetitionCounts,
@@ -188,16 +195,16 @@ export function withoutBaseline(
   }
 }
 
-/* ------------------------------------------------------- разбор формы A2 */
+/* ------------------------------------------------------- parsing form A2 */
 
 /*
- * Что прислала форма редактора, лежит в `@shared/competitions-api`: это форма
- * проводов, и вторая её копия здесь разошлась бы с клиентом на первом же новом
- * поле.
+ * What the editor form sent lives in `@shared/competitions-api`: it is the
+ * shape of the wire, and a second copy of it here would diverge from the
+ * client on the very first new field.
  */
 export type { CompetitionInput }
 
-/** Отказ формы называет ПОЛЕ: человек должен знать, что подсветить. */
+/** A form refusal names the FIELD: the person must know what to highlight. */
 export type InputRefusal =
   | { field: 'slug'; why: SlugRefusal }
   | { field: 'title'; why: 'empty' }
@@ -212,17 +219,17 @@ const CHOICES = {
 } as const
 
 /**
- * Прочитать тело запроса как правку соревнования.
+ * Read the request body as an edit of a competition.
  *
- * Чистая, и это не из любви к чистоте: границы полей — единственное, что стоит
- * между формой и базой. Поле, проверенное только на экране, — это поле без
- * ограничения, а «публичная часть 0 %» или «памяти 64 МБ» ломаются не при
- * сохранении, а через неделю, на чужой посылке, и выглядят как ошибка
- * участника.
+ * Pure, and not out of love for purity: the field bounds are the only thing
+ * standing between the form and the database. A field checked only on screen
+ * is a field without a limit, and "public part 0 %" or "memory 64 MB" break
+ * not on saving but a week later, on someone else's submission, and look like
+ * the participant's mistake.
  *
- * Пришедшие поля — только те, что назвала форма: редактор A2 и вкладка
- * «Настройки» в A3 показывают РАЗНЫЕ куски соревнования, и «сохранить всё»
- * означало бы, что вкладка затирает поля, которых никогда не показывала.
+ * The fields that arrive are only those the form named: the A2 editor and the
+ * "Settings" tab in A3 show DIFFERENT pieces of a competition, and "save
+ * everything" would mean the tab overwrites fields it never showed.
  */
 export function parseCompetitionInput(
   body: unknown,
@@ -243,8 +250,8 @@ export function parseCompetitionInput(
     input.title = title
   }
   if (has('blurb')) input.blurb = String(raw.blurb ?? '').trim()
-  // Описание не подрезается по краям: пробел в конце строки Markdown — это
-  // перенос, а не мусор.
+  // The description is not trimmed at the edges: a space at the end of a
+  // Markdown line is a line break, not garbage.
   if (has('description')) input.description = String(raw.description ?? '')
 
   if (has('metric')) {
@@ -317,16 +324,19 @@ export function parseCompetitionInput(
   return { input }
 }
 
-/** Целое из тела запроса; `null` — это не число (в том числе `"5"` с мусором). */
+/**
+ * An integer from the request body; `null` means it is not a number
+ * (including `"5"` with garbage).
+ */
 function number(value: unknown): number | null {
   if (typeof value === 'boolean' || value === null || value === undefined) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? Math.round(parsed) : null
 }
 
-/* ------------------------------------------------------- порядок очереди */
+/* ----------------------------------------------------------- queue order */
 
-/** Строка очереди в том виде, в каком её сортируют. */
+/** A queue row in the form in which it is sorted. */
 export interface QueueOrderRow {
   submissionId: string
   entrantId: string
@@ -335,15 +345,15 @@ export interface QueueOrderRow {
 }
 
 /**
- * Ждущие — в том порядке, в котором их возьмут.
+ * The waiting ones — in the order in which they will be taken.
  *
- * ЭТО КОПИЯ ПОРЯДКА ИЗ `store.ts` · `selectNext`, и другой она быть не может:
- * берёт работу SQL (два процесса должны видеть один ответ), а нумерует строки
- * экран. Разойдясь, они не падают — экран просто врёт: человек читает «вы
- * вторая», а исполнитель берёт третью, и объяснить это нельзя ничем. Правило
- * одно: у кого уже что-то исполняется, тот пропускает остальных вперёд; своя
- * k-я посылка встаёт позади всех чужих (k−1)-х; при равенстве — кто раньше
- * прислал.
+ * THIS IS A COPY OF THE ORDER FROM `store.ts` · `selectNext`, and it cannot be
+ * any other: SQL takes the work (two processes must see one answer), while
+ * the screen numbers the rows. If they diverge, nothing crashes — the screen
+ * simply lies: a person reads "you are second", while the executor takes the
+ * third, and nothing can explain it. The rule is one: whoever already has
+ * something running lets the others go ahead; one's own k-th submission gets
+ * in line behind everyone else's (k−1)-th; on a tie, whoever sent it first.
  */
 export function fairOrder<T extends QueueOrderRow>(
   waiting: readonly T[],

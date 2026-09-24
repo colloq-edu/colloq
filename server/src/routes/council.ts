@@ -1,40 +1,44 @@
 import { tr } from '@shared/i18n'
 /**
- * Единственная REST-дверь консилиума: спросить оракула о решениях.
+ * The council's only REST door: asking the Oracle about the solutions.
  *
- * Всё остальное в консилиуме ходит по управляющему сокету (control.ts ·
- * council:*): попытки, показ, ответы, отметки. Оракул — здесь, потому что он
- * ходит к той же модели и тратит тот же лимит вопросов комнаты, что и
+ * Everything else in the council goes over the control socket (control.ts ·
+ * council:*): attempts, showing, answers, marks. The Oracle is here because
+ * it goes to the same model and spends the same room question limit as
  * `/api/sessions/:id/ai/ask` (routes/ai.ts · countRoomQuestions/recordQuestion),
- * и право у него то же: только преподаватель (`sessionAuth`, роль по куке
- * штата, а не из токена).
+ * and its right is the same: teacher only (`sessionAuth`, the role from the
+ * staff cookie, not from the token).
  *
- *   POST   /api/sessions/:id/council/:cellId/oracle  — «Спросить»/«Обновить»:
- *          один вопрос из лимита; ответ уходит сокетом (`council:oracle`),
- *          здесь — 202 с текущим `CouncilOracle` (state: 'reading') или отказ
- *          словами: 403 выключен / 503 нет ключа / 429 лимит / 409 уже читает
- *   DELETE /api/sessions/:id/council/:cellId/oracle  — «Стоп»
+ *   POST   /api/sessions/:id/council/:cellId/oracle  — "Ask"/"Refresh":
+ *          one question from the limit; the answer goes out over the socket
+ *          (`council:oracle`), here a 202 with the current `CouncilOracle`
+ *          (state: 'reading') or a refusal in words: 403 disabled / 503 no key
+ *          / 429 limit / 409 already reading
+ *   DELETE /api/sessions/:id/council/:cellId/oracle  — "Stop"
  *
- * У POST один вид: вопрос о классе. Тело `{ question?: string }` — свои слова
- * преподавателя, а пустое тело значит заготовку, которую ставит СЕРВЕР
- * (`server.council.statusQuestion`): она едет модели в промпте и должна быть
- * одна для любого клиента, включая тот, что откроют через полгода.
+ * POST has one kind: a question about the class. The body
+ * `{ question?: string }` is the teacher's own words, and an empty body means
+ * the stock question set by the SERVER (`server.council.statusQuestion`): it
+ * goes to the model in the prompt and must be the same for any client,
+ * including one opened half a year from now.
  *
- * Спросить можно ВСЕГДА. 400 «в этой ячейке ещё никто ничего не написал» здесь
- * был и снят: на пустой ячейке кадр всё равно несёт текст общей ячейки и
- * markdown над ней, а «что это вообще за задание и как им действовать» —
- * законный вопрос ровно в те минуты, когда ещё никто ничего не написал.
+ * One can ALWAYS ask. A 400 "nobody has written anything in this cell yet"
+ * used to be here and was removed: on an empty cell the frame still carries
+ * the text of the shared cell and the markdown above it, and "what is this
+ * task anyway and how should we go about it" is a legitimate question exactly
+ * in the minutes when nobody has written anything yet.
  *
- * Модель видит задание, весь класс — черновики, запуски, отметки, тишину — и
- * решения поимённо. Имена настоящие, если инстанс это разрешает
- * (`OracleSettings.sendNames`, по умолчанию да); выключено — едут метки, и
- * соответствие «метка → человек» остаётся на сервере
- * (`CouncilOracleAnswer.people`). Сборка кадра и состояние — ai/council.ts;
- * здесь только право, лимит и ячейка.
+ * The model sees the task, the whole class (drafts, runs, marks, silence) and
+ * the solutions by name. The names are real if the instance allows it
+ * (`OracleSettings.sendNames`, yes by default); when it is off, labels go
+ * instead, and the "label → person" mapping stays on the server
+ * (`CouncilOracleAnswer.people`). Frame assembly and state are in
+ * ai/council.ts; here there is only the right, the limit and the cell.
  *
- * Хранение — council.ts, но через `deps`, а не напрямую: тесты подменяют его
- * списком в памяти, и маршрут проверяется без таблицы попыток — она живёт у
- * другого модуля и меняется отдельно от этого.
+ * Storage is council.ts, but through `deps`, not directly: tests replace it
+ * with an in-memory list, and the route is checked without the attempts
+ * table, which belongs to another module and changes separately from this
+ * one.
  */
 import { json, Router, type Request, type Response } from 'express'
 import { cellSource, findCell } from '@shared/notebook'
@@ -56,32 +60,34 @@ import { visitSessionDoc } from './doc-visit.js'
 import { attemptsOf, oracleOf, setOracle } from '../council.js'
 import { getParticipant, getRules, getSession } from '../db.js'
 /*
- * Потолок комнаты — тот же самый, а не такое же число.
+ * The room ceiling is the very same one, not an equal number.
  *
- * Здесь стояло собственное `ROOM_MULTIPLIER = 30` с комментарием «то же число,
- * что в routes/ai.ts», и это признание было единственным, что их связывало:
- * правка одного тихо разводила лимиты, хотя оракул сводки и оракул вопросов
- * тратят один ключ и считаются в одну таблицу. Теперь функция одна на обоих —
- * и она же знает, что потолок считается от размера комнаты.
+ * There used to be a separate `ROOM_MULTIPLIER = 30` here with the comment
+ * "the same number as in routes/ai.ts", and that admission was the only thing
+ * tying them together: editing one silently split the limits, even though the
+ * summary Oracle and the question Oracle spend one key and are counted in one
+ * table. Now there is one function for both, and it also knows that the
+ * ceiling is computed from the room's size.
  */
 import { roomQuestionCeiling } from './ai.js'
 import { banDoor, sessionAuth } from './sessions.js'
 
 const HOUR_MS = 3_600_000
 
-/** Откуда маршрут берёт попытки и куда кладёт оракула. По умолчанию — council.ts. */
+/** Where the route gets attempts and where it puts the Oracle. council.ts by default. */
 export interface CouncilOracleDeps extends OracleStore {
   attemptsOf(sessionId: string, cellId: string): OracleAttempt[]
 }
 
 /**
- * Имя к попытке — здесь, а не в council.ts.
+ * The name for an attempt, here rather than in council.ts.
  *
- * Стопка преподавателя и так собирает имена (`toAttempt`), но оракулу едет не
- * стопка, а голые строки: подтягивать участника имеет смысл ровно на тех
- * попытках, которые сейчас уезжают в кадр, и ровно тогда, когда инстанс
- * разрешил слать имена. Строки участника может не быть вовсе — человек вышел,
- * его сняли, — и тогда кадр зовёт его меткой (ai/council.ts · namesFor).
+ * The teacher's stack collects names anyway (`toAttempt`), but what goes to
+ * the Oracle is not the stack but bare rows: looking up the participant makes
+ * sense exactly for the attempts going into the frame now, and exactly when
+ * the instance allowed sending names. The participant row may not exist at
+ * all (the person left, was removed), and then the frame calls them by a
+ * label (ai/council.ts · namesFor).
  */
 function named(sessionId: string, cellId: string): OracleAttempt[] {
   return attemptsOf(sessionId, cellId).map((attempt) => {
@@ -89,7 +95,7 @@ function named(sessionId: string, cellId: string): OracleAttempt[] {
     try {
       name = getParticipant(sessionId, attempt.participantId)?.name ?? null
     } catch {
-      /* строки участника нет — кадр обойдётся меткой */
+      /* no participant row: the frame will do with a label */
     }
     return { ...attempt, name }
   })
@@ -100,13 +106,14 @@ const live: CouncilOracleDeps = { attemptsOf: named, oracleOf, setOracle }
 export function councilRoutes(deps: CouncilOracleDeps = live): Router {
   const router = Router()
 
-  // Та же дверь, что у остальных маршрутов комнаты (routes/sessions.ts · banDoor).
+  // The same door as the room's other routes (routes/sessions.ts · banDoor).
   router.use('/api/sessions/:id', banDoor)
 
   /**
-   * Кто и о какой ячейке. Три отказа, общие обоим маршрутам: не вошёл, нет
-   * комнаты, не преподаватель. Слова отказа — те же, что у признака в пульте
-   * (web/src/lib/may.ts · councilWhy), чтобы кнопка и сервер говорили одно.
+   * Who, and about which cell. Three refusals shared by both routes: not
+   * joined, no room, not a teacher. The refusal's words are the same as the
+   * console's flag (web/src/lib/may.ts · councilWhy), so that the button and
+   * the server say the same thing.
    */
   const lead = (
     req: Request,
@@ -130,13 +137,13 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
   }
 
   /*
-   * Разбор тела — свой, а не только общий из app.ts.
+   * Body parsing of our own, not only the common one from app.ts.
    *
-   * Общий `express.json` стоит на приложении и до этого маршрута доходит; но
-   * роутер собирается и в тестах, где приложения нет вовсе, и вопрос о классе
-   * там молча превращался бы в сводку — то есть проверялся бы не тот путь.
-   * Повторный разбор ничего не стоит: body-parser пропускает тело, которое уже
-   * прочитано (`req._body`).
+   * The common `express.json` sits on the app and does reach this route; but
+   * the router is also assembled in tests, where there is no app at all, and
+   * a question about the class would silently turn into a summary there, that
+   * is, the wrong path would be tested. Parsing twice costs nothing:
+   * body-parser skips a body that has already been read (`req._body`).
    */
   router.post('/api/sessions/:id/council/:cellId/oracle', json({ limit: '8kb' }), (req, res) => {
     const who = lead(req, res)
@@ -144,10 +151,11 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     const { sessionId, cellId } = who
 
     /*
-     * Выключен, нет ключа, нет вопросов — те же три двери, что у /ai/ask, и
-     * в том же порядке; слова по-русски, потому что читает их преподаватель с
-     * пульта, а не студент из панели. Режим подсказок сюда пускает: сводка —
-     * для ведущего, и решений за студентов она не пишет.
+     * Disabled, no key, no questions: the same three doors as /ai/ask, in the
+     * same order; the words are in Russian because the teacher reads them on
+     * the console, not a student in the panel. Hints mode is let through
+     * here: the summary is for the presenter, and it writes no solutions for
+     * the students.
      */
     const settings = getOracleSettings()
     const mode = oracleModeIn(getRules(sessionId), settings.defaultMode)
@@ -171,16 +179,16 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     }
 
     /*
-     * Ячейка — из документа комнаты, а не из тела запроса: задание для модели
-     * — это текст общей ячейки, каким он сейчас есть у всех, и предыдущая
-     * ячейка над ним как условие.
+     * The cell comes from the room's document, not from the request body: the
+     * task for the model is the text of the shared cell as everyone has it
+     * right now, with the cell above it as the problem statement.
      *
-     * Через `visitSessionDoc`: у идущего консилиума документ и так поднят, и
-     * тогда это просто чтение; а вот «Обновить» в комнате, из которой все
-     * вышли, поднимает её тетрадь, и без визита она лежала бы в памяти до
-     * уборки простаивающих комнат (routes/doc-visit.ts). Из документа берутся
-     * строки, а не ссылки на `Y.Text`: за границей визита документа может уже
-     * не быть.
+     * Through `visitSessionDoc`: in a running council the document is up
+     * anyway, and then this is just a read; but "Refresh" in a room everyone
+     * has left brings its notebook up, and without the visit it would sit in
+     * memory until the idle sweep (routes/doc-visit.ts). Strings are taken
+     * from the document, not references to `Y.Text`: beyond the visit the
+     * document may no longer exist.
      */
     const task = visitSessionDoc(sessionId, (doc) => {
       const found = findCell(doc, cellId)
@@ -189,7 +197,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       return {
         source: cellSource(found.cell).toString(),
         before: before ? cellSource(before).toString() : null,
-        // Эталона в тетради пока нет: когда появится поле у ячейки — сюда.
+        // The notebook has no reference solution yet: when the cell gets such a field, it goes here.
         reference: null,
       }
     })
@@ -203,13 +211,15 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     }
 
     /*
-     * Потолок комнаты — и для преподавателя.
+     * The room ceiling applies to the teacher too.
      *
-     * У /ai/ask ведущего потолки не держат: его вопросы — это разбор, а в
-     * комнатный предел его привёл бы класс. Здесь иначе: сводка — самый
-     * дорогой вопрос в комнате, она везёт модели все решения разом, и
-     * «Обновить» на каждую сдачу — ровно тот расход, от которого потолок
-     * держит инстанс. Личный предел и слоу-мод ведущего не касаются и тут.
+     * At /ai/ask the ceilings do not hold the presenter back: their questions
+     * are the review, and it would be the class that drove them into the room
+     * limit. Here it is different: the summary is the most expensive question
+     * in the room, it carries all the solutions to the model at once, and
+     * "Refresh" on every submission is exactly the spending the ceiling
+     * protects the instance from. The personal limit and slow mode do not
+     * apply to the presenter here either.
      */
     const limit = oracleLimitsIn(getRules(sessionId), settings).questionsPerHour
     const roomLimit = roomQuestionCeiling(sessionId, limit)
@@ -222,14 +232,15 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     }
 
     /*
-     * Вопрос. Пустая строка — это «вопроса нет», а не «вопрос из пробелов»:
-     * поле ввода пульта отправляет то, что в нём лежит, и Enter на пробеле
-     * уезжать к модели не должен.
+     * The question. An empty string means "no question", not "a question made
+     * of spaces": the console's input field sends whatever is in it, and an
+     * Enter on a space must not go to the model.
      *
-     * Ни одного листа в ячейке — тоже законный случай, и раньше он был
-     * единственным 400. Спросить «что это за задание и как им действовать»
-     * хочется ровно тогда, когда никто ещё ничего не написал; кадр в этот
-     * момент несёт текст общей ячейки и markdown над ней — этого хватает.
+     * Not a single sheet in the cell is a legitimate case too, and it used to
+     * be the only 400. One wants to ask "what is this task and how should we
+     * go about it" exactly when nobody has written anything yet; at that
+     * moment the frame carries the shared cell's text and the markdown above
+     * it, and that is enough.
      */
     const body = (req.body ?? {}) as { question?: unknown; effort?: unknown }
     const asked =
@@ -237,10 +248,10 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     const question = asked !== '' ? asked : tr('server.council.statusQuestion')
 
     /*
-     * Уровень размышлений — понизить может любой, поднять выше инстансового
-     * может только преподаватель. Сюда доходит только преподаватель
-     * (`mayLeadCouncil` выше), так что здесь проверяется лишь само значение;
-     * права разбирает дверь /ai/ask, куда ходит вся комната.
+     * The reasoning level: anyone may lower it, only a teacher may raise it
+     * above the instance's. Only a teacher gets here (`mayLeadCouncil` above),
+     * so only the value itself is checked here; the rights are sorted out by
+     * the /ai/ask door, which the whole room uses.
      */
     const effort: ReasoningEffort | undefined = isReasoningEffort(body.effort)
       ? body.effort
@@ -249,10 +260,11 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     const attempts = deps.attemptsOf(sessionId, cellId)
 
     /*
-     * Строка расхода — при приёме, как у /ai/ask: запрос к провайдеру уйдёт,
-     * чем бы он ни кончился. Своё действие в учёте: оракул консилиума в
-     * разбивке панели не должен прятаться среди «спросили». Кончится запрос
-     * ничем — строка снимается (ai/council.ts · wasted).
+     * The usage row is written on acceptance, as at /ai/ask: the request to
+     * the provider will go out however it ends. It has its own action in the
+     * accounting: the council Oracle must not hide among "asked" in the
+     * panel's breakdown. If the request comes to nothing, the row is removed
+     * (ai/council.ts · wasted).
      */
     const usageId = recordQuestion({
       sessionId,
@@ -270,7 +282,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       question,
       effort,
     })
-    // 202: вопрос ушёл, ответ приедет сокетом (`council:oracle`) — как у /ai/ask.
+    // 202: the question went out, the answer arrives over the socket (`council:oracle`), as at /ai/ask.
     res.status(202).json(oracle satisfies CouncilOracle)
   })
 
@@ -278,14 +290,14 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     const who = lead(req, res)
     if (!who) return
     /*
-     * «Стоп» обязан работать ВСЕГДА, и «остановить нечего» — не ошибка.
+     * "Stop" must ALWAYS work, and "nothing to stop" is not an error.
      *
-     * Кнопка и опоздавший ответ встречаются постоянно, и красить это красным
-     * незачем. Но есть случай хуже: ячейка, застрявшая в `reading` без живого
-     * чтения. Тогда «Стоп» раньше не делал ничего, а следующий вопрос получал
-     * 409 «уже готовится» — до перезапуска сервера. Поэтому store едет внутрь:
-     * не нашлось, что обрывать, а состояние всё ещё «читает» — привести в
-     * порядок и ответить успехом.
+     * The button and a late answer meet all the time, and there is no reason
+     * to paint that red. But there is a worse case: a cell stuck in `reading`
+     * without a live read. Then "Stop" used to do nothing, and the next
+     * question got a 409 "already being prepared" until the server restarted.
+     * So the store goes inside: if there was nothing to cut off but the state
+     * still says "reading", put it in order and answer with success.
      */
     stopCouncilOracle(who.sessionId, who.cellId, deps)
     res.json({ ok: true })

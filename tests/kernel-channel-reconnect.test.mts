@@ -1,20 +1,23 @@
 /**
- * Канал к ядру — один. Второй означает, что комната видит каждый вывод дважды.
+ * There is one channel to the kernel. A second one means the room sees every
+ * output twice.
  *
- * Jupyter рассылает iopub во ВСЕ подключения к ядру, поэтому два открытых
- * сокета — это не запас прочности, а удвоение: каждый `print`, каждая картинка
- * и каждый трейсбек обрабатываются дважды и дважды ложатся в ячейку, до конца
- * жизни ядра.
+ * Jupyter broadcasts iopub to ALL connections to the kernel, so two open
+ * sockets are not a safety margin but a doubling: every `print`, every image
+ * and every traceback is handled twice and lands in the cell twice, for the
+ * rest of the kernel's life.
  *
- * Открывались они так: пока `reconnect()` ждёт рукопожатия (до двадцати секунд),
- * `socket` уже null, таймер уже снят — оба сторожа пусты, и `waitForSocket`,
- * который опрашивает состояние каждые сто миллисекунд из каждого `execute`,
- * заводил ещё одно переподключение. Обработчик `open` просто присваивал новый
- * сокет поверх старого, не закрывая его, а `close` старого планировал третье.
- * В terminal.ts этот же класс бед закрыт полем `opening`; здесь он был открыт.
+ * This is how they got opened: while `reconnect()` waits for the handshake
+ * (up to twenty seconds), `socket` is already null and the timer already
+ * cleared — both guards are empty, and `waitForSocket`, which polls the state
+ * every hundred milliseconds from every `execute`, started one more
+ * reconnection. The `open` handler simply assigned the new socket over the
+ * old one without closing it, and the old one's `close` scheduled a third.
+ * In terminal.ts the same class of trouble is closed by the `opening` field;
+ * here it was open.
  *
- * Подделка Jupyter с медленным рукопожатием: настоящее ядро эту гонку по
- * требованию не отдаст.
+ * A fake Jupyter with a slow handshake: a real kernel will not produce this
+ * race on demand.
  */
 import './_env.mts'
 import { createServer, type Server } from 'node:http'
@@ -27,9 +30,9 @@ let wss: WebSocketServer
 let port = 0
 let minted = 0
 const kernels = new Set<string>()
-/** Открытые сокеты по id ядра: второй к тому же ядру — и есть дефект. */
+/** Open sockets by kernel id: a second one to the same kernel is the defect. */
 const open = new Map<string, Set<WebSocket>>()
-/** Задержка рукопожатия: ею открывается окно «переподключение в полёте». */
+/** Handshake delay: it opens the "reconnect in flight" window. */
 let upgradeDelayMs = 0
 
 const liveSockets = (id: string) =>
@@ -81,13 +84,13 @@ before(async () => {
             content: { code: string }
           }
           if (msg.header.msg_type !== 'execute_request') return
-          // Ячейка, остановившаяся в input(): ответа ждём, реплая не шлём.
+          // A cell stopped at input(): we wait for an answer and send no reply.
           if (/INPUT/.test(msg.content.code)) {
             send(ws, msg.header, 'input_request', { prompt: 'сколько? ', password: false })
             return
           }
-          // Настоящий Jupyter рассылает iopub каждому подключению — ровно это и
-          // превращает второй сокет в удвоенный вывод.
+          // Real Jupyter broadcasts iopub to every connection — exactly what
+          // turns a second socket into doubled output.
           for (const peer of liveSockets(id)) {
             send(peer, msg.header, 'status', { execution_state: 'busy' })
             send(peer, msg.header, 'stream', { name: 'stdout', text: `${msg.content.code}\n` })
@@ -120,58 +123,61 @@ const handlers = (seen: string[]) => ({
   onClear: () => {},
 })
 
-test('переподключение посреди ожидания не открывает второй канал', async () => {
+test('a reconnect in the middle of a wait does not open a second channel', async () => {
   const { JupyterKernel } = await import('../server/src/kernel/jupyter.js')
   const endpoint = { url: `http://127.0.0.1:${port}`, token: 'fake' }
   const kernel = await JupyterKernel.connect('reconnect-room', endpoint)
   const id = [...kernels][kernels.size - 1]
-  assert.equal(liveSockets(id).length, 1, 'подделка отдала не один канал на старте')
+  assert.equal(liveSockets(id).length, 1, 'the fake gave more than one channel at the start')
 
   /*
-   * Рукопожатие теперь долгое — это и есть окно, в которое `waitForSocket`
-   * успевал завести второе переподключение поверх идущего.
+   * The handshake is now slow — that is exactly the window in which
+   * `waitForSocket` managed to start a second reconnection on top of the one
+   * in progress.
    */
   upgradeDelayMs = 1200
   for (const ws of liveSockets(id)) ws.terminate()
   await wait(150)
 
-  // Ровно то, что делает комната: кто-то жмёт Run, пока канал ещё не вернулся.
+  // Exactly what the room does: someone presses Run while the channel has not
+  // come back yet.
   const first: string[] = []
   assert.equal(await kernel.execute('hello', handlers(first)), 'ok')
   assert.deepEqual(first, ['hello\n'])
 
   /*
-   * Лишние рукопожатия доезжают ПОЗЖЕ первого, и в этом всё дело: комната к
-   * этому моменту уже увидела нормальный вывод и ничего не заподозрила, а
-   * второй канал открылся и остался. Ждём, пока всё, что успело уйти,
-   * доедет, — и только потом спрашиваем.
+   * The extra handshakes arrive LATER than the first one, and that is the
+   * whole point: by then the room has already seen normal output and
+   * suspected nothing, while the second channel opened and stayed. We wait
+   * until everything that went out has arrived — and only then ask.
    */
   await wait(2000)
   assert.equal(
     liveSockets(id).length,
     1,
-    `к одному ядру открыто каналов: ${liveSockets(id).length} — весь iopub поедет столько же раз`,
+    `channels open to one kernel: ${liveSockets(id).length} — all of iopub will travel that many times`,
   )
 
   const second: string[] = []
   assert.equal(await kernel.execute('second', handlers(second)), 'ok')
-  assert.deepEqual(second, ['second\n'], `вывод пришёл ${second.length} раз(а)`)
+  assert.deepEqual(second, ['second\n'], `the output arrived ${second.length} time(s)`)
 
   upgradeDelayMs = 0
   kernel.detach()
 })
 
-test('ответ на input() при упавшем канале не гасит ожидание', async () => {
+test('an answer to input() over a dropped channel does not clear the wait', async () => {
   /*
-   * `answerInput` снимал `awaitingInput` ДО того, как ответ уходил в сокет, —
-   * а между этими двумя строками стоит ожидание канала, которое умеет бросить.
-   * Ядро после такого всё ещё стоит в `input()`, а сервер считает, что уже нет:
-   * приглашение висит у всей комнаты, каждое следующее «Send» молча получает
-   * `false`, очередь стоит, и выход один — «остановить».
+   * `answerInput` cleared `awaitingInput` BEFORE the answer went into the
+   * socket — and between those two lines sits a wait for the channel, which
+   * can throw. After that the kernel is still sitting in `input()`, while the
+   * server thinks it no longer is: the prompt hangs for the whole room, every
+   * following "Send" silently gets `false`, the queue is stuck, and the only
+   * way out is "stop".
    *
-   * Канал здесь роняется `detach()`, а не медленным переподключением: путь
-   * внутри тот же самый (`waitForSocket` бросает), только без сорока пяти
-   * секунд ожидания в сюите.
+   * The channel is dropped here with `detach()`, not with a slow reconnect:
+   * the path inside is the same (`waitForSocket` throws), just without
+   * forty-five seconds of waiting in the suite.
    */
   const { JupyterKernel } = await import('../server/src/kernel/jupyter.js')
   const endpoint = { url: `http://127.0.0.1:${port}`, token: 'fake' }
@@ -186,16 +192,16 @@ test('ответ на input() при упавшем канале не гасит
     }
     return false
   })()
-  assert.ok(asked, 'подделка не спросила ввода')
+  assert.ok(asked, 'the fake did not ask for input')
 
   kernel.detach()
   await assert.rejects(
     () => kernel.answerInput('42'),
-    'ответ ушёл в закрытый канал и объявлен доставленным',
+    'the answer went into a closed channel and was declared delivered',
   )
   assert.equal(
     kernel.waitingForInput,
     true,
-    'ожидание ввода сняли, хотя ответ так и не отправили — форма останется у всей комнаты',
+    'the input wait was cleared although the answer was never sent — the form will stay up for the whole room',
   )
 })

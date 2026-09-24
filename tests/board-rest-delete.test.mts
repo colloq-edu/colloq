@@ -1,16 +1,19 @@
 /**
- * Документ убрали — общий экран обязан погаснуть, какой бы дверью его ни убрали.
+ * The document was removed, so the shared screen must go dark, whichever
+ * door it was removed through.
  *
- * Дверей две: сокет комнаты (`tree:remove`) и REST панели файлов
- * (`DELETE /api/sessions/:id/file`). Первая гасила доску, вторая — нет: PDF,
- * удалённый из панели, оставался на общем экране у всей комнаты и на проекторе
- * до перезагрузки страницы. Пустая область без единого слова — и никто не может
- * понять, почему.
+ * There are two doors: the room socket (`tree:remove`) and the files panel
+ * REST (`DELETE /api/sessions/:id/file`). The first turned the board off,
+ * the second did not: a PDF deleted from the panel stayed on the shared
+ * screen for the whole room and on the projector until the page was
+ * reloaded. An empty area without a single word, and nobody can understand
+ * why.
  *
- * Клиентская страховка это больше не ловит и не должна: она считает пропажу
- * доказанной только на ПОЛНОМ списке файлов (web/src/lib/board.ts), потому что
- * обрезанный список — не доказательство, что файла нет, и по нему доска гасла
- * у всего зала посреди лекции.
+ * The client-side safety net no longer catches this and must not: it
+ * considers a disappearance proven only on the FULL file list
+ * (web/src/lib/board.ts), because a truncated list is no proof that the file
+ * is gone, and on such a list the board went dark for the whole hall in the
+ * middle of a lecture.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -33,7 +36,7 @@ const HOST: TokenPayload = { sessionId: ROOM, participantId: 'p_teacher', role: 
 let base = ''
 let server: http.Server
 
-/** Ровно то, что читает `send` управляющего сокета. */
+/** Exactly what the control socket's `send` reads. */
 function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
   const heard: ControlServerMessage[] = []
   const handlers = new Map<string, ((...args: unknown[]) => void)[]>()
@@ -55,8 +58,9 @@ function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
 
 before(async () => {
   createSession(ROOM, 'Лекция с документом', null)
-  // Ведущий по токену: `roleFor` спрашивает про это на каждом запросе, и без
-  // строки в базе REST-дверь ответила бы «файл убирает преподаватель».
+  // The host by token: `roleFor` asks about this on every request, and
+  // without a database row the REST door would answer "the teacher removes
+  // files".
   upsertParticipant({
     id: 'p_teacher',
     sessionId: ROOM,
@@ -83,11 +87,11 @@ after(() => {
   shutdownCollab()
 })
 
-test('удаление файла через панель гасит общий экран у всей комнаты', async () => {
+test('deleting a file through the panel turns off the shared screen for the whole room', async () => {
   const seat = socket()
   handleControlSocket(seat.ws, ROOM, HOST)
   dispatch(seat.ws, ROOM, HOST, { t: 'board:open', name: 'lecture.pdf' })
-  assert.equal(boardOf(ROOM), 'lecture.pdf', 'документ не встал на общий экран — проверять нечего')
+  assert.equal(boardOf(ROOM), 'lecture.pdf', 'the document did not go up on the shared screen, so there is nothing to check')
 
   seat.heard.length = 0
   const res = await fetch(`${base}/api/sessions/${ROOM}/file?path=lecture.pdf`, {
@@ -96,7 +100,7 @@ test('удаление файла через панель гасит общий 
   })
   assert.equal(res.status, 200)
 
-  assert.equal(boardOf(ROOM), null, 'удалённый документ остался на общем экране')
+  assert.equal(boardOf(ROOM), null, 'the deleted document stayed on the shared screen')
   const told = seat.heard.filter((frame) => frame.t === 'board').at(-1)
-  assert.deepEqual(told, { t: 'board', open: null }, 'комнате не сказали, что экран погас')
+  assert.deepEqual(told, { t: 'board', open: null }, 'the room was not told that the screen went dark')
 })

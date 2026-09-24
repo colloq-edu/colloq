@@ -1,64 +1,65 @@
 /**
- * Два решения тетради, которые уже успели разойтись с делом.
+ * Two notebook decisions that had already drifted out of step with reality.
  *
- * Оба про одно: клавиша, нажатая в тетради, обязана действовать на ту тетрадь,
- * которую человек видит, и не обязана менять её состав от его имени, если
- * состава ему не менять.
+ * Both are about the same thing: a key pressed in the notebook must act on the
+ * notebook the person sees, and has no business changing its make-up on their
+ * behalf when they may not change it.
  */
 
-/** Выделение — но только если оно ЗДЕСЬ. */
+/** The selection — but only if it is HERE. */
 export interface Here {
-  /** Ячейка, с которой работают клавиши; `null` — выделение в другой тетради. */
+  /** The cell the keys act on; `null`: the selection is in another notebook. */
   id: string | null
-  /** Её место в этом листе; -1, когда её тут нет. */
+  /** Its position in this sheet; -1 when it is not here. */
   at: number
 }
 
 /**
- * Выделение, принадлежащее ЭТОМУ листу.
+ * The selection that belongs to THIS sheet.
  *
- * `session.selectedCellId` — один на комнату и переключение вкладки его не
- * трогает. Пока обработчики брали его как есть, `d d` в открытой тетради
- * удаляла ячейку, которой на экране нет, `m`/`y` меняли её вид, а Shift+Enter
- * отправлял её на запуск — вывод появлялся в спрятанной вкладке. Ничего из
- * этого не видел тот, кто нажал.
+ * `session.selectedCellId` is one per room, and switching tabs does not touch
+ * it. While the handlers took it as is, `d d` in the open notebook deleted a
+ * cell that was not on screen, `m`/`y` changed its type, and Shift+Enter sent
+ * it to run — the output showed up in a hidden tab. The person who pressed the
+ * keys saw none of it.
  *
- * Чужое выделение считается пустым: `a`/`b` тогда вставляют в начало и в конец,
- * как в тетради, где ещё ничего не выбрано, а всё остальное просто молчит.
+ * A selection somewhere else counts as empty: `a`/`b` then insert at the start
+ * and at the end, as in a notebook where nothing is selected yet, and
+ * everything else simply does nothing.
  */
 export function selectionHere(selected: string | null, list: readonly string[]): Here {
   const at = selected ? list.indexOf(selected) : -1
   return { id: at === -1 ? null : selected, at }
 }
 
-/** Куда шагать после запуска — и дорастать ли лист. */
+/** Where to step after a run — and whether to grow the sheet. */
 export type StepPlan =
   | { kind: 'move'; cellId: string }
-  /** Шагать некуда, но Shift+Enter дописывает ячейку: вот сюда. */
+  /** Nowhere to step, but Shift+Enter appends a cell: right here. */
   | { kind: 'grow'; at: number }
   | { kind: 'stay' }
 
 export interface StepOptions {
-  /** Удаление первой ячейки: подхватить соседа с ДРУГОЙ стороны. */
+  /** Deleting the first cell: pick up the neighbour on the OTHER side. */
   fallback?: boolean
-  /** Shift+Enter: за последней ячейкой завести новую. */
+  /** Shift+Enter: add a new cell after the last one. */
   grow?: boolean
-  /** Можно ли в этой комнате добавлять ячейки. */
+  /** Whether cells may be added in this room. */
   mayAdd?: boolean
 }
 
 /**
- * Шаг от ячейки к соседке.
+ * A step from a cell to its neighbour.
  *
- * `grow` без права добавлять — не отказ, а «остаться на месте».
+ * `grow` without the right to add is not a refusal but "stay where you are".
  *
- * Пока это был отказ, комната с `run: room, structure: host` (преподаватель
- * зафиксировал каркас, считать разрешил всем) отвечала красным тостом
- * «Состав тетради в этом семинаре — преподавательский» на КАЖДЫЙ Shift+Enter в
- * последней ячейке — при том что запуск состоялся и был правильный. Человек,
- * правящий и перезапускающий последнюю ячейку, читал это как «запуск не
- * прошёл». Ровно то же поведение, что у Cmd+Enter, — «выполнить и остаться», —
- * и оно ничего не обещает сверх сделанного.
+ * While it was a refusal, a room with `run: room, structure: host` (the teacher
+ * fixed the skeleton and let everyone run) answered with a red toast "The
+ * notebook's make-up in this seminar is up to the teacher" to EVERY Shift+Enter
+ * in the last cell — even though the run had happened and was correct. Someone
+ * editing and re-running the last cell read it as "the run failed". This is
+ * exactly the behaviour of Cmd+Enter — "run and stay" — and it promises nothing
+ * beyond what was done.
  */
 export function stepPlan(
   list: readonly string[],

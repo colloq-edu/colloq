@@ -1,34 +1,39 @@
 #!/usr/bin/env bash
 #
-# .env локального занятия — для make. Печатает его в stdout; пишет цель `.env`.
+# The .env of a local class, for make. Prints it to stdout; the `.env` target
+# writes it.
 #
-# Зачем отдельный писатель, когда тот же файл уже выписывает colloq
-# (cli/src/launch-config.ts · localClassEnv). Цель `.env` раньше делала
-# `cp .env.example .env`, а .env.example — шаблон ПРОДА: KERNEL_BACKEND=broker,
-# KERNEL_CATALOG_FILE=/etc/colloq/… . Файл заводит первая же цель, которой он
-# нужен (make up, run, host, activity), — и после неё `make dev` отказывал на
-# broker: «This is a runtime broker installation». Супервизор при этом прав —
-# ослаблять его проверку незачем, — неправ был Makefile, выписавший за
-# человека файл, непригодный ровно для того, что человек делает.
+# Why a separate writer, when colloq already writes out the same file
+# (cli/src/launch-config.ts · localClassEnv). The `.env` target used to do
+# `cp .env.example .env`, and .env.example is the PRODUCTION template:
+# KERNEL_BACKEND=broker, KERNEL_CATALOG_FILE=/etc/colloq/… . The file is
+# created by the first target that needs it (make up, run, host, activity),
+# and after that `make dev` refused on broker: "This is a runtime broker
+# installation". The supervisor is right about it, and there is no reason to
+# weaken its check; the one in the wrong was the Makefile, which wrote out for
+# a person a file unfit for exactly what that person is doing.
 #
-# Почему не звать сам localClassEnv через node. `make up` — всё в docker, и
-# на машине с одним docker (разовая демонстрация, арендованная VM) нет ни node,
-# ни node_modules с tsx: цель `.env` упала бы раньше compose. Поэтому текст
-# здесь продублирован, а расходиться копиям не даёт тест
-# (tests/local-launch-env.test.mts сверяет вывод с localClassEnv(false)
-# построчно, кроме значения токена). Правите одно — правьте и другое.
+# Why not call localClassEnv itself through node. `make up` is all in docker,
+# and on a machine with docker alone (a one-off demo, a rented VM) there is
+# neither node nor node_modules with tsx: the `.env` target would fail before
+# compose. So the text is duplicated here, and a test keeps the copies from
+# drifting apart (tests/local-launch-env.test.mts compares the output with
+# localClassEnv(false) line by line, except for the token value). Edit one,
+# edit the other.
 #
-# Язык ru: localClassEnv(false) — это ветка репозитория, а make бывает только
-# в репозитории. Для `make up` содержимого хватает: compose берёт отсюда PORT,
-# BIND_ADDR, UI_LANGUAGE, KERNEL_*, ключи и настройки оракула, прочее у него
-# с умолчаниями; DOCKER_GID допишет цель docker-gid.
+# Language ru: localClassEnv(false) is the repository branch, and make exists
+# only in the repository. For `make up` the content is enough: compose takes
+# PORT, BIND_ADDR, UI_LANGUAGE, KERNEL_*, the keys and the Oracle settings
+# from here, and has defaults for the rest; the docker-gid target appends
+# DOCKER_GID.
 set -euo pipefail
 
-# Токен ядра свой на каждой установке, 24 байта в hex — как randomBytes(24) у
-# colloq. Через od, а не `tr -dc … </dev/urandom | head`: под pipefail tr
-# ловит SIGPIPE, подстановка возвращает 141, и set -e обрывал бы скрипт.
+# The kernel token is unique to each installation, 24 bytes in hex, like
+# randomBytes(24) in colloq. Through od, not `tr -dc … </dev/urandom | head`:
+# under pipefail tr catches SIGPIPE, the substitution returns 141, and set -e
+# would cut the script short.
 token="$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')"
-[ "${#token}" -eq 48 ] || { echo 'local-env.sh: /dev/urandom не дал 24 байта' >&2; exit 1; }
+[ "${#token}" -eq 48 ] || { echo 'local-env.sh: /dev/urandom did not give 24 bytes' >&2; exit 1; }
 
 cat <<EOF
 # Settings for this machine. colloq wrote this file on its first start:

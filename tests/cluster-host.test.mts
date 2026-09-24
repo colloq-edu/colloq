@@ -1,21 +1,23 @@
 /**
- * `make host` на k3s-машине: без докера, со ссылкой на панель, с уборкой.
+ * `make host` on a k3s machine: no docker, with a panel link, with cleanup.
  *
- * Три отказа, найденные на одном и том же пути — `make vast-up HOST=…` под
- * релизом, где scripts/host.sh идёт с COLLOQ_CLUSTER=1:
+ * Three failures found on one and the same path — `make vast-up HOST=…` under
+ * a release, where scripts/host.sh runs with COLLOQ_CLUSTER=1:
  *
- *  - скрипт требовал docker на первой строке, хотя под релизом сервер и ядра
- *    живут в k3s, а докера на VM может не быть вовсе, — tmux-сессия с
- *    туннелем умирала через секунду, адрес не выставлялся;
- *  - ссылку на панель печатал только тот, кто сам выставил DATA_DIR: токен
- *    k3s лежит в <COLLOQ_STATE_DIR>/data (/var/lib/colloq/data), а скрипт
- *    искал его в ./data;
- *  - после Ctrl+C кластер так и раздавал ссылки на мёртвый туннель: уборка
- *    обходила cluster.sh стороной.
+ *  - the script required docker on its first line, although under a release
+ *    the server and the kernels live in k3s and the VM may have no docker at
+ *    all — the tmux session with the tunnel died a second later and the
+ *    address was never set;
+ *  - the panel link was printed only for someone who had set DATA_DIR
+ *    themselves: the k3s token lives in <COLLOQ_STATE_DIR>/data
+ *    (/var/lib/colloq/data), while the script looked for it in ./data;
+ *  - after Ctrl+C the cluster kept handing out links to a dead tunnel: the
+ *    cleanup went around cluster.sh.
  *
- * Скрипт здесь настоящий, вокруг него — выдуманные curl, dig, cloudflared и
- * scripts/cluster.sh, а PATH собран поимённо, без docker: иначе на машине
- * разработчика он нашёлся бы и спрятал первый отказ.
+ * The script here is real; around it are made-up curl, dig, cloudflared and
+ * scripts/cluster.sh, and PATH is assembled name by name, without docker:
+ * otherwise it would be found on a developer's machine and hide the first
+ * failure.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -30,7 +32,7 @@ const TUNNEL = 'https://quick-test.trycloudflare.com'
 const LOCAL = 'http://127.0.0.1:30080'
 const TOKEN = 'k3s-setup-token-1234567890'
 
-/** Системные утилиты, которые зовёт host.sh на этом пути, — и ни одной сверх. */
+/** System utilities that host.sh calls on this path, and not a single extra. */
 const TOOLS = ['bash', 'sh', 'cat', 'grep', 'tail', 'cut', 'mktemp', 'rm', 'wc', 'sed', 'seq', 'sleep',
   'head', 'tr', 'dirname', 'env', 'mkdir', 'ls', 'id', 'uname']
 
@@ -39,9 +41,9 @@ function stand() {
   fs.mkdirSync(path.join(dir, 'scripts'))
   for (const file of ['host.sh', 'lib.sh']) fs.copyFileSync(path.join(repo, 'scripts', file), path.join(dir, 'scripts', file))
   const calls = path.join(dir, 'cluster-calls')
-  // cluster.sh — выдуманный: пишет, с чем его позвали. На --if-current
-  // отвечает 4, когда тест говорит «адрес уже чужой», и 75 с причиной — когда
-  // «замок состояния занят».
+  // cluster.sh is made up: it records what it was called with. On
+  // --if-current it answers 4 when the test says "the address is someone
+  // else's now", and 75 with a reason when "the state lock is taken".
   fs.writeFileSync(path.join(dir, 'scripts/cluster.sh'), `#!/bin/sh
 printf '%s\\n' "$*" >> '${calls}'
 case "$*" in *--if-current*)
@@ -57,8 +59,9 @@ exit 0
     fs.symlinkSync(found, path.join(bin, tool))
   }
   const fake = (name: string, code: string) => fs.writeFileSync(path.join(bin, name), `#!${process.execPath}\n${code}\n`, { mode: 0o755 })
-  // Здоровье, проба снаружи и вход по токену — всё через curl. Здоровье k3s
-  // называет изоляцию комнат брокером: без поля host.sh ничего не публикует.
+  // Health, the outside probe and the token sign-in all go through curl. The
+  // k3s health names room isolation as broker: without that field host.sh
+  // publishes nothing.
   fake('curl', `const a = process.argv.slice(2)
 if (a.some(x => x.endsWith('/api/admin/signin/token'))) {
   const body = JSON.parse(a[a.indexOf('-d') + 1])
@@ -75,7 +78,7 @@ else if (a.some(x => x.endsWith('/api/health')) && !a.includes('-o')) process.st
   return { dir, bin, calls, env }
 }
 
-/** Запустить host.sh и дождаться, пока он выставит адрес и напечатает ссылки. */
+/** Start host.sh and wait until it sets the address and prints the links. */
 async function publish(s: ReturnType<typeof stand>, extra: NodeJS.ProcessEnv = {}) {
   const bash = path.join(s.bin, 'bash')
   const host = spawn(bash, ['scripts/host.sh'], { cwd: s.dir, env: { ...s.env, ...extra } })
@@ -102,24 +105,26 @@ test('k3s: no docker needed, the panel link comes from the cluster state and Ctr
   const s = stand()
   let run: Awaited<ReturnType<typeof publish>> | undefined
   try {
-    // Не «ровно 1»: bash отвечает на ненайденное имя единицей, а dash (sh в
-    // Ubuntu, где идёт CI) — 127. Важно одно: docker в стенде не находится.
+    // Not "exactly 1": bash answers a name it cannot find with 1, while dash
+    // (sh on Ubuntu, where CI runs) answers 127. Only one thing matters: docker
+    // is not found in the stand.
     assert.notEqual(spawnSync(path.join(s.bin, 'sh'), ['-c', 'command -v docker'], { env: s.env }).status, 0, 'docker leaked into the stand PATH')
     run = await publish(s)
     const out = run.read()
     assert.equal(run.host.exitCode, null, out)
     assert.doesNotMatch(out, /docker/i)
     assert.deepEqual(lines(s.calls), [`public-url ${TUNNEL}`], out)
-    // Ссылка на панель — без DATA_DIR, из <COLLOQ_STATE_DIR>/data.
+    // The panel link: without DATA_DIR, from <COLLOQ_STATE_DIR>/data.
     assert.match(out, new RegExp(`${TUNNEL}/admin/t/${TOKEN}`), out)
     assert.match(out, /taken off the cluster too/)
 
     await stop(run.host)
     const after = run.read()
-    // Снят ровно наш адрес, и только пока он наш.
+    // Exactly our address was taken down, and only while it was ours.
     assert.deepEqual(lines(s.calls), [`public-url ${TUNNEL}`, `public-url ${LOCAL} --if-current ${TUNNEL}`], after)
     assert.match(after, new RegExp(`PUBLIC_URL is back at ${LOCAL}`))
-    // Запись в .env, по которой vast-status узнаёт адрес машины, тоже вернулась.
+    // The .env entry that vast-status reads the machine's address from is
+    // back too.
     assert.deepEqual(publicUrl(s.dir), [`PUBLIC_URL=${LOCAL}`])
   } finally {
     if (run) await stop(run.host).catch(() => run!.host.kill('SIGKILL'))
@@ -133,7 +138,7 @@ test('k3s: an address someone else set after us is left alone on exit', async ()
   try {
     run = await publish(s, { FAKE_FOREIGN: '1' })
     assert.equal(run.host.exitCode, null, run.read())
-    // Поверх нас выставили другой адрес — вторым `make host` или руками.
+    // Another address was set over ours, by a second `make host` or by hand.
     fs.writeFileSync(path.join(s.dir, '.env'), `COLLOQ_CLUSTER=1\nRELAY_DOMAIN=\nPUBLIC_URL=https://other.example\n`)
     await stop(run.host)
     const after = run.read()
@@ -150,7 +155,7 @@ test('k3s: an address someone else set after us is left alone on exit', async ()
 test('k3s: a failure before publication leaves the cluster address untouched', () => {
   const s = stand()
   try {
-    // Туннель не поднялся: cloudflared умер, не назвав адреса.
+    // The tunnel did not come up: cloudflared died without naming an address.
     fs.writeFileSync(path.join(s.bin, 'cloudflared'), `#!${process.execPath}\nprocess.exit(1)\n`, { mode: 0o755 })
     const r = spawnSync(path.join(s.bin, 'bash'), ['scripts/host.sh'], { cwd: s.dir, env: s.env, encoding: 'utf8', timeout: 20000 })
     assert.notEqual(r.status, 0)
@@ -163,7 +168,8 @@ test('k3s: a failure before publication leaves the cluster address untouched', (
 test('k3s: a server that does not confirm room isolation is not published at all', () => {
   const s = stand()
   try {
-    // Здоров, но изоляции не называет: сервер старше замка или бэкенд без неё.
+    // Healthy, but names no isolation: a server that predates the lock, or a
+    // backend without isolation.
     const r = spawnSync(path.join(s.bin, 'bash'), ['scripts/host.sh'], {
       cwd: s.dir, env: { ...s.env, FAKE_HEALTH: '{"status":"ok","kernel":true}' }, encoding: 'utf8', timeout: 20000,
     })
@@ -179,7 +185,8 @@ test('k3s: when the cluster refuses to take the address back, the reason and the
   const s = stand()
   let run: Awaited<ReturnType<typeof publish>> | undefined
   try {
-    // Уборка упёрлась в замок состояния — например, в это время идёт vast-sync.
+    // The cleanup ran into the state lock — say, a vast-sync is running just
+    // then.
     run = await publish(s, { FAKE_LOCKED: '1' })
     assert.equal(run.host.exitCode, null, run.read())
     await stop(run.host)
@@ -188,8 +195,8 @@ test('k3s: when the cluster refuses to take the address back, the reason and the
     assert.match(after, /operation lock: another operation is active/, after)
     assert.match(after, new RegExp(`By hand, as root: bash scripts/cluster\\.sh public-url ${LOCAL}`), after)
     assert.doesNotMatch(after, /PUBLIC_URL is back/)
-    // Кластер так и держит адрес туннеля — и запись в .env, по которой
-    // vast-status проверяет машину снаружи, говорит то же самое.
+    // The cluster still holds the tunnel address, and the .env entry that
+    // vast-status uses to check the machine from outside says the same.
     assert.deepEqual(publicUrl(s.dir), [`PUBLIC_URL=${TUNNEL}`])
   } finally {
     if (run) await stop(run.host).catch(() => run!.host.kill('SIGKILL'))

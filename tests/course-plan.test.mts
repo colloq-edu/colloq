@@ -1,11 +1,11 @@
 /**
- * Строки «по плану» из панели.
+ * "Planned" rows from the panel.
  *
- * Завести план семестра можно было только скриптом из таблицы или запросом к
- * API: экран курса строки плана показывал, но не заводил, не правил и не
- * ставил на их место состоявшееся занятие. Здесь — решения экрана
- * (web/src/admin/course-plan.ts) и то, что сервер делает с тем, что экран
- * присылает (PUT /api/admin/courses/:id/items).
+ * A semester plan could only be set up with a script from a spreadsheet or
+ * with an API request: the course screen showed plan rows but did not create
+ * them, did not edit them and did not put a held class in their place. Here
+ * are the screen's decisions (web/src/admin/course-plan.ts) and what the
+ * server does with what the screen sends (PUT /api/admin/courses/:id/items).
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -41,18 +41,18 @@ after(() => shutdownCollab())
 
 const week = (name: string, when: string): CourseItemPlanned => ({ kind: 'planned', name, when })
 
-/* ------------------------------------------------------------ решения экрана */
+/* ---------------------------------------------------------- screen decisions */
 
-test('строка плана из набранного: тема обязательна, обрезка та же, что у сервера', () => {
-  assert.equal(plannedRow('   ', '1–7 сен'), null, 'пустая тема стала строкой')
+test('a plan row from what was typed: the topic is required, trimming is the same as the server\'s', () => {
+  assert.equal(plannedRow('   ', '1–7 сен'), null, 'an empty topic became a row')
   assert.deepEqual(plannedRow('  Бустинг ', ' 14–20 сен '), week('Бустинг', '14–20 сен'))
-  assert.deepEqual(plannedRow('Бустинг', ''), week('Бустинг', ''), 'неделя необязательна')
+  assert.deepEqual(plannedRow('Бустинг', ''), week('Бустинг', ''), 'the week is optional')
   const long = plannedRow('т'.repeat(MAX_COURSE_NAME + 10), 'н'.repeat(MAX_PLANNED_WHEN + 10))!
   assert.equal(long.name.length, MAX_COURSE_NAME)
   assert.equal(long.when.length, MAX_PLANNED_WHEN)
 })
 
-test('новая тема встаёт в конец, правка — на своё место', () => {
+test('a new topic goes to the end, an edit goes to its own place', () => {
   const items: CourseItem[] = [week('Регрессия', '1–7 сен'), week('Деревья', '8–14 сен')]
   assert.deepEqual(putPlanned(items, week('Бустинг', '15–21 сен'), null), [
     ...items,
@@ -63,20 +63,20 @@ test('новая тема встаёт в конец, правка — на св
     was: week('Деревья', '8–14 сен'),
   })
   assert.deepEqual(edited, [week('Регрессия', '1–7 сен'), week('Деревья решений', '8–14 сен')])
-  assert.deepEqual(items[1], week('Деревья', '8–14 сен'), 'исходный список изменён на месте')
+  assert.deepEqual(items[1], week('Деревья', '8–14 сен'), 'the original list was changed in place')
 })
 
-test('правка по номеру, под которым уже другая строка, не пишет ничего', () => {
+test('an edit by index under which there is already another row writes nothing', () => {
   /*
-   * Поле открыли на «Деревьях» (строка 2), а курс тем временем переставили:
-   * на второй позиции теперь «Регрессия». Запись по номеру переименовала бы
-   * чужую неделю — молча, на странице, которую читает поток.
+   * The field was opened on "Деревья" (row 2), and meanwhile the course was
+   * reordered: the second position now holds "Регрессия". Writing by index
+   * would rename someone else's week — silently, on a page the cohort reads.
    */
   const swapped: CourseItem[] = [week('Деревья', '8–14 сен'), week('Регрессия', '1–7 сен')]
   const target = { at: 1, was: week('Деревья', '8–14 сен') }
   assert.equal(putPlanned(swapped, week('Деревья решений', '8–14 сен'), target), null)
   assert.equal(seatSeminar(swapped, target, { id: 'room1', name: 'Деревья' }), null)
-  // И если на месте строки плана теперь занятие — тоже.
+  // And if a class now stands in the place of the plan row — the same.
   const seated: CourseItem[] = [
     week('Регрессия', '1–7 сен'),
     { kind: 'seminar', sessionId: 'room1', name: 'Деревья', publication: null },
@@ -84,7 +84,7 @@ test('правка по номеру, под которым уже другая 
   assert.equal(putPlanned(seated, week('x', ''), target), null)
 })
 
-test('занятие встаёт на место строки плана, и нумерация недель не уезжает', () => {
+test('a class takes the place of a plan row, and the week numbering does not shift', () => {
   const items: CourseItem[] = [
     week('Регрессия', '1–7 сен'),
     week('Деревья', '8–14 сен'),
@@ -103,15 +103,15 @@ test('занятие встаёт на место строки плана, и н
   })
   assert.deepEqual(next[0], items[0])
   assert.deepEqual(next[2], items[2])
-  // Второй раз ту же комнату в курс не ставим: две строки одной комнаты
-  // читаются как две разные недели.
+  // The same room is not put into the course a second time: two rows of one
+  // room read as two different weeks.
   assert.equal(
     seatSeminar(next, { at: 2, was: week('Бустинг', '15–21 сен') }, { id: 'room1', name: 'x' }),
     null,
   )
 })
 
-test('счёт курса видит строки плана', () => {
+test('the course tally sees plan rows', () => {
   const items: CourseItem[] = [
     {
       kind: 'seminar',
@@ -127,7 +127,7 @@ test('счёт курса видит строки плана', () => {
   assert.deepEqual(courseTally(items), { published: 1, waiting: 1, planned: 2 })
 })
 
-/* ------------------------------------------------------------------- сервер */
+/* ------------------------------------------------------------------- server */
 
 let teacher: ReturnType<typeof createTeacher> = null
 
@@ -136,7 +136,8 @@ async function panel(): Promise<{
   get: (route: string) => Promise<{ status: number; body: Record<string, unknown> }>
   close: () => Promise<void>
 }> {
-  // Одна владелица на файл: второй `createTeacher` с тем же адресом — null.
+  // One owner per file: a second `createTeacher` with the same address
+  // returns null.
   teacher ??= createTeacher({ name: 'Ада', email: 'ada@course-plan.test', role: 'owner' })
   assert.ok(teacher)
   let cookie = ''
@@ -166,12 +167,12 @@ async function panel(): Promise<{
   }
 }
 
-test('план из панели: завести, поправить, переставить, заменить занятием, убрать', async () => {
+test('the plan from the panel: create, edit, reorder, replace with a class, remove', async () => {
   createSession('plan-room', 'Деревья решений', null)
   const course = createCourse('ML · план', null, 'Ада')
   const api = await panel()
 
-  // Завести: три недели, одна без даты.
+  // Create: three weeks, one without a date.
   const made = await api.put(course.id, {
     rev: course.rev,
     items: [week('Регрессия', '1–7 сен'), week('Деревья', '8–14 сен'), week('Бустинг', '')],
@@ -184,7 +185,8 @@ test('план из панели: завести, поправить, перес
     week('Бустинг', ''),
   ])
 
-  // Поправить тему и неделю, переставить — одним составом, как шлёт экран.
+  // Edit a topic and a week, reorder — in one set, the way the screen sends
+  // it.
   const moved = await api.put(course.id, {
     rev: one.rev,
     items: [week('Бустинг', '15–21 сен'), week('Регрессия', '1–7 сен'), week('Деревья', '8–14 сен')],
@@ -196,7 +198,8 @@ test('план из панели: завести, поправить, перес
     ['Бустинг|15–21 сен', 'Регрессия|1–7 сен', 'Деревья|8–14 сен'],
   )
 
-  // Занятие на место «Деревьев» — позиция та же, имя — комнаты.
+  // A class in the place of "Деревья" — the position is the same, the name is
+  // the room's.
   const seated = await api.put(course.id, {
     rev: two.rev,
     items: seatSeminar(two.items, { at: 2, was: week('Деревья', '8–14 сен') }, {
@@ -209,25 +212,25 @@ test('план из панели: завести, поправить, перес
   assert.equal(three.items[2].kind, 'seminar')
   assert.equal(three.items[2].kind === 'seminar' && three.items[2].sessionId, 'plan-room')
 
-  // Страница курса: строки плана с неделей, комната — без своего адреса.
+  // The course page: plan rows with the week, the room without its address.
   const view = await api.get(`/api/c/${course.id}`)
   assert.equal(view.status, 200)
   const items = (view.body.course as { items: CourseItem[] }).items
   assert.deepEqual(items[0], week('Бустинг', '15–21 сен'))
-  assert.equal(items[2].kind === 'seminar' && items[2].sessionId, '', 'адрес комнаты ушёл наружу')
+  assert.equal(items[2].kind === 'seminar' && items[2].sessionId, '', 'the room address leaked outside')
 
-  // Убрать строку плана.
+  // Remove a plan row.
   const dropped = await api.put(course.id, { rev: three.rev, items: three.items.slice(1) })
   assert.equal(dropped.status, 200)
   assert.equal((dropped.body.course as Course).items.length, 2)
   await api.close()
 })
 
-test('строка плана без темы — отказ словами, а не молчаливая пропажа', async () => {
+test('a plan row without a topic is a refusal in words, not a silent loss', async () => {
   /*
-   * Раньше такая строка выбрасывалась, а ответ был 200: «Добавить» с пустой
-   * темой выглядело успехом, после которого строки нет. Отказ не пишет ничего —
-   * и остальные строки того же запроса тоже.
+   * Such a row used to be thrown away, and the answer was 200: "Add" with an
+   * empty topic looked like success, after which the row was not there. A
+   * refusal writes nothing — including the other rows of the same request.
    */
   const course = createCourse('Без темы', null, null)
   const saved = setCourseItems(course.id, course.rev, [week('Регрессия', '1–7 сен')])!
@@ -239,12 +242,12 @@ test('строка плана без темы — отказ словами, а 
   assert.equal(res.status, 400)
   assert.ok(typeof res.body.error === 'string' && res.body.error.length > 0)
   const now = getCourse(course.id)!
-  assert.equal(now.rev, saved.rev, 'отказ всё-таки записал состав')
+  assert.equal(now.rev, saved.rev, 'the refusal wrote the set after all')
   assert.deepEqual(now.items, [week('Регрессия', '1–7 сен')])
   await api.close()
 })
 
-test('неделя режется по общей константе, а устаревшая версия — 409 с правдой', async () => {
+test('the week is cut by the shared constant, and a stale version gets 409 with the truth', async () => {
   const course = createCourse('Длинная неделя', null, null)
   const api = await panel()
   const long = 'н'.repeat(MAX_PLANNED_WHEN + 25)
@@ -253,7 +256,8 @@ test('неделя режется по общей константе, а уст�
   const saved = res.body.course as Course
   assert.equal(saved.items[0].kind === 'planned' && saved.items[0].when.length, MAX_PLANNED_WHEN)
 
-  // Экран держит старую версию: запись не проходит, ответ несёт курс как есть.
+  // The screen holds an old version: the write does not go through, the
+  // answer carries the course as it is.
   const stale = await api.put(course.id, { rev: course.rev, items: [] })
   assert.equal(stale.status, 409)
   assert.equal((stale.body.course as Course).items.length, 1)
@@ -261,9 +265,9 @@ test('неделя режется по общей константе, а уст�
   await api.close()
 })
 
-/* ------------------------------------------------------ набор подряд, экран */
+/* ---------------------------------------------- typing in a row, the screen */
 
-/** Разметка и код без комментариев: объяснение — не обещание. */
+/** Markup and code without comments: an explanation is not a promise. */
 const source = (rel: string): string =>
   fs
     .readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
@@ -271,35 +275,37 @@ const source = (rel: string): string =>
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '')
 
-test('новая тема: форма пустеет сразу, а не по ответу, и закрытую ответ не открывает', () => {
+test('a new topic: the form clears at once, not on the answer, and the answer does not reopen a closed form', () => {
   /*
-   * Стенд с записью в полторы секунды: Enter в поле недели, курсор остаётся в
-   * нём, следующая тема печаталась в хвост недели («1–7 сенДеревья»), и
-   * пришедший ответ стирал обе строки. «Отмена» посреди записи — форма
-   * открывалась снова, когда ответ доезжал.
+   * A test stand with a write taking a second and a half: Enter in the week
+   * field, the cursor stays in it, the next topic was typed onto the tail of
+   * the week ("1–7 сенДеревья"), and the arriving answer wiped both rows.
+   * "Cancel" in the middle of a write — the form opened again when the
+   * answer arrived.
    */
   const screen = source('web/src/admin/screens/Courses.svelte')
   const save = screen.slice(screen.indexOf('async function savePlan'), screen.indexOf('function openSeat'))
   const sent = save.indexOf('const writing = writeItems(next)')
   const cleared = save.indexOf("plan = { target: null, name: '', when: '' }")
   const answered = save.indexOf('await writing')
-  assert.ok(sent > 0 && cleared > sent && answered > cleared, 'форма пустеет только после ответа')
-  assert.match(save, /plan === fresh/, 'ответ после «Отмены» снова открывает форму')
-  assert.match(save, /\.\.\.typed/, 'несохранённая тема не возвращается после сбоя')
-  const keys = screen.slice(screen.indexOf('function planKeys'), screen.indexOf('/** Семинары, которых'))
-  assert.match(keys, /isComposing\) return/, 'Enter из IME сохраняет недонабранную тему')
+  assert.ok(sent > 0 && cleared > sent && answered > cleared, 'the form clears only after the answer')
+  assert.match(save, /plan === fresh/, 'the answer after "Cancel" opens the form again')
+  assert.match(save, /\.\.\.typed/, 'an unsaved topic does not come back after a failure')
+  const keys = screen.slice(screen.indexOf('function planKeys'), screen.indexOf('const addable = $derived('))
+  assert.match(keys, /isComposing\) return/, 'Enter from an IME saves a half-typed topic')
 })
 
-test('длинная неделя на странице курса переносится, а не ложится поверх темы', () => {
+test('a long week on the course page wraps instead of lying over the topic', () => {
   /*
-   * Неделю набирают руками, до MAX_PLANNED_WHEN знаков. С `nowrap` на
-   * телефоне в 390 она забирала всю строку: тема — по слову в строке, неделя —
-   * поверх неё. И в комнатном чтении, и в выгрузке сайта.
+   * The week is typed by hand, up to MAX_PLANNED_WHEN characters. With
+   * `nowrap` on a 390 phone it took the whole row: the topic went one word
+   * per line, the week lay over it. Both in the room reader and in the site
+   * export.
    */
   const list = source('web/src/components/reader/CourseList.svelte')
   const planned = list.slice(list.indexOf("item.kind === 'planned'"))
   const when = /<span class="([^"]*)">\{item\.when\}<\/span>/.exec(planned)
-  assert.ok(when, 'неделя строки плана не найдена')
+  assert.ok(when, 'the plan row\'s week was not found')
   assert.doesNotMatch(when[1], /whitespace-nowrap/)
   assert.match(when[1], /max-w-/)
   const html = renderCourse(

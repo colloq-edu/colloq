@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
 #
-# Проверка образа colloq-vast на своей машине — без аренды и без риска для
-# идущего рядом занятия.
+# A check of the colloq-vast image on your own machine, with no rental and no
+# risk to a class running next to it.
 #
-#   deploy/vast/smoke.sh up      поднять «машину» (docker:dind), загрузить в неё образ,
-#                                colloq-host up и дождаться готовности ядра
-#   deploy/vast/smoke.sh e2e     завладеть инстансом, открыть комнату, выполнить
-#                                ячейки настоящим ядром (scripts/e2e.mts), снять копию
-#   deploy/vast/smoke.sh stop    мягкая остановка Colloq: SIGTERM, снимки, база
-#   deploy/vast/smoke.sh down    убрать «машину» со всем, что в ней было
+#   deploy/vast/smoke.sh up      bring up the "machine" (docker:dind), load the image into it,
+#                                colloq-host up and wait until the kernel is ready
+#   deploy/vast/smoke.sh e2e     claim the instance, open a room, run cells on a
+#                                real kernel (scripts/e2e.mts), take a backup
+#   deploy/vast/smoke.sh stop    a gentle stop of Colloq: SIGTERM, snapshots, database
+#   deploy/vast/smoke.sh down    remove the "machine" with everything that was in it
 #
-# ПОЧЕМУ В DIND, А НЕ В DOCKER ЭТОЙ МАШИНЫ. Сервер убирает простаивающие
-# контейнеры комнат по метке docker (kernel/index.ts · sweepIdleKernelsOnce) —
-# ВСЕ контейнеры с меткой colloq.kind=room-kernel на демоне, а не только свои.
-# Стенд, поднятый на том же демоне, что и `make dev`, через полчаса снёс бы
-# ядра чужой пары. Внутри dind свой демон: он и есть арендованная VM — пустой,
-# с сокетом, без собранных ядер, — и colloq-host на нём проходит тот же путь,
-# что на vast.
+# WHY IN DIND AND NOT IN THE DOCKER OF THIS MACHINE. The server removes idle
+# room containers by docker label (kernel/index.ts · sweepIdleKernelsOnce): ALL
+# the containers labeled colloq.kind=room-kernel on the daemon, not only its
+# own. A rig brought up on the same daemon as `make dev` would take down the
+# kernels of another class half an hour later. Inside dind there is a daemon of
+# its own: it is the rented VM (empty, with a socket, no kernels built), and
+# colloq-host on it goes the same path as on vast.
 #
-# Переменные: IMAGE (colloq-vast:dev), SMOKE_PORT (13000), SMOKE_NAME,
-# SEED_KERNEL=1 — отдать «машине» уже собранный здесь colloq-kernel:base вместо
-# сборки (минуты против секунд), SMOKE_WAIT — сколько ждать ядра (900 с).
+# Variables: IMAGE (colloq-vast:dev), SMOKE_PORT (13000), SMOKE_NAME,
+# SEED_KERNEL=1 to hand the "machine" the colloq-kernel:base already built here
+# instead of a build (minutes versus seconds), SMOKE_WAIT for how long to wait
+# for the kernel (900 s).
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -41,10 +42,11 @@ up() {
     die "$NAME already exists — deploy/vast/smoke.sh down first"
   fi
   say "starting a stand-in VM ($DIND) on $BASE"
-  # --privileged — только у стенда: так dind получает свой демон. Сам образ
-  # colloq-vast внутри него работает без привилегий, как на VM.
-  # Демон стенда слушает только свой сокет: без TLS dind по умолчанию открывает
-  # ещё и tcp 2375 — root-доступ для любого контейнера на мосту этой машины.
+  # --privileged only for the rig: that is how dind gets its own daemon. The
+  # colloq-vast image itself runs inside it without privileges, as on a VM.
+  # The rig's daemon listens only on its own socket: without TLS dind by
+  # default also opens tcp 2375, root access for any container on the bridge of
+  # this machine.
   docker run -d --privileged --name "$NAME" --label colloq.smoke=1 \
     -e DOCKER_TLS_CERTDIR= -p "127.0.0.1:${PORT}:3000" "$DIND" \
     dockerd --host=unix:///var/run/docker.sock >/dev/null
@@ -57,7 +59,7 @@ up() {
     say "seeding colloq-kernel:base from this machine (SEED_KERNEL=1)"
     docker save colloq-kernel:base | docker exec -i "$NAME" docker load >/dev/null
   fi
-  # bash и curl — у dind их нет, а у Ubuntu VM vast они есть.
+  # bash and curl: dind lacks them, while the Ubuntu VM on vast has them.
   in_vm apk add --no-cache bash curl >/dev/null
   in_vm docker run --rm -v /usr/local/sbin:/host "$IMAGE" install-host /host
   docker exec -e COLLOQ_IMAGE="$IMAGE" -e COLLOQ_PULL=0 -e COLLOQ_BIND=0.0.0.0 \
@@ -77,8 +79,9 @@ up() {
 e2e() {
   local token tmp code
   token="$(in_vm cat /workspace/colloq/data/setup-token)"
-  # Стенд — одноразовый инстанс, завладеть им здесь можно. На живом инстансе
-  # scripts/e2e.mts нарочно этого не делает: это решение человека.
+  # The rig is a throwaway instance, so claiming it here is fine. On a live
+  # instance scripts/e2e.mts deliberately does not do this: that is a decision
+  # for a person.
   code="$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
     -d "{\"token\":\"$token\",\"name\":\"Smoke Owner\",\"email\":\"owner@example.com\"}" \
     "$BASE/api/admin/claim")"
@@ -87,8 +90,9 @@ e2e() {
   printf '%s\n' "$token" > "$tmp/setup-token"
   E2E_BASE_URL="$BASE" DATA_DIR="$tmp" node --import tsx scripts/e2e.mts || { rm -rf "$tmp"; die "scripts/e2e.mts"; }
   rm -rf "$tmp"
-  # Контейнер комнаты e2e уже убрал вместе с семинаром — поэтому не список,
-  # а история: видно, что комнате поднимали СВОЙ контейнер и сносили его.
+  # e2e has already removed the room container together with the seminar, so
+  # not a list but the history: it shows that the room got a container of ITS
+  # OWN, and that it was taken down.
   say "room kernel containers the room got on the stand-in daemon:"
   in_vm docker events --since 30m --until 0s --filter type=container \
     --filter label=colloq.kind=room-kernel --filter event=create --filter event=destroy \

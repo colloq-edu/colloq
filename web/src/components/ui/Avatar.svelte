@@ -8,10 +8,12 @@
     avatar?: string | null
     size?: 'xs' | 'sm' | 'md' | 'lg'
     /**
-     * Кегль метки в пикселях, если круг задан не ступенью, а числом.
-     * Ступеней четыре, а диаметров у стопки сколько угодно: на 28px ступень
-     * `sm` даёт те же 14px, что и на 24px, и метка вместо 55% диаметра
-     * занимает 47 — то есть чем крупнее круг, тем мельче в нём человек.
+     * The mark's font size in pixels, when the circle is given as a number
+     * rather than a step.
+     * There are four steps, but a stack can have any diameter: at 28px the `sm`
+     * step gives the same 14px as at 24px, and the mark takes 47% of the
+     * diameter instead of 55 — so the bigger the circle, the smaller the person
+     * inside it.
      */
     emojiPx?: number
     ring?: boolean
@@ -45,13 +47,14 @@
 
   const step = $derived(SIZES[size])
   /*
-   * Метка — только та, что есть в списке комнаты, а не «всё, что не похоже на
-   * адрес». Отличать по префиксу значило рисовать <img src> из любой строки:
-   * метка доезжает сюда присутствием, то есть от правленного клиента, и
-   * `avatar="https://…/px.png"` заставлял браузер каждого в комнате — и ноутбук
-   * у проектора — стучаться на чужой адрес при каждой отрисовке списка людей.
-   * Незнакомая строка рисуется инициалами: круг человека на месте, чужого
-   * запроса нет.
+   * A mark is only one that is on the room's list, not "anything that does not
+   * look like an address". Telling them apart by prefix meant drawing <img src>
+   * from any string: the mark arrives here through presence, that is, from a
+   * client that may have been modified, and `avatar="https://…/px.png"` made
+   * the browser of everyone in the room — and the laptop at the projector —
+   * knock on a foreign address every time the list of people was drawn. An
+   * unfamiliar string is drawn as initials: the person's circle is in place,
+   * and there is no foreign request.
    */
   const isEmoji = $derived(isMark(avatar))
 

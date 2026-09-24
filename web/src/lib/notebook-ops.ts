@@ -16,11 +16,12 @@ import {
  * Every mutation is wrapped in a transaction so remote peers see one atomic
  * change instead of a flicker of intermediate states, and undo groups sensibly.
  *
- * Тетрадей в комнате несколько, и каждая правка называет свою: `root` — имя
- * корня той тетради, в которой нажали. Единственное исключение — то, что
- * адресуется ИМЕНЕМ ячейки: имя в комнате одно, и по нему тетрадь находится
- * сама (см. `findCell`). Так вызывающему не приходится помнить, из какой
- * тетради ячейка, ради операции, которой это всё равно.
+ * A room has several notebooks, and every edit names its own: `root` is the
+ * root name of the notebook where the press happened. The only exception is
+ * what is addressed by a cell's NAME (its id): a name is unique in the room,
+ * and the notebook is found by it on its own (see `findCell`). This way the
+ * caller does not have to remember which notebook a cell is from, for an
+ * operation that does not care.
  */
 
 function arrayOf(doc: Y.Doc, root: string): Y.Array<YCell> {
@@ -64,21 +65,23 @@ export function deleteCell(doc: Y.Doc, id: string): void {
   })
 }
 
-/** Словами сервера: ровно этим `control.ts` отвечает на вторую ячейку. */
+/** In the server's words: exactly what `control.ts` answers to a second cell. */
 export const ONE_AT_A_TIME = "В этом семинаре можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди."
 
 /**
- * Есть ли у этого человека ячейка, которая сейчас считается или ждёт очереди.
+ * Whether this person has a cell that is computing now or waiting in the
+ * queue.
  *
- * Потолок очереди при правиле «по одной» живёт на сервере (`runQueueCap`), и
- * клиент его не видел: он проверял только право запускать, отправлял запуск,
- * получал отказ — и всё равно успевал шагнуть вниз и дописать пустую ячейку в
- * общую тетрадь. Пять нажатий — пять пустых ячеек у всего класса.
+ * The queue ceiling under the "one at a time" rule lives on the server
+ * (`runQueueCap`), and the client did not see it: it checked only the right to
+ * run, sent the run, got a refusal — and still managed to step down and append
+ * an empty cell to the shared notebook. Five presses — five empty cells for
+ * the whole class.
  *
- * Считаем по документу, потому что состояние ячеек в нём и есть та очередь:
- * `requestRun` меряет то же самое своей средой исполнения (очередь плюс
- * текущая ячейка того же человека). Решает всё равно сервер — здесь только
- * чтобы не править общий документ за отказанный запуск.
+ * We count by the document, because the cell states in it are that queue:
+ * `requestRun` measures the same thing with its own runtime (the queue plus
+ * the same person's current cell). The server decides anyway — this is only
+ * to avoid editing the shared document for a refused run.
  */
 export function hasPendingRun(doc: Y.Doc, participantId: string): boolean {
   for (const cells of allCellArrays(doc)) {
@@ -92,13 +95,13 @@ export function hasPendingRun(doc: Y.Doc, participantId: string): boolean {
 }
 
 /**
- * Можно ли двигать эту ячейку — только чтобы не рисовать мёртвую кнопку.
+ * Whether this cell can be moved — only so as not to draw a dead button.
  *
- * Сама перестановка делается на сервере (`cells:move`): у Y.Array нет
- * перемещения, так что соседнюю ячейку приходится пересоздать клоном, а клон
- * несёт её вывод — и запись чужого вывода из браузера закрыта в любой комнате.
- * Переупорядочить тетрадь не повод выбрасывать то, что она напечатала, поэтому
- * уехала операция, а не свойство.
+ * The move itself happens on the server (`cells:move`): Y.Array has no move,
+ * so the neighbouring cell has to be recreated as a clone, and the clone
+ * carries its output — and writing someone else's output from the browser is
+ * closed in every room. Reordering a notebook is no reason to throw away what
+ * it printed, so it was the operation that moved, not the property.
  */
 export function canMoveCell(doc: Y.Doc, id: string, direction: -1 | 1): boolean {
   const found = findCell(doc, id)
@@ -111,12 +114,13 @@ export function setCellType(doc: Y.Doc, id: string, type: CellType): void {
   const found = findCell(doc, id)
   if (!found) return
   /*
-   * Пишется только вид. Гашение секундомера и вывода — забота сервера: он
-   * делает это, увидев принятую смену вида (`collab/ops.ts · resetAfterRetype`).
+   * Only the type is written. Clearing the stopwatch and the output is the
+   * server's job: it does this on seeing an accepted type change
+   * (`collab/ops.ts · resetAfterRetype`).
    *
-   * Здесь было единственное место, где состояние выполнения писал браузер, и
-   * пока оно было, правило «вывод и состояние пишет только сервер» имело
-   * исключение — то есть не было правилом.
+   * This was the only place where the browser wrote execution state, and while
+   * it existed, the rule "only the server writes output and state" had an
+   * exception — that is, it was not a rule.
    */
   doc.transact(() => found.cell.set('type', type))
 }

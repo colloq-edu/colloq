@@ -2,101 +2,107 @@ import { createHash } from 'node:crypto'
 import { tr } from '@shared/i18n'
 
 /**
- * Опасные команды в ячейке — лежачий полицейский на всю комнату.
+ * Dangerous commands in a cell: a speed bump for the whole room.
  *
- * ЭТО НЕ ПЕСОЧНИЦА, и сказать это надо первым делом. `ctypes.string_at(0)`,
- * перезагрузка модуля `os` через importlib, fork-бомба, segfault нативной
- * библиотеки, `globals().clear()` и терминал комнаты проходят мимо всего, что
- * здесь написано. Закрыт ровно один класс бед: «одна строка, известная из
- * интернета, набранная из любопытства, — и у всего класса всё пропало».
- * Умысел этим не останавливают и не пытаются.
+ * THIS IS NOT A SANDBOX, and that has to be said first. `ctypes.string_at(0)`,
+ * reloading the `os` module through importlib, a fork bomb, a segfault in a
+ * native library, `globals().clear()` and the room's terminal all get past
+ * everything written here. Exactly one class of trouble is closed: "one line
+ * known from the internet, typed out of curiosity, and the whole class has
+ * lost everything". Intent is not stopped by this, and no attempt is made.
  *
- * Беда измеренная. 20.09.2026, занятие на тридцать человек: студент написал в
- * попытке консилиума две строки — `import os` и `os._exit(0)`. Преподаватель,
- * перебирая работы и нажимая «запустить», девять раз за одиннадцать минут
- * уронил ядро комнаты: `os._exit` кончает процесс БЕЗ исключения, без сигнала
- * в dmesg, без счётчика в cgroup и без единой строки в журнале. Jupyter
- * поднимал ядро заново, тридцать человек теряли переменные и очередь, и никто,
- * включая преподавателя, не видел причины.
+ * The trouble is measured. 20 Sep 2026, a class of thirty: a student wrote two
+ * lines in a council attempt, `import os` and `os._exit(0)`. The teacher, going
+ * through the work and pressing "run", brought the room's kernel down nine
+ * times in eleven minutes: `os._exit` ends the process WITHOUT an exception,
+ * without a signal in dmesg, without a counter in the cgroup and without a
+ * single line in the journal. Jupyter brought the kernel back up, thirty
+ * people lost their variables and the queue, and nobody, the teacher included,
+ * saw the cause.
  *
- * В тот день это закрыли внутри попытки консилиума (`council-isolation.ts`), а
- * в ОБЫЧНОЙ ячейке `exit()` и `os._exit()` по-прежнему гасили ядро всем.
- * Теперь защита одна на оба места и живёт здесь; консилиум её переиспользует,
- * а не заводит вторую (`hold`/`release` ниже).
+ * That day it was closed inside the council attempt (`council-isolation.ts`),
+ * while in an ORDINARY cell `exit()` and `os._exit()` still took the kernel
+ * down for everyone. Now there is one guard for both places, and it lives
+ * here; the council reuses it instead of starting a second one
+ * (`hold`/`release` below).
  *
- * Два слоя, оба под одним правилом комнаты (`shared/rules.ts` · `danger`):
+ * Two layers, both under one room rule (`shared/rules.ts` · `danger`):
  *
- *   1. ПОДМЕНЫ ВНУТРИ ПРОЦЕССА — надёжные, потому что мимо них не пройти, не
- *      написав это другими словами: `shell.ask_exit` (это `exit()` и
- *      `quit()`), `os._exit`, `os.abort`, `os.kill`, `os.killpg`,
- *      `signal.raise_signal`, `signal.pthread_kill`, `kernel.do_shutdown`.
- *      Сигналы закрыты ТОЛЬКО когда цель — само ядро, его родитель, pid 1,
- *      своя группа или «все» (`0`, `-1`), а сигнал смертельный: чужих детей
- *      убивать можно, иначе ломаются `multiprocessing`, joblib и `subprocess`.
- *      `sys.exit()` не трогается вовсе — в ipykernel это `SystemExit`, и ядро
- *      его переживает.
+ *   1. IN-PROCESS PATCHES, reliable because there is no getting past them
+ *      without writing the same thing in other words: `shell.ask_exit` (that
+ *      is `exit()` and `quit()`), `os._exit`, `os.abort`, `os.kill`,
+ *      `os.killpg`, `signal.raise_signal`, `signal.pthread_kill`,
+ *      `kernel.do_shutdown`. Signals are closed ONLY when the target is the
+ *      kernel itself, its parent, pid 1, its own group or "everyone" (`0`,
+ *      `-1`), and the signal is deadly: killing other children is allowed,
+ *      otherwise `multiprocessing`, joblib and `subprocess` break.
+ *      `sys.exit()` is not touched at all: in ipykernel it is `SystemExit`,
+ *      and the kernel survives it.
  *
- *   2. КОМАНДЫ ОБОЛОЧКИ И МАГИИ — по тексту команды в момент запуска, а не
- *      разбором Python: `!cmd` (`shell.system`, `shell.getoutput`),
- *      `%%bash`/`%%sh`/`%%script`, `os.system`, `os.popen`, `subprocess`.
- *      Граница узкая нарочно: `git`, `pip`, `ls`, `kill` собственного фонового
- *      процесса работают, а `kill -9 -1`, `pkill python`, `shutdown`,
- *      `reboot`, `init 0` и `rm -rf` корня занятия — нет. Сюда же `%reset`,
- *      `%reset -f`, `%reset_selective` и `%xdel`: в общей тетради они стирают
- *      переменные у всего класса.
+ *   2. SHELL COMMANDS AND MAGICS, by the command text at run time, not by
+ *      parsing Python: `!cmd` (`shell.system`, `shell.getoutput`),
+ *      `%%bash`/`%%sh`/`%%script`, `os.system`, `os.popen`, `subprocess`. The
+ *      boundary is narrow on purpose: `git`, `pip`, `ls`, `kill` of your own
+ *      background process work, while `kill -9 -1`, `pkill python`,
+ *      `shutdown`, `reboot`, `init 0` and `rm -rf` of the class root do not.
+ *      The same goes for `%reset`, `%reset -f`, `%reset_selective` and
+ *      `%xdel`: in a shared notebook they erase the variables of the whole
+ *      class.
  *
- * Роль не различается. Правило действует и на преподавателя: ядро одно, и
- * `os._exit(0)` из его ячейки стоит классу ровно столько же. Перезапустить
- * ядро у него есть чем — кнопка Restart, она идёт мимо ядра, через Jupyter.
+ * The role makes no difference. The rule applies to the teacher too: there is
+ * one kernel, and `os._exit(0)` from their cell costs the class exactly as
+ * much. They do have a way to restart the kernel: the Restart button, which
+ * goes around the kernel, through Jupyter.
  *
- * Чистый модуль: исходник на Python, сборка и разбор отчёта, ни сети, ни Yjs —
- * ради теста, который гоняет этот же исходник настоящим python3 (тот же приём,
- * что в council-isolation.ts).
+ * A pure module: the Python source, building and parsing the report, no
+ * network, no Yjs, for the sake of the test that runs this same source with a
+ * real python3 (the same trick as in council-isolation.ts).
  */
 
-/** Скрытый модуль, в котором живёт защита. Не имя в `globals()` студента. */
+/** The hidden module the guard lives in. Not a name in the student's `globals()`. */
 export const GUARD_MODULE = '_colloq_guard'
 
 /**
- * Имя исключения, которым защита отказывает.
+ * The name of the exception the guard refuses with.
  *
- * Одно на глобальную защиту и на изоляцию консилиума: сервер узнаёт по нему
- * свой же отказ и печатает ОДНУ человеческую строку без трейсбека — кадры
- * `<colloq-guard>` не код студента, и читать ему там нечего.
+ * One for the global guard and for the council isolation: the server
+ * recognises its own refusal by it and prints ONE human line without a
+ * traceback; the `<colloq-guard>` frames are not student code, and there is
+ * nothing there for the student to read.
  */
 export const COLLOQ_REFUSED = 'ColloqRefused'
 
-/** Ключ, под которым отчёт едет в `user_expressions` ответа ядра. */
+/** The key the report travels under in the kernel reply's `user_expressions`. */
 export const GUARD_REPORT_KEY = 'colloq'
 
-/** Выражение, которым сервер спрашивает у ядра, встала ли защита. */
+/** The expression the server uses to ask the kernel whether the guard is up. */
 export const GUARD_REPORT_EXPR = `__import__('sys').modules['${GUARD_MODULE}'].report`
 
 export interface GuardReport {
   ok: boolean
-  /** Подменены ли сейчас функции (правило или удержание консилиума). */
+  /** Whether the functions are patched right now (the rule or a council hold). */
   on: boolean
-  /** Что именно сказано про ПРАВИЛО комнаты — это и сверяет сервер. */
+  /** What exactly was said about the room RULE; this is what the server checks. */
   policy: boolean
-  /** Сколько попыток консилиума держат защиту поверх правила. */
+  /** How many council attempts hold the guard on top of the rule. */
   holds: number
-  /** Имена подменённых атрибутов — для журнала и теста. */
+  /** Names of the patched attributes, for the journal and the test. */
   patched: string[]
   error: string | null
 }
 
 /**
- * Реализация — одним куском Python, который исполняется НЕ в пространстве
- * студента.
+ * The implementation, as one chunk of Python that runs NOT in the student's
+ * namespace.
  *
- * Всё объявленное ниже ложится в `__dict__` скрытого модуля: ячейка установки
- * не связывает в `globals()` ни одного имени, иначе защита сама оставляла бы в
- * тетради `os`, `sys` и свои переменные.
+ * Everything declared below lands in the hidden module's `__dict__`: the
+ * install cell binds not a single name in `globals()`, otherwise the guard
+ * itself would leave `os`, `sys` and its own variables in the notebook.
  *
- * Регулярных выражений здесь нет ни одного, и это не вкусовщина: исходник
- * живёт в шаблонной строке TypeScript, где каждый `\\` — это escape, и
- * `re.compile('\\|\\|')` молча превратился бы в `re.compile('||')`. Разбор
- * команд обходится `str.split`.
+ * There is not a single regular expression here, and that is not a matter of
+ * taste: the source lives in a TypeScript template string, where every `\\` is
+ * an escape, and `re.compile('\\|\\|')` would silently turn into
+ * `re.compile('||')`. Command parsing gets by with `str.split`.
  */
 const IMPL = `
 import json
@@ -105,20 +111,21 @@ import sys
 
 
 class ColloqRefused(Exception):
-    """Ячейка попросила то, что у комнаты одно на всех.
+    """The cell asked for something the room has only one of, shared by all.
 
-    Имя видно студенту, поэтому оно короткое и своё: сервер узнаёт по нему свой
-    же отказ и печатает одну человеческую строку без трейсбека (kernel/index.ts
-    · runOne и runCouncilOne), как и с остановкой по пределу.
+    The name is visible to the student, so it is short and our own: the server
+    recognises its own refusal by it and prints one human line without a
+    traceback (kernel/index.ts · runOne and runCouncilOne), just as with a stop
+    at the limit.
     """
 
 
 class _Report(object):
-    """Отчёт серверу: его repr и есть готовый JSON.
+    """A report for the server: its repr is ready-made JSON.
 
-    user_expressions возвращает mimebundle, а text/plain в нём — repr()
-    значения. Отдавать строку нельзя: её repr приехал бы в кавычках и с
-    экранированием, то есть JSON внутри JSON.
+    user_expressions returns a mimebundle, and its text/plain is the repr() of
+    the value. A string cannot be handed over: its repr would arrive in quotes
+    and escaped, i.e. JSON inside JSON.
     """
     __slots__ = ('text',)
 
@@ -129,54 +136,55 @@ class _Report(object):
         return self.text
 
 
-# Снимок встроенных, снятый ПРИ УСТАНОВКЕ, когда они ещё целы: ячейка вправе
-# написать builtins.getattr = None, и снятие защиты падало бы на первой строке.
+# A snapshot of the builtins, taken AT INSTALL time while they are still
+# intact: a cell may write builtins.getattr = None, and removing the guard
+# would then fail on its first line.
 _getattr = getattr
 _setattr = setattr
 _delattr = delattr
 _MISS = object()
 
-# Сигналы, у которых нет другого смысла, кроме «кончить процесс сейчас» или
-# «заморозить его навсегда». SIGINT сюда НЕ входит: им останавливают ячейку.
+# Signals that have no meaning other than "end the process now" or "freeze it
+# forever". SIGINT is NOT among them: it is what stops a cell.
 _DEADLY_NAMES = (
     'SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGQUIT', 'SIGSEGV', 'SIGHUP',
     'SIGBUS', 'SIGILL', 'SIGFPE', 'SIGSYS', 'SIGTRAP', 'SIGSTOP', 'SIGTSTP',
 )
 
-# Команды, у которых цель — машина целиком.
+# Commands whose target is the whole machine.
 _STOP_CMDS = frozenset(('shutdown', 'reboot', 'halt', 'poweroff'))
 
-# Слова, по которым pkill и killall находят само ядро.
+# Words by which pkill and killall find the kernel itself.
 _SELF_WORDS = (
     'python', 'ipython', 'ipykernel', 'jupyter', 'kernel',
 )
 
-# Шаблоны pkill, которые значат «всё, что есть».
+# pkill patterns that mean "everything there is".
 _ALL_PATTERNS = frozenset(('.', '.*', '^.*', '^.*$', '*', '-1'))
 
-# Флаги pkill и killall, за которыми идёт значение, а не шаблон.
+# pkill and killall flags followed by a value, not a pattern.
 _PATTERN_FLAGS = frozenset((
     '-u', '-U', '-g', '-G', '-P', '-s', '-t', '-n', '-o',
     '--user', '--group', '--parent', '--signal', '--session',
 ))
 
-# Магии, стирающие переменные ВСЕЙ комнаты одной строкой.
+# Magics that erase the variables of the WHOLE room in one line.
 _WIPE_MAGICS = frozenset(('reset', 'reset_selective', 'xdel'))
 
-# Клеточные магии, тело которых — это команда оболочки, а не Python.
+# Cell magics whose body is a shell command, not Python.
 _SCRIPT_MAGICS = frozenset(('bash', 'sh', 'script', 'zsh', 'ksh', 'cmd', 'powershell'))
 
-# Слова, которые стоят ПЕРЕД настоящей командой и ничего о ней не говорят.
+# Words that stand IN FRONT of the real command and say nothing about it.
 _PREFIX_CMDS = frozenset((
     'sudo', 'doas', 'env', 'nohup', 'exec', 'time', 'command', 'setsid', 'stdbuf',
 ))
 
-# Разделители команд в строке оболочки. Порядок важен: сначала двойные.
+# Command separators in a shell line. Order matters: doubled ones first.
 _SEPARATORS = ('||', '&&', ';', '|', '&', '\\n')
 
 
 def _shell():
-    """Оболочка IPython, если мы в ядре; в голом python её нет, и это нормально."""
+    """IPython's shell when inside a kernel; plain python has none, which is fine."""
     mod = sys.modules.get('IPython')
     if mod is None:
         return None
@@ -195,11 +203,11 @@ def _mine():
 
 
 def _in_child():
-    """Ребёнок после fork() — там настоящие функции и есть правильное поведение.
+    """A child after fork(): there the real functions are the right behaviour.
 
-    multiprocessing и joblib кончают дочерний процесс именно os._exit, и отказ
-    в ребёнке пустил бы копию ячейки бежать дальше вторым ядром — беда крупнее
-    той, от которой защищаемся.
+    multiprocessing and joblib end a child process precisely with os._exit, and
+    refusing in the child would let a copy of the cell run on as a second
+    kernel, a bigger trouble than the one we guard against.
     """
     try:
         return os.getpid() != _mine()
@@ -208,8 +216,9 @@ def _in_child():
 
 
 def _texts():
-    # Пока попытка консилиума держит защиту, говорят ЕЁ словами: там нечего
-    # советовать про правило комнаты — внутри попытки запрет безусловный.
+    # While a council attempt holds the guard, we speak in ITS words: there is
+    # nothing to advise about the room rule, since inside an attempt the ban is
+    # unconditional.
     return held if held is not None else texts
 
 
@@ -249,17 +258,17 @@ def _deadly():
 
 
 def _fatal_target(pid):
-    """Цель сигнала — само ядро, его родитель, pid 1, своя группа или «все».
+    """The signal's target is the kernel, its parent, pid 1, its group or "everyone".
 
-    Чужой ребёнок сюда не попадает нарочно: им управляют subprocess и joblib, и
-    отказ там сломал бы больше, чем закрыл.
+    Someone else's child deliberately does not get here: subprocess and joblib
+    manage those, and a refusal there would break more than it closed.
     """
     try:
         pid = int(pid)
     except Exception:
         return False
     mine = _mine()
-    # 0 — своя группа процессов, -1 — все процессы пользователя.
+    # 0 is our own process group, -1 is all of the user's processes.
     if pid in (0, 1, -1) or pid == mine:
         return True
     try:
@@ -290,11 +299,11 @@ def _fatal_group(pgid):
         return False
 
 
-# ------------------------------------------------- разбор команд оболочки
+# ------------------------------------------------- parsing shell commands
 
 
 def _is_assign(word):
-    """VAR=value перед командой — это окружение, а не команда."""
+    """VAR=value before a command is environment, not a command."""
     head = word.split('=', 1)[0]
     if not head or head == word:
         return False
@@ -308,8 +317,8 @@ def _words(piece):
         import shlex
         return shlex.split(piece, posix=True)
     except Exception:
-        # Незакрытая кавычка, странный юникод — разбираем грубо. Пропустить
-        # опасное здесь можно: это лежачий полицейский, а не песочница.
+        # An unclosed quote, strange unicode: parse roughly. Something dangerous
+        # can get through here: this is a speed bump, not a sandbox.
         try:
             return piece.split()
         except Exception:
@@ -338,7 +347,7 @@ def _pieces(text):
 
 
 def _roots():
-    """Каталоги, снос которых целиком и есть «у всех всё пропало»."""
+    """Directories whose wholesale removal is exactly "everyone lost everything"."""
     out = set(('/', '/workspace'))
     here = _state().get('root')
     try:
@@ -357,7 +366,7 @@ def _roots():
 
 def _resolve(arg):
     raw = arg
-    # rm -rf /* и rm -rf * — это снос того же каталога, только звёздочкой.
+    # rm -rf /* and rm -rf * remove the same directory, just with an asterisk.
     if raw.endswith('/*'):
         raw = raw[:-2] or '/'
     elif raw in ('*', './*'):
@@ -370,9 +379,9 @@ def _resolve(arg):
 
 
 def _rm_target(args):
-    """Что сносит \`rm\`, если это корень занятия или машины; иначе None.
+    """What \`rm\` removes, if that is the class or machine root; otherwise None.
 
-    Без -r рекурсии нет, а значит нет и беды: \`rm -f /\` не делает ничего.
+    Without -r there is no recursion, and so no trouble: \`rm -f /\` does nothing.
     """
     recursive = False
     targets = []
@@ -397,7 +406,7 @@ def _rm_target(args):
 
 
 def _kill_target(args):
-    """Кого просят убить: первая подпись сигнала съедается как подпись."""
+    """Whom to kill: the first signal spec is swallowed as a spec."""
     signature = True
     for arg in args:
         if signature and arg.startswith('-'):
@@ -406,8 +415,8 @@ def _kill_target(args):
         signature = False
         if arg.startswith('-') and not arg[1:].isdigit():
             continue
-        # $PPID у команды \`!kill\` — это и есть процесс ядра: оболочку запустило
-        # оно. Числа тут нет, но цель известна.
+        # $PPID for a \`!kill\` command is the kernel process itself: it started
+        # the shell. There is no number here, but the target is known.
         if arg in ('$PPID',):
             return arg
         if _fatal_target(arg):
@@ -435,7 +444,7 @@ def _pattern_target(args):
 
 
 def _bad_words(words):
-    """Первая опасная команда в разобранной строке — или None."""
+    """The first dangerous command in a parsed line, or None."""
     words = _head(words)
     if not words:
         return None
@@ -520,8 +529,8 @@ def _check_argv(args, shell_mode):
     if not words:
         return
     if shell_mode:
-        # shell=True со списком: оболочке достаётся первый элемент, остальные
-        # уезжают в её $0, $1 — то есть командой является именно он.
+        # shell=True with a list: the shell gets the first element, the rest go
+        # into its $0, $1, so the command is exactly that element.
         _check_text(words[0])
         return
     bad = _bad_words(words)
@@ -529,7 +538,7 @@ def _check_argv(args, shell_mode):
         _refuse(bad[0], bad[1])
 
 
-# --------------------------------------------------------------- подмены
+# --------------------------------------------------------------- patches
 
 
 def _patch(store, obj, name, make):
@@ -553,7 +562,7 @@ def _unpatch(store):
             if own:
                 _setattr(obj, name, real)
             else:
-                # Метод класса вернётся сам, как только уйдёт наша подмена.
+                # The class method comes back by itself once our patch is gone.
                 _delattr(obj, name)
         except Exception:
             try:
@@ -563,16 +572,17 @@ def _unpatch(store):
 
 
 def _guard_exit(store):
-    """exit() и quit() в ячейке гасят ядро ВСЕЙ комнате.
+    """exit() and quit() in a cell take down the kernel for the WHOLE room.
 
-    В ipykernel exit и quit — один объект ZMQExitAutocall, его вызов (и даже
-    голое имя exit на строке: IPython сам дописывает скобки) идёт в
-    shell.ask_exit(), а тот ставит exit_now, и процесс заканчивается.
+    In ipykernel exit and quit are one ZMQExitAutocall object; calling it (and
+    even a bare exit on a line: IPython adds the parentheses itself) goes to
+    shell.ask_exit(), which sets exit_now, and the process ends.
 
-    Подменяется именно ask_exit, а не имена exit/quit: голое exit на строке
-    IPython превращает в вызов только потому, что там лежит ЕГО объект
-    автовызова. Подменив имя обычной функцией, мы бы закрыли exit() со скобками
-    и открыли exit без них — проверено на живом ядре, именно так и вышло.
+    It is ask_exit that gets patched, not the names exit/quit: IPython turns a
+    bare exit on a line into a call only because ITS autocall object lies
+    there. Had we replaced the name with an ordinary function, we would have
+    closed exit() with parentheses and opened exit without them; checked on a
+    live kernel, that is exactly what happened.
     """
     shell = _shell()
     if shell is None:
@@ -593,9 +603,9 @@ def _guard_exit(store):
 
     def shutdown(real):
         def refuse(*args, **kwargs):
-            # Настоящий shutdown_request приходит от самого ipykernel, и его
-            # трогать нельзя: им пользуются клиенты Jupyter. Отличаем по
-            # НЕПОСРЕДСТВЕННОМУ вызывающему: у кода ячейки это __main__.
+            # A real shutdown_request comes from ipykernel itself and must not
+            # be touched: Jupyter clients use it. We tell them apart by the
+            # IMMEDIATE caller: for cell code that is __main__.
             try:
                 who = sys._getframe(1).f_globals.get('__name__') or ''
             except Exception:
@@ -609,11 +619,11 @@ def _guard_exit(store):
 
 
 def _guard_process_exit(store):
-    """os._exit() и os.abort() кончают процесс молча — без слова и без следа.
+    """os._exit() and os.abort() end the process silently: no word, no trace.
 
-    Ни трассировки, ни стека, ни сигнала в dmesg, ни счётчика oom_kill в
-    cgroup. Ровно этим 20.09.2026 занятие на тридцать человек потеряло ядро
-    девять раз за одиннадцать минут.
+    No traceback, no stack, no signal in dmesg, no oom_kill counter in the
+    cgroup. Exactly this made a class of thirty lose its kernel nine times in
+    eleven minutes on 20 Sep 2026.
     """
     for name in ('_exit', 'abort'):
         def make(real, _name=name):
@@ -626,11 +636,11 @@ def _guard_process_exit(store):
 
 
 def _guard_signals(store, deadly):
-    """Смертельный сигнал В САМО ЯДРО — и только он.
+    """A deadly signal INTO THE KERNEL ITSELF, and only that.
 
-    os.kill остаётся рабочим инструментом: им управляют дочерними процессами, и
-    joblib, multiprocessing и subprocess без него не живут. Закрыта одна
-    единственная пара «цель — это мы» и «сигнал смертельный».
+    os.kill stays a working tool: child processes are managed with it, and
+    joblib, multiprocessing and subprocess cannot live without it. Exactly one
+    pair is closed: "the target is us" and "the signal is deadly".
     """
     def kill(real):
         def refuse(pid, sig, *rest, **kwargs):
@@ -683,8 +693,8 @@ def _guard_signals(store, deadly):
 
     def pthread_kill(real):
         def refuse(thread, number, *rest, **kwargs):
-            # Смертельный сигнал ЛЮБОМУ потоку кончает весь процесс: потоки
-            # делят таблицу обработчиков.
+            # A deadly signal to ANY thread ends the whole process: threads
+            # share the handler table.
             if not _in_child():
                 try:
                     value = int(number)
@@ -721,18 +731,18 @@ def _guard_subprocess(store):
         return
 
     class _GuardedPopen(real):
-        """Подкласс, а не функция: isinstance и наследование должны жить.
+        """A subclass, not a function: isinstance and inheritance must still work.
 
-        joblib и multiprocessing на Linux сюда не заходят вовсе — они зовут
-        _posixsubprocess.fork_exec напрямую, — так что эта подмена стоит на
-        дороге только у того, кто сам написал subprocess.
+        joblib and multiprocessing on Linux never come here at all (they call
+        _posixsubprocess.fork_exec directly), so this patch stands in the way
+        only of someone who wrote subprocess code themselves.
         """
 
         def __init__(self, args, *rest, **kwargs):
             if not _in_child():
                 shell_mode = kwargs.get('shell', False)
-                # shell — девятый позиционный; списком его почти никогда не
-                # передают, но раз уж передали, читаем оттуда.
+                # shell is the ninth positional; it is almost never passed that
+                # way, but since it was, we read it from there.
                 if len(rest) >= 8:
                     shell_mode = rest[7]
                 _check_argv(args, shell_mode)
@@ -763,8 +773,9 @@ def _guard_shell_commands(store):
             return real(command, *rest, **kwargs)
         return refuse
 
-    # system — это !cmd; getoutput — это !!cmd, %sx и var = !cmd. Остальные два
-    # имени подменяются на случай, когда магия зовёт их в обход self.system.
+    # system is !cmd; getoutput is !!cmd, %sx and var = !cmd. The other two
+    # names are patched for the case when a magic calls them bypassing
+    # self.system.
     for name in ('system', 'system_raw', 'system_piped', 'getoutput'):
         _patch(store, shell, name, make)
 
@@ -800,7 +811,7 @@ def _guard_magics(store):
     _patch(store, shell, 'run_cell_magic', cellmagic)
 
 
-# ------------------------------------------------------- установка и снятие
+# ------------------------------------------------------ install and removal
 
 
 def _install():
@@ -815,7 +826,8 @@ def _install():
         current['root'] = os.getcwd()
     except Exception:
         pass
-    # Ставится ДО подмен: сами подмены спрашивают у него pid и корень.
+    # Set BEFORE the patches: the patches themselves ask it for the pid and the
+    # root.
     saved = current
     deadly = _deadly()
     for step in (
@@ -830,7 +842,7 @@ def _install():
         try:
             step()
         except Exception:
-            # Одна не вставшая подмена — не повод остаться без остальных.
+            # One patch that did not go in is no reason to go without the others.
             pass
 
 
@@ -849,8 +861,9 @@ def _recompute():
         if saved is None:
             _install()
         elif _state().get('version') != version:
-            # Сервер выкатили, пока ядро жило: старые подмены снимаются своими
-            # же записями, новые встают из свежего кода.
+            # The server was redeployed while the kernel lived: the old patches
+            # are removed by their own records, and the new ones come from the
+            # fresh code.
             _remove()
             _install()
         return
@@ -877,10 +890,10 @@ def _tell():
 
 
 def apply(on, settings=None):
-    """Правило комнаты: исполнять опасные команды или нет.
+    """The room rule: whether to execute dangerous commands.
 
-    Отчёт ставится ВСЕГДА, в том числе на своей ошибке: сервер читает его как
-    единственное подтверждение и молчание обязан считать отказом.
+    The report is set ALWAYS, including on our own error: the server reads it
+    as the only confirmation and must treat silence as a refusal.
     """
     global policy, texts, report
     try:
@@ -904,12 +917,12 @@ def apply(on, settings=None):
 
 
 def hold(settings=None):
-    """Попытка консилиума: защита действует, что бы ни стояло в правиле.
+    """A council attempt: the guard is on, whatever the rule says.
 
-    Попытка студента идёт на ОБЩЕМ ядре, и уронить им класс нельзя даже тогда,
-    когда преподаватель разрешил опасные команды ради показа. Счётчик, а не
-    флажок: правило могут поменять посреди попытки, и оба ответа должны
-    складываться, а не спорить.
+    A student's attempt runs on the SHARED kernel, and it must not be able to
+    bring the class down even when the teacher has allowed dangerous commands
+    for a demonstration. A counter, not a flag: the rule may be changed in the
+    middle of an attempt, and both answers have to add up, not argue.
     """
     global holds, held
     if settings:
@@ -921,7 +934,7 @@ def hold(settings=None):
 
 
 def release():
-    """Попытка кончилась — вернуться к тому, что говорит правило комнаты."""
+    """The attempt is over: go back to what the room rule says."""
     global holds, held
     if holds > 0:
         holds -= 1
@@ -937,20 +950,20 @@ globals().setdefault('held', None)
 globals().setdefault('holds', 0)
 globals().setdefault('saved', None)
 globals().setdefault('report', None)
-# Умолчание строгое: ядро, которому сервер ещё ничего не сказал, защищено.
-# Ошибиться здесь можно только в сторону «отказали лишнего», и это дешевле.
+# The default is strict: a kernel the server has told nothing yet is guarded.
+# The only possible mistake here is "refused too much", and that is cheaper.
 globals().setdefault('policy', True)
-# Последней строкой, и это важно: по ней установка узнаёт, что ДОШЛА до конца.
+# As the last line, and this matters: by it the install knows it got to the END.
 version = '__VERSION__'
 `
 
-/** Версия установки — короткий хеш самого исходника, считается один раз. */
+/** The install version: a short hash of the source itself, computed once. */
 let stamp: string | null = null
 function implVersion(): string {
   return (stamp ??= createHash('sha1').update(IMPL).digest('hex').slice(0, 12))
 }
 
-/** Исходник с проставленной версией, уже экранированный в литерал Python. */
+/** The source with the version filled in, already escaped into a Python literal. */
 let literal: string | null = null
 function implLiteral(): string {
   return (literal ??= JSON.stringify(IMPL.replace('__VERSION__', implVersion())))
@@ -959,13 +972,14 @@ function implLiteral(): string {
 const MODULE = JSON.stringify(GUARD_MODULE)
 
 /**
- * Строка установки — ровно одна, и её ставят первой все, кому защита нужна.
+ * The install line: exactly one, and everyone who needs the guard puts it
+ * first.
  *
- * Установка идёт только когда её ещё нет или она другая: исходник за двадцать
- * килобайт, а `compile` его стоил бы полмиллисекунды каждой ячейке при том,
- * что между ячейками он не меняется никогда. Сверка по версии остаётся
- * честной: другая сборка сервера — другой хеш, и живое ядро получает новый
- * код без перезапуска.
+ * The install runs only when the module is not there yet or is a different
+ * one: the source is twenty kilobytes, and `compile` would cost every cell
+ * half a millisecond, while between cells it never changes. The version check
+ * stays honest: a different server build means a different hash, and a live
+ * kernel gets the new code without a restart.
  */
 export function guardInstallLine(): string {
   return (
@@ -978,12 +992,13 @@ export function guardInstallLine(): string {
 }
 
 /**
- * Тексты отказа — литералом в самом вызове, а не внутри исходника.
+ * Refusal texts: as a literal in the call itself, not inside the source.
  *
- * Язык комнаты меняют в панели посреди пары: запёкши перевод в исходник, мы
- * держали бы в живом ядре вчерашний (или переустанавливали модуль на каждой
- * смене языка). Хвост разный: в комнате он говорит, кто это может разрешить, а
- * в попытке консилиума разрешить это нельзя ничем, и обещать обратное нечестно.
+ * The room language gets changed in the panel in the middle of class: had we
+ * baked the translation into the source, the live kernel would hold
+ * yesterday's (or we would reinstall the module on every language change). The
+ * tail differs: in a room it says who can allow this, while in a council
+ * attempt nothing can allow it, and promising otherwise would be dishonest.
  */
 function settingsLiteral(tail: string): string {
   return [
@@ -995,22 +1010,23 @@ function settingsLiteral(tail: string): string {
   ].join(', ')
 }
 
-/** Настройки для комнаты: хвост советует правило «Опасные команды». */
+/** Settings for a room: the tail points to the "Dangerous commands" rule. */
 export function guardRoomSettings(): string {
   return settingsLiteral(tr('server.guard.allow'))
 }
 
-/** Настройки для попытки консилиума: разрешить это не может никто. */
+/** Settings for a council attempt: nobody can allow this. */
 export function guardCouncilSettings(): string {
   return settingsLiteral(tr('server.guard.inCouncil'))
 }
 
 /**
- * Ячейка, которой сервер объявляет ядру правило комнаты.
+ * The cell with which the server tells the kernel the room rule.
  *
- * Строка целиком и служит отпечатком: в ней и правило, и язык отказа, так что
- * сравнение с прошлой сказанной строкой ловит и смену правила посреди пары, и
- * смену языка инстанса — без лишнего похода в ядро на каждую ячейку.
+ * The whole line serves as the fingerprint: it holds both the rule and the
+ * refusal language, so comparing it with the last line said catches both a
+ * rule change in the middle of class and a change of the instance language,
+ * without an extra trip to the kernel for every cell.
  */
 export function guardPolicySource(block: boolean): string {
   return [
@@ -1020,28 +1036,29 @@ export function guardPolicySource(block: boolean): string {
   ].join('\n')
 }
 
-/** Выражение удержания — его зовёт вход изоляции консилиума. */
+/** The hold expression: the council isolation's entry calls it. */
 export function guardHoldExpr(): string {
   return `__import__('sys').modules[${MODULE}].hold(${guardCouncilSettings()})`
 }
 
-/** Выражение освобождения — его зовёт выход изоляции консилиума. */
+/** The release expression: the council isolation's exit calls it. */
 export const GUARD_RELEASE_EXPR = `__import__('sys').modules[${MODULE}].release()`
 
 /**
- * Разобрать ответ ядра в отчёт; `null` — подтверждения не было.
+ * Parse the kernel's answer into a report; `null` means there was no
+ * confirmation.
  *
- * Принимает и то, что приезжает в `user_expressions` (`{status, data}` с
- * `text/plain` внутри), и голую строку JSON — второе ради теста, который гоняет
- * те же исходники настоящим python3 и читает отчёт со stdout.
+ * Accepts both what arrives in `user_expressions` (`{status, data}` with
+ * `text/plain` inside) and a bare JSON string; the latter for the test that
+ * runs the same sources with a real python3 and reads the report from stdout.
  */
 export function parseGuardReport(raw: unknown): GuardReport | null {
   let text: string | null = null
   if (typeof raw === 'string') text = raw
   else if (raw && typeof raw === 'object') {
     const wrapper = raw as { status?: unknown; data?: Record<string, unknown> }
-    // status !== 'ok' — это `_user_obj_error()` IPython: выражение не
-    // посчиталось, то есть модуля или отчёта в нём нет.
+    // status !== 'ok' is IPython's `_user_obj_error()`: the expression was not
+    // evaluated, i.e. the module or its report is missing.
     if (wrapper.status !== undefined && wrapper.status !== 'ok') return null
     const plain = wrapper.data?.['text/plain']
     if (typeof plain === 'string') text = plain

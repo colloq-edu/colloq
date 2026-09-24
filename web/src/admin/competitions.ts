@@ -1,16 +1,16 @@
 /**
- * Решения вкладки «Соревнования», вынесенные из компонентов.
+ * The decisions of the "Competitions" tab, taken out of the components.
  *
- * Ни Svelte, ни браузера — как в `admin/panel.ts` и по той же причине: это
- * числа и слова, по которым преподаватель принимает решения посреди пары
- * («успею ли починить метрику до дедлайна», «почему не открывается»,
- * «на какой ячейке падают все»), и ошибку в них видно только на живом
- * соревновании, когда исправлять поздно.
+ * No Svelte and no browser — as in `admin/panel.ts` and for the same reason:
+ * these are the numbers and words a teacher makes decisions by in the middle
+ * of a class ("can I fix the metric before the deadline", "why won't it
+ * open", "which cell is everyone failing on"), and a mistake in them only
+ * shows on a live competition, when it is too late to fix.
  *
- * Чего здесь нет: правил, которые обязаны совпасть с сервером. Порядок
- * лидерборда, зачётная посылка, деление строк — всё это лежит в
- * `shared/competitions.ts` и зовётся оттуда. Вторая копия такого правила не
- * падает, а тихо показывает классу другое место.
+ * What is not here: rules that must match the server. Leaderboard order, the
+ * counted submission, the row split — all of that lives in
+ * `shared/competitions.ts` and is called from there. A second copy of such a
+ * rule does not crash; it quietly shows the class a different place.
  */
 import { tr, formatDate, formatNumber } from '@shared/i18n'
 import {
@@ -33,26 +33,27 @@ import type {
   SubmissionRow,
 } from '@shared/competitions-api'
 
-/* --------------------------------------------------------------- числа */
+/* ------------------------------------------------------------- numbers */
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 
 /**
- * Число метрики так, как его читают в колонке.
+ * A metric value the way it is read in a column.
  *
- * Макет знает ровно один масштаб — `0.0412`, четыре знака, — и про остальные
- * молчит. Молчать здесь нельзя: метрику пишет преподаватель, и RMSE в рублях
- * выдаёт `1234.5678`, а log-loss на хорошей модели — `0.00003`. Первое рвёт
- * колонку в 96 пикселей, второе печатается как `0.0000` у всех подряд — то
- * есть лидерборд, в котором первые десять мест выглядят одинаково.
+ * The mockup knows exactly one scale — `0.0412`, four digits — and says
+ * nothing about the others. Saying nothing is not an option here: the teacher
+ * writes the metric, and RMSE in roubles gives `1234.5678`, while log-loss on
+ * a good model gives `0.00003`. The first breaks a 96-pixel column, the
+ * second prints as `0.0000` for everyone — that is, a leaderboard whose top
+ * ten places look the same.
  *
- * Отсюда три правила. Знаков после запятой тем меньше, чем крупнее число
- * (колонка — двенадцать знаков моноширинного тринадцатого кегля, и это
- * измерено, а не угадано). Очень крупное и очень мелкое уходит в
- * экспоненту — она узкая и честная. `NaN`, `inf` и отсутствие числа — прочерк:
- * выдумывать ноль там, где считать не вышло, нельзя.
+ * Hence three rules. The larger the number, the fewer digits after the point
+ * (the column is twelve characters of 13px monospace, and that was measured,
+ * not guessed). Very large and very small values go to exponent notation —
+ * it is narrow and honest. `NaN`, `inf` and a missing number become a dash:
+ * inventing a zero where scoring failed is not allowed.
  */
 export function metricNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—'
@@ -62,17 +63,17 @@ export function metricNumber(value: number | null | undefined): string {
   return value.toFixed(digits)
 }
 
-/** Целое с разделителем разрядов: `7 340`. */
+/** An integer with a thousands separator: `7 340`. */
 export function count(value: number): string {
   return formatNumber(value)
 }
 
 /**
- * Длительность словами: «2 мин 40 с», «1 мин 48 с», «41 с».
+ * A duration in words: "2 min 40 s", "1 min 48 s", "41 s".
  *
- * Секунды не отбрасываются у коротких прогонов и отбрасываются у длинных:
- * «4 ч 12 мин 09 с» — это не факт, а шум, а вот разница между «41 с» и
- * «1 мин 20 с» на посылке решает, ждать ли её на экране.
+ * Seconds are kept for short runs and dropped for long ones: "4 h 12 min
+ * 09 s" is not a fact but noise, whereas the difference between "41 s" and
+ * "1 min 20 s" on a submission decides whether to wait for it on screen.
  */
 export function spanWords(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return '—'
@@ -86,12 +87,12 @@ export function spanWords(ms: number | null | undefined): string {
 }
 
 /**
- * Таймер прогона: `01:12`, `10:00`, `1:02:30`.
+ * The run timer: `01:12`, `10:00`, `1:02:30`.
  *
- * Моноширинный счётчик, а не слова: он стоит рядом с пределом («01:12 из
- * 10:00») и обязан сравниваться взглядом, не чтением. Минуты дополняются
- * нулём только когда есть с чем равняться — в колонке «ШЛА» макет пишет
- * `3:05`, без ведущего нуля.
+ * A monospace counter, not words: it stands next to the limit ("01:12 of
+ * 10:00") and has to be compared at a glance, not by reading. Minutes are
+ * zero-padded only when there is something to line up with — in the "TOOK"
+ * column the mockup writes `3:05`, without a leading zero.
  */
 export function clock(ms: number | null | undefined, pad = false): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return '—'
@@ -105,10 +106,11 @@ export function clock(ms: number | null | undefined, pad = false): string {
 }
 
 /**
- * Сколько осталось: «6 дн 4 ч», «1 ч 12 мин», «40 с».
+ * How much is left: "6 d 4 h", "1 h 12 min", "40 s".
  *
- * Две единицы, никогда три: «6 дн 4 ч 17 мин» читается дольше, чем стоит, а
- * решение по этой строке принимают одно — успею или не успею.
+ * Two units, never three: "6 d 4 h 17 min" takes longer to read than it is
+ * worth, and the only decision made from this line is whether I will make it
+ * or not.
  */
 export function leftWords(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return tr('admin.competitions.leftNone')
@@ -131,12 +133,12 @@ export function leftWords(ms: number): string {
 }
 
 /**
- * Сколько прошло: «вчера», «3 дн назад», «неделю назад».
+ * How much time has passed: "yesterday", "3 d ago", "a week ago".
  *
- * Своё, а не `panel.ts · ago`: там шкала кончается днями, и завершённое
- * месяц назад соревнование подписывалось «45 дн назад» — число, которое никто
- * не переводит в недели в уме. Здесь шкала доведена до месяцев, потому что
- * список соревнований живёт семестр, а не пару.
+ * Its own, not `panel.ts · ago`: that scale ends at days, and a competition
+ * finished a month ago was labelled "45 d ago" — a number nobody converts to
+ * weeks in their head. Here the scale goes up to months, because the list of
+ * competitions lives for a semester, not for one class.
  */
 export function sinceWords(from: number, now: number): string {
   const ms = Math.max(0, now - from)
@@ -150,25 +152,25 @@ export function sinceWords(from: number, now: number): string {
   return tr('admin.competitions.sinceMonth', { count: Math.max(1, Math.floor(days / 30)) })
 }
 
-/* ------------------------------------------------------------- дедлайн */
+/* ------------------------------------------------------------ deadline */
 
-/** Дата дедлайна и подпись под ней — две строки колонки «ДЕДЛАЙН». */
+/** Deadline date and its caption — the two lines of the "DEADLINE" column. */
 export interface DeadlineLine {
-  /** `27.09, 23:59`, `сегодня, 21:00` или «не назначен». */
+  /** `27.09, 23:59`, `today, 21:00` or "not set". */
   when: string
-  /** «осталось 6 дн 4 ч», «неделю назад», «откроется после проверки». */
+  /** "6 d 4 h left", "a week ago", "opens once it passes the check". */
   note: string
-  /** Подпись горит: до дедлайна меньше половины суток. */
+  /** The caption is lit: less than half a day to the deadline. */
   hot: boolean
 }
 
 /**
- * Момент в колонке «КОГДА»: `18:58` сегодня, `13.09` раньше.
+ * A moment in the "WHEN" column: `18:58` for today, `13.09` for earlier.
  *
- * Колонка в 74 пикселя, и в неё не влезает ни то ни другое сразу. Выбор
- * сделан за человека, и он же — единственный осмысленный: лента идущего
- * соревнования почти вся сегодняшняя, а вчерашнюю строку от сегодняшней
- * отличает не минута, а день.
+ * The column is 74 pixels wide, and both at once do not fit. The choice is
+ * made for the person, and it is the only meaningful one: the feed of a
+ * running competition is almost entirely today's, and what tells yesterday's
+ * row from today's is not the minute but the day.
  */
 export function feedWhen(at: number, now: number): string {
   const sameDay = new Date(at).toDateString() === new Date(now).toDateString()
@@ -177,7 +179,7 @@ export function feedWhen(at: number, now: number): string {
     : formatDate(at, { day: '2-digit', month: '2-digit' })
 }
 
-/** Момент — датой и временем; «сегодня» вместо даты, пока это сегодня. */
+/** A moment as date and time; "today" instead of the date while it is today. */
 export function moment(at: number, now: number): string {
   const time = formatDate(at, { hour: '2-digit', minute: '2-digit' })
   const sameDay = new Date(at).toDateString() === new Date(now).toDateString()
@@ -186,13 +188,14 @@ export function moment(at: number, now: number): string {
 }
 
 /**
- * Порог, за которым подпись дедлайна становится жёлтой.
+ * The threshold past which the deadline caption turns yellow.
  *
- * Полсуток, а не «сегодня»: дедлайн в 23:59 наступает для того, кто сел за
- * задачу в девять вечера, так же внезапно, как и для того, кто открыл экран в
- * полночь, — а календарные сутки различают их только по формальности. И не
- * час: за час преподаватель уже ничего не успеет сделать со своей стороны, а
- * строка списка нужна ему как раз затем, чтобы успеть.
+ * Half a day, not "today": a 23:59 deadline arrives just as suddenly for
+ * someone who sat down to the task at nine in the evening as for someone who
+ * opened the screen at midnight — and calendar days tell them apart only on a
+ * technicality. And not an hour: with an hour left the teacher can no longer
+ * do anything on their side, and the list row is there precisely so that
+ * they still can.
  */
 const HOT_MS = 12 * HOUR
 
@@ -204,8 +207,9 @@ export function deadlineLine(
   if (c.deadlineAt === null) {
     return {
       when: tr('admin.competitions.deadlineNone'),
-      // Черновику без даты говорят не «нет даты» (это и так видно слева), а
-      // что с ним будет дальше: он ждёт проверки, а не назначения.
+      // A draft without a date is not told "no date" (that is visible on the
+      // left anyway) but what happens to it next: it waits for a check, not
+      // for a date.
       note: c.state === 'draft' ? openNote(ready) : tr('admin.competitions.deadlineOpenEnded'),
       hot: false,
     }
@@ -223,22 +227,23 @@ export function deadlineLine(
   }
 }
 
-/** Подпись черновика: он откроется, когда пройдёт проверку. */
+/** A draft's caption: it will open once it passes the check. */
 function openNote(ready: OpenRefusal | null): string {
   return ready === null
     ? tr('admin.competitions.readyToOpen')
     : tr('admin.competitions.opensAfterCheck')
 }
 
-/* -------------------------------------------------------- строки списка */
+/* ----------------------------------------------------------- list rows */
 
 /**
- * Вторая строка названия: «MAPE · меньше — лучше · публичная часть 30 %».
+ * The title's second line: "MAPE · lower is better · public part 30%".
  *
- * Третий кусок меняется со состоянием, и это не украшение: у черновика на его
- * месте стоит единственное, что мешает открыться, у завершённого — открыт ли
- * итог. Одна строка отвечает на вопрос «что с ним сейчас не так», ради
- * которого в список и заходят.
+ * The third piece changes with the state, and that is not decoration: for a
+ * draft its place holds the one thing stopping it from opening, for a
+ * finished one — whether the final result is open. One line answers the
+ * question "what is wrong with it right now", which is why people open the
+ * list in the first place.
  */
 export function metricLine(row: CompetitionRow, now: number): string {
   const c = row.competition
@@ -257,13 +262,14 @@ export function metricLine(row: CompetitionRow, now: number): string {
 }
 
 /**
- * Подпись под лучшим публичным: «бейзлайн 0.0587» или его беда.
+ * The caption under the best public score: "baseline 0.0587" or its trouble.
  *
- * Именно бейзлайн, а не приватный результат, даже у завершённого: приватного
- * числа в строке списка нет и быть не может — это одна строка на соревнование,
- * а итог считается по одной посылке КАЖДОГО участника. Бейзлайн же и есть то,
- * с чем сравнивают лучший результат класса: «0.0412 против 0.0587» — это
- * единственное, что строка списка вообще может сказать о качестве решений.
+ * The baseline specifically, not the private result, even for a finished
+ * one: there is no private number in a list row and there cannot be — it is
+ * one row per competition, while the final result is computed from one
+ * submission of EACH entrant. The baseline is exactly what the class's best
+ * result is compared with: "0.0412 against 0.0587" is the only thing a list
+ * row can say about the quality of the solutions at all.
  */
 export function baselineNote(row: CompetitionRow): { text: string; bad: boolean } {
   if (row.baselineState === null) return { text: tr('admin.competitions.baselineNotRun'), bad: false }
@@ -276,22 +282,22 @@ export function baselineNote(row: CompetitionRow): { text: string; bad: boolean 
   return { text: tr('admin.competitions.baselineScore', { score: metricNumber(row.baselineScore) }), bad: false }
 }
 
-/* ------------------------------------------------------ полоса очереди */
+/* --------------------------------------------------------- queue strip */
 
-/** Две фразы полосы исполнителя: что идёт и на каких условиях. */
+/** The runner strip's two phrases: what is running and on what terms. */
 export interface RunnerLine {
   head: string
   tail: string
 }
 
 /**
- * «исполняет 1 посылку · 2 ждут» и «по одной за раз · без сети · сегодня
- * исполнено 37, в среднем 2 мин 40 с».
+ * "running 1 submission · 2 waiting" and "one at a time · no network · 37 run
+ * today, 2 min 40 s on average".
  *
- * Пауза сказана первой и словом: приостановленная очередь выглядит точно так
- * же, как пустая, — ничего не исполняется, — и различает их только эта
- * строка. Соревнование, в котором посылки молча не считаются вторые сутки,
- * начинается ровно здесь.
+ * The pause is said first and in words: a paused queue looks exactly like an
+ * empty one — nothing is running — and only this line tells them apart. A
+ * competition whose submissions have silently not been scored for two days
+ * starts right here.
  */
 export function runnerLine(queue: QueueSnapshot): RunnerLine {
   const parts: string[] = []
@@ -315,25 +321,25 @@ export function runnerLine(queue: QueueSnapshot): RunnerLine {
   return { head: parts.join(' · '), tail: tail.join(' · ') }
 }
 
-/** «≈ 3 мин»; оценки нет — так и сказано, а не «≈ 0 мин». */
+/** "≈ 3 min"; with no estimate it says so, rather than "≈ 0 min". */
 export function etaWords(ms: number | null): string {
   if (ms === null) return tr('admin.competitions.etaUnknown')
   if (ms < MINUTE) return tr('admin.competitions.etaSoon')
   return tr('admin.competitions.eta', { time: leftWords(ms) })
 }
 
-/* ------------------------------------------------- почему не открывается */
+/* ------------------------------------------------ why it will not open */
 
-/** Секция редактора, в которой лежит причина отказа. */
+/** The editor section where the reason for a refusal lives. */
 export type EditorSection = 'basics' | 'data' | 'baseline' | 'metric' | 'terms'
 
 /**
- * Куда вести человека по отказу.
+ * Where to take the person for a refusal.
  *
- * Отказ называет причину, а не место, и «Нет файла ответов» на экране в шесть
- * секций — это шесть мест, в которых его можно искать. Порядок проверок на
- * сервере (`competitions/panel.ts` · openRefusal) — это порядок секций сверху
- * вниз, так что соответствие однозначное.
+ * A refusal names a reason, not a place, and "There is no answer file" on a
+ * screen of six sections is six places to look for it. The order of checks
+ * on the server (`competitions/panel.ts` · openRefusal) is the order of the
+ * sections from top to bottom, so the mapping is unambiguous.
  */
 export function refusalSection(refusal: OpenRefusal): EditorSection {
   switch (refusal) {
@@ -350,24 +356,25 @@ export function refusalSection(refusal: OpenRefusal): EditorSection {
   }
 }
 
-/** Фраза отказа — та же, которой отказывает дверь `/open`. */
+/** The refusal phrase — the same one the `/open` door refuses with. */
 export function refusalText(refusal: OpenRefusal): string {
   return tr(`competitions.refusal.open.${refusal}`)
 }
 
-/* ------------------------------------------------------ заготовки метрики */
+/* ---------------------------------------------------- metric templates */
 
-/** Заготовка: имя в чипе, куда смотрит метрика и какой у неё код. */
+/** A template: the chip's name, which way the metric points and its code. */
 export interface MetricPreset {
   name: string
   direction: MetricDirection
 }
 
 /**
- * Семь чипов «ЗАГОТОВКИ» — ровно те, что нарисованы, и в том же порядке.
+ * The seven "TEMPLATES" chips — exactly the ones drawn, in the same order.
  *
- * Направление едет вместе с именем: MAPE, у которой «больше — лучше», — это
- * лидерборд задом наперёд, и заметит это тот, кто окажется последним.
+ * The direction travels with the name: a MAPE that is "higher is better" is
+ * a leaderboard turned upside down, and the one who notices is whoever ends
+ * up last.
  */
 export const METRIC_PRESETS: readonly MetricPreset[] = [
   { name: 'MAPE', direction: 'lower' },
@@ -379,31 +386,32 @@ export const METRIC_PRESETS: readonly MetricPreset[] = [
   { name: 'QWK', direction: 'higher' },
 ]
 
-/** Колонки файла ответов: по ним заготовка знает, что с чем сливать. */
+/** Answer file columns: they tell a template what to merge with what. */
 export interface AnswerColumns {
-  /** Ключ строки — первая колонка `solution.csv`. */
+  /** The row key — the first column of `solution.csv`. */
   id: string
-  /** Что предсказывают — вторая. */
+  /** What is predicted — the second. */
   target: string
 }
 
 /**
- * Колонки из шапки файла ответов; нет файла — общие имена.
+ * Columns from the answer file's header; no file — generic names.
  *
- * Заготовка, подставляющая `target` туда, где в ответах написано `orders`,
- * падает на первой же проверке — с трейсом, который преподаватель будет
- * читать как ошибку продукта. Шапку ответов сервер уже прислал (`FileView ·
- * columns`), и единственное, чего ей не хватало, — чтобы кто-то её прочёл.
+ * A template that puts `target` where the answers say `orders` fails on the
+ * very first check — with a traceback the teacher will read as a bug in the
+ * product. The server has already sent the answers' header (`FileView ·
+ * columns`), and the only thing it lacked was someone to read it.
  */
 export function answerColumns(columns: readonly string[] | null | undefined): AnswerColumns {
   const named = (columns ?? []).filter((name) => typeof name === 'string' && name.trim() !== '')
-  // Колонка `Usage` — разметка деления строк, а не предсказание: она лежит в
-  // файле ответов рядом с целевой и в метрику не идёт (shared · splitByUsage).
+  // The `Usage` column marks the row split, it is not a prediction: it sits
+  // in the answer file next to the target and does not go into the metric
+  // (shared · splitByUsage).
   const useful = named.filter((name) => name.toLowerCase() !== 'usage')
   return { id: useful[0] ?? 'id', target: useful[1] ?? 'target' }
 }
 
-/** Тело `score` для заготовки — с настоящими именами колонок этого соревнования. */
+/** The `score` body for a template — with this competition's real column names. */
 export function presetCode(name: string, columns: AnswerColumns): string {
   const { id, target } = columns
   const guard = [
@@ -437,12 +445,12 @@ export function presetCode(name: string, columns: AnswerColumns): string {
   }
 }
 
-/** Строка Python: кавычки те же, что у остального кода заготовок. */
+/** A Python string: the same quotes as the rest of the template code. */
 function quote(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
 
-/** Метрика после нажатия на чип заготовки. */
+/** The metric after a template chip is pressed. */
 export interface MetricDraft {
   name: string
   direction: MetricDirection
@@ -450,13 +458,13 @@ export interface MetricDraft {
 }
 
 /**
- * Что делает чип заготовки с тем, что уже набрано.
+ * What a template chip does to what has already been typed.
  *
- * Имя и направление он меняет всегда — за этим его и нажимают. А код
- * подставляет ТОЛЬКО поверх пустого места или поверх другой, нетронутой
- * заготовки: полчаса работы над своей метрикой, стёртые случайным попаданием в
- * чип, назад не вернёшь, а Ctrl+Z в поле кода отменяет ввод, а не чужую
- * подстановку.
+ * It always changes the name and the direction — that is what it is pressed
+ * for. But it puts in code ONLY over an empty field or over another,
+ * untouched template: half an hour of work on your own metric, wiped by an
+ * accidental hit on a chip, cannot be brought back, and Ctrl+Z in the code
+ * field undoes typing, not someone else's substitution.
  */
 export function applyPreset(current: MetricDraft, name: string, columns: AnswerColumns): MetricDraft {
   const preset = METRIC_PRESETS.find((one) => one.name === name)
@@ -468,14 +476,14 @@ export function applyPreset(current: MetricDraft, name: string, columns: AnswerC
   return next
 }
 
-/** Код, который целиком совпадает с какой-нибудь заготовкой, — значит, ничей. */
+/** Code that matches some template exactly — so it belongs to nobody. */
 export function isUntouchedPreset(code: string, columns: AnswerColumns): boolean {
   return METRIC_PRESETS.some((preset) => presetCode(preset.name, columns).trim() === code.trim())
 }
 
-/* ------------------------------------------------------------- сводка A3 */
+/* ---------------------------------------------------------- A3 summary */
 
-/** «Чаще всего тетради падают на ячейке 7 — 11 посылок из 27». */
+/** "Notebooks most often die on cell 7 — 11 submissions out of 27". */
 export interface WorstCell {
   cell: number
   hits: number
@@ -483,16 +491,16 @@ export interface WorstCell {
 }
 
 /**
- * Ячейка, на которой падает больше всего тетрадей.
+ * The cell on which the most notebooks fail.
  *
- * Единственное число этого экрана, которое говорит про ЗАДАЧУ, а не про
- * машину: если двадцать семь человек из ста спотыкаются на седьмой ячейке,
- * значит, дело не в них, а в данных или в формулировке, — и увидеть это
- * можно только сложив чужие неудачи в одну кучу.
+ * The only number on this screen that speaks about the TASK rather than the
+ * machine: if twenty-seven people out of a hundred stumble on the seventh
+ * cell, the problem is not them but the data or the wording — and you can
+ * only see that by piling other people's failures into one heap.
  *
- * `null` там, где куча ещё не куча: одно-два падения — это просто чей-то
- * `KeyError`, и объявлять его закономерностью значит отправить
- * преподавателя чинить свою задачу из-за одного человека.
+ * `null` where the heap is not a heap yet: one or two failures are just
+ * someone's `KeyError`, and calling that a pattern would send the teacher to
+ * fix their task because of one person.
  */
 export function worstCell(rows: readonly SubmissionRow[], least = 3): WorstCell | null {
   const failed = rows.filter(
@@ -514,13 +522,15 @@ export function worstCell(rows: readonly SubmissionRow[], least = 3): WorstCell 
 }
 
 /**
- * Лидерборд из ленты посылок, обе части сразу.
+ * A leaderboard from the submission feed, both parts at once.
  *
- * Только для полных локальных снимков. Живой экран получает авторитетную
- * таблицу с сервера: страница ленты никогда не служит входом для ранжирования.
+ * Only for complete local snapshots. The live screen gets the authoritative
+ * table from the server: a page of the feed never serves as input for
+ * ranking.
  *
- * Базовое решение из таблицы вынуто: оно не участник, и место ему не
- * полагается. Строкой «бейзлайн» его рисует экран — отдельно и без номера.
+ * The baseline solution is taken out of the table: it is not an entrant and
+ * is not entitled to a place. The screen draws it as a "baseline" row —
+ * separately and without a number.
  */
 export function boardFromFeed(
   rows: readonly SubmissionRow[],
@@ -554,9 +564,9 @@ function entryOf(submission: Submission): BoardEntry {
   }
 }
 
-/* --------------------------------------------------------------- слова */
+/* --------------------------------------------------------------- words */
 
-/** Что случилось с посылкой — колонка «ЧТО СЛУЧИЛОСЬ». */
+/** What happened to a submission — the "WHAT HAPPENED" column. */
 export function outcomeLine(row: SubmissionRow, best: boolean): string {
   const s = row.submission
   if (s.state === 'metricFailed') return tr('admin.competitions.outcome.metricFailed')
@@ -572,20 +582,20 @@ export function outcomeLine(row: SubmissionRow, best: boolean): string {
   return ''
 }
 
-/** Состояние соревнования словом — одна копия на список и на шапку. */
+/** A competition's state as a word — one copy for the list and the header. */
 export function stateWord(state: CompetitionState): string {
   return competitionWord(state)
 }
 
 /**
- * Тон плашки соревнования — по таблице макета: идёт — accent, черновик —
- * предупреждение, завершено — нейтральная.
+ * The tone of a competition's badge, per the mockup's table: live — accent,
+ * draft — warning, finished — neutral.
  */
 export function stateTone(state: CompetitionState): 'accent' | 'warning' | 'neutral' {
   return state === 'live' ? 'accent' : state === 'draft' ? 'warning' : 'neutral'
 }
 
-/** Идёт ли посылка прямо сейчас — строки очереди рисуются не в ленте. */
+/** Whether a submission is in flight now; queue rows are not drawn in the feed. */
 export function inFlight(state: SubmissionState): boolean {
   return state === 'queued' || state === 'running'
 }

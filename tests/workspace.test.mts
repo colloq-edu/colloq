@@ -52,9 +52,10 @@ test('one seminar cannot name another seminar file', () => {
 })
 
 test('a control character in a name is refused, not stripped', () => {
-  // Мерка одна на всех и живёт в shared/paths (её саму проверяет paths.test.mts);
-  // здесь — что дверь в папку семинара спрашивает именно её. Разделитель теперь
-  // законен: `src/model.py` — путь, а не имя с косой чертой внутри.
+  // There is one yardstick for everyone and it lives in shared/paths
+  // (paths.test.mts checks it itself); here — that the door to the seminar
+  // folder asks exactly it. The separator is now legitimate: `src/model.py` is
+  // a path, not a name with a slash inside.
   for (const name of ['a\\b.csv', 'a\nb.csv', 'a\u0000b.csv', 'a\u001fb.csv']) {
     assert.equal(resolveInSession(SID, name), null, JSON.stringify(name))
   }
@@ -94,10 +95,11 @@ test('a name is kept as typed — alphabet, case and spaces included', () => {
 })
 
 test('a name at the length limit is kept and one past it is not', () => {
-  // Потолок один на весь путь — `safeSegment` из shared/paths, сто двадцать
-  // символов. Своей мерки у загрузки больше нет: пока она была (двести
-  // символов), имя из середины щели проходило её, чтобы строкой ниже получить
-  // отказ, не назвавший ни причины, ни потолка.
+  // There is one cap for the whole path — `safeSegment` from shared/paths, a
+  // hundred and twenty characters. The upload no longer has a yardstick of its
+  // own: while it had one (two hundred characters), a name from the middle of
+  // the gap passed it only to get a refusal one line below that named neither
+  // the reason nor the cap.
   const at = 'a'.repeat(MAX_SEGMENT - 4) + '.csv'
   assert.ok(resolveInSession(SID, at)?.endsWith(at))
   assert.equal(resolveInSession(SID, 'a'.repeat(MAX_SEGMENT + 1)), null)

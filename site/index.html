@@ -5,17 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <!--
-      Выбор языка до первой отрисовки. Скрипт стоит первым в <head> и до
-      стилей: location.replace на этом месте отменяет загрузку страницы
-      целиком, и читатель не успевает увидеть чужой язык.
+      Language choice before the first paint. The script comes first in
+      <head>, before the styles: location.replace at this point cancels
+      loading the page altogether, and the reader has no time to see the
+      wrong language.
 
-      Явный выбор из шапки сильнее браузера и хранится навсегда; без него
-      смотрится первый язык из navigator.languages. Русская страница — для
-      ru, be, uk, kk; английская — для всех остальных.
+      An explicit choice from the header beats the browser and is kept
+      forever; without it the first language in navigator.languages is
+      used. The Russian page is for ru, be, uk, kk; the English one is for
+      everyone else.
 
-      Петли не будет: обе страницы считают одно и то же значение, и та, на
-      которую увозят, всегда видит своё. Якорь переносится — иначе ссылка
-      на раздел теряет раздел ровно в тот момент, когда меняет язык.
+      There will be no loop: both pages compute the same value, and the one
+      the reader is sent to always sees its own. The anchor is carried over,
+      otherwise a link to a section loses the section exactly at the moment
+      it changes language.
     -->
     <script>
       ;(function () {
@@ -56,10 +59,11 @@
     <link rel="canonical" href="https://colloq.ru/" />
 
     <!--
-      Канон обеих страниц живёт на colloq.ru: зеркало colloq.cc отдаёт тот же
-      текст, и без канона поисковик считает их разными страницами об одном.
-      x-default — английская: она для тех, чей язык не совпал ни с одним из
-      объявленных, а это все, кроме русскоязычных.
+      The canonical URL of both pages lives on colloq.ru: the colloq.cc
+      mirror serves the same text, and without a canonical a search engine
+      takes them for different pages about the same thing. x-default is the
+      English one: it is for those whose language matched none of the
+      declared ones, and that is everyone except Russian speakers.
     -->
     <link rel="alternate" hreflang="ru" href="https://colloq.ru/" />
     <link rel="alternate" hreflang="en" href="https://colloq.ru/en/" />
@@ -81,10 +85,10 @@
     <meta name="twitter:card" content="summary_large_image" />
 
     <!--
-      Значок — настоящими файлами, а не data:-ссылкой: Google ставит его в
-      выдачу только с адреса, который может скачать его робот, и только
-      квадратным со стороной, кратной 48 px (или SVG). Файлы рисует
-      scripts/site-icons.mts из favicon.svg.
+      The icon as real files, not a data: link: Google puts it into search
+      results only from an address its robot can download, and only square,
+      with a side that is a multiple of 48 px (or SVG). The files are drawn
+      by scripts/site-icons.mts from favicon.svg.
     -->
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -92,8 +96,9 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 
     <!--
-      Имя сайта и логотип для поисковиков: по этой разметке Google называет сайт
-      «Colloq», а не доменом, и берёт логотип организации.
+      Site name and logo for search engines: from this markup Google names
+      the site "Colloq" rather than by its domain, and takes the
+      organization's logo.
     -->
     <script type="application/ld+json">
     {
@@ -163,7 +168,7 @@
       crossorigin
     />
 
-    <link rel="stylesheet" href="styles.css?v=bc7b1897" />
+    <link rel="stylesheet" href="styles.css?v=e62915da" />
   </head>
 
   <body>
@@ -194,8 +199,9 @@
             <a href="#start">Установить <span aria-hidden="true">↗</span></a>
           </div>
           <!--
-            Текущий язык — не ссылка: вести со страницы на неё же незачем, а
-            диктор по aria-current сам скажет, что читатель уже здесь.
+            The current language is not a link: there is no point linking a
+            page to itself, and a screen reader will say from aria-current
+            that the reader is already here.
           -->
           <div class="lang-switch" role="group" aria-label="Язык страницы">
             <span class="lang-option" aria-current="page">RU</span>
@@ -272,9 +278,9 @@
 
     <main id="main">
       <!--
-        Установка стоит сразу под героем, а не в конце страницы: читатель,
-        который уже понял, зачем это ему, не должен пролистывать восемь
-        экранов до первой команды.
+        Installation sits right under the hero, not at the end of the page:
+        a reader who has already understood why they need this should not
+        have to scroll eight screens to the first command.
       -->
       <section class="section install-section" id="start" aria-labelledby="start-h">
         <div class="inner install-layout">
@@ -295,8 +301,8 @@
             <div>
               <code>colloq start --share</code>
               <!--
-                Ровно то, что делает флаг: быстрый туннель Cloudflare. Обещать
-                постоянный адрес нельзя — он новый при каждом запуске.
+                Exactly what the flag does: a quick Cloudflare tunnel. A
+                permanent address cannot be promised: it is new on every run.
               -->
               <p>одна ссылка для студентов, пока открыт терминал</p>
             </div>
@@ -333,10 +339,10 @@
           </p>
         </div>
         <!--
-          Вместо снимка экрана — сцена: снимок показывал, как выглядит
-          комната, а сцена показывает, что в ней происходит, — очередь
-          запусков и общий df. Ширина и высота проставлены, чтобы место под
-          картинку было занято до её загрузки.
+          A scene instead of a screenshot: the screenshot showed what the
+          room looks like, while the scene shows what happens in it, the run
+          queue and the shared df. Width and height are set so that the space
+          for the picture is taken before it loads.
         -->
         <figure class="scene-band">
           <div class="scene-plate">
@@ -365,8 +371,9 @@
           </p>
 
           <!--
-            Порядок карточек — причинный и он же порядок панелей в сцене
-            ниже: пишут на пульте, видно на проекторе, читают у себя.
+            The order of the cards is causal, and it is also the order of the
+            panels in the scene below: written on the console, seen on the
+            projector, read on one's own screen.
           -->
           <div class="lec-grid lecture-cards">
             <article class="lec-card">
@@ -438,10 +445,10 @@
           </div>
         </div>
         <!--
-          Здесь стоял свёрстанный вручную экран преподавателя: он показывал
-          сводку по группам решений, которой в пульте больше нет. Сцена
-          показывает то, что есть сейчас, — отдельные листы, кнопку «Сдать»
-          и очередь запусков.
+          A hand-built teacher screen used to stand here: it showed a summary
+          by groups of solutions, which the console no longer has. The scene
+          shows what exists now: separate sheets, the "Submit" button and the
+          run queue.
         -->
         <figure class="scene-band">
           <div class="scene-plate">
@@ -506,9 +513,9 @@
           </div>
 
           <!--
-            Сцена про вход стоит под шагами, а не в герое: в герое уже живёт
-            рейка присутствия, и два рассказа об одном и том же на первом
-            экране — это повтор, а не усиление.
+            The entry scene sits under the steps, not in the hero: the hero
+            already has the presence rail, and two stories about the same
+            thing on the first screen are repetition, not reinforcement.
           -->
           <figure class="scene-band">
             <div class="scene-plate">
@@ -810,8 +817,8 @@ df.shape</pre
           </div>
 
           <!--
-            Оракулу отведены две плитки из девяти, и обе про то, что он
-            делает. Сцена отвечает на другой вопрос — кто это видит.
+            The oracle gets two tiles out of nine, and both are about what it
+            does. The scene answers another question: who sees it.
           -->
           <figure class="scene-band">
             <div class="scene-plate">
@@ -985,14 +992,15 @@ df.shape</pre
     </footer>
 
     <!--
-      Словарь живых кусков страницы. Логика лежит в demos.js и общая для
-      обоих языков; здесь только то, что на них отличается, — имена, слова
-      числительных и реплики ядра.
+      Dictionary of the page's live pieces. The logic lives in demos.js and
+      is shared by both languages; here is only what differs between them:
+      names, number words and the kernel's lines.
     -->
     <script>
       window.COLLOQ_I18N = {
-        /* [инициалы, цвет, имя, женский род] — род нужен только строке
-           «вошла/вышел»; в английском словаре оба варианта совпадают. */
+        /* [initials, colour, name, feminine]: the gender is needed only for
+           the joined/left line, whose Russian verbs agree in gender; in the
+           English dictionary both variants are the same. */
         roster: [
           ['АК', '#e8734a', 'Алиса', 1],
           ['МР', '#8b6bd9', 'Марат', 0],
@@ -1011,7 +1019,7 @@ df.shape</pre
           ['ДБ', '#e8734a', 'Даня', 0],
           ['ПЛ', '#e8734a', 'Полина', 1],
         ],
-        /* «двенадцать», а не «12»: в рейке это часть фразы, а не счётчик. */
+        /* Words ("twelve"), not "12": in the rail this is part of a phrase, not a counter. */
         counts: [
           'ноль',
           'один',
@@ -1042,6 +1050,6 @@ df.shape</pre
         kernelQueuedOut: '… ждёт очереди: ядро занято',
       }
     </script>
-    <script src="demos.js?v=5ac985ff" defer></script>
+    <script src="demos.js?v=17319e32" defer></script>
   </body>
 </html>

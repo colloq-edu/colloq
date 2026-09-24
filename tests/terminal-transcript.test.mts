@@ -1,22 +1,25 @@
 /**
- * Транскрипт — это хвост, и он обрезается с головы. Одна запись обрезке не
- * подлежит: строка команды, которая прямо сейчас производит вывод.
+ * The transcript is a tail, and it is trimmed from the head. One entry is not
+ * subject to trimming: the line of the command that is producing output right
+ * now.
  *
- * По ней — и только по ней — `runCommand` решает, занята ли оболочка. Вывод
- * перекатывается в новую запись каждые 32 КБ, так что строка команды быстро
- * становится самой старой и вылетала первой: `forgetEntry` обнулял вместе с ней
- * `commandLine`, охрана «одна команда за раз» переставала держать, и следующий
- * набравший `ls` отправлял его прямо в stdin занятой оболочки. Его байты
- * доставались чужому `train.py`, остаток чужого вывода печатался под его
- * строкой, а «X — команда ждёт свободной оболочки» не появлялось. Хватало
- * восьмисот строк вывода — то есть одной `find /`.
+ * By it — and only by it — `runCommand` decides whether the shell is busy.
+ * Output rolls over into a new entry every 32 KB, so the command line quickly
+ * becomes the oldest and was the first to go: `forgetEntry` zeroed
+ * `commandLine` along with it, the "one command at a time" guard stopped
+ * holding, and the next person to type `ls` sent it straight into the stdin of
+ * the busy shell. Their bytes went to someone else's `train.py`, the rest of
+ * someone else's output was printed under their line, and "X: the command is
+ * waiting for the shell" did not appear. Eight hundred lines of output were
+ * enough — that is, a single `find /`.
  *
- * Здесь же — вторая половина того же обещания: «Ctrl+C — команду останавливает X» не пишется,
- * пока ETX действительно не ушёл. Раньше строка появлялась при оборванном
- * канале, а команда в pty продолжала работать, и человек жал «стоп» в пустоту.
+ * Here too is the second half of the same promise: "Ctrl+C: X is stopping
+ * the command" is not written until the ETX has actually gone out. Previously
+ * the line appeared with a broken channel, while the command in the pty kept
+ * running, and the person pressed "stop" into the void.
  *
- * Подделка терминадо, а не настоящая оболочка: под проверкой порядок записей и
- * охрана, а настоящий шелл не отдаст нужную гонку по требованию.
+ * A fake terminado, not a real shell: under test are the order of entries and
+ * the guard, and a real shell will not produce the needed race on demand.
  */
 import './_env.mts'
 import { createServer, type Server } from 'node:http'
@@ -27,11 +30,11 @@ import { getTerminal } from '../shared/notebook.js'
 
 let http: Server
 let wss: WebSocketServer
-/** Что подделка получила в stdin оболочки. */
+/** What the fake received in the shell's stdin. */
 let typed: string[] = []
 let live: WebSocket | null = null
 let minted = 0
-/** Какие pty подделку просили удалить: перезапуск сервера не должен просить ни одного. */
+/** Which ptys the fake was asked to delete: a server restart must not ask for any. */
 let deleted: string[] = []
 
 before(async () => {
@@ -55,7 +58,8 @@ before(async () => {
     wss.handleUpgrade(req, socket, head, (ws) => {
       live = ws
       ws.send(JSON.stringify(['setup', {}]))
-      // Приглашение, чтобы прайм на той стороне увидел успокоившуюся оболочку.
+      // A prompt, so that the prime on the other side sees a shell that has
+      // settled.
       ws.send(JSON.stringify(['stdout', '$ ']))
       ws.on('message', (raw) => {
         const frame = JSON.parse(String(raw)) as [string, string]
@@ -103,7 +107,7 @@ async function shell() {
   const { doc } = getSessionDoc(id)
   typed = []
   await openTerminal(id)
-  await wait(500) // прайм
+  await wait(500) // prime
   typed = []
   const lines = () =>
     getTerminal(doc)
@@ -119,18 +123,18 @@ async function shell() {
 
 const who = (name: string) => ({ name, color: '#7e82f0', participantId: `p_${name}` })
 
-test('обрезка транскрипта не выносит строку идущей команды', async () => {
+test('trimming the transcript does not throw out the line of the running command', async () => {
   const { id, lines } = await shell()
   const { runCommand } = await import('../server/src/kernel/terminal.js')
 
   runCommand(id, 'find / -name "*.py"', who('Maria'))
-  assert.ok(await until(() => typed.some((t) => t.includes('find /'))), 'команду не отправили')
+  assert.ok(await until(() => typed.some((t) => t.includes('find /'))), 'the command was not sent')
   typed = []
 
   /*
-   * Шесть окон склейки по ~39 КБ: каждое влезает в MAX_FLUSH_CHARS, вместе они
-   * переваливают и за 200 КБ, и за 800 строк, и раскатываются на записи по
-   * 32 КБ — то есть ровно тот случай, где обрезка и начинала есть голову.
+   * Six coalescing windows of ~39 KB: each fits in MAX_FLUSH_CHARS, together
+   * they go past both 200 KB and 800 lines, and they roll out into 32 KB
+   * entries — exactly the case where trimming started eating the head.
    */
   const burst = Array.from({ length: 300 }, (_, i) => `/usr/lib/python3/${'x'.repeat(110)}/${i}`).join('\n') + '\n'
   for (let i = 0; i < 6; i++) {
@@ -140,23 +144,23 @@ test('обрезка транскрипта не выносит строку и�
   await wait(200)
 
   const kept = lines()
-  assert.ok(kept.length < 40, `транскрипт не обрезался вовсе: ${kept.length} записей`)
+  assert.ok(kept.length < 40, `the transcript was not trimmed at all: ${kept.length} entries`)
   const command = kept.find((l) => l.kind === 'command')
-  assert.ok(command, `строку идущей команды выбросило обрезкой:\n${JSON.stringify(kept.slice(0, 3))}`)
+  assert.ok(command, `trimming threw out the line of the running command:\n${JSON.stringify(kept.slice(0, 3))}`)
   assert.equal(command.name, 'Maria')
-  assert.equal(command.running, true, 'идущая команда перестала считаться идущей')
+  assert.equal(command.running, true, 'the running command stopped counting as running')
 
-  // И, главное, следствие: чужая команда встаёт в очередь, а не уходит в
-  // занятую оболочку.
+  // And, most importantly, the consequence: someone else's command gets queued
+  // instead of going into the busy shell.
   runCommand(id, 'ls', who('John'))
   await wait(300)
-  assert.deepEqual(typed, [], 'команду John отправили в оболочку, которая ещё занята')
+  assert.deepEqual(typed, [], 'the command from John was sent to a shell that is still busy')
   const notice = lines().find((l) => l.kind === 'system' && /ждёт свободной оболочки/.test(l.text))
-  assert.ok(notice, 'комната не узнала, что команда ждёт')
+  assert.ok(notice, 'the room did not learn that the command is waiting')
   assert.match(notice.text, /John/)
 })
 
-test('Ctrl+C при оборванном канале не объявляется отправленным', async () => {
+test('Ctrl+C over a broken channel is not announced as sent', async () => {
   const { id, lines } = await shell()
   const { runCommand, interruptTerminal } = await import('../server/src/kernel/terminal.js')
 
@@ -164,7 +168,8 @@ test('Ctrl+C при оборванном канале не объявляетс�
   assert.ok(await until(() => typed.some((t) => t.includes('sleep 300'))))
   typed = []
 
-  // Канал к Jupyter обрывается — pty внутри контейнера продолжает работать.
+  // The channel to Jupyter breaks — the pty inside the container keeps
+  // running.
   live?.terminate()
   await wait(150)
 
@@ -172,52 +177,53 @@ test('Ctrl+C при оборванном канале не объявляетс�
   const said = lines().filter((l) => l.kind === 'system')
   assert.ok(
     said.some((l) => /Ctrl\+C до неё ещё не дошёл/.test(l.text)),
-    `комнате не сказали, что Ctrl+C не ушёл:\n${JSON.stringify(said)}`,
+    `the room was not told that Ctrl+C did not go out:\n${JSON.stringify(said)}`,
   )
 
-  // И обещание выполняется: ETX уходит, как только канал вернулся.
+  // And the promise is kept: the ETX goes out as soon as the channel is back.
   assert.ok(
     await until(() => typed.some((t) => t.includes('\u0003'))),
-    'ETX так и не доехал до оболочки после переподключения',
+    'the ETX never reached the shell after the reconnect',
   )
 })
 
-test('перезапуск сервера не убивает оболочку — и возвращается в неё', async () => {
+test('a server restart does not kill the shell — and comes back into it', async () => {
   const { id, lines } = await shell()
   const { runCommand, openTerminal, shutdownTerminals } = await import(
     '../server/src/kernel/terminal.js'
   )
 
   runCommand(id, 'python train.py', who('Maria'))
-  assert.ok(await until(() => typed.some((t) => t.includes('train.py'))), 'команду не отправили')
+  assert.ok(await until(() => typed.some((t) => t.includes('train.py'))), 'the command was not sent')
 
   /*
-   * `make run` после правки — то, что Makefile советует делать всё время.
-   * Ядро его переживает намеренно (shutdownKernels), а терминал раньше слал
-   * DELETE и убивал pty вместе с трёхчасовым обучением внутри.
+   * `make run` after an edit — what the Makefile advises doing all the time.
+   * The kernel survives it on purpose (shutdownKernels), while the terminal
+   * used to send DELETE and kill the pty together with a three-hour training
+   * run inside.
    */
   const pty = minted
   deleted = []
   typed = []
   await shutdownTerminals()
-  assert.deepEqual(deleted, [], 'оболочку удалили вместе с сервером — обучение внутри погибло')
+  assert.deepEqual(deleted, [], 'the shell was deleted together with the server — the training inside died')
 
   await openTerminal(id)
-  await wait(900) // прайм + опрос оболочки
-  assert.equal(minted, pty, 'после перезапуска завели новую оболочку вместо прежней')
+  await wait(900) // prime + polling the shell
+  assert.equal(minted, pty, 'after the restart a new shell was created instead of the old one')
 
   const command = lines().find((l) => l.kind === 'command' && /train\.py/.test(l.text))
-  assert.ok(command, 'строка команды пропала из транскрипта')
+  assert.ok(command, 'the command line disappeared from the transcript')
   assert.equal(
     command.running,
     true,
-    'команда, идущая в переживший перезапуск pty, объявлена законченной — ' +
-      'охрана «одна команда за раз» после перезапуска не держит',
+    'a command running in a pty that survived the restart was declared finished — ' +
+      'the "one command at a time" guard does not hold after a restart',
   )
 
-  // И следующая команда честно ждёт, а не уходит в занятую оболочку.
+  // And the next command honestly waits instead of going into the busy shell.
   typed = []
   runCommand(id, 'ls', who('John'))
   await wait(300)
-  assert.deepEqual(typed, [], 'команду John отправили в оболочку, где идёт чужое обучение')
+  assert.deepEqual(typed, [], 'the command from John was sent into a shell where another participant is training')
 })

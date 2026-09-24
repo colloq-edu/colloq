@@ -1,18 +1,19 @@
 /**
- * Числа, которые панель обязана взять у сервера, а не выдумать.
+ * Numbers the panel has to take from the server rather than make up.
  *
- * Два поля, и у обоих цена — строка на экране, которая звучит уверенно и врёт.
+ * Two fields, and for both the cost is a line on screen that sounds confident
+ * and lies.
  *
- * Предел загрузки: форма создания семинара печатает его («Up to 50 MB each») и
- * по нему же отказывает слишком большому файлу ДО того, как комната появится.
- * Пока сервер его не присылал, панель держала копию умолчания — и оператор,
- * поднявший MAX_UPLOAD_MB до 200, читал на экране чужое число, а узнавал
- * правду загрузкой, которая не доехала.
+ * The upload limit: the seminar creation form prints it ("Up to 50 MB each")
+ * and uses it to refuse a file that is too large BEFORE the room exists.
+ * While the server did not send it, the panel kept a copy of the default — and
+ * an operator who had raised MAX_UPLOAD_MB to 200 read somebody else's number
+ * on screen and learned the truth from an upload that never arrived.
  *
- * Часы занятия: строка списка пишет «Running now · started 25 min ago». Пока
- * этих часов не было, она считала их от создания комнаты — а комнату заводят за
- * неделю до пары и переиспользуют на второй, так что рядом со словом «сейчас»
- * стояло «6 days ago».
+ * The class clock: the list row says "Running now · started 25 min ago".
+ * Before this clock existed, the row counted from the room's creation — and a
+ * room is set up a week before the class and reused for the next one, so next
+ * to the word "now" stood "6 days ago".
  */
 import './_env.mts'
 import http from 'node:http'
@@ -42,15 +43,16 @@ function cookieFor(teacher: Parameters<typeof issueStaffCookie>[1]): string {
   return `${STAFF_COOKIE}=${value}`
 }
 
-/** Ровно то, что читает `handleCollabSocket`, и ничего сверх. */
+/** Exactly what `handleCollabSocket` reads, and nothing more. */
 function seat(): { ws: WebSocket; close(): void } {
   const handlers = new Map<string, ((...args: unknown[]) => void)[]>()
   const fake = {
     binaryType: 'arraybuffer',
     readyState: WebSocket.OPEN as number,
-    // Три аргумента, как их шлёт collab/index.ts: кадр, настройки сжатия и
-    // колбэк. Двухаргументная подделка ловила настройки вместо колбэка, звала
-    // их как функцию — и сервер, поймав исключение, закрывал сокет сразу же.
+    // Three arguments, the way collab/index.ts sends them: the frame, the
+    // compression options and the callback. A two-argument fake caught the
+    // options instead of the callback, called them as a function — and the
+    // server, catching the exception, closed the socket right away.
     send(_frame: unknown, _opts?: unknown, done?: (err?: Error) => void) {
       done?.()
     },
@@ -62,7 +64,7 @@ function seat(): { ws: WebSocket; close(): void } {
     terminate() {},
     close() {
       fake.readyState = WebSocket.CLOSED
-      // Иначе сердцебиение переживёт тест и потащит за собой всю сюиту.
+      // Otherwise the heartbeat outlives the test and drags the whole suite along.
       for (const fn of handlers.get('close') ?? []) fn()
     },
   }
@@ -91,19 +93,19 @@ after(() => {
   shutdownCollab()
 })
 
-test('состояние инстанса называет предел загрузки числом', async () => {
+test('the instance state names the upload limit as a number', async () => {
   const res = await fetch(`${base}/api/admin/state`)
   assert.equal(res.status, 200)
   const state = (await res.json()) as InstanceState
   assert.equal(
     state.maxUploadBytes,
     config.maxUploadBytes,
-    'панель снова угадывает предел вместо того, чтобы прочитать его',
+    'the panel is guessing the limit again instead of reading it',
   )
 })
 
-test('часы занятия идут от первого сокета, а не от создания комнаты', async () => {
-  assert.equal(liveSince(ROOM), null, 'в пустой комнате занятие «идёт»')
+test('the class clock runs from the first socket, not from the room creation', async () => {
+  assert.equal(liveSince(ROOM), null, 'a class is "running" in an empty room')
 
   const opened = Date.now()
   const first = seat()
@@ -111,21 +113,21 @@ test('часы занятия идут от первого сокета, а не
   const started = liveSince(ROOM)
   assert.ok(started !== null && Math.abs(started - opened) < 5_000)
 
-  // Второй пришедший часов не переводит: занятие идёт с первого.
+  // The second arrival does not reset the clock: the class runs from the first one.
   const second = seat()
   handleCollabSocket(second.ws, ROOM, 'participant', 'p_second')
-  assert.equal(liveSince(ROOM), started, 'опоздавший переставил начало пары на себя')
+  assert.equal(liveSince(ROOM), started, 'a latecomer moved the start of the class to themselves')
 
   const res = await fetch(`${base}/api/admin/seminars`, { headers: { cookie } })
   const rows = (await res.json()) as AdminSeminar[]
   const row = rows.find((one) => one.id === ROOM)
   assert.ok(row)
-  assert.equal(row.liveSince, started, 'часы занятия до панели не доехали')
-  assert.notEqual(row.liveSince, row.createdAt, 'снова часы комнаты вместо часов пары')
+  assert.equal(row.liveSince, started, 'the class clock did not reach the panel')
+  assert.notEqual(row.liveSince, row.createdAt, 'the room clock again instead of the class clock')
 
   first.close()
   second.close()
-  // Комната опустела — часов больше нет: перерыв между парами ничем другим от
-  // конца занятия не отличается.
+  // The room emptied, so there is no clock any more: a break between classes is
+  // no different from the end of a class.
   assert.equal(liveSince(ROOM), null)
 })

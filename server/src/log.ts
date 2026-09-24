@@ -1,25 +1,26 @@
 /**
- * Время в каждой строке журнала.
+ * A timestamp on every log line.
  *
- * Журнал писался без него, а `make run` ещё и затирал файл на каждом запуске.
- * В результате «в четверг после обеда что-то сломалось» было невозможно
- * сопоставить ни с чем: строки есть, порядок есть, а когда — неизвестно, и
- * прошлая неделя стёрта. Стоит это одной обёртки на весь процесс.
+ * The log used to be written without it, and `make run` also overwrote the
+ * file on every start. As a result "something broke on Thursday afternoon"
+ * could not be matched with anything: the lines are there, the order is
+ * there, but when is unknown, and last week is erased. It costs one wrapper
+ * for the whole process.
  *
- * Правится сама console, а не заводится свой logger: пишут в неё из двух
- * десятков мест, включая зависимости, и половина строк осталась бы без времени.
- * Формат — ISO 8601: сортируется как текст и не зависит от того, в каком поясе
- * стоит машина.
+ * console itself is patched rather than introducing a logger of our own: it
+ * is written to from a couple of dozen places, dependencies included, and
+ * half the lines would stay without a time. The format is ISO 8601: it sorts
+ * as text and does not depend on the machine's time zone.
  */
 const wrapped = ['log', 'info', 'warn', 'error', 'debug'] as const
 
 /*
- * Побочный эффект при загрузке модуля, а не вызов из index.ts.
+ * A side effect at module load, not a call from index.ts.
  *
- * `import` поднимается наверх: вызов, написанный между импортами, выполнится
- * после того, как загрузятся все они, — и всё, что модули напечатали при
- * загрузке, останется без времени. Первый импорт в index.ts — единственное
- * место, откуда это можно сделать раньше остальных.
+ * `import` is hoisted: a call written between imports runs after all of them
+ * have loaded, and everything the modules printed while loading stays without
+ * a time. The first import in index.ts is the only place from which this can
+ * be done before everything else.
  */
 for (const level of wrapped) {
   const original = console[level].bind(console)
@@ -28,37 +29,38 @@ for (const level of wrapped) {
   }
 }
 
-/* ------------------------------------------------------------- журнал пары */
+/* -------------------------------------------------------------- lesson log */
 
 /**
- * Что происходило на паре — скупо, но так, чтобы это можно было прочитать.
+ * What happened during the lesson, sparingly, but so that it can be read.
  *
- * За целый день журнала службы набиралось девяносто строк, и по ним нельзя
- * было сказать ни сколько комнат жило, ни когда умерло ядро: писались только
- * поломки. Строка на каждое событие тоже не годится — на потоке в пятьсот
- * человек кадров синхронизации десятки тысяч в минуту, и настоящее в них
- * тонет так же надёжно, как в пустоте.
+ * A whole day of the service log added up to ninety lines, and from them one
+ * could tell neither how many rooms were alive nor when a kernel died: only
+ * breakages were written. A line per event does not work either: with a
+ * cohort of five hundred there are tens of thousands of sync frames a minute,
+ * and what matters drowns in them just as surely as in emptiness.
  *
- * Поэтому две разные вещи. Частое считается и раз в минуту выходит одной
- * строкой сводки. Редкое и настоящее — открылась комната, умерло ядро, отказал
- * гейт — печатается как есть, тем же `console`, что и всё остальное здесь:
- * второго механизма журналирования в проекте нет и заводить его незачем.
+ * So two different things. What is frequent is counted and comes out once a
+ * minute as one summary line. What is rare and real (a room opened, a kernel
+ * died, the gate refused) is printed as is, with the same `console` as
+ * everything else here: the project has no second logging mechanism and no
+ * reason to start one.
  *
- * Ничего личного: в сводку и в события едут числа и идентификаторы комнат.
- * Имена участников и текст ячеек в журнал не попадают вовсе.
+ * Nothing personal: the summary and the events carry numbers and room ids.
+ * Participants' names and cell text never get into the log at all.
  */
 
-/** Частое, что считается за минуту, а не пишется строкой. */
+/** Frequent things that are counted per minute rather than written as lines. */
 export type Tally =
-  /** Принятые кадры синхронизации — мера того, что в комнате вообще работают. */
+  /** Accepted sync frames: a measure of whether anyone is working in the room at all. */
   | 'frames'
-  /** Кадры, отвергнутые гейтом. */
+  /** Frames refused by the gate. */
   | 'gate'
-  /** Запросы, оборванные клиентом: студент ушёл со страницы. */
+  /** Requests aborted by the client: the student left the page. */
   | 'aborted'
-  /** Входы, отвергнутые пределом на новых участников. */
+  /** Joins refused by the limit on new participants. */
   | 'joins'
-  /** Отказы оракула — любые, включая фильтр безопасности. */
+  /** Oracle failures of any kind, including the safety filter. */
   | 'oracle'
 
 const minute: Record<Tally, number> = { frames: 0, gate: 0, aborted: 0, joins: 0, oracle: 0 }
@@ -68,12 +70,13 @@ export function tally(what: Tally, n = 1): void {
 }
 
 /**
- * Одно и то же событие — не чаще раза в минуту на ключ.
+ * The same event no more than once a minute per key.
  *
- * Отказ гейта и упёршийся в предел вход бывают редкими, а бывают лавиной:
- * нагрузочный стенд на пятистах студентах дал 378 отказов входа подряд. Строка
- * на каждый — это тот же поток, от которого журнал и лечим, поэтому первый
- * такой отказ говорится словами, а остальные за ту же минуту идут в счётчик.
+ * A gate refusal and a join that hit the limit can be rare, and can come as
+ * an avalanche: a load test instance with five hundred students gave 378 join
+ * refusals in a row. A line for each is the very flood we are curing the log
+ * of, so the first such refusal is spelled out in words, and the rest within
+ * the same minute go into the counter.
  */
 const said = new Map<string, number>()
 
@@ -81,21 +84,21 @@ export function seldom(key: string, quiet = 60_000): boolean {
   const now = Date.now()
   const last = said.get(key)
   if (last !== undefined && now - last < quiet) return false
-  // Карта живёт столько же, сколько процесс, а ключей в ней — по комнате на
-  // каждую причину. Просроченное выметается здесь же, чтобы семестр открытых
-  // комнат не остался в памяти навсегда.
+  // The map lives as long as the process, with a key per room for each
+  // reason. Expired entries are swept out right here, so that a semester of
+  // opened rooms does not stay in memory forever.
   for (const [old, at] of said) if (now - at >= quiet) said.delete(old)
   said.set(key, now)
   return true
 }
 
-/** Состояние инстанса на сейчас — его спрашивают раз в минуту. */
+/** The instance's state right now; it is asked for once a minute. */
 export interface Census {
-  /** Комнат, в которых кто-то есть. */
+  /** Rooms with someone in them. */
   rooms: number
-  /** Людей в них — по участникам, а не по сокетам: вкладка рядом не человек. */
+  /** People in them, counted by participant, not socket: a second tab is not a person. */
   people: number
-  /** Ядра комнат: живые, из них занятые, и мёртвые. */
+  /** Room kernels: live ones, the busy ones among them, and dead ones. */
   kernels: { live: number; busy: number; dead: number }
 }
 
@@ -105,20 +108,22 @@ let census: (() => Census) | null = null
 let ticker: ReturnType<typeof setInterval> | null = null
 
 /**
- * Включить сводку. Зовёт `index.ts`, уже подняв сервер: перепись комнат и ядер
- * живёт в `collab` и `kernel`, а тянуть их импортом сюда нельзя — этот модуль
- * грузится первым в процессе, до всего остального.
+ * Turn the summary on. `index.ts` calls it once the server is up: the census
+ * of rooms and kernels lives in `collab` and `kernel`, and they cannot be
+ * imported here, since this module loads first in the process, before
+ * everything else.
  */
 export function startJournal(read: () => Census): void {
   census = read
   if (ticker) return
   ticker = setInterval(journalMinute, SUMMARY_MS)
-  // Сводка не повод не дать процессу закончиться: тесты и `make backup`
-  // поднимают сервер на секунды, и незакрытый таймер держал бы их до упора.
+  // The summary is no reason to keep the process from exiting: tests and
+  // `make backup` start the server for seconds, and an open timer would hold
+  // them to the end.
   ticker.unref?.()
 }
 
-/** Остановить сводку — при выключении, чтобы последняя строка не легла в шум. */
+/** Stop the summary, at shutdown, so the last line does not land in the noise. */
 export function stopJournal(): void {
   if (!ticker) return
   clearInterval(ticker)
@@ -126,23 +131,25 @@ export function stopJournal(): void {
 }
 
 /**
- * Свести минуту и обнулить счётчики. Зовёт таймер — и зовут тесты: формат этой
- * строки читает человек, и проверить его можно только прочитав её целиком.
+ * Sum up the minute and reset the counters. The timer calls it, and so do the
+ * tests: a person reads this line's format, and it can only be checked by
+ * reading the whole line.
  */
 export function journalMinute(): void {
   let now: Census | null = null
   try {
     now = census?.() ?? null
   } catch {
-    // Пара важнее сводки: перепись, которая упала, молчит и не роняет процесс.
+    // The lesson matters more than the summary: a census that failed stays silent and does not bring the process down.
   }
-  // Снимок ДО обнуления: минута кончается здесь независимо от того, будет
-  // строка или нет, иначе тихая минута уносила бы с собой счёт следующей.
+  // A snapshot BEFORE the reset: the minute ends here whether or not there
+  // will be a line, otherwise a quiet minute would carry off the next one's
+  // count.
   const was = { ...minute }
   reset()
   const counted = was.frames + was.gate + was.aborted + was.joins + was.oracle
-  // Ночью на машине не происходит ничего, и 1440 строк об этом — то же самое
-  // враньё, что и пустой журнал: настоящее в них так же не найти.
+  // At night nothing happens on the machine, and 1440 lines about it are the
+  // same lie as an empty log: what matters cannot be found in them either.
   if (!now || (now.rooms === 0 && now.kernels.live === 0 && counted === 0)) return
 
   const parts = [`rooms ${now.rooms}`, `people ${now.people}`]
@@ -152,8 +159,8 @@ export function journalMinute(): void {
     const gone = dead > 0 ? `, ${dead} dead` : ''
     parts.push(`kernels ${live} live${working}${gone}`)
   }
-  // Нули не печатаются: на спокойной минуте строка коротка, а всё, что в ней
-  // появилось, — это то, ради чего в журнал и лезут.
+  // Zeros are not printed: on a calm minute the line is short, and whatever
+  // appears in it is exactly what people dig into the log for.
   if (was.frames > 0) parts.push(`frames ${was.frames}`)
   if (was.gate > 0) parts.push(`gate refused ${was.gate}`)
   if (was.joins > 0) parts.push(`joins refused ${was.joins}`)

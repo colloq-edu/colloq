@@ -1,45 +1,49 @@
 #!/usr/bin/env bash
 #
-# colloq-vast — точка входа образа deploy/vast/Dockerfile.
+# colloq-vast: the entry point of the deploy/vast/Dockerfile image.
 #
-#   colloq-vast serve          (по умолчанию) сервер + туннель + ядра по требованию
-#   colloq-vast status         готов ли инстанс вести пару: /api/health и образы ядер
-#   colloq-vast link           адрес для аудитории и, пока инстанс ничей, ссылка входа
-#   colloq-vast backup         копия занятия в <состояние>/backups/ (база + файлы)
-#   colloq-vast restore …      развернуть копию; только при ОСТАНОВЛЕННОМ сервере
-#   colloq-vast install-host D положить на хост его менеджер (colloq-host) в каталог D
+#   colloq-vast serve          (default) server + tunnel + kernels on demand
+#   colloq-vast status         is the instance ready for a class: /api/health and kernel images
+#   colloq-vast link           the address for the audience and, while nobody owns it, the setup link
+#   colloq-vast backup         a class backup into <state>/backups/ (database + files)
+#   colloq-vast restore …      restore a backup; only while the server is STOPPED
+#   colloq-vast install-host D put the host-side manager (colloq-host) into directory D on the host
 #   colloq-vast version
 #
-# ЧТО ЗДЕСЬ ПРОИСХОДИТ И ПОЧЕМУ ТАК.
+# WHAT HAPPENS HERE AND WHY IT IS DONE THIS WAY.
 #
-# Ядро каждой комнаты — отдельный контейнер (server/src/kernel/pool.ts), и
-# поднимает его демон ХОСТА через примонтированный сокет. Отсюда три вещи,
-# которые точка входа обязана сделать до старта сервера, иначе он поднимется
-# «здоровым» и откажет на первом Run:
+# Every room's kernel is a separate container (server/src/kernel/pool.ts), and
+# the HOST daemon starts it through the mounted socket. Hence three things the
+# entry point has to do before the server starts, otherwise the server comes up
+# "healthy" and refuses on the first Run:
 #
-#   1. путь каталога состояния глазами хоста. `-v` у контейнера комнаты
-#      разбирает демон, а не мы: сервер пишет файлы комнаты в
-#      /workspace/colloq/workspace/<id> ВНУТРИ этого контейнера, а демону надо
-#      назвать то же место на хосте. Узнаём его у самого демона — по своим
-#      монтированиям, — а не просим оператора повторить путь второй раз;
-#   2. общая сеть с контейнерами комнат (KERNEL_NETWORK). Сервер ходит к ядру
-#      по имени контейнера; без сети canIsolate() отвечает «нет» и КЭШИРУЕТ
-#      ответ до перезапуска (pool.ts · networkExists), поэтому сеть заводится
-#      раньше сервера, а не «когда понадобится»;
-#   3. публичный адрес. Сервер печатает ссылку входа владельца при старте, и
-#      печатает её от PUBLIC_URL: туннель поднимается ПЕРВЫМ, чтобы в журнале
-#      оказалась настоящая ссылка, а не localhost.
+#   1. the path of the state directory as the host sees it. The `-v` of a room
+#      container is resolved by the daemon, not by us: the server writes the
+#      room files to /workspace/colloq/workspace/<id> INSIDE this container,
+#      while the daemon has to be given the same place on the host. We learn it
+#      from the daemon itself, from our own mounts, instead of asking the
+#      operator to repeat the path a second time;
+#   2. a network shared with the room containers (KERNEL_NETWORK). The server
+#      reaches a kernel by container name; without the network canIsolate()
+#      answers "no" and CACHES the answer until a restart (pool.ts ·
+#      networkExists), so the network is created before the server, not "when
+#      it is needed";
+#   3. the public address. The server prints the owner's setup link at start,
+#      and prints it from PUBLIC_URL: the tunnel comes up FIRST, so that the log
+#      gets the real link, not localhost.
 #
-# Ядро окружения по умолчанию готовится в фоне уже после старта сервера:
-# первая сборка — минуты, а панель и ссылка входа нужны сразу. Пока образа нет,
-# /api/health честно отвечает 503 «окружение не собрано», и это правда.
+# The kernel of the default environment is prepared in the background after the
+# server has started: the first build takes minutes, and the panel and the
+# setup link are needed right away. While there is no image, /api/health
+# honestly answers 503 "environment not built", and that is the truth.
 #
-# NODE_ENV=development — не опечатка и не отладка. Докер-бэкенд ядер сервер
-# пускает только вне production (runtime-client.ts · selectKernelBackend): в
-# production он ждёт брокер k3s. Прежний путь на арендованной машине
-# (deploy/colloq-legacy.service) идёт ровно так же и по той же причине. Больше
-# NODE_ENV в сервере не решает ничего: небезопасный файловый обход включается
-# только вместе с COLLOQ_UNSAFE_DEV_FILES=1, а её здесь нет.
+# NODE_ENV=development is neither a typo nor debugging. The server allows the
+# docker kernel backend only outside production (runtime-client.ts ·
+# selectKernelBackend): in production it expects the k3s broker. The old path
+# on a rented machine (deploy/colloq-legacy.service) does exactly the same, for
+# the same reason. NODE_ENV decides nothing else in the server: the unsafe file
+# bypass is enabled only together with COLLOQ_UNSAFE_DEV_FILES=1, and that is
+# not set here.
 set -euo pipefail
 
 APP=/opt/colloq
@@ -57,45 +61,51 @@ die()  { printf '[vast] ERROR: %s\n' "$*" >&2; exit "${2:-1}"; }
 
 # ----------------------------------------------------------- root → node
 #
-# От root — только подготовка: каталог состояния и группа сокета docker. Всё
-# остальное (сервер, туннели, сборки, копии) — от node, uid 1000: это тот же
-# uid, что у пользователя ядра в kernel/Dockerfile, и файлы комнаты читают и
-# пишут обе стороны без групп и umask (см. UMask в deploy/colloq-legacy.service
-# — там этого совпадения не было, и его пришлось создавать руками).
+# As root, only the preparation: the state directory and the docker socket
+# group. Everything else (the server, tunnels, builds, backups) runs as node,
+# uid 1000: that is the same uid as the kernel user in kernel/Dockerfile, and
+# both sides read and write the room files without groups and umask (see UMask
+# in deploy/colloq-legacy.service: that match was missing there, and it had to
+# be created by hand).
 #
-# Честная оговорка: доступ к сокету docker — это root на хосте. Непривилегированный
-# uid здесь про владельца файлов и про то, чтобы ошибка в сервере не писала от
-# root в чужие каталоги, а не про границу безопасности с хостом.
+# An honest caveat: access to the docker socket is root on the host. The
+# unprivileged uid here is about file ownership and about a server bug not
+# writing as root into other directories, not about a security boundary with
+# the host.
 prepare_as_root() {
   local walk="${1:-}"
   mkdir -p "$STATE"/data "$STATE"/workspace "$STATE"/environments "$STATE"/backups "$STATE"/.colloq
   if [ "$walk" = full ]; then
-    # Своё — своим. Копии, привезённые scp от root, и файлы, разложенные руками,
-    # иначе становятся «Permission denied» у сервера посреди пары. find, а не
-    # chown -R: трогаются только чужие файлы, и повторный старт стоит один обход.
+    # Our files back to our user. Backups brought by scp as root, and files laid
+    # out by hand, otherwise turn into "Permission denied" for the server in the
+    # middle of a class. find, not chown -R: only files owned by others are
+    # touched, and a repeated start costs one walk.
     find "$STATE" -xdev \( ! -user "$APP_UID" -o ! -group "$APP_GID" \) \
       -exec chown -h "$APP_UID:$APP_GID" {} + 2>/dev/null || true
   else
-    # status, link, backup — это `docker exec` посреди пары, и обходить ради них
-    # весь workspace (датасеты комнат) незачем: его уже разобрал serve. Хватает
-    # верхних каталогов — на случай, если их только что завёл mkdir выше.
+    # status, link, backup are a `docker exec` in the middle of a class, and
+    # there is no reason to walk the whole workspace (the rooms' datasets) for
+    # them: serve has already sorted it out. The top directories are enough, in
+    # case mkdir above has just created them.
     chown "$APP_UID:$APP_GID" "$STATE" "$STATE"/data "$STATE"/workspace "$STATE"/environments "$STATE"/backups "$STATE"/.colloq
   fi
   chmod 0700 "$STATE/data"
   touch "$STATE/.env"
   chown "$APP_UID:$APP_GID" "$STATE/.env"
   chmod 0600 "$STATE/.env"
-  # Ссылка .env в образе ведёт в /workspace/colloq — умолчание COLLOQ_HOME.
-  # Другой каталог состояния оставил бы её висеть: PUBLIC_URL сервер читает из
-  # .env ПРИЛОЖЕНИЯ (config.ts · readPublicUrl), и ссылки говорили бы localhost
-  # вместо адреса туннеля — при том что панель (environments.ts · envFile) пишет
-  # KERNEL_ENV в каталог состояния и ничего не заметила бы.
+  # The .env link in the image leads to /workspace/colloq, the COLLOQ_HOME
+  # default. Another state directory would leave it dangling: the server reads
+  # PUBLIC_URL from the APPLICATION's .env (config.ts · readPublicUrl), and the
+  # links would say localhost instead of the tunnel address, while the panel
+  # (environments.ts · envFile) writes KERNEL_ENV into the state directory and
+  # would notice nothing.
   if [ "$(readlink "$APP/.env" 2>/dev/null || true)" != "$STATE/.env" ]; then
     ln -sfn "$STATE/.env" "$APP/.env"
   fi
-  # Учётка закрытого реестра (colloq-host монтирует её только на чтение):
-  # копией в ~/.docker пользователя node. Файл, смонтированный прямо туда,
-  # завёл бы ~/.docker от root, и buildx не смог бы писать рядом свой каталог.
+  # The credentials of the private registry (colloq-host mounts them
+  # read-only): as a copy into the ~/.docker of the node user. A file mounted
+  # straight there would create ~/.docker as root, and buildx could not write
+  # its own directory next to it.
   if [ -s /run/colloq/docker-config.json ]; then
     install -d -o "$APP_UID" -g "$APP_GID" -m 0700 /home/node/.docker
     install -o "$APP_UID" -g "$APP_GID" -m 0600 /run/colloq/docker-config.json /home/node/.docker/config.json
@@ -109,13 +119,13 @@ drop_to_app() {
   else
     groups=(--clear-groups)
   fi
-  # HOME обязателен: buildx пишет ~/.docker/buildx, и под HOME=/root сборка
-  # окружения падает на правах раньше первого слоя.
+  # HOME is required: buildx writes ~/.docker/buildx, and under HOME=/root an
+  # environment build fails on permissions before the first layer.
   exec setpriv --reuid="$APP_UID" --regid="$APP_GID" "${groups[@]}" --inh-caps=-all \
     env HOME=/home/node USER=node LOGNAME=node COLLOQ_VAST_DROPPED=1 "$0" "$@"
 }
 
-# ------------------------------------------------------------ docker хоста
+# ------------------------------------------------------------- host docker
 require_docker() {
   if docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then return 0; fi
   cat >&2 <<'MSG'
@@ -133,7 +143,7 @@ MSG
   exit 78
 }
 
-# Свой контейнер: чтобы спросить демон о своих монтированиях и сетях.
+# Our own container: to ask the daemon about our own mounts and networks.
 SELF=""
 locate_self() {
   SELF="${COLLOQ_CONTAINER:-$(hostname)}"
@@ -141,10 +151,11 @@ locate_self() {
     || die "cannot inspect this container as \"$SELF\". Start it without --hostname, or set COLLOQ_CONTAINER=<its name>."
 }
 
-# Путь каталога состояния глазами хоста — самое длинное монтирование, внутри
-# которого он лежит. Не сошлось ни одно — значит, состояние живёт в слое
-# контейнера: демон смонтирует комнате пустоту, файлы семинара разойдутся с
-# ядром, а при обновлении образа исчезнет всё. Это отказ, а не предупреждение.
+# The path of the state directory as the host sees it: the longest mount that
+# contains it. If none matches, the state lives in the container layer: the
+# daemon will mount an empty place into a room, the seminar files will diverge
+# from the kernel, and an image update will wipe out everything. That is a
+# refusal, not a warning.
 HOST_STATE=""
 locate_host_state() {
   if [ -n "${COLLOQ_HOST_STATE:-}" ]; then HOST_STATE="$COLLOQ_HOST_STATE"; return; fi
@@ -177,12 +188,12 @@ ensure_network() {
   esac
 }
 
-# ------------------------------------------------------------ .env состояния
+# --------------------------------------------------------------- state .env
 #
-# Одна строка PUBLIC_URL в <состояние>/.env. Сервер перечитывает её не реже раза
-# в две секунды (config.ts · readPublicUrl), поэтому новый адрес быстрого
-# туннеля после его перезапуска доезжает до ссылок без перезапуска сервера.
-# Через tmp и mv в том же каталоге: читатель не должен увидеть полфайла.
+# A single PUBLIC_URL line in <state>/.env. The server re-reads it at least once
+# every two seconds (config.ts · readPublicUrl), so the new quick tunnel address
+# after a tunnel restart reaches the links without a server restart.
+# Through tmp and mv in the same directory: a reader must not see half a file.
 set_public_url() {
   local url="$1" file="$STATE/.env" tmp
   tmp="$(mktemp "$STATE/.env.XXXXXX")"
@@ -195,20 +206,20 @@ read_state_env() {
   grep -E "^$1=" "$STATE/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' || true
 }
 
-# ------------------------------------------------------------- туннели
+# ------------------------------------------------------------- tunnels
 #
-# Четыре способа, выбор — COLLOQ_TUNNEL (auto по умолчанию):
+# Four ways, chosen by COLLOQ_TUNNEL (auto by default):
 #
-#   relay       frpc → свой ретранслятор (RELAY_*), адрес https://<имя>.<домен>.
-#               Путь для России: адреса Cloudflare оттуда не открываются.
-#   cloudflare  CLOUDFLARE_TUNNEL_TOKEN + COLLOQ_HOSTNAME — именованный туннель,
-#               иначе быстрый *.trycloudflare.com со случайным адресом.
-#   direct      http://$PUBLIC_IPADDR:$VAST_TCP_PORT_<PORT> — проброс портов vast,
-#               без TLS и без посредника.
-#   none        ничего не поднимать; адрес — PUBLIC_URL или localhost.
+#   relay       frpc → your own relay (RELAY_*), address https://<name>.<domain>.
+#               The path for Russia: Cloudflare addresses do not open from there.
+#   cloudflare  CLOUDFLARE_TUNNEL_TOKEN + COLLOQ_HOSTNAME: a named tunnel,
+#               otherwise a quick *.trycloudflare.com with a random address.
+#   direct      http://$PUBLIC_IPADDR:$VAST_TCP_PORT_<PORT>: vast port forwarding,
+#               no TLS and no intermediary.
+#   none        bring nothing up; the address is PUBLIC_URL or localhost.
 #
-# auto берёт relay, если он настроен; иначе именованный Cloudflare; иначе
-# none, если адрес назван явно; иначе быстрый туннель.
+# auto takes relay if it is configured; otherwise a named Cloudflare tunnel;
+# otherwise none, if the address is given explicitly; otherwise a quick tunnel.
 MODE=""
 PUBLIC=""
 TUNNEL_PID=""
@@ -217,7 +228,7 @@ RUN_DIR=""
 
 relay_hostname() {
   local host="${COLLOQ_HOSTNAME:-}"
-  # Короткое имя достраивается до зоны ретранслятора: HOST=demo → demo.<домен>.
+  # A short name is completed to the relay zone: HOST=demo → demo.<domain>.
   case "$host" in
     *.*) printf '%s' "$host" ;;
     '') printf '' ;;
@@ -243,9 +254,9 @@ pick_mode() {
       [ -n "${RELAY_ADDR:-}" ] && [ -n "${RELAY_TOKEN:-}" ] && [ -n "${RELAY_DOMAIN:-}" ] && [ -n "${COLLOQ_HOSTNAME:-}" ] \
         || die "COLLOQ_TUNNEL=relay needs COLLOQ_HOSTNAME, RELAY_ADDR, RELAY_TOKEN and RELAY_DOMAIN."
       local host; host="$(relay_hostname)"
-      # Имя уходит строкой в frpc.toml (start_relay): кавычка или пробел в нём
-      # сломали бы конфиг так, что frpc назвал бы виноватой строку файла, а не
-      # переменную.
+      # The name goes as a string into frpc.toml (start_relay): a quote or a
+      # space in it would break the config so that frpc would blame a line of
+      # the file, not the variable.
       case "$host" in
         *[!A-Za-z0-9.-]*) die "COLLOQ_HOSTNAME=$COLLOQ_HOSTNAME: a hostname has only letters, digits, dots and hyphens." ;;
       esac
@@ -258,8 +269,9 @@ pick_mode() {
         PUBLIC="https://${COLLOQ_HOSTNAME}"
       fi ;;
     direct)
-      # На Docker-инстансе vast сам кладёт адрес и внешний порт в окружение; до
-      # VM эти переменные могут не доехать — тогда адрес называют PUBLIC_URL.
+      # On a Docker instance vast itself puts the address and the external port
+      # into the environment; on a VM these variables may not arrive, and then
+      # the address is given as PUBLIC_URL.
       local mapped_var="VAST_TCP_PORT_${PORT}"
       local mapped="${!mapped_var:-}"
       if [ -z "${PUBLIC_URL:-}" ]; then
@@ -271,19 +283,21 @@ pick_mode() {
       PUBLIC="${PUBLIC_URL:-http://localhost:${PORT}}" ;;
     *) die "unknown COLLOQ_TUNNEL=$MODE (auto, relay, cloudflare, direct, none)" ;;
   esac
-  # Явный PUBLIC_URL сильнее вычисленного: оператор знает про свой прокси
-  # больше, чем мы про переменные vast.
+  # An explicit PUBLIC_URL beats the computed one: the operator knows more
+  # about their proxy than we know about the vast variables.
   if [ -n "${PUBLIC_URL:-}" ] && [ "$MODE" != none ]; then PUBLIC="$PUBLIC_URL"; fi
 }
 
-# Строки туннеля — в журнал контейнера с приставкой, и в файл: по файлу ждём
-# подтверждения. `> >(…)` оставляет в $! номер самого туннеля, а не tee.
+# The tunnel lines go to the container log with a prefix, and to a file: we
+# wait for the confirmation by the file. `> >(…)` leaves in $! the number of
+# the tunnel itself, not of tee.
 start_relay() {
   local conf="$RUN_DIR/frpc.toml" sub host
   host="$(relay_hostname)"
   sub="${host%".$RELAY_DOMAIN"}"
-  # Секрет ретранслятора — в файл 0600 в каталоге контейнера, а не в аргументы
-  # (командную строку видит ps) и не в каталог состояния (он едет в копии).
+  # The relay secret goes into a 0600 file in the container directory, not
+  # into the arguments (ps sees the command line) and not into the state
+  # directory (it travels in backups).
   (umask 077; cat > "$conf" <<CONF
 serverAddr = "${RELAY_ADDR}"
 serverPort = ${RELAY_PORT:-7000}
@@ -291,13 +305,14 @@ auth.method = "token"
 auth.token = "${RELAY_TOKEN}"
 log.to = "console"
 log.level = "info"
-# Журнал контейнера — не терминал: escape-коды цвета в нём только мусор.
+# The container log is not a terminal: color escape codes there are just junk.
 log.disablePrintColor = true
-# Готовые соединения к ретранслятору: звонок — это вся группа разом, и без
-# запаса каждый первый запрос ждёт установки соединения (см. scripts/host.sh).
+# Ready connections to the relay: the bell brings the whole group at once, and
+# without a reserve every first request waits for a connection to be set up
+# (see scripts/host.sh).
 transport.poolCount = 5
-# Первый вход неудачен — не выходить, а пробовать дальше: ретранслятор мог
-# моргнуть, а поднимать frpc заново некому, кроме нас.
+# The first login failed: do not exit, keep trying: the relay may have
+# blinked, and there is nobody but us to start frpc again.
 loginFailExit = false
 
 [[proxies]]
@@ -311,11 +326,12 @@ CONF
   : > "$TUNNEL_LOG"
   frpc -c "$conf" > >(tee -a "$TUNNEL_LOG" | sed -u 's/^/[frpc] /') 2>&1 &
   TUNNEL_PID=$!
-  # Отказ ретранслятора — не смерть контейнера: сервер поднимается всё равно
-  # (до него можно дойти по ssh -L), а frpc снимается и перезапускается циклом
-  # в serve с нарастающей паузой. Занятое имя так и лечится само: прежняя
-  # машина уходит — следующая попытка его получает. Строки — те, что печатает
-  # frpc 0.71 (проверены на живом ретрансляторе, см. scripts/host.sh).
+  # A relay refusal is not the death of the container: the server comes up
+  # anyway (it can be reached through ssh -L), and frpc is taken down and
+  # restarted by the loop in serve with a growing pause. A taken name heals
+  # itself this way: the previous machine leaves, and the next attempt gets the
+  # name. The lines are the ones frpc 0.71 prints (checked on a live relay, see
+  # scripts/host.sh).
   local i
   for i in $(seq 1 30); do
     if grep -q 'start proxy success' "$TUNNEL_LOG" 2>/dev/null; then say "relay tunnel is up: $PUBLIC"; return 0; fi
@@ -338,7 +354,8 @@ CONF
 start_cloudflare() {
   : > "$TUNNEL_LOG"
   if [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
-    # Токен — переменной окружения cloudflared (TUNNEL_TOKEN), не аргументом.
+    # The token goes as the cloudflared environment variable (TUNNEL_TOKEN),
+    # not as an argument.
     TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" cloudflared tunnel --no-autoupdate run \
       > >(tee -a "$TUNNEL_LOG" | sed -u 's/^/[cloudflared] /') 2>&1 &
     TUNNEL_PID=$!
@@ -374,10 +391,10 @@ start_tunnel() {
   esac
 }
 
-# Зеркало статики на ретрансляторе (scripts/relay-assets.py): иначе каждый
-# байт /assets едет через туннель к каждому пришедшему. Не отказ, если не
-# вышло: без зеркала пара идёт, только медленнее. Заголовок с секретом — из
-# файла (`-H @file`), а не аргументом.
+# The static mirror on the relay (scripts/relay-assets.py): otherwise every
+# byte of /assets travels through the tunnel to everyone who comes. Not a
+# refusal if it fails: without the mirror the class goes on, only slower. The
+# header with the secret comes from a file (`-H @file`), not as an argument.
 upload_relay_assets() {
   [ "$MODE" = relay ] || return 0
   local host archive hdr code dirs=()
@@ -398,21 +415,22 @@ upload_relay_assets() {
   esac
 }
 
-# ------------------------------------------------------------ ядра комнат
+# ------------------------------------------------------------ room kernels
 #
-# Образ окружения по умолчанию (и KERNEL_PRELOAD, через запятую) — до первой
-# пары, а не на первом Run. Порядок источников:
+# The image of the default environment (and KERNEL_PRELOAD, comma-separated)
+# before the first class, not on the first Run. The order of sources:
 #
-#   1. уже есть в docker хоста — ничего не делаем (пересоздание машины из
-#      образа не трогает образы, а обновление colloq-vast — тем более);
-#   2. KERNEL_IMAGE_REPO — вытянуть опубликованный образ релиза
-#      (<repo>:<тег>-<окружение>, как их называет scripts/release-build.py) и
-#      назвать его colloq-kernel:<окружение>, как ждёт pool.ts;
-#   3. собрать из контекста, лежащего в образе, тем же вызовом docker, что и
-#      панель (environments.ts · buildCommand) и CLI (launch-prepare.ts).
+#   1. already in the host docker: do nothing (re-creating the machine from the
+#      image does not touch the images, let alone a colloq-vast update);
+#   2. KERNEL_IMAGE_REPO: pull the published release image
+#      (<repo>:<tag>-<environment>, as scripts/release-build.py names them) and
+#      name it colloq-kernel:<environment>, as pool.ts expects;
+#   3. build from the context that lies in the image, with the same docker call
+#      as the panel (environments.ts · buildCommand) and the CLI
+#      (launch-prepare.ts).
 #
-# Цепочка `# colloq: from <родитель>` проходится от корня к листу, как у
-# панели: gpu стоит на base-gpu, и torch с CUDA ставится один раз.
+# The `# colloq: from <parent>` chain is walked from the root to the leaf, as
+# in the panel: gpu stands on base-gpu, and torch with CUDA is installed once.
 env_file_for() {
   local name="$1"
   if [ -f "$STATE/environments/$name.txt" ]; then printf '%s' "$STATE/environments/$name.txt"
@@ -433,8 +451,9 @@ chain_of() {
 }
 
 kernel_context() {
-  # Свои окружения поверх привезённых — копией, как делает сервер
-  # (environments.ts · buildContext): контекст docker один каталог.
+  # Our own environments on top of the shipped ones, as a copy, the way the
+  # server does it (environments.ts · buildContext): the docker context is one
+  # directory.
   if compgen -G "$STATE/environments/*.txt" >/dev/null; then
     local staged="$STATE/.colloq/kernel-context/_boot"
     rm -rf "$staged"; mkdir -p "$(dirname "$staged")"
@@ -454,8 +473,8 @@ prepare_kernels() {
   for name in "${names[@]}"; do
     name="$(printf '%s' "$name" | tr -d '[:space:]')"
     [ -n "$name" ] || continue
-    # Цепочка целиком заранее, а не `while read … < <(…)`: docker внутри цикла
-    # не должен делить с ним stdin.
+    # The whole chain up front, not `while read … < <(…)`: docker inside the
+    # loop must not share stdin with it.
     mapfile -t chain < <(chain_of "$name" || true)
     parent=""
     for link in "${chain[@]}"; do
@@ -477,9 +496,9 @@ prepare_kernels() {
       if [ -n "$parent" ]; then
         args+=(--build-arg "PARENT=$parent")
       else
-        # Корень цепочки: версию Python называет директива его файла; нет
-        # директивы — умолчание самого kernel/Dockerfile, второй копии имени
-        # базового образа здесь не заводим.
+        # The root of the chain: the Python version is named by the directive
+        # in its file; no directive means the default of kernel/Dockerfile
+        # itself, and we keep no second copy of the base image name here.
         file="$(env_file_for "$link")"
         py="$(sed -nE 's/^[[:space:]]*#[[:space:]]*colloq:[[:space:]]*python[[:space:]]+(3\.[0-9]+)[[:space:]]*$/\1/p' "$file" | head -1)"
         [ -z "$py" ] || args+=(--build-arg "PARENT=python:${py}-slim-bookworm")
@@ -498,9 +517,10 @@ prepare_kernels() {
   say "[kernels] done; readiness: curl -s http://127.0.0.1:${PORT}/api/health"
 }
 
-# Штамп «что собрано» — тем же файлом, что пишет панель (environments.ts ·
-# ownStampFor): иначе свежесть образа панель судит по времени правки списка, и
-# вытянутый из реестра образ мог бы выглядеть «Needs rebuild».
+# The "what was built" stamp is the same file the panel writes (environments.ts
+# · ownStampFor): otherwise the panel judges the image's freshness by the time
+# the list was edited, and an image pulled from the registry could look like
+# "Needs rebuild".
 stamp_environment() {
   local file; file="$(env_file_for "$1")"
   [ -n "$file" ] || return 0
@@ -513,14 +533,14 @@ PREP_PID=""
 STOPPING=""
 
 start_server() {
-  # JUPYTER_TOKEN докер-бэкенду не нужен вовсе: у каждой комнаты свой токен,
-  # выведенный из ключа подписи (pool.ts · roomToken). Случайный здесь — только
-  # чтобы сервер не печатал предупреждение про известный всем токен из
-  # .env.example, которое к этому инстансу не относится.
+  # The docker backend does not need JUPYTER_TOKEN at all: every room has its
+  # own token, derived from the signing key (pool.ts · roomToken). A random one
+  # here only so that the server does not print the warning about the
+  # well-known token from .env.example, which does not apply to this instance.
   local jt; jt="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  # Секреты туннеля нужны точке входа, а не серверу: он их не читает, а всё,
-  # что лежит в его окружении, наследуют и его дочерние процессы (docker CLI,
-  # сборки окружений).
+  # The tunnel secrets are needed by the entry point, not by the server: it
+  # does not read them, and everything in its environment is inherited by its
+  # child processes too (docker CLI, environment builds).
   (
     cd "$APP"
     exec env \
@@ -556,7 +576,8 @@ on_term() {
   STOPPING=1
   say "stopping: the server saves notebooks and closes the database; room kernels keep running"
   [ -n "$SERVER_PID" ] && kill -TERM "$SERVER_PID" 2>/dev/null || true
-  # Сервер отводит себе восемь секунд (SHUTDOWN_GRACE_MS); ждём с запасом.
+  # The server gives itself eight seconds (SHUTDOWN_GRACE_MS); we wait with
+  # a margin.
   local i
   for i in $(seq 1 25); do kill -0 "$SERVER_PID" 2>/dev/null || break; sleep 1; done
   [ -n "$PREP_PID" ] && kill -TERM "$PREP_PID" 2>/dev/null || true
@@ -590,8 +611,8 @@ serve() {
   say "          print it again with: docker exec <container> colloq-vast link"
   upload_relay_assets
 
-  # Без errexit: упавшая команда посреди подготовки должна стать строкой в
-  # журнале, а не молча убитой фоновой подоболочкой.
+  # No errexit: a command that fails in the middle of the preparation must
+  # become a line in the log, not a background subshell killed in silence.
   (set +e; prepare_kernels) &
   PREP_PID=$!
 
@@ -607,16 +628,18 @@ serve() {
     [ -z "$STOPPING" ] || continue
     [ -n "$done_pid" ] || continue
     if [ "$done_pid" = "$SERVER_PID" ]; then
-      # Сервер упал — выходим с его кодом, и перезапуском займётся docker
-      # (--restart unless-stopped в colloq-host): поднимать процесс в живом
-      # контейнере с полусломанным туннелем честнее не станет.
+      # The server died: exit with its code, and docker takes care of the
+      # restart (--restart unless-stopped in colloq-host): bringing the process
+      # back up in a live container with a half-broken tunnel would be no more
+      # honest.
       warn "the server exited with code $code"
       [ -n "$TUNNEL_PID" ] && kill -TERM "$TUNNEL_PID" 2>/dev/null || true
       exit "$code"
     fi
-    # Пауза растёт до минуты на отказах подряд и сбрасывается, если туннель
-    # до этого прожил дольше пяти минут: моргнувший посреди пары ретранслятор
-    # не должен стоить минуты ожидания только потому, что утром был отказ.
+    # The pause grows up to a minute on consecutive failures and resets if the
+    # tunnel had lived longer than five minutes before that: a relay that
+    # blinked in the middle of a class must not cost a minute of waiting just
+    # because there was a failure in the morning.
     [ $((SECONDS - TUNNEL_SINCE)) -lt 300 ] || backoff=5
     warn "the tunnel exited (code $code); restarting it in ${backoff}s"
     sleep "$backoff"
@@ -630,7 +653,7 @@ serve() {
   done
 }
 
-# ------------------------------------------------------------ сервисные
+# -------------------------------------------------------- service commands
 status() {
   local body
   body="$(curl -s --max-time 10 "http://127.0.0.1:${PORT}/api/health" || true)"
@@ -661,16 +684,17 @@ link() {
 backup() {
   cd "$APP"
   bash scripts/backup-local.sh
-  # Подсказка скрипта называет команду колеса pip (`colloq restore --legacy`),
-  # которой на VM нет; здесь обратная дорога — colloq-host.
+  # The script's hint names the command of the pip wheel
+  # (`colloq restore --legacy`), which does not exist on the VM; here the way
+  # back is colloq-host.
   say "restore on a machine running this image: colloq-host restore backups/<the .db above>"
 }
 
 restore() {
-  # restore.sh сам откажет под живым сервером — но спрашивает он localhost ЭТОГО
-  # контейнера. Разовый `docker run … restore` живёт в своём сетевом
-  # пространстве и работающего соседа не увидит, поэтому colloq-host
-  # останавливает основной контейнер раньше, чем зовёт это.
+  # restore.sh refuses by itself under a live server, but it asks the
+  # localhost of THIS container. A one-off `docker run … restore` lives in its
+  # own network namespace and will not see a running neighbor, so colloq-host
+  # stops the main container before calling this.
   cd "$APP"
   exec bash scripts/restore.sh "$@"
 }

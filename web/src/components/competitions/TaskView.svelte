@@ -1,15 +1,16 @@
 <script lang="ts">
   /**
-   * Вкладка «Задача и данные» — единственная, которой в макете нет вовсе.
+   * The "Task and data" tab — the only one the mockup does not have at all.
    *
-   * Собрана из того, что макет обещает в других местах: условие, написанное
-   * преподавателем (описание в Markdown, с формулами `$…$`), открытые файлы на
-   * скачивание и те же условия проверки, что стоят справа во вкладке посылок.
-   * Ничего своего она не придумывает — всё это уже есть в ответе двери.
+   * It is assembled from what the mockup promises elsewhere: the statement
+   * written by the teacher (a Markdown description, with `$…$` formulas), the
+   * open files for download and the same check conditions that stand on the
+   * right in the submissions tab. It invents nothing of its own — all of it
+   * is already in the door's response.
    *
-   * Разметка чужая: её пишет преподаватель, и через `{@html}` она проходит
-   * только после санитайзера (lib/render.svelte.ts) — того же самого, через
-   * который проходят заметки в комнате.
+   * The markup is someone else's: the teacher writes it, and it goes through
+   * `{@html}` only after the sanitiser (lib/render.svelte.ts) — the same one
+   * the notes in the room go through.
    */
   import { formatNumber, tr } from '@shared/i18n'
   import { loadRenderers, renderers } from '@/lib/render.svelte'

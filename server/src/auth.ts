@@ -20,14 +20,16 @@ export interface TokenPayload {
    */
   iat?: number
   /**
-   * Чьей кукой этот токен получил права ведущего — при передаче пульта.
+   * Whose cookie gave this token its host rights — when the console is handed
+   * off.
    *
-   * «Ведущий по куке» намеренно никогда не пишется в строку участника: куку
-   * можно отобрать, и в этом весь смысл роли (см. db.ts, столбец token_host).
-   * Планшет куки не имеет, поэтому право переезжает сюда — но не насовсем:
-   * `roleFor` спрашивает, состоит ли ещё этот преподаватель в штате, и с
-   * удалением из списка пульт перестаёт быть пультом. Подпись покрывает поле,
-   * так что вписать себе чужой id нельзя.
+   * "Host by cookie" is deliberately never written into the participant row:
+   * the cookie can be taken away, and that is the whole point of the role (see
+   * db.ts, the token_host column). A tablet has no cookie, so the right moves
+   * here — but not for good: `roleFor` asks whether this teacher is still on
+   * the staff, and once they are removed from the list the console stops being
+   * a console. The signature covers the field, so nobody can write someone
+   * else's id into it.
    */
   staff?: string
   /** Durable generation of the staff credential that granted this token. */
@@ -120,24 +122,24 @@ export function verifyDownloadToken(
 }
 
 /**
- * Ключ, которым преподаватель отдаёт СВОЙ пульт своему же планшету.
+ * The key with which a teacher hands THEIR OWN console to their own tablet.
  *
- * Задача звучит просто: вести пару с айпада, не входя на нём заново и не
- * перенося вручную ни имени, ни прав. Но токен участника в адресе — это ровно
- * то, от чего ушёл `signDownloadToken`: строка, которой открывается
- * управляющий сокет, в ссылке, которую копируют в чат.
+ * The task sounds simple: run a class from an iPad without signing in on it
+ * again and without carrying over a name or rights by hand. But a participant
+ * token in the address is exactly what `signDownloadToken` moved away from: the
+ * string that opens the control socket, in a link people copy into a chat.
  *
- * Поэтому в ссылке едет не токен, а ключ на обмен: он живёт десять минут,
- * годится один раз и ни для чего, кроме обмена, — по нему нельзя ни открыть
- * сокет, ни скачать файл. Планшет меняет его на обычный токен участника и
- * дальше живёт как всякий вошедший.
+ * So the link carries not a token but an exchange key: it lives ten minutes,
+ * works once and is good for nothing but the exchange — it can neither open a
+ * socket nor download a file. The tablet exchanges it for an ordinary
+ * participant token and from then on lives like anyone who has signed in.
  *
- * Десять минут — это «дошёл до кафедры и открыл»; ссылка, забытая в чате,
- * протухает раньше, чем её прочитают.
+ * Ten minutes is "walked to the lectern and opened it"; a link forgotten in a
+ * chat goes stale before anyone reads it.
  */
 export const HANDOFF_TTL_MS = 10 * 60 * 1000
 
-/** Кто получит пульт и чьей кукой это право держится (null — своим токеном). */
+/** Who gets the console and whose cookie holds that right (null: their own token). */
 export interface HandoffHolder {
   participantId: string
   staff: string | null
@@ -155,7 +157,7 @@ export function signHandoffToken(
   return `${Buffer.from(who).toString('base64url')}.${until.toString(36)}.${sig}`
 }
 
-/** Кому этот ключ принадлежит — или null, если он чужой, кривой или протух. */
+/** Whom this key belongs to — or null if it is someone else's, malformed or stale. */
 export function verifyHandoffToken(
   sessionId: string,
   token: string | undefined | null,
@@ -186,21 +188,21 @@ export function verifyHandoffToken(
 }
 
 /**
- * Потраченные ключи — ровно до их же срока.
+ * Spent keys — kept exactly until their own expiry.
  *
- * «Годится один раз» было написано в трёх местах и не было правдой нигде:
- * ключ проверялся подписью и сроком, а помечать его потраченным было нечем —
- * ссылка, уехавшая не в то окно AirDrop, десять минут пускала в комнату
- * преподавателем сколько угодно устройств. Множество в памяти, а не таблица:
- * жить ему столько же, сколько ключу, а десять минут после падения процесса
- * стоят меньше, чем таблица, которую никто не чистит.
+ * "Works once" was written in three places and was true in none: the key was
+ * checked by signature and expiry, and there was nothing to mark it spent with
+ * — a link that went to the wrong AirDrop window let any number of devices into
+ * the room as the teacher for ten minutes. A set in memory, not a table: it
+ * lives as long as a key does, and ten minutes after a process crash cost less
+ * than a table nobody cleans.
  */
 const spentHandoffs = new Map<string, number>()
 
 /**
- * Проверить ключ и тут же его погасить. Второй обмен того же ключа — null,
- * как и чужого: планшет меняет ключ ровно однажды, а копия ссылки из чата
- * приезжает к уже потраченному.
+ * Check a key and spend it right away. A second exchange of the same key gives
+ * null, just like someone else's key: the tablet exchanges the key exactly
+ * once, and a copy of the link from a chat arrives at one already spent.
  */
 export function spendHandoffToken(
   sessionId: string,
@@ -209,7 +211,7 @@ export function spendHandoffToken(
   const holder = verifyHandoffToken(sessionId, token)
   if (!holder) return null
   const now = Date.now()
-  // Уборка здесь же: ключей мало, а Map иначе растёт весь семестр.
+  // Cleanup right here: keys are few, and otherwise the Map grows all semester.
   for (const [key, until] of spentHandoffs) if (until <= now) spentHandoffs.delete(key)
   const key = `${sessionId}\u0000${token as string}`
   if (spentHandoffs.has(key)) return null
@@ -219,16 +221,17 @@ export function spendHandoffToken(
 
 /** Host credential handed out at session creation; proves ownership after a refresh. */
 /**
- * Ключ ведущего к комнате — со сроком, как и у участника.
+ * The host key to a room — with an expiry, like the participant's.
  *
- * Раньше подписывалось голое `host:<sessionId>`: такой ключ не старел никогда.
- * Отозвать его можно было только сбросом SESSION_SECRET, то есть выкинув из
- * всех комнат сразу всех. А живёт он там же, где живут ссылки, — в истории
- * терминала, в чате, в закладке.
+ * It used to sign a bare `host:<sessionId>`: such a key never aged. Revoking it
+ * was only possible by resetting SESSION_SECRET, that is, throwing everyone out
+ * of every room at once. And it lives where links live — in terminal history,
+ * in a chat, in a bookmark.
  *
- * Отметка времени в самом ключе, а не рядом: подпись покрывает и её, так что
- * переписать срок нельзя, не зная секрета. Тот же тридцатидневный предел, что
- * у токена участника, и по той же причине — семестр длиннее, но семинар нет.
+ * The timestamp is in the key itself, not next to it: the signature covers it
+ * too, so the expiry cannot be rewritten without knowing the secret. The same
+ * thirty-day limit as the participant token, and for the same reason — a
+ * semester is longer, but a seminar is not.
  */
 export function signHostToken(sessionId: string): string {
   const issued = Date.now().toString(36)
@@ -243,12 +246,13 @@ export function verifyHostToken(sessionId: string, token: string | undefined | n
   if (typeof token !== 'string' || !token) return false
   const parts = token.split('.')
   /*
-   * Двухчастные ключи — выданные до того, как у них появился срок.
+   * Two-part keys — issued before they had an expiry.
    *
-   * Принимать их значило бы оставить дыру открытой ради удобства, а отвергать
-   * молча — выкинуть из своих комнат тех, кто держит вкладку со вчера. Второе
-   * честнее: ключ выдаётся заново при следующем заходе через панель, а комната
-   * от этого не пропадает — теряется только значок ведущего.
+   * Accepting them would mean leaving the hole open for convenience, and
+   * rejecting them silently would mean throwing out of their own rooms those
+   * who have kept a tab open since yesterday. The second is more honest: the
+   * key is issued again on the next entry through the panel, and the room does
+   * not disappear because of it — only the host badge is lost.
    */
   if (parts.length !== 3) return false
   const [claimed, issued, sig] = parts

@@ -1,16 +1,16 @@
 /**
- * Единственное место, где CLI что-то печатает.
+ * The only place where the CLI prints anything.
  *
- * Словарь закрыт: пять символов, четыре цвета, таблицы руками. Зелёного нет —
- * его нет и в Makefile. Цвет гаснет целиком при NO_COLOR, --no-color и когда
- * вывод не в терминал: тогда в потоке не остаётся ни одного байта escape, и
- * это стережёт тест.
+ * The vocabulary is closed: five symbols, four colours, tables by hand. There
+ * is no green: the Makefile has none either. Colour goes off entirely with
+ * NO_COLOR, --no-color and when the output is not a terminal: then not a
+ * single escape byte is left in the stream, and a test guards that.
  */
 
-/** Символы. Других не заводить: ● работает · ○ нет · ✓ пройдено · ✗ отказ · → дальше. */
+/** Symbols. Do not add others: ● running · ○ not · ✓ passed · ✗ refusal · → next. */
 export const SYMBOL = { on: '●', off: '○', ok: '✓', bad: '✗', next: '→' } as const
 
-// Коды те же, что в шапке Makefile.
+// The same codes as in the Makefile header.
 const BOLD = '\u001b[1m'
 const DIM = '\u001b[2m'
 const CYAN = '\u001b[36m'
@@ -18,10 +18,10 @@ const RED = '\u001b[31m'
 const OFF = '\u001b[0m'
 
 /**
- * Не выполнено предусловие: нет .env, нет docker, нет терминала для вопроса — код 3.
+ * A precondition is not met: no .env, no docker, no terminal for a question: code 3.
  *
- * Три части те же, что у ui.refuse: что случилось, чем вызвано, что делать.
- * why необязательна — второй строки просто не будет.
+ * The three parts are the same as in ui.refuse: what happened, what caused it,
+ * what to do. why is optional: there simply will be no second line.
  */
 export class PreconditionError extends Error {
   readonly code = 3
@@ -35,7 +35,7 @@ export class PreconditionError extends Error {
   }
 }
 
-/** Употребление: нет команды, нет обязательного аргумента, конфликт флагов — код 2. */
+/** Usage: no command, no required argument, conflicting flags: code 2. */
 export class UsageError extends Error {
   readonly code = 2
   readonly fix: string
@@ -49,29 +49,29 @@ export class UsageError extends Error {
 }
 
 export type Ui = {
-  /** Включён ли цвет. */
+  /** Whether colour is on. */
   readonly color: boolean
-  /** Режим --json: обычный вывод погашен целиком. */
+  /** --json mode: the normal output is switched off entirely. */
   readonly jsonMode: boolean
   bold(text: string): string
   dim(text: string): string
   cyan(text: string): string
   red(text: string): string
-  /** Строка как есть, в stdout. */
+  /** A line as is, to stdout. */
   line(text?: string): void
-  /** Заголовок раздела — одна строка BOLD. */
+  /** A section heading: one BOLD line. */
   header(text: string): void
-  /** Ключ-значение: два пробела, ключ padEnd(12), значение, за ним « · » и DIM-пояснение. */
+  /** Key-value: two spaces, the key padEnd(12), the value, then " · " and a DIM note. */
   kv(key: string, value: string, hint?: string): void
-  /** Подсказка под строкой: шесть пробелов, DIM, начинается с «→ ». */
+  /** A hint under a line: six spaces, DIM, starts with "→ ". */
   hint(text: string): void
-  /** Таблица руками: padEnd по измеренной ширине, отступ два пробела, рамок нет. */
+  /** A table by hand: padEnd to the measured width, a two-space indent, no borders. */
   table(rows: string[][]): void
-  /** Отказ — ровно три строки в stderr: что, почему, что делать. */
+  /** A refusal is exactly three lines on stderr: what, why, what to do. */
   refuse(what: string, why: string, fix: string): void
-  /** Вопрос с умолчанием «нет». Нет терминала — PreconditionError (код 3). */
+  /** A question that defaults to "no". No terminal means PreconditionError (code 3). */
   confirm(question: string): Promise<boolean>
-  /** Печатает JSON и гасит весь остальной вывод. */
+  /** Prints JSON and switches off all other output. */
   json(value: unknown): void
 }
 
@@ -80,34 +80,34 @@ export type UiOptions = {
   json?: boolean
   out?: (text: string) => void
   err?: (text: string) => void
-  /** Терминал ли перед нами: от этого зависит, можно ли спрашивать. */
+  /** Whether there is a terminal in front of us: it decides whether we may ask. */
   tty?: boolean
-  /** Подставной источник ответов — для тестов. */
+  /** A stand-in source of answers, for tests. */
   ask?: (question: string) => Promise<string>
 }
 
-/** Длина строки без escape-последовательностей: по ней считается ширина колонки. */
+/** The length of a string without escape sequences: column widths are measured by it. */
 export function visibleLength(text: string): number {
   return stripAnsi(text).length
 }
 
-/** Снять escape-последовательности. */
+/** Remove escape sequences. */
 export function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;]*m/g, '')
 }
 
-/** Цвет разрешён? NO_COLOR при любом значении и не-терминал гасят его целиком. */
+/** Is colour allowed? NO_COLOR with any value and a non-terminal switch it off entirely. */
 export function colorAllowed(env: NodeJS.ProcessEnv, isTty: boolean): boolean {
   if ('NO_COLOR' in env) return false
   return isTty
 }
 
 /**
- * Запись в поток, который могли закрыть с той стороны.
+ * Writing to a stream that may have been closed from the other end.
  *
- * `colloq doctor | head` закрывает трубу на десятой строке, и следующий write
- * бросает EPIPE. Для нас это не ошибка: читателю хватило. Молча замолкаем —
- * ровно так же ведут себя обычные утилиты.
+ * `colloq doctor | head` closes the pipe at the tenth line, and the next write
+ * throws EPIPE. For us this is not an error: the reader has had enough. We go
+ * quiet silently, exactly as ordinary utilities do.
  */
 function writer(stream: NodeJS.WriteStream): (text: string) => void {
   let broken = false
@@ -128,7 +128,7 @@ export function createUi(opts: UiOptions = {}): Ui {
   const err = opts.err ?? writer(process.stderr)
   const tty = opts.tty ?? false
   let jsonMode = opts.json ?? false
-  // Однажды напечатанный JSON — весь вывод команды: второй раз не печатаем.
+  // JSON printed once is the whole output of the command: we do not print it a second time.
   let jsonDone = false
 
   const paint = (code: string, text: string): string => (color ? code + text + OFF : text)
@@ -154,8 +154,9 @@ export function createUi(opts: UiOptions = {}): Ui {
     },
     kv(key, value, hint) {
       if (jsonMode) return
-      // Пояснение отделяется точкой, а не одним цветом: без цвета (труба,
-      // NO_COLOR, журнал) значение и пояснение слипались в одну фразу.
+      // The note is set off by a dot, not by colour alone: without colour (a
+      // pipe, NO_COLOR, a log) the value and the note ran together into one
+      // phrase.
       const tail = hint ? ' · ' + ui.dim(hint) : ''
       out('  ' + key.padEnd(12) + value + tail)
     },
@@ -180,13 +181,13 @@ export function createUi(opts: UiOptions = {}): Ui {
           const pad = ' '.repeat(Math.max(0, (widths[i] ?? 0) - visibleLength(cell)))
           cells.push(cell + pad)
         }
-        // Хвостовых пробелов в выводе нет: правый край строки обрезается.
+        // There are no trailing spaces in the output: the right edge of the line is trimmed.
         out((indent + cells.join(gap)).replace(/[ ]+$/, ''))
       }
     },
     refuse(what, why, fix) {
-      // В режиме --json отказ — тоже JSON, и ни строки вне него, в том числе
-      // на stderr.
+      // In --json mode a refusal is JSON too, and not a line outside it,
+      // including on stderr.
       if (jsonMode) {
         ui.json({ ok: false, code: 3, error: what + (why ? '. ' + why : ''), hint: fix })
         return
@@ -219,36 +220,39 @@ export function createUi(opts: UiOptions = {}): Ui {
 }
 
 /**
- * «3 rooms», «1 package»: число перед словом всегда, слово по числу.
+ * "3 rooms", "1 package": the number always comes before the word, and the
+ * word follows the number.
  *
- * Форм две, и правило одно на все слова, поэтому списывать его во второй раз
- * ради пакетов незачем. Второе слово даётся только там, где множественное
- * неправильное: countWord(2, 'class', 'classes'), — обычному хватает 's'.
+ * There are two forms, and one rule for all words, so there is no reason to
+ * copy it a second time for packages. The second word is given only where the
+ * plural is irregular: countWord(2, 'class', 'classes'); a regular one is fine
+ * with 's'.
  */
 export function countWord(count: number, one: string, many = one + 's'): string {
   return count + ' ' + (count === 1 ? one : many)
 }
 
-/** Счёт комнат нужен двоим: вопросу перед опасным действием и строке состояния. */
+/** Two places need the room count: the question before a dangerous action and the status line. */
 export function roomsWord(count: number): string {
   return countWord(count, 'room')
 }
 
 /**
- * Шапка долгой работы: одна строка BOLD, дальше поток ребёнка без изменений.
- * Под --dry-run строка ровно одна, и она не наша, — поэтому шапки нет.
+ * The header of long work: one BOLD line, then the child's stream unchanged.
+ * Under --dry-run there is exactly one line, and it is not ours, so there is
+ * no header.
  */
 export function heading(ctx: { dryRun: boolean; ui: Ui }, text: string): void {
   if (!ctx.dryRun) ctx.ui.header(text)
 }
 
-/** «нет» на вопрос: DIM «отменено» и код 4. Говорится одинаково во всех группах. */
+/** "no" to the question: DIM "cancelled" and code 4. Said the same way in every group. */
 export function cancelled(ui: Ui): number {
   ui.line(ui.dim('cancelled'))
   return 4
 }
 
-/** Одна строка со stdin. Отдельно, чтобы readline создавался только под вопрос. */
+/** One line from stdin. Separate, so that readline is created only for a question. */
 async function readLine(question: string): Promise<string> {
   const readline = await import('node:readline/promises')
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })

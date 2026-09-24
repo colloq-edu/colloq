@@ -1,28 +1,30 @@
 /**
- * Постраничные чернила лекции — серверная половина.
+ * Per-page lecture ink — the server half.
  *
- * Чернила ездили одной мерой: ВСЕ страницы лекции одним кадром в
- * приветственной пачке. Двадцать минут письма — около мегабайта на сокет, а
- * смотрит вошедший одну страницу; после сбоя Wi-Fi зал возвращается весь сразу,
- * и мегабайт умножается на пятьсот (аудит · core-9). Теперь пачка везёт
- * страницу, которую показывает ведущий, и ОПИСЬ остальных (`ink:pages`), а
- * недостающее вкладка спрашивает (`ink:page`).
+ * Ink used to travel in one measure: ALL pages of the lecture in one frame in
+ * the welcome batch. Twenty minutes of writing is about a megabyte per
+ * socket, while whoever joins looks at one page; after a Wi-Fi drop the whole
+ * hall comes back at once, and the megabyte is multiplied by five hundred
+ * (audit · core-9). Now the batch carries the page the host is showing and an
+ * INVENTORY of the rest (`ink:pages`), and the tab asks for what is missing
+ * (`ink:page`).
  *
- * Вкладка проверена отдельно (lecture-ink-page), и там же сказано, чего она
- * ждёт от сервера. Здесь — ровно эти обещания, и каждое из них такое, что без
- * него чернила гаснут молча:
+ * The tab is checked separately (lecture-ink-page), and that is also where it
+ * says what it expects from the server. Here are exactly those promises, and
+ * each of them is such that without it the ink goes dark silently:
  *
- *  • пачка не возит чужие страницы, но и не молчит о них;
- *  • опись — «есть хоть один штрих», тем же правилом, что и на вкладке
- *    (shared/lecture.ts · `inkPagesOf`), иначе стёртая страница остаётся
- *    лишним листом в ленте и вопросом про чернила, которых нет;
- *  • на вопрос отвечают всегда, и пустой ответ — тоже ответ;
- *  • перелистывание ведущего досылает разметку САМО: иначе каждое из них
- *    собирает пятьсот вопросов — тот самый круг рассылки, ради которого пачку
- *    и обрезали;
- *  • кэш кадра помнит страницу, а не только номер перемены.
+ *  • the batch does not carry other pages, but it does not keep quiet about
+ *    them either;
+ *  • the inventory is "has at least one stroke", by the same rule as on the
+ *    tab (shared/lecture.ts · `inkPagesOf`), otherwise an erased page stays as
+ *    an extra sheet in the strip and a request for ink that does not exist;
+ *  • a request is always answered, and an empty answer is an answer too;
+ *  • a page turn by the host sends the markup ON ITS OWN: otherwise each one
+ *    collects five hundred requests — the very broadcast round the batch was
+ *    trimmed to avoid;
+ *  • the frame cache remembers the page, not just the change number.
  *
- * Ни сети, ни браузера: сокет поддельный, комната настоящая.
+ * Neither network nor browser: the socket is fake, the room is real.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -56,8 +58,8 @@ function socket(): Fake {
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      // Строкой или байтами: кадр чернил собирается раз на комнату и уходит
-      // уже закодированным (control.ts · sendFrame).
+      // As a string or as bytes: the ink frame is built once per room and
+      // goes out already encoded (control.ts · sendFrame).
       if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
         heard.push(JSON.parse(String(frame)) as ControlServerMessage)
       }
@@ -95,7 +97,7 @@ function draw(sessionId: string, page: number, id: string): void {
   addInk(sessionId, { id, page, color: '#101a33', width: 0.004, points: [0, 0, 0.1, 0.1] })
 }
 
-/** Полный кадр чернил, который получил этот сокет: страницы его штрихов. */
+/** The full ink frame this socket received: the pages of its strokes. */
 function inkPages(sock: Fake): number[] | null {
   for (let i = sock.heard.length - 1; i >= 0; i--) {
     const m = sock.heard[i]
@@ -104,7 +106,7 @@ function inkPages(sock: Fake): number[] | null {
   return null
 }
 
-/** Последняя опись, которую получил этот сокет; `null` — не получал вовсе. */
+/** The last inventory this socket received; `null` means it received none. */
 function listed(sock: Fake): number[] | null {
   for (let i = sock.heard.length - 1; i >= 0; i--) {
     const m = sock.heard[i]
@@ -113,7 +115,7 @@ function listed(sock: Fake): number[] | null {
   return null
 }
 
-/** Все страничные кадры, которые получил этот сокет, по порядку. */
+/** All page frames this socket received, in order. */
 function pageFrames(sock: Fake): { page: number; strokes: number }[] {
   const out: { page: number; strokes: number }[] = []
   for (const m of sock.heard) {
@@ -122,7 +124,7 @@ function pageFrames(sock: Fake): { page: number; strokes: number }[] {
   return out
 }
 
-test('приветственная пачка везёт показываемую страницу — и опись остальных', () => {
+test('the welcome batch carries the shown page — and an inventory of the rest', () => {
   const id = room()
   startLecture(id, { file: 'лекция.pdf', by: 'p_1', byName: 'Ада', color: '#c273e6' })
   draw(id, 1, 's1')
@@ -132,21 +134,21 @@ test('приветственная пачка везёт показываему�
 
   const first = socket()
   enter(first, id, 'p_1')
-  assert.deepEqual(inkPages(first), [1], 'вошедшему уехали чужие страницы')
-  assert.deepEqual(listed(first), [-1, 1, 2], 'без описи вкладка не знает, чего ей не хватает')
+  assert.deepEqual(inkPages(first), [1], 'the newcomer was sent other pages')
+  assert.deepEqual(listed(first), [-1, 1, 2], 'without an inventory the tab does not know what it is missing')
 
-  // Ведущий перевёл зал на вторую — следующий вошедший получает уже её.
+  // The host moved the hall to page two — the next newcomer gets that one.
   dispatch(first.ws, id, who(id, 'p_1'), { t: 'lecture:page', page: 2 })
   const second = socket()
   enter(second, id, 'p_2')
-  assert.deepEqual(inkPages(second), [2, 2], 'кэш кадра не заметил смены страницы')
+  assert.deepEqual(inkPages(second), [2, 2], 'the frame cache did not notice the page change')
   assert.deepEqual(listed(second), [-1, 1, 2])
 
   stopLecture(id)
   closeControlRoom(id)
 })
 
-test('кадр страницы собирается один на всех, но устаревает от нового штриха', () => {
+test('the page frame is built once for everyone but goes stale with a new stroke', () => {
   const id = room()
   startLecture(id, { file: 'лекция.pdf', by: 'p_1', byName: 'Ада', color: '#c273e6' })
   draw(id, 1, 's1')
@@ -157,29 +159,29 @@ test('кадр страницы собирается один на всех, н�
 
   const second = socket()
   enter(second, id, 'p_2')
-  assert.deepEqual(inkPages(second), [1], 'второму в том же окне уехало не то же самое')
+  assert.deepEqual(inkPages(second), [1], 'the second one in the same window was sent something different')
 
   draw(id, 1, 's2')
   const third = socket()
   enter(third, id, 'p_3')
-  assert.deepEqual(inkPages(third), [1, 1], 'вошедшему уехали вчерашние чернила')
+  assert.deepEqual(inkPages(third), [1, 1], 'the newcomer was sent stale ink')
 
   stopLecture(id)
   closeControlRoom(id)
 })
 
-test('опись — страницы с хотя бы одним штрихом, тем же правилом, что на вкладке', () => {
+test('the inventory is the pages with at least one stroke, by the same rule as on the tab', () => {
   const id = room()
   startLecture(id, { file: 'лекция.pdf', by: 'p_1', byName: 'Ада', color: '#c273e6' })
   draw(id, 3, 's1')
   draw(id, 1, 's2')
   draw(id, 3, 's3')
-  assert.deepEqual(inkedPagesOf(id), [1, 3], 'опись не по возрастанию или с повторами')
-  assert.deepEqual(inkedPagesOf(id), inkPagesOf(inkOf(id)), 'две меры исписанной страницы')
+  assert.deepEqual(inkedPagesOf(id), [1, 3], 'the inventory is not ascending or has repeats')
+  assert.deepEqual(inkedPagesOf(id), inkPagesOf(inkOf(id)), 'two measures of a written-on page')
 
-  // Ластик снял последний штрих страницы: ключ в памяти комнаты остался, а
-  // страница исписанной быть перестала — иначе пульт держит лишний лист и
-  // спрашивает чернила, которых нет.
+  // The eraser removed the page's last stroke: the key stayed in the room's
+  // memory, but the page is no longer written on — otherwise the console keeps
+  // an extra sheet and asks for ink that does not exist.
   assert.equal(eraseInk(id, 1, 's2'), true)
   assert.deepEqual(inkedPagesOf(id), [3])
   assert.deepEqual(inkedPagesOf(id), inkPagesOf(inkOf(id)))
@@ -190,7 +192,7 @@ test('опись — страницы с хотя бы одним штрихом
   stopLecture(id)
 })
 
-test('на вопрос про страницу отвечают спрашивающему — и пустой ответ тоже ответ', () => {
+test('a request for a page is answered to the asker — and an empty answer is an answer too', () => {
   const id = room()
   startLecture(id, { file: 'лекция.pdf', by: 'p_1', byName: 'Ада', color: '#c273e6' })
   draw(id, 2, 's1')
@@ -202,19 +204,21 @@ test('на вопрос про страницу отвечают спрашив�
   enter(other, id, 'p_3')
   const heardBefore = other.heard.length
 
-  // Спрашивает НЕ ведущий: чернила видит вся комната, а не только пульт.
+  // The one asking is NOT the host: the whole room sees the ink, not only the
+  // console.
   const student: TokenPayload = { sessionId: id, participantId: 'p_2', role: 'participant' }
   dispatch(asker.ws, id, student, { t: 'ink:page', page: 2 })
   assert.deepEqual(pageFrames(asker), [{ page: 2, strokes: 2 }])
-  assert.equal(other.heard.length, heardBefore, 'ответ на чужой вопрос уехал всей комнате')
+  assert.equal(other.heard.length, heardBefore, "the answer to someone else's request went to the whole room")
 
-  // Чистый лист: пустой список — это «страница чистая», и по нему вкладка
-  // закрывает вопрос. Молчание оставило бы её ждать чернил до конца лекции.
+  // A blank sheet: an empty list means "the page is blank", and the tab closes
+  // the request on it. Silence would leave it waiting for ink until the end of
+  // the lecture.
   dispatch(asker.ws, id, who(id, 'p_2'), { t: 'ink:page', page: -1 })
   assert.deepEqual(pageFrames(asker).at(-1), { page: -1, strokes: 0 })
 
-  // Мусор из вкладки: `Number` даёт NaN, а `JSON.stringify` пишет его `null` —
-  // такой ответ вкладка приняла бы за ответ про свою страницу.
+  // Junk from the tab: `Number` gives NaN, and `JSON.stringify` writes it as
+  // `null` — the tab would take such an answer for an answer about its page.
   const before = pageFrames(asker).length
   dispatch(asker.ws, id, who(id, 'p_2'), {
     t: 'ink:page',
@@ -226,7 +230,7 @@ test('на вопрос про страницу отвечают спрашив�
   closeControlRoom(id)
 })
 
-test('перелистывание ведущего досылает разметку само — залу, а не по вопросу', () => {
+test('a page turn by the host sends the markup on its own — to the hall, not on request', () => {
   const id = room()
   startLecture(id, { file: 'лекция.pdf', by: 'p_1', byName: 'Ада', color: '#c273e6' })
   draw(id, 5, 's1')
@@ -236,13 +240,14 @@ test('перелистывание ведущего досылает разме�
   const before = pageFrames(hall).length
 
   dispatch(hall.ws, id, who(id, 'p_2'), { t: 'lecture:page', page: 5 })
-  assert.equal(pageFrames(hall).length, before, 'страницу двигает не тот, кто ведёт')
+  assert.equal(pageFrames(hall).length, before, 'the page is moved by someone other than the host')
 
   dispatch(hall.ws, id, who(id, 'p_1'), { t: 'lecture:page', page: 5 })
   assert.deepEqual(pageFrames(hall).at(-1), { page: 5, strokes: 1 })
 
-  // И на чистую страницу — тоже: пустой кадр стоит десятки байт, а его
-  // отсутствие вкладка ждёт полсекунды и потом спрашивает сама, все пятьсот.
+  // And to a blank page too: an empty frame costs tens of bytes, while without
+  // it the tab waits half a second and then asks itself, all five hundred of
+  // them.
   dispatch(hall.ws, id, who(id, 'p_1'), { t: 'lecture:page', page: 6 })
   assert.deepEqual(pageFrames(hall).at(-1), { page: 6, strokes: 0 })
 
@@ -250,7 +255,7 @@ test('перелистывание ведущего досылает разме�
   closeControlRoom(id)
 })
 
-test('опись едет рядом с каждым полным кадром чернил: начало лекции и «стереть»', () => {
+test('the inventory rides next to every full ink frame: lecture start and "erase"', () => {
   const id = room()
   makeFile(id, 'первая.pdf', '%PDF-1.4')
   makeFile(id, 'вторая.pdf', '%PDF-1.4')
@@ -262,19 +267,20 @@ test('опись едет рядом с каждым полным кадром �
   enter(hall, id, 'p_2')
   assert.deepEqual(listed(hall), [1, 4])
 
-  // Стёрли страницу — опись убавилась.
+  // A page was erased — the inventory shrank.
   dispatch(hall.ws, id, who(id, 'p_1'), { t: 'ink:clear', page: 4 })
-  assert.deepEqual(listed(hall), [1], 'стёртая страница осталась в описи лишним листом')
+  assert.deepEqual(listed(hall), [1], 'the erased page stayed in the inventory as an extra sheet')
 
-  // Стёрли всё — опись пустая.
+  // Everything was erased — the inventory is empty.
   dispatch(hall.ws, id, who(id, 'p_1'), { t: 'ink:clear' })
   assert.deepEqual(listed(hall), [])
 
-  // Новая лекция: пустой кадр чернил и пустая опись рядом с ним — опись живёт
-  // у вкладки дольше чернил, и от прошлой лекции в ленте остались бы листы.
+  // A new lecture: an empty ink frame and an empty inventory next to it — the
+  // inventory lives on the tab longer than the ink, and sheets from the
+  // previous lecture would remain in the strip.
   draw(id, 2, 's3')
   dispatch(hall.ws, id, who(id, 'p_1'), { t: 'lecture:start', file: 'вторая.pdf' })
-  assert.deepEqual(inkPages(hall), [], 'начатая лекция не стёрла чернила у зала')
+  assert.deepEqual(inkPages(hall), [], 'the new lecture did not clear the ink for the hall')
   assert.deepEqual(listed(hall), [])
 
   clearInk(id)

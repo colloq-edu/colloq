@@ -1,10 +1,10 @@
 /**
- * Одна кнопка на все состояния выполнения ячейки.
+ * One button for every execution state of a cell.
  *
- * До этого первое место в тулбаре всегда рисовало «запустить» — и на
- * работающей ячейке тоже. Кнопка была включена, обещала действие и не делала
- * ничего: `requestRun` на сервере пропускает и то, что уже выполняется, и то,
- * что уже в очереди. Такая неправда молчит, поэтому она здесь и закреплена.
+ * Before this, the first slot in the toolbar always drew "run" — on a running
+ * cell too. The button was enabled, promised an action and did nothing:
+ * `requestRun` on the server skips both what is already running and what is
+ * already queued. A lie like that is silent, which is why it is pinned here.
  */
 import './_env.mts'
 import { test, beforeEach, afterEach } from 'node:test'
@@ -17,7 +17,7 @@ import { OFFLINE_REASON } from '../web/src/lib/controls.js'
 
 const OPEN = { connected: true, mayRun: true, canCancel: true, canInterrupt: true }
 
-test('успокоившаяся ячейка предлагает запуск', () => {
+test('a settled cell offers to run', () => {
   for (const state of ['idle', 'ok', 'error'] as const) {
     const slot = runSlot(state, OPEN)
     assert.equal(slot.action, 'run', state)
@@ -27,35 +27,35 @@ test('успокоившаяся ячейка предлагает запуск'
   }
 })
 
-test('стоящая в очереди предлагает отмену и никогда — запуск', () => {
+test('a queued cell offers cancel and never run', () => {
   const slot = runSlot('queued', OPEN)
   assert.equal(slot.action, 'cancel')
   assert.equal(slot.icon, 'x')
   assert.notEqual(slot.action, 'run')
 })
 
-test('работающая предлагает остановку и никогда — запуск', () => {
+test('a running cell offers stop and never run', () => {
   const slot = runSlot('running', OPEN)
   assert.equal(slot.action, 'interrupt')
   assert.equal(slot.icon, 'stop')
   assert.notEqual(slot.action, 'run')
 })
 
-test('запрет на запуск гасит кнопку, но не меняет её лица', () => {
+test('a ban on running disables the button but does not change its face', () => {
   const slot = runSlot('idle', { ...OPEN, mayRun: false })
-  assert.equal(slot.icon, 'play', 'лицо сменилось на отказе')
+  assert.equal(slot.icon, 'play', 'the face changed on a refusal')
   assert.equal(slot.disabled, true)
   assert.match(slot.title, /only the teacher/i)
 })
 
-test('чужая работающая ячейка — нарисованный погашенный квадрат, а не «пуск»', () => {
+test('a running cell somebody else started is a dimmed square, not "run"', () => {
   const slot = runSlot('running', { ...OPEN, canInterrupt: false })
-  assert.equal(slot.icon, 'stop', 'чужая работающая ячейка предложила запуск')
+  assert.equal(slot.icon, 'stop', 'a running cell somebody else started offered to run')
   assert.equal(slot.disabled, true)
   assert.match(slot.title, /whoever started it/i)
 })
 
-test('чужая очередь — погашенный крест, и фраза не обещает разрешения', () => {
+test('a cell somebody else queued is a dimmed cross, and the phrase promises no permission', () => {
   const slot = runSlot('queued', { ...OPEN, canCancel: false })
   assert.equal(slot.icon, 'x')
   assert.equal(slot.disabled, true)
@@ -63,17 +63,17 @@ test('чужая очередь — погашенный крест, и фраз
   assert.notEqual(slot.title, 'Take this cell out of the queue')
 })
 
-test('обрыв связи перебивает любую другую причину', () => {
+test('a lost connection overrides any other reason', () => {
   for (const state of ['idle', 'queued', 'running'] as const) {
     const slot = runSlot(state, { connected: false, mayRun: true, canCancel: true, canInterrupt: true })
     assert.equal(slot.title, tr(OFFLINE_REASON), state)
     assert.equal(slot.disabled, true, state)
-    // Лицо остаётся: значок по-прежнему говорит правду о том, что делает ячейка.
+    // The face stays: the icon still tells the truth about what the cell is doing.
     assert.equal(slot.action, runSlot(state, OPEN).action, state)
   }
 })
 
-test('обрыв связи ничего не включает', () => {
+test('a lost connection enables nothing', () => {
   const offline = runSlot('running', { connected: false, mayRun: false, canCancel: false, canInterrupt: false })
   assert.equal(offline.disabled, true)
 })

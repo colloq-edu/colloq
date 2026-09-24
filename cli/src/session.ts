@@ -1,39 +1,43 @@
 /**
- * Расписка идущего занятия, прочитанная со стороны команд.
+ * The receipt of the running class, as read from the side of the commands.
  *
- * Занятие ведёт супервизор (launch.ts) и оставляет расписку в каталоге
- * состояния: порт, адрес, свой pid и pid сервера. Это единственное место,
- * которое знает, что работает ПРЯМО СЕЙЧАС, — и потому единственное, откуда
- * позволено брать порт, адрес и номера процессов.
+ * The class is run by the supervisor (launch.ts), which leaves a receipt in the
+ * state directory: the port, the address, its own pid and the server's pid.
+ * This is the only place that knows what is running RIGHT NOW, and therefore
+ * the only place the port, the address and the process numbers may be taken
+ * from.
  *
- * Почему это отдельный файл, а не по месту. Читателей трое — `link`, `status`
- * и `doctor`, — и пока каждый читал по-своему, они расходились в показаниях на
- * одном экране: status называл pid супервизора «сервером», doctor тут же
- * объявлял настоящий слушатель порта «вторым Colloq» и советовал остановить
- * собственное занятие, а порт оба брали из .env, где его никто не менял.
+ * Why this is a separate file and not inline. There are three readers, `link`,
+ * `status` and `doctor`, and while each read it in its own way, they disagreed
+ * on one screen: status called the supervisor's pid "the server", doctor right
+ * away declared the real listener of the port "a second Colloq" and advised
+ * stopping one's own class, and both took the port from .env, where nobody had
+ * changed it.
  *
- * Три вещи здесь НЕ делаются, и каждая намеренно.
+ * Three things are NOT done here, and each on purpose.
  *
- * Не берётся порт из .env. Вопросы разные: .env говорит, что настроено,
- * расписка — на чём идёт занятие. `colloq run --port 4100` .env не трогает
- * (launch-config.ts · launchConfig), и совпадают эти два ответа только по
- * случайности.
+ * The port is not taken from .env. The questions differ: .env says what is
+ * configured, the receipt says what the class runs on. `colloq run --port 4100`
+ * does not touch .env (launch-config.ts · launchConfig), and the two answers
+ * coincide only by chance.
  *
- * Не считается «жив ли»: это вопрос к процессам, а модули групп к ним не
- * ходят — только через ctx.sh. Здесь лежит то, что написано в файле, и
- * проверка живости остаётся за тем, кто спрашивает.
+ * "Is it alive" is not worked out here: that is a question for the processes,
+ * and the group modules do not go to them except through ctx.sh. What lies
+ * here is what is written in the file, and the liveness check stays with
+ * whoever asks.
  *
- * Не читается расписка ЧУЖОГО корня. Путь один — ctx.env.paths.sessionFile, и
- * он посчитан от каталога состояния. Выписанный руками относительный путь
- * ровно этим и был сломан: команды искали расписку рядом с приложением.
+ * The receipt of SOMEONE ELSE'S root is not read. There is one path,
+ * ctx.env.paths.sessionFile, and it is computed from the state directory. A
+ * relative path written out by hand was broken in exactly this way: the
+ * commands looked for the receipt next to the application.
  */
 import type { Io } from './env.js'
 
-/** То из расписки, что нужно командам. Остальные поля читает сам супервизор. */
+/** The part of the receipt the commands need. The supervisor reads the other fields itself. */
 export interface Session {
-  /** Супервизор: его завершение и есть конец занятия. */
+  /** The supervisor: its exit is the end of the class. */
   pid: number
-  /** Сервер — ребёнок супервизора. Это он слушает порт. */
+  /** The server is the supervisor's child. It is the one listening on the port. */
   serverPid: number | null
   port: number
   url: string
@@ -41,7 +45,7 @@ export interface Session {
   mode: 'run' | 'dev'
   phase: 'preparing' | 'starting' | 'ready' | 'stopping'
   startedAt: number
-  /** Файл расписки на временный публичный адрес; пустая строка — нет такого. */
+  /** The receipt file for a temporary public address; an empty string means there is none. */
   leaseFile: string
 }
 
@@ -50,12 +54,13 @@ function whole(value: unknown): number | null {
 }
 
 /**
- * Локальный адрес из расписки — и он же проверка, что файл наш.
+ * The local address from the receipt, which is also the check that the file
+ * is ours.
  *
- * Требования те же, что были у sessionAddress в группе local: только http,
- * только петля, без пользователя, пароля, запроса и пути. Расписку пишет свой
- * же супервизор, но она лежит в обычном файле, и ссылка из неё попадает
- * человеку на экран — значит принимается не всякая.
+ * The requirements are the same as sessionAddress had in the local group: http
+ * only, loopback only, no user, password, query or path. The receipt is
+ * written by our own supervisor, but it lies in an ordinary file, and the link
+ * from it lands on a person's screen, so not just any link is accepted.
  */
 function loopback(value: unknown): string | null {
   if (typeof value !== 'string') return null
@@ -71,7 +76,7 @@ function loopback(value: unknown): string | null {
   }
 }
 
-/** Расписка или null: нет файла, битый файл и чужой формат — одинаково null. */
+/** The receipt or null: no file, a broken file and a foreign format are all equally null. */
 export function readSession(io: Io, file: string): Session | null {
   let data: Record<string, unknown>
   try {

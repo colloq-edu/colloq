@@ -1,16 +1,18 @@
 /**
- * Картинка вывода живёт рядом с комнатой, а не в её документе.
+ * An output image lives next to the room, not in its document.
  *
- * Это та правка, которую легко «починить» обратно и не заметить: всё работает
- * и когда base64 лежит в документе — просто комната на пятьсот человек получает
- * сто мегабайт исходящего и две секунды zlib на один график, а история и
- * снимки несут его копию на каждый кадр. Поэтому здесь проверяется не «видно
- * ли картинку», а ЧТО ИМЕННО легло в документ: ссылка на полторы сотни байт
- * вместо трёхсот килобайт, и сколько после этого весит сам документ.
+ * This is the change that is easy to "fix" back without noticing: everything
+ * works when the base64 sits in the document too — it is just that a room of
+ * five hundred people gets a hundred megabytes of egress and two seconds of
+ * zlib per chart, and the history and snapshots carry a copy of it on every
+ * frame. So what is checked here is not "is the image visible" but WHAT
+ * EXACTLY landed in the document: a reference of a hundred and fifty bytes
+ * instead of three hundred kilobytes, and how much the document itself weighs
+ * after that.
  *
- * И обратная сторона: вынесенное обязано вернуться. Публикация собирается
- * отдельным предметом и переживает удаление семинара, поэтому байты в неё
- * вкладываются заново — байт в байт.
+ * And the other side: what was moved out has to come back. A publication is
+ * built as a separate object and survives the deletion of the seminar, so the
+ * bytes are embedded into it anew — byte for byte.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -49,7 +51,7 @@ import { withBlobs } from '../web/src/components/notebook/output-mimes.js'
 const FLUSH_MS = 80
 const settle = () => new Promise((r) => setTimeout(r, FLUSH_MS))
 
-/** Настоящая PNG-сигнатура: по ней сервер решает, чем отдавать байты. */
+/** A real PNG signature: the server decides by it what type to serve the bytes as. */
 function png(bytes: number): Buffer {
   const body = Buffer.alloc(bytes, 7)
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(body)
@@ -69,9 +71,9 @@ const outputsOf = (doc: Y.Doc, id: string) => {
   return readCell(found!).outputs
 }
 
-/* ------------------------------------------------------------- хранилище */
+/* --------------------------------------------------------------- storage */
 
-test('полка комнаты: то же содержимое — та же запись, и уносится вся сразу', () => {
+test('a room shelf: the same content is the same entry, and the whole shelf goes at once', () => {
   const room = 'blobstore1'
   createSession(room, 'Полка')
   const body = png(4096)
@@ -79,12 +81,12 @@ test('полка комнаты: то же содержимое — та же з
   const first = putBlob(room, body)
   const again = putBlob(room, body)
   assert.ok(first && again)
-  assert.equal(first.sha, again.sha, 'одно содержимое — один адрес')
+  assert.equal(first.sha, again.sha, 'one content, one address')
   assert.equal(first.bytes, body.length)
 
   assert.deepEqual(readBlob(room, first.sha), body)
   assert.equal(blobBytes(room, first.sha), body.length)
-  // Чужая комната по тому же хэшу не читает ничего: полка на комнату.
+  // Another room reads nothing by the same hash: one shelf per room.
   assert.equal(readBlob('blobstore-other', first.sha), null)
   assert.equal(readBlob(room, 'нет-такого'), null)
 
@@ -92,7 +94,7 @@ test('полка комнаты: то же содержимое — та же з
   assert.equal(readBlob(room, first.sha), null)
 })
 
-test('картинки удалённого семинара подметаются, живого — нет', () => {
+test('images of a deleted seminar are swept, those of a live one are not', () => {
   const gone = 'blobgone1'
   const live = 'bloblive1'
   createSession(live, 'Живой')
@@ -101,19 +103,19 @@ test('картинки удалённого семинара подметают�
   assert.ok(a && b)
 
   sweepOrphans()
-  assert.equal(readBlob(gone, a.sha), null, 'комнаты нет — и картинок нет')
-  assert.ok(readBlob(live, b.sha), 'у живой комнаты картинки на месте')
+  assert.equal(readBlob(gone, a.sha), null, 'no room, no images')
+  assert.ok(readBlob(live, b.sha), 'the live room keeps its images')
 })
 
-test('тип содержимого — по байтам, а не по слову ядра', () => {
+test('the content type comes from the bytes, not from the kernel', () => {
   assert.equal(sniffMime(png(64)), 'image/png')
   assert.equal(sniffMime(Buffer.from([0xff, 0xd8, 0xff, 0x00])), 'image/jpeg')
   assert.equal(sniffMime(Buffer.from('<html>hi</html>')), 'application/octet-stream')
 })
 
-/* ----------------------------------------------------------------- ядро */
+/* ----------------------------------------------------------- the kernel */
 
-test('крупная картинка уходит на полку, а в документе остаётся ссылка', async () => {
+test('a large image goes to the shelf, and a reference stays in the document', async () => {
   const room = 'blobwrite1'
   createSession(room, 'График')
   const doc = new Y.Doc()
@@ -129,16 +131,16 @@ test('крупная картинка уходит на полку, а в док
   const [output] = outputsOf(doc, id)
   assert.equal(output.kind, 'data')
   if (output.kind !== 'data') return
-  assert.equal(output.data['image/png'], undefined, 'base64 в документе не осталось')
-  assert.equal(output.data['text/plain'], '<Figure size 640x480>', 'текст остаётся в документе')
+  assert.equal(output.data['image/png'], undefined, 'no base64 is left in the document')
+  assert.equal(output.data['text/plain'], '<Figure size 640x480>', 'the text stays in the document')
   assert.equal(output.blobs?.length, 1)
   assert.equal(output.blobs?.[0].mime, 'image/png')
   assert.equal(output.blobs?.[0].bytes, body.length)
-  assert.deepEqual(readBlob(room, output.blobs![0].sha), body, 'байты на полке те же')
+  assert.deepEqual(readBlob(room, output.blobs![0].sha), body, 'the bytes on the shelf are the same')
 
   /*
-   * Ради чего всё: сколько весит сам документ. Это и есть та величина, которая
-   * уезжает каждому вошедшему целиком и переписывается в каждый снимок.
+   * What all of this is for: how much the document itself weighs. That is the
+   * quantity that goes in full to everyone who joins and is rewritten into every snapshot.
    */
   const withRef = Y.encodeStateAsUpdate(doc).byteLength
 
@@ -150,14 +152,14 @@ test('крупная картинка уходит на полку, а в док
   await settle()
   const withBase64 = Y.encodeStateAsUpdate(plain).byteLength
 
-  assert.ok(withBase64 > 260 * 1024, `ожидали base64 в документе, а там ${withBase64} Б`)
+  assert.ok(withBase64 > 260 * 1024, `expected base64 in the document, but it has ${withBase64} B`)
   assert.ok(
     withRef < withBase64 / 50,
-    `ссылка должна быть на два порядка дешевле: ${withRef} Б против ${withBase64} Б`,
+    `the reference should be two orders of magnitude cheaper: ${withRef} B against ${withBase64} B`,
   )
 })
 
-test('мелкая картинка и разметка остаются в документе', async () => {
+test('a small image and markup stay in the document', async () => {
   const room = 'blobwrite2'
   createSession(room, 'Значок')
   const doc = new Y.Doc()
@@ -171,13 +173,13 @@ test('мелкая картинка и разметка остаются в до
   await settle()
 
   const [output] = outputsOf(doc, id)
-  if (output.kind !== 'data') return assert.fail('ожидался data')
-  assert.equal(output.data['image/png'], small, 'значок дешевле отдать вместе с документом')
-  assert.equal(output.data['text/html'], table, 'разметку показывает сам документ')
+  if (output.kind !== 'data') return assert.fail('expected data')
+  assert.equal(output.data['image/png'], small, 'an icon is cheaper to send along with the document')
+  assert.equal(output.data['text/html'], table, 'markup is shown by the document itself')
   assert.equal(output.blobs, undefined)
 })
 
-test('без комнаты писатель пишет как раньше — всё в документ', async () => {
+test('without a room the writer writes as before: everything into the document', async () => {
   const doc = new Y.Doc()
   const id = cellIn(doc)
   const base64 = png(200 * 1024).toString('base64')
@@ -187,21 +189,21 @@ test('без комнаты писатель пишет как раньше — 
   await settle()
 
   const [output] = outputsOf(doc, id)
-  if (output.kind !== 'data') return assert.fail('ожидался data')
+  if (output.kind !== 'data') return assert.fail('expected data')
   assert.equal(output.data['image/png'], base64)
   assert.equal(output.blobs, undefined)
 })
 
-test('потолок картинок ячейки считает вынесенное — дешевле, но считает', async () => {
+test('the cell image ceiling counts what was moved out: cheaper, but it counts', async () => {
   const room = 'blobbudget1'
   createSession(room, 'Потолок')
   const doc = new Y.Doc()
   const id = cellIn(doc)
-  // Бюджет в один мегабайт: вынесенное стоит восьмую часть своего веса, так
-  // что мегабайт бюджета — это восемь мегабайт картинок и ни байтом больше.
+  // A budget of one megabyte: what is moved out costs an eighth of its weight, so
+  // a megabyte of budget is eight megabytes of images and not a byte more.
   const writer = new OutputWriter(doc, id, 1024 * 1024, room)
   for (let i = 0; i < 12; i++) {
-    // Разное содержимое: одинаковое легло бы одной записью по одному хэшу.
+    // Different content: identical content would land as one entry under one hash.
     const body = png(1024 * 1024)
     body[100 + i] = i + 1
     writer.data({ 'image/png': body.toString('base64') }, i + 1)
@@ -211,18 +213,18 @@ test('потолок картинок ячейки считает вынесен
 
   const outputs = outputsOf(doc, id)
   const shown = outputs.filter((o) => o.kind === 'data').length
-  assert.ok(shown >= 7 && shown <= 8, `ожидали около восьми картинок, показано ${shown}`)
+  assert.ok(shown >= 7 && shown <= 8, `expected about eight images, shown ${shown}`)
   assert.ok(
     outputs.some((o) => o.kind === 'stream' && o.name === 'stderr' && o.text.length > 0),
-    'о потолке сказано вслух, а не молча',
+    'the ceiling is announced out loud, not silently',
   )
 })
 
-test('ссылка переживает круг «документ → снимок → документ»', () => {
+test('a reference survives the round trip "document → snapshot → document"', () => {
   /*
-   * Отмена удаления ячейки возвращает выводы из памяти сервера
-   * (collab/ops.ts), и вернуть она обязана то же самое: потерянная по дороге
-   * ссылка — это ячейка, у которой график молча стал текстовой строкой.
+   * Undoing a cell deletion returns the outputs from the server's memory
+   * (collab/ops.ts), and it has to return the same thing: a reference lost on
+   * the way is a cell whose chart silently turned into a line of text.
    */
   const output = {
     kind: 'data' as const,
@@ -239,9 +241,9 @@ test('ссылка переживает круг «документ → сним
   assert.deepEqual(readOutput(cellOutputs(cell).get(0)), output)
 })
 
-/* ---------------------------------------------------------- публикация */
+/* ---------------------------------------------------------- publishing */
 
-test('публикация вкладывает вынесенные байты обратно, байт в байт', async () => {
+test('a publication embeds the moved-out bytes back, byte for byte', async () => {
   const room = 'blobpub1'
   createSession(room, 'Публикация')
   const doc = new Y.Doc()
@@ -259,14 +261,14 @@ test('публикация вкладывает вынесенные байты 
   const output = cells[0].outputs[0]
   assert.equal(output.kind, 'data')
   if (output.kind !== 'data') return
-  assert.ok(output.data['image/png']?.startsWith('blob:'), 'на странице стоит запись публикации')
+  assert.ok(output.data['image/png']?.startsWith('blob:'), 'the page carries the publication entry')
   const all = bag.all()
   assert.equal(all.length, 1)
-  assert.deepEqual(all[0].body, body, 'в публикацию уехали те же байты')
+  assert.deepEqual(all[0].body, body, 'the same bytes went into the publication')
   assert.equal(all[0].mime, 'image/png')
 })
 
-/* -------------------------------------------------------------- маршрут */
+/* ------------------------------------------------------------ the route */
 
 const ROOM = 'blobroute1'
 const OTHER = 'blobroute2'
@@ -297,7 +299,7 @@ after(() => server?.close())
 
 const token = () => signToken({ sessionId: ROOM, participantId: 'p_host', role: 'host' })
 
-test('картинку не отдают без удостоверения, а ключ — не всякому', async () => {
+test('an image is not served without credentials, and the key is not for just anyone', async () => {
   const bare = await fetch(`${base}/api/sessions/${ROOM}/blobs/${sha}`)
   assert.equal(bare.status, 401)
   const noTicket = await fetch(`${base}/api/sessions/${ROOM}/blobs/ticket`)
@@ -306,7 +308,7 @@ test('картинку не отдают без удостоверения, а �
   assert.equal(forged.status, 401)
 })
 
-test('по ключу комнаты картинка отдаётся — с вечным кэшем и своим типом', async () => {
+test('with the room key the image is served, with an eternal cache and its own type', async () => {
   const ticketRes = await fetch(`${base}/api/sessions/${ROOM}/blobs/ticket`, {
     headers: { authorization: `Bearer ${token()}` },
   })
@@ -321,11 +323,11 @@ test('по ключу комнаты картинка отдаётся — с в
   assert.equal(res.headers.get('etag'), `"${sha}"`)
   assert.deepEqual(Buffer.from(await res.arrayBuffer()), body)
 
-  // Второй заход по тому же адресу — без байтов.
+  // A second visit to the same address comes without the bytes.
   const again = await fetch(`${base}${url}`, { headers: { 'if-none-match': `"${sha}"` } })
   assert.equal(again.status, 304)
 
-  // Тот же ключ в соседней комнате не открывает ничего, и картинки там нет.
+  // The same key opens nothing in the neighbouring room, and the image is not there.
   const wrongRoom = await fetch(
     `${base}/api/sessions/${OTHER}/blobs/${sha}?token=${encodeURIComponent(ticket)}`,
   )
@@ -337,14 +339,14 @@ test('по ключу комнаты картинка отдаётся — с в
   assert.equal(missing.status, 404)
 })
 
-test('полка лежит в DATA_DIR, а не в папке комнаты', () => {
+test('the shelf lives in DATA_DIR, not in the room folder', () => {
   const shelf = path.join(config.dataDir, 'blobs', ROOM, sha)
-  assert.ok(fs.existsSync(shelf), `ожидали файл на полке: ${shelf}`)
+  assert.ok(fs.existsSync(shelf), `expected a file on the shelf: ${shelf}`)
 })
 
-/* ---------------------------------------------------------------- экран */
+/* ----------------------------------------------------------- the screen */
 
-test('экран подставляет адрес вместо вынесенной картинки', () => {
+test('the screen substitutes an address for a moved-out image', () => {
   const output = {
     kind: 'data' as const,
     data: { 'text/plain': '<Figure>' },
@@ -355,11 +357,11 @@ test('экран подставляет адрес вместо вынесенн
   assert.equal(shown.kind === 'data' && shown.data['image/png'], '/api/sessions/r/blobs/abc?token=t')
   assert.equal(shown.kind === 'data' && shown.data['text/plain'], '<Figure>')
 
-  // Ключа ещё нет — набор остаётся прежним, и выбор дойдёт до text/plain.
+  // No key yet: the bundle stays as it was, and the choice will reach text/plain.
   const waiting = withBlobs(output, () => null)
   assert.equal(waiting.kind === 'data' && waiting.data['image/png'], undefined)
 
-  // Старые документы — без ссылок вовсе; их не трогаем и не копируем.
+  // Old documents have no references at all; we neither touch nor copy them.
   const old = { kind: 'data' as const, data: { 'image/png': 'AAA' }, execCount: 1 }
   assert.equal(withBlobs(old, () => '/api/x'), old)
 })

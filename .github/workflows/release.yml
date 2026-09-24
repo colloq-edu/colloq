@@ -1,11 +1,13 @@
-# Неизменяемый выпуск для k3s: release.json с digest-ами образов приложения,
-# брокера и окружений ядра плюс архив инструментов установки.
+# The immutable release for k3s: release.json with the image digests of the
+# app, the broker and the kernel environments, plus an archive of the install
+# tools.
 #
-# Запускается руками для уже выпущенного тега: ему нужны проверенная версия
-# k3s и версии GPU-обвязки, которых из тега не вывести. Тег, GitHub Release и
-# его заметки создаёт release-please при слиянии PR выпуска, колесо, PyPI и
-# образ vast.ai докладывает publish.yml; этот workflow дописывает свои файлы в
-# тот же GitHub Release. Порядок — RELEASING.md.
+# Started by hand for an already released tag: it needs a verified k3s version
+# and versions of the GPU plumbing that cannot be derived from the tag. The
+# tag, the GitHub Release and its notes are created by release-please when the
+# release PR is merged; the wheel, PyPI and the vast.ai image are added by
+# publish.yml; this workflow adds its own files to the same GitHub Release.
+# The order of steps: RELEASING.md.
 name: Publish immutable release
 on:
   workflow_dispatch:
@@ -43,10 +45,11 @@ jobs:
         with:
           ref: ${{ inputs.version }}
           fetch-depth: 0
-          # У этой задачи токен с правом записи в contents и packages, а
-          # `npm ci` дальше исполняет install-скрипты зависимостей. git после
-          # checkout в сеть не ходит (release-build.py делает git archive
-          # локально), так что держать токен в .git/config незачем.
+          # This job has a token with write access to contents and packages,
+          # and `npm ci` then runs the install scripts of the dependencies.
+          # git does not go to the network after checkout (release-build.py
+          # does git archive locally), so there is no reason to keep the token
+          # in .git/config.
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -59,8 +62,9 @@ jobs:
         run: |
           test "$(git describe --tags --exact-match HEAD)" = "$VERSION"
           npm ci
-          # Тег обязан быть версией из package.json этого коммита: иначе образы
-          # :v0.2.0 содержали бы дерево, которое называет себя иначе.
+          # The tag must be the version from this commit's package.json:
+          # otherwise the :v0.2.0 images would contain a tree that calls itself
+          # something else.
           node --import tsx scripts/version.mts check --tag "$VERSION"
           npm test
           npm run typecheck
@@ -69,11 +73,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
-        # GitHub Release по этому тегу создал release-please, колесо к нему
-        # приложил publish.yml — это нормально. Выпуска нет — тег поставлен
-        # мимо release-please, а заводить выпуск здесь значило бы писать его
-        # заметки вторым писателем: отказ, и до сборки образов, а не после.
-        # Неизменяемы файлы k3s: второй release.json — тоже отказ.
+        # The GitHub Release for this tag was created by release-please, and
+        # publish.yml attached the wheel to it: that is normal. No release
+        # means the tag was put past release-please, and creating the release
+        # here would mean writing its notes as a second writer: refuse, and do
+        # it before the image build, not after. The k3s files are immutable:
+        # a second release.json is a refusal too.
         run: |
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
             echo "::error::$VERSION has no GitHub Release. Releases are created by release-please when its release pull request is merged; see RELEASING.md." >&2
@@ -83,9 +88,10 @@ jobs:
             echo "This version already has a k3s release manifest. Choose a new version." >&2
             exit 1
           fi
-      # Вход в GHCR — после npm ci и тестов, а не до: иначе токен с правом
-      # записи в пакеты лежал бы в ~/.docker/config.json, пока исполняются
-      # install-скрипты зависимостей и вся сюита.
+      # The GHCR login comes after npm ci and the tests, not before: otherwise
+      # a token with write access to packages would sit in
+      # ~/.docker/config.json while the install scripts of the dependencies
+      # and the whole suite run.
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -112,13 +118,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
-        # Выпуск есть (проверено до сборки); release.json сверяется ещё раз:
-        # проверка выше была до долгой сборки, и отказ здесь дешевле, чем
-        # полагаться на то, что между ними ничего не случилось.
+        # The release exists (checked before the build); release.json is
+        # checked once more: the check above came before the long build, and
+        # refusing here is cheaper than relying on nothing having happened in
+        # between.
         run: |
           if gh release view "$VERSION" --json assets --jq '.assets[].name' | grep -qxF release.json; then
             echo "Release already has k3s artifacts; publish a new version instead of replacing them." >&2
             exit 1
           fi
-          # Без --clobber: существующий файл с тем же именем — отказ, а не замена.
+          # No --clobber: an existing file with the same name is a refusal,
+          # not a replacement.
           gh release upload "$VERSION" release.json colloq-deploy.tar.gz SHA256SUMS

@@ -45,93 +45,98 @@ export interface SessionInfo {
    */
   rules: RoomRules
   /**
-   * Когда преподаватель закончил занятие — или null, пока оно идёт.
+   * When the teacher finished the class — or null while it is going on.
    *
-   * Комната от этого не закрывается и не исчезает: тетрадь, файлы, лента
-   * терминала и ответы оракула остаются открытыми на чтение, потому что после
-   * пары в них и ходят. Закрываются действия — всё, что меняет комнату или
-   * будит ядро, остаётся преподавателю (shared/rules.ts · rulesAfterClass).
+   * The room does not close or disappear because of it: the notebook, the
+   * files, the terminal feed and the oracle's answers stay open for reading,
+   * because that is exactly what people come for after class. What closes is
+   * actions — everything that changes the room or wakes the kernel is left to
+   * the teacher (shared/rules.ts · rulesAfterClass).
    *
-   * Время, а не флаг: «закончено в 15:40» — это то, что показывают комната и
-   * панель, а флагу пришлось бы дописывать вторым полем то же самое.
+   * A time, not a flag: "finished at 15:40" is what the room and the panel
+   * show, and a flag would need a second field to say the same thing.
    */
   finishedAt: number | null
   /**
-   * Опубликованная страница этого семинара и курс, в котором он состоит.
+   * This seminar's published page and the course it belongs to.
    *
-   * Нужно экрану входа, и это чинит единственный адрес, который у студента
-   * действительно есть. Ссылка в чате — `/s/`; без этой подсказки студент
-   * через неделю вводит имя в закончившееся занятие, заводит ещё одну строку
-   * участника, будит ядро и оказывается один в живой тетради, где ничто не
-   * говорит, что есть опубликованная версия.
+   * The join screen needs it, and it repairs the only address a student
+   * really has. The link in the chat is `/s/`; without this hint a student a
+   * week later types their name into a finished class, creates one more
+   * participant row, wakes the kernel and ends up alone in a live notebook
+   * where nothing says that a published version exists.
    *
-   * `slug` — потому что подсказка обязана вести по ТОМУ адресу, который дали
-   * классу: страницы живут по `/p/<slug>`, а `/p/<id>` — запасной вход для
-   * тех, у кого имени нет. Собирать адрес руками не надо, для этого есть
-   * `publicationAddress` в shared/publish.ts. Необязательное поле: сервер,
-   * который его ещё не шлёт, оставляет адрес по `id` — и это правда, а не
-   * догадка.
+   * `slug` — because the hint must lead to THE address that was given to the
+   * class: pages live at `/p/<slug>`, and `/p/<id>` is the fallback entrance
+   * for those without a name. There is no need to assemble the address by
+   * hand; `publicationAddress` in shared/publish.ts is there for that.
+   * Optional field: a server that does not send it yet leaves the address by
+   * `id` — and that is the truth, not a guess.
    */
   published: { id: string; slug?: string | null; steps: number } | null
   course: { id: string; name: string } | null
   /**
-   * Организация, развернувшая инстанс, — строка рядом с логотипом.
+   * The organization that deployed the instance — the line next to the logo.
    *
-   * Свойство ИНСТАНСА, а не семинара: она одна на все комнаты сразу и меняется
-   * только правкой `INSTITUTION` в окружении. В контракте семинара она живёт
-   * ровно потому, что этот контракт и так приезжает на каждый экран, где
-   * рисуется логотип, — комнату, проекцию, пульт и экран входа. Отдельный
-   * запрос за одной строкой стоил бы либо лишнего круга до сервера на первом
-   * кадре, либо линейки, всплывающей под уже нарисованным словом.
+   * A property of the INSTANCE, not of the seminar: it is one for all rooms at
+   * once and changes only by editing `INSTITUTION` in the environment. It
+   * lives in the seminar contract precisely because that contract already
+   * arrives on every screen where the logo is drawn — the room, the
+   * projection, the console and the join screen. A separate request for a
+   * single line would cost either an extra round trip to the server on the
+   * first frame or a divider popping up under an already drawn word.
    *
-   * Пусто — и строки нет вовсе; это умолчание. Продукт разворачивают разные
-   * организации, и ничьё имя здесь не зашито.
+   * Empty means there is no line at all; that is the default. The product is
+   * deployed by different organizations, and nobody's name is hard-coded
+   * here.
    */
   institution: string
 }
 
 export interface FileEntry {
-  /** Имя без папок — то, что видно в строке дерева. */
+  /** The name without folders — what is visible in the tree row. */
   name: string
   /**
-   * Путь от корня папки семинара: `src/model.py`.
+   * The path from the root of the seminar folder: `src/model.py`.
    *
-   * Отдельно от `name`, а не вместо него, и это выбор в пользу тех, кто уже
-   * написан: у файла в корне `path === name`, так что всё, что читало `name`
-   * до появления папок, читает его и дальше и видит ровно то же самое. Адресуют
-   * файл — по `path`; показывают — `name`.
+   * Next to `name`, not instead of it, and that is a choice in favor of what
+   * is already written: for a file in the root `path === name`, so everything
+   * that read `name` before folders appeared keeps reading it and sees exactly
+   * the same. A file is addressed by `path`; it is shown by `name`.
    */
   path: string
-  /** Папка. У неё `size` нулевой и смысла не имеет. */
+  /** A folder. Its `size` is zero and means nothing. */
   dir: boolean
   size: number
   modifiedAt: number
 }
 
 /**
- * Перемена в дереве комнаты — вместо всего дерева.
+ * A change in the room's tree — instead of the whole tree.
  *
- * Список файлов рассылался целиком на каждую правку, а правит его всё подряд:
- * автосохранение редактора, `df.to_csv` в ячейке, `pip install`. Один
- * заведённый файл стоил комнате в пятьсот человек 3.0 МБ (замерено) — при том
- * что изменилась в нём одна строка из двух тысяч.
+ * The file list used to be broadcast whole on every edit, and all sorts of
+ * things edit it: the editor's autosave, `df.to_csv` in a cell,
+ * `pip install`. One created file cost a room of five hundred people 3.0 MB
+ * (measured) — while one row out of two thousand had changed.
  *
- * Порядок в списке — обход в глубину, папки перед файлами, по имени: он
- * однозначно определён составом дерева, поэтому относительный порядок
- * уцелевших записей в старом и новом списке один и тот же. Отсюда и правило
- * применения: сначала убрать `removed`, потом заменить `changed` по пути,
- * потом вставить `added` по возрастанию `at` — и получится ровно новый список.
+ * The order of the list is a depth-first walk, folders before files, by name:
+ * it is uniquely determined by the tree's contents, so the relative order of
+ * the surviving entries is the same in the old and the new list. Hence the
+ * rule for applying it: first remove `removed`, then replace `changed` by
+ * path, then insert `added` in ascending `at` — and the result is exactly the
+ * new list.
  *
- * Обрезанное дерево (`truncated`) дельтой не описывается: в нём «записи нет» и
- * «запись не поместилась» — разные вещи, и разница эта стоит удалённой у всех
- * тетради. Там кадр едет целиком.
+ * A truncated tree (`truncated`) is not described by a delta: in it "there is
+ * no entry" and "the entry did not fit" are different things, and that
+ * difference costs a notebook deleted for everyone. There the frame travels
+ * whole.
  */
 export interface FilesDelta {
-  /** Записи, которых не стало, — путями. */
+  /** Entries that are gone — by path. */
   removed: string[]
-  /** Записи, у которых сменились размер, время или сам вид записи. */
+  /** Entries whose size, time or kind of entry changed. */
   changed: FileEntry[]
-  /** Новые записи и место каждой в ГОТОВОМ списке, по возрастанию `at`. */
+  /** New entries and each one's place in the FINISHED list, in ascending `at`. */
   added: { at: number; entry: FileEntry }[]
 }
 
@@ -140,17 +145,19 @@ export interface FilesDelta {
 export interface CreateSessionRequest {
   name: string
   /**
-   * Сколько памяти выдать ядру этой комнаты, в мегабайтах.
+   * How much memory to give this room's kernel, in megabytes.
    *
-   * Только для штата и только в границах машины (512 МБ снизу, память машины
-   * минус гигабайт сверху): комната, взявшая всё, убивает не себя, а сервер под
-   * собой. Опущено — умолчание окружения, то есть ровно то, чем комнаты жили до
-   * появления поля.
+   * Staff only, and only within the machine's bounds (512 MB at the bottom,
+   * the machine's memory minus a gigabyte at the top): a room that took
+   * everything kills not itself but the server under it. Omitted means the
+   * environment's default, that is, exactly what rooms lived by before the
+   * field appeared.
    */
   memoryMb?: number | null
   /**
-   * Сколько ядер выдать комнате. Тем же правилом: только для штата, от одного
-   * до всех ядер машины, опущено — умолчание инстанса (`KERNEL_CPUS`).
+   * How many cores to give the room. By the same rule: staff only, from one to
+   * all of the machine's cores; omitted means the instance default
+   * (`KERNEL_CPUS`).
    */
   cpus?: number | null
 }
@@ -162,24 +169,26 @@ export interface CreateSessionResponse {
 }
 
 /**
- * Ключ, которым преподаватель отдаёт свой пульт планшету.
+ * The key with which the teacher hands their console over to a tablet.
  *
- * Не токен: по нему нельзя ни открыть сокет, ни скачать файл — только один раз
- * обменять его на обычный вход, и только пока он жив. Срок приезжает вместе с
- * ключом, чтобы экран мог сказать «ссылка живёт десять минут» и не врать, если
- * срок однажды поменяется.
+ * Not a token: it can open neither a socket nor a file download — it can only
+ * be exchanged once for an ordinary join, and only while it is alive. The
+ * lifetime arrives together with the key, so that the screen can say "the
+ * link lives ten minutes" and not lie if the lifetime changes one day.
  */
 export interface HandoffResponse {
   key: string
   livesMs: number
   /**
-   * Адрес, по которому комнату видно снаружи, — `PUBLIC_URL` инстанса.
+   * The address at which the room is visible from outside — the instance's
+   * `PUBLIC_URL`.
    *
-   * Ссылку на пульт строили от `location.origin`, а комнату преподаватель чаще
-   * всего открывает на `http://localhost:3000`: такая ссылка на планшете не
-   * откроется вовсе, хотя семинар выставлен наружу. Выбирает из двух адресов
-   * по-прежнему клиент (то же правило, что в панели, — seminar-link.ts), но
-   * настройку в комнате взять больше неоткуда.
+   * The console link used to be built from `location.origin`, and a teacher
+   * most often opens the room at `http://localhost:3000`: such a link will not
+   * open on a tablet at all, even though the seminar is exposed to the
+   * outside. The client still picks one of the two addresses (the same rule
+   * as in the panel — seminar-link.ts), but there is nowhere else in the room
+   * to get the setting from.
    */
   origin: string
 }
@@ -201,19 +210,20 @@ export interface JoinRequest {
   /** Proves "I created this seminar" across a page refresh. */
   hostToken?: string | null
   /**
-   * Метку выбрали руками, а не выдал экран.
+   * The mark was picked by hand, not handed out by the screen.
    *
-   * Судья уникальности — сервер: занятую метку он подменяет свободной, иначе
-   * класс, открывший ссылку в одну минуту, расходится с одинаковыми зверями
-   * (routes/sessions.ts · `markToHand`). Отличить выданную от выбранной по
-   * телу запроса он не мог — и подменял обе, а человек, ткнувший в ежа,
-   * получал выдру без единого слова. Это единственное поле, по которому такая
-   * разница видна.
+   * The judge of uniqueness is the server: it swaps a taken mark for a free
+   * one, otherwise a class that opened the link in the same minute scatters
+   * with identical animals (routes/sessions.ts · `markToHand`). It could not
+   * tell a handed-out mark from a chosen one by the request body — and swapped
+   * both, so a person who tapped the hedgehog got an otter without a single
+   * word. This is the only field through which that difference is visible.
    *
-   * Выбранную руками не подменяют: подборщик рисует занятые метки занятыми и
-   * нажать на них не даёт (components/join/MarkPicker.svelte), так что ткнуть
-   * в чужого зверя можно только в круге сети — а два ежа в комнате дешевле
-   * экрана, который сделал вид, что не услышал.
+   * A hand-picked mark is not swapped: the picker draws taken marks as taken
+   * and does not let anyone press them (components/join/MarkPicker.svelte), so
+   * one can tap someone else's animal only within a network round trip — and
+   * two hedgehogs in a room are cheaper than a screen that pretended not to
+   * hear.
    */
   picked?: boolean
 }
@@ -226,31 +236,32 @@ export interface JoinResponse {
 }
 
 /**
- * Бан: кого преподаватель закрыл из комнаты и до какого времени.
+ * A ban: whom the teacher shut out of the room and until when.
  *
- * То, что видит преподаватель в списке, — и ничего сверх того. Ни
- * идентификатора участника, ни метки устройства, ни адреса: по этим полям бан
- * проверяется, но в списке они не нужны, а метка браузера — единственное в
- * комнате, чего про человека не знает никто, включая его самого.
+ * What the teacher sees in the list — and nothing beyond it. No participant
+ * id, no device mark, no address: the ban is checked by those fields, but the
+ * list does not need them, and the browser's mark is the only thing in the
+ * room about a person that nobody knows, the person included.
  *
- * `until` — момент конца, а не «сколько осталось»: часы рисует тот, кто
- * смотрит. Сервер в контейнере живёт по UTC, и собранная им строка «до 15:40»
- * в аудитории UTC+3 указывала бы не на то время.
+ * `until` is the moment of the end, not "how much is left": the clock is drawn
+ * by whoever is looking. The server in the container lives in UTC, and a line
+ * "until 15:40" built by it would point to the wrong time in a classroom at
+ * UTC+3.
  */
 export interface Ban {
   id: string
-  /** Имя, под которым человека забанили: комната могла его уже забыть. */
+  /** The name the person was banned under: the room may have forgotten it by now. */
   name: string
   until: number
   createdAt: number
-  /** Кто забанил — или null, если банил ведущий без учётной записи штата. */
+  /** Who banned them — or null if it was a host without a staff account. */
   byTeacher: string | null
   /**
-   * Это ваше собственное устройство.
+   * This is your own device.
    *
-   * Промахнуться легко: список участников — это имена, а не лица, и
-   * преподаватель, забанивший себя, иначе увидел бы обычную строку и не понял,
-   * почему комната перестала пускать его вторую вкладку.
+   * It is easy to miss: the participant list is names, not faces, and a
+   * teacher who banned themselves would otherwise see an ordinary row and not
+   * understand why the room stopped letting their second tab in.
    */
   mine: boolean
 }
@@ -273,36 +284,36 @@ export type ControlClientMessage =
   | { t: 'term:clear' }
   | { t: 'term:close' }
   /**
-   * Весь лист — и `book` называет, ЧЕЙ лист.
+   * The whole sheet — and `book` says WHOSE sheet.
    *
-   * Тетрадей в комнате несколько, и «запустить всё» в одной не означает
-   * «запустить всё в комнате»: ядро общее, а листы разные. Отсутствие поля —
-   * тетрадь комнаты, то есть первая: так читаются сообщения вкладок, открытых
-   * до появления нескольких тетрадей.
+   * A room has several notebooks, and "run all" in one of them does not mean
+   * "run everything in the room": the kernel is shared, but the sheets are
+   * different. No field means the room's notebook, that is, the first one:
+   * this is how messages from tabs opened before multiple notebooks existed
+   * are read.
    */
   | { t: 'runAll'; book?: string }
   | { t: 'runAbove'; cellId: string; book?: string }
   /**
-   * Остановить выполнение.
+   * Stop execution.
    *
-   * `cellId` — та ячейка, ради которой нарисовали кнопку. Кнопка на самой
-   * ячейке его называет, комнатная в верхней панели нет, и разница
-   * существенная: нажатие, промахнувшееся мимо своей ячейки, всё равно
-   * останавливает то, что считается в этой тетради — ядро у неё одно, — но
-   * чужую очередь не
-   * разбирает: пачка снимается только та, из которой названная ячейка. А
-   * безымянное нажатие остаётся единственным способом разобрать скопившуюся
-   * очередь, когда не выполняется ничего. Право проверяется по среде
-   * исполнения на сервере; имя цели ничего не разрешает.
+   * `cellId` is the cell the button was drawn for. The button on the cell
+   * itself names it, the room-wide one in the top bar does not, and the
+   * difference matters: a press that missed its own cell still stops whatever
+   * is computing in this notebook — it has one kernel — but does not take
+   * apart someone else's queue: only the batch the named cell belongs to is
+   * removed. And a nameless press remains the only way to clear a piled-up
+   * queue when nothing is running. The right is checked against the execution
+   * environment on the server; the target's name permits nothing.
    */
   | { t: 'interrupt'; cellId?: string; book?: string }
   /**
-   * Перезапустить ядро ОДНОЙ тетради — той, что названа.
+   * Restart the kernel of ONE notebook — the one named.
    *
-   * Ядро у каждой тетради своё (server/src/kernel/index.ts), так что
-   * перезапуск лекции семинара не касается. Отсутствие поля — тетрадь комнаты,
-   * тем же правилом, что у `runAll`: так читаются кадры вкладок, открытых до
-   * того, как ядер стало несколько.
+   * Each notebook has its own kernel (server/src/kernel/index.ts), so
+   * restarting the lecture does not touch the seminar. No field means the
+   * room's notebook, by the same rule as `runAll`: this is how frames from
+   * tabs opened before there were several kernels are read.
    */
   | { t: 'restart'; book?: string }
   | { t: 'clearOutputs'; cellId?: string; book?: string }
@@ -313,123 +324,130 @@ export type ControlClientMessage =
    */
   | { t: 'format'; book?: string }
   /**
-   * Ответ ячейке, остановившейся внутри `input()`.
+   * An answer to a cell stopped inside `input()`.
    *
-   * Отвечает тот, чья ячейка спрашивает, — или преподаватель. Приглашение живёт
-   * в документе, потому что его должна видеть комната; видеть и отвечать — не
-   * одно и то же, а `input()` под паролем тем более.
+   * The one whose cell is asking answers — or the teacher. The prompt lives in
+   * the document because the room must see it; seeing and answering are not
+   * the same thing, and a password `input()` all the more so.
    *
-   * `cellId` называет ту ячейку, которой форма была нарисована. Без него ответ
-   * уходил тому, на чём ядро оказалось заблокировано в этот момент: ячейка
-   * сменилась между отрисовкой и нажатием Enter — и набранный пароль ушёл в
-   * чужую.
+   * `cellId` names the cell the form was drawn for. Without it the answer went
+   * to whatever the kernel happened to be blocked on at that moment: the cell
+   * changed between drawing and pressing Enter — and the typed password went
+   * to someone else's cell.
    */
   | { t: 'input'; value: string; cellId?: string }
   /**
-   * Решение по предложению оракула — принять или отклонить.
+   * A decision on an oracle proposal — accept or reject.
    *
-   * Через сервер, а не в своём документе. Проверка «предложение ещё открыто»
-   * внутри транзакции спасает от двух нажатий в одной вкладке и не спасает от
-   * двух браузеров: каждый читает в своей копии `'open'`, каждый пишет, и Yjs
-   * добросовестно сливает обе правки — ячейка получает патч дважды.
+   * Through the server, not in one's own document. The "is the proposal still
+   * open" check inside a transaction saves from two presses in one tab and
+   * does not save from two browsers: each reads `'open'` in its own copy, each
+   * writes, and Yjs dutifully merges both edits — the cell gets the patch
+   * twice.
    *
-   * У сервера копия одна, и сообщения он разбирает по очереди: второе видит
-   * состояние, которое поставило первое, и не делает ничего.
+   * The server has one copy, and it handles messages in turn: the second sees
+   * the state the first set, and does nothing.
    */
   | { t: 'ai:decide'; entryId: string; accept: boolean }
   /**
-   * Отменить ход оракула целиком: вернуть файлы к тому, что было до него.
+   * Undo an oracle turn entirely: return the files to what they were before
+   * it.
    *
-   * Через сервер, потому что возвращать надо файлы, а не документ: их прежний
-   * текст помнит он один. Проходит по тому же правилу, что и сам режим
-   * «сделать» — кто мог его запустить, тот может и отменить.
+   * Through the server, because it is the files that must be returned, not the
+   * document: only the server remembers their earlier text. It goes by the
+   * same rule as "do" mode itself — whoever could start it can undo it.
    */
   | { t: 'ai:undo'; entryId: string }
   /**
-   * Поменять ячейку местами с соседом.
+   * Swap a cell with its neighbor.
    *
-   * Через сервер, а не в своём документе, и это вынужденно. У Y.Array нет
-   * перемещения: одну из двух ячеек приходится пересоздать клоном, а клон несёт
-   * её вывод. Переупорядочить тетрадь — не повод выбрасывать вывод, а писать
-   * вывод из браузера нельзя ни в какой комнате. Единственная смешанная
-   * клиентская транзакция в продукте, и она уезжает на сервер целиком.
+   * Through the server, not in one's own document, and that is forced. Y.Array
+   * has no move: one of the two cells has to be recreated as a clone, and the
+   * clone carries its output. Reordering a notebook is no reason to throw away
+   * output, and writing output from a browser is not allowed in any room. The
+   * only mixed client transaction in the product, and it goes to the server
+   * whole.
    */
   | { t: 'cells:move'; cellId: string; direction: -1 | 1 }
   /**
-   * Открыть ячейку комнате — или закрыть её обратно.
+   * Open a cell to the room — or close it again.
    *
-   * Замок на ячейке: в лекционной комнате печатает и запускает преподаватель, а
-   * открытая ячейка — та одна, где это делает зал. Поэтому поле `open` пишет
-   * сервер, а не браузер: клиентская запись в CRDT была бы правом, которого
-   * сервер не выдавал, — «мне здесь можно» объявлял бы себе сам тот, у кого
-   * спрашивают. Гейт закрывает клиенту серверные ключи ячейки ровно за этим, и
-   * этот ключ из их числа.
+   * A lock on a cell: in a lecture room the teacher types and runs, and an
+   * open cell is the one where the hall does so. So the `open` field is
+   * written by the server, not the browser: a client write into the CRDT would
+   * be a right the server never granted — "I may do this here" would be
+   * declared by the very person being asked. The gate closes the cell's server
+   * keys to clients precisely for this, and this key is one of them.
    */
   | { t: 'cell:open'; cellId: string; open: boolean }
   /**
-   * Замок ячейки в одно из трёх положений: закрыта / открыта всем / консилиум.
+   * Put a cell's lock into one of three positions: closed / open to everyone /
+   * council.
    *
-   * Одно сообщение на все три положения, и `cell:open` над ним — его частный
-   * случай на два положения, оставленный ради тех, кто его уже шлёт: сервер
-   * читает оба одинаково (control.ts). Только преподаватель, только пока
-   * занятие идёт — по тем же доводам, что у `cell:open`.
+   * One message for all three positions, and `cell:open` above is its special
+   * two-position case, kept for those who already send it: the server reads
+   * both the same way (control.ts). Teacher only, and only while the class is
+   * going on — by the same arguments as for `cell:open`.
    *
-   * `settings` — ручки консилиума; имеют смысл только при `state: 'council'`.
-   * Не приложены — остаются как были, а у ячейки, которая консилиумом ещё не
-   * была, ставятся умолчания (notebook.ts · DEFAULT_COUNCIL). Повторное
-   * `cell:lock` с тем же `state` и новыми `settings` — это и есть «переключить
-   * ручку»: отдельного сообщения для ручек нет.
+   * `settings` are the council's knobs; they make sense only with
+   * `state: 'council'`. Not attached — they stay as they were, and a cell that
+   * has not been a council yet gets the defaults (notebook.ts ·
+   * DEFAULT_COUNCIL). A repeated `cell:lock` with the same `state` and new
+   * `settings` is exactly "flip a knob": there is no separate message for
+   * knobs.
    *
-   * Замок → не консилиум: попытки остаются в базе на просмотр до конца
-   * занятия, студенту уходит `council:mine` с `closed: true`, его текст
-   * остаётся у него черновиком.
+   * Lock → not a council: the attempts stay in the database for viewing until
+   * the end of class, the student gets `council:mine` with `closed: true`, and
+   * their text stays with them as a draft.
    */
   | { t: 'cell:lock'; cellId: string; state: CellLock; settings?: Partial<CouncilSettings> }
   /**
-   * Консилиум: свой лист студента.
+   * Council: the student's own sheet.
    *
-   * `council:draft` — снимок текста при паузе в наборе (~1 с). Целиком, не
-   * дельтой: попытка не живёт в CRDT, и одному человеку на одну ячейку хватает
-   * последнего снимка. Сервер принимает его от любого, кто действует в комнате
-   * (rules.ts · mayWriteCouncil), только в ячейку, где сейчас консилиум, и
-   * рассылает ТОЛЬКО преподавателю (`council:board`) и самому автору
-   * (`council:mine`). Снимок сданной попытки её не «рассдаёт»: для этого есть
-   * `council:withdraw` — иначе автоснимок при случайном нажатии снимал бы
-   * «сдано» молча.
+   * `council:draft` is a snapshot of the text on a pause in typing (~1 s).
+   * Whole, not a delta: an attempt does not live in the CRDT, and for one
+   * person on one cell the latest snapshot is enough. The server accepts it
+   * from anyone who acts in the room (rules.ts · mayWriteCouncil), only into a
+   * cell that is a council right now, and sends it ONLY to the teacher
+   * (`council:board`) and to the author themselves (`council:mine`). A
+   * snapshot of a submitted attempt does not "unsubmit" it: that is what
+   * `council:withdraw` is for — otherwise an autosnapshot after an accidental
+   * keypress would silently take off "submitted".
    *
-   * `council:submit` — «Сдать»: ставит submittedAt; `council:withdraw` —
-   * «Изменить»: снимает его, текст остаётся.
+   * `council:submit` is "Submit": it sets submittedAt; `council:withdraw` is
+   * "Edit": it clears it, the text stays.
    */
   | { t: 'council:draft'; cellId: string; text: string }
   | { t: 'council:submit'; cellId: string }
   | { t: 'council:withdraw'; cellId: string }
   /**
-   * Консилиум: то, что делает ведущий (rules.ts · mayLeadCouncil — только host).
+   * Council: what the host does (rules.ts · mayLeadCouncil — host only).
    *
-   * `council:show` — «Показать классу»: общий текст ячейки при этом НЕ
-   * меняется. Показанная попытка приезжает всей комнате отдельным кадром
-   * `council:shown` — подписанной плашкой под той же ячейкой, — а ячейка
-   * остаётся ячейкой: заготовка преподавателя на месте, в истории документа
-   * нет правки, которой никто не делал. Автору уходит ещё и `council:mine` с
+   * `council:show` is "Show the class": the cell's shared text does NOT
+   * change. The shown attempt arrives to the whole room as a separate
+   * `council:shown` frame — a signed badge under that same cell — and the cell
+   * stays a cell: the teacher's template is in place, and the document history
+   * has no edit nobody made. The author also gets `council:mine` with
    * `shown: true`.
    *
-   * `council:show:clear` — «убрать с экрана»: снимает показ с ячейки целиком
-   * (кадр `council:shown` с `null`). Прежде снять его было нечем, потому что
-   * снимать было нечего: показ был подменой текста, и «откатить» его значило
-   * печатать руками.
+   * `council:show:clear` is "take off the screen": it removes the showing from
+   * the cell entirely (a `council:shown` frame with `null`). Before, there was
+   * nothing to remove it with, because there was nothing to remove: showing
+   * was a text substitution, and "rolling it back" meant typing by hand.
    *
-   * `council:run` — запустить попытку в ядре ЕЁ тетради; вывод ложится к попытке,
-   * не в общую ячейку. Без `participantId` — своя попытка: так запускает
-   * студент, и это проходит только при `studentRun === true`
-   * (rules.ts · mayRunCouncil); отказ — `error` словами, с номером в очереди,
-   * если очередь есть.
+   * `council:run` runs an attempt in the kernel of ITS notebook; the output
+   * goes to the attempt, not into the shared cell. Without `participantId` it
+   * is one's own attempt: this is how a student runs, and it goes through only
+   * with `studentRun === true` (rules.ts · mayRunCouncil); a refusal is an
+   * `error` in words, with the place in the queue if there is a queue.
    *
-   * `council:reply` — ответ автору или всей группе одинаковых решений: у
-   * каждого адресата в `council:mine.reply` появляется строка с подписью
-   * преподавателя. Черновик оракула (CouncilOracle.drafts) сюда попадает уже
-   * правленым текстом — модель на этих проводах не говорит.
+   * `council:reply` is an answer to the author or to the whole group of
+   * identical solutions: every addressee gets a line in `council:mine.reply`
+   * signed by the teacher. An oracle draft (CouncilOracle.drafts) arrives here
+   * as already edited text — the model does not speak on these wires.
    *
-   * `council:mark` — ✓ Верно / снять отметку: `correct: true | false | null`.
+   * `council:mark` is ✓ Correct / clear the mark:
+   * `correct: true | false | null`.
    */
   | { t: 'council:show'; cellId: string; participantId: string }
   | { t: 'council:show:clear'; cellId: string }
@@ -440,17 +458,18 @@ export type ControlClientMessage =
   | { t: 'council:run:approve'; cellId: string; participantId: string; requestId: string }
   | { t: 'council:run:decline'; cellId: string; participantId: string; requestId: string }
   /**
-   * Снять ЧУЖОЙ ждущий запуск с очереди — не трогая человека.
+   * Take SOMEONE ELSE'S waiting run off the queue — without touching the
+   * person.
    *
-   * Только преподаватель. До сих пор в очереди пульта у чужой записи была одна
-   * кнопка, и та — «убрать с занятия»: чтобы освободить очередь от запуска,
-   * который занял её по ошибке, приходилось банить автора. Это и есть
-   * несоразмерность, о которой просили: снять работу и снять человека — разные
-   * вещи.
+   * Teacher only. Until now someone else's entry in the console queue had one
+   * button, and it was "remove from the class": to free the queue from a run
+   * that took it by mistake, one had to ban the author. That is exactly the
+   * disproportion people asked about: removing a job and removing a person
+   * are different things.
    *
-   * Работает только на ждущую попытку: ушедшую в ядро отсюда не достать, её
-   * останавливает «Прервать». Автору об этом говорят словом — молча
-   * исчезнувший запуск читается как поломка.
+   * Works only on a waiting attempt: one that has gone to the kernel cannot be
+   * reached from here, it is stopped by "Interrupt". The author is told about
+   * it in words — a run that vanished silently reads as a breakage.
    */
   | { t: 'council:run:drop'; cellId: string; participantId: string }
   | {
@@ -461,124 +480,132 @@ export type ControlClientMessage =
     }
   | { t: 'council:mark'; cellId: string; participantId: string; correct: boolean | null }
   /**
-   * «Подсказка оракула» на СВОЮ упавшую попытку — и больше ни на чью.
+   * "Ask the oracle" on ONE'S OWN failed attempt — and nobody else's.
    *
-   * Сокетом, а не `POST /ai/ask`, потому что общий тред читает вся комната, а
-   * тексты консилиума частные: вопрос «почему у меня падает» вместе с кодом
-   * попытки ушёл бы туда, где его прочитают сорок соседей. Ответ приезжает
-   * письмом в самой попытке (`CouncilReply.to === 'oracle'`) и виден двоим —
-   * автору и преподавателю, как всё остальное в его листе.
+   * Over the socket, not `POST /ai/ask`, because the shared thread is read by
+   * the whole room, while council texts are private: the question "why does
+   * mine fail" together with the attempt's code would go where forty
+   * neighbors would read it. The answer arrives as a letter in the attempt
+   * itself (`CouncilReply.to === 'oracle'`) and is visible to two people — the
+   * author and the teacher, like everything else on their sheet.
    *
-   * Имя автора кадр не называет: подсказку просят только себе, и participantId
-   * берётся из токена — иначе это была бы дверь к чужому коду.
+   * The frame does not name the author: a hint is asked only for oneself, and
+   * participantId is taken from the token — otherwise it would be a door to
+   * someone else's code.
    */
   | { t: 'council:hint'; cellId: string }
   /**
-   * Консилиум: пришлите эту попытку целиком — с выводом.
+   * Council: send this attempt whole — with its output.
    *
-   * Спрашивает пульт преподавателя, когда карточка развёрнута, а вывод в
-   * стопку не поехал (`CouncilRun.outputsOmitted`). Ответ — обычная дельта
-   * `council:patch` с одной попыткой; кадра на «нет такой попытки» нет
-   * намеренно: её могли забанить, и стопка узнает об этом своим чередом.
+   * The teacher's console asks when a card is expanded and the output did not
+   * come with the stack (`CouncilRun.outputsOmitted`). The answer is an
+   * ordinary `council:patch` delta with one attempt; there is deliberately no
+   * frame for "no such attempt": it may have been banned, and the stack will
+   * learn about that in due course.
    */
   | { t: 'council:attempt'; cellId: string; participantId: string }
   /**
-   * Поставить документ комнаты на общий экран — или убрать его.
+   * Put a room document on the shared screen — or take it off.
    *
-   * Через сервер, а не через присутствие: присутствие исчезает вместе с
-   * вкладкой, и закрытый ноутбук преподавателя убрал бы материал у всех разом,
-   * а опоздавший не увидел бы ничего, пока преподаватель не пошевелится.
-   * Комната помнит это сама и рассказывает каждому, кто подключился.
+   * Through the server, not through presence: presence disappears with the
+   * tab, and the teacher's closed laptop would take the material away from
+   * everyone at once, while a latecomer would see nothing until the teacher
+   * moved. The room remembers it by itself and tells everyone who connects.
    */
   | { t: 'board:open'; name: string }
   | { t: 'board:close' }
   /**
-   * Закончить занятие — и открыть его обратно.
+   * Finish the class — and open it again.
    *
-   * Преподавательское, и проверяется сервером: с этой минуты участник в
-   * комнате только читает. Обратное движение здесь же и намеренно — пара
-   * заканчивается раньше, чем понадобилось дописать одну ячейку, и цена
-   * ошибки должна быть одним нажатием, а не «заводите новый семинар».
+   * A teacher's action, checked by the server: from that minute a participant
+   * in the room only reads. The reverse move is right here, on purpose — a
+   * class ends before one more cell needed finishing, and the cost of a
+   * mistake must be one press, not "create a new seminar".
    */
   | { t: 'class:finish' }
   | { t: 'class:resume' }
   /**
-   * Правка дерева: завести, переименовать, убрать.
+   * Tree edits: create, rename, remove.
    *
-   * Через управляющий сокет, а не REST, ровно по той причине, по которой через
-   * него ходит `cells:move`: результат должен увидеть не тот, кто нажал, а вся
-   * комната, и сообщение `files` уже рассылается всем. Ответ на отказ приходит
-   * тому же одному человеку строкой `error`: `refused` — про кадры CRDT,
-   * разобранные гейтом, а дерево через гейт не ходит.
+   * Over the control socket, not REST, for exactly the reason `cells:move`
+   * goes through it: the result must be seen not only by whoever pressed but
+   * by the whole room, and the `files` message is already broadcast to
+   * everyone. A refusal comes back to that one person as an `error` line:
+   * `refused` is about CRDT frames parsed by the gate, and the tree does not
+   * go through the gate.
    */
   | { t: 'tree:mkdir'; path: string }
   | { t: 'tree:new'; path: string }
   /**
-   * Внести .ipynb в комнату — то есть открыть его тетрадью.
+   * Bring a .ipynb into the room — that is, open it as a notebook.
    *
-   * Отдельное сообщение, а не побочный эффект открытия вкладки: ячейки
-   * переезжают из файла в документ комнаты, и это должен сделать сервер один
-   * раз, а не двадцать браузеров наперегонки.
+   * A separate message, not a side effect of opening a tab: the cells move
+   * from the file into the room's document, and the server must do it once,
+   * not twenty browsers racing each other.
    */
   | { t: 'book:open'; path: string }
   | { t: 'tree:move'; from: string; to: string }
   | { t: 'tree:remove'; path: string }
   /**
-   * Продублировать файл — копией рядом, под свободным именем.
+   * Duplicate a file — as a copy alongside, under a free name.
    *
-   * Право — `files`, то же, что у «нового файла» и у загрузки: копия ДОБАВЛЯЕТ
-   * запись, а не убирает, и открытая комната, куда каждый кладёт своё решение,
-   * — обычный семинар. Переименование и удаление остаются преподавательскими,
-   * и это не противоречие: они убирают прежний путь, а это нет.
+   * The right is `files`, the same as for "new file" and for upload: a copy
+   * ADDS an entry rather than removing one, and an open room where everyone
+   * puts their own solution is an ordinary seminar. Rename and delete stay
+   * with the teacher, and there is no contradiction: they remove the old path,
+   * and this does not.
    *
-   * Имя копии выбирает сервер, а не тот, кто нажал. «Занято» здесь не отказ, а
-   * обычное дело — дублируют одно и то же дважды подряд, — и сочинять имя на
-   * двадцати вкладках наперегонки значит спорить за него по сети: вторая
-   * получила бы отказ на имя, которое первая заняла, пока кадр летел.
+   * The copy's name is chosen by the server, not by whoever pressed. "Taken"
+   * here is not a refusal but the normal case — people duplicate the same
+   * thing twice in a row — and composing the name on twenty tabs racing each
+   * other would mean fighting over it across the network: the second would
+   * get a refusal for a name the first took while the frame was in flight.
    *
-   * Только файл. Папку пришлось бы обходить вглубь, считая потолок комнаты на
-   * каждом шаге, а в панели это одно нажатие без возврата; сказать «папки не
-   * дублируются» дешевле, чем удвоить распакованный датасет молча.
+   * Files only. A folder would have to be walked in depth, counting the
+   * room's ceiling at every step, while in the panel it is one press with no
+   * way back; saying "folders are not duplicated" is cheaper than silently
+   * doubling an unpacked dataset.
    */
   | { t: 'tree:copy'; path: string }
   /**
-   * Дайте дерево целиком.
+   * Give me the whole tree.
    *
-   * Спрашивается ровно в одном случае: приехала дельта (`files:delta`), а
-   * склеить её не с чем — вкладка держит список другого номера. Само по себе
-   * это не сбой: комната стояла пустой, вошедший пересчитал дерево, номер
-   * сдвинулся. Спросить дешевле, чем рассылать всем полный список на всякий
-   * случай.
+   * Asked in exactly one case: a delta arrived (`files:delta`), and there is
+   * nothing to glue it to — the tab holds a list with a different number. By
+   * itself that is not a failure: the room stood empty, someone who came in
+   * recomputed the tree, the number moved. Asking is cheaper than sending
+   * everyone the full list just in case.
    */
   | { t: 'files:ask' }
   /**
-   * Запустить файл — скриптом, а не ячейкой.
+   * Run a file — as a script, not a cell.
    *
-   * Уезжает в тот же терминал, в котором живёт `term:run`: у комнаты один
-   * контейнер, одна лента вывода и одна кнопка «прервать», и заводить скриптам
-   * вторую значит показывать два разных ответа на вопрос «что сейчас
-   * считается».
+   * It goes into the same terminal where `term:run` lives: the room has one
+   * container, one output feed and one "interrupt" button, and giving scripts
+   * a second one would mean showing two different answers to the question
+   * "what is computing now".
    */
   | { t: 'file:run'; path: string }
-  /* ---------------------------------------------------------- лекция */
+  /* --------------------------------------------------------- lecture */
   /**
-   * Начать лекцию: одна страница на проекторе и один человек за пультом.
+   * Start a lecture: one page on the projector and one person at the console.
    *
-   * Отдельно от общего экрана (`board:open`), потому что это другое занятие. У
-   * общего экрана каждый смотрит документ у себя и волен уйти вперёд; у лекции
-   * есть ОДНА проекция, которую видит зал, и её страницу двигает ведущий.
+   * Separate from the shared screen (`board:open`), because it is a different
+   * kind of class. With the shared screen everyone looks at the document on
+   * their own and is free to run ahead; a lecture has ONE projection the hall
+   * sees, and its page is moved by the presenter.
    */
   | { t: 'lecture:start'; file: string }
   | { t: 'lecture:stop' }
   | { t: 'lecture:page'; page: number }
-  /** Чёрный экран: гасит проекцию, оставляя страницу у ведущего на пульте. */
+  /** A black screen: turns off the projection, leaving the page on the presenter's console. */
   | { t: 'lecture:blank'; on: boolean }
   /**
-   * Дописать штрих карандашом.
+   * Append to a pencil stroke.
    *
-   * Точками, а не целым штрихом в конце: зал должен видеть линию, пока её
-   * ведут. Координаты — доли страницы: пиксель планшета не значит ничего ни на
-   * проекторе, ни у студента.
+   * In points, not the whole stroke at the end: the hall must see the line
+   * while it is being drawn. Coordinates are fractions of the page: a tablet
+   * pixel means nothing either on the projector or for a student.
    */
   | {
       t: 'ink'
@@ -586,124 +613,138 @@ export type ControlClientMessage =
       id: string
       color: string
       width: number
-      /** Пары долей: x0, y0, x1, y1 … */
+      /** Pairs of fractions: x0, y0, x1, y1 … */
       points: number[]
     }
   | { t: 'ink:undo'; page: number }
   /**
-   * Стереть один штрих — тот, до которого дотронулись ластиком.
+   * Erase one stroke — the one the eraser touched.
    *
-   * По имени штриха, а не по пикселям: в проводе есть только целые штрихи, и
-   * пиксельное стирание потребовало бы нового формата и переписывания всей
-   * истории лекции ради ластика. Отдельно от `ink:undo` не для симметрии:
-   * отмена снимает ПОСЛЕДНИЙ, а ластик — тот, на который легла рука, и посреди
-   * лекции это два разных жеста, а не один с двумя кнопками.
+   * By the stroke's name, not by pixels: the wire has only whole strokes, and
+   * pixel erasing would require a new format and rewriting the lecture's whole
+   * history for the sake of an eraser. Separate from `ink:undo`, and not for
+   * symmetry: undo removes the LAST stroke, the eraser the one the hand came
+   * down on, and in the middle of a lecture those are two different gestures,
+   * not one with two buttons.
    */
   | { t: 'ink:erase'; page: number; id: string }
   | { t: 'ink:clear'; page?: number }
   /**
-   * Спросить чернила ОДНОЙ страницы.
+   * Ask for the ink of ONE page.
    *
-   * Приветственная пачка не обязана везти всё письмо лекции: двадцать минут
-   * разметки — это около мегабайта на сокет, а смотрят в этот момент одну
-   * страницу. Поэтому пачка везёт текущую страницу и ОПИСЬ остальных
-   * (`ink:pages`), а страницу, на которую ушли не спросясь, спрашивают здесь:
-   * лента эскизов пульта с чистыми листами и вкладка, отставшая от зала.
+   * The welcome batch does not have to carry all of the lecture's writing:
+   * twenty minutes of markup is about a megabyte per socket, and at that
+   * moment people are looking at one page. So the batch carries the current
+   * page and an INVENTORY of the rest (`ink:pages`), and a page one moved to
+   * without asking is asked for here: by the console's thumbnail strip with
+   * its blank sheets and by a tab that fell behind the hall.
    *
-   * Страницу, на которую ведущий перевёл ЗАЛ, сервер досылает сам — иначе
-   * между кадром `lecture` и ответом на этот вопрос у пятисот человек стоял бы
-   * пустой слайд.
+   * A page the presenter moved the HALL to, the server sends by itself —
+   * otherwise between the `lecture` frame and the answer to this question five
+   * hundred people would have an empty slide.
    */
   | { t: 'ink:page'; page: number }
   /**
-   * Спросить заметки спикера к документу.
+   * Ask for the speaker notes for a document.
    *
-   * Спросить, а не получить в приветственной пачке, и это не экономия. Заметки
-   * приходят ТОЛЬКО хостам, а роль сокета выясняется при подключении — класть
-   * их в общую пачку значило бы держать «кому это можно» в двух местах, из
-   * которых одно однажды забудут поправить.
+   * Ask, rather than receive in the welcome batch, and that is not thrift.
+   * Notes go ONLY to hosts, and a socket's role is determined on connection —
+   * putting them in the shared batch would mean keeping "who may see this" in
+   * two places, one of which someone will one day forget to fix.
    */
   | { t: 'notes:open'; file: string }
   /**
-   * Записать заметку к одной странице. Пустая — это её отсутствие.
+   * Write a note for one page. An empty one means its absence.
    *
-   * Весь текст страницы, а не разница: очередь клиента при обрыве держит
-   * шестнадцать сообщений и выбрасывает СТАРЫЕ, так что при полном тексте
-   * единственное уцелевшее сообщение и есть верное, а при разнице уцелел бы
-   * бессмысленный хвост.
+   * The whole text of the page, not a difference: on a disconnect the client's
+   * queue holds sixteen messages and throws away the OLD ones, so with the full
+   * text the only surviving message is the correct one, while with a
+   * difference a meaningless tail would survive.
    */
   | { t: 'notes:set'; file: string; page: number; text: string }
   /**
-   * Указка. Эфемерна намеренно: где она была секунду назад — не факт о лекции,
-   * а движение руки, и хранить его негде и незачем.
+   * The pointer. Ephemeral on purpose: where it was a second ago is not a fact
+   * about the lecture but a movement of a hand, and there is nowhere and no
+   * reason to store it.
    *
-   * `shape` — точкой показывают или линией обводят; едет вместе с точкой,
-   * потому что зал обязан видеть ТО ЖЕ, что ведущий. Форма живёт в каждом
-   * кадре, а не в отдельном сообщении о смене режима: кадр указки и так идёт
-   * двадцать пять раз в секунду, лишний байт в нём дешевле, чем ещё одно
-   * состояние, которое можно пропустить и разъехаться.
+   * `shape` — whether it points with a dot or circles with a line; it travels
+   * together with the point, because the hall must see THE SAME as the
+   * presenter. The shape lives in every frame, not in a separate mode-change
+   * message: pointer frames go twenty-five times a second anyway, an extra
+   * byte in them is cheaper than one more state that can be missed and drift
+   * apart.
    */
   | { t: 'laser'; page: number; x: number; y: number; shape?: 'dot' | 'line' }
   | { t: 'laser:off' }
   /**
-   * Что дописать в этом месте кода — спрашивает редактор ячейки у ядра комнаты.
+   * What to complete at this place in the code — the cell editor asks the
+   * room's kernel.
    *
-   * `id` свой у каждого вопроса, и ответ приезжает с тем же номером: пока
-   * человек набирает, вопросов в проводе бывает несколько, и отстающий ответ
-   * обязан быть узнан и выброшен, а не показан поверх свежего. Номер тут
-   * ровно за этим — ни на что в комнате он не ссылается.
+   * `id` is unique to each question, and the answer arrives with the same
+   * number: while a person types there are several questions on the wire, and
+   * a late answer must be recognized and thrown away, not shown over a fresh
+   * one. That is the only reason for the number — it refers to nothing in the
+   * room.
    *
-   * `cursor` — знаков от начала `code`, а не строка со столбцом: ровно то,
-   * чем меряет курсор сам Jupyter (`cursor_pos`), и лишний перевод между
-   * системами счёта — лишнее место, где однажды разъедутся суррогатные пары.
+   * `cursor` is characters from the start of `code`, not a line and column:
+   * exactly what Jupyter itself measures the cursor with (`cursor_pos`), and
+   * an extra conversion between counting systems is one more place where
+   * surrogate pairs will one day drift apart.
    *
-   * `code` — текст ЯЧЕЙКИ, а не тетради: ядро дополняет по своим переменным,
-   * а незаконченная строка выше в тетради только сбила бы разбор. Длиннее 24
-   * КБ не бывает — клиент режет сам (session.svelte.ts), и сервер режет ещё
-   * раз, потому что клиент не единственный, кто может прислать сюда кадр.
+   * `code` is the text of the CELL, not the notebook: the kernel completes
+   * from its own variables, and an unfinished line higher up in the notebook
+   * would only confuse the parse. It is never longer than 24 KB — the client
+   * cuts it itself (session.svelte.ts), and the server cuts it once more,
+   * because the client is not the only one who can send a frame here.
    */
   /**
-   * `cellId` — откуда спрашивают, и он про ПРАВО, а не про разбор.
+   * `cellId` — where the question comes from, and it is about the RIGHT, not
+   * about parsing.
    *
-   * Право дополнять — это право читать состояние ядра, и в лекции оно у
-   * преподавателя (control.ts · mayComplete). Своя ячейка консилиума — та
-   * единственная, где студенту велено писать код самому, и молчаливый отказ в
-   * ней означал «пиши на память»: имена приезжали из слов самой ячейки, а
-   * столбцы настоящего `df` — нет. Кадр без имени ячейки сказать этого не мог,
-   * и сервер додумывать за него не имеет права: см. комментарий у mayComplete.
-   * Необязательное — старый клиент его не шлёт, и тогда правило прежнее.
+   * The right to complete is the right to read the kernel's state, and in a
+   * lecture it belongs to the teacher (control.ts · mayComplete). One's own
+   * council cell is the only one where a student is told to write code
+   * themselves, and a silent refusal there meant "write from memory": names
+   * came from the cell's own words, but the columns of the real `df` did not.
+   * A frame without the cell's name could not say this, and the server has
+   * no right to fill it in: see the comment at mayComplete. Optional — an old
+   * client does not send it, and then the old rule applies.
    */
   | { t: 'complete'; id: number; code: string; cursor: number; cellId?: string }
-  /** Справка о том, что стоит под кареткой: сигнатура для подсказки над скобкой. */
+  /** Help about what is under the caret: the signature for the hint above the parenthesis. */
   /**
-   * `brief` — спрашивают не справку, а ОДНУ СТРОКУ про значение.
+   * `brief` — what is asked is not help but ONE LINE about the value.
    *
-   * Тем же кадром, потому что вопрос тот же: «что под указателем». Разница в
-   * ответе и в цене: справка это сигнатура с документацией и, если надо,
-   * подъём ядра, а строка про значение — тип и размер объекта, который в ядре
-   * уже лежит. Ядро ради неё не поднимают и статически не гадают: нет ответа —
-   * нет и строки (жалоба владельца 21.09 про «вагон текста» у переменной).
+   * The same frame, because the question is the same: "what is under the
+   * pointer". The difference is in the answer and the price: help is a
+   * signature with documentation and, if needed, bringing the kernel up,
+   * while a line about a value is the type and size of an object already
+   * lying in the kernel. The kernel is not brought up for it and there is no
+   * static guessing: no answer, no line (the owner's complaint on 21 Sep 2026
+   * about "a wagonload of text" on a variable).
    */
   | { t: 'inspect'; id: number; code: string; cursor: number; cellId?: string; brief?: boolean }
   /**
-   * «Где это определено» — третий вопрос той же формы, и единственный из трёх,
-   * который НЕ идёт в ядро.
+   * "Where is this defined" — the third question of the same shape, and the
+   * only one of the three that does NOT go to the kernel.
    *
-   * Отвечает на него сервер сам: он разбирает Python подмножеством
-   * (shared/python-defs.ts) и ищет по документу тетради и по .py-файлам папки
-   * семинара. Отсюда два следствия, которых нет у соседей. Работает без
-   * запущенного ядра — то есть у того, кто только что открыл тетрадь и ничего
-   * не запускал; и права здесь не «право запускать», а право ЧИТАТЬ: переход к
-   * определению не трогает состояние ядра и ничего о нём не сообщает.
+   * The server answers it by itself: it parses a subset of Python
+   * (shared/python-defs.ts) and searches the notebook's document and the .py
+   * files of the seminar folder. Hence two consequences its neighbors do not
+   * have. It works without a running kernel — that is, for someone who has
+   * just opened the notebook and run nothing; and the right here is not "the
+   * right to run" but the right to READ: going to a definition does not touch
+   * the kernel's state and reports nothing about it.
    *
-   * `path` — файл, в котором щёлкнули, если это не ячейка: от него считаются
-   * относительные импорты (`from . import util`).
+   * `path` is the file clicked in, if it is not a cell: relative imports
+   * (`from . import util`) are resolved from it.
    *
-   * `from` — сколько знаков срезано СЛЕВА, когда исходник не влез в потолок.
-   * Без этого числа переход в крупном файле приземлялся не на ту строку: сервер
-   * считал строки от начала присланного окна, а человек видит их от начала
-   * файла. `case_cian.py` в живом курсе — 886 КБ, то есть окно там правило, а
-   * не исключение.
+   * `from` is how many characters were cut off on the LEFT when the source did
+   * not fit under the ceiling. Without this number a jump in a large file
+   * landed on the wrong line: the server counted lines from the start of the
+   * window it was sent, while a person sees them from the start of the file.
+   * `case_cian.py` in a live course is 886 KB, that is, the window is the rule
+   * there, not the exception.
    */
   | {
       t: 'define'
@@ -717,43 +758,47 @@ export type ControlClientMessage =
   | { t: 'ping' }
 
 /**
- * Где лежит определение.
+ * Where the definition lies.
  *
- * Ячейка адресуется именем (`cellId`) — тем же, что и везде в комнате; файл —
- * путём от корня папки семинара. У ячейки `path` тоже есть, но он про ТЕТРАДЬ,
- * в которой она лежит: им подписывают переход, когда тетрадей несколько.
+ * A cell is addressed by name (`cellId`) — the same as everywhere in the room;
+ * a file by its path from the root of the seminar folder. A cell has a `path`
+ * too, but it is about the NOTEBOOK the cell lies in: it labels the jump when
+ * there are several notebooks.
  */
 export interface DefinitionHit {
   where: 'cell' | 'file'
   cellId?: string
   path?: string
-  /** Строка, считая с единицы: такой её и показывают человеку. */
+  /** The line, counting from one: that is how it is shown to a person. */
   line: number
-  /** Колонка начала имени, считая с нуля. */
+  /** The column where the name starts, counting from zero. */
   column: number
-  /** Что там написано — строкой, обрезанной: подпись о том, куда прыгнули. */
+  /** What is written there — as a line, trimmed: the caption of where the jump landed. */
   text: string
-  /** Имя, которое искали. */
+  /** The name that was looked for. */
   name: string
 }
 
 /**
- * Почему перехода нет — и это четыре РАЗНЫХ ответа, а не один.
+ * Why there is no jump — and these are four DIFFERENT answers, not one.
  *
- * `nothing` — под указателем не имя вовсе. Об этом не говорят: подчёркивания
- * там не было, и жеста человек не делал.
+ * `nothing` — there is no name under the pointer at all. Nothing is said
+ * about it: there was no underline, and the person made no gesture.
  *
- * `unknown` — имя есть, а определения в комнате нет. Обычное дело: функция из
- * стандартной библиотеки, опечатка, ячейка, которую ещё не написали.
+ * `unknown` — there is a name, but no definition in the room. An ordinary
+ * thing: a function from the standard library, a typo, a cell not written
+ * yet.
  *
- * `outside` — имя из библиотеки: модуль назван, но его файла в папке семинара
- * нет и быть не может. Сказать это стоит вместе с именем модуля — «numpy не в
- * папке семинара» объясняет, а «не нашёл» обвиняет.
+ * `outside` — a name from a library: the module is named, but its file is
+ * not and cannot be in the seminar folder. It is worth saying so together
+ * with the module's name — "numpy is not in the seminar folder" explains,
+ * while "not found" accuses.
  *
- * `opaque` — цепочка от ДАННЫХ: `df.head`, где `df` связан присваиванием.
- * Искать `head` по всей тетради значило бы почти наверняка найти чужой метод и
- * уверенно увести в него — единственный промах, которого человек не заметит.
- * Поэтому здесь честное «не знаю, что такое df».
+ * `opaque` — a chain from DATA: `df.head`, where `df` is bound by
+ * assignment. Searching for `head` across the whole notebook would almost
+ * certainly find someone else's method and confidently lead into it — the
+ * one miss a person would not notice. So here there is an honest "I do not
+ * know what df is".
  */
 export type DefinitionMiss =
   | { why: 'nothing' }
@@ -762,56 +807,62 @@ export type DefinitionMiss =
   | { why: 'opaque'; name: string; owner: string }
 
 /**
- * Почему справки нет — и почему это стоит сказать вслух.
+ * Why there is no help — and why it is worth saying out loud.
  *
- * Долго не говорилось ничего: справка либо появлялась, либо не появлялась, и
- * человек не мог отличить «имени нет в ядре» от «ядро ещё поднимается» от
- * «здесь справки не бывает». На живом занятии 19.09 это читалось как поломка —
- * «она не всегда появляется», — хотя каждый отказ был законным.
+ * For a long time nothing was said: help either appeared or did not, and a
+ * person could not tell "the name is not in the kernel" from "the kernel is
+ * still coming up" from "there is never help here". At the live class on
+ * 19 Sep 2026 this read as a breakage — "it does not always show up" —
+ * although every refusal was legitimate.
  *
- * `no-kernel` — ядра в комнате нет и поднять его этому человеку нечем
- * (лекционная комната, законченное занятие). Говорим, что запускать некому.
+ * `no-kernel` — the room has no kernel, and this person has no way to bring
+ * one up (a lecture room, a finished class). We say that there is nobody to
+ * start it.
  *
- * `starting` — ядро поднимается прямо сейчас, в том числе потому, что этот же
- * вопрос его и поднял. Ответ будет, но не на этот вопрос: сказать «через
- * несколько секунд» честнее, чем промолчать.
+ * `starting` — the kernel is coming up right now, including because this very
+ * question brought it up. There will be an answer, but not to this question:
+ * saying "in a few seconds" is more honest than silence.
  *
- * `busy` — ядро считает чужую ячейку. Shell у ipykernel один и
- * последовательный: справка не опоздает, она не придёт вовсе.
+ * `busy` — the kernel is computing someone else's cell. ipykernel has one
+ * shell and it is sequential: the help will not be late, it will not come at
+ * all.
  *
- * `thinking` — статический разбор не успел в свой бюджет. Первый разбор
- * тяжёлой библиотеки на холодном контейнере стоит секунды, а второй —
- * миллисекунды: ответ будет, и ждать его стоит. Отдельно от `unknown`
- * потому, что это ровно противоположные вещи: «пока не знаю» и «не знаю».
+ * `thinking` — static analysis did not make it within its budget. The first
+ * analysis of a heavy library on a cold container costs seconds, the second
+ * milliseconds: there will be an answer, and it is worth waiting for.
+ * Separate from `unknown` because these are exact opposites: "I do not know
+ * yet" and "I do not know".
  *
- * `unknown` — спросили, ответили «не нашлось». Имя не выполняли ни разу, и
- * статический разбор тоже ничего о нём не знает.
+ * `unknown` — asked, and the answer was "not found". The name was never
+ * executed, and static analysis knows nothing about it either.
  *
- * `refused` — спрашивать было нельзя (ведро вопросов, кадр без кода). Клиент
- * проживает это молча: человек сделал правильный жест, объяснять ему нечего.
+ * `refused` — asking was not allowed (the question bucket, a frame without
+ * code). The client lives through this silently: the person made the right
+ * gesture, there is nothing to explain to them.
  *
- * Три из шести — временные: `starting`, `busy` и `thinking`. Клиент на них не
- * успокаивается, а переспрашивает, пока подсказка открыта (CodeEditor.svelte ·
- * `askSignature`), и заменяет строку-причину справкой на месте.
+ * Three of the six are temporary: `starting`, `busy` and `thinking`. The
+ * client does not settle for them but asks again while the hint is open
+ * (CodeEditor.svelte · `askSignature`), and replaces the reason line with the
+ * help in place.
  */
 /**
- * Короткая правда о значении — то, что показывают наведением на переменную.
+ * A short truth about a value — what is shown on hovering over a variable.
  *
- * Все поля необязательные, и это форма ответа, а не лень: у `int` есть
- * значение и нет размера, у `DataFrame` наоборот, а у незнакомого объекта
- * есть только имя типа — спрашивать у него что-то ещё нельзя, это может
- * стоить дорого или иметь побочное действие (server/src/kernel/
- * inspect-static.ts · `_brief_of`).
+ * All fields are optional, and that is the shape of the answer, not laziness:
+ * an `int` has a value and no size, a `DataFrame` the other way round, and an
+ * unfamiliar object has only a type name — nothing else may be asked of it,
+ * since that could be expensive or have a side effect
+ * (server/src/kernel/inspect-static.ts · `_brief_of`).
  */
 export interface BriefValue {
   /** `DataFrame`, `ndarray`, `list[str]`, `LinearRegression`. */
   type: string
-  /** Размер словами типа: `1460 × 81`, `(100, 3)`, `3`. */
+  /** The size in the type's own words: `1460 × 81`, `(100, 3)`, `3`. */
   dims?: string
   dtype?: string
-  /** Само значение — только у скаляров и строк, обрезанное. */
+  /** The value itself — only for scalars and strings, trimmed. */
   value?: string
-  /** Приписка: устройство тензора, первые ключи словаря, «обучен». */
+  /** A footnote: the tensor's device, the dict's first keys, "fitted". */
   note?: string
 }
 
@@ -826,31 +877,36 @@ export type InspectMiss =
 export type TerminalStatus = 'closed' | 'starting' | 'idle' | 'busy' | 'dead'
 
 /**
- * Что кадр CRDT делает с документом — в терминах правил комнаты, а не байтов.
+ * What a CRDT frame does to the document — in terms of the room's rules, not
+ * bytes.
  *
- * Одно перечисление на обе стороны: гейт (server/src/collab/gate.ts) им судит,
- * `refused` его же и называет. Копий было две, и они уже разошлись — в
- * протоколе висело четвёртое значение `'files'`, которого сервер не слал
- * никогда: файлы через гейт не ходят, у них управляющие сообщения и `error`.
+ * One enumeration for both sides: the gate (server/src/collab/gate.ts) judges
+ * by it, and `refused` names it too. There were two copies, and they had
+ * already drifted apart — the protocol had a fourth value `'files'` the
+ * server never sent: files do not go through the gate, they have control
+ * messages and `error`.
  */
 export type GateRule = 'structure' | 'edit' | 'title'
 
 export type ControlServerMessage =
   | { t: 'instance:language'; language: Locale }
   /**
-   * @param kernel состояние ядра тетради КОМНАТЫ — то, что здесь было всегда.
-   * @param kernels состояние по тетрадям: путь листа и что с его ядром. Поле
-   * необязательное, потому что вкладка, открытая до появления нескольких ядер,
-   * его не знает, а дальше и то и другое всё равно приезжает документом
-   * (`meta.kernels`) — этот кадр только про первый миг, пока идёт sync.
+   * @param kernel the state of the ROOM's notebook kernel — what has always
+   * been here.
+   * @param kernels the state per notebook: the sheet's path and what is
+   * happening with its kernel. The field is optional because a tab opened
+   * before multiple kernels existed does not know it, and from then on both
+   * arrive with the document anyway (`meta.kernels`) — this frame is only
+   * about the first moment, while sync is in progress.
    */
   /**
-   * @param ownKernels умеет ли ЭТОТ инстанс давать личной тетради собственное
-   * ядро. На docker — да; на брокере (k3s) Pod заводится один на занятие, и
-   * второго, без карты, там пока нет. Поле едет в комнату затем, чтобы строка
-   * правила «Свои тетради студентов» не обещала того, чего инстанс не умеет:
-   * узнать об этом из отказа на первом запуске посреди пары — худший способ.
-   * Отсутствие поля читается как «умеет»: так отвечала бы старая сборка.
+   * @param ownKernels whether THIS instance can give a personal notebook a
+   * kernel of its own. On docker — yes; on the broker (k3s) one Pod is created
+   * per class, and a second one, without a GPU, does not exist there yet. The
+   * field goes to the room so that the "Students' personal notebooks" rule
+   * line does not promise what the instance cannot do: learning it from a
+   * refusal on the first run in the middle of a class is the worst way. A
+   * missing field reads as "can": that is how an old build would answer.
    */
   | {
       t: 'ready'
@@ -868,27 +924,30 @@ export type ControlServerMessage =
    */
   | { t: 'role'; role: ParticipantRole }
   | { t: 'terminal'; status: TerminalStatus }
-  /** @param book чья это новость; без поля — тетрадь комнаты. */
+  /** @param book whose news this is; without the field — the room's notebook. */
   | { t: 'kernel'; status: KernelStatus; book?: string }
   /**
-   * Дерево комнаты. `truncated` — список неполон: обход упёрся в потолок, и
-   * часть папок осталась нераскрытой.
+   * The room's tree. `truncated` — the list is incomplete: the walk hit the
+   * ceiling, and some folders stayed unexpanded.
    *
-   * Признак, а не молчание: «файла нет в списке» и «файла нет» — разные вещи, и
-   * тот, кто их путает, либо ищет глазами файл, который лежит на диске, либо
-   * (хуже) убирает по неполному списку живую тетрадь.
+   * A flag, not silence: "the file is not in the list" and "there is no file"
+   * are different things, and whoever confuses them either searches by eye
+   * for a file that is on disk or (worse) removes a live notebook based on an
+   * incomplete list.
    */
   | { t: 'files'; files: FileEntry[]; truncated?: boolean; rev?: number }
   /**
-   * Дерево изменилось — и едет только то, что в нём изменилось.
+   * The tree changed — and only what changed in it travels.
    *
-   * `from` — номер списка, поверх которого дельта ложится, `rev` — номер после
-   * неё. Номера сквозные по комнате и растут на единицу: вкладка, у которой на
-   * руках не `from`, дельту НЕ применяет (склеить её не с чем), а спрашивает
-   * дерево целиком (`files:ask`). Так разрыв лечится сам — и после
-   * переподключения, и после того, как вошедший получил список свежее чужого.
+   * `from` is the number of the list the delta is laid on top of, `rev` the
+   * number after it. The numbers run through the room and grow by one: a tab
+   * that does not hold `from` does NOT apply the delta (there is nothing to
+   * glue it to) but asks for the whole tree (`files:ask`). This way a gap
+   * heals itself — both after a reconnect and after someone who came in got a
+   * list fresher than someone else's.
    *
-   * Обрезанное дерево дельтой не описывается: там едет полный кадр.
+   * A truncated tree is not described by a delta: the full frame travels
+   * there.
    */
   | ({ t: 'files:delta'; from: number; rev: number } & FilesDelta)
   /*
@@ -899,134 +958,145 @@ export type ControlServerMessage =
    */
   | { t: 'rules'; rules: RoomRules }
   /**
-   * Занятие закончилось или снова идёт.
+   * The class has ended or is going on again.
    *
-   * Отдельным кадром, а не полем в `rules`: хранимые правила при этом не
-   * меняются, и комната обязана увидеть разницу между «преподаватель ужесточил
-   * правило» и «занятие кончилось» — фразы в подсказках у них разные.
+   * A separate frame, not a field in `rules`: the stored rules do not change,
+   * and the room must see the difference between "the teacher tightened a
+   * rule" and "the class ended" — the phrases in the hints are different for
+   * them.
    */
   | { t: 'class'; finishedAt: number | null }
   /**
-   * Вас забанили — прямо сейчас, посреди занятия.
+   * You have been banned — right now, in the middle of the class.
    *
-   * Приходит одному человеку, и сразу после этого сокет закрывается. Без кадра
-   * забаненный увидел бы ровно то же, что видит комната при обрыве сети:
-   * соединение молча пропало и не возвращается, — то есть решил бы, что
-   * сломался Colloq, и пошёл бы жаловаться на него вместо того, чтобы понять,
-   * что произошло.
+   * It comes to one person, and right after it the socket closes. Without the
+   * frame the banned person would see exactly what the room sees on a network
+   * drop: the connection silently vanished and does not come back — that is,
+   * they would decide Colloq broke and go complain about it instead of
+   * understanding what happened.
    *
-   * `until` — момент конца бана; словами его показывает браузер по своим часам.
+   * `until` is the moment the ban ends; the browser shows it in words by its
+   * own clock.
    */
   | { t: 'banned'; until: number }
   /**
-   * Документ на общем экране комнаты, или `null`, если его нет.
+   * The document on the room's shared screen, or `null` if there is none.
    *
-   * Приходит и в приветственной пачке, и при каждой смене: иначе человек,
-   * зашедший в середине занятия, не узнает, что комната что-то смотрит.
+   * Comes both in the welcome batch and on every change: otherwise a person
+   * who came in the middle of the class will not learn that the room is
+   * looking at something.
    */
   | { t: 'board'; open: string | null }
   /**
-   * Лекция комнаты, или `null`, если её нет.
+   * The room's lecture, or `null` if there is none.
    *
-   * Приходит и в приветственной пачке, и при каждой смене: опоздавший должен
-   * увидеть ту же страницу, что и зал, не дожидаясь, пока ведущий перелистнёт.
+   * Comes both in the welcome batch and on every change: a latecomer must see
+   * the same page as the hall without waiting for the presenter to turn the
+   * page.
    */
   | { t: 'lecture'; state: LectureState | null }
   /**
-   * Чернила лекции — ПОЛНАЯ замена всего, что вкладка держит.
+   * The lecture's ink — a FULL replacement of everything the tab holds.
    *
-   * Приходит при подключении и после «стереть всё». Сколько страниц в нём
-   * едет, решает сервер, и обе меры законны: приветственная пачка возит
-   * ПОКАЗЫВАЕМУЮ страницу (control.ts · inkFrame), а начатая лекция — пустой
-   * список; остальное приезжает по `ink:page`. Клиент готов к обеим мерам и не
-   * считает пришедшее полным письмом лекции: сколько страниц исписано на самом
-   * деле, говорит опись ниже.
+   * Comes on connection and after "erase everything". How many pages travel
+   * in it is decided by the server, and both measures are legitimate: the
+   * welcome batch carries the SHOWN page (control.ts · inkFrame), and a
+   * lecture just started carries an empty list; the rest arrives by
+   * `ink:page`. The client is ready for both measures and does not take what
+   * arrived for the lecture's full writing: how many pages are actually inked
+   * is said by the inventory below.
    */
   | { t: 'ink'; strokes: InkStroke[] }
   /**
-   * Чернила ОДНОЙ страницы — полная замена штрихов ЭТОЙ страницы, и только её.
+   * The ink of ONE page — a full replacement of the strokes of THAT page, and
+   * only of it.
    *
-   * Ответ на вопрос вкладки и досылка тому, кого ведущий перевёл на другую
-   * страницу. Пустой список — законный ответ и означает «страница чистая», а
-   * не «не знаю»: без него вкладка, спросившая про пустой лист, ждала бы
-   * чернил до конца лекции.
+   * An answer to a tab's question, and a send-along to someone the presenter
+   * moved to another page. An empty list is a legitimate answer and means
+   * "the page is clean", not "I do not know": without it a tab that asked
+   * about a blank sheet would wait for ink until the end of the lecture.
    */
   | { t: 'ink:page'; page: number; strokes: InkStroke[] }
   /**
-   * ОПИСЬ исписанных страниц: их номера, без единого штриха.
+   * The INVENTORY of inked pages: their numbers, without a single stroke.
    *
-   * Едет рядом с каждым `ink` — то есть с приветственной пачкой и с «стереть
-   * всё», — и стоит десятки байт там, где чернила стоят мегабайт. Без неё
-   * вкладка, получившая одну страницу, не отличает «на остальных пусто» от
-   * «остальные не приехали»: пульт считает по чернилам, сколько чистых листов
-   * заведено (лист номер N доказывает, что заведены и все до него), и лента
-   * эскизов по ним же знает, что просить.
+   * Travels next to every `ink` — that is, with the welcome batch and with
+   * "erase everything" — and costs tens of bytes where the ink costs a
+   * megabyte. Without it a tab that got one page cannot tell "the rest are
+   * empty" from "the rest have not arrived": the console counts from the ink
+   * how many blank sheets were created (sheet number N proves that all before
+   * it were created too), and the thumbnail strip knows from it what to ask
+   * for.
    */
   | { t: 'ink:pages'; pages: number[] }
-  /** Новые точки. Штрих с известным именем дополняется, незнакомый — заводится. */
+  /** New points. A stroke with a known name is extended, an unknown one is created. */
   | { t: 'ink:add'; stroke: InkStroke }
   | { t: 'ink:drop'; page: number; id: string }
   | { t: 'ink:clear'; page: number | null }
   /**
-   * Заметки спикера к документу: страница → текст.
+   * The speaker notes for a document: page → text.
    *
-   * Приходит ТОЛЬКО хостам и только в ответ на `notes:open`. Единственное в
-   * этом продукте, чего комнате видеть не полагается: заметка «здесь спросить,
-   * кто помнит формулу Байеса; если молчат — вывести на доске» — это речь
-   * преподавателя самому себе, и приехав всем, она приезжает вместе с ответом
-   * на вопрос, который ещё не задан.
+   * Comes ONLY to hosts and only in answer to `notes:open`. The only thing in
+   * this product the room is not supposed to see: a note "ask here who
+   * remembers Bayes' formula; if they are silent, derive it on the board" is
+   * the teacher talking to themselves, and arriving to everyone it arrives
+   * together with the answer to a question not yet asked.
    */
   | { t: 'notes'; file: string; notes: Record<number, string> }
   /**
-   * Эхо одной правки — тоже только хостам.
+   * The echo of one edit — also only to hosts.
    *
-   * Одна страница, а не свежая карта целиком: правка уезжает по дебаунсу в
-   * четыреста миллисекунд, то есть несколько раз за фразу, а карта к
-   * двухсотстраничной методичке — сотни килобайт. Это ровно та расточительность,
-   * от которой чернила защищены нарезкой на новые точки.
+   * One page, not a fresh whole map: an edit goes out with a debounce of four
+   * hundred milliseconds, that is, several times per phrase, and the map for a
+   * two-hundred-page handout is hundreds of kilobytes. This is exactly the
+   * wastefulness the ink is protected from by slicing into new points.
    */
   | { t: 'notes:one'; file: string; page: number; text: string }
   /**
-   * Где указка прямо сейчас, или `null` — её убрали.
+   * Where the pointer is right now, or `null` — it was taken away.
    *
-   * Без цвета: она красная у всех и всегда — это единственное, что зал узнаёт
-   * мгновенно и ни с чем не путает. Цвет ведущего сюда приезжал из общей
-   * привычки красить всё по автору, и на лекции второго преподавателя указка
-   * оказывалась синей — то есть неотличимой от чернил.
+   * No color: it is red for everyone, always — it is the one thing the hall
+   * recognizes instantly and confuses with nothing. The presenter's color used
+   * to come here out of the general habit of coloring everything by author,
+   * and at a second teacher's lecture the pointer turned out blue — that is,
+   * indistinguishable from the ink.
    */
   | { t: 'laser'; at: { page: number; x: number; y: number; shape: 'dot' | 'line' } | null }
   /**
-   * Консилиум: своя попытка — одному человеку.
+   * Council: one's own attempt — to one person.
    *
-   * Приходит автору при подключении (по каждой ячейке, где у него есть
-   * попытка или где консилиум открыт) и после каждого своего действия и
-   * каждого действия преподавателя над его попыткой: сдал, показали, ответили,
-   * запустили, отметили, закрыли консилиум. Чужих попыток в нём нет никогда.
+   * Comes to the author on connection (for every cell where they have an
+   * attempt or where a council is open) and after each of their own actions
+   * and each of the teacher's actions on their attempt: submitted, shown,
+   * answered, run, marked, council closed. It never contains other people's
+   * attempts.
    */
   | { t: 'council:mine'; cellId: string; state: CouncilMine }
   /**
-   * Консилиум: вся стопка — ТОЛЬКО преподавателю.
+   * Council: the whole stack — ONLY to the teacher.
    *
-   * Целиком — в приветственной пачке хоста по каждой ячейке, где консилиум
-   * открыт или где есть попытки, и на смену замка или ручек; перемены между
-   * ними едут `council:patch`. Группы и порядок стопки клиент считает сам по
-   * полному списку. Сервер вправе слить частые пересылки в одну (дребезг).
+   * Whole — in the host's welcome batch for every cell where a council is
+   * open or where there are attempts, and on a change of lock or knobs; the
+   * changes in between travel as `council:patch`. The client computes the
+   * groups and the stack's order itself from the full list. The server may
+   * merge frequent resends into one (debounce).
    */
   | { t: 'council:board'; cellId: string; board: CouncilBoard }
   /**
-   * Консилиум: перемена в стопке — ТОЛЬКО преподавателю, и только то, что
-   * сменилось.
+   * Council: a change in the stack — ONLY to the teacher, and only what
+   * changed.
    *
-   * Стопка целиком едет в приветственной пачке и на смену замка; всё
-   * остальное — снимок при паузе в наборе, запуск, ответ, отметка, бан — едет
-   * попытками, которых это коснулось. Иначе каждый кадр вёз хосту вывод
-   * каждой попытки (до мегабайт на карточку) из-за одной буквы у одного
-   * студента — по три раза в секунду, пока класс печатает. `attempts` —
-   * попытки целиком (заменить по participantId), `removed` — кого в стопке
-   * больше нет (бан); `counts`, `lock` и `settings` — свежие, как в стопке.
-   * Группы и порядок клиент считает сам по полному списку, как и раньше.
-   * Кадр по ячейке, стопки которой у клиента нет, — пропускается: полная
-   * стопка по ней уже в пути или уже была.
+   * The whole stack travels in the welcome batch and on a lock change;
+   * everything else — a snapshot on a pause in typing, a run, a reply, a
+   * mark, a ban — travels as the attempts it affected. Otherwise every frame
+   * would carry to the host the output of every attempt (up to megabytes per
+   * card) because of one letter from one student — three times a second while
+   * the class types. `attempts` are whole attempts (replace by
+   * participantId), `removed` are those no longer in the stack (a ban);
+   * `counts`, `lock` and `settings` are fresh, as in the stack. The client
+   * computes the groups and the order itself from the full list, as before. A
+   * frame for a cell whose stack the client does not have is skipped: the full
+   * stack for it is already on its way or has already been.
    */
   | {
       t: 'council:patch'
@@ -1038,127 +1108,141 @@ export type ControlServerMessage =
       settings: CouncilSettings
     }
   /**
-   * Консилиум: НОМЕР В ОЧЕРЕДИ — и больше ничего.
+   * Council: THE PLACE IN THE QUEUE — and nothing else.
    *
-   * Номер двигается у каждого ждущего на каждый конец любой работы ядра, а вёз
-   * его полный лист (`council:mine`): на пятистах ждущих один досчитавшийся
-   * запуск — это пятьсот листов, каждый из которых сервер собирал отдельно
-   * (обход документа за замком, чтение попытки из базы) и вёз целиком, вместе с
-   * текстом попытки и заданием, ради одного числа в нём. Замер: 0.32 МБ на
-   * сдвиг против 30 КБ этими кадрами.
+   * The number moves for every waiting person at every end of any kernel
+   * work, and it used to be carried by the whole sheet (`council:mine`): with
+   * five hundred waiting, one finished run meant five hundred sheets, each of
+   * which the server assembled separately (a walk of the document under a
+   * lock, reading the attempt from the database) and carried whole, together
+   * with the attempt's text and the task, for the sake of one number in it.
+   * Measured: 0.32 MB per shift against 30 KB with these frames.
    *
-   * Комнате целиком очередь при этом НЕ рассылается: она была бы одной сборкой
-   * на всех, но пятьсот раз по одиннадцать килобайт (замерено 5.65 МБ на
-   * сдвиг) — чтобы каждый прочитал в ней одно своё число.
+   * The whole queue is NOT broadcast to the room either: it would be one
+   * assembly for everyone, but five hundred times eleven kilobytes (measured
+   * 5.65 MB per shift) — so that each person reads one number of their own in
+   * it.
    *
-   * `at` — место в очереди ЯДРА, а не среди попыток: впереди могут считаться
-   * ячейки преподавателя, поэтому номера не сплошные. `null` — в очереди этой
-   * ячейки человека больше нет; «считается сейчас» говорит `run.state`, а не
-   * место в очереди.
+   * `at` is the place in the KERNEL's queue, not among attempts: the
+   * teacher's cells may be computing ahead, so the numbers are not
+   * contiguous. `null` means the person is no longer in this cell's queue;
+   * "computing now" is said by `run.state`, not by a place in the queue.
    */
   | { t: 'council:queue'; cellId: string; at: number | null }
   /**
-   * Консилиум: чем занято ядро ТЕТРАДИ этой ячейки — ТОЛЬКО преподавателю.
+   * Council: what the kernel of this cell's NOTEBOOK is busy with — ONLY to
+   * the teacher.
    *
-   * Приходит в приветственной пачке по каждой ячейке со стопкой и дальше на
-   * каждый сдвиг очереди (сгущённый окном). Маленький и без текстов: имя,
-   * номер ячейки, часы и два признака. Всё остальное про работу пульт уже
-   * знает из стопки. См. `CouncilKernel` — там записано, зачем он заведён.
+   * Comes in the welcome batch for every cell with a stack and then on every
+   * queue shift (coalesced within a window). Small and without texts: a name,
+   * a cell number, a clock and two flags. Everything else about the work the
+   * console already knows from the stack. See `CouncilKernel` — it records
+   * why this was introduced.
    */
   | { t: 'council:kernel'; cellId: string; kernel: CouncilKernel }
-  /** Консилиум: оракул о решениях сменил состояние — тоже только преподавателю. */
+  /** Council: the oracle on solutions changed state — also to the teacher only. */
   | { t: 'council:oracle'; cellId: string; oracle: CouncilOracle }
   /**
-   * Консилиум: что с просьбой о подсказке — АВТОРУ попытки и никому больше.
+   * Council: what is happening with the hint request — to the attempt's
+   * AUTHOR and nobody else.
    *
-   * Сам ответ приезжает письмом в `council:mine`: он часть попытки и переживает
-   * перезагрузку. Этот кадр — только про кнопку: «думает» (гасить), «готово»
-   * (зажечь обратно) и отказ словами, если модель выключена или вопросы
-   * кончились. Отдельный кадр, а не общий `error`: по общему не отличить, чей
-   * отказ пришёл, и кнопка осталась бы погашенной навсегда.
+   * The answer itself arrives as a letter in `council:mine`: it is part of the
+   * attempt and survives a reload. This frame is only about the button:
+   * "thinking" (disable), "done" (enable again) and a refusal in words if the
+   * model is turned off or the questions have run out. A separate frame, not
+   * the general `error`: from the general one you cannot tell whose refusal
+   * arrived, and the button would stay disabled forever.
    */
   | { t: 'council:hint:state'; cellId: string; asking: boolean; error?: string }
   /**
-   * Консилиум: что сейчас на экране по этой ячейке — ВСЕЙ комнате.
+   * Council: what is on the screen for this cell right now — to the WHOLE
+   * room.
    *
-   * Единственный кадр консилиума с чужим кодом, который видит студент, и это
-   * не утечка: показанное решение в ту же секунду стоит на проекторе. Взамен
-   * ушла подмена — общий текст ячейки показ больше не трогает (`CouncilShown`).
+   * The only council frame with someone else's code that a student sees, and
+   * that is not a leak: the shown solution is on the projector that very
+   * second. In return the substitution is gone — showing no longer touches
+   * the cell's shared text (`CouncilShown`).
    *
-   * `null` — «убрали с экрана» (или показывать нечего): плашка сворачивается,
-   * ячейка возвращается к одной колонке. Приходит в приветственной пачке по
-   * каждой ячейке, где показ идёт, и дальше на каждую перемену — показали
-   * другого, сменили ручку имён, автор переписал показанный текст.
+   * `null` means "taken off the screen" (or there is nothing to show): the
+   * badge folds, the cell goes back to one column. Comes in the welcome batch
+   * for every cell where a showing is on, and then on every change — someone
+   * else was shown, the names knob was flipped, the author rewrote the shown
+   * text.
    */
   | { t: 'council:shown'; cellId: string; shown: CouncilShown | null }
   /**
-   * Консилиум: «N сдали из M» — всей комнате, без текстов.
+   * Council: "N of M submitted" — to the whole room, without texts.
    *
-   * Это для проектора и для чипа над ячейкой у студентов. Живой стены здесь
-   * нет намеренно: счётчик говорит, что класс работает, и ничего о том, что он
-   * написал. `total` — сколько людей завели попытку (сдали или пишут).
+   * This is for the projector and for the chip above the cell for students.
+   * There is deliberately no live wall here: the counter says that the class
+   * is working, and nothing about what it wrote. `total` is how many people
+   * started an attempt (submitted or writing).
    */
   | { t: 'council:count'; cellId: string; submitted: number; total: number }
   /**
-   * Приветственная пачка консилиума кончилась — можно верить пустоте.
+   * The council's welcome batch is over — emptiness can now be trusted.
    *
-   * Без этого кадра «стопки по этой ячейке нет» означало сразу два разных
-   * факта: «кадр ещё едет» и «консилиума тут правда нет». Пульт выбирал
-   * второе и на перезагрузке успевал мигнуть «ячейка не в консилиуме» ровно
-   * между заставкой и собой. Отличить их изнутри клиента нечем: кадров может
-   * не прийти НИ ОДНОГО (в комнате нет ни одного консилиума), и ждать «ещё
-   * немного» — это гадание, а не знание.
+   * Without this frame "there is no stack for this cell" meant two different
+   * facts at once: "the frame is still on its way" and "there really is no
+   * council here". The console chose the second, and on reload managed to
+   * flash "the cell is not in a council" exactly between the splash and
+   * itself. Nothing inside the client can tell them apart: NOT A SINGLE frame
+   * may arrive (the room has no councils at all), and waiting "a little
+   * longer" is guessing, not knowing.
    *
-   * Поэтому конец пачки говорится словом, одним кадром на подключение и в
-   * двадцать байт. Приходит ВСЕМ, а не только преподавателю: у студента та же
-   * развилка на его листе, и второй признак для того же факта разошёлся бы с
-   * первым. Старый сервер его не шлёт — клиент это переживает сторожем по
-   * времени (council.svelte.ts · WELCOME_WAIT_MS).
+   * So the end of the batch is said in a word, one frame per connection and
+   * twenty bytes long. It goes to EVERYONE, not only the teacher: a student
+   * has the same fork on their sheet, and a second flag for the same fact
+   * would drift from the first. An old server does not send it — the client
+   * survives that with a timed guard (council.svelte.ts · WELCOME_WAIT_MS).
    */
   | { t: 'council:ready' }
   /**
-   * Правку ДОКУМЕНТА не приняли — и почему.
+   * An edit to the DOCUMENT was not accepted — and why.
    *
-   * Приходит одному человеку, а не комнате. Предотвращение — обычный путь:
-   * комната, где правило запрещает править, рисует редакторы только для
-   * чтения, и это сообщение — подстраховка для двух случаев: подделанный или
-   * скриптовый клиент и те доли секунды после ужесточения правила, пока кадр
-   * был в пути.
+   * Comes to one person, not to the room. Prevention is the normal path: a
+   * room where a rule forbids editing draws read-only editors, and this
+   * message is a safety net for two cases: a forged or scripted client, and
+   * the fractions of a second after a rule was tightened while the frame was
+   * in flight.
    *
-   * Правильность на нём не держится: управляющий сокет — отдельное соединение,
-   * которое переподключается само по себе, и если бы возврат документа в
-   * согласованное состояние зависел от этой строки, обрыв оставил бы человека
-   * навсегда немым, и ни одна из сторон не смогла бы это заметить.
+   * Correctness does not rest on it: the control socket is a separate
+   * connection that reconnects on its own, and if returning the document to a
+   * consistent state depended on this line, a disconnect would leave a person
+   * mute forever, and neither side would be able to notice.
    *
-   * Только про кадр CRDT, разобранный гейтом (server/src/collab/gate.ts):
-   * состав тетради, текст ячейки, заголовок. У всего, что идёт управляющим
-   * сообщением — дерево файлов, терминал, лекция, — свой ответ, и это `error`.
+   * Only about a CRDT frame parsed by the gate (server/src/collab/gate.ts):
+   * the notebook's composition, a cell's text, the title. Everything that goes
+   * as a control message — the file tree, the terminal, the lecture — has its
+   * own answer, and that is `error`.
    */
   | { t: 'refused'; rule: GateRule; message: string }
   | { t: 'error'; message: string }
   /**
-   * Ответ на пульс, и заодно часы сервера.
+   * The answer to the heartbeat, and the server's clock along with it.
    *
-   * `startedAt` на ячейке — серверное время, а секундомер тикает в браузере.
-   * Вычесть одно из другого без поправки значит показать «40.0s» на только что
-   * запущенной ячейке у того, чьи часы спешат, и застывший «0.0s» у того, чьи
-   * отстают, — секундомер, который стоит на работающей ячейке. Одно поле на
-   * сообщении, которое и так ходит туда-обратно, снимает оба случая.
+   * `startedAt` on a cell is server time, while the stopwatch ticks in the
+   * browser. Subtracting one from the other without a correction means showing
+   * "40.0s" on a just-started cell to someone whose clock runs fast, and a
+   * frozen "0.0s" to someone whose clock runs slow — a stopwatch standing
+   * still on a working cell. One field on a message that goes back and forth
+   * anyway removes both cases.
    */
   | { t: 'pong'; now: number }
   /**
-   * Ответ на `complete` — с тем же номером, что был в вопросе.
+   * The answer to `complete` — with the same number as in the question.
    *
-   * Пустой список — законный ответ, и он же ответ на всякий отказ: ядро
-   * занято, ядра нет вовсе, право не дано, вопросов больше, чем позволено.
-   * Слов об отказе тут нет намеренно. Подсказка — это фон набора, и тост «в
-   * этой комнате запускает преподаватель» на каждую набранную точку был бы
-   * наказанием за печатание, а не объяснением правила: про правило говорит
-   * серая кнопка «запустить», у которой для этого есть место.
+   * An empty list is a legitimate answer, and it is also the answer to every
+   * refusal: the kernel is busy, there is no kernel at all, the right is not
+   * granted, there are more questions than allowed. There are deliberately no
+   * words about the refusal here. Completion is the background of typing, and
+   * a toast "in this room the teacher runs things" on every typed dot would be
+   * a punishment for typing, not an explanation of the rule: the rule is told
+   * by the gray "run" button, which has room for that.
    *
-   * `start`/`end` — какой кусок кода замена собой заменяет; их считает ядро
-   * (`cursor_start`/`cursor_end`), и по ним редактор понимает, дописывать ли к
-   * `df.` или заменять начатое слово.
+   * `start`/`end` — which piece of code the replacement replaces; the kernel
+   * computes them (`cursor_start`/`cursor_end`), and by them the editor
+   * understands whether to append to `df.` or to replace the word begun.
    */
   | {
       t: 'complete:reply'
@@ -1168,12 +1252,14 @@ export type ControlServerMessage =
       end: number
     }
   /**
-   * Ответ на `inspect`. `found: false` — сказать нечего, и это не ошибка.
+   * The answer to `inspect`. `found: false` — nothing to say, and that is not
+   * an error.
    *
-   * `reason` — ПОЧЕМУ нечего (`InspectMiss`), и поле необязательное нарочно:
-   * старый клиент его не читает и ведёт себя как вёл, а новый вместо молчания
-   * говорит одну приглушённую строку. Поле есть только у промаха: там, где
-   * `found: true`, объяснять нечего.
+   * `reason` is WHY there is nothing (`InspectMiss`), and the field is
+   * optional on purpose: an old client does not read it and behaves as it
+   * did, while a new one says a single muted line instead of silence. The
+   * field exists only on a miss: where `found: true`, there is nothing to
+   * explain.
    */
   | {
       t: 'inspect:reply'
@@ -1181,105 +1267,113 @@ export type ControlServerMessage =
       found: boolean
       text?: string
       reason?: InspectMiss
-      /** Ответ на `brief`: тип и размер значения. См. `BriefValue`. */
+      /** The answer to `brief`: the value's type and size. See `BriefValue`. */
       brief?: BriefValue
     }
   /**
-   * Ответ на `define`: куда идти — или почему некуда.
+   * The answer to `define`: where to go — or why there is nowhere.
    *
-   * Ровно одно из двух полей. Молчанием, как `complete`, здесь отделаться
-   * нельзя: дополнение — фон набора, а переход к определению человек ЗОВЁТ,
-   * и жест, не сделавший ничего, читается как поломка. Поэтому у каждого
-   * «некуда» своя причина и свои слова — см. `DefinitionMiss`.
+   * Exactly one of the two fields. Silence, as with `complete`, will not do
+   * here: completion is the background of typing, while a person CALLS for a
+   * jump to a definition, and a gesture that did nothing reads as a breakage.
+   * So each "nowhere" has its own reason and its own words — see
+   * `DefinitionMiss`.
    */
   | { t: 'define:reply'; id: number; hit?: DefinitionHit; miss?: DefinitionMiss }
 
 import type { OracleMode } from './admin.js'
 
-/* ---------------------------------------------------------------- консилиум */
+/* ------------------------------------------------------------------ council */
 
 /**
- * Что известно о попытке после запуска.
+ * What is known about an attempt after a run.
  *
- * Отдельная запись, а не поля общей ячейки: вывод попытки ложится К ПОПЫТКЕ, а
- * общая ячейка остаётся тем, что показал преподаватель. `by` — кто нажал:
- * преподаватель (обычный путь) или сам автор (при включённой ручке).
+ * A separate record, not fields of the shared cell: the attempt's output goes
+ * TO THE ATTEMPT, and the shared cell stays what the teacher showed. `by` is
+ * who pressed: the teacher (the usual path) or the author themselves (with the
+ * knob on).
  */
 export interface CouncilRun {
   state: Extract<CellState, 'queued' | 'running' | 'ok' | 'error'>
   outputs: CellOutput[]
   execCount: number | null
-  /** Сколько шёл настоящий запуск; `null`, пока идёт или если прервали. */
+  /** How long the actual run took; `null` while it is going or if it was interrupted. */
   ranMs: number | null
-  /** Серверные часы начала — для строки «запускал преподаватель · 14:36». */
+  /** The server clock at the start — for the line "run by the teacher · 14:36". */
   startedAt: number
   by: 'host' | 'author'
   /**
-   * Запуск остановил сервер сам: он шёл дольше предела из регламента ячейки
-   * (notebook.ts · CouncilSettings.runLimitSec). Число — тот предел в секундах,
-   * который сработал: регламент с тех пор могли поменять, а строка «остановлен:
-   * дольше 30 с» должна говорить про свой запуск.
+   * The server stopped the run by itself: it went on longer than the limit
+   * from the cell's rules (notebook.ts · CouncilSettings.runLimitSec). The
+   * number is the limit in seconds that fired: the rules may have changed
+   * since, and the line "stopped: longer than 30 s" must speak about its own
+   * run.
    *
-   * Отдельным полем, а не именем ошибки в выводе: по `ename` пришлось бы
-   * разбирать вывод, который в стопке часто и не едет (`outputsOmitted`), а
-   * список работ и очередь должны знать причину, не открывая карточку.
-   * `state` при этом — `'error'`, и вывод до остановки сохранён.
+   * A separate field, not an error name in the output: by `ename` one would
+   * have to parse output that often does not even travel in the stack
+   * (`outputsOmitted`), and the job list and the queue must know the reason
+   * without opening the card. `state` is then `'error'`, and the output up to
+   * the stop is kept.
    */
   timedOut?: number
   /**
-   * Вывод в этом кадре не поехал — он есть, но его попросили отдельно.
+   * The output did not travel in this frame — it exists, but it is requested
+   * separately.
    *
-   * Стопка целиком (`council:board`) везёт вывод каждой попытки, а в нём до 64
-   * КБ текста и до 2 МБ картинок (kernel/council.ts). На пятистах прогнанных
-   * попытках один кадр стал бы десятками мегабайт — и это на каждое
-   * переподключение пульта и каждый щелчок замка. Поэтому у сервера есть
-   * бюджет вывода на кадр: попытки сверх него едут с `outputs: []` и этим
-   * признаком, а вывод одной карточки пульт просит `council:attempt` — он
-   * приезжает дельтой `council:patch` целиком.
+   * The whole stack (`council:board`) carries every attempt's output, and that
+   * is up to 64 KB of text and up to 2 MB of pictures (kernel/council.ts).
+   * With five hundred attempts run, one frame would become tens of megabytes
+   * — and that on every console reconnect and every click of the lock. So the
+   * server has an output budget per frame: attempts beyond it travel with
+   * `outputs: []` and this flag, and the console asks for one card's output
+   * with `council:attempt` — it arrives whole as a `council:patch` delta.
    *
-   * Необязательное: `undefined` — «вывод здесь настоящий», как и было. В
-   * `council:mine` и в дельте по запросу его нет никогда.
+   * Optional: `undefined` means "the output here is real", as before. It is
+   * never present in `council:mine` or in the on-request delta.
    */
   outputsOmitted?: boolean
 }
 
-/** Ответ преподавателя автору или группе. Подпись — всегда преподавателя. */
+/** The teacher's answer to the author or to a group. Always signed by the teacher. */
 export interface CouncilReply {
   text: string
   at: number
-  /** Имя того, кто отвечал: в комнате может быть два преподавателя. */
+  /** The name of whoever answered: a room can have two teachers. */
   by: string
   /**
-   * Кому это письмо было адресовано: лично или всей группе.
+   * Whom this letter was addressed to: personally or to the whole group.
    *
-   * По нему письма и различаются в хранении: у попытки их два места — личное и
-   * групповое (server/src/council.ts · keeping), и новое письмо ложится в своё,
-   * не трогая соседнее. Преподаватель отвечал Пете «Проверьте знак», через
-   * минуту слал черновик оракула всей группе, ещё через минуту — поправку той
-   * же группе; личная строка у Пети переживает и то, и другое. Поле
-   * необязательное: у попыток, записанных до него, `to` нет, и такой ответ
-   * считается личным — то есть бережётся.
+   * Letters are told apart in storage by it: an attempt has two places for
+   * them — personal and group (server/src/council.ts · keeping) — and a new
+   * letter goes into its own, without touching the neighbor. The teacher
+   * answered Petya "Check the sign", a minute later sent the oracle's draft
+   * to the whole group, another minute later a correction to the same group;
+   * Petya's personal line survives both. The field is optional: attempts
+   * recorded before it have no `to`, and such an answer counts as personal —
+   * that is, it is kept.
    *
-   * `oracle` — третий вид: подсказка модели, которую попросил САМ автор, когда
-   * его попытка упала. Она лежит там же, где письма преподавателя, и по той же
-   * причине: это разговор об ЭТОЙ попытке, а не строка общей ленты — в ленту
-   * консилиум не пишет никогда, тексты попыток частные. Своим видом она держит
-   * себе одно место: следующая подсказка заменяет прошлую и не трогает ни
-   * личного письма, ни рассылки.
+   * `oracle` is the third kind: a model hint the author asked for THEMSELVES
+   * when their attempt failed. It lies in the same place as the teacher's
+   * letters, and for the same reason: it is a conversation about THIS
+   * attempt, not a line in the shared feed — the council never writes to the
+   * feed, attempt texts are private. By being its own kind it keeps one place
+   * for itself: the next hint replaces the previous one and touches neither
+   * the personal letter nor the group mailing.
    */
   to?: 'person' | 'group' | 'oracle'
 }
 
 /**
- * Письма преподавателя по попытке — по отдельности и в порядке отправки.
+ * The teacher's letters on an attempt — separately and in the order sent.
  *
- * Одна копия правила на обоих читателей: лист студента (CellView) и лента
- * пульта (PultLetters) рисуют письма построчно, и оба обязаны уметь
- * старый сервер. Там поля `replies` нет вовсе, и единственное, что приезжает,
- * — `reply`: те же письма склейкой. Клиент без запасного пути не показал бы
- * тогда ответа вообще — а ответ преподавателя студент ждёт.
+ * One copy of the rule for both readers: the student's sheet (CellView) and
+ * the console feed (PultLetters) draw letters line by line, and both must be
+ * able to handle an old server. There the `replies` field does not exist at
+ * all, and the only thing that arrives is `reply`: the same letters glued
+ * together. A client without the fallback would then show no answer at all —
+ * and the student is waiting for the teacher's answer.
  *
- * Пустой список — «писем нет»: рисовать нечего, и строка не заводится.
+ * An empty list means "no letters": nothing to draw, and no line is created.
  */
 export function councilLetters(
   attempt: { reply: CouncilReply | null; replies?: readonly CouncilReply[] } | null | undefined,
@@ -1289,29 +1383,31 @@ export function councilLetters(
 }
 
 /**
- * Состояние попытки одним словом — чип на карточке и цвет черты под сегментом.
+ * The attempt's state in one word — the chip on the card and the color of the
+ * line under the segment.
  *
- *   unrun   — не запускали и не отмечали (серая черта, «не запускали»)
- *   ran     — запуск прошёл без исключения, отметки нет
- *   failed  — запуск упал (красная черта; в чипе — имя исключения)
- *   correct — преподаватель отметил «верно» (зелёная)
- *   wrong   — преподаватель отметил «неверно» (охра)
+ *   unrun   — not run and not marked (gray line, "not run")
+ *   ran     — the run went through without an exception, no mark
+ *   failed  — the run failed (red line; the chip shows the exception name)
+ *   correct — the teacher marked it "correct" (green)
+ *   wrong   — the teacher marked it "wrong" (ochre)
  *
- * Отметка преподавателя сильнее запуска: `correct`/`wrong` стоят и над упавшим
- * запуском, потому что решение о верности — его, а не ядра.
+ * The teacher's mark beats the run: `correct`/`wrong` stand even over a failed
+ * run, because the decision about correctness is theirs, not the kernel's.
  */
 export type CouncilStatus = 'unrun' | 'ran' | 'failed' | 'correct' | 'wrong'
 
 /**
- * Состояние группы по состояниям её членов — одно место на пульт, сервер и
- * оракула. По одному представителю нельзя: преподаватель стрелкой попадает на
- * любого члена группы, и «Верно» или TypeError на его карточке иначе не
- * доходили бы ни до черты под сегментом, ни до чипа в сводке, а оракул считал
- * бы группу иначе, чем пульт.
+ * A group's state from its members' states — one place for the console, the
+ * server and the oracle. It cannot go by one representative: the teacher
+ * lands with an arrow on any member of the group, and a "Correct" or a
+ * TypeError on their card would otherwise reach neither the line under the
+ * segment nor the chip in the summary, and the oracle would count the group
+ * differently from the console.
  *
- * Отметка преподавателя сильнее запуска (correct, потом wrong); из запусков
- * громче падение: у одного и того же текста в общем ядре исход зависит от
- * состояния, и красная черта честнее серой.
+ * The teacher's mark beats the run (correct, then wrong); among runs a
+ * failure is louder: for the same text in a shared kernel the outcome depends
+ * on the state, and a red line is more honest than a gray one.
  */
 export function groupStatus(statuses: readonly CouncilStatus[]): CouncilStatus {
   for (const wanted of ['correct', 'wrong', 'failed', 'ran'] as const) {
@@ -1320,7 +1416,7 @@ export function groupStatus(statuses: readonly CouncilStatus[]): CouncilStatus {
   return 'unrun'
 }
 
-/** Своя попытка — то, что видит студент. */
+/** One's own attempt — what the student sees. */
 export interface CouncilRunRequest {
   id: string
   requestedAt: number
@@ -1330,64 +1426,70 @@ export interface CouncilRunRequest {
 export interface CouncilMine {
   runRequest?: CouncilRunRequest | null
   text: string
-  /** Когда нажал «Сдать»; `null` — ещё пишет (или нажал «Изменить»). */
+  /** When they pressed "Submit"; `null` — still writing (or pressed "Edit"). */
   submittedAt: number | null
   updatedAt: number
-  /** Преподаватель показал этот вариант классу. */
+  /** The teacher showed this answer to the class. */
   shown: boolean
   correct: boolean | null
   /**
-   * Письма преподавателя одной строкой — совместимость и запасной вид.
+   * The teacher's letters as one line — compatibility and a fallback view.
    *
-   * Настоящее хранение — `replies` (личное и групповое рядом); здесь они
-   * склеены пустой строкой, а подпись и время — у последнего. Поле осталось
-   * обязательным, потому что его читают клиенты, которые про `replies` ещё не
-   * знают: им лучше увидеть оба письма в одном абзаце, чем потерять личное.
+   * The real storage is `replies` (personal and group side by side); here they
+   * are glued with an empty line, and the signature and time are the last
+   * one's. The field stayed required because clients that do not yet know
+   * about `replies` read it: they are better off seeing both letters in one
+   * paragraph than losing the personal one.
    */
   reply: CouncilReply | null
   /**
-   * Письма преподавателя по отдельности, в порядке отправки.
+   * The teacher's letters separately, in the order sent.
    *
-   * Их не больше двух: личное и групповое. Новое письмо ложится в своё место,
-   * не трогая соседнее, — иначе рассылка группе стирала бы личный ответ, а
-   * вернуть его нечем: у попыток истории версий нет (`CouncilReply.to`).
+   * There are no more than two: personal and group. A new letter goes into
+   * its own place without touching the neighbor — otherwise a group mailing
+   * would erase a personal answer, and there would be no way to bring it back:
+   * attempts have no version history (`CouncilReply.to`).
    *
-   * Необязательное: старый сервер поля не шлёт, и тогда клиент рисует `reply`.
+   * Optional: an old server does not send the field, and then the client draws
+   * `reply`.
    */
   replies?: CouncilReply[]
   run: CouncilRun | null
   /**
-   * Место в очереди на запуск, если запуск студентам включён и запуск ждёт:
-   * «вы 37-й». `null` — не в очереди.
+   * The place in the run queue, if runs for students are on and the run is
+   * waiting: "you are 37th". `null` — not in the queue.
    */
   queue: number | null
   /**
-   * С какой секунды (серверные часы) автор снова может запускать или просить
-   * запуск — пауза из регламента (notebook.ts · CouncilSettings.rerunPauseSec).
-   * `null` или в прошлом — можно сейчас. Право держит сервер: он откажет и без
-   * этого поля; поле — чтобы на месте кнопки стоял отсчёт, а не кнопка, которая
-   * отвечает отказом.
+   * From which second (server clock) the author may run or ask for a run
+   * again — the pause from the rules (notebook.ts ·
+   * CouncilSettings.rerunPauseSec). `null` or in the past — right now. The
+   * server holds the right: it will refuse even without this field; the field
+   * is there so that a countdown stands in place of the button rather than a
+   * button that answers with a refusal.
    */
   nextRunAt?: number | null
-  /** Консилиум на этой ячейке закрыт: текст остаётся черновиком, на сервер не идёт. */
+  /** The council on this cell is closed: the text stays a draft and does not go to the server. */
   closed: boolean
   /**
-   * ЗАДАНИЕ: общий текст ячейки в момент, когда замок перевели в консилиум.
+   * THE TASK: the cell's shared text at the moment the lock was switched to
+   * council.
    *
-   * Пустой лист засевается им, а не тем, что в ячейке лежит сейчас. Разница
-   * появляется после «Показать классу»: с этой секунды общий текст — уже чьё-то
-   * решение, и опоздавший (или просто перезагрузивший страницу) получал его
-   * стартовым текстом своего листа. Утечки в этом нет — решение и так на
-   * экране, — но задания у него в листе не оставалось, а «попытка» появлялась,
-   * и одно нажатие «Сдать» отправляло его в группу автора.
+   * An empty sheet is seeded with it, not with what lies in the cell now. The
+   * difference appears after "Show the class": from that second the shared
+   * text is already someone's solution, and a latecomer (or someone who just
+   * reloaded the page) got it as the starting text of their sheet. There is
+   * no leak in this — the solution is on the screen anyway — but no task
+   * remained on their sheet, while an "attempt" appeared, and a single press
+   * of "Submit" sent them into the author's group.
    *
-   * Необязательное: старый сервер поля не шлёт, и тогда клиент сеет как
-   * раньше — общим текстом.
+   * Optional: an old server does not send the field, and then the client
+   * seeds as before — with the shared text.
    */
   seed?: string
 }
 
-/** Одна попытка глазами преподавателя. */
+/** One attempt as the teacher sees it. */
 export interface CouncilAttempt {
   runRequest?: CouncilRunRequest | null
   participantId: string
@@ -1399,153 +1501,165 @@ export interface CouncilAttempt {
   updatedAt: number
   status: CouncilStatus
   run: CouncilRun | null
-  /** Склейка писем для старых клиентов — как в `CouncilMine.reply`. */
+  /** The glued letters for old clients — as in `CouncilMine.reply`. */
   reply: CouncilReply | null
-  /** Письма по отдельности: личное и групповое — как в `CouncilMine.replies`. */
+  /** The letters separately: personal and group — as in `CouncilMine.replies`. */
   replies?: CouncilReply[]
   correct: boolean | null
   shown: boolean
-  /** Ключ группы одинаковых решений (council-board.ts · groupAttempts). */
+  /** The key of the group of identical solutions (council-board.ts · groupAttempts). */
   groupKey: string
 }
 
 /**
- * Что сейчас на экране по этой ячейке — подписанная попытка, а не текст.
+ * What is on the screen for this cell right now — a signed attempt, not text.
  *
- * «Показать классу» раньше переписывал общий текст ячейки чужим решением от
- * имени преподавателя: заготовка исчезала у всех, в истории документа автором
- * значился ведущий, а на экране ничто не говорило, что это чьё-то решение.
- * Теперь показ — это ССЫЛКА рядом с ячейкой: текст никто не трогает, а комната
- * получает вот это — чья попытка, кто и когда её вывел, с каким выводом.
+ * "Show the class" used to overwrite the cell's shared text with someone
+ * else's solution on the teacher's behalf: the template disappeared for
+ * everyone, the document history named the host as the author, and nothing
+ * on the screen said it was someone's solution. Now showing is a LINK next to
+ * the cell: nobody touches the text, and the room gets this — whose attempt,
+ * who put it up and when, with what output.
  *
- * Едет ВСЕЙ комнате (`council:shown`), в отличие от стопки: показанное решение
- * и так на проекторе, скрывать его от тех, кто на него смотрит, нечего. Всё
- * остальное про чужие попытки по-прежнему знает один преподаватель.
+ * It goes to the WHOLE room (`council:shown`), unlike the stack: the shown
+ * solution is on the projector anyway, there is nothing to hide from those
+ * looking at it. Everything else about other people's attempts is still known
+ * only to the teacher.
  *
- * Своего идентификатора у попытки нет и не заводится: ключ — пара «ячейка и
- * человек» (council_attempts), а `cellId` стоит в самом кадре. Второе имя
- * того же самого однажды разошлось бы с первым.
+ * An attempt has no id of its own and none is introduced: the key is the
+ * "cell and person" pair (council_attempts), and `cellId` sits in the frame
+ * itself. A second name for the same thing would one day drift from the
+ * first.
  *
- * Имя — `null`, когда на ячейке выключена ручка `namesOnProjector`: тогда
- * подписывает `variant` («Вариант 12»), и не приезжает ни имени, ни цвета, ни
- * аватара — ни студенту, ни преподавателю в тетрадь. Не «приехало, но не
- * рисуем»: имя, доехавшее до чужого браузера, считается показанным.
+ * The name is `null` when the cell's `namesOnProjector` knob is off: then
+ * `variant` signs it ("Answer 12"), and neither the name, nor the color, nor
+ * the avatar arrive — neither to the student nor to the teacher in the
+ * notebook. Not "arrived, but we do not draw it": a name that reached someone
+ * else's browser counts as shown.
  */
 export interface CouncilShown {
   participantId: string
   /**
-   * Номер варианта в этой ячейке — подпись вместо имени и при выключенных
-   * именах, и как способ сослаться на решение вслух («смотрим вариант 12»).
+   * The answer's number in this cell — the signature instead of the name when
+   * names are off, and a way to refer to a solution out loud ("let's look at
+   * answer 12").
    *
-   * Присваивается НА ПОКАЗЕ и дальше не переезжает: считается он по времени
-   * сдачи среди попыток ячейки, а времена эти живые — сосед сдал, передумал,
-   * сдал снова, — и номер на проекторе менялся бы от чужого нажатия.
+   * Assigned AT SHOWING and never moves after that: it is computed by
+   * submission time among the cell's attempts, and those times are live — a
+   * neighbor submitted, changed their mind, submitted again — and the number
+   * on the projector would change because of someone else's press.
    */
   variant: number
-  /** `null` — имена на проекторе выключены; подписывает `variant`. */
+  /** `null` — names on the projector are off; `variant` signs it. */
   name: string | null
   color: string | null
   avatar: string | null
   /**
-   * Имя того, кто показал, и когда — `null` у показа, начатого до того, как их
-   * стали записывать.
+   * The name of whoever showed it, and when — `null` for a showing started
+   * before these were recorded.
    *
-   * Комната, идущая прямо сейчас на прежней версии, знает только «эту попытку
-   * показывали»: подмену текста никто не подписывал. Плашка у неё соберётся
-   * без строки времени — и это честнее выдуманного часа.
+   * A room running right now on the previous version knows only "this attempt
+   * was shown": nobody signed the text substitution. Its badge will be
+   * assembled without the time line — and that is more honest than a made-up
+   * hour.
    */
   shownBy: string | null
   shownAt: number | null
-  /** Текст попытки на момент показа — тот, что читает класс. */
+  /** The attempt's text at the moment of showing — the one the class reads. */
   text: string
   /**
-   * Запуск ПРЕПОДАВАТЕЛЯ по этой попытке, если он был и досчитался.
+   * The TEACHER's run of this attempt, if there was one and it finished.
    *
-   * Свой запуск автора сюда не едет: под кодом на экране класс читает вывод,
-   * за который отвечает ведущий, — он же по нему и говорит «верно».
+   * The author's own run does not travel here: under the code on the screen
+   * the class reads output the host is responsible for — and the host also
+   * says "correct" based on it.
    */
   run: CouncilRun | null
-  /** Сколько ЕЩЁ сдали ровно то же самое (без автора); 0 — никого. */
+  /** How many OTHERS submitted exactly the same (not counting the author); 0 — nobody. */
   alsoWrote: number
   /**
-   * Отметка преподавателя по этой попытке — она же стоит в углу проекторной
-   * карточки. Классу это не новость: «верно» он в ту же секунду слышит вслух,
-   * а на экране оно держится дольше голоса.
+   * The teacher's mark on this attempt — it also stands in the corner of the
+   * projector card. It is no news to the class: they hear "correct" out loud
+   * that same second, and on the screen it lasts longer than the voice.
    */
   correct: boolean | null
 }
 
 /**
- * Ядро ТОЙ тетради, где живёт ячейка консилиума, — глазами преподавателя.
+ * The kernel of THE notebook the council cell lives in — as the teacher sees
+ * it.
  *
- * Отдельный кадр, потому что ответ на него нельзя собрать из стопки. Пульт
- * складывал «выполняется» и «в очереди» из попыток своей ячейки, и это была
- * половина правды: очередь у тетради ОДНА, в ней вперемешку стоят обычные
- * ячейки и попытки всех ячеек консилиума. Пока ядро держала чужая работа,
- * пульт писал «в этой ячейке сейчас ничего не выполняется» рядом с «в очереди:
- * 12» и прятал кнопку «Прервать» — ровно в ту минуту, когда она нужна.
+ * A separate frame, because the answer to it cannot be assembled from the
+ * stack. The console used to put "running" and "queued" together from its
+ * own cell's attempts, and that was half the truth: the notebook has ONE
+ * queue, in which ordinary cells and the attempts of all council cells stand
+ * mixed. While someone else's work held the kernel, the console wrote
+ * "nothing is running in this cell right now" next to "in queue: 12" and hid
+ * the "Interrupt" button — exactly in the minute it was needed.
  *
- * Едет ТОЛЬКО преподавателю и только про тетрадь его ячейки. Имена здесь
- * настоящие всегда; прятать их за «Вариант 12» при выключенных именах — дело
- * пульта, как и у остальных карточек стопки.
+ * Goes ONLY to the teacher and only about their cell's notebook. The names
+ * here are always real; hiding them behind "Answer 12" with names off is the
+ * console's business, as with the other cards of the stack.
  */
 export interface CouncilKernel {
-  /** Чем ядро занято; `null` — свободно (или в этой тетради ещё не запускали). */
+  /** What the kernel is busy with; `null` — free (or nothing has been run in this notebook yet). */
   busy: {
-    /** Обычная ячейка тетради или попытка консилиума. */
+    /** An ordinary cell of the notebook or a council attempt. */
     kind: 'cell' | 'attempt'
-    /** Номер ячейки в тетради, считая с единицы; `null` — ячейки уже нет. */
+    /** The cell's number in the notebook, counting from one; `null` — the cell is gone. */
     index: number | null
-    /** Кто нажал — у ячейки, автор — у попытки. Пусто, если имени не нашлось. */
+    /** Who pressed — for a cell; the author — for an attempt. Empty if no name was found. */
     name: string
-    /** Автор попытки: по нему пульт открывает работу. `null` у обычной ячейки. */
+    /** The attempt's author: the console opens the work by it. `null` for an ordinary cell. */
     participantId: string | null
-    /** Это попытка ТОЙ ЖЕ ячейки: пульт рисует её своей карточкой, как раньше. */
+    /** This is an attempt of THE SAME cell: the console draws it as its own card, as before. */
     here: boolean
     startedAt: number
-    /** Под каким пределом идёт, в секундах; `null` — без предела. */
+    /** Which limit it runs under, in seconds; `null` — no limit. */
     limitSec: number | null
     /**
-     * Два сигнала остановки ушли, а работа считается.
+     * Two stop signals went out, and the work is still computing.
      *
-     * Питон, ушедший в C, SIGINT не видит до возврата в интерпретатор. Сервер
-     * сигналит дважды и замолкает — дальше это шторм запросов к Jupyter без
-     * единого шанса помочь (kernel/index.ts · fireLimit). С этой секунды
-     * очередь тетради стоит намертво, и сказать об этом может только пульт.
+     * Python that went into C does not see SIGINT until it returns to the
+     * interpreter. The server signals twice and falls silent — beyond that it
+     * would be a storm of requests to Jupyter without a single chance to help
+     * (kernel/index.ts · fireLimit). From that second the notebook's queue is
+     * stuck dead, and only the console can say so.
      */
     stuck: boolean
   } | null
-  /** Вся очередь ТЕТРАДИ: и ячейки, и попытки любых её ячеек консилиума. */
+  /** The NOTEBOOK's whole queue: both cells and attempts of any of its council cells. */
   queued: number
 }
 
 /**
- * Группа одинаковых решений: тот же текст после нормализации (без пробелов,
- * пустых строк и комментариев). Считает клиент по полному списку попыток
- * (web/src/lib/council-board.ts) и сервер — для оракула, той же функцией.
+ * A group of identical solutions: the same text after normalization (without
+ * spaces, empty lines and comments). Computed by the client from the full list
+ * of attempts (web/src/lib/council-board.ts) and by the server — for the
+ * oracle, with the same function.
  */
 export interface CouncilGroup {
   key: string
   count: number
-  /** Имя группы одной строкой — от оракула; пока его нет, `null` (рисуют первую строку кода). */
+  /** The group's one-line name, from the oracle; `null` until then (the first code line is drawn). */
   label: string | null
-  /** Код представителя — то, что показывают в сводке. */
+  /** The representative's code — what is shown in the summary. */
   sample: string
-  /** По всем членам, не по представителю — `groupStatus`. */
+  /** Over all members, not the representative — `groupStatus`. */
   status: CouncilStatus
-  /** Кто-то из группы сейчас на экране: этот текст уже лежит в общей ячейке. */
+  /** Someone from the group is on the screen now: this text already lies in the shared cell. */
   shown: boolean
-  /** Представитель: самый ранний сдавший в группе. */
+  /** The representative: the earliest to submit in the group. */
   representative: string
   members: string[]
 }
 
 /**
- * Что нужно знать о попытке, чтобы сложить её в группу.
+ * What one needs to know about an attempt to put it into a group.
  *
- * Ровно те поля, которые есть и у карточки пульта (`CouncilAttempt`), и у
- * строки сервера, и у попытки, которую видит оракул. Ничего лишнего: имени,
- * цвета и аватара группировка не касается.
+ * Exactly the fields that the console card (`CouncilAttempt`), the server row
+ * and the attempt the oracle sees all have. Nothing extra: grouping does not
+ * concern name, color or avatar.
  */
 export interface GroupMember {
   participantId: string
@@ -1554,17 +1668,18 @@ export interface GroupMember {
   updatedAt: number
   status: CouncilStatus
   shown: boolean
-  /** Ключ группы — `normalizeAttempt(text)`, посчитанный один раз при записи. */
+  /** The group key — `normalizeAttempt(text)`, computed once on write. */
   groupKey: string
 }
 
 /**
- * Состояние попытки одним словом.
+ * The attempt's state in one word.
  *
- * Отметка преподавателя сильнее запуска: решение о верности — его, а не ядра
- * (см. `CouncilStatus`). Одна функция на сервер, пульт и оракула: три копии
- * этого правила уже расходились разрывом при равенстве, и это стоило бы
- * группе, подписанной чужим именем.
+ * The teacher's mark beats the run: the decision about correctness is theirs,
+ * not the kernel's (see `CouncilStatus`). One function for the server, the
+ * console and the oracle: three copies of this rule had already drifted apart
+ * in how they broke ties, and that would have cost a group signed with
+ * someone else's name.
  */
 export function attemptStatus(attempt: {
   run: CouncilRun | null
@@ -1578,14 +1693,14 @@ export function attemptStatus(attempt: {
 }
 
 /**
- * Порядок сдачи: раньше сдал — раньше в списке; в одну миллисекунду — кто
- * раньше написал, потом по id.
+ * Submission order: whoever submitted earlier comes earlier in the list; in
+ * the same millisecond — whoever wrote earlier, then by id.
  *
- * Разрыв при равенстве важнее, чем кажется: по нему выбирается представитель
- * группы, и две реализации с разными разрывами дают пульту и оракулу разных
- * представителей одной группы — то есть черновик ответа ложится не на ту
- * карточку. Ровно так и было: сервер и клиент ломали ничью по `updatedAt`,
- * оракул — нет.
+ * The tie-break matters more than it seems: the group's representative is
+ * chosen by it, and two implementations with different tie-breaks give the
+ * console and the oracle different representatives of the same group — that
+ * is, the draft answer lands on the wrong card. That is exactly how it was:
+ * the server and the client broke ties by `updatedAt`, the oracle did not.
  */
 export function bySubmission(
   a: Pick<GroupMember, 'submittedAt' | 'updatedAt' | 'participantId'>,
@@ -1599,20 +1714,23 @@ export function bySubmission(
 }
 
 /**
- * Группы одинаковых решений — только среди сданных, по готовому `groupKey`.
+ * Groups of identical solutions — only among submitted ones, by the
+ * ready-made `groupKey`.
  *
- * Одна функция на три места: стопку преподавателя (server/src/council.ts),
- * кадр для оракула (server/src/ai/council.ts) и пульт
- * (web/src/lib/council-board.ts). Пока их было три, каждая правка ключа,
- * ничьей или порядка должна была повториться трижды — и однажды не повторилась
- * бы: «так же ещё 311» разошлось бы с шириной сегмента, а черновик оракула лёг
- * бы не на ту группу.
+ * One function for three places: the teacher's stack (server/src/council.ts),
+ * the frame for the oracle (server/src/ai/council.ts) and the console
+ * (web/src/lib/council-board.ts). While there were three of them, every change
+ * to the key, the tie-break or the order had to be repeated three times — and
+ * one day it would not have been: "311 others answered the same" would have
+ * drifted from the width of the segment, and the oracle's draft would have
+ * landed on the wrong group.
  *
- * Только сданные: то, что человек ещё печатает, — не решение, а полуслово.
- * Представитель — самый ранний сдавший; состояние и «на экране» — по всем
- * членам (`groupStatus`); порядок — от большой группы к малой, при равенстве
- * раньше та, чей представитель сдал раньше, и потом по ключу, чтобы порядок не
- * плавал между двумя одинаковыми кадрами.
+ * Only submitted ones: what a person is still typing is not a solution but
+ * half a word. The representative is the earliest to submit; the state and
+ * "on screen" go over all members (`groupStatus`); the order is from a big
+ * group to a small one, on a tie the one whose representative submitted
+ * earlier goes first, and then by key, so that the order does not float
+ * between two identical frames.
  */
 export function groupAttempts<T extends GroupMember>(
   attempts: readonly T[],
@@ -1642,9 +1760,9 @@ export function groupAttempts<T extends GroupMember>(
       members: members.map((m) => m.participantId),
     })
   }
-  // Время представителя посчитано выше, а не искалось бы `find`-ом по всем
-  // попыткам на каждое сравнение: у пятисот попыток это сортировка, внутри
-  // которой прячется линейный поиск.
+  // The representative's time is computed above rather than looked up with
+  // `find` over all attempts on every comparison: with five hundred attempts
+  // that is a sort with a linear search hidden inside it.
   return groups.sort(
     (a, b) =>
       b.count - a.count ||
@@ -1654,112 +1772,123 @@ export function groupAttempts<T extends GroupMember>(
 }
 
 /**
- * Оракул о классе — состояние, которое хранит сервер и рисует вкладка пульта.
+ * The oracle on the class — the state the server keeps and the console tab
+ * draws.
  *
- * Спрашивают ТОЛЬКО рукой, и ответ всегда один: проза в ленте. Сводки по
- * группам одинаковых решений здесь больше нет — ни `summary` тремя абзацами,
- * ни `groupLabels`, ни `drafts`: преподаватель читает не шесть безымянных
- * групп, а класс поимённо, и письмо группе оказалось ответом не тому.
+ * Asked ONLY by hand, and the answer is always one: prose in the feed. There
+ * is no longer a summary by groups of identical solutions here — neither a
+ * three-paragraph `summary`, nor `groupLabels`, nor `drafts`: the teacher
+ * reads not six nameless groups but the class by name, and a letter to a
+ * group turned out to be an answer to the wrong person.
  *
- * `basedOn` — сколько попыток модель читала в последний раз; сдано на экране
- * столько-то, разница и есть «с тех пор сдали ещё N» (web/src/lib/
- * council-board.ts · oracleState/staleBy). Считается КЛИЕНТОМ: иначе сервер
- * обязан был бы слать `council:oracle` на каждое чужое «Сдать».
+ * `basedOn` is how many attempts the model read last time; so many are
+ * submitted on the screen, and the difference is exactly "N more submitted
+ * since then" (web/src/lib/council-board.ts · oracleState/staleBy). The CLIENT
+ * computes it: otherwise the server would have to send `council:oracle` on
+ * every "Submit" by anyone.
  */
 /**
- * Один ход ленты «вопрос → ответ»: что спросили о классе и что ответили.
+ * One turn of the "question → answer" feed: what was asked about the class and
+ * what was answered.
  *
- * `people` нужен ровно в одном случае: когда имена учащихся к модели НЕ едут
- * (настройка инстанса `sendNames` выключена). Тогда она видит людей метками
- * S1…SN, и этот словарь превращает `S7` в ответе в чип с именем студента (или
- * «Вариант N») и в кнопку, открывающую его работу. Нумерация живёт ровно один
- * вопрос, угадать её по ответу клиент не может — поэтому словарь считает
- * сервер при сборке кадра.
+ * `people` is needed in exactly one case: when students' names do NOT go to
+ * the model (the instance setting `sendNames` is off). Then it sees people as
+ * labels S1…SN, and this dictionary turns `S7` in the answer into a chip with
+ * the student's name (or "Answer N") and into a button that opens their work.
+ * The numbering lives for exactly one question, and the client cannot guess
+ * it from the answer — so the server computes the dictionary when it
+ * assembles the frame.
  *
- * При включённых именах (умолчание) словарь пустой: модель называет людей по
- * имени, и подсвечивает их пульт по составу комнаты
+ * With names on (the default) the dictionary is empty: the model calls people
+ * by name, and the console highlights them by the room's roster
  * (web/src/lib/council-oracle-answer.ts).
  *
- * Этот кадр едет ТОЛЬКО преподавателям (control.ts · toTeachers): и разметка
- * чужих работ, и разбор того, кто как решал, — не для класса.
+ * This frame goes ONLY to teachers (control.ts · toTeachers): both the markup
+ * of other people's work and the analysis of who solved it how are not for
+ * the class.
  */
 /**
- * Длина вопроса о классе — одно число на поле ввода и на маршрут.
+ * The length of a question about the class — one number for the input field
+ * and for the route.
  *
- * Пятьсот знаков — это «кто застрял и что им сказать», а не пересказ занятия:
- * кадр о классе и так везёт модели весь список, и длинный вопрос отъедает у
- * него место. Поле обрезает на вводе, сервер — на приёме: `maxlength` в
- * браузере держит только клавиатуру, но не вставку из буфера в чужой вкладке.
+ * Five hundred characters is "who is stuck and what to tell them", not a
+ * retelling of the class: the frame about the class already carries the whole
+ * list to the model, and a long question eats into its room. The field cuts
+ * on input, the server on receipt: `maxlength` in the browser holds back only
+ * the keyboard, not a paste from the clipboard in someone else's tab.
  */
 export const MAX_ORACLE_QUESTION = 500
 
 export interface CouncilOracleAnswer {
   id: string
-  /** О чём спросили — своими словами преподавателя или заготовкой пульта. */
+  /** What was asked — in the teacher's own words or as a console preset. */
   question: string
   text: string
   /**
-   * Почему ответа нет: модель не открыла поток, замолчала на середине, нажали
-   * «Стоп». `undefined`/`null` — обычный ответ.
+   * Why there is no answer: the model did not open the stream, fell silent
+   * halfway, someone pressed "Stop". `undefined`/`null` — an ordinary answer.
    *
-   * Ход остаётся в ленте и при отказе, и это не мелочь: на живом занятии
-   * 20.09 «Обновить сводку» висело до конца пары, а вопрос преподавателя
-   * исчезал вместе с отказом — спросить второй раз было нечего повторить, и
-   * даже понять, на что не ответили, было невозможно.
+   * The turn stays in the feed on a refusal too, and that is no small thing:
+   * at the live class on 20 Sep 2026 "Refresh summary" hung until the end of
+   * class, and the teacher's question disappeared together with the refusal
+   * — there was nothing to repeat for a second try, and it was impossible
+   * even to understand what had gone unanswered.
    */
   failed?: string | null
   askedAt: number
-  /** На каком классе отвечали: «сдали 5 · пишут 5» под ответом. */
+  /** Which class the answer was about: "5 submitted · 5 writing" under the answer. */
   basedOn: { submitted: number; drafts: number }
   /**
-   * Метка в тексте ответа → participantId. Ключи — `S1`, `S2`, …
+   * A label in the answer text → participantId. The keys are `S1`, `S2`, …
    *
-   * Пустой, когда имена уехали модели: тогда в ответе стоят имена, и чип
-   * собирается по составу комнаты, а не по словарю.
+   * Empty when the names went to the model: then the answer has names in it,
+   * and the chip is assembled from the room's roster, not from the dictionary.
    */
   people: Record<string, string>
 }
 
 export interface CouncilOracle {
   /**
-   * Три состояния, и все три сервер выставляет сам. Четвёртого — «отстала» —
-   * здесь нет намеренно: оно не про модель, а про то, сколько сдали после неё,
-   * и считается на месте (см. `basedOn`).
+   * Three states, and the server sets all three itself. A fourth — "stale" —
+   * is deliberately not here: it is not about the model but about how many
+   * submitted after it, and it is computed on the spot (see `basedOn`).
    */
   state: 'idle' | 'reading' | 'ready'
   askedAt: number | null
-  /** Сколько попыток модель читала. */
+  /** How many attempts the model read. */
   basedOn: number
   /**
-   * Почему не получилось. Дублирует причину, которая уже стоит в ленте у
-   * своего вопроса (`CouncilOracleAnswer.failed`): плашка сверху — для того,
-   * кто смотрит на вкладку, строка в ленте — для того, кто вернулся к ней
-   * через минуту и ищет, на что именно не ответили.
+   * Why it did not work. Duplicates the reason that already stands in the
+   * feed at its question (`CouncilOracleAnswer.failed`): the banner on top is
+   * for whoever is looking at the tab, the line in the feed for whoever came
+   * back to it a minute later and is looking for what exactly went
+   * unanswered.
    */
   error: string | null
   /**
-   * Лента вопросов о классе, старые впереди; сервер держит последние шесть.
+   * The feed of questions about the class, oldest first; the server keeps the
+   * last six.
    *
-   * Шесть — это экран разговора на паре и потолок кадра: каждый ответ везёт
-   * свой словарь меток, и лента без предела росла бы в каждом `council:oracle`
-   * до конца занятия.
+   * Six is a screen of conversation in class and the frame's ceiling: every
+   * answer carries its own label dictionary, and a feed without a limit would
+   * grow in every `council:oracle` until the end of class.
    *
-   * Строки `council_oracle`, записанные до этого поля, читаются пустой лентой
-   * (server/src/council.ts · normalizeOracle) — семинар, идущий прямо сейчас,
-   * не должен спотыкаться об обновление.
+   * `council_oracle` rows written before this field read as an empty feed
+   * (server/src/council.ts · normalizeOracle) — a seminar running right now
+   * must not stumble over the update.
    */
   answers: CouncilOracleAnswer[]
   /**
-   * Вопрос, на который читают прямо сейчас, — чтобы в ленте он стоял над
-   * скелетом ответа, а не появлялся вместе с ним.
+   * The question being read right now — so that in the feed it stands above
+   * the answer's skeleton instead of appearing together with it.
    *
-   * `null` и при `state === 'reading'` — это законно: так читается СВОДКА по
-   * решениям, у которой вопроса нет.
+   * `null` even with `state === 'reading'` is legitimate: that is how a
+   * SUMMARY of the solutions is read, which has no question.
    */
   pending: { question: string; askedAt: number } | null
 }
 
-/** Стопка целиком — то, что приезжает преподавателю. */
+/** The whole stack — what arrives for the teacher. */
 export interface CouncilBoard {
   lock: CellLock
   settings: CouncilSettings
@@ -1773,9 +1902,10 @@ export interface CouncilBoard {
   }
   attempts: CouncilAttempt[]
   /**
-   * Группы на момент полного кадра — для теста и для взгляда снаружи; пульт
-   * считает их сам по `attempts` (council-board.ts · groupAttempts), поэтому
-   * `council:patch` их не везёт и после дельты это поле устаревает.
+   * The groups at the time of the full frame — for tests and for an outside
+   * look; the console computes them itself from `attempts` (council-board.ts ·
+   * groupAttempts), so `council:patch` does not carry them, and after a delta
+   * this field goes stale.
    */
   groups: CouncilGroup[]
   oracle: CouncilOracle | null
@@ -1813,36 +1943,36 @@ export interface AiAskRequest {
   message: string
   action?: AiAction
   /**
-   * Ячейка, к которой ход ПРИВЯЗАН: та, куда ляжет предложенная правка.
+   * The cell the turn is ATTACHED to: the one the proposed edit will land in.
    *
-   * Одна, и это не пережиток: предложение переписывает один текст, у него одна
-   * база и одно решение на всех. Ход про несколько ячеек называет их в
-   * `cellIds`, а править предлагает по-прежнему одной.
+   * One, and that is not a leftover: a proposal rewrites one text, it has one
+   * base and one decision for everyone. A turn about several cells names them
+   * in `cellIds`, and still proposes edits to just one.
    */
   cellId?: string | null
   /**
-   * Ячейки, на которых просят сосредоточиться, — выделение спрашивающего.
+   * The cells one asks to focus on — the asker's selection.
    *
-   * Оракул и без них видит тетради целиком; это не «что ему показать», а «на
-   * что смотреть в первую очередь». Пусто — смотрит на всё сразу, и это
-   * обычный случай.
+   * The oracle sees the notebooks whole even without them; this is not "what
+   * to show it" but "what to look at first". Empty means it looks at
+   * everything at once, and that is the ordinary case.
    */
   cellIds?: string[]
   /**
-   * Спросить или сделать.
+   * Ask or do.
    *
-   * `agent` — это не «тот же вопрос, но подробнее»: оракул сам читает папку,
-   * правит файлы и запускает скрипты. Отдельное правило комнаты, отдельная
-   * лента шагов и отдельная кнопка отмены — см. `RoomRules.agent`.
+   * `agent` is not "the same question, but in more detail": the oracle reads
+   * the folder, edits files and runs scripts by itself. A separate room rule,
+   * a separate step feed and a separate undo button — see `RoomRules.agent`.
    */
   mode?: 'ask' | 'agent'
   /**
-   * Сколько думать перед ответом — на ЭТОТ вопрос.
+   * How long to think before answering — for THIS question.
    *
-   * Пусто — умолчание инстанса (`OracleSettings.reasoningEffort`), и тогда
-   * провайдеру не уезжает ни одного нового поля. Понизить уровень может любой
-   * участник, поднять выше инстансового — только преподаватель: ждать и
-   * платить за «подробно» решает тот, кто ведёт пару.
+   * Empty means the instance default (`OracleSettings.reasoningEffort`), and
+   * then not a single new field goes to the provider. Any participant may
+   * lower the level, only the teacher may raise it above the instance's:
+   * waiting and paying for "detailed" is decided by whoever runs the class.
    */
   effort?: ReasoningEffort
 }
@@ -1901,38 +2031,40 @@ export interface AwarenessUser {
   /** True while their cursor is in the terminal. */
   inTerminal?: boolean
   /**
-   * Какой файл человек правит прямо сейчас — путь, или null, если тетрадь.
+   * Which file the person is editing right now — a path, or null if it is the
+   * notebook.
    *
-   * В присутствии, как и `viewing`, и по той же причине: место работы
-   * эфемерно, оно ничего не значит после ухода вкладки и не должно попадать ни
-   * в историю версий, ни под Ctrl+Z. Панель файлов рисует по нему точки «кто
-   * здесь», а редактор — строку «Ада правит здесь».
+   * In presence, like `viewing`, and for the same reason: the place of work is
+   * ephemeral, it means nothing after the tab leaves and must not get into
+   * version history or under Ctrl+Z. The files panel draws "who is here" dots
+   * from it, and the editor the line "Ada is editing here".
    *
-   * Курсоры внутри самого файла сюда не входят: они живут в присутствии ТОГО
-   * документа, который открыт, и до комнаты не доходят вовсе.
+   * Cursors inside the file itself are not included here: they live in the
+   * presence of THE document that is open, and never reach the room at all.
    */
   editing?: string | null
   /**
-   * Какой документ человек смотрит и где он в нём.
+   * Which document the person is looking at and where they are in it.
    *
-   * В присутствии, а не в общем документе, и это выбор, а не удобство. Место в
-   * PDF ровно так же эфемерно, как курсор в ячейке: оно ничего не значит после
-   * того, как человек ушёл, его незачем возвращать по Ctrl+Z и незачем
-   * записывать в историю версий — иначе лента заполнится строками «преподаватель
-   * пролистал». Присутствие уже рассылается всей комнате и уже чинится сервером
-   * (см. `pinRole`, `ownAwareness`), так что новых путей записи не появляется.
+   * In presence, not in the shared document, and that is a choice, not a
+   * convenience. A place in a PDF is exactly as ephemeral as a cursor in a
+   * cell: it means nothing after the person has left, there is no reason to
+   * bring it back with Ctrl+Z and no reason to record it in version history —
+   * otherwise the timeline would fill up with rows "the teacher scrolled".
+   * Presence is already broadcast to the whole room and already repaired by
+   * the server (see `pinRole`, `ownAwareness`), so no new write paths appear.
    *
-   * Цена честная: при перезагрузке страницы место теряется, и если
-   * преподаватель вышел — идти не за кем. И то и другое верно по существу.
+   * The price is honest: on a page reload the place is lost, and if the
+   * teacher left there is nobody to follow. Both are right in substance.
    */
   viewing?: {
     file: string
     page: number
     /**
-     * Место на странице долей её высоты, а не пикселями.
+     * The place on the page as a fraction of its height, not in pixels.
      *
-     * У смотрящего своя ширина колонки и свой зум: пиксель преподавателя
-     * приходится на другую строку. Доля переносится.
+     * The viewer has their own column width and their own zoom: the teacher's
+     * pixel falls on a different line. A fraction carries over.
      */
     y: number
   } | null
@@ -1941,31 +2073,34 @@ export interface AwarenessUser {
 /** Per-viewer preference, never shared with the room. */
 export type ThemeName = 'light' | 'dark'
 
-/* ------------------------------------------------- «комнаты нет» словами */
+/* ----------------------------------------------- "no such room" in words */
 
 /**
- * Что сервер отвечает про несуществующий семинар.
+ * What the server answers about a nonexistent seminar.
  *
- * Одна строка на весь продукт, потому что по ней принимают необратимое: 404
- * от НАШЕГО API означает «комнаты больше нет» — местную копию тетради можно
- * стирать, — а 404 от чего угодно перед ним (ретранслятор без подключённого
- * frpc, статика с index.html-на-всё, неверный upstream) означает только, что
- * бэкенда сейчас не слышно. Голый код состояния этих двух случаев не
- * различает, и пока клиент судил по нему, отвал туннеля стирал офлайн-набор у
- * всего класса и объявлял живой семинар удалённым.
+ * One string for the whole product, because something irreversible is decided
+ * by it: a 404 from OUR API means "the room is gone" — the local copy of the
+ * notebook may be erased — while a 404 from anything in front of it (a relay
+ * without a connected frpc, static hosting with index.html-for-everything, a
+ * wrong upstream) only means that the backend cannot be heard right now. A
+ * bare status code does not tell these two cases apart, and while the client
+ * judged by it, a tunnel dropping erased the offline typing of the whole
+ * class and declared a live seminar deleted.
  *
- * Отсюда её берут и сервер (тело ответа), и клиент (проверка) — чтобы копия
- * была одна и они не разошлись молча.
+ * Both the server (the response body) and the client (the check) take it from
+ * here — so that there is one copy and they do not silently drift apart.
  */
 export const SESSION_MISSING = 'session not found'
 
 /**
- * Это наш 404 — тот, где сервер прямо сказал, что такой комнаты у него нет.
+ * This is our 404 — the one where the server said plainly that it has no such
+ * room.
  *
- * Структурно, а не по классу ошибки: `ApiError` живёт в браузере, а правило
- * общее. Всё, чего оно требует, — код 404 и наши же слова в теле; ответ без
- * тела приезжает с фразой вида «Not found (404)» и под правило не подходит,
- * то есть считается обрывом связи, а не приговором комнате.
+ * Structurally, not by error class: `ApiError` lives in the browser, while the
+ * rule is shared. All it requires is the 404 code and our own words in the
+ * body; an answer without a body arrives with a phrase like "Not found (404)"
+ * and does not fit the rule, that is, it counts as a lost connection, not a
+ * verdict on the room.
  */
 export function saysSessionMissing(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false
@@ -1973,34 +2108,37 @@ export function saysSessionMissing(error: unknown): boolean {
   return status === 404 && message === SESSION_MISSING
 }
 
-/* ------------------------------------------- «а меня-то пускают» словами */
+/* ------------------------------------------- "but am I let in?" in words */
 
 /**
- * Что комната отвечает про предъявленный ключ: годен ли он и не закрыт ли вход.
+ * What the room answers about a presented key: whether it is valid and whether
+ * entry is closed.
  *
- * Заведено ради одного места — вкладки, которой отказали в рукопожатии. Сокет
- * закрывается ДО апгрейда и без слов (браузер видит 1006), и клиенту остаётся
- * гадать: комнаты нет, ключ протух или преподаватель закрыл доступ. Пока он
- * гадал по неавторизованному `GET /api/sessions/:id`, забаненный после
- * перезагрузки читал «место истекло», терял свою личность в комнате и на
- * следующий день входил новым участником — с отвязанными попытками и авторством.
+ * Introduced for one place — a tab refused at the handshake. The socket closes
+ * BEFORE the upgrade and without words (the browser sees 1006), and the client
+ * is left guessing: there is no room, the key has expired, or the teacher has
+ * closed access. While it guessed by an unauthorized `GET /api/sessions/:id`,
+ * a banned person after a reload read "the place has expired", lost their
+ * identity in the room and the next day came in as a new participant — with
+ * their attempts and authorship unlinked.
  *
- * Три разных ответа на три разных случая, и ни одного «наверное»:
- *   • `ban` — вход закрыт человеком, до этого момента;
- *   • `tokenValid: false` — ключ этой комнатой больше не признаётся;
- *   • всё остальное (404 нашими словами, отказ сети, пятисотка) — не ответ
- *     вовсе, и вести себя по нему надо как при обрыве связи.
+ * Three different answers for three different cases, and not a single
+ * "probably":
+ *   • `ban` — entry is closed by a person, until this moment;
+ *   • `tokenValid: false` — this room no longer recognizes the key;
+ *   • everything else (a 404 in our words, a network failure, a 500) is not an
+ *     answer at all, and should be treated like a lost connection.
  *
- * Отвечает и БЕЗ ключа: `tokenValid: false` без бана — это «предъявите ключ», а
- * не «вас удалили».
+ * It answers WITHOUT a key too: `tokenValid: false` without a ban means "show
+ * your key", not "you have been removed".
  */
 export interface SessionMe {
-  /** Ключ, предъявленный в заголовке, комната признаёт прямо сейчас. */
+  /** The room recognizes the key presented in the header right now. */
   tokenValid: boolean
-  /** Вход закрыт преподавателем до этого момента, или null. */
+  /** Entry is closed by the teacher until this moment, or null. */
   ban: { until: number } | null
-  /** Кем комната считает предъявителя ключа, или null. */
+  /** Who the room considers the key's bearer to be, or null. */
   participantId: string | null
-  /** Роль, которой сервер будет действовать на этом ключе, или null. */
+  /** The role the server will act with on this key, or null. */
   role: ParticipantRole | null
 }

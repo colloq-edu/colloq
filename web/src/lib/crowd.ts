@@ -1,52 +1,55 @@
 
 /**
- * Очередь у двери.
+ * A queue at the door.
  *
- * Комната растёт только от НОВЫХ людей, и сервер считает их поштучно: слишком
- * много входов за минуту — и следующему отвечают 429 (`tooManyArrivals` в
- * routes/sessions.ts). Предел высокий, но он есть, а поток на входе неровный:
- * пара начинается в 18:10, и вся группа открывает ссылку в одну и ту же
- * минуту — то есть первыми в отказ попадают ровно те, кто пришёл вовремя.
+ * A room grows only from NEW people, and the server counts them one by one:
+ * too many entries in a minute — and the next one gets a 429
+ * (`tooManyArrivals` in routes/sessions.ts). The limit is high, but it exists,
+ * and the inflow is uneven: a class starts at 18:10, and the whole group opens
+ * the link in the same minute — so the first to be refused are exactly those
+ * who came on time.
  *
- * Человеку в этот момент сообщать нечего: он ничего не сделал неправильно и
- * ничего не может сделать правильнее, кроме как нажать ту же кнопку ещё раз.
- * Значит нажать должна вкладка — один раз, вслух и с концом: повтор без конца
- * превращает переполненную комнату в ту, куда «не пускает совсем», и делает
- * это молча.
+ * There is nothing to tell the person at that moment: they did nothing wrong
+ * and can do nothing better except press the same button again. So the tab
+ * must press it — once, out loud and with an end: an endless retry turns a
+ * crowded room into one that "does not let you in at all", and does it
+ * silently.
  */
 import { ApiError } from './api'
 import { saysSessionMissing } from '@shared/protocol'
 
 /**
- * Пауза перед повтором.
+ * The pause before a retry.
  *
- * Секунды, а не миллисекунды: окно счёта у сервера — минута, и мгновенный
- * повтор упёрся бы в тот же счётчик, только быстрее. Четыре секунды — это ещё
- * ожидание, а не зависшая страница, и их хватает, чтобы всплеск на входе
- * рассосался.
+ * Seconds, not milliseconds: the server's counting window is a minute, and an
+ * instant retry would hit the same counter, only faster. Four seconds is still
+ * waiting rather than a frozen page, and it is enough for the burst at the
+ * entrance to disperse.
  */
 export const CROWD_WAIT_MS = 4000
 
-/** Строка, которую человек читает, пока вкладка ждёт. */
+/** The line the person reads while the tab waits. */
 export const CROWD_NOTICE = "В комнату сейчас заходит много людей — пробую ещё раз…"
 
 /**
- * Сколько раз вкладка стучится в дверь сама.
+ * How many times the tab knocks at the door by itself.
  *
- * Два: первый вход и один повтор. Дальше — прежний отказ словами сервера и
- * кнопка, потому что решение ждать дальше принимает человек, а не программа.
+ * Two: the first entry and one retry. After that — the usual refusal in the
+ * server's words and a button, because the decision to keep waiting is made
+ * by a person, not by the program.
  */
 const KNOCKS = 2
 
 /**
- * Ждать ли перед следующей попыткой войти — и сколько.
+ * Whether to wait before the next attempt to enter — and how long.
  *
- * `null` значит «показывать отказ»: это либо не тот отказ (имя занято, комнаты
- * нет, связи нет), либо повтор уже был. Отделено от экрана, потому что «ещё
- * раз» и «хватит» — единственное решение во всей этой истории.
+ * `null` means "show the refusal": either it is the wrong kind of refusal (the
+ * name is taken, there is no room, there is no connection), or the retry has
+ * already happened. Kept apart from the screen, because "once more" and
+ * "enough" is the only decision in this whole story.
  *
- * @param cause — чем ответил `api.join`.
- * @param tried — сколько попыток уже сделано, включая только что упавшую.
+ * @param cause — what `api.join` answered with.
+ * @param tried — how many attempts have been made, including the one that just failed.
  */
 export function retryJoinIn(cause: unknown, tried: number): number | null {
   if (!(cause instanceof ApiError) || tried >= KNOCKS) return null

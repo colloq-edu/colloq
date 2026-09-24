@@ -2,19 +2,21 @@ import { tr } from '@shared/i18n'
 /**
  * One Python kernel per NOTEBOOK, and the queue in front of each.
  *
- * Тетрадь — это ноутбук, а ноутбуки не делят переменных. Лекция и семинар
- * идут в одной комнате и в одном занятии, но `df`, загруженный на лекции, в
- * семинаре появляться не должен: это разные файлы и разная работа. Поэтому
- * область исполнения здесь — пара (занятие, корень тетради), а не занятие: у
- * каждой свой процесс Python, своя очередь и свой счёт. Считаются они
- * ПАРАЛЛЕЛЬНО — два ядра, два насоса, — и это видно: пока лекция думает над
- * обучением, семинар отвечает.
+ * A notebook here is a Jupyter notebook, and notebooks do not share variables.
+ * A lecture and a seminar run in one room and one class, but a `df` loaded in
+ * the lecture must not show up in the seminar: these are different files and
+ * different work. So the execution scope here is the pair (class, notebook
+ * root), not the class: each has its own Python process, its own queue and its
+ * own execution counter. They compute IN PARALLEL (two kernels, two pumps),
+ * and it shows: while the lecture is thinking over training, the seminar
+ * answers.
  *
- * Где живёт ядро — второй вопрос, и у него другой ответ. Тетради занятия
- * считаются в контейнере комнаты; личные тетради студентов — в отдельном
- * контейнере без GPU (`bookHasOwnKernel`, pool.ts · KernelRole), потому что
- * карта выдаётся контейнеру целиком, а OOM-killer в общем лимите выбирает
- * самый тяжёлый процесс — то есть ядро преподавателя с датасетом.
+ * Where a kernel lives is a second question, and it has a different answer.
+ * The class's notebooks compute in the room container; students' personal
+ * notebooks in a separate container without a GPU (`bookHasOwnKernel`,
+ * pool.ts · KernelRole), because a GPU is handed to a container whole, and the
+ * OOM killer under a shared limit picks the heaviest process, i.e. the
+ * teacher's kernel with the dataset.
  *
  * The room shares a kernel per notebook, so the interesting part of this file
  * is not talking to Jupyter — jupyter.ts does that — but deciding whose turn it
@@ -28,9 +30,9 @@ import { tr } from '@shared/i18n'
  * the browser that pressed the button: cell state, execution counts, output,
  * the queue, the kernel status and the notes in the terminal's kernel log. That
  * is why a student who joins twenty minutes late sees the whole history, and
- * why two people watching the same run see byte-identical output. Состояние
- * ядер лежит там по тетрадям (`meta.kernels`), а у тетради комнаты ещё и
- * зеркалится в прежние ключи — см. `setStatus`.
+ * why two people watching the same run see byte-identical output. The kernel
+ * state lives there per notebook (`meta.kernels`), and for the room's notebook
+ * it is also mirrored into the old keys; see `setStatus`.
  *
  * A press of Run is a *batch* — one cell for Run, thirty for Run All. A failure
  * stops the rest of its own batch and nothing else, so somebody else's queued
@@ -175,14 +177,16 @@ interface QueueItem {
    */
   batch: number
   /**
-   * Попытка консилиума, а не ячейка.
+   * A council attempt, not a cell.
    *
-   * Тот же насос и та же очередь — ядро у тетради одно, и «запустить попытку» стоит в
-   * ней рядом с ячейками, в порядке нажатий. Но `cellId` у такой записи
-   * синтетический (`councilQueueId`): в документе такой ячейки нет, и всё, что
-   * пишет в документ по имени ячейки — состояние, вывод, зеркало очереди, —
-   * находит пустоту и молчит. Вывод идёт в буфер (kernel/council.ts), а не в
-   * общую ячейку: показывать его залу решает преподаватель, а не ядро.
+   * The same pump and the same queue: a notebook has one kernel, and "run the
+   * attempt" stands in its queue next to cells, in the order of presses. But
+   * the `cellId` of such an entry is synthetic (`councilQueueId`): there is no
+   * such cell in the document, and everything that writes to the document by
+   * cell name (state, output, the queue mirror) finds nothing and stays silent.
+   * The output goes into a buffer (kernel/council.ts), not into a shared cell:
+   * whether to show it to the audience is the teacher's decision, not the
+   * kernel's.
    */
   council?: CouncilJob
 }
@@ -207,69 +211,71 @@ function finishExecution(runtime: Runtime, item: QueueItem, outcome: ActivityOut
   if (runtime.activityItem === item) runtime.activityItem = null
 }
 
-/** Попытка консилиума, которую ядро считает прямо сейчас. */
+/** The council attempt the kernel is computing right now. */
 interface ActiveJob {
   item: QueueItem
   job: CouncilJob
   buffer: CouncilOutputBuffer
   run: CouncilRun
-  /** Отложенный кадр вывода — см. `touchJob`. */
+  /** A deferred output frame; see `touchJob`. */
   timer: NodeJS.Timeout | null
 }
 
 /**
- * Будильник предела на то, что ядро считает СЕЙЧАС, — один на ячейку и на
- * попытку.
+ * The limit alarm for what the kernel is computing NOW, one for a cell and for
+ * an attempt alike.
  *
- * Живёт у среды исполнения, а не у попытки, и это главное решение здесь.
- * Предел был свойством ячейки консилиума и сторожил только попытки — а очередь
- * у тетради одна и общая (`Runtime.queue`): один бесконечный запуск ОБЫЧНОЙ
- * ячейки держал весь консилиум до конца пары, и преподаватель, выставивший
- * «все по очереди» и предел 30 с, честно читал это как «предел не работает».
- * Вторая копия будильника под ячейки разошлась бы с первой на первом же
- * повороте — на пересчёте от начала запуска, на `restamp`, на «сигналов не
- * больше двух», — поэтому здесь одна запись и один набор функций.
+ * It lives on the runtime, not on the attempt, and that is the main decision
+ * here. The limit used to be a property of the council cell and guarded only
+ * attempts, but a notebook's queue is one and shared (`Runtime.queue`): one
+ * endless run of an ORDINARY cell held the whole council until the end of
+ * class, and a teacher who had set "everyone in turn" and a 30 s limit
+ * honestly read it as "the limit does not work". A second copy of the alarm
+ * for cells would drift from the first at the very first turn (on recounting
+ * from the start of the run, on `restamp`, on "no more than two signals"), so
+ * there is one record and one set of functions here.
  *
- * В каждый момент считается ровно одна работа (насос строго последовательный),
- * так что запись одна и она же называет свою цель.
+ * At any moment exactly one job is computing (the pump is strictly
+ * sequential), so there is one record, and it names its own target.
  */
 interface RunLimit {
-  /** Запись очереди, которую сторожим: ячейка или попытка. */
+  /** The queue entry being guarded: a cell or an attempt. */
   item: QueueItem
-  /** Откуда отсчитывать, если среда не помнит начала (см. `startOfLimit`). */
+  /** Where to count from if the runtime lacks the start (see `startOfLimit`). */
   startedAt: number
   /**
-   * Предел в секундах; `null` — без предела, будильник не заводится.
+   * The limit in seconds; `null` means no limit, and the alarm is not set.
    *
-   * Отдельно от `CouncilJob.limitSec`, потому что регламент можно поменять
-   * посреди запуска, и «правила действуют сразу» значит, что новый предел
-   * считается от начала уже идущей работы (`retimeCouncilRun`).
+   * Separate from `CouncilJob.limitSec`, because the rules can be changed in the
+   * middle of a run, and "rules apply at once" means the new limit is counted
+   * from the start of the work already running (`retimeCouncilRun`).
    */
   sec: number | null
   timer: NodeJS.Timeout | null
-  /** Предел, который СРАБОТАЛ: он поедет в `CouncilRun.timedOut` и в вывод ячейки. */
+  /** The limit that FIRED: it goes to `CouncilRun.timedOut` and the cell's output. */
   firedSec: number | null
-  /** Сколько раз мы уже просили ядро остановиться по этому пределу. */
+  /** How many times we have already asked the kernel to stop over this limit. */
   interrupts: number
   /**
-   * Два сигнала ушли, а работа всё считается.
+   * Two signals went out, and the work is still computing.
    *
-   * Питон, ушедший в C, SIGINT не видит до возврата в интерпретатор, и дальше
-   * сигналить бессмысленно (см. `fireLimit`). Раньше на этом месте наступала
-   * тишина: попытка навсегда «считается», насос стоит, очередь замерзает — и
-   * никто об этом не сказал ни слова. Признак читает пульт и предлагает
-   * единственное, что помогает, — перезапуск ядра тетради.
+   * Python that has gone into C does not see SIGINT until it returns to the
+   * interpreter, and signalling further is pointless (see `fireLimit`). This
+   * used to be followed by silence: the attempt "computing" forever, the pump
+   * standing, the queue frozen, and nobody saying a word about it. The console
+   * reads this flag and offers the only thing that helps: restarting the
+   * notebook's kernel.
    */
   stuck: boolean
 }
 
 /**
- * Во сколько миллисекунд обходится секунда предела — и шов для теста.
+ * How many milliseconds a second of the limit costs, and a seam for the test.
  *
- * Санитайзер регламента принимает только целые секунды от единицы
- * (shared/notebook.ts · readCouncilSettings), и это правильно для ручки, но
- * означало бы сюиту, которая честно ждёт по пять секунд на каждый случай.
- * Масштаб переставляется только тестом; в работе он всегда тысяча.
+ * The rules sanitizer accepts only whole seconds from one up
+ * (shared/notebook.ts · readCouncilSettings), and that is right for a knob, but
+ * it would mean a suite that honestly waits five seconds for every case. The
+ * scale is changed only by a test; in production it is always a thousand.
  */
 let limitTickMs = 1000
 export function setCouncilLimitTick(ms: number): void {
@@ -277,14 +283,14 @@ export function setCouncilLimitTick(ms: number): void {
 }
 
 /**
- * Через сколько повторить SIGINT, если попытка его не заметила.
+ * How long until SIGINT is repeated if the attempt did not notice it.
  *
- * Считается в тех же «секундах» предела, чтобы тест, ускоривший масштаб,
- * ускорил и повтор.
+ * Counted in the same limit "seconds", so that a test that sped up the scale
+ * also speeds up the repeat.
  */
 const LIMIT_RETRY_TICKS = 5
 
-/** Синтетическое имя записи очереди для попытки: никогда не совпадает с ячейкой. */
+/** The synthetic name of a queue entry for an attempt: never equal to a cell's. */
 function councilQueueId(cellId: string, participantId: string): string {
   return `council:${cellId}:${participantId}`
 }
@@ -292,21 +298,24 @@ function councilQueueId(cellId: string, participantId: string): string {
 interface Runtime {
   sessionId: string
   /**
-   * Тетрадь, чьё это ядро, — корень в документе комнаты.
+   * The notebook this kernel belongs to: its root in the room document.
    *
-   * Пара (занятие, корень) и есть область исполнения: у каждой свой Python,
-   * своя очередь и свой счёт. `cells` — тетрадь комнаты, историческая первая;
-   * её область несёт прежнее имя сессии Jupyter и зеркалится в прежние ключи
-   * документа, чтобы выкатка не стоила живым комнатам переменных.
+   * The pair (class, root) is the execution scope: each has its own Python, its
+   * own queue and its own execution counter. `cells` is the room's notebook,
+   * historically the first; its scope carries the old Jupyter session name and
+   * is mirrored into the old document keys, so that a deploy does not cost live
+   * rooms their variables.
    */
   root: string
   /**
-   * В каком контейнере это ядро поднято: занятия или личных тетрадей.
+   * Which container this kernel is up in: the class's or the personal
+   * notebooks'.
    *
-   * Решается ОДИН раз, при подъёме, по хранимым правилам — и запоминается,
-   * потому что гасить ядро надо там, где оно живёт. Преподаватель, сменивший
-   * доступ тетради посреди пары, меняет ответ `bookHasOwnKernel`; область при
-   * этом гасится целиком (`relocateBookKernel`), а не переезжает молча.
+   * Decided ONCE, at start-up, by the stored rules, and remembered, because a
+   * kernel has to be shut down where it lives. A teacher who changes a
+   * notebook's access in the middle of class changes the answer of
+   * `bookHasOwnKernel`; the scope is then shut down entirely
+   * (`relocateBookKernel`) rather than silently moving.
    */
   role: KernelRole
   activityItem?: QueueItem | null
@@ -316,14 +325,15 @@ interface Runtime {
   /**
    * In-flight restart, if one is running.
    *
-   * Гонка Run и Restart. Перезапуск сбрасывал очередь, объявлял 'restarting' и
-   * уходил ждать ядро; Run в эту же секунду клал ячейку в очередь и будил
-   * насос, который видел живое (ещё) ядро и слал execute в то, что уже
-   * перезапускается. Ответа на такой execute не приходит никогда: очередь
-   * стоит, комната видит «idle», а `currentCell` занят до следующего Restart.
+   * The race between Run and Restart. A restart reset the queue, announced
+   * 'restarting' and went off to wait for the kernel; a Run in that same second
+   * put a cell into the queue and woke the pump, which saw a (still) live
+   * kernel and sent execute to something already restarting. Such an execute
+   * never gets an answer: the queue stands, the room sees "idle", and
+   * `currentCell` stays taken until the next Restart.
    *
-   * Обещание, а не флажок: и второе нажатие Restart, и насос ждут одного и
-   * того же — того же самого перезапуска, а не своего.
+   * A promise, not a flag: both a second press of Restart and the pump wait for
+   * the same thing, that very restart, not one of their own.
    */
   restarting: Promise<void> | null
   queue: QueueItem[]
@@ -334,54 +344,58 @@ interface Runtime {
   /** Which press of Run the running cell came from; see stopBatchOf. */
   currentBatch: number | null
   /**
-   * Что и когда начали, по часам сервера.
+   * What was started and when, by the server's clock.
    *
-   * Дубль поля `startedAt` в документе — и дубль намеренный: документ пишет вся
-   * комната, а по этому числу считается длительность, которую потом показывают
-   * как факт. Живой секундомер растёт из документа, длительность — отсюда.
+   * A duplicate of the `startedAt` field in the document, and a deliberate one:
+   * the whole room writes the document, while this number is what the duration
+   * later shown as a fact is computed from. The live stopwatch grows from the
+   * document; the duration comes from here.
    *
-   * Пара, а не одно число: `currentCell` обнуляется в `finally` у `runOne`
-   * СТРОКОЙ РАНЬШЕ, чем вызывается `setCellState`, так что связать отметку с
-   * ячейкой через него нельзя — длительность просто перестала бы записываться,
-   * и заметил бы это только тест.
+   * A pair, not a single number: `currentCell` is cleared in `runOne`'s
+   * `finally` ONE LINE BEFORE `setCellState` is called, so the mark cannot be
+   * tied to the cell through it: the duration would simply stop being
+   * recorded, and only a test would notice.
    */
   started: { cellId: string; at: number } | null
   /** Who asked for the running cell — the server's own record, not the document's. */
   currentRunById: string | null
   /**
-   * Ячейка, которая только что закончилась, и её пачка.
+   * The cell that has just finished, and its batch.
    *
-   * Нужна ровно для одного: «стоп», нажатый на ячейке в тот момент, когда она
-   * успела кончиться, а ядро уже взяло следующую. Без этой записи о цели
-   * нажатия не остаётся ничего, и снималась пачка того, что выполняется
-   * сейчас, — то есть чужая.
+   * Needed for exactly one thing: a "stop" pressed on a cell at the moment it
+   * managed to finish while the kernel had already taken the next one. Without
+   * this record nothing is left of the press's target, and the batch of what
+   * was running at that moment got cancelled, i.e. someone else's.
    */
   lastFinished: { cellId: string; batch: number } | null
   /**
-   * Когда эта область в последний раз что-то делала, по часам сервера.
+   * When this scope last did anything, by the server's clock.
    *
-   * Только для уборки простоя ЛИЧНЫХ тетрадей: у них свой счёт (см.
-   * `sweepIdleOwnScopes`). Ставится при подъёме ядра и на каждом конце работы
-   * — ячейки и попытки консилиума, — то есть в тех же местах, где область
-   * перестаёт быть занятой. `null` до первого подъёма: гасить ещё нечего.
+   * Only for the idle cleanup of PERSONAL notebooks: they have their own count
+   * (see `sweepIdleOwnScopes`). Set when the kernel comes up and at every end
+   * of work (cells and council attempts), i.e. at the same places where the
+   * scope stops being busy. `null` before the first start: there is nothing to
+   * shut down yet.
    */
   lastWorkAt: number | null
   writer: OutputWriter | null
   /**
-   * «Не выселяй комнату»: писатель держит `Y.Doc` дольше одного вызова.
+   * "Do not evict the room": the writer holds the `Y.Doc` longer than one call.
    *
-   * Пустая комната выселяется из памяти через десять минут (collab · sweepIdleRooms),
-   * и выселение уничтожает документ. Писатель же взял его в конструкторе
-   * (outputs.ts · OutputWriter) и пишет в ЭТОТ объект до конца выполнения: в
-   * уничтоженный запись не видит никто и молча. Само окно счёта прикрыто со
-   * стороны collab (`atWork` не даёт выселить комнату, пока в документе стоит
-   * работающая ячейка, очередь или занятое ядро) — это страховка на щель между
-   * концом прогона и обнулением `writer`. Держит `dropWriter`, он же отпускает.
+   * An empty room is evicted from memory after ten minutes (collab ·
+   * sweepIdleRooms), and eviction destroys the document. The writer, though,
+   * took it in its constructor (outputs.ts · OutputWriter) and writes into THIS
+   * object until the end of the execution: writes into a destroyed one are seen
+   * by nobody, silently. The computing window itself is covered from the collab
+   * side (`atWork` does not let a room be evicted while the document has a
+   * running cell, a queue or a busy kernel); this is insurance for the gap
+   * between the end of a run and `writer` being cleared. `dropWriter` owns it
+   * and is also what releases it.
    */
   writerHold: (() => void) | null
-  /** Считается попытка консилиума, а не ячейка; `currentCell` при этом — её синтетическое имя. */
+  /** An attempt, not a cell, is computing; `currentCell` is then its synthetic name. */
   job: ActiveJob | null
-  /** Будильник предела на текущую работу — общий у ячейки и у попытки. См. `RunLimit`. */
+  /** The limit alarm on the current work, shared by cells and attempts. See `RunLimit`. */
   limit: RunLimit | null
   /**
    * Which environment this room's kernel actually came up on.
@@ -393,39 +407,42 @@ interface Runtime {
    */
   environment: string | null
   /**
-   * Семинар закрыт (удалён или убран по простою) — эта среда больше не его.
+   * The seminar is closed (deleted or removed for idleness): this runtime is no
+   * longer its.
    *
-   * `shutdownSession` снимает среду с карты, но подъём ядра, начатый до этого,
-   * доживает свою минуту на захваченном объекте — и всё, что он пишет, идёт
-   * через `getSessionDoc`, который заводит документ заново. Удалённая комната
-   * возвращалась в память, а с ней папка с новым session.ipynb и строка в
-   * истории. Правило то же, что в collab: заводить документ имеет право только
-   * то, что делает человек.
+   * `shutdownSession` takes the runtime off the map, but a kernel start begun
+   * before that lives out its minute on the captured object, and everything it
+   * writes goes through `getSessionDoc`, which creates the document anew. The
+   * deleted room came back into memory, and with it a folder with a new
+   * session.ipynb and a line in the history. The rule is the same as in collab:
+   * only what a person does has the right to create a document.
    */
   retired: boolean
   /**
-   * Что этому ядру УЖЕ сказано про опасные команды — той самой строкой.
+   * What this kernel has ALREADY been told about dangerous commands, in that
+   * very line.
    *
-   * Отпечатком служит сам исходник (danger.ts · guardPolicySource): в нём и
-   * правило комнаты, и язык отказа, так что сравнение с прошлым сказанным
-   * ловит и переключение правила посреди пары, и смену языка инстанса, и при
-   * этом не стоит ни одного лишнего похода в ядро на каждую ячейку.
+   * The source itself serves as the fingerprint (danger.ts ·
+   * guardPolicySource): it holds both the room rule and the refusal language,
+   * so comparing with what was said before catches both a rule switch in the
+   * middle of class and a change of the instance language, and costs not a
+   * single extra trip to the kernel per cell.
    *
-   * `null` — ядру ещё ничего не сказано или сказанное больше не в силе: свежий
-   * процесс, перезапуск, самовольный перезапуск Jupyter после OOM. Пока здесь
-   * `null`, очередь не выпускается (`ensureGuard`).
+   * `null`: the kernel has not been told anything yet, or what was said no
+   * longer holds: a fresh process, a restart, Jupyter's own restart after an
+   * OOM. While this is `null`, the queue is not let through (`ensureGuard`).
    */
   guard: string | null
 }
 
 /**
- * Области исполнения: занятие → корень тетради → её ядро с очередью.
+ * Execution scopes: class → notebook root → its kernel with a queue.
  *
- * Вложенная карта, а не плоская с составным ключом, и это существенно: половина
- * работы здесь — «всё, что относится к этому занятию» (погасить, посчитать,
- * прибрать по простою), и склеенный ключ превращал бы каждый такой вопрос в
- * разбор строки. Внутренняя карта, оставшаяся пустой, снимается сразу —
- * занятие без областей не должно занимать место в памяти до перезапуска.
+ * A nested map, not a flat one with a compound key, and this matters: half the
+ * work here is "everything belonging to this class" (shut down, count, clean up
+ * for idleness), and a glued key would turn each such question into parsing a
+ * string. An inner map left empty is removed at once: a class without scopes
+ * must not take up memory until a restart.
  */
 const runtimes = new Map<string, Map<string, Runtime>>()
 const workspaceListeners: Array<(sessionId: string) => void> = []
@@ -433,35 +450,39 @@ const workspaceListeners: Array<(sessionId: string) => void> = []
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 /**
- * В каком контейнере считать эту тетрадь.
+ * Which container to compute this notebook in.
  *
- * По ХРАНИМЫМ правилам, а не по действующим, и это не мелочь: `rulesAfterClass`
- * карту `books` не переносит вовсе, так что после звонка действующие правила
- * отвечают «комнатная» про каждую тетрадь — и первый же запуск после конца
- * занятия переселял бы ядро личной тетради в контейнер лекции, к её карте и её
- * лимиту памяти. Конец занятия — про права, а не про размещение.
+ * By the STORED rules, not the effective ones, and that is no trifle:
+ * `rulesAfterClass` does not carry the `books` map over at all, so after the
+ * bell the effective rules answer "room" for every notebook, and the very first
+ * run after the end of class would move a personal notebook's kernel into the
+ * lecture container, to its GPU and its memory limit. The end of class is about
+ * rights, not placement.
  */
 function roleOfBook(sessionId: string, root: string): KernelRole {
   try {
     return bookHasOwnKernel(storedRules(sessionId), root) ? 'own' : 'room'
   } catch {
-    // Строки занятия в базе нет (тест, удалённая комната) — считаем комнатной:
-    // это прежнее поведение и единственный контейнер, который точно существует.
+    // There is no class row in the database (a test, a deleted room): count it
+    // as a room notebook; that is the old behaviour and the only container that
+    // surely exists.
     return 'room'
   }
 }
 
 /**
- * Через сколько секунд ячейка этой комнаты останавливается сама; `null` — никогда.
+ * After how many seconds a cell in this room stops by itself; `null` means
+ * never.
  *
- * По ХРАНИМЫМ правилам, и разницы с действующими тут нет по построению:
- * `rulesAfterClass` это число переносит как есть (конец занятия — про права, а
- * не про то, сколько ядру дано считать). Спрашивается у правил КОМНАТЫ, а не
- * тетради: `rulesForBook` предела не трогает, и личная тетрадь студента живёт
- * под тем же потолком — ядро у неё своё, но процессор общий на машину.
+ * By the STORED rules, and by construction there is no difference from the
+ * effective ones here: `rulesAfterClass` carries this number over as is (the
+ * end of class is about rights, not about how long the kernel may compute).
+ * Asked of the ROOM's rules, not the notebook's: `rulesForBook` does not touch
+ * the limit, and a student's personal notebook lives under the same ceiling:
+ * its kernel is its own, but the CPU is shared across the machine.
  *
- * Строки занятия в базе нет (тест, удалённая комната) — без предела: это
- * прежнее поведение, и ошибаться здесь можно только в эту сторону.
+ * No class row in the database (a test, a deleted room) means no limit: that
+ * is the old behaviour, and erring here is only allowed in that direction.
  */
 function cellLimitOf(sessionId: string): number | null {
   try {
@@ -472,16 +493,17 @@ function cellLimitOf(sessionId: string): number | null {
 }
 
 /**
- * Не исполнять ли в этой комнате опасные команды (rules.ts · `danger`).
+ * Whether not to execute dangerous commands in this room (rules.ts · `danger`).
  *
- * По ХРАНИМЫМ правилам, и разницы с действующими тут нет по построению:
- * `rulesAfterClass` это поле переносит как есть — конец занятия про права, а
- * защита остаётся той же, какой была. Спрашивается у правил КОМНАТЫ, а не
- * тетради: `rulesForBook` её не трогает, и личная тетрадь студента живёт под
- * той же защитой — процесс у неё свой, а беда одна и та же.
+ * By the STORED rules, and by construction there is no difference from the
+ * effective ones here: `rulesAfterClass` carries this field over as is; the end
+ * of class is about rights, and the guard stays as it was. Asked of the ROOM's
+ * rules, not the notebook's: `rulesForBook` does not touch it, and a student's
+ * personal notebook lives under the same guard: its process is its own, but
+ * the trouble is the same.
  *
- * Строки занятия в базе нет (тест, удалённая комната) — защищаем: умолчание
- * здесь строгое, и ошибиться можно только в эту сторону.
+ * No class row in the database (a test, a deleted room) means we guard: the
+ * default here is strict, and erring is only allowed in that direction.
  */
 function dangerBlocked(sessionId: string): boolean {
   try {
@@ -528,25 +550,25 @@ function getRuntime(sessionId: string, root: string): Runtime {
   return runtime
 }
 
-/** Область, если она уже заведена. Вопрос не должен заводить комнате Python. */
+/** The scope, if it already exists. A question must not start a Python for the room. */
 function peekRuntime(sessionId: string, root: string): Runtime | undefined {
   return runtimes.get(sessionId)?.get(root)
 }
 
-/** Все области ОДНОГО занятия — по всем его тетрадям. */
+/** All scopes of ONE class, across all its notebooks. */
 function scopesOf(sessionId: string): Runtime[] {
   const scopes = runtimes.get(sessionId)
   return scopes ? [...scopes.values()] : []
 }
 
-/** Все области всех занятий этого процесса. */
+/** All scopes of all classes in this process. */
 function allScopes(): Runtime[] {
   const out: Runtime[] = []
   for (const scopes of runtimes.values()) out.push(...scopes.values())
   return out
 }
 
-/** Убрать область из карты — и само занятие, если областей у него не осталось. */
+/** Remove the scope from the map, and the class itself if it has no scopes left. */
 function forgetScope(runtime: Runtime): void {
   const scopes = runtimes.get(runtime.sessionId)
   if (!scopes) return
@@ -555,12 +577,12 @@ function forgetScope(runtime: Runtime): void {
 }
 
 /**
- * В какой тетради лежит ячейка — и `cells`, если её в комнате уже нет.
+ * Which notebook a cell lives in, and `cells` if it is no longer in the room.
  *
- * Запасной ответ нужен для ячеек, удалённых, пока они стояли в очереди: искать
- * их область по документу уже негде, а сказать «нигде» значило бы оставить
- * запись в очереди навсегда. Настоящие вызовы, которым область важна, спрашивают
- * `rootOfCell` сами и умеют получить `null`.
+ * The fallback answer is needed for cells deleted while they were waiting in
+ * the queue: there is nowhere left in the document to look up their scope, and
+ * saying "nowhere" would leave the queue entry there forever. The real callers
+ * for whom the scope matters ask `rootOfCell` themselves and can handle `null`.
  */
 function rootOf(sessionId: string, cellId: string): string {
   try {
@@ -570,7 +592,7 @@ function rootOf(sessionId: string, cellId: string): string {
   }
 }
 
-/** Имя корня по самому массиву ячеек — `findCell` отдаёт его вместе с ячейкой. */
+/** The root name from the cell array itself: `findCell` returns it with the cell. */
 function rootOfArray(cells: Y.Array<YCell>): string | null {
   try {
     return Y.findRootTypeKey(cells)
@@ -580,17 +602,17 @@ function rootOfArray(cells: Y.Array<YCell>): string | null {
 }
 
 /**
- * Чья это работа — по имени записи очереди, а не только по документу.
+ * Whose work this is, by the queue entry's name and not only by the document.
  *
- * Сначала спрашиваются живые области, и это не оптимизация. В очереди стоят не
- * только ячейки: у попытки консилиума имя синтетическое (`councilQueueId`), и
- * ячейки с таким именем в документе нет вовсе — найти её область можно только
- * там, где она лежит. Тем же способом находится и ячейка, которую успели
- * удалить, пока она ждала.
+ * The live scopes are asked first, and that is not an optimisation. Not only
+ * cells stand in the queue: a council attempt has a synthetic name
+ * (`councilQueueId`), and there is no cell with such a name in the document at
+ * all; its scope can only be found where it lives. A cell that was deleted
+ * while it waited is found the same way.
  *
- * Документ — второй вопрос и обычный случай: ячейка есть, область ей ещё не
- * заводили. `fallback` — последнее слово вызывающего: тетрадь, из которой
- * нажали.
+ * The document is the second question and the ordinary case: the cell exists,
+ * but no scope has been created for it yet. `fallback` is the caller's last
+ * word: the notebook the press came from.
  */
 function scopeOfCell(sessionId: string, cellId: string, fallback: string): string {
   for (const scope of scopesOf(sessionId)) {
@@ -606,13 +628,14 @@ function scopeOfCell(sessionId: string, cellId: string, fallback: string): strin
 }
 
 /**
- * Закончить с писателем вывода: дописать накопленное и отпустить комнату.
+ * Finish with the output writer: flush what has accumulated and release the
+ * room.
  *
- * Одно место на все концы выполнения — пустая ячейка, `finally` у `runOne`,
- * мёртвое ядро, конец семинара, остановка сервера, — потому что забыть здесь
- * можно ровно одно, и молча: `holdRoom` не отпущен, и комната, в которую никто
- * не вернётся, остаётся в памяти навсегда. Повторный вызов безопасен: и
- * `dispose`, и «отпустить» идемпотентны.
+ * One place for every end of an execution (an empty cell, `runOne`'s `finally`,
+ * a dead kernel, the end of a seminar, a server stop), because exactly one
+ * thing can be forgotten here, and silently: `holdRoom` is not released, and a
+ * room nobody will come back to stays in memory forever. A repeated call is
+ * safe: both `dispose` and "release" are idempotent.
  */
 function dropWriter(runtime: Runtime): void {
   runtime.writer?.dispose()
@@ -624,18 +647,19 @@ function dropWriter(runtime: Runtime): void {
 /* --------------------------------------------------------- document mirror */
 
 /**
- * Состояние ядра ОДНОЙ тетради — в карту `meta.kernels`, а у тетради комнаты
- * ещё и в прежний ключ.
+ * The kernel state of ONE notebook goes into the `meta.kernels` map, and for
+ * the room's notebook also into the old key.
  *
- * Зеркало — не переходный костыль, а три живых читателя. Вкладка, открытая до
- * выкатки, знает только `kernelStatus` и будет знать только его до перезагрузки
- * страницы. Снимки в истории версий хранят прежнюю форму, и лента обязана
- * открываться. И сброс зависшего состояния (shared/notebook.ts · clearStaleWork)
- * чинит обе записи сразу, потому что обе может оставить умерший процесс.
+ * The mirror is not a transitional crutch but three live readers. A tab opened
+ * before the deploy knows only `kernelStatus` and will know only that until the
+ * page is reloaded. Snapshots in the version history keep the old shape, and
+ * the timeline has to open. And the reset of stuck state (shared/notebook.ts ·
+ * clearStaleWork) repairs both records at once, because a dead process can
+ * leave both behind.
  *
- * Зеркалится ровно `cells` — тетрадь комнаты. Класть туда состояние «какой-то»
- * тетради значило бы, что старая вкладка показывает то лекцию, то семинар, по
- * тому, кто последним нажал.
+ * Exactly `cells`, the room's notebook, is mirrored. Putting the state of
+ * "some" notebook there would mean an old tab shows the lecture one moment and
+ * the seminar the next, depending on who pressed last.
  */
 function setStatus(runtime: Runtime, status: KernelStatus): void {
   if (runtime.retired) return
@@ -645,9 +669,10 @@ function setStatus(runtime: Runtime, status: KernelStatus): void {
   const entry = kernelsMap(doc)?.get(runtime.root)
   const known = entry instanceof Y.Map ? entry.get(KERNEL_STATUS_FIELD) : undefined
   /*
-   * В прежний ключ — совместимое слово: `off` вкладка, открытая до 20.09, не
-   * знает вовсе, и её плашка осталась бы пустой (shared/notebook.ts ·
-   * `legacyKernelStatus`). Правда целиком лежит в карте, которую читают новые.
+   * Into the old key goes a compatible word: a tab opened before 20 Sep 2026
+   * does not know `off` at all, and its badge would stay empty
+   * (shared/notebook.ts · `legacyKernelStatus`). The whole truth lies in the
+   * map the new ones read.
    */
   const legacy = legacyKernelStatus(status)
   if (known === status && (!mirrored || meta.get('kernelStatus') === legacy)) return
@@ -658,10 +683,10 @@ function setStatus(runtime: Runtime, status: KernelStatus): void {
 }
 
 /**
- * Почему последний подъём не вышел — словом для совета преподавателю, или
- * ничего (см. shared/kernel-problem.ts). Поднялось ядро или упало по другой
- * причине — прежнее слово снимается: совет «уменьшите память» к комнате,
- * которой не отвечает Jupyter, был бы неправдой.
+ * Why the last start-up did not work, as a word for advice to the teacher, or
+ * nothing (see shared/kernel-problem.ts). If the kernel came up or failed for
+ * another reason, the previous word is removed: the advice "reduce memory" for
+ * a room that Jupyter does not answer would be untrue.
  */
 function setKernelProblem(runtime: Runtime, problem: KernelProblem | null): void {
   if (runtime.retired) return
@@ -682,19 +707,21 @@ function setKernelProblem(runtime: Runtime, problem: KernelProblem | null): void
 }
 
 /**
- * Самая узкая правка списка: что выкинуть и что вставить, чтобы `current` стал
- * `next`.
+ * The narrowest edit of a list: what to remove and what to insert so that
+ * `current` becomes `next`.
  *
- * Очередь меняется двумя способами и обоими — по краям: ячейка ушла в работу
- * (пропал первый элемент) или встала в хвост (появился последний). Полная
- * перезапись превращала каждый из них в «удалить всё и положить всё»: при
- * пятистах участниках и правиле «по одной» это сотни идентификаторов в
- * обновлении Yjs — на КАЖДЫЙ старт и КАЖДЫЙ конец ячейки, всей комнате, плюс
- * столько же тумбстоунов в документе и лишний обход `record()` в истории.
+ * The queue changes in two ways, both at the edges: a cell went to work (the
+ * first element disappeared) or joined the tail (a last one appeared). A full
+ * rewrite turned each of them into "delete everything and put everything":
+ * with five hundred participants and the "one at a time" rule that is hundreds
+ * of identifiers in a Yjs update, on EVERY start and EVERY end of a cell, to
+ * the whole room, plus as many tombstones in the document and an extra
+ * `record()` pass in the history.
  *
- * Считается по общей голове и общему хвосту, а не по «умному» диффу: очередь —
- * список без повторов, и этого достаточно, чтобы обычные два случая стоили
- * одной операции. Чистая функция — её и надо доказывать.
+ * Computed by a common head and a common tail, not by a "smart" diff: the
+ * queue is a list without repeats, and that is enough for the two ordinary
+ * cases to cost one operation. A pure function, and that is what has to be
+ * proved.
  */
 export function queueDelta(
   current: string[],
@@ -718,19 +745,20 @@ export function queueDelta(
 }
 
 /**
- * Кто хочет знать, что очередь тетради сдвинулась, — и сколько раз ни на что.
+ * Who wants to know that a notebook's queue has moved, even when it moved for
+ * nothing.
  *
- * Зеркало очереди в документе (ниже) отвечает только про ЯЧЕЙКИ: попытки
- * консилиума в него не попадают нарочно, у них нет ячейки, которую комната
- * могла бы подсветить. Поэтому пульт преподавателя, глядя на очередь тетради,
- * не видел ни чужой ячейки, занявшей ядро, ни длины настоящей очереди — и
- * писал «в этой ячейке ничего не выполняется» рядом с «в очереди: 12».
- * Подписка — единственная точка, из которой это видно целиком.
+ * The queue mirror in the document (below) covers only CELLS: council attempts
+ * deliberately do not go into it, they have no cell the room could highlight.
+ * So the teacher's console, looking at the notebook's queue, saw neither
+ * someone else's cell occupying the kernel nor the length of the real queue,
+ * and wrote "nothing is running in this cell" next to "queued: 12". The
+ * subscription is the only point from which all of it is visible.
  *
- * Зовётся ИЗ `syncQueue`, то есть на каждый сдвиг очереди и каждую смену
- * работы, до всех его проверок «а изменилось ли зеркало»: зеркало могло не
- * измениться (попытки в него не едут), а очередь — измениться. Сгущать кадры
- * — дело подписчика.
+ * Called FROM `syncQueue`, i.e. on every queue shift and every change of work,
+ * before all of its "did the mirror change" checks: the mirror may not have
+ * changed (attempts do not go into it) while the queue did. Thinning out the
+ * frames is the subscriber's business.
  */
 const queueWatchers: Array<(sessionId: string, root: string) => void> = []
 
@@ -743,8 +771,8 @@ function tellQueueWatchers(runtime: Runtime): void {
     try {
       cb(runtime.sessionId, runtime.root)
     } catch (err) {
-      // Чужой обработчик не должен уметь уронить насос — тот же довод, что у
-      // `tellJob`.
+      // Someone else's handler must not be able to bring the pump down: the
+      // same argument as for `tellJob`.
       console.error(`[kernel] queue watcher failed for ${runtime.sessionId}:`, errText(err))
     }
   }
@@ -756,8 +784,9 @@ function syncQueue(runtime: Runtime): void {
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
   const mirrored = runtime.root === CELLS_KEY
-  // Попытки консилиума в зеркало не попадают: у них нет ячейки, которую
-  // комната могла бы подсветить, а чип «2 queued» и так честен — он про лист.
+  // Council attempts do not go into the mirror: they have no cell the room
+  // could highlight, and the "2 queued" chip is honest anyway: it is about the
+  // sheet.
   const ids = runtime.queue.filter((item) => !item.council).map((item) => item.cellId)
   const running = runtime.job ? null : (runtime.currentCell ?? null)
 
@@ -769,8 +798,9 @@ function syncQueue(runtime: Runtime): void {
   const runningUnchanged =
     entry instanceof Y.Map && (entry.get(KERNEL_RUNNING_FIELD) ?? null) === running
   if (queueUnchanged && runningUnchanged) {
-    // Зеркало могло отстать само по себе только у комнаты со старым снимком;
-    // проверка дешевле, чем транзакция, и не даёт тихого расхождения.
+    // The mirror could fall behind by itself only in a room with an old
+    // snapshot; the check is cheaper than a transaction and prevents a silent
+    // divergence.
     if (!mirrored) return
     const legacy = meta.get('queue')
     const sameLegacy =
@@ -791,11 +821,11 @@ function syncQueue(runtime: Runtime): void {
 }
 
 /**
- * Записать список ожидающих узкой правкой — ту же, что и раньше.
+ * Write the list of waiting cells with a narrow edit, the same as before.
  *
- * Полная перезапись превращала каждый старт и каждый конец ячейки в «удалить
- * всё и положить всё» — сотни идентификаторов в обновлении Yjs на КАЖДЫЙ шаг
- * очереди, всей комнате. См. `queueDelta`.
+ * A full rewrite turned every start and every end of a cell into "delete
+ * everything and put everything": hundreds of identifiers in a Yjs update on
+ * EVERY step of the queue, to the whole room. See `queueDelta`.
  */
 function writeQueue(
   holder: Y.Map<any>,
@@ -829,13 +859,14 @@ async function runOnKernel(
   } catch (err) {
     if (runtime.kernel && runtime.kernel.phase !== 'dead') throw err
     /*
-     * Область закрыта — поднимать ей ядро заново НЕЛЬЗЯ.
+     * The scope is closed: a kernel must NOT be brought up for it again.
      *
-     * Сюда приходит и обычная смерть ядра на перемене (тогда свежее ядро —
-     * ровно то, что нужно), и конец области: семинар удалили, тетрадь убрали,
-     * доступ к ней сменили. Во втором случае подъём завёл бы комнате новый
-     * контейнер и новый Python под тетрадь, которой уже нет, — и писал бы в
-     * документ, который в этот момент выселяют.
+     * Both an ordinary kernel death during a break comes here (then a fresh
+     * kernel is exactly what is needed) and the end of a scope: the seminar was
+     * deleted, the notebook removed, its access changed. In the second case a
+     * start-up would create a new container and a new Python for a notebook
+     * that no longer exists, and would write into a document that is being
+     * evicted at that moment.
      */
     if (runtime.retired) throw err
     kernelNote(
@@ -844,28 +875,29 @@ async function runOnKernel(
     )
     await ensureKernel(runtime.sessionId, runtime.root)
     /*
-     * Секундомер заводится заново, когда ядро наконец есть.
+     * The stopwatch is restarted once there finally is a kernel.
      *
-     * Подъём холодного контейнера — это до полутора минут, и они шли в счёт
-     * ячейки: однострочник отчитывался о полутора минутах работы, хотя считал
-     * миллисекунды. Ждали при этом не его.
+     * Bringing up a cold container takes up to a minute and a half, and it
+     * counted against the cell: a one-liner reported a minute and a half of
+     * work, although it computed for milliseconds. And it was not the one being
+     * waited for.
      */
     restamp(runtime)
     return await runtime.kernel!.execute(source, handlers, opts)
   }
 }
 
-/** Заново отметить начало выполнения — и в среде, и в документе. */
+/** Mark the start of the execution anew, in the runtime and in the document. */
 function restamp(runtime: Runtime): void {
   const cellId = runtime.currentCell
   if (!cellId) return
   const at = Date.now()
   runtime.started = { cellId, at }
-  // И предел отсчитывается заново по тому же доводу, что и секундомер: полторы
-  // минуты подъёма холодного ядра — не время запуска, и сгорать в них
-  // тридцатисекундному пределу нечестно. Касается и ячейки, и попытки: запись
-  // предела одна на обеих (`RunLimit`), и `startOfLimit` читает ту же отметку,
-  // которую строка выше только что переставила.
+  // The limit is restarted too, by the same argument as the stopwatch: a minute
+  // and a half of bringing up a cold kernel is not run time, and it is unfair
+  // for a thirty-second limit to burn out in it. This applies to both a cell
+  // and an attempt: there is one limit record for both (`RunLimit`), and
+  // `startOfLimit` reads the same mark the line above has just moved.
   if (runtime.limit?.item.cellId === cellId) armLimit(runtime)
   const { doc } = getSessionDoc(runtime.sessionId)
   const found = findCell(doc, cellId)
@@ -873,35 +905,36 @@ function restamp(runtime: Runtime): void {
 }
 
 /**
- * Единственная дверь из 'running' наружу — и потому единственное место, где
- * гасится секундомер.
+ * The only door out of 'running', and so the only place where the stopwatch is
+ * stopped.
  *
- * Сюда приходят все три конца выполнения: пустая ячейка, обычное завершение и
- * `reportDeadKernel`. Бросок из `execute` тоже: `runOne` ловит его сам и
- * доходит до этой же строки. Поэтому три ключа — `state`, `startedAt`, `ranMs`
- * — держатся согласованными здесь, а не в трёх местах порознь.
+ * All three ends of an execution come here: an empty cell, an ordinary finish
+ * and `reportDeadKernel`. A throw from `execute` too: `runOne` catches it
+ * itself and reaches this same line. So the three keys, `state`, `startedAt`
+ * and `ranMs`, are kept consistent here rather than in three places apart.
  *
- * `ranMs` пишется только на исходах, которые действительно чем-то кончились:
- * у прерванного выполнения нет времени завершения, и напечатать его рядом с
- * `Out [n]` значило бы объявить результат, которого не было. Проверка на
- * `was === 'running'` нужна ради `reportDeadKernel`: он приходит сюда и за
- * ячейками, которые стояли в очереди и не начинались.
+ * `ranMs` is written only for outcomes that really ended in something: an
+ * interrupted execution has no finish time, and printing one next to `Out [n]`
+ * would announce a result that did not happen. The `was === 'running'` check
+ * is there for `reportDeadKernel`: it comes here also for cells that stood in
+ * the queue and never started.
  */
 function setCellState(sessionId: string, cellId: string, state: CellState): void {
   const { doc } = getSessionDoc(sessionId)
   const found = findCell(doc, cellId)
   if (!found) return
   /*
-   * Длительность считается по записи сервера, а не по полю документа.
+   * The duration is counted from the server's record, not from the document
+   * field.
    *
-   * `startedAt` лежит в общем документе, а его пишет кто угодно в комнате — это
-   * устройство продукта, а не дыра. Считать по нему длительность значило дать
-   * любому студенту дописать преподавателю «выполнялось три часа». Поле в
-   * документе остаётся тем, чем и было: числом, от которого в браузере растёт
-   * секундомер. Настоящее время начала сервер держит у себя.
+   * `startedAt` lies in the shared document, and anyone in the room writes it:
+   * that is the product's design, not a hole. Counting the duration from it
+   * would let any student write "ran for three hours" for the teacher to see.
+   * The field in the document stays what it was: the number the stopwatch in
+   * the browser grows from. The real start time is kept by the server.
    */
-  // По областям: ячейка принадлежит одной тетради, но отметку начала держит
-  // та область, которая её и запускала, — а какая именно, знает только она.
+  // By scopes: a cell belongs to one notebook, but the start mark is held by
+  // the scope that ran it, and only that scope knows which one it is.
   const runtime = scopesOf(sessionId).find((scope) => scope.started?.cellId === cellId)
   const startedAt = runtime?.started?.at ?? null
   doc.transact(() => {
@@ -916,55 +949,56 @@ function setCellState(sessionId: string, cellId: string, state: CellState): void
 }
 
 /**
- * Как часто одной комнате имеет смысл проходить по призракам.
+ * How often it makes sense for one room to sweep for ghosts.
  *
- * Поводов три — пульс, нажатие, подключение управляющего сокета, — и все три
- * приходят пачкой: после перезапуска сервера пятьсот вкладок возвращаются за
- * две секунды, и это пятьсот транзакций по всем ячейкам всех тетрадей ОДНОЙ
- * комнаты ровно в ту секунду, когда весь зал ждёт синхронизации. Чинит же этот
- * проход то, что осталось от умершего процесса: оно уже лежит в документе и
- * будет найдено первым же вызовом, а не пятисотым.
+ * There are three triggers (the heartbeat, a press, a control socket
+ * connecting), and all three come in bursts: after a server restart five
+ * hundred tabs come back within two seconds, and that is five hundred
+ * transactions over every cell of every notebook of ONE room in exactly the
+ * second when the whole audience is waiting for sync. What this pass repairs is
+ * what a dead process left behind: it is already in the document and will be
+ * found by the very first call, not the five-hundredth.
  */
 const ORPHAN_SWEEP_EVERY_MS = 2000
 
-/** Когда по этой комнате проходили в последний раз, по часам сервера. */
+/** When this room was last swept, by the server's clock. */
 const orphanSweeps = new Map<string, number>()
 
 /**
- * Ячейки, которые документ считает работающими, а сервер о них не знает.
+ * Cells the document considers running while the server knows nothing of them.
  *
- * `clearStaleExecution` проходит один раз, при подъёме комнаты, — и этого мало.
- * Вкладка, открытая в момент падения сервера, держит свои обновления и при
- * переподключении сливает их обратно как есть. Yjs решает по каждому ключу
- * отдельно и по последней записи, так что 'running' из умершего процесса может
- * пережить сброс — и до этой правки такая ячейка просто тихо стояла. Теперь она
- * дышит и считает секунды до конца пары: анимация сделала старую тихую беду
- * громкой, и чинить её приходится здесь.
+ * `clearStaleExecution` runs once, when the room comes up, and that is not
+ * enough. A tab open at the moment the server crashed keeps its updates and on
+ * reconnecting merges them back as they are. Yjs decides per key and by the
+ * last write, so a 'running' from a dead process can survive the reset, and
+ * before this fix such a cell simply sat there quietly. Now it breathes and
+ * counts seconds until the end of class: the animation made an old quiet
+ * trouble loud, and it has to be fixed here.
  *
- * `scopesOf`, а не `getRuntime`: комната, в которой никто ничего не запускал,
- * не должна обзаводиться средой исполнения от одной проверки. Проход идёт по
- * ВСЕМ областям занятия: ядер у него столько, сколько тетрадей, и застрявшая
- * ячейка может стоять в любой из них.
+ * `scopesOf`, not `getRuntime`: a room where nobody ran anything must not
+ * acquire a runtime from one check. The pass goes over ALL scopes of the class:
+ * it has as many kernels as notebooks, and a stuck cell can be in any of them.
  *
- * Отвергнутый вариант — повесить отложенный проход на `doc.on('update')` в
- * collab. Это точный момент, и он же цикл: ядро берёт `getSessionDoc` у collab,
- * так что обратный импорт замкнул бы модули друг на друга. Три дешёвых повода
- * лучше одного красивого цикла.
+ * The rejected option was hanging a deferred pass on `doc.on('update')` in
+ * collab. That is the precise moment, and also a cycle: the kernel takes
+ * `getSessionDoc` from collab, so a reverse import would tie the modules to
+ * each other. Three cheap triggers are better than one beautiful cycle.
  *
- * `now` — часы вызывающего: окно между проходами (ORPHAN_SWEEP_EVERY_MS) можно
- * проверить из теста, не ожидая его вживую, — тот же приём, что у
- * collab · sweepIdleRooms.
+ * `now` is the caller's clock: the window between passes
+ * (ORPHAN_SWEEP_EVERY_MS) can be checked from a test without waiting for it
+ * live, the same trick as collab · sweepIdleRooms.
  */
 export function sweepOrphanRuns(sessionId: string, now: number = Date.now()): number {
-  // Прошли по этой комнате только что — второй раз незачем. Проверка стоит до
-  // `getSessionDoc`: обход документа и есть та цена, ради которой окно заведено.
+  // This room was swept just now; there is no need for a second time. The
+  // check comes before `getSessionDoc`: walking the document is exactly the
+  // cost the window exists for.
   const last = orphanSweeps.get(sessionId)
   if (last !== undefined && now - last < ORPHAN_SWEEP_EVERY_MS) return 0
   orphanSweeps.set(sessionId, now)
   const scopes = scopesOf(sessionId)
   const { doc } = getSessionDoc(sessionId)
-  // По всем тетрадям комнаты: у каждой своё ядро и своя очередь, и застрявшая
-  // ячейка может стоять в любой открытой.
+  // Across all of the room's notebooks: each has its own kernel and its own
+  // queue, and a stuck cell can be in any open one.
   const cells = allCellArrays(doc).flatMap((array: Y.Array<YCell>) => array.toArray())
   let repaired = 0
 
@@ -979,41 +1013,43 @@ export function sweepOrphanRuns(sessionId: string, now: number = Date.now()): nu
       if (ours) continue
       cell.set('state', 'idle' as CellState)
       cell.set('startedAt', null)
-      // Вместе с состоянием гаснет и вопрос ядра.
+      // The kernel's question goes out along with the state.
       //
-      // Ячейка, остановившаяся в input(), несёт `stdin` — по нему рисуется
-      // форма ответа. Погасить состояние и оставить форму значит показать
-      // комнате поле ввода, за которым уже никого нет: отвечать некому,
-      // «Send» уходит в пустоту, и убрать это с экрана нечем.
+      // A cell stopped in input() carries `stdin`, from which the answer form
+      // is drawn. Clearing the state and leaving the form would show the room an
+      // input field with nobody behind it any more: there is no one to answer,
+      // "Send" goes into the void, and there is no way to take it off the
+      // screen.
       if (cell.get('stdin') != null) cell.set('stdin', null)
       repaired++
     }
   }, ORIGIN)
 
   /*
-   * Половина призрака — тоже призрак.
+   * Half a ghost is a ghost too.
    *
-   * Кроме состояния ячеек тот же умерший процесс оставляет за собой своё
-   * зеркало в meta: `runningCell`, `queue` и `kernelStatus`. Их пишет только
-   * сервер, клиент их читает — и читает по ним чип «2 queued» в панели,
-   * строку «Maria — running cell 05» в списке людей и то, рисовать ли комнатный
-   * Interrupt включённым. Почистить ячейки и оставить зеркало значило починить
-   * то, что видно, и оставить то, по чему считают.
+   * Besides the cells' state, the same dead process leaves its mirror in meta
+   * behind: `runningCell`, `queue` and `kernelStatus`. Only the server writes
+   * them and the client reads them, and it reads from them the "2 queued" chip
+   * in the panel, the "Maria — running cell 05" line in the people list, and
+   * whether to draw the room's Interrupt enabled. Cleaning the cells and
+   * leaving the mirror would mean fixing what is visible and leaving what the
+   * counting is based on.
    *
-   * `syncQueue` умеет ровно это и сам ничего не пишет, когда зеркало и так
-   * право. Когда среды исполнения нет вовсе — а это и есть случай после
-   * перезапуска — чистим прямо, как это делает clearStaleExecution.
+   * `syncQueue` can do exactly that and writes nothing itself when the mirror
+   * is already right. When there is no runtime at all (and that is the case
+   * after a restart), we clean directly, as clearStaleExecution does.
    */
   if (repaired > 0) {
     const live = new Set(scopes.map((scope) => scope.root))
     for (const scope of scopes) syncQueue(scope)
     /*
-     * И по тем тетрадям, у которых области в этом процессе НЕТ.
+     * And for the notebooks that have NO scope in this process.
      *
-     * Это и есть случай после перезапуска сервера: запись в документе осталась
-     * от умершего процесса, а завести ей область значило бы поднять комнате
-     * Python от одной проверки. Чистим прямо — то же, что делает
-     * clearStaleExecution, только теперь по карте.
+     * That is exactly the case after a server restart: the record in the
+     * document is left over from a dead process, and creating a scope for it
+     * would mean bringing up a Python for the room from one check. We clean
+     * directly, the same as clearStaleExecution does, only now across the map.
      */
     const meta = getMeta(doc)
     const roots = new Set<string>([CELLS_KEY, ...bookList(doc).map((book) => book.root)])
@@ -1044,9 +1080,9 @@ export function sweepOrphanRuns(sessionId: string, now: number = Date.now()): nu
     }, ORIGIN)
   }
 
-  // runBy, runById, execCount, ranMs и вывод остаются: та же позиция, что у
-  // clearStaleExecution — мы гасим то, что происходит, и не трогаем то, что
-  // произошло.
+  // runBy, runById, execCount, ranMs and the output stay: the same position as
+  // clearStaleExecution's: we stop what is happening and do not touch what has
+  // happened.
   return repaired
 }
 
@@ -1070,11 +1106,12 @@ function dropQueue(runtime: Runtime): void {
 }
 
 /**
- * Попытки, снятые с очереди без запуска, — об этом надо сказать их авторам.
+ * Attempts taken off the queue without running: their authors have to be told.
  *
- * У ячейки та же новость ложится в документ (`state: 'idle'`), и комната видит
- * её сама. У попытки документа нет: не позвать — значит оставить на карточке
- * «в очереди» до конца пары. `null` — «запуска не было», см. CouncilJob.
+ * For a cell the same news goes into the document (`state: 'idle'`), and the
+ * room sees it by itself. An attempt has no document: not calling would leave
+ * "queued" on the card until the end of class. `null` means "there was no
+ * run"; see CouncilJob.
  */
 function releaseCouncil(runtime: Runtime, dropped: QueueItem[]): void {
   for (const item of dropped) {
@@ -1083,7 +1120,7 @@ function releaseCouncil(runtime: Runtime, dropped: QueueItem[]): void {
   }
 }
 
-/** Обратный вызов чужого модуля не должен уметь уронить насос. */
+/** Another module's callback must not be able to bring the pump down. */
 function tellJob(job: CouncilJob, run: CouncilRun | null): void {
   try {
     job.onChange(run)
@@ -1093,17 +1130,18 @@ function tellJob(job: CouncilJob, run: CouncilRun | null): void {
 }
 
 /**
- * Окно, в котором ядра падают не сами по себе.
+ * The window in which kernels do not die on their own.
  *
- * Смена окружения пересоздаёт контейнер, и все комнаты, которые в этот момент
- * что-то считали, теряют ядро разом. Каждая слышала «The kernel ran out of
- * memory» — фразу правильную для девяноста девяти падений из ста и совершенно
- * ложную здесь. Преподаватель шёл смотреть, чья ячейка съела память, а её
- * никто не ел: администратор нажал «использовать это окружение».
+ * Switching the environment recreates the container, and every room that was
+ * computing something at that moment loses its kernel at once. Each heard "The
+ * kernel ran out of memory", a phrase right for ninety-nine crashes out of a
+ * hundred and utterly false here. The teacher went looking for whose cell had
+ * eaten the memory, but nobody had: an administrator had pressed "use this
+ * environment".
  *
- * Окно, а не флажок на комнату: пересоздание идёт по всем контейнерам сразу и
- * растянуто на секунды, а знает о нём один HTTP-запрос, который к этому
- * времени уже ответил.
+ * A window, not a per-room flag: the recreation goes across all containers at
+ * once and stretches over seconds, while the only thing that knows about it is
+ * one HTTP request that has already answered by then.
  */
 let churn: { reason: string; until: number } | null = null
 
@@ -1120,31 +1158,32 @@ function churnReason(): string | null {
   return churn.reason
 }
 
-/** Что считалось в секунду смерти: фраза для комнаты и номер ячейки для вскрытия. */
+/** What was computing at death: a phrase for the room, a cell for the post-mortem. */
 interface DeathScene {
-  /** «попытка Кирилла по ячейке 21» / «ячейка 21, запустил Тимур»; `null` — ядро простаивало. */
+  /** "Kirill's attempt on cell 21" / "cell 21, run by Timur"; `null`: the kernel was idle. */
   what: string | null
-  /** Ячейка, к которой это относится, — для `explainDeath`; у попытки это ячейка консилиума. */
+  /** The cell this relates to, for `explainDeath`; for an attempt, the council cell. */
   cellId: string | null
 }
 
 /**
- * Назвать то, что выполнялось, когда ядра не стало.
+ * Name what was running when the kernel went away.
  *
- * 20.09 комната теряла ядро девять раз за одиннадцать минут, и заметка каждый
- * раз говорила ровно одно: «переменные сброшены». В ней не было единственного,
- * что решало дело, — ЧТО выполнялось. Убивала одна и та же попытка консилиума
- * в две строки (`import os` / `os._exit(0)`), и узнать это можно было только
- * запросом в базу на следующий день. У сервера это знание есть в ту же
- * секунду: `runtime.job` — чья попытка и по какой ячейке, `currentCell` и
- * `currentRunById` — какая ячейка и кто нажал.
+ * On 20 Sep 2026 a room lost its kernel nine times in eleven minutes, and each
+ * time the note said exactly one thing: "variables were reset". It lacked the
+ * only thing that settled the matter: WHAT was running. The killer was the same
+ * two-line council attempt (`import os` / `os._exit(0)`), and the only way to
+ * learn that was a database query the next day. The server has this knowledge
+ * in that very second: `runtime.job` says whose attempt and on which cell,
+ * `currentCell` and `currentRunById` say which cell and who pressed.
  *
- * Номер ячейки — порядковый в своей тетради, считая markdown: тот же, что
- * нарисован в комнате слева от неё. Иначе преподаватель идёт искать «ячейку
- * 11» там, где на экране написано 21.
+ * The cell number is its position in its notebook, counting markdown: the same
+ * one drawn in the room to its left. Otherwise the teacher goes looking for
+ * "cell 11" where the screen says 21.
  *
- * Имени может не быть (участник ушёл, запуск не от человека) — тогда фраза
- * короче на имя, а не подменяется выдумкой.
+ * The name may be missing (the participant left, the run was not from a
+ * person); then the phrase is shorter by the name rather than filled in with an
+ * invention.
  */
 function whatWasRunning(runtime: Runtime): DeathScene {
   const job = runtime.job
@@ -1195,16 +1234,19 @@ function whatWasRunning(runtime: Runtime): DeathScene {
 }
 
 /**
- * Сколько раз эта область теряла ядро подряд — и не повторять одно и то же.
+ * How many times in a row this scope has lost its kernel, so as not to repeat
+ * the same thing.
  *
- * Девять одинаковых заметок за одиннадцать минут не сказали преподавателю
- * ничего сверх первой, зато утопили в себе строку про ячейку, которая только и
- * была нужна. Со второго раза заметка говорит счёт («третий раз за десять
- * минут») и предлагает действие — остановить очередь, — потому что при смерти
- * подряд виновата не случайность, а то, что комната запускает снова и снова.
+ * Nine identical notes in eleven minutes told the teacher nothing beyond the
+ * first, and drowned the one line about the cell that was all that was needed.
+ * From the second time on, the note gives the count ("the third time in ten
+ * minutes") and suggests an action (stop the queue), because with deaths in a
+ * row it is not chance that is to blame but what the room runs again and
+ * again.
  *
- * Окно скользящее: полчаса тишины — и счёт начинается заново, потому что
- * «третий раз» про падения, разнесённые на пару, — это не про одну беду.
+ * The window slides: half an hour of quiet and the count starts over, because
+ * "the third time" about crashes spread over a whole class is not about one
+ * trouble.
  */
 const DEATH_WINDOW_MS = 10 * 60_000
 const deaths = new Map<string, { count: number; at: number }>()
@@ -1218,7 +1260,7 @@ function countDeath(runtime: Runtime): number {
   return count
 }
 
-/** Комнату закрыли или ядро сменили — счёт падений к новому отношения не имеет. */
+/** Room closed or kernel replaced: the crash count has no bearing on the new one. */
 export function forgetDeaths(sessionId: string): void {
   for (const key of [...deaths.keys()]) {
     if (key === sessionId || key.startsWith(`${sessionId}/`)) deaths.delete(key)
@@ -1226,24 +1268,25 @@ export function forgetDeaths(sessionId: string): void {
 }
 
 /**
- * Досказать комнате, ПОЧЕМУ ядра не стало.
+ * Tell the room WHY the kernel went away.
  *
- * Первая заметка уходит мгновенно и говорит правду о последствиях: переменных
- * нет, очередь пуста. Причина приезжает следом, через полсекунды, потому что
- * за ней надо сходить к docker — и ждать её, держа комнату в неведении, было бы
- * хуже, чем дописать вторую строку. В журнале ядра это две строки подряд, и
- * читаются они как одна мысль: что случилось и отчего.
+ * The first note goes out at once and tells the truth about the consequences:
+ * the variables are gone, the queue is empty. The cause follows half a second
+ * later, because it has to be fetched from docker, and waiting for it while
+ * keeping the room in the dark would be worse than adding a second line. In
+ * the kernel log these are two lines in a row, and they read as one thought:
+ * what happened and why.
  *
- * Номер ячейки — тот же, что нарисован в комнате слева от неё: порядковый в
- * своей тетради, считая markdown. Иначе преподаватель идёт искать «ячейку 11»
- * там, где на экране написано 21.
+ * The cell number is the one drawn in the room to its left: its position in
+ * its notebook, counting markdown. Otherwise the teacher goes looking for
+ * "cell 11" where the screen says 21.
  *
- * Ничего не обещает: `explain` возвращает `null`, когда сказать нечего, и
- * молчание здесь — осознанный ответ, а не потерянная ошибка.
+ * Promises nothing: `explain` returns `null` when there is nothing to say, and
+ * silence here is a deliberate answer, not a lost error.
  */
 function tellWhyItDied(runtime: Runtime, cellId: string | null): void {
-  // Закрытой комнате — молча: и заметка, и сам поиск ячейки завели бы её
-  // документ заново, а рассказывать причину уже некому.
+  // A closed room gets silence: both the note and the cell lookup itself would
+  // create its document anew, and there is nobody left to tell the cause to.
   if (runtime.retired) return
   const doc = (() => {
     try {
@@ -1254,30 +1297,31 @@ function tellWhyItDied(runtime: Runtime, cellId: string | null): void {
   })()
   const found = cellId && doc ? findCell(doc, cellId) : null
   const cell = found ? found.index + 1 : null
-  // Вскрытие — по ТОМУ контейнеру, где жило умершее ядро: у личных тетрадей
-  // свой cgroup, свой лимит памяти и свой счётчик убийств.
+  // The post-mortem looks at THE container where the dead kernel lived:
+  // personal notebooks have their own cgroup, memory limit and kill counter.
   void explainDeath(runtime.sessionId, cell, runtime.role)
     .then((why) => {
       if (!why) return
-      // В журнал машины — тем же словом `oom`, по которому эту беду уже ищут
-      // одним grep, и с числами, которых там до сих пор не было.
+      // Into the machine's journal, with the same word `oom` this trouble is
+      // already searched for with one grep, and with numbers that were never
+      // there before.
       console.warn(`[kernel ${runtime.sessionId}] ${why.oom ? 'oom' : 'died'}: ${why.text}`)
       if (!runtime.retired) kernelNote(runtime.sessionId, why.text)
     })
     .catch(() => {
-      /* Вскрытие, сорвавшее работу комнаты, — хуже отсутствия вскрытия. */
+      /* A post-mortem that breaks the room's work is worse than no post-mortem. */
     })
 }
 
 function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
   /*
-   * Процесс меняется — всё, что мы ему сказали, больше не в силе.
+   * The process is changing: everything we told it no longer holds.
    *
-   * Перезапуск (хоть кнопкой, хоть своевольный, после OOM или после `os._exit`
-   * в ту единственную ночь, когда защиту ещё не ставили) заводит НОВЫЙ Python,
-   * в котором нет ни нашего модуля, ни подмен. Забыв обнулить отпечаток, мы бы
-   * считали защиту стоящей на ядре, где её нет, — и следующие тридцать ячеек
-   * пошли бы в него как есть.
+   * A restart (by the button or on its own, after an OOM or after `os._exit`
+   * on that one night when the guard was not installed yet) starts a NEW Python
+   * that has neither our module nor the patches. If we forgot to clear the
+   * fingerprint, we would consider the guard in place on a kernel without it,
+   * and the next thirty cells would go into it as they are.
    */
   if (phase === 'restarting' || phase === 'dead') runtime.guard = null
   /*
@@ -1291,36 +1335,40 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
    */
   if (phase === 'restarting' && !expected) {
     const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
-    // Что выполнялось — снимается ДО `dropQueue`: она и уносит с собой попытку,
-    // а без неё от самого важного вопроса («чья ячейка?») не остаётся ничего.
+    // What was running is taken BEFORE `dropQueue`: it carries the attempt away
+    // with it, and without the attempt nothing is left of the most important
+    // question ("whose cell?").
     const scene = whatWasRunning(runtime)
     dropQueue(runtime)
     setStatus(runtime, 'restarting')
     /*
-     * И номера выполнений — со всей тетради, как это делает ручной Restart.
+     * And the execution numbers too, across the whole notebook, as a manual
+     * Restart does.
      *
-     * Процесс новый, переменных нет, а `Out [12]` над каждым прошлым выводом
-     * остаётся и утверждает обратное; по нему же клиент решает, показывать ли
-     * «From an earlier run — the kernel restarted». Без этой строки врала не
-     * одна убитая ячейка, а вся тетрадь.
+     * The process is new, there are no variables, yet `Out [12]` stays above
+     * every past output and claims the opposite; the client also uses it to
+     * decide whether to show "From an earlier run — the kernel restarted".
+     * Without this line it was not just the one killed cell that lied, but the
+     * whole notebook.
      */
     resetAllCells(runtime, runtime.currentCell)
     const known = churnReason()
     /*
-     * В журнал — отдельной строкой, и БЕЗ угаданной причины.
+     * Into the journal as a separate line, and WITHOUT a guessed cause.
      *
-     * До 20.09 здесь стояло слово «oom», когда причина неизвестна: удобный
-     * grep и, как оказалось, неправда. В тот день комната теряла ядро девять
-     * раз подряд, журнал девять раз сказал «oom», а вскрытие тут же, строкой
-     * ниже, возражало: «завершился не по памяти, занято 5,2 ГБ из 16». Убивал
-     * `os._exit(0)` в попытке консилиума — cgroup не тронут, dmesg чист. Одна
-     * ложная строка стоила полдня поисков прожорливой ячейки, которой не было.
+     * Until 20 Sep 2026 the word "oom" stood here when the cause was unknown: a
+     * handy grep and, as it turned out, untrue. That day the room lost its
+     * kernel nine times in a row, the journal said "oom" nine times, and the
+     * post-mortem right there, a line below, objected: "did not end because of
+     * memory, 5.2 GB of 16 in use". The killer was `os._exit(0)` in a council
+     * attempt: the cgroup untouched, dmesg clean. One false line cost half a day
+     * of hunting for a greedy cell that did not exist.
      *
-     * Теперь строка говорит ровно то, что известно СЕЙЧАС: ядро перезапустило
-     * себя само, причина ещё выясняется. Настоящую причину печатает вскрытие
-     * (`tellWhyItDied`) — словом `oom` только там, где cgroup это подтвердил,
-     * и словом `died` во всех остальных случаях. Grep по `[kernel` и по `oom:`
-     * остались, а врать перестали.
+     * Now the line says exactly what is known NOW: the kernel restarted itself,
+     * the cause is still being found out. The real cause is printed by the
+     * post-mortem (`tellWhyItDied`), with the word `oom` only where the cgroup
+     * confirmed it, and the word `died` in all other cases. The greps for
+     * `[kernel` and `oom:` still work, and the lying has stopped.
      */
     const again = known ? 0 : countDeath(runtime)
     console.warn(
@@ -1341,7 +1389,7 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
             .filter((part): part is string => part !== null)
             .join(' '),
     )
-    // Пересборка окружения объяснена и без docker; всё остальное объясняет он.
+    // An environment rebuild is explained without docker; docker explains the rest.
     if (!known) tellWhyItDied(runtime, scene.cellId)
     return
   }
@@ -1351,27 +1399,28 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
      * on a fresh kernel and will say so itself. Two notices, one of them about a
      * cell that then runs perfectly well, is worse than one.
      *
-     * И очередь при этом не трогаем — она стояла ЗА этой ячейкой и поедет на
-     * том же свежем ядре. Раньше `dropQueue` стоял выше проверки, и Run All на
-     * ядре, умершем на перемене, выполнял ровно одну ячейку: остальные молча
-     * возвращались в покой (заметки о них нет — `return` стоит раньше), причём
-     * вместе с чужими пачками, вопреки обещанию «сбой останавливает только
-     * свою». Сбоя тут и нет: ядро подменяют до отправки.
+     * And the queue is left alone: it stood BEHIND this cell and will go on the
+     * same fresh kernel. `dropQueue` used to stand above this check, and Run All
+     * on a kernel that died during a break ran exactly one cell: the rest
+     * silently went back to rest (there is no note about them, since the
+     * `return` comes earlier), together with other people's batches, contrary to
+     * the promise that "a failure stops only its own". There is no failure here
+     * anyway: the kernel is replaced before sending.
      */
     if (expected) {
       setStatus(runtime, 'dead')
       return
     }
     const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
-    // Как и при перезапуске: кто и что считал — только до `dropQueue`.
+    // As with a restart: who computed what is taken only before `dropQueue`.
     const scene = whatWasRunning(runtime)
     dropQueue(runtime)
     setStatus(runtime, 'dead')
-    // Почему ядра не стало, честно говорит вскрытие ниже; здесь — что случилось.
+    // The post-mortem below honestly says why the kernel went; here, what happened.
     const known = churnReason()
     const again = known ? 0 : countDeath(runtime)
-    // Смерть ядра — то, из-за чего пара останавливается; в журнале это обязано
-    // быть строкой, а не только заметкой в тетради, которая уедет вместе с ней.
+    // A kernel's death is what stops a class; in the journal it must be a line,
+    // not only a note in the notebook that goes away together with it.
     console.warn(
       `[kernel ${runtime.sessionId}] died${hadWork ? ' mid-run' : ''}${known ? ` — churn: ${known}` : ''}` +
         `${scene.what ? ` · ${scene.what}` : ''}${again > 1 ? ` · ${again} in 10 min` : ''}`,
@@ -1404,8 +1453,9 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
  * connect. A kernel that has died counts as absent, so the next Run quietly
  * brings a fresh one up instead of demanding a manual restart.
  *
- * `root` — тетрадь, чьё ядро поднимаем; без него — тетрадь комнаты, то есть
- * прежнее поведение для всего, что о нескольких ядрах ещё не знает.
+ * `root` is the notebook whose kernel we bring up; without it, the room's
+ * notebook, i.e. the old behaviour for everything that does not know about
+ * multiple kernels yet.
  */
 export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promise<void> {
   const runtime = getRuntime(sessionId, root)
@@ -1413,17 +1463,17 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
   if (runtime.starting) return runtime.starting
 
   /*
-   * Потолок личных ядер считается ДО подъёма и до всякой работы.
+   * The personal kernel ceiling is checked BEFORE start-up and before any work.
    *
-   * Контейнер личных тетрадей один на занятие, и ядер в нём десятки: без
-   * потолка поток, у каждого по черновику, кладёт его на пределе процессов или
-   * памяти — то есть роняет работу всех сразу и молча. Считаются живые ядра, а
-   * не заведённые области: тетрадь, чьё ядро погасло по простою, места не
-   * занимает.
+   * There is one personal notebooks container per class, and it holds dozens of
+   * kernels: without a ceiling, a cohort in which everyone has a draft brings
+   * it down at the process or memory limit, i.e. drops everyone's work at once
+   * and silently. Live kernels are counted, not created scopes: a notebook
+   * whose kernel went out for idleness takes up no place.
    *
-   * Своя область в счёт не идёт: у неё ядро либо уже есть (и мы сюда не дошли),
-   * либо умерло и поднимается заново — отказать ей значило бы запереть тетрадь
-   * насовсем после первого же OOM.
+   * Our own scope does not count: its kernel either already exists (and we did
+   * not get here) or died and is being brought up again; refusing it would lock
+   * the notebook for good after the very first OOM.
    */
   if (runtime.role === 'own') {
     const limit = ownKernelMax()
@@ -1451,13 +1501,13 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
   const envName = sessionEnvironment(sessionId) ?? activeName()
   const slow = setTimeout(() => {
     /*
-     * Про то окружение, которое поднимается, а не про глобальный адрес.
+     * About the environment that is being brought up, not the global address.
      *
-     * Здесь стоял `config.jupyter.url` — «kernel:8888», общая настройка. Но
-     * ждут обычно не его: комната на своём окружении поднимает свой контейнер,
-     * и это те самые полторы минуты. Названный не тот адрес превращает
-     * объяснение в загадку — идти чинить kernel:8888, который в этот момент
-     * жив и совершенно ни при чём.
+     * `config.jupyter.url` used to stand here: "kernel:8888", the shared
+     * setting. But that is usually not what is being waited for: a room on its
+     * own environment brings up its own container, and that is the minute and a
+     * half. Naming the wrong address turns an explanation into a riddle: go fix
+     * kernel:8888, which at that moment is alive and has nothing to do with it.
      */
     if (runtime.retired) return
     kernelNote(
@@ -1480,23 +1530,25 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
         /* it was already gone */
       }
     }
-    // Какое окружение сейчас спрашиваем — понадобится, если оно не ответит.
+    // Which environment we are asking for now: needed if it does not answer.
     const wanted = sessionEnvironment(sessionId)
     try {
       /*
-       * Куда идти за Python — решают комната и тетрадь.
+       * Where to go for Python is decided by the room and the notebook.
        *
-       * Комната выбирает контейнер: у занятия свой, у его личных тетрадей —
-       * второй, без карты (pool.ts · KernelRole). Окружение выбирает только
-       * образ, из которого контейнер поднят. А тетрадь выбирает СЕССИЮ внутри
-       * него: разные пути — разные ядра и разные переменные.
+       * The room picks the container: the class has its own, its personal
+       * notebooks a second one, without a GPU (pool.ts · KernelRole). The
+       * environment picks only the image the container is brought up from.
+       * And the notebook picks the SESSION inside it: different paths,
+       * different kernels and different variables.
        */
       const endpoint = await endpointForSession(sessionId, wanted, runtime.role)
       const kernel = await JupyterKernel.connect(sessionId, endpoint, runtime.root)
       if (runtime.retired) {
-        // Семинар закрыли, пока ядро поднималось. Подключаться теперь не к
-        // чему: без этой ветки сокет и сторож живого ядра остались бы висеть
-        // на среде, которой уже нет в карте, до перезапуска сервера.
+        // The seminar was closed while the kernel was coming up. There is
+        // nothing to connect to now: without this branch the socket and the
+        // live-kernel watchdog would hang on a runtime that is no longer in
+        // the map until the server restarts.
         await kernel.dispose().catch(() => {})
         return
       }
@@ -1513,60 +1565,64 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
         )
       }
       /*
-       * Защита от опасных команд — ДО того, как ядро объявлено готовым.
+       * The guard against dangerous commands comes BEFORE the kernel is
+       * declared ready.
        *
-       * Процесс новый, и в нём `os._exit` пока настоящий: между «сокет
-       * поднялся» и этой строкой ни одна пользовательская ячейка не должна
-       * успеть уйти в ядро. Неудача здесь ядро не хоронит — его просто не
-       * выпускают в работу: `ensureGuard` спросят ещё раз перед каждой
-       * ячейкой (`pump`), и та, что не дождалась, скажет об этом словами
-       * вместо того, чтобы молча считаться на незащищённом ядре.
+       * The process is new, and `os._exit` in it is still the real one: between
+       * "the socket came up" and this line not a single user cell may get into
+       * the kernel. A failure here does not bury the kernel; it is simply not
+       * let out to work: `ensureGuard` will be asked again before every cell
+       * (`pump`), and the one that did not get it will say so in words instead
+       * of silently computing on an unguarded kernel.
        */
       runtime.guard = null
       await ensureGuard(runtime).catch(() => false)
       setStatus(runtime, runtime.currentCell ? 'busy' : (kernel.phase as KernelStatus))
-      // Подъём ядра — настоящее событие: до полутора минут холодного старта, и
-      // именно между этой строкой и следующей комната смотрит в пустоту.
+      // A kernel coming up is a real event: up to a minute and a half of cold
+      // start, and it is exactly between this line and the next that the room
+      // stares into emptiness.
       console.log(`[kernel ${sessionId}/${runtime.root}] up (${envName ?? 'shared'}, ${runtime.role})`)
-      // Отсчёт простоя начинается с подъёма: ядро, поднятое и не тронутое
-      // полчаса, — это ровно тот черновик, который открыли и забыли.
+      // The idle count starts at start-up: a kernel brought up and untouched
+      // for half an hour is exactly the draft that was opened and forgotten.
       runtime.lastWorkAt = Date.now()
       /*
-       * Точка отсчёта для будущего вскрытия.
+       * The reference point for a future post-mortem.
        *
-       * Счётчик убийств по памяти у контейнера сквозной — он считает с рождения
-       * контейнера, а контейнер переживает и смену ядра, и перезапуск сервера.
-       * Не запомнив его сейчас, на первой же смерти мы не отличим «убит этой
-       * ячейкой» от «убит утром на прошлой паре». Не ждём: старт комнаты не
-       * должен стоять из-за диагностики, которая понадобится через час.
+       * A container's OOM kill counter is cumulative: it counts from the
+       * container's birth, and the container survives both a kernel change and
+       * a server restart. If we do not remember it now, at the very first death
+       * we cannot tell "killed by this cell" from "killed this morning in the
+       * previous class". We do not wait: a room's start must not stand still
+       * for diagnostics needed an hour later.
        */
       void sampleKills(sessionId, runtime.role)
     } catch (err) {
       setStatus(runtime, 'dead')
-      // Отказ планировщика — слово для совета преподавателю; остальное его снимает.
+      // A scheduler refusal is a word for advice to the teacher; anything else removes it.
       const problem = err instanceof RuntimeRequestError ? err.failure ?? null : null
       setKernelProblem(runtime, problem)
-      // Не чаще раза в минуту на комнату: `ensureKernel` зовёт и вход каждого
-      // студента, и каждый Run, а обещание у них одно на всех — тридцать
-      // одинаковых строк в ту же миллисекунду мы уже видели.
+      // No more than once a minute per room: `ensureKernel` is called by every
+      // student's entry and every Run, and they all share one promise: we have
+      // already seen thirty identical lines in the same millisecond.
       if (seldom(`kernel-down:${sessionId}/${runtime.root}`)) {
-        // Текст ошибки здесь — студенческий, поэтому в журнал ещё и слово:
-        // оператору по нему искать в событиях кластера.
+        // The error text here is for students, so the journal also gets a
+        // word: the operator searches the cluster events by it.
         const lacking = problem ? ` [unschedulable: ${problem.unschedulable}]` : ''
         console.warn(`[kernel ${sessionId}/${runtime.root}] did not start: ${errText(err)}${lacking}`)
       }
       /*
-       * Забыть запомненный адрес контейнера.
+       * Forget the remembered container address.
        *
-       * Порт у контейнера комнаты случайный, и пул его кеширует. После
-       * `docker restart colloq-room-<id>` порт другой, а комната ходит по
-       * старому — и будет ходить, пока не перезапустят весь сервер: «No Python
-       * kernel after 60s» на каждый Run, при живом и здоровом контейнере рядом.
+       * The room container's port is random, and the pool caches it. After
+       * `docker restart colloq-room-<id>` the port is different, but the room
+       * goes to the old one, and will keep going until the whole server is
+       * restarted: "No Python kernel after 60s" on every Run, with a live and
+       * healthy container right next to it.
        */
       forgetSessionKernel(sessionId, runtime.role)
       // Into the shared record too: the person who presses Run sees the message
       // on their cell, and everyone else sees a notebook that stopped.
-      // Закрытой комнате — молча: заметка завела бы её документ заново.
+      // A closed room gets silence: a note would create its document anew.
       if (!runtime.retired) kernelNote(sessionId, errText(err))
       throw err
     } finally {
@@ -1579,20 +1635,20 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
 }
 
 /*
- * Пересозданный контейнер — новость для комнаты, а не для журнала сервера.
+ * A recreated container is news for the room, not for the server journal.
  *
- * Пул сносит контейнер, когда тот собран из старого образа, стоит не в той
- * сети, держит чужой срез GPU или не принимает наш токен. Каждый такой случай
- * стоит семинару всех переменных сразу — и до сих пор проходил молча: `x` был и
- * вдруг NameError, а на экране ни строки. Теперь строка есть, и в ней сказано
- * почему.
+ * The pool removes a container when it was built from an old image, sits on
+ * the wrong network, holds someone else's GPU slice or does not accept our
+ * token. Each such case costs the seminar all its variables at once, and until
+ * now it went by silently: `x` existed and suddenly NameError, with not a line
+ * on screen. Now there is a line, and it says why.
  */
 onRoomKernelRecreated((sessionId, why, role) => {
-  // Контейнер новый — и счётчик его убийств тоже начинается с нуля. Считается
-  // он по контейнеру комнаты (postmortem.ts), так что пересоздание второго его
-  // не касается.
+  // The container is new, and so its kill counter starts from zero as well. It
+  // is counted per room container (postmortem.ts), so recreating the second
+  // container does not affect it.
   if (role !== 'own') forgetKills(sessionId)
-  // Закрытой комнате — молча: заметка завела бы её документ заново.
+  // A closed room gets silence: a note would create its document anew.
   const scopes = scopesOf(sessionId)
   if (scopes.length > 0 && scopes.every((scope) => scope.retired)) return
   kernelNote(
@@ -1628,12 +1684,12 @@ export function kernelNote(sessionId: string, text: string): void {
 }
 
 /**
- * Перезапустить ядро ОДНОЙ тетради.
+ * Restart the kernel of ONE notebook.
  *
- * `root` — чьё; без него — тетрадь комнаты, чтобы вкладка, открытая до выкатки,
- * делала ровно то, что делала раньше. Соседние тетради занятия это не трогает
- * вовсе: у них свои процессы, и «перезапустить лекцию» не должно означать
- * «обнулить семинар».
+ * `root` says whose; without it, the room's notebook, so that a tab opened
+ * before the deploy does exactly what it did before. The class's neighbouring
+ * notebooks are not touched at all: they have their own processes, and
+ * "restart the lecture" must not mean "reset the seminar".
  */
 export async function restartSession(
   sessionId: string,
@@ -1641,8 +1697,8 @@ export async function restartSession(
   root: string = CELLS_KEY,
 ): Promise<void> {
   const runtime = getRuntime(sessionId, root)
-  // Два нажатия — один перезапуск. Второе присоединяется к первому, а не
-  // запускает поверх него ещё один.
+  // Two presses mean one restart. The second joins the first rather than
+  // starting another one on top of it.
   if (runtime.restarting) return runtime.restarting
   if (runtime.activityItem) runtime.activityItem.activityCancelled = true
   dropQueue(runtime)
@@ -1653,10 +1709,12 @@ export async function restartSession(
       if (runtime.kernel && runtime.kernel.phase !== 'dead') await runtime.kernel.restart()
       else await ensureKernel(sessionId, root)
       /*
-       * Перезапуск — это новый процесс, то есть ядро без защиты. Ставим её
-       * здесь же, не дожидаясь первой ячейки: между «ядро вернулось» и первым
-       * Run в комнате обычно есть люди, а у них — терминал и оракул.
-       * Неудача не роняет перезапуск: перед ячейкой спросят ещё раз.
+       * A restart is a new process, i.e. a kernel without the guard. We install
+       * it right here, without waiting for the first cell: between "the kernel
+       * is back" and the first Run the room usually has people in it, and they
+       * have the terminal and the Oracle.
+       * A failure does not fail the restart: the question is asked again before
+       * a cell.
        */
       runtime.guard = null
       await ensureGuard(runtime).catch(() => false)
@@ -1683,28 +1741,30 @@ export async function restartSession(
     await runtime.restarting
   } finally {
     runtime.restarting = null
-    // Что успели поставить в очередь, пока ядро возвращалось, — теперь можно.
+    // Whatever was queued while the kernel was coming back can go now.
     void pump(runtime)
   }
 }
 
 /**
- * @param cellId Ячейка, ради которой нажали. Комнатная кнопка её не называет.
+ * @param cellId The cell the press was for. The room-wide button does not name
+ * one.
  *
- * Нажатие на самой ячейке называет свою цель, и это исправление, а не удобство.
- * Кнопка нарисована по состоянию документа, а документ отстаёт от сервера на
- * круг: нажать «стоп» в промежутке между двумя ячейками Run All значило попасть
- * в ветку `else` внизу и вынести очередь всей комнаты — включая батчи людей,
- * которые ничего не нажимали. Пока «стоп» жил только внизу ячейки, попасть в
- * этот промежуток было трудно; кнопка под курсором делает это лёгким.
+ * A press on the cell itself names its target, and that is a fix, not a
+ * convenience. The button is drawn from the document's state, and the document
+ * lags the server by a round trip: pressing "stop" in the gap between two cells
+ * of Run All meant landing in the `else` branch below and throwing out the
+ * whole room's queue, including the batches of people who had pressed nothing.
+ * While "stop" lived only at the bottom of the cell, hitting that gap was hard;
+ * a button under the cursor makes it easy.
  *
- * Без `cellId` поведение прежнее, и эта ветка нужна: Interrupt в полосе
- * тетради — единственный способ разобрать скопившуюся очередь одним нажатием,
- * когда не выполняется ничего.
+ * Without `cellId` the behaviour is as before, and this branch is needed:
+ * Interrupt in the notebook's bar is the only way to clear an accumulated queue
+ * with one press when nothing is running.
  *
- * @param root Тетрадь, чьё ядро останавливаем. Названная ячейка сильнее: её
- * область и есть та, где идёт работа, — а `root` при промахе именем взялся бы
- * из вкладки, которая в этот момент открыта.
+ * @param root The notebook whose kernel is stopped. A named cell is stronger:
+ * its scope is the one where the work is going on, while `root`, on a miss by
+ * name, would be taken from whichever tab is open at that moment.
  */
 export async function interruptSession(
   sessionId: string,
@@ -1727,31 +1787,33 @@ export async function interruptSession(
    */
   const running = runtime.currentCell
   /*
-   * Проверка цели стоит только на второй ветке, и это существенно.
+   * The target check stands only on the second branch, and this matters.
    *
-   * Сначала она стояла над всей функцией, и получалось строго хуже задуманного:
-   * нажатие, промахнувшееся мимо своей ячейки, не делало вообще ничего — а
-   * ядро в этот момент считает следующую ячейку того же Run All, и человек,
-   * который жал «стоп», остаётся с работающей тетрадью и молчащей кнопкой.
+   * At first it stood over the whole function, and the result was strictly
+   * worse than intended: a press that missed its cell did nothing at all, while
+   * the kernel at that moment was computing the next cell of the same Run All,
+   * and the person who pressed "stop" was left with a running notebook and a
+   * silent button.
    *
-   * Опасна была ровно нижняя ветка: `dropQueue` выносит очередь всей тетради,
-   * включая чужие батчи. `stopBatchOf` так не умеет — он ограничен батчем той
-   * ячейки, которая сейчас выполняется, — поэтому остановить текущую работу
-   * можно и промахнувшимся нажатием, а вот разбирать очередь по промаху нельзя.
+   * Only the lower branch was dangerous: `dropQueue` throws out the whole
+   * notebook's queue, other people's batches included. `stopBatchOf` cannot do
+   * that (it is limited to the batch of the cell running now), so the current
+   * work may be stopped even by a missed press, but the queue must not be
+   * cleared on a miss.
    */
   if (running) {
     /*
-     * SIGINT всё равно достаётся тому, что считается в ЭТОЙ тетради: ядро у
-     * области одно, и выбирать ему не из чего. А вот очередь по промаху
-     * разбираем только свою.
+     * SIGINT still goes to whatever is computing in THIS notebook: a scope has
+     * one kernel, and there is nothing for it to choose from. But on a miss we
+     * clear only our own queue.
      *
-     * Промах между двумя ячейками бывает и межвладельческим: преподаватель
-     * жмёт «стоп» на своей ячейке ровно когда она кончилась, а ядро уже взяло
-     * первую ячейку из Run All студента. Снять с неё пачку значило погасить
-     * двенадцать чужих ячеек без объяснения — и именно это раньше и
-     * происходило, потому что `stopBatchOf` по текущей ячейке падал на
-     * `currentBatch`. Цель, о которой мы вообще ничего не знаем (ячейку успели
-     * удалить), считается своей, как и прежде.
+     * A miss between two cells can also cross owners: the teacher presses
+     * "stop" on their cell exactly as it finishes, while the kernel has already
+     * taken the first cell of a student's Run All. Cancelling that batch would
+     * put out twelve of someone else's cells without explanation, and that is
+     * exactly what used to happen, because `stopBatchOf` on the current cell
+     * fell back to `currentBatch`. A target we know nothing about at all (the
+     * cell has been deleted) counts as our own, as before.
      */
     const batch = cellId === undefined ? runtime.currentBatch : batchOf(runtime, cellId)
     if (batch === null || batch === runtime.currentBatch) stopBatchOf(runtime, running)
@@ -1774,15 +1836,15 @@ export async function interruptSession(
  * Every other caller wants restartSession, which keeps the room.
  */
 export async function shutdownSession(sessionId: string, permanent = false): Promise<void> {
-  // ВСЕ области занятия: ядер у него столько, сколько тетрадей, и оставить
-  // хоть одно значило бы оставить процесс, который пишет в документ комнаты,
-  // которой больше нет.
+  // ALL of the class's scopes: it has as many kernels as notebooks, and leaving
+  // even one would leave a process writing into the document of a room that no
+  // longer exists.
   const scopes = scopesOf(sessionId)
   runtimes.delete(sessionId)
   for (const runtime of scopes) {
-    // Первым делом, до всякого await: подъём ядра, идущий прямо сейчас, увидит
-    // этот признак и не станет ни писать в документ, ни оставлять за собой
-    // подключённое ядро.
+    // First of all, before any await: a kernel start going on right now will
+    // see this flag and will neither write into the document nor leave a
+    // connected kernel behind.
     runtime.retired = true
     for (const item of runtime.queue) finishExecution(runtime, item, 'cancelled')
     runtime.queue.length = 0
@@ -1798,66 +1860,72 @@ export async function shutdownSession(sessionId: string, permanent = false): Pro
   } catch (err) {
     console.error(`[kernel] could not stop the terminal for ${sessionId}:`, errText(err))
   }
-  // Комната кончилась: если её откроют снова, про общее ядро надо сказать
-  // заново — это уже другое занятие.
-  // И отметка прохода по призракам: комната кончилась, помнить о ней нечего.
+  // The room is over: if it is opened again, the shared kernel has to be told
+  // anew, since that is a different class by then.
+  // And the ghost sweep mark too: the room is over, there is nothing to
+  // remember about it.
   orphanSweeps.delete(sessionId)
   /*
-   * И сами контейнеры комнаты — оба.
+   * And the room's containers themselves, both of them.
    *
-   * Контейнеры теперь по паре на семинар, а не один на окружение: не убрать их
-   * — значит оставить по два контейнера на каждую пару, когда-либо проведённую
-   * на этой машине. Файлы комнаты лежат на хосте и это переживают; уходит
-   * только Python со всеми переменными, что и означает «семинар закончился».
+   * Containers are now a pair per seminar, not one per environment: not
+   * removing them would mean leaving two containers for every class ever held
+   * on this machine. The room's files live on the host and survive this; only
+   * the Python with all its variables goes, which is exactly what "the seminar
+   * is over" means.
    */
   // Deleting documents or files is safe only after the runtime confirms that
   // every room writer stopped. The caller must retain the room on failure.
   await dropRoomKernel(sessionId, permanent)
-  // Счётчик убийств по памяти считает с рождения КОНТЕЙНЕРА. Контейнера
-  // больше нет, а запомненное число пережило бы его и объявило бы первую же
-  // смерть в новом контейнере «не по памяти».
+  // The OOM kill counter counts from the birth of the CONTAINER. The container
+  // is gone, and a remembered number would outlive it and declare the very
+  // first death in a new container "not from memory".
   forgetKills(sessionId)
-  // Счёт падений подряд — про ТО ядро; новому «третий раз за десять минут» не
-  // принадлежит, и переносить его значило бы пугать комнату чужой бедой.
+  // The count of deaths in a row is about THAT kernel; "the third time in ten
+  // minutes" does not belong to the new one, and carrying it over would scare
+  // the room with someone else's trouble.
   forgetDeaths(sessionId)
 }
 
-/* ------------------------------------------------- переезд и снос областей */
+/* ---------------------------------------------- moving and removing scopes */
 
 /**
- * Погасить ядро ОДНОЙ тетради — со всем, что оно держало.
+ * Shut down the kernel of ONE notebook, with everything it held.
  *
- * Не перезапуск: область снимается с карты целиком, и следующий запуск в этой
- * тетради заведёт её заново — уже там, где ей теперь положено жить. Это и есть
- * «переезд»: переселить живой процесс из одного контейнера в другой нельзя, а
- * делать вид, что переменные уцелели, — хуже, чем сказать, что их нет.
+ * Not a restart: the scope is removed from the map entirely, and the next run
+ * in this notebook creates it anew, already where it is now supposed to live.
+ * That is what "moving" is: a live process cannot be moved from one container
+ * to another, and pretending the variables survived is worse than saying they
+ * are gone.
  *
- * Порядок здесь важен и весь про гонку с насосом. Сначала область снимается с
- * карты, чтобы параллельный Run завёл СВЕЖУЮ, а не дописывал в умирающую.
- * Потом разбирается очередь — ячейки возвращаются в покой, попытки консилиума
- * узнают, что запуска не было. И только потом гасится ядро: его `dispose`
- * обрывает то, что считалось, и насос допишет в ячейку своё — поэтому
- * состояния ячеек тетради выравниваются ПОСЛЕ него, последним словом.
+ * The order here matters, and it is all about the race with the pump. First
+ * the scope is removed from the map, so that a parallel Run creates a FRESH one
+ * instead of writing into the dying one. Then the queue is cleared: cells go
+ * back to rest, council attempts learn there was no run. And only then is the
+ * kernel shut down: its `dispose` cuts off what was computing, and the pump
+ * will add its own ending to the cell, so the notebook's cell states are
+ * levelled AFTER it, as the last word.
  */
 async function retireScope(runtime: Runtime, note: string | null): Promise<void> {
   const { sessionId, root } = runtime
   forgetScope(runtime)
   if (runtime.activityItem) runtime.activityItem.activityCancelled = true
   /*
-   * Что эта область держала — до того, как мы её разберём.
+   * What this scope held, before we take it apart.
    *
-   * Ячейка, которая считалась, кончится сама: `dispose` оборвёт её, и насос
-   * допишет в неё «ядро остановлено». Для обычной смерти ядра это правильные
-   * слова, а здесь — нет: ядра не стало не потому, что что-то сломалось, а
-   * потому, что тетрадь переехала, и об этом сказано отдельной строкой. Имена
-   * запоминаются сейчас, потому что через строку очередь будет пуста.
+   * The cell that was computing will end by itself: `dispose` cuts it off, and
+   * the pump writes "kernel stopped" into it. For an ordinary kernel death those
+   * are the right words, but not here: the kernel is gone not because something
+   * broke but because the notebook moved, and that is said in a separate line.
+   * The names are remembered now, because a line later the queue will be empty.
    */
   const touched = new Set<string>(runtime.queue.map((item) => item.cellId))
   if (runtime.currentCell) touched.add(runtime.currentCell)
   dropQueue(runtime)
   dropWriter(runtime)
-  // Признак ставится ДО `dispose`: насос, увидев мёртвое ядро, иначе поднял бы
-  // этой тетради новое (см. `runOnKernel`) — тетради, которой уже нет.
+  // The flag is set BEFORE `dispose`: otherwise the pump, seeing a dead kernel,
+  // would bring up a new one for this notebook (see `runOnKernel`), a notebook
+  // that no longer exists.
   runtime.retired = true
   try {
     await runtime.kernel?.dispose()
@@ -1866,30 +1934,30 @@ async function retireScope(runtime: Runtime, note: string | null): Promise<void>
   }
   runtime.kernel = null
   /*
-   * Дождаться насоса, прежде чем выравнивать ячейки.
+   * Wait for the pump before levelling the cells.
    *
-   * `dispose` обрывает то, что считалось, но узнаёт об этом `runOne` на своём
-   * `await` — и дописывает в ячейку свой конец («ядро остановлено») уже после
-   * того, как мы отсюда вернёмся. Выровнять состояния раньше него значит
-   * оставить в тетради «ошибка» там, где ядра просто не стало: последнее слово
-   * должно быть за нами, а не за гонкой.
+   * `dispose` cuts off what was computing, but `runOne` learns of it at its
+   * `await` and writes its own ending into the cell ("kernel stopped") after we
+   * have returned from here. Levelling the states before it would leave "error"
+   * in the notebook where the kernel simply went away: the last word must be
+   * ours, not the race's.
    */
   await settled(runtime)
   runtime.currentCell = null
   restCells(sessionId, root, touched)
   clearScopeMirror(sessionId, root)
   if (note) kernelNote(sessionId, note)
-  // Контейнер личных тетрадей держится, пока в нём есть хоть одно ядро.
+  // The personal notebooks container is kept while it has at least one kernel.
   if (runtime.role === 'own') await dropOwnIfEmpty(sessionId)
 }
 
 /**
- * Подождать, пока насос этой области остановится, — но не дольше секунды.
+ * Wait until this scope's pump stops, but no longer than a second.
  *
- * Секунда, а не «сколько понадобится»: сюда приходит удаление семинара и смена
- * доступа, и висеть на них из-за ядра, которое не отвечает, нельзя. Не успели —
- * выравниваем состояния как есть: лишняя строка «ядро остановлено» в тетради
- * честнее, чем запрос, который не вернулся.
+ * A second, not "as long as it takes": seminar deletion and access changes come
+ * here, and they must not hang because of a kernel that does not answer. If it
+ * does not make it, we level the states as they are: an extra "kernel stopped"
+ * line in the notebook is more honest than a request that never came back.
  */
 async function settled(runtime: Runtime): Promise<void> {
   const deadline = Date.now() + 1000
@@ -1899,12 +1967,13 @@ async function settled(runtime: Runtime): Promise<void> {
 }
 
 /**
- * Всё, что эта тетрадь считала, — обратно в покой. Вывод остаётся: он был.
+ * Everything this notebook was computing goes back to rest. The output stays:
+ * it happened.
  *
- * `touched` — имена, которые область держала на момент сноса. Они гасятся в
- * любом состоянии, а не только из «работает»: насос успел дописать в свою
- * ячейку конец («ядро остановлено»), и оставить её красной значило бы объявить
- * поломкой то, что было переездом.
+ * `touched` are the names the scope held at the moment of removal. They are put
+ * out in any state, not only from "running": the pump managed to write its
+ * ending into its cell ("kernel stopped"), and leaving it red would declare a
+ * breakage what was a move.
  */
 function restCells(sessionId: string, root: string, touched: ReadonlySet<string>): void {
   let doc: Y.Doc
@@ -1927,7 +1996,7 @@ function restCells(sessionId: string, root: string, touched: ReadonlySet<string>
   }, ORIGIN)
 }
 
-/** Снять запись тетради из карты ядер — и её зеркало, если это тетрадь комнаты. */
+/** Clear the notebook's kernels-map entry, and its mirror for the room's notebook. */
 function clearScopeMirror(sessionId: string, root: string): void {
   let doc: Y.Doc
   try {
@@ -1939,14 +2008,15 @@ function clearScopeMirror(sessionId: string, root: string): void {
   const meta = getMeta(doc)
   doc.transact(() => {
     /*
-     * Запись не удаляется, а переводится в `off`, и это правка 20.09.
+     * The entry is not deleted but switched to `off`, and that is the fix of
+     * 20 Sep 2026.
      *
-     * Удалённая запись означала «о ядре этой тетради ничего не известно», и
-     * комната читала это по-разному: тетрадь комнаты сползала на прежний ключ
-     * (там стояло «ГОТОВО» — обещание живого Python, которого нет), а
-     * остальные получали умолчание «ЗАПУСК». Ни то ни другое не описывает то,
-     * что произошло: ядро убрали — штатно, по простою или по концу занятия, —
-     * и поднимется оно при следующем запуске.
+     * A deleted entry meant "nothing is known about this notebook's kernel",
+     * and the room read that in different ways: the room's notebook slid back to
+     * the old key (which said "IDLE", a promise of a live Python that does not
+     * exist), and the others got the default "STARTING". Neither describes what
+     * happened: the kernel was removed, normally, for idleness or at the end of
+     * class, and it will come up at the next run.
      */
     if (map?.has(root)) kernelEntry(doc, root).set(KERNEL_STATUS_FIELD, 'off' as KernelStatus)
     const slot = map?.get(root)
@@ -1965,7 +2035,7 @@ function clearScopeMirror(sessionId: string, root: string): void {
   }, ORIGIN)
 }
 
-/** Личных ядер не осталось — контейнеру личных тетрадей стоять незачем. */
+/** No personal kernels left: the personal notebooks container has no reason to stay. */
 async function dropOwnIfEmpty(sessionId: string): Promise<void> {
   if (scopesOf(sessionId).some((scope) => scope.role === 'own')) return
   try {
@@ -1976,26 +2046,29 @@ async function dropOwnIfEmpty(sessionId: string): Promise<void> {
 }
 
 /**
- * Свериться с правилами и документом: где ядрам этого занятия теперь место.
+ * Check against the rules and the document: where this class's kernels belong
+ * now.
  *
- * Зовётся там, где меняется ответ: преподаватель сменил доступ тетради
- * (routes/sessions.ts, routes/admin-instance.ts) и тетрадь убрали из комнаты
- * (control.ts · onBooksWritten). Дёшево: проход по живым областям занятия, а их
- * столько, сколько тетрадей в нём открывали, — единицы.
+ * Called where the answer changes: the teacher changed a notebook's access
+ * (routes/sessions.ts, routes/admin-instance.ts), and a notebook was removed
+ * from the room (control.ts · onBooksWritten). Cheap: a pass over the class's
+ * live scopes, and there are as many as notebooks were opened in it, a handful.
  *
- * Почему гасим, а не переносим. Ядро — это процесс в конкретном контейнере с
- * конкретным лимитом памяти и конкретным доступом к карте. «Перенести» его
- * нельзя: можно только завести новый и потерять переменные. Оставить как есть —
- * значит оставить личную тетрадь студента считаться в контейнере лекции, с её
- * GPU и её OOM-killer'ом, то есть ровно то, от чего вся эта развилка и стоит.
+ * Why we shut down rather than move. A kernel is a process in a specific
+ * container with a specific memory limit and specific access to the GPU. It
+ * cannot be "moved": one can only start a new one and lose the variables.
+ * Leaving it as is would mean leaving a student's personal notebook computing
+ * in the lecture container, with its GPU and its OOM killer, i.e. exactly what
+ * this whole fork exists to prevent.
  */
 export function syncBookKernels(sessionId: string): void {
   const scopes = scopesOf(sessionId)
   if (scopes.length === 0) return
   const doc = peekSessionDoc(sessionId)?.doc ?? null
   const books = doc ? bookList(doc) : []
-  // Пустой список — у комнаты, которую ещё не открывали в этом процессе, и у
-  // документа из теста. Считать по нему «тетрадей нет» значило бы погасить всё.
+  // An empty list belongs to a room not yet opened in this process, and to a
+  // test document. Taking it as "there are no notebooks" would shut down
+  // everything.
   const roots = books.length > 0 ? new Set(books.map((book) => book.root)) : null
   const named = (root: string): string =>
     books.find((book) => book.root === root)?.path ?? root
@@ -2010,46 +2083,46 @@ export function syncBookKernels(sessionId: string): void {
   }
 }
 
-/* --------------------------------------------------------- уборка простоя */
+/* ----------------------------------------------------------- idle cleanup */
 
 /**
- * Сколько контейнер комнаты живёт после того, как из неё все вышли.
+ * How long a room's container lives after everyone has left.
  *
- * Пара идёт полтора часа; два часа пустой комнаты — это «занятие кончилось», а
- * не «преподаватель вышел за кофе». Раньше уборки не требовалось вовсе:
- * контейнер был один на окружение и обслуживал всех. Теперь их по ДВА на
- * семинар — его собственный и тот, где считаются личные тетради студентов, — и
- * без уборки на машине копится по паре на каждую когда-либо проведённую пару.
- * Уходят они вместе: занятие кончилось целиком, а не наполовину.
+ * A class lasts an hour and a half; two hours of an empty room mean "the class
+ * is over", not "the teacher went out for coffee". Previously no cleanup was
+ * needed at all: there was one container per environment serving everyone. Now
+ * there are TWO per seminar (its own and the one where students' personal
+ * notebooks compute), and without cleanup the machine piles up a pair for every
+ * class ever held. They go together: the class ended as a whole, not by half.
  */
 const IDLE_KERNEL_MS = 2 * 60 * 60 * 1000
 /**
- * Остановленному контейнеру столько ждать незачем.
+ * A stopped container has no reason to wait that long.
  *
- * Два часа — это «преподаватель вышел за кофе, переменные семинара пусть
- * подождут». У остановленного контейнера переменных нет вовсе: его Python убит
- * вместе с ним, а держит он только слой на диске и — что дороже — свой срез
- * GPU, из-за которого следующий семинар слышит «свободных срезов нет». После
- * перезагрузки машины (`--restart=no`) такими становятся ВСЕ вчерашние
- * контейнеры сразу, так что цена ожидания — целое утро без GPU.
+ * Two hours mean "the teacher went out for coffee, let the seminar's variables
+ * wait". A stopped container has no variables at all: its Python was killed
+ * with it, and all it holds is a layer on disk and, more expensively, its GPU
+ * slice, because of which the next seminar hears "no free slices". After a
+ * machine reboot (`--restart=no`) ALL of yesterday's containers become like
+ * that at once, so the price of waiting is a whole morning without a GPU.
  */
 const IDLE_STOPPED_KERNEL_MS = 30 * 60 * 1000
 const SWEEP_EVERY_MS = 10 * 60 * 1000
 
-/** Когда в комнате в последний раз кто-то был. */
+/** When someone was last in the room. */
 const lastOccupied = new Map<string, number>()
 
 /**
- * Что делать с контейнером комнаты прямо сейчас — одним правилом и без docker.
+ * What to do with a room's container right now, by one rule and without docker.
  *
- * `busy` — занята: кто-то в комнате, считается ячейка, стоит очередь или
- * работает команда в оболочке. `watch` — пустая, отсчёт идёт. `drop` — пустая
- * достаточно долго, контейнер убираем.
+ * `busy`: occupied: someone is in the room, a cell is computing, a queue stands
+ * or a command is running in the shell. `watch`: empty, the countdown is on.
+ * `drop`: empty long enough, the container is removed.
  *
- * Отдельной функцией, потому что ошибка была именно в правиле, а не в докере:
- * остановленные контейнеры в уборку не попадали вовсе, и на GPU-машине после
- * ночной перезагрузки все срезы оставались за комнатами, которых больше никто
- * не откроет.
+ * A separate function, because the bug was in the rule itself, not in docker:
+ * stopped containers never got into the cleanup at all, and on a GPU machine
+ * after a nightly reboot every slice stayed with rooms nobody would ever open
+ * again.
  */
 export function idleVerdict(opts: {
   running: boolean
@@ -2069,9 +2142,10 @@ let idleSweep: Promise<void> | null = null
  * A broker outage postpones maintenance; it must not reject the interval's
  * detached promise or strand the single-flight slot for all later sweeps.
  *
- * `now` — часы вызывающего, тем же приёмом, что у `sweepOrphanRuns`: полчаса
- * простоя личного ядра проверяются за миллисекунду, а не ожиданием получаса.
- * В работе их всегда ставит вызов без аргументов.
+ * `now` is the caller's clock, the same trick as `sweepOrphanRuns`: half an
+ * hour of a personal kernel's idleness is checked in a millisecond rather than
+ * by waiting half an hour. In production it is always set by a call without
+ * arguments.
  */
 export function sweepIdleKernels(now: number = Date.now()): Promise<void> {
   if (idleSweep) return idleSweep
@@ -2089,22 +2163,25 @@ export function sweepIdleKernels(now: number = Date.now()): Promise<void> {
 }
 
 /**
- * Личные ядра, которые ничего не делали дольше положенного, — по одному.
+ * Personal kernels that have done nothing for longer than allowed, one at a
+ * time.
  *
- * Отдельный проход внутри общей уборки, а не второй таймер: повод один и тот
- * же — «этим больше не пользуются», — и два расписания на один повод разошлись
- * бы первым же изменением.
+ * A separate pass inside the shared cleanup, not a second timer: the reason is
+ * one and the same ("nobody uses this any more"), and two schedules for one
+ * reason would drift apart with the very first change.
  *
- * Считается ПО ОБЛАСТИ, а не по комнате, и в этом вся разница с уборкой ядер
- * занятия. Комната может быть полна людей и работы: лекция считает, семинар
- * открыт, — а сорок черновиков, открытых утром, всё это время держат сорок
- * питонов в одном контейнере. Занятость комнаты про них не говорит ничего.
+ * Counted PER SCOPE, not per room, and that is the whole difference from the
+ * cleanup of class kernels. A room can be full of people and work (the lecture
+ * computing, the seminar open) while forty drafts opened in the morning have
+ * been holding forty Pythons in one container all this time. The room being
+ * busy says nothing about them.
  *
- * Гаснет только то, что и правда простаивает: ничего не выполняется, очередь
- * пуста, попытки консилиума не идут. Тетрадь узнаёт об этом строкой в журнале
- * ядра, и следующий Run поднимает ядро обычным путём — за секунды, потому что
- * контейнер уже стоит. А когда в нём не остаётся ни одного ядра, уходит и он
- * (`retireScope` → `dropOwnIfEmpty`).
+ * Only what is really idle is put out: nothing is running, the queue is empty,
+ * no council attempts are going. The notebook learns about it from a line in
+ * the kernel log, and the next Run brings the kernel up the usual way, in
+ * seconds, because the container is already there. And when not a single
+ * kernel is left in it, the container goes too (`retireScope` →
+ * `dropOwnIfEmpty`).
  */
 async function sweepIdleOwnScopes(now: number): Promise<void> {
   const minutes = ownIdleMinutes()
@@ -2112,7 +2189,7 @@ async function sweepIdleOwnScopes(now: number): Promise<void> {
   const limit = minutes * 60_000
   for (const runtime of allScopes()) {
     if (runtime.role !== 'own' || runtime.retired) continue
-    // Ядра ещё нет — гасить нечего; область без ядра места не занимает.
+    // No kernel yet, so nothing to put out; a scope without a kernel takes no room.
     if (!runtime.kernel) continue
     if (runtime.currentCell !== null || runtime.queue.length > 0 || runtime.job) continue
     const since = runtime.lastWorkAt
@@ -2130,39 +2207,40 @@ async function sweepIdleOwnScopes(now: number): Promise<void> {
 }
 
 async function sweepIdleKernelsOnce(now: number): Promise<void> {
-  // Сначала личные ядра поодиночке: занятие при этом продолжается, и комната
-  // ниже может оказаться занятой — на решение по ней это не влияет.
+  // Personal kernels first, one by one: the class goes on meanwhile, and the
+  // room below may turn out to be busy; that does not affect the decision on it.
   await sweepIdleOwnScopes(now)
   /*
-   * Не только те, что поднял этот процесс, и не только живые.
+   * Not only the ones this process brought up, and not only the live ones.
    *
-   * `runningRoomKernels()` — карта в памяти, и после перезапуска сервера она
-   * пуста, а вчерашние контейнеры работают: уборка о них не знала, пока кто-то
-   * не откроет комнату, и они жили до `make down`. Метка docker переживает нас,
-   * поэтому спрашиваем и её — вместе с остановленными (`docker ps -a`), которые
-   * до сих пор не попадали в уборку НИКОГДА.
+   * `runningRoomKernels()` is a map in memory, and after a server restart it is
+   * empty while yesterday's containers keep running: the cleanup did not know
+   * about them until someone opened the room, and they lived until `make down`.
+   * The docker label outlives us, so we ask it too, together with the stopped
+   * ones (`docker ps -a`), which until now NEVER got into the cleanup.
    */
   const rooms = new Map<string, boolean>()
   for (const sessionId of runningRoomKernels()) rooms.set(sessionId, true)
   for (const room of await listRoomKernels()) rooms.set(room.session, room.running)
   for (const [sessionId, running] of rooms) {
     const scopes = scopesOf(sessionId)
-    // Считающая комната занята, даже если все закрыли вкладки: у ячейки есть
-    // хозяин, который вернётся за результатом. То же и у команды в оболочке:
-    // трёхчасовое обучение, запущенное в терминале, — работа с хозяином, и
-    // снести контейнер под ней значит убить её строкой «terminal closed».
+    // A computing room is busy even if everyone closed their tabs: the cell has
+    // an owner who will come back for the result. The same goes for a command
+    // in the shell: a three-hour training run started in the terminal is work
+    // with an owner, and removing the container under it means killing it with
+    // a "terminal closed" line.
     //
-    // По ВСЕМ областям занятия: считающая лекция держит комнату так же, как
-    // держал бы её единственный прежний насос, — а уборка снимает контейнеры
-    // занятия целиком, и оба сразу.
+    // Across ALL of the class's scopes: a computing lecture holds the room just
+    // as the single old pump would have held it, and the cleanup removes the
+    // class's containers as a whole, both at once.
     const busy =
       onlineCount(sessionId) > 0 ||
       scopes.some((scope) => scope.currentCell !== null || scope.queue.length > 0) ||
       terminalPhase(sessionId) === 'busy'
     const verdict = idleVerdict({ running, busy, since: lastOccupied.get(sessionId), now })
     if (verdict !== 'drop') {
-      // Занятую — отмечаем сейчас; пустую впервые — тоже сейчас: отсчёт
-      // начинается с первого взгляда, а не от нуля.
+      // A busy room is marked now; an empty one seen for the first time is also
+      // marked now: the countdown starts from the first look, not from zero.
       if (verdict === 'busy' || !lastOccupied.has(sessionId)) lastOccupied.set(sessionId, now)
       continue
     }
@@ -2176,8 +2254,8 @@ async function sweepIdleKernelsOnce(now: number): Promise<void> {
 }
 
 /*
- * `unref`: таймер не должен держать процесс живым — тесты и одноразовые
- * скрипты импортируют этот модуль и обязаны уметь завершиться.
+ * `unref`: the timer must not keep the process alive: tests and one-off
+ * scripts import this module and must be able to exit.
  */
 setInterval(() => void sweepIdleKernels(), SWEEP_EVERY_MS).unref()
 
@@ -2194,8 +2272,8 @@ setInterval(() => void sweepIdleKernels(), SWEEP_EVERY_MS).unref()
 export async function shutdownKernels(): Promise<void> {
   const all = allScopes()
   runtimes.clear()
-  // Отметки прохода — вместе со средами исполнения: следующий процесс начинает
-  // с чистого листа, и первый же его повод обязан пройти по призракам.
+  // The sweep marks go along with the runtimes: the next process starts from a
+  // clean slate, and its very first trigger must sweep for ghosts.
   orphanSweeps.clear()
   for (const runtime of all) {
     for (const item of runtime.queue) finishExecution(runtime, item, 'cancelled')
@@ -2206,15 +2284,15 @@ export async function shutdownKernels(): Promise<void> {
 }
 
 /**
- * Состояние ядер для минутной сводки: живые, из них занятые, и мёртвые.
+ * Kernel state for the minute summary: live, of those busy, and dead.
  *
- * Считаются ЯДРА, а не комнаты: у занятия их столько, сколько тетрадей в нём
- * открывали, плюс личные тетради его студентов. Сводка про нагрузку машины, и
- * нагрузку даёт каждый процесс, а не комната.
+ * KERNELS are counted, not rooms: a class has as many as notebooks were opened
+ * in it, plus its students' personal notebooks. The summary is about the
+ * machine's load, and the load comes from every process, not from a room.
  *
- * Тетради, которым ядро ещё ни разу не поднимали, здесь не считаются вовсе:
- * у них нет ядра, а не мёртвое — и записывать пустую тетрадь в потери значило
- * бы каждую минуту пугать того, кто читает журнал.
+ * Notebooks whose kernel has never been brought up are not counted at all:
+ * they have no kernel rather than a dead one, and recording an empty notebook
+ * as a loss would scare whoever reads the journal every minute.
  */
 export function kernelCensus(): { live: number; busy: number; dead: number } {
   let live = 0
@@ -2228,8 +2306,9 @@ export function kernelCensus(): { live: number; busy: number; dead: number } {
       continue
     }
     live += 1
-    // Занято — это когда в тетради правда идёт ячейка: фаза 'busy' приходит от
-    // Jupyter с задержкой, а `currentCell` знает об этом с самого execute.
+    // Busy means a cell is really running in the notebook: the 'busy' phase
+    // comes from Jupyter with a delay, while `currentCell` knows it from the
+    // very execute.
     if (phase === 'busy' || runtime.currentCell !== null) busy += 1
   }
   return { live, busy, dead }
@@ -2242,10 +2321,10 @@ export function kernelCensus(): { live: number; busy: number; dead: number } {
  * client could write `runById` into a cell itself. The queue is the server's
  * own record of who asked for what.
  *
- * `root` — тетрадь, про которую спрашивают; без него — про ЛЮБУЮ тетрадь
- * занятия. Это не послабление, а прежний смысл вопроса: его задаёт «стоп» и
- * ответ на `input()`, и человек, у которого считается ячейка в семинаре,
- * остаётся её хозяином независимо от того, какую вкладку он держит открытой.
+ * `root` is the notebook being asked about; without it, ANY notebook of the
+ * class. That is not a loosening but the old meaning of the question: it is
+ * asked by "stop" and by answering `input()`, and a person whose cell is
+ * computing in the seminar stays its owner whichever tab they keep open.
  */
 export function startedTheRunningCell(
   sessionId: string,
@@ -2259,28 +2338,29 @@ export function startedTheRunningCell(
 function startedIn(runtime: Runtime, participantId: string): boolean {
   if (runtime.currentCell) return runtime.currentRunById === participantId
   /*
-   * Между двумя ячейками хозяин работы — тот, чья ячейка стоит первой.
+   * Between two cells the owner of the work is the one whose cell stands first.
    *
-   * `currentRunById` теперь гаснет вместе с `currentCell` (иначе потолок «по
-   * одной» отказывал прежнему автору, пока насос поднимает умершее ядро — а это
-   * до полутора минут). Читать его в это окно было бы неправдой; но и отвечать
-   * «нет» нельзя: ровно в этот промежуток человек, у которого идёт Run All,
-   * жмёт «стоп», и отказ оставил бы его с работающей тетрадью и молчащей
-   * кнопкой. Спрашиваем очередь — она про ту же работу и тоже наша.
+   * `currentRunById` now goes out together with `currentCell` (otherwise the
+   * "one at a time" ceiling refused the previous author while the pump was
+   * bringing up a dead kernel, and that takes up to a minute and a half).
+   * Reading it in that window would be untrue; but answering "no" is not
+   * allowed either: in exactly this gap a person running Run All presses
+   * "stop", and a refusal would leave them with a running notebook and a silent
+   * button. We ask the queue: it is about the same work and is ours too.
    */
   return runtime.queue[0]?.runById === participantId
 }
 
 /**
- * Стоит ли в очереди только то, что поставил этот человек.
+ * Whether the queue holds only what this person queued.
  *
- * Безымянное «остановить» выносит очередь тетради целиком, а очередь у тетради
- * общая: одно нажатие убирало бы чужие пачки под тем же правом, под которым
- * человек останавливает свою ячейку. Пустая очередь считается своей —
- * останавливать нечего.
+ * A nameless "stop" throws out the notebook's whole queue, and a notebook's
+ * queue is shared: one press would remove other people's batches under the
+ * same right with which a person stops their own cell. An empty queue counts
+ * as one's own: there is nothing to stop.
  *
- * `root` — тетрадь, чью очередь собираются разбирать; без него — все очереди
- * занятия, как и было, когда очередь была одна.
+ * `root` is the notebook whose queue is about to be cleared; without it, all
+ * of the class's queues, as it was when there was one queue.
  */
 export function queueIsOnly(sessionId: string, participantId: string, root?: string): boolean {
   const scopes = root === undefined ? scopesOf(sessionId) : [peekRuntime(sessionId, root)]
@@ -2294,13 +2374,14 @@ export function queueIsOnly(sessionId: string, participantId: string, root?: str
 let batchCounter = 0
 
 /**
- * Поставить ячейки в очередь.
+ * Put cells into the queue.
  *
- * `cap` — сколько своих ячеек этот человек держит в очереди одновременно; при
- * правиле «по одной» это единица. Потолок, а не право: он и делает «по одной»
- * границей, а не счётчиком нажатий — скриптовый цикл из кадров `{t:'run'}`
- * ставит одну ячейку и получает фразу на остальные. Возвращает, сколько
- * ячеек не поместилось, чтобы вызывающий сказал это один раз, а не двадцать.
+ * `cap` is how many of their own cells this person may hold in the queue at
+ * once; under the "one at a time" rule that is one. A ceiling, not a right: it
+ * is what makes "one at a time" a boundary rather than a press counter; a
+ * scripted loop of `{t:'run'}` frames queues one cell and gets a sentence for
+ * the rest. Returns how many cells did not fit, so the caller says so once,
+ * not twenty times.
  */
 export function requestRun(
   sessionId: string,
@@ -2309,25 +2390,25 @@ export function requestRun(
   runById: string,
   cap = Number.POSITIVE_INFINITY,
   /**
-   * Тетрадь, в чью очередь. Без него — тетрадь комнаты, то есть прежнее
-   * поведение кадра без имени листа.
+   * The notebook whose queue this is. Without it, the room's notebook, i.e. the
+   * old behaviour of a frame without a sheet name.
    *
-   * Потолок `cap` считается ПО ЭТОЙ очереди, и это следствие того, что ядер
-   * теперь несколько: «по одной» значит «по одной в тетради», иначе правило
-   * запирало бы студента, чья ячейка считается в лекции, в его собственном
-   * черновике.
+   * The `cap` ceiling is counted PER THIS queue, and that follows from there now
+   * being several kernels: "one at a time" means "one at a time per notebook",
+   * otherwise the rule would lock a student whose cell is computing in the
+   * lecture out of their own draft.
    */
   root: string = CELLS_KEY,
 ): number {
   const runtime = getRuntime(sessionId, root)
-  // Нажатие чинит комнату, в которой нажали: если в ней осталась ячейка,
-  // которую документ считает работающей, а сервер о ней не знает, — самое
-  // время это заметить. См. sweepOrphanRuns.
+  // A press repairs the room it was made in: if a cell is left there that the
+  // document considers running while the server knows nothing of it, now is the
+  // time to notice. See sweepOrphanRuns.
   sweepOrphanRuns(sessionId)
   const { doc } = getSessionDoc(sessionId)
   const batch = ++batchCounter
 
-  // Считается по среде исполнения, а не по документу: документ пишут все.
+  // Counted from the runtime, not from the document: everyone writes the document.
   let mine =
     runtime.queue.filter((item) => item.runById === runById).length +
     (runtime.currentRunById === runById ? 1 : 0)
@@ -2339,12 +2420,12 @@ export function requestRun(
       // Markdown cells arrive in every runAll list; skipping them is not an error.
       if (!found || cellType(found.cell) !== 'code') continue
       /*
-       * Ячейка из другой тетради в эту очередь не встаёт.
+       * A cell from another notebook does not join this queue.
        *
-       * Списки сюда приходят собранными по листу, так что в работе это молчит.
-       * Но кадр приходит по проводу, и ячейка, названная от чужой тетради,
-       * посчиталась бы в ядре этой — то есть увидела бы её переменные. Ровно та
-       * граница, ради которой ядер и стало несколько.
+       * The lists arrive here assembled per sheet, so in practice this is
+       * silent. But a frame arrives over the wire, and a cell named from someone
+       * else's notebook would compute in this one's kernel, i.e. would see its
+       * variables. Exactly the boundary there are several kernels for.
        */
       if (rootOfArray(found.cells) !== runtime.root) continue
       if (runtime.currentCell === cellId) continue
@@ -2388,12 +2469,13 @@ export function cancelRun(
   isHost: boolean,
 ): number {
   /*
-   * По ВСЕМ очередям занятия, а не по одной.
+   * Across ALL of the class's queues, not one.
    *
-   * Имя ячейки само называет свою тетрадь, а называть её отдельно вызывающему
-   * нечем: сюда приходит и `onCellsRemoved`, где ячейки уже нет в документе и
-   * спросить о ней некого. Очередь — наша запись, в ней ячейка лежит там, где
-   * её поставили, и найти её можно только так.
+   * The cell's name itself names its notebook, and the caller has no way to
+   * name it separately: `onCellsRemoved` comes here too, when the cell is no
+   * longer in the document and there is nobody to ask about it. The queue is
+   * our record; the cell lies in it where it was put, and this is the only way
+   * to find it.
    */
   let removedTotal = 0
   for (const runtime of scopesOf(sessionId)) {
@@ -2442,10 +2524,12 @@ function failed(runtime: Runtime, cellId: string): boolean {
 }
 
 /**
- * Из какой пачки ячейка, названная нажатием, — насколько сервер это ещё помнит.
+ * Which batch the cell named by a press came from, as far as the server still
+ * remembers.
  *
- * `null` значит «не знаем»: ячейка не в очереди, не выполняется и кончилась не
- * последней. Тогда судить о пачке нечем, и решает вызывающий.
+ * `null` means "we do not know": the cell is not in the queue, is not running
+ * and was not the last to finish. Then there is nothing to judge the batch by,
+ * and the caller decides.
  */
 function batchOf(runtime: Runtime, cellId: string): number | null {
   const queued = runtime.queue.find((item) => item.cellId === cellId)
@@ -2526,14 +2610,16 @@ function stopBatch(runtime: Runtime, failedItem: QueueItem): void {
 async function pump(runtime: Runtime): Promise<void> {
   if (runtime.pumping) return
   /*
-   * Пустую очередь насос не разбирает вовсе — и это не экономия.
+   * The pump does not process an empty queue at all, and that is not about
+   * saving work.
    *
-   * `finally` ниже объявляет комнате фазу ядра, а у области, которой ядро
-   * никогда не поднимали, фазы нет, и читается она как `dead`. Пока очередь
-   * была одна на комнату, сюда с пустой не приходили; теперь приходят — Run,
-   * у которого все ячейки отсеялись (markdown, потолок «по одной», ячейка
-   * чужой тетради), заводит область и будит насос. Без этой строки тетрадь, в
-   * которой никто ничего не запускал, получала бы плашку «ядро остановлено».
+   * The `finally` below announces the kernel phase to the room, and a scope
+   * whose kernel was never brought up has no phase, which reads as `dead`.
+   * While there was one queue per room, nothing came here with an empty one;
+   * now things do: a Run whose cells were all filtered out (markdown, the "one
+   * at a time" ceiling, a cell from another notebook) creates a scope and wakes
+   * the pump. Without this line a notebook where nobody ran anything would get
+   * a "kernel stopped" badge.
    */
   if (runtime.queue.length === 0) return
   runtime.pumping = true
@@ -2544,11 +2630,12 @@ async function pump(runtime: Runtime): Promise<void> {
       // the next job before it settles would deliver that SIGINT to the wrong
       // author. Keep the queue intact and wait only at this boundary.
       if (runtime.beforeNext) await runtime.beforeNext
-      // Перезапуск идёт — ждать его, а не слать execute в ядро, которого через
-      // мгновение не будет. Ответ на такой execute не приходит никогда.
+      // A restart is under way: wait for it rather than send execute to a
+      // kernel that will be gone in a moment. Such an execute never gets an
+      // answer.
       if (runtime.restarting) {
         await runtime.restarting.catch(() => {})
-        // Перезапуск сбрасывает очередь; всё, что осталось, пришло после него.
+        // A restart clears the queue; whatever is left arrived after it.
         if (runtime.queue.length === 0) break
       }
       try {
@@ -2595,31 +2682,32 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   runtime.activityItem = item
   const source = cellSource(cell).toString()
   /*
-   * Потолок картинок — по числу тех, кому они поедут.
+   * The image ceiling depends on the number of people the images will travel
+   * to.
    *
-   * Вывод ячейки уходит в общий документ, то есть КАЖДОМУ открытому сокету
-   * комнаты, каждому в своей копии и со своим deflate. Шесть мегабайт `imshow`
-   * на семинаре из тридцати — это сто восемьдесят мегабайт и никого не трогает;
-   * те же шесть на потоке из пятисот — это гигабайт исходящего, за которым у
-   * всех встаёт очередь из собственного набора текста. См. dataBudgetFor.
+   * A cell's output goes into the shared document, i.e. to EVERY open socket of
+   * the room, each in its own copy and with its own deflate. Six megabytes of
+   * `imshow` in a seminar of thirty is a hundred and eighty megabytes and
+   * bothers nobody; the same six on a cohort of five hundred is a gigabyte of
+   * egress, behind which everyone's own typing queues up. See dataBudgetFor.
    */
   const writer = new OutputWriter(
     doc,
     item.cellId,
     dataBudgetFor(onlineCount(runtime.sessionId)),
-    // Комната — чтобы крупные картинки легли рядом с ней, а не в документ.
+    // The room, so that large images are stored next to it, not in the document.
     runtime.sessionId,
   )
   runtime.currentCell = item.cellId
   runtime.currentBatch = item.batch
   runtime.currentRunById = item.runById
-  // Писатель переживёт этот вызов, а значит и документ, который он взял:
-  // пока он пишет, комнату из памяти не выселяют. Отпустит `dropWriter`.
+  // The writer will outlive this call, and so will the document it took: while
+  // it writes, the room is not evicted from memory. `dropWriter` releases it.
   dropWriter(runtime)
   runtime.writer = writer
   runtime.writerHold = holdRoom(runtime.sessionId)
-  // Одно и то же число в двух местах: в документ — чтобы росли часы у всех, в
-  // среду исполнения — чтобы длительность считалась по нашей записи.
+  // The same number in two places: into the document, so everyone's clocks
+  // grow; into the runtime, so the duration is counted from our record.
   const startedAt = Date.now()
   runtime.started = { cellId: item.cellId, at: startedAt }
   executionActivity(runtime, item, 'execution.started')
@@ -2632,37 +2720,38 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     cell.set('runById', item.runById)
     cell.set('execCount', null)
     /*
-     * Одно число в транзакции, которая и так происходит.
+     * One number in a transaction that is happening anyway.
      *
-     * Живой секундомер на ячейке — это ровно эта отметка плюс счёт в браузере.
-     * Писать сюда каждую секунду было бы проще на вид и разрушительно на деле:
-     * поле, меняющееся чаще раза в двенадцать секунд, навсегда держит открытым
-     * всплеск истории (и приписывает комнате всё, что за это время напечатали
-     * люди), и заставляет запись на диск кодировать снимок каждые несколько
-     * секунд в пустой комнате. Здесь же — ноль лишних обновлений Yjs, ноль
-     * лишних рассылок и ноль лишних всплесков.
+     * A cell's live stopwatch is exactly this mark plus counting in the
+     * browser. Writing here every second would look simpler and be ruinous in
+     * practice: a field changing more often than once every twelve seconds
+     * keeps a history burst open forever (and attributes to the room everything
+     * people typed in that time), and makes the disk write encode a snapshot
+     * every few seconds in an empty room. Here it is zero extra Yjs updates,
+     * zero extra broadcasts and zero extra bursts.
      *
-     * `ranMs` гасится вместе с `execCount` и по той же причине: время прошлого
-     * выполнения перестаёт быть правдой в тот момент, когда началось это.
+     * `ranMs` is cleared together with `execCount` and for the same reason: the
+     * time of the previous execution stops being true the moment this one
+     * starts.
      */
     cell.set('startedAt', startedAt)
     cell.set('ranMs', null)
     /*
-     * Прошлый вывод стирается здесь же, в этой самой транзакции.
+     * The previous output is erased right here, in this very transaction.
      *
-     * Стирается по-прежнему на старте, а не в очереди: пока ячейка не пошла,
-     * прошлый результат — всё ещё правда на экране. Изменилось одно: раньше
-     * это была отдельная транзакция строкой ниже, и клиент получал два
-     * события. На первом просыпался наблюдатель полей — `execCount` уходил в
-     * null, и пропадала строка `Out [n]`, это двадцать четыре пикселя. На
-     * втором просыпался наблюдатель вывода, и пропадало тело. Между этими
-     * двумя кадрами область успевала обмериться на те же двадцать четыре
-     * пикселя короче — то есть место под новый вывод резервировалось неверным,
-     * — и комната видела лишний скачок.
+     * It is still erased at the start, not in the queue: until the cell goes,
+     * the previous result is still the truth on the screen. One thing changed:
+     * it used to be a separate transaction a line below, and the client got two
+     * events. On the first one the field observer woke up: `execCount` went to
+     * null and the `Out [n]` line disappeared, twenty-four pixels. On the second
+     * the output observer woke up, and the body disappeared. Between those two
+     * frames the area managed to be measured twenty-four pixels shorter, i.e.
+     * the space for the new output was reserved wrong, and the room saw an
+     * extra jump.
      *
-     * Одна транзакция — одно обновление на проводе, один вызов record() и один
-     * обход shapeOf на запуск. На Run All из сорока ячеек в комнате из
-     * двадцати это сорок обновлений и восемьсот кадров, которых больше нет.
+     * One transaction is one update on the wire, one record() call and one
+     * shapeOf pass per run. For a Run All of forty cells in a room of twenty,
+     * that is forty updates and eight hundred frames that no longer exist.
      */
     writer.clear()
   }, ORIGIN)
@@ -2680,25 +2769,27 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   }
 
   /*
-   * Защита от опасных команд — прежде первой строки, ушедшей в ядро.
+   * The guard against dangerous commands, before the first line goes to the
+   * kernel.
    *
-   * Обычно это ноль работы: отпечаток совпадает с тем, что ядру уже сказано, и
-   * функция возвращается не выходя из процесса. Поход в ядро случается ровно
-   * дважды — на первой ячейке после подъёма и на смене правила посреди пары.
+   * Usually this is zero work: the fingerprint matches what the kernel has
+   * already been told, and the function returns without leaving the process. A
+   * trip to the kernel happens exactly twice: on the first cell after start-up
+   * and on a rule change in the middle of class.
    *
-   * Не подтвердилась — ячейку НЕ исполняем и говорим почему. Пропустить её
-   * значило бы вернуться ровно в то, с чего всё началось: `os._exit(0)` в
-   * чьей-то ячейке и тридцать человек без переменных, без строчки в журнале и
-   * без причины.
+   * If it is not confirmed, the cell is NOT executed, and we say why. Letting it
+   * through would mean returning to exactly where it all started: `os._exit(0)`
+   * in someone's cell and thirty people without variables, without a line in
+   * the journal and without a cause.
    */
   if (!(await ensureGuard(runtime))) {
     /*
-     * Ядро, умершее в щель между `ensureKernel` и этой строкой, объясняется
-     * своими словами: «защита не подтвердилась» отправило бы преподавателя
-     * искать поломку в правиле, которого он не трогал. Имя исключения у
-     * второго случая пустое по тому же доводу, что у остановки пределом:
-     * ячейка рисует «имя: текст», и английское слово перед русской фразой
-     * ничего не добавляет.
+     * A kernel that died in the gap between `ensureKernel` and this line is
+     * explained in its own words: "the guard was not confirmed" would send the
+     * teacher looking for a breakage in a rule they did not touch. The
+     * exception name in the second case is empty by the same argument as for a
+     * stop by the limit: the cell draws "name: text", and an English word in
+     * front of a Russian phrase adds nothing.
      */
     if (runtime.kernel?.phase === 'dead') writer.error('KernelDied', deadMessage(), [])
     else writer.error('', tr('server.guard.notConfirmed'), [])
@@ -2714,31 +2805,32 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   }
 
   /*
-   * Всё набранное — на диск, прежде чем ячейка пойдёт это читать.
+   * Everything typed goes to disk before the cell goes to read it.
    *
-   * `%run solve.py`, `open('data.csv')`, `import helpers` читают файл, а не
-   * документ, а документ доезжает до диска с задержкой: редактор — через
-   * 700 мс после последнего нажатия, тетради — через полторы секунды. Ячейка,
-   * запущенная сразу после правки, читала прошлую версию файла и падала на
-   * строке, которую только что исправили при всех, — и объяснить это было
-   * нечем.
+   * `%run solve.py`, `open('data.csv')`, `import helpers` read a file, not the
+   * document, and the document reaches the disk with a delay: the editor 700 ms
+   * after the last keystroke, notebooks after a second and a half. A cell run
+   * right after an edit read the previous version of the file and failed on the
+   * line that had just been fixed in front of everyone, and there was nothing
+   * to explain it with.
    */
   flushToDisk(runtime.sessionId)
 
   const unwatch = stopIfDeleted(runtime, doc, item.cellId)
   /*
-   * Будильник комнаты — на обычную ячейку, тем же механизмом, что у попытки.
+   * The room's alarm on an ordinary cell, by the same mechanism as an
+   * attempt's.
    *
-   * Заводится ДО первой строки, ушедшей в ядро, и после проверки на пустую
-   * ячейку: пустую считать нечего, а всё остальное — уже время, которое
-   * очередь стоит. Число читается ЗДЕСЬ, а не при постановке в очередь, и это
-   * не случайность: «правила действуют сразу» — обещание всей комнаты, а между
-   * нажатием Run All и сороковой ячейкой проходит полпары.
+   * Set BEFORE the first line goes to the kernel and after the empty-cell check:
+   * an empty cell has nothing to compute, while everything else is already time
+   * the queue stands still. The number is read HERE, not at queueing time, and
+   * that is no accident: "rules apply at once" is a promise to the whole room,
+   * and between pressing Run All and the fortieth cell half a class goes by.
    */
   beginLimit(runtime, item, cellLimitOf(runtime.sessionId), startedAt)
-  /** Сказали ли мы уже, что остановил предел: строка об этом нужна одна. */
+  /** Whether we have already said the limit stopped it: that line is needed once. */
   let saidStopped = false
-  /** Число сработавшего предела — спрашивается у записи, пока она жива. */
+  /** The number of the limit that fired, asked of the record while it is alive. */
   const firedNow = (): number | null =>
     runtime.limit?.item === item ? runtime.limit.firedSec : null
   let state: CellState = 'idle'
@@ -2759,26 +2851,28 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
       onStream: (name, text) => writer.stream(name, text),
       onData: (mimebundle, execCount) => writer.data(mimebundle, execCount),
       /*
-       * Остановку пределом объясняет одна строка, а не трейсбек.
+       * A stop by the limit is explained by one line, not a traceback.
        *
-       * SIGINT приходит в Python как `KeyboardInterrupt`, и по умолчанию в
-       * ячейке остался бы его трейсбек: десяток кадров чужой библиотеки и
-       * строка про клавиатуру, которой никто не нажимал. Комната читает это
-       * как «кто-то нажал стоп». Подмена делается ЗДЕСЬ, на входе, а не правкой
-       * уже записанного: вывод ячейки живёт в общем документе, и вычёркивать
-       * из него задним числом — это лишние надгробия у всех и лишний обход
-       * истории. У попытки та же строка получается иначе, буфером в памяти
-       * (kernel/council.ts · stopped) — там правка задним числом ничего не
-       * стоит.
+       * SIGINT arrives in Python as `KeyboardInterrupt`, and by default the cell
+       * would keep its traceback: a dozen frames of someone else's library and a
+       * line about a keyboard nobody pressed. The room reads that as "someone
+       * pressed stop". The substitution is made HERE, on the way in, not by
+       * editing what has already been written: a cell's output lives in the
+       * shared document, and striking things out of it after the fact means
+       * extra tombstones for everyone and an extra history pass. For an attempt
+       * the same line comes about differently, through a buffer in memory
+       * (kernel/council.ts · stopped): there an after-the-fact edit costs
+       * nothing.
        */
       onError: (ename, evalue, traceback) => {
         /*
-         * Свой отказ — одной строкой, без трейсбека, ровно как остановка по
-         * пределу. Кадры `<colloq-guard>` в нём не код студента: там наш
-         * модуль объясняет, почему `os._exit()` в общей тетради гасит ядро
-         * всему классу, — и всё это уже сказано человеческими словами в самом
-         * тексте отказа. Код ДО опасной строки при этом отработал как обычно:
-         * отказ — это исключение, а не отмена ячейки.
+         * Our own refusal is one line without a traceback, just like a stop by
+         * the limit. The `<colloq-guard>` frames in it are not student code:
+         * that is our module explaining why `os._exit()` in a shared notebook
+         * takes the kernel down for the whole class, and all of that is already
+         * said in human words in the refusal text itself. The code BEFORE the
+         * dangerous line ran as usual: a refusal is an exception, not a
+         * cancellation of the cell.
          */
         if (ename === COLLOQ_REFUSED) {
           writer.error('', evalue, [])
@@ -2786,15 +2880,15 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
         }
         const fired = firedNow()
         if (fired !== null && (ename === 'KeyboardInterrupt' || ename === 'Interrupted')) {
-          // Имя исключения пустое нарочно: ячейка рисует «имя: текст», и
-          // английское слово перед русской фразой ничего не добавляет.
+          // The exception name is empty on purpose: the cell draws "name: text",
+          // and an English word in front of a Russian phrase adds nothing.
           writer.error('', tr('server.cell.stoppedByLimit', { p0: durationWords(fired) }), [])
           saidStopped = true
           return
         }
         writer.error(ename, evalue, traceback)
       },
-      // wait=True — обещание заменить, wait=False — стереть сейчас. См. OutputWriter.
+      // wait=True promises a replacement, wait=False erases now. See OutputWriter.
       onClear: (wait) => (wait ? writer.supersede() : writer.clear()),
       /*
        * input() blocks the kernel until a person types something, so the ask
@@ -2818,11 +2912,12 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
         state = 'error'
       } else if (phase === 'restarting' && runtime.kernel?.phaseExpected === false) {
         /*
-         * Ядро перезапустил не человек, а сам Jupyter: процесс убили — почти
-         * всегда за память, — и убила его эта ячейка. Фаза в этот момент
-         * `restarting`, а не `dead`, поэтому раньше сюда не попадали вовсе:
-         * ячейка садилась в `idle` с номером «Out [7]», на экране неотличимая
-         * от успешной, а связь с NameError в следующей никто уже не видел.
+         * The kernel was restarted not by a person but by Jupyter itself: the
+         * process was killed (almost always for memory), and this cell killed
+         * it. The phase at this moment is `restarting`, not `dead`, so this
+         * branch was never reached before: the cell sat down in `idle` with
+         * "Out [7]", indistinguishable on screen from a successful one, and
+         * nobody saw the link to the NameError in the next one any more.
          */
         writer.error('KernelDied', killedMessage(), [])
         state = 'error'
@@ -2834,21 +2929,22 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   } finally {
     unwatch()
     /*
-     * Будильник гасится ЗДЕСЬ, на единственном выходе ячейки, и потому гасится
-     * на всех исходах: обычный конец, падение, прерывание, смерть ядра, снос
-     * ячейки. Переживи он свою ячейку хоть на миг — сигнал ушёл бы в следующую
-     * запись очереди, то есть в чужую ячейку или в чью-то попытку.
+     * The alarm is cleared HERE, at the cell's only exit, and so it is cleared
+     * on every outcome: a normal end, a failure, an interrupt, a kernel death,
+     * the cell's removal. Were it to outlive its cell even for a moment, the
+     * signal would go to the next queue entry, i.e. someone else's cell or
+     * someone's attempt.
      */
     const fired = clearLimit(runtime, item)
     /*
-     * И слово об остановке — если его ещё не сказали.
+     * And the word about the stop, if it has not been said yet.
      *
-     * Обычный случай ловит `onError` выше: ядро отвечает `KeyboardInterrupt`, и
-     * вместо трейсбека встаёт строка. Сюда доходят те, у кого его не было:
-     * ячейка поймала прерывание своим `except` и упала чем-то другим, или
-     * `execute` вообще не ответил ошибкой. Молчать про остановку в этих
-     * случаях — значит оставить преподавателя с ячейкой, которая оборвалась
-     * без причины.
+     * The ordinary case is caught by `onError` above: the kernel answers
+     * `KeyboardInterrupt`, and a line takes the traceback's place. Those without
+     * one get here: the cell caught the interrupt with its own `except` and
+     * failed with something else, or `execute` did not answer with an error at
+     * all. Keeping quiet about the stop in these cases would leave the teacher
+     * with a cell that broke off for no reason.
      */
     if (fired !== null && state === 'error' && !saidStopped) {
       writer.error('', tr('server.cell.stoppedByLimit', { p0: durationWords(fired) }), [])
@@ -2857,17 +2953,18 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     runtime.currentCell = null
     runtime.currentBatch = null
     /*
-     * И хозяин запуска — здесь же, вместе с ячейкой.
+     * And the run's owner is cleared right here too, together with the cell.
      *
-     * Раньше `currentRunById` держался до опустошения очереди (`finally` у
-     * насоса), а между двумя ячейками насос успевает сходить в `ensureKernel`:
-     * умершее ядро — это до полутора минут. Всё это время `requestRun` считал
-     * прежнему автору лишнюю «выполняющуюся» ячейку и при правиле «по одной»
-     * отказывал ему в новом Run, хотя у него ничего не выполнялось.
+     * `currentRunById` used to be kept until the queue emptied (the pump's
+     * `finally`), and between two cells the pump manages to go into
+     * `ensureKernel`: a dead kernel takes up to a minute and a half. All that
+     * time `requestRun` counted an extra "running" cell for the previous author
+     * and, under the "one at a time" rule, refused them a new Run, although
+     * nothing of theirs was running.
      */
     runtime.currentRunById = null
-    // Чья это была пачка — помним ещё круг: «стоп» по этой ячейке может
-    // доехать уже после того, как ядро взяло следующую.
+    // Whose batch this was is remembered for one more round: a "stop" on this
+    // cell may arrive after the kernel has already taken the next one.
     runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
     runtime.lastWorkAt = Date.now()
     // The prompt belongs to a running cell. Whatever ended the run — an answer,
@@ -2886,92 +2983,100 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   notifyWorkspaceChanged(runtime.sessionId)
 }
 
-/* --------------------------------------------------------- консилиум */
+/* ----------------------------------------------------------- council */
 
-/** Не чаще этого кадр вывода попытки едет хосту и автору, пока она считается. */
+/** How often at most a computing attempt's output frame goes to host and author. */
 const COUNCIL_REPORT_MS = 400
 
 /**
- * Попытка консилиума работает с личными копиями данных, а после неё ядро
- * возвращается в точности к тому, что было.
+ * A council attempt works with personal copies of the data, and after it the
+ * kernel returns to exactly what it was.
  *
- * Ядро у тетради одно — это устройство продукта, а не недосмотр: попытка
- * должна видеть `df`, `np` и всё, что преподаватель подготовил в общей ячейке.
- * А вот в обратную сторону это была дыра, и притом молчаливая. Сначала по
- * именам: `secret = 42` в попытке одного студента отвечал на `print(secret)` в
- * попытке следующего. Потом, на живом семинаре 19.09, — по данным: в задании
- * стояла строка `# data = data.dropna()`, один человек её раскомментировал, и
- * `data` стал другим у ВСЕХ, включая тех, кто уже сдал.
+ * A notebook has one kernel, and that is by product design, not an oversight:
+ * an attempt has to see `df`, `np` and everything the teacher prepared in a
+ * shared cell. In the other direction, though, this was a hole, and a silent
+ * one. First by names: `secret = 42` in one student's attempt answered
+ * `print(secret)` in the next one's. Then, at the live seminar of 19 Sep 2026,
+ * by data: the task had the line `# data = data.dropna()`, one person
+ * uncommented it, and `data` changed for EVERYONE, including those who had
+ * already submitted.
  *
- * Прежняя уборка (снимок имён до, снятие новых после) закрывала только первую
- * половину и по устройству не могла закрыть вторую: перепривязка меняет имя,
- * которое БЫЛО, а мутация на месте не меняет имён вовсе.
+ * The previous cleanup (a snapshot of the names before, removing the new ones
+ * after) closed only the first half and by design could not close the second:
+ * rebinding changes a name that EXISTED, and in-place mutation does not change
+ * names at all.
  *
- * Поэтому вокруг попытки теперь два других молчаливых запроса
- * (council-isolation.ts): вход подменяет привязки личными копиями и
- * отчитывается через `user_expressions`, выход возвращает каждую привязку,
- * снимает новые имена, откатывает cwd и rcParams. Личную копию получают
- * таблицы и ряды pandas, массивы numpy, встроенные контейнеры и кортежи,
- * тензоры и модели torch вместе с их оптимизаторами (общий memo — чтобы
- * оптимизатор указывал на параметры СВОЕЙ копии модели), разреженные матрицы
- * scipy, оценщики sklearn, генераторы случайных чисел и объекты классов,
- * объявленных в самой тетради. Изоляции пространства имён
- * (`exec` в свежем словаре) по-прежнему нет: она ломает и эхо последнего
- * выражения, и магии, и номера строк в трейсбеке — то есть всё, чем попытка
- * похожа на ячейку.
+ * So there are now two other silent requests around an attempt
+ * (council-isolation.ts): the entry replaces the bindings with personal copies
+ * and reports through `user_expressions`; the exit returns every binding,
+ * removes new names, and rolls back cwd and rcParams. Personal copies are made
+ * of pandas frames and series, numpy arrays, built-in containers and tuples,
+ * torch tensors and models together with their optimizers (a shared memo, so
+ * that the optimizer points to the parameters of ITS OWN copy of the model),
+ * scipy sparse matrices, sklearn estimators, random number generators and
+ * objects of classes declared in the notebook itself. There is still no
+ * namespace isolation (`exec` in a fresh dict): it breaks the echo of the last
+ * expression, magics and the line numbers in tracebacks, i.e. everything that
+ * makes an attempt like a cell.
  *
- * Копиями закрыты данные; тем же входом закрыто и то, чем одна попытка гасила
- * занятие целиком (council-isolation.ts):
- *   · `exit()` и `quit()` — в ipykernel это `shell.ask_exit()`, то есть конец
- *     процесса и потеря переменных у ВСЕХ; проверено на живом ядре. На время
- *     попытки они отвечают отказом одной строкой. `sys.exit()` ядро переживает
- *     и без нас — его не трогаем;
- *   · `os._exit()` и `os.abort()` — конец процесса без единого слова: ни
- *     трассировки, ни сигнала в dmesg, ни счётчика в cgroup. 20.09 комната на
- *     тридцать человек потеряла ядро девять раз за одиннадцать минут на
- *     попытке в две строки. На время попытки отвечают отказом; ребёнку после
- *     `fork()` настоящий `_exit` остаётся, иначе ломается multiprocessing;
- *   · жадность: попытке ставится потолок адресного пространства от предела
- *     контейнера (`COUNCIL_MEMORY_GUARD`), и `np.ones((40000, 40000))` теперь
- *     кончается `MemoryError` у автора, а не OOM-killer'ом на всю комнату;
- *   · состояние процесса, которое сдвигает результаты следующим: поток
- *     случайных чисел (`random`, `numpy`, `torch`), `sys.stdout`/`stderr`,
- *     `sys.path`, `os.environ`, `builtins`, фильтры предупреждений, предел
- *     рекурсии, трассировщик, обработчик SIGINT, опции печати numpy и pandas,
- *     `sklearn.set_config`, контекст `decimal`, `%pdb`, хуки IPython, фигуры
- *     matplotlib, дочерние процессы.
+ * Copies cover the data; the same entry also closes what let one attempt take
+ * down the whole class (council-isolation.ts):
+ *   · `exit()` and `quit()`: in ipykernel that is `shell.ask_exit()`, i.e. the
+ *     end of the process and the loss of EVERYONE's variables; checked on a
+ *     live kernel. For the duration of an attempt they answer with a one-line
+ *     refusal. The kernel survives `sys.exit()` without our help, so that one
+ *     is left alone;
+ *   · `os._exit()` and `os.abort()`: the end of the process without a single
+ *     word: no traceback, no signal in dmesg, no counter in the cgroup. On
+ *     20 Sep 2026 a room of thirty lost its kernel nine times in eleven minutes
+ *     on a two-line attempt. For the duration of an attempt they answer with a
+ *     refusal; a child after `fork()` keeps the real `_exit`, otherwise
+ *     multiprocessing breaks;
+ *   · greed: the attempt gets an address-space ceiling derived from the
+ *     container limit (`COUNCIL_MEMORY_GUARD`), and `np.ones((40000, 40000))`
+ *     now ends in a `MemoryError` for the author, not with the OOM killer for
+ *     the whole room;
+ *   · process state that shifts the results of whoever comes next: the random
+ *     number stream (`random`, `numpy`, `torch`), `sys.stdout`/`stderr`,
+ *     `sys.path`, `os.environ`, `builtins`, warning filters, the recursion
+ *     limit, the tracer, the SIGINT handler, numpy and pandas print options,
+ *     `sklearn.set_config`, the `decimal` context, `%pdb`, IPython hooks,
+ *     matplotlib figures, child processes.
  *
- * Что остаётся общим — и о чём сказано вслух (COUNCIL_SHARED_KERNEL_NOTE,
- * README, docs/pages · council.html):
- *   · файлы на диске: `df.to_csv('out.csv')` пишет в общий каталог комнаты.
- *     Чинить это не стали нарочно: chmod на время попытки ломает и редактор
- *     файлов, и терминал, а перехват `open` — обычное «каждый пишет out.csv»;
- *   · объекты вне списка копируемых типов — открытый файл, генератор, сокет,
- *     соединение с базой, polars, PIL (council-isolation.ts · _plan);
- *   · объекты сверх бюджета `COUNCIL_COPY_MB` и те, чью копию не удалось
- *     сделать, — эти названы поимённо в выводе самой попытки;
- *   · модули, которые попытка импортировала: они остаются в памяти ядра;
- *   · потоки, которые попытка оставила работать: остановить их в Python
- *     нечем, поэтому выход их считает и говорит о них в выводе;
- *   · GPU: память карты и её контексты у комнаты одни;
- *   · умысел в обход отказов: `ctypes`, `signal.raise_signal`, `os.kill`, снос
- *     служебного модуля из `sys.modules`. Консилиум — приём преподавания, а не
- *     экзаменационная песочница: закрыт тот способ погасить пару, которым её
- *     гасят на самом деле, а не все мыслимые.
+ * What stays shared, and is said out loud (COUNCIL_SHARED_KERNEL_NOTE, README,
+ * docs/pages · council.html):
+ *   · files on disk: `df.to_csv('out.csv')` writes into the room's shared
+ *     directory. This was deliberately not fixed: chmod for the duration of an
+ *     attempt breaks both the file editor and the terminal, and intercepting
+ *     `open` breaks the ordinary "everyone writes out.csv";
+ *   · objects outside the list of copied types: an open file, a generator, a
+ *     socket, a database connection, polars, PIL (council-isolation.ts ·
+ *     _plan);
+ *   · objects beyond the `COUNCIL_COPY_MB` budget and those whose copy failed;
+ *     these are named one by one in the attempt's own output;
+ *   · modules the attempt imported: they stay in the kernel's memory;
+ *   · threads the attempt left running: Python has no way to stop them, so the
+ *     exit counts them and mentions them in the output;
+ *   · the GPU: the card's memory and its contexts are one for the room;
+ *   · intent that goes around the refusals: `ctypes`, `signal.raise_signal`,
+ *     `os.kill`, deleting the service module from `sys.modules`. The council is
+ *     a teaching technique, not an exam sandbox: what is closed is the way a
+ *     class really gets taken down, not every conceivable one.
  */
 function councilEnterSourceNow(): string {
   /*
-   * Собирается на КАЖДУЮ попытку, и это не расточительство: внутрь уезжает
-   * текст отказа на языке комнаты, а язык меняют в панели посреди пары.
-   * Дорогая часть — экранирование исходника — считается один раз и лежит в
-   * памяти модуля; здесь остаётся склейка двух строк.
+   * Built for EVERY attempt, and that is not wasteful: the refusal text in the
+   * room's language goes inside, and the language gets changed in the panel in
+   * the middle of class. The expensive part, escaping the source, is computed
+   * once and kept in the module's memory; what is left here is joining two
+   * strings.
    */
   return councilEnterSource(config.councilCopyBytes, {
     memoryGuard: config.councilMemoryGuard,
   })
 }
 
-/** Обработчики для служебного запроса, у которого нет ни вывода, ни зрителей. */
+/** Handlers for a service request that has neither output nor audience. */
 const SILENT_HANDLERS: Parameters<JupyterKernel['execute']>[1] = {
   onExecuteInput: () => {},
   onStream: () => {},
@@ -2981,20 +3086,22 @@ const SILENT_HANDLERS: Parameters<JupyterKernel['execute']>[1] = {
 }
 
 /**
- * Поставить в ядре защиту от опасных команд — и ДОЖДАТЬСЯ подтверждения.
+ * Install the guard against dangerous commands in the kernel, and WAIT for
+ * confirmation.
  *
- * Подтверждение обязательно, и это главное свойство: `false` отсюда означает
- * «неизвестно, подменены ли `os._exit` и остальные», а на таком ядре ячейка не
- * запускается. 20.09 цена молчаливого «наверное, встало» уже измерена — девять
- * потерянных ядер за одиннадцать минут на занятии в тридцать человек.
+ * The confirmation is mandatory, and that is the main property: `false` from
+ * here means "unknown whether `os._exit` and the rest are patched", and on such
+ * a kernel a cell does not run. On 20 Sep 2026 the price of a silent "it
+ * probably went in" was already measured: nine lost kernels in eleven minutes
+ * in a class of thirty.
  *
- * Отчёт едет `user_expressions`: при `silent: true` ядро не шлёт в IOPUB
- * ничего, и услышать установку иначе было бы нечем — тем же приёмом слышат
- * вход изоляции консилиума.
+ * The report travels in `user_expressions`: with `silent: true` the kernel
+ * sends nothing over IOPUB, and there would be no other way to hear the
+ * install; the council isolation's entry is heard the same way.
  *
- * Стоит это одного похода в ядро на ПЕРВУЮ ячейку после подъёма и ещё одного
- * на каждую смену правила или языка: дальше отпечаток совпадает, и функция
- * возвращается не выходя из процесса.
+ * It costs one trip to the kernel on the FIRST cell after start-up and one more
+ * on every rule or language change: after that the fingerprint matches, and
+ * the function returns without leaving the process.
  */
 async function ensureGuard(runtime: Runtime): Promise<boolean> {
   const wanted = guardPolicySource(dangerBlocked(runtime.sessionId))
@@ -3022,22 +3129,23 @@ async function ensureGuard(runtime: Runtime): Promise<boolean> {
     return false
   }
   const report = parseGuardReport(raw)
-  // `policy` сверяется, а не `on`: попытка консилиума может держать защиту
-  // поверх правила прямо сейчас, и `on: true` при выключенном правиле — это
-  // нормально, а вот разошедшееся `policy` значило бы, что ядро нас не поняло.
+  // `policy` is checked, not `on`: a council attempt may be holding the guard
+  // above the rule right now, and `on: true` with the rule off is normal, while
+  // a diverged `policy` would mean the kernel did not understand us.
   if (!report?.ok || report.policy !== dangerBlocked(runtime.sessionId)) return false
   runtime.guard = wanted
   return true
 }
 
 /**
- * Правило поменяли посреди пары — донести это до всех живых ядер занятия.
+ * The rule was changed in the middle of class: carry it to all of the class's
+ * live kernels.
  *
- * «Правила действуют сразу» — обещание всей комнаты (shared/rules.ts), и
- * защита не может быть из него исключением: преподаватель курса по Python
- * переключил строку ради показа и ждёт, что следующая же ячейка покажет
- * `os._exit`, а не отказ. Тихо и без очереди: ячейке на это ждать нечего, а
- * та, что не успела, спросит сама через `ensureGuard`.
+ * "Rules apply at once" is a promise to the whole room (shared/rules.ts), and
+ * the guard cannot be an exception to it: a Python course teacher switched the
+ * line for a demonstration and expects the very next cell to show `os._exit`,
+ * not a refusal. Quietly and without a queue: a cell has nothing to wait for
+ * here, and one that did not make it will ask by itself through `ensureGuard`.
  */
 export function syncDangerGuard(sessionId: string): void {
   for (const runtime of scopesOf(sessionId)) {
@@ -3046,26 +3154,29 @@ export function syncDangerGuard(sessionId: string): void {
   }
 }
 
-/** Молча посчитать служебную строку в ядре тетради; неудача — не беда попытки. */
+/** Quietly run a service line in the notebook's kernel; a failure is no trouble. */
 async function quietly(runtime: Runtime, source: string): Promise<void> {
   try {
     await runtime.kernel?.execute(source, SILENT_HANDLERS, { silent: true, storeHistory: false })
   } catch {
-    /* ядро уже не отвечает — попытке об этом скажет её собственный запуск */
+    /* the kernel no longer answers: the attempt's own run will say so */
   }
 }
 
 /**
- * Приготовить попытке личные копии данных — и дождаться подтверждения.
+ * Prepare personal copies of the data for an attempt, and wait for
+ * confirmation.
  *
- * Подтверждение обязательно, и это главное свойство: `null` отсюда означает
- * «неизвестно, подменены ли привязки», а на общих объектах попытка не
- * запускается никогда. Отчёт едет `user_expressions` — при `silent: true` в
- * IOPUB не приходит ничего, и услышать вход иначе было бы нечем.
+ * The confirmation is mandatory, and that is the main property: `null` from
+ * here means "unknown whether the bindings were replaced", and an attempt never
+ * runs on shared objects. The report travels in `user_expressions`: with
+ * `silent: true` nothing arrives over IOPUB, and there would be no other way to
+ * hear the entry.
  *
- * `runOnKernel`, а не `quietly`: ядро, умершее между двумя попытками, здесь
- * поднимается заново — и попытка считается в свежем, пустом ядре, как считалась
- * бы и раньше, а не отказывается из-за того, что копировать оказалось нечего.
+ * `runOnKernel`, not `quietly`: a kernel that died between two attempts is
+ * brought up again here, and the attempt computes in a fresh, empty kernel, as
+ * it would have before, rather than being refused because there turned out to
+ * be nothing to copy.
  */
 async function enterCouncilIsolation(
   runtime: Runtime,
@@ -3079,10 +3190,10 @@ async function enterCouncilIsolation(
       {
         ...SILENT_HANDLERS,
         onError: (ename, evalue) => {
-          // Вход ловит свои ошибки сам и отчитывается ими; сюда доходит только
-          // то, что его пережило, — прерывание пределом, смерть ядра. У
-          // KeyboardInterrupt текста нет вовсе, и двоеточие после имени
-          // повисало бы в строке отказа ни на чём.
+          // The entry catches its own errors and reports them; only what
+          // outlived it gets here: an interrupt by the limit, a kernel death.
+          // KeyboardInterrupt has no text at all, and the colon after the name
+          // would hang in the refusal line on nothing.
           reason = evalue.trim().length > 0 ? `${ename}: ${evalue.trim()}` : ename
         },
         onUserExpressions: (values) => {
@@ -3104,11 +3215,11 @@ async function enterCouncilIsolation(
 }
 
 /**
- * Вернуть ядро к тому, что было, — и узнать, чего вернуть не удалось.
+ * Return the kernel to what it was, and learn what could not be returned.
  *
- * В отличие от входа, молчание здесь ничего не решает: выход сам по себе
- * работает, а отчёт нужен ради одной приписки в выводе попытки. Поэтому
- * `quietly`-логика: ядро не ответило — и ладно.
+ * Unlike the entry, silence here decides nothing: the exit works by itself, and
+ * the report is needed for one note in the attempt's output. Hence the
+ * `quietly` logic: the kernel did not answer, and so be it.
  */
 async function leaveCouncilIsolation(runtime: Runtime): Promise<CouncilLeftovers | null> {
   let raw: unknown = null
@@ -3128,12 +3239,12 @@ async function leaveCouncilIsolation(runtime: Runtime): Promise<CouncilLeftovers
       },
     )
   } catch {
-    /* ядро уже не отвечает — возвращать ему нечего и некому */
+    /* the kernel no longer answers: nothing to return, and nobody to return it to */
   }
   return parseCouncilLeftovers(raw)
 }
 
-/** Первый кадр запуска: он же заявка, и текст под ним — тот, что в задании. */
+/** A run's first frame: it is also the request, and its text is the job's. */
 const queuedRun = (job: CouncilJob): CouncilRun => ({
   state: 'queued',
   outputs: [],
@@ -3144,28 +3255,30 @@ const queuedRun = (job: CouncilJob): CouncilRun => ({
 })
 
 /**
- * Поставить попытку консилиума в очередь ядра.
+ * Put a council attempt into the kernel's queue.
  *
- * Одна и та же попытка — одна запись: второе нажатие по ТОМУ ЖЕ тексту, пока
- * первая ждёт или считается, ничего не ставит и возвращает её место, чтобы
- * отказ мог сказать «вы 37-й». `position` — номер в очереди, считая ту, что
- * выполняется; `0` — выполняется сейчас. `runById` — кто нажал: преподаватель,
- * запускающий чужую попытку, остаётся хозяином запуска (прервать, ответить на
- * input) — как и у ячейки.
+ * The same attempt means one entry: a second press on THE SAME text while the
+ * first is waiting or computing queues nothing and returns its place, so a
+ * refusal can say "you are 37th". `position` is the place in the queue,
+ * counting the one being executed; `0` means executing now. `runById` is who
+ * pressed: a teacher running someone else's attempt stays the owner of the run
+ * (interrupting, answering input), as with a cell.
  *
- * Другой текст — не второе нажатие, а другой запуск.
+ * A different text is not a second press but a different run.
  *
- * Очередь на потоке одна, ждать минуту — обычное дело, и правка за это время
- * тоже обычна. Прежде ждущая запись была неприкасаемой: студент, поправивший
- * лист, получал «эта попытка уже в очереди — 37-я» и не мог перезапустить
- * НОВУЮ версию, пока ядро не досчитает старую — а её вывод к тому времени всё
- * равно выбрасывался как опоздавший (council.ts · recordRun). Поэтому запись
- * подменяется на месте: место в очереди остаётся прежним (за опечатку не
- * наказывают), а считаться будет то, что человек видит на экране.
+ * There is one queue for the whole cohort, waiting a minute is ordinary, and an
+ * edit in that time is ordinary too. Previously a waiting entry was
+ * untouchable: a student who fixed their sheet got "this attempt is already
+ * queued, 37th" and could not rerun the NEW version until the kernel finished
+ * the old one, whose output by then was thrown away anyway as late (council.ts
+ * · recordRun). So the entry is replaced in place: the place in the queue stays
+ * the same (nobody is punished for a typo), and what gets computed is what the
+ * person sees on screen.
  *
- * Уже считающуюся подменить нечем: строка ушла в ядро. Ей по-прежнему отвечают
- * «уже считается», и это честно — прервать её можно кнопкой, а её вывод под
- * новый текст всё равно не ляжет.
+ * One already computing cannot be replaced: the line has gone to the kernel.
+ * It is still answered "already computing", and that is honest: it can be
+ * interrupted with the button, and its output would not fit the new text
+ * anyway.
  */
 export function requestCouncilRun(
   sessionId: string,
@@ -3174,13 +3287,14 @@ export function requestCouncilRun(
   runById: string,
 ): { queued: boolean; position: number } {
   /*
-   * Попытка считается в ядре ТОЙ тетради, где стоит её ячейка.
+   * An attempt computes in the kernel of THE notebook where its cell is.
    *
-   * Консилиум — это ячейка на листе, и лист у неё один. Считать попытки в ядре
-   * комнаты, когда сама ячейка лежит в семинаре, значило бы дать им чужие
-   * переменные и занять чужую очередь. Изоляция попыток друг от друга
-   * (council-isolation.ts) от этого не меняется: она про пространство имён
-   * внутри одного ядра, и ядро это теперь — ядро своей тетради.
+   * A council is a cell on a sheet, and it has one sheet. Computing attempts in
+   * the room's kernel while the cell itself lies in the seminar would give them
+   * someone else's variables and occupy someone else's queue. Isolating
+   * attempts from each other (council-isolation.ts) does not change because of
+   * this: it is about the namespace inside one kernel, and that kernel is now
+   * the kernel of its own notebook.
    */
   const runtime = getRuntime(sessionId, rootOf(sessionId, job.cellId))
   sweepOrphanRuns(sessionId)
@@ -3192,8 +3306,8 @@ export function requestCouncilRun(
     if (!waiting || waiting.council?.source === job.source) {
       return { queued: false, position: already }
     }
-    // Кадр «в очереди» уходит по НОВОМУ заданию: он же переставляет отпечаток
-    // текста, по которому recordRun решает, чей вывод считать своим.
+    // The "queued" frame goes out for the NEW job: it also moves the text
+    // fingerprint by which recordRun decides whose output counts as its own.
     finishExecution(runtime, waiting, 'cancelled')
     const replacement: QueueItem = { ...waiting, runBy, runById, council: job, activityFinished: false, activityCancelled: false, activitySeq: null }
     replacement.activitySeq = executionActivity(runtime, replacement, 'execution.queued', { count: 1 })
@@ -3202,18 +3316,20 @@ export function requestCouncilRun(
     return { queued: true, position: already }
   }
   /*
-   * Один запуск на человека в полёте — по всей тетради, а не по ячейке.
+   * One run in flight per person, across the whole notebook, not per cell.
    *
-   * Потолок, а не право (тот же вид границы, что `runQueueCap` у ячеек): он
-   * ничего не запрещает нажать и никого не делит на роли. Без него ожидание не
-   * ограничено ничем: ячеек консилиума в листе несколько, и один человек
-   * занимал очередь общего ядра сразу тремя своими попытками, пока класс стоял
-   * за ними. Подмена текста в уже стоящей записи (ветка выше) при этом
-   * остаётся: за опечатку по-прежнему не наказывают, место в очереди своё.
+   * A ceiling, not a right (the same kind of boundary as `runQueueCap` for
+   * cells): it forbids no press and divides nobody into roles. Without it the
+   * waiting is not limited by anything: a sheet has several council cells, and
+   * one person occupied the shared kernel's queue with three of their attempts
+   * at once while the class stood behind them. Replacing the text in an entry
+   * already waiting (the branch above) still stays: nobody is punished for a
+   * typo, and the place in the queue is kept.
    *
-   * Преподаватель под потолок тоже попадает, и это нарочно: он запускает
-   * ЧУЖУЮ попытку, и в очереди она стоит от имени автора — иначе разбор у
-   * доски ставил бы студенту вторую работу поверх той, что он уже ждёт.
+   * The teacher falls under the ceiling too, and on purpose: they run SOMEONE
+   * ELSE'S attempt, and it stands in the queue in the author's name; otherwise
+   * a review at the board would give a student a second job on top of the one
+   * they are already waiting for.
    */
   const elsewhere = councilQueuePositionsOf(runtime, job.participantId)
   if (elsewhere !== null) return { queued: false, position: elsewhere }
@@ -3234,13 +3350,14 @@ export function requestCouncilRun(
 }
 
 /**
- * Где в очереди ЭТОЙ тетради стоит попытка этого человека — любая, из любой
- * ячейки. `0` — считается сейчас, `null` — его в очереди нет.
+ * Where in THIS notebook's queue this person's attempt stands, any attempt,
+ * from any cell. `0` means computing now, `null` means they are not queued.
  *
- * Отдельно от `councilQueuePosition`, потому что вопрос другой: та отвечает
- * «где моя попытка по ЭТОЙ ячейке» (её задаёт карточка), а эта — «занято ли
- * уже его место в очереди» (её задаёт потолок). Номер считается по той же
- * формуле, вместе с ячейками впереди: ждать человеку придётся их всех.
+ * Separate from `councilQueuePosition`, because the question is different: that
+ * one answers "where is my attempt for THIS cell" (the card asks it), and this
+ * one "is their place in the queue already taken" (the ceiling asks it). The
+ * number is computed by the same formula, together with the cells ahead: the
+ * person will have to wait for all of them.
  */
 function councilQueuePositionsOf(runtime: Runtime, participantId: string): number | null {
   const running = runtime.job
@@ -3251,18 +3368,18 @@ function councilQueuePositionsOf(runtime: Runtime, participantId: string): numbe
 }
 
 /**
- * Снять ждущую попытку с очереди — её больше некому считать.
+ * Take a waiting attempt off the queue: there is nobody left to compute it for.
  *
- * Два повода, и оба про то, что работа стала бессмысленной ещё до начала:
- * автор сменил текст (control.ts · council:draft) и человека забанили
- * (control.ts · purgeCouncilOf). Ядро на потоке одно, очередь к нему общая, и
- * минута, потраченная на код, которого уже нет, — это минута, которую ждёт
- * весь остальной класс.
+ * Two reasons, and both are about the work becoming pointless before it even
+ * started: the author changed the text (control.ts · council:draft), and the
+ * person was banned (control.ts · purgeCouncilOf). There is one kernel for the
+ * cohort, the queue to it is shared, and a minute spent on code that no longer
+ * exists is a minute the rest of the class waits.
  *
- * `null` в `tellJob` понимается как «запуска не было»: council.ts стирает и
- * запуск с карточки, и отпечаток текста. Возвращает, сняли ли: `false` — либо
- * попытка уже считается (строка ушла в ядро, отсюда её не достать), либо её в
- * очереди и не было.
+ * `null` in `tellJob` is understood as "there was no run": council.ts erases
+ * both the run from the card and the text fingerprint. Returns whether it was
+ * removed: `false` means either the attempt is already computing (the line has
+ * gone to the kernel and cannot be reached from here) or it was never queued.
  */
 export function cancelCouncilRun(
   sessionId: string,
@@ -3282,21 +3399,23 @@ export function cancelCouncilRun(
 }
 
 /**
- * Убрать из ядра все попытки человека, которого удаляют с занятия.
+ * Remove from the kernel all attempts of a person being removed from the class.
  *
- * Обычная отмена намеренно не трогает выполняющуюся попытку. Для бана это
- * оставляло бесконечный цикл занимать общее ядро уже после того, как автора и
- * его работу убрали из комнаты. Здесь текущая работа проверяется по серверной
- * записи задания. Следующую чужую попытку очередь не начинает до ответа на
- * interrupt: иначе поздний SIGINT мог попасть уже в неё.
+ * An ordinary cancel deliberately does not touch a running attempt. For a ban
+ * this left an endless loop occupying the shared kernel after the author and
+ * their work had been removed from the room. Here the current work is checked
+ * against the server's record of the job. The queue does not start someone
+ * else's next attempt until the interrupt is answered: otherwise a late SIGINT
+ * could land in that one.
  */
 export function purgeCouncilRunsOf(
   sessionId: string,
   participantId: string,
 ): { running: boolean; queued: number } {
-  // По всем тетрадям занятия: забаненный мог стоять в очереди у каждой, где
-  // ведётся консилиум, и оставить хоть одну значит оставить его бесконечный
-  // цикл занимать ядро уже после того, как его самого убрали из комнаты.
+  // Across all of the class's notebooks: the banned person could be queued in
+  // each one where a council is running, and leaving even one means leaving
+  // their endless loop occupying the kernel after they themselves were removed
+  // from the room.
   let running = false
   let queued = 0
   for (const runtime of scopesOf(sessionId)) {
@@ -3318,33 +3437,35 @@ export function purgeCouncilRunsOf(
 }
 
 /**
- * Область, в которой живёт консилиум этой ячейки, — и `undefined`, если её ещё
- * не заводили.
+ * The scope this cell's council lives in, and `undefined` if it has not been
+ * created yet.
  *
- * `peekRuntime`, а не `getRuntime`: вопрос «где моя попытка в очереди» задаёт
- * каждая карточка при открытии пульта, и заводить от него комнате Python
- * нельзя.
+ * `peekRuntime`, not `getRuntime`: every card asks "where is my attempt in the
+ * queue" when the console opens, and that must not start a Python for the
+ * room.
  */
 function councilScope(sessionId: string, cellId: string): Runtime | undefined {
   return peekRuntime(sessionId, rootOf(sessionId, cellId))
 }
 
 /**
- * Прервать ИМЕННО эту работу — и не дать SIGINT догнать следующую.
+ * Interrupt EXACTLY this work, and do not let the SIGINT catch up with the next
+ * one.
  *
- * Три повода остановить то, чего никто не просил останавливать: автора попытки
- * забанили, попытка перебрала предел регламента, ячейка перебрала предел
- * комнаты. Граница у них одна, потому что опасность одна: `interrupt` уходит в
- * Jupyter по HTTP и отвечает не мгновенно, а очередь за это время успевает
- * взять следующую работу — и сигнал, посланный Пете, останавливал Машу.
- * Поэтому обещание кладётся в `beforeNext`: насос ждёт на нём ровно на границе
- * между работами, ничего не выбрасывая из очереди. Прошлый барьер не теряется
- * — два бана подряд дают два сигнала, и ждать надо обоих.
+ * Three reasons to stop something nobody asked to stop: the attempt's author
+ * was banned, the attempt exceeded the rules' limit, the cell exceeded the
+ * room's limit. They share one boundary because the danger is one: `interrupt`
+ * goes to Jupyter over HTTP and does not answer instantly, and in that time the
+ * queue manages to take the next job, so a signal sent to Petya stopped Masha.
+ * So the promise goes into `beforeNext`: the pump waits on it exactly at the
+ * boundary between jobs, throwing nothing out of the queue. The previous
+ * barrier is not lost: two bans in a row give two signals, and both have to be
+ * waited for.
  *
- * `interruptSession` с именем записи очереди, а не без него: без имени он
- * разбирает очередь ВСЕЙ комнаты (там ветка комнатной кнопки Interrupt). У
- * попытки пачка своя и единственная, у ячейки — её собственный Run, и
- * `stopBatchOf` по ней не найдёт ничего чужого.
+ * `interruptSession` with the queue entry's name, not without it: without a
+ * name it clears the queue of the WHOLE room (that is the room Interrupt
+ * button's branch). An attempt has its own single batch, a cell its own Run,
+ * and `stopBatchOf` on it will find nothing of anyone else's.
  */
 function stopRunningItem(runtime: Runtime, item: QueueItem): void {
   const interrupt = interruptSession(runtime.sessionId, item.cellId, runtime.root)
@@ -3357,8 +3478,9 @@ function stopRunningItem(runtime: Runtime, item: QueueItem): void {
 }
 
 /**
- * Где попытка в очереди: `0` — считается сейчас, `null` — её там нет.
- * Считает и ячейки перед ней: очередь у тетради одна, и ждать студенту придётся их всех.
+ * Where the attempt is in the queue: `0` means computing now, `null` means it
+ * is not there. Also counts the cells ahead of it: a notebook has one queue,
+ * and the student will have to wait for all of them.
  */
 export function councilQueuePosition(
   sessionId: string,
@@ -3375,18 +3497,19 @@ export function councilQueuePosition(
 }
 
 /**
- * Все ждущие попытки с их номерами — одним проходом по очереди.
+ * All waiting attempts with their numbers, in one pass over the queue.
  *
- * То же, что `councilQueuePosition` для каждого ждущего, только без поиска по
- * очереди на каждого: сдвиг очереди при пятистах попытках стоил четверти
- * миллиона сравнений на ровном месте. Номер считается так же — вместе с той,
- * что считается сейчас. Нуля здесь не бывает: считающаяся попытка уже не ждёт.
+ * The same as `councilQueuePosition` for each waiting one, only without a
+ * search through the queue for each: with five hundred attempts a queue shift
+ * cost a quarter of a million comparisons for nothing. The number is computed
+ * the same way, together with the one computing now. There is no zero here: a
+ * computing attempt is no longer waiting.
  */
 export function councilQueuePositions(
   sessionId: string,
 ): { cellId: string; participantId: string; position: number }[] {
-  // Номер считается В СВОЕЙ очереди: тетрадей несколько, очередей столько же, и
-  // «третий» в семинаре ничего не говорит о том, что делается в лекции.
+  // The number is counted IN ITS OWN queue: there are several notebooks and as
+  // many queues, and "third" in the seminar says nothing about the lecture.
   const out: { cellId: string; participantId: string; position: number }[] = []
   for (const runtime of scopesOf(sessionId)) {
     const ahead = runtime.currentCell ? 1 : 0
@@ -3402,37 +3525,39 @@ export function councilQueuePositions(
   return out
 }
 
-/** Что ядро тетради считает прямо сейчас — для пульта преподавателя. */
+/** What the notebook's kernel is computing right now, for the teacher's console. */
 export interface KernelBusy {
-  /** Обычная ячейка тетради или попытка консилиума. */
+  /** An ordinary notebook cell or a council attempt. */
   kind: 'cell' | 'attempt'
-  /** Ячейка ДОКУМЕНТА: у обычного запуска своя, у попытки — её ячейка консилиума. */
+  /** The DOCUMENT's cell: an ordinary run's own, or an attempt's council cell. */
   cellId: string
-  /** Кто нажал — по серверной записи очереди, а не по полю документа. */
+  /** Who pressed, by the server's queue record, not the document field. */
   runById: string
-  /** Чья попытка; `null` у обычной ячейки. */
+  /** Whose attempt; `null` for an ordinary cell. */
   participantId: string | null
   startedAt: number
-  /** Под каким пределом идёт, в секундах; `null` — без предела. */
+  /** The limit it runs under, in seconds; `null` means no limit. */
   limitSec: number | null
-  /** Два сигнала остановки ушли, а работа считается: очередь тетради стоит. */
+  /** Two stop signals went out and it still computes: the notebook's queue stands. */
   stuck: boolean
 }
 
 /**
- * Ядро ТОЙ тетради, где живёт эта ячейка: чем занято и сколько ждёт.
+ * The kernel of THE notebook where this cell lives: what it is busy with and
+ * how much is waiting.
  *
- * Заведено ради пульта консилиума, и ради одной его беды. Пульт собирал
- * «выполняется/в очереди» из попыток СВОЕЙ ячейки — единственного, что до него
- * доезжало, — и когда ядро держала обычная ячейка или попытка соседней ячейки,
- * честно писал «в этой ячейке сейчас ничего не выполняется» рядом с «в
- * очереди: 12». Кнопки «Прервать» в этот момент не было вовсе: её рисовали
- * внутри ветки «идёт запуск». То есть ровно в ту минуту, когда преподавателю
- * надо действовать, пульт показывал, что действовать не над чем.
+ * Created for the council console, and for one of its troubles. The console
+ * built "running/queued" from the attempts of ITS OWN cell, the only thing that
+ * reached it, and when the kernel was held by an ordinary cell or by an attempt
+ * of a neighbouring cell, it honestly wrote "nothing is running in this cell
+ * right now" next to "queued: 12". There was no "Interrupt" button at that
+ * moment at all: it was drawn inside the "a run is going" branch. So exactly
+ * in the minute when the teacher needed to act, the console showed there was
+ * nothing to act on.
  *
- * `peekRuntime`, а не `getRuntime`: вопрос задаёт каждый кадр пульта, и
- * заводить от него комнате Python нельзя. `null` — области ещё не было, то
- * есть в этой тетради ничего и не запускали.
+ * `peekRuntime`, not `getRuntime`: every console frame asks this, and it must
+ * not start a Python for the room. `null` means there was no scope yet, i.e.
+ * nothing has been run in this notebook.
  */
 export function kernelWorkOf(
   sessionId: string,
@@ -3440,8 +3565,9 @@ export function kernelWorkOf(
 ): { busy: KernelBusy | null; queued: number } | null {
   const runtime = councilScope(sessionId, cellId)
   if (!runtime) return null
-  // Длина очереди — ВСЯ: и ячейки, и попытки любых ячеек этой тетради. Очередь
-  // одна, и ждать студенту придётся всех, кто в ней стоит.
+  // The queue length is ALL of it: both cells and attempts of any cells of this
+  // notebook. There is one queue, and the student will have to wait for
+  // everyone in it.
   const queued = runtime.queue.length
   const active = runtime.job
   const limit = runtime.limit
@@ -3475,7 +3601,7 @@ export function kernelWorkOf(
   }
 }
 
-/** Чьи попытки ждут в очереди — чтобы после каждого сдвига сказать им новый номер. */
+/** Whose attempts wait in the queue, to tell them their new number after each shift. */
 export function councilQueued(sessionId: string): { cellId: string; participantId: string }[] {
   const out: { cellId: string; participantId: string }[] = []
   for (const runtime of scopesOf(sessionId)) {
@@ -3487,7 +3613,7 @@ export function councilQueued(sessionId: string): { cellId: string; participantI
   return out
 }
 
-/** Кадр вывода — не на каждую строку print, а раз в окно: стопка едет хосту целиком. */
+/** One output frame per window, not per print: the stack travels to the host whole. */
 function touchJob(runtime: Runtime, active: ActiveJob): void {
   if (active.timer) return
   active.timer = setTimeout(() => {
@@ -3498,21 +3624,22 @@ function touchJob(runtime: Runtime, active: ActiveJob): void {
   active.timer.unref?.()
 }
 
-/** Когда сторожимая работа началась по часам сервера — с поправкой на `restamp`. */
+/** When the guarded work started by the server's clock, corrected for `restamp`. */
 function startOfLimit(runtime: Runtime, limit: RunLimit): number {
-  // По записи среды, а не по своей: `restamp` переставляет начало, когда ядро
-  // пришлось поднимать заново, и полторы минуты его подъёма — не время работы.
+  // By the runtime's record, not its own: `restamp` moves the start when the
+  // kernel had to be brought up again, and the minute and a half of that is not
+  // work time.
   return runtime.started?.cellId === limit.item.cellId ? runtime.started.at : limit.startedAt
 }
 
 /**
- * Завести будильник на работу, которая только что пошла в ядро.
+ * Set the alarm on work that has just gone to the kernel.
  *
- * Одна дверь для обоих путей: `runOne` приносит предел комнаты
- * (rules.ts · RoomRules.cellLimitSec), `runCouncilOne` — предел регламента
- * ячейки (notebook.ts · CouncilSettings.runLimitSec). Всё, что дальше —
- * отсчёт, повтор сигнала, признак «не берёт», — у них общее, и разойтись им
- * негде.
+ * One door for both paths: `runOne` brings the room's limit
+ * (rules.ts · RoomRules.cellLimitSec), `runCouncilOne` the cell rules' limit
+ * (notebook.ts · CouncilSettings.runLimitSec). Everything after that (the
+ * countdown, the repeated signal, the "not taking" flag) is shared, and there
+ * is nowhere for them to diverge.
  */
 function beginLimit(runtime: Runtime, item: QueueItem, sec: number | null, startedAt: number): void {
   runtime.limit = { item, startedAt, sec, timer: null, firedSec: null, interrupts: 0, stuck: false }
@@ -3520,13 +3647,13 @@ function beginLimit(runtime: Runtime, item: QueueItem, sec: number | null, start
 }
 
 /**
- * Снять будильник и сказать, сработал ли он.
+ * Clear the alarm and say whether it fired.
  *
- * Зовётся на ЕДИНСТВЕННОМ выходе каждого из двух путей — `finishCouncil` у
- * попытки и `finally` у ячейки, — и потому снимается на всех исходах разом:
- * обычный конец, падение, прерывание, смерть ядра, снос ячейки. Переживи
- * будильник свою работу хоть на миг — сигнал ушёл бы в следующую запись
- * очереди, то есть в чужую попытку или в ячейку преподавателя.
+ * Called at the ONLY exit of each of the two paths (`finishCouncil` for an
+ * attempt and `finally` for a cell), and so cleared on every outcome at once:
+ * a normal end, a failure, an interrupt, a kernel death, the cell's removal.
+ * Were the alarm to outlive its work even for a moment, the signal would go to
+ * the next queue entry, i.e. someone else's attempt or the teacher's cell.
  */
 function clearLimit(runtime: Runtime, item: QueueItem): number | null {
   const limit = runtime.limit
@@ -3540,12 +3667,13 @@ function clearLimit(runtime: Runtime, item: QueueItem): number | null {
 }
 
 /**
- * Переставить будильник на текущую работу — или снять его.
+ * Reset the alarm on the current work, or clear it.
  *
- * Считается от НАЧАЛА запуска, а не от «сейчас»: иначе преподаватель, дважды
- * тронувший регламент за минуту, продлевал бы зависшему циклу жизнь каждым
- * нажатием. Отсюда же и «опустили предел ниже уже прошедшего» — остаток
- * отрицательный, ноль в `setTimeout`, сигнал на следующем такте.
+ * Counted from the START of the run, not from "now": otherwise a teacher who
+ * touched the rules twice in a minute would extend a hung loop's life with
+ * every press. Hence also "the limit was lowered below the time already
+ * passed": the remainder is negative, zero goes into `setTimeout`, the signal
+ * comes on the next tick.
  */
 function armLimit(runtime: Runtime): void {
   const limit = runtime.limit
@@ -3564,32 +3692,36 @@ function armLimit(runtime: Runtime): void {
 }
 
 /**
- * Предел сработал: остановить работу и запомнить, какой именно предел это был.
+ * The limit fired: stop the work and remember which limit it was.
  *
- * Ядро НЕ перезапускается, даже если SIGINT не помог. Питон, ушедший в C
- * (`np.linalg.inv` на матрице не того размера), сигнала не увидит до возврата
- * в интерпретатор — но ядро в тетради одно, и в нём лежит весь разбор
- * преподавателя: `df`, модель, полчаса подготовки. Снести это за него, по
- * таймеру и молча — цена выше беды. Решает он: у него есть «Прервать» и
- * «Перезапустить», а с этого дня ещё и слово о том, что случилось.
+ * The kernel is NOT restarted, even if SIGINT did not help. Python that has
+ * gone into C (`np.linalg.inv` on a matrix of the wrong size) will not see the
+ * signal until it returns to the interpreter, but the notebook has one kernel,
+ * and it holds the teacher's whole analysis: `df`, the model, half an hour of
+ * preparation. Wiping that out for them, by a timer and silently, costs more
+ * than the trouble. They decide: they have "Interrupt" and "Restart", and from
+ * now on also a word about what happened.
  *
- * И потому же сигналов не больше двух: один сразу и один через пять «секунд»
- * предела — на случай, когда первый пришёл ровно в чужой `except
- * KeyboardInterrupt`. Дальше молча сигналить нельзя: SIGINT в тугом цикле раз
- * в секунду — это шторм HTTP-запросов к Jupyter до конца пары, а помочь он не
- * может. Но и МОЛЧАТЬ нельзя: с этой секунды очередь тетради стоит намертво, и
- * до сих пор об этом не узнавал никто — ни автор, чья попытка «считается»
- * вечно, ни те двенадцать, кто за ней стоит. Поэтому здесь ставится признак
- * `stuck`, по нему пульт рисует перезапуск ядра с честной ценой, а в журнал
- * ядра уходит строка.
+ * And for the same reason there are no more than two signals: one at once and
+ * one five limit "seconds" later, for the case when the first landed right in
+ * someone else's `except KeyboardInterrupt`. Signalling silently beyond that is
+ * not allowed: SIGINT in a tight loop once a second is a storm of HTTP requests
+ * to Jupyter until the end of class, and it cannot help. But KEEPING QUIET is
+ * not allowed either: from this second the notebook's queue stands dead still,
+ * and until now nobody learned about it: neither the author, whose attempt
+ * "computes" forever, nor the twelve people standing behind it. So the `stuck`
+ * flag is set here, the console draws a kernel restart with an honest price
+ * from it, and a line goes into the kernel log.
  */
 function fireLimit(runtime: Runtime, limit: RunLimit): void {
-  // Работа успела кончиться сама ровно в этот миг — трогать нечего: очередь
-  // уже могла взять следующую, и сигнал попал бы в неё.
+  // The work finished by itself at exactly this moment: there is nothing to
+  // touch, since the queue may have taken the next job already, and the signal
+  // would land in it.
   if (runtime.limit !== limit) return
-  // И семинар, закрытый за эти миллисекунды, не будит `getRuntime` внутри
-  // `interruptSession`: тот заводит среду заново, а с ней и документ комнаты,
-  // которой больше нет (та же осторожность, что у `retired` в `shutdownSession`).
+  // And a seminar closed in these milliseconds must not wake `getRuntime` inside
+  // `interruptSession`: that one creates the runtime anew, and with it the
+  // document of a room that no longer exists (the same caution as with
+  // `retired` in `shutdownSession`).
   if (runtime.retired || peekRuntime(runtime.sessionId, runtime.root) !== runtime) return
   if (limit.sec !== null) limit.firedSec = limit.sec
   limit.interrupts += 1
@@ -3603,12 +3735,12 @@ function fireLimit(runtime: Runtime, limit: RunLimit): void {
     return
   }
   /*
-   * Второй сигнал ушёл. Через те же пять «секунд» смотрим, взял ли он: работа,
-   * которая к этому времени всё ещё считается, не остановится уже никогда, и
-   * очередь тетради за ней не двинется. Проверка отложенная, а не сразу
-   * следом, потому что `interrupt` уходит по HTTP и отвечает не мгновенно —
-   * объявить ядро глухим в ту же миллисекунду значило бы оболгать половину
-   * нормальных остановок.
+   * The second signal went out. After the same five "seconds" we check whether
+   * it took: work that is still computing by then will never stop, and the
+   * notebook's queue will not move behind it. The check is deferred rather than
+   * right after, because `interrupt` goes over HTTP and does not answer
+   * instantly: declaring the kernel deaf in the same millisecond would slander
+   * half of the normal stops.
    */
   const check = setTimeout(() => {
     if (runtime.limit !== limit || limit.stuck) return
@@ -3620,25 +3752,26 @@ function fireLimit(runtime: Runtime, limit: RunLimit): void {
 }
 
 /**
- * Регламент поменяли, пока попытка этой ячейки считается, — предел действует
- * сразу, с отсчётом от её начала.
+ * The rules were changed while this cell's attempt is computing: the limit
+ * applies at once, counted from its start.
  *
- * Зовётся из control.ts на `cell:lock`: «правила действуют сразу» — обещание
- * всей комнаты (shared/rules.ts), и предел запуска не может быть исключением
- * из него, иначе зависший цикл доживает до конца пары под новым регламентом,
- * который его как раз и запрещает.
+ * Called from control.ts on `cell:lock`: "rules apply at once" is a promise to
+ * the whole room (shared/rules.ts), and the run limit cannot be an exception to
+ * it, otherwise a hung loop lives until the end of class under new rules that
+ * forbid exactly that.
  */
 export function retimeCouncilRun(sessionId: string, cellId: string, limitSec: number | null): void {
   const runtime = councilScope(sessionId, cellId)
   if (!runtime) return
   /*
-   * Сначала те, кто ждёт: предел записан в саму работу при постановке в очередь
-   * (ядро документа не читает), и без этой строки «действует сразу» было бы
-   * правдой ровно для одной попытки. На потоке очередь — десятки работ: снял
-   * преподаватель «без предела», а сорок уже стоящих запусков так и пошли бы
-   * без него, по одному, до конца пары. Запись в очереди заменяется целиком, а
-   * не правится на месте: `job` у неё — тот же объект, что держит слушатель в
-   * control.ts, и чужое поле под ним менять незачем.
+   * The waiting ones first: the limit is written into the job itself at
+   * queueing time (the kernel does not read the document), and without this
+   * "applies at once" would be true for exactly one attempt. On a cohort the
+   * queue is dozens of jobs: the teacher replaces "no limit" with a limit, and
+   * forty runs already waiting would still go without one, one by one, until
+   * the end of class. The queue entry is replaced whole rather than edited in
+   * place: its `job` is the same object the listener in control.ts holds, and
+   * there is no reason to change someone else's field under it.
    */
   for (const item of runtime.queue) {
     if (item.council?.cellId === cellId && item.council.limitSec !== limitSec) {
@@ -3648,19 +3781,20 @@ export function retimeCouncilRun(sessionId: string, cellId: string, limitSec: nu
   const active = runtime.job
   if (!active || active.job.cellId !== cellId) return
   const limit = runtime.limit
-  // Будильник сторожит ИМЕННО эту попытку, а не «что-то в этой тетради»: между
-  // концом попытки и следующей работой очередь успевает шагнуть.
+  // The alarm guards EXACTLY this attempt, not "something in this notebook":
+  // between the end of an attempt and the next job the queue manages to step.
   if (!limit || limit.item !== active.item || limit.sec === limitSec) return
   limit.sec = limitSec
-  // Сигнал уже посылали — второй раз по новому пределу не шлём: остановка одна,
-  // и её число (`firedSec`) уже названо.
+  // A signal was already sent: no second one by the new limit; there is one
+  // stop, and its number (`firedSec`) is already named.
   if (limit.firedSec !== null) return
   armLimit(runtime)
 }
 
 /**
- * Единственная дверь из «считается» для попытки — как `setCellState` у ячейки.
- * Сюда приходят обычный конец, бросок из execute и `reportDeadKernel`.
+ * The only door out of "computing" for an attempt, like `setCellState` for a
+ * cell. The ordinary end, a throw from execute and `reportDeadKernel` come
+ * here.
  */
 function finishCouncil(runtime: Runtime, active: ActiveJob, state: 'ok' | 'error'): void {
   if (active.timer) {
@@ -3668,24 +3802,27 @@ function finishCouncil(runtime: Runtime, active: ActiveJob, state: 'ok' | 'error
     active.timer = null
   }
   /*
-   * Будильник предела гасится ЗДЕСЬ, на единственном выходе попытки, и потому
-   * гасится на всех исходах: обычный конец, падение, прерывание, смерть ядра,
-   * снос ячейки. Переживи он попытку хоть на миг — сигнал ушёл бы в следующую
-   * работу очереди, то есть в чужую попытку или в ячейку преподавателя.
-   * `clearLimit` заодно и отвечает, сработал ли он.
+   * The limit alarm is cleared HERE, at the attempt's only exit, and so it is
+   * cleared on every outcome: a normal end, a failure, an interrupt, a kernel
+   * death, the cell's removal. Were it to outlive the attempt even for a
+   * moment, the signal would go to the next job in the queue, i.e. someone
+   * else's attempt or the teacher's cell. `clearLimit` also answers whether it
+   * fired.
    */
-  // По записи среды, а не по своей: `restamp` переставляет начало, когда ядро
-  // пришлось поднимать заново, и полторы минуты его подъёма — не время попытки.
+  // By the runtime's record, not its own: `restamp` moves the start when the
+  // kernel had to be brought up again, and the minute and a half of that is not
+  // attempt time.
   const startedAt =
     runtime.started?.cellId === active.item.cellId ? runtime.started.at : active.run.startedAt
   const fired = clearLimit(runtime, active.item)
   /*
-   * Отметка «остановлено по пределу» ставится только на упавший запуск.
+   * The "stopped by the limit" mark is put only on a failed run.
    *
-   * Сигнал и последняя строка кода могут совпасть в одну миллисекунду: ядро
-   * успело ответить `ok`, значит попытка досчиталась сама и ничего у неё не
-   * отняли. Назвать такой запуск остановленным — соврать на карточке и в
-   * списке работ, а стоит это дороже, чем пропущенная секунда предела.
+   * The signal and the last line of code can coincide within one millisecond:
+   * the kernel managed to answer `ok`, so the attempt finished computing by
+   * itself and nothing was taken from it. Calling such a run stopped would be a
+   * lie on the card and in the list of works, and that costs more than a missed
+   * second of the limit.
    */
   const limitFired = state === 'error' ? fired : null
   if (limitFired !== null) {
@@ -3713,9 +3850,10 @@ function finishCouncil(runtime: Runtime, active: ActiveJob, state: 'ok' | 'error
 }
 
 /**
- * Посчитать попытку — тем же ядром и теми же обработчиками, что ячейку, но с
- * выводом в буфер. Отличия от `runOne` названы по месту; всё остальное —
- * нарочно то же самое, чтобы попытка вела себя как ячейка, которую нажали.
+ * Compute an attempt with the same kernel and the same handlers as a cell, but
+ * with output into a buffer. The differences from `runOne` are named where they
+ * occur; everything else is deliberately the same, so that an attempt behaves
+ * like a cell that was run.
  */
 async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob): Promise<void> {
   const { doc } = getSessionDoc(runtime.sessionId)
@@ -3746,49 +3884,52 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   flushToDisk(runtime.sessionId)
   const unwatch = stopIfDeleted(runtime, doc, item.cellId, job.cellId)
   /*
-   * Будильник заводится ДО первой строки, ушедшей в ядро, и после проверки на
-   * пустую попытку: пустую считать нечего, а всё остальное — уже время,
-   * которое очередь стоит. Личные копии данных (вход ниже) идут в счёт предела
-   * намеренно: они тоже занимают общее ядро.
+   * The alarm is set BEFORE the first line goes to the kernel and after the
+   * empty-attempt check: an empty one has nothing to compute, while everything
+   * else is already time the queue stands still. Personal data copies (the
+   * entry below) count against the limit on purpose: they occupy the shared
+   * kernel too.
    *
-   * Число снято с ячейки в секунду нажатия и приехало с заданием
-   * (kernel/council.ts · CouncilJob.limitSec); регламент, поменянный посреди
-   * запуска, доезжает отдельно — `retimeCouncilRun`.
+   * The number was taken from the cell at the second of the press and came with
+   * the job (kernel/council.ts · CouncilJob.limitSec); rules changed in the
+   * middle of a run arrive separately, through `retimeCouncilRun`.
    */
   beginLimit(runtime, item, job.limitSec, startedAt)
   const { buffer } = active
   let state: 'ok' | 'error' = 'ok'
-  // Личные копии данных попытки. См. councilEnterSourceNow.
+  // The attempt's personal data copies. See councilEnterSourceNow.
   const { report, reason } = await enterCouncilIsolation(runtime)
   let starved = false
   try {
     if (!report?.ok) {
       /*
-       * Вход не подтвердился — попытка НЕ запускается.
+       * The entry was not confirmed: the attempt does NOT run.
        *
-       * Молчание входа означает «неизвестно, чьи сейчас данные в ядре», и
-       * запуск на общих объектах ровно здесь и стоил бы пары: студент получил
-       * бы правильный на вид ответ, испортив данные всей группе. Одна строка
-       * без трейсбека: кадры `<colloq-council>` — не его код и ничего ему не
-       * скажут.
+       * The entry's silence means "unknown whose data is in the kernel right
+       * now", and running on shared objects is exactly what would cost a class
+       * here: the student would get a right-looking answer while spoiling the
+       * data for the whole group. One line without a traceback: the
+       * `<colloq-council>` frames are not their code and will tell them
+       * nothing.
        */
-      // Имя исключения пустое по той же причине, что у остановки пределом
-      // (council.ts · stopped): карточка рисует «имя: текст», и английское
-      // слово перед русской фразой ничего не добавляет.
+      // The exception name is empty for the same reason as with a stop by the
+      // limit (council.ts · stopped): the card draws "name: text", and an
+      // English word in front of a Russian phrase adds nothing.
       buffer.error('', councilEnterRefusal(reason), [])
       state = 'error'
       return
     }
-    // Что осталось общим — в начало вывода, до первой строки самой попытки.
+    // What stayed shared goes first in the output, before the attempt's first line.
     for (const note of councilSkipNotes(report)) buffer.stream('stderr', note)
     /*
-     * Без истории ядра — единственное отличие от ячейки в самом запросе.
+     * No kernel history: the only difference from a cell in the request itself.
      *
-     * Ядро у тетради одно, и IPython кладёт исходник каждой выполненной ячейки
-     * в `In`/`_ih`: попытки, которые преподаватель запускал, читал бы любой,
-     * кому потом откроют ячейку «всем» (`print(In[-5:])`, `%history`). Вывод
-     * попытки едет двоим честно, а её текст в памяти ядра лежал бы для всех —
-     * вопреки правилу «чужих попыток студент не видит никогда».
+     * A notebook has one kernel, and IPython puts the source of every executed
+     * cell into `In`/`_ih`: the attempts the teacher ran could be read by anyone
+     * a cell is later opened to "everyone" for (`print(In[-5:])`, `%history`).
+     * An attempt's output honestly travels to two people, while its text would
+     * lie in the kernel's memory for everyone, contrary to the rule "a student
+     * never sees other people's attempts".
      */
     const status = await runOnKernel(
       runtime,
@@ -3808,15 +3949,16 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
         },
         onError: (ename, evalue, traceback) => {
           /*
-           * Свой отказ — одной строкой, без трейсбека, как и остановка по
-           * пределу. Кадры `<colloq-council>` в нём — не код студента, и
-           * читать ему там нечего: там наш модуль объясняет, почему `exit()`
-           * в попытке гасил бы ядро всей комнате.
+           * Our own refusal is one line without a traceback, like a stop by the
+           * limit. The `<colloq-council>` frames in it are not student code,
+           * and there is nothing there for them to read: that is our module
+           * explaining why `exit()` in an attempt would take the kernel down
+           * for the whole room.
            */
           if (ename === COUNCIL_REFUSED) buffer.error('', evalue, [])
           else buffer.error(ename, evalue, traceback)
-          // MemoryError под нашим потолком — это спасённое занятие, и сказать
-          // об этом надо после трейсбека, словами и с числом.
+          // A MemoryError under our ceiling is a class saved, and that has to
+          // be said after the traceback, in words and with a number.
           if (/MemoryError/.test(ename)) starved = true
           touchJob(runtime, active)
         },
@@ -3826,11 +3968,12 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
           touchJob(runtime, active)
         },
         /*
-         * `input()` в попытке некому показать: приглашение ячейки живёт в общем
-         * документе, а у попытки документа нет, и зал её не видит. Ядро при этом
-         * стоит, пока не ответят, — и стояло бы до конца пары. Отвечаем пустой
-         * строкой сами и говорим об этом в выводе: `int('')` упадёт честно и
-         * объяснимо, а очередь пойдёт дальше.
+         * `input()` in an attempt has nobody to show it to: a cell's prompt
+         * lives in the shared document, but an attempt has no document, and the
+         * audience does not see it. Meanwhile the kernel stands until someone
+         * answers, and would stand until the end of class. We answer with an
+         * empty string ourselves and say so in the output: `int('')` fails
+         * honestly and explainably, and the queue moves on.
          */
         onInputRequest: () => {
           buffer.stream(
@@ -3857,21 +4000,22 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   } finally {
     unwatch()
     /*
-     * Выход — ВСЕГДА, включая ту ветку, где попытку не запускали: вход мог
-     * успеть подменить привязки и упасть после, и тогда единственное, что
-     * вернёт комнате её данные, — вот эта строка.
+     * The exit ALWAYS happens, including the branch where the attempt was not
+     * run: the entry may have managed to replace the bindings and fail after,
+     * and then the only thing that returns the room its data is this line.
      *
-     * Конец попытки собран здесь же, за выходом, а не после `try`: ветка
-     * «вход не подтвердился» выходит из блока раньше, и иначе карточка
-     * осталась бы «считается» навсегда.
+     * The end of the attempt is assembled right here, after the exit, not after
+     * the `try`: the "entry not confirmed" branch leaves the block early, and
+     * otherwise the card would stay "computing" forever.
      */
     const leftovers = await leaveCouncilIsolation(runtime)
-    // Приписки в хвост вывода: почему не хватило памяти и что осталось
-    // работать. Обе — после кода попытки, потому что обе про его последствия.
+    // Notes at the tail of the output: why memory ran short and what was left
+    // running. Both come after the attempt's code, because both are about its
+    // consequences.
     if (starved) buffer.stream('stderr', councilMemoryNote(report?.memory ?? null))
     for (const note of councilLeftoverNotes(leftovers)) buffer.stream('stderr', note)
     finishCouncil(runtime, active, state)
-    // Попытка могла записать файл — панели файлов это так же интересно.
+    // The attempt may have written a file: the files panel cares about that too.
     notifyWorkspaceChanged(runtime.sessionId)
   }
 }
@@ -3883,9 +4027,9 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
       Math.max(0, Date.now() - (runtime.started?.at ?? Date.now())))
   }
   /*
-   * Попытка консилиума — тем же словом, но к попытке, а не в ячейку: у неё
-   * нет ячейки, и OutputWriter ниже написал бы в пустоту, оставив карточку
-   * «считается» навсегда.
+   * A council attempt gets the same word, but on the attempt, not into a cell:
+   * it has no cell, and the OutputWriter below would write into the void,
+   * leaving the card "computing" forever.
    */
   if (runtime.job) {
     runtime.job.buffer.error('KernelError', message, [])
@@ -3915,8 +4059,8 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
   if (stuck) {
     const writer = runtime.writer ?? new OutputWriter(doc, stuck)
     writer.error('KernelError', message, [])
-    // Свой, заведённый строкой выше, комнату не держит — его и отпускать
-    // нечего; тот, что стоял в среде исполнения, отпускается здесь.
+    // Our own one, created a line above, does not hold the room, so there is
+    // nothing to release; the one that sat in the runtime is released here.
     writer.dispose()
     dropWriter(runtime)
     runtime.currentCell = null
@@ -3926,14 +4070,16 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
     if (waiting) finishExecution(runtime, runtime.queue[0], 'error')
     if (waiting) runtime.queue.shift()
     /*
-     * Ячейка, которая только стояла в очереди, теряет номер вместе с ядром.
+     * A cell that was only waiting in the queue loses its number along with the
+     * kernel.
      *
-     * Её прошлый результат остаётся — это единственное свидетельство того, что
-     * она когда-то показывала, и стирать его незачем. А вот номер над ним
-     * теперь врёт: под одним `Out [12] · 3.4 s` оказывается содержимое двух
-     * разных выполнений, `hasError` красит всю ячейку как упавшую, и
-     * `newestErrorIndex` в контексте оракула отдаёт модели таблицу двенадцатого
-     * выполнения как обстоятельства падения, которое не принадлежит никакому.
+     * Its previous result stays: it is the only evidence of what it once showed,
+     * and there is no reason to erase it. But the number above it now lies:
+     * under one `Out [12] · 3.4 s` there end up the contents of two different
+     * executions, `hasError` paints the whole cell as failed, and
+     * `newestErrorIndex` in the Oracle's context hands the model the table of
+     * the twelfth execution as the circumstances of a failure that belongs to
+     * none.
      */
     if (waiting) {
       const found = findCell(doc, stuck)
@@ -3955,25 +4101,25 @@ function deadMessage(): string {
 }
 
 /**
- * Ячейку, которая считается прямо сейчас, удалили — остановить ядро.
+ * The cell that is computing right now was deleted: stop the kernel.
  *
- * Удаление ничем не связано с выполнением: ячейка исчезает из документа, а
- * цикл в ядре крутится дальше, `meta.runningCell` называет id, которого больше
- * нет, и остановить это нечем — кнопка нарисована на ячейке, а ячейки нет.
- * Прерывание здесь — ровно то, что нажал бы человек, будь кнопке к чему
- * привязаться.
+ * Deletion has no link to execution: the cell disappears from the document
+ * while the loop in the kernel keeps spinning, `meta.runningCell` names an id
+ * that no longer exists, and there is nothing to stop it with: the button is
+ * drawn on the cell, and the cell is gone. An interrupt here is exactly what a
+ * person would press if the button had something to attach to.
  *
- * Наблюдатель живёт только пока ячейка считается, и своих же записей не видит:
- * вывод и состояния идут под `ORIGIN`.
+ * The observer lives only while the cell computes and does not see our own
+ * writes: output and states go under `ORIGIN`.
  */
 function stopIfDeleted(
   runtime: Runtime,
   doc: Y.Doc,
   cellId: string,
   /*
-   * За чем следить. У ячейки — она сама; у попытки консилиума запись очереди
-   * синтетическая, а исчезнуть из документа может ячейка консилиума — и вместе
-   * с ней смысл считать чью-то попытку к ней.
+   * What to watch. For a cell, the cell itself; for a council attempt the queue
+   * entry is synthetic, and what can disappear from the document is the council
+   * cell, and with it the point of computing anyone's attempt for it.
    */
   watched = cellId,
 ): () => void {
@@ -3994,21 +4140,22 @@ function stopIfDeleted(
 }
 
 /**
- * Дописать на диск то, что комната набрала, но ещё не сохранила.
+ * Write to disk what the room has typed but not saved yet.
  *
- * Только по своей комнате: ячейка читает диск здесь, а чужие несохранённые
- * файлы уедут туда сами теми же семьюстами миллисекундами позже.
+ * Only for our own room: the cell reads the disk here, while other rooms'
+ * unsaved files will get there by themselves the same seven hundred
+ * milliseconds later.
  */
 function flushToDisk(sessionId: string): void {
   try {
     projectBooks(sessionId)
     flushSessionFiles(sessionId)
   } catch (err) {
-    console.error(`[kernel] не удалось дописать файлы ${sessionId}:`, errText(err))
+    console.error(`[kernel] could not flush files for ${sessionId}:`, errText(err))
   }
 }
 
-/** Ядро вернулось само, а ячейка — нет: процесс, в котором она шла, убили. */
+/** The kernel came back on its own, the cell did not: its process was killed. */
 function killedMessage(): string {
   const known = churnReason()
   return known
@@ -4029,38 +4176,40 @@ function killedMessage(): string {
 export async function formatSession(
   sessionId: string,
   book?: string,
-  /** Тетрадь, чьё ядро считает чёрноту; без него — тетрадь комнаты. */
+  /** The notebook whose kernel runs black; without it, the room's notebook. */
   root: string = CELLS_KEY,
 ): Promise<FormatOutcome> {
   const runtime = getRuntime(sessionId, root)
   /*
-   * Мимо очереди — но не в занятое ядро.
+   * Bypassing the queue, but not into a busy kernel.
    *
-   * Запрос форматирования идёт в ядро напрямую, минуя нашу очередь, а Jupyter
-   * исполняет строго по порядку: пока считается ячейка, `execute` черноты
-   * просто стоит за ней. Обычно это секунды и никого не касается. Но ячейка,
-   * остановившаяся в `input()`, не кончится, пока кто-нибудь не ответит, — и
-   * кнопка Format висит без единого слова до конца пары, а `stop_on_error`
-   * соседней ячейки может ещё и оборвать запрос словами «The kernel could not
-   * run the formatter», из которых не следует ничего.
+   * The formatting request goes straight to the kernel, bypassing our queue,
+   * and Jupyter executes strictly in order: while a cell is computing, black's
+   * `execute` simply waits behind it. Usually that is seconds and concerns
+   * nobody. But a cell stopped in `input()` will not end until somebody
+   * answers, and the Format button hangs without a word until the end of class,
+   * while a neighbouring cell's `stop_on_error` can even cut the request off
+   * with "The kernel could not run the formatter", which explains nothing.
    *
-   * Поэтому отказ словами и сразу. Ждать своей очереди тут нечего: тетрадь всё
-   * равно нельзя переписывать под ячейкой, которая её в этот момент выполняет.
+   * So the refusal comes in words and at once. There is nothing to wait in line
+   * for here: the notebook cannot be rewritten under a cell that is executing
+   * it at that moment anyway.
    */
   const busyWith = formatBlocker(runtime)
   if (busyWith) return formatRefused(sessionId, busyWith)
   try {
     await ensureKernel(sessionId, root)
   } catch (err) {
-    // Единственный отказ без своей строки в журнале: `ensureKernel` уже положил
-    // туда `errText(err)` теми же словами, и повторять их второй раз всей
-    // комнате незачем. Нажавшему они всё равно уедут ответом.
+    // The only refusal without its own kernel log line: `ensureKernel` has
+    // already put `errText(err)` there in the same words, and there is no need
+    // to repeat them to the whole room a second time. The person who pressed
+    // gets them as the answer anyway.
     return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error: errText(err) }
   }
   const kernel = runtime.kernel
   if (!kernel) return formatRefused(sessionId, tr("server.theKernelIsNotRunning.2a9152"))
-  // Ядро могло уйти в работу, пока оно поднималось: спрашиваем ещё раз, уже
-  // зная и про `input()`.
+  // The kernel may have gone to work while it was coming up: we ask again, now
+  // knowing about `input()` too.
   const nowBusy = formatBlocker(runtime)
   if (nowBusy) return formatRefused(sessionId, nowBusy)
   const outcome = await formatNotebook(sessionId, kernel, book)
@@ -4069,22 +4218,22 @@ export async function formatSession(
 }
 
 /**
- * Отказ форматирования — одной дорогой для всех причин.
+ * A formatting refusal, one road for every reason.
  *
- * Строка «Formatting failed: …» уходила в журнал ядра только из `formatNotebook`,
- * а ранние отказы (ждём `input()`, ядро занято, очередь) возвращались раньше
- * неё — то есть комната, у которой Format ничего не сделал, не видела причины
- * нигде, а комментарии рядом обещали обратное. Теперь причину пишет одно место:
- * нажавшему она едет ответом (control.ts · `t:'error'`), комнате — этой же
- * строкой в журнал. Считать тут нечего: `formatNotebook` при ошибке тоже
- * возвращает одни нули.
+ * The "Formatting failed: …" line went into the kernel log only from
+ * `formatNotebook`, while the early refusals (waiting for `input()`, the kernel
+ * is busy, the queue) returned before it, i.e. a room whose Format did nothing
+ * saw the reason nowhere, while the comments nearby promised the opposite. Now
+ * one place writes the reason: the person who pressed gets it as the answer
+ * (control.ts · `t:'error'`), the room gets this same line in the log. There is
+ * nothing to count here: on an error `formatNotebook` also returns all zeros.
  */
 function formatRefused(sessionId: string, error: string): FormatOutcome {
   kernelNote(sessionId, tr("server.formattingFailed.e1afc5", { p0: error }))
   return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error }
 }
 
-/** Почему сейчас не время форматировать — теми словами, что уедут в журнал ядра. */
+/** Why now is not the time to format, in the words that will go to the kernel log. */
 function formatBlocker(runtime: Runtime): string | null {
   if (runtime.kernel?.waitingForInput) {
     return tr("server.aCellIsWaitingForInputAnswer.370e11")
@@ -4106,12 +4255,12 @@ function formatBlocker(runtime: Runtime): string | null {
  * not always the person who knows the number.
  */
 /**
- * Ответить ячейке, остановившейся внутри `input()`.
+ * Answer a cell stopped inside `input()`.
  *
- * `cellId` — не украшение: без него ответ уходил тому, на чём ядро оказалось
- * заблокировано в этот момент, кем угодно и с любого экрана. Ячейка сменилась
- * между отрисовкой формы и нажатием Enter — и пароль, набранный для своей
- * ячейки, уходит в чужую.
+ * `cellId` is not decoration: without it the answer went to whatever the
+ * kernel happened to be blocked on at that moment, from anyone and from any
+ * screen. The cell changed between drawing the form and pressing Enter, and a
+ * password typed for one's own cell goes to someone else's.
  */
 export async function answerInput(
   sessionId: string,
@@ -4120,13 +4269,14 @@ export async function answerInput(
 ): Promise<boolean> {
   const scopes = scopesOf(sessionId)
   /*
-   * Область ищется по ячейке, а без неё — по тому, кто СПРАШИВАЕТ.
+   * The scope is found by the cell, and without one by what is ASKING.
    *
-   * Ядер теперь несколько, и стоять в `input()` может любое; «то, на чём ядро
-   * заблокировано» перестало быть одним местом. С именем ячейки ответ уходит
-   * ровно туда, откуда спросили. Без имени — вкладке, открытой до выкатки, —
-   * берём ту область, которая правда ждёт ответа: если ждёт одна, промахнуться
-   * не в кого, а если несколько, порядок тот же, в каком заводились тетради.
+   * There are several kernels now, and any of them may stand in `input()`;
+   * "what the kernel is blocked on" is no longer one place. With a cell name
+   * the answer goes exactly where the question came from. Without a name (a tab
+   * opened before the deploy) we take the scope that really waits for an
+   * answer: if only one waits, there is nobody to miss into, and if several,
+   * the order is the same one in which the notebooks were created.
    */
   const runtime = cellId
     ? scopes.find((scope) => scope.currentCell === cellId)
@@ -4134,11 +4284,12 @@ export async function answerInput(
   const kernel = runtime?.kernel
   if (!runtime || !kernel || !kernel.waitingForInput) {
     /*
-     * Ядро ввода не ждёт — значит, и форма на ячейке не должна спрашивать.
+     * The kernel is not waiting for input, so the form on the cell must not ask
+     * either.
      *
-     * Приглашение живёт в общем документе, и висело оно у ВСЕЙ комнаты: каждое
-     * следующее «Send» тихо получало `false`, и выйти из этого можно было
-     * только «остановить». Гасим здесь, а не только на удачном ответе.
+     * The prompt lives in the shared document, and it hung for the WHOLE room:
+     * every next "Send" quietly got `false`, and the only way out was "stop".
+     * We clear it here, not only on a successful answer.
      */
     const stale = cellId ?? scopes.find((scope) => scope.currentCell)?.currentCell ?? null
     if (stale && scopes.some((scope) => !scope.retired)) clearStdinOn(sessionId, stale)
@@ -4150,13 +4301,13 @@ export async function answerInput(
 }
 
 /**
- * Ядро ТЕТРАДИ — но только то, которое УЖЕ живо.
+ * The NOTEBOOK's kernel, but only one that is ALREADY alive.
  *
- * Нет ядра, оно мертво или перезапускается — здесь `null`, и спрашивать
- * нечего. ПОДНЯТЬ его отсюда нельзя: `ensureKernel` — это до полутора минут
- * ожидания, и вопрос, заданный наведённой мышью, ждать их не может. Кто
- * поднимает и по какому праву — сказано у `mayWake` ниже; сюда ядро приезжает
- * уже живым или не приезжает вовсе.
+ * No kernel, a dead one or one restarting gives `null` here, and there is
+ * nothing to ask. It cannot be BROUGHT UP from here: `ensureKernel` means up to
+ * a minute and a half of waiting, and a question asked by a hovering mouse
+ * cannot wait that long. Who brings it up and by what right is said at
+ * `mayWake` below; the kernel arrives here already alive or not at all.
  */
 function liveKernel(sessionId: string, root: string): JupyterKernel | null {
   const kernel = peekRuntime(sessionId, root)?.kernel ?? null
@@ -4167,142 +4318,149 @@ function liveKernel(sessionId: string, root: string): JupyterKernel | null {
 }
 
 /**
- * Разбудить ядро этим вопросом — и не ждать его.
+ * Wake the kernel with this question, and do not wait for it.
  *
- * До 19.09 подсказка ядро не поднимала никогда, и довод был такой: `ensureKernel`
- * — до полутора минут, а набранная точка после `df` не повод греть машину.
- * Довод остался верным наполовину. Ждать вопрос по-прежнему не может и не
- * ждёт — обещание разрешается тут же, ответом «запускается». Но ПРАВО на пуск у
- * спросившего ровно то же, что у кнопки «Запустить»: решает его control.ts
- * (`mayWake`), и тот, кто может нажать Run, может и навести мышь. Отказывать
- * ему в справке потому, что он ещё ничего не запускал, значило отказывать
- * ровно в начале занятия — когда тетрадь только открыли и справка нужнее всего.
+ * Until 19 Sep 2026 a hint never brought a kernel up, and the argument was:
+ * `ensureKernel` takes up to a minute and a half, and a dot typed after `df` is
+ * no reason to warm up the machine. The argument stayed half right. The
+ * question still cannot wait and does not: the promise resolves right away with
+ * the answer "starting". But the asker's RIGHT to start is exactly the same as
+ * the "Run" button's: control.ts decides it (`mayWake`), and whoever can press
+ * Run can also hover the mouse. Refusing them help because they have not run
+ * anything yet would mean refusing exactly at the start of class, when the
+ * notebook has just been opened and help is needed most.
  */
 function wakeKernel(sessionId: string, root: string): void {
   /*
-   * Ядро ТОЙ тетради, в которой набирают. У личной тетради оно своё, в своём
-   * контейнере, и поднять вместо него ядро комнаты значило бы показать справку
-   * про чужие переменные.
+   * The kernel of THE notebook being typed in. A personal notebook has its
+   * own, in its own container, and bringing up the room's kernel instead would
+   * show help about someone else's variables.
    *
-   * Отказ наружу не уходит: у личных ядер есть потолок на занятие
-   * (`OwnKernelUnavailable`), а у брокера — свои поводы не дать Pod. Для
-   * справки это просто «ядра нет», и следующий вопрос скажет это словами;
-   * бросить отсюда исключение значило бы уронить ответ на наведение мышью.
+   * A refusal does not go outside: personal kernels have a ceiling per class
+   * (`OwnKernelUnavailable`), and the broker has its own reasons not to give a
+   * Pod. For help this is simply "no kernel", and the next question will say so
+   * in words; throwing an exception from here would bring down the answer to a
+   * mouse hover.
    */
   void ensureKernel(sessionId, root).catch(() => {
-    /* не поднялось — следующий вопрос скажет об этом сам; жаловаться некому */
+    /* did not come up: the next question says so itself; nobody to complain to */
   })
 }
 
 /**
- * Что ядро дописало бы в этом месте кода.
+ * What the kernel would complete at this point in the code.
  *
- * `null` — «спросить было не у кого или ядро не ответило»: отдельного слова
- * для отказа нет намеренно, потому что показывать его негде. Подсказка либо
- * есть, либо её нет; тост про то, что jedi задумался, — это шум посреди
- * набора.
+ * `null` means "there was nobody to ask, or the kernel did not answer": there
+ * is deliberately no separate word for a refusal, because there is nowhere to
+ * show it. A suggestion either exists or it does not; a toast saying jedi is
+ * thinking is noise in the middle of typing.
  */
 export async function completeIn(
   sessionId: string,
   code: string,
   cursor: number,
-  /** Тетрадь, у чьего ядра спрашиваем; без неё — тетрадь комнаты. */
+  /** The notebook whose kernel is asked; without it, the room's notebook. */
   root: string = CELLS_KEY,
   opts: { mayWake?: boolean } = {},
 ): Promise<CompleteResult | null> {
   /*
-   * У тестового бэкенда ядра нет вовсе (KERNEL_BACKEND=test, JUPYTER_URL
-   * смотрит в мёртвый порт), а проверять надо путь целиком — от кадра пульта
-   * до кадра обратно. Заготовленный ответ здесь и есть «ядро» этого бэкенда:
-   * тот же набор, что даёт pandas на `df.`, чтобы тест говорил про настоящий
-   * случай, а не про пустой список.
+   * The test backend has no kernel at all (KERNEL_BACKEND=test, JUPYTER_URL
+   * points at a dead port), yet the whole path has to be checked, from the
+   * console frame to the frame back. The prepared answer is this backend's
+   * "kernel": the same set pandas gives on `df.`, so that the test speaks about
+   * the real case rather than an empty list.
    */
   if (kernelBackend() === 'test') return cannedComplete(code, cursor)
   const kernel = liveKernel(sessionId, root)
   if (!kernel) {
-    // Первая же набранная точка поднимает этой тетради Python — см.
-    // `wakeKernel`. Этому вопросу ответить уже нечем, а следующему будет чем.
+    // The very first dot typed brings up a Python for this notebook; see
+    // `wakeKernel`. This question has nothing to answer with, but the next one
+    // will.
     if (opts.mayWake === true) wakeKernel(sessionId, root)
     return null
   }
   try {
     return await kernel.complete(code, cursor)
   } catch {
-    // Занятое ядро не отвечает на shell вовсе — см. SHELL_REQUEST_MS. Это
-    // обычный исход посреди прогона, и жаловаться на него некуда.
+    // A busy kernel does not answer shell at all; see SHELL_REQUEST_MS. That is
+    // an ordinary outcome in the middle of a run, with nowhere to complain.
     return null
   }
 }
 
-/** Справка о том, что стоит под кареткой, — и причина, если её нет. */
+/** Help for what is under the caret, and the reason if there is none. */
 export interface InspectAnswer {
   found: boolean
   text: string | null
-  /** Почему не нашлось; `null` — нашлось. См. protocol.ts · `InspectMiss`. */
+  /** Why nothing was found; `null` means found. See protocol.ts · `InspectMiss`. */
   reason: InspectMiss | null
 }
 
 export interface InspectHelpOptions {
   /**
-   * Шапка импортов тетради — для статического разбора.
+   * The notebook's import header, for the static analysis.
    *
-   * Собирает её тот, у кого есть документ (control.ts), а не эта функция: у
-   * слоя ядер тетрадей нет вовсе, и лезть за ними в CRDT отсюда значило бы
-   * завести вторую дорогу к документу ради одной строки.
+   * It is assembled by whoever has the document (control.ts), not by this
+   * function: the kernel layer has no notebooks at all, and reaching into the
+   * CRDT for them from here would mean creating a second road to the document
+   * for the sake of one line.
    */
   header?: string
-  /** Можно ли поднять ядро этим вопросом: право решает control.ts. */
+  /** Whether this question may bring the kernel up: control.ts decides the right. */
   mayWake?: boolean
 }
 
 const miss = (reason: InspectMiss): InspectAnswer => ({ found: false, text: null, reason })
 
 /**
- * Справка о том, что стоит под кареткой, — двумя дорогами и с причиной отказа.
+ * Help for what is under the caret, by two roads and with the reason for a
+ * refusal.
  *
- * Спрашивается ядро ТОЙ тетради, в которой набирают: ядер теперь столько,
- * сколько тетрадей, и `df` семинара — это не тот `df`, что преподаватель
- * загрузил на лекции.
+ * The kernel of THE notebook being typed in is asked: there are now as many
+ * kernels as notebooks, and the seminar's `df` is not the `df` the teacher
+ * loaded in the lecture.
  *
- * Сначала спрашивается ЖИВОЕ ядро (`inspect_request`): оно смотрит на
- * настоящий объект и знает про него всё, включая то, что человек досчитал в
- * этой тетради минуту назад. Если ядро отвечает «не нашлось» — а так оно
- * отвечает всякий раз, когда ячейку с импортом ещё не запускали, — спрашивается
- * jedi по ИСХОДНИКАМ (inspect-static.ts). Порядок именно такой и обратным быть
- * не может: статический разбор знает библиотеку, но не знает комнаты.
+ * The LIVE kernel is asked first (`inspect_request`): it looks at the real
+ * object and knows everything about it, including what the person computed in
+ * this notebook a minute ago. If the kernel answers "not found" (and it does
+ * every time the cell with the import has not been run yet), jedi is asked
+ * from the SOURCES (inspect-static.ts). The order is exactly this and cannot be
+ * reversed: the static analysis knows the library but not the room.
  *
- * Молчания больше нет ни в одной ветке. Раньше здесь на каждую беду
- * возвращался `null`, и человек не мог отличить «имени нет в ядре» от «ядро
- * ещё поднимается»: на занятии это читалось как «справка работает через раз».
+ * There is no more silence in any branch. Previously `null` came back here for
+ * every trouble, and a person could not tell "the name is not in the kernel"
+ * from "the kernel is still coming up": in class this read as "help works every
+ * other time".
  */
 export async function inspectIn(
   sessionId: string,
   code: string,
   cursor: number,
-  /** Тетрадь, у чьего ядра спрашиваем; без неё — тетрадь комнаты. */
+  /** The notebook whose kernel is asked; without it, the room's notebook. */
   root: string = CELLS_KEY,
   help: InspectHelpOptions = {},
 ): Promise<InspectAnswer> {
   const runtime = peekRuntime(sessionId, root) ?? null
   const kernel = liveKernel(sessionId, root)
   /*
-   * Заготовленный ответ тестового бэкенда — вместо ядра, которого там нет.
+   * The test backend's prepared answer, in place of the kernel it lacks.
    *
-   * И только вместо него. Живое ядро есть (подделка Jupyter в
-   * tests/kernel.test.mts) — работает настоящая дорога, с причинами отказа и
-   * со статическим разбором. Ядра нет, но спросивший МОЖЕТ его поднять —
-   * тоже настоящая: он получит «запускается», ядро поднимется, и следующий
-   * вопрос ответит по-честному. Заготовка остаётся тем, чем была, — ответом
-   * там, где ядру взяться неоткуда: чужой лист консилиума, читатель,
-   * закончившееся занятие.
+   * And only in place of it. If there is a live kernel (the Jupyter fake in
+   * tests/kernel.test.mts), the real road works, with refusal reasons and the
+   * static analysis. If there is no kernel but the asker MAY bring it up, it is
+   * the real road too: they get "starting", the kernel comes up, and the next
+   * question answers honestly. The prepared answer stays what it was: an answer
+   * where a kernel has nowhere to come from: someone else's council sheet, a
+   * reader, a class that has ended.
    */
   if (kernelBackend() === 'test' && !kernel && help.mayWake !== true) {
     return cannedInspect(code, cursor)
   }
   if (!kernel) {
     const phase = runtime?.kernel?.phase ?? null
-    // Уже поднимается — своим ли вопросом, чужим ли Run: ответ будет, но не
-    // этот. Говорим «через несколько секунд», а не «ядра нет».
+    // Already coming up, by its own question or by someone else's Run: there
+    // will be an answer, but not this one. We say "in a few seconds", not "no
+    // kernel".
     if (runtime?.starting || phase === 'starting' || phase === 'restarting') return miss('starting')
     if (help.mayWake === true) {
       wakeKernel(sessionId, root)
@@ -4311,17 +4469,18 @@ export async function inspectIn(
     return miss('no-kernel')
   }
   /*
-   * Занято — говорим сразу, не выжидая своих двух с половиной секунд.
+   * Busy: we say so at once, without waiting out our two and a half seconds.
    *
-   * Про занятость сервер знает и без ядра: у области этой тетради своя очередь
-   * и своя работающая ячейка. Ждать в этом случае нечего — shell у ipykernel
-   * один и последовательный, — а две с половиной секунды тишины на наведение
-   * мышью читаются как «подсказка сломалась».
+   * The server knows about being busy even without the kernel: this notebook's
+   * scope has its own queue and its own running cell. There is nothing to wait
+   * for in this case (ipykernel's shell is single and sequential), and two and a
+   * half seconds of silence on a mouse hover read as "the hint is broken".
    *
-   * Занятость СОСЕДНЕЙ тетради справке не мешает, и это следствие того, что
-   * ядер теперь столько, сколько тетрадей: очередь и ячейка спрашиваются у
-   * области (`peekRuntime(sessionId, root)`), а не у занятия. Пока лекция
-   * считает, справка в личной тетради студента отвечает как ни в чём не бывало.
+   * A NEIGHBOURING notebook being busy does not get in the way of help, and that
+   * follows from there now being as many kernels as notebooks: the queue and
+   * the cell are asked of the scope (`peekRuntime(sessionId, root)`), not of the
+   * class. While the lecture computes, help in a student's personal notebook
+   * answers as if nothing were happening.
    */
   if (kernel.phase === 'busy' || runtime?.currentCell || (runtime?.queue.length ?? 0) > 0) {
     return miss('busy')
@@ -4330,14 +4489,15 @@ export async function inspectIn(
     const live = await kernel.inspect(code, cursor)
     if (live.found && live.text !== null && live.text !== '') {
       /*
-       * Про модуль живое ядро говорит ничего.
+       * About a module the live kernel says nothing.
        *
-       * `Type: module`, адрес объекта в памяти и `<no docstring>` — ровно то,
-       * что увидел преподаватель 21.09 у pandas и seaborn (у первого строка
-       * документации собирается в рантайме, у второго её нет вовсе). Всё
-       * содержательное про пакет лежит рядом с ним на диске, и достаётся оно
-       * вторым коротким вопросом к тому же помощнику. Не вышло — отдаём как
-       * есть: приписка необязательна, ответ без неё хуже, но не сломан.
+       * `Type: module`, the object's address in memory and `<no docstring>`:
+       * exactly what the teacher saw on 21 Sep 2026 for pandas and seaborn (the
+       * first assembles its docstring at runtime, the second has none at all).
+       * Everything substantial about the package lies next to it on disk, and
+       * it is fetched by a second short question to the same helper. If that
+       * fails, we return it as is: the addition is optional, and the answer
+       * without it is worse but not broken.
        */
       if (looksLikeModule(live.text) && runtime) {
         const extra = await moduleFacts(runtime, nameChainAt(code, cursor))
@@ -4346,34 +4506,36 @@ export async function inspectIn(
       return { found: true, text: live.text, reason: null }
     }
   } catch {
-    // Ядро занялось между проверкой выше и вопросом: обычная гонка семинара.
+    // The kernel got busy between the check and the question: a usual seminar race.
     return miss('busy')
   }
   return runtime ? await inspectStatically(runtime, code, cursor, help.header ?? '') : miss('unknown')
 }
 
 /**
- * Сколько ждём строку про значение: четыреста миллисекунд.
+ * How long we wait for the line about a value: four hundred milliseconds.
  *
- * Это самый дешёвый вопрос из всех — объект уже в памяти ядра, у него
- * спрашивают тип и размер (замер на живом ядре: 0,01–0,05 мс на ответ). Всё,
- * что не уложилось в этот срок, означает занятое ядро, а не долгий ответ, — и
- * тогда строки просто не будет: про переменную либо есть мгновенный ответ,
- * либо тишина.
+ * This is the cheapest question of all: the object is already in the kernel's
+ * memory, it is asked for its type and size (measured on a live kernel:
+ * 0.01–0.05 ms per answer). Anything that does not fit in this time means a
+ * busy kernel, not a long answer, and then there simply will be no line: about
+ * a variable there is either an instant answer or silence.
  */
 const BRIEF_WAIT_MS = 400
 
 /**
- * Что это за значение — одной строкой, без справки и без подъёма ядра.
+ * What this value is, in one line, without help and without bringing the
+ * kernel up.
  *
- * «Мелкие всплывающие подсказки было бы интересно увидеть: хотя бы тип данных
- * у переменной, быстрый тип и размерность» — просьба владельца 21.09, и вторая
- * её половина не менее важна первой: «он там ещё добавлял детальнее вагон
- * текста, это не очень прикольно». Поэтому здесь нет ни `inspect_request`, ни
- * jedi, ни второго пути: `null` — и клиент молчит.
+ * "Small pop-up hints would be interesting to see: at least the data type of a
+ * variable, a quick type and the dimensions" was the owner's request of
+ * 21 Sep 2026, and its second half matters no less than the first: "it also
+ * added a whole wagon of more detailed text there, that is not much fun". So
+ * there is no `inspect_request` here, no jedi and no second path: `null`, and
+ * the client stays silent.
  *
- * Ядро не поднимается НИКОГДА: пока его нет, про переменную и сказать нечего —
- * она появится только после запуска ячейки.
+ * The kernel is NEVER brought up: until it exists there is nothing to say about
+ * a variable; it appears only after a cell is run.
  */
 export async function briefIn(
   sessionId: string,
@@ -4384,7 +4546,7 @@ export async function briefIn(
   const runtime = peekRuntime(sessionId, root) ?? null
   const kernel = liveKernel(sessionId, root)
   if (!runtime || !kernel || kernel.phase !== 'idle') return null
-  // Занятое ядро отвечать не будет, а ждать его ради строки незачем.
+  // A busy kernel will not answer, and a line is not worth waiting for it.
   if (runtime.currentCell || runtime.queue.length > 0) return null
   let raw: unknown = null
   try {
@@ -4400,7 +4562,7 @@ export async function briefIn(
         {
           silent: true,
           storeHistory: false,
-          // Наведение мышью не событие комнаты: индикатор ядра не моргает.
+          // A mouse hover is not a room event: the kernel indicator does not blink.
           quiet: true,
           userExpressions: { [INSPECT_REPORT_KEY]: INSPECT_REPORT_EXPR },
         },
@@ -4418,22 +4580,24 @@ export async function briefIn(
 }
 
 /**
- * Сколько ждём приписку про пакет: полсекунды и ни мигом больше.
+ * How long we wait for the package addition: half a second and not a moment
+ * more.
  *
- * Это чтение файлов рядом с пакетом (dist-info), а не разбор исходников: карта
- * «модуль → дистрибутив» строится один раз на ядро (84 мс на образе
- * colloq-kernel:base), дальше вопрос стоит единицы миллисекунд. Приписка
- * необязательна, а shell ядра общий — ждать её дольше значило бы задерживать
- * чужой Run ради строки «Документация: …».
+ * This is reading files next to the package (dist-info), not parsing sources:
+ * the "module → distribution" map is built once per kernel (84 ms on the
+ * colloq-kernel:base image), and after that a question costs a few
+ * milliseconds. The addition is optional, and the kernel's shell is shared:
+ * waiting longer for it would delay someone else's Run for the sake of a
+ * "Docs: …" line.
  */
 const MODULE_FACTS_WAIT_MS = 500
 
 /**
- * Имя пакета, его версия и ссылка на документацию — для ЖИВОГО модуля.
+ * The package name, its version and documentation link, for a LIVE module.
  *
- * Пустая строка — не беда: ответ ядра уедет как есть. Тем же тихим запуском,
- * что и статический разбор (`quiet: true`), то есть индикатор ядра у комнаты
- * не моргает.
+ * An empty string is no trouble: the kernel's answer goes as is. By the same
+ * quiet run as the static analysis (`quiet: true`), i.e. the room's kernel
+ * indicator does not blink.
  */
 async function moduleFacts(runtime: Runtime, expr: string): Promise<string> {
   const kernel = runtime.kernel
@@ -4471,22 +4635,26 @@ async function moduleFacts(runtime: Runtime, expr: string): Promise<string> {
 }
 
 /**
- * Сколько ждём ответа СЛУЖЕБНОГО запуска, прежде чем считать, что его не будет.
+ * How long we wait for a SERVICE run's answer before deciding there will be
+ * none.
  *
- * Бюджет jedi плюс секунда на дорогу. Будильник стоит внутри Python
- * (inspect-static.ts · `_arm`), и в обычной жизни он срабатывает первым; этот
- * потолок — про случай, когда сигнал не дошёл вовсе (ядро считает в чужом
- * потоке, ядро не ipykernel). Обещание обязано разрешиться в любом из них.
+ * The jedi budget plus a second for the road. The alarm sits inside Python
+ * (inspect-static.ts · `_arm`), and in ordinary life it fires first; this
+ * ceiling is for the case when the signal did not arrive at all (the kernel
+ * computes in another thread, the kernel is not ipykernel). The promise has to
+ * resolve in any of them.
  */
 const STATIC_INSPECT_WAIT_MS = Math.round(INSPECT_BUDGET_SEC * 1000) + 1000
 
 /**
- * Второй путь: то же имя, прочитанное jedi из исходников, без единого запуска.
+ * The second path: the same name, read by jedi from the sources, without a
+ * single run.
  *
- * Только на СВОБОДНОМ ядре этой тетради. Это настоящий `execute_request`, и
- * встань он в очередь за чужой ячейкой — подсказка приехала бы через минуту, а
- * ядро в это время принадлежало бы наведённой мыши, а не занятию. Область
- * приезжает сюда целиком, поэтому и очередь спрашивается её собственная.
+ * Only on this notebook's FREE kernel. This is a real `execute_request`, and
+ * were it to queue behind someone else's cell, the suggestion would arrive a
+ * minute later, and in that time the kernel would belong to a hovering mouse,
+ * not to the class. The scope arrives here whole, so its own queue is what is
+ * asked.
  */
 async function inspectStatically(
   runtime: Runtime,
@@ -4511,8 +4679,8 @@ async function inspectStatically(
         {
           silent: true,
           storeHistory: false,
-          // Комнате об этом знать незачем: индикатор ядра не моргает — см.
-          // jupyter.ts · `Pending.quiet`.
+          // The room has no need to know about this: the kernel indicator does
+          // not blink; see jupyter.ts · `Pending.quiet`.
           quiet: true,
           userExpressions: { [INSPECT_REPORT_KEY]: INSPECT_REPORT_EXPR },
         },
@@ -4522,7 +4690,7 @@ async function inspectStatically(
         timer.unref?.()
       }),
     ])
-    // Ядро не ответило в отведённое время — ждать его дальше клиенту, а не нам.
+    // No answer in the allotted time: further waiting is the client's job, not ours.
     if (status !== 'ok') return miss('thinking')
   } catch {
     return miss('unknown')
@@ -4530,22 +4698,23 @@ async function inspectStatically(
   const answer = parseStaticInspect(raw)
   if (answer?.found && answer.text !== null) return { found: true, text: answer.text, reason: null }
   /*
-   * Не успел — это не «не знаю».
+   * Not making it is not "I do not know".
    *
-   * Первый разбор тяжёлой библиотеки на холодном контейнере стоит секунды
-   * (pandas ~1,5 с), а второй — миллисекунды: jedi кладёт разбор в свой кеш.
-   * Отвечать на это «сказать нечего» значило врать ровно там, где ответ был в
-   * полушаге, — с этим и пришли 20.09. Говорим «ещё думаю», клиент
-   * переспрашивает сам (protocol.ts · InspectMiss.thinking).
+   * The first analysis of a heavy library on a cold container costs seconds
+   * (pandas ~1.5 s), and the second milliseconds: jedi puts the analysis into
+   * its cache. Answering "nothing to say" to that would mean lying exactly where
+   * the answer was half a step away, which is what people came with on
+   * 20 Sep 2026. We say "still thinking", and the client asks again by itself
+   * (protocol.ts · InspectMiss.thinking).
    */
   return miss(answer?.why === 'timeout' ? 'thinking' : 'unknown')
 }
 
-/** Дополнение тестового бэкенда: несколько имён pandas и ничего больше. */
+/** The test backend's completion: a few pandas names and nothing more. */
 function cannedComplete(code: string, cursor: number): CompleteResult {
   const before = code.slice(0, cursor)
-  // Слово, которое человек уже начал, и точка перед ним — ровно то, по чему
-  // настоящий ядерный ответ решает, откуда начинается заменяемый кусок.
+  // The word the person has already started, and the dot before it: exactly
+  // what the real kernel answer uses to decide where the replaced piece starts.
   const word = /[A-Za-z_][A-Za-z0-9_]*$/.exec(before)?.[0] ?? ''
   const start = cursor - word.length
   const attribute = before[start - 1] === '.'
@@ -4565,16 +4734,17 @@ function cannedComplete(code: string, cursor: number): CompleteResult {
 }
 
 /**
- * Длинная справка тестового бэкенда — настоящий ответ seaborn, как есть.
+ * The test backend's long help: a real seaborn answer, as is.
  *
- * Стоит здесь ради двух вещей, которые на коротком ответе не проверяются
- * вовсе: прокрутки внутри окна и того, что длинная сигнатура не прячет собой
- * документацию. У `sns.lmplot` сорок с лишним параметров — то есть сигнатура
- * длиннее, чем всё окно, — и ровно на ней подсказка и сломалась на занятии
- * 19.09, когда показывала первые шесть строк.
+ * It is here for two things that are not checked by a short answer at all:
+ * scrolling inside the window, and a long signature not hiding the
+ * documentation. `sns.lmplot` has forty-odd parameters, i.e. a signature
+ * longer than the whole window, and that is exactly where the hint broke in the
+ * class of 19 Sep 2026, when it showed the first six lines.
  *
- * Текст снят с живого ядра (`colloq-kernel:base`, seaborn 0.13.2) и обрезан по
- * границе раздела; `File:` и `Type:` дописаны, чтобы разбор видел и их.
+ * The text was taken from a live kernel (`colloq-kernel:base`, seaborn 0.13.2)
+ * and cut at a section boundary; `File:` and `Type:` were added so that the
+ * parser sees them too.
  */
 const CANNED_LONG = `Signature:
 sns.lmplot(
@@ -4706,25 +4876,27 @@ File:      /usr/local/lib/python3.11/site-packages/seaborn/regression.py
 Type:      function`
 
 /**
- * Справка тестового бэкенда: сигнатура, узнаваемая на глаз и в утверждении.
+ * The test backend's help: a signature recognisable by eye and in an
+ * assertion.
  *
- * Имя решает, какой ответ придёт, и это не прихоть: у тестового бэкенда ядра
- * нет вовсе, а проверять надо оба случая — короткий ответ, который помещается
- * в окно целиком, и длинный, ради которого окно вообще прокручивается. Всё,
- * что кончается на `lmplot`, отвечает длинным.
+ * The name decides which answer comes, and that is not a whim: the test backend
+ * has no kernel at all, yet both cases have to be checked: a short answer that
+ * fits into the window whole, and a long one, which is what the window scrolls
+ * for at all. Everything ending in `lmplot` answers with the long one.
  *
- * Пустое имя — `unknown`, а не молчание: под указателем пробел или скобка, и
- * сказать об этом надо тем же словом, каким это сказало бы живое ядро.
+ * An empty name gives `unknown`, not silence: under the pointer there is a
+ * space or a bracket, and that has to be said with the same word a live kernel
+ * would use.
  */
 function cannedInspect(code: string, cursor: number): InspectAnswer {
   const name = /[A-Za-z_][A-Za-z0-9_.]*$/.exec(code.slice(0, cursor))?.[0] ?? ''
   if (!name) return miss('unknown')
   /*
-   * Имена-ключи для причин отказа. Настоящих поводов у тестового бэкенда нет
-   * вовсе — ядра в нём нет, — а проверить надо ЧЕТЫРЕ строки, которые человек
-   * видит вместо справки: «ядро запускается», «ядро занято» и остальные. Без
-   * этой ветки увидеть их на стенде было бы нечем, и проверялись бы они только
-   * чтением локалей.
+   * Key names for refusal reasons. The test backend has no real reasons at all
+   * (it has no kernel), yet FOUR lines have to be checked that a person sees
+   * instead of help: "the kernel is starting", "the kernel is busy" and the
+   * rest. Without this branch there would be no way to see them on a test
+   * stand, and they would be checked only by reading the locales.
    */
   const staged = /(?:^|\.)zz_(starting|busy|nokernel|unknown)$/.exec(name)?.[1]
   if (staged) return miss(staged === 'nokernel' ? 'no-kernel' : (staged as InspectMiss))
@@ -4736,7 +4908,7 @@ function cannedInspect(code: string, cursor: number): InspectAnswer {
   }
 }
 
-/** Погасить приглашение ко вводу на ячейке — там, где спрашивать уже нечему. */
+/** Clear the input prompt on a cell, where there is nothing left to ask. */
 function clearStdinOn(sessionId: string, cellId: string | null): void {
   if (!cellId) return
   const { doc } = getSessionDoc(sessionId)
@@ -4745,28 +4917,29 @@ function clearStdinOn(sessionId: string, cellId: string | null): void {
 }
 
 /**
- * Стереть выводы.
+ * Erase outputs.
  *
- * С именем ячейки — у одной, в какой бы тетради она ни лежала. Без имени — у
- * ВСЕЙ комнаты, а не у одной тетради: кнопка так и называется, и стирать
- * половину было бы обещанием, которого она не давала.
+ * With a cell name, one cell's, whichever notebook it lies in. Without a name,
+ * the WHOLE room's, not one notebook's: that is what the button is called, and
+ * erasing half would be a promise it never made.
  */
 export function clearOutputs(sessionId: string, cellId?: string, book?: string): void {
   const { doc } = getSessionDoc(sessionId)
   /*
-   * Тетрадь названа — стираем в ней; не названа — во всей комнате.
+   * A notebook is named: erase in it; not named: in the whole room.
    *
-   * Кнопка «Clear» стоит в тулбаре ОДНОЙ тетради и называет её; перезапуск ядра
-   * не называет никого, потому что уносит переменные всей комнаты сразу.
+   * The "Clear" button stands in ONE notebook's toolbar and names it; a kernel
+   * restart names nobody, because it takes away the variables of the whole room
+   * at once.
    */
   const named = book ? cellsAt(doc, book) : null
   /*
-   * Названная, но не найденная тетрадь — это не «тетрадь не названа».
+   * A notebook named but not found is not "no notebook named".
    *
-   * `null` здесь читался как «во всей комнате», и промах именем — кадр от
-   * вкладки, чью тетрадь только что закрыли или переименовали, — стирал выводы
-   * ВСЕХ тетрадей сразу. Кадры с неизвестным именем control.ts теперь отвергает
-   * раньше; это вторая линия.
+   * `null` here read as "in the whole room", and a miss by name (a frame from a
+   * tab whose notebook had just been closed or renamed) erased the outputs of
+   * ALL notebooks at once. control.ts now rejects frames with an unknown name
+   * earlier; this is the second line of defence.
    */
   if (book && !named) return
   const cells = named
@@ -4785,47 +4958,49 @@ export function clearOutputs(sessionId: string, cellId?: string, book?: string):
 }
 
 /**
- * Всё обратно в покой — кроме той ячейки, которую в этот момент разбирает насос.
+ * Everything back to rest, except the cell the pump is handling at the moment.
  *
- * Перезапуск обрывает исполнение, но насос узнаёт об этом на своём await и
- * доводит ячейку до конца сам: пишет в неё KernelDied и ставит состояние. Если
- * пройтись по ней здесь, состояние ляжет раньше — и насос допишет своё поверх,
- * оставив ячейку «running» в комнате, где ничего не выполняется.
+ * A restart cuts off execution, but the pump learns about it at its await and
+ * finishes the cell itself: it writes KernelDied into it and sets the state. If
+ * we went over it here, the state would land earlier, and the pump would write
+ * its own on top, leaving the cell "running" in a room where nothing is
+ * running.
  */
 function resetAllCells(runtime: Runtime, except: string | null = null): void {
   const { doc } = getSessionDoc(runtime.sessionId)
   /*
-   * Ячейки ОДНОЙ тетради — той, чьё ядро перезапустили.
+   * The cells of ONE notebook, the one whose kernel was restarted.
    *
-   * Раньше здесь был обход всех тетрадей комнаты, и это было правдой: ядро
-   * было одно, и его перезапуск уносил переменные всех сразу. Теперь у каждой
-   * тетради свой процесс, и стирать номера выполнений в соседней значит
-   * объявлять её результаты недействительными — ровно в тот момент, когда они
-   * совершенно действительны, потому что её ядро никто не трогал.
+   * This used to walk all of the room's notebooks, and that was true: there was
+   * one kernel, and its restart took everyone's variables at once. Now each
+   * notebook has its own process, and erasing execution numbers in a
+   * neighbouring one would declare its results invalid exactly when they are
+   * perfectly valid, because nobody touched its kernel.
    */
   const cells = bookCells(doc, runtime.root).toArray()
   doc.transact(() => {
     cells.forEach((cell: YCell) => {
       /*
-       * Номер снимается со всех, состояние — не со всех.
+       * The number is removed from all, the state not from all.
        *
-       * Исключение существует ради гонки: ячейку, которую сейчас разбирает
-       * насос, он допишет сам, и трогать её состояние отсюда значит получить
-       * «running» в комнате, где ничего не выполняется. К номеру это не
-       * относится: за это выполнение его больше никто не запишет — execute_input
-       * уже был, а setCellState номера не касается, — и счётчик, который его
-       * выдал, принадлежит ядру, которого больше нет.
+       * The exception exists for the race: the cell the pump is handling now,
+       * it will finish by itself, and touching its state from here means
+       * getting "running" in a room where nothing is running. That does not
+       * apply to the number: nobody will write it for this execution any more
+       * (execute_input has already happened, and setCellState does not touch
+       * the number), and the counter that issued it belongs to a kernel that no
+       * longer exists.
        *
-       * Раньше исключение накрывало и номер, и получалось хуже всего: после
-       * перезапуска сорок результатов оставались на экране, а единственный
-       * проверяемый факт о них — номер выполнения — исчезал молча. Теперь
-       * номера нет у всех, и клиент говорит об этом словами.
+       * The exception used to cover the number too, and it came out worst of
+       * all: after a restart forty results stayed on screen, while the only
+       * verifiable fact about them, the execution number, disappeared silently.
+       * Now nobody has a number, and the client says so in words.
        */
       cell.set('execCount', null)
       if (except && idOf(cell) === except) return
       cell.set('state', 'idle' as CellState)
-      // И секундомер вместе с ним: ядро, которое считало, перезапущено, а
-      // время прошлого выполнения относилось к нему.
+      // And the stopwatch with it: the kernel that computed was restarted, and
+      // the time of the previous execution belonged to it.
       cell.set('startedAt', null)
       cell.set('ranMs', null)
     })
@@ -4854,9 +5029,9 @@ function notifyWorkspaceChanged(sessionId: string): void {
  * still on the old image, and a column that showed the configured value would
  * be quietly wrong about exactly the case worth knowing.
  *
- * Окружение у занятия одно на все его тетради — образ выбирается для
- * контейнера, а не для ядра. Спрашивается сначала тетрадь комнаты: она
- * поднимается первой и живёт дольше всех, а панель говорит про занятие.
+ * A class has one environment for all its notebooks: the image is chosen for a
+ * container, not for a kernel. The room's notebook is asked first: it comes up
+ * first and lives the longest, and the panel speaks about the class.
  */
 export function environmentOf(sessionId: string): string | null {
   const scopes = scopesOf(sessionId)

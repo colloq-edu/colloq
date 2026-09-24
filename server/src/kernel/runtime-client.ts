@@ -14,19 +14,20 @@ import {
 
 export type KernelBackend = 'broker' | 'docker' | 'test'
 /**
- * Чем поднимать ядра. Умолчание для `NODE_ENV=test` — подставные ядра.
+ * What starts the kernels. The default under `NODE_ENV=test` is fake kernels.
  *
- * Прежде тестовый сервер без явного `KERNEL_BACKEND` брал docker — и начинал
- * распоряжаться НАСТОЯЩИМИ контейнерами: уборщик простоя ходит по меткам
- * `colloq.kind=room-kernel` через `docker ps -a`, то есть видит и комнаты
- * чужого, живого сервера на той же машине. 20.09.2026 так поднятый стенд
- * оказался рядом с идущим занятием и мог погасить его комнату; цена ошибки —
- * сброшенные переменные у всего класса посреди пары.
+ * Previously a test server without an explicit `KERNEL_BACKEND` took docker
+ * and began managing REAL containers: the idle sweeper walks the
+ * `colloq.kind=room-kernel` labels via `docker ps -a`, so it also sees the
+ * rooms of another, live server on the same machine. On 20 Sep 2026 a test
+ * instance started this way ended up next to a class in progress and could
+ * have shut down its room; the cost of the mistake is wiped variables for the
+ * whole class in the middle of the lesson.
  *
- * Тестовому серверу настоящие контейнеры не нужны ни для чего, поэтому
- * умолчание здесь безопасное, а не «как у разработки». Кому нужен docker под
- * `NODE_ENV=test`, тот пишет `KERNEL_BACKEND=docker` руками — и делает это
- * осознанно.
+ * A test server has no use for real containers at all, so the default here is
+ * the safe one, not "the same as development". Whoever needs docker under
+ * `NODE_ENV=test` writes `KERNEL_BACKEND=docker` by hand, and does it
+ * deliberately.
  */
 export function selectKernelBackend(env: NodeJS.ProcessEnv): KernelBackend {
   const chosen = env.KERNEL_BACKEND?.trim() ||
@@ -56,18 +57,18 @@ export class RuntimeRequestError extends Error {
   constructor(
     message: string,
     readonly status = 0,
-    /** Почему комната не поднялась — словом брокера; преподавателю из него пишут совет (shared/kernel-problem.ts). */
+    /** Why the room did not start, in the broker's words; the teacher's advice is written from it (shared/kernel-problem.ts). */
     readonly failure?: RuntimeStartFailure,
   ) { super(message); this.name = 'RuntimeRequestError' }
 }
 interface ClientOptions { url: string; tokenFile?: string; token?: string; timeoutMs?: number }
 const TOKEN = /^[A-Za-z0-9_-]{32,256}$/
 const MAX_RESPONSE = 1024 * 1024
-/** Мебибайты от брокера — целые и в границах протокола; иначе ответ не его. */
+/** Mebibytes from the broker are integers within the protocol bounds; otherwise the answer is not its own. */
 const memoryField = (value: unknown): boolean =>
   value === undefined ||
   (typeof value === 'number' && Number.isInteger(value) && value >= RUNTIME_MEMORY_MIN_MB && value <= RUNTIME_MEMORY_MAX_MB)
-/** Ядра от брокера — как в переписи комнат: дробные можно (1500m у оператора), мусор нельзя. */
+/** CPUs from the broker, as in the room census: fractions are fine (1500m at the operator), garbage is not. */
 const cpusField = (value: unknown): boolean =>
   value === undefined || (typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 64)
 function object(value: unknown): Record<string, unknown> {
@@ -142,12 +143,13 @@ export class RuntimeClient {
     const value = await boundedJson(response)
     if (!response.ok) {
       /*
-       * Pod комнаты не встал на узел — и это видит вся комната.
+       * The room's Pod did not get onto a node, and the whole room sees it.
        *
-       * Текст брокера («node lacks allocatable memory») здесь не годится: он
-       * уходит в ячейку и журнал ядра общего документа, то есть студентам. Им —
-       * короткое и без устройства сервера; преподавателю совет с числами
-       * рисует комната сама по `failure` (см. kernel/index.ts · kernelProblem).
+       * The broker's text ("node lacks allocatable memory") is no good here: it
+       * goes into the cell and the kernel log of the shared document, that is,
+       * to students. They get something short, without the server's internals;
+       * the room itself draws the teacher's advice with numbers from `failure`
+       * (see kernel/index.ts · kernelProblem).
        */
       const failure = parseRuntimeStartFailure(value)
       if (failure) throw new RuntimeRequestError(tr('server.kernel.unschedulable'), response.status, failure)
@@ -164,8 +166,9 @@ export class RuntimeClient {
     if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
     const body = parseRuntimeEnsureRequest({
       environment, ...(revision ? {revision} : {}), ...(cpus != null ? {cpus} : {}),
-      // Своё число комнаты — или ничего, и тогда умолчание брокера. До 18.09
-      // этого поля не было, и Pod на k3s получал 2Gi при любом числе в форме.
+      // The room's own number, or nothing, and then the broker's default. Before
+      // 18 Sep 2026 this field did not exist, and the Pod on k3s got 2Gi whatever
+      // the number in the form.
       ...(memoryMb != null ? {memoryMb} : {}),
     })
     const value = object(await this.request('POST',`/v1/rooms/${encodeURIComponent(sessionId)}`,body,180000))
@@ -182,16 +185,17 @@ export class RuntimeClient {
     return {url:value.url, token:value.token, instanceId:value.instanceId,environment,revision:value.revision}
   }
   /**
-   * Память и ядра живой комнате — без нового Pod и без потери её Python.
+   * Memory and CPUs for a live room, without a new Pod and without losing its
+   * Python.
    *
-   * Поля нет — ресурс не трогается; `null` — умолчание брокера. Pod нет —
-   * `absent`, и это не ошибка: число уже в строке семинара, следующий подъём
-   * возьмёт его оттуда.
+   * No field means the resource is left alone; `null` means the broker's
+   * default. No Pod means `absent`, and that is not an error: the number is
+   * already in the seminar's row, and the next start takes it from there.
    */
   async resize(sessionId: string, change: RuntimeResizeRequest): Promise<RuntimeResizeResult> {
     if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
     const body = parseRuntimeResizeRequest(change)
-    // Встаёт в очередь комнаты за её подъёмом — отсюда срок как у ensure.
+    // Waits in the room's queue behind its start, hence the same timeout as ensure.
     const value = object(await this.request('PATCH',`/v1/rooms/${encodeURIComponent(sessionId)}`,body,180000))
     if (!['applied','pending','absent'].includes(String(value.outcome)) || !memoryField(value.memoryMb) || !cpusField(value.cpus))
       throw new RuntimeRequestError(tr("server.invalidKernelRuntimeResponse.110f37"))

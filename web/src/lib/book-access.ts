@@ -1,44 +1,45 @@
 import { tr } from '@shared/i18n'
 /**
- * Доступ к ОТДЕЛЬНОЙ тетради — то, что человек про него видит.
+ * Access to a SINGLE notebook — what a person sees of it.
  *
- * Права считает `shared/rules.ts` (`rulesForBook`), и второй копии этого
- * решения здесь нет и быть не должно. Здесь только слова и форма: метка на
- * вкладке, четыре строки меню и патч, который уезжает тем же маршрутом, что и
- * все остальные правила комнаты.
+ * The rights are computed by `shared/rules.ts` (`rulesForBook`), and there is
+ * no second copy of that decision here, nor should there be. Here are only the
+ * words and the form: the mark on the tab, the four menu rows and the patch
+ * that leaves by the same route as all the other room rules.
  *
- * Чистый модуль, без Svelte: то, что решает, какое слово стоит на вкладке,
- * проверяется тестом, а не глазами на снимке.
+ * A pure module, no Svelte: what decides which word sits on the tab is checked
+ * by a test, not by eye on a screenshot.
  */
 import type { BookAccess, BookRule, RoomRules } from '@shared/rules'
 
-/** Тетрадь комнаты вместе с тем, что комната про неё помнит. */
+/** A room notebook together with what the room remembers about it. */
 export interface BookTab {
   path: string
   root: string
-  /** Запись в правилах или `null` — «про эту тетрадь ничего не сказано». */
+  /** The entry in the rules, or `null` — "nothing is said about this notebook". */
   rule: BookRule | null
   /**
-   * Её ядро сейчас занято: считается ячейка или стоит очередь.
+   * Its kernel is busy right now: a cell is computing or a queue is waiting.
    *
-   * У каждой тетради своё ядро, и считать они могут одновременно. Без этой
-   * точки соседняя вкладка, в которой полторы минуты идёт обучение, выглядит
-   * ровно как пустая — и человек переключается туда посмотреть, идёт ли ещё.
+   * Every notebook has its own kernel, and they can compute at the same time.
+   * Without this dot a neighbouring tab where training has been running for a
+   * minute and a half looks exactly like an idle one — and the person switches
+   * over to check whether it is still going.
    */
   busy?: boolean
 }
 
 /**
- * Короткая метка на вкладке — и только там, где доступ НЕ «как в комнате».
+ * A short mark on the tab — and only where access is NOT "as in the room".
  *
- * Метка у каждой тетради была бы шумом: у большинства доступ комнатный, и
- * подпись «как в комнате» на каждой вкладке говорит ровно ничего. Появляется
- * она тогда, когда тетрадь живёт не по правилам комнаты, — то есть тогда, когда
- * серая кнопка внутри нуждается в объяснении.
+ * A mark on every notebook would be noise: most have room access, and an "as
+ * in the room" caption on every tab says exactly nothing. It appears when the
+ * notebook does not live by the room's rules — that is, when a grey button
+ * inside needs explaining.
  *
- * Автор видит про свою «моя», а не «личная · <своё имя>»: имя собственной
- * тетради человеку сообщать незачем, а «моя» — это ровно то, что ему нужно
- * знать в лекции, где всё остальное серое.
+ * The author sees "mine" on their own, not "personal · <own name>": there is
+ * no point telling a person the name on their own notebook, and "mine" is
+ * exactly what they need to know in a lecture where everything else is grey.
  */
 export interface BookMark {
   text: string
@@ -60,19 +61,19 @@ export function bookMark(rule: BookRule | null, meId: string | null): BookMark |
   }
 }
 
-/** Строка меню «Доступ»: что выбирают и что при этом случится. */
+/** A row of the "Access" menu: what is chosen and what will happen then. */
 export interface AccessOption {
   access: BookAccess
   label: string
   hint: string
   /**
-   * Выбрать нельзя — и меню говорит почему, а не прячет строку.
+   * Cannot be chosen — and the menu says why instead of hiding the row.
    *
-   * Касается ровно «Личной»: сделать тетрадь личной можно только тогда, когда у
-   * неё есть автор, а автор записывается в тот миг, когда её заводит студент
-   * (server/src/collab/books.ts). У преподавательской тетради автора нет, и
-   * спрятанная строка читалась бы как «такого не бывает» — а бывает, просто не
-   * у этой.
+   * This concerns exactly "Personal": a notebook can be made personal only when
+   * it has an author, and the author is recorded the moment a student starts it
+   * (server/src/collab/books.ts). A teacher's notebook has no author, and a
+   * hidden row would read as "there is no such thing" — whereas there is, just
+   * not for this one.
    */
   disabled: boolean
 }
@@ -92,8 +93,8 @@ export function accessOptions(rule: BookRule | null): AccessOption[] {
       label: owner
         ? tr('room.book.access.owner', { name: owner })
         : tr('room.book.access.ownerNoAuthor'),
-      // Подсказка у недоступной строки говорит, ПОЧЕМУ её нельзя выбрать, а не
-      // что она делает: последнее здесь бесполезно.
+      // The hint on an unavailable row says WHY it cannot be chosen, not what
+      // it does: the latter is useless here.
       hint: known ? tr('room.book.access.ownerHint') : tr('room.book.access.ownerNone'),
       disabled: !known,
     },
@@ -113,18 +114,19 @@ export function accessOptions(rule: BookRule | null): AccessOption[] {
 }
 
 /**
- * Патч правил, которым меняется доступ к одной тетради.
+ * The rules patch that changes access to one notebook.
  *
- * Правила комнаты меняются одним маршрутом (PATCH /api/sessions/:id/rules), и
- * доступ к тетради — не исключение: он живёт в тех же правилах, едет тем же
- * кадром и так же проверяет роль на сервере. Карта пересылается целиком, потому
- * что PATCH накладывает присланное поверх сохранённого по ВЕРХНЕМУ уровню, а
- * `books` — один ключ этого уровня.
+ * Room rules change through one route (PATCH /api/sessions/:id/rules), and
+ * notebook access is no exception: it lives in the same rules, travels in the
+ * same frame and has its role checked on the server the same way. The map is
+ * sent whole, because PATCH lays what was sent over what is stored at the TOP
+ * level, and `books` is a single key of that level.
  *
- * Автор из записи сохраняется, даже когда доступ вернули к комнатному: имя
- * нужно меню, чтобы в следующий раз снова предложить «Личная — Аким», и терять
- * его от одного передумывания нельзя. Запись без автора при `room` сервер
- * отбросит сам (shared/rules.ts · readRules), так что карта не пухнет.
+ * The author in the entry is kept even when access is set back to the room's:
+ * the menu needs the name to offer "Personal — Akim" again next time, and it
+ * must not be lost to a single change of mind. The server drops an entry
+ * without an author under `room` by itself (shared/rules.ts · readRules), so
+ * the map does not bloat.
  */
 export function accessPatch(
   rules: RoomRules,

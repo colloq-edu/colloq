@@ -1,22 +1,24 @@
 /**
- * Расписание на выложенной странице курса.
+ * The schedule on the published course page.
  *
- * `colloq.ru/c/<курс>` — единственный адрес, который классу дают на весь год:
- * его диктуют вслух, сохраняют и открывают, чтобы понять, что будет на неделе.
- * Страница нумерует строки подряд, и эта нумерация читается как расписание —
- * значит недели обязаны идти подряд тоже. Пока в плане «ML · сильная» после
- * «25–31 янв» шло «1–7 мар», февраль просто исчезал: строка 22 была на месте,
- * а недели за ней не было, и сверить страницу с расписанием было нельзя.
+ * `colloq.ru/c/<course>` is the only address a class is given for the whole
+ * year: it is dictated aloud, saved, and opened to see what is coming this
+ * week. The page numbers its rows consecutively, and that numbering reads as a
+ * schedule — so the weeks must be consecutive too. While in the "ML · strong"
+ * plan "25–31 Jan" was followed by "1–7 Mar", February simply vanished: row 22
+ * was in place, but the week after it was not, and the page could not be
+ * checked against the timetable.
  *
- * Проверяется выгруженный файл, а не база: до студента доезжает именно он, а
- * между планом в панели и страницей на Pages стоит `make site`, который эту
- * дыру переносит слово в слово. Незаполненную неделю называют строкой («буфер»,
- * «каникулы»), а не пропускают.
+ * The exported file is checked, not the database: that is what reaches the
+ * student, and between the plan in the panel and the page on Pages stands
+ * `make site`, which carries this hole over word for word. An unfilled week is
+ * named with a row ("buffer", "holidays"), not skipped.
  *
- * Цепочка рвётся сама, как только вместо темы в строке появляется проведённый
- * семинар: у него в подписи дата публикации, а не неделя, и сколько недель он
- * занял — из страницы не видно. Тогда счёт начинается заново со следующей
- * названной недели: тест обязан молчать там, где не знает, а не выдумывать.
+ * The chain breaks by itself as soon as a held seminar appears in a row
+ * instead of a topic: its caption has the publication date, not a week, and
+ * how many weeks it took cannot be seen from the page. Then counting starts
+ * again from the next named week: the test must stay silent where it does not
+ * know, not make things up.
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -35,7 +37,7 @@ interface Row {
   when: string
 }
 
-/** Строки плана со страницы курса: номер, тема, подпись справа. */
+/** The plan rows from the course page: number, topic, caption on the right. */
 function rowsOf(html: string): Row[] {
   const out: Row[] = []
   const row = /<span class="n">([^<]*)<\/span><span class="t">([^<]*)<\/span><span class="s">([^<]*)<\/span>/g
@@ -46,11 +48,12 @@ function rowsOf(html: string): Row[] {
 }
 
 /**
- * Неделя словами расписания в пару «первый день, последний день».
+ * A week in the schedule's words, as a pair "first day, last day".
  *
- * Года в расписании нет и не будет: его так и составляют («7–13 сен»). Года
- * здесь и не надо — важно только, что дни идут подряд, — так что он считается
- * от условного и переводится вперёд, как только месяц пошёл назад.
+ * There is no year in the schedule and there will not be: that is how it is
+ * written ("7–13 Sep"). Nor is a year needed here — all that matters is that
+ * the days are consecutive — so it is counted from a nominal one and moved
+ * forward as soon as the month goes backwards.
  */
 function week(label: string, year: { at: number; month: number }): [number, number] | null {
   const text = label.replace(/[–—−]/g, '-').replace(/\s+/g, ' ').trim()
@@ -74,7 +77,7 @@ function week(label: string, year: { at: number; month: number }): [number, numb
   return from === null || to === null ? null : [from, to]
 }
 
-/** Февраль кончается 28-м или 29-м — год расписание не называет. */
+/** February ends on the 28th or the 29th — the schedule does not name the year. */
 const nextDay = (end: number, start: number): boolean => {
   if (start === end + DAY) return true
   const last = new Date(end)
@@ -91,9 +94,10 @@ const pages = readdirSync(resolve(ROOT, 'site/c'), { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => `site/c/${entry.name}/index.html`)
 
-test('на выложенных страницах курсов есть что читать', () => {
-  // Иначе всё, что ниже, зелено просто потому, что проверять нечего.
-  assert.ok(pages.length > 0, 'в site/c нет ни одной страницы курса')
+test('the published course pages have something to read', () => {
+  // Otherwise everything below is green simply because there is nothing to
+  // check.
+  assert.ok(pages.length > 0, 'site/c has no course pages at all')
 })
 
 for (const page of pages) {
@@ -101,33 +105,33 @@ for (const page of pages) {
   const html = readFileSync(resolve(ROOT, page), 'utf8')
   const rows = rowsOf(html)
 
-  test(`курс «${course}»: недели плана идут подряд`, () => {
-    assert.ok(rows.length > 0, 'на странице курса нет ни одной строки')
+  test(`course "${course}": the plan's weeks are consecutive`, () => {
+    assert.ok(rows.length > 0, 'the course page has no rows at all')
     const year = { at: 2025, month: -1 }
     let prev: { row: Row; to: number } | null = null
     for (const row of rows) {
       const span = week(row.when, year)
       if (!span) {
-        // Проведённый семинар или удалённая комната: недели в подписи нет.
+        // A held seminar or a deleted room: there is no week in the caption.
         prev = null
         continue
       }
       if (prev !== null) {
         assert.ok(
           nextDay(prev.to, span[0]),
-          `между «${prev.row.n} · ${prev.row.when}» и «${row.n} · ${row.when}» ` +
-            'в расписании дыра: страница нумерует строки подряд, а недели пропускает',
+          `between "${prev.row.n} · ${prev.row.when}" and "${row.n} · ${row.when}" ` +
+            'there is a hole in the schedule: the page numbers rows consecutively but skips weeks',
         )
       }
       prev = { row, to: span[1] }
     }
   })
 
-  test(`курс «${course}»: в темах нет черновых пометок`, () => {
+  test(`course "${course}": no draft marks in the topics`, () => {
     for (const row of rows) {
       assert.ok(
         !/\?{2,}|TODO|XXX/i.test(row.name),
-        `строка ${row.n}: «${row.name}» — черновая пометка уехала классу`,
+        `row ${row.n}: "${row.name}" — a draft mark went out to the class`,
       )
     }
   })

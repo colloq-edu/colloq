@@ -1,25 +1,27 @@
 /**
- * Пауза между запусками у студента: отсчёт на месте кнопки.
+ * The pause between a student's runs: a countdown in place of the button.
  *
- * Правило держит сервер (`CouncilSettings.rerunPauseSec`), но кнопка, которая
- * молча получает отказ, читается как поломка связи — поэтому на её месте стоит
- * отсчёт, а `CouncilMine.nextRunAt` возит секунду, с которой можно снова.
+ * The server holds the rule (`CouncilSettings.rerunPauseSec`), but a button
+ * that silently gets refused reads as a broken connection — so a countdown
+ * stands in its place, and `CouncilMine.nextRunAt` carries the second from
+ * which running is allowed again.
  *
- * Ломается такой отсчёт тихо, и проверяется здесь ровно это:
+ * Such a countdown breaks quietly, and exactly this is checked here:
  *
- *   — часы. `nextRunAt` отмерен СЕРВЕРОМ, а тикает браузер. Без поправки
- *     ноутбук, ушедший на минуту вперёд, показывает минуту лишней паузы; без
- *     потолка в само правило — вкладка, не успевшая получить первый понг
- *     (поправка ещё ноль), рисует «Запуск через 8:03» там, где преподаватель
- *     поставил тридцать секунд;
- *   — ноль. Пауза, снятая преподавателем, обязана погасить отсчёт той же
- *     секундой, не дожидаясь свежего листа;
- *   — цифра. Округление вниз держало бы «0:00» целую секунду — отсчёт, замерший
- *     на нуле, читается как зависший ровно тогда, когда он работает.
+ *   — the clock. `nextRunAt` is measured by the SERVER, while the browser
+ *     does the ticking. Without a correction, a laptop running a minute fast
+ *     shows a minute of extra pause; without a cap at the rule itself, a tab
+ *     that has not yet received its first pong (the correction is still zero)
+ *     draws "Run in 8:03" where the teacher set thirty seconds;
+ *   — zero. A pause removed by the teacher must switch the countdown off in
+ *     the same second, without waiting for a fresh sheet;
+ *   — the digits. Rounding down would hold "0:00" for a whole second — a
+ *     countdown frozen at zero reads as hung exactly when it is working.
  *
- * И разметка подвала: отсчёт стоит В ТОМ ЖЕ месте, что «В очереди: 3», клавиша
- * запуска во время паузы на сервер не ходит, а у остановленного пределом
- * запуска нет кнопки оракула — подсказывать по серверному пределу нечего.
+ * And the footer markup: the countdown stands IN THE SAME place as
+ * "Queued: 3", the run key does not go to the server during the pause, and a
+ * run stopped by the limit has no oracle button — there is nothing to hint
+ * about for a server-side limit.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -33,171 +35,185 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка без комментариев: объяснение — не обещание. */
+/** Markup without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
 const NOW = 1_800_000_000_000
 
-/* ------------------------------------------------------------ остаток */
+/* ---------------------------------------------------------- remainder */
 
-test('остаток считается от серверных часов, а не от часов ноутбука', () => {
-  // Часы браузера совпали с серверными: двенадцать секунд и есть двенадцать.
+test('the remainder is counted from the server clock, not the laptop clock', () => {
+  // The browser clock matches the server's: twelve seconds are twelve.
   assert.equal(pauseLeftMs(NOW + 12_000, NOW, 0, 30), 12_000)
-  // Браузер ушёл на минуту ВПЕРЁД: без поправки остаток был бы отрицательным и
-  // кнопка вернулась бы, пока сервер ещё отказывает.
+  // The browser is a minute AHEAD: without the correction the remainder would
+  // be negative and the button would come back while the server still
+  // refuses.
   assert.equal(pauseLeftMs(NOW + 12_000, NOW + 60_000, 60_000, 30), 12_000)
-  // И на минуту НАЗАД: без поправки отсчёт показывал бы минуту с лишним.
+  // And a minute BEHIND: without the correction the countdown would show a
+  // minute and more.
   assert.equal(pauseLeftMs(NOW + 12_000, NOW - 60_000, -60_000, 30), 12_000)
 })
 
-test('дольше самого правила отсчёт не показывает никогда', () => {
-  // Поправка ещё ноль (первый понг не доехал), часы вкладки на четверть суток
-  // вперёд… а пауза всё равно не больше тридцати секунд.
+test('the countdown never shows more than the rule itself', () => {
+  // The correction is still zero (the first pong has not arrived), the tab's
+  // clock is a quarter of a day ahead… and the pause is still no more than
+  // thirty seconds.
   assert.equal(pauseLeftMs(NOW + 6 * 3600_000, NOW, 0, 30), 30_000)
-  // Потолок — само правило, каким бы оно ни было.
+  // The cap is the rule itself, whatever it is.
   assert.equal(pauseLeftMs(NOW + 6 * 3600_000, NOW, 0, 120), 120_000)
   assert.equal(
     pauseLeftMs(NOW + 10 * 3600_000, NOW, 0, COUNCIL_RERUN_PAUSE_MAX),
     COUNCIL_RERUN_PAUSE_MAX * 1000,
   )
-  // Ошибается он в сторону сервера: кнопка вернётся раньше, а не позже.
+  // It errs on the server's side: the button comes back earlier, not later.
   assert.ok(pauseLeftMs(NOW + 90_000, NOW, 0, 30) < 90_000)
 })
 
-test('паузы нет — нуль, и молча: ни NaN, ни отрицательных', () => {
-  assert.equal(pauseLeftMs(null, NOW, 0, 30), 0, 'сервер паузы не назначал')
-  assert.equal(pauseLeftMs(undefined, NOW, 0, 30), 0, 'старый сервер поля не шлёт')
-  assert.equal(pauseLeftMs(NOW - 1, NOW, 0, 30), 0, 'секунда прошла')
-  assert.equal(pauseLeftMs(NOW, NOW, 0, 30), 0, 'ровно та секунда — уже можно')
-  // Правило снято прямо сейчас: лист со старым `nextRunAt` ещё не переехал, а
-  // отсчёта уже нет — кнопка на месте той же секундой.
+test('no pause — zero, and silently: no NaN, no negatives', () => {
+  assert.equal(pauseLeftMs(null, NOW, 0, 30), 0, 'the server did not set a pause')
+  assert.equal(pauseLeftMs(undefined, NOW, 0, 30), 0, 'an old server does not send the field')
+  assert.equal(pauseLeftMs(NOW - 1, NOW, 0, 30), 0, 'the second has passed')
+  assert.equal(pauseLeftMs(NOW, NOW, 0, 30), 0, 'exactly that second — already allowed')
+  // The rule was removed just now: the sheet with the old `nextRunAt` has not
+  // arrived yet, but the countdown is already gone — the button is back in
+  // the same second.
   assert.equal(pauseLeftMs(NOW + 25_000, NOW, 0, 0), 0)
-  assert.equal(DEFAULT_COUNCIL.rerunPauseSec, 0, 'умолчание регламента — без паузы')
-  // Мусор в числах значит «паузы нет», а не «пауза навсегда».
+  assert.equal(DEFAULT_COUNCIL.rerunPauseSec, 0, 'the rules default is no pause')
+  // Garbage in the numbers means "no pause", not "pause forever".
   assert.equal(pauseLeftMs(Number.NaN, NOW, 0, 30), 0)
   assert.equal(pauseLeftMs(NOW + 12_000, Number.NaN, 0, 30), 0)
   assert.equal(pauseLeftMs(NOW + 12_000, NOW, 0, Number.NaN), 0)
 })
 
-test('«идёт ли пауза» — тот же счёт, одним словом', () => {
+test('"is a pause on" is the same count, in one word', () => {
   assert.equal(pausePending(NOW + 1, NOW, 0, 30), true)
   assert.equal(pausePending(NOW, NOW, 0, 30), false)
   assert.equal(pausePending(NOW + 25_000, NOW, 0, 0), false)
   assert.equal(pausePending(null, NOW, 0, 30), false)
 })
 
-/* -------------------------------------------------------------- цифра */
+/* ------------------------------------------------------------- digits */
 
-test('m:ss с округлением вверх: «0:00» не показывается никогда', () => {
+test('m:ss rounded up: "0:00" is never shown', () => {
   assert.equal(pauseClock(12_000), '0:12')
-  assert.equal(pauseClock(11_001), '0:12', 'вниз показало бы 0:11 раньше времени')
-  assert.equal(pauseClock(1), '0:01', 'последний миг — всё ещё секунда')
+  assert.equal(pauseClock(11_001), '0:12', 'rounding down would show 0:11 too early')
+  assert.equal(pauseClock(1), '0:01', 'the last instant is still a second')
   assert.equal(pauseClock(60_000), '1:00')
   assert.equal(pauseClock(59_999), '1:00')
   assert.equal(pauseClock(65_500), '1:06')
-  assert.equal(pauseClock(9_000), '0:09', 'секунды всегда двумя знаками')
-  // Ноль бывает только настоящим нулём, и чипа в этот момент уже нет.
+  assert.equal(pauseClock(9_000), '0:09', 'seconds always have two digits')
+  // Zero only happens as a real zero, and by then the chip is gone.
   assert.equal(pauseClock(0), '0:00')
   assert.equal(pauseClock(-5_000), '0:00')
-  // Потолок паузы — час, и он остаётся в минутах: часов в чипе нет.
+  // The pause cap is an hour, and it stays in minutes: the chip has no hours.
   assert.equal(pauseClock(COUNCIL_RERUN_PAUSE_MAX * 1000), '60:00')
 })
 
-test('чип собирается из каталога, а не из склеенных слов', () => {
+test('the chip is built from the catalogue, not from glued words', () => {
   assert.equal(translate('ru', 'room.council.nextRun', { p0: pauseClock(12_000) }), 'Запуск через 0:12')
   assert.equal(translate('en', 'room.council.nextRun', { p0: pauseClock(12_000) }), 'Run in 0:12')
-  // Подсказка объясняет ПРАВИЛО, а не отказ: ядро у тетради одно на всех.
+  // The hint explains the RULE, not the refusal: a notebook has one kernel
+  // for everyone.
   assert.match(translate('ru', 'room.council.nextRunWhy'), /правило преподавателя/)
   assert.match(translate('ru', 'room.council.nextRunWhy'), /ядро у тетради одно/)
 })
 
-/* ------------------------------------------------------------ подвал */
+/* ------------------------------------------------------------ footer */
 
 const CELL = code(read('web/src/components/notebook/CellView.svelte'))
 const SHEET = CELL.slice(CELL.indexOf('{#if ownSheet && sheet}'), CELL.indexOf('{:else if showEditor}'))
 const FOOTER = SHEET.slice(SHEET.indexOf('<span class="ml-auto flex'))
 
-test('отсчёт стоит на месте кнопки — в одной цепочке с очередью', () => {
-  // Ровно одна ветка между ожиданием и кнопкой: иначе отсчёт оказался бы РЯДОМ
-  // с живой кнопкой, то есть предлагал бы нажать её ещё раз.
+test('the countdown stands in place of the button — in one chain with the queue', () => {
+  // Exactly one branch between waiting and the button: otherwise the
+  // countdown would end up NEXT TO a live button, that is, it would invite
+  // pressing it once more.
   assert.match(
     FOOTER,
     /\{#if runWaiting\}[\s\S]*?\{:else if runPaused\}[\s\S]*?\{:else if mayRunAttempt \|\| mayRequestRun\}/,
-    'отсчёт не встал на место кнопки',
+    'the countdown did not take the button\'s place',
   )
-  // И только там, где кнопка вообще была бы: не у сданной, не в очереди и не
-  // там, где запускает преподаватель.
+  // And only where the button would be at all: not on a submitted sheet, not
+  // in the queue and not where the teacher runs.
   assert.match(
     CELL,
     /const runPaused = \$derived\(\s*pauseLeft > 0 && submittedAt === null && !runWaiting && \(mayRunAttempt \|\| mayRequestRun\),\s*\)/,
   )
-  // Тот же чип, что «В очереди», и тот же рост — но приглушённый: это правило,
-  // а не тревога и не акцентное ожидание.
+  // The same chip as "Queued" and the same height — but muted: this is a
+  // rule, not an alarm and not an accented wait.
   assert.match(FOOTER, /tr\('room\.council\.nextRun', \{ p0: pauseClock\(pauseLeft\) \}\)/)
   assert.match(FOOTER, /'inline-flex h-7 items-center border px-3 tabular-nums'/)
   assert.match(FOOTER, /'border-line text-muted'/)
   assert.doesNotMatch(
     FOOTER.slice(FOOTER.indexOf('{:else if runPaused}'), FOOTER.indexOf('{:else if mayRunAttempt')),
     /text-accent-text|border-accent|text-danger|text-warning/,
-    'пауза покрасилась в тревогу или в акцент очереди',
+    'the pause got painted as an alarm or as the queue accent',
   )
-  // Причина — подсказкой, и она же в имени: диктору цифру не читают каждую
-  // секунду, но, дойдя до чипа, он говорит и остаток, и правило.
+  // The reason goes in a tooltip, and in the name as well: a screen reader
+  // does not announce the digits every second, but once it reaches the chip
+  // it speaks both the remainder and the rule.
   assert.match(FOOTER, /title=\{tr\('room\.council\.nextRunWhy'\)\}/)
   assert.match(FOOTER, /aria-live="off"/)
   assert.match(FOOTER, /aria-label=\{`\$\{tr\('room\.council\.nextRun'[\s\S]*?room\.council\.nextRunWhy'\)\}`\}/)
 })
 
-test('кнопка возвращается тиком, а тик живёт только во время паузы', () => {
-  // Часы — серверные: поправка вкладки и потолок из регламента ячейки.
+test('the button comes back on a tick, and the tick lives only during a pause', () => {
+  // The clock is the server's: the tab's correction and the cap from the
+  // cell's rules.
   assert.match(
     CELL,
     /pauseLeftMs\(mine\?\.nextRunAt, pauseNow, session\.clockSkewMs, councilSettings\.rerunPauseSec\)/,
   )
   assert.match(read('web/src/lib/session.svelte.ts'), /clockSkewMs = \$state\(0\)/)
-  // Интервал заводится от самой паузы и снимается, когда она вышла: сорок
-  // ячеек консилиума не должны держать сорок таймеров до конца пары.
+  // The interval is started by the pause itself and removed when it is over:
+  // forty council cells must not hold forty timers until the end of the
+  // class.
   assert.match(CELL, /const pauseTicking = \$derived\(pauseLeft > 0\)/)
   const tick = CELL.slice(CELL.indexOf('const pauseTicking'), CELL.indexOf('const runPaused'))
   assert.match(tick, /if \(!pauseTicking\) return/)
   assert.match(tick, /window\.setInterval\(\(\) => \(pauseNow = Date\.now\(\)\), 500\)/)
-  assert.match(tick, /return \(\) => window\.clearInterval\(id\)/, 'таймер переживает ячейку')
+  assert.match(tick, /return \(\) => window\.clearInterval\(id\)/, 'the timer outlives the cell')
 })
 
-test('⇧↵ во время паузы не ходит на сервер, а мигает отсчётом', () => {
+test('⇧↵ during a pause does not go to the server but flashes the countdown', () => {
   const key = CELL.slice(CELL.indexOf('function sheetRunKey'), CELL.indexOf('$effect(() => () => window.clearTimeout(runHintTimer))'))
-  // Пауза — раньше обеих веток запуска: ни `council:run`, ни просьбы.
+  // The pause comes before both run branches: neither `council:run` nor a
+  // request.
   assert.match(key, /if \(runPaused\) \{\s*nudgePause\(\)\s*return\s*\}/)
   for (const sends of ['requestAttemptRun()', 'runAttempt()']) {
     assert.ok(
       key.indexOf('if (runPaused)') < key.indexOf(sends),
-      `клавиша успевает вызвать ${sends} до проверки паузы`,
+      `the key manages to call ${sends} before the pause check`,
     )
   }
-  assert.doesNotMatch(key, /showError/, 'отказ тостом поверх набора')
-  // Вспышка — та же, что у кнопки сдачи на ⌘⇧↵, и гаснет сама.
+  assert.doesNotMatch(key, /showError/, 'a refusal as a toast on top of the typing')
+  // The flash is the same as the submit button's on ⌘⇧↵, and it fades by
+  // itself.
   const nudge = CELL.slice(CELL.indexOf('function nudgePause'), CELL.indexOf('function nudgePause') + 300)
   assert.match(nudge, /pauseNudge = true/)
   assert.match(nudge, /setTimeout\(\(\) => \(pauseNudge = false\), FLASH_MS\)/)
   assert.match(CELL, /const FLASH_MS = 260/)
   assert.match(CELL, /\$effect\(\(\) => \(\) => window\.clearTimeout\(nudgeTimer\)\)/)
-  // И чип показывает вспышку одной парой классов: два `text-*` рядом решал бы
-  // порядок в собранном CSS, а не порядок здесь.
+  // And the chip shows the flash with a single pair of classes: with two
+  // `text-*` side by side the order in the built CSS would decide, not the
+  // order here.
   assert.match(FOOTER, /pauseNudge \? 'border-ink text-ink' : 'border-line text-muted'/)
 })
 
-/* ------------------------------------------------- остановленный запуск */
+/* -------------------------------------------------------- a stopped run */
 
-test('остановленный пределом запуск — обычная неудача, без подсказки оракула', () => {
-  // Сервер кладёт причину в сам вывод попытки, поэтому у подвала новых слов
-  // нет: `state` остаётся 'error', и красная подложка берётся из него.
+test('a run stopped by the limit is an ordinary failure, without an oracle hint', () => {
+  // The server puts the reason into the attempt's output itself, so the
+  // footer has no new words: `state` stays 'error', and the red background
+  // comes from it.
   assert.match(SHEET, /attemptRun\.state === 'error' \? 'bg-danger\/5' : 'bg-canvas'/)
-  assert.doesNotMatch(CELL, /TimeLimit/, 'подвал разбирает вывод по имени ошибки')
-  assert.doesNotMatch(SHEET, /\bename\b/, 'чип состояния смотрит на имя исключения')
-  // А кнопки оракула у него нет: трейсбека не существует, и модели остаётся
-  // гадать по тексту попытки — то есть решать за студента.
+  assert.doesNotMatch(CELL, /TimeLimit/, 'the footer parses the output by the error name')
+  assert.doesNotMatch(SHEET, /\bename\b/, 'the state chip looks at the exception name')
+  // And it has no oracle button: there is no traceback, and the model would
+  // be left guessing from the attempt's text — that is, solving it for the
+  // student.
   assert.match(
     CELL,
     /const mayHint = \$derived\(\s*!councilClosed &&\s*mine\?\.run\?\.state === 'error' &&\s*!mine\.run\.timedOut &&/,

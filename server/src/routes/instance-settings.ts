@@ -5,9 +5,10 @@ import { isLocale, tr } from '@shared/i18n'
 export function instanceSettingsRoutes(): Router {
   const router = Router()
   router.get('/api/instance', (_req, res) => {
-    // `no-cache`, а не `no-store`: ответ обязан перепроверяться каждый раз, но
-    // храниться он может — тогда опрос языка становится 304 без тела, а не
-    // полным 200. Свежесть та же: без перепроверки браузер его не отдаёт.
+    // `no-cache`, not `no-store`: the response must be revalidated every time,
+    // but it may be stored, and then polling the language becomes a 304
+    // without a body instead of a full 200. Freshness is the same: the browser
+    // does not serve it without revalidation.
     res.set('Cache-Control', 'no-cache').json({ language: getInstanceLanguage() })
   })
   router.get('/api/admin/instance/settings', requireStaff, (_req, res) => {

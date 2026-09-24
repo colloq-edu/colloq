@@ -32,19 +32,22 @@ export interface ExecuteHandlers {
   onStream(name: 'stdout' | 'stderr', text: string): void
   onData(mimebundle: Record<string, string>, execCount: number | null): void
   onError(ename: string, evalue: string, traceback: string[]): void
-  /** @param wait `clear_output(wait=True)` — стереть, когда будет чем заменить. */
+  /** @param wait `clear_output(wait=True)`: erase once something replaces it. */
   onClear(wait: boolean): void
   /**
-   * Ответ на `opts.userExpressions` — единственный способ услышать ядро молча.
+   * The answer to `opts.userExpressions`, the only way to hear the kernel
+   * silently.
    *
-   * При `silent: true` в IOPUB не едет НИЧЕГО: ни stream, ни execute_result.
-   * А `user_expressions` ядро считает и кладёт в `execute_reply` и в этом
-   * случае тоже (ipykernel · IPythonKernel.do_execute) — если сам запуск
-   * прошёл со статусом `ok`. Этим отчитывается вход консилиума
-   * (council-isolation.ts), которому надо сказать серверу «копии готовы», не
-   * написав в комнату ни строки.
+   * With `silent: true` NOTHING travels over IOPUB: neither stream nor
+   * execute_result. But the kernel still evaluates `user_expressions` and puts
+   * them into `execute_reply` in this case too (ipykernel ·
+   * IPythonKernel.do_execute), provided the run itself finished with status
+   * `ok`. This is how the council entry reports back (council-isolation.ts):
+   * it has to tell the server "the copies are ready" without writing a single
+   * line into the room.
    *
-   * Значение каждого ключа — mimebundle вида `{status, data, metadata}`.
+   * The value of each key is a mimebundle of the form
+   * `{status, data, metadata}`.
    */
   onUserExpressions?(values: Record<string, unknown>): void
 }
@@ -77,16 +80,17 @@ interface Pending {
   idle: boolean
   graceTimer: NodeJS.Timeout | null
   /**
-   * Служебный запуск, о котором комнате знать незачем, — см. `execute`.
+   * A service run the room has no need to know about; see `execute`.
    *
-   * Здесь он значит ровно одно: `busy`/`idle` вокруг него не двигают фазу
-   * ядра, то есть индикатор у комнаты не моргает. Разбор запроса это не
-   * меняет ничем — закрывающий `idle` по-прежнему закрывает ожидание.
+   * Here it means exactly one thing: the `busy`/`idle` around it do not move
+   * the kernel phase, i.e. the room's indicator does not blink. It changes
+   * nothing in how the request is handled: the closing `idle` still closes the
+   * wait.
    */
   quiet: boolean
 }
 
-/** Ожидание одного `*_reply` по shell: ни вывода, ни рукопожатия с iopub. */
+/** Waiting for one `*_reply` over shell: no output, no handshake with iopub. */
 interface ShellPending {
   resolve: (content: Record<string, any>) => void
   reject: (err: Error) => void
@@ -113,27 +117,29 @@ const WATCHDOG_MS = config.kernelWatchdogMs
 /** iopub and shell are independent streams, so the reply can beat the final idle. */
 const IDLE_GRACE_MS = 3000
 /**
- * Сколько ждём ответа на служебный запрос по shell — дополнение и справку.
+ * How long we wait for an answer to a service request over shell: completion
+ * and help.
  *
- * Две с половиной секунды, и это не «на всякий случай». ipykernel разбирает
- * shell по одному сообщению за раз: пока считается ячейка, `complete_request`
- * просто стоит в очереди за ней и ответа не будет вовсе. Ждать его дольше
- * нечем — подсказка, приехавшая через минуту, это подсказка к тексту, который
- * человек давно дописал. Отказ по времени здесь — обычный исход, а не сбой.
+ * Two and a half seconds, and this is not "just in case". ipykernel handles
+ * shell one message at a time: while a cell is computing, `complete_request`
+ * simply waits in the queue behind it and there will be no answer at all.
+ * There is no point waiting longer: a suggestion that arrives a minute later
+ * is a suggestion for text the person finished typing long ago. A timeout here
+ * is an ordinary outcome, not a failure.
  */
 const SHELL_REQUEST_MS = 2500
 
 /**
- * ANSI из `text/plain` справки.
+ * ANSI from the help's `text/plain`.
  *
- * IPython раскрашивает вывод `?` даже тогда, когда его никто не просил: в
- * `inspect_reply` приезжает `\x1b[0;31mSignature:\x1b[0m` — и в подсказке над
- * кареткой это выглядит как мусор перед каждым словом. Тот же набор, что в
- * publish/render.ts: CSI, OSC и двухсимвольные.
+ * IPython colours the output of `?` even when nobody asked for it:
+ * `inspect_reply` carries `\x1b[0;31mSignature:\x1b[0m`, and in a tooltip above
+ * the caret this looks like garbage in front of every word. The same set as in
+ * publish/render.ts: CSI, OSC and two-character sequences.
  */
 const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g
 
-/** Одно дополнение: текст замены и то, чем jedi его считает. */
+/** One completion: the replacement text and what jedi takes it to be. */
 export interface CompleteMatch {
   text: string
   type: string | null
@@ -141,7 +147,7 @@ export interface CompleteMatch {
 
 export interface CompleteResult {
   matches: CompleteMatch[]
-  /** Границы куска, который замена собой заменяет, в знаках от начала кода. */
+  /** Bounds of the span the replacement replaces, in chars from the code start. */
   cursorStart: number
   cursorEnd: number
 }
@@ -177,36 +183,37 @@ export function endpointIdentity(endpoint: KernelEndpoint): string {
 }
 
 /**
- * Путь сессии Jupyter, по которому у тетради своё ядро.
+ * The Jupyter session path that gives a notebook its own kernel.
  *
- * Сессии в jupyter_server опознаются по ПУТИ: `POST /api/sessions` сначала
- * спрашивает `session_exists(path=…)` и на совпадение возвращает уже живую
- * сессию с её ядром. Это то самое свойство, ради которого здесь сессии, а не
- * `/api/kernels`: перезапуск сервера посреди пары находит то же ядро с теми же
- * переменными. И оно же — способ дать каждой тетради своё: разные пути,
- * разные ядра.
+ * jupyter_server identifies sessions by PATH: `POST /api/sessions` first asks
+ * `session_exists(path=…)` and on a match returns the already live session
+ * with its kernel. That is the very property sessions are used for here,
+ * rather than `/api/kernels`: a server restart in the middle of class finds
+ * the same kernel with the same variables. And it is also the way to give each
+ * notebook its own: different paths, different kernels.
  *
- * У тетради комнаты (`cells`) путь ТОТ ЖЕ, что был до появления нескольких
- * ядер, — и это не эстетика. Комната, которая идёт прямо сейчас, после выкатки
- * обязана найти своё живое ядро, а не завести рядом второе: иначе переменные
- * пары исчезают в момент обновления сервера, молча. Именно `cells`, а не
- * «первая по порядку»: порядок тетрадей меняет перетаскивание вкладок.
+ * The room's notebook (`cells`) keeps the SAME path it had before multiple
+ * kernels appeared, and this is not aesthetics. A room that is running right
+ * now must, after a deploy, find its live kernel rather than start a second one
+ * next to it: otherwise the class's variables vanish at the moment the server
+ * is updated, silently. Exactly `cells`, not "the first in order": dragging
+ * tabs changes the order of notebooks.
  *
- * Двоеточие из корня `nb:` убрано: путь у Jupyter виртуальный, но ложится он
- * на файловую систему контейнера, а двоеточие в имени файла — приглашение к
- * беде на ровном месте. Столкнуться два корня не могут: `nb:` выдаётся один
- * раз и никогда повторно (shared/notebook.ts · rootForNewBook).
+ * The colon from the `nb:` root is removed: the Jupyter path is virtual, but
+ * it lands on the container's file system, and a colon in a file name is an
+ * invitation to trouble out of nowhere. Two roots cannot collide: `nb:` is
+ * issued once and never again (shared/notebook.ts · rootForNewBook).
  *
- * Папка одна на все тетради — папка занятия: рабочий каталог ядра берётся из
- * пути, и `open('data.csv')` обязан находить то, что положили в панель файлов,
- * из любой тетради.
+ * There is one folder for all notebooks, the class folder: the kernel's working
+ * directory is taken from the path, and `open('data.csv')` has to find what
+ * was put into the files panel, from any notebook.
  */
 export function jupyterSessionPath(sessionId: string, root: string): string {
   if (root === CELLS_KEY) return `${sessionId}/session.ipynb`
   return `${sessionId}/session-${root.replace(/[^A-Za-z0-9_-]+/g, '-')}.ipynb`
 }
 
-/** Подпись сессии — то, что видно в списке ядер Jupyter; ядро ею не опознаётся. */
+/** Session label, shown in Jupyter's kernel list; kernels are not identified by it. */
 export function jupyterSessionName(sessionId: string, root: string): string {
   return root === CELLS_KEY ? sessionId : `${sessionId}#${root}`
 }
@@ -268,16 +275,16 @@ function frameText(data: RawData): string | null {
 }
 
 /**
- * Отвечает ли Jupyter — с коротким кешем, чтобы это можно было спрашивать часто.
+ * Whether Jupyter answers, with a short cache so this can be asked often.
  *
- * `/api/health` говорил `ok: true`, пока жив сам процесс, а `host.sh` и
- * `make status` ему верили. Docker выключен, вчерашний node ещё стоит — и
- * скрипт печатает «Colloq доступен по ссылке», после чего комната через
- * семьдесят секунд получает KERNEL DEAD. Проверка отвечает на настоящий
- * вопрос: сможет ли здесь запуститься Python.
+ * `/api/health` said `ok: true` as long as the process itself was alive, and
+ * `host.sh` and `make status` believed it. Docker is off, yesterday's node is
+ * still up, and the script prints "Colloq is available at this link", after
+ * which the room gets KERNEL DEAD seventy seconds later. The check answers the
+ * real question: can Python start here.
  *
- * Кеш на пять секунд: проба ходит по сети, а зонды опрашивают health раз в
- * секунду и не должны каждым запросом дёргать Jupyter.
+ * Cached for five seconds: the probe goes over the network, and the health
+ * probes poll once a second and must not poke Jupyter with every request.
  */
 let lastProbe: { at: number; ok: boolean; reason: string | null } | null = null
 
@@ -288,7 +295,7 @@ export async function jupyterReachable(): Promise<{ ok: boolean; reason: string 
   let ok = false
   let reason: string | null = null
   try {
-    // /api/status — самая дешёвая ручка Jupyter, и она есть у всех его версий.
+    // /api/status is Jupyter's cheapest endpoint, and every version of it has it.
     const res = await jupyterRequest(defaultEndpoint(), '/api/status', undefined, 3000)
     ok = res.ok
     if (!ok) reason = tr("server.jupyterAnswered.d1df44", { p0: res.status })
@@ -304,34 +311,34 @@ export class JupyterKernel {
   private socket: WebSocket | null = null
   private readonly pending = new Map<string, Pending>()
   /**
-   * Служебные запросы по shell — отдельной картой от выполнений.
+   * Service requests over shell, in a map separate from executions.
    *
-   * Отдельной намеренно: у `pending` есть обработчики вывода и рукопожатие с
-   * iopub («ответ ПЛЮС закрывающий idle»), а дополнению ни то ни другое не
-   * нужно и вредно. `complete_reply` — это весь ответ целиком; ждать после
-   * него ещё и idle значило бы держать подсказку лишние миллисекунды, а на
-   * занятом ядре — не дождаться её никогда.
+   * Separate on purpose: `pending` has output handlers and a handshake with
+   * iopub ("the reply PLUS the closing idle"), and a completion needs neither;
+   * both would hurt. `complete_reply` is the whole answer; waiting for an idle
+   * after it as well would hold the suggestion back for extra milliseconds,
+   * and on a busy kernel it would never arrive.
    */
   private readonly shellPending = new Map<string, ShellPending>()
   private readonly listeners: Array<(phase: KernelPhase, expected: boolean) => void> = []
   private reconnectAttempts = 0
   private reconnectTimer: NodeJS.Timeout | null = null
   /**
-   * Переподключение, которое идёт прямо сейчас.
+   * The reconnect that is under way right now.
    *
-   * Пока `reconnect()` ждёт `openSocket` (до двадцати секунд), `this.socket`
-   * уже null, а таймер уже снят — то есть оба сторожа пусты, и `waitForSocket`,
-   * опрашивающий состояние каждые сто миллисекунд из каждого `execute`, заводил
-   * ВТОРОЕ переподключение, а за ним третье. Открывшиеся сокеты просто
-   * присваивались поверх, старые оставались с живым `on('message')`, и iopub
-   * приходил дважды: каждый `print` в комнате печатался по два раза до конца
-   * жизни ядра. В terminal.ts этот же класс бед закрыт полем `opening`; здесь
-   * он был открыт.
+   * While `reconnect()` waits for `openSocket` (up to twenty seconds),
+   * `this.socket` is already null and the timer already cleared, i.e. both
+   * guards are empty, and `waitForSocket`, which polls the state every hundred
+   * milliseconds from every `execute`, started a SECOND reconnect, and after it
+   * a third. The sockets that opened were simply assigned on top, the old ones
+   * stayed with a live `on('message')`, and iopub arrived twice: every `print`
+   * in the room was printed twice until the kernel died. In terminal.ts this
+   * same class of trouble is closed by the `opening` field; here it was open.
    */
   private reconnecting: Promise<void> | null = null
   private disposed = false
   private _phase: KernelPhase = 'starting'
-  /** Просили ли мы сами о последней смене фазы; см. `phaseExpected`. */
+  /** Whether we ourselves asked for the last phase change; see `phaseExpected`. */
   private _phaseExpected = false
   /** When the kernel last said anything at all. See confirmAlive(). */
   private lastHeard = Date.now()
@@ -344,9 +351,9 @@ export class JupyterKernel {
     readonly sessionId: string,
     private readonly jupyterSessionId: string,
     private readonly kernelId: string,
-    /** Кому принадлежит это ядро: адрес контейнера окружения этой комнаты. */
+    /** Whose kernel this is: the address of the room's environment container. */
     readonly endpoint: KernelEndpoint,
-    /** Тетрадь, чьё это ядро: корень в документе комнаты. */
+    /** The notebook this kernel belongs to: its root in the room document. */
     readonly root: string = CELLS_KEY,
   ) {}
 
@@ -355,12 +362,13 @@ export class JupyterKernel {
   }
 
   /**
-   * Пришла ли текущая фаза по нашей просьбе.
+   * Whether the current phase came at our request.
    *
-   * Различает две одинаковые снаружи вещи: `restarting` после нажатия Restart —
-   * и `restarting`, которым Jupyter сообщает, что процесс убили (память). В
-   * первом случае прерванная ячейка просто не доработала, во втором её убило
-   * ядро, и сказать об этом должна она сама.
+   * Tells apart two things that look the same from outside: `restarting` after
+   * Restart was pressed, and the `restarting` with which Jupyter reports that
+   * the process was killed (memory). In the first case the interrupted cell
+   * simply did not finish; in the second the kernel's death killed it, and the
+   * cell itself must say so.
    */
   get phaseExpected(): boolean {
     return this._phaseExpected
@@ -375,15 +383,16 @@ export class JupyterKernel {
    * existing session for a path, so a server restart mid-seminar re-attaches to
    * the live kernel with everybody's variables still in it.
    *
-   * Ключ этой идемпотентности — ПУТЬ, а не имя: jupyter_server ищет сессию
-   * через `session_exists(path=…)`, а `name` для него подпись. Отсюда и
-   * устройство `jupyterSessionPath` ниже: у каждой тетради свой путь, значит
-   * своё ядро и свои переменные, а `cells` держит ровно тот путь, что был.
+   * The key of this idempotency is the PATH, not the name: jupyter_server looks
+   * the session up via `session_exists(path=…)`, and `name` is just a label to
+   * it. Hence the design of `jupyterSessionPath` below: each notebook has its
+   * own path, therefore its own kernel and its own variables, and `cells` keeps
+   * exactly the path it had.
    */
   static async connect(
     sessionId: string,
     endpoint: KernelEndpoint,
-    /** Корень тетради; по умолчанию — тетрадь комнаты, то есть прежнее поведение. */
+    /** The notebook root; by default the room's notebook, i.e. the old behaviour. */
     root: string = CELLS_KEY,
   ): Promise<JupyterKernel> {
     sessionDir(sessionId)
@@ -459,19 +468,19 @@ export class JupyterKernel {
    * clients. Used by Format, which has to run Python to do its job but must not
    * leave a footprint in a notebook thirty people are looking at.
    * @param opts.storeHistory whether IPython keeps the source in `In`/`_ih` and
-   * the result in `Out`/`_`. Defaults to «not silent». Off for a council
+   * the result in `Out`/`_`. Defaults to "not silent". Off for a council
    * attempt: the kernel is shared by the room, and anyone who can run a line
    * in it could otherwise read every attempt the teacher has run with
    * `In[-5:]` or `%history` — the one thing the council promises never happens.
-   * @param opts.userExpressions выражения, которые ядро посчитает после кода и
-   * вернёт в `execute_reply` — см. `ExecuteHandlers.onUserExpressions`.
-   * @param opts.quiet прячет ЭТОТ запуск от индикатора ядра: `busy` и `idle`
-   * вокруг него фазу не меняют. Ровно то же правило, что у `complete_request`
-   * и `inspect_request` ниже (см. handleFrame), и заведено оно тем же случаем:
-   * справка, которую спрашивает наведённая мышь, не событие комнаты, и
-   * моргающий на неё индикатор у тридцати человек — поломка, а не подсказка.
-   * Ставится только служебным запускам вида `silent: true`; обычная ячейка
-   * обязана быть видна.
+   * @param opts.userExpressions expressions the kernel evaluates after the code
+   * and returns in `execute_reply`; see `ExecuteHandlers.onUserExpressions`.
+   * @param opts.quiet hides THIS run from the kernel indicator: the `busy` and
+   * `idle` around it do not change the phase. Exactly the same rule as for
+   * `complete_request` and `inspect_request` below (see handleFrame), and it
+   * came from the same case: help requested by a hovering mouse is not a room
+   * event, and an indicator blinking at it for thirty people is a breakage, not
+   * a hint. Set only on service runs of the `silent: true` kind; an ordinary
+   * cell has to be visible.
    */
   async execute(
     code: string,
@@ -546,17 +555,17 @@ export class JupyterKernel {
     const parent = this.awaitingInput
     if (!parent) return false
     /*
-     * Ожидание снимается ПОСЛЕ отправки, а не до.
+     * The wait is cleared AFTER sending, not before.
      *
-     * `waitForSocket` — это до сорока пяти секунд ожидания канала, и он умеет
-     * бросить. Сброшенное заранее ожидание превращало такой бросок в тупик:
-     * ядро всё ещё стоит в `input()`, а `waitingForInput` уже false — значит
-     * каждое следующее «Send» молча получает `false`, приглашение висит у всей
-     * комнаты, очередь стоит, и выход один — «остановить».
+     * `waitForSocket` can wait up to forty-five seconds for the channel, and it
+     * can throw. A wait cleared in advance turned such a throw into a dead end:
+     * the kernel still sits in `input()`, while `waitingForInput` is already
+     * false, so every next "Send" silently gets `false`, the prompt hangs for
+     * the whole room, the queue stands still, and the only way out is "stop".
      */
     const socket = await this.waitForSocket()
-    // Пока мы ждали канал, на приглашение мог ответить кто-то другой — в
-    // семинаре это обычное дело, а не гонка.
+    // While we were waiting for the channel, someone else may have answered the
+    // prompt: in a seminar that is ordinary, not a race.
     if (this.awaitingInput !== parent) return false
     socket.send(
       JSON.stringify({
@@ -577,18 +586,20 @@ export class JupyterKernel {
   }
 
   /**
-   * Спросить ядро о чём-нибудь по shell — и дождаться ровно одного ответа.
+   * Ask the kernel something over shell, and wait for exactly one answer.
    *
-   * Мимо очереди выполнения, и это главное свойство. `execute` ставит ячейку в
-   * общую очередь комнаты (kernel/index.ts · pump), где она ждёт своей минуты
-   * за чужими; подсказка, доехавшая через минуту, не подсказка. Здесь запрос
-   * уходит в провод сразу, а если ядро занято своей ячейкой — ответа не
-   * приходит вовсе, и через SHELL_REQUEST_MS обещание отказывает. Это
-   * НОРМАЛЬНЫЙ исход, а не сбой: ipykernel разбирает shell по одному, и пока
-   * `time.sleep(60)` не кончится, ответить он не может.
+   * Bypassing the execution queue, and that is the main property. `execute`
+   * puts a cell into the room's shared queue (kernel/index.ts · pump), where it
+   * waits its turn behind others; a suggestion that arrives a minute later is
+   * no suggestion. Here the request goes onto the wire at once, and if the
+   * kernel is busy with its cell, no answer comes at all, and after
+   * SHELL_REQUEST_MS the promise rejects. This is a NORMAL outcome, not a
+   * failure: ipykernel handles shell one message at a time, and until
+   * `time.sleep(60)` is over it cannot answer.
    *
-   * Канала нет — отказ сразу, без `waitForSocket`: тот ждёт до сорока пяти
-   * секунд, и ждать их ради подсказки некому.
+   * No channel means an immediate refusal, without `waitForSocket`: that one
+   * waits up to forty-five seconds, and nobody would wait that long for a
+   * suggestion.
    */
   private request(
     msgType: string,
@@ -605,7 +616,8 @@ export class JupyterKernel {
         this.shellPending.delete(header.msg_id)
         reject(new Error(`${msgType} timed out after ${timeoutMs}ms`))
       }, timeoutMs)
-      // Вопрос о ядре не имеет права держать процесс живым — как и сторож выше.
+      // A question to the kernel must not keep the process alive, just like the
+      // watchdog above.
       timer.unref?.()
       this.shellPending.set(header.msg_id, { resolve, reject, timer })
       try {
@@ -621,17 +633,18 @@ export class JupyterKernel {
   }
 
   /**
-   * Что можно дописать в этом месте кода — глазами самого ядра.
+   * What can be completed at this point in the code, as the kernel itself sees
+   * it.
    *
-   * Именно ядра, а не разбора текста в браузере: `df.` в тетради — это
-   * настоящий DataFrame с настоящими методами, и список их знает только тот
-   * процесс, где он лежит. Разбор текста знает слова этой же ячейки, и ими мы
-   * подпираем ответ на клиенте, когда ядра нет.
+   * The kernel's view precisely, not text parsing in the browser: `df.` in a
+   * notebook is a real DataFrame with real methods, and only the process it
+   * lives in knows their list. Text parsing knows the words of this same cell,
+   * and we prop up the answer with them on the client when there is no kernel.
    *
-   * `types` — из `metadata._jupyter_types_experimental`: ipykernel кладёт туда
-   * то, чем jedi считает каждое совпадение («function», «instance», «module»).
-   * Поле экспериментальное больше десяти лет и есть не у всех ядер, поэтому
-   * его отсутствие — не ошибка, а просто список без значков.
+   * `types` comes from `metadata._jupyter_types_experimental`: ipykernel puts
+   * there what jedi takes each match to be ("function", "instance", "module").
+   * The field has been experimental for more than ten years and not every
+   * kernel has it, so its absence is not an error, just a list without icons.
    */
   async complete(code: string, cursorPos: number): Promise<CompleteResult> {
     const content = await this.request('complete_request', { code, cursor_pos: cursorPos })
@@ -653,11 +666,13 @@ export class JupyterKernel {
   }
 
   /**
-   * Справка о том, что стоит под кареткой: сигнатура и начало docstring.
+   * Help for what is under the caret: the signature and the start of the
+   * docstring.
    *
-   * То же, что делает `имя?` в ячейке, только ответ не печатается в вывод, а
-   * едет вызвавшему. `detail_level` 0 — сигнатура и документация, 1 — ещё и
-   * исходник; для подсказки над скобкой хватает нуля.
+   * The same as `name?` does in a cell, except that the answer is not printed
+   * to the output but travels to the caller. `detail_level` 0 means the
+   * signature and documentation, 1 adds the source as well; zero is enough for
+   * a hint above a parenthesis.
    */
   async inspect(code: string, cursorPos: number, detailLevel = 0): Promise<InspectResult> {
     const content = await this.request('inspect_request', {
@@ -975,8 +990,8 @@ export class JupyterKernel {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        // Предыдущий канал закрывается здесь и сейчас: два открытых сокета к
-        // одному ядру — это весь iopub дважды, в каждой ячейке комнаты.
+        // The previous channel is closed here and now: two open sockets to one
+        // kernel mean all of iopub twice, in every cell of the room.
         const previous = this.socket
         this.socket = socket
         this.reconnectAttempts = 0
@@ -984,14 +999,15 @@ export class JupyterKernel {
           try {
             previous.terminate()
           } catch {
-            /* уже закрыт */
+            /* already closed */
           }
         }
         resolve()
       })
       socket.on('message', (data: RawData) => {
-        // Кадры сокета, который уже сменили, — эхо прошлого канала: те же
-        // сообщения уже пришли (или придут) по новому.
+        // Frames from a socket that has already been replaced are an echo of the
+        // previous channel: the same messages have come (or will come) over the
+        // new one.
         if (this.socket !== socket) return
         this.handleFrame(data)
       })
@@ -1010,8 +1026,8 @@ export class JupyterKernel {
           reject(new Error(tr("server.channelClosedBeforeItOpened.7a0657")))
           return
         }
-        // Закрылся не наш канал — тот, что мы сами и сменили: переподключаться
-        // к нему незачем, живой уже есть.
+        // The channel that closed is not ours but the one we replaced ourselves:
+        // there is no reason to reconnect to it, a live one already exists.
         if (ours) this.scheduleReconnect()
       })
     })
@@ -1034,7 +1050,7 @@ export class JupyterKernel {
 
   private reconnect(): Promise<void> {
     if (this.disposed || this._phase === 'dead') return Promise.resolve()
-    // Одно переподключение на всех, кто его ждёт, — как `opening` у терминала.
+    // One reconnect for everyone waiting on it, like the terminal's `opening`.
     if (this.reconnecting) return this.reconnecting
     const run = (async () => {
       let failure: unknown = null
@@ -1043,8 +1059,8 @@ export class JupyterKernel {
       } catch (err) {
         failure = err
       }
-      // Снимается ДО следующего захода: иначе `scheduleReconnect` увидел бы
-      // самого себя и круг остановился бы на первой же неудаче.
+      // Cleared BEFORE the next round: otherwise `scheduleReconnect` would see
+      // itself, and the loop would stop at the very first failure.
       this.reconnecting = null
       if (failure === null) return
       if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
@@ -1089,12 +1105,12 @@ export class JupyterKernel {
     const pending = parentId ? this.pending.get(parentId) : undefined
 
     /*
-     * Ответ на служебный запрос — раньше всего остального.
+     * A reply to a service request comes before everything else.
      *
-     * Раньше, потому что ниже начинается разбор выполнения: ветка `status`
-     * отвечает за фазы, а всё, что после неё, молча уходит в `if (!pending)
-     * return`. `complete_reply` в `pending` не лежит и лежать не должен — у
-     * него нет ни вывода, ни закрывающего idle, которого стоило бы ждать.
+     * Before, because below this the execution handling begins: the `status`
+     * branch is in charge of phases, and everything after it silently falls
+     * into `if (!pending) return`. `complete_reply` is not in `pending` and
+     * must not be: it has no output and no closing idle worth waiting for.
      */
     const waiting = parentId ? this.shellPending.get(parentId) : undefined
     if (waiting && typeof msgType === 'string' && msgType.endsWith('_reply')) {
@@ -1132,46 +1148,48 @@ export class JupyterKernel {
         return
       }
       /*
-       * Занятость от подсказки — не занятость комнаты.
+       * Busy from a suggestion is not the room being busy.
        *
-       * ipykernel публикует `busy` и `idle` вокруг ЛЮБОГО запроса по shell, не
-       * только вокруг выполнения: у `complete_request` и `inspect_request` они
-       * такие же, и в `parent_header` стоит их тип. Пока их принимали за фазу,
-       * индикатор ядра моргал у всей комнаты на каждую латинскую букву любого
-       * студента — редактор спрашивает дополнение по мере набора (19.09.2026;
-       * по-русски не моргало: кириллица — не идентификатор, и запрос не
-       * уходит). Shell у ядра один и последовательный, так что подсказка не
-       * может ни начаться, ни кончиться посреди чужой ячейки: пропуская её
-       * статусы, фазу выполнения мы не теряем. Единственное, что от неё
-       * берём, — первый `idle` только что поднятого ядра: он честно говорит,
-       * что ядро отвечает.
+       * ipykernel publishes `busy` and `idle` around ANY shell request, not
+       * only around an execution: `complete_request` and `inspect_request` get
+       * them too, with their type in `parent_header`. While these were taken
+       * for the phase, the kernel indicator blinked for the whole room on every
+       * Latin letter any student typed, since the editor asks for completions
+       * while you type (19 Sep 2026; typing in Russian did not blink: Cyrillic
+       * is not an identifier, and no request goes out). The kernel has one
+       * sequential shell, so a suggestion can neither start nor end in the
+       * middle of someone else's cell: skipping its statuses, we lose no
+       * execution phase. The only thing we take from it is the first `idle` of
+       * a kernel that has just come up: it honestly says the kernel answers.
        */
       const parentType = msg.parent_header?.msg_type
       /*
-       * И запуск бывает служебным — тогда он тоже не занятость комнаты.
+       * And a run can be a service one too; then it is not the room being busy
+       * either.
        *
-       * Статический разбор справки (inspect-static.ts) — это настоящий
-       * `execute_request`: jedi живёт в ядре, и спросить его иначе нечем. Но
-       * поводом он остаётся тем же — наведённая мышь, — и моргать от него
-       * индикатору так же нельзя, как от `inspect_request` выше. Узнаём такие
-       * по ЗАПРОСУ, а не по типу сообщения: пометку ставит тот, кто запуск
-       * заводил (`execute`, opts.quiet), и подделать её кадром снаружи нечем.
+       * The static help analysis (inspect-static.ts) is a real
+       * `execute_request`: jedi lives in the kernel, and there is no other way
+       * to ask it. But its cause is still the same, a hovering mouse, and the
+       * indicator must not blink from it any more than from `inspect_request`
+       * above. Such runs are recognised by the REQUEST, not by the message
+       * type: the mark is set by whoever started the run (`execute`,
+       * opts.quiet), and a frame from outside has no way to forge it.
        */
       const quiet =
         parentType === 'complete_request' ||
         parentType === 'inspect_request' ||
         pending?.quiet === true
       if (quiet) {
-        // Единственное, что берём и у служебного, — первый `idle` только что
-        // поднятого ядра: он честно говорит, что ядро отвечает.
+        // The only thing we take even from a service run: the first `idle` of a
+        // kernel that has just come up, which honestly says the kernel answers.
         if (state === 'idle' && this._phase === 'starting') this.setPhase('idle')
       } else if (state === 'busy' || state === 'idle' || state === 'starting') {
         this.setPhase(state)
       }
       /*
-       * А ЗАКРЫТЬ ожидание обязан и служебный: `idle` — вторая половина
-       * рукопожатия, без которой `execute` не разрешится вовсе (maybeSettle).
-       * Тихий он для комнаты, а не для того, кто его ждёт.
+       * But a service run is still obliged to CLOSE the wait: `idle` is the
+       * second half of the handshake, without which `execute` never resolves
+       * (maybeSettle). It is quiet for the room, not for whoever waits on it.
        */
       if (pending && state === 'idle') {
         pending.idle = true
@@ -1197,10 +1215,11 @@ export class JupyterKernel {
       const status = content.status
       pending.status = status === 'ok' || status === 'error' || status === 'abort' ? status : 'ok'
       /*
-       * Ответ на `user_expressions` — до settle, как и справка ниже: после
-       * него писать уже некуда. Ядро не считает выражения на упавшем запуске
-       * и присылает пустой объект — значит пустота здесь означает «не
-       * подтверждено», и слушатель обязан читать её именно так.
+       * The answer to `user_expressions` comes before settle, like the help
+       * below: after settle there is nowhere to write. The kernel does not
+       * evaluate the expressions on a failed run and sends an empty object, so
+       * emptiness here means "not confirmed", and the listener has to read it
+       * exactly that way.
        */
       if (pending.handlers.onUserExpressions) {
         const values = content.user_expressions
@@ -1209,27 +1228,28 @@ export class JupyterKernel {
         )
       }
       /*
-       * `print?` ничего не печатает — и это не фигура речи.
+       * `print?` prints nothing, and that is not a figure of speech.
        *
-       * IPython превращает `имя?` в запрос справки, и ответ на него не идёт
-       * по iopub вовсе: ни stream, ни display_data, ни execute_result. Он
-       * приезжает сюда, в execute_reply, полем `payload` — куском, который в
-       * настоящем ноутбуке открывается «страницей» внизу окна. Мы читали из
-       * этого сообщения один только status, так что вся справка отправлялась в
-       * никуда: человек писал `print?`, ячейка отрабатывала за миллисекунды и
-       * оставалась пустой, будто вопросительный знак ничего не значит.
+       * IPython turns `name?` into a help request, and the answer does not go
+       * over iopub at all: no stream, no display_data, no execute_result. It
+       * arrives here, in execute_reply, as the `payload` field, a piece that in
+       * a real notebook opens as a "page" at the bottom of the window. We read
+       * only the status from this message, so all the help went nowhere: a
+       * person wrote `print?`, the cell finished in milliseconds and stayed
+       * empty, as if the question mark meant nothing.
        *
-       * Отдаём его как обычный вывод: внутри `text/plain` с ANSI-раскраской,
-       * которую наш рендер уже умеет — той же дорогой ходят трейсбеки.
+       * We hand it over as ordinary output: inside is `text/plain` with ANSI
+       * colouring, which our renderer already handles; tracebacks travel the
+       * same road.
        *
-       * Раньше settle: после него писать уже некуда.
+       * Before settle: after it there is nowhere to write.
        */
       const payload = Array.isArray(content.payload) ? content.payload : []
       for (const item of payload) {
         const part = item as { source?: unknown; data?: unknown }
-        // 'page' — это `?`, `??`, %pinfo и %pdoc. Остальные виды (set_next_input
-        // от %load, ask_exit от exit()) меняют не вывод, а состояние сеанса, и
-        // показывать их как вывод было бы неправдой.
+        // 'page' is `?`, `??`, %pinfo and %pdoc. The other kinds (set_next_input
+        // from %load, ask_exit from exit()) change not the output but the
+        // session state, and showing them as output would be untrue.
         if (part.source !== 'page') continue
         const bundle = toStringBundle(part.data)
         if (Object.keys(bundle).length > 0) pending.handlers.onData(bundle, null)
@@ -1269,13 +1289,15 @@ export class JupyterKernel {
           break
         case 'clear_output':
           /*
-           * `wait` — это не мелочь, вопреки прежнему комментарию здесь.
+           * `wait` is not a trifle, contrary to the comment that used to be
+           * here.
            *
-           * Он утверждал, что на окне склейки разница незаметна. Разница ровно
-           * в том, чем рисуются прогресс-бары и виджеты:
-           * `while ...: clear_output(wait=True); print(frame)` очищал массив
-           * немедленно, а замена ждала до config.outputFlushMs — и комната
-           * смотрела, как анимация мигает раз двадцать в секунду.
+           * It claimed the difference was invisible within the coalescing
+           * window. The difference is exactly in how progress bars and widgets
+           * are drawn: `while ...: clear_output(wait=True); print(frame)`
+           * cleared the array immediately, while the replacement waited up to
+           * config.outputFlushMs, and the room watched the animation blink
+           * twenty times a second.
            */
           handlers.onClear(Boolean(content.wait))
           break
@@ -1311,12 +1333,12 @@ export class JupyterKernel {
       pending.settle('abort')
     }
     /*
-     * Служебные запросы — тем же движением.
+     * Service requests go in the same sweep.
      *
-     * Процесс за сокетом меняется (перезапуск, OOM), и ответа на вопрос,
-     * заданный прошлому процессу, не будет никогда. Без этой половины
-     * дополнение висело бы до своего таймаута — недолго, но на ровном месте, а
-     * `dispose` оставлял бы после себя обещание, которое никто не тронет.
+     * The process behind the socket changes (a restart, OOM), and a question
+     * asked of the previous process will never be answered. Without this half a
+     * completion would hang until its timeout (not for long, but for nothing),
+     * and `dispose` would leave behind a promise nobody will ever touch.
      */
     const asked = [...this.shellPending.entries()]
     this.shellPending.clear()

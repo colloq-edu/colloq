@@ -29,40 +29,41 @@ const ORIGIN = 'kernel'
 const MAX_CELL_OUTPUT_CHARS = 400 * 1024
 
 /**
- * У картинок свой бюджет, и он больше.
+ * Images have a budget of their own, and it is larger.
  *
- * Один `plt.imshow` при dpi=200 — это мегабайт-другой base64, то есть больше
- * всего текстового потолка сразу. Считать их из одного кошелька значило
- * отвечать на семинаре по зрению «output stopped after 400 KB — write to a
- * file instead of printing» вместо картинки, ради которой ячейку и запускали,
- * и заодно глушить весь дальнейший print этой ячейки. Цена известна: столько
- * же уедет каждому в комнате, в снимок и в ключевой кадр истории, — поэтому
- * бюджет на ячейку, а не на кадр, и не «сколько дадут».
+ * One `plt.imshow` at dpi=200 is a megabyte or two of base64, i.e. more than
+ * the whole text ceiling at once. Paying for them from one wallet would mean
+ * answering a computer vision seminar with "output stopped after 400 KB —
+ * write to a file instead of printing" instead of the image the cell was run
+ * for, and silencing every later print of that cell along the way. The price
+ * is known: the same amount travels to everyone in the room, into the
+ * snapshot and into the history keyframe, so the budget is per cell, not per
+ * frame, and not "however much we get".
  */
 const MAX_CELL_DATA_CHARS = 6 * 1024 * 1024
 
 /**
- * Комната, которой этот бюджет достаётся целиком.
+ * The room that gets this budget in full.
  *
- * Цена картинки — не её размер, а размер, умноженный на число открытых вкладок:
- * один `imshow` на два мегабайта в комнате из пятисот человек — это гигабайт
- * исходящего и пятьсот независимых заданий deflate, за которыми встают в
- * очередь ВСЕ остальные правки, включая набор текста. На семинаре из тридцати
- * это шестьдесят мегабайт и никого не трогает, поэтому потолок общий не для
- * всех: до этого числа зрителей он прежний.
+ * The cost of an image is not its size but its size times the number of open
+ * tabs: one two-megabyte `imshow` in a room of five hundred people is a
+ * gigabyte of egress and five hundred independent deflate jobs, behind which
+ * ALL other edits queue up, typing included. In a seminar of thirty it is
+ * sixty megabytes and bothers nobody, so the ceiling is not the same for
+ * everyone: up to this number of viewers it stays as it was.
  */
 const FULL_DATA_BUDGET_VIEWERS = 40
 /**
- * Ниже не опускаемся ни при каком зале: обычная картинка matplotlib (`figsize`
- * по умолчанию, dpi 100) — это сотня-другая килобайт, и лекция, где её нельзя
- * показать вовсе, не лучше лекции, которая тормозит.
+ * We never go below this, whatever the audience: an ordinary matplotlib image
+ * (default `figsize`, dpi 100) is a hundred or two kilobytes, and a lecture
+ * where it cannot be shown at all is no better than a lecture that lags.
  */
 const MIN_CELL_DATA_CHARS = 768 * 1024
 
 /**
- * Сколько картинок ячейке позволено показать — с оглядкой на то, скольким это
- * поедет. Чистая функция: считать её нечем, кроме числа зрителей, и проверять
- * надо именно правило.
+ * How many images a cell is allowed to show, with an eye on how many people
+ * they will travel to. A pure function: there is nothing to compute it from
+ * but the number of viewers, and it is the rule itself that needs testing.
  */
 export function dataBudgetFor(viewers: number): number {
   if (!Number.isFinite(viewers) || viewers <= FULL_DATA_BUDGET_VIEWERS) return MAX_CELL_DATA_CHARS
@@ -71,67 +72,72 @@ export function dataBudgetFor(viewers: number): number {
 }
 
 /**
- * Порог, за которым картинка уезжает из документа наружу (`server/blobs.ts`).
+ * The threshold past which an image leaves the document for outside storage
+ * (`server/blobs.ts`).
  *
- * Шестнадцать килобайт base64 — это двенадцать килобайт байтов: меньше весит
- * значок или маленький спрайт, которому отдельный запрос дороже собственного
- * размера, а всё, что больше, — уже график. Текст, HTML и SVG не выносятся
- * никогда: первые два комната показывает разметкой и санитайзит на месте, а
- * ссылка на них была бы вторым кругом загрузки ради килобайта.
+ * Sixteen kilobytes of base64 are twelve kilobytes of bytes: less than that is
+ * an icon or a small sprite, for which a separate request costs more than its
+ * own size, and anything bigger is already a plot. Text, HTML and SVG are
+ * never moved out: the room shows the first two as markup and sanitises them
+ * in place, and a link to them would be a second round of loading for the
+ * sake of a kilobyte.
  */
 const BLOB_FROM_CHARS = 16 * 1024
 
 /**
- * Во сколько раз вынесенная картинка дешевле для комнаты, чем лежащая в
- * документе.
+ * How many times cheaper an image moved out of the document is for the room
+ * than one lying in it.
  *
- * Бюджет у ячейки остался один (`dataBudget`), и это правильно: он про то,
- * сколько комната готова заплатить за вывод одной ячейки. Но ссылка стоит
- * иначе, чем base64 в документе: документ её не несёт вовсе, снимок и кадр
- * истории — тоже, zlib на каждого зрителя не тратится, а картинка едет один
- * раз, отдельным запросом, и дальше живёт в кэше браузера. Остаётся только
- * исходящий трафик — примерно восьмая часть прежней цены. Так что вынесенные
- * байты и считаются восьмой частью: ячейка, которая раньше упиралась в потолок
- * на шести мегабайтах картинок, теперь рисует их сорок восемь.
+ * The cell still has one budget (`dataBudget`), and that is right: it is about
+ * how much the room is prepared to pay for one cell's output. But a link costs
+ * differently from base64 in the document: the document does not carry it at
+ * all, neither do the snapshot and the history frame, no zlib is spent per
+ * viewer, and the image travels once, as a separate request, and then lives
+ * in the browser cache. Only the egress traffic remains, roughly an eighth of
+ * the former price. So the moved-out bytes are counted at one eighth: a cell
+ * that used to hit the ceiling at six megabytes of images now draws
+ * forty-eight.
  */
 const BLOB_BUDGET_FACTOR = 8
 
 /**
- * Во что обходится документу одна ссылка: хэш в шестьдесят четыре знака, тип,
- * вес и кавычки вокруг — с запасом. Считается до записи на диск, когда хэша
- * ещё нет, а решать про бюджет уже надо.
+ * What one link costs the document: a sixty-four-character hash, the type, the
+ * weight and the quotes around them, with a margin. Counted before the write
+ * to disk, when there is no hash yet but the budget already has to be decided.
  */
 const REF_CHARS = 150
 
 /** RecursionError tracebacks run to thousands of identical frames. */
 const MAX_TRACEBACK_LINES = 80
 /**
- * Длина одной строки ошибки: и `evalue`, и каждого кадра трейсбека.
+ * The length of one error line: both `evalue` and each traceback frame.
  *
- * Ошибка идёт мимо потолка ячейки, потому что она и есть причина запуска, — но
- * это не значит «сколько угодно». `assert len(rows) == 0, rows` на списке из
- * миллиона элементов кладёт мегабайты в `evalue` и в последнюю строку
- * трейсбека, а оттуда — во все тридцать браузеров, в снимок и в каждый
- * ключевой кадр истории. Восемьдесят кадров по четыре килобайта плюс
- * сообщение — это меньше потолка ячейки, так что запись ограничена и целиком.
+ * An error bypasses the cell ceiling, because it is the very reason for the
+ * run, but that does not mean "as much as you like".
+ * `assert len(rows) == 0, rows` on a list of a million elements puts megabytes
+ * into `evalue` and into the last traceback line, and from there into all
+ * thirty browsers, the snapshot and every history keyframe. Eighty frames of
+ * four kilobytes plus the message are less than the cell ceiling, so the
+ * record as a whole is bounded too.
  */
 const MAX_ERROR_LINE_CHARS = 4 * 1024
 
-/** Обрезать строку, сказав в ней самой, что она обрезана. */
+/** Cut a line, saying in the line itself that it was cut. */
 function clip(text: string, max: number): string {
   if (text.length <= max) return text
   return tr("server.colloqMoreCharactersCutHere.cfc854", { p0: text.slice(0, max), p1: text.length - max })
 }
 
 /**
- * Свернуть кадры одной строки: `\r` значит «пиши эту строку заново».
+ * Collapse the frames of one line: `\r` means "write this line again".
  *
- * tqdm, pip и keras рисуют прогресс возвратом каретки — за десять минут
- * обучения это тысячи кадров одной и той же строки. Панель их сворачивает при
- * показе (`collapseCarriage` в web/src/lib/utils.ts, тот же алгоритм), но по
- * проводу они всё равно ехали и до последнего символа тратили потолок вывода
- * ячейки: настоящий результат обучения обрезался прогресс-баром, который его
- * набрал. В документ уходит последний кадр каждой строки — то, что и видно.
+ * tqdm, pip and keras draw progress with carriage returns: over ten minutes of
+ * training that is thousands of frames of the same line. The panel collapses
+ * them for display (`collapseCarriage` in web/src/lib/utils.ts, the same
+ * algorithm), but they still travelled over the wire and used up the cell's
+ * output ceiling down to the last character: the real training result was cut
+ * off by the progress bar that had filled the ceiling. The document gets the
+ * last frame of each line, which is what is visible anyway.
  */
 function collapseCarriage(text: string): string {
   if (!text.includes('\r')) return text
@@ -152,39 +158,42 @@ export class OutputWriter {
   private used = 0
   private truncated = false
   private noticed = false
-  /** Бюджет картинок и прочих mimebundle: считается отдельно от текста. */
+  /** The budget for images and other mimebundles: counted apart from text. */
   private usedData = 0
   private dataTruncated = false
   private dataNoticed = false
   /**
-   * Незакрытая строка в конце документа — та, которую ещё может переписать `\r`.
+   * The unfinished line at the end of the document, the one a `\r` may still
+   * rewrite.
    *
-   * Свернуть кадры внутри одного окна склейки мало: tqdm шлёт кадр в окно, и
-   * между окнами строка обязана оставаться той же самой строкой. Поэтому хвост
-   * помнится ровно так, как он лежит в Y.Text, и следующий кадр не дописывается
-   * за ним, а заменяет его.
+   * Collapsing frames inside one coalescing window is not enough: tqdm sends a
+   * frame per window, and between windows the line must stay the same line. So
+   * the tail is remembered exactly as it lies in the Y.Text, and the next frame
+   * is not appended after it but replaces it.
    */
   private tailText = ''
   private tailName: StreamName | null = null
   private disposed = false
   /**
-   * Обещание: следующая запись не добавляет, а заменяет.
+   * A promise: the next write does not add but replaces.
    *
-   * Заводится только на `clear_output(wait=True)` — том самом, которым
-   * рисуются прогресс-бары и виджеты. Слово «wait» в нём значит «сотри, когда
-   * будет чем заменить», а мы стирали сразу: массив пустел немедленно, замена
-   * ждала окно склейки, и комната смотрела, как анимация мигает раз двадцать в
-   * секунду. Само по себе обещание в документ не пишет ничего.
+   * Set only on `clear_output(wait=True)`, the very call progress bars and
+   * widgets are drawn with. The word "wait" in it means "erase when there is
+   * something to replace it with", but we erased right away: the array went
+   * empty immediately, the replacement waited for the coalescing window, and
+   * the room watched the animation blink twenty times a second. By itself the
+   * promise writes nothing into the document.
    */
   private superseded = false
   /**
-   * Лёг ли в документ хоть один кусок потока; см. stream().
+   * Whether at least one stream chunk has landed in the document; see stream().
    *
-   * Ставится там, где текст правда дописан (`put`), а не в `write()`: `write()`
-   * зовёт и `clear()`, который `runOne` делает в стартовой транзакции ЕЩЁ ДО
-   * execute — и признак оказывался поднят раньше первого байта. Первый вывод
-   * после этого честно ждал окно склейки, то есть ровно те пятьдесят
-   * миллисекунд пустого места, ради которых исключение и заведено.
+   * Set where text is really appended (`put`), not in `write()`: `write()` is
+   * also called by `clear()`, which `runOne` does in the starting transaction
+   * EVEN BEFORE execute, and the flag ended up raised before the first byte.
+   * The first output after that dutifully waited for the coalescing window,
+   * i.e. exactly the fifty milliseconds of empty space the exception exists to
+   * avoid.
    */
   private wrote = false
 
@@ -192,16 +201,17 @@ export class OutputWriter {
     private readonly doc: Y.Doc,
     private readonly cellId: string,
     /**
-     * Потолок картинок этой ячейки — свой у каждого выполнения, потому что
-     * зависит от того, сколько человек сейчас в комнате (см. dataBudgetFor).
+     * This cell's image ceiling, its own for each execution, because it depends
+     * on how many people are in the room right now (see dataBudgetFor).
      */
     private readonly dataBudget: number = MAX_CELL_DATA_CHARS,
     /**
-     * Комната, рядом с которой лягут вынесенные картинки.
+     * The room next to which moved-out images will be stored.
      *
-     * Необязательна, и это не забывчивость: писатель без комнаты (тесты,
-     * аварийный писатель мёртвого ядра) пишет всё в документ, как раньше.
-     * Хранилище адресуется семинаром — без него выносить некуда.
+     * Optional, and not by forgetfulness: a writer without a room (tests, the
+     * emergency writer of a dead kernel) writes everything into the document,
+     * as before. The storage is addressed by seminar; without one there is
+     * nowhere to move anything to.
      */
     private readonly sessionId: string | null = null,
   ) {}
@@ -209,28 +219,28 @@ export class OutputWriter {
   stream(name: StreamName, text: string): void {
     if (this.disposed || !text) return
     /*
-     * Упёршаяся в потолок ячейка всё же должна пропустить замену.
+     * A cell that has hit the ceiling must still let a replacement through.
      *
-     * Раньше здесь стояло `|| this.truncated`, и ячейка, набравшая свои 400 КБ,
-     * отказывала каждому следующему куску — включая тот, который должен был
-     * выполнить отложенное стирание и сбросить бюджет. Отложенное обещание не
-     * срабатывало никогда, и ячейка держала прошлый вывод до конца выполнения.
-     * В коротком тесте этого не видно вовсе.
+     * There used to be `|| this.truncated` here, and a cell that had used up
+     * its 400 KB refused every next chunk, including the one that was supposed
+     * to carry out the deferred erase and reset the budget. The deferred
+     * promise never fired, and the cell kept its previous output until the end
+     * of the execution. In a short test this does not show at all.
      */
     if (this.truncated && !this.superseded) return
     const last = this.pending[this.pending.length - 1]
     if (last && last.name === name) last.text += text
     else this.pending.push({ name, text })
     /*
-     * Первый вывод не ждёт окна склейки.
+     * The first output does not wait for the coalescing window.
      *
-     * Склейка существует, чтобы двести записей не стали двумястами
-     * обновлениями, — а на первом байте она не экономит ничего и стоит ровно
-     * тех пятидесяти миллисекунд, которые комната смотрит на пустое место
-     * после нажатия. Дальше всё как было.
+     * Coalescing exists so that two hundred writes do not become two hundred
+     * updates, but on the first byte it saves nothing and costs exactly the
+     * fifty milliseconds the room spends looking at empty space after the
+     * click. After that everything is as before.
      *
-     * `clear()` этот признак не сбрасывает: иначе перерисовка прогресс-бара
-     * начала бы писать без склейки двадцать раз в секунду.
+     * `clear()` does not reset this flag: otherwise redrawing a progress bar
+     * would start writing without coalescing twenty times a second.
      */
     if (!this.wrote) {
       this.flush()
@@ -245,11 +255,12 @@ export class OutputWriter {
   }
 
   /**
-   * Стереть не сейчас, а когда будет чем заменить.
+   * Erase not now, but when there is something to replace it with.
    *
-   * `clear_output(wait=True)` — это «сотри в тот момент, когда придёт
-   * следующий кадр». Ничего не пишет и ничего не планирует: всю работу делает
-   * следующая запись, а если её не будет — конец выполнения (см. dispose).
+   * `clear_output(wait=True)` means "erase at the moment the next frame
+   * arrives". It writes nothing and schedules nothing: all the work is done by
+   * the next write, and if there is none, by the end of the execution (see
+   * dispose).
    */
   supersede(): void {
     if (this.disposed) return
@@ -260,49 +271,50 @@ export class OutputWriter {
     if (this.disposed) return
     // Ordering matters more than latency: a print() before a plot must stay before it.
     this.flush()
-    // Строка потока закрыта картинкой: дописывать в неё уже некуда.
+    // An image closes the stream line: there is nothing left to append to.
     this.forgetTail()
     /*
-     * Фигура plotly — раньше всех прочих расчётов, и по двум разным поводам.
+     * A plotly figure comes before all other calculations, for two different
+     * reasons.
      *
-     * Первый: рядом с ней ядро присылает `text/html` — сотни килобайт скрипта,
-     * который продукт не исполнит никогда (kernel/figures.ts). В документ он
-     * ложился бы полным весом и на каждый график.
+     * First: next to it the kernel sends `text/html`, hundreds of kilobytes of
+     * script the product will never execute (kernel/figures.ts). In the
+     * document it would land at full weight, and on every plot.
      *
-     * Второй: у фигуры свой потолок поверх бюджета ячейки. Обрезать JSON
-     * нельзя — обрезанная фигура это не «часть графика», а битый кадр, — так
-     * что вместо неё встаёт строка, которая говорит, что случилось и что
-     * делать.
+     * Second: a figure has its own ceiling on top of the cell budget. JSON
+     * cannot be cut (a truncated figure is not "part of a plot" but a broken
+     * frame), so its place is taken by a line that says what happened and what
+     * to do.
      */
     let bundle = withoutDeadPlotlyHtml(mimebundle)
     const chars = figureChars(bundle)
     const oversize = chars > MAX_FIGURE_CHARS ? chars : 0
     if (oversize > 0) bundle = withoutFigure(bundle)
     /*
-     * Раскодировать — до транзакции, положить — внутри неё.
+     * Decode before the transaction, put inside it.
      *
-     * Внутри транзакции документ закрыт для всех остальных, и `Buffer.from`
-     * мегабайтного base64 там — это миллисекунды, за которыми встаёт очередь
-     * из чужого набора текста. А вот решение «класть или не класть» зависит от
-     * бюджета, который отложенное стирание сбрасывает ровно в начале
-     * транзакции (см. `write`), — поэтому оно принимается там.
+     * Inside a transaction the document is closed to everyone else, and
+     * `Buffer.from` on a megabyte of base64 there takes milliseconds, behind
+     * which a queue of other people's typing builds up. But the decision "put
+     * it or not" depends on the budget, which the deferred erase resets exactly
+     * at the start of the transaction (see `write`), so it is made there.
      */
     const heavy = this.heavyParts(bundle)
     this.write((outputs) => {
       if (oversize > 0) this.say(outputs, figureTooBigNotice(oversize))
-      // Из набора могла остаться одна фигура, и та не поместилась: записи
-      // data тогда нет вовсе — только строка выше.
+      // The bundle may have held only a figure, and that did not fit: then
+      // there is no data record at all, only the line above.
       if (Object.keys(bundle).length === 0) return
       const inline: Record<string, string> = {}
       for (const [mime, value] of Object.entries(bundle)) {
         if (!heavy.has(mime)) inline[mime] = value
       }
       /*
-       * Сначала цена, потом запись на диск.
+       * First the price, then the write to disk.
        *
-       * Иначе ячейка, упёршаяся в потолок, оставляла бы по файлу на каждую
-       * картинку, которую ей не дали показать: в документ они не попадут, и
-       * убрать их потом будет некому до удаления семинара.
+       * Otherwise a cell that hit the ceiling would leave a file behind for
+       * every image it was not allowed to show: they will never get into the
+       * document, and nobody would remove them until the seminar is deleted.
        */
       let spilled = 0
       for (const body of heavy.values()) spilled += body.length
@@ -319,8 +331,8 @@ export class OutputWriter {
       for (const [mime, body] of heavy) {
         const stored = this.sessionId ? putBlob(this.sessionId, body) : null
         if (!stored) {
-          // Не записалось — картинка всё равно едет, просто по-старому. Потерять
-          // её из-за полного диска хуже, чем заплатить за неё документом.
+          // Not written: the image still travels, just the old way. Losing it
+          // because of a full disk is worse than paying for it in the document.
           inline[mime] = bundle[mime]
           continue
         }
@@ -338,18 +350,17 @@ export class OutputWriter {
   }
 
   /**
-   * Что из набора уедет по ссылке — уже раскодированным.
+   * Which parts of the bundle will travel by link, already decoded.
    *
-   * Растровые картинки и фигуры plotly (`SPILL_MIMES`), и только крупные:
-   * остальное дешевле оставить в документе, чем сходить за ним вторым
-   * запросом. Тот же список, по которому выносит содержимое публикация, —
-   * чтобы в комнате и на опубликованной странице по ссылке уезжало одно и то
-   * же.
+   * Raster images and plotly figures (`SPILL_MIMES`), and only large ones: the
+   * rest is cheaper to leave in the document than to fetch with a second
+   * request. The same list publishing uses to move content out, so that the
+   * same things travel by link in the room and on a published page.
    *
-   * Кодировка у них разная и спрашивается по типу (`spillEncoding`): картинка
-   * приходит base64, фигура — текстом JSON. Раскодировать текст как base64 —
-   * это мусор в записи и пустая рамка на экране, ровно та беда, из-за которой
-   * SVG в записи не выносится вовсе.
+   * Their encoding differs and is looked up by type (`spillEncoding`): an
+   * image arrives as base64, a figure as JSON text. Decoding text as base64
+   * gives garbage in the record and an empty frame on screen, the very trouble
+   * that keeps SVG in a record from being moved out at all.
    */
   private heavyParts(mimebundle: Record<string, string>): Map<string, Uint8Array> {
     const heavy = new Map<string, Uint8Array>()
@@ -358,8 +369,8 @@ export class OutputWriter {
       if (typeof value !== 'string' || value.length < BLOB_FROM_CHARS) continue
       if (!SPILL_MIMES.has(mime)) continue
       const body = Buffer.from(value, spillEncoding(mime))
-      // Пустое после раскодирования — это не картинка, а что-то, что ядро
-      // назвало картинкой: пусть едет в документ и разбирается там.
+      // Empty after decoding means not an image but something the kernel called
+      // an image: let it go into the document and be sorted out there.
       if (body.length > 0) heavy.set(mime, body)
     }
     return heavy
@@ -402,8 +413,8 @@ export class OutputWriter {
     this.dataTruncated = false
     this.dataNoticed = false
     this.forgetTail()
-    // Немедленное стирание отвечает на тот же вопрос, что и отложенное, — и
-    // отвечает раньше. Обещание больше не нужно.
+    // An immediate erase answers the same question as a deferred one, and
+    // answers it earlier. The promise is no longer needed.
     this.superseded = false
     this.write((outputs) => {
       if (outputs.length > 0) outputs.delete(0, outputs.length)
@@ -432,15 +443,16 @@ export class OutputWriter {
   dispose(): void {
     this.flush()
     /*
-     * Невыполненное обещание выполняется здесь.
+     * An unfulfilled promise is fulfilled here.
      *
-     * Если до конца выполнения так ничего и не пришло, заменять было нечем — а
-     * стереть просили. Без этой строки стёртый кадр виджета не возвращался бы
-     * никогда: на экране остаётся картинка, которую ядро уже отменило.
+     * If nothing at all arrived by the end of the execution, there was nothing
+     * to replace with, but erasing was requested. Without this line a widget
+     * frame's erase would never happen: the screen keeps an image the kernel
+     * has already cancelled.
      *
-     * Именно в dispose, а не третьим методом, который надо помнить: это
-     * единственная строка, до которой доходит каждое начатое выполнение —
-     * finally у runOne, короткий путь пустой ячейки, catch с KernelError и
+     * In dispose precisely, not in a third method one has to remember: this is
+     * the only line every started execution reaches: runOne's finally, the
+     * short path of an empty cell, the catch with KernelError, and
      * reportDeadKernel.
      */
     if (this.superseded) this.write(() => {})
@@ -463,15 +475,16 @@ export class OutputWriter {
     this.doc.transact(() => {
       const outputs = cellOutputs(found.cell)
       /*
-       * Обещание разрешается здесь, до `mutate`, и это существенно.
+       * The promise is resolved here, before `mutate`, and this matters.
        *
-       * Стереть после — значит дать `append()` подклеить новый кадр в хвост
-       * Y.Text старого: получилась бы одна строка «a\nb» без границы, и она
-       * поехала бы и в снимок, и в экспорт. Не устаревший кадр, а порча.
+       * Erasing afterwards would let `append()` glue the new frame onto the
+       * tail of the old Y.Text: the result would be one line "a\nb" with no
+       * boundary, and it would travel into the snapshot and the export too. Not
+       * a stale frame, but corruption.
        *
-       * Бюджет сбрасывается тоже здесь, а не в `supersede()`: сбросить его
-       * заранее — значит вернуть упёршейся ячейке её 400 КБ в тот момент,
-       * когда на экране ещё висит прошлый вывод.
+       * The budget is reset here too, not in `supersede()`: resetting it in
+       * advance would give a cell at the ceiling its 400 KB back while the
+       * previous output is still on screen.
        */
       if (this.superseded) {
         this.superseded = false
@@ -489,12 +502,13 @@ export class OutputWriter {
   }
 
   /**
-   * Написать кусок потока, свернув кадры возврата каретки вместе с хвостом.
+   * Write a stream chunk, collapsing carriage-return frames together with the
+   * tail.
    *
-   * Сворачивать надо не кусок, а строку целиком: `abc\r\n` после уже
-   * написанного `xy` — это «xyabc» и перевод строки, а не «abc». Поэтому кадры
-   * считаются от того, что лежит в документе, и если строка переписана, старая
-   * стирается ровно на свою длину.
+   * It is the whole line that must be collapsed, not the chunk: `abc\r\n` after
+   * an already written `xy` is "xyabc" and a newline, not "abc". So the frames
+   * are counted from what lies in the document, and if the line is rewritten,
+   * the old one is erased by exactly its own length.
    */
   private put(outputs: Y.Array<YOutput>, name: StreamName, chunk: string): void {
     this.wrote = true
@@ -508,7 +522,7 @@ export class OutputWriter {
         text = folded
         tail = ''
       } else {
-        // Хвоста в документе уже нет — сворачиваем хотя бы то, что пришло.
+        // The tail is no longer in the document: collapse at least what came.
         text = collapseCarriage(chunk)
       }
     }
@@ -519,13 +533,13 @@ export class OutputWriter {
     this.tailText = nl < 0 ? tail + body : body.slice(nl + 1)
   }
 
-  /** Хвоста больше нет: за ним в документе легло что-то другое. */
+  /** The tail is gone: something else landed after it in the document. */
   private forgetTail(): void {
     this.tailText = ''
     this.tailName = null
   }
 
-  /** Стереть незакрытую строку: следующий кадр напишет её заново. */
+  /** Erase the unfinished line: the next frame will write it anew. */
   private rewind(outputs: Y.Array<YOutput>, name: StreamName, count: number): boolean {
     if (count <= 0) return true
     const last = outputs.length > 0 ? outputs.get(outputs.length - 1) : null
@@ -572,11 +586,12 @@ export class OutputWriter {
   }
 
   /**
-   * Слово от продукта, а не от Python, — отдельной записью потока ошибок.
+   * A word from the product, not from Python, as a separate stderr stream
+   * record.
    *
-   * Одна на все объяснения ниже: обрезанный текст, кончившийся бюджет
-   * картинок, фигура, которая не поместилась. Хвост забывается всегда —
-   * дописывать в строку, за которой легла наша строка, уже некуда.
+   * One for all the explanations below: truncated text, an exhausted image
+   * budget, a figure that did not fit. The tail is always forgotten: nothing
+   * can be appended to a line after which our line has landed.
    */
   private say(outputs: Y.Array<YOutput>, text: string): void {
     this.forgetTail()
@@ -598,7 +613,7 @@ export class OutputWriter {
     )
   }
 
-  /** Про картинки — своими словами: совет «печатайте в файл» тут ни при чём. */
+  /** About images, in its own words: the "print to a file" advice is beside the point. */
   private dataNotice(outputs: Y.Array<YOutput>): void {
     if (this.dataNoticed) return
     this.dataNoticed = true

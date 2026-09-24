@@ -23,13 +23,14 @@ import {
   pythonImage,
 } from '@shared/admin'
 /*
- * Директивы шапки разбираются в одном месте на всех — в shared/admin.ts.
+ * Header directives are parsed in one place for everyone, in shared/admin.ts.
  *
- * Форма создания окружения читает `# colloq: from` и `# colloq: python` тем же
- * разбором, что и сборка: второй список регулярных выражений разъехался бы с
- * первым на первой же правке, и панель показывала бы не ту версию, на которой
- * образ соберётся. Переэкспорт — чтобы соседи по файлу (declaresGpu, buildChain)
- * читались как одна семья, какой они и являются.
+ * The environment creation form reads `# colloq: from` and `# colloq: python`
+ * with the same parser as the build: a second list of regular expressions
+ * would drift away from the first at the very first edit, and the panel would
+ * show a different version from the one the image gets built on. The
+ * re-export lets the neighbours in this file (declaresGpu, buildChain) read as
+ * one family, which is what they are.
  */
 export { declaresParent, declaresPython }
 
@@ -54,34 +55,36 @@ function findRepoRoot(): string {
 
 const ROOT = findRepoRoot()
 /**
- * Контекст сборки: Dockerfile, requirements.txt и списки окружений.
+ * The build context: the Dockerfile, requirements.txt and environment lists.
  *
- * Каталог, а не файл: `docker build` читает его КЛИЕНТОМ и отдаёт демону, так
- * что для сборки достаточно этой папки — демон может быть и на хосте.
+ * A directory, not a file: `docker build` reads it on the CLIENT and hands it
+ * to the daemon, so this folder is all the build needs, and the daemon may
+ * even be on the host.
  */
 const KERNEL_DIR = path.join(ROOT, 'kernel')
 export const ENV_DIR = path.join(KERNEL_DIR, 'environments')
-/** Репозиторий целиком: compose и .env рядом с ним — файлы хоста, не образа. */
+/** The repository: compose and .env next to it are host files, not the image's. */
 const COMPOSE_FILE = path.join(ROOT, 'docker-compose.yml')
 
-/* --------------------------------------------- два каталога окружений */
+/* ------------------------------------------- two environment directories */
 
 /**
- * Каталог состояния этой машины: .env, data/, workspace/ и свои окружения.
+ * This machine's state directory: .env, data/, workspace/ and its own
+ * environments.
  *
- * Сам сервер его не вычисляет и вычислить не может: корень ПРИЛОЖЕНИЯ он
- * находит шагами вверх до kernel/environments (findRepoRoot выше), а состояние
- * у установленного через pip colloq лежит совсем в другом месте — ~/.colloq или
- * COLLOQ_HOME. Поэтому каталог ему СООБЩАЮТ переменной, ровно как DATA_DIR и
- * WORKSPACE_DIR (cli/src/launch-config.ts · launchConfig).
+ * The server does not compute it and cannot: it finds the APPLICATION root by
+ * walking up to kernel/environments (findRepoRoot above), while the state of
+ * a colloq installed through pip lives somewhere else entirely, ~/.colloq or
+ * COLLOQ_HOME. So the directory is PASSED to it in a variable, exactly like
+ * DATA_DIR and WORKSPACE_DIR (cli/src/launch-config.ts · launchConfig).
  *
- * Переменной нет — значит, сервер подняли не супервизором: репозиторий, `make
- * up`, служба. Тогда каталог окружений один, как было всегда, и ни одна строка
- * ниже своего поведения не меняет.
+ * No variable means the server was not started by the supervisor: the
+ * repository, `make up`, a service. Then there is one environment directory,
+ * as there always was, and not a single line below changes its behaviour.
  *
- * Читается на каждом обращении, а не однажды при импорте: .env доезжает до
- * process.env из config.ts (`dotenv/config`), и порядок вычисления модулей не
- * должен решать, увидим мы переменную или нет. Цена вопроса — один path.join.
+ * Read on every call, not once at import: .env reaches process.env from
+ * config.ts (`dotenv/config`), and the order of module evaluation must not
+ * decide whether we see the variable. The price is one path.join.
  */
 function stateHome(): string | null {
   const named = process.env.COLLOQ_HOME?.trim()
@@ -89,20 +92,21 @@ function stateHome(): string | null {
 }
 
 /**
- * Куда панель ПИШЕТ окружения. Та же развилка, что у CLI (cli/src/env.ts ·
- * ownEnvDir), и списана она оттуда дословно: разъехаться этим двоим нельзя —
- * иначе `colloq env new` заводит окружение, которого не видит панель, а панель
- * заводит такое, которого не видит `colloq env list`. Ровно это и было.
+ * Where the panel WRITES environments. The same fork as in the CLI
+ * (cli/src/env.ts · ownEnvDir), copied from there word for word: the two must
+ * not drift apart, otherwise `colloq env new` creates an environment the
+ * panel does not see, and the panel creates one `colloq env list` does not
+ * see. That is exactly what happened.
  *
- * У установленного colloq <app>/kernel/environments — это site-packages:
- * каталог целиком перезаписывается следующим `pip install -U`, а на многих
- * машинах в него и не пишется вовсе. Поэтому своё живёт в каталоге состояния,
- * рядом с .env и data/, — там, где его никто не перезапишет.
+ * For an installed colloq, <app>/kernel/environments is site-packages: the
+ * whole directory is overwritten by the next `pip install -U`, and on many
+ * machines it is not writable at all. So our own environments live in the
+ * state directory, next to .env and data/, where nobody will overwrite them.
  *
- * Когда состояние И ЕСТЬ каталог приложения (репозиторий, клон, контейнер под
- * `make up`), второй каталог — это ПЕРВЫЙ, тот же самый путь: новый каталог
- * рядом увёл бы файл из-под make env-list, из-под `colloq env new` и из-под
- * контекста `docker build`.
+ * When the state IS the application directory (the repository, a clone, a
+ * container under `make up`), the second directory is the FIRST one, the same
+ * path: a new directory alongside would pull the file out from under make
+ * env-list, `colloq env new` and the `docker build` context.
  */
 export function ownEnvDirOf(root: string, home: string | null): string {
   const shipped = path.join(root, 'kernel', 'environments')
@@ -115,11 +119,11 @@ function ownEnvDir(): string {
 }
 
 /**
- * Оба каталога в порядке старшинства: своё перебивает привезённое.
+ * Both directories in order of precedence: our own overrides the shipped one.
  *
- * Перебивает, а не отказывает: человек вправе переопределить `cv` под свой
- * курс, и его список должен побеждать везде — в чтении, в списке, в цепочке
- * наследования и в контексте сборки.
+ * Overrides, not refuses: a person is entitled to redefine `cv` for their
+ * course, and their list must win everywhere: in reading, in the list, in the
+ * inheritance chain and in the build context.
  */
 function envDirs(): string[] {
   const own = ownEnvDir()
@@ -136,11 +140,11 @@ function checkName(name: string): void {
 }
 
 /**
- * Где файл ЛЕЖИТ: сначала свой каталог, потом привезённый.
+ * Where the file LIVES: first our own directory, then the shipped one.
  *
- * Нет ни там, ни там — возвращается привезённый путь: читать по нему нечего, а
- * «нет такого окружения» отвечают вызывающие, каждый по-своему (readSource —
- * пустой строкой, fromDisk — null).
+ * If it is in neither, the shipped path is returned: there is nothing to read
+ * there, and "no such environment" is answered by the callers, each in its
+ * own way (readSource with an empty string, fromDisk with null).
  */
 function findFile(file: string): string {
   const dirs = envDirs()
@@ -152,27 +156,28 @@ function fileFor(name: string): string {
   return findFile(`${name}.txt`)
 }
 
-/** Куда ПИСАТЬ список: всегда своё. Каталог приложения только читается. */
+/** Where to WRITE a list: always our own. The app directory is only read. */
 function ownFileFor(name: string): string {
   checkName(name)
   return path.join(ownEnvDir(), `${name}.txt`)
 }
 
 /**
- * Приехало с продуктом и своей копии не имеет — значит, это не наш файл.
+ * Came with the product and has no copy of our own, so it is not our file.
  *
- * Отдельным вопросом, потому что от него зависит отказ на удаление: `rm` по
- * site-packages либо падает правами, либо удаляет файл, который вернётся
- * следующим `pip install -U`. Кнопка, которая иногда работает, хуже честного
- * отказа. В репозитории каталог один, свой и привезённый совпадают, и ответ
- * здесь всегда «нет» — то есть поведение прежнее.
+ * A separate question, because refusing a delete depends on it: an `rm` in
+ * site-packages either fails on permissions or deletes a file that the next
+ * `pip install -U` brings back. A button that sometimes works is worse than
+ * an honest refusal. In the repository there is one directory, our own and
+ * the shipped one coincide, and the answer here is always "no", i.e. the
+ * behaviour is as before.
  */
 export function isShipped(name: string): boolean {
   checkName(name)
   return !fs.existsSync(ownFileFor(name)) && fs.existsSync(path.join(ENV_DIR, `${name}.txt`))
 }
 
-/** `.env` со строкой KERNEL_ENV — файл СОСТОЯНИЯ, а не приложения. */
+/** The `.env` with the KERNEL_ENV line is a STATE file, not an application one. */
 function envFile(): string {
   return path.join(stateHome() ?? ROOT, '.env')
 }
@@ -193,12 +198,14 @@ function envFile(): string {
  * which is the old behaviour and the safer guess: better to offer a rebuild
  * nobody needs than to hide one somebody does.
  *
- * Штамп — состояние ЭТОЙ машины: он про образ, который лежит в её docker, а не
- * про продукт. Поэтому пишется он в свой каталог (ownStampFor), даже когда сам
- * список приехал с colloq: в site-packages ему либо откажут правами, либо он
- * исчезнет на первом `pip install -U` вместе со всей папкой. Читается из обоих:
- * штамп, оставленный в каталоге приложения прежней версией, — это ответ на тот
- * же вопрос, и терять его значит звать на лишнюю пересборку перед парой.
+ * The stamp is the state of THIS machine: it is about the image sitting in its
+ * docker, not about the product. So it is written into our own directory
+ * (ownStampFor), even when the list itself came with colloq: in site-packages
+ * it would either be refused on permissions or vanish at the first
+ * `pip install -U` together with the whole folder. It is read from both: a
+ * stamp left in the application directory by a previous version is the answer
+ * to the same question, and losing it means calling for a needless rebuild
+ * right before class.
  */
 function stampFor(name: string): string {
   checkName(name)
@@ -231,13 +238,13 @@ export function listChanged(stamped: string, current: string): boolean {
 }
 
 /**
- * Все окружения — объединением двух каталогов, по одному имени на строку.
+ * All environments, as the union of the two directories, one name per line.
  *
- * Set, а не конкатенация: своё окружение с именем привезённого — это то же
- * самое окружение, переопределённое, и в списке панели ему полагается одна
- * строка. Раньше читался только каталог приложения, и заведённое `colloq env
- * new` окружение не показывалось вовсе — при том что активным панель называла
- * именно его имя.
+ * A Set, not concatenation: our own environment with a shipped one's name is
+ * the same environment, redefined, and it gets one line in the panel's list.
+ * Previously only the application directory was read, and an environment
+ * created by `colloq env new` was not shown at all, even though the panel
+ * named exactly that one as active.
  */
 export function listNames(): string[] {
   if (usingRuntimeBroker())
@@ -251,7 +258,7 @@ export function listNames(): string[] {
     try {
       files = fs.readdirSync(dir)
     } catch {
-      // Своего каталога может не быть вовсе: человек ещё не заводил окружений.
+      // Our own directory may not exist at all: no environment was created yet.
       continue
     }
     for (const file of files) {
@@ -286,31 +293,33 @@ export function parsePackages(source: string): string[] {
 }
 
 /**
- * Нужен ли этому окружению срез GPU — по директиве `# colloq: gpu` в шапке.
+ * Whether this environment needs a GPU slice, by the `# colloq: gpu` directive
+ * in the header.
  *
- * Признак живёт в самом списке пакетов, а не рядом с комнатой, потому что это
- * свойство окружения: колёса torch собраны под CUDA, и «то же самое, только на
- * процессоре» здесь не существует. Комната на таком окружении либо получает
- * срез на всё время жизни своего контейнера, либо честно не едет.
+ * The flag lives in the package list itself, not next to the room, because it
+ * is a property of the environment: torch wheels are built for CUDA, and "the
+ * same thing, only on the CPU" does not exist here. A room on such an
+ * environment either gets a slice for the whole lifetime of its container or
+ * honestly does not start.
  *
- * Для pip это комментарий, поэтому директива ничего не ставит, не меняет
- * `listChanged` и не зажигает «Needs rebuild» на собранном образе.
+ * To pip this is a comment, so the directive installs nothing, does not change
+ * `listChanged` and does not light up "Needs rebuild" on a built image.
  *
- * Ищется среди всех комментариев, а не только до первой строки с пакетом:
- * директива, дописанная человеком в конец файла, должна сработать, а не
- * промолчать. Строка сравнивается целиком — фраза «# colloq: gpu не нужен»
- * директивой не считается.
+ * It is looked for among all comments, not only up to the first package line:
+ * a directive a person appended at the end of the file must work, not stay
+ * silent. The line is compared whole: the phrase "# colloq: gpu not needed"
+ * does not count as the directive.
  */
 export function declaresGpu(source: string): boolean {
   return source.split('\n').some((line) => /^#\s*colloq:\s*gpu$/i.test(line.trim()))
 }
 
-/** Чем читается список: имя → текст, или null, когда такого окружения нет. */
+/** How a list is read: name to text, or null when there is no such environment. */
 export type ReadEnvironment = (name: string) => string | null
 
 /**
- * Отличает «пусто» от «нет такого»: readSource возвращает '' на оба, а сборке
- * надо отказать на неизвестном родителе, а не молча собрать поверх базы.
+ * Tells "empty" from "no such thing": readSource returns '' for both, while
+ * the build has to refuse an unknown parent, not silently build on the base.
  */
 const fromDisk: ReadEnvironment = (name) => {
   try {
@@ -320,16 +329,16 @@ const fromDisk: ReadEnvironment = (name) => {
   }
 }
 
-/** Длиннее этого цепочка не бывает: дальше это опечатка, а не устройство. */
+/** No chain is longer than this: beyond it is a typo, not a design. */
 export const MAX_INHERITANCE = 8
 
 /**
- * Порядок сборки: от корня к листу, `['base-gpu', 'gpu']`.
+ * The build order: from the root to the leaf, `['base-gpu', 'gpu']`.
  *
- * Три отказа вместо бесконечной сборки, и все три — до docker: петля (a → b →
- * a), цепочка длиннее MAX_INHERITANCE и родитель, которого нет. Девять минут,
- * потраченных на то, чтобы упасть на `COPY environments/нет-такого.txt`, — это
- * та же ошибка, только дороже.
+ * Three refusals instead of an endless build, and all three before docker: a
+ * loop (a → b → a), a chain longer than MAX_INHERITANCE, and a parent that
+ * does not exist. Nine minutes spent only to fail on
+ * `COPY environments/no-such.txt` are the same error, just more expensive.
  */
 export function buildChain(name: string, read: ReadEnvironment = fromDisk): string[] {
   const chain: string[] = []
@@ -367,16 +376,18 @@ export function buildChain(name: string, read: ReadEnvironment = fromDisk): stri
     current = declaresParent(source)
   }
   /*
-   * Версию Python выбирает КОРЕНЬ цепочки, и четвёртый отказ — про это.
+   * The Python version is chosen by the chain's ROOT, and the fourth refusal
+   * is about that.
    *
-   * Слой поверх готового образа не меняет интерпретатор: pip в нём ставит
-   * колёса под тот Python, который пришёл из базы. Файл, где написано
-   * `# colloq: from base-gpu` и `# colloq: python 3.12`, обещает ровно то, чего
-   * сборка сделать не может, — и молча собрался бы на версии родителя, а панель
-   * показывала бы 3.12. Та же цена, что у неизвестного родителя: лучше отказать
-   * здесь и назвать обе версии вслух.
+   * A layer on top of a ready image does not change the interpreter: pip in it
+   * installs wheels for the Python that came from the base. A file saying
+   * `# colloq: from base-gpu` and `# colloq: python 3.12` promises exactly what
+   * the build cannot do, and it would silently build on the parent's version
+   * while the panel showed 3.12. The same price as an unknown parent: better to
+   * refuse here and name both versions out loud.
    *
-   * Повтор родительской версии — не конфликт: это лишняя строка, а не ложь.
+   * Repeating the parent's version is not a conflict: it is a redundant line,
+   * not a lie.
    */
   const root = chain[0] as string
   const rootPython = declaresPython(read(root) ?? '') ?? DEFAULT_PYTHON
@@ -397,14 +408,14 @@ export function buildChain(name: string, read: ReadEnvironment = fromDisk): stri
 }
 
 /**
- * На каком Python поедет это окружение: версия корня цепочки, иначе умолчание
- * Dockerfile.
+ * Which Python this environment will run on: the chain root's version,
+ * otherwise the Dockerfile default.
  *
- * Не своя директива, а корневая, потому что версия приходит из базового образа:
- * `# colloq: python` у листа — это либо повтор корня, либо ложь, и второе
- * сборка отвергает (buildChain выше). Сломанная цепочка здесь не исключение:
- * об этом скажет сборка, а панели нужно что-то показать — показывается то, что
- * просит сам файл.
+ * The root's directive, not its own, because the version comes from the base
+ * image: `# colloq: python` on a leaf is either a repeat of the root or a lie,
+ * and the build rejects the latter (buildChain above). A broken chain does not
+ * throw here: the build will say so, while the panel needs to show something,
+ * and what it shows is what the file itself asks for.
  */
 export function pythonOf(name: string, read: ReadEnvironment = fromDisk): string {
   let root = name
@@ -417,12 +428,14 @@ export function pythonOf(name: string, read: ReadEnvironment = fromDisk): string
 }
 
 /**
- * Просит ли окружение срез видеокарты — своей директивой или родительской.
+ * Whether the environment asks for a GPU slice, by its own directive or its
+ * parent's.
  *
- * Признак наследуется, потому что наследуется его причина: образ поверх base-gpu
- * несёт колёса под CUDA, и без устройства комната на нём упадёт на первом
- * `.cuda()`. Сломанная цепочка здесь не исключение: об этом скажет сборка, а
- * отнимать срез у окружения, которое его просит, — худший из двух ответов.
+ * The flag is inherited because its cause is inherited: an image on top of
+ * base-gpu carries CUDA wheels, and without the device a room on it fails at
+ * the first `.cuda()`. A broken chain does not throw here: the build will say
+ * so, and taking the slice away from an environment that asks for it is the
+ * worse of the two answers.
  */
 export function needsGpu(name: string, read: ReadEnvironment = fromDisk): boolean {
   if (usingRuntimeBroker()) return runtimeEnvironment(name).gpu
@@ -436,12 +449,13 @@ export function needsGpu(name: string, read: ReadEnvironment = fromDisk): boolea
 }
 
 /**
- * Запись — всегда в свой каталог, никогда в каталог приложения.
+ * Writes always go to our own directory, never to the application one.
  *
- * Правка привезённого окружения тоже: она ложится своей копией, и чтение её
- * перебивает (envDirs). Иначе панель писала бы в site-packages — отказ прав в
- * лучшем случае, а в худшем файл, который исчезнет на первом `pip install -U`
- * вместе со штампом сборки, и человек не поймёт, куда делся его список.
+ * That includes editing a shipped environment: the edit lands as our own copy,
+ * and reading prefers it (envDirs). Otherwise the panel would write into
+ * site-packages: a permission refusal at best, and at worst a file that
+ * vanishes at the first `pip install -U` together with the build stamp, and
+ * the person will not understand where their list went.
  */
 export function writeSource(name: string, source: string): void {
   if (usingRuntimeBroker())
@@ -457,13 +471,14 @@ export function writeSource(name: string, source: string): void {
 }
 
 /**
- * Удалить можно только своё.
+ * Only our own can be deleted.
  *
- * Отказ, а не тихое «ничего не произошло»: `rm` по каталогу приложения либо
- * падает правами, либо снимает файл, который вернётся следующим обновлением
- * пакета, — и в обоих случаях строка в панели пропадает не навсегда. Маршрут
- * спрашивает isShipped раньше и отвечает 409; этот отказ — для всех остальных,
- * чтобы дыру нельзя было обойти мимо маршрута.
+ * A refusal, not a quiet "nothing happened": an `rm` in the application
+ * directory either fails on permissions or removes a file that the next
+ * package update brings back, and in both cases the line in the panel does not
+ * go away for good. The route asks isShipped first and answers 409; this
+ * refusal is for everyone else, so the hole cannot be reached around the
+ * route.
  */
 export function removeEnvironment(name: string): void {
   if (usingRuntimeBroker())
@@ -472,8 +487,8 @@ export function removeEnvironment(name: string): void {
     throw new Error(tr('server.shipsWithColloqAndCannotBeDeletedHere.06a8ea', { p0: name }))
   }
   fs.rmSync(ownFileFor(name), { force: true })
-  // Штамп уходит вместе со списком: иначе среда, заведённая под тем же именем
-  // заново, сравнивалась бы с чужой сборкой.
+  // The stamp goes along with the list: otherwise an environment created anew
+  // under the same name would be compared against someone else's build.
   fs.rmSync(ownStampFor(name), { force: true })
 }
 
@@ -486,14 +501,14 @@ export function exists(name: string): boolean {
 /* ------------------------------------------------- which one is running */
 
 /**
- * Какое окружение считается умолчанием: строка `.env`, а если её нет — то, что
- * compose передал процессу переменной окружения.
+ * Which environment counts as the default: the `.env` line, and if there is
+ * none, what compose passed to the process as an environment variable.
  *
- * Второе — про контейнер. В образе app файла `.env` нет и быть не должно (это
- * файл хоста), поэтому без запасного пути под `make up` панель всегда отвечала
- * «base», а новый семинар записывался на base при собранном ядре `cv`: имя
- * окружения у семинара — это то, из какого образа поднимется его контейнер,
- * когда сервер увидит docker.
+ * The second is about the container. The app image has no `.env` file and
+ * must not have one (it is a host file), so without the fallback, under
+ * `make up` the panel always answered "base", and a new seminar was recorded
+ * on base while the built kernel was `cv`: a seminar's environment name is
+ * the image its container will come up from once the server sees docker.
  */
 export function pickActiveName(envFile: string | null, fromEnv: string | undefined): string {
   const line = envFile
@@ -513,10 +528,11 @@ export function pickActiveName(envFile: string | null, fromEnv: string | undefin
  * file too, and a panel that believed a value from process start would show the
  * wrong environment as active for as long as the server ran.
  *
- * Файл берётся из каталога СОСТОЯНИЯ (envFile выше). У установленного colloq
- * .env лежит в ~/.colloq, а не в site-packages: там его пишет `colloq env use`,
- * оттуда его читает следующий запуск, — и панель обязана смотреть в тот же
- * файл, иначе она называет активным одно, а занятие поднимается на другом.
+ * The file is taken from the STATE directory (envFile above). For an installed
+ * colloq, .env lives in ~/.colloq, not in site-packages: `colloq env use` writes
+ * it there, the next start reads it from there, and the panel has to look at
+ * the same file, otherwise it names one environment as active while the class
+ * comes up on another.
  */
 export function activeName(): string {
   if (usingRuntimeBroker()) return runtimeDefaultEnvironment()
@@ -582,38 +598,40 @@ function run(
 }
 
 /**
- * Что этот сервер умеет делать с окружениями — по отдельности.
+ * What this server can do with environments, each ability separately.
  *
- * Раньше это был один вопрос на двоих («лежит ли рядом docker-compose.yml»), и
- * под `make up` он гасил обе кнопки разом: на арендованной машине окружение
- * нельзя было собрать вовсе, только по ssh. Но нужно им РАЗНОЕ.
+ * This used to be one question for both ("is docker-compose.yml next to us"),
+ * and under `make up` it turned off both buttons at once: on a rented machine
+ * an environment could not be built at all, only over ssh. But the two need
+ * DIFFERENT things.
  *
- * Сборке хватает клиента docker и каталога kernel: контекст читает клиент и
- * отдаёт демону, поэтому то, что демон на хосте, роли не играет, а compose для
- * `docker build` не нужен вовсе.
+ * Building needs only the docker client and the kernel directory: the client
+ * reads the context and hands it to the daemon, so the daemon being on the
+ * host does not matter, and `docker build` does not need compose at all.
  *
- * Умолчание — это строка `KERNEL_ENV` в .env рядом с docker-compose.yml, то
- * есть файл ХОСТА. Записать его внутрь контейнера значит соврать человеку:
- * правка доживёт до первой пересборки, пока compose всё это время читает файл
- * на хосте. Поэтому «Make default» остаётся командой на хосте, и панель
- * говорит об этом ровно про ту кнопку, которой это касается.
+ * The default is the `KERNEL_ENV` line in the .env next to docker-compose.yml,
+ * i.e. a HOST file. Writing it inside the container would be lying to the
+ * person: the edit would survive until the first rebuild, while compose keeps
+ * reading the file on the host the whole time. So "Make default" stays a
+ * command on the host, and the panel says so on exactly the button it
+ * concerns.
  *
- * У установленного colloq всё это верно наоборот, и потому появился третий
- * вопрос — `home`. Репозитория там нет и docker-compose.yml нет, а .env есть:
- * он лежит в каталоге состояния, который назвал супервизор. Тот же самый файл
- * читает и пишет `colloq env use`, и перечитает его следующий `colloq run`, —
- * никакого хоста «снаружи» здесь не существует, врать некому. Гасить
- * «Make default» в этом случае значило отнимать у преподавателя единственный
- * способ выбрать окружение из панели и посылать его в make, которого у него
- * тоже нет.
+ * For an installed colloq all of this is the other way round, hence a third
+ * question, `home`. There is no repository and no docker-compose.yml there,
+ * but there is a .env: it lives in the state directory the supervisor named.
+ * `colloq env use` reads and writes that same file, and the next `colloq run`
+ * rereads it; no host "outside" exists here, and there is nobody to lie to.
+ * Turning off "Make default" in this case would take away the teacher's only
+ * way to choose an environment from the panel and send them to make, which
+ * they do not have either.
  */
 export function abilities(found: {
   docker: boolean
-  /** kernel/Dockerfile: контекст сборки виден отсюда. */
+  /** kernel/Dockerfile: the build context is visible from here. */
   context: boolean
-  /** docker-compose.yml: репозиторий целиком, а с ним и .env. */
+  /** docker-compose.yml: the whole repository, and with it .env. */
   repository: boolean
-  /** Нам назвали каталог состояния: .env в нём — наш, и писать его можно. */
+  /** We were given a state directory: its .env is ours and may be written. */
   home: boolean
 }): EnvironmentAbilities {
   if (!found.docker) {
@@ -645,7 +663,7 @@ export function abilities(found: {
   }
 }
 
-/** То же самое, но спросив docker и посмотрев, что вообще лежит рядом. */
+/** The same, but after asking docker and looking at what is actually around. */
 export async function environmentAbilities(): Promise<EnvironmentAbilities> {
   if (usingRuntimeBroker()) {
     loadRuntimeCatalog()
@@ -661,8 +679,8 @@ export async function environmentAbilities(): Promise<EnvironmentAbilities> {
     docker: version.code === 0,
     context: fs.existsSync(path.join(KERNEL_DIR, 'Dockerfile')),
     repository: fs.existsSync(COMPOSE_FILE),
-    // Переменная от супервизора, а не догадка по файлам: она и значит, что
-    // .env этой установки лежит там, куда мы можем писать.
+    // A variable from the supervisor, not a guess from files: it is exactly what
+    // says that this installation's .env lies where we can write.
     home: stateHome() !== null,
   })
 }
@@ -670,29 +688,29 @@ export async function environmentAbilities(): Promise<EnvironmentAbilities> {
 interface ImageFacts {
   bytes: number
   builtAt: number
-  /** `3.12.7` — из самого образа; null, если он про Python молчит. */
+  /** `3.12.7`, from the image itself; null if it says nothing about Python. */
   python: string | null
 }
 
 /**
- * Строка формата: размер, дата и переменные образа — по строке на каждую.
+ * The format string: the image's size, date and variables, one line each.
  *
- * Одним `docker image inspect`, а не двумя: список опрашивает КАЖДОЕ окружение
- * на каждое открытие экрана и на каждый тик опроса во время сборки, и второй
- * вызов на строку удвоил бы это в том же цикле событий, который ведёт чужую
- * пару.
+ * One `docker image inspect`, not two: the list queries EVERY environment on
+ * every opening of the screen and on every poll tick during a build, and a
+ * second call per row would double that in the same event loop that is
+ * running someone else's class.
  */
 const IMAGE_FORMAT =
   '{{println .Size}}{{println .Created}}{{range .Config.Env}}{{println .}}{{end}}'
 
 /**
- * Что образ рассказывает о себе сам.
+ * What the image tells about itself.
  *
- * Версия Python берётся из переменной PYTHON_VERSION, которую официальный
- * `python:<версия>-slim` записывает в конфигурацию образа, — значит, спросить
- * её можно не запуская контейнер. Это ВЕРСИЯ СБОРКИ, а не то, что просит файл:
- * расходятся они ровно тогда, когда файл поправили после сборки, и показать
- * надо обе.
+ * The Python version comes from the PYTHON_VERSION variable that the official
+ * `python:<version>-slim` writes into the image config, so it can be asked for
+ * without starting a container. This is the BUILD's version, not what the file
+ * asks for: they diverge exactly when the file was edited after the build, and
+ * both have to be shown.
  */
 export function parseImageFacts(out: string): ImageFacts | null {
   const [size, created, ...vars] = out.split('\n')
@@ -772,29 +790,31 @@ function push(build: Build, chunk: string): void {
 }
 
 /**
- * Чем собирать: прямым `docker build` или через compose поверх репозитория.
+ * What to build with: a direct `docker build` or compose over the repository.
  *
- * Compose нужен ровно там, где он есть, — на машине с репозиторием: он
- * подхватывает dev-override, без которого пересобранное общее ядро теряет
- * проброшенный 8888. В контейнере app его нет и не будет (это файл хоста), а
- * каталог kernel есть, и его достаточно.
+ * Compose is needed exactly where it exists, on a machine with the repository:
+ * it picks up the dev override, without which the rebuilt shared kernel loses
+ * the forwarded 8888. In the app container it is not there and never will be
+ * (it is a host file), but the kernel directory is, and that is enough.
  */
 export type BuildPlan = { via: 'direct' } | { via: 'compose'; files: string[] }
 
 /**
- * Команда одного звена цепочки. Оба пути дают один и тот же образ
- * `colloq-kernel:<имя>` из одного и того же Dockerfile — расходятся они только
- * в том, кто подставляет аргументы: compose из своего файла или мы сами.
+ * The command for one link of the chain. Both paths produce the same image
+ * `colloq-kernel:<name>` from the same Dockerfile; they differ only in who
+ * fills in the arguments: compose from its file, or we ourselves.
  *
- * Родитель — аргумент PARENT: тем же Dockerfile собирается и база (поверх
- * python-slim), и тонкий слой поверх готового colloq-образа. Когда родителя
- * нет, аргумент не передаётся вовсе — действует умолчание самого Dockerfile, и
- * имя базового образа остаётся в одном месте, а не в двух расходящихся.
+ * The parent is the PARENT argument: the same Dockerfile builds both the base
+ * (on top of python-slim) and a thin layer on top of a ready colloq image. When
+ * there is no parent, the argument is not passed at all: the Dockerfile's own
+ * default applies, and the base image name stays in one place, not in two that
+ * drift apart.
  *
- * `kernel` — каталог контекста: обычно это kernel/ приложения, а у
- * установленного colloq — склеенная копия со своими окружениями (buildContext).
- * Путь через compose его не принимает и не должен: контекст ./kernel записан в
- * docker-compose.yml, а он лежит только там, где каталог окружений и так один.
+ * `kernel` is the context directory: usually the application's kernel/, and
+ * for an installed colloq a merged copy with its own environments
+ * (buildContext). The compose path does not accept it and should not: the
+ * ./kernel context is written in docker-compose.yml, and that file exists only
+ * where there is a single environment directory anyway.
  */
 export function buildCommand(
   plan: BuildPlan,
@@ -802,8 +822,8 @@ export function buildCommand(
   parentImage: string | null,
   kernel: string = KERNEL_DIR,
 ): { args: string[]; env: Record<string, string> } {
-  // Журнал читают построчно в панели, а «красивый» прогресс BuildKit
-  // перерисовывает себя каретками и в текстовом окне превращается в кашу.
+  // The log is read line by line in the panel, and BuildKit's "pretty" progress
+  // redraws itself with carriage returns and turns into mush in a text window.
   const env: Record<string, string> = { DOCKER_BUILDKIT: '1', BUILDKIT_PROGRESS: 'plain' }
   if (plan.via === 'compose') {
     env.KERNEL_ENV = step
@@ -827,29 +847,31 @@ export function buildCommand(
 }
 
 /**
- * Контекст `docker build`, когда каталогов окружений два: копия kernel/ со
- * своими списками поверх привезённых.
+ * The `docker build` context when there are two environment directories: a
+ * copy of kernel/ with our own lists on top of the shipped ones.
  *
- * Склейка, а не развилка в самой сборке, — тот же выбор и по той же причине,
- * что на стороне запуска (cli/src/launch-prepare.ts · kernelRoot): развилку
- * «этот файл оттуда, а тот отсюда» пришлось бы протащить в цепочку
- * наследования, в COPY внутри Dockerfile и в сам вызов docker, и однажды
- * забыть про одно из трёх. Здесь она ровно в одном месте: контекст собирается
- * заново перед сборкой, а дальше всё идёт как раньше, с ОДНИМ каталогом.
+ * Merging, not a fork inside the build itself: the same choice, for the same
+ * reason, as on the launch side (cli/src/launch-prepare.ts · kernelRoot): a
+ * "this file from there, that one from here" fork would have to be dragged
+ * into the inheritance chain, into the COPY inside the Dockerfile and into the
+ * docker call itself, and one day one of the three would be forgotten. Here it
+ * sits in exactly one place: the context is assembled anew before a build, and
+ * from then on everything goes as before, with ONE directory.
  *
- * А вот каталог свой, и он на имя: kernelRoot чистит своё место rmSync раз за
- * запуск, когда сервера ещё нет вовсе, а панель собирает несколько окружений
- * разом — две сборки на один каталог значат, что чистка второй выдёргивает
- * контекст из-под первой, и та падает на «no such file or directory» посреди
- * чтения. Одно имя дважды одновременно не собирается (слот в builds), так что
- * на своём каталоге чистка безопасна.
+ * The directory, though, is our own, and one per name: kernelRoot cleans its
+ * place with rmSync once per launch, when there is no server yet at all, while
+ * the panel builds several environments at once. Two builds on one directory
+ * mean that the second one's cleanup pulls the context out from under the
+ * first, and that one fails with "no such file or directory" in the middle of
+ * reading. One name is never built twice at the same time (the slot in
+ * builds), so cleaning a directory of its own is safe.
  *
- * Каталог не убирается после сборки: он маленький (весь kernel/ — десятки
- * килобайт), по нему видно, что именно уехало в docker, а следующая сборка того
- * же имени всё равно переписывает его целиком.
+ * The directory is not removed after the build: it is small (all of kernel/ is
+ * tens of kilobytes), it shows exactly what went into docker, and the next
+ * build of the same name overwrites it whole anyway.
  *
- * Возвращается сам каталог ядра, а не корень над ним: buildCommand ждёт ту
- * папку, где лежит Dockerfile.
+ * What is returned is the kernel directory itself, not the root above it:
+ * buildCommand expects the folder where the Dockerfile lies.
  */
 export function buildContext(name: string): string {
   const home = stateHome()
@@ -857,8 +879,9 @@ export function buildContext(name: string): string {
   const staged = path.join(home, '.colloq', 'kernel-context', name)
   fs.rmSync(staged, { recursive: true, force: true })
   fs.mkdirSync(path.dirname(staged), { recursive: true })
-  // preserveTimestamps: копия обязана быть неотличима от оригинала — по времени
-  // правки решается свежесть образа, пока штампа сборки ещё нет.
+  // preserveTimestamps: the copy must be indistinguishable from the original,
+  // since the image's freshness is decided by edit time while there is no build
+  // stamp yet.
   const keep = { recursive: true, preserveTimestamps: true } as const
   fs.cpSync(KERNEL_DIR, staged, keep)
   const into = path.join(staged, 'environments')
@@ -869,9 +892,9 @@ export function buildContext(name: string): string {
 }
 
 /**
- * Одно звено цепочки: одна сборка одного окружения.
+ * One link of the chain: one build of one environment.
  *
- * Возвращает, продолжать ли: упавшее звено делает следующие бессмысленными.
+ * Returns whether to go on: a failed link makes the next ones pointless.
  */
 function runStage(
   build: Build,
@@ -883,19 +906,20 @@ function runStage(
   return new Promise((resolve) => {
     const { args, env: vars } = buildCommand(plan, step, parentImage, kernel)
     /*
-     * Список читается ДО спавна — это и уедет в штамп.
+     * The list is read BEFORE the spawn: this is what goes into the stamp.
      *
-     * Штамп заведён затем, чтобы «Needs rebuild» говорило о содержимом, а не о
-     * времени правки файла. Читая список на `close`, он говорил о содержимом
-     * НЕ ТОГО момента: сборка с torch идёт минуты, преподаватель за это время
-     * дописывает в тот же список `timm` и сохраняет, штамп получает новый
-     * список, `editedSinceBuild` сравнивает его с файлом — совпадает, — и
-     * строка показывает «Ready» над образом без timm. Обнаруживается это на
-     * `import timm` посреди пары: ровно та ложь, от которой штамп и заведён.
+     * The stamp exists so that "Needs rebuild" speaks about the content, not
+     * about the file's edit time. Reading the list on `close`, it spoke about
+     * the content at the WRONG moment: a build with torch takes minutes, in
+     * that time the teacher adds `timm` to the same list and saves, the stamp
+     * gets the new list, `editedSinceBuild` compares it with the file, they
+     * match, and the row shows "Ready" over an image without timm. This comes
+     * to light at `import timm` in the middle of class: exactly the lie the
+     * stamp exists to prevent.
      *
-     * Здесь возможна ошибка в одну сторону — сказать «пересобрать» там, где
-     * docker успел прочитать уже новый файл. Лишняя пересборка стоит минут,
-     * ложное «Ready» — пары.
+     * An error is possible here in one direction only: saying "rebuild" where
+     * docker had already read the new file. A needless rebuild costs minutes; a
+     * false "Ready" costs a class.
      */
     const built = readSource(step)
     const child = spawn('docker', args, {
@@ -903,8 +927,8 @@ function runStage(
       env: { ...process.env, ...vars },
     })
     build.child = child
-    // Строка журнала — то, что человек может повторить руками: переменные,
-    // которые сборка правда читает, и сама команда целиком.
+    // The log line is something a person can repeat by hand: the variables the
+    // build really reads, and the whole command itself.
     const shown = Object.entries(vars)
       .filter(([name]) => name.startsWith('KERNEL_'))
       .map(([name, value]) => `${name}=${value} `)
@@ -913,8 +937,8 @@ function runStage(
 
     child.stdout.on('data', (d: Buffer) => push(build, d.toString()))
     child.stderr.on('data', (d: Buffer) => push(build, d.toString()))
-    // Отменённой сборке ошибку не переписываем: «cancelled» — это ответ, а
-    // «build exited null» на его месте — загадка.
+    // The error of a cancelled build is not overwritten: "cancelled" is an
+    // answer, and "build exited null" in its place is a riddle.
     child.on('error', (err) => {
       push(build, String(err))
       if (!build.done) {
@@ -926,9 +950,10 @@ function runStage(
     child.on('close', (code) => {
       if (code === 0) {
         // Remember WHAT was built, so the next comparison is about content.
-        // Штамп — про образ в docker этой машины, поэтому в свой каталог: см.
-        // stampFor. Каталога может ещё не быть — своих окружений человек не
-        // заводил, а собрал привезённое.
+        // The stamp is about the image in this machine's docker, so it goes to
+        // our own directory: see stampFor. The directory may not exist yet: the
+        // person has not created environments of their own, only built a
+        // shipped one.
         try {
           const stamp = ownStampFor(step)
           fs.mkdirSync(path.dirname(stamp), { recursive: true })
@@ -957,18 +982,19 @@ function runStage(
 }
 
 /**
- * Поверх чего встаёт КОРЕНЬ цепочки: официальный python той версии, которую
- * просит его файл.
+ * What the chain's ROOT stands on: the official python of the version its
+ * file asks for.
  *
- * Передаётся всегда, а не только когда версия не умолчательная, — ровно затем,
- * чтобы строка команды в журнале называла базовый образ целиком: «на чём это
- * собрано» человек читает там, а не в Dockerfile.
+ * Always passed, not only when the version is not the default, precisely so
+ * that the command line in the log names the base image in full: a person
+ * reads "what was this built on" there, not in the Dockerfile.
  *
- * KERNEL_PARENT из окружения сервера (оболочка или строка в .env — config.ts
- * читает его dotenv) сильнее директивы: это способ собрать цепочку на своём
- * базовом образе, и молча его игнорировать значит собрать не то, что просили.
- * Но тогда об этом говорится вслух, потому что в панели у окружения будет
- * стоять версия из директивы, а в образе — чужая.
+ * KERNEL_PARENT from the server's environment (the shell, or a line in .env,
+ * which config.ts reads with dotenv) is stronger than the directive: it is the
+ * way to build the chain on a base image of your own, and silently ignoring it
+ * would mean building something other than what was asked for. But then this
+ * is said out loud, because the panel will show the directive's version for
+ * the environment, while the image has a different one.
  */
 export function rootParentImage(version: string, override?: string): string {
   const named = override?.trim()
@@ -985,15 +1011,16 @@ function rootParent(build: Build, root: string): string {
 }
 
 /**
- * Build an environment's image, in the background — вместе с цепочкой, на
- * которой оно стоит.
+ * Build an environment's image, in the background — together with the chain
+ * it stands on.
  *
- * Родитель собирается первым и только если его образа ещё нет: ради этого
- * наследование и заведено — правка листа не должна ставить torch заново. Пока
- * идёт цепочка, «Building» стоит на каждом звене, которое она СОБИРАЕТ: журнал
- * у них общий, и второй Build на родителя посреди этой сборки не начнётся.
- * Звенья, чьи образы уже есть, отпускаются, как только это выяснится, — их
- * кнопка не должна быть заперта чужой сборкой.
+ * A parent is built first, and only if its image does not exist yet: that is
+ * what inheritance is for, since an edit to a leaf must not install torch all
+ * over again. While the chain runs, "Building" shows on every link it BUILDS:
+ * they share one log, and a second Build on the parent will not start in the
+ * middle of this build. Links whose images already exist are released as soon
+ * as that becomes clear: their button must not be locked by someone else's
+ * build.
  *
  * Uses the dev override when the kernel is currently published on the host —
  * the same reasoning as the Makefile: rebuilding without it silently drops the
@@ -1007,13 +1034,14 @@ export async function startBuild(name: string): Promise<void> {
   failures.delete(name)
 
   /*
-   * Слот занимается синхронно, до первого await, и это существенно.
+   * The slot is taken synchronously, before the first await, and this matters.
    *
-   * Между проверкой `isBuilding` и `builds.set` стоял `docker compose ps` —
-   * сотни миллисекунд, за которые второй Build на то же имя (вторая вкладка,
-   * планшет рядом с ноутбуком) проходил проверку и запускал вторую сборку.
-   * Первая при этом вытеснялась из карты: её лог и Cancel становились
-   * недоступны, а закончившись, она молча дописывала штамп.
+   * Between the `isBuilding` check and `builds.set` there used to be a
+   * `docker compose ps`: hundreds of milliseconds in which a second Build on
+   * the same name (a second tab, a tablet next to the laptop) passed the check
+   * and started a second build. The first one was then pushed out of the map:
+   * its log and Cancel became unreachable, and when it finished it silently
+   * wrote the stamp.
    */
   const build: Build = {
     name,
@@ -1030,9 +1058,9 @@ export async function startBuild(name: string): Promise<void> {
   try {
     chain = buildChain(name)
   } catch (err) {
-    // Петля, слишком длинная цепочка, несуществующий родитель — отказ до
-    // docker. Собирать девять минут, чтобы упасть на COPY, — та же ошибка,
-    // только дороже.
+    // A loop, a chain that is too long, a parent that does not exist: refused
+    // before docker. Building for nine minutes only to fail on COPY is the same
+    // error, just more expensive.
     const message = err instanceof Error ? err.message : String(err)
     push(build, message)
     build.failed = true
@@ -1042,20 +1070,21 @@ export async function startBuild(name: string): Promise<void> {
   }
 
   /*
-   * Занимается ВСЯ цепочка, и тоже до первого await.
+   * The WHOLE chain is taken, also before the first await.
    *
-   * Слот на имя закрывал только половину двери: родители регистрировались
-   * строкой ниже, после `docker compose ps` и опроса образов — сотни
-   * миллисекунд, за которые Build на родителя из второго окна проходил
-   * `isBuilding`, запускал свой `docker build` с тем же `-t`, а затем
-   * вытеснялся записью ребёнка: лог и Cancel родителя пропадали, а конец
-   * цепочки удалял запись, пока его собственная сборка ещё шла. Обещание из
-   * шапки — «второй Build на родителя не начнётся» — держится здесь.
+   * The slot on the name closed only half the door: the parents were
+   * registered a line below, after `docker compose ps` and the image queries,
+   * hundreds of milliseconds in which a Build on the parent from a second
+   * window passed `isBuilding`, started its own `docker build` with the same
+   * `-t`, and was then pushed out by the child's entry: the parent's log and
+   * Cancel disappeared, and the end of the chain deleted the entry while the
+   * parent's own build was still running. The promise from the header, "a
+   * second Build on the parent will not start", is kept here.
    */
   const busy = chain.find((step) => step !== name && isBuilding(step))
   if (busy) {
-    // Не «упало», а «занято»: собирается тот самый слой, поверх которого мы бы
-    // встали, и ждать его — единственное разумное.
+    // Not "failed" but "busy": the very layer we would stand on is being built,
+    // and waiting for it is the only sensible thing.
     const message = tr('server.environmentInThisChainIsAlreadyBuilding.166f94', { p0: busy })
     push(build, message)
     build.failed = true
@@ -1065,21 +1094,22 @@ export async function startBuild(name: string): Promise<void> {
   }
   const held = chain.filter((step) => step !== name)
   for (const step of held) builds.set(step, build)
-  /** Отпустить звенья — но только те, что и правда держим мы. */
+  /** Release the links, but only the ones we really hold. */
   const release = (steps: readonly string[]): void => {
     for (const step of steps) if (builds.get(step) === build) builds.delete(step)
   }
 
   /*
-   * Через compose — только там, где он лежит.
+   * Through compose only where it exists.
    *
-   * В контейнере app примонтирован каталог kernel, а docker-compose.yml и .env
-   * остались на хосте: `docker compose build` там падал бы «no configuration
-   * file provided», и панель поэтому гасила Build вовсе. Прямая сборка этого не
-   * требует — контекст читает клиент, — а путь через compose остаётся на машине
-   * с репозиторием ради dev-override: без него пересобранное общее ядро
-   * возвращается без проброшенного 8888, и комната теряет Python при всех
-   * здоровых контейнерах.
+   * In the app container the kernel directory is mounted, while
+   * docker-compose.yml and .env stayed on the host: `docker compose build`
+   * there would fail with "no configuration file provided", and so the panel
+   * turned Build off entirely. A direct build does not need them (the client
+   * reads the context), and the compose path stays on the machine with the
+   * repository for the sake of the dev override: without it the rebuilt shared
+   * kernel comes back without the forwarded 8888, and the room loses Python
+   * while every container is healthy.
    */
   const plan: BuildPlan = fs.existsSync(COMPOSE_FILE)
     ? {
@@ -1089,19 +1119,21 @@ export async function startBuild(name: string): Promise<void> {
           : [],
       }
     : { via: 'direct' }
-  // Cancel мог прийти, пока мы спрашивали docker: тогда начинать нечего.
+  // Cancel may have come while we were asking docker: then there is nothing to
+  // start.
   if (build.done) {
     release(held)
     return
   }
 
   /*
-   * Начинаем с того места, где кончились готовые образы.
+   * We start from where the ready images end.
    *
-   * Родитель нужен ровно затем, чтобы поверх него встал следующий слой: есть
-   * его образ — прабабку трогать незачем. А устаревший родитель (список
-   * правился) — отдельная кнопка в его собственной строке: пересобирать три
-   * гигабайта за человека, который нажал Build на ребёнке, мы не вправе.
+   * A parent is needed exactly so that the next layer can stand on top of it:
+   * if its image exists, there is no reason to touch the great-grandmother.
+   * And a stale parent (its list was edited) is a separate button in its own
+   * row: we have no right to rebuild three gigabytes on behalf of a person who
+   * pressed Build on the child.
    */
   let from = 0
   for (let i = chain.length - 2; i >= 0; i -= 1) {
@@ -1116,15 +1148,16 @@ export async function startBuild(name: string): Promise<void> {
     release(held)
     return
   }
-  // Пропущенные звенья отпускаем: их образы уже есть, собирать их никто не
-  // собирается, и «Building» в их строке было бы враньём с запертой кнопкой.
+  // Skipped links are released: their images exist, nobody is going to build
+  // them, and "Building" in their row would be a lie with a locked button.
   release(chain.slice(0, from))
 
   /*
-   * Контекст готовится здесь, а не в начале: до этой строки сборку могли
-   * отменить, и копировать каталог ради отменённой сборки незачем. Отказ
-   * копирования (нет места, закрыт каталог состояния) — это провал сборки со
-   * своей причиной в журнале, а не исключение, летящее мимо панели.
+   * The context is prepared here, not at the start: up to this line the build
+   * could have been cancelled, and there is no reason to copy a directory for a
+   * cancelled build. A copy failure (no space, the state directory is closed)
+   * is a build failure with its own reason in the log, not an exception flying
+   * past the panel.
    */
   let kernel: string
   try {
@@ -1149,8 +1182,8 @@ export async function startBuild(name: string): Promise<void> {
 
   build.done = true
   if (!build.failed) push(build, tr('server.buildFinished.ce23d0'))
-  // Дальше каждое звено отвечает за себя: чужой журнал в своей строке — это
-  // «build failed» на образе, который собрался.
+  // From here on each link answers for itself: someone else's log in a row of
+  // its own is a "build failed" on an image that did build.
   release(held)
 }
 
@@ -1172,14 +1205,14 @@ async function usesDevOverride(): Promise<boolean> {
 }
 
 /**
- * Переключения идут по одному.
+ * Switches go one at a time.
  *
- * `docker compose up -d kernel` — операция над одной службой одного проекта, и
- * два таких вызова внахлёст спорят за один контейнер: второй падает на
- * конфликте имени, а панель показывает «The kernel did not come back» там, где
- * ядро прекрасно вернулось — просто не для этого запроса. Очередь общая, а не
- * по имени окружения: служба одна, и два РАЗНЫХ имени ссорятся за неё ровно
- * так же.
+ * `docker compose up -d kernel` is an operation on one service of one project,
+ * and two such calls overlapping fight over one container: the second fails on
+ * a name conflict, and the panel shows "The kernel did not come back" where
+ * the kernel came back just fine, only not for this request. The queue is
+ * shared, not per environment name: there is one service, and two DIFFERENT
+ * names quarrel over it just the same.
  */
 let switching: Promise<void> = Promise.resolve()
 
@@ -1191,19 +1224,20 @@ let switching: Promise<void> = Promise.resolve()
  * that succeeded against a file that did not get written is a lie that outlives
  * the process.
  *
- * `restartShared` — правда ли комнаты сидят на ядре compose. Когда у каждой
- * свой контейнер, пересоздавать эту службу незачем: ни одна комната в неё не
- * ходит, а перезапуск на минуту занимает машину и выглядит в панели так, будто
- * что-то произошло с семинарами. Тогда «Make default» — это ровно запись
- * умолчания для новых семинаров, и больше ничего.
+ * `restartShared`: whether the rooms really sit on the compose kernel. When
+ * each has its own container, there is no reason to recreate this service: not
+ * a single room goes to it, and a restart ties up the machine for a minute and
+ * looks in the panel as though something happened to the seminars. Then
+ * "Make default" is just writing the default for new seminars, and nothing
+ * more.
  */
 export function activate(
   name: string,
   restartShared = true,
 ): Promise<{ ok: boolean; out: string }> {
   const done = switching.then(() => switchTo(name, restartShared))
-  // Очередь не рвётся от неудачного переключения: следующему всё равно надо
-  // дать ход, иначе панель залипает до перезапуска сервера.
+  // A failed switch does not break the queue: the next one still has to be let
+  // through, otherwise the panel gets stuck until the server restarts.
   switching = done.then(
     () => undefined,
     () => undefined,
@@ -1262,35 +1296,37 @@ function stateOf(
    */
   if (editedSinceBuild(name, built)) return 'unbuilt'
   /*
-   * Просит одну версию Python, а собрано на другой — тоже «пересобрать».
+   * Asks for one Python version but was built on another: also "rebuild".
    *
-   * Отдельной проверкой, потому что штамп здесь не помогает: директива для pip
-   * комментарий, и `listChanged` её не видит вовсе — то есть смена версии в
-   * шапке не меняет НИЧЕГО в том, чем мы отличаем свежий образ от старого.
-   * Панель показывала бы «Python 3.12 · Ready» над образом с 3.11, а узнавали
-   * бы об этом на первом `match` посреди пары.
+   * A separate check, because the stamp does not help here: to pip the
+   * directive is a comment, and `listChanged` does not see it at all, i.e.
+   * changing the version in the header changes NOTHING in how we tell a fresh
+   * image from an old one. The panel would show "Python 3.12 · Ready" over an
+   * image with 3.11, and people would find out at the first `match` in the
+   * middle of class.
    */
   if (pythonDrifted(name, built)) return 'unbuilt'
   /*
-   * Родителя пересобрали позже — значит, этот образ стоит на прежнем слое.
+   * The parent was rebuilt later, so this image stands on the previous layer.
    *
-   * Список ребёнка не менялся, и по нему всё готово; но torch в нём тот, что
-   * был до пересборки base-gpu, а панель говорила бы «Ready». Тот же
-   * «Needs rebuild», что и на правку списка: образ есть, комнаты на нём идут,
-   * пересобрать стоит секунды.
+   * The child's list did not change, and by it everything is ready; but the
+   * torch in it is the one from before base-gpu was rebuilt, while the panel
+   * would say "Ready". The same "Needs rebuild" as for a list edit: the image
+   * exists, rooms run on it, and a rebuild costs seconds.
    */
   if (parentBuilt && parentBuilt.builtAt > built.builtAt) return 'unbuilt'
   return 'ready'
 }
 
 /**
- * Разошлись ли версия из файла и версия в образе.
+ * Whether the version from the file and the version in the image diverged.
  *
- * Сравниваются минорные версии: образ говорит `3.12.7`, файл просит `3.12` —
- * это одна и та же версия, и предлагать из-за патча пересборку значит звать на
- * неё после каждого обновления официального образа. Образ, который про Python
- * молчит (собран не от python-slim), расхождением не считается: сказать
- * «пересоберите» на основании незнания — хуже, чем промолчать.
+ * Minor versions are compared: the image says `3.12.7`, the file asks for
+ * `3.12`, and that is the same version; offering a rebuild over a patch would
+ * mean calling for one after every update of the official image. An image
+ * that says nothing about Python (built not from python-slim) does not count
+ * as a divergence: saying "rebuild" on the basis of not knowing is worse than
+ * saying nothing.
  */
 function pythonDrifted(name: string, built: ImageFacts): boolean {
   if (built.python === null) return false
@@ -1330,9 +1366,10 @@ export async function listEnvironments(): Promise<AdminEnvironment[]> {
         error: null,
         parent: null,
         gpu: e.gpu,
-        // Версия — только та, которую назвал каталог: образ здесь чужой и
-        // неизменный, спросить его отсюда нечем, а умолчание на этом месте было
-        // бы выдумкой о production-сборке. Не сказано — панель промолчит.
+        // Only the version the catalog named: the image here is someone else's
+        // and immutable, there is nothing to ask it with from here, and a
+        // default in this place would be an invention about the production
+        // build. If nothing is stated, the panel says nothing.
         python: e.python ?? '',
         pythonBuilt: null,
         managed: true,
@@ -1342,8 +1379,9 @@ export async function listEnvironments(): Promise<AdminEnvironment[]> {
   }
   const active = activeName()
   const names = listNames()
-  // Образы всех окружений разом: строке нужен не только свой, но и родительский
-  // — иначе «пересобрали родителя» видно только по датам, глазами.
+  // All environments' images at once: a row needs not only its own but also
+  // its parent's, otherwise "the parent was rebuilt" can only be seen by eye,
+  // from the dates.
   const facts = new Map<string, ImageFacts | null>(
     await Promise.all(names.map(async (name) => [name, await imageFacts(name)] as const)),
   )
@@ -1360,13 +1398,14 @@ export async function listEnvironments(): Promise<AdminEnvironment[]> {
       active: name === active,
       error: failures.get(name) ?? null,
       parent,
-      // Директива из шапки файла, а не отдельный реестр: панель показывает то
-      // же самое, по чему потом решает подъём ядра, — включая унаследованное от
-      // родителя.
+      // The directive from the file header, not a separate registry: the panel
+      // shows the same thing the kernel start later decides by, including what
+      // is inherited from the parent.
       gpu: needsGpu(name),
-      // Обе версии: чего просит файл и что получилось в образе. Пока они
-      // совпадают, панель показывает вторую — она точнее (`3.12.7`); разошлись
-      // — первую, вместе с «Needs rebuild», который её и объясняет.
+      // Both versions: what the file asks for and what the image ended up with.
+      // While they match, the panel shows the second, being more precise
+      // (`3.12.7`); once they diverge, the first, together with the "Needs
+      // rebuild" that explains it.
       python: pythonOf(name),
       pythonBuilt: built?.python ?? null,
     }

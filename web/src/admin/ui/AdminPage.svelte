@@ -5,16 +5,16 @@
     title: string
     subtitle?: string
     /**
-     * Строка НАД заголовком: раздел, из которого сюда пришли.
+     * A line ABOVE the title: the section you came here from.
      *
-     * Экран одного соревнования открывают по ссылке из чата и возвращаются на
-     * него через неделю — и без этой строки заголовок «Rohlik: сколько заказов
-     * будет завтра» не говорит, в каком разделе панели человек стоит и куда
-     * ведёт «назад». Необязательная: остальным экранам панели она не нужна,
-     * они и есть раздел.
+     * A single competition's screen is opened from a link in a chat and
+     * returned to a week later — and without this line the title "Rohlik: how
+     * many orders there will be tomorrow" does not say which section of the
+     * panel you are in or where "back" leads. Optional: the other panel
+     * screens do not need it, they are the section.
      */
     eyebrow?: Snippet
-    /** Рядом с заголовком: плашка состояния, срок — то, что читается вместе с именем. */
+    /** Beside the title: state badge, deadline — what is read along with the name. */
     beside?: Snippet
     actions?: Snippet
     children: Snippet
@@ -48,8 +48,8 @@
           {@render eyebrow()}
         </div>
       {/if}
-      <!-- Заголовок и то, что читается вместе с ним, — одна строка: плашка
-           «ИДЁТ» под именем читалась бы как подпись к чему-то другому. -->
+      <!-- The title and what is read together with it are one line: a "LIVE"
+           badge under the name would read as a caption to something else. -->
       <div class="flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-1">
         <h1 class="min-w-0 max-w-full truncate text-display font-black text-ink">{title}</h1>
         {#if beside}{@render beside()}{/if}
@@ -59,12 +59,13 @@
       {/if}
     </div>
     <!--
-      На телефоне ряд действий занимает строку целиком, и это не косметика: без
-      ширины он «ужимается по содержимому», и `w-full` внутри него — поле поиска
-      на всю строку, кнопка на всю строку — разрешается от ширины, которую эта
-      же ширина и определяет. Процент от неизвестного родителя браузер считает
-      как умеет, и поле выходило то в 220px, то в край экрана. Выше 640 ширины
-      здесь нет вовсе — остаётся прежний ужим по содержимому.
+      On a phone the actions row takes the whole line, and that is not
+      cosmetic: without a width it "shrinks to content", and `w-full` inside
+      it — a full-line search field, a full-line button — resolves against a
+      width that this very width defines. The browser computes a percentage of
+      an unknown parent as best it can, and the field came out now at 220px,
+      now at the screen edge. Above 640 there is no width here at all — the
+      old shrink-to-content remains.
     -->
     {#if actions}
       <div class="flex min-w-0 max-w-full flex-wrap items-center gap-2 max-[640px]:w-full">

@@ -1,52 +1,57 @@
 /**
- * Что оформление из текстовой ячейки имеет право сделать с чужим экраном.
+ * What styling from a text cell is allowed to do to other people's screens.
  *
- * Атрибут `style` в заметке был запрещён целиком, и запрет был заслуженный:
- * `<div style="position:fixed;inset:0;background:#000;z-index:9999">` из одной
- * ячейки — чёрный экран у всех тридцати человек и у ноутбука в проекторе,
- * причём поверх интерфейса, так что удалить ячейку мышью уже нельзя, а
- * перезагрузка возвращает ту же ячейку.
+ * The `style` attribute in a note used to be banned outright, and the ban was
+ * deserved: `<div style="position:fixed;inset:0;background:#000;z-index:9999">`
+ * from a single cell is a black screen for all thirty people and for the
+ * laptop on the projector, on top of the interface at that, so the cell can
+ * no longer be deleted with the mouse, and a reload brings back the same cell.
  *
- * Но цена запрета — вся привычная разметка учебной тетради. `<div
- * style="background:#eef;padding:8px;border-left:3px solid #66f">` — это врезка
- * «Замечание», которую пишут в каждом втором ноутбуке; без атрибута она
- * доезжает голым `<div>`, то есть неотличимо от обычного абзаца. Снаружи это
- * читается не как «оформление запрещено», а как «HTML не работает», потому что
- * структура-то прошла, а видимой разницы нет.
+ * But the price of the ban is all the familiar markup of a teaching notebook.
+ * `<div style="background:#eef;padding:8px;border-left:3px solid #66f">` is
+ * the "Note" callout found in every other notebook; without the attribute it
+ * arrives as a bare `<div>`, that is, indistinguishable from an ordinary
+ * paragraph. From the outside this reads not as "styling is forbidden" but as
+ * "HTML does not work", because the structure did get through, yet there is
+ * no visible difference.
  *
- * Поэтому запрещён не атрибут, а СВОЙСТВА: значение разбирается, знакомое
- * оформление проходит, рычаги на чужой экран — нет. Граница проведена по
- * одному признаку: свойство остаётся, если всё, что оно может испортить, —
- * прямоугольник самой заметки; и уходит, если оно умеет рисовать, двигать или
- * ловить мышь ЗА его пределами.
+ * So what is forbidden is not the attribute but PROPERTIES: the value is
+ * parsed, familiar styling gets through, levers on other people's screens do
+ * not. The border is drawn by a single criterion: a property stays if all it
+ * can spoil is the note's own rectangle, and goes if it can draw, move or
+ * catch the mouse OUTSIDE it.
  *
- * Отсюда и неочевидные отказы:
+ * Hence the non-obvious refusals:
  *
- * - `box-shadow` и `text-shadow` — не украшение, а `0 0 0 100vmax #000`: тень
- *   рисуется ВНЕ элемента и закрашивает экран целиком. Ровно та дыра, от
- *   которой закрывались запретом `position`, только с другой стороны, и
- *   единственные два свойства, которые умеют это без него.
- * - `url(...)` — адрес, который запросит браузер каждого в комнате: тот же
- *   довод, что и у `@import` в теневом корне вывода (ScopedOutput.svelte).
- * - `calc()` и `var()` — способ пронести число мимо потолка ниже и значение
- *   мимо разбора. Заметке они не нужны ни разу.
+ * - `box-shadow` and `text-shadow` are not decoration but
+ *   `0 0 0 100vmax #000`: a shadow is drawn OUTSIDE the element and paints
+ *   over the whole screen. Exactly the hole the `position` ban was meant to
+ *   close, only from the other side, and the only two properties that can do
+ *   it without `position`.
+ * - `url(...)` is an address that the browser of everyone in the room will
+ *   request: the same argument as for `@import` in the output's shadow root
+ *   (ScopedOutput.svelte).
+ * - `calc()` and `var()` are a way to smuggle a number past the ceiling below
+ *   and a value past the parsing. A note never needs them.
  *
- * Санитайзер тегов живёт отдельно (web/src/lib/sanitize.ts): `<style>`,
- * `<form>`, `<audio>`, `<video>` по-прежнему выброшены целиком, и по прежней
- * причине — таблица стилей внутри страницы действует на ВСЮ страницу, а
- * свойства этот файл считает по одному элементу.
+ * The tag sanitizer lives separately (web/src/lib/sanitize.ts): `<style>`,
+ * `<form>`, `<audio>`, `<video>` are still dropped whole, and for the same
+ * reason as before — a style sheet inside the page acts on the WHOLE page,
+ * while this file judges properties one element at a time.
  *
- * Один файл на оба отрисовщика заметки — комнату (web/src/lib/render.svelte.ts)
- * и статическую публикацию (server/src/publish/render.ts). Вторая копия
- * политики безопасности — это способ открыть дыру, а не закрыть.
+ * One file for both renderers of a note — the room
+ * (web/src/lib/render.svelte.ts) and the static publication
+ * (server/src/publish/render.ts). A second copy of a security policy is a way
+ * to open a hole, not to close one.
  */
 
 /**
- * Свойства, которые заметка может назвать. Всё, чего здесь нет, снимается.
+ * Properties a note may name. Anything not listed here is removed.
  *
- * Список, а не чёрный список: свойств в CSS несколько сотен, каждый год
- * прибавляются новые, и `anchor-name` с `view-transition-name` — это ровно те
- * два, о которых чёрный список узнал бы из отчёта об уже испорченном занятии.
+ * An allowlist, not a blocklist: CSS has several hundred properties, new ones
+ * are added every year, and `anchor-name` and `view-transition-name` are
+ * exactly the two a blocklist would have learned about from a report on an
+ * already ruined class.
  */
 export const NOTE_CSS_PROPS: ReadonlySet<string> = new Set(
   `color background background-color background-image background-position
@@ -85,13 +90,13 @@ export const NOTE_CSS_PROPS: ReadonlySet<string> = new Set(
 )
 
 /**
- * Функции, которые разрешены в значении. Скобка с любым другим именем —
- * причина выбросить объявление целиком.
+ * Functions allowed in a value. A parenthesis with any other name is a reason
+ * to drop the whole declaration.
  *
- * Цвет и градиент считаются сами по себе и никуда не ходят. `url()`,
- * `image-set()`, `attr()`, `element()` ходят; `calc()`, `min()`, `max()`,
- * `clamp()`, `var()`, `env()` — считают, а значит проносят число мимо потолка
- * длин.
+ * A color and a gradient are computed on their own and go nowhere. `url()`,
+ * `image-set()`, `attr()`, `element()` go places; `calc()`, `min()`, `max()`,
+ * `clamp()`, `var()`, `env()` compute, which means they smuggle a number past
+ * the length ceiling.
  */
 const CSS_FUNCS: ReadonlySet<string> = new Set([
   'rgb',
@@ -114,27 +119,27 @@ const CSS_FUNCS: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Потолок длины — в пикселях, куда приводится любая единица.
+ * The length ceiling — in pixels, to which any unit is converted.
  *
- * Без него белый список свойств половину работы не делает: `border: 9999px
- * solid #000` и `margin-left: -9999px` уводят содержимое за пределы заметки
- * теми самыми свойствами, которые оформлению нужны. 1600 — заметно больше
- * самой широкой колонки тетради и заведомо меньше экрана.
+ * Without it the property allowlist does only half the job:
+ * `border: 9999px solid #000` and `margin-left: -9999px` take content outside
+ * the note with the very properties styling needs. 1600 is noticeably more
+ * than the widest column of a notebook and certainly less than a screen.
  *
- * Отрицательные отбивки нужны редко и по мелочи (сдвинуть рамку на пару
- * пикселей), поэтому вниз потолок куда ближе: -240 хватает на приём, но не на
- * вынос блока из ячейки.
+ * Negative spacing is needed rarely and in small amounts (nudging a frame by
+ * a couple of pixels), so the ceiling downwards is much closer: -240 is
+ * enough for that trick, but not for carrying a block out of the cell.
  */
 const MAX_PX = 1600
 const MIN_PX = -240
 
-/** Потолок процентов: `line-height: 150%` — да, `width: 900%` — нет. */
+/** The percentage ceiling: `line-height: 150%` — yes, `width: 900%` — no. */
 const MAX_PCT = 400
 
-/** Отдельно кегль: 96px — это уже «одна буква на пол-экрана». */
+/** Font size on its own: 96px is already "one letter per half a screen". */
 const MAX_FONT_PX = 96
 
-/** Сколько пикселей в единице. `%` считается отдельно — он не длина. */
+/** How many pixels are in a unit. `%` is counted separately — it is not a length. */
 const UNIT_PX: Record<string, number> = {
   px: 1,
   pt: 96 / 72,
@@ -147,9 +152,9 @@ const UNIT_PX: Record<string, number> = {
   rem: 16,
   ex: 8,
   ch: 8,
-  // Единицы экрана считаются по большому экрану — то есть по худшему случаю:
-  // `width: 100vw` на проекторе должно упереться в потолок, а не пролезть под
-  // ним потому, что мерили ноутбуком.
+  // Viewport units are counted against a large screen — that is, the worst
+  // case: `width: 100vw` on a projector must hit the ceiling, not slip under
+  // it because it was measured on a laptop.
   vw: 20,
   vh: 12,
   vmin: 12,
@@ -166,7 +171,7 @@ const UNIT_PX: Record<string, number> = {
 
 const NUMBER = /(-?(?:\d+\.?\d*|\.\d+))([a-z%]*)/gi
 
-/** Влезает ли каждое число значения в потолок. */
+/** Whether every number in the value fits under the ceiling. */
 function withinBounds(value: string, limit: number): boolean {
   NUMBER.lastIndex = 0
   let found: RegExpExecArray | null
@@ -179,8 +184,8 @@ function withinBounds(value: string, limit: number): boolean {
       continue
     }
     const factor = UNIT_PX[unit]
-    // Без единицы — не длина: `line-height: 1.5`, `opacity: .4`, `flex: 1 1 0`,
-    // а также каналы цвета внутри `rgb(...)`. Мерить их пикселями бессмысленно.
+    // No unit means not a length: `line-height: 1.5`, `opacity: .4`, `flex: 1 1 0`,
+    // and also color channels inside `rgb(...)`. Measuring them in pixels is pointless.
     if (factor === undefined) continue
     const px = n * factor
     if (px > limit || px < MIN_PX) return false
@@ -188,28 +193,29 @@ function withinBounds(value: string, limit: number): boolean {
   return true
 }
 
-/** Имя функции перед скобкой: `linear-gradient(` -> `linear-gradient`. */
+/** The function name before a parenthesis: `linear-gradient(` -> `linear-gradient`. */
 const CALL = /(^|[\s,(:/])(-?[a-z][a-z0-9-]*)\s*\(/gi
 
-/** Знает ли значение только разрешённые функции. */
+/** Whether the value calls only allowed functions. */
 function callsAllowed(value: string): boolean {
   CALL.lastIndex = 0
   let found: RegExpExecArray | null
   while ((found = CALL.exec(value)) !== null) {
     if (!CSS_FUNCS.has(found[2].toLowerCase())) return false
   }
-  // Скобка, перед которой нет имени, — способ спрятать вызов от разбора выше.
+  // A parenthesis with no name before it is a way to hide a call from the parsing above.
   return !/(^|[\s,:/])\(/.test(value)
 }
 
 /**
- * Объявления значения атрибута `style`, разрезанные по `;`.
+ * The declarations of a `style` attribute value, cut at `;`.
  *
- * Разрез руками, а не `split(';')`: точка с запятой бывает внутри скобок
- * (`color-mix(in srgb, …)` её не содержит, а вот чужая функция — вполне) и
- * внутри кавычек, и `split` резал бы объявление пополам, превращая хвост
- * функции в отдельное «свойство». Оно бы всё равно не нашлось в белом списке,
- * но разбирать надо то, что прочтёт браузер, а не то, что удобно резать.
+ * Cut by hand rather than with `split(';')`: a semicolon can occur inside
+ * parentheses (`color-mix(in srgb, …)` has none, but a foreign function well
+ * might) and inside quotes, and `split` would cut a declaration in half,
+ * turning the tail of a function into a separate "property". It would not be
+ * found in the allowlist anyway, but what has to be parsed is what the
+ * browser will read, not what is convenient to cut.
  */
 function declarations(value: string): string[] {
   const out: string[] = []
@@ -236,37 +242,39 @@ function declarations(value: string): string[] {
 }
 
 /**
- * Длина значения, за которой разбирать уже незачем.
+ * The value length beyond which there is no point in parsing.
  *
- * Атрибут на десять килобайт — это не оформление, а попытка занять разбором
- * каждую вкладку в комнате: заметка перерисовывается на каждое нажатие соседа.
+ * A ten-kilobyte attribute is not styling but an attempt to keep every tab in
+ * the room busy parsing: a note is re-rendered on every keystroke of a
+ * neighbor.
  */
 const MAX_STYLE = 2000
 
 /**
- * Значение атрибута `style` из заметки — тем, что можно показать.
+ * The value of a note's `style` attribute — reduced to what may be shown.
  *
- * Пустая строка означает «атрибут снять целиком»: `style=""` в разметке ничем
- * не лучше отсутствия атрибута, а лишний пустой атрибут в сравнении разметки
- * читается как изменение.
+ * An empty string means "remove the attribute entirely": `style=""` in the
+ * markup is no better than no attribute, and an extra empty attribute reads as
+ * a change when markup is compared.
  *
- * Отбрасывается ОБЪЯВЛЕНИЕ, а не весь атрибут: в
- * `style="background:#eef;position:fixed"` первое — обычная врезка, и терять её
- * из-за второго значило бы наказывать за соседство. Автор увидит, что одно из
- * двух не подействовало, и это честный ответ.
+ * What gets dropped is the DECLARATION, not the whole attribute: in
+ * `style="background:#eef;position:fixed"` the first is an ordinary callout,
+ * and losing it because of the second would mean punishing it for its
+ * neighbor. The author will see that one of the two did not take effect, and
+ * that is an honest answer.
  */
 export function safeStyle(value: string): string {
   if (typeof value !== 'string' || value.length > MAX_STYLE) return ''
   /*
-   * Обратный слеш — это escape в CSS: `\70 osition` браузер читает как
-   * `position`. Разбирать такое значит писать второй разборщик CSS; значение с
-   * ним не проходит целиком, и ни одной настоящей заметки это не стоит — в
-   * оформлении escape встречается только в `content`, которого здесь нет.
+   * A backslash is an escape in CSS: the browser reads `\70 osition` as
+   * `position`. Parsing that would mean writing a second CSS parser; a value
+   * containing one is rejected whole, and that costs no real note anything —
+   * in styling, escapes only occur in `content`, which is not here.
    *
-   * Управляющие символы и `<` ловятся тем же доводом: они бывают только у
-   * того, кто пробует разбор на прочность.
+   * Control characters and `<` are caught by the same argument: they only
+   * turn up from someone testing how sturdy the parser is.
    */
-  // eslint-disable-next-line no-control-regex -- управляющие символы и есть предмет
+  // eslint-disable-next-line no-control-regex -- control characters are the very subject here
   if (/[\\<>{}@]|[ -]/.test(value)) return ''
 
   const kept: string[] = []
@@ -276,13 +284,13 @@ export function safeStyle(value: string): string {
     const prop = decl.slice(0, colon).trim().toLowerCase()
     if (!NOTE_CSS_PROPS.has(prop)) continue
     /*
-     * `!important` снимается, а не запрещает объявление.
+     * `!important` is removed rather than disqualifying the declaration.
      *
-     * Автору он не даёт ничего — инлайновый стиль и так сильнее правил
-     * `.prose-note`, — а нам стоил бы возможности защититься от заметки
-     * собственным правилом. Заметка, скопированная из чужого ноутбука, несёт
-     * его сплошь и рядом, и падать на ней было бы враньём про «HTML не
-     * работает».
+     * It gives the author nothing — an inline style already beats the
+     * `.prose-note` rules — while it would cost us the ability to defend
+     * against a note with a rule of our own. A note copied from someone else's
+     * notebook carries it all over the place, and failing on it would be a
+     * lie of the "HTML does not work" kind.
      */
     const body = decl
       .slice(colon + 1)

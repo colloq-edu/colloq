@@ -80,8 +80,8 @@ test('room CPU intent accepts bounded whole cores without accepting container se
 })
 
 test('room memory intent carries whole MiB within the protocol bounds and nothing else', () => {
-  // До 18.09 брокер этого поля не принимал вовсе, и Pod на k3s получал 2Gi при
-  // любом числе в форме занятия.
+  // Before 18 Sep 2026 the broker did not accept this field at all, and the Pod
+  // on k3s got 2Gi whatever number the class form had.
   assert.deepEqual(parseRuntimeEnsureRequest({ environment: 'base', memoryMb: 4096 }), {
     environment: 'base',
     memoryMb: 4096,
@@ -93,7 +93,8 @@ test('room memory intent carries whole MiB within the protocol bounds and nothin
 test('live resize intent is memory and/or whole cores: a number, or null for the broker default', () => {
   assert.deepEqual(parseRuntimeResizeRequest({ memoryMb: 8192 }), { memoryMb: 8192 })
   assert.deepEqual(parseRuntimeResizeRequest({ memoryMb: null }), { memoryMb: null })
-  // Ядра с 18.09 — тем же входом: до того их меняла только замена Pod.
+  // Cores, since 18 Sep 2026, go through the same input: before that only
+  // replacing the Pod changed them.
   assert.deepEqual(parseRuntimeResizeRequest({ cpus: 4 }), { cpus: 4 })
   assert.deepEqual(parseRuntimeResizeRequest({ cpus: null }), { cpus: null })
   assert.deepEqual(parseRuntimeResizeRequest({ memoryMb: 8192, cpus: 4 }), { memoryMb: 8192, cpus: 4 })

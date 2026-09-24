@@ -1,26 +1,28 @@
 import type { Locale } from '@shared/i18n-types'
 
 /**
- * Какая часть продукта говорит — и, значит, какой словарь ей нужен.
+ * Which part of the product is speaking — and so which dictionary it needs.
  *
- * Словарь был один на всех и вёз оба языка сразу: 351 КБ исходника (74 КБ по
- * проводу) перед ЛЮБЫМ экраном, из которых комнате принадлежит четверть.
- * Теперь область и язык выбираются здесь, а состав каждой области перечислен
- * импортами в lib/messages/<область>-<язык>.ts — оттуда же его читает плагин
- * сборки, который и режет каталоги до одного языка.
+ * The dictionary used to be one for everyone and carried both languages at
+ * once: 351 KB of source (74 KB over the wire) before ANY screen, of which a
+ * quarter belongs to the room. Now the area and the language are chosen here,
+ * and each area's contents are listed as imports in
+ * lib/messages/<area>-<language>.ts — the build plugin, which cuts the catalogs
+ * down to one language, reads them from there too.
  */
 /**
- * `competitions` — четвёртая область, и заведена она потому, что три прежние
- * ей не подходят: `/k/**` — ни комната, ни панель преподавателя, ни читалка.
- * Общего с ними у неё только `common` и урезанный серверный каталог.
+ * `competitions` is the fourth area, and it was set up because the three
+ * earlier ones do not fit it: `/k/**` is neither the room, nor the teacher
+ * panel, nor the reader. All it shares with them is `common` and the trimmed
+ * server catalog.
  */
 export type MessageArea = 'room' | 'admin' | 'reader' | 'competitions'
 
 /*
- * Перечислено руками и целиком, потому что `import('./messages/' + name)`
- * сборщик разобрать не может: он либо утащит в сборку весь каталог, либо не
- * найдёт ничего. Восемь строк — цена того, чтобы Rollup видел ровно восемь
- * кусков и назвал их предсказуемо (на эти имена смотрит firstPaint).
+ * Listed by hand and in full, because the bundler cannot parse
+ * `import('./messages/' + name)`: it either drags the whole directory into the
+ * build or finds nothing. Eight lines are the price of Rollup seeing exactly
+ * eight chunks and naming them predictably (firstPaint looks at these names).
  */
 const MODULES: Record<string, () => Promise<unknown>> = {
   'room-ru': () => import('./messages/room-ru'),
@@ -36,14 +38,15 @@ const MODULES: Record<string, () => Promise<unknown>> = {
 const loading = new Map<string, Promise<unknown>>()
 const shown = new Set<MessageArea>()
 
-/** Словарь одной области на одном языке — один раз за вкладку. */
+/** One area's dictionary in one language — once per tab. */
 export function loadAreaMessages(area: MessageArea, locale: Locale): Promise<unknown> {
   shown.add(area)
   const name = `${area}-${locale}`
   const known = loading.get(name)
   if (known) return known
   const started = MODULES[name]().catch((cause: unknown) => {
-    // Отказ не кешируется: «Обновить страницу» внизу экрана должно работать.
+    // A failure is not cached: "Reload the page" at the bottom of the screen
+    // must work.
     if (loading.get(name) === started) loading.delete(name)
     throw cause
   })
@@ -63,10 +66,12 @@ export async function loadLocalizedScreen<T>(
 }
 
 /**
- * Язык сменили — доложить его словарь тем экранам, что уже открыты.
+ * The language was switched — deliver its dictionary to the screens already
+ * open.
  *
- * До этого момента `translate` отдаёт прежний язык, а не голый ключ: увидеть
- * полсекунды старую надпись лучше, чем `room.ui.862` посреди формы.
+ * Until then `translate` returns the previous language, not a bare key: seeing
+ * the old caption for half a second is better than `room.ui.862` in the middle
+ * of a form.
  */
 export async function reloadAreaMessages(locale: Locale): Promise<void> {
   await Promise.all([...shown].map((area) => loadAreaMessages(area, locale)))

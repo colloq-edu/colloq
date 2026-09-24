@@ -169,12 +169,12 @@ export function updateTeacherRole(id: string, role: AdminRole): Teacher | null {
 }
 
 /**
- * Переименовать преподавателя или поправить адрес.
+ * Rename a teacher or correct their email address.
  *
- * До этого исправить опечатку в фамилии можно было только удалением и заводом
- * заново — с новой ссылкой, потерянным авторством у семинаров и выброшенным из
- * панели человеком. Null, если адрес уже занят: решает UNIQUE-индекс, как и на
- * заведении.
+ * Before this, a typo in a surname could only be fixed by deleting the person
+ * and adding them again — with a new link, lost authorship of seminars and the
+ * person thrown out of the panel. Null if the address is already taken: the
+ * UNIQUE index decides, as it does on creation.
  */
 export function updateTeacherIdentity(
   id: string,

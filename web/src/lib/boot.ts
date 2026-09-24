@@ -1,45 +1,52 @@
 /**
- * Заставка из `web/index.html` и то, когда её снимают.
+ * The splash from `web/index.html`, and when it is taken down.
  *
- * Оболочка `#boot` — логотип и полоска посреди пустого экрана — рисуется без
- * единого запроса и держится, пока приложение едет. Снимали её по факту
- * монтирования (`main.ts`), и это было на кадр раньше правды: смонтированный
- * App — это ещё не экран, это `{#await}` над куском маршрута и пустые `session`
- * и `adminAuth`. Заставка уходила, и на её месте из ниоткуда появлялся скелет
- * тетради — серые полосы там, где интерфейса ещё нет вовсе. Замерено на стенде
- * (задержка 2,5 с на /api/**): оболочка уходила на 430 мс, скелет держался до
- * 2,7 с, и только потом появлялась панель.
+ * The `#boot` shell — a logo and a bar in the middle of an empty screen — is
+ * drawn without a single request and stays while the app loads. It used to be
+ * removed on mount (`main.ts`), and that was a frame ahead of the truth: a
+ * mounted App is not a screen yet, it is an `{#await}` over a route chunk and
+ * an empty `session` and `adminAuth`. The splash left, and in its place a
+ * notebook skeleton appeared out of nowhere — grey bars where there is no
+ * interface at all yet. Measured on a test bench (2.5 s delay on /api/**): the
+ * shell left at 430 ms, the skeleton stayed until 2.7 s, and only then did the
+ * panel appear.
  *
- * Поэтому снятие оболочки привязано не к монтированию, а к тому, что первому
- * экрану ЕСТЬ ЧТО ПОКАЗАТЬ: панель дождалась состояния инстанса, читалка —
- * публикации, комната — первого кадра тетради. Экран говорит об этом сам,
- * одним вызовом `firstScreenReady()`; кто именно докладывает — перечислено
- * ниже, чтобы следующий экран не забыли.
+ * So taking the shell down is tied not to mounting but to the first screen
+ * HAVING SOMETHING TO SHOW: the panel has the instance state, the reader has
+ * the publication, the room has the notebook's first frame. The screen says so
+ * itself, with one `firstScreenReady()` call; exactly who reports is listed
+ * below, so that the next screen is not forgotten.
  *
- * Дольше `SCREEN_WAIT` оболочка не живёт ни при каких условиях. Это не
- * таймаут «на всякий случай», а граница жанра: ждать сеть под заставкой
- * разумно доли секунды, а дальше человеку надо показать интерфейс — хотя бы
- * тот, в котором на месте данных стоит та же самая заставка (`Splash`,
- * `size="screen"`), встающая ровно на место `#boot`, без скачка.
+ * The shell never lives longer than `SCREEN_WAIT`, whatever happens. This is
+ * not a "just in case" timeout but the limit of the genre: waiting for the
+ * network under a splash is reasonable for a fraction of a second, and after
+ * that the person must be shown the interface — even if it is one where the
+ * data's place is taken by the very same splash (`Splash`, `size="screen"`),
+ * landing exactly where `#boot` was, without a jump.
  *
- * Кто докладывает о готовности:
- *  - `App.svelte` — экран отказа и форма входа, когда о комнате всё известно;
- *  - `AdminScreen.svelte` — когда панель знает, что рисовать: вход или себя;
- *  - `ReaderScreen.svelte` — когда курс или публикация получены (или отказ);
- *  - `SessionScreen.svelte` — когда в центре комнаты не тетрадь (пульт,
- *    проекция, открытый файл); пульт консилиума ждёт ещё и первого кадра
- *    стопки, иначе между заставкой и собой он успевал мигнуть «ячейка не в
- *    консилиуме» (council.svelte.ts · boardPhase);
- *  - `Notebook.svelte` — когда тетрадь перестала быть «непрочитанной»;
- *  - `CompetitionsScreen.svelte` — когда ключ из ссылки для входа обменян:
- *    под заставкой это один запрос, а пустая страница под ним мелькнула бы;
- *  - `main.ts` — когда кусок приложения не доехал: под заставкой, которая
- *    больше ничего не дождётся, стоять нечему.
+ * Who reports readiness:
+ *  - `App.svelte` — the refusal screen and the sign-in form, once everything
+ *    about the room is known;
+ *  - `AdminScreen.svelte` — when the panel knows what to draw: sign-in or
+ *    itself;
+ *  - `ReaderScreen.svelte` — when the course or publication has arrived (or a
+ *    refusal);
+ *  - `SessionScreen.svelte` — when the centre of the room is not a notebook
+ *    (console, projection, an open file); the council console also waits for
+ *    the stack's first frame, otherwise between the splash and itself it
+ *    managed to flash "the cell is not in the council"
+ *    (council.svelte.ts · boardPhase);
+ *  - `Notebook.svelte` — when the notebook has stopped being "unread";
+ *  - `CompetitionsScreen.svelte` — when the key from the sign-in link has been
+ *    exchanged: under the splash this is one request, and an empty page under
+ *    it would flash;
+ *  - `main.ts` — when an app chunk failed to arrive: there is no point
+ *    standing under a splash that will never get anything more.
  */
 
 /**
- * Потолок ожидания, миллисекунды. Отсчитывается от применённых стилей, то есть
- * от того мгновения, когда оболочка уходила раньше.
+ * The wait ceiling, milliseconds. Counted from applied styles, that is, from
+ * the moment the shell used to leave before.
  */
 export const SCREEN_WAIT = 2000
 
@@ -49,23 +56,24 @@ const screen = new Promise<void>((resolve) => {
   tell = resolve
 })
 
-/** Первому экрану есть что показать — оболочку можно снимать. */
+/** The first screen has something to show — the shell can come down. */
 export function firstScreenReady(): void {
   if (told) return
   told = true
   tell?.()
 }
 
-/** Уже доложили? Для тестов и для того, кто хочет знать, ждут ли его. */
+/** Already reported? For tests, and for whoever wants to know if it is awaited. */
 export function firstScreenShown(): boolean {
   return told
 }
 
 /**
- * Дождаться первого экрана, но не дольше потолка.
+ * Wait for the first screen, but no longer than the ceiling.
  *
- * Возвращает `true`, если экран доложил сам, и `false`, если вышло время, —
- * вызывающему это нужно, чтобы не выдавать одно за другое в журнале.
+ * Returns `true` if the screen reported by itself, and `false` if time ran
+ * out — the caller needs this so as not to pass one off as the other in the
+ * log.
  */
 export function whenFirstScreen(limit = SCREEN_WAIT): Promise<boolean> {
   if (told) return Promise.resolve(true)

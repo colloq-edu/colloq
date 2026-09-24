@@ -1,10 +1,11 @@
 /**
- * Импорты с `?url`, которые Vite превращает в адрес выложенного файла.
+ * Imports with `?url`, which Vite turns into the address of the emitted file.
  *
- * TypeScript о них не знает: суффикс — соглашение сборщика, а не модульной
- * системы. Обычно эти объявления приходят из `vite/client`, но он тянет за
- * собой всё остальное окружение Vite, а нужен ровно один случай — воркер
- * pdf.js, который обязан лежать отдельным файлом и грузиться по адресу.
+ * TypeScript does not know about them: the suffix is the bundler's
+ * convention, not the module system's. These declarations usually come from
+ * `vite/client`, but that drags in the whole rest of the Vite environment,
+ * while exactly one case is needed — the pdf.js worker, which has to live in
+ * a separate file and be loaded by address.
  */
 declare module '*?url' {
   const url: string

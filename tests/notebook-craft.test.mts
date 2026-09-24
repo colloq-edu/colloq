@@ -1,18 +1,20 @@
 import { translate, tr } from '../shared/i18n.js'
 /**
- * Мелочи тетради, которые видно только глазами, — и одно слово, без которого
- * консилиум врёт.
+ * Notebook details that can only be seen with the eyes — and one word without
+ * which the council lies.
  *
- * Правила, каждое откатывается одной строкой и каждое об этом молчит: кнопка
- * «Запустить» над файлом переводит переход шорткатом `transition` (все
- * свойства, включая кольцо фокуса) вместо позиционного списка; «кто запускал»
- * ищется перебором по всем вкладкам комнаты в КАЖДОЙ ячейке с выводом; про
- * общее ядро попыток не сказано там, где ручку включают; состояние ядра
- * уезжает в прокрутку полосы, а счётчик ячеек снова прячется медиазапросом
- * про окно, которое не знает ни про панели, ни про зум.
+ * Rules, each of which reverts with one line and each of which stays silent
+ * about it: the "Run" button above a file animates via the `transition`
+ * shortcut (all properties, including the focus ring) instead of a positional
+ * list; "who ran it" is looked up by going through all the room's tabs in
+ * EVERY cell with output; the shared kernel for attempts is not mentioned
+ * where the switch is turned on; the kernel state slides off into the bar's
+ * scroll, and the cell counter hides again behind a media query about the
+ * window, which knows nothing about panels or zoom.
  *
- * Читается прямо из компонентов — тот же приём, что в panels-craft: тест со
- * своей копией правила проходит вечно, пока файл уезжает.
+ * It is read straight from the components — the same trick as in
+ * panels-craft: a test with its own copy of the rule passes forever while the
+ * file drifts away.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -25,7 +27,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка и стили без комментариев: объяснение — не обещание. */
+/** Markup and styles without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -34,178 +36,188 @@ const CELL = read('web/src/components/notebook/CellView.svelte')
 const FILEBAR = read('web/src/components/editor/FileBar.svelte')
 const NOTEBOOK = read('web/src/components/notebook/Notebook.svelte')
 
-/* ------------------------------------------------------------- переходы */
+/* ------------------------------------------------------------- transitions */
 
-test('«Запустить» над файлом переводит два свойства, а не все подряд', () => {
+test('"Run" above a file animates two properties, not everything', () => {
   const bar = code(FILEBAR)
-  // `transition` без списка переводит и border-color, и box-shadow: кольцо
-  // фокуса приезжало вслед за клавишей вместо того, чтобы появиться сразу.
-  assert.doesNotMatch(bar, /class="[^"]*\btransition\s/, 'шорткат `transition` вернулся')
-  assert.match(bar, /transition-\[filter,transform\]/, 'список свойств — позиционный')
-  // Лестница скоростей и кривых (index.css) существует ровно чтобы литералов
-  // вроде «100ms ease-out» тут не было.
-  assert.match(bar, /duration-press ease-out/, 'скорость и кривая — из лестницы')
-  // Нажимаемое отвечает пальцу: тот же press, что у близнеца этой кнопки —
-  // «На общий экран» в SessionScreen.
-  assert.match(bar, /enabled:active:scale-\[0\.97\]/, 'кнопка не прессуется')
+  // `transition` without a list animates both border-color and box-shadow:
+  // the focus ring arrived after the key press instead of appearing at once.
+  assert.doesNotMatch(bar, /class="[^"]*\btransition\s/, 'the `transition` shortcut is back')
+  assert.match(bar, /transition-\[filter,transform\]/, 'the property list is positional')
+  // The ladder of speeds and curves (index.css) exists precisely so that
+  // literals like "100ms ease-out" do not appear here.
+  assert.match(bar, /duration-press ease-out/, 'the speed and the curve come from the ladder')
+  // What is pressable answers the finger: the same press as this button's
+  // twin — "To the shared screen" in SessionScreen.
+  assert.match(bar, /enabled:active:scale-\[0\.97\]/, 'the button does not press')
 })
 
-/* --------------------------------------------------------- присутствие */
+/* --------------------------------------------------------- presence */
 
-test('«кто запускал» спрашивается по карте, а не перебором по всей комнате', () => {
+test('"who ran it" is looked up in a map, not by going through the whole room', () => {
   const at = CELL.indexOf('const runner = $derived.by')
-  assert.ok(at > 0, 'лица запускавшего в ячейке больше нет')
+  assert.ok(at > 0, 'the face of whoever ran it is gone from the cell')
   const runner = CELL.slice(at, at + 300)
   assert.match(runner, /session\.peersById\.get\(who\)/)
-  // Двести ячеек на пятьсот вкладок — сто тысяч сравнений на кадр присутствия.
-  assert.doesNotMatch(code(CELL), /session\.peers\.find\(/, 'перебор по вкладкам вернулся')
+  // Two hundred cells times five hundred tabs is a hundred thousand
+  // comparisons per presence frame.
+  assert.doesNotMatch(code(CELL), /session\.peers\.find\(/, 'going through the tabs is back')
 })
 
-/* ------------------------------------------------------------ общее ядро */
+/* ------------------------------------------------------------ shared kernel */
 
-test('про общее ядро сказано у кнопки попытки — и там, где ручку включают', () => {
-  // Одна копия на весь продукт: строка живёт в shared, а не переписана здесь
-  // своими словами — иначе подсказка кнопки и ручка разъедутся.
+test('the shared kernel is mentioned at the attempt button — and where the switch is turned on', () => {
+  // One copy for the whole product: the line lives in shared rather than being
+  // rewritten here in other words — otherwise the button hint and the switch
+  // will drift apart.
   assert.match(CELL, /COUNCIL_SHARED_KERNEL_NOTE/)
-  assert.doesNotMatch(CELL, /Попытки считаются в общем ядре/, 'строка переписана копией')
+  assert.doesNotMatch(CELL, /Попытки считаются в общем ядре/, 'the line was rewritten as a copy')
 
-  // Ручка «кто может запускать» уехала из меню замка в полосу очереди пульта,
-  // и строка уехала вместе с ней: council-strip-note.test.mts.
-  assert.doesNotMatch(CELL, /tr\('room\.ui\.335'\)/, 'ручка studentRun вернулась в тетрадь')
+  // The "who may run" switch moved from the lock menu to the console's queue
+  // strip, and the line moved with it: council-strip-note.test.mts.
+  assert.doesNotMatch(CELL, /tr\('room\.ui\.335'\)/, 'the studentRun switch is back in the notebook')
 
   const run = CELL.indexOf("tr('room.extra.138'")
-  assert.ok(run > 0, 'кнопки запуска попытки больше нет')
+  assert.ok(run > 0, 'the attempt run button is gone')
   assert.match(
     CELL.slice(run - 200, run + 300),
     /p0: tr\(COUNCIL_SHARED_KERNEL_NOTE\)/,
-    'подсказка кнопки — про очередь, а не про состояние',
+    'the button hint is about the queue, not the state',
   )
 })
 
-test('строка про общее ядро говорит и про личные копии, и про то, что осталось общим', () => {
+test('the shared kernel line speaks of both the personal copies and what stayed shared', () => {
   /*
-   * Три половины правды, и ни одну нельзя потерять.
+   * Three halves of the truth, and none of them may be lost.
    *
-   * Попытки считаются по очереди в одном ядре; данные каждая получает свои
-   * (kernel/council-isolation.ts), и заведённые ею имена снимаются
-   * (kernel/index.ts · COUNCIL_ENTER_SOURCE). Но файлы, настройки модулей и
-   * то, что скопировать не вышло, остаются общими — без этой части фраза
-   * обещала бы экзаменационную изоляцию, которой нет и не будет.
+   * Attempts are computed in turn in one kernel; each gets its own data
+   * (kernel/council-isolation.ts), and the names it created are removed
+   * (kernel/index.ts · COUNCIL_ENTER_SOURCE). But files, module settings and
+   * whatever could not be copied stay shared — without this part the phrase
+   * would promise exam-grade isolation that does not and will not exist.
    */
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /по очереди/)
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /личные копии данных/)
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /удаляются после запуска/)
-  // Два способа кончить занятие всем сразу тем же входом и закрыты.
+  // The two ways to end the class for everyone at once through the same door
+  // are closed as well.
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /ядро завершить нельзя/)
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /память решения ограничена/)
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /Общими остаются файлы/)
 })
 
-/* ------------------------------------------------------- полоса тетради */
+/* ------------------------------------------------------- notebook bar */
 
-test('состояние ядра в полосе стоит вне прокрутки и не режется', () => {
+test('the kernel state in the bar sits outside the scroll and is not cut off', () => {
   const bar = code(NOTEBOOK)
-  // Правый угол — отдельный слот, а не хвост прокручиваемого ряда: пока он
-  // лежал внутри `overflow-x-auto`, «ядро остановлено» уезжало за край вместе
-  // с «Форматировать», а затухание, намекающее на прокрутку, гасило ровно его.
+  // The right corner is a separate slot, not the tail of the scrolling row:
+  // while it lay inside `overflow-x-auto`, "kernel stopped" slid off the edge
+  // together with "Format", and the fade hinting at scrolling dimmed exactly
+  // it.
   const scroller = bar.indexOf('overflow-x-auto')
   const corner = bar.indexOf('max-w-[70%]')
-  assert.ok(scroller > 0 && corner > scroller, 'правый угол полосы пропал или вернулся в прокрутку')
+  assert.ok(scroller > 0 && corner > scroller, 'the right corner of the bar is gone or back in the scroll')
   const cornerClass = bar.slice(bar.lastIndexOf('class=', corner), bar.indexOf('>', corner))
-  assert.doesNotMatch(cornerClass, /mask-image/, 'угол с состоянием снова под градиентом')
-  assert.doesNotMatch(cornerClass, /overflow-x/, 'угол с состоянием снова прокручивается')
+  assert.doesNotMatch(cornerClass, /mask-image/, 'the corner with the state is under the gradient again')
+  assert.doesNotMatch(cornerClass, /overflow-x/, 'the corner with the state scrolls again')
 
-  // Плашка гнётся, слово в ней уходит в многоточие, а целиком живёт в title:
-  // `shrink-0` возвращал негнущуюся коробку, которую срезал `contain: paint`.
-  assert.match(bar, /const PILL = '[^']*min-w-0/, 'плашка снова негнущаяся')
-  assert.doesNotMatch(bar, /const PILL = '[^']*shrink-0/, 'плашка снова негнущаяся')
+  // The badge flexes, the word in it goes into an ellipsis and lives in full in
+  // the title: `shrink-0` brought back a rigid box that `contain: paint` cut
+  // off.
+  assert.match(bar, /const PILL = '[^']*min-w-0/, 'the badge is rigid again')
+  assert.doesNotMatch(bar, /const PILL = '[^']*shrink-0/, 'the badge is rigid again')
 })
 
-test('счётчик ячеек уступает ступенями, а не по медиазапросу', () => {
+test('the cell counter gives way in steps, not by a media query', () => {
   const bar = code(NOTEBOOK)
-  // `xl:` — про ширину окна, а полосу сужают панели и зум браузера, про
-  // которые окно ничего не знает: счётчик пропадал на широком экране с
-  // открытым терминалом и держался на узком с закрытыми панелями.
-  assert.doesNotMatch(bar, /xl:inline/, 'счётчик снова прячется медиазапросом')
-  assert.match(bar, /bind:clientWidth=\{barWidth\}/, 'полоса больше не меряет себя')
-  // Три ступени: полная строка → одно число с подсказкой → ничего.
+  // `xl:` is about the window width, while the bar is narrowed by panels and
+  // browser zoom, which the window knows nothing about: the counter vanished on
+  // a wide screen with the terminal open and stayed on a narrow one with the
+  // panels closed.
+  assert.doesNotMatch(bar, /xl:inline/, 'the counter hides behind a media query again')
+  assert.match(bar, /bind:clientWidth=\{barWidth\}/, 'the bar no longer measures itself')
+  // Three steps: the full line → a single number with a hint → nothing.
   assert.match(
     bar,
     /countMode === 'short'\s*\?\s*tr\('room\.notebook\.cellCount'/,
-    'у числа пропала подсказка',
+    'the number lost its hint',
   )
   for (const step of ["return 'full'", "return 'short'", "return 'none'"]) {
-    assert.ok(bar.includes(step), `ступень ${step} пропала`)
+    assert.ok(bar.includes(step), `step ${step} is gone`)
   }
 })
 
-test('якорь не меряет спрятанную вкладку, и ход после запуска идёт через один расчёт', () => {
+test('the anchor does not measure a hidden tab, and the move after a run goes through one calculation', () => {
   const settle = NOTEBOOK.slice(NOTEBOOK.indexOf('function settle(): void'))
   const body = settle.slice(0, settle.indexOf('\n  }'))
   /*
-   * Проверка обязана стоять ДО первого измерения: отравляет не поправка, а
-   * память высот — один записанный ноль уводит экран на следующем кадре, когда
-   * тетрадь уже видна. Поэтому ищем `measurable` раньше, чем `slotHeights.set`.
+   * The check must come BEFORE the first measurement: what poisons things is
+   * not the correction but the height memory — a single recorded zero throws
+   * the screen off on the next frame, when the notebook is already visible. So
+   * we look for `measurable` before `slotHeights.set`.
    */
   const guard = body.indexOf('measurable(')
-  assert.ok(guard > 0, 'якорь снова меряет всё подряд, включая спрятанную вкладку')
-  assert.ok(guard < body.indexOf('slotHeights.set'), 'ноль успевает попасть в память высот')
+  assert.ok(guard > 0, 'the anchor measures everything again, including a hidden tab')
+  assert.ok(guard < body.indexOf('slotHeights.set'), 'a zero manages to get into the height memory')
 
-  // Арифметика хода живёт в cell-scroll (там тесты и там обе жалобы), а не
-  // вторым списком чисел в компоненте.
+  // The move arithmetic lives in cell-scroll (the tests and both complaints
+  // are there), not as a second list of numbers in the component.
   const show = code(NOTEBOOK).slice(code(NOTEBOOK).indexOf('function show(id: string)'))
   assert.match(show.slice(0, 500), /afterRun\(frameOf\(box\), boxOf\(cell\)\)/)
   assert.doesNotMatch(
     show.slice(0, 500),
     /scrollTo\(/,
-    'плавный ход мимо steerTo не обрывается чужой прокруткой',
+    "a smooth move bypassing steerTo is not interrupted by someone else's scroll",
   )
 })
 
-test('за «Запустить всё» лист не ходит вовсе, а увёзший его сам остаётся хозяином', () => {
+test('the sheet does not follow "Run all" at all, and whoever scrolled it away stays in charge', () => {
   const body = code(NOTEBOOK)
 
   /*
-   * Прогон отличается от одиночного запуска ПИКОМ очереди, а не текущей её
-   * длиной: к концу «Запустить всё» очередь пуста, и последняя ячейка по ней
-   * неотличима от одиночной — лист дёргался бы ровно один раз, напоследок.
-   * И решение принимается синхронно с переходом: ход отложен на tick и кадр,
-   * к тому времени пик уже сброшен.
+   * A batch run differs from a single run by the PEAK of the queue, not by its
+   * current length: by the end of "Run all" the queue is empty, and by it the
+   * last cell is indistinguishable from a single one — the sheet would jerk
+   * exactly once, at the very end. And the decision is made synchronously with
+   * the transition: the move is deferred by a tick and a frame, and by then
+   * the peak has already been reset.
    */
   const run = body.slice(body.indexOf('let peak = 0'))
   const head = run.slice(0, run.indexOf('\n  })'))
-  assert.match(head, /if \(queued > peak\) peak = queued/, 'пик очереди больше не считается')
-  assert.match(head, /const batch = peak >= 2/, 'прогон снова путают с одиночным запуском')
+  assert.match(head, /if \(queued > peak\) peak = queued/, 'the queue peak is no longer counted')
+  assert.match(head, /const batch = peak >= 2/, 'a batch run is mistaken for a single run again')
   assert.ok(
     head.indexOf('const batch = peak >= 2') < head.indexOf('if (now === null) peak = 0'),
-    'пик сбрасывается раньше решения — последняя ячейка прогона потянет лист',
+    'the peak is reset before the decision — the last cell of the run will drag the sheet',
   )
   assert.match(head, /if \(batch\) return/)
 
-  // Ход остался ровно один и плавный: мгновенная езда по очереди была нужна,
-  // пока за очередью вообще ходили.
+  // Exactly one move is left, and it is smooth: instant travel along the queue
+  // was needed while the queue was being followed at all.
   const show = body.slice(body.indexOf('function show(id: string)'))
   const inside = show.slice(0, show.indexOf('\n  }'))
-  assert.doesNotMatch(inside, /box\.scrollTop = target/, 'мгновенная езда вернулась без очереди')
+  assert.doesNotMatch(inside, /box\.scrollTop = target/, 'instant travel is back without a queue')
   assert.match(inside, /steerTo\(box, id, target\)/)
   assert.match(
     inside,
     /steering && Math\.abs\(steering\.top - target\) < 2/,
-    'разгон сбивается заново',
+    'the glide restarts from scratch',
   )
 
-  // Просьбы за кадр всё равно складываются: Shift+Enter подряд — тоже частый ход.
+  // Requests within a frame are still merged: Shift+Enter in a row is a
+  // common move too.
   const follow = body.slice(body.indexOf('function follow(id: string)'))
   assert.match(
     follow.slice(0, 500),
     /requestAnimationFrame/,
-    'просьбы за кадр больше не складываются',
+    'requests within a frame are no longer merged',
   )
 
-  // Увёл сам — не ведём. Увозом считается прокрутка, а не нажатие: выделить
-  // ячейку по ходу работы можно, не отказываясь от того, чтобы показывали.
+  // Scrolled away yourself — we do not lead. Scrolling counts as taking over,
+  // a press does not: one can select a cell while working without giving up
+  // being shown.
   assert.match(body, /onwheelcapture=\{\(\) => \{[\s\S]{0,120}handedOver = true/)
   assert.match(body, /ontouchmovecapture=\{\(\) => \{[\s\S]{0,120}handedOver = true/)
   const down = body.slice(body.indexOf('onpointerdowncapture'))
-  assert.doesNotMatch(down.slice(0, 80), /handedOver/, 'нажатие на ячейку отключает показ')
+  assert.doesNotMatch(down.slice(0, 80), /handedOver/, 'a press on a cell turns off the showing')
 })

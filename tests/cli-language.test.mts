@@ -1,22 +1,22 @@
 /**
- * CLI говорит по-английски, а объясняет себя по-русски.
+ * The CLI speaks English, and explains itself in English.
  *
- * Два языка в одном файле — это не недоделка, а решение, и оно держится ровно
- * на границе кавычек. Строка — это ЭКРАН: её читает человек, поставивший
- * `pip install colloq` где угодно на свете. Комментарий — это ПРИЧИНА: его
- * читает тот, кто правит соседнюю строку через год, и написан он по-русски,
- * потому что по-русски в нём сказано больше.
+ * A string is the SCREEN: it is read by a person who ran `pip install colloq`
+ * anywhere in the world. A comment is the REASON: it is read by whoever edits
+ * the neighbouring line a year from now. The comments used to be Russian; since
+ * the code went public (24 Sep 2026) they are English too, like the rest of the
+ * repository's code.
  *
- * Граница ничем, кроме этой проверки, не держится: ни типами, ни сборкой. Стоит
- * кому-нибудь дописать отказ на родном языке — и у половины преподавателей
- * посреди английского экрана появится русская фраза. Ловим это здесь, а не на
- * паре.
+ * Nothing but this check holds that: neither types nor the build. Let someone
+ * add a refusal in their native language, and half of the teachers will see a
+ * Russian phrase in the middle of an English screen. We catch it here, not in
+ * class.
  *
- * Комментарии из кода вырезаются не регуляркой. Регулярка спотыкается о самые
- * обычные вещи: `'https://colloq.ru'` внутри строки выглядит как начало
- * комментария, а `'/*'` в тексте — как начало блочного. Поэтому ниже — маленький
- * посимвольный разбор, который знает про три состояния (код, строка,
- * комментарий) и потому не ошибается ни на том, ни на другом.
+ * Comments are cut out of the code without a regex. A regex trips over the
+ * most ordinary things: `'https://colloq.ru'` inside a string looks like the
+ * start of a comment, and `'/*'` in text like the start of a block comment.
+ * Hence the small character-by-character scanner below, which knows three
+ * states (code, string, comment) and therefore gets neither case wrong.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -24,7 +24,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 
 const CYRILLIC = /[А-Яа-яЁё]/
 
-/** Каждый строковый литерал файла: три вида кавычек, комментарии — мимо. */
+/** Every string literal in a file: three kinds of quotes, comments skipped. */
 function literals(source: string): { text: string; line: number }[] {
   const found: { text: string; line: number }[] = []
   let line = 1
@@ -60,9 +60,9 @@ function literals(source: string): { text: string; line: number }[] {
       }
       if (source[at] === '\n') {
         line++
-        // Незакрытая одинарная или двойная кавычка — это не литерал, а,
-        // например, апостроф внутри комментария, который мы уже пропустили бы.
-        // У шаблонной перенос строки законен, и она продолжается.
+        // An unclosed single or double quote is not a literal but, say, an
+        // apostrophe inside a comment we would already have skipped. A
+        // template literal may legally span lines, so it continues.
         if (quote !== '`') break
         continue
       }
@@ -80,7 +80,7 @@ function cliSources(): { name: string; source: string }[] {
     .map((name) => ({ name, source: readFileSync(new URL(name, dir), 'utf8') }))
 }
 
-test('CLI strings are English; only its comments are Russian', () => {
+test('CLI strings are English', () => {
   const guilty: string[] = []
   for (const { name, source } of cliSources())
     for (const { text, line } of literals(source))
@@ -88,16 +88,25 @@ test('CLI strings are English; only its comments are Russian', () => {
   assert.deepEqual(
     guilty,
     [],
-    'русская строка на английском экране:\n' +
+    'a Russian string on an English screen:\n' +
       guilty.join('\n') +
-      '\n\nЭкран — по-английски, причина — комментарием по-русски.',
+      '\n\nThe screen is in English.',
   )
 })
 
+test('CLI comments are English too', () => {
+  const guilty: string[] = []
+  for (const { name, source } of cliSources())
+    for (const [at, line] of source.split('\n').entries())
+      if (CYRILLIC.test(line)) guilty.push(`cli/src/${name}:${at + 1}  ${line.trim().slice(0, 80)}`)
+  assert.deepEqual(guilty, [], 'Russian in the CLI source:\n' + guilty.join('\n'))
+})
+
 /**
- * Проверка сама себе не верит на слово: разбор проверяется на образцах, где
- * регулярка ошибается. Иначе однажды он тихо перестанет находить что-либо
- * вовсе, и тест станет зелёным навсегда, ничего не проверяя.
+ * The check does not take its own word for it: the scanner is tested on
+ * samples where a regex goes wrong. Otherwise one day it would quietly stop
+ * finding anything at all, and the test would turn green forever while
+ * checking nothing.
  */
 test('the scanner tells a string from a comment, including the tricky shapes', () => {
   const sample = [
@@ -118,12 +127,13 @@ test('the scanner tells a string from a comment, including the tricky shapes', (
 })
 
 /**
- * «Семинар» ушёл из продукта в обоих написаниях.
+ * "Seminar" is gone from the product in both alphabets.
  *
- * Русское слово убрали раньше — занятие называется занятием. Английское
- * «seminar» вернуло бы ту же путаницу с другой стороны: в панели Classes, в
- * CLI seminars. Ловим оба, и в примерах имён тоже: `colloq tunnel setup
- * seminar.example.ru` — это тот же словарь, просто в адресе.
+ * The Russian word was removed earlier: a class is called "занятие". The
+ * English "seminar" would bring back the same confusion from the other side:
+ * Classes in the panel, seminars in the CLI. We catch both, in example names
+ * too: `colloq tunnel setup seminar.example.ru` is the same vocabulary, just
+ * in an address.
  */
 test('the CLI says class, in both alphabets', () => {
   const guilty: string[] = []
@@ -131,5 +141,5 @@ test('the CLI says class, in both alphabets', () => {
     source.split('\n').forEach((text, index) => {
       if (/семинар|seminar/i.test(text)) guilty.push(`cli/src/${name}:${index + 1}  ${text.trim()}`)
     })
-  assert.deepEqual(guilty, [], 'занятие называется занятием:\n' + guilty.join('\n'))
+  assert.deepEqual(guilty, [], 'a class is called a class:\n' + guilty.join('\n'))
 })

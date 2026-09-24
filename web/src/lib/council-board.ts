@@ -1,41 +1,47 @@
 import { tr } from '@shared/i18n'
 /**
- * Консилиум на клиенте — чистая арифметика пульта, без Svelte и без сокета.
+ * The council on the client — the console's pure arithmetic, with no Svelte and
+ * no socket.
  *
- * Здесь остаётся то, что читают ОБА оставшихся места: окно пульта
- * (components/council/pult) и плашка показанного. Группировка, слово в чипе
- * состояния, имя группы и состояние оракула — по одной копии на клиент:
- * сложенное в двух местах рано или поздно складывается по-разному.
+ * What stays here is what BOTH remaining places read: the console window
+ * (components/council/pult) and the badge of what is shown. Grouping, the word
+ * in the status chip, the group name and the oracle state — one copy each per
+ * client: whatever is put together in two places sooner or later comes out
+ * differently.
  *
- * Порядок стопки, сегменты полосы групп, соседи по стрелкам и «редкие группы»
- * жили здесь, пока консоль стояла под ячейкой карточкой с «‹ ›». Консоль
- * переехала в отдельное окно и стала лентой (council-pult.ts), и считать
- * стопку больше некому — эти функции ушли вместе с ней, а не остались «на
- * будущее»: непозванный код с тестом читается как работающая возможность.
+ * The stack order, the segments of the group strip, the arrow neighbours and
+ * the "rare groups" lived here while the console sat under the cell as a card
+ * with "‹ ›". The console moved into a separate window and became a feed
+ * (council-pult.ts), and nobody is left to compute the stack — those functions
+ * left with it rather than staying "for the future": uncalled code with a test
+ * reads as a working feature.
  *
- * Ключ группы попыткам ставит сервер той же `normalizeAttempt`, что
- * реэкспортирована отсюда: пульт по нему только группирует, не пересчитывает.
+ * The server sets the attempts' group key with the same `normalizeAttempt`
+ * that is re-exported from here: the console only groups by it and never
+ * recomputes it.
  */
 import type { CouncilAttempt, CouncilGroup, CouncilOracle } from '@shared/protocol'
 import { groupAttempts } from '@shared/protocol'
 export { normalizeAttempt } from '@shared/notebook'
 
 /*
- * Группировка — общая, из shared/protocol.ts.
+ * Grouping is shared, from shared/protocol.ts.
  *
- * Здесь лежали свои `bySubmission` и `groupAttempts`, третья копия одного и
- * того же правила: своя была у серверной стопки, своя у оракула, своя у
- * пульта, — и они уже разошлись разрывом при равенстве. Разрыв решает, кто
- * представитель группы, то есть чей код стоит первым в ленте и на чью группу
- * ложится черновик ответа; при расхождении «так же ещё 311» и размер группы
- * считались от разных наборов. `CouncilAttempt` подходит под `GroupMember` как
- * есть — `groupKey` ему ставит сервер той же `normalizeAttempt`.
+ * Here lived our own `bySubmission` and `groupAttempts`, a third copy of the
+ * same rule: the server stack had its own, the oracle its own, the console its
+ * own — and they had already diverged in how they break ties. The tie-break
+ * decides who represents the group, that is, whose code comes first in the
+ * feed and which group a reply draft lands on; with the divergence, "311 others
+ * answered the same" and the group size were counted from different sets.
+ * `CouncilAttempt` fits `GroupMember` as it is — the server sets its
+ * `groupKey` with the same `normalizeAttempt`.
  */
 export { groupAttempts }
 
 /**
- * Слово в чипе состояния. Для упавшей — имя исключения, потому что «ошибка»
- * ничего не говорит, а `TypeError` в чипе сразу отвечает, что показать классу.
+ * The word in the status chip. For a failed one — the exception name, because
+ * "error" says nothing, while `TypeError` in the chip immediately answers what
+ * to show the class.
  */
 export function statusLabel(attempt: Pick<CouncilAttempt, 'status' | 'run'>): string {
   switch (attempt.status) {
@@ -54,7 +60,7 @@ export function statusLabel(attempt: Pick<CouncilAttempt, 'status' | 'run'>): st
   }
 }
 
-/** Имя группы: от оракула, а пока его нет — первая непустая строка кода. */
+/** The group name: from the oracle, and until then — the first non-empty code line. */
 export function groupTitle(group: Pick<CouncilGroup, 'label' | 'sample'>): string {
   if (group.label) return group.label
   const line = group.sample.split('\n').find((l) => l.trim())
@@ -64,11 +70,12 @@ export function groupTitle(group: Pick<CouncilGroup, 'label' | 'sample'>): strin
 export type OracleView = 'idle' | 'reading' | 'ready' | 'stale'
 
 /**
- * В каком состоянии рисовать вкладку оракула. «Отстала» — счёт на месте, по
- * числу сдавших против `basedOn`: сводка обновляется только рукой, и о чужой
- * сдаче сервер ей ничего не говорит — `council:oracle` на «Сдать» не ходит
- * намеренно. Своего `stale` у сервера нет и не было: в кадре приезжают только
- * три остальных состояния.
+ * Which state to draw the oracle tab in. "Stale" is counted on the spot, by
+ * the number of submissions against `basedOn`: the summary is refreshed only
+ * by hand, and the server tells it nothing about other people's submissions —
+ * `council:oracle` deliberately does not fire on "Submit". The server has no
+ * `stale` of its own and never had: only the other three states arrive in the
+ * frame.
  */
 export function oracleState(oracle: CouncilOracle | null, submitted: number): OracleView {
   if (!oracle) return 'idle'
@@ -76,7 +83,7 @@ export function oracleState(oracle: CouncilOracle | null, submitted: number): Or
   return submitted > oracle.basedOn ? 'stale' : 'ready'
 }
 
-/** «С тех пор сдали ещё N» — разница с тем, сколько попыток модель читала. */
+/** "N more submitted since" — the difference from how many attempts the model read. */
 export function staleBy(oracle: CouncilOracle, submitted: number): number {
   return Math.max(submitted - oracle.basedOn, 0)
 }

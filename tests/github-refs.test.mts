@@ -1,16 +1,16 @@
 /**
- * Ветка со слэшем: `release/2024`, `feature/x`, `students/2026-fall`.
+ * A branch with a slash: `release/2024`, `feature/x`, `students/2026-fall`.
  *
- * Адрес такой ветки в браузере выглядит ровно как адрес обычной —
- * `/o/r/tree/release/2024/week1`, — и по нему не видно, где кончается имя ветки
- * и начинается путь. Разбор берёт первый сегмент, GitHub отвечает 404, а
- * сервер переводил это в «нет такого или репозиторий приватный»: преподаватель
- * шёл искать опечатку в ссылке, с которой всё в порядке, или делать публичным
- * репозиторий, который и так публичный.
+ * In the browser the address of such a branch looks exactly like that of an
+ * ordinary one — `/o/r/tree/release/2024/week1` — and nothing in it shows where
+ * the branch name ends and the path begins. Parsing takes the first segment,
+ * GitHub answers 404, and the server turned that into "no such thing, or the
+ * repository is private": the teacher went looking for a typo in a link that
+ * was fine, or making public a repository that was already public.
  *
- * Сети здесь нет: `fetch` подменён на время теста. Проверяется не GitHub, а
- * наше поведение — сколько запросов, в каком порядке и что уходит наверх, если
- * догадка не удалась.
+ * There is no network here: `fetch` is replaced for the duration of the test.
+ * What is checked is not GitHub but our behaviour — how many requests, in what
+ * order, and what goes up if the guess fails.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -24,9 +24,9 @@ interface Call {
 }
 
 /**
- * Подделка `fetch`: карта «кусок адреса → ответ». Всё, чего в карте нет, —
- * 404, потому что именно так GitHub отвечает и на «нет такого», и на «не для
- * вас».
+ * A fake `fetch`: a map "piece of the address → response". Everything not in
+ * the map is a 404, because that is exactly how GitHub answers both "no such
+ * thing" and "not for you".
  */
 function fakeGithub(routes: Record<string, unknown>): Call[] {
   const calls: Call[] = []
@@ -60,7 +60,7 @@ const target = (over: Partial<GithubTarget> = {}): GithubTarget => ({
   ...over,
 })
 
-test('ветка со слэшем узнаётся по списку веток, а не по фразе про приватность', async () => {
+test('a branch with a slash is recognised from the branch list, not from the phrase about privacy', async () => {
   const calls = fakeGithub({
     'branches?per_page=100': [{ name: 'main' }, { name: 'release/2024' }],
     'contents/week1?ref=release%2F2024': [
@@ -71,9 +71,10 @@ test('ветка со слэшем узнаётся по списку веток
     const entries = await listDirectory(target())
     assert.deepEqual(entries.map((e) => e.name), ['nb.ipynb'])
     /*
-     * Три запроса и именно в этом порядке: сперва как разобрали, потом — только
-     * после 404 — список веток, потом заново. Спрашивать ветки заранее нельзя:
-     * анонимных запросов к GitHub шестьдесят в час, а импорт и так стоит два.
+     * Three requests and in exactly this order: first as parsed, then — only
+     * after the 404 — the branch list, then again. Asking for the branches up
+     * front is not allowed: anonymous requests to GitHub are sixty per hour,
+     * and an import already costs two.
      */
     assert.equal(calls.length, 3, calls.map((c) => c.url).join('\n'))
     assert.match(calls[0]?.url ?? '', /contents\/2024\/week1\?ref=release$/)
@@ -84,23 +85,23 @@ test('ветка со слэшем узнаётся по списку веток
   }
 })
 
-test('живой ответ не платит за догадку: ветки не спрашиваются вовсе', async () => {
+test('a live answer does not pay for the guess: branches are not asked for at all', async () => {
   const calls = fakeGithub({ 'contents/week02?ref=main': [] })
   try {
     await listDirectory(target({ ref: 'main', path: 'week02' }))
-    assert.equal(calls.length, 1, 'лишний запрос к GitHub на каждом успешном импорте')
+    assert.equal(calls.length, 1, 'an extra request to GitHub on every successful import')
   } finally {
     restore()
   }
 })
 
-test('если такой ветки нет, наверх уходит первоначальный отказ, а не выдуманный', async () => {
+test('if there is no such branch, the original refusal goes up, not an invented one', async () => {
   fakeGithub({ 'branches?per_page=100': [{ name: 'main' }] })
   try {
     await assert.rejects(
       () => listDirectory(target()),
-      // Та самая фраза про приватность — она здесь и правда единственный
-      // честный ответ: ветки с таким именем в репозитории нет.
+      // That very phrase about privacy — here it really is the only honest
+      // answer: the repository has no branch with that name.
       /репозиторий закрытый/,
     )
   } finally {
@@ -108,9 +109,9 @@ test('если такой ветки нет, наверх уходит перв�
   }
 })
 
-test('из двух подходящих веток берётся самая длинная', async () => {
-  // `release/2024/hotfix` бьёт `release/2024`, а тот — голое `release`:
-  // иначе путь уехал бы вместе с куском имени ветки.
+test('of two matching branches the longest one is taken', async () => {
+  // `release/2024/hotfix` beats `release/2024`, and that one beats a bare
+  // `release`: otherwise the path would go off with a piece of the branch name.
   fakeGithub({
     'branches?per_page=100': [
       { name: 'release' },
@@ -127,7 +128,7 @@ test('из двух подходящих веток берётся самая д
   }
 })
 
-test('ветка длиной во весь путь оставляет корень репозитория, а не хвост от имени', async () => {
+test('a branch as long as the whole path leaves the repository root, not a tail of the name', async () => {
   fakeGithub({ 'branches?per_page=100': [{ name: 'students/2026-fall' }] })
   try {
     const fixed = await resolveRef(target({ ref: 'students', path: '2026-fall' }))
@@ -138,7 +139,7 @@ test('ветка длиной во весь путь оставляет коре
   }
 })
 
-test('без пути догадываться не о чем, и запрос не тратится', async () => {
+test('without a path there is nothing to guess, and no request is spent', async () => {
   const calls = fakeGithub({})
   try {
     const same = await resolveRef(target({ ref: 'main', path: '' }))

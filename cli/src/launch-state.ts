@@ -6,45 +6,50 @@ import { fileURLToPath } from 'node:url'
 import type { LaunchOptions } from './launch-config.js'
 
 /*
- * ------------------------------------------------------------------ два корня
+ * ------------------------------------------------------------------ two roots
  *
- * Корень был один — репозиторий, — и в нём лежало сразу всё: и server/dist с
- * web/dist, и .env, и data/ с базой, и workspace/ с файлами студентов. Пока
- * colloq запускали из клона, это было правдой и ничего не стоило.
+ * There used to be one root, the repository, and everything lay in it at
+ * once: server/dist with web/dist, .env, data/ with the database, and
+ * workspace/ with the students' files. While colloq was started from a clone,
+ * this was true and cost nothing.
  *
- * `pip install colloq` эту правду ломает. Код приезжает туда, куда его кладёт
- * установщик (site-packages, Cellar, /usr/lib): каталог перезаписывается
- * следующим обновлением целиком и на многих машинах не пишется вовсе. Занятие
- * же — это .env с ключами входа, data/ с базой занятий и workspace/ с
- * тетрадями; потерять их при `pip install -U` нельзя, а класть рядом с кодом
- * значит однажды потерять.
+ * `pip install colloq` breaks that truth. The code arrives wherever the
+ * installer puts it (site-packages, Cellar, /usr/lib): the directory is
+ * overwritten entirely by the next update and on many machines is not
+ * writable at all. A class, though, is .env with the sign-in keys, data/ with
+ * the database of classes and workspace/ with the notebooks; losing them on
+ * `pip install -U` is not an option, and putting them next to the code means
+ * losing them one day.
  *
- * Поэтому корня два, и они названы:
- *   COLLOQ_APP_DIR — приложение: server/dist, web/dist, kernel/, node_modules;
- *   COLLOQ_HOME    — состояние: .env, .colloq/, .colloq.pid, .colloq.log,
+ * So there are two roots, and they are named:
+ *   COLLOQ_APP_DIR — the application: server/dist, web/dist, kernel/, node_modules;
+ *   COLLOQ_HOME    — the state: .env, .colloq/, .colloq.pid, .colloq.log,
  *                    data/, workspace/.
  *
- * Первое правило важнее остальных: в репозитории оба указывают на репозиторий.
- * Разработка не меняется ни на шаг — те же файлы на тех же местах, те же
- * тесты; расхождение начинается только там, где приложение установлено.
+ * The first rule matters more than the others: in the repository both point
+ * at the repository. Development does not change a single step: the same files
+ * in the same places, the same tests; the divergence starts only where the
+ * application is installed.
  *
- * Почему здесь, а не в env.ts, где живут остальные пути CLI. launch*.ts должны
- * запускаться отдельно от остального CLI: tests/local-launch-process.test.mts
- * собирает стенд, копируя в него ровно `cli/src/launch*.ts`, и импорт env.js
- * из launch.ts этот стенд не нашёл бы. Реализация одна и лежит в файле с
- * префиксом launch; env.ts её перепечатывает наружу для команд (env.ts ·
- * appDir/homeDir), чтобы у CLI не завелось второго ответа на тот же вопрос.
+ * Why here and not in env.ts, where the other CLI paths live. launch*.ts must
+ * be runnable separately from the rest of the CLI:
+ * tests/local-launch-process.test.mts assembles a test rig by copying exactly
+ * `cli/src/launch*.ts` into it, and an import of env.js from launch.ts would
+ * not be found by that rig. There is one implementation, and it lies in a file
+ * with the launch prefix; env.ts re-exports it for the commands (env.ts ·
+ * appDir/homeDir), so that the CLI does not grow a second answer to the same
+ * question.
  */
 
-/** Каталог этого файла: <app>/cli/src в репозитории, <app>/cli у бандла. */
+/** This file's directory: <app>/cli/src in the repository, <app>/cli in the bundle. */
 const selfDir = path.dirname(fileURLToPath(import.meta.url))
 
-/** `~` в значении переменной: оболочка его не раскрывает, если её просили о кавычках. */
+/** `~` in a variable's value: the shell does not expand it if it was asked to quote. */
 function expandHome(value: string): string {
   return value === '~' || value.startsWith('~/') ? path.join(os.homedir(), value.slice(1)) : value
 }
 
-/** Репозиторий: Makefile рядом с package.json, где name — colloq. */
+/** The repository: a Makefile next to a package.json whose name is colloq. */
 function isRepository(dir: string): boolean {
   try {
     if (!fs.existsSync(path.join(dir, 'Makefile'))) return false
@@ -55,38 +60,41 @@ function isRepository(dir: string): boolean {
 }
 
 /**
- * Рабочее дерево без примет репозитория: исходники CLI лежат на месте.
+ * A working tree without the marks of the repository: the CLI sources are in
+ * place.
  *
- * Так выглядят стенды тестов (копия cli/src/launch*.ts в пустом каталоге, без
- * Makefile) и клон, у которого Makefile переименовали. Состояние в таком
- * каталоге остаётся рядом с кодом — ровно как было всегда; уводить его в
- * ~/.colloq стоит только у установленного приложения, где рядом с кодом ему
- * не выжить.
+ * This is what test rigs look like (a copy of cli/src/launch*.ts in an empty
+ * directory, without a Makefile), and a clone whose Makefile was renamed. The
+ * state in such a directory stays next to the code, exactly as it always has;
+ * moving it into ~/.colloq is worth it only for an installed application,
+ * where it would not survive next to the code.
  */
 function isWorkingTree(dir: string): boolean {
   return fs.existsSync(path.join(dir, 'cli/src/launch.ts'))
 }
 
 /**
- * Признак «это готовый дистрибутив, а не исходники»: <app>/.colloq-dist.json.
+ * The marker "this is a ready distribution, not the sources":
+ * <app>/.colloq-dist.json.
  *
- * Файл кладёт сборщик пакета. Всё, что решается по нему, решается одинаково:
- * не считать отпечаток исходников, не звать npm и make, не искать tsx — в
- * дистрибутиве ничего этого нет и не будет.
+ * The package builder puts the file there. Everything decided by it is decided
+ * the same way: do not compute the fingerprint of the sources, do not call npm
+ * and make, do not look for tsx; a distribution has none of these and never
+ * will.
  */
 export function isDistribution(dir = appDir()): boolean {
   return fs.existsSync(path.join(dir, '.colloq-dist.json'))
 }
 
 /**
- * Каталог, похожий на корень приложения: репозиторий, распакованный
- * дистрибутив или просто собранное дерево.
+ * A directory that looks like the application root: the repository, an
+ * unpacked distribution or just a built tree.
  *
- * Искать приходится по приметам, а не отсчитывать уровни: в репозитории этот
- * код лежит в cli/src/launch-state.ts, а в пакете тот же код приезжает одним
- * бандлом cli/launch.mjs (scripts/pack.mts) — на уровень выше. Фиксированное
- * «два вверх» было бы верным ровно в одной из двух раскладок и промахнулось бы
- * мимо корня в другой, причём молча.
+ * It has to be found by its marks rather than by counting levels: in the
+ * repository this code lies in cli/src/launch-state.ts, while in the package
+ * the same code arrives as a single bundle cli/launch.mjs (scripts/pack.mts),
+ * one level higher. A fixed "two up" would be right in exactly one of the two
+ * layouts and would miss the root in the other, and silently at that.
  */
 function looksLikeApp(dir: string): boolean {
   if (isRepository(dir) || fs.existsSync(path.join(dir, '.colloq-dist.json'))) return true
@@ -97,7 +105,7 @@ function looksLikeApp(dir: string): boolean {
 }
 
 let appCache: string | undefined
-/** Каталог приложения. */
+/** The application directory. */
 export function appDir(): string {
   if (appCache) return appCache
   const explicit = process.env.COLLOQ_APP_DIR
@@ -108,19 +116,20 @@ export function appDir(): string {
     if (up === dir) break
     dir = up
   }
-  // Последнее слово — прежнее выражение launch.ts: два уровня над cli/src.
+  // The last word goes to the former expression of launch.ts: two levels above cli/src.
   return (appCache = path.resolve(selfDir, '../..'))
 }
 
-/** Каталог пользователя для состояния, когда рядом с кодом ему не место. */
+/** The user's directory for the state, when it has no place next to the code. */
 function userStateDir(): string {
   const xdg = process.env.XDG_DATA_HOME
   return xdg && path.isAbsolute(xdg) ? path.join(xdg, 'colloq') : path.join(os.homedir(), '.colloq')
 }
 
 function resolveHome(): string {
-  // Относительный COLLOQ_HOME считается от текущего каталога человека; детям
-  // (фоновый запуск) он уезжает уже абсолютным — launch.ts · detached.
+  // A relative COLLOQ_HOME is resolved from the person's current directory;
+  // children (a background start) get it already absolute: launch.ts ·
+  // detached.
   const explicit = process.env.COLLOQ_HOME
   if (explicit) return path.resolve(expandHome(explicit))
   const app = appDir()
@@ -131,24 +140,25 @@ function resolveHome(): string {
 }
 
 let homeCache: string | undefined
-/** Каталог состояния; заводится при первом обращении. */
+/** The state directory; created on first access. */
 export function homeDir(): string {
   if (homeCache) return homeCache
   const home = resolveHome()
-  // 0700 действует только при создании: внутри .env с ключами входа и data/.
+  // 0700 applies only on creation: inside are .env with the sign-in keys and data/.
   fs.mkdirSync(home, { recursive: true, mode: 0o700 })
   return (homeCache = home)
 }
 
 /**
- * Расписка идущего занятия — относительным именем, одним на всех.
+ * The receipt of the running class, as a relative name, one for everybody.
  *
- * Пишет её супервизор (launch.ts), читают команды (commands/local.ts,
- * commands/tools.ts) и каркас. Пока имя было выписано в каждом месте своей
- * строкой, стороны разъехались молча: команды искали расписку в каталоге
- * ПРИЛОЖЕНИЯ, супервизор писал в каталог СОСТОЯНИЯ, и у установленного colloq
- * `colloq stop` отвечал «занятие не идёт», пока занятие шло. Имя здесь одно,
- * а от какого корня его считать — решает тот, кто зовёт.
+ * The supervisor (launch.ts) writes it; the commands (commands/local.ts,
+ * commands/tools.ts) and the framework read it. While the name was written out
+ * in each place as its own string, the sides drifted apart silently: the
+ * commands looked for the receipt in the APPLICATION directory, the supervisor
+ * wrote to the STATE directory, and for an installed colloq `colloq stop`
+ * answered "no class is running" while a class was running. The name here is
+ * one, and which root it is resolved against is decided by the caller.
  */
 export const SESSION_FILE = '.colloq/local-session.json'
 

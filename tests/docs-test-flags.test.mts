@@ -1,21 +1,23 @@
 /**
- * Шапка `tests/README.md` объясняет, почему прогон устроен именно так, и
- * приводит числа, которых после неё никто не пересчитывал. Сверяется и то, и
- * другое — потому что этот файл не собирает и не типизирует никто.
+ * The header of `tests/README.md` explains why the run is set up exactly
+ * this way, and cites numbers nobody has recounted since. Both are checked —
+ * because nobody builds or type-checks this file.
  *
- * Флаги. Абзацы про `--test-concurrency=1` и `--test-force-exit` — не заметка
- * на память: первый держит сюиту от молчаливого недосчёта хвоста файла, второй
- * не даёт прогону висеть на таймере серверного модуля. Уберут флаг из `npm
- * test` — и README останется единственным местом, где он ещё есть: сюита снова
- * начнёт терять тесты, а объяснение будет рассказывать, почему этого не бывает.
+ * Flags. The paragraphs about `--test-concurrency=1` and `--test-force-exit`
+ * are not a note to self: the first keeps the suite from silently
+ * undercounting the tail of a file, the second keeps the run from hanging on
+ * a server module's timer. Remove a flag from `npm test` — and the README
+ * stays the only place that still has it: the suite starts losing tests
+ * again, while the explanation tells why that does not happen.
  *
- * Числа. «232, 232, 230, 232» и «двенадцать лишних секунд» — измерение той
- * поры, когда в сюите было 232 теста; сегодня их в разы больше, и сколько
- * именно — здесь нарочно не написано. Число в тексте растёт от чужих правок, а
- * живёт в файле, который при этом никто не открывает, — ровно так же соврала
- * строка «about 220 tests» в корневом README (см. `docs-readme-drift.test.mts`).
- * Поэтому старое число обязано быть названо прошлым, а живое — взято с конца
- * прогона, а не отсюда.
+ * Numbers. "232, 232, 230, 232" and "twelve extra seconds" are a
+ * measurement from the time the suite had 232 tests; today there are many
+ * times more, and exactly how many is deliberately not written here. A
+ * number in the text grows with other people's edits, while it lives in a
+ * file nobody opens meanwhile — exactly the way the line "about 220 tests"
+ * in the root README lied (see `docs-readme-drift.test.mts`). So the old
+ * number must be named as the past, and the live one taken from the end of
+ * the run, not from here.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -30,19 +32,20 @@ const doc = read('tests/README.md')
 const npmTest: string = JSON.parse(read('package.json')).scripts.test
 
 /**
- * Абзац, начинающийся с этих слов: до первой пустой строки, одной строкой.
+ * The paragraph starting with these words: up to the first blank line, as
+ * one line.
  *
- * Переносы схлопываются нарочно — абзац переносится по восьмидесяти знакам, и
- * фраза ломается там, где сегодня пришлась граница; проверка, чувствительная к
- * ней, падала бы от переформата, а не от неправды.
+ * Line breaks are collapsed on purpose — the paragraph wraps at eighty
+ * characters, and the phrase breaks wherever the boundary falls today; a
+ * check sensitive to it would fail from a reformat, not from an untruth.
  */
 function paragraph(from: string): string {
   const at = doc.indexOf(from)
-  assert.notEqual(at, -1, `в tests/README.md нет абзаца «${from}…»`)
+  assert.notEqual(at, -1, `tests/README.md has no paragraph "${from}…"`)
   return doc.slice(at, doc.indexOf('\n\n', at)).replace(/\s+/g, ' ')
 }
 
-/** Сколько тестов объявлено в дереве. Тот же счёт, что и в корневом README. */
+/** How many tests are declared in the tree. The same count as in the root README. */
 function declared(): number {
   const dir = path.join(root, 'tests')
   let n = 0
@@ -53,43 +56,44 @@ function declared(): number {
   return n
 }
 
-test('флаги, которые объясняет tests/README.md, стоят в npm test', () => {
+test('the flags tests/README.md explains are in npm test', () => {
   paragraph('`--test-concurrency=1` is deliberate')
   assert.match(
     npmTest,
     /--test-concurrency=1\b/,
-    'tests/README.md объясняет последовательный прогон, а npm test его больше не просит: сюита снова недосчитывает хвост файла',
+    'tests/README.md explains the sequential run, but npm test no longer asks for it: the suite undercounts the tail of a file again',
   )
 
   paragraph('`--test-force-exit` is deliberate')
   assert.match(
     npmTest,
     /--test-force-exit\b/,
-    'tests/README.md объясняет --test-force-exit, а npm test его больше не передаёт: прогон повиснет на таймере серверного модуля',
+    'tests/README.md explains --test-force-exit, but npm test no longer passes it: the run will hang on a server module\'s timer',
   )
 })
 
-test('старое измерение в шапке названо прошлым, а не сегодняшним', (t) => {
+test('the old measurement in the header is named as the past, not the present', (t) => {
   const said = paragraph('`--test-concurrency=1` is deliberate')
   const then = 232
   if (!said.includes(String(then))) {
-    t.skip('абзац перемерили: старого числа в нём больше нет, датировать нечего')
+    t.skip('the paragraph was remeasured: the old number is no longer in it, there is nothing to date')
     return
   }
   const now = declared()
-  assert.ok(now > 0, 'в tests/ не нашлось ни одного объявленного теста — сломан счёт, а не README')
-  // Пока счёт держится того же порядка, число ещё описывает сюиту само по себе.
+  assert.ok(now > 0, 'no declared test was found in tests/ — the count is broken, not the README')
+  // While the count stays within the same order, the number still describes
+  // the suite by itself.
   if (now < then * 2 && now > then / 2) return
 
   assert.match(
     said,
     /\bthen\b|\bhistory\b/i,
-    `в шапке всё ещё стоит ${then} теста, а объявлено ${now}: число обязано быть названо прошлым или перемерено`,
+    `the header still says ${then} tests, while ${now} are declared: the number must be named as the past or remeasured`,
   )
 })
 
-test('шапка говорит, откуда берутся сегодняшние число и время', () => {
+test('the header says where today\'s number and time come from', () => {
   const said = paragraph('`--test-concurrency=1` is deliberate')
-  assert.match(said, /duration_ms/, 'не сказано, где смотреть настоящее время прогона')
-  assert.match(said, /ℹ tests/, 'не сказано, где смотреть настоящее число тестов')
+  assert.match(said, /duration_ms/, 'it is not said where to look for the real run time')
+  assert.match(said, /ℹ tests/, 'it is not said where to look for the real number of tests')
 })

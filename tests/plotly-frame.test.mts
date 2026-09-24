@@ -1,16 +1,17 @@
 /**
- * Рамка, в которой рисуется чужой график, и её политика.
+ * The frame in which somebody else's chart is drawn, and its policy.
  *
- * Здесь проверяется ровно то, что делает рамку песочницей, а не просто вторым
- * `<div>`: заголовок. Отказ тут молчалив вдвойне — страница продолжит
- * показывать графики как ни в чём не бывало, просто чужой код снова окажется
- * рядом с токеном комнаты. Поэтому директивы проверяются по одной и с
- * объяснением, за что каждая отвечает.
+ * What is checked here is exactly what makes the frame a sandbox rather than
+ * just a second `<div>`: the header. A failure here is doubly silent — the page
+ * will keep showing charts as if nothing happened, only foreign code will again
+ * sit next to the room token. So the directives are checked one by one, with an
+ * explanation of what each is responsible for.
  *
- * Что сама песочница работает — свойство браузера, и оно измерено вживую:
- * в рамке `window.origin === "null"`, а `document.cookie`, `localStorage` и
- * `window.parent.document` бросают SecurityError. Заголовок оттуда же:
- * `img-src data: blob:` отказал картинке фигуры с чужого адреса.
+ * That the sandbox itself works is a property of the browser, and it was
+ * measured live: in the frame `window.origin === "null"`, and `document.cookie`,
+ * `localStorage` and `window.parent.document` throw SecurityError. The header
+ * comes from the same measurement: `img-src data: blob:` refused a figure image
+ * from a foreign address.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -36,81 +37,81 @@ const directives = new Map(
   }),
 )
 
-/* ------------------------------------------------------------- политика */
+/* ----------------------------------------------------------- the policy */
 
-test('origin рамки непрозрачен — и это делает заголовок, а не атрибут', () => {
+test('the frame origin is opaque, and the header does that, not the attribute', () => {
   /*
-   * `sandbox` из заголовка действует даже тогда, когда адрес открыли прямо в
-   * отдельной вкладке (проверено вживую: там тоже `window.origin === "null"`).
-   * Атрибут `sandbox` у `<iframe>` стоит тоже, но он — вторая линия: его
-   * видно из DOM страницы, а заголовок — нет.
+   * `sandbox` from the header applies even when the address is opened directly
+   * in a separate tab (verified live: there too `window.origin === "null"`).
+   * The `sandbox` attribute on the `<iframe>` is set as well, but it is the
+   * second line: it is visible from the page DOM, and the header is not.
    */
-  assert.ok(directives.has('sandbox'), 'без sandbox origin рамки остаётся нашим')
+  assert.ok(directives.has('sandbox'), 'without sandbox the frame origin stays ours')
   assert.match(directives.get('sandbox')!, /\ballow-scripts\b/)
-  // `allow-same-origin` здесь был бы отменой всей затеи: он возвращает рамке
-  // наш origin, а с ним куки, localStorage и доступ к DOM страницы.
+  // `allow-same-origin` here would cancel the whole idea: it gives the frame our
+  // origin back, and with it cookies, localStorage and access to the page DOM.
   assert.ok(!/allow-same-origin/.test(directives.get('sandbox')!))
 })
 
-test('скриптов ровно два: наш загрузчик по хэшу и бандл по точному адресу', () => {
+test('exactly two scripts: our loader by hash and the bundle by exact address', () => {
   const scripts = directives.get('script-src')!.split(' ')
-  assert.equal(scripts.length, 2, `в script-src ${scripts.length} источников: ${scripts.join(' ')}`)
-  assert.match(scripts[0], /^'sha256-[A-Za-z0-9+/=]+'$/, 'загрузчик пущен не по хэшу')
+  assert.equal(scripts.length, 2, `script-src has ${scripts.length} sources: ${scripts.join(' ')}`)
+  assert.match(scripts[0], /^'sha256-[A-Za-z0-9+/=]+'$/, 'the loader is not allowed by hash')
   assert.equal(scripts[1], `${ORIGIN}${PLOTLY_BUNDLE_PATH}`)
   /*
-   * `'self'` тут нет намеренно. В песочнице origin непрозрачный, опираться
-   * этому слову не на что — а где оно всё-таки совпадает (Chrome читает его
-   * от АДРЕСА ответа, это измерено), оно пускает в рамку любой файл нашего
-   * инстанса, включая то, что в комнату загрузили студенты.
+   * `'self'` is absent on purpose. In the sandbox the origin is opaque, so the
+   * word has nothing to rest on — and where it does match after all (Chrome
+   * reads it from the ADDRESS of the response, this was measured), it lets any
+   * file of our instance into the frame, including what students uploaded to the room.
    */
   assert.ok(!/'self'/.test(directives.get('script-src')!))
-  assert.ok(!/unsafe-eval/.test(policy), 'strict-сборка plotly не требует eval — и не должна получать его')
+  assert.ok(!/unsafe-eval/.test(policy), 'the strict build of plotly does not need eval, and must not get it')
   assert.ok(!/unsafe-inline/.test(directives.get('script-src')!))
 })
 
-test('хэш загрузчика считается от того самого текста, который уедет в разметку', () => {
+test('the loader hash is computed from the very text that goes into the markup', () => {
   const inline = /<script>([\s\S]*?)<\/script>/.exec(FRAME_HTML)
-  assert.ok(inline, 'в разметке рамки нет инлайнового загрузчика')
-  const hash = directives.get('script-src')!.split(' ')[0].slice(1, -1) // без кавычек
+  assert.ok(inline, 'the frame markup has no inline loader')
+  const hash = directives.get('script-src')!.split(' ')[0].slice(1, -1) // without the quotes
   const [algorithm, digest] = hash.split('-')
   assert.equal(algorithm, 'sha256')
-  // Байт в байт: расхождение здесь — это рамка, которая молча перестала
-  // рисовать вообще всё, и ошибка про CSP в консоли одного человека.
+  // Byte for byte: a mismatch here is a frame that silently stopped drawing
+  // anything at all, and a CSP error in one person's console.
   assert.equal(crypto.createHash('sha256').update(inline[1], 'utf8').digest('base64'), digest)
 })
 
-test('из рамки не уходит ни один запрос — ни за данными, ни за картинкой', () => {
+test('not a single request leaves the frame, neither for data nor for an image', () => {
   assert.equal(directives.get('default-src'), "'none'")
   assert.equal(directives.get('connect-src'), "'none'")
   /*
-   * Картинки только `data:` и `blob:`. НЕ `https:` — и это не педантизм:
-   * `layout.images` с чужим адресом выдал бы автору фигуры IP каждого, кто
-   * её открыл, то есть всей аудитории. Цена известна и принята: фигура с
-   * картинкой по ссылке покажется без неё.
+   * Images only from `data:` and `blob:`. NOT `https:` — and this is not
+   * pedantry: `layout.images` with a foreign address would hand the figure's
+   * author the IP of everyone who opened it, that is, of the whole audience.
+   * The price is known and accepted: a figure with an image by link shows without it.
    */
   assert.equal(directives.get('img-src'), 'data: blob:')
   assert.ok(!/https?:/.test(directives.get('img-src')!))
 })
 
-test('оформление plotly пускается, чужая навигация — нет', () => {
-  // plotly раскладывает график инлайновыми стилями и своим <style>: без
-  // 'unsafe-inline' в style-src не рисуется вообще ничего.
+test('plotly styling is let in, foreign navigation is not', () => {
+  // plotly lays a chart out with inline styles and its own <style>: without
+  // 'unsafe-inline' in style-src nothing is drawn at all.
   assert.equal(directives.get('style-src'), "'unsafe-inline'")
   assert.equal(directives.get('base-uri'), "'none'")
   assert.equal(directives.get('form-action'), "'none'")
-  // Встроить рамку может только сам инстанс. `'none'`, как в общем заголовке,
-  // здесь был бы запретом и для НАШЕЙ тетради.
+  // Only the instance itself may embed the frame. `'none'`, as in the shared
+  // header, would forbid it here for OUR notebook too.
   assert.equal(directives.get('frame-ancestors'), "'self'")
   assert.match(CONTENT_SECURITY_POLICY, /frame-ancestors 'none'/)
 })
 
 /* --------------------------------------------------------------- origin */
 
-test('origin в заголовок попадает только по белому списку формы', () => {
+test('an origin gets into the header only if it passes an allowlist of shapes', () => {
   assert.equal(frameOrigin('http://localhost:5173'), 'http://localhost:5173')
   assert.equal(frameOrigin('https://hse.colloq.ru'), 'https://hse.colloq.ru')
-  // Значение уезжает в Content-Security-Policy, где точка с запятой и перевод
-  // строки — не мусор, а ВТОРАЯ директива. Поэтому не экранирование, а форма.
+  // The value goes into Content-Security-Policy, where a semicolon and a newline
+  // are not junk but a SECOND directive. Hence a shape check rather than escaping.
   assert.equal(frameOrigin('https://ok.ru; script-src *'), null)
   assert.equal(frameOrigin('https://ok.ru\nX-Frame-Options: none'), null)
   assert.equal(frameOrigin('javascript:alert(1)'), null)
@@ -119,7 +120,7 @@ test('origin в заголовок попадает только по белом
   assert.equal(frameOrigin('x'.repeat(400)), null)
 })
 
-/* -------------------------------------------------------------- маршрут */
+/* ------------------------------------------------------------ the route */
 
 let server: http.Server | undefined
 let base = ''
@@ -136,33 +137,33 @@ after(() => server?.close())
 const frameUrl = (origin: string) =>
   `${base}${PLOTLY_FRAME_PATH}?${PLOTLY_ORIGIN_PARAM}=${encodeURIComponent(origin)}`
 
-test('рамка отдаётся своей политикой вместо общей и без удостоверения', async () => {
+test('the frame is served with its own policy instead of the shared one, and without credentials', async () => {
   const res = await fetch(frameUrl(ORIGIN))
   assert.equal(res.status, 200)
   assert.equal(res.headers.get('content-security-policy'), policy)
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff')
   assert.match(res.headers.get('content-type') ?? '', /text\/html/)
   const body = await res.text()
-  // Страница пустая: показать она может только то, что ей пришлют
-  // postMessage, то есть только то, что человек и так видит в своей тетради.
+  // The page is empty: it can show only what it is sent by postMessage, that
+  // is, only what the person already sees in their notebook.
   assert.ok(body.includes(PLOTLY_MSG))
   assert.ok(body.includes(PLOTLY_BUNDLE_PATH))
-  assert.ok(!body.includes('<script src='), 'бандл цепляется скриптом, а не тегом в разметке')
+  assert.ok(!body.includes('<script src='), 'the bundle is attached by the script, not by a tag in the markup')
 })
 
-test('без origin рамки нет: политику собрать не из чего', async () => {
+test('no origin, no frame: there is nothing to build the policy from', async () => {
   assert.equal((await fetch(`${base}${PLOTLY_FRAME_PATH}`)).status, 400)
   assert.equal((await fetch(frameUrl('ftp://nope'))).status, 400)
 })
 
-test('загрузчик рамки сверяет источник сообщения, а не его origin', () => {
+test('the frame loader checks the source of a message, not its origin', () => {
   /*
-   * Origin песочницы — строка «null», и он ОДИНАКОВ у любой другой песочницы
-   * на странице: сверять его бессмысленно. Сверяется окно-источник, и этого
-   * достаточно — чужая рамка не станет нашим `window.parent`.
+   * The sandbox origin is the string "null", and it is THE SAME for any other
+   * sandbox on the page: comparing it is pointless. The source window is
+   * compared, and that is enough — a foreign frame will not become our `window.parent`.
    */
   assert.match(FRAME_HTML, /e\.source!==window\.parent/)
   assert.match(FRAME_HTML, /msg\.colloq!==TAG/)
-  // Прозрачный фон — против белой вспышки: подложку рисует тетрадь.
+  // A transparent background, against a white flash: the notebook draws the backdrop.
   assert.match(FRAME_HTML, /background:transparent/)
 })

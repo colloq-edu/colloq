@@ -49,14 +49,15 @@
   const face = $derived(size <= 22 ? 'xs' : size <= 30 ? 'sm' : size <= 40 ? 'md' : 'lg')
 
   /*
-   * Кегль метки — доля диаметра, а не ступень. Ступеней четыре, диаметров у
-   * стопки сколько угодно, и на 28px ступень `sm` давала те же 14px, что на
-   * 24px: круг вырос, человек в нём остался прежним.
+   * The mark's font size is a fraction of the diameter, not a step. There are
+   * four steps and any number of stack diameters, and at 28px the `sm` step
+   * gave the same 14px as at 24px: the circle grew, the person in it stayed the
+   * same.
    *
-   * 0.58, потому что Apple Color Emoji рисует краску примерно в 0.94 кегля, а
-   * Avatar хочет 0.55 диаметра — это и есть 0.55/0.94. Замерено на живой
-   * стопке, а не выведено из метрик: у цветных растровых эмодзи
-   * actualBoundingBox врёт и отдаёт коробку выкладки.
+   * 0.58, because Apple Color Emoji paints its ink at about 0.94 of the font
+   * size, and Avatar wants 0.55 of the diameter — which is exactly 0.55/0.94.
+   * Measured on a live stack, not derived from the metrics: for colour bitmap
+   * emoji actualBoundingBox lies and returns the layout box.
    */
   const glyph = $derived(Math.round(size * 0.58))
 </script>
@@ -66,12 +67,13 @@
     <!-- First person on top, z descending rightwards, so the stack reads as a
          queue rather than as whoever happened to be last in the DOM. -->
     <!--
-      flex, а не block. Аватар внутри — inline-flex, то есть строчный бокс, и в
-      блочном родителе он садится на базовую линию: под ним остаётся место под
-      выносные элементы, и лицо съезжает вниз и вылезает за кольцо. На круге в
-      24px это три с половиной пикселя — лица стояли ниже чипа «+N», и полоса
-      читалась кривой. Флекс-контейнер базовой линии не строит, и `width/height:
-      100%` ниже кладёт лицо ровно в отверстие кольца.
+      flex, not block. The avatar inside is inline-flex, that is, an inline box,
+      and in a block parent it sits on the baseline: room for descenders is left
+      under it, and the face slides down and pokes out of the ring. On a 24px
+      circle that is three and a half pixels — the faces stood lower than the
+      "+N" chip, and the row read as crooked. A flex container does not build a
+      baseline, and `width/height: 100%` below puts the face exactly into the
+      hole of the ring.
     -->
     <span
       class="cell relative flex shrink-0 rounded-full"

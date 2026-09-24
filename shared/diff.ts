@@ -10,15 +10,16 @@
  * shows as a scatter of insertions inside a line instead of as the line that
  * changed.
  *
- * Ячейки короткие — десятки строк, — и на них квадратичная таблица стоит
- * ничего. Но в ячейку попадает и лог на пятнадцать тысяч строк, а сравнение
- * считается синхронно в обработчике запроса истории: замер на этом коде —
- * десять тысяч строк против десяти тысяч дают секунды блокировки и сотни
- * мегабайт кучи, то есть стоит весь инстанс, пока кто-то листает ленту.
- * Поэтому здесь две страховки. Общие начало и конец отрезаются заранее, так
- * что правка одной строки в длинном логе и остаётся сравнением одной строки.
- * А на то, что осталось, стоит потолок площади: выше него разница
- * показывается как замена куска целиком — грубее, но за один проход.
+ * Cells are short — tens of lines — and on them a quadratic table costs
+ * nothing. But a cell can also receive a fifteen-thousand-line log, and the
+ * comparison runs synchronously in the history request handler: measured on
+ * this code, ten thousand lines against ten thousand give seconds of blocking
+ * and hundreds of megabytes of heap, that is, the whole instance stands still
+ * while somebody scrolls the timeline. Hence two safeguards here. The common
+ * head and tail are cut off up front, so an edit of one line in a long log
+ * stays a comparison of one line. And what remains has an area cap: above it
+ * the difference is shown as a replacement of the whole chunk — coarser, but
+ * in a single pass.
  */
 
 export type DiffKind = 'same' | 'added' | 'removed'
@@ -29,12 +30,13 @@ export interface DiffLine {
 }
 
 /**
- * Площадь таблицы, выше которой построчное сравнение не считается.
+ * The table area above which no line-by-line comparison is computed.
  *
- * Четыре миллиона клеток — это десятки миллисекунд и шестнадцать мегабайт
- * (Int32Array, а не массив чисел, ровно ради второго числа). Столько
- * обработчик запроса потратить может; всё, что больше, — уже не сравнение
- * ячейки, а сравнение двух логов, и его никто не читает построчно.
+ * Four million cells is tens of milliseconds and sixteen megabytes
+ * (Int32Array rather than an array of numbers, precisely for the sake of the
+ * second number). A request handler can afford that much; anything larger is
+ * no longer a comparison of a cell but a comparison of two logs, and nobody
+ * reads that line by line.
  */
 const MAX_TABLE = 4_000_000
 
@@ -42,7 +44,7 @@ export function diffLines(before: string, after: string): DiffLine[] {
   const a = before.length === 0 ? [] : before.split('\n')
   const b = after.length === 0 ? [] : after.split('\n')
 
-  // Общее начало и общий конец совпадают построчно — таблица на них не нужна.
+  // The common head and common tail match line for line — they need no table.
   let head = 0
   while (head < a.length && head < b.length && a[head] === b[head]) head++
   let tail = 0

@@ -61,7 +61,7 @@ function fail(res: Response, status: number, reason: AdminErrorBody['reason'], e
 
 /**
  * Collapse whitespace and drop control characters so a name cannot break the
- * staff list. Мерка общая — shared/text.ts.
+ * staff list. The measure is shared: shared/text.ts.
  */
 const normalizeName = normalizeLabel
 
@@ -103,15 +103,15 @@ export function adminAuthRoutes(): Router {
       suggestedEmail: claimed ? '' : config.adminEmail,
       openSeminarCreation: config.openSeminarCreation,
       /*
-       * Предел загрузки — числом, а не догадкой панели.
+       * The upload limit as a number, not the panel's guess.
        *
-       * Форма создания семинара печатает его («Up to 50 MB each») и по нему же
-       * отказывает слишком большому файлу ДО того, как комната появится; до
-       * этого поля она держала свою копию умолчания, и оператор, поднявший
-       * MAX_UPLOAD_MB до 200, читал на экране чужое число.
+       * The seminar creation form prints it ("Up to 50 MB each") and refuses
+       * a file that is too big by it BEFORE the room exists; before this field
+       * it kept its own copy of the default, and an operator who raised
+       * MAX_UPLOAD_MB to 200 read someone else's number on the screen.
        *
-       * Секрета здесь нет: то же число сервер называет в отказе всякому
-       * загружающему (routes/files.ts).
+       * There is no secret here: the server names the same number in its
+       * refusal to anyone uploading (routes/files.ts).
        */
       maxUploadBytes: config.maxUploadBytes,
     }
@@ -171,14 +171,15 @@ export function adminAuthRoutes(): Router {
   })
 
   /*
-   * Отозвать токен установки.
+   * Revoke the setup token.
    *
-   * Он подписывает вошедшего как самого старого владельца и печатается
-   * `make host` при каждом запуске: он есть в истории терминала, на снимках
-   * проектора и в переписке, куда его пересылали. Отозвать его было нечем.
+   * It signs in whoever uses it as the oldest owner and is printed by
+   * `make host` on every start: it is in the terminal history, in photos of
+   * the projector and in the messages it was forwarded in. There was no way
+   * to revoke it.
    *
-   * Только владелец, и ответ содержит новый токен: он показывается один раз,
-   * как и ссылки преподавателей.
+   * Owner only, and the response contains the new token: it is shown once,
+   * like teacher links.
    */
   router.post('/api/admin/setup-token/rotate', ownerOnly('server.ownerAction.1'), (_req, res) => {
     res.json({ token: rotateSetupToken() })
@@ -275,12 +276,13 @@ export function adminAuthRoutes(): Router {
   })
 
   /*
-   * Одна ручка на роль и на имя с адресом.
+   * One endpoint for the role and for the name with the address.
    *
-   * Роль была единственным, что здесь принималось, и опечатка в фамилии
-   * лечилась удалением с заводом заново: новая ссылка, потерянное авторство
-   * семинаров и выброшенный из панели человек — ради одной буквы. Поля
-   * необязательные: кто прислал только роль, работает как раньше.
+   * The role used to be the only thing accepted here, and a typo in a surname
+   * was cured by deleting and re-creating: a new link, lost authorship of
+   * seminars and a person thrown out of the panel, for the sake of one
+   * letter. The fields are optional: whoever sends only the role works as
+   * before.
    */
   router.patch('/api/admin/teachers/:id', requireOwner, (req, res) => {
     const target = getTeacher(req.params.id)
@@ -289,13 +291,14 @@ export function adminAuthRoutes(): Router {
     const wantsIdentity = req.body?.name !== undefined || req.body?.email !== undefined
     if (wantsIdentity) {
       /*
-       * Поля правда необязательные — по одному тоже.
+       * The fields really are optional, one at a time too.
        *
-       * `wantsIdentity` требовал имя и адрес ВМЕСТЕ: `{name:'Иванов'}` без
-       * адреса отвечал «a valid email address is required», то есть просил
-       * прислать то, что менять не собирались. Панель шлёт оба поля и этого не
-       * видела; видел тот, кто читал комментарий выше и поверил ему.
-       * Неприсланное берётся из записи — это и значит «необязательное».
+       * `wantsIdentity` required the name and the address TOGETHER:
+       * `{name:'Ivanov'}` without an address answered "a valid email address
+       * is required", that is, it asked to send what nobody meant to change.
+       * The panel sends both fields and never saw this; whoever read the
+       * comment above and believed it did. What was not sent is taken from the
+       * record: that is what "optional" means.
        */
       const name =
         req.body?.name === undefined ? target.name : normalizeName(req.body.name)
@@ -318,7 +321,7 @@ export function adminAuthRoutes(): Router {
       if (!renamed) {
         return fail(res, 409, 'invalid', tr("server.someoneWithThatEmailIsAlreadyOn.c19140"))
       }
-      // Смена только имени и адреса — роль трогать незачем.
+      // Only the name and the address change; there is no reason to touch the role.
       if (req.body?.role === undefined) return res.json(renamed)
     }
 

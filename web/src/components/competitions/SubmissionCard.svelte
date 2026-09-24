@@ -1,14 +1,17 @@
 <script lang="ts">
   /**
-   * Та же посылка на телефоне (P4) — и это другая раскладка, а не та же, но уже.
+   * The same submission on a phone (P4) — and it is a different layout, not
+   * the same one made narrower.
    *
-   * Пять колонок в 390 px не помещаются, поэтому строка разворачивается в
-   * карточку: сверху ряд «плашка · номер · таймер», под ним имя файла, под ним
-   * одна фраза состояния. Действий справа нет вовсе — их место занял таймер,
-   * и это решение макета: палец промахивается по ссылке 13 px в тесном ряду.
+   * Five columns do not fit in 390 px, so the row unfolds into a card: on top
+   * the "badge · number · timer" row, under it the file name, under that one
+   * sentence of state. There are no actions on the right at all — the timer
+   * has taken their place, and that is the mockup's decision: a finger misses
+   * a 13 px link in a cramped row.
    *
-   * Полосы этапов здесь нет: пять подписей капсом в такую ширину не ложатся.
-   * Вместо неё — «Выполняется ячейка 9 из 14» и полоска прогресса.
+   * There is no strip of stages here: five capitalised captions do not fit
+   * in such a width. Instead there is "Running cell 9 of 14" and a progress
+   * bar.
    */
   import { tr } from '@shared/i18n'
   import { entrantBadge, type EntrantSubmission } from '@shared/competitions'
@@ -35,7 +38,7 @@
     limitMs: number
     dependenciesSlug?: string
     notebookUrl: string
-    /** Приём закрыт: зачётную посылку больше не переставить. */
+    /** Submissions are closed: the counted submission can no longer be changed. */
     frozen: boolean
     oncancel: (id: string) => void
     onchoose: (id: string) => void
@@ -131,9 +134,9 @@
     </a>
   {/if}
 
-  <!-- Единственное действие, которое на телефоне осталось внизу карточки:
-       снять свою посылку и выбрать зачётную — то, ради чего человек сюда и
-       зашёл с телефона, стоя в коридоре. -->
+  <!-- The only action left at the bottom of the card on a phone: withdraw
+       your submission and choose the counted one — which is what a person
+       opened this for on a phone, standing in the corridor. -->
   {#if running || queued}
     <button
       class="self-start text-2xs text-danger disabled:text-faint"

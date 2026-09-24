@@ -71,43 +71,49 @@ const ACTIONS: readonly AiAction[] = ['explain', 'fix', 'debug', 'improve', 'hin
  */
 const MAX_MESSAGE = 8000
 /**
- * Длина имени записи, ячейки и всего, что приезжает идентификатором.
+ * The length of an entry name, a cell name and everything that arrives as an
+ * id.
  *
- * Сто двадцать восемь знаков — вчетверо больше самого длинного, какой этот
- * продукт выдаёт (`c_` плюс восемь шестнадцатеричных). Потолок стоит не ради
- * красоты: `cellId` и двадцать `cellIds` уходили в общий документ комнаты как
- * есть, а тело запроса — до мегабайта, так что один вопрос мог унести мегабайт
- * мусора в CRDT — с записью на диск, рассылкой всем пятистам сокетам и вечной
- * жизнью в снимках истории. Слишком длинное не режется, а отбрасывается: имя
- * ячейки — это ключ, и обрезанный ключ уже не тот, что просили.
+ * A hundred and twenty-eight characters is four times the longest this
+ * product issues (`c_` plus eight hex digits). The cap is not for looks:
+ * `cellId` and twenty `cellIds` went into the room's shared document as is,
+ * and a request body is up to a megabyte, so one question could carry a
+ * megabyte of garbage into the CRDT, with a write to disk, a broadcast to all
+ * five hundred sockets and eternal life in history snapshots. Anything too
+ * long is not truncated but rejected: a cell name is a key, and a truncated
+ * key is no longer the one asked for.
  */
 const MAX_ENTRY_ID = 128
 
 const HOUR_MS = 3_600_000
 
 /*
- * Потолок комнаты переехал в общую дверь к модели (ai/door.ts): его зовут уже
- * трое — вопрос, сводка консилиума и подсказка студенту, — и место ему там, а
- * не в одном из троих. Имя остаётся здесь ре-экспортом: на него ссылаются
- * routes/council.ts и тесты, и переименовывать их ради переезда незачем.
+ * The room ceiling moved to the shared door to the model (ai/door.ts): three
+ * callers use it now (the question, the council summary and the student
+ * hint), and its place is there rather than in one of the three. The name
+ * stays here as a re-export: routes/council.ts and the tests refer to it, and
+ * there is no reason to rename them for the sake of the move.
  */
 export { roomQuestionCeiling } from '../ai/door.js'
 import { oracleCapacity, roomQuestionCeiling } from '../ai/door.js'
 
 /**
- * Сколько ответов оракул пишет в одной комнате разом.
+ * How many answers the Oracle writes in one room at once.
  *
- * Потолки в час считают расход, а этот — цикл событий. Каждый идущий ответ
- * дописывается в общий документ несколько раз в секунду, и каждая такая правка
- * уезжает всем сокетам комнаты; ход агента вдобавок держит запрос к провайдеру
- * и правит файлы. Без границы слова преподавателя «спросите оракула» хватало,
- * чтобы двести человек начали двести потоков разом — а это сотни тысяч кадров
- * в секунду на пятистах сокетах, пропущенные пинги и разошедшаяся комната.
+ * The hourly ceilings count spending, while this one counts the event loop.
+ * Every answer in progress is appended to the shared document several times a
+ * second, and every such edit goes out to all the room's sockets; an agent
+ * turn also holds a request to the provider and edits files. Without a bound
+ * the teacher's words "ask the Oracle" were enough for two hundred people to
+ * start two hundred streams at once, and that is hundreds of thousands of
+ * frames a second on five hundred sockets, missed pings and a room that fell
+ * apart.
  *
- * Двенадцать — это «спросили и ждут» у дюжины человек одновременно; при ответе
- * секунд на десять комната переваривает больше вопроса в секунду, то есть
- * очередь рассасывается быстрее, чем класс успевает её создать. Отказ — не
- * ошибка, а ожидание: панель показывает его обратным отсчётом, как слоу-мод.
+ * Twelve means "asked and waiting" for a dozen people at the same time; with
+ * answers of about ten seconds the room digests more than a question a
+ * second, that is, the queue drains faster than the class can build it. A
+ * refusal is not an error but a wait: the panel shows it as a countdown, like
+ * slow mode.
  */
 
 /**
@@ -127,19 +133,21 @@ function oracleModeFor(
 }
 
 /**
- * Своя ли это запись в треде — та, которую спросил он сам.
+ * Whether this thread entry is one's own, the one they asked themselves.
  *
- * `peekSessionDoc`, а не `getSessionDoc`: спрашиваем ради отказа, а отказ —
- * не повод заводить комнату заново (та же причина написана над самим
- * `peekSessionDoc`). Незнакомая запись считается чужой: останавливать в ней
- * нечего, и лучше пусть об этом скажет отказ, чем молчание.
+ * `peekSessionDoc`, not `getSessionDoc`: we ask for the sake of a refusal,
+ * and a refusal is no reason to bring the room up again (the same reason is
+ * written above `peekSessionDoc` itself). An unknown entry counts as someone
+ * else's: there is nothing to stop in it, and better that a refusal says so
+ * than silence.
  */
 /**
- * Положение замка на ячейке — открыта, заперта, консилиум.
+ * The position of a cell's lock: open, locked, council.
  *
- * Тем же `peekSessionDoc` и по той же причине: спрашиваем ради отказа, а отказ
- * — не повод поднимать тетрадь остывшей комнаты. Документа нет или ячейки в
- * нём нет — считаем запертой: право по догадке не раздаётся.
+ * With the same `peekSessionDoc` and for the same reason: we ask for the sake
+ * of a refusal, and a refusal is no reason to bring up the notebook of a room
+ * that has gone cold. No document, or no such cell in it, counts as locked:
+ * rights are not handed out on a guess.
  */
 function cellLockIn(sessionId: string, cellId: string | null): CellLock {
   if (!cellId) return 'closed'
@@ -149,9 +157,10 @@ function cellLockIn(sessionId: string, cellId: string | null): CellLock {
 }
 
 /**
- * Корень тетради, в которой лежит эта ячейка, — для её собственного доступа.
+ * The root of the notebook this cell lives in, for its own access.
  *
- * `null` — ячейки в комнате нет; тогда правила комнаты, как и раньше.
+ * `null` means the cell is not in the room; then the room's rules apply, as
+ * before.
  */
 function bookRootOf(sessionId: string, cellId: string | null): string | null {
   if (!cellId) return null
@@ -166,24 +175,28 @@ function askedBy(sessionId: string, entryId: string, participantId: string): boo
 }
 
 /**
- * Убрать из ленты вопросы одного человека — и остановить то, что ему пишется.
+ * Remove one person's questions from the feed, and stop what is being written
+ * for them.
  *
- * Живёт здесь, рядом с двумя другими ластиками ленты: тред стирают в этом
- * файле, и третий способ стереть его же в другом месте разошёлся бы с ними на
- * первой правке. Зовёт это бан (routes/bans.ts): спам в общей ленте — обычно
- * ровно то, за что банят, и оставить его висеть перед всей комнатой значит
- * наказать всех, кроме автора.
+ * It lives here, next to the feed's two other erasers: the thread is erased
+ * in this file, and a third way of erasing it somewhere else would drift
+ * apart from them on the first edit. The ban calls it (routes/bans.ts): spam
+ * in the shared feed is usually exactly what people get banned for, and
+ * leaving it hanging in front of the whole room would punish everyone except
+ * its author.
  *
- * Отметка в истории — ПЕРЕД удалением, и не для порядка. Лента живёт в
- * документе комнаты, а стёртое из документа возвращается только версией:
- * названный момент — единственное, чем преподаватель вернёт вычищенное, если
- * промахнулся человеком. Имя в отметке — забаненного, автор — того, кто банил.
+ * The history mark comes BEFORE the deletion, and not for tidiness. The feed
+ * lives in the room's document, and what is erased from the document comes
+ * back only through a version: a named moment is the only thing the teacher
+ * can use to bring back what was purged if they banned the wrong person. The
+ * name in the mark is the banned person's, the author is whoever banned.
  *
- * Идущий ответ обрывается той же парой, что и кнопка «Стоп» ниже: у хода агента
- * свой способ, у потока свой. Иначе модель ещё минуту дописывает ответ в
- * запись, которой в ленте уже нет.
+ * An answer in progress is cut off by the same pair as the "Stop" button
+ * below: an agent turn has its own way, a stream has its own. Otherwise the
+ * model keeps writing the answer for another minute into an entry that is no
+ * longer in the feed.
  *
- * Возвращает, сколько записей убрали.
+ * Returns how many entries were removed.
  */
 export function purgeQuestions(
   sessionId: string,
@@ -199,12 +212,13 @@ export function purgeQuestions(
 }
 
 /**
- * Снять из общего треда записи нескольких участников разом.
+ * Remove several participants' entries from the shared thread at once.
  *
- * Появилось 13.09.2026: скрипт с одного адреса завёл пятьсот «участников» по
- * одному вопросу на каждого — обход медленного режима, который считает по
- * человеку. Банить их по одному значило бы пятьсот контрольных точек в ленте
- * версий и пятьсот правок; здесь одна точка и одна правка на всех.
+ * Added on 13 Sep 2026: a script from one address created five hundred
+ * "participants" with one question each, getting around slow mode, which
+ * counts per person. Banning them one by one would mean five hundred
+ * checkpoints in the version feed and five hundred edits; here it is one
+ * checkpoint and one edit for all of them.
  */
 export function purgeQuestionsOf(
   sessionId: string,
@@ -213,19 +227,20 @@ export function purgeQuestionsOf(
   label: string,
 ): number {
   /*
-   * `getSessionDoc`, а не `peekSessionDoc`: вычистка — это правка, и правка
-   * должна лечь в документ комнаты, а не мимо неё. Комнату, которую никто не
-   * открывал с перезапуска, поднять придётся — иначе стёртое вернулось бы к
-   * первому вошедшему с диска.
+   * `getSessionDoc`, not `peekSessionDoc`: a purge is an edit, and the edit
+   * has to land in the room's document, not beside it. A room nobody has
+   * opened since the restart has to be brought up, otherwise what was erased
+   * would come back from disk to the first person to join.
    *
-   * И не `visitSessionDoc`, которым поднимает документ лента версий: гость
-   * тетради тем же движением её отпускает (routes/doc-visit.ts), а здесь
-   * отпускать нечего и незачем. Банят в идущей комнате — её документ поднят
-   * теми, кто в ней сидит, — и сразу за вычисткой в том же запросе идут ещё два
-   * шага по той же комнате: стопки консилиума без забаненного и закрытие его
-   * сокетов (routes/bans.ts). А поднятую вхолостую — бан сразу после
-   * перезапуска, пока никто не переподключился, — отпустит уборка
-   * простаивающих комнат (collab/index.ts · sweepIdleRooms).
+   * And not `visitSessionDoc`, which the version feed uses to bring the
+   * document up: a notebook visitor lets it go with the same motion
+   * (routes/doc-visit.ts), and here there is nothing to let go and no reason
+   * to. People are banned in a running room, whose document is up because of
+   * those sitting in it, and right after the purge the same request takes two
+   * more steps in the same room: the council stacks without the banned person
+   * and the closing of their sockets (routes/bans.ts). And one brought up for
+   * nothing (a ban right after a restart, before anyone reconnected) will be
+   * let go by the idle sweep (collab/index.ts · sweepIdleRooms).
    */
   const { doc } = getSessionDoc(sessionId)
   const chat = getChat(doc)
@@ -246,12 +261,12 @@ export function purgeQuestionsOf(
   for (const id of ids) if (!stopWork(sessionId, id)) cancel(sessionId, id)
 
   /*
-   * От имени преподавателя, а не «комнаты»: в ленте версий у этой строки должно
-   * стоять имя того, кто банил, — иначе рядом с названным моментом «до бана
-   * Пети» стоит ничья правка на двенадцать записей.
+   * On behalf of the teacher, not "the room": in the version feed this row
+   * must carry the name of whoever banned, otherwise next to the named moment
+   * "before banning Petya" there is nobody's edit of twelve entries.
    *
-   * С конца: индексы посчитаны до удаления, и снятие первого сдвинуло бы все
-   * следующие.
+   * From the end: the indices were computed before the deletion, and removing
+   * the first one would shift all the following ones.
    */
   applyOnBehalf(sessionId, byTeacher, () => {
     for (let i = at.length - 1; i >= 0; i--) chat.delete(at[i], 1)
@@ -259,18 +274,18 @@ export function purgeQuestionsOf(
   return at.length
 }
 
-/** Сколько имён можно снять из треда одним запросом. */
+/** How many names can be removed from the thread in one request. */
 const MAX_PRUNE_IDS = 2000
-/** Длина id участника — та же, что у routes/bans.ts. */
+/** The participant id length, the same as in routes/bans.ts. */
 const MAX_ID = 128
-/** Новичок молчит: токену участника должно быть хотя бы столько. */
+/** A newcomer stays silent: a participant token must be at least this old. */
 const NEWCOMER_MS = 2 * 60_000
 /**
- * Вопросов оракулу с одного адреса за окно — на все имена сразу.
+ * Oracle questions from one address per window, for all names together.
  *
- * Больше дюжины одновременных в комнате (см. ниже, IN_FLIGHT): очередь
- * комнаты должна отказывать первой, иначе класс за одним NAT, упёршийся в
- * очередь, читал бы «с вашего адреса» вместо «подождите пять секунд».
+ * More than the dozen concurrent ones in a room (see below, IN_FLIGHT): the
+ * room's queue has to refuse first, otherwise a class behind one NAT that hit
+ * the queue would read "from your address" instead of "wait five seconds".
  */
 const ADDRESS_ASKS = 20
 const ADDRESS_WINDOW_MS = 60_000
@@ -286,7 +301,7 @@ function addressMayAsk(sessionId: string, address: string): boolean {
   }
   recent.push(now)
   asksByAddress.set(key, recent)
-  // Карта не растёт без предела: адреса, замолчавшие на окно, уносятся здесь же.
+  // The map does not grow without bound: addresses silent for a window are swept out right here.
   if (asksByAddress.size > 5000) {
     for (const [k, v] of asksByAddress) if (v.every((at) => now - at >= ADDRESS_WINDOW_MS)) asksByAddress.delete(k)
   }
@@ -296,8 +311,9 @@ function addressMayAsk(sessionId: string, address: string): boolean {
 export function aiRoutes(): Router {
   const router = Router()
 
-  // Забаненный не пишет в общий тред и не тратит ключ инстанса: purgeQuestions
-  // убирает написанное, а это — закрывает дверь (routes/sessions.ts · banDoor).
+  // A banned person does not write to the shared thread and does not spend the
+  // instance key: purgeQuestions removes what was written, and this closes the
+  // door (routes/sessions.ts · banDoor).
   router.use('/api/sessions/:id', banDoor)
 
   router.get('/api/ai/status', (_req, res) => {
@@ -310,21 +326,22 @@ export function aiRoutes(): Router {
       model: aiModel(),
       mode: settings.defaultMode,
       /*
-       * Потолки инстанса — чтобы «как на инстансе» в пульте правил называло
-       * число, а не оставалось обещанием: строка «не ниже инстансового», под
-       * которой не написано какого, не говорит преподавателю ничего. Не тайна:
-       * то же число студент читает в отказе, когда в него упирается.
+       * The instance ceilings, so that "as on the instance" in the rules
+       * console names a number rather than staying a promise: a line "no lower
+       * than the instance's" that does not say which tells the teacher
+       * nothing. It is no secret: a student reads the same number in the
+       * refusal on hitting it.
        */
       questionsPerHour: settings.questionsPerHour,
       slowModeSeconds: settings.slowModeSeconds,
       agentSteps: settings.agentSteps,
       /*
-       * Умолчание уровня размышлений — по той же причине, что и потолки:
-       * переключатель у поля вопроса должен знать, что тут считается обычным.
-       * Без него панель не может сказать студенту, какие положения ему
-       * доступны (понижать может любой, повышать — только преподаватель), и
-       * либо врала бы кнопкой, которая ничего не делает, либо прятала бы
-       * «сразу» там, где оно и так разрешено.
+       * The reasoning level default, for the same reason as the ceilings: the
+       * switch by the question field has to know what counts as ordinary
+       * here. Without it the panel cannot tell a student which positions are
+       * available to them (anyone may lower it, only a teacher may raise it),
+       * and it would either lie with a button that does nothing or hide
+       * "instant" where it is allowed anyway.
        */
       reasoningEffort: settings.reasoningEffort,
     })
@@ -337,14 +354,14 @@ export function aiRoutes(): Router {
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
 
     /*
-     * Занятие закончено — спрашивает один преподаватель.
+     * The class is over: only the teacher asks.
      *
-     * Правилом это не выразить: у `oracle` нет измерения «кто» — он про
-     * подробность ответа для всей комнаты, включая ведущего. Отказ стоит раньше
-     * всех остальных, потому что вопрос ложится в общий тред: запись «объясни
-     * это», под которой никогда не появится ответ, читается как поломка, а не
-     * как конец пары. Режим «сделать» этой же проверкой и закрыт — участник до
-     * него не доходит.
+     * This cannot be expressed as a rule: `oracle` has no "who" dimension; it
+     * is about how detailed the answer is for the whole room, the presenter
+     * included. The refusal comes before all the others because the question
+     * lands in the shared thread: an "explain this" entry under which an
+     * answer never appears reads as a breakage, not as the end of the lesson.
+     * "Act" mode is closed by the same check: a participant never gets to it.
      */
     if (!actsAfterClass(isFinished(sessionId), auth.role)) {
       return res.status(403).json({ error: tr(CLASS_IS_OVER) })
@@ -397,21 +414,22 @@ export function aiRoutes(): Router {
       ? (body?.action as AiAction)
       : undefined
     /*
-     * Имена ячеек — с потолком длины, и слишком длинное отбрасывается целиком.
+     * Cell names have a length cap, and anything too long is dropped whole.
      *
-     * Оба поля ложатся в запись треда как есть, а запись — в общий документ
-     * комнаты: он персистится, уезжает всем сокетам и остаётся в снимках
-     * истории, откуда его достаёт только удаление треда преподавателем. Пока
-     * потолка не было, один вопрос мог унести туда почти мегабайт (тело
-     * запроса — express.json), а по часовому пределу — сотни мегабайт с одного
-     * участника. См. MAX_ENTRY_ID.
+     * Both fields go into the thread entry as is, and the entry goes into the
+     * room's shared document: it is persisted, sent to all sockets and stays
+     * in history snapshots, from which only the teacher deleting the thread
+     * removes it. While there was no cap, one question could carry almost a
+     * megabyte there (the request body is express.json), and within the
+     * hourly limit, hundreds of megabytes from one participant. See
+     * MAX_ENTRY_ID.
      */
     const asked = typeof body?.cellId === 'string' ? body.cellId : ''
     const cellId = asked && asked.length <= MAX_ENTRY_ID ? asked : null
     /*
-     * Выделение спрашивающего. Потолок на число — не про безопасность, а про
-     * смысл: «сосредоточься на сорока ячейках» значит «ни на чём», а место в
-     * кадре они займут за счёт остальной тетради.
+     * The asker's selection. The cap on the number is not about security but
+     * about meaning: "focus on forty cells" means "on nothing", and they would
+     * take room in the frame at the expense of the rest of the notebook.
      */
     const cellIds = Array.isArray(body?.cellIds)
       ? body.cellIds
@@ -439,30 +457,33 @@ export function aiRoutes(): Router {
     }
 
     /*
-     * «Переписать ячейку» — правка, а не ответ, и правило у неё от ЯЧЕЙКИ.
+     * "Rewrite the cell" is an edit, not an answer, and its rule comes from
+     * the CELL.
      *
-     * `edit` — единственное действие, которое кончается предложением с кнопкой
-     * «Применить» (ai/index.ts · patchBase), то есть правкой общей тетради.
-     * Остальные — `explain`, `fix`, `debug`, `improve`, `hint`, `ask` — про
-     * ячейку РАССКАЗЫВАЮТ, и в лекции они студенту не заказаны: спрашивать про
-     * запертую ячейку можно и нужно.
+     * `edit` is the only action that ends with a proposal with an "Apply"
+     * button (ai/index.ts · patchBase), that is, an edit of the shared
+     * notebook. The others (`explain`, `fix`, `debug`, `improve`, `hint`,
+     * `ask`) TALK ABOUT the cell, and in a lecture they are not off limits for
+     * a student: asking about a locked cell is allowed and encouraged.
      *
-     * Проверка здесь, а не только у «Применить»: иначе участник в лекции пишет
-     * фразу, тратит вопрос из часового лимита комнаты и получает предложение,
-     * которое сам же принять не может, — а вопрос уже потрачен.
+     * The check is here, not only at "Apply": otherwise a participant in a
+     * lecture types a sentence, spends a question from the room's hourly
+     * limit and gets a proposal they cannot accept themselves, with the
+     * question already spent.
      *
-     * Консилиум отдельным слагаемым: правило `edit` в открытой комнате
-     * разрешает участнику править ячейки, но общая ячейка консилиума — это
-     * задание, и переписать её под себя значило бы переписать его всему классу.
-     * Свой лист у него есть, и у листа есть своя подсказка оракула.
+     * The council is a separate term: the `edit` rule in an open room lets a
+     * participant edit cells, but the shared council cell is the task, and
+     * rewriting it for oneself would mean rewriting it for the whole class.
+     * They have a sheet of their own, and the sheet has its own Oracle hint.
      */
     if (action === 'edit') {
       const lock = cellLockIn(sessionId, cellId)
       /*
-       * И по правилам ТОЙ ТЕТРАДИ, где ячейка лежит: «переписать» кончается
-       * правкой, а правку спрашивают у тетради (shared/rules.ts · rulesForBook).
-       * Иначе студент в лекции не мог бы попросить переписать ячейку в
-       * собственной тетради — той самой, где он и сидит.
+       * And by the rules of THE NOTEBOOK the cell lives in: "rewrite" ends
+       * with an edit, and an edit is asked of the notebook
+       * (shared/rules.ts · rulesForBook). Otherwise a student in a lecture
+       * could not ask to rewrite a cell in their own notebook, the very one
+       * they are sitting in.
        */
       const here = rulesForBook(getRules(sessionId), bookRootOf(sessionId, cellId), {
         role: auth.role,
@@ -477,23 +498,24 @@ export function aiRoutes(): Router {
     }
 
     /*
-     * «Сделать» — не вопрос, и правило у него своё.
+     * "Act" is not a question, and it has a rule of its own.
      *
-     * Проверяется здесь, а не в агенте: отказ должен прийти до того, как в
-     * тред ляжет поручение, — иначе комната увидит запись «сделай то-то», за
-     * которой ничего не последует, и это читается как поломка, а не как
-     * правило. Режим подсказок сюда не пускает никого: оракул, который не
-     * пишет ответ за студента, тем более не пишет его в файл.
+     * It is checked here, not in the agent: the refusal has to come before
+     * the assignment lands in the thread, otherwise the room sees an entry
+     * "do such-and-such" followed by nothing, and that reads as a breakage,
+     * not as a rule. Hints mode lets nobody in here: an Oracle that does not
+     * write the answer for a student certainly does not write it into a file.
      */
     /*
-     * Уровень размышлений — на этот вопрос.
+     * The reasoning level for this question.
      *
-     * Понизить может любой участник: ответ придёт быстрее и обойдётся дешевле,
-     * и разрешения на это спрашивать не у кого. Поднять ВЫШЕ умолчания
-     * инстанса может только преподаватель — ждать и платить за «подробно» на
-     * весь класс решает тот, кто ведёт пару. Чужое значение не отказ, а молчок:
-     * просьба «подумай подольше» от студента просто не действует, и вопрос его
-     * уходит с обычным уровнем, а не отскакивает 403 посреди семинара.
+     * Any participant may lower it: the answer comes faster and costs less,
+     * and there is nobody to ask permission from. Only a teacher may raise it
+     * ABOVE the instance default: whoever runs the lesson decides whether the
+     * whole class waits and pays for "thorough". A value that is not theirs
+     * to set is not a refusal but silence: a student's "think longer" request
+     * simply has no effect, and their question goes out at the usual level
+     * instead of bouncing with a 403 in the middle of the seminar.
      */
     const wanted = isReasoningEffort(body?.effort) ? body.effort : undefined
     const effort =
@@ -519,21 +541,23 @@ export function aiRoutes(): Router {
         })
       }
       /*
-       * Один ход на комнату — и преподавателя это касается тоже.
+       * One turn per room, and that applies to the teacher too.
        *
-       * Потолок ниже (`oracleCapacity`) считает нагрузку и ведущего мимо себя
-       * пропускает: его единственный вопрос среди дюжины студенческих ничего
-       * не решает. С ходом это неправда, и дело не в нагрузке. Два хода в одной
-       * комнате правят одну тетрадь и одни файлы наперегонки: у каждого свой
-       * снимок «как было до хода», и отмена второго возвращает файл к тому, что
-       * оставил первый, — то есть молча стирает его работу. Отметка в истории
-       * версий ставится тоже дважды и указывает не туда. Ведущий здесь как раз
-       * тот, кто попадает в это чаще всех: он единственный, кому режим доступен
-       * во всякой комнате, и «нажал ещё раз, потому что долго думает» — его
-       * обычное движение.
+       * The ceiling below (`oracleCapacity`) counts load and lets the
+       * presenter pass: their single question among a dozen students' decides
+       * nothing. With a turn that is not true, and it is not about load. Two
+       * turns in one room race to edit the same notebook and the same files:
+       * each has its own "as it was before the turn" snapshot, and undoing the
+       * second returns a file to what the first one left, that is, silently
+       * erases its work. The mark in the version history is also set twice
+       * and points to the wrong place. The presenter is exactly the one who
+       * runs into this most often: they are the only one for whom the mode is
+       * available in every room, and "pressed again because it is taking a
+       * long time" is their usual move.
        *
-       * 409, а не 429: это не «подождите очереди», а «так нельзя, пока идёт
-       * тот». Кнопка «Стоп» под ходом — рядом, в той же панели.
+       * 409, not 429: this is not "wait in the queue" but "not allowed while
+       * that one runs". The "Stop" button under the turn is right there, in
+       * the same panel.
        */
       if (turnsInRoom(sessionId) > 0) {
         return res.status(409).json({ error: tr('server.agent.busyTurn') })
@@ -541,56 +565,61 @@ export function aiRoutes(): Router {
     }
 
     /*
-     * Потолки — настройка инстанса, ужесточённая правилами комнаты: одна
-     * функция на сервер и на пульт, и она же держит границу «комната
-     * ужесточает, но не ослабляет» (shared/rules.ts · oracleLimitsIn).
+     * The ceilings are the instance setting tightened by the room's rules:
+     * one function for the server and the console, and it also holds the
+     * "the room tightens but does not loosen" line
+     * (shared/rules.ts · oracleLimitsIn).
      */
     const limits = oracleLimitsIn(getRules(sessionId), settings)
     const limit = limits.questionsPerHour
 
     /*
-     * Потолки — про класс, а не про ведущего.
+     * The ceilings are about the class, not about the presenter.
      *
-     * Оба счёта ниже держат инстанс от комнаты: от человека, спросившего
-     * лишнего, и от вкладок, открываемых в цикле. Преподаватель — не тот, от
-     * кого это стоит держать: он ведёт занятие, и вопросы у него идут подряд
-     * потому, что подряд идёт разбор. Упереться посреди пары в собственный
-     * потолок он не должен, а в общий по комнате — тем более: туда его привёл
-     * бы не он, а класс, и молчал бы тогда как раз тот, кто эту пару ведёт.
+     * Both counts below protect the instance from the room: from a person who
+     * asked too much and from tabs opened in a loop. The teacher is not the
+     * one to protect against: they run the class, and their questions come in
+     * a row because the review goes in a row. They must not hit their own
+     * ceiling in the middle of a lesson, and even less the room-wide one: it
+     * would be the class, not them, that drove them there, and then the one
+     * running the lesson would be the one left silent.
      *
-     * Роль здесь та же, по которой маршрут уже пропускает ведущего мимо
-     * слоу-мода ниже. Из счёта его вопросы не вычитаются: расход инстанса —
-     * это расход, и в панели он виден как есть.
+     * The role here is the same by which the route already lets the
+     * presenter past slow mode below. Their questions are not subtracted from
+     * the count: the instance's spending is spending, and the panel shows it
+     * as it is.
      */
     if (auth.role !== 'host') {
       /*
-       * Потолок на комнату, а не только на человека.
+       * A ceiling per room, not only per person.
        *
-       * Личный предел обходится перезаходом: имя в этой комнате ничем не
-       * подтверждено — в этом весь смысл «одна ссылка, и всё», — так что новая
-       * вкладка инкогнито даёт нового участника и свежие N вопросов. Настоящей
-       * границы у счёта не было вовсе, а панель обещала защиту.
+       * The personal limit is bypassed by rejoining: a name in this room is
+       * not confirmed by anything (that is the whole point of "one link and
+       * that is it"), so a new incognito tab gives a new participant and a
+       * fresh N questions. The count had no real boundary at all, while the
+       * panel promised protection.
        *
-       * Тридцать личных пределов на всю комнату — или по половине на человека,
-       * если людей больше шестидесяти: класс из двадцати, где каждый спросил
-       * вдвое больше положенного, укладывается в первое, поток на пятьсот — во
-       * второе, а один человек, открывающий вкладки в цикле, не укладывается ни
-       * во что (roomQuestionCeiling).
+       * Thirty personal limits for the whole room, or half a limit per person
+       * if there are more than sixty people: a class of twenty where everyone
+       * asked twice their share fits into the first, a cohort of five hundred
+       * into the second, and one person opening tabs in a loop fits into
+       * neither (roomQuestionCeiling).
        */
       const roomLimit = roomQuestionCeiling(sessionId, limit)
       const roomUsed = countRoomQuestions(sessionId, HOUR_MS)
       if (roomUsed >= roomLimit) {
         res.setHeader('Retry-After', '600')
         /*
-         * Куда идти — правда, а не вежливость.
+         * Where to go is the truth, not politeness.
          *
-         * Здесь стояло «попросите преподавателя, он поднимет предел в панели».
-         * Поднять его преподаватель не может: правила комнаты потолок только
-         * ужесточают (shared/rules.ts · oracleLimitsIn), а ручка живёт в
-         * админке инстанса, куда преподаватель обычно и не вхож. Двадцать
-         * человек шли к нему, он шёл в пульт и не находил там ничего. Читает
-         * это только участник — ведущего потолки не держат, — так что сказать
-         * надо ровно то, что ему поможет: ждать или спрашивать сообща.
+         * This used to say "ask the teacher, they will raise the limit in the
+         * panel". The teacher cannot raise it: the room's rules only tighten
+         * the ceiling (shared/rules.ts · oracleLimitsIn), and the knob lives
+         * in the instance admin panel, which a teacher usually has no access
+         * to. Twenty people went to the teacher, the teacher went to the
+         * console and found nothing there. Only a participant reads this (the
+         * ceilings do not hold the presenter back), so it has to say exactly
+         * what helps them: wait, or ask together.
          */
         return res.status(429).json({
           error: tr("server.thisSeminarHasUsedAllOracleQuestions.5ff314", { p0: roomLimit }),
@@ -616,38 +645,41 @@ export function aiRoutes(): Router {
     }
 
     /*
-     * Слоу-мод: не сколько вопросов, а как часто.
+     * Slow mode: not how many questions, but how often.
      *
-     * Потолок в час ловит расход, а не спам: двадцать вопросов можно выкрикнуть
-     * за двадцать секунд, и наказан будет не выкрик, а следующий настоящий
-     * вопрос — через час без оракула. Промежуток стоит ровно там, где спам, и
-     * стоит секунды.
+     * The hourly ceiling catches spending, not spam: twenty questions can be
+     * shouted out in twenty seconds, and what gets punished is not the shout
+     * but the next real question, an hour without the Oracle. The gap stands
+     * exactly where the spam is, and costs seconds.
      *
-     * Стоит ПОСЛЕ потолков, а не перед ними: у кого вопросы на час кончились,
-     * тот должен услышать про час, а не про десять секунд, после которых его
-     * всё равно развернут.
+     * It comes AFTER the ceilings, not before them: whoever has run out of
+     * questions for the hour must hear about the hour, not about ten seconds
+     * after which they would be turned away anyway.
      *
-     * Преподавателя не касается. Он не спамит — он ведёт занятие, и его вопросы
-     * идут подряд потому, что подряд идёт разбор; роль здесь та же, по которой
-     * этот маршрут уже различает ведущего выше.
+     * It does not apply to the teacher. They do not spam, they run the class,
+     * and their questions come in a row because the review goes in a row; the
+     * role here is the same by which this route already tells the presenter
+     * apart above.
      *
-     * Тот же `windowResetAt`, что и у потолка в час: с пределом в один вопрос
-     * «когда окно отпустит» и означает «когда пройдёт промежуток после
-     * последнего». Второго счётчика заводить не за что.
+     * The same `windowResetAt` as for the hourly ceiling: with a limit of one
+     * question, "when the window lets go" means exactly "when the gap after
+     * the last one has passed". There is no reason to start a second counter.
      */
     /*
-     * Две защиты от скрипта, а не от человека (13.09.2026, открытое занятие: с
-     * одного адреса за два часа пятьсот «участников» по одному вопросу каждый).
+     * Two protections against a script, not against a person (13 Sep 2026, an
+     * open class: five hundred "participants" from one address in two hours,
+     * one question each).
      *
-     * Медленный режим и потолок в час считаются по человеку, и обходятся
-     * ровно так: новый участник — новый счётчик. Поэтому первое — новичок
-     * ждёт: вопрос оракулу принимается, когда токену участника хотя бы две
-     * минуты. Студент входит по звонку и спрашивает позже; скрипт входит и
-     * спрашивает в ту же секунду. Второе — адрес: сколько бы ни было имён,
-     * провод один, и с одного адреса больше ADDRESS_ASKS за минуту не бывает
-     * даже у класса за одним NAT — двенадцать вопросов оракулу в минуту с
-     * одной школы это уже не вопросы. Преподавателя не касается ни то, ни
-     * другое: он разбирает, и разбирает подряд.
+     * Slow mode and the hourly ceiling are counted per person, and are
+     * bypassed exactly that way: a new participant is a new counter. So,
+     * first, a newcomer waits: a question to the Oracle is accepted once the
+     * participant token is at least two minutes old. A student comes in at
+     * the bell and asks later; a script comes in and asks in the same second.
+     * Second, the address: however many names there are, the wire is one, and
+     * more than ADDRESS_ASKS a minute from one address does not happen even
+     * for a class behind one NAT: twelve Oracle questions a minute from one
+     * school are no longer questions. Neither applies to the teacher: they
+     * review, and review in a row.
      */
     if (auth.role !== 'host') {
       const age = typeof auth.iat === 'number' ? Date.now() - auth.iat : Infinity
@@ -678,11 +710,11 @@ export function aiRoutes(): Router {
         return res.status(429).json({
           error: tr("server.waitBetweenQuestionsTryAgainIn.f64333", { p0: seconds(gap), p1: seconds(left) }),
           /*
-           * Число, а не только заголовок. Retry-After — для машины, а панели
-           * этим числом ещё и решать, как показать отказ: ожидание — спокойная
-           * строка с обратным отсчётом, а не красная ошибка, которой она
-           * встречает всё остальное. Отличить одно от другого по тексту 429
-           * она не может.
+           * A number, not only the header. Retry-After is for the machine,
+           * while the panel also decides by this number how to show the
+           * refusal: a wait is a calm line with a countdown, not the red error
+           * it meets everything else with. It cannot tell one from the other
+           * by the text of a 429.
            */
           retryAfter: left,
         })
@@ -690,15 +722,17 @@ export function aiRoutes(): Router {
     }
 
     /*
-     * Сколько ответов пишется в комнате прямо сейчас.
+     * How many answers are being written in the room right now.
      *
-     * Стоит последним из отказов и последним по смыслу: это не про расход и не
-     * про спам, а про то, что цикл событий у комнаты один. Считаются и потоки,
-     * и ходы агента — второй дороже, но нагружает то же место.
+     * It comes last among the refusals and last in meaning: it is not about
+     * spending and not about spam, but about the room having one event loop.
+     * Both streams and agent turns count: the latter is more expensive but
+     * loads the same place.
      *
-     * Преподавателя не касается, как и потолки выше: он ведёт занятие, и его
-     * единственный вопрос среди дюжины студенческих ничего не решает — а вот
-     * молчащий посреди разбора оракул решает многое.
+     * It does not apply to the teacher, like the ceilings above: they run the
+     * class, and their single question among a dozen students' decides
+     * nothing, while an Oracle gone silent in the middle of a review decides a
+     * lot.
      */
     const capacity = oracleCapacity(sessionId, auth.role)
     if (capacity) {
@@ -710,25 +744,26 @@ export function aiRoutes(): Router {
     // must say who really asked, not who the client claims to be.
     const participant = getParticipant(sessionId, auth.participantId)
     /*
-     * Строка расхода заводится до вопроса, а не после.
+     * The usage row is created before the question, not after.
      *
-     * Считать при приёме — старое и правильное решение: запрос к провайдеру
-     * уже ушёл, чем бы он ни кончился, и предел, считающий только удачи,
-     * позволял бы бесконечно долбить сломанную ручку. Изменилось одно: строка
-     * теперь возвращает свой номер, и последний кадр потока кладёт на неё
-     * настоящий расход вместо вечного NULL.
+     * Counting on acceptance is an old and correct decision: the request to
+     * the provider has already gone out however it ends, and a limit counting
+     * only successes would let one hammer a broken endpoint forever. One
+     * thing changed: the row now returns its number, and the stream's last
+     * frame puts the real spending on it instead of an eternal NULL.
      */
     const usageId = recordQuestion({
       sessionId,
       participantId: auth.participantId,
       /*
-       * У режима «сделать» своё действие в учёте.
+       * "Act" mode has its own action in the accounting.
        *
-       * Под 'ask' он был неотличим от обычного вопроса, а это самая дорогая
-       * строка в таблице: один ход ходит к модели до двенадцати раз и тащит с
-       * собой файлы. Разбивка в панели — единственное место, где владелец
-       * ключа видит, на что ушёл семестр, и слить туда «спросили» и «сделали»
-       * значит спрятать от него главную статью расхода.
+       * Under 'ask' it was indistinguishable from an ordinary question, and it
+       * is the most expensive row in the table: one turn goes to the model up
+       * to twelve times and drags files along. The breakdown in the panel is
+       * the only place where the key's owner sees what the semester went on,
+       * and merging "asked" and "acted" there would hide the main spending
+       * item from them.
        */
       action: doing ? 'work' : (action ?? 'ask'),
     })
@@ -739,8 +774,9 @@ export function aiRoutes(): Router {
           participantId: auth.participantId,
           participantName: participant?.name ?? 'Someone',
           participantColor: participant?.color ?? colorForId(auth.participantId),
-          // Роль — та, с которой человек действует прямо сейчас, а не та, с
-          // которой он входил: ход правит тетрадь его руками и по его правам.
+          // The role is the one the person acts with right now, not the one
+          // they joined with: the turn edits the notebook with their hands and
+          // by their rights.
           role: auth.role,
           message,
           usageId,
@@ -768,12 +804,12 @@ export function aiRoutes(): Router {
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     /*
-     * 404 до того, как кто-нибудь тронет документ.
+     * A 404 before anybody touches the document.
      *
-     * `cancel` идёт в `docOf`, а тот в `getSessionDoc`, который поднимает
-     * комнату: заводит историю строкой «opened», сеет стартовую тетрадь и
-     * пишет снимок. Для удалённого семинара это воскрешение — по старому
-     * токену, из строки, которой в списке уже нет.
+     * `cancel` goes to `docOf`, and that to `getSessionDoc`, which brings the
+     * room up: it starts the history with an "opened" row, seeds the starter
+     * notebook and writes a snapshot. For a deleted seminar that is a
+     * resurrection, by an old token, from a row no longer on the list.
      */
     if (!getSession(req.params.id)) return res.status(404).json({ error: SESSION_MISSING })
 
@@ -782,22 +818,26 @@ export function aiRoutes(): Router {
       return res.status(400).json({ error: tr("server.entryidIsRequired.a5742a") })
     }
     /*
-     * Свою запись — автор, чужую — преподаватель. Больше никто.
+     * One's own entry by its author, someone else's by the teacher. Nobody
+     * else.
      *
-     * Здесь стояло «останавливать может кто угодно: ничего не разрушает» — и
-     * это неправда ровно для чужой записи. Оборвать чужой ответ — это стереть
-     * работу, которую человек ждёт, а оборвать чужой ход агента — остановить
-     * его посреди правки файлов: половина тетради переписана, половина нет, и
-     * такого состояния никто не просил. Своя запись — другое дело: она твоя, и
-     * пришедший текст остаётся на месте, так что автор останавливает её всегда.
+     * This used to say "anyone may stop: it destroys nothing", and that is
+     * untrue exactly for someone else's entry. Cutting off someone else's
+     * answer means erasing work the person is waiting for, and cutting off
+     * someone else's agent turn means stopping it in the middle of editing
+     * files: half the notebook rewritten, half not, a state nobody asked for.
+     * One's own entry is different: it is yours, and the text that arrived
+     * stays in place, so the author can always stop it.
      *
-     * Преподавателю чужая нужна по-настоящему: разогнавшийся ответ висит на
-     * проекторе у всей комнаты, а спросил его кто-то из зала. Роль — та же, по
-     * которой этот же файл выше решает, кому чинить оракул.
+     * The teacher really needs someone else's: a runaway answer hangs on the
+     * projector for the whole room, and someone in the audience asked it. The
+     * role is the same one by which this file decides above who gets to fix
+     * the Oracle.
      *
-     * Звонок отдельной проверки больше не требует: `actsAfterClass` разрешала
-     * ровно то же — преподавателя всегда, участника до конца пары, — а участник
-     * и до звонка теперь ходит только за своей записью.
+     * The bell no longer needs a separate check: `actsAfterClass` allowed
+     * exactly the same (the teacher always, a participant until the end of
+     * the lesson), and even before the bell a participant now goes only after
+     * their own entry.
      */
     if (auth.role !== 'host' && !askedBy(req.params.id, entryId, auth.participantId)) {
       return res.status(403).json({
@@ -806,12 +846,13 @@ export function aiRoutes(): Router {
       })
     }
     /*
-     * Ход оракула — не поток, и обрывается он иначе: см. agent.stopWork. Обе
-     * остановки зовутся здесь, потому что кнопка на записи одна, но через
-     * запятую их звать нельзя: `cancel` тут же помечает запись законченной, а
-     * ход после «Стоп» ещё дописывает начатый шаг — запись выглядела бы
-     * готовой, и под ней появлялись бы новые строки ленты. Состояние хода
-     * ставит он сам, когда правда закончил.
+     * An Oracle turn is not a stream, and it is cut off differently: see
+     * agent.stopWork. Both stops are called here, because the entry has one
+     * button, but they cannot both be called in a row: `cancel` marks the
+     * entry finished at once, while a turn after "Stop" still finishes the
+     * step it started; the entry would look done, and new feed rows would
+     * appear under it. The turn sets its own state when it has really
+     * finished.
      */
     if (!stopWork(req.params.id, entryId)) cancel(req.params.id, entryId)
     appendActivity(req.params.id, auth.participantId, 'oracle.cancel_requested', { entryId }, auth.role)
@@ -821,34 +862,36 @@ export function aiRoutes(): Router {
   router.delete('/api/sessions/:id/ai/thread', (req, res) => {
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
-    // То же, что и в cancel: clearThread поднимает комнату, а поднимать нечего.
+    // The same as in cancel: clearThread brings the room up, and there is nothing to bring up.
     if (!getSession(req.params.id)) return res.status(404).json({ error: SESSION_MISSING })
     // The thread belongs to the room, so clearing it is the host's call — a
     // student must not be able to wipe what the class asked.
-    // Стирать общее — то же право, что и стереть всю доску: лента вопросов
-    // принадлежит комнате, а не тому, кто спросил последним.
+    // Erasing what is shared is the same right as wiping the whole board: the
+    // question feed belongs to the room, not to whoever asked last.
     if (!allows(getRules(req.params.id).wipe, auth.role)) {
       return res.status(403).json({
-        // После конца занятия `wipe` ужесточается сам (db.getRules), но называть
-        // человеку правило тут уже неверно: он пойдёт искать преподавателя,
-        // который ничего не менял.
+        // After the end of class `wipe` tightens by itself (db.getRules), but
+        // naming the rule to the person is wrong here: they would go looking
+        // for a teacher who changed nothing.
         error: isFinished(req.params.id)
           ? tr(CLASS_IS_OVER)
           : tr("server.onlyTheTeacherCanClearTheShared.684c21"),
       })
     }
     /*
-     * Стереть ленту — это и «остановить».
+     * Erasing the feed also means "stop".
      *
-     * Поток оракула clearThread обрывает сам; ход агента жил дальше и ещё
-     * десяток шагов правил файлы и запускал скрипты — без строки в треде,
-     * которая бы это объяснила, и без кнопки отмены, потому что выставить её
-     * стало некуда. Здесь же, где рядом стоит та же пара для «Стоп».
+     * clearThread cuts off the Oracle stream by itself; an agent turn lived on
+     * and for another dozen steps edited files and ran scripts, with no line
+     * in the thread to explain it and no cancel button, because there was
+     * nowhere left to put one. Hence here, next to the same pair used for
+     * "Stop".
      */
     /*
-     * С именами — вычистить только их записи, без имён — весь тред. Список
-     * приходит от преподавателя, который увидел в ленте сотню одинаковых
-     * «участников» и хочет снять их, не теряя вопросы группы.
+     * With names, purge only their entries; without names, the whole thread.
+     * The list comes from a teacher who saw a hundred identical
+     * "participants" in the feed and wants to remove them without losing the
+     * group's questions.
      */
     const listed: unknown = (req.body as { participantIds?: unknown } | undefined)?.participantIds
     if (Array.isArray(listed)) {

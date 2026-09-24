@@ -1,33 +1,34 @@
 <script lang="ts">
   /**
-   * Заставка приложения: марка по центру и полоска под ней.
+   * The app splash: the mark in the centre and a thin bar under it.
    *
-   * Та же картинка, что рисует `#boot` в `web/index.html`, и это главное её
-   * свойство. Оболочка уходит, а заставка остаётся стоять на её месте — в тех
-   * же координатах, того же размера, с той же анимацией, — так что для
-   * человека это ОДНА непрерывная заставка, а не две сменившие друг друга.
-   * Поэтому числа ниже — копия тамошних, и правятся они парой: в index.html
-   * стоит указатель сюда, здесь — туда.
+   * The same picture that `#boot` draws in `web/index.html`, and that is its
+   * main property. The shell goes away, and the splash stays standing in its
+   * place — at the same coordinates, the same size, with the same animation —
+   * so to a person it is ONE continuous splash, not two that replaced each
+   * other. That is why the numbers below are a copy of the ones there, and they
+   * are edited as a pair: index.html has a pointer here, and this file has one
+   * there.
    *
-   * Почему копия, а не общий файл: `#boot` рисуется до того, как приедет CSS
-   * приложения (лист грузится неблокирующе, см. vite.config.ts), поэтому свои
-   * токены `--boot-*` и своя разметка у него неизбежны. Марка при этом
-   * рисуется одним и тем же набором клеток — здесь через `Icon name="logo"`,
-   * там тем же SVG руками.
+   * Why a copy and not a shared file: `#boot` is drawn before the app's CSS
+   * arrives (the stylesheet loads without blocking, see vite.config.ts), so its
+   * own `--boot-*` tokens and its own markup are unavoidable. The mark,
+   * meanwhile, is drawn from the same set of cells — here through
+   * `Icon name="logo"`, there with the same SVG written by hand.
    *
-   * Заменяет скелет «страницы» и «тетради»: серая вёрстка обещает конкретный
-   * экран и появляется до того, как хоть что-то из него известно, — а
-   * заставка обещает только «идёт загрузка», что и есть правда.
+   * Replaces the "page" and "notebook" skeletons: grey layout promises a
+   * specific screen and appears before anything about that screen is known —
+   * whereas the splash promises only "loading", which is the truth.
    */
   import { tr } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'
 
   interface Props {
     /**
-     * `screen` — вместо целого экрана: ровно там же, где стоял `#boot`.
-     * `pane` — внутри уже нарисованного интерфейса (область тетради в
-     * комнате, тело страницы в читалке): тише и мельче, чтобы не спорить с
-     * тем, что вокруг неё уже есть.
+     * `screen` — in place of the whole screen: exactly where `#boot` stood.
+     * `pane` — inside an interface that is already drawn (the notebook area in
+     * the room, the page body in the reader): quieter and smaller, so as not to
+     * compete with what is already around it.
      */
     size?: 'screen' | 'pane'
     label?: string
@@ -35,15 +36,15 @@
 
   let { size = 'screen', label = tr('common.loading') }: Props = $props()
 
-  // Марка мельче на панели по той же причине, по которой полоска короче:
-  // вложенная заставка не может быть крупнее той, что стоит вместо экрана.
+  // The mark is smaller in a pane for the same reason the bar is shorter: a
+  // nested splash cannot be bigger than the one that stands in for the screen.
   const MARK = { screen: 28, pane: 20 } as const
 </script>
 
 <!--
-  `role="status"` с `aria-busy` — то же, что у `#boot` и у скелетов, которые
-  эта заставка сменила: экран читалки объявляет «Загрузка…» один раз и не
-  поминутно, пока идёт ожидание.
+  `role="status"` with `aria-busy` — the same as on `#boot` and on the skeletons
+  this splash replaced: a screen reader announces "Loading…" once, not every
+  minute while the wait goes on.
 -->
 <div
   class="splash {size}"
@@ -60,10 +61,10 @@
 
 <style>
   /*
-   * ЧИСЛА — КОПИЯ #boot ИЗ web/index.html. Марка 28, полоска 88×2, зазор 16,
-   * появление 0.25s с задержкой 0.25s, пробег 1.1s ease-in-out. Разъехавшись,
-   * они дадут скачок ровно в то мгновение, когда оболочка уходит, — то самое,
-   * ради чего эту заставку и завели.
+   * THE NUMBERS ARE A COPY OF #boot FROM web/index.html. Mark 28, bar 88×2, gap
+   * 16, fade-in 0.25s after a 0.25s delay, sweep 1.1s ease-in-out. Once they
+   * drift apart, they will produce a jump exactly at the moment the shell goes
+   * away — the very thing this splash was introduced to prevent.
    */
   .splash {
     display: flex;
@@ -73,10 +74,10 @@
   }
 
   /*
-   * Экранная — fixed, а не «на всю родительскую коробку»: она обязана встать
-   * в тот же центр окна, что и `#boot`, независимо от того, в какой ветке
-   * разметки её поставили. z-index ниже оболочки (999): пока та не ушла, эта
-   * стоит под ней и её не видно.
+   * The screen splash is fixed, not "the whole parent box": it has to land on
+   * the same centre of the window as `#boot`, no matter which branch of the
+   * markup it was placed in. Its z-index is below the shell's (999): until the
+   * shell is gone, this one stands under it and cannot be seen.
    */
   .screen {
     position: fixed;
@@ -85,9 +86,10 @@
   }
 
   /*
-   * Панельная — обычный блок в потоке. Потолок высоты снизу, чтобы область не
-   * схлопнулась в полоску: 240 px — это примерно первая ячейка тетради, то
-   * есть столько места, сколько всё равно займёт то, что грузится.
+   * The pane splash is an ordinary block in the flow. It has a minimum height
+   * so that the area does not collapse into a strip: 240 px is roughly the
+   * first cell of a notebook, that is, as much space as whatever is loading
+   * will take up anyway.
    */
   .pane {
     width: 100%;
@@ -102,8 +104,8 @@
     gap: 16px;
     color: rgb(var(--ink));
     opacity: 0;
-    /* Загрузка быстрее четверти секунды не должна показывать ничего: мигнувшая
-       заставка читается как заминка, а не как ожидание. */
+    /* A load that is faster than a quarter of a second should show nothing: a
+       splash that blinks reads as a hiccup, not as waiting. */
     animation: splash-in 0.25s ease 0.25s forwards;
   }
   @keyframes splash-in {
@@ -142,8 +144,8 @@
     }
   }
 
-  /* Как в `#boot`: бегущего акцента нет вовсе, остаётся тихая полоса — и
-     появляется она сразу, потому что гасить нечего. */
+  /* As in `#boot`: there is no running accent at all, only a quiet bar
+     remains — and it appears at once, since there is nothing to hold back. */
   @media (prefers-reduced-motion: reduce) {
     .mark {
       animation-delay: 0s;

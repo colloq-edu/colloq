@@ -56,15 +56,15 @@ test('what is stored is always a complete, valid set', () => {
   assert.equal(back.model, null)
 })
 
-test('правила пишутся один раз, при создании, и читаются обратно теми же', () => {
+test('rules are written once, at creation, and read back exactly as written', () => {
   /*
-   * Заголовок здесь был про импорт с GitHub — «маршрут импорта rules не читал,
-   * и „Teacher only“ + „Oracle: off“ давало комнату, где Run доступен всем», —
-   * а тело звало `setRules` и `getRules` напрямую и ту самую регрессию
-   * пропустило бы целиком. Маршрут проверяется маршрутом:
-   * `tests/import-github.test.mts`. Здесь остаётся то, что тело правда
-   * закрепляет: правила ложатся при создании (править после негде) и приезжают
-   * обратно ровно теми, какими легли.
+   * The title here used to be about the GitHub import — "the import route did
+   * not read rules, and 'Teacher only' + 'Oracle: off' gave a room where Run
+   * was open to everyone" — while the body called `setRules` and `getRules`
+   * directly and would have missed that very regression entirely. The route is
+   * tested through the route: `tests/import-github.test.mts`. What stays here
+   * is what the body really pins: rules are laid down at creation (there is
+   * nowhere to edit them afterwards) and come back exactly as they were laid.
    */
   const id = 'rules-import'
   createSession(id, 'Импорт', null)

@@ -1,17 +1,17 @@
 /**
- * Кому лента версий, а кому только смотреть на тетрадь.
+ * Who gets the version feed, and who only gets to look at the notebook.
  *
- * У ленты три двери и два права. Читать её по умолчанию может вся комната —
- * тетрадь общая, и кто что менял, не секрет от тех, при ком это менялось; но
- * семинар, где тетрадь показывают, а не пишут вместе, вправе её закрыть
- * (`history: 'host'`): там лента — черновики преподавателя, которые он не
- * показывал. Возврат версии и чекпоинт преподавательские всегда: первый
- * переписывает то, на что смотрит вся комната, второй ставит метку в общей
- * ленте.
+ * The feed has three doors and two permissions. By default the whole room may
+ * read it — the notebook is shared, and who changed what is no secret from
+ * those present when it changed; but a seminar where the notebook is shown
+ * rather than written together may close it (`history: 'host'`): there the
+ * feed holds the teacher's drafts, which they did not show. Restoring a
+ * version and a checkpoint are always the teacher's: the first rewrites what
+ * the whole room is looking at, the second puts a mark in the shared feed.
  *
- * Проверялся из этого ровно один случай — 404 удалённого семинара, — так что
- * снятая проверка `allows()` не роняла ничего: правило было, а теста на него не
- * было.
+ * Of all this exactly one case was tested — the 404 of a deleted seminar — so
+ * removing the `allows()` check broke nothing: the rule existed, but there was
+ * no test for it.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -46,8 +46,9 @@ before(async () => {
   })
 
   /*
-   * Приложение целиком (server/src/app.ts), а не свой express рядом: копия
-   * порядка middleware расхождений с продуктом не ловит, она их повторяет.
+   * The whole app (server/src/app.ts), not an express of our own next to it:
+   * a copy of the middleware order does not catch discrepancies with the
+   * product, it repeats them.
    */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -61,9 +62,10 @@ after(() => {
 })
 
 /*
- * Роль в токене всегда 'participant': её пересчитывает `sessionAuth` на каждом
- * запросе — по куке штата и по столбцу token_host, а не по тому, что в токене
- * написано. Ведущий здесь — тот, у кого token_host стоит в строке.
+ * The role in the token is always 'participant': `sessionAuth` recomputes it
+ * on every request — from the staff cookie and the token_host column, not
+ * from what the token says. The host here is whoever has token_host set in
+ * their row.
  */
 const bearer = (id: string) => ({
   authorization: `Bearer ${signToken({ sessionId: ROOM, participantId: id, role: 'participant' })}`,
@@ -76,58 +78,59 @@ const ask = (path: string, id: string, method = 'GET', body?: unknown) =>
     body: body ? JSON.stringify(body) : undefined,
   })
 
-test('по умолчанию ленту читает вся комната', async () => {
+test('by default the whole room reads the feed', async () => {
   const res = await ask('/history', 'p_student')
   assert.equal(res.status, 200)
   const body = (await res.json()) as { versions: unknown[] }
   assert.ok(Array.isArray(body.versions))
 })
 
-test("history: 'host' закрывает ленту от участника и оставляет её преподавателю", async () => {
+test("history: 'host' closes the feed to a participant and leaves it to the teacher", async () => {
   setRules(ROOM, readRules({ ...storedRules(ROOM), history: 'host' }))
 
   const student = await ask('/history', 'p_student')
-  assert.equal(student.status, 403, 'черновики преподавателя показали залу')
+  assert.equal(student.status, 403, "the teacher's drafts were shown to the hall")
   const refusal = (await student.json()) as { error?: string }
-  // Отказ словами: «Лента версий в этом семинаре — преподавательская».
+  // A refusal in words: "In this seminar the version feed is the teacher's".
   assert.match(refusal.error ?? '', /может только преподаватель/i)
 
   const teacher = await ask('/history', 'p_teacher')
-  assert.equal(teacher.status, 200, 'правило закрыло ленту и от самого преподавателя')
+  assert.equal(teacher.status, 200, 'the rule closed the feed to the teacher too')
 })
 
-test('возврат версии и чекпоинт участнику закрыты и при открытой ленте', async () => {
+test('restoring a version and a checkpoint stay closed to a participant even with the feed open', async () => {
   setRules(ROOM, readRules({ ...storedRules(ROOM), history: 'everyone' }))
-  // Лента читается — а писать в неё всё равно нельзя.
+  // The feed can be read — but writing to it is still not allowed.
   assert.equal((await ask('/history', 'p_student')).status, 200)
 
   const restored = await ask('/history/1/restore', 'p_student', 'POST', {})
-  assert.equal(restored.status, 403, 'участник вернул версию всей комнате')
+  assert.equal(restored.status, 403, 'a participant restored a version for the whole room')
 
   const marked = await ask('/history/checkpoint', 'p_student', 'POST', { label: 'до упражнения' })
-  assert.equal(marked.status, 403, 'участник поставил метку в общей ленте')
+  assert.equal(marked.status, 403, 'a participant put a mark in the shared feed')
 })
 
-test('чтение ленты не селит тетрадь в памяти и не дописывает строк', async () => {
+test('reading the feed does not settle the notebook in memory and appends no rows', async () => {
   /*
-   * Лента поднимает документ комнаты — без него у семинара, который никто не
-   * открывал с перезапуска, нет базовой строки, и панель показала бы пустой
-   * список для комнаты, полной работы. Но поднятый документ выселялся только
-   * удалением семинара: открыть ленту у двадцати архивных семинаров значило
-   * поселить в памяти двадцать чужих тетрадей с картинками до перезапуска.
+   * The feed brings up the room document — without it a seminar nobody has
+   * opened since the restart has no base row, and the panel would show an
+   * empty list for a room full of work. But a document brought up this way
+   * was evicted only by deleting the seminar: opening the feed of twenty
+   * archived seminars meant settling twenty other notebooks, images and all,
+   * in memory until the restart.
    */
   const first = await ask('/history', 'p_teacher')
   const before = ((await first.json()) as { versions: unknown[] }).versions.length
-  assert.equal(peekSessionDoc(ROOM), null, 'тетрадь осталась в памяти после чтения ленты')
+  assert.equal(peekSessionDoc(ROOM), null, 'the notebook stayed in memory after reading the feed')
 
   await ask('/history', 'p_teacher')
   const again = await ask('/history', 'p_teacher')
   const after = ((await again.json()) as { versions: unknown[] }).versions.length
-  // И каждое чтение не дописывает «открыли семинар» заново.
+  // And each read does not append "seminar opened" again.
   assert.equal(after, before)
 })
 
-test('преподаватель ставит чекпоинт, и он появляется в ленте', async () => {
+test('the teacher sets a checkpoint, and it appears in the feed', async () => {
   const marked = await ask('/history/checkpoint', 'p_teacher', 'POST', { label: 'до упражнения' })
   assert.equal(marked.status, 201)
   const { seq } = (await marked.json()) as { seq: number }
@@ -137,12 +140,12 @@ test('преподаватель ставит чекпоинт, и он появ
     versions: { seq: number; label: string | null; authorName: string | null }[]
   }
   const marked2 = versions.find((v) => v.seq === seq)
-  assert.ok(marked2, 'названный момент не виден в ленте')
+  assert.ok(marked2, 'the named moment is not visible in the feed')
   assert.equal(marked2.label, 'до упражнения')
   /*
-   * Имя автора берётся из одной карты участников на запрос, а не запросом на
-   * строку: четыреста строк ленты — это четыреста синхронных SELECT, а лента
-   * открывается у всей комнаты разом.
+   * The author's name comes from one participant map per request, not from a
+   * query per row: four hundred feed rows are four hundred synchronous
+   * SELECTs, and the feed opens for the whole room at once.
    */
   assert.equal(marked2.authorName, 'Преподаватель')
 })

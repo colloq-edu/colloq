@@ -50,11 +50,12 @@ test('getting started names the Classes list in generated documentation', () => 
 })
 
 /**
- * Словарь CLI переехал в tests/cli-language.test.mts.
+ * The CLI dictionary moved to tests/cli-language.test.mts.
  *
- * Здесь проверка была, пока CLI говорил по-русски: она стерегла, чтобы он
- * говорил «занятие», а не «семинар». Теперь CLI говорит по-английски целиком,
- * и вопрос стал шире — не одно слово, а язык, — поэтому он проверяется рядом с
- * самим языком. Исключение про лист Google-таблицы («Семинары») умерло вместе с
- * русской строкой, в которой оно жило.
+ * The check lived here while the CLI spoke Russian: it made sure the CLI said
+ * "занятие" (class), not "семинар" (seminar). Now the CLI speaks English
+ * throughout, and the question has grown wider — not one word but the whole
+ * language — so it is checked next to the language itself. The exception for
+ * the Google Sheets tab ("Семинары") died together with the Russian string it
+ * lived in.
  */

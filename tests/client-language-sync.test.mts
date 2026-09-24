@@ -27,7 +27,8 @@ async function withClient(run: (client: Client, requests: Pending[]) => Promise<
   const globals = {
     window: win,
     document: doc,
-    // Адрес решает, опрашивать ли сервер: в комнате язык приносит сокет.
+    // The address decides whether to poll the server: in a room the socket
+    // brings the language.
     location: { pathname: path },
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
     fetch: () => new Promise<Response>((resolve, reject) => requests.push({ resolve, reject })),
@@ -77,8 +78,9 @@ test('HTML-supplied language starts a cold app with no settings request at all',
     await settle()
     assert.equal(ready, true, 'initial app still waits for the language round trip')
     assert.equal(document.documentElement.lang, 'en')
-    // Навигационный HTML уже принёс язык инстанса. Спрашивать его ещё раз —
-    // это лишний запрос на пути к первому кадру у каждого входящего.
+    // The navigation HTML already brought the instance language. Asking for it
+    // again is an extra request on the path to the first frame for everyone who
+    // joins.
     assert.deepEqual(requests, [])
     await initial
   }, undefined, 'en')

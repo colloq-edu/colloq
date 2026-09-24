@@ -1,11 +1,12 @@
 <script lang="ts">
   /**
-   * «УСЛОВИЯ ПРОВЕРКИ» — правая колонка P2.
+   * "CHECK CONDITIONS" — the right column of P2.
    *
-   * Шесть пар, и каждая отвечает на вопрос, который иначе задают преподавателю
-   * в чате курса: сколько времени, сколько памяти, есть ли интернет, где
-   * данные, как назвать файл с прогнозами. Числа те же, с которыми запускается
-   * контейнер (`competition.limits`), а не переписанные в макет от руки.
+   * Six pairs, and each answers a question that would otherwise be asked of
+   * the teacher in the course chat: how much time, how much memory, is there
+   * internet, where the data is, what to call the predictions file. The
+   * numbers are the same ones the container is started with
+   * (`competition.limits`), not copied into the mockup by hand.
    */
   import { tr } from '@shared/i18n'
   import type { CompetitionPublic } from '@shared/competitions'

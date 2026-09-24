@@ -46,20 +46,20 @@ import { abortSession } from '../ai/index.js'
 import { appendActivity } from '../activity.js'
 
 /**
- * Происхождение для записи, которую сервер делает от чьего-то имени.
+ * The origin for a write the server makes on someone's behalf.
  *
- * `onBehalfOf(id)` в транзакции — и версия в истории подписана этим человеком,
- * а не «комнатой». Составить такую строку может только код на сервере:
- * обновление от клиента приходит с сокетом в качестве происхождения.
+ * `onBehalfOf(id)` in a transaction — and the version in the history is signed
+ * by that person, not by "the room". Only code on the server can compose such a
+ * string: an update from a client arrives with its socket as the origin.
  */
 const BEHALF_PREFIX = 'on-behalf:'
 
 /**
- * Записать в документ комнаты от имени человека, а не от имени сервера.
+ * Write into the room's document on behalf of a person, not of the server.
  *
- * Вложенная `doc.transact` присоединяется к внешней, и происхождение остаётся
- * внешним — поэтому обёртка работает даже вокруг кода, который заводит свою
- * транзакцию сам (а `acceptPatch` именно такой).
+ * A nested `doc.transact` joins the outer one, and the origin stays the outer
+ * one — so the wrapper works even around code that opens its own transaction
+ * (and `acceptPatch` is exactly that).
  */
 export function applyOnBehalf(sessionId: string, participantId: string, write: () => void): void {
   const { doc } = getSessionDoc(sessionId)
@@ -100,11 +100,12 @@ export interface SessionDoc {
 const ORIGIN = 'server'
 
 /**
- * Эту ячейку завела вот эта транзакция?
+ * Did this transaction create this cell?
  *
- * Так спрашивает и сам Yjs: у структуры, появившейся в транзакции, такт не ниже
- * того, на котором её клиент стоял до начала. Нужно там, где из двух одинаковых
- * имён надо выбрать пришедшее, а не то, что уже жило в тетради.
+ * That is how Yjs itself asks: a structure that appeared in a transaction has a
+ * clock no lower than the one its client stood at before the start. Needed
+ * where, of two identical names, the one that arrived must be chosen, not the
+ * one that already lived in the notebook.
  */
 function madeIn(transaction: Y.Transaction, cell: YCell): boolean {
   const item = cell._item
@@ -113,13 +114,14 @@ function madeIn(transaction: Y.Transaction, cell: YCell): boolean {
 }
 
 /**
- * Ячейки, в которых прямо сейчас стоят курсоры, — по присутствию.
+ * Cells that have cursors in them right now — by presence.
  *
- * Нужно перестановке ячеек: клон уносит с собой нажатия, ушедшие в старый
- * `Y.Text` за круг до сервера, и выбирать, кого пересоздавать, лучше зная, где
- * кто стоит. В `ops.ts` попадает регистрацией, а не импортом, чтобы тот остался
- * модулем без сокетов и базы; возврат версии (`history.ts · reorder`) пересобирает
- * клонами весь лист и вправе спросить о том же.
+ * Needed by cell rearrangement: a clone takes away the keystrokes that went
+ * into the old `Y.Text` one round trip before the server, and choosing whom to
+ * recreate is better done knowing who stands where. It reaches `ops.ts` by
+ * registration, not by import, so that module stays free of sockets and the
+ * database; a version restore (`history.ts · reorder`) rebuilds the whole sheet
+ * with clones and has the right to ask the same.
  */
 export function cellsWithCarets(doc: Y.Doc): ReadonlySet<string> {
   const busy = new Set<string>()
@@ -149,7 +151,7 @@ interface ConnState {
   participantId: string | null
   /** Awareness clientIDs this socket introduced, so we can retract exactly those. */
   clientIds: Set<number>
-  /** Сколько пингов подряд остались без ответа; сердцебиение — на комнату. */
+  /** How many pings in a row went unanswered; the heartbeat is per room. */
   missedPongs: number
   /**
    * The role the token carried. The document is shared and every field in it is
@@ -159,14 +161,15 @@ interface ConnState {
    */
   role: ParticipantRole
   /**
-   * Когда открылся этот сокет.
+   * When this socket opened.
    *
-   * Комната знает про себя «сколько людей сейчас», но не знает «с какого
-   * момента идёт то, что идёт»: строка семинара помнит только час создания, а
-   * заводят его за неделю до пары и переиспользуют на второй. Из-за этого
-   * панель писала «Running now · started 6 days ago» про занятие, начавшееся
-   * двадцать минут назад. Часы занятия — это самый старый из открытых сейчас
-   * сокетов (см. liveSince), и других у сервера нет.
+   * The room knows about itself "how many people right now", but not "since
+   * when what is going on has been going on": the seminar row remembers only
+   * its creation time, and a seminar is created a week before the class and
+   * reused for the next one. Because of that the panel said "Running now ·
+   * started 6 days ago" about a class that started twenty minutes ago. The
+   * class clock is the oldest of the sockets open right now (see liveSince),
+   * and the server has no other.
    */
   openedAt: number
   /** Shared across one person's overlapping tabs; survives closing their first tab. */
@@ -175,16 +178,16 @@ interface ConnState {
 
 interface DocEntry extends SessionDoc {
   conns: Map<WebSocket, ConnState>
-  /** Снять наблюдение за тетрадями и отпустить запись на диск, дописав её. */
+  /** Stop watching the notebooks and release the disk binding, flushing it first. */
   dispose: () => void
-  /** Только снять наблюдение за тетрадями — для удаления семинара, где писать некуда. */
+  /** Only stop watching notebooks — for seminar deletion, when there is nowhere to write. */
   unwatch: () => void
   /**
-   * Кадры, ещё не уехавшие в комнату, — см. `scheduleFlush` и `scheduleFaces`.
+   * Frames not yet sent to the room — see `scheduleFlush` and `scheduleFaces`.
    *
-   * Правки склеиваются на такт, присутствие — на окно (`FACES_WINDOW_MS`), и
-   * очереди у них поэтому разные. Кадр присутствия едет всем, отправителю
-   * тоже — почему, см. `sendAwareness`.
+   * Edits are coalesced per tick, presence per window (`FACES_WINDOW_MS`), and
+   * so they have different queues. A presence frame goes to everyone, the
+   * sender included — for why, see `sendAwareness`.
    */
   outbox: {
     updates: Uint8Array[]
@@ -193,27 +196,28 @@ interface DocEntry extends SessionDoc {
     facesTimer: NodeJS.Timeout | null
   }
   /**
-   * Ответ ХОЛОДНОЙ вкладке — весь документ одним кадром, собранным один раз.
+   * The answer to a COLD tab — the whole document in one frame, built once.
    *
-   * Байты у всех холодных одинаковые (`encodeStateAsUpdate` от пустого вектора
-   * состояния), а стоят они мегабайта кодирования на каждого. Пятьсот вкладок
-   * после перезапуска сервера возвращаются за секунду — это один и тот же
-   * снимок, собранный пятьсот раз. Обнуляется любой правкой документа.
+   * The bytes are the same for every cold tab (`encodeStateAsUpdate` from an
+   * empty state vector), and they cost a megabyte of encoding for each one.
+   * Five hundred tabs come back within a second after a server restart — that
+   * is one and the same snapshot built five hundred times. Reset by any edit of
+   * the document.
    */
   coldFrame: Uint8Array | null
-  /** Полный список лиц для входящего — тоже один на всех, пока никто не шевелится. */
+  /** The full list of faces for a newcomer — also one for all while nobody moves. */
   welcomeFaces: Uint8Array | null
-  /** Сердцебиение всей комнаты: один таймер на сокеты, а не таймер на сокет. */
+  /** The whole room's heartbeat: one timer for the sockets, not a timer per socket. */
   pingTimer: NodeJS.Timeout | null
-  /** С какого момента в комнате нет ни одного сокета; 0 — есть. */
+  /** Since when the room has had no sockets at all; 0 means it has some. */
   emptySince: number
   /**
-   * Сколько сокетов закрыто отставанием с прошлой строки в журнале.
+   * How many sockets were closed for lagging since the last log line.
    *
-   * Отставший сокет закрывается, браузер подключается заново, снова не
-   * успевает — и так по кругу: в журнале живой комнаты это была одинаковая
-   * строка раз в минуту, по которой не видно ни того, что она про РАЗНЫЕ
-   * сокеты, ни того, сколько их. Считаем и говорим числом.
+   * A lagging socket is closed, the browser reconnects, lags again — and so on
+   * in a circle: in a live room's log this was the same line once a minute,
+   * from which one could see neither that it was about DIFFERENT sockets nor
+   * how many of them there were. We count and say it as a number.
    */
   lagDrops: number
 }
@@ -231,70 +235,71 @@ function toUint8Array(data: RawData): Uint8Array {
 }
 
 /**
- * Сколько байт может ждать отправки на одном сокете, прежде чем ему перестают
- * слать курсоры, — и сколько, прежде чем его считают безнадёжным.
+ * How many bytes may wait to be sent on one socket before it stops being sent
+ * cursors — and how many before it is considered hopeless.
  *
- * `ws.send` не спрашивает, успевает ли сеть: он складывает кадр в очередь
- * сокета и возвращается. `plt.imshow` при dpi=200 — мегабайт-другой в одном
- * обновлении, и на пятистах слушателях с аудиторным аплинком это гигабайт,
- * который сервер держит в памяти по копии на сокет, пока картинка ползёт к
- * телефону на краю сети. Каждое следующее нажатие в комнате встаёт в эту
- * очередь ЗА картинкой — у всех.
+ * `ws.send` does not ask whether the network keeps up: it puts the frame into
+ * the socket's queue and returns. `plt.imshow` at dpi=200 is a megabyte or two
+ * in one update, and with five hundred listeners on a lecture-hall uplink that
+ * is a gigabyte the server holds in memory, a copy per socket, while the image
+ * crawls to a phone at the edge of the network. Every following keystroke in
+ * the room queues up BEHIND the image — for everyone.
  *
- * Поэтому две черты. За первой перестают ехать кадры присутствия: курсор —
- * единственное, что можно не досылать без последствий (следующее движение
- * объявит положение заново). За второй сокет закрывается: он всё равно
- * получает вчерашнюю комнату, а браузер переподключится через секунду и
- * соберёт состояние заново одним шагом синхронизации — дешевле, чем мегабайты
- * в памяти сервера.
+ * Hence two lines. Beyond the first, presence frames stop going out: a cursor
+ * is the only thing that can be left undelivered without consequences (the
+ * next movement will announce the position anew). Beyond the second, the
+ * socket is closed: it gets yesterday's room anyway, and the browser will
+ * reconnect in a second and rebuild the state in one sync step — cheaper than
+ * megabytes in the server's memory.
  */
 const AWARENESS_STALL_BYTES = 1024 * 1024
-/** Как редко комната жалуется на отставшие сокеты. Считает их всё это время. */
+/** How rarely a room complains about lagging sockets. It counts them all the while. */
 const LAG_QUIET_MS = 10 * 60_000
 const HOPELESS_BYTES = 8 * 1024 * 1024
 
 /**
- * Потолок кадра, выше которого сжатие не окупается.
+ * The frame size above which compression does not pay off.
  *
- * `perMessageDeflate` (server/src/index.ts) работает НА СОКЕТ: у ws свой
- * `PerMessageDeflate` на соединение, поэтому один двухмегабайтный кадр вывода —
- * это пятьсот независимых заданий zlib по два мегабайта через общий лимитер на
- * десять потоков, то есть секунды процессорного времени и пятьсот сжатых копий
- * в памяти на одну картинку.
+ * `perMessageDeflate` (server/src/index.ts) works PER SOCKET: ws has its own
+ * `PerMessageDeflate` per connection, so one two-megabyte output frame is five
+ * hundred independent zlib jobs of two megabytes each through a shared limiter
+ * of ten threads, that is, seconds of CPU time and five hundred compressed
+ * copies in memory for one image.
  *
- * `threshold` в настройке сервера этого не лечит: он НИЖНЯЯ граница («мельче —
- * не сжимать»), и поднять его значит перестать сжимать ровно то, ради чего
- * сжатие заведено, — первые шаги синхронизации в десятки килобайт. Верхняя
- * граница живёт здесь, где виден размер кадра.
+ * `threshold` in the server settings does not cure this: it is the LOWER bound
+ * ("smaller — do not compress"), and raising it means no longer compressing
+ * exactly what compression was set up for — the first sync steps of tens of
+ * kilobytes. The upper bound lives here, where the frame size is visible.
  *
- * Четверть мегабайта: текстовый вывод и дерево такого размера жмутся в разы и
- * стоят миллисекунды, а всё, что крупнее, — это data-вывод (картинка, PDF) в
- * base64, то есть уже сжатые байты, из которых deflate вернёт четверть объёма
- * за куда большую цену.
+ * A quarter of a megabyte: text output and a tree of that size compress several
+ * times and cost milliseconds, while everything larger is data output (an
+ * image, a PDF) in base64, that is, already compressed bytes, from which
+ * deflate will win back a quarter of the volume at a much higher price.
  */
 const MAX_DEFLATE_BYTES = 256 * 1024
 
 /**
- * Кадр, который несёт документ ЦЕЛИКОМ, — исключение из потолка.
+ * A frame carrying the WHOLE document is an exception to the ceiling.
  *
- * Потолок написан про вывод ядра: картинка в base64 уже сжата, и deflate
- * платит за неё секундами процессора ради четверти объёма. Первая
- * синхронизация устроена наоборот — это структуры Yjs и текст ячеек, то есть
- * самые сжимаемые байты, какие бывают на этом проводе. Замер на живой паре:
- * ответ холодной вкладке 1 065 985 Б, тот же ответ через deflate сервера
- * (level 4, windowBits 13) — 360 985 Б, втрое меньше.
+ * The ceiling is written about kernel output: an image in base64 is already
+ * compressed, and deflate pays seconds of CPU for it to win a quarter of the
+ * volume. The first sync is the opposite — Yjs structures and cell text, that
+ * is, the most compressible bytes there are on this wire. Measured in a live
+ * class: the answer to a cold tab was 1 065 985 B, the same answer through the
+ * server's deflate (level 4, windowBits 13) 360 985 B, three times smaller.
  *
- * Без этой пометки потолок отменял сжатие ровно там, где оно окупается: пятьсот
- * вкладок, вернувшихся после перезапуска, — это полгигабайта в аудиторный
- * аплинк вместо ста восьмидесяти мегабайт.
+ * Without this mark the ceiling cancelled compression exactly where it pays
+ * off: five hundred tabs coming back after a restart are half a gigabyte into
+ * the lecture-hall uplink instead of a hundred and eighty megabytes.
  */
 function send(
   entry: DocEntry,
   conn: WebSocket,
   message: Uint8Array,
   /**
-   * Присутствие можно пропустить; правки — нет, они и есть документ.
-   * `state` — кадр целого документа или целого присутствия: жать всегда.
+   * Presence can be skipped; edits cannot, they are the document.
+   * `state` is a frame of the whole document or the whole presence: always
+   * compress.
    */
   kind: 'sync' | 'state' | 'awareness' = 'sync',
 ): void {
@@ -305,22 +310,22 @@ function send(
   const waiting = conn.bufferedAmount
   if (waiting > HOPELESS_BYTES) {
     /*
-     * Строка в журнале — про КРУГ, а не про сокет.
+     * The log line is about the CIRCLE, not the socket.
      *
-     * Сокет здесь закрывается один раз и больше не возвращается: возвращается
-     * браузер, и если документ комнаты не пролезает в канал вовсе, он
-     * возвращается каждые несколько секунд. В журнале живой комнаты это
-     * выглядело одной и той же строкой раз в минуту — по ней не прочесть ни
-     * что сокеты разные, ни сколько их. Поэтому раз в десять минут и числом:
-     * «закрыт 87-й» читается как «комната не доезжает», а не как «моргнула
-     * сеть».
+     * The socket is closed here once and never comes back: the browser comes
+     * back, and if the room's document does not fit through the channel at
+     * all, it comes back every few seconds. In a live room's log this looked
+     * like one and the same line once a minute — from which one could read
+     * neither that the sockets are different nor how many there are. Hence
+     * once every ten minutes and as a number: "the 87th closed" reads as "the
+     * room does not get through", not as "the network blinked".
      */
     entry.lagDrops += 1
     if (seldom(`collab-backpressure-${entry.sessionId}`, LAG_QUIET_MS)) {
-      const again = entry.lagDrops > 1 ? ` (таких за последние минуты: ${entry.lagDrops})` : ''
+      const again = entry.lagDrops > 1 ? ` (such drops in the last minutes: ${entry.lagDrops})` : ''
       console.warn(
-        `[collab ${entry.sessionId}] сокет отстал на ${Math.round(waiting / 1024)} КБ — закрыт, ` +
-          `браузер соберёт документ заново${again}`,
+        `[collab ${entry.sessionId}] socket fell ${Math.round(waiting / 1024)} KB behind — closed, ` +
+          `the browser will rebuild the document${again}`,
       )
       entry.lagDrops = 0
     }
@@ -347,8 +352,8 @@ function closeConn(entry: DocEntry, conn: WebSocket): void {
       reason: 'disconnected', durationMs: Math.max(0, Date.now() - state.presenceStartedAt),
     }, state.role)
   }
-  // Ушёл последний — с этой секунды комната пустая, и отсчёт до выселения
-  // (см. `sweepIdleRooms`) идёт отсюда.
+  // The last one left — from this second the room is empty, and the countdown
+  // to eviction (see `sweepIdleRooms`) starts from here.
   if (entry.conns.size === 0) {
     entry.emptySince = Date.now()
     stopHeartbeat(entry)
@@ -363,23 +368,24 @@ function closeConn(entry: DocEntry, conn: WebSocket): void {
 }
 
 /**
- * Сердцебиение — одно на комнату, а не на сокет.
+ * The heartbeat — one per room, not per socket.
  *
- * Таймер на сокет выглядел честно: у каждого своя фаза, каждый сам за себя. Но
- * пятьсот `setInterval` — это пятьсот записей в куче таймеров Node, пятьсот
- * замыканий и пятьсот пробуждений цикла событий врассыпную на каждые двадцать
- * пять секунд; на десяти идущих парах — пять тысяч. Один обход карты сокетов
- * делает ровно то же самое и просыпается раз на комнату.
+ * A timer per socket looked honest: everyone has their own phase, everyone for
+ * themselves. But five hundred `setInterval`s are five hundred entries in
+ * Node's timer heap, five hundred closures and five hundred scattered event
+ * loop wake-ups every twenty-five seconds; with ten classes running, five
+ * thousand. One walk over the socket map does exactly the same and wakes up
+ * once per room.
  *
- * Что здесь остаётся прежним до буквы: частота (`PING_INTERVAL_MS`), счётчик
- * пропущенных ответов у КАЖДОГО сокета и закрытие на втором пропуске. Меняется
- * одна вещь — фаза: вошедший получает первый пинг вместе с комнатой, а не через
- * двадцать пять секунд после себя.
+ * What stays the same here to the letter: the frequency (`PING_INTERVAL_MS`),
+ * the missed-answer counter of EACH socket and closing on the second miss. One
+ * thing changes — the phase: a newcomer gets their first ping together with
+ * the room, not twenty-five seconds after joining.
  */
 function startHeartbeat(entry: DocEntry): void {
   if (entry.pingTimer) return
   entry.pingTimer = setInterval(() => {
-    // Снимок: `closeConn` изнутри цикла вынимает сокет из той самой карты.
+    // A snapshot: `closeConn` inside the loop takes the socket out of that very map.
     for (const [conn, state] of Array.from(entry.conns)) {
       if (state.missedPongs >= MAX_MISSED_PONGS) {
         closeConn(entry, conn)
@@ -410,31 +416,31 @@ function syncFrame(update: Uint8Array): Uint8Array {
 }
 
 /**
- * Рассылка правок комнате — одним кадром за тик цикла событий, а не кадром на
- * нажатие. Присутствие едет своей дорогой, см. `scheduleFaces`.
+ * Broadcasting edits to the room — one frame per event loop tick, not a frame
+ * per keystroke. Presence goes its own way, see `scheduleFaces`.
  *
- * Считать так. Одно нажатие — это одно обновление документа И один кадр
- * присутствия (`yCollab` объявляет положение курсора на каждое движение
- * выделения). Без склейки комната из пятисот человек получает на него две
- * тысячи `ws.send`, каждый со своим `deflate`; двадцать печатающих по пять
- * нажатий в секунду — двести тысяч отправок в секунду, и цикл событий занят
- * только ими.
+ * Count it like this. One keystroke is one document update AND one presence
+ * frame (`yCollab` announces the cursor position on every selection move).
+ * Without coalescing, a room of five hundred people gets two thousand
+ * `ws.send`s for it, each with its own `deflate`; twenty people typing five
+ * keystrokes a second make two hundred thousand sends a second, and the event
+ * loop is busy with nothing else.
  *
- * `setImmediate` выбран не «на глазок»: он срабатывает после того, как Node
- * разобрал ВСЕ кадры, пришедшие в текущем цикле опроса сокетов. То есть
- * задержка ровно нулевая для одинокого нажатия (тик и так закончится сейчас) и
- * тем больше склеивает, чем больше нагрузка, — а это и есть то, что нужно.
+ * `setImmediate` was not chosen "by eye": it fires after Node has parsed ALL
+ * the frames that arrived in the current socket poll cycle. That is, the delay
+ * is exactly zero for a lone keystroke (the tick is ending now anyway), and it
+ * coalesces more the greater the load — which is exactly what is needed.
  */
 function scheduleFlush(entry: DocEntry): void {
   if (entry.outbox.queued) return
   entry.outbox.queued = true
   setImmediate(() => {
     /*
-     * Своё исключение — только своей комнате.
+     * Its own exception — only for its own room.
      *
-     * Это `setImmediate`, а не обработчик сокета: брошенное отсюда не ловит
-     * никто, и одна не собравшаяся рассылка унесла бы процесс вместе со всеми
-     * остальными комнатами.
+     * This is `setImmediate`, not a socket handler: nobody catches what is
+     * thrown from here, and one broadcast that failed to assemble would take
+     * down the process along with all the other rooms.
      */
     try {
       flushRoom(entry)
@@ -446,20 +452,21 @@ function scheduleFlush(entry: DocEntry): void {
 }
 
 /**
- * Окно присутствия: четверть секунды на комнату, а не такт на движение.
+ * The presence window: a quarter of a second per room, not a tick per movement.
  *
- * Присутствие — единственный поток, который течёт в МОЛЧАЩЕЙ комнате.
- * `y-protocols` объявляет состояние заново каждые пятнадцать секунд
- * (`outdatedTimeout / 2`), даже если человек просто смотрит в экран: иначе
- * соседи вычеркнут его через тридцать. Пятьсот вкладок — это тридцать три
- * объявления в секунду, и на такте каждое становится пятьюстами отправками:
- * замер стенда — 16 578 кадров/с и 2.3 МБ/с в комнате, где никто ничего не
- * делает.
+ * Presence is the only stream that flows in a SILENT room. `y-protocols`
+ * announces the state anew every fifteen seconds (`outdatedTimeout / 2`), even
+ * if the person is just looking at the screen: otherwise the neighbours would
+ * strike them out after thirty. Five hundred tabs are thirty-three
+ * announcements a second, and per tick each becomes five hundred sends: a
+ * test-harness measurement gave 16 578 frames/s and 2.3 MB/s in a room where
+ * nobody does anything.
  *
- * Окно этого не отменяет, оно склеивает: за 200 мс накапливаются все лица, что
- * шевельнулись, и уезжает ОДИН кадр на получателя. Продление жизни при этом не
- * теряется — тридцатисекундный потолок `y-protocols` больше окна в полтораста
- * раз, — а движение курсора отстаёт на те же 200 мс, чего глазу не видно.
+ * The window does not cancel this, it coalesces: over 200 ms all the faces
+ * that moved accumulate, and ONE frame per recipient goes out. The keep-alive
+ * is not lost — the thirty-second limit of `y-protocols` is a hundred and fifty
+ * times the window — and cursor movement lags by the same 200 ms, which the
+ * eye does not see.
  */
 export const FACES_WINDOW_MS = 200
 
@@ -467,7 +474,7 @@ function scheduleFaces(entry: DocEntry): void {
   if (entry.outbox.facesTimer) return
   const timer = setTimeout(() => {
     entry.outbox.facesTimer = null
-    /* Своё исключение — только своей комнате; см. `scheduleFlush`. */
+    /* Its own exception — only for its own room; see `scheduleFlush`. */
     try {
       flushFaces(entry)
     } catch (err) {
@@ -475,13 +482,13 @@ function scheduleFaces(entry: DocEntry): void {
       entry.outbox.faces.clear()
     }
   }, FACES_WINDOW_MS)
-  // Курсоры не повод держать процесс живым: этот модуль импортируют и тесты, и
-  // одноразовые скрипты.
+  // Cursors are no reason to keep the process alive: this module is imported
+  // by tests and by one-off scripts.
   timer.unref?.()
   entry.outbox.facesTimer = timer
 }
 
-/** Окно закрыть, ничего не рассылая: комнату уносят из памяти. */
+/** Close the window without broadcasting anything: the room is leaving memory. */
 function stopFaces(entry: DocEntry): void {
   if (entry.outbox.facesTimer) clearTimeout(entry.outbox.facesTimer)
   entry.outbox.facesTimer = null
@@ -491,9 +498,10 @@ function stopFaces(entry: DocEntry): void {
 function flushRoom(entry: DocEntry): void {
   entry.outbox.queued = false
   /*
-   * Некому — значит и кодировать нечего. Ядро дописывает вывод и в комнату, из
-   * которой все вышли (за результатом вернутся), и склейка кадра для нуля
-   * слушателей — это `mergeUpdates` целого всплеска впустую.
+   * Nobody to send to — so nothing to encode. The kernel appends output even
+   * into a room everyone has left (they will come back for the result), and
+   * assembling a frame for zero listeners is a `mergeUpdates` of a whole burst
+   * for nothing.
    */
   if (entry.conns.size === 0) {
     entry.outbox.updates = []
@@ -522,9 +530,9 @@ function sendUpdates(entry: DocEntry, batch: Uint8Array[]): void {
     merged = mergeOf(batch)
   } catch (err) {
     /*
-     * Склейка — это ускорение, а не протокол. Если `mergeUpdates` почему-то не
-     * справился, комната обязана получить свои правки, пусть и по одной: иначе
-     * оптимизация превращается в молчание, которое никто не заметит.
+     * Coalescing is a speed-up, not the protocol. If `mergeUpdates` failed for
+     * some reason, the room must still get its edits, even one by one:
+     * otherwise the optimization turns into a silence nobody will notice.
      */
     console.error(`[collab] could not merge updates for ${entry.sessionId}`, err)
     for (const item of batch) {
@@ -534,22 +542,22 @@ function sendUpdates(entry: DocEntry, batch: Uint8Array[]): void {
     return
   }
   /*
-   * Один кадр на всю комнату — авторам в том числе.
+   * One frame for the whole room — authors included.
    *
-   * Раньше автору вычиталось своё: на каждый приславший сокет батч склеивался
-   * заново (`mergeUpdates` по всему всплеску минус его правки). Это выглядело
-   * бережно, а стоило квадрата. Замер на стенде (tests/collab-fanout):
-   * один автор — 0.01 мс на рассылку, сто — 15.75 мс, пятьсот — 1403 мс. То
-   * есть в секунду, когда полкурса печатает одновременно, цикл событий занят
-   * склейками, а не комнатой. И платится это за байты, которые получатель уже
-   * имеет.
+   * The author used to have their own edits subtracted: for every sending
+   * socket the batch was merged anew (`mergeUpdates` over the whole burst minus
+   * their edits). This looked careful but cost a square. A test-harness
+   * measurement (tests/collab-fanout): one author — 0.01 ms per broadcast, a
+   * hundred — 15.75 ms, five hundred — 1403 ms. That is, in a second when half
+   * the course types at once, the event loop is busy with merging, not with the
+   * room. And this is paid for bytes the recipient already has.
    *
-   * Слать своё обратно безопасно, и это свойство протокола, а не надежда.
-   * Применение обновления, все структуры которого уже стоят, в Yjs —
-   * бездействие: транзакция не меняет ни документа, ни набора удалений, и
-   * события `update` из неё не выходит. А `WebsocketProvider` у себя
-   * ретранслирует только обновления, чьё происхождение — не он сам, так что
-   * эхо не возвращается на сервер даже теоретически.
+   * Sending one's own back is safe, and that is a property of the protocol, not
+   * a hope. Applying an update all of whose structures are already in place is
+   * a no-op in Yjs: the transaction changes neither the document nor the
+   * delete set, and no `update` event comes out of it. And `WebsocketProvider`
+   * relays only updates whose origin is not itself, so the echo does not come
+   * back to the server even in theory.
    */
   const whole = syncFrame(merged)
   for (const conn of entry.conns.keys()) send(entry, conn, whole)
@@ -564,17 +572,19 @@ function sendAwareness(entry: DocEntry, clients: number[]): void {
   )
   const message = encoding.toUint8Array(encoder)
   /*
-   * Один кадр на всех — отправителю в том числе, и это не небрежность.
+   * One frame for everyone — the sender included, and this is not
+   * carelessness.
    *
-   * Вкладка-клиент (`WebsocketProvider`) закрывает сокет сама, если тридцать
-   * секунд не получала от сервера ни одного сообщения: протокольные пинги
-   * браузеру не видны, и единственное, на что она рассчитывает в молчащей
-   * комнате, — эхо собственного «я ещё здесь», которое присутствие шлёт раз в
-   * пятнадцать секунд. Пока эхо вычиталось (12.09.2026, «своё лицо обратно
-   * не едет»), одинокая вкладка рвала и поднимала соединение каждые
-   * тридцать секунд — «[room …] opened» в журнале шло метрономом, а в шапке
-   * мигало «Восстанавливаем связь». Полсотни байт раз в пятнадцать секунд
-   * дешевле: `applyAwarenessUpdate` состояние со своим же тактом пропускает.
+   * A client tab (`WebsocketProvider`) closes the socket itself if it has not
+   * received a single message from the server for thirty seconds: protocol
+   * pings are invisible to the browser, and the only thing it can count on in a
+   * silent room is the echo of its own "I am still here", which presence sends
+   * every fifteen seconds. While the echo was subtracted (12 Sep 2026, "one's
+   * own face does not travel back"), a lonely tab tore down and brought up the
+   * connection every thirty seconds — "[room …] opened" in the log went like a
+   * metronome, and "Reconnecting" blinked in the header. Fifty bytes every
+   * fifteen seconds are cheaper: `applyAwarenessUpdate` skips a state with its
+   * own clock.
    */
   for (const conn of entry.conns.keys()) send(entry, conn, message, 'awareness')
 }
@@ -592,17 +602,18 @@ export function getSessionDoc(sessionId: string, title?: string): SessionDoc {
 }
 
 /**
- * Документ комнаты, если он уже открыт, — и `null`, если нет.
+ * The room's document if it is already open — and `null` if not.
  *
- * Отличается от `getSessionDoc` ровно тем, что НЕ заводит его. Разница
- * оказалась не косметической: отложенная работа, доехавшая после закрытия
- * комнаты — запись файла тетради, уборка за удалённым файлом, — звала
- * `getSessionDoc`, тот честно строил комнату заново из снимка, новая комната
- * заводила себе таймеры, и следующая отложенная работа строила её опять.
- * Процесс переставал завершаться, а удалённая комната возвращалась в память.
+ * It differs from `getSessionDoc` exactly in that it does NOT create it. The
+ * difference turned out to be not cosmetic: deferred work that arrived after
+ * the room was closed — writing a notebook file, cleaning up after a deleted
+ * file — called `getSessionDoc`, which honestly built the room again from the
+ * snapshot, the new room set up timers for itself, and the next deferred work
+ * built it again. The process stopped exiting, and a deleted room came back
+ * into memory.
  *
- * Правило простое: заводить документ имеет право только то, что делает человек.
- * Всё, что доезжает само, обязано спрашивать так.
+ * The rule is simple: only what a person does has the right to create a
+ * document. Everything that arrives by itself must ask this way.
  */
 export function peekSessionDoc(sessionId: string): SessionDoc | null {
   return docs.get(sessionId) ?? null
@@ -628,18 +639,19 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     coldFrame: null,
     welcomeFaces: null,
     pingTimer: null,
-    // Комната заводится не только человеком (ядро, оракул, маршрут истории), и
-    // пустой она с этой секунды: отсчёт до выселения идёт от рождения.
+    // A room is created not only by a person (the kernel, the oracle, the
+    // history route), and it is empty from this second: the countdown to
+    // eviction starts from birth.
     emptySince: Date.now(),
     lagDrops: 0,
   }
   docs.set(sessionId, entry)
   if (dropPending(sessionId, doc)) invalidateSnapshot(sessionId)
   /*
-   * Файлы тетрадей — сразу после того, как документ попал в реестр, и до
-   * засева: наблюдатель должен увидеть засев обычной правкой, а `watchBooks`
-   * зовёт `getSessionDoc` изнутри и нашёл бы полупостроенную комнату, встань он
-   * строкой выше.
+   * Notebook files — right after the document got into the registry, and
+   * before seeding: the watcher must see the seeding as an ordinary edit, and
+   * `watchBooks` calls `getSessionDoc` from inside and would find a half-built
+   * room if it stood a line higher.
    */
   const unwatchBooks = watchBooks(sessionId, doc)
   const closeBinding = entry.dispose
@@ -681,43 +693,46 @@ function getEntry(sessionId: string, title?: string): DocEntry {
   }
 
   /*
-   * История начинается ПОСЛЕ засева, и это не мелочь порядка.
+   * History starts AFTER seeding, and that is not a trifle of ordering.
    *
-   * Стояло раньше — с комментарием, обещавшим ровно обратное: «новая комната
-   * записывает свои стартовые ячейки первой версией». Не записывала. Слепок
-   * снимался с пустого документа (две байты), засев происходил следом и в
-   * историю не попадал вовсе — наблюдатель `doc.on('update')` вешается ещё
-   * ниже. Дальше каждая строка была дельтой к документу, которого история
-   * никогда не видела: Yjs складывал их в pending, и ЛЮБАЯ версия
-   * разворачивалась в пустую тетрадь. Молча — вкладка «История» показывала
-   * ноль ячеек и не жаловалась.
+   * It used to stand earlier — with a comment promising exactly the opposite:
+   * "a new room records its starter cells as its first version". It did not.
+   * The cast was taken from an empty document (two bytes), the seeding
+   * happened right after and never got into the history — the
+   * `doc.on('update')` observer is hung even lower. After that every row was a
+   * delta to a document the history had never seen: Yjs put them into pending,
+   * and ANY version unfolded into an empty notebook. Silently — the "History"
+   * tab showed zero cells and did not complain.
    *
-   * Проверено на живой базе: у семинара с двадцатью одной строкой все
-   * двадцать одна давали ноль ячеек.
+   * Checked on a live database: for a seminar with twenty-one rows, all
+   * twenty-one gave zero cells.
    *
-   * И ПОСЛЕ уборки протухшего запуска — по той же причине, с другого конца.
-   * Между базовой точкой и подпиской `record()` строкой ниже документ обязан
-   * стоять: `clearStaleExecution` пишет в него своими тактами (очередь,
-   * `runningCell`, `startedAt`, `stdin` — и пишет даже когда сбрасывать нечего),
-   * а эти такты не попадали ни в базу, ни в дельты. Дальше любая серверная
-   * запись — принятый патч оракула, перестановка ячейки — ссылалась при разборе
-   * версии на такт, которого в истории нет, и навсегда уходила в pending:
-   * принятие патча не показывалось в ленте, а «вернуть версию» обнуляло текст
-   * ячейки у всей комнаты.
+   * And AFTER cleaning up a stale run — for the same reason, from the other
+   * end. Between the baseline and the `record()` subscription a line below, the
+   * document must stand still: `clearStaleExecution` writes into it with its
+   * own clocks (the queue, `runningCell`, `startedAt`, `stdin` — and writes
+   * even when there is nothing to reset), and those clocks got into neither the
+   * database nor the deltas. After that any server write — an accepted oracle
+   * patch, a cell rearrangement — referred, when a version was parsed, to a
+   * clock that is not in the history, and went into pending forever: accepting
+   * a patch did not show in the feed, and "restore the version" wiped the
+   * cell's text for the whole room.
    */
   /*
-   * Картинки заметок — на полку, и до `beginHistory`.
+   * Note images go to the shelf, and before `beginHistory`.
    *
-   * Комнаты, заведённые до появления полки для заметок, носят условия задач
-   * base64-строками в тексте ячеек: замер на живой комнате — 9.4 МБ из 10.5 МБ
-   * документа, который целиком едет каждому вошедшему. Импорт с этого дня
-   * кладёт их на полку сам (server/src/notebook-images.ts), а уже лежащие
-   * разгружаются здесь, один раз при подъёме комнаты.
+   * Rooms created before the shelf for notes appeared carry problem statements
+   * as base64 strings in the cell text: a measurement on a live room — 9.4 MB
+   * of a 10.5 MB document, which goes whole to everyone who joins. From now on
+   * the import puts them on the shelf itself (server/src/notebook-images.ts),
+   * and those already there are offloaded here, once when the room is brought
+   * up.
    *
-   * Строкой ВЫШЕ, а не ниже, ровно по доводу соседнего абзаца: правка, сделанная
-   * после базовой точки, показалась бы комнате чужой версией в ленте истории —
-   * и пришла бы туда от «сервера», который ничего не писал. До точки она
-   * становится частью того документа, с которого история начинается.
+   * A line ABOVE, not below, exactly by the argument of the neighbouring
+   * paragraph: an edit made after the baseline would look to the room like
+   * someone else's version in the history feed — and would come there from
+   * "the server", which wrote nothing. Before the baseline it becomes part of
+   * the document the history starts from.
    */
   shelveRoomImages(sessionId, doc)
 
@@ -736,21 +751,22 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    * Repaired here rather than in the editor for the reason the title is: there
    * is exactly one server, and it cannot be a stale client racing another.
    *
-   * Кто из двух остаётся — не безразлично, и раньше было. Совпадение имён
-   * бывает законным: кто-то вернул удалённую ячейку из истории — возврат
-   * воссоздаёт её с ПРЕЖНИМ именем, — а тот, кто её удалял, нажал Ctrl+Z, и
-   * Yjs отменил удаление копией. Остаётся живая ячейка, уходит копия, которую
-   * принесла эта транзакция; среди копий, приехавших разом (две слитые
-   * перестановки), остаётся первая.
+   * Which of the two stays is not a matter of indifference — and it used to be
+   * treated as one. A name match can be legitimate: someone brought a deleted
+   * cell back from the history — a restore recreates it with the PREVIOUS name
+   * — while whoever deleted it pressed Ctrl+Z, and Yjs undid the deletion with
+   * a copy. The live cell stays, the copy brought by this transaction goes;
+   * among copies that arrived at once (two merged rearrangements), the first
+   * one stays.
    */
   /*
-   * Наблюдатель на весь документ, а не на один массив ячеек: тетрадей в комнате
-   * несколько, они появляются на ходу, и подписка на каждую при появлении — это
-   * ещё одно место, где можно забыть отписаться.
+   * An observer on the whole document, not on one cell array: a room has
+   * several notebooks, they appear on the fly, and subscribing to each as it
+   * appears is one more place where one can forget to unsubscribe.
    */
   doc.on('afterTransaction', (transaction: Y.Transaction) => {
     if (transaction.origin === ORIGIN) return
-    // Только вставка заводит двойника, и только в массиве ячеек.
+    // Only an insertion creates a duplicate, and only in a cell array.
     let touched = false
     transaction.changed.forEach((_keys, type) => {
       if (type instanceof Y.Array) touched = true
@@ -758,17 +774,19 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     if (!touched) return
 
     /*
-     * Уходит та копия, которую завела ЭТА транзакция, а не та, что стоит дальше
-     * по списку. Разница видна там, где совпадение имён законно: кто-то вернул
-     * удалённую ячейку из истории — возврат воссоздаёт её с ПРЕЖНИМ именем, — а
-     * тот, кто её удалял, нажал Ctrl+Z, и Yjs отменил удаление копией. Выкинуть
-     * надо копию: иначе новая, встав выше по списку, вытесняла бы живую ячейку
-     * вместе с её выводом, и подменить чужую ячейку своей можно было бы одним
-     * совпадением имени.
+     * The copy that goes is the one THIS transaction created, not the one
+     * standing further down the list. The difference shows where a name match
+     * is legitimate: someone brought a deleted cell back from the history — a
+     * restore recreates it with the PREVIOUS name — while whoever deleted it
+     * pressed Ctrl+Z, and Yjs undid the deletion with a copy. It is the copy
+     * that has to be thrown out: otherwise the new one, standing higher in the
+     * list, would push out the live cell together with its output, and swapping
+     * someone else's cell for your own would take one name coincidence.
      *
-     * Имена сверяются по ВСЕМ тетрадям сразу, а не внутри каждой: ячейку ищут
-     * по имени, не зная тетради (см. `findCell`), и два одинаковых имени в
-     * разных тетрадях значат, что «Запустить» иногда запускает не ту.
+     * Names are compared across ALL notebooks at once, not within each: a cell
+     * is found by name without knowing its notebook (see `findCell`), and two
+     * identical names in different notebooks mean that "Run" sometimes runs
+     * the wrong one.
      */
     const seen = new Map<string, { cells: Y.Array<YCell>; index: number; fresh: boolean }>()
     const doomed = new Map<Y.Array<YCell>, number[]>()
@@ -845,8 +863,9 @@ function getEntry(sessionId: string, title?: string): DocEntry {
 
   doc.on('update', (update: Uint8Array, origin: unknown, _doc: Y.Doc, tr: Y.Transaction) => {
     entry.outbox.updates.push(update)
-    // Ответ холодной вкладке собран из документа, а документ только что стал
-    // другим: следующий вошедший должен получить кадр, а не вчерашний снимок.
+    // The answer to a cold tab is built from the document, and the document
+    // has just changed: the next newcomer must get a frame, not yesterday's
+    // snapshot.
     entry.coldFrame = null
     scheduleFlush(entry)
     /*
@@ -860,18 +879,18 @@ function getEntry(sessionId: string, title?: string): DocEntry {
      */
     if (origin === RESTORE_ORIGIN) return
     /*
-     * Автор берётся из происхождения обновления.
+     * The author is taken from the update's origin.
      *
-     * Обычно это сокет, по которому оно пришло. Но сервер и сам иногда пишет в
-     * документ от чьего-то имени — сейчас так применяется предложение оракула:
-     * решение принимает сервер, чтобы две вкладки не вписали патч дважды, и
-     * без этой ветки версия в истории оказывалась ничьей. Строка «принял
-     * Пётр» превращалась в «the room», а Ctrl+Z у самого Петра переставал
-     * доставать до его же собственной правки.
+     * Usually that is the socket it arrived on. But the server itself sometimes
+     * writes into the document on someone's behalf — that is how an oracle
+     * proposal is applied now: the server makes the decision so that two tabs
+     * do not write the patch twice, and without this branch the version in the
+     * history ended up belonging to nobody. The line "accepted by Pyotr" turned
+     * into "the room", and Pyotr's own Ctrl+Z no longer reached his own edit.
      *
-     * Форма — `on-behalf:<participantId>`: строка, которую может составить
-     * только код на сервере, потому что клиентское обновление приходит с
-     * сокетом в качестве происхождения и никогда со строкой.
+     * The form is `on-behalf:<participantId>`: a string only code on the server
+     * can compose, because a client update arrives with its socket as the
+     * origin and never with a string.
      */
     const author =
       origin instanceof WebSocket
@@ -903,16 +922,16 @@ function getEntry(sessionId: string, title?: string): DocEntry {
         pinRole(entry, state, changes.added.concat(changes.updated))
       }
       /*
-       * Лицо в окно кладётся по clientID, а не по кадру: продлений жизни от
-       * одной вкладки за окно может прийти несколько, а кодируется присутствие
-       * всё равно из текущего состояния — значит, повтор в окне ничего не
-       * добавляет, и множества довольно.
+       * A face goes into the window by clientID, not by frame: several
+       * keep-alives from one tab may arrive within a window, and presence is
+       * encoded from the current state anyway — so a repeat within the window
+       * adds nothing, and a set is enough.
        */
       for (const id of changes.added) entry.outbox.faces.add(id)
       for (const id of changes.updated) entry.outbox.faces.add(id)
       for (const id of changes.removed) entry.outbox.faces.add(id)
-      // Список лиц для входящего собран из состояния, которое только что стало
-      // другим: пересобрать. После `pinRole` — он правит состояние молча.
+      // The face list for a newcomer is built from a state that has just
+      // changed: rebuild it. After `pinRole` — it edits the state silently.
       entry.welcomeFaces = null
       scheduleFaces(entry)
     },
@@ -922,36 +941,38 @@ function getEntry(sessionId: string, title?: string): DocEntry {
 }
 
 /**
- * Подтипы протокола синхронизации. Числа — сам протокол, а не выбор.
+ * Subtypes of the sync protocol. The numbers are the protocol itself, not a
+ * choice.
  *
- * `1` (step2) и `2` (update) проверяются одинаково. Проверять только `2` — дыра
- * шириной в одно переподключение: сервер шлёт step1 при каждом соединении,
- * браузер отвечает step2 всем, чего у сервера нет, и любой отказ отмывается
- * повторным входом.
+ * `1` (step2) and `2` (update) are checked the same way. Checking only `2` is a
+ * hole one reconnection wide: the server sends step1 on every connection, the
+ * browser answers with step2 containing everything the server lacks, and any
+ * refusal gets laundered by rejoining.
  */
 const SYNC_STEP1 = 0
 const SYNC_STEP2 = 1
 const SYNC_UPDATE = 2
 
 /**
- * Вектор состояния пустой вкладки — ровно один байт, ноль клиентов.
+ * The state vector of an empty tab — exactly one byte, zero clients.
  *
- * Так выглядит step1 от вкладки, у которой нет ничего: чистый браузер, режим
- * инкогнито, вычищенный IndexedDB, — и ответ ей одинаков до байта, потому что
- * собирается из документа, а не из её кадра.
+ * That is what step1 looks like from a tab that has nothing: a clean browser,
+ * incognito mode, a wiped IndexedDB — and the answer to it is the same down to
+ * the byte, because it is built from the document, not from its frame.
  */
 function coldTab(stateVector: Uint8Array): boolean {
   return stateVector.byteLength === 1 && stateVector[0] === 0
 }
 
 /**
- * Весь документ одним кадром — собранный один раз на комнату.
+ * The whole document in one frame — built once per room.
  *
- * Замер живой пары: 1 065 985 Б и десятки миллисекунд на кодирование. Пятьсот
- * вкладок, вошедших после перезапуска сервера, — это пятьсот одинаковых
- * снимков, и разница между «собрать раз» и «собрать пятьсот раз» тут в секундах
- * занятого цикла событий. Обнуляется в обработчике `doc.on('update')`: пока
- * документ не изменился, байты холодного ответа те же самые.
+ * A measurement in a live class: 1 065 985 B and tens of milliseconds of
+ * encoding. Five hundred tabs joining after a server restart are five hundred
+ * identical snapshots, and the difference between "build once" and "build five
+ * hundred times" here is seconds of busy event loop. Reset in the
+ * `doc.on('update')` handler: as long as the document has not changed, the
+ * bytes of the cold answer are the same.
  */
 function coldFrame(entry: DocEntry): Uint8Array {
   if (entry.coldFrame) return entry.coldFrame
@@ -963,15 +984,15 @@ function coldFrame(entry: DocEntry): Uint8Array {
 }
 
 /**
- * Отказать этому соединению в кадре.
+ * Refuse this connection's frame.
  *
- * Закрытие, а не молчание. Ничто в протоколе синхронизации не умеет убрать у
- * клиента структуру, которая у него уже есть: слияние CRDT — объединение, и
- * ни `encodeStateAsUpdate`, ни полный круг step1/step2 не уберут отказанный
- * текст с экрана того, кто его набрал. Поэтому клиент, получивший 4403,
- * пересобирает документ с нуля — и новый clientID заодно лечит разрыв в
- * тактах, из-за которого следующее разрешённое нажатие иначе легло бы в
- * `pendingStructs` за тактом, который сервер не принял.
+ * Closing, not silence. Nothing in the sync protocol can take away from a
+ * client a structure it already has: a CRDT merge is a union, and neither
+ * `encodeStateAsUpdate` nor a full step1/step2 round will remove the refused
+ * text from the screen of whoever typed it. So a client that got 4403 rebuilds
+ * the document from scratch — and the new clientID also cures the gap in
+ * clocks because of which the next allowed keystroke would otherwise land in
+ * `pendingStructs` behind a clock the server did not accept.
  */
 function refuse(
   entry: DocEntry,
@@ -980,16 +1001,17 @@ function refuse(
     rule: GateRule
     message: string
     /**
-     * Что именно не разобралось — словами гейта, с путём. В журнал, не
-     * человеку: по одной общей фразе про кэш два вечера искали причину,
-     * которая называлась «кадр слишком велик для разбора (cells#…)».
+     * What exactly failed to parse — in the gate's words, with the path. For
+     * the log, not for the person: with one generic phrase about the cache, two
+     * evenings went into looking for a cause that was called "frame too large
+     * to parse (cells#…)".
      */
     detail?: string
     /**
-     * Отказ первой синхронизации, а не правке. Вкладка по этому слову в кадре
-     * закрытия отличает «ваш кэш старше сервера» от «эту правку не приняли»:
-     * управляющий сокет с текстом отказа идёт другим проводом и может прийти
-     * позже закрытия.
+     * A refusal of a first sync, not of an edit. By this word in the close
+     * frame the tab tells "your cache is older than the server" from "this edit
+     * was not accepted": the control socket with the refusal text travels over
+     * a different wire and may arrive after the close.
      */
     stale?: boolean
   },
@@ -1000,14 +1022,15 @@ function refuse(
   }
   tally('gate')
   /*
-   * Причина — словами, но не на каждый отказ.
+   * The reason in words, but not on every refusal.
    *
-   * Отказ гейта в журнале нужен: по нему видно, что комната упёрлась в правило,
-   * а не сломалась. Но отказывают целому кадру, и браузер после 4403
-   * пересобирает документ и пробует снова — на потоке это лавина одинаковых
-   * строк. Первая за минуту на комнату и правило говорится, остальные видны
-   * числом в сводке. Ни имени участника, ни текста правки: только правило и
-   * причина, которую сформулировал сам гейт.
+   * A gate refusal in the log is needed: it shows that the room hit a rule, not
+   * that it broke. But a whole frame is refused, and after 4403 the browser
+   * rebuilds the document and tries again — in a cohort that is an avalanche of
+   * identical lines. The first one per minute per room and rule is said, the
+   * rest are visible as a number in the summary. Neither the participant's name
+   * nor the edit's text: only the rule and the reason the gate itself put into
+   * words.
    */
   if (seldom(`gate:${entry.sessionId}:${refusal.rule}`)) {
     const detail = refusal.detail ? ` · ${refusal.detail}` : ''
@@ -1016,25 +1039,27 @@ function refuse(
   try {
     conn.close(4403, refusal.stale ? 'stale' : refusal.rule)
   } catch {
-    /* сокет уже закрыт — отказ всё равно состоялся: кадр не применён */
+    /* socket already closed — the refusal stands anyway: the frame was not applied */
   }
 }
 
 /**
- * Выбросить из документа то, что в него так и не встало.
+ * Throw out of the document what never got into it.
  *
- * `pendingStructs` — нажатия, для которых Yjs ждёт предыдущего такта их же
- * клиента. Ждать нечего: тот кадр гейт отказал, и такт не придёт никогда. А
- * подвисшее не лежит тихо — `encodeStateAsUpdate` кладёт его в снимок и в
- * каждый step2 каждой вкладке, вкладка возвращает его в своём step2, и гейт
- * судит те же нажатия при каждом входе — в закрытой комнате отказом. Измерено
- * на живой комнате: 140 КБ подвисших нажатий шести клиентов после одного утра.
+ * `pendingStructs` are keystrokes for which Yjs is waiting for the previous
+ * clock of the same client. There is nothing to wait for: the gate refused that
+ * frame, and the clock will never come. And what is stuck does not lie quietly
+ * — `encodeStateAsUpdate` puts it into the snapshot and into every step2 to
+ * every tab, the tab returns it in its own step2, and the gate judges the same
+ * keystrokes on every entry — in a closed room with a refusal. Measured on a
+ * live room: 140 KB of stuck keystrokes from six clients after one morning.
  *
- * Сейчас гейт такой кадр не пропускает (gate.ts · checkContiguity), так что
- * это уборка за прошлым: снимки, записанные до неё. Вкладки, у которых мусор
- * остался в кэше, получат отказ на первом же входе и пересоберутся начисто.
+ * Now the gate does not let such a frame through (gate.ts · checkContiguity),
+ * so this is cleaning up after the past: snapshots written before it. Tabs
+ * that still have the garbage in their cache will get a refusal on their very
+ * first entry and rebuild cleanly.
  *
- * Возвращает, было ли что выбрасывать.
+ * Returns whether there was anything to throw out.
  */
 function dropPending(sessionId: string, doc: Y.Doc): boolean {
   const store = doc.store as unknown as {
@@ -1058,8 +1083,8 @@ type RefusalListener = (
 let refusalListener: RefusalListener | null = null
 
 /**
- * Кому сообщать словами об отказе. Регистрирует `control.ts`: сообщение уходит
- * по управляющему сокету, а импортировать его отсюда значило бы замкнуть цикл.
+ * Whom to tell about a refusal in words. Registered by `control.ts`: the message
+ * goes over the control socket, and importing it from here would close a loop.
  */
 export function onRefusal(listener: RefusalListener): void {
   refusalListener = listener
@@ -1070,84 +1095,90 @@ type RemovedListener = (sessionId: string, cellIds: string[]) => void
 let removedListener: RemovedListener | null = null
 
 /**
- * Каких ячеек в комнате больше нет. Регистрирует `control.ts`.
+ * Which cells are no longer in the room. Registered by `control.ts`.
  *
- * Удалить можно и ту ячейку, которую ядро прямо сейчас считает или держит в
- * очереди: документ этого не запрещает, и запрещать не следует — человек видит
- * ячейку и вправе её убрать. Расходится другое: ядро продолжает крутить цикл
- * ради ячейки, которой нет, а `meta.runningCell` называет исчезнувшее имя.
+ * A cell the kernel is computing right now or holds in its queue can be deleted
+ * too: the document does not forbid it, and it should not — the person sees the
+ * cell and has the right to remove it. What diverges is something else: the
+ * kernel keeps spinning its loop for a cell that is gone, and
+ * `meta.runningCell` names a vanished name.
  *
- * Через регистрацию, как и `onRefusal`: снимает с выполнения ядро, а импорт
- * ядра отсюда замкнул бы модули друг на друга — ядро само берёт документ через
- * `getSessionDoc`.
+ * Through registration, like `onRefusal`: it is the kernel that takes the cell
+ * off execution, and importing the kernel from here would tie the modules into
+ * a loop — the kernel itself takes the document through `getSessionDoc`.
  */
 export function onCellsRemoved(listener: RemovedListener): void {
   removedListener = listener
 }
 
 /**
- * Сколько лиц одно соединение может завести в комнате.
+ * How many faces one connection may create in a room.
  *
- * Одно на вкладку — норма; вторым бывает переход между провайдерами при
- * переподключении. Четыре — потолок с запасом, а без потолка один сокет
- * наполняет панель людей выдуманными участниками, у каждого из которых имя,
- * цвет и курсор в чужой ячейке.
+ * One per tab is the norm; a second one happens when switching providers on
+ * reconnect. Four is a ceiling with a margin, and without a ceiling one socket
+ * fills the People panel with made-up participants, each with a name, a colour
+ * and a cursor in someone else's cell.
  */
 const MAX_AWARENESS_CLIENTS = 4
 
 /**
- * Лица, которые комната уже видела, — включая ушедшие вместе со своим сокетом.
+ * Faces the room has already seen — including those gone along with their
+ * socket.
  *
- * `y-websocket` пересылает в сокет КАЖДОЕ обновление присутствия, которое
- * применил, — в том числе приехавшее по BroadcastChannel из соседней вкладки
- * того же семинара. Пока сосед на связи, эхо отбивается тем, что его лицо уже
- * стоит в комнате. Но стоит соседу оборваться, `closeConn` его лицо снимает — и
- * эхо проходит: вкладка А присваивает себе clientID вкладки Б, кадры
- * переподключившегося Б молча отбрасываются, а уход А уносит Б из панели людей.
+ * `y-websocket` forwards into the socket EVERY presence update it has applied —
+ * including one that came over BroadcastChannel from a neighbouring tab of the
+ * same seminar. While the neighbour is connected, the echo is fended off
+ * because its face is already in the room. But once the neighbour drops,
+ * `closeConn` removes its face — and the echo gets through: tab A takes over
+ * tab B's clientID, the frames of the reconnected B are silently discarded, and
+ * A's leaving takes B out of the People panel.
  *
- * Поэтому имя, которое комната уже слышала, достаётся только сокету, который
- * ещё никого не привёл: переподключившийся Б заходит со своим прежним clientID
- * первым же кадром, а у А своё лицо уже есть.
+ * So a name the room has already heard goes only to a socket that has not
+ * brought anyone yet: the reconnected B comes in with its previous clientID in
+ * its very first frame, while A already has its own face.
  *
- * По документу присутствия, а не по записи комнаты: этой же проверкой живут
- * сокеты редактора файлов (collab/files.ts), у которых своя.
+ * By the presence document, not by the room entry: the file editor's sockets
+ * (collab/files.ts), which have their own, live by this same check.
  */
 const introduced = new WeakMap<Awareness, Map<number, number>>()
 
 /**
- * Сколько комната помнит ушедшее лицо.
+ * How long the room remembers a face that left.
  *
- * По времени, а не по счёту. Стоял потолок в 256 имён с подписью «столько
- * вкладок за пару не открывают» — неправда ровно на том масштабе, ради которого
- * продукт сделан: в комнате на пятьсот человек живых clientID заведомо больше,
- * а с переподключениями за пару их тысячи. Память переполнялась, забывала
- * ушедшие имена по одному — и защита от эха переставала действовать там, где
- * она и нужна: эхо соседней вкладки присваивало себе clientID ушедшего
- * участника, тот пропадал из панели людей, а его кадры молча отбрасывались.
+ * By time, not by count. There used to be a ceiling of 256 names with the
+ * caption "nobody opens that many tabs during a class" — untrue exactly at the
+ * scale the product was made for: in a room of five hundred people there are
+ * certainly more live clientIDs, and with reconnections over a class there are
+ * thousands. The memory overflowed, forgot departed names one by one — and the
+ * echo protection stopped working exactly where it is needed: the echo of a
+ * neighbouring tab took over the clientID of a participant who left, that
+ * participant vanished from the People panel, and their frames were silently
+ * discarded.
  *
- * Полчаса — заведомо дольше, чем живёт эхо в `BroadcastChannel` соседней
- * вкладки (оно приезжает в ту же секунду), и заведомо короче пары. Цена памяти
- * — одно число на лицо: комната на пятьсот человек с переподключениями помнит
- * тысячи имён и стоит десятки килобайт.
+ * Half an hour is certainly longer than an echo lives in a neighbouring tab's
+ * `BroadcastChannel` (it arrives in the same second), and certainly shorter
+ * than a class. The memory price is one number per face: a room of five
+ * hundred people with reconnections remembers thousands of names and costs
+ * tens of kilobytes.
  */
 const REMEMBER_FACE_MS = 30 * 60 * 1000
 
 /**
- * Сколько имён держим, пока не пришло время их забывать.
+ * How many names we keep before it is time to forget them.
  *
- * Не мера комнаты, а предохранитель от бесконечного роста: сюда упирается
- * только тот, кто открывает вкладки быстрее, чем истекает получас.
+ * Not a room measure but a fuse against unbounded growth: only someone who
+ * opens tabs faster than half an hour expires runs into it.
  */
 const MAX_REMEMBERED_CLIENTS = 8192
 
-/** Забыть лица, которых комната не видела дольше `REMEMBER_FACE_MS`. */
+/** Forget faces the room has not seen for longer than `REMEMBER_FACE_MS`. */
 function forgetOldFaces(known: Map<number, number>, now: number): void {
   for (const [clientId, at] of known) {
     if (now - at < REMEMBER_FACE_MS) continue
     known.delete(clientId)
   }
-  // Не помогло — значит имена сыплются быстрее, чем истекают: уходят самые
-  // старые, вставка в Map держит их первыми.
+  // Did not help — so names pour in faster than they expire: the oldest go,
+  // and Map insertion order keeps them first.
   while (known.size > MAX_REMEMBERED_CLIENTS) {
     const oldest = known.keys().next()
     if (oldest.done) break
@@ -1156,12 +1187,14 @@ function forgetOldFaces(known: Map<number, number>, now: number): void {
 }
 
 /**
- * Всё, что проверке ниже нужно от документа: свои сокеты и своё присутствие.
+ * Everything the check below needs from a document: its sockets and its
+ * presence.
  *
- * Не `Pick<DocEntry, …>`: этот же разбор служит документам файлов, а их
- * `ConnState` — свой (collab/files.ts) и совпадать с нашим не обязан. Пока
- * поля у них случайно сходились, `Pick` работал; первое же поле, нужное только
- * комнате, ломало сборку в чужом файле. Названо то, что правда требуется.
+ * Not `Pick<DocEntry, …>`: the same parsing serves file documents, and their
+ * `ConnState` is their own (collab/files.ts) and does not have to match ours.
+ * While their fields happened to coincide, `Pick` worked; the very first field
+ * needed only by the room broke the build in someone else's file. What is
+ * really required is named.
  */
 export interface AwarenessOwner {
   conns: Map<WebSocket, { clientIds: Set<number> }>
@@ -1169,16 +1202,17 @@ export interface AwarenessOwner {
 }
 
 /**
- * Кадр присутствия — только про себя.
+ * A presence frame — only about oneself.
  *
- * `applyAwarenessUpdate` принимает состояние ЛЮБОГО clientID, лишь бы такт был
- * выше: то есть один участник мог убрать всех остальных из панели людей для
- * всей комнаты или переписать чужой курсор вместе с именем и ролью. Сокет
- * знает, кого он привёл (`state.clientIds`), — и всё остальное отвергается.
+ * `applyAwarenessUpdate` accepts the state of ANY clientID as long as the clock
+ * is higher: that is, one participant could remove everyone else from the
+ * People panel for the whole room or rewrite someone else's cursor together
+ * with the name and role. The socket knows whom it has brought
+ * (`state.clientIds`) — and everything else is rejected.
  *
- * Отвергается кадр целиком, а не по одному лицу: у пакета присутствия нет
- * способа выкинуть из середины одну запись, и разбирать его на части значило бы
- * пересобирать его же протокол.
+ * The frame is rejected whole, not face by face: a presence packet has no way
+ * to throw one entry out of the middle, and taking it apart would mean
+ * rebuilding its own protocol.
  */
 export function ownAwareness(entry: AwarenessOwner, conn: WebSocket, payload: Uint8Array): boolean {
   const state = entry.conns.get(conn)
@@ -1188,33 +1222,35 @@ export function ownAwareness(entry: AwarenessOwner, conn: WebSocket, payload: Ui
   const now = Date.now()
   for (let i = 0; i < count; i += 1) {
     const clientId = decoding.readVarUint(decoder)
-    decoding.readVarUint(decoder) // такт — не наше дело
+    decoding.readVarUint(decoder) // the clock is none of our business
     /*
-     * Состояние ПРОПУСКАЕТСЯ, а не читается.
+     * The state is SKIPPED, not read.
      *
-     * `readVarString` — это разбор UTF-8 в новую строку, то есть копия всего
-     * JSON присутствия. А `y-websocket` возвращает серверу каждый кадр, который
-     * применил, — в том числе чужой, приехавший от сервера же (см. load.mts):
-     * в комнате на пятьсот вкладок это пятьсот копий чужого курсора на каждое
-     * нажатие, и все они заведомо отвергаются строкой ниже. На проводе строка
-     * лежит как длина плюс байты, так что пройти её мимо — это сложение.
+     * `readVarString` is parsing UTF-8 into a new string, that is, a copy of
+     * the whole presence JSON. And `y-websocket` returns to the server every
+     * frame it applied — including someone else's that came from the server
+     * itself (see load.mts): in a room of five hundred tabs that is five
+     * hundred copies of someone else's cursor on every keystroke, and all of
+     * them are certainly rejected a line below. On the wire the string lies as
+     * a length plus bytes, so walking past it is an addition.
      *
-     * Длина — отдельной строкой, и это не вкусовщина. `decoder.pos +=
-     * readVarUint(decoder)` в JS сначала берёт СТАРЫЙ `pos`, и байты самого
-     * варинта длины пропадают: на кадре с одним лицом это незаметно (дальше
-     * никто не читает), а со второго лица декодер разъезжается и клиентом
-     * оказывается случайный байт чужого JSON — то есть проверка принадлежности
-     * начинает пропускать чужое присутствие вторым лицом в кадре.
+     * The length on its own line, and that is not a matter of taste.
+     * `decoder.pos += readVarUint(decoder)` in JS takes the OLD `pos` first, and
+     * the bytes of the length varint itself get lost: on a frame with one face
+     * it is invisible (nobody reads further), but from the second face on the
+     * decoder drifts, and the client turns out to be a random byte of someone
+     * else's JSON — that is, the ownership check starts letting through
+     * someone else's presence as the second face in a frame.
      */
     const bytes = decoding.readVarUint(decoder)
     decoder.pos += bytes
     if (state.clientIds.has(clientId)) continue
-    // Новое лицо этого сокета — можно, пока их не слишком много.
+    // A new face of this socket — allowed while there are not too many.
     if (state.clientIds.size + 1 > MAX_AWARENESS_CLIENTS) return false
     if (entry.awareness.getStates().has(clientId)) return false
     let known = introduced.get(entry.awareness)
     if (!known) introduced.set(entry.awareness, (known = new Map()))
-    // Чужое лицо, уже уходившее из комнаты, — эхо соседней вкладки.
+    // Someone else's face that has already left the room is a neighbouring tab's echo.
     if (known.has(clientId) && state.clientIds.size > 0) return false
     state.clientIds.add(clientId)
     known.set(clientId, now)
@@ -1230,17 +1266,19 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
     switch (decoding.readVarUint(decoder)) {
       case MESSAGE_SYNC: {
         /*
-         * Проверка до применения, и позже её поставить некуда: ретрансляция,
-         * запись в историю и запись на диск висят синхронно внутри
-         * `applyUpdate` внутри `readSyncMessage`. Подтип читается с копии
-         * декодера, чтобы настоящий остался нетронутым, если кадр принят.
+         * The check comes before applying, and there is nowhere later to put
+         * it: the relay, the history write and the disk write hang
+         * synchronously inside `applyUpdate` inside `readSyncMessage`. The
+         * subtype is read from a copy of the decoder so that the real one stays
+         * untouched if the frame is accepted.
          */
         const peek = decoding.clone(decoder)
         const subtype = decoding.readVarUint(peek)
         /*
-         * Холодная вкладка — по короткой дороге. Её step1 не несёт ничего, что
-         * надо проверять (это запрос, а не правка), а ответ ей у комнаты уже
-         * собран: ровно тот же снимок, что и предыдущему вошедшему.
+         * A cold tab takes the short road. Its step1 carries nothing that needs
+         * checking (it is a request, not an edit), and the room already has the
+         * answer to it built: exactly the same snapshot as for the previous
+         * newcomer.
          */
         if (subtype === SYNC_STEP1 && coldTab(decoding.readVarUint8Array(peek))) {
           send(entry, conn, coldFrame(entry), 'state')
@@ -1248,23 +1286,25 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
         }
         let accepted: { retyped: string[]; created: string[]; removed: string[] } | null = null
         /*
-         * Чего эта ветка стоит на возврате зала — числом, а не на глаз.
+         * What this branch costs when the hall comes back — as a number, not
+         * by eye.
          *
-         * step2 вернувшегося — не «дельта в пару десятков байт»: он несёт весь
-         * набор удалений комнаты, и ответ сервера синхронному клиенту,
-         * `encodeStateAsUpdate(doc, sv)`, — тот же набор обратно. Замер на
-         * семестровой комнате (400 ячеек, 160 тыс. набранных символов, 22.8 тыс.
-         * удалений, документ 750 КБ; tests/sync-storm-cost.test.mts):
+         * A returning tab's step2 is not "a delta of a couple dozen bytes": it
+         * carries the room's whole delete set, and the server's answer to a
+         * synced client, `encodeStateAsUpdate(doc, sv)`, is the same set back.
+         * Measured on a semester room (400 cells, 160 thousand typed
+         * characters, 22.8 thousand deletions, a 750 KB document;
+         * tests/sync-storm-cost.test.mts):
          *
-         *   step2 вернувшегося ......................... 87 КБ
-         *   `classify` этого кадра ..................... 5.6 мс
-         *   `encodeStateAsUpdate(doc, sv)` в ответ ..... 87 КБ, 1.3 мс
+         *   step2 of a returning tab ................... 87 KB
+         *   `classify` of this frame ................... 5.6 ms
+         *   `encodeStateAsUpdate(doc, sv)` in reply .... 87 KB, 1.3 ms
          *
-         * Пятьсот вкладок возвращаются за одну-две секунды после перезапуска
-         * сервера или моргания ретранслятора — это ≈2.8 с занятого цикла
-         * событий на одном разборе и ≈44 МБ исходящего. До потолка кадра
-         * (`MAX_SYNC_STEP2_BYTES`, 8 МБ) при этом ещё ×90 запаса: упирается не
-         * он, а цикл событий.
+         * Five hundred tabs come back within a second or two after a server
+         * restart or a relay blink — that is ≈2.8 s of busy event loop on
+         * parsing alone and ≈44 MB outgoing. The frame ceiling
+         * (`MAX_SYNC_STEP2_BYTES`, 8 MB) still has ×90 headroom: it is not the
+         * ceiling that gives out but the event loop.
          */
         if (subtype === SYNC_STEP2 || subtype === SYNC_UPDATE) {
           const state = entry.conns.get(conn)
@@ -1275,7 +1315,7 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
             stale ? MAX_SYNC_STEP2_BYTES : undefined,
           )
           if (!judgement.ok) {
-            // Пол комнаты: это не право, а то, что сервер пишет сам.
+            // The room's floor: not a right, but what the server writes itself.
             return refuse(entry, conn, {
               rule: 'edit',
               message: stale ? STALE_SYNC() : floorMessage(judgement.why),
@@ -1284,11 +1324,11 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
             })
           }
           /*
-           * Конец занятия едет отдельно от правил, хотя ужесточает их же.
-           * `getRules` уже отдаёт преподавательские правила, так что отказ
-           * состоится и без этого признака; но по одним правилам гейт не
-           * отличит закончившуюся пару от комнаты, где тетрадь и так закрыта, а
-           * фразы у них разные.
+           * The end of the class travels separately from the rules, although
+           * it tightens those very rules. `getRules` already returns the
+           * teacher's rules, so the refusal will happen even without this flag;
+           * but by the rules alone the gate cannot tell a finished class from a
+           * room where the notebook is closed anyway, and their phrases differ.
            */
           const verdict = permits(
             judgement.verdicts,
@@ -1296,31 +1336,35 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
             state?.role ?? 'participant',
             isFinished(entry.sessionId),
             /*
-             * Кто прислал кадр — ради личных тетрадей: только по этому имени
-             * видно, своя перед человеком тетрадь или чужая (shared/rules.ts ·
-             * BookRule.owner). Сокет без имени — заведомо не автор, и отказ
-             * получает он, а не соседняя личная тетрадь.
+             * Who sent the frame — for personal notebooks: only by this name
+             * can one see whether the notebook in front of the person is their
+             * own or someone else's (shared/rules.ts · BookRule.owner). A socket
+             * without a name is certainly not the author, and it is the one
+             * that gets the refusal, not the neighbouring personal notebook.
              */
             state?.participantId ?? null,
           )
           if (!verdict.ok) return refuse(entry, conn, verdict)
           /*
-           * Запомнить ДО применения: после него читать уже нечего, а без этого
-           * Ctrl+Z вернул бы ячейку без вывода — Yjs отменяет удаление копией,
-           * и вывод в копии пришлось бы взять у браузера, чего пол не разрешает.
+           * Remember BEFORE applying: after it there is nothing left to read,
+           * and without this Ctrl+Z would bring back a cell without output —
+           * Yjs undoes a deletion with a copy, and the output in the copy would
+           * have to be taken from the browser, which the floor does not allow.
            */
           rememberDeleted(entry.sessionId, entry.doc, judgement.removed)
           accepted = judgement
-          // Принятый кадр — единственная мера того, что в комнате правда
-          // работают. Только число, раз в минуту: их десятки тысяч.
+          // An accepted frame is the only measure that people in the room are
+          // really working. Only a number, once a minute: there are tens of
+          // thousands of them.
           tally('frames')
         }
         encoding.writeVarUint(encoder, MESSAGE_SYNC)
         syncProtocol.readSyncMessage(decoder, encoder, entry.doc, conn)
         /*
-         * Принятый кадр обязан встать целиком: дыры отказывает гейт. Если
-         * подвисло всё же — это ошибка в гейте, и молчать о ней нельзя, но и
-         * оставлять мусор в документе тоже: см. dropPending.
+         * An accepted frame must go in whole: gaps are refused by the gate. If
+         * something got stuck anyway, that is a bug in the gate, and one must
+         * not keep quiet about it, but must not leave garbage in the document
+         * either: see dropPending.
          */
         if (accepted && dropPending(entry.sessionId, entry.doc)) {
           console.error(`[collab] accepted frame left pending structs in ${entry.sessionId}`)
@@ -1334,13 +1378,14 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
               settleFresh(entry.sessionId, entry.doc, created)
             }, ORIGIN)
           }
-          // После применения: ядру говорят про ячейки, которых в тетради уже нет.
+          // After applying: the kernel is told about cells no longer in the notebook.
           if (removed.length > 0) removedListener?.(entry.sessionId, removed)
         }
         /*
          * A bare message type and nothing after it means there is nothing to
-         * say. Всё, что здесь не пусто, — это step2 в ответ на step1, то есть
-         * документ целиком: жать его стоит при любом размере (`send` · state).
+         * say. Anything non-empty here is step2 in response to step1, that is,
+         * the whole document: it is worth compressing at any size (`send` ·
+         * state).
          */
         if (encoding.length(encoder) > 1) {
           send(entry, conn, encoding.toUint8Array(encoder), 'state')
@@ -1356,13 +1401,14 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
     }
   } catch (err) {
     /*
-     * Отказ, а не проглатывание.
+     * A refusal, not swallowing.
      *
-     * Раньше здесь стояло «одному кривому кадру стоить сокету сообщения, а не
-     * семинару» — и это верно ровно до появления проверки: проглотить кадр
-     * синхронизации значит навсегда и молча онеметь, потому что клиент считает
-     * его доставленным и никогда не повторит. Развалившаяся проверка обязана
-     * отказывать, иначе она выполняется после того, как перестала смотреть.
+     * There used to be "one malformed frame should cost the socket a message,
+     * not the seminar" here — and that is true exactly until a check appears:
+     * swallowing a sync frame means going silently mute forever, because the
+     * client considers it delivered and will never repeat it. A check that
+     * fell apart must refuse, otherwise what it could not read is executed
+     * after it stopped looking.
      */
     console.error(`[collab] bad message in ${entry.sessionId}`, err)
     refuse(entry, conn, {
@@ -1373,23 +1419,26 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
 }
 
 /**
- * Слова для отказа по полу комнаты — то есть не по правилу, а по тому, что
- * сервер пишет сам. Человеку незачем знать про пути внутри документа.
+ * The words for a refusal by the room's floor — that is, not by a rule but by
+ * what the server writes itself. The person has no need to know about paths
+ * inside the document.
  */
 function floorMessage(why: string): string {
   return tr("server.thisEditWasNotAccepted.540727", { p0: why })
 }
 
 /**
- * Отдельные слова для отказа кадру ПЕРВОЙ синхронизации.
+ * Separate words for refusing a FIRST-sync frame.
  *
- * `step2` — это не чья-то правка, а весь кэш вкладки, который браузер
- * предлагает серверу при каждом подключении. Причина отказа тут обычно не в
- * человеке: сервер убили жёстко (OOM, питание) или базу вернули из копии, его
- * снимок отстал на несколько секунд, и в кэше вкладки лежат выводы и состояние
- * ядра, написанные ПРОШЛЫМ сервером. Сказать на это «это поле пишет сервер, а
- * не браузер» значит обвинить человека в чужой беде — а вкладка всё равно
- * пересоберётся, потому что убрать у неё эти структуры протоколу нечем.
+ * `step2` is not anyone's edit but the tab's whole cache, which the browser
+ * offers the server on every connection. The cause of a refusal here is
+ * usually not the person: the server was killed hard (OOM, power) or the
+ * database was restored from a backup, its snapshot lagged a few seconds
+ * behind, and the tab's cache holds outputs and kernel state written by the
+ * PREVIOUS server. Answering that with "this field is written by the server,
+ * not the browser" means blaming the person for someone else's trouble — and
+ * the tab will rebuild anyway, because the protocol has nothing to remove
+ * those structures from it with.
  */
 const STALE_SYNC =
   () => tr("server.someOfThisTabSCachedChanges.47f300")
@@ -1425,11 +1474,12 @@ export function handleCollabSocket(
   const authorized = authorizeSocket(ws, credentials)
   const entry = getEntry(sessionId)
   /*
-   * Комната открылась — по первому сокету, а не по строке в базе.
+   * The room opened — by the first socket, not by a row in the database.
    *
-   * Семинар заводят заранее и иногда за неделю; пара начинается, когда в
-   * комнату кто-то вошёл. Та же строка повторится после перезапуска сервера, и
-   * это правильно: с точки зрения журнала комната тогда открывается заново.
+   * A seminar is created in advance, sometimes a week ahead; a class begins
+   * when someone enters the room. The same line will repeat after a server
+   * restart, and that is right: from the log's point of view the room then
+   * opens anew.
    */
   const wasEmpty = entry.conns.size === 0
   entry.emptySince = 0
@@ -1469,14 +1519,14 @@ export function handleCollabSocket(
 }
 
 /**
- * Полный список лиц комнаты для входящего — один кадр на всех, пока никто не
- * шевелится.
+ * The room's full list of faces for a newcomer — one frame for everyone while
+ * nobody moves.
  *
- * Замер на комнате в пятьсот человек: 75 КБ и 5.46 мс на каждого входящего.
- * Возврат зала после моргания ретранслятора — это пятьсот входов подряд, то
- * есть 413 мс процессора и 37 МБ мусора на одно и то же присутствие. Кадр
- * обнуляется любым изменением присутствия (обработчик `awareness.on('update')`,
- * после `pinRole`), так что устареть он не может.
+ * Measured on a room of five hundred people: 75 KB and 5.46 ms per newcomer.
+ * The hall coming back after a relay blink is five hundred entries in a row,
+ * that is, 413 ms of CPU and 37 MB of garbage for one and the same presence.
+ * The frame is reset by any change of presence (the `awareness.on('update')`
+ * handler, after `pinRole`), so it cannot go stale.
  */
 function welcomeFaces(entry: DocEntry): Uint8Array | null {
   if (entry.welcomeFaces) return entry.welcomeFaces
@@ -1498,15 +1548,15 @@ export function onlineCount(sessionId: string): number {
 }
 
 /**
- * С какого момента в комнате кто-то есть — или null, если сейчас никого.
+ * Since when there is someone in the room — or null if there is nobody now.
  *
- * Самый старый из открытых сокетов, а не первый за всю историю комнаты:
- * занятие, которое идёт, — это те, кто в ней сейчас. Комната, опустевшая и
- * наполнившаяся снова, начинает часы заново, и это правда о ней: перерыв между
- * парами ничем другим от конца занятия не отличается.
+ * The oldest of the open sockets, not the first in the room's whole history:
+ * the class that is going on is those who are in it now. A room that emptied
+ * and filled again starts its clock anew, and that is the truth about it: a
+ * break between classes differs from the end of a class in nothing else.
  *
- * Перезапуск сервера обнуляет эти часы вместе с сокетами — ровно как обнуляет
- * журнальное «[room …] opened», и по той же причине.
+ * A server restart resets this clock together with the sockets — just as it
+ * resets the log's "[room …] opened", and for the same reason.
  */
 export function liveSince(sessionId: string): number | null {
   const entry = docs.get(sessionId)
@@ -1517,13 +1567,14 @@ export function liveSince(sessionId: string): number | null {
 }
 
 /**
- * Сколько комнат сейчас живо и сколько в них людей — для минутной сводки.
+ * How many rooms are alive now and how many people are in them — for the
+ * per-minute summary.
  *
- * Живая комната — та, в которой есть хоть один сокет: документ переживает уход
- * последнего (его ещё дописывают на диск), а пара нет, и считать такую комнату
- * идущей значило бы врать в каждой строке до перезапуска. Люди считаются по
- * участникам, а не по сокетам, — то же число, что комната видит у себя в
- * панели людей.
+ * A live room is one with at least one socket: the document outlives the
+ * departure of the last one (it is still being written to disk), but the class
+ * does not, and counting such a room as running would mean lying in every line
+ * until a restart. People are counted by participants, not sockets — the same
+ * number the room sees in its own People panel.
  */
 export function roomCensus(): { rooms: number; people: number } {
   let rooms = 0
@@ -1568,83 +1619,88 @@ export function onlineParticipantIds(sessionId: string): string[] {
 }
 
 /**
- * Убрать из документа комнаты одного человека, не трогая комнату.
+ * Remove one person from the room's document without touching the room.
  *
- * Сосед `dropSessionDoc` сносит документ целиком, потому что сносят семинар.
- * Здесь всё наоборот: пара идёт дальше, и уйти должен ровно тот, кого забанили,
- * — остальные девятнадцать не должны заметить ничего.
+ * The neighbour `dropSessionDoc` tears down the document whole, because a
+ * seminar is being torn down. Here it is the other way round: the class goes
+ * on, and exactly the one who was banned must leave — the other nineteen must
+ * notice nothing.
  *
- * Через тот же `closeConn`, что и обычный уход: он снимает присутствие, и
- * курсор ушедшего исчезает у всех сразу, а не висит в чужой ячейке до
- * тайм-аута. Вернуться этот сокет не сможет — рукопожатие спрашивает бан до
- * апгрейда; чистый браузер по-прежнему сможет, и это сказано вслух везде, где
- * про бан вообще говорится.
+ * Through the same `closeConn` as an ordinary leave: it removes the presence,
+ * and the departed person's cursor disappears for everyone at once instead of
+ * hanging in someone else's cell until a timeout. This socket will not be able
+ * to come back — the handshake checks the ban before the upgrade; a clean
+ * browser still will, and that is said out loud everywhere bans are talked
+ * about at all.
  */
 export function dropParticipant(sessionId: string, participantId: string): void {
   const entry = docs.get(sessionId)
   if (!entry) return
-  // Копия: closeConn правит ту же карту, по которой идёт обход.
+  // A copy: closeConn edits the same map the loop walks over.
   for (const [conn, state] of [...entry.conns]) {
     if (state.participantId !== participantId) continue
     closeConn(entry, conn)
   }
 }
 
-/* ------------------------------------------------- выселение простаивающих */
+/* ------------------------------------------------- evicting idle rooms */
 
 /**
- * Сколько пустая комната ещё живёт в памяти.
+ * How long an empty room still lives in memory.
  *
- * Десять минут — это «преподаватель закрыл вкладку, чтобы открыть её с другого
- * ноутбука», а не «пара кончилась». Меньше — и переменка стоила бы всем
- * повторной сборки документа из снимка; больше — и семестровый инстанс копит
- * комнаты быстрее, чем их отпускает.
+ * Ten minutes is "the teacher closed the tab to open it from another laptop",
+ * not "the class is over". Less — and a break would cost everyone a rebuild of
+ * the document from the snapshot; more — and a semester instance accumulates
+ * rooms faster than it releases them.
  *
- * Держит комната не только `Y.Doc` (полный CRDT вместе с набором удалений — у
- * долгой комнаты это сотни килобайт и только растёт), но и базовую точку
- * истории (ВТОРАЯ полная копия документа), тексты всех ячеек, лица присутствия
- * и привязку к снимку. На тетради с картинками это десяток мегабайт на
- * брошенную комнату, а освобождалось это раньше только удалением семинара или
- * перезапуском сервера: университетский инстанс за семестр накапливал сотни
- * таких — до OOM, который роняет ВСЕ комнаты разом.
+ * A room holds not only the `Y.Doc` (the full CRDT together with the delete set
+ * — for a long-lived room that is hundreds of kilobytes and only growing) but
+ * also the history baseline (a SECOND full copy of the document), the texts of
+ * all cells, presence faces and the snapshot binding. On a notebook with images
+ * that is ten megabytes per abandoned room, and it used to be released only by
+ * deleting the seminar or restarting the server: a university instance
+ * accumulated hundreds of these over a semester — until an OOM that takes down
+ * ALL rooms at once.
  *
- * Вернуться в выселенную комнату можно как всегда: она поднимется из снимка,
- * ровно так же, как после перезапуска сервера.
+ * One can come back to an evicted room as always: it will be brought up from
+ * the snapshot, exactly as after a server restart.
  */
 const IDLE_ROOM_MS = 10 * 60 * 1000
 
 /**
- * А столько — при любых обстоятельствах.
+ * And this long — under any circumstances.
  *
- * Обычное выселение ждёт, пока в комнате ничего не делается: ядро может считать
- * ячейку, когда все закрыли ноутбуки, и снести из-под неё документ значило бы
- * выбросить результат, за которым хозяин вернётся. Но признак «делается»
- * читается из самого документа, а он способен застрять: ответ оракула, чей
- * процесс убили посреди потока, остаётся `streaming` навсегда — и одна такая
- * запись держала бы комнату в памяти до перезапуска, то есть ровно ту утечку,
- * ради которой выселение и написано.
+ * Ordinary eviction waits until nothing is happening in the room: the kernel
+ * may be computing a cell when everyone has closed their laptops, and tearing
+ * the document out from under it would mean throwing away a result its owner
+ * will come back for. But the "something is happening" flag is read from the
+ * document itself, and it can get stuck: an oracle answer whose process was
+ * killed mid-stream stays `streaming` forever — and one such entry would keep
+ * the room in memory until a restart, that is, exactly the leak eviction was
+ * written against.
  *
- * Три часа — заведомо позже, чем ядро само сносит контейнер простаивающей
- * комнаты (два часа, kernel/index.ts · IDLE_KERNEL_MS): писать в документ к
- * этому времени уже некому.
+ * Three hours is certainly later than the kernel tears down an idle room's
+ * container by itself (two hours, kernel/index.ts · IDLE_KERNEL_MS): by that
+ * time there is nobody left to write into the document.
  */
 const MAX_IDLE_ROOM_MS = 3 * 60 * 60 * 1000
 
-/** Как часто смотрим. Обход карты комнат стоит меньше, чем один кадр правки. */
+/** How often we look. A walk over the room map costs less than one edit frame. */
 const ROOM_SWEEP_MS = 60 * 1000
 
-/** Комнаты, которые кто-то держит в памяти намеренно, и сколько держателей. */
+/** Rooms someone keeps in memory on purpose, and how many holders. */
 const holds = new Map<string, number>()
 
 /**
- * Не выселять эту комнату, пока держат.
+ * Do not evict this room while it is held.
  *
- * Для того, кто взял `Y.Doc` в руки и работает с ним дольше одного вызова:
- * выселение уничтожает документ, и запись в уничтоженный не видит никто —
- * молча. Всё, что берёт документ через `getSessionDoc` на каждое обращение,
- * держать ничего не должно: такая запись поднимет комнату заново.
+ * For whoever has taken the `Y.Doc` in hand and works with it for longer than
+ * one call: eviction destroys the document, and nobody sees a write into a
+ * destroyed one — silently. Anything that takes the document through
+ * `getSessionDoc` on every access must hold nothing: such a write will bring
+ * the room up again.
  *
- * Возвращает «отпустить». Вызывать его дважды безопасно.
+ * Returns "release". Calling it twice is safe.
  */
 export function holdRoom(sessionId: string): () => void {
   holds.set(sessionId, (holds.get(sessionId) ?? 0) + 1)
@@ -1659,12 +1715,12 @@ export function holdRoom(sessionId: string): () => void {
 }
 
 /**
- * Делается ли в комнате что-то, чему нужен ЭТОТ документ.
+ * Whether something is happening in the room that needs THIS document.
  *
- * Спрашивается у самого документа, а не у ядра: импортировать ядро отсюда
- * значило бы замкнуть модули друг на друга (ядро берёт документ здесь). Всё,
- * что перечислено, ядро в документ и пишет — по этим же полям комната рисует,
- * что она занята.
+ * Asked of the document itself, not of the kernel: importing the kernel from
+ * here would tie the modules into a loop (the kernel takes the document here).
+ * Everything listed is what the kernel writes into the document — the room
+ * draws that it is busy by these same fields.
  */
 function atWork(doc: Y.Doc): boolean {
   const meta = getMeta(doc)
@@ -1673,14 +1729,14 @@ function atWork(doc: Y.Doc): boolean {
   if (status === 'busy' || status === 'restarting') return true
   const queue = meta.get('queue')
   if (queue instanceof Y.Array && queue.length > 0) return true
-  // Идущий ответ оракула пишется в ленту чата теми же тактами.
+  // A running oracle answer is written into the chat feed with the same clocks.
   return getChat(doc)
     .toArray()
     .some((turn) => turn.get('state') === 'streaming')
 }
 
 /**
- * Отпустить пустые комнаты. Возвращает, кого выселили, — этим же зовут тесты.
+ * Release empty rooms. Returns who was evicted — tests call it this way too.
  */
 export function sweepIdleRooms(now: number = Date.now()): string[] {
   const gone: string[] = []
@@ -1696,53 +1752,57 @@ export function sweepIdleRooms(now: number = Date.now()): string[] {
 }
 
 /**
- * Убрать комнату из памяти, не потеряв ничего из написанного.
+ * Remove a room from memory without losing anything that was written.
  *
- * Порядок здесь — весь смысл: сперва дописывается открытая строка истории
- * (это чья-то работа), потом снимок документа на диск, и только после этого
- * документ уничтожается вместе со своими наблюдателями и присутствием.
+ * The order here is the whole point: first the open history row is written out
+ * (it is somebody's work), then the document snapshot goes to disk, and only
+ * after that is the document destroyed together with its observers and
+ * presence.
  */
 function evictRoom(entry: DocEntry): void {
   docs.delete(entry.sessionId)
   forgetHistory(entry.sessionId)
-  // Незакрытое окно присутствия пережило бы документ и выстрелило бы в
-  // уничтоженное `awareness` через четверть секунды после выселения.
+  // An unclosed presence window would outlive the document and fire into the
+  // destroyed `awareness` a quarter of a second after the eviction.
   stopHeartbeat(entry)
   stopFaces(entry)
   entry.dispose()
-  // И то, что сервер помнил об удалённых в ней ячейках ради Ctrl+Z: отменять
-  // спустя десять минут пустой комнаты уже некому.
+  // And what the server remembered about cells deleted in it for Ctrl+Z: after
+  // ten minutes of an empty room there is nobody left to undo.
   forgetSession(entry.sessionId)
-  // И то, что оракул помнил ради отмены: возвращать спустя десять минут пустой
-  // комнаты уже некому.
+  // And what the oracle remembered for undo: after ten minutes of an empty room
+  // there is nobody left to restore for.
   forgetUndo(entry.sessionId)
   entry.doc.destroy()
   console.log(`[room ${entry.sessionId}] released from memory`)
 }
 
 /*
- * `unref`: уборка не должна держать процесс живым — этот модуль импортируют и
- * тесты, и одноразовые скрипты.
+ * `unref`: cleanup must not keep the process alive — this module is imported
+ * by tests and by one-off scripts.
  */
 setInterval(() => sweepIdleRooms(), ROOM_SWEEP_MS).unref?.()
 
 /**
- * Отпустить документ комнаты, ничего в ней не закрывая.
+ * Release a room's document without closing anything in it.
  *
- * Тот же выход, что у уборки простаивающих, только по требованию: им уходит
- * гость тетради (routes/doc-visit.ts), поднявший документ пустой комнаты ради
- * одной строки — переименования в панели, чтения ленты, публикации. Ждать за
- * такую тетрадь десять минут пустоты незачем: она не была ничьей ни секунды.
+ * The same exit as the idle cleanup, only on demand: it is used by a notebook
+ * visitor (routes/doc-visit.ts) that brought up an empty room's document for
+ * one line — a rename in the panel, reading the feed, a publication. There is
+ * no point in waiting ten minutes of emptiness for such a notebook: it was not
+ * anybody's for a single second.
  *
- * `dropSessionDoc` для этого шире, чем нужно: он написан для снесённого
- * семинара и закрывает его сокеты и файлы. Файловые сокеты живут в своей карте
- * (collab/files.ts) и документ комнаты не поднимают, так что открытый в
- * редакторе `.py` переживает и уборку простаивающих, и визит, — а `forgetFiles`
- * хлопнул бы ему кодом 1001 «комната закрыта» посреди живого семинара.
+ * `dropSessionDoc` is broader than needed for this: it was written for a
+ * torn-down seminar and closes its sockets and files. File sockets live in
+ * their own map (collab/files.ts) and do not bring up the room's document, so a
+ * `.py` open in the editor survives both the idle cleanup and a visit — while
+ * `forgetFiles` would slam it with code 1001 "the room is closed" in the middle
+ * of a live seminar.
  *
- * Комнату, в которой кто-то сидит, не выселяет: её документ держат сокеты, и
- * для них это тот же снос. Возвращает, отпустил ли: `false` — либо документа в
- * памяти не было, либо в комнате есть люди.
+ * A room with someone in it is not evicted: its document is held by sockets,
+ * and for them this would be the same as a teardown. Returns whether it was
+ * released: `false` means either the document was not in memory or there are
+ * people in the room.
  */
 export function releaseSessionDoc(sessionId: string): boolean {
   const entry = docs.get(sessionId)
@@ -1766,25 +1826,27 @@ export function releaseSessionDoc(sessionId: string): boolean {
  * is going away — that assumption is what the two doors buy.
  */
 export function dropSessionDoc(sessionId: string): void {
-  // Открытые файлы этой комнаты — тоже её: их надо дописать и закрыть до того,
-  // как исчезнет папка, иначе последнее сохранение создаст её заново.
+  // The open files of this room are its own too: they must be written out and
+  // closed before the folder disappears, otherwise the last save would create
+  // it again.
   forgetFiles(sessionId)
-  // И то, что оракул помнил о ней ради отмены: возвращать больше некуда.
+  // And what the oracle remembered about it for undo: there is nowhere left to restore to.
   forgetUndo(sessionId)
-  // И идущие ответы оракула: писать их больше некуда, а сам поток заметил бы
-  // это только на ближайшем кадре — незачем платить за ответ снесённой комнате.
+  // And the oracle's running answers: there is nowhere to write them anymore,
+  // and the stream itself would notice only on its next frame — no point in
+  // paying for an answer to a torn-down room.
   abortSession(sessionId)
   const entry = docs.get(sessionId)
   if (!entry) return
   docs.delete(sessionId)
-  // Наблюдатель тетрадей — тоже привязка к этому документу, и его таймер
-  // проекции пережил бы удаление: `dispose` здесь не годится, он дописывает
-  // снимок комнаты, которой больше нет.
+  // The notebook watcher is also a binding to this document, and its
+  // projection timer would outlive the deletion: `dispose` does not fit here,
+  // since it writes out a snapshot of a room that no longer exists.
   entry.unwatch()
   discardPersistence(sessionId)
   // The room is gone; an open burst describing it would be a version of nothing.
   discardBurst(sessionId)
-  // И то, что сервер помнил об удалённых в ней ячейках: возвращать некуда.
+  // And what the server remembered about cells deleted in it: nowhere to bring them back.
   forgetSession(sessionId)
   stopHeartbeat(entry)
   stopFaces(entry)
@@ -1819,8 +1881,8 @@ export function shutdownCollab(): void {
   }
   docs.clear()
   flushAllPersistence()
-  // То же и для файлов: набранное за последние полсекунды — это работа, а
-  // остановка процесса — не повод её терять.
+  // The same for files: what was typed in the last half second is work, and
+  // stopping the process is no reason to lose it.
   flushAllFiles()
   // Whatever somebody was typing when the process was told to stop is still a
   // thing they did, and the seminar may be reopened tomorrow.

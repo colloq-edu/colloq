@@ -1,16 +1,17 @@
 /**
- * Чем располагает машина под инстансом — одной дверью для панели.
+ * What the machine under the instance has to offer, as one endpoint for the
+ * panel.
  *
- * Форма нового занятия спрашивает её, чтобы подписать поле «память» правдой:
- * сколько на машине всего, сколько свободно сейчас, что получит комната на
- * выбранном окружении по умолчанию и какая на машине карта. До этого числа
- * знал только оператор, у которого есть ssh, — а решение «сколько дать
- * семинару» принимает преподаватель.
+ * The new-class form asks it so that the "memory" field is labelled with the
+ * truth: how much the machine has in total, how much is free right now, what
+ * a room on the chosen environment gets by default, and which card the
+ * machine has. Before this only the operator with ssh knew the numbers, while
+ * the decision "how much to give the seminar" is the teacher's.
  *
- * Только для штата: это описание машины, а не комнаты, и студенту в нём нечего
- * узнавать. `no-store` по той же причине, по которой стоит у остальных
- * панельных чтений, — и потому, что ответ живой: свободная память меняется
- * между двумя открытиями формы.
+ * Staff only: this describes the machine, not the room, and a student has
+ * nothing to learn from it. `no-store` for the same reason as on the other
+ * panel reads, and because the answer is live: free memory changes between
+ * two openings of the form.
  */
 import { operationalStatus } from '../ops/status.js'
 import { Router } from 'express'
@@ -30,11 +31,13 @@ export function instanceResourcesRoutes(): Router {
         res.set('Cache-Control', 'no-store').json({
           ...resources,
           /*
-           * Границы едут вместе с числами, а не считаются в браузере.
+           * The bounds travel with the numbers rather than being computed in
+           * the browser.
            *
-           * Считать их там значило бы завести вторую копию правила «оставь
-           * машине гигабайт»: сервер отвергает по своей, форма красит по
-           * своей, и расходятся они ровно в тот день, когда правило меняют.
+           * Computing them there would mean a second copy of the "leave the
+           * machine a gigabyte" rule: the server rejects by its copy, the form
+           * paints by its own, and they diverge on exactly the day the rule
+           * changes.
            */
           limits: { ...memoryBounds(), cpus: cpuBounds() },
         }),

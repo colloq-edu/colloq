@@ -1,16 +1,16 @@
 <script lang="ts">
   /**
-   * Полоса этапов под идущей посылкой: ПРИНЯТА · ОЧЕРЕДЬ · ЗАПУСК ТЕТРАДИ ·
-   * ПРОВЕРКА CSV · ОЦЕНКА.
+   * The strip of stages under a running submission: ACCEPTED · QUEUE ·
+   * RUNNING NOTEBOOK · CHECKING CSV · SCORING.
    *
-   * Она отвечает на единственный вопрос человека, который смотрит на таймер:
-   * «оно вообще движется или висит». Цвет пройденного — зелёный, текущего —
-   * ссылочный синий, будущего — бледный; трёх цветов хватает, потому что
-   * четвёртого состояния у этапа не бывает.
+   * It answers the only question of a person watching the timer: "is it
+   * moving at all or is it stuck". The colour of a passed stage is green, of
+   * the current one link blue, of future ones pale; three colours are
+   * enough, because a stage has no fourth state.
    *
-   * Только на десктопе. На телефоне её место занимает одна фраза («Выполняется
-   * ячейка 9 из 14»): пять подписей в 390 px складываются в два ряда и
-   * перестают читаться как одна линия.
+   * Desktop only. On a phone its place is taken by one sentence ("Running
+   * cell 9 of 14"): five captions in 390 px fold into two rows and stop
+   * reading as one line.
    */
   import type { SubmissionStage, SubmissionState } from '@shared/competitions'
   import { stageStrip } from '@/lib/competition-words'

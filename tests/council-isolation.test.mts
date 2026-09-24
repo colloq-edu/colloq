@@ -1,23 +1,25 @@
 /**
- * Личные копии данных на попытку консилиума — снизу, со стороны Python.
+ * Personal copies of data per council attempt — from below, from the Python
+ * side.
  *
- * Беда, ради которой всё это заведено, случилась на живом семинаре 19.09: в
- * задании стояла закомментированная строка `# data = data.dropna()`, один
- * человек её раскомментировал и запустил — и `data` стал другим у ВСЕХ,
- * включая тех, кто уже сдал. Прежняя уборка (снимок имён до попытки, снятие
- * новых после) не могла это поймать по устройству: перепривязка меняет имя,
- * которое БЫЛО, а `df.drop(..., inplace=True)` не меняет имён вовсе.
+ * The trouble all this exists for happened at a live seminar on 19 Sep 2026:
+ * the task had a commented-out line `# data = data.dropna()`, one person
+ * uncommented it and ran it — and `data` became different for EVERYONE,
+ * including those who had already submitted. The old clean-up (a snapshot of
+ * names before the attempt, removing the new ones after) could not catch this
+ * by design: rebinding changes a name that ALREADY EXISTED, and
+ * `df.drop(..., inplace=True)` changes no names at all.
  *
- * Поэтому здесь проверяется не форма исходника, а поведение: тот же кусок
- * Python, что уезжает в ядро комнаты, исполняется настоящим `python3` — вход,
- * попытка, выход, — и после выхода исходники обязаны быть целы до последнего
- * байта. Половина случаев не требует pandas и numpy вовсе (список, словарь,
- * множество), и она идёт всегда; таблицы и массивы — только если в этом
- * `python3` они есть.
+ * So what is tested here is not the shape of the source but the behaviour:
+ * the same piece of Python that goes into the room's kernel is executed by a
+ * real `python3` — entry, attempt, exit — and after the exit the originals
+ * must be intact down to the last byte. Half of the cases need neither pandas
+ * nor numpy (a list, a dict, a set), and that half always runs; tables and
+ * arrays only if this `python3` has them.
  *
- * `python3` может не оказаться (CI без Python, чужая машина) — тогда вся
- * нижняя половина пропускается, а верхняя, про сборку исходника и разбор
- * отчёта, остаётся: она чистая.
+ * `python3` may be missing (CI without Python, someone else's machine) — then
+ * the whole lower half is skipped, while the upper one, about building the
+ * source and parsing the report, stays: it is pure.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -41,62 +43,69 @@ import {
 } from '../server/src/kernel/council-isolation.js'
 import { guardPolicySource, GUARD_MODULE } from '../server/src/kernel/danger.js'
 
-/* ------------------------------------------------------------- исходники */
+/* --------------------------------------------------------------- sources */
 
-test('вход — три выражения, которые не связывают в ядре ни одного имени', () => {
+test('entry is three statements that bind not a single name in the kernel', () => {
   const source = councilEnterSource(1024 * 1024)
   const lines = source.split('\n')
   /*
-   * Третьим выражение стало 20.09, когда защита от опасных команд переехала из
-   * консилиума в общий модуль: первая строка ставит ЕЁ, вторая — изоляцию,
-   * третья входит. Порядок не вкусовой — вход тут же берёт защиту в удержание
-   * и без неё отказывается (IMPL · `_hold`).
+   * It became three statements on 20 Sep 2026, when the guard against
+   * dangerous commands moved from the council into a shared module: the first
+   * line installs THE GUARD, the second the isolation, the third enters. The
+   * order is not a matter of taste — the entry immediately takes hold of the
+   * guard and refuses without it (IMPL · `_hold`).
    */
-  assert.equal(lines.length, 3, 'вход перестал быть тремя выражениями')
-  assert.ok(lines[0].includes(JSON.stringify(GUARD_MODULE)), 'первой строкой ставится не защита')
+  assert.equal(lines.length, 3, 'entry is no longer three statements')
+  assert.ok(lines[0].includes(JSON.stringify(GUARD_MODULE)), 'the first line does not install the guard')
   /*
-   * Ни одного присваивания на верхнем уровне — в этом весь смысл `exec` в
-   * `__dict__` скрытого модуля. Появись здесь `import sys` или `m = ...`, вход
-   * сам бы нарушил обещание «пространство имён возвращается в точности к
-   * тому, что было»: его собственные имена остались бы у студента.
+   * Not a single assignment at the top level — that is the whole point of
+   * `exec` into the hidden module's `__dict__`. Were `import sys` or
+   * `m = ...` to appear here, the entry itself would break the promise "the
+   * namespace returns exactly to what it was": its own names would stay with
+   * the student.
    */
   for (const line of lines) {
-    assert.doesNotMatch(line, /^[A-Za-z_][A-Za-z0-9_]*\s*=[^=]/, `вход связал имя: ${line.slice(0, 40)}`)
-    assert.doesNotMatch(line, /^(import|from|def|class)\s/, `вход связал имя: ${line.slice(0, 40)}`)
+    assert.doesNotMatch(line, /^[A-Za-z_][A-Za-z0-9_]*\s*=[^=]/, `entry bound a name: ${line.slice(0, 40)}`)
+    assert.doesNotMatch(line, /^(import|from|def|class)\s/, `entry bound a name: ${line.slice(0, 40)}`)
   }
   /*
-   * Установка идёт через сверку версии, а не безусловно: исходник перевалил за
-   * двадцать килобайт, и `compile` на каждую попытку стоил бы полмиллисекунды
-   * ни за что. Версия — хеш самого исходника, поэтому новая сборка сервера
-   * переустановит модуль в уже живом ядре сама, без перезапуска комнаты.
+   * Installation goes through a version check, not unconditionally: the
+   * source has grown past twenty kilobytes, and a `compile` per attempt would
+   * cost half a millisecond for nothing. The version is a hash of the source
+   * itself, so a new server build reinstalls the module in an already live
+   * kernel on its own, without restarting the room.
    */
   for (const line of [lines[0], lines[1]]) {
     assert.match(line, /^if getattr\(__import__\('sys'\)\.modules\.get\(/)
     assert.match(line, /'version', None\) != "[0-9a-f]{12}": exec\(compile\(/)
   }
   assert.ok(lines[1].includes(JSON.stringify(COUNCIL_MODULE)))
-  // Версия внутри исходника и версия в сверке — одна и та же строка, иначе
-  // модуль переустанавливался бы на каждой попытке и молча.
+  // The version inside the source and the version in the check are one and
+  // the same string, otherwise the module would be reinstalled on every
+  // attempt, and silently.
   const stamp = /!= "([0-9a-f]{12})"/.exec(lines[1])![1]
-  assert.ok(lines[1].includes(`version = '${stamp}'`), 'версия в исходнике другая')
-  // Бюджет уезжает числом в самый запрос: ядро о конфигурации сервера не знает.
+  assert.ok(lines[1].includes(`version = '${stamp}'`), 'the version in the source is different')
+  // The budget travels as a number in the request itself: the kernel knows
+  // nothing about the server's configuration.
   assert.match(lines[2], /\.enter\(globals\(\), 1048576, \{/)
-  // Негодное число не превращается в NaN внутри Python: своё умолчание ближе.
+  // A bad number does not turn into NaN inside Python: our own default is
+  // closer at hand.
   assert.match(councilEnterSource(Number.NaN), /\.enter\(globals\(\), 536870912, \{/)
   assert.match(councilEnterSource(-1), /\.enter\(globals\(\), 536870912, \{/)
 
   /*
-   * Настройки — литералом в вызове, а не внутри исходника: текст отказа зависит
-   * от языка комнаты, а его меняют в панели посреди пары. Булево при этом —
-   * словом Python: `false` в ядре не значение, а NameError (наступали).
+   * The settings go as a literal in the call, not inside the source: the
+   * refusal text depends on the room's language, and that gets changed in the
+   * panel in the middle of a class. The boolean, meanwhile, is a Python word:
+   * `false` in the kernel is not a value but a NameError (we stepped on it).
    */
   assert.match(lines[2], /'memory': False\}?/)
   assert.match(councilEnterSource(1024, { memoryGuard: true }), /'memory': True/)
   assert.doesNotMatch(lines[2], /\b(false|true|null)\b/)
   /*
-   * Хвост отказа у попытки СВОЙ: в комнате он советует правило «Опасные
-   * команды», а здесь разрешить это не может никто — ядро одно на всех, и
-   * обещать обратное было бы неправдой.
+   * The refusal's tail is the attempt's OWN: in a room it points to the
+   * "Dangerous commands" rule, but here nobody can allow this — the kernel is
+   * one for everyone, and promising otherwise would be untrue.
    */
   setLocaleResolver(() => 'en')
   assert.match(councilEnterSource(1024), /never run: the whole room shares one kernel/)
@@ -106,18 +115,19 @@ test('вход — три выражения, которые не связыва
   assert.doesNotMatch(councilEnterSource(1024), /Разрешить такие команды/)
 })
 
-test('выход переживает отсутствие модуля — возвращать тогда нечего', () => {
-  // Ядро могли перезапустить между входом и выходом: модуля нет, KeyError —
-  // нормальный исход, и глушить его должен сам исходник, а не сервер.
+test('exit survives the module being absent — then there is nothing to return', () => {
+  // The kernel may have been restarted between entry and exit: no module, and
+  // a KeyError is a normal outcome, which the source itself must swallow, not
+  // the server.
   assert.match(COUNCIL_EXIT_SOURCE, /^try:/)
   assert.match(COUNCIL_EXIT_SOURCE, /except Exception:\n {4}pass$/)
   assert.ok(COUNCIL_EXIT_SOURCE.includes('.leave(globals())'))
   assert.ok(COUNCIL_REPORT_EXPR.includes(COUNCIL_MODULE))
 })
 
-/* ----------------------------------------------------------------- отчёт */
+/* ---------------------------------------------------------------- report */
 
-test('отчёт читается из mimebundle, а всё непонятное — это «не подтверждено»', () => {
+test('the report is read from the mimebundle, and anything unclear means "not confirmed"', () => {
   const body = { ok: true, copied: 3, skipped: [{ name: 'big', bytes: 42 }], failed: [], bytes: 7, ms: 4 }
   const bundle = { status: 'ok', data: { 'text/plain': JSON.stringify(body) }, metadata: {} }
   const parsed = parseCouncilReport(bundle)
@@ -126,30 +136,32 @@ test('отчёт читается из mimebundle, а всё непонятно�
   assert.equal(parsed?.bytes, 7)
   assert.deepEqual(parsed?.skipped, [{ name: 'big', bytes: 42 }])
 
-  // Та же строка без обёртки — так его читает тест, гоняющий python3 напрямую.
+  // The same string without the wrapper — that is how the test driving
+  // python3 directly reads it.
   assert.equal(parseCouncilReport(JSON.stringify(body))?.copied, 3)
 
   /*
-   * Всё остальное — `null`, и это главное свойство разбора: сервер по нему
-   * решает НЕ запускать попытку. Пустой объект — ровно то, что приезжает от
-   * ядра, когда вход упал: user_expressions на упавшем запуске не считаются.
+   * Everything else is `null`, and this is the main property of the parser:
+   * by it the server decides NOT to run the attempt. An empty object is
+   * exactly what comes from the kernel when the entry failed:
+   * user_expressions are not evaluated on a failed run.
    */
-  assert.equal(parseCouncilReport({}), null, 'пустой ответ сошёл за подтверждение')
+  assert.equal(parseCouncilReport({}), null, 'an empty answer passed for a confirmation')
   assert.equal(parseCouncilReport(undefined), null)
   assert.equal(parseCouncilReport({ status: 'error', ename: 'KeyError' }), null)
   assert.equal(parseCouncilReport({ status: 'ok', data: { 'text/plain': 'не json' } }), null)
   assert.equal(parseCouncilReport({ status: 'ok', data: { 'text/plain': '{"copied":1}' } }), null,
-    'отчёт без ok сошёл за подтверждение')
+    'a report without ok passed for a confirmation')
 
-  // Отказ входа — это отчёт, а не молчание: у него есть причина.
+  // An entry refusal is a report, not silence: it has a cause.
   const bad = parseCouncilReport('{"ok":false,"error":"MemoryError: ","copied":0,"ms":3}')
   assert.equal(bad?.ok, false)
   assert.equal(bad?.error, 'MemoryError: ')
 })
 
-/* ----------------------------------------------------------------- слова */
+/* ----------------------------------------------------------------- words */
 
-test('про оставшееся общим сказано по-человечески, не больше трёх строк и на двух языках', () => {
+test('what stayed shared is told in human words, in at most three lines and in two languages', () => {
   const report = (skipped: { name: string; bytes: number }[]): CouncilIsolationReport => ({
     ok: true, copied: 0, skipped, failed: [], bytes: 0, ms: 1, error: null,
   })
@@ -160,28 +172,30 @@ test('про оставшееся общим сказано по-человеч�
   assert.equal(one.length, 1)
   assert.match(one[0], /Переменная `big`/)
   assert.match(one[0], /1,2 ГБ/)
-  // Совет обязан быть исполнимым: имя подставлено с обеих сторон.
+  // The advice must be actionable: the name is filled in on both sides.
   assert.match(one[0], /big = big\.copy\(\)/)
-  // Строка идёт в stderr попытки — своим переводом строки, а не склейкой.
+  // The line goes to the attempt's stderr — with its own newline, not glued
+  // on.
   assert.ok(one[0].endsWith('\n'))
 
   const many = councilSkipNotes(report(
     ['a', 'b', 'c', 'd', 'e'].map((name) => ({ name, bytes: 5 * 1024 ** 2 })),
   ))
-  assert.equal(many.length, MAX_SKIP_NOTES + 1, 'предупреждения вытеснили бы сам ответ')
+  assert.equal(many.length, MAX_SKIP_NOTES + 1, 'the warnings would crowd out the answer itself')
   assert.match(many.at(-1)!, /и ещё 2 такие переменные/)
 
-  // Не влезло в бюджет и не скопировалось — для студента одно и то же: данные
-  // общие. Но размера у второго нет, и выдумывать его нельзя.
+  // Did not fit the budget or did not copy — for the student it is the same
+  // thing: the data is shared. But the second one has no size, and making one
+  // up is not allowed.
   const failed = councilSkipNotes({
     ok: true, copied: 0, skipped: [], bytes: 0, ms: 1, error: null,
     failed: [{ name: 'conn', error: 'TypeError: cannot pickle' }],
   })
   assert.equal(failed.length, 1)
   assert.match(failed[0], /`conn`/)
-  // Размера у неудачной копии нет, и выдумывать его нельзя.
-  assert.doesNotMatch(failed[0], /\(\d/, 'выдуманный размер')
-  // Обход, упёршийся в потолок узлов, — та же строка без числа.
+  // A failed copy has no size, and making one up is not allowed.
+  assert.doesNotMatch(failed[0], /\(\d/, 'a made-up size')
+  // A walk that hit the node ceiling — the same line without a number.
   const deep = councilSkipNotes(report([{ name: 'tree', bytes: SIZE_UNKNOWN }]))
   assert.equal(deep.length, 1)
   assert.doesNotMatch(deep[0], /\(\d/)
@@ -189,7 +203,7 @@ test('про оставшееся общим сказано по-человеч�
   assert.match(councilEnterRefusal(null), /Не удалось подготовить личные копии/)
   assert.match(councilEnterRefusal(null), /ядро не подтвердило/)
   assert.match(councilEnterRefusal('MemoryError'), /MemoryError/)
-  assert.doesNotMatch(councilEnterRefusal('MemoryError'), /\n/, 'отказ перестал быть одной строкой')
+  assert.doesNotMatch(councilEnterRefusal('MemoryError'), /\n/, 'the refusal is no longer a single line')
 
   setLocaleResolver(() => 'en')
   assert.match(councilSkipNotes(report([{ name: 'big', bytes: 3 * 1024 ** 2 }]))[0], /too large to copy/)
@@ -200,19 +214,21 @@ test('про оставшееся общим сказано по-человеч�
   setLocaleResolver(() => 'ru')
 
   /*
-   * MemoryError под нашим потолком — это спасённое занятие, и говорить о нём
-   * надо так, чтобы студент понял: упал он, а не комната. Число обязательно:
-   * без него совет «уменьшите объём» не на что опереть.
+   * A MemoryError under our ceiling is a class saved, and it has to be told
+   * so that the student understands: it was they who fell over, not the room.
+   * The number is required: without it the advice "reduce the size" has
+   * nothing to lean on.
    */
   assert.match(councilMemoryNote(2 * 1024 ** 3), /не хватило памяти/)
   assert.match(councilMemoryNote(2 * 1024 ** 3), /2 ГБ/)
   assert.match(councilMemoryNote(2 * 1024 ** 3), /Ядро и данные остальных целы/)
-  // Потолка не было (не Linux, рядом CUDA) — та же мысль, но без выдуманного числа.
+  // There was no ceiling (not Linux, CUDA alongside) — the same thought, but
+  // without a made-up number.
   assert.doesNotMatch(councilMemoryNote(null), /\d/)
   assert.match(councilMemoryNote(null), /Ядро и данные остальных целы/)
 })
 
-/* ------------------------------------------------- настоящий python3 */
+/* ---------------------------------------------------- a real python3 */
 
 const python = (() => {
   const probe = spawnSync('python3', ['-c', 'import sys; print(sys.version_info[0])'], {
@@ -222,35 +238,37 @@ const python = (() => {
 })()
 
 interface Drive {
-  /** Что вошло в `setup`, ушло в `enter`, пережило попытку и вернулось выходом. */
+  /** What went into `setup`, went through `enter`, survived the attempt and was returned by the exit. */
   setup: string
   attempt: string
-  /** Выражение Python, которое считают в `ns` ПОСЛЕ выхода и кладут в JSON. */
+  /** A Python expression evaluated in `ns` AFTER the exit and put into JSON. */
   probe: string
   budget?: number
-  /** Второй вход подряд, без выхода между ними: прошлый выход не дошёл. */
+  /** A second entry in a row, with no exit in between: the previous exit never arrived. */
   twice?: boolean
   /**
-   * Правило комнаты «Опасные команды», объявленное ядру ДО входа.
+   * The room's "Dangerous commands" rule, declared to the kernel BEFORE the
+   * entry.
    *
-   * С 20.09 защита от `exit()` и `os._exit()` у консилиума не своя: он держит
-   * включённой общую (danger.ts), и после выхода она остаётся ровно такой,
-   * какой её велело правило. Не сказано ничего — умолчание самой защиты,
-   * то есть «не исполняются».
+   * Since 20 Sep 2026 the guard against `exit()` and `os._exit()` is not the
+   * council's own: the council keeps the shared one (danger.ts) switched on,
+   * and after the exit the guard stays exactly as the rule told it to be.
+   * Nothing said means the guard's own default, that is, "Blocked".
    */
   policy?: boolean
 }
 
 /**
- * Один прогон настоящим python3: setup → вход → попытка → выход → проба.
+ * One run on a real python3: setup → entry → attempt → exit → probe.
  *
- * `ns` — обычный словарь, и это честная замена user_ns: IPython исполняет
- * ячейку ровно так же, с `globals()`, равным ему. Исключение попытки ловится
- * и называется, но выход отрабатывает в любом случае — как и на сервере.
+ * `ns` is a plain dict, and it is an honest stand-in for user_ns: IPython
+ * executes a cell in exactly the same way, with `globals()` equal to it. An
+ * exception in the attempt is caught and named, but the exit runs in any
+ * case — just as on the server.
  */
 interface Drove {
   report: any
-  /** Отчёт выхода: что вернуть было нечем. `null` — хвостов не осталось. */
+  /** The exit's report: what it had no way to put back. `null` means nothing was left behind. */
   left: any
   after: any
   failure: string | null
@@ -285,15 +303,15 @@ function drive(what: Drive): Drove {
       + " 'names': sorted(k for k in ns if k not in ('__builtins__', '__name__'))}))",
   ].join('\n')
   const run = spawnSync(python!, ['-'], { input: script, encoding: 'utf8' })
-  assert.equal(run.status, 0, `python3 упал: ${run.stderr}`)
+  assert.equal(run.status, 0, `python3 crashed: ${run.stderr}`)
   const line = run.stdout.split('\n').find((l) => l.startsWith('@@'))
-  assert.ok(line, `нет ответа: ${run.stdout} ${run.stderr}`)
+  assert.ok(line, `no answer: ${run.stdout} ${run.stderr}`)
   return JSON.parse(line.slice(2))
 }
 
-const noPython = python ? false : 'нет python3'
+const noPython = python ? false : 'no python3'
 
-test('перепривязка, мутация и новое имя не переживают попытку — настоящим python3', { skip: noPython }, () => {
+test('rebinding, mutation and a new name do not survive the attempt — on a real python3', { skip: noPython }, () => {
   const out = drive({
     setup: [
       'lst = [1, 2, 3]',
@@ -304,11 +322,11 @@ test('перепривязка, мутация и новое имя не пер�
       'shared = [7]',
       'a = shared',
       'b = shared',
-      // Кортеж неизменяем сам, а список внутри него — нет.
+      // A tuple is immutable itself, but the list inside it is not.
       'pair = ([1], "x")',
     ].join('\n'),
     attempt: [
-      // Перепривязка: та самая строка семинара, только на списке.
+      // Rebinding: that very line from the seminar, only on a list.
       'lst = lst + [9]',
       "d['k'] = 2",
       "d['new'] = 3",
@@ -316,10 +334,10 @@ test('перепривязка, мутация и новое имя не пер�
       'ba.extend(b"xyz")',
       "nested['inner'].append(4)",
       "nested['deep']['q'] = 9",
-      // Два имени на один объект — и внутри попытки они обязаны остаться одним.
-      "assert a is b, 'копии разъехались'",
+      // Two names for one object — and inside the attempt they must stay one.
+      "assert a is b, 'copies drifted apart'",
       'a.append(8)',
-      "assert b == [7, 8], 'изменение через a не видно через b'",
+      "assert b == [7, 8], 'a change through a is not visible through b'",
       'pair[0].append(2)',
       'secret = 42',
     ].join('\n'),
@@ -327,22 +345,22 @@ test('перепривязка, мутация и новое имя не пер�
       + " 'a': a, 'b': b, 'same': a is b and a is shared, 'pair': list(pair[0])}",
   })
   assert.equal(out.report.ok, true)
-  assert.equal(out.failure, null, `попытка упала: ${out.failure}`)
-  assert.deepEqual(out.after.lst, [1, 2, 3], 'перепривязка не откатилась')
-  assert.deepEqual(out.after.d, { k: 1 }, 'словарь испорчен')
-  assert.deepEqual(out.after.st, [1, 2], 'множество испорчено')
-  assert.equal(out.after.ba, 'abc', 'bytearray испорчен')
-  assert.deepEqual(out.after.nested, { inner: [1, 2], deep: { q: 3 } }, 'вложенное испорчено')
-  assert.deepEqual(out.after.a, [7], 'общий объект испорчен')
-  assert.deepEqual(out.after.pair, [1], 'список внутри кортежа испорчен')
-  assert.equal(out.after.same, true, 'после выхода имена разъехались по разным объектам')
-  assert.ok(!out.names.includes('secret'), 'новое имя пережило попытку')
-  // И ни одного собственного имени вход с выходом после себя не оставили.
+  assert.equal(out.failure, null, `the attempt failed: ${out.failure}`)
+  assert.deepEqual(out.after.lst, [1, 2, 3], 'the rebinding was not rolled back')
+  assert.deepEqual(out.after.d, { k: 1 }, 'the dict is corrupted')
+  assert.deepEqual(out.after.st, [1, 2], 'the set is corrupted')
+  assert.equal(out.after.ba, 'abc', 'the bytearray is corrupted')
+  assert.deepEqual(out.after.nested, { inner: [1, 2], deep: { q: 3 } }, 'the nested value is corrupted')
+  assert.deepEqual(out.after.a, [7], 'the shared object is corrupted')
+  assert.deepEqual(out.after.pair, [1], 'the list inside the tuple is corrupted')
+  assert.equal(out.after.same, true, 'after the exit the names drifted apart onto different objects')
+  assert.ok(!out.names.includes('secret'), 'the new name survived the attempt')
+  // And the entry and the exit left not a single name of their own behind.
   assert.ok(!out.names.some((n) => n.startsWith('_colloq')), out.names.join(','))
   assert.deepEqual(out.names, ['a', 'b', 'ba', 'd', 'lst', 'nested', 'pair', 'shared', 'st'])
 })
 
-test('исключение и KeyboardInterrupt посреди попытки не мешают выходу', { skip: noPython }, () => {
+test('an exception or KeyboardInterrupt in the middle of an attempt does not stop the exit', { skip: noPython }, () => {
   for (const boom of ['raise ValueError("бум")', 'raise KeyboardInterrupt()']) {
     const out = drive({
       setup: 'lst = [1, 2, 3]',
@@ -350,12 +368,12 @@ test('исключение и KeyboardInterrupt посреди попытки н
       probe: 'lst',
     })
     assert.equal(out.report.ok, true)
-    assert.deepEqual(out.after, [1, 2, 3], `выход не отработал после ${boom}`)
+    assert.deepEqual(out.after, [1, 2, 3], `the exit did not run after ${boom}`)
   }
 })
 
-test('объект сверх бюджета назван в отчёте и остаётся общим', { skip: noPython }, () => {
-  // Бюджет в сотню байт: под него не подходит ни один настоящий список.
+test('an object over the budget is named in the report and stays shared', { skip: noPython }, () => {
+  // A budget of a hundred bytes: no real list fits under it.
   const out = drive({
     setup: 'big = list(range(5000))\nsmall = [1]',
     attempt: 'big.append(-1)\nsmall.append(2)',
@@ -364,37 +382,37 @@ test('объект сверх бюджета назван в отчёте и о�
   })
   assert.equal(out.report.ok, true)
   assert.deepEqual(out.report.skipped.map((r: { name: string }) => r.name), ['big'])
-  assert.ok(out.report.skipped[0].bytes > 100, 'размер в отчёте не назван')
-  assert.equal(out.after.big, -1, 'сверхбюджетный объект оказался копией')
-  assert.deepEqual(out.after.small, [1], 'мелкий объект не получил копии')
+  assert.ok(out.report.skipped[0].bytes > 100, 'the report does not name the size')
+  assert.equal(out.after.big, -1, 'the over-budget object turned out to be a copy')
+  assert.deepEqual(out.after.small, [1], 'the small object did not get a copy')
 })
 
-test('повторный вход без выхода не теряет исходники', { skip: noPython }, () => {
+test('a second entry without an exit does not lose the originals', { skip: noPython }, () => {
   const out = drive({
     setup: 'lst = [1, 2, 3]',
     attempt: 'lst.append(9)',
     probe: 'lst',
     twice: true,
   })
-  assert.deepEqual(out.after, [1, 2, 3], 'повторный вход запомнил копию как исходник')
+  assert.deepEqual(out.after, [1, 2, 3], 'the second entry remembered the copy as the original')
 })
 
-test('каталог возвращается вместе с именами', { skip: noPython }, () => {
+test('the working directory comes back together with the names', { skip: noPython }, () => {
   const out = drive({
     setup: 'import os as _os\nwas = _os.getcwd()',
     attempt: "import os\nos.chdir('/')",
     probe: '_os.getcwd() == was',
   })
-  assert.equal(out.after, true, 'каталог не вернулся')
+  assert.equal(out.after, true, 'the working directory did not come back')
 })
 
-/* ----------------------------------------------- pandas и numpy, если есть */
+/* -------------------------------------------- pandas and numpy, if present */
 
 const hasPandas = python !== null &&
   spawnSync(python, ['-c', 'import pandas, numpy'], { encoding: 'utf8' }).status === 0
 
-test('таблица и массив: dropna, inplace и запись по индексу не доходят до следующего',
-  { skip: hasPandas ? false : 'нет pandas/numpy' }, () => {
+test('a table and an array: dropna, inplace and writes by index do not reach the next person',
+  { skip: hasPandas ? false : 'no pandas/numpy' }, () => {
     const out = drive({
       setup: [
         'import pandas as pd',
@@ -406,9 +424,9 @@ test('таблица и массив: dropna, inplace и запись по ин�
         "box = {'inner': pd.DataFrame({'z': [1, 2]})}",
       ].join('\n'),
       attempt: [
-        // Ровно то, что случилось на семинаре 19.09.
+        // Exactly what happened at the seminar on 19 Sep 2026.
         'data = data.dropna()',
-        "assert len(data) == 2, 'попытка не увидела свою копию'",
+        "assert len(data) == 2, 'the attempt did not see its copy'",
         "df.drop(columns=['b'], inplace=True)",
         "df['x'] = 1",
         'df.iloc[0, 0] = 999',
@@ -420,50 +438,53 @@ test('таблица и массив: dropna, inplace и запись по ин�
         + " 'arr0': int(arr[0]), 'box': list(box['inner'].columns)}",
     })
     assert.equal(out.report.ok, true)
-    assert.equal(out.failure, null, `попытка упала: ${out.failure}`)
-    assert.ok(out.report.copied >= 5, `скопировано слишком мало: ${out.report.copied}`)
-    assert.equal(out.after.data, 3, 'перепривязка таблицы не откатилась')
-    assert.deepEqual(out.after.cols, ['a', 'b'], 'inplace-удаление колонки доехало до исходника')
-    assert.equal(out.after.s0, 1, 'запись в Series доехала до исходника')
-    assert.equal(out.after.arr0, 0, 'запись в ndarray доехала до исходника')
-    assert.deepEqual(out.after.box, ['z'], 'вложенная таблица испорчена')
-    // Модули не копируются: копия numpy стоила бы дорого и не значила бы ничего.
+    assert.equal(out.failure, null, `the attempt failed: ${out.failure}`)
+    assert.ok(out.report.copied >= 5, `too little was copied: ${out.report.copied}`)
+    assert.equal(out.after.data, 3, 'the table rebinding was not rolled back')
+    assert.deepEqual(out.after.cols, ['a', 'b'], 'the inplace column drop reached the original')
+    assert.equal(out.after.s0, 1, 'the write into the Series reached the original')
+    assert.equal(out.after.arr0, 0, 'the write into the ndarray reached the original')
+    assert.deepEqual(out.after.box, ['z'], 'the nested table is corrupted')
+    // Modules are not copied: a copy of numpy would cost a lot and mean
+    // nothing.
     assert.ok(out.names.includes('np') && out.names.includes('pd'))
   })
 
-/* --------------------------------------- разрушительные приёмы и процесс */
+/* ------------------------------------ destructive tricks and the process */
 
 /**
- * «Кто-то сделает X, и всем конец» — список, собранный по живому семинару.
+ * "Someone will do X, and it is over for everyone" — a list collected at a
+ * live seminar.
  *
- * Каждая строка здесь закрыта одним и тем же движением: снимок до попытки,
- * возврат после. Ценность теста в том, что он гоняет НАСТОЯЩИЙ python3 —
- * половина этих случаев ломает сам возврат, если написать его неаккуратно
- * (подменённый `builtins.list` в своё время ронял выход целиком).
+ * Every line here is closed by one and the same move: a snapshot before the
+ * attempt, a restore after. The value of the test is that it runs a REAL
+ * python3 — half of these cases break the restore itself if it is written
+ * carelessly (a replaced `builtins.list` once brought the whole exit down).
  */
-test('del, globals().clear() и затенение встроенных не переживают попытку', { skip: noPython }, () => {
+test('del, globals().clear() and shadowed builtins do not survive the attempt', { skip: noPython }, () => {
   const out = drive({
     setup: 'df = [1, 2, 3]\nkeep = {"a": 1}',
     attempt: 'del df\nlist = "сломал"\nlen = None\nsecret = 1',
     probe: "{'df': df, 'keep': keep}",
   })
-  assert.deepEqual(out.after.df, [1, 2, 3], 'del df не вернулся')
-  assert.deepEqual(out.names, ['df', 'keep'], 'затенение встроенных или новое имя пережили попытку')
+  assert.deepEqual(out.after.df, [1, 2, 3], 'del df was not restored')
+  assert.deepEqual(out.names, ['df', 'keep'], 'shadowed builtins or a new name survived the attempt')
 
   const wiped = drive({
     setup: 'df = [1, 2, 3]\nkeep = {"a": 1}',
     attempt: 'globals().clear()',
     probe: "{'df': df, 'keep': keep}",
   })
-  assert.deepEqual(wiped.after, { df: [1, 2, 3], keep: { a: 1 } }, 'globals().clear() унёс комнату')
+  assert.deepEqual(wiped.after, { df: [1, 2, 3], keep: { a: 1 } }, 'globals().clear() took the room away with it')
 })
 
-test('подменённые builtins возвращаются — и не ломают сам возврат', { skip: noPython }, () => {
+test('replaced builtins come back — and do not break the restore itself', { skip: noPython }, () => {
   /*
-   * Здесь возврат чинит то, чем сам пользуется. Пока он звал `list(ns)` из
-   * builtins, попытка с `builtins.list = "сломал"` роняла выход на первой
-   * строке, состояние оставалось подменённым, а следующий вход запоминал
-   * чужие копии как исходники. Проверено — падало именно так.
+   * Here the restore repairs what it uses itself. While it called `list(ns)`
+   * from builtins, an attempt with `builtins.list = "..."` brought the exit
+   * down on its first line, the state stayed replaced, and the next entry
+   * remembered someone else's copies as originals. Verified — it failed
+   * exactly like that.
    */
   const out = drive({
     setup: 'df = [1, 2, 3]',
@@ -471,16 +492,17 @@ test('подменённые builtins возвращаются — и не ло�
     probe: "{'list_ok': __import__('builtins').list is list, 'len_ok': __import__('builtins').len is len,"
       + " 'no_new': not hasattr(__import__('builtins'), 'ПОДКИНУТО'), 'df': df}",
   })
-  assert.equal(out.after.list_ok, true, 'builtins.list остался подменённым')
-  assert.equal(out.after.len_ok, true, 'builtins.len остался подменённым')
-  assert.equal(out.after.no_new, true, 'подкинутое имя осталось в builtins')
-  assert.deepEqual(out.after.df, [1, 2, 3], 'возврат имён не доработал после битых builtins')
+  assert.equal(out.after.list_ok, true, 'builtins.list stayed replaced')
+  assert.equal(out.after.len_ok, true, 'builtins.len stayed replaced')
+  assert.equal(out.after.no_new, true, 'the planted name stayed in builtins')
+  assert.deepEqual(out.after.df, [1, 2, 3], 'restoring the names did not finish after broken builtins')
 })
 
-test('exit() и quit() в попытке отказывают, а не гасят ядро комнате', { skip: noPython }, () => {
-  // В ipykernel это `shell.ask_exit()` — конец процесса и потеря переменных у
-  // ВСЕХ; воспроизведено на живом ядре. В голом python оболочки нет, поэтому
-  // здесь проверяются сами имена, а автовызов IPython — приёмкой на ядре.
+test('exit() and quit() in an attempt refuse instead of shutting down the room\'s kernel', { skip: noPython }, () => {
+  // In ipykernel this is `shell.ask_exit()` — the end of the process and lost
+  // variables for EVERYONE; reproduced on a live kernel. Plain python has no
+  // shell, so the names themselves are checked here, and IPython's autocall
+  // by an acceptance test on a kernel.
   const out = drive({
     setup: 'df = [1]',
     attempt: 'try:\n    exit()\nexcept BaseException as e:\n    caught = type(e).__name__\n'
@@ -489,67 +511,75 @@ test('exit() и quit() в попытке отказывают, а не гася�
     probe: "{'names': sorted(k for k in globals() if k in ('exit', 'quit')), 'df': df}",
   })
   assert.equal(out.failure, null, out.failure ?? '')
-  assert.deepEqual(out.after.names, [], 'exit/quit остались в пространстве после выхода')
+  assert.deepEqual(out.after.names, [], 'exit/quit stayed in the namespace after the exit')
 })
 
 /**
- * Тот самый `os._exit(0)`, который 20.09 девять раз унёс ядро у тридцати человек.
+ * That very `os._exit(0)` which on 20 Sep 2026 took the kernel away from
+ * thirty people nine times.
  *
- * Тест устроен так, что мимо него эта беда не проходит физически: если
- * `os._exit` сработает, python кончится молча, до `print('@@'...)` дело не
- * дойдёт, и `drive` упадёт на «нет ответа». То есть проверяется не форма
- * отказа, а ровно то, что процесс ЖИВ — единственное, что в тот день имело
- * значение. `os.abort()` рядом: он гасит так же, только через SIGABRT.
+ * The test is built so that this trouble physically cannot slip past it: if
+ * `os._exit` fires, python ends silently, `print('@@'...)` is never reached,
+ * and `drive` fails with "no answer". So what is checked is not the shape of
+ * the refusal but exactly that the process is ALIVE — the only thing that
+ * mattered that day. `os.abort()` sits alongside: it kills the same way, only
+ * through SIGABRT.
  *
- * И вторая половина, не менее важная: после выхода `os._exit` обязан быть
- * НАСТОЯЩИМ. Оставить в общем модуле `os` наш отказ значило бы сломать
- * `multiprocessing` всей комнате — и не на попытке, а навсегда.
+ * And the second half, no less important: after the exit `os._exit` must be
+ * the REAL one. Leaving our refusal in the shared `os` module would mean
+ * breaking `multiprocessing` for the whole room — not for the attempt, but
+ * for good.
  */
-test('os._exit() в попытке отказывает, а не гасит ядро комнате', { skip: noPython }, () => {
+test('os._exit() in an attempt refuses instead of shutting down the room\'s kernel', { skip: noPython }, () => {
   const out = drive({
     setup: 'df = [1]',
-    // Ровно та попытка, что стояла в комнате d8uf9ewe 20.09 — две строки.
+    // Exactly the attempt that stood in room d8uf9ewe on 20 Sep 2026 — two
+    // lines.
     attempt: 'import os\nos._exit(0)',
     probe: "{'alive': True, 'df': df}",
   })
-  // Дошли сюда — значит, python досчитал до печати ответа, то есть выжил.
-  assert.equal(out.after.alive, true, 'попытка унесла процесс с собой')
-  assert.deepEqual(out.after.df, [1], 'данные комнаты не пережили попытку')
-  // Имя отказа — то, по которому сервер печатает одну строку вместо трейсбека.
-  assert.match(out.failure ?? '', /^ColloqRefused: /, `вместо отказа: ${out.failure}`)
+  // We got here, so python made it to printing the answer, that is, it
+  // survived.
+  assert.equal(out.after.alive, true, 'the attempt took the process down with it')
+  assert.deepEqual(out.after.df, [1], 'the room\'s data did not survive the attempt')
+  // The refusal's name is what the server goes by to print one line instead
+  // of a traceback.
+  assert.match(out.failure ?? '', /^ColloqRefused: /, `instead of a refusal: ${out.failure}`)
   assert.match(out.failure ?? '', /os\._exit/)
 })
 
-test('os.abort() в попытке отказывает так же', { skip: noPython }, () => {
+test('os.abort() in an attempt refuses the same way', { skip: noPython }, () => {
   const out = drive({
     setup: 'df = [1]',
     attempt: 'import os\nos.abort()',
     probe: "{'alive': True}",
   })
-  assert.equal(out.after.alive, true, 'os.abort() унёс процесс с собой')
-  assert.match(out.failure ?? '', /^ColloqRefused: /, `вместо отказа: ${out.failure}`)
+  assert.equal(out.after.alive, true, 'os.abort() took the process down with it')
+  assert.match(out.failure ?? '', /^ColloqRefused: /, `instead of a refusal: ${out.failure}`)
 })
 
 /**
- * Вложенность: попытка держит защиту ПОВЕРХ правила, и выход возвращает ровно
- * то, что правило и говорит.
+ * Nesting: the attempt holds the guard ON TOP of the rule, and the exit
+ * restores exactly what the rule says.
  *
- * До 20.09 у консилиума была своя копия отказа, и после выхода `os._exit`
- * обязан был стать настоящим — иначе `multiprocessing` ломался бы всей
- * комнате навсегда. Теперь копия одна (danger.ts), и обещание стало точнее:
- * при правиле «исполняются» после попытки возвращаются НАСТОЯЩИЕ функции, при
- * «не исполняются» защита остаётся стоять — она и должна стоять, это правило
- * комнаты, а не свойство попытки.
+ * Before 20 Sep 2026 the council had its own copy of the refusal, and after
+ * the exit `os._exit` had to become the real one again — otherwise
+ * `multiprocessing` would break for the whole room for good. Now there is one
+ * copy (danger.ts), and the promise has become more precise: with the rule
+ * set to "Allowed", the REAL functions come back after the attempt; with
+ * "Blocked", the guard stays in place — and it should, this is the room's
+ * rule, not a property of the attempt.
  *
- * Проверяется поимённо, потому что ошибиться здесь можно молча в обе стороны:
- * забытый отказ в общем `os` — это сломанный joblib до конца пары, а снятая
- * защита — ровно та дыра, ради которой всё писалось.
+ * Checked name by name, because one can go wrong here silently in both
+ * directions: a forgotten refusal in the shared `os` is joblib broken until
+ * the end of the class, and a removed guard is exactly the hole all of this
+ * was written for.
  */
-test('после выхода функции возвращаются по правилу комнаты, а не по попытке',
+test('after the exit the functions come back according to the room\'s rule, not the attempt',
   { skip: noPython }, () => {
     const allowed = drive({
-      // Записка про то, что видела попытка, кладётся в sys.modules: имена,
-      // заведённые попыткой, выход снимает, а туда он не смотрит.
+      // The note about what the attempt saw goes into sys.modules: the exit
+      // removes the names the attempt created, but it does not look there.
       setup: 'import os, signal, sys, types\n'
         + "sys.modules['_probe'] = types.ModuleType('_probe')\n"
         + 'real = (os._exit, os.abort, os.kill, signal.raise_signal)',
@@ -559,16 +589,16 @@ test('после выхода функции возвращаются по пр�
       policy: false,
     })
     assert.equal(allowed.failure, null, allowed.failure ?? '')
-    assert.equal(allowed.after.held, true, 'внутри попытки защиты не было — класс уронить можно')
+    assert.equal(allowed.after.held, true, 'there was no guard inside the attempt — the class can be brought down')
     assert.equal(
       allowed.after.restored,
       true,
-      'при правиле «исполняются» подмена пережила попытку — это сломает multiprocessing навсегда',
+      'with the rule set to "Allowed" the replacement survived the attempt — this breaks multiprocessing for good',
     )
 
     const blocked = drive({
-      // Записка про то, что видела попытка, кладётся в sys.modules: имена,
-      // заведённые попыткой, выход снимает, а туда он не смотрит.
+      // The note about what the attempt saw goes into sys.modules: the exit
+      // removes the names the attempt created, but it does not look there.
       setup: 'import os, signal, sys, types\n'
         + "sys.modules['_probe'] = types.ModuleType('_probe')\n"
         + 'real = (os._exit, os.abort, os.kill, signal.raise_signal)',
@@ -578,15 +608,15 @@ test('после выхода функции возвращаются по пр�
       policy: true,
     })
     assert.equal(blocked.failure, null, blocked.failure ?? '')
-    assert.equal(blocked.after.held, true, 'внутри попытки защиты не было')
+    assert.equal(blocked.after.held, true, 'there was no guard inside the attempt')
     assert.equal(
       blocked.after.guarded,
       true,
-      'выход из попытки снял защиту комнаты — а правило её как раз и требует',
+      'the exit from the attempt removed the room\'s guard — and the rule requires exactly that guard',
     )
   })
 
-test('состояние процесса возвращается: ГСЧ, потоки вывода, путь, окружение', { skip: noPython }, () => {
+test('process state comes back: the RNG, output streams, the path, the environment', { skip: noPython }, () => {
   const out = drive({
     setup: 'import random, sys, os, warnings, decimal\n'
       + 'random.seed(1234)\n'
@@ -618,38 +648,39 @@ test('состояние процесса возвращается: ГСЧ, по
       + " 'trace': sys.gettrace() is None,"
       + " 'prec': decimal.getcontext().prec == prec_was}",
   })
-  assert.equal(out.after.rng, true, 'поток случайных чисел сдвинут попыткой')
-  assert.equal(out.after.stdout, true, 'sys.stdout остался подменённым — вывод сломан у всех')
-  assert.equal(out.after.path, true, 'sys.path остался с чужой записью')
-  assert.equal(out.after.env_keep, 'да', 'os.environ испорчено')
-  assert.equal(out.after.env_new, false, 'подкинутая переменная окружения осталась')
-  assert.equal(out.after.filters, true, 'фильтры предупреждений остались чужими')
-  assert.equal(out.after.reclimit, true, 'предел рекурсии остался чужим')
-  assert.equal(out.after.trace, true, 'трассировщик попытки остался включённым')
-  assert.equal(out.after.prec, true, 'контекст decimal остался чужим')
+  assert.equal(out.after.rng, true, 'the random number stream was shifted by the attempt')
+  assert.equal(out.after.stdout, true, 'sys.stdout stayed replaced — output is broken for everyone')
+  assert.equal(out.after.path, true, 'sys.path kept someone else\'s entry')
+  assert.equal(out.after.env_keep, 'да', 'os.environ is corrupted')
+  assert.equal(out.after.env_new, false, 'the planted environment variable stayed')
+  assert.equal(out.after.filters, true, 'the warning filters stayed someone else\'s')
+  assert.equal(out.after.reclimit, true, 'the recursion limit stayed someone else\'s')
+  assert.equal(out.after.trace, true, 'the attempt\'s tracer stayed switched on')
+  assert.equal(out.after.prec, true, 'the decimal context stayed someone else\'s')
 })
 
-test('поток, оставленный попыткой, посчитан выходом — остановить его нечем', { skip: noPython }, () => {
+test('a thread left by the attempt is counted by the exit — there is nothing to stop it with', { skip: noPython }, () => {
   const out = drive({
     setup: 'x = 1',
     attempt: 'import threading\nev = threading.Event()\n'
       + 'threading.Thread(target=lambda: ev.wait(20), daemon=True).start()',
     probe: 'x',
   })
-  assert.equal(out.left?.threads, 1, `отчёт выхода: ${JSON.stringify(out.left)}`)
-  // И ровно то же в словах, которые увидит преподаватель.
+  assert.equal(out.left?.threads, 1, `exit report: ${JSON.stringify(out.left)}`)
+  // And exactly the same in the words the teacher will see.
   setLocaleResolver(() => 'ru')
   const notes = councilLeftoverNotes(parseCouncilLeftovers(JSON.stringify(out.left)))
   assert.equal(notes.length, 1)
   assert.match(notes[0], /остался работать 1 поток/)
 
-  // А без хвостов приписки нет вовсе: пустой отчёт — это не новость.
+  // And with nothing left behind there is no note at all: an empty report is
+  // not news.
   const quiet = drive({ setup: 'x = 1', attempt: 'y = 2', probe: 'x' })
   assert.equal(parseCouncilLeftovers(JSON.stringify(quiet.left)), null)
 })
 
-test('numpy, pandas и их генераторы возвращаются вместе с остальным',
-  { skip: hasPandas ? false : 'нет pandas/numpy' }, () => {
+test('numpy, pandas and their generators come back together with the rest',
+  { skip: hasPandas ? false : 'no pandas/numpy' }, () => {
     const out = drive({
       setup: 'import numpy as np, pandas as pd\n'
         + 'np.random.seed(7)\nwas = list(np.random.rand(3))\nnp.random.seed(7)\n'
@@ -667,21 +698,21 @@ test('numpy, pandas и их генераторы возвращаются вме
         + " 'pandas': pd.get_option('display.width') == width_was,"
         + " 'generator': list(rng.random(3)) == first}",
     })
-    assert.equal(out.after.rng, true, 'numpy: поток случайных чисел сдвинут попыткой')
-    assert.equal(out.after.print, true, 'numpy printoptions остались чужими')
-    assert.equal(out.after.pandas, true, 'опции pandas остались чужими')
-    // Generator в переменной — тоже состояние: без личной копии одинаковые
-    // попытки давали бы разные числа в зависимости от очереди.
-    assert.equal(out.after.generator, true, 'np.random.Generator оказался общим')
+    assert.equal(out.after.rng, true, 'numpy: the random number stream was shifted by the attempt')
+    assert.equal(out.after.print, true, 'numpy printoptions stayed someone else\'s')
+    assert.equal(out.after.pandas, true, 'pandas options stayed someone else\'s')
+    // A Generator in a variable is state too: without a personal copy,
+    // identical attempts would give different numbers depending on the queue.
+    assert.equal(out.after.generator, true, 'np.random.Generator turned out to be shared')
   })
 
-/* ------------------------------------------------ torch, если он есть */
+/* -------------------------------------------------- torch, if present */
 
 const hasTorch = python !== null &&
   spawnSync(python, ['-c', 'import torch'], { encoding: 'utf8' }).status === 0
 
-test('тензоры, модель и оптимизатор — личные, и оптимизатор смотрит на свою модель',
-  { skip: hasTorch ? false : 'нет torch' }, () => {
+test('tensors, the model and the optimizer are personal, and the optimizer looks at its own model',
+  { skip: hasTorch ? false : 'no torch' }, () => {
     for (const order of ['model', 'opt'] as const) {
       const out = drive({
         setup: 'import torch, torch.nn as nn\n'
@@ -694,30 +725,31 @@ test('тензоры, модель и оптимизатор — личные, �
             : 'model0 = nn.Linear(4, 2)\nopt = torch.optim.SGD(model0.parameters(), lr=1.0)\nmodel = model0\ndel model0\n')
           + 'was = float(model.weight[0][0])',
         attempt: 'import torch\nt[0] = 7\nt.add_(1)\nbag[0][0] = 5\n'
-          + "assert a is b, 'тензоры разъехались'\na[0] = 9\n"
+          + "assert a is b, 'tensors drifted apart'\na[0] = 9\n"
           + 'out = model(torch.ones(1, 4)).sum()\nopt.zero_grad()\nout.backward()\nopt.step()\n'
-          + "assert opt.param_groups[0]['params'][0] is model.weight, 'оптимизатор смотрит не на свою модель'\n"
+          + "assert opt.param_groups[0]['params'][0] is model.weight, 'the optimizer is not looking at its own model'\n"
           + 'moved = float(model.weight[0][0])',
         probe: "{'t': float(t[0]), 'bag': float(bag[0][0]), 'shared': float(a[0]),"
           + " 'same': a is b, 'weight': float(model.weight[0][0]), 'was': was}",
       })
       assert.equal(out.failure, null, `${order}: ${out.failure}`)
-      assert.equal(out.after.t, 0, `${order}: запись в тензор доехала до исходника`)
-      assert.equal(out.after.bag, 0, `${order}: тензор в списке испорчен`)
-      assert.equal(out.after.shared, 1, `${order}: общий тензор испорчен`)
-      assert.equal(out.after.same, true, `${order}: после выхода имена разъехались`)
-      assert.equal(out.after.weight, out.after.was, `${order}: шаг оптимизатора изменил общую модель`)
-      // Не-листовой тензор с историей градиента deepcopy не берёт — он
-      // остаётся общим и назван в отчёте, а не роняет вход.
+      assert.equal(out.after.t, 0, `${order}: the write into the tensor reached the original`)
+      assert.equal(out.after.bag, 0, `${order}: the tensor in the list is corrupted`)
+      assert.equal(out.after.shared, 1, `${order}: the shared tensor is corrupted`)
+      assert.equal(out.after.same, true, `${order}: after the exit the names drifted apart`)
+      assert.equal(out.after.weight, out.after.was, `${order}: the optimizer step changed the shared model`)
+      // deepcopy does not take a non-leaf tensor with gradient history — it
+      // stays shared and is named in the report instead of bringing the entry
+      // down.
       assert.ok(out.report.failed.some((row: { name: string }) => row.name === 'nonleaf'),
         JSON.stringify(out.report.failed))
       assert.equal(out.report.ok, true)
     }
   })
 
-/* ------------------------------------- классы тетради и scipy.sparse */
+/* --------------------------------- notebook classes and scipy.sparse */
 
-test('объект класса, объявленного в тетради, получает личную копию', { skip: noPython }, () => {
+test('an object of a class declared in the notebook gets a personal copy', { skip: noPython }, () => {
   const out = drive({
     setup: 'class Dataset:\n'
       + '    def __init__(self):\n'
@@ -736,21 +768,23 @@ test('объект класса, объявленного в тетради, п�
     attempt: 'ds.rows.append(9)\nds.name = "испорчено"\nsl.items.append(3)\nwg.rows.append(9)',
     probe: "{'rows': ds.rows, 'name': ds.name, 'slots': sl.items, 'gen': wg.rows}",
   })
-  assert.deepEqual(out.after.rows, [1, 2, 3], 'список внутри объекта тетради испорчен')
-  assert.equal(out.after.name, 'исходник', 'поле объекта тетради испорчено')
-  assert.deepEqual(out.after.slots, [1, 2], '__slots__-объект не скопирован')
-  // Генератор внутри копировать нечем — объект остаётся общим и назван.
-  assert.deepEqual(out.after.gen, [1, 2, 9], 'объект с генератором вдруг скопировался')
+  assert.deepEqual(out.after.rows, [1, 2, 3], 'the list inside the notebook\'s object is corrupted')
+  assert.equal(out.after.name, 'исходник', 'the field of the notebook\'s object is corrupted')
+  assert.deepEqual(out.after.slots, [1, 2], 'the __slots__ object was not copied')
+  // A generator inside has nothing to be copied with — the object stays
+  // shared and is named.
+  assert.deepEqual(out.after.gen, [1, 2, 9], 'the object with a generator got copied after all')
   const shared = out.report.failed.map((row: { name: string }) => row.name)
   assert.ok(shared.includes('wg'), JSON.stringify(out.report.failed))
-  // Чужой (библиотечный) объект не копируется вовсе: там сокеты и окна.
+  // A foreign (library) object is not copied at all: sockets and windows live
+  // in there.
   assert.ok(!out.report.failed.some((row: { name: string }) => row.name === 'buf'))
 })
 
 const hasScipy = python !== null &&
   spawnSync(python, ['-c', 'import scipy.sparse'], { encoding: 'utf8' }).status === 0
 
-test('разреженная матрица копируется и весит своими массивами', { skip: hasScipy ? false : 'нет scipy' }, () => {
+test('a sparse matrix is copied and weighed by its own arrays', { skip: hasScipy ? false : 'no scipy' }, () => {
   const out = drive({
     setup: 'import scipy.sparse as sp, numpy as np\n'
       + 'm = sp.csr_matrix(np.array([[1.0, 0.0], [0.0, 2.0]]))\n'
@@ -759,10 +793,11 @@ test('разреженная матрица копируется и весит �
     probe: "{'m': float(m.toarray()[0][0]), 'big': float(abs(big).sum())}",
     budget: 1024,
   })
-  assert.equal(out.after.m, 1, 'запись в data разреженной доехала до исходника')
-  // Большая не влезла в бюджет — и посчитана по настоящим массивам, а не по
-  // весу обёртки, иначе она прошла бы мимо бюджета молча.
+  assert.equal(out.after.m, 1, 'the write into the sparse matrix\'s data reached the original')
+  // The big one did not fit the budget — and was weighed by its real arrays,
+  // not by the wrapper's weight, otherwise it would slip past the budget
+  // silently.
   const skipped = out.report.skipped.find((row: { name: string }) => row.name === 'big')
   assert.ok(skipped, JSON.stringify(out.report.skipped))
-  assert.ok(skipped.bytes > 300 * 300 * 0.5 * 4, `вес разреженной: ${skipped.bytes}`)
+  assert.ok(skipped.bytes > 300 * 300 * 0.5 * 4, `sparse matrix weight: ${skipped.bytes}`)
 })

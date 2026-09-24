@@ -1,12 +1,13 @@
 /**
- * Файл, который тащат в папку, и всё, чем этот жест кончается.
+ * A file dragged into a folder, and everything this gesture ends with.
  *
- * Проверяется не арифметика путей, а то, что комната увидит на экране: где
- * окажется запись, когда переносить нечего и о чём при этом молчат. Правила
- * здесь стоят раньше сервера намеренно: до сервера дело не доходит вовсе —
- * цель, помеченную «нельзя», браузер не отдаёт, события `drop` не будет, и
- * читают всегда ЗДЕШНЮЮ фразу. Значит, она обязана совпадать со словами
- * сервера дословно, а не по смыслу.
+ * What is checked is not path arithmetic but what the room will see on the
+ * screen: where the entry will end up, when there is nothing to move, and
+ * what stays unsaid then. The rules here stand in front of the server on
+ * purpose: things never get to the server at all — the browser does not hand
+ * out a target marked "not allowed", there will be no `drop` event, and people
+ * always read the phrase from HERE. So it must match the server's words
+ * verbatim, not just in meaning.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -29,12 +30,12 @@ function file(path: string): FileEntry {
 function dir(path: string): FileEntry {
   return { name: path.slice(path.lastIndexOf('/') + 1), path, dir: true, size: 0, modifiedAt: 0 }
 }
-/** Строка дерева так, как её берёт в руку панель. */
+/** A tree row the way the panel picks it up. */
 function row(entry: FileEntry): Row {
   return { path: entry.path, dir: entry.dir }
 }
 
-/** Папка семинара в том же порядке, в каком её рисуют. */
+/** The seminar folder in the same order as it is drawn. */
 const TREE: FileEntry[] = [
   dir('data'),
   file('data/train.csv'),
@@ -45,50 +46,53 @@ const TREE: FileEntry[] = [
   file('train.csv'),
 ]
 
-test('файл переезжает в папку — и только тогда уходит сообщение', () => {
+test('a file moves into a folder — and only then is a message sent', () => {
   const plan = planMove(row(file('README.md')), row(dir('src')), TREE)
   assert.deepEqual(plan, { do: 'move', from: 'README.md', to: 'src/README.md' })
 })
 
-test('папка, брошенная на саму себя, никуда не едет — и об этом не сообщают', () => {
+test('a folder dropped onto itself goes nowhere — and nothing is reported', () => {
   /*
-   * Промах пальцем, а не ошибка. Отказ здесь читался бы как «папку нельзя
-   * трогать вовсе», и человек перестал бы пробовать.
+   * A slip of the finger, not a mistake. A refusal here would read as "the
+   * folder cannot be touched at all", and the person would stop trying.
    */
   assert.deepEqual(planMove(row(dir('src')), row(dir('src')), TREE), { do: 'nothing' })
-  // И бросок папки на файл, лежащий прямо в ней, — тот же самый жест.
+  // And dropping a folder onto a file lying right inside it is the same
+  // gesture.
   assert.deepEqual(planMove(row(dir('src')), row(file('src/model.py')), TREE), { do: 'nothing' })
 })
 
-test('папку нельзя положить в свою же подпапку, и сказано это про место, а не про имя', () => {
+test('a folder cannot be put into its own subfolder, and this is said about the place, not the name', () => {
   /*
-   * Доехав до сервера, этот жест возвращается фразой «„deep“ не годится в
-   * качестве имени»: сервер отказывает верно, а объясняет именем цели. Имя как
-   * раз годится — не годится место, и об этом должны сказать здесь.
+   * Having reached the server, this gesture comes back with the phrase
+   * ""deep" is not valid as a name": the server refuses correctly but explains
+   * it with the target's name. The name is fine — the place is not, and that
+   * must be said here.
    */
   const plan = planMove(row(dir('src')), row(dir('src/deep')), TREE)
   assert.equal(plan.do, 'refuse')
   assert.equal(
     plan.do === 'refuse' ? plan.why : '',
     '«src» нельзя переместить внутрь себя.',
-    'отказ объясняет не то: имя вместо места',
+    'the refusal explains the wrong thing: the name instead of the place',
   )
 })
 
-test('файл, брошенный в свою же папку, не поднимает tree:move', () => {
-  // Иначе каждый несостоявшийся жест — круг по сети и моргание всего списка.
+test('a file dropped into its own folder does not raise tree:move', () => {
+  // Otherwise every gesture that did not happen means a network round trip
+  // and a blink of the whole list.
   assert.deepEqual(planMove(row(file('src/model.py')), row(dir('src')), TREE), { do: 'nothing' })
   assert.deepEqual(planMove(row(file('src/model.py')), row(file('src/model.py')), TREE), {
     do: 'nothing',
   })
-  // И запись, которая уже лежит в корне, брошенная мимо строк.
+  // And an entry already lying in the root, dropped outside the rows.
   assert.deepEqual(planMove(row(file('README.md')), null, TREE), { do: 'nothing' })
 })
 
-test('брошенное на файл ложится в его папку, а не поверх него', () => {
+test('what is dropped onto a file lands in its folder, not on top of it', () => {
   /*
-   * То же правило, по которому кладут файл, перетащенный с диска. Разойдясь,
-   * они на один и тот же жест положили бы файл в разные места.
+   * The same rule by which a file dragged in from the disk is placed. If they
+   * diverged, the same gesture would put the file in different places.
    */
   assert.equal(dropFolder(row(file('src/model.py'))), 'src')
   assert.equal(dropFolder(row(dir('src'))), 'src')
@@ -100,8 +104,9 @@ test('брошенное на файл ложится в его папку, а �
   })
 })
 
-test('брошенное мимо строк ложится в корень', () => {
-  // Пустое место панели — это корень папки семинара, а не «никуда».
+test('what is dropped outside the rows lands in the root', () => {
+  // Empty space in the panel is the root of the seminar folder, not
+  // "nowhere".
   assert.equal(dropFolder(null), '')
   assert.deepEqual(planMove(row(file('src/model.py')), null, TREE), {
     do: 'move',
@@ -110,32 +115,36 @@ test('брошенное мимо строк ложится в корень', ()
   })
 })
 
-test('занятое имя названо вместе с папкой, в которой оно занято', () => {
+test('a taken name is named together with the folder where it is taken', () => {
   /*
-   * `train.csv` лежит и в корне, и в `data`. «В этой папке» указывало на ту, ИЗ
-   * которой тащат, — то есть на корень, где столкновения нет, — и человек шёл
-   * искать несуществующую вторую копию. Сервер это уже различает
-   * (`treeTrouble`), но его фразы не видит никто: цель с «нельзя» события `drop`
-   * не отдаёт, и читают всегда эту.
+   * `train.csv` lies both in the root and in `data`. "In this folder" pointed
+   * to the one it is dragged FROM — that is, to the root, where there is no
+   * collision — and the person went looking for a nonexistent second copy.
+   * The server already tells these apart (`treeTrouble`), but nobody sees its
+   * phrase: a target with "not allowed" does not hand out a `drop` event, and
+   * people always read this one.
    */
   const plan = planMove(row(file('train.csv')), row(dir('data')), TREE)
   assert.equal(plan.do, 'refuse')
   assert.equal(plan.do === 'refuse' ? plan.why : '', '«train.csv» в папке «data» уже есть.')
-  // Занять имя может и папка — сервер откажет и в этом случае.
+  // A folder can take a name too — the server will refuse in that case as
+  // well.
   const twins: FileEntry[] = [dir('a'), dir('a/deep'), dir('b'), dir('b/deep')]
   const folders = planMove(row(dir('a/deep')), row(dir('b')), twins)
   assert.equal(folders.do === 'refuse' ? folders.why : '', '«deep» в папке «b» уже есть.')
-  // У корня имени нет, и «в папке „“» было бы дырой в фразе.
+  // The root has no name, and "in the folder <empty>" would be a hole in the
+  // phrase.
   const home = planMove(row(file('data/train.csv')), null, TREE)
   assert.equal(home.do === 'refuse' ? home.why : '', '«train.csv» в корне комнаты уже есть.')
 })
 
-test('папка, чьё содержимое на новом месте уходит глубже потолка, не переезжает', () => {
+test('a folder whose contents would go deeper than the cap in the new place does not move', () => {
   /*
-   * Восемь сегментов — потолок адресации. Сервер смотрит только на путь папки
-   * и такой переезд исполняет; после него обход дерева до содержимого просто не
-   * доходит, флага «показано не целиком» не выставляет, и поддерево пропадает
-   * из панели молча — открыть, скачать и убрать его будет нечем.
+   * Eight segments is the addressing cap. The server looks only at the
+   * folder's own path and carries out such a move; after it, the tree walk
+   * simply does not reach the contents, does not set the "not shown in full"
+   * flag, and the subtree silently vanishes from the panel — there will be
+   * nothing to open, download or remove it with.
    */
   const deep: FileEntry[] = [
     dir('a'),
@@ -148,32 +157,34 @@ test('папка, чьё содержимое на новом месте ухо�
     file('a/b/c/d/e/f/g/x.py'),
     dir('data'),
   ]
-  assert.equal(deepestAfter(row(dir('a')), 'data', deep), 9, 'глубину считают по самой папке')
+  assert.equal(deepestAfter(row(dir('a')), 'data', deep), 9, 'the depth is computed from the folder itself')
   const plan = planMove(row(dir('a')), row(dir('data')), deep)
   assert.equal(plan.do, 'refuse')
   assert.equal(
     plan.do === 'refuse' ? plan.why : '',
     'Допустимая глубина пути — до 8 уровней.',
   )
-  // Ровно на потолок — можно: правило про то, что не влезает, а не про запас.
+  // Exactly at the cap is allowed: the rule is about what does not fit, not
+  // about headroom.
   assert.equal(planMove(row(dir('a/b')), row(dir('data')), deep).do, 'move')
 })
 
-test('того, чего в списке уже нет, не перетаскивают', () => {
-  // Строку держали в руке, пока пришёл новый список: файл убрали, папку
-  // переименовали. Отправить `tree:move` значило бы получить отказ на круг
-  // позже и не в панель, а в общую полосу ошибок.
+test('what is no longer in the list is not dragged', () => {
+  // The row was held while a new list arrived: the file was removed, the
+  // folder renamed. Sending `tree:move` would mean getting a refusal one
+  // round trip later, and not in the panel but in the shared error bar.
   const plan = planMove(row(file('old.csv')), row(dir('data')), TREE)
   assert.equal(plan.do, 'refuse')
   assert.equal(plan.do === 'refuse' ? plan.why : '', '«old.csv» в комнате больше нет.')
 })
 
-test('подсветка целится в ту же папку, куда запись и ляжет', () => {
+test('the highlight targets the same folder where the entry will land', () => {
   /*
-   * Панель подсвечивает `dropFolder`, а посылает `plan.to`. Разойдясь, они
-   * дадут строку, которая светится на одной папке, а файл кладёт в другую, — и
-   * человек пойдёт искать его глазами не туда. Проверяется на всех парах
-   * дерева разом: правило одно для файла, папки и пустого места.
+   * The panel highlights `dropFolder` but sends `plan.to`. If they diverged,
+   * they would give a row that lights up on one folder while the file goes
+   * into another — and the person would look for it in the wrong place.
+   * Checked on all pairs of the tree at once: the rule is one for a file, a
+   * folder and empty space.
    */
   const spots: (FileEntry | null)[] = [...TREE, null]
   for (const dragged of TREE) {
@@ -181,36 +192,37 @@ test('подсветка целится в ту же папку, куда зап
       const here = onto ? row(onto) : null
       const plan = planMove(row(dragged), here, TREE)
       if (plan.do !== 'move') continue
-      const where = onto?.path ?? '(корень)'
+      const where = onto?.path ?? '(root)'
       assert.equal(plan.to, landingPath(row(dragged), here), `${dragged.path} → ${where}`)
       assert.equal(
         parentOf(plan.to),
         dropFolder(here),
-        `подсветка и переезд разошлись на ${dragged.path} → ${where}`,
+        `the highlight and the move diverged on ${dragged.path} → ${where}`,
       )
     }
   }
 })
 
-test('папка уводит за собой вкладки всего, что в ней', () => {
+test('a folder takes along the tabs of everything in it', () => {
   /*
-   * Вкладка знает ТОЧНЫЙ путь: сказать ей одно имя папки — значит не сдвинуть
-   * ни одной из тех, ради которых папку и таскают. Следом приходит список
-   * файлов, вкладка на `src/model.py` в нём не находится и закрывается вместе с
-   * документом — то есть с набранным и историей отмен, а если она была
-   * активной, центр комнаты пустеет.
+   * A tab knows the EXACT path: telling it just the folder name means moving
+   * none of the ones the folder is dragged for. Then the file list arrives,
+   * the tab on `src/model.py` is not found in it and closes together with the
+   * document — that is, with what was typed and the undo history, and if it
+   * was active, the centre of the room goes empty.
    */
   assert.deepEqual(movedPaths('src', 'data/src', TREE), [
     { from: 'src', to: 'data/src' },
     { from: 'src/deep', to: 'data/src/deep' },
     { from: 'src/model.py', to: 'data/src/model.py' },
   ])
-  // Файл говорит о себе одном.
+  // A file speaks only for itself.
   assert.deepEqual(movedPaths('README.md', 'src/README.md', TREE), [
     { from: 'README.md', to: 'src/README.md' },
   ])
-  // Сосед с тем же началом имени — не содержимое: `src2` начинается на `src`,
-  // а внутри `src` не лежит, и увезти его вкладку значило бы потерять её.
+  // A neighbour with the same name prefix is not contents: `src2` starts with
+  // `src` but does not lie inside `src`, and carrying its tab off would mean
+  // losing it.
   const twins: FileEntry[] = [dir('src'), file('src/a.py'), dir('src2'), file('src2/b.py')]
   assert.deepEqual(movedPaths('src', 'x/src', twins), [
     { from: 'src', to: 'x/src' },
@@ -218,26 +230,26 @@ test('папка уводит за собой вкладки всего, что 
   ])
 })
 
-test('внутрь папки на самом дне сервер не заглядывает — и «пусто» про неё неправда', () => {
+test('the server does not look inside a folder at the very bottom — and "empty" is not true about it', () => {
   /*
-   * `listTree` читает каталоги, пока их содержимое помещается в восемь
-   * сегментов, и флага «показано не целиком» при этом не ставит: он считает
-   * только строки. Панель без этого вопроса рисовала «пусто» под папкой, в
-   * которой лежат файлы, — и звала убрать её как пустую.
+   * `listTree` reads directories while their contents fit in eight segments,
+   * and does not set the "not shown in full" flag: it counts only rows.
+   * Without this question, the panel drew "empty" under a folder with files in
+   * it — and offered to remove it as empty.
    */
-  assert.equal(readsInside(''), true, 'корень читают всегда')
-  assert.equal(readsInside('a/b/c/d/e/f/g'), true, 'седьмой уровень сервер ещё обходит')
-  assert.equal(readsInside('a/b/c/d/e/f/g/h'), false, 'до дна обход не доходит никогда')
+  assert.equal(readsInside(''), true, 'the root is always read')
+  assert.equal(readsInside('a/b/c/d/e/f/g'), true, 'the server still walks the seventh level')
+  assert.equal(readsInside('a/b/c/d/e/f/g/h'), false, 'the walk never reaches the bottom')
 })
 
-test('папка, чьё содержимое на новом месте не помещается в длину пути, не переезжает', () => {
+test('a folder whose contents would not fit in the path length in the new place does not move', () => {
   /*
-   * Та же дыра, что и с глубиной, только по символам: длину меряют у того пути,
-   * который прислали, а он короткий. Содержимое уезжает за четыреста символов —
-   * и после этого его не открыть, не скачать и не убрать поштучно
-   * (`normalizePath` такой путь не пропускает), а место оно занимает. На
-   * «Убрать» приходила фраза не про то: «„data.csv“ не годится в качестве
-   * имени».
+   * The same hole as with depth, only in characters: the length is measured
+   * on the path that was sent, and it is short. The contents go past four
+   * hundred characters — and after that they can be neither opened, nor
+   * downloaded, nor removed one by one (`normalizePath` does not let such a
+   * path through), yet they take up space. "Remove" got a phrase about the
+   * wrong thing: ""data.csv" is not valid as a name".
    */
   const long = 'a'.repeat(120)
   const far = 'b'.repeat(40)
@@ -250,14 +262,14 @@ test('папка, чьё содержимое на новом месте не п
     dir('x'),
   ]
 
-  assert.equal(longestAfter(row(dir(long)), far, tree), 412, 'длину считают по самой папке')
+  assert.equal(longestAfter(row(dir(long)), far, tree), 412, 'the length is computed from the folder itself')
   const plan = planMove(row(dir(long)), row(dir(far)), tree)
   assert.equal(plan.do, 'refuse')
   assert.equal(
     plan.do === 'refuse' ? plan.why : '',
     `«${long}» нельзя переместить: путь к содержимому превысит 400 символов.`,
   )
-  // Та же папка на короткое имя — можно: правило про то, что не влезает, а не
-  // про запас.
+  // The same folder under a short name is allowed: the rule is about what
+  // does not fit, not about headroom.
   assert.equal(planMove(row(dir(long)), row(dir('x')), tree).do, 'move')
 })

@@ -127,9 +127,9 @@ export function setSeminarCreator(sessionId: string, createdBy: string): void {
 }
 
 /**
- * Убран ли семинар из списка. Столбец заводится здесь, поэтому и спрашивается
- * здесь; читает это `/join`, чтобы не греть ядро комнате, в которую заходят
- * перечитать разбор.
+ * Whether the seminar was removed from the list. The column is created here,
+ * so it is asked here too; `/join` reads it so as not to warm up a kernel for
+ * a room people enter to reread the review.
  */
 export function isArchived(sessionId: string): boolean {
   const row = selectArchived.get(sessionId) as { archived_at: number | null } | undefined
@@ -148,11 +148,11 @@ export function isArchived(sessionId: string): boolean {
  * decoded from its stored snapshot, which for a room with nobody in it is what
  * the next visitor would load anyway.
  *
- * И пересчитывается, только когда снимок изменился. Список запрашивается при
- * каждой смене вкладки и раз в двадцать секунд на экране семинаров, а
- * декодирование чужой тетради с картинками — это миллисекунды блокировки того
- * же цикла событий, который обслуживает CRDT живых комнат. Ключ — отметка
- * времени снимка: поменяться ей неоткуда, кроме записи снимка.
+ * And it is recounted only when the snapshot changed. The list is requested
+ * on every tab switch and every twenty seconds on the seminars screen, and
+ * decoding someone else's notebook with images means milliseconds of blocking
+ * the same event loop that serves the CRDT of live rooms. The key is the
+ * snapshot's timestamp: nothing but a snapshot write can change it.
  */
 const cellCounts = new Map<string, { at: number; count: number }>()
 const snapshotStamp = db.prepare('SELECT updated_at FROM doc_snapshots WHERE session_id = ?')
@@ -181,22 +181,23 @@ function cellCount(sessionId: string, live: boolean): number {
  * listFiles, not a bare readdir: the number on the card has to be the number the
  * Files panel shows.
  *
- * И тоже по отметке времени, а не обходом на каждую строку. `listFiles` читает
- * комнату целиком — readdir и lstat на каждую запись, до двух тысяч, синхронно
- * и в том же цикле событий, что обслуживает живые комнаты, — а список
- * запрашивается при каждой смене вкладки и раз в двадцать секунд. Ключ — mtime
- * корня комнаты: туда падают и загрузки, и удаления, и всё, что ядро кладёт
- * рядом с тетрадью. Файл, записанный вглубь подпапки, оставит на карточке
- * прежнее число до следующего изменения корня — это число на карточке, а не
- * список файлов.
+ * Also by timestamp, not by a walk per row. `listFiles` reads the whole room
+ * (readdir and an lstat per entry, up to two thousand, synchronously and in
+ * the same event loop that serves live rooms), and the list is requested on
+ * every tab switch and every twenty seconds. The key is the mtime of the
+ * room's root: uploads, deletions and everything the kernel puts next to the
+ * notebook land there. A file written deep in a subfolder leaves the old
+ * number on the card until the next change of the root; it is a number on a
+ * card, not a file list.
  *
- * Считать заново — значит и обойти заново: у самого `listFiles` своя короткая
- * память (workspace.ts · TREE_MEMO_MS), и она бывает СТАРШЕ той отметки
- * времени, на которую мы ключуемся. Тогда к новому mtime прибивалось число,
- * посчитанное по прежнему дереву, и карточка показывала «0 файлов» не триста
- * миллисекунд, а до следующего изменения папки: в комнату положили файл мимо
- * workspace.ts (ядро, сохранение открытого), и на карточке этого не видно
- * вовсе. Папка изменилась — обходим её, а не вспоминаем.
+ * Counting afresh means walking afresh too: `listFiles` itself has a short
+ * memory of its own (workspace.ts · TREE_MEMO_MS), and it can be OLDER than
+ * the timestamp we key by. Then a number counted on the previous tree got
+ * pinned to the new mtime, and the card showed "0 files" not for three
+ * hundred milliseconds but until the next change of the folder: a file was
+ * put into the room bypassing workspace.ts (the kernel, saving an open file),
+ * and the card did not show it at all. If the folder changed, we walk it
+ * instead of remembering.
  */
 const fileCounts = new Map<string, { at: number; count: number }>()
 
@@ -215,11 +216,12 @@ function fileCount(sessionId: string): number {
 }
 
 /**
- * Одно слово о семинаре — и решение преподавателя сильнее подсчёта.
+ * One word about the seminar, and the teacher's decision beats the count.
  *
- * Пока звонка не было, слово отвечает на «что там сейчас»: кто-то в комнате,
- * ссылку не давали, пусто. После звонка отвечать на это бессмысленно: комната
- * закончена, и то, что в ней трое перечитывают разбор, не делает пару идущей.
+ * Until the bell, the word answers "what is going on there now": someone is
+ * in the room, the link was never given out, it is empty. After the bell
+ * answering that makes no sense: the room is finished, and three people
+ * rereading the review in it do not make the lesson live.
  */
 function statusOf(
   liveCount: number,
@@ -245,9 +247,10 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
     status: statusOf(liveCount, row.participants, finishedAt(row.id)),
     liveCount,
     /*
-     * Часы занятия, а не часы комнаты: строка «Running now · started 25 min
-     * ago» про то, сколько идёт ЭТА пара. Комнату завели за неделю, и её
-     * `createdAt` отвечал на другой вопрос (collab/index.ts · liveSince).
+     * The class's clock, not the room's: the line "Running now · started 25
+     * min ago" is about how long THIS lesson has been going. The room was
+     * created a week earlier, and its `createdAt` answered a different
+     * question (collab/index.ts · liveSince).
      */
     liveSince: liveSince(row.id),
     totalParticipants: row.participants,
@@ -255,30 +258,34 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
     fileCount: fileCount(row.id),
     url: `${config.publicUrl}/s/${row.id}`,
     /*
-     * Что комната РЕАЛЬНО запустила, если ядро уже поднялось; иначе — что она
-     * попросила при создании. Разница видна ровно тогда, когда она важна:
-     * семинар, переживший переключение, продолжает работать на старом образе.
+     * What the room ACTUALLY started, if the kernel is already up; otherwise
+     * what it asked for at creation. The difference shows exactly when it
+     * matters: a seminar that survived a switch keeps working on the old
+     * image.
      */
     environment: environmentOf(row.id) ?? sessionEnvironment(row.id),
     createdBy: row.created_by,
     archivedAt: row.archived_at,
     /*
-     * Выбранные правила, а не действующие: в форме редактирования человек
-     * обязан видеть то, что он выбрал. Законченное занятие ужесточает права
-     * поверх них (shared/rules.ts · rulesAfterClass) и отступает, не тронув
-     * настройку, — а `finishedAt` рядом говорит, идёт ли оно сейчас.
+     * The chosen rules, not the effective ones: in the edit form a person has
+     * to see what they chose. A finished class tightens the rights on top of
+     * them (shared/rules.ts · rulesAfterClass) and steps back without
+     * touching the setting, and `finishedAt` next to it says whether it is
+     * running now.
      */
     rules: storedRules(row.id),
     /*
-     * Сколько памяти выдано ЭТОЙ комнате, или null — «как у окружения».
+     * How much memory THIS room was given, or null for "as for the
+     * environment".
      *
-     * Своё число, а не действующее: в форме настроек человек обязан видеть то,
-     * что он задал, и отличать «я поставил 4 ГБ» от «столько даёт окружение».
-     * Умолчание окружения панель берёт из /api/instance/resources — оно одно
-     * на все комнаты и меняется без них.
+     * Its own number, not the effective one: in the settings form a person
+     * has to see what they set, and tell "I set 4 GB" from "that is what the
+     * environment gives". The panel takes the environment default from
+     * /api/instance/resources: it is one for all rooms and changes without
+     * them.
      */
     memoryMb: sessionMemoryMb(row.id),
-    /** И ядра тем же правилом: своё число комнаты, а не действующее. */
+    /** And CPUs by the same rule: the room's own number, not the effective one. */
     cpus: sessionCpus(row.id),
     finishedAt: finishedAt(row.id),
     publication: publication
@@ -294,10 +301,10 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
 }
 
 /**
- * Курсы, в которых состоит семинар. Строка списка показывает их ссылками.
+ * The courses the seminar belongs to. The list row shows them as links.
  *
- * Список курсов передаётся, а не запрашивается заново: на семестре в шестьдесят
- * семинаров это было шестьдесят одинаковых чтений на один ответ.
+ * The course list is passed in rather than requested again: in a semester of
+ * sixty seminars that was sixty identical reads per response.
  */
 function coursesWith(sessionId: string, courses: Course[]): { id: string; name: string }[] {
   return courses
@@ -311,7 +318,7 @@ function coursesWith(sessionId: string, courses: Course[]): { id: string; name: 
 
 /**
  * Collapse whitespace and drop control characters so a name cannot break the
- * list layout. Одна мерка на все четыре двери — shared/text.ts.
+ * list layout. One measure for all four doors: shared/text.ts.
  */
 const normalize = normalizeLabel
 
@@ -321,11 +328,11 @@ function invalid(res: Response, error: string): Response {
 }
 
 /**
- * Почему число не взяли — числами же.
+ * Why the number was not accepted, in numbers too.
  *
- * Границы называются вслух: «должно быть числом» на поле, куда форма шлёт
- * мегабайты, ничего не говорит тому, кто прислал гигабайты, а «от 512 до
- * 71 680 МБ» говорит всё сразу.
+ * The bounds are named out loud: "must be a number" on a field the form
+ * sends megabytes to tells nothing to someone who sent gigabytes, while "from
+ * 512 to 71 680 MB" tells everything at once.
  */
 function memoryRefusal(why: 'type' | 'range'): string {
   const { min, max } = memoryBounds()
@@ -334,7 +341,7 @@ function memoryRefusal(why: 'type' | 'range'): string {
     : tr('server.memoryOutOfRange', { p0: min, p1: max })
 }
 
-/** То же, что и у памяти: границы называются числами, а не «неверно». */
+/** The same as for memory: the bounds are named in numbers, not as "invalid". */
 function cpuRefusal(why: 'type' | 'range'): string {
   const { min, max } = cpuBounds()
   return why === 'type'
@@ -379,9 +386,10 @@ export function adminInstanceRoutes(): Router {
     }
 
     /*
-     * Окружение проверяется, а не принимается на слово: имя становится тегом
-     * образа и именем контейнера, и оно приходит из браузера. Несуществующее
-     * имя лучше отвергнуть здесь, чем обнаружить, когда комната уже полна.
+     * The environment is checked, not taken on trust: the name becomes an
+     * image tag and a container name, and it comes from the browser. A
+     * nonexistent name is better rejected here than discovered when the room
+     * is already full.
      */
     const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
     if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
@@ -401,9 +409,9 @@ export function adminInstanceRoutes(): Router {
     const environment = wanted || activeName()
 
     /*
-     * Лимит памяти проверяется той же меркой, что и при изменении: граница у
-     * машины одна, и форма создания не то место, где комнате можно пообещать
-     * больше, чем есть.
+     * The memory limit is checked by the same measure as on change: the
+     * machine has one boundary, and the creation form is not the place where
+     * a room can be promised more than there is.
      */
     const memory = readMemoryInput(req.body?.memoryMb)
     if (!memory.ok) return invalid(res, memoryRefusal(memory.error))
@@ -420,19 +428,20 @@ export function adminInstanceRoutes(): Router {
      * rules — a script, an older client — still produces the open room the
      * product has always been.
      *
-     * Режим — это ПРЕСЕТ правил, и записывается он ими же. Отдельным состоянием
-     * комнаты («эта — лекционная») он завёл бы второй источник правды о том,
-     * что в ней можно: сервер спрашивает права у правил, а настройки показывают
-     * их же, и первый переключатель в настройках развёл бы слово и дело.
-     * Поэтому 'lecture' — это `LECTURE_ROOM`, 'lab' и отсутствие поля — это
-     * `OPEN_ROOM`, и дальше комната живёт одними правилами.
+     * The mode is a rules PRESET, and it is recorded as rules. As a separate
+     * room state ("this one is a lecture room") it would introduce a second
+     * source of truth about what is allowed in the room: the server asks the
+     * rules for rights, the settings show the same rules, and the first
+     * switch in the settings would split word from deed. So 'lecture' is
+     * `LECTURE_ROOM`, 'lab' and a missing field are `OPEN_ROOM`, and from then
+     * on the room lives by rules alone.
      *
-     * Присланные правила ложатся ПОВЕРХ пресета: человек выбрал режим и
-     * подкрутил в нём одну строку, и подкрученное должно быть сильнее
-     * выбранного, а не наоборот.
+     * The rules sent in lie ON TOP of the preset: a person chose a mode and
+     * tweaked one row in it, and the tweak must be stronger than the choice,
+     * not the other way round.
      */
     const mode = req.body?.mode
-    // Консилиум — та же лекция, у которой замок открывает каждому свой лист.
+    // A council is the same lecture, except the lock opens each person's own sheet to them.
     const preset = mode === 'council' ? COUNCIL_ROOM : mode === 'lecture' ? LECTURE_ROOM : null
     const asked =
       req.body?.rules && typeof req.body.rules === 'object' ? (req.body.rules as object) : null
@@ -440,11 +449,12 @@ export function adminInstanceRoutes(): Router {
       setRules(id, readRules({ ...(preset ?? OPEN_ROOM), ...asked }))
     }
     /*
-     * Память — сразу в строку, до первого пуска ядра.
+     * Memory goes into the row right away, before the kernel's first start.
      *
-     * Занятие по зрению заводят накануне, и выбор «шесть гигабайт» должен
-     * дожить до пары, а не быть отдельным походом в настройки утром. Контейнера
-     * ещё нет, менять нечего — число просто лежит и ждёт своего `docker run`.
+     * A vision class is created the day before, and the "six gigabytes"
+     * choice has to last until the lesson rather than be a separate trip to
+     * the settings in the morning. There is no container yet, nothing to
+     * change: the number just lies there waiting for its `docker run`.
      */
     if (memory.ok && memory.mb !== null) {
       setSessionMemoryMb(id, memory.mb)
@@ -483,23 +493,24 @@ export function adminInstanceRoutes(): Router {
         return invalid(res, tr("server.aSeminarNameMustBeCharactersOr.c9d56a", { p0: LIMITS.seminarName }))
       }
       /*
-       * В строку — через `renameSession`, а не своим UPDATE.
+       * Into the row through `renameSession`, not an UPDATE of our own.
        *
-       * Здесь стоял второй такой же `UPDATE sessions SET name`, и с тех пор как
-       * имя комнаты легло в кэш строки (db.ts · roomCache), он писал мимо него:
-       * панель переименовывала семинар, а `getSession` до перезапуска отдавал
-       * прежнее имя — той же карточке комнаты, публикации и списку курса. У
-       * строки имени одна дверь, и она забывает кэш за собой.
+       * There used to be a second, identical `UPDATE sessions SET name` here,
+       * and ever since the room name went into the row cache
+       * (db.ts · roomCache) it wrote past the cache: the panel renamed the
+       * seminar, while `getSession` kept serving the old name until a
+       * restart, to the same room card, the publication and the course list.
+       * The name row has one door, and it forgets the cache behind itself.
        */
       renameSession(row.id, name)
       // ...and into the room, whose header reads the document rather than this
       // row. Without it a rename in the panel never reached the people inside,
       // and the seminar quietly had two names.
       //
-      // Через visitSessionDoc: переименование прошлогоднего семинара поднимает
-      // его тетрадь со всеми картинками, и без визита она лежала бы в памяти до
-      // ближайшей уборки простаивающих комнат — а переименовывают их пачкой,
-      // разбирая семестр (routes/doc-visit.ts).
+      // Through visitSessionDoc: renaming last year's seminar brings up its
+      // notebook with all the images, and without a visit it would sit in
+      // memory until the next idle sweep, and seminars get renamed in batches
+      // when sorting out a semester (routes/doc-visit.ts).
       visitSessionDoc(row.id, (doc) => getMeta(doc).set('title', name))
     }
     if (body?.archived !== undefined) {
@@ -512,26 +523,27 @@ export function adminInstanceRoutes(): Router {
     if (body?.finished !== undefined) {
       if (typeof body.finished !== 'boolean') return invalid(res, tr("server.finishedMustBeTrueOrFalse.f9f3c0"))
       /*
-       * Та же дверь, что кнопка в комнате: преподаватель, закрывший вкладку и
-       * вспомнивший про занятие в метро, не должен возвращаться в семинар ради
-       * одного нажатия.
+       * The same door as the button in the room: a teacher who closed the tab
+       * and remembered the class on the metro should not have to go back into
+       * the seminar for one click.
        *
-       * Уже законченному время не переписывается: панель шлёт форму целиком, и
-       * переименование семинара сдвигало бы «закончено в 15:40» на сейчас —
-       * час, который спрашивают потом, чтобы узнать, когда кончилась пара.
+       * The time of an already finished one is not rewritten: the panel sends
+       * the whole form, and renaming the seminar would move "finished at
+       * 15:40" to now, the hour people later ask about to find out when the
+       * lesson ended.
        */
       const was = finishedAt(row.id)
       const at = body.finished ? (was ?? Date.now()) : null
       if (at !== was) {
         setClassFinished(row.id, at)
-        // Комната узнаёт сейчас, а не при перезагрузке: иначе у студента ещё
-        // горят кнопки, которые сервер уже не примет, и отказ читается как
-        // поломка. Тем же кадром она и открывается обратно.
+        // The room learns now, not on reload: otherwise a student still has
+        // lit buttons the server will no longer accept, and the refusal reads
+        // as a breakage. The same frame opens it back up, too.
         broadcast(row.id, { t: 'class', finishedAt: at })
-        // И ход агента обрывается — ровно как у кнопки в комнате
-        // (control.ts · class:finish). Иначе «Закончить занятие» из панели
-        // оставляет оракула править файлы там, где всем остальным уже только
-        // читать.
+        // And the agent's turn is cut off, exactly as with the button in the
+        // room (control.ts · class:finish). Otherwise "End class" from the
+        // panel leaves the Oracle editing files where everyone else may only
+        // read.
         if (at !== null) stopAll(row.id)
       }
     }
@@ -548,13 +560,15 @@ export function adminInstanceRoutes(): Router {
         return invalid(res, tr("server.rulesMustBeAnObject.c2a9d1"))
       }
       setRules(row.id, readRules({ ...storedRules(row.id), ...(body.rules as object) }))
-      // И числа личных тетрадей — их контейнеру, тем же путём, что из комнаты.
+      // And the personal notebooks' numbers go to their container, the same way as from the room.
       void applyOwnLimits(row.id).catch(() => {})
-      // Доступ тетради решает, в каком контейнере её ядро; сменился — ядро
-      // гасится. Тот же довод, что в routes/sessions.ts.
+      // A notebook's access decides which container its kernel is in; if it
+      // changed, the kernel is shut down. The same argument as in
+      // routes/sessions.ts.
       syncBookKernels(row.id)
-      // И защита от опасных команд — в живые ядра занятия, тем же путём и по
-      // тому же доводу, что из комнаты (routes/sessions.ts).
+      // And the guard against dangerous commands goes into the class's live
+      // kernels, the same way and for the same reason as from the room
+      // (routes/sessions.ts).
       syncDangerGuard(row.id)
       // The room finds out now, not on its next reload: the panel greys its
       // controls from this, and a rule nobody was told about is a rule that
@@ -568,19 +582,20 @@ export function adminInstanceRoutes(): Router {
       setSessionMemoryMb(row.id, memory.mb)
       forgetResources()
       /*
-       * Живой комнате — прямо сейчас, и БЕЗ перезапуска ядра.
+       * To the live room right now, and WITHOUT a kernel restart.
        *
-       * Ради этого всё и затевалось: преподаватель, чьё ядро только что убили
-       * по памяти, добавляет гигабайты и запускает ту же ячейку заново, не
-       * потеряв ни переменных семинара, ни открытого терминала. Ответ не
-       * ждётся: `docker update` на занятой машине занимает сотни миллисекунд,
-       * а число уже записано — контейнера нет или docker отказал, и его
-       * возьмёт следующий пуск. Что именно случилось, скажет журнал ядра.
+       * This is what all of it was started for: a teacher whose kernel was
+       * just killed for memory adds gigabytes and runs the same cell again
+       * without losing the seminar's variables or the open terminal. The
+       * answer is not awaited: `docker update` on a busy machine takes
+       * hundreds of milliseconds, and the number is already recorded; if
+       * there is no container or docker refused, the next start picks it up.
+       * The kernel log will say what exactly happened.
        */
-      // Сброс к умолчанию (`null`) тоже едет: брокер возвращает живой Pod к
-      // своему умолчанию сразу, docker по-прежнему ждёт следующего пуска.
+      // A reset to the default (`null`) goes too: the broker returns the live
+      // Pod to its default at once, docker still waits for the next start.
       void applyMemoryLimit(row.id, memory.mb).catch((err: unknown) => {
-        console.error(`[kernel] лимит памяти для ${row.id} не доехал:`, err)
+        console.error(`[kernel] memory limit for ${row.id} did not get through:`, err)
       })
     }
 
@@ -590,16 +605,18 @@ export function adminInstanceRoutes(): Router {
       setSessionCpus(row.id, cpu.cpus)
       forgetResources()
       /*
-       * Живой комнате — сразу, как и память, на обоих бэкендах: `docker
-       * update --cpus` или `pods/resize` брокера. Оговорка одна и честная:
-       * потоки numpy и torch задаются при создании контейнера комнаты, и
-       * живому их не поменять — даже перезапуском ядра. Форма об этом говорит
-       * вслух, поэтому здесь ядро не трогается.
+       * To the live room at once, like memory, on both backends:
+       * `docker update --cpus` or the broker's `pods/resize`. There is one
+       * caveat, and an honest one: the numpy and torch threads are set when
+       * the room's container is created and cannot be changed in a live one,
+       * not even by a kernel restart. The form says so out loud, so the
+       * kernel is not touched here.
        */
-      // Сброс к умолчанию тоже меняет квоту уже работающего контейнера;
-      // чьё это умолчание (KERNEL_CPUS или брокера), решает пул.
+      // A reset to the default also changes the quota of an already running
+      // container; whose default it is (KERNEL_CPUS or the broker's) is up to
+      // the pool.
       void applyCpuLimit(row.id, cpu.cpus).catch((err: unknown) => {
-        console.error(`[kernel] число ядер для ${row.id} не доехало:`, err)
+        console.error(`[kernel] CPU count for ${row.id} did not get through:`, err)
       })
     }
 
@@ -633,7 +650,7 @@ export function adminInstanceRoutes(): Router {
       return
     }
     const release = blockKernelStarts(row.id)
-    // `?reading=drop` — «удалить и то и другое». Умолчание сохраняет чтение.
+    // `?reading=drop` means "delete both". The default keeps the reading.
     const keepReading = req.query.reading !== 'drop'
     void (async () => {
       try {
@@ -665,9 +682,10 @@ export function adminInstanceRoutes(): Router {
           return
         }
 
-        // И картинки вывода: они лежат не в папке комнаты, а на своей полке
-        // рядом с базой (server/src/blobs.ts). Без этой строки папка дожила бы
-        // до ближайшего подметания — оно есть, но час лишний.
+        // And the output images: they are not in the room's folder but on
+        // their own shelf next to the database (server/src/blobs.ts). Without
+        // this line the folder would live until the next sweep; there is one,
+        // but that is an hour too long.
         deleteRoomBlobs(row.id)
 
         const purge = db.transaction((id: string) => {
@@ -678,54 +696,57 @@ export function adminInstanceRoutes(): Router {
           // was gone and whose every cell is still on disk — and still served
           // over HTTP to anyone holding an old token.
           discardHistory(id)
-          // И заметки лекции: это единственное, что преподаватель писал себе
-          // сам, и оставлять их в базе удалённой комнаты не за чем.
+          // And the lecture notes: the only thing the teacher wrote for
+          // themselves, and there is no reason to keep them in the database of
+          // a deleted room.
           discardNotes(id)
-          // И баны: в строке бана лежит адрес человека, и переживать комнату,
-          // которой больше нет, он не должен.
+          // And the bans: a ban row holds the person's address, and it must
+          // not outlive a room that no longer exists.
           discardBans(id)
           deleteSeminarRow.run(id)
         })
         purge(row.id)
         forgetCache(row.id)
         /*
-         * И всё, что db.ts помнит о комнате: строку, правила и права её людей
-         * по токену.
+         * And everything db.ts remembers about the room: the row, the rules
+         * and its people's rights by token.
          *
-         * Здесь звалось `forgetRules`, и пока в памяти лежали одни правила,
-         * этого хватало. Теперь там же лежит и сама строка — то самое «жив ли
-         * ещё семинар», которым дверь сокета встречает забытый в браузере
-         * токен: не забыть её значило бы пускать в удалённую комнату до
-         * перезапуска сервера.
+         * `forgetRules` used to be called here, and while memory held only
+         * the rules, that was enough. Now the row itself lives there too, the
+         * very "is the seminar still alive" that the socket door meets a token
+         * forgotten in a browser with: not forgetting it would mean letting
+         * people into a deleted room until the server restarts.
          */
         forgetRoom(row.id)
         cellCounts.delete(row.id)
         fileCounts.delete(row.id)
         /*
-         * Опубликованная страница — отдельный предмет, и её судьба спрашивается
-         * отдельно. Она собрана целиком и лежит своими строками: за ней не
-         * стоит ни комнаты, ни документа, так что «удалить комнату, чтение
-         * оставить» — это выбор, а не отговорка. По умолчанию оставляется:
-         * ссылку у студентов не отозвать, и страница, отвечающая 404 там, где
-         * вчера был семинар, — худшее из двух.
+         * The published page is a separate object, and its fate is asked
+         * about separately. It is assembled whole and lives in its own rows:
+         * there is no room and no document behind it, so "delete the room,
+         * keep the reading" is a choice, not an excuse. By default it is kept:
+         * a link cannot be recalled from students, and a page answering 404
+         * where yesterday there was a seminar is the worse of the two.
          */
         const pub = publicationOf(row.id)
         if (pub) {
           if (keepReading) orphanPublication(row.id)
           else deletePublication(pub.id)
         }
-        // В курсах остаётся надгробие: пропавшая четвёртая неделя ломает курс
-        // для того, кто на ней сидел, и сдвигает нумерацию остальных.
+        // A tombstone stays in the courses: a missing fourth week breaks the
+        // course for whoever attended it and shifts the numbering of the rest.
         entombSeminar(row.id, row.name)
 
         /*
-         * Второй проход — по тому, что могло воскреснуть, пока гасло ядро.
+         * A second pass, over what may have come back to life while the
+         * kernel was shutting down.
          *
-         * Опоздавший вывод ячейки или пульт, дошедший до `getSessionDoc`
-         * миллисекундой раньше сноса строк, поднимают документ заново, а он
-         * пишет снимок и строку в ленту. Это дешёвые DELETE по ключу, и повтор
-         * их ничего не стоит; зато комната после удаления действительно
-         * удалена, а не возвращается на следующем перезапуске.
+         * A late cell output or a console that reached `getSessionDoc` a
+         * millisecond before the rows were removed brings the document up
+         * again, and it writes a snapshot and a feed row. These are cheap
+         * DELETEs by key, and repeating them costs nothing; in return the room
+         * is really deleted after deletion, rather than coming back on the
+         * next restart.
          */
         dropSessionDoc(row.id)
         deleteSnapshot.run(row.id)

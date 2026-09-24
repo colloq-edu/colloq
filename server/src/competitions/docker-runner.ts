@@ -1,44 +1,49 @@
 /**
- * Настоящий прогонщик: два одноразовых контейнера на одну посылку.
+ * The real runner: two disposable containers per submission.
  *
- * Родство с комнатами намеренное. `runArgs()` ниже — это `runArgs()` из
- * kernel/pool.ts, у которого отняли всё, что делает контейнер живым (имя
- * комнаты, публикацию порта, том занятия, GPU, токен Jupyter), и добавили то,
- * что делает его одноразовым: сеть отнята целиком, корень только на чтение,
- * потолок на размер файла. `hardeningArgs()` — дословно `roomHardeningArgs()`
- * из kernel/perimeter.ts, с одним изменением: потолок процессов ниже.
+ * The kinship with rooms is intentional. `runArgs()` below is the `runArgs()`
+ * of kernel/pool.ts with everything that makes a container live taken away
+ * (the room name, the published port, the class volume, GPU, the Jupyter
+ * token), and with what makes it disposable added: the network removed
+ * entirely, a read-only root, a cap on file size. `hardeningArgs()` is
+ * `roomHardeningArgs()` from kernel/perimeter.ts word for word, with one
+ * change: a lower process cap.
  *
- * ОТЛИЧИЯ ОТ КОМНАТЫ, каждое куплено опытом прототипа, а не рассуждением.
+ * DIFFERENCES FROM A ROOM, each one bought by the prototype's experience, not
+ * by reasoning.
  *
- * 1. `--network none` вместо сети комнат. Комнате нужен pip и датасеты,
- *    посылке — нет, и запрет сетью дешевле и надёжнее правил iptables. Цена
- *    названа участнику на странице соревнования: пакетов, которых нет в
- *    образе, взять неоткуда, а `pip install` без сети уходит в отказ за
- *    пятнадцать секунд его же срока.
+ * 1. `--network none` instead of the room network. A room needs pip and
+ *    datasets, a submission does not, and a network ban is cheaper and more
+ *    reliable than iptables rules. The price is stated to the participant on
+ *    the competition page: packages that are not in the image cannot be had
+ *    from anywhere, and `pip install` without a network fails after fifteen
+ *    seconds, spent from the participant's own time limit.
  *
- * 2. `--read-only`. Комнате так нельзя — она живёт парами и ставит пакеты
- *    `%pip install` в свой слой (об этом прямо сказано в perimeter.ts).
- *    Посылка живёт минуту и писать должна только в `/out` и `/tmp`.
+ * 2. `--read-only`. A room cannot do that — it lives for whole class periods
+ *    and installs packages with `%pip install` into its own layer (perimeter.ts
+ *    says so outright). A submission lives for a minute and must write only to
+ *    `/out` and `/tmp`.
  *
- * 3. `/out` — tmpfs с жёстким потолком, а не папка хоста. Диск контейнера не
- *    ограничен ничем, и это главная дыра первого шага: тетрадь на десять строк
- *    пишет терабайт. tmpfs решает её ядром — запись сверх потолка даёт ENOSPC
- *    прямо в ячейке, и на диск хоста не попадает ни байта. Цена честная и
- *    названная: tmpfs считается в `--memory` посылки.
- *
+ * 3. `/out` is a tmpfs with a hard cap, not a host folder. The container's
+ *    disk is not limited by anything, and that is the main hole of the first
+ *    step: a ten-line notebook writes a terabyte. tmpfs solves it in the
+ *    kernel — a write over the cap gives ENOSPC right in the cell, and not a
+ *    single byte reaches the host disk. The price is honest and stated: tmpfs
+ *    counts toward the submission's `--memory`.
  * 4. `/result` is bounded tmpfs. A fixed supervisor keeps it mounted after
  *    notebook completion; the host exports only regular allowlisted files with
  *    per-file byte limits, then removes the container. No writable host mount.
  *
  * 5. `--ulimit fsize` also bounds each individual file inside tmpfs.
  *
- * 6. Нет `--rm`. Контейнер нужен мёртвым ещё десяток миллисекунд — прочитать
- *    `State.OOMKilled`. У ОДНОРАЗОВОГО контейнера этот флаг честен, в отличие
- *    от комнаты, где он залипает навсегда и postmortem.ts вынужден считать
- *    убийства счётчиком cgroup: контейнер живёт один раз.
+ * 6. No `--rm`. The container is needed dead for another ten milliseconds or
+ *    so — to read `State.OOMKilled`. On a DISPOSABLE container this flag is
+ *    honest, unlike in a room, where it sticks forever and postmortem.ts has
+ *    to count kills with a cgroup counter: the container lives once.
  *
- * И одно правило, купленное дороже всех: монтируются ТОЛЬКО каталоги и только
- * по путям, которых до этой посылки не существовало (см. шапку storage.ts).
+ * And one rule, bought at a higher price than any other: we mount ONLY
+ * directories, and only at paths that did not exist before this submission
+ * (see the header of storage.ts).
  */
 import { spawn } from 'node:child_process'
 import path from 'node:path'
@@ -62,7 +67,7 @@ import {
 import { machineResources } from '../kernel/resources.js'
 import type { RunVerdict } from '@shared/competitions'
 
-/** Метка на обоих контейнерах: по ней их находит уборка, и только их. */
+/** Label on both containers: cleanup finds them by it, and only them. */
 export const RUN_LABEL = 'colloq.kind=competition-run'
 export const SCORE_LABEL = 'colloq.kind=competition-score'
 const HOST_DATA_ROOT = path.resolve(hostPathOf(config.dataDir))
@@ -70,13 +75,13 @@ const INSTANCE_KEY = 'ru.colloq.competition-instance'
 const INSTANCE_SCOPE = createHash('sha256').update(HOST_DATA_ROOT).digest('hex').slice(0, 16)
 const INSTANCE_LABEL = `${INSTANCE_KEY}=${INSTANCE_SCOPE}`
 
-/** Образ — тот же, в котором идёт занятие: одно окружение у задачи и у решения. */
+/** The image is the one the class runs in: one environment for task and solution. */
 const IMAGE_PREFIX = 'colloq-kernel'
 
-/** Как часто смотреть на идущий контейнер. Четверть секунды — как в прототипе. */
+/** How often to look at a running container. A quarter second, as in the prototype. */
 const POLL_MS = 250
 
-/** Имена файлов, которые обвязка кладёт в `/result`. */
+/** Names of the files the harness puts into `/result`. */
 const RUN_FILE = 'run.json'
 const SCORE_FILE = 'score.json'
 
@@ -85,11 +90,12 @@ interface Shell {
 }
 
 /**
- * Позвать docker.
+ * Call docker.
  *
- * Своя копия, а не `dockerRead` из pool.ts, ровно по одной причине: у той
- * короткий срок на чтение, а здесь бывает `docker run` тяжёлого образа. Форма
- * та же — spawn массивом, без шелла, без кавычек.
+ * Our own copy rather than `dockerRead` from pool.ts, for exactly one reason:
+ * that one has a short read deadline, while here we get `docker run` of a
+ * heavy image. The form is the same — spawn with an array, no shell, no
+ * quoting.
  */
 const shell: Shell = (args, timeoutMs = 60_000, maxOutputBytes = 256 * 1024) =>
   new Promise((resolve) => {
@@ -134,26 +140,28 @@ async function removeContainer(container: string): Promise<void> {
 }
 
 /**
- * Подменить docker — тестам аргументов и вскрытия.
+ * Swap out docker — for the tests of arguments and of the post-mortem.
  *
- * Тот же приём, что `useDockerForLimits` (pool.ts) и `useDockerForPostmortem`:
- * настоящего docker в сюите нет, а проверять надо ровно то, что бывает только
- * с ним. Этим подменяется ВЫЗОВ, а не прогонщик целиком: тест сборки команды
- * не должен зависеть от того, есть ли на машине образ.
+ * The same trick as `useDockerForLimits` (pool.ts) and `useDockerForPostmortem`:
+ * the suite has no real docker, and what needs checking is exactly what only
+ * happens with it. This swaps the CALL, not the whole runner: a test of how
+ * the command is assembled must not depend on whether the machine has the
+ * image.
  */
 export function useDockerForCompetitions(fake: Shell | null): void {
   docker = fake ?? shell
 }
 
-/* ------------------------------------------------------- сборка аргументов */
+/* ------------------------------------------------------- argument assembly */
 
 /**
- * Укреплённый профиль — дословно `roomHardeningArgs`, с одной правкой.
+ * The hardened profile — `roomHardeningArgs` word for word, with one change.
  *
- * 256 процессов вместо комнатных 512: в посылке живёт один python и его
- * потоки, а не Jupyter с терминалом и `DataLoader(num_workers=8)` разом.
- * Форк-бомба упирается в стенку вдвое раньше, а `DataLoader` этого не
- * замечает (замер прототипа: 88 потомков, пик 829 МБ, контейнер выжил).
+ * 256 processes instead of the room's 512: a submission hosts one python and
+ * its threads, not Jupyter with a terminal and `DataLoader(num_workers=8)` all
+ * at once. A fork bomb hits the wall twice as early, and `DataLoader` does not
+ * notice (prototype measurement: 88 children, 829 MB peak, the container
+ * survived).
  */
 function hardeningArgs(pids: number): string[] {
   return [
@@ -173,35 +181,36 @@ function hardeningArgs(pids: number): string[] {
 }
 
 /**
- * Сколько потоков разрешить численным библиотекам.
+ * How many threads to allow numeric libraries.
  *
- * То же правило, что в pool.ts · threadLimit, и по той же причине:
- * `os.cpu_count()` внутри контейнера показывает ядра ХОСТА, и numpy поднимет
- * тридцать потоков на два выданных ядра.
+ * The same rule as in pool.ts · threadLimit, and for the same reason:
+ * `os.cpu_count()` inside a container shows the HOST's cores, and numpy will
+ * spin up thirty threads on the two cores it was given.
  */
 function threads(cpus: number): string {
   return String(Math.max(1, Math.floor(Number.isFinite(cpus) && cpus > 0 ? cpus : 2)))
 }
 
 /**
- * Каждый `-v` проходит через `hostPathOf` — обязательно и без исключений.
+ * Every `-v` goes through `hostPathOf` — mandatory, with no exceptions.
  *
- * Под `make run` это тождество. Под `make up` сервер сам в контейнере, и путь,
- * по которому файл видит он, демону docker не известен: тот заведёт по нему
- * пустой каталог на лету, и посылка МОЛЧА не увидит ни данных, ни своей
- * тетради — ни ошибки, ни строки в журнале.
+ * Under `make run` this is the identity. Under `make up` the server itself is
+ * in a container, and the path at which it sees a file is unknown to the
+ * docker daemon: the daemon creates an empty directory at that path on the
+ * fly, and the submission SILENTLY sees neither the data nor its notebook — no
+ * error, no line in the log.
  */
 function mount(inside: string, at: string, readOnly = false): string[] {
   return ['-v', `${hostPathOf(inside)}:${at}${readOnly ? ':ro' : ''}`]
 }
 
 /**
- * Аргументы `docker run` для контейнера ТЕТРАДИ.
+ * `docker run` arguments for the NOTEBOOK container.
  *
- * Отдельной чистой функцией, потому что настоящего docker в тестах нет, а
- * собрать эту строку правильно важнее, чем её позвать: потерянный `--network
- * none` здесь — это посылка с интернетом, и заметить это можно только тогда,
- * когда кто-то им воспользуется.
+ * A separate pure function, because the tests have no real docker, and
+ * assembling this line correctly matters more than calling it: a lost
+ * `--network none` here is a submission with internet access, and it can only
+ * be noticed when someone makes use of it.
  */
 export function runArgs(opts: {
   attemptId?: string
@@ -222,19 +231,19 @@ export function runArgs(opts: {
     '-d',
     '--name',
     container,
-    // Сети нет вовсе: ни DNS, ни петли, ни моста. Соревнование — это обучение
-    // на выданных данных, а не поход за ответами наружу.
+    // No network at all: no DNS, no loopback, no bridge. A competition is
+    // learning on the data provided, not a trip outside for the answers.
     '--network',
     'none',
     ...hardeningArgs(limits.pids),
     '--read-only',
     `--tmpfs=/tmp:rw,nosuid,nodev,size=${limits.tmpfsMb}m,mode=1777`,
-    // Рабочая папка тетради — tmpfs с жёстким потолком: диска хоста в ней нет
-    // ни байта.
+    // The notebook's working folder is a tmpfs with a hard cap: not a single
+    // byte of the host disk in it.
     `--tmpfs=/out:rw,exec,nosuid,nodev,size=${limits.tmpfsMb}m,mode=1777`,
-    // HOME внутри tmpfs, и папки в нём заводит обвязка: `--tmpfs` создаёт
-    // только точку монтирования, а IPython, не найдя HOME, печатает
-    // предупреждение в КАЖДУЮ посылку.
+    // HOME is inside the tmpfs, and the harness creates the folders in it:
+    // `--tmpfs` creates only the mount point, and IPython, not finding HOME,
+    // prints a warning into EVERY submission.
     '-e',
     'HOME=/tmp/home',
     '-e',
@@ -264,19 +273,19 @@ export function runArgs(opts: {
     '-e',
     `COMP_MAX_TARGET_BYTES=${limits.targetBytes}`,
     /*
-     * Потолок ОДНОЙ ячейки — ради понятного текста, а не ради гарантии.
-     * Прототип показал, что он крепче ожидаемого (срабатывает и на `while
-     * True`, и на SVD в си, и на ячейке, игнорирующей SIGINT), но про ОБЩИЙ
-     * срок он не знает: тетрадь из пятидесяти ячеек по три секунды проходит
-     * мимо него насквозь. Поэтому он равен общему сроку, а настоящий убийца —
-     * снаружи.
+     * The cap on ONE cell — for the sake of a clear message, not a guarantee.
+     * The prototype showed it to be sturdier than expected (it fires on `while
+     * True`, on SVD in C, and on a cell that ignores SIGINT), but it knows
+     * nothing about the OVERALL time limit: a notebook of fifty cells at three
+     * seconds each goes straight past it. So it equals the overall limit, and
+     * the real killer is outside.
      */
     '-e',
     `COMP_CELL_TIMEOUT_SEC=${limits.wallSeconds}`,
-    // Открытая половина данных. solution.csv здесь не появляется никогда — он
-    // лежит в закрытом каталоге, который этому контейнеру не смонтирован.
+    // The open half of the data. solution.csv never appears here — it lies in
+    // the closed directory, which is not mounted into this container.
     ...mount(opts.dataDir, '/data', true),
-    // Каталог, а не файл: внутри одна тетрадь и больше ничего.
+    // A directory, not a file: one notebook inside and nothing else.
     ...mount(opts.inputDir, '/submission', true),
     ...mount(harnessDir(), '/harness', true),
     // Hard aggregate export bound. The host copies only validated named files.
@@ -285,8 +294,9 @@ export function runArgs(opts: {
     '-e', `COMP_MAX_OUTPUT_KILL_BYTES=${limits.outputKillBytes}`,
     ...(opts.dependenciesDir ? [...mount(opts.dependenciesDir, '/deps', true), '-e', 'COMP_DEPENDENCIES=/deps'] : []),
     `--memory=${memory}`,
-    // Swap ровно по памяти — иначе упёршийся контейнер не умирает, а уходит на
-    // диск и стоит минутами (та же причина, что в pool.ts).
+    // Swap exactly equal to memory — otherwise a container that hits the limit
+    // does not die but goes to disk and stalls for minutes (the same reason as
+    // in pool.ts).
     `--memory-swap=${memory}`,
     `--cpus=${limits.cpus}`,
     `--ulimit=fsize=${limits.fsizeBytes}:${limits.fsizeBytes}`,
@@ -305,12 +315,12 @@ export function runArgs(opts: {
 }
 
 /**
- * Аргументы `docker run` для контейнера МЕТРИКИ.
+ * `docker run` arguments for the METRIC container.
  *
- * Участника в нём нет: приезжает один его файл, только на чтение. Открытые
- * данные и исполненная тетрадь сюда не попадают — код преподавателя
- * исполняется рядом с ответами, и всё, что туда положено, может уехать в текст
- * его ошибки.
+ * The participant is not in it: only their one file arrives, read-only. The
+ * open data and the executed notebook do not get here — the teacher's code
+ * runs next to the answers, and anything put there may leak into the text of
+ * its error.
  */
 export function scoreArgs(opts: {
   attemptId?: string
@@ -365,8 +375,8 @@ export function scoreArgs(opts: {
     `COMP_PUBLIC_PERCENT=${opts.publicPercent}`,
     '-e',
     `COMP_SPLIT_SEED=${opts.splitSeed}`,
-    // Закрытая половина соревнования и один файл участника. Ни один из них не
-    // был и не будет виден контейнеру тетради.
+    // The closed half of the competition and one file of the participant.
+    // Neither of them has been or will be visible to the notebook container.
     ...mount(opts.secretDir, '/secret', true),
     ...mount(opts.submissionDir, '/submission', true),
     ...mount(harnessDir(), '/harness', true),
@@ -390,9 +400,9 @@ export function scoreArgs(opts: {
   ]
 }
 
-/* ---------------------------------------------------------------- присмотр */
+/* ---------------------------------------------------------------- watchdog */
 
-/** Что вернул присмотр за идущим контейнером. */
+/** What the watchdog over a running container returned. */
 interface Watched {
   killedBy: 'wall' | 'output' | 'disk' | null
   progress: RunProgress | null
@@ -417,12 +427,13 @@ function num(value: unknown): number | null {
 }
 
 /**
- * Присмотр за идущим контейнером: срок, печать и то, что он пишет на диск.
+ * Watching a running container: the time limit, printed output and what it
+ * writes to disk.
  *
- * Внутренний таймер на это не годится вовсе. Ячейка, ушедшая в сишный цикл,
- * держит GIL, и ни один питоновский будильник внутри не сработает; `--ulimit
- * fsize` ловит один файл, а не сотню файлов по гигабайту. Снаружи от
- * контейнера не спрячешься: `docker kill` — это SIGKILL от ядра хоста.
+ * An internal timer is no good for this at all. A cell that went into a C loop
+ * holds the GIL, and no Python alarm inside will fire; `--ulimit fsize`
+ * catches one file, not a hundred files of a gigabyte each. There is no hiding
+ * from outside the container: `docker kill` is a SIGKILL from the host kernel.
  *
  * Disk growth is bounded by tmpfs itself, including nested directories. The
  * host watchdog handles time/output and reads only bounded progress JSON.
@@ -473,9 +484,10 @@ async function watch(
       return { killedBy: 'wall', progress: last }
     }
     /*
-     * Печать читается из маячка, а не из контейнера: подрезанные выводы в
-     * память не попадают, но время и процессор тетрадь на них тратит, и восемь
-     * гигабайт печати — это тридцать секунд чужой очереди.
+     * Printed output is read from the beacon, not from the container: trimmed
+     * outputs do not get into memory, but the notebook spends time and CPU on
+     * them, and eight gigabytes of printing is thirty seconds of someone else's
+     * queue.
      */
     if (limits.outputKillBytes > 0 && (last?.outputBytes ?? 0) > limits.outputKillBytes) {
       await docker(['kill', '--signal=KILL', container], 30_000)
@@ -503,7 +515,7 @@ async function collectExports(container: string, from: string, to: string, files
   }
 }
 
-/** Вскрытие остановленного контейнера — ДО того, как его снимут. */
+/** Post-mortem of a stopped container — BEFORE it is removed. */
 async function postmortem(container: string): Promise<{ exit: number | null; oom: boolean; tail: string }> {
   const state = await docker(['inspect', container, '--format', INSPECT], 20_000)
   let exit: number | null = null
@@ -519,19 +531,20 @@ async function postmortem(container: string): Promise<{ exit: number | null; oom
 }
 
 /**
- * Во что превращается всё увиденное.
+ * What everything we saw turns into.
  *
- * Порядок здесь и есть ответ, и он тот же, что у прототипа (`drive.py`
- * · verdict_of). Убийство по памяти и по сроку старше всего, что успела
- * записать обвязка: её `run.json` мог остаться от предыдущей ячейки. «Тетрадь
- * исполнилась, а файла нет» идёт ПЕРЕД её статусом — иначе посылка с пустыми
- * руками считалась бы удавшейся и уходила бы в метрику ни с чем.
+ * The order here is the answer itself, and it is the same as in the prototype
+ * (`drive.py` · verdict_of). A kill for memory or for the time limit outranks
+ * anything the harness managed to write: its `run.json` may have been left
+ * over from the previous cell. "The notebook ran, but there is no file" goes
+ * BEFORE its status — otherwise a submission with empty hands would count as a
+ * success and go to the metric with nothing.
  *
- * Два убийства снаружи названы словами участника, а не нашими. Печать сверх
- * потолка — это падение его тетради (`cell_error`, «ОШИБКА В ТЕТРАДИ»), и
- * рядом лежит фраза о том, сколько она напечатала. Запись сверх потолка в
- * каталог хоста — это «ответ не принят» (`target_too_large`), потому что
- * ровно это и случилось.
+ * The two kills from outside are named in the participant's words, not ours.
+ * Printing over the cap is a crash of their notebook (`cell_error`, "NOTEBOOK
+ * ERROR"), with a sentence next to it about how much it printed. A write over
+ * the cap into the host directory is "answer rejected" (`target_too_large`),
+ * because that is exactly what happened.
  */
 export function verdictOfRun(input: {
   oom: boolean
@@ -550,10 +563,11 @@ export function verdictOfRun(input: {
 }
 
 /**
- * Слово обвязки — только если оно нам известно.
+ * The harness's word — only if we know it.
  *
- * Обвязка и типы правятся в разных файлах, и чужое слово, пропущенное дальше
- * как есть, легло бы в базу состоянием, которого нет ни в одной плашке.
+ * The harness and the types are edited in different files, and an unknown
+ * word passed on as is would land in the database as a state that no badge
+ * has.
  */
 const VERDICTS = new Set<string>([
   'ok',
@@ -573,13 +587,13 @@ const VERDICTS = new Set<string>([
 ])
 
 function asVerdict(status: string): RunVerdict {
-  // Тетрадь, которую не прочёл nbformat, — отказ участнику, а не падение
-  // обвязки: файл прислал он.
+  // A notebook that nbformat could not read is a refusal to the participant,
+  // not a harness crash: the participant sent the file.
   if (status === 'notebook_unreadable') return 'target_unreadable'
   return VERDICTS.has(status) ? (status as RunVerdict) : 'unknown'
 }
 
-/* ---------------------------------------------------------------- прогонщик */
+/* ------------------------------------------------------------------- runner */
 
 class DockerCompetitionRunner implements CompetitionRunner {
   readonly backend = 'docker' as const
@@ -623,9 +637,9 @@ class DockerCompetitionRunner implements CompetitionRunner {
         await collectExports(request.container, '/result', request.resultDir, [[RUN_FILE, 65536], [SUBMISSION_NAME, request.limits.targetBytes], ['executed.ipynb', 64 * 1024 ** 2]])
       }
     } finally {
-      // Контейнер снимается ВСЕГДА и только после вскрытия: `--rm` отнял бы у
-      // нас флаг OOM, а забытый контейнер — это гигабайты на машине, где идёт
-      // занятие.
+      // The container is ALWAYS removed, and only after the post-mortem: `--rm`
+      // would take the OOM flag from us, and a forgotten container is gigabytes
+      // on a machine where a class is running.
       await removeContainer(request.container)
     }
     const observed = readJson(path.join(request.resultDir, RUN_FILE))
@@ -690,10 +704,11 @@ class DockerCompetitionRunner implements CompetitionRunner {
     }
     const wall = Date.now() - started
     /*
-     * Метрику убили снаружи или по памяти — это упавший код ПРЕПОДАВАТЕЛЯ, а
-     * не участника, и назвать это «вышло время» значило бы поставить ему
-     * плашку за чужую ошибку: `stateOfVerdict` разбирает `timeout` и
-     * `out-of-memory` раньше, чем вид прогона.
+     * The metric was killed from outside or for memory — that is the TEACHER's
+     * code failing, not the participant's, and calling it "time ran out" would
+     * give the participant a badge for someone else's mistake:
+     * `stateOfVerdict` examines `timeout` and `out-of-memory` before the kind
+     * of run.
      */
     if (dead.oom) {
       return metricFailure(this.backend, `metric container out of memory\n${dead.tail}`, wall, dead.exit, true)
@@ -728,13 +743,14 @@ class DockerCompetitionRunner implements CompetitionRunner {
   }
 
   /**
-   * Подмести за прошлой жизнью процесса.
+   * Sweep up after the process's previous life.
    *
-   * Только по СВОИМ меткам: на машине преподавателя рядом стоят контейнеры
-   * комнат и личных тетрадей, и снести чужое здесь значило бы погасить идущее
-   * занятие. Помеченные `competition-run`/`competition-score` контейнеры
-   * заведены только этим модулем и живут только на время одной посылки, так
-   * что любой найденный после старта — уже осиротевший.
+   * Only by OUR OWN labels: on the teacher's machine the containers of rooms
+   * and personal notebooks stand alongside, and removing someone else's here
+   * would mean killing a class in progress. Containers labelled
+   * `competition-run`/`competition-score` are created only by this module and
+   * live only for the duration of one submission, so any found after startup
+   * is already orphaned.
    */
   async sweep(legacyContainers: readonly string[] = []): Promise<number> {
     let dropped = 0
@@ -774,12 +790,13 @@ class DockerCompetitionRunner implements CompetitionRunner {
   }
 
   /**
-   * Сколько памяти на машине ещё можно раздать.
+   * How much memory on the machine can still be handed out.
    *
-   * Спрашивается у того же модуля, что и форма семинара (kernel/resources.ts):
-   * потолок держит ВИРТУАЛКА докера, а не Мак, и на colima это двенадцать
-   * гигабайт при тридцати шести у машины. Считать по хосту значило бы брать в
-   * работу посылку, которой `docker run` откажет посреди пары.
+   * Asked of the same module as the seminar form (kernel/resources.ts): the
+   * ceiling is held by docker's VIRTUAL MACHINE, not the Mac, and on colima
+   * that is twelve gigabytes out of the machine's thirty-six. Counting by the
+   * host would mean taking on a submission that `docker run` will refuse in the
+   * middle of a class.
    */
   async capacity(): Promise<Capacity> {
     for (const container of pendingCleanup) {
@@ -795,11 +812,12 @@ class DockerCompetitionRunner implements CompetitionRunner {
   }
 }
 
-/** Текст, который участник читает дословно, — и только он. */
+/** Text the participant reads verbatim — and only that. */
 function participantText(report: Record<string, unknown>): string | null {
   if (typeof report.message === 'string' && report.message) return report.message
-  // Наша собственная проверка приезжает кодом: перевод живёт в shared/locales,
-  // а контейнер о языке инстанса не знает (см. harness.ts · align).
+  // Our own check arrives as a code: the translation lives in shared/locales,
+  // and the container knows nothing of the instance's language (see
+  // harness.ts · align).
   if (typeof report.code === 'string' && report.code) {
     return JSON.stringify({ code: report.code, params: report.params ?? {} })
   }
@@ -824,17 +842,17 @@ function metricFailure(
   }
 }
 
-/** Имена внутри закрытого каталога и в `/result` — одни на прогонщик и хранилище. */
+/** Names in the closed directory and in `/result` — one set for runner and storage. */
 export const SUBMISSION_NAME = 'submission.csv'
 export const SOLUTION_NAME = 'solution.csv'
 export const METRIC_NAME = 'metric.py'
 
 /**
- * Какая колонка склеивает ответ с ответами.
+ * Which column joins a submitted answer to the answer key.
  *
- * Поля в редакторе соревнования (A2) для неё пока нет, и умолчание здесь —
- * то же, что у Kaggle и у прототипа. Когда поле появится, оно придёт сюда
- * через `Competition`, а не через вторую переменную окружения.
+ * The competition editor (A2) has no field for it yet, and the default here is
+ * the same as Kaggle's and the prototype's. When the field appears, it will
+ * come here through `Competition`, not through a second environment variable.
  */
 export const DEFAULT_ID_COLUMN = 'id'
 

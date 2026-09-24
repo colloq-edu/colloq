@@ -1,7 +1,7 @@
 import { isLocale, normalizeLocale, setLocaleResolver, tr, type Locale } from '@shared/i18n'
 import { readRoomRoute } from './routes'
 const CACHE_KEY = 'colloq:instance-language'
-/** Как часто спрашивать язык у сервера там, где о смене некому рассказать. */
+/** How often to ask the server for the language where nobody would report a change. */
 const REFRESH_EVERY = 5 * 60_000
 function cachedLanguage(): Locale | null {
   try {
@@ -17,20 +17,21 @@ const suppliedValue = typeof document === 'undefined'
 const supplied = isLocale(suppliedValue) ? suppliedValue : null
 export const language = $state<{ current: Locale }>({ current: supplied ?? cached ?? 'ru' })
 /*
- * Счётчик приехавших словарей, и он тоже реактивный.
+ * A counter of arrived dictionaries, and it is reactive too.
  *
- * Экранный словарь везёт ОДИН язык (lib/screen-language.ts), поэтому текст на
- * экране меняется не только когда сменили язык, но и когда доехал словарь
- * нового языка. Разрешитель читает счётчик вместе с языком — значит, любое
- * `tr()` в разметке зависит и от него, и `messagesChanged()` перерисовывает
- * ровно то, что сказано словами, не трогая ни одного состояния комнаты.
+ * A screen dictionary carries ONE language (lib/screen-language.ts), so the
+ * text on screen changes not only when the language is switched but also when
+ * the new language's dictionary arrives. The resolver reads the counter along
+ * with the language — so every `tr()` in the markup depends on it too, and
+ * `messagesChanged()` redraws exactly what is said in words, without touching
+ * a single piece of room state.
  */
 const revision = $state<{ n: number }>({ n: 0 })
 if (typeof window !== 'undefined') setLocaleResolver(() => {
   revision.n
   return language.current
 })
-/** Словарь пополнился — перерисовать всё, что переведено. */
+/** The dictionary has grown — redraw everything that is translated. */
 export function messagesChanged(): void {
   revision.n++
 }
@@ -61,8 +62,8 @@ async function refreshLanguage(strict = false): Promise<void> {
   const started = generation
   const attempt = (async () => {
     try {
-      // Без `no-store`: ответ маленький и с ETag, и пусть его судьбу решают
-      // заголовки сервера, а не вкладка, которая спрашивает раз в пять минут.
+      // No `no-store`: the response is small and has an ETag, so let the server's
+      // headers decide its fate, not a tab that asks once every five minutes.
       const response = await fetch('/api/instance', { signal: AbortSignal.timeout(1500) })
       if (!response.ok) throw new Error(tr('common.languageReadFailed'))
       const state: unknown = await response.json()
@@ -100,13 +101,15 @@ export async function initializeLanguage(): Promise<void> {
   if (typeof window === 'undefined') return
   document.documentElement.lang = normalizeLocale(language.current)
   /*
-   * В комнате язык приносит управляющий сокет (`instance:language`, см.
-   * lib/session.svelte.ts), и опрос ей не нужен вовсе. Он и был не нужен:
-   * тридцать студентов держали по запросу каждые тридцать секунд всё занятие
-   * — тысячи запросов за пару ради настройки, которую меняют раз в год.
+   * In a room the control socket brings the language (`instance:language`, see
+   * lib/session.svelte.ts), and it needs no polling at all. It never did:
+   * thirty students each kept up a request every thirty seconds for the whole
+   * class — thousands of requests per class for a setting that changes once a
+   * year.
    *
-   * Остальные экраны — панель, читалка — сокета не держат; им остаётся тот же
-   * опрос, но раз в пять минут, и возврат во вкладку с тем же порогом.
+   * The other screens — the panel, the reader — hold no socket; they keep the
+   * same polling, but once every five minutes, plus a return to the tab with
+   * the same threshold.
    */
   const inRoom = typeof location !== 'undefined' && readRoomRoute(location.pathname) !== null
   if (!stopSync) {

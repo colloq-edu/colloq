@@ -29,10 +29,11 @@
       .then((status) => ({ enabled: status.enabled, mode: status.mode }))
       .catch((cause: unknown) => {
         /*
-         * Отказ не запоминается. Раньше он превращался в заглушку «оракула
-         * нет», и вкладка, открытая в момент перезапуска сервера, до конца
-         * пары не рисовала «Fix with AI» ни под одним трейсбеком — при том что
-         * панель оракула рядом спрашивает статус заново и показывает модель.
+         * A refusal is not remembered. It used to turn into a stub "there is
+         * no oracle", and a tab opened at the moment of a server restart drew
+         * no "Fix with AI" under any traceback until the end of class, even
+         * though the oracle panel next to it asks for the status again and
+         * shows the model.
          */
         oracle = null
         throw cause
@@ -137,19 +138,19 @@
 
   interface Props {
     id: string
-    /** Корень тетради, в которой эта ячейка: см. Notebook.svelte. */
+    /** The root of the notebook this cell is in: see Notebook.svelte. */
     bookRoot: string
     index: number
-    /** Последняя в тетради: «вниз» ей некуда, и кнопка это показывает. */
+    /** Last in the notebook: there is no "down" for it, and the button shows that. */
     last: boolean
-    /** Ячейка входит в выделение — их может быть несколько. */
+    /** The cell is part of the selection; there may be several. */
     selected: boolean
     /**
-     * Та самая, с которой работают клавиатура и курсор.
+     * The very one the keyboard and the caret work with.
      *
-     * Отдельно от `selected`, потому что при выделении нескольких ячеек ровно
-     * одна из них остаётся якорем: от неё меряется диапазон, в неё уходит Enter
-     * и её видит комната как «правит ячейку 04».
+     * Separate from `selected`, because when several cells are selected
+     * exactly one of them stays the anchor: the range is measured from it,
+     * Enter goes into it, and the room sees it as "editing cell 04".
      */
     anchor?: boolean
     /** False while the cell sits far outside the viewport; see Notebook.svelte. */
@@ -169,13 +170,15 @@
   }: Props = $props()
 
   /**
-   * Тексты ячеек кода этой тетради — справке, чтобы знать её импорты.
+   * The texts of this notebook's code cells, for the help, so that it knows
+   * the notebook's imports.
    *
-   * Вызовом, а не значением: читать восемьдесят `Y.Text` на каждую перерисовку
-   * ячейки незачем, а справка спрашивает их только на наведении — не чаще
-   * раза в треть секунды и только там, где окно вообще может появиться
-   * (lib/hover-target.ts). Ячейки чужих тетрадей сюда не попадают: `np` в
-   * лекции и `np` в семинаре — разные ядра и разные импорты.
+   * A call, not a value: there is no point reading eighty `Y.Text`s on every
+   * re-render of a cell, and the help asks for them only on hover, no more
+   * than once every third of a second and only where the window can appear
+   * at all (lib/hover-target.ts). Cells of other notebooks do not get in
+   * here: `np` in a lecture and `np` in a seminar are different kernels and
+   * different imports.
    */
   function codeSources(): string[] {
     const out: string[] = []
@@ -192,13 +195,14 @@
   const cell = watchCell(session.doc, () => id)
   const meta = watchCellMeta(() => cell.current)
   /**
-   * Оракул занят ЭТОЙ ячейкой прямо сейчас.
+   * The oracle is busy with THIS cell right now.
    *
-   * Жест делают кнопкой над ячейкой, а ответ приходит в панель — и когда панель
-   * свёрнута, между нажатием и появлением предложения нет вообще ничего: взял
-   * ли он задачу, стоит ли она в очереди, не отказал ли сервер — по экрану не
-   * прочитать. Признак снимается сам, чем бы ход ни кончился: `state` уходит из
-   * `streaming` и при ответе, и при ошибке.
+   * The gesture is made with a button above the cell, and the answer comes
+   * into the panel, and when the panel is collapsed there is nothing at all
+   * between the press and the appearance of a suggestion: whether it took
+   * the task, whether it is queued, whether the server refused, none of it
+   * can be read from the screen. The flag clears itself however the turn
+   * ended: `state` leaves `streaming` both on an answer and on an error.
    */
   const oracleAt = watchOracleBusy(session.doc, () => id)
   const oracleBusy = $derived(oracleAt.current)
@@ -207,120 +211,133 @@
   // The room's own rule, read where the button is drawn — the server has
   // enforced it since rules existed and the interface never asked.
   /*
-   * Что в этой комнате можно — одним местом. Правило, которое останавливает,
-   * обязано сказать об этом там, где нажимают, и ДО нажатия: кнопка, молча
-   * ничего не делающая, читается как поломка и приходит обратно баг-репортом.
+   * What is allowed in this room, in one place. A rule that stops something
+   * must say so where people press, and BEFORE the press: a button that
+   * silently does nothing reads as a breakage and comes back as a bug
+   * report.
    */
   const may = $derived(
-    // По правилам ТОЙ ТЕТРАДИ, в которой ячейка лежит: у личной тетради свой
-    // ответ на «кто здесь печатает и запускает» (shared/rules.ts · rulesForBook),
-    // и сервер отвечает тем же. Корень приходит пропсом — искать его по ячейке
-    // значило бы обходить документ на каждую перерисовку каждой ячейки.
+    // By the rules of THE NOTEBOOK the cell lives in: a personal notebook has
+    // its own answer to "who types and runs here" (shared/rules.ts ·
+    // rulesForBook), and the server answers the same. The root comes as a
+    // prop: looking it up from the cell would mean walking the document on
+    // every re-render of every cell.
     permitsIn(session.session.rules, session.me.role, session.finished, {
       root: bookRoot,
       participantId: session.me.id,
     }),
   )
   /*
-   * Замок на этой ячейке — и три производных, которыми живёт весь компонент.
+   * The lock on this cell, and the three derivatives the whole component
+   * lives on.
    *
-   * Права считает shared/rules.ts теми же функциями, что и сервер: компонент
-   * не складывает правило комнаты с полем ячейки сам. Иначе в продукте было бы
-   * два ответа на вопрос «можно ли здесь печатать», и расходиться они начали бы
-   * не с кнопкой, а с гейтом, который правку молча отвергает.
+   * Permissions are computed by shared/rules.ts with the same functions as
+   * on the server: the component does not combine the room rule with the
+   * cell's field itself. Otherwise the product would have two answers to the
+   * question "may I type here", and they would start to diverge not at the
+   * button but at the gate that silently rejects the edit.
    *
-   * `lock` — стоит ли рисовать замок вообще. В комнате, где участник и так
-   * печатает и запускает, открывать нечего, и значок там был бы украшением;
-   * после звонка — тем более, там своя причина и свои слова.
+   * `lock` is whether to draw the lock at all. In a room where a participant
+   * types and runs anyway, there is nothing to open, and an icon there would
+   * be decoration; after the bell all the more so: there it has its own
+   * reason and its own words.
    */
   const cellOpen = $derived(meta.current.open)
   const lock = $derived(cellLockMatters(may))
   const mayEdit = $derived(mayEditThisCell(may, cellOpen))
   const mayRun = $derived(mayRunThisCell(may, cellOpen))
-  /** Закрыта для ТЕБЯ: у преподавателя замок висит, но ничего не запирает. */
+  /** Closed for YOU: for the teacher the lock hangs there but locks nothing. */
   const shut = $derived(lock && !mayEdit && !mayRun)
   /*
-   * Одна фраза вместо правила комнаты — по тому же доводу, что и `CLASS_IS_OVER`
-   * в may.ts: услышать «тетрадь принадлежит преподавателю» там, где ячейку
-   * открывают одним нажатием, значит пойти искать не то.
+   * One phrase instead of the room rule, by the same argument as
+   * `CLASS_IS_OVER` in may.ts: hearing "the notebook belongs to the teacher"
+   * where a cell is opened with one press means going off to look for the
+   * wrong thing.
    */
   /*
-   * Слова тетради — раньше слов комнаты.
+   * The notebook's words come before the room's.
    *
-   * `LECTURE_CELL` написана про лекцию («эту ячейку редактирует и запускает
-   * только преподаватель») и в чужой личной тетради неправда: правит её автор.
-   * `may.bookWhy` непуст ровно тогда, когда закрыла ТЕТРАДЬ, и тогда говорит
-   * она — теми же словами, которыми отвечает сервер (collab/gate.ts).
+   * `LECTURE_CELL` is written about a lecture ("only the teacher edits and
+   * runs this cell"), and in someone else's personal notebook it is untrue:
+   * its author edits it. `may.bookWhy` is non-empty exactly when the
+   * NOTEBOOK closed it, and then the notebook speaks, in the same words the
+   * server answers with (collab/gate.ts).
    */
   const editWhy = $derived(may.bookWhy ?? (shut ? tr(LECTURE_CELL) : may.editWhy))
   /*
-   * Действует ли этот человек после звонка — для того, у чего правила нет:
-   * ответить на `input()`, отклонить предложение оракула. Та же
-   * `actsAfterClass`, которой отвечает сервер.
+   * Whether this person acts after the bell, for what has no rule: answering
+   * `input()`, declining an oracle suggestion. The same `actsAfterClass` the
+   * server answers with.
    */
   const acts = $derived(actsAfterClass(may.finished, session.me.role))
 
-  /* ------------------------------------------------------------ консилиум */
+  /* -------------------------------------------------------------- council */
 
   /*
-   * Третье положение замка — консилиум: у каждого свой лист.
+   * The lock's third position is the council: a sheet for everyone.
    *
-   * `meta.current.open` про него не знает намеренно (для гейта и `mayEditCell`
-   * консилиум — закрытая ячейка), поэтому положение целиком читает свой
-   * наблюдатель. Дальше три роли в одной ячейке: студент пишет СВОЙ лист
-   * (`ownSheet`), преподаватель видит общий текст как эталон и под ним пульт
-   * (`leads`), а всё остальное — как у закрытой.
+   * `meta.current.open` does not know about it on purpose (for the gate and
+   * `mayEditCell` the council is a closed cell), so the position as a whole
+   * is read by its own watcher. From there, three roles in one cell: a
+   * student writes THEIR OWN sheet (`ownSheet`), the teacher sees the shared
+   * text as the reference and the console under it (`leads`), and
+   * everything else is as for a closed cell.
    */
   const lockView = watchCellLock(() => cell.current)
   const lockState = $derived(lockView.current.lock)
   const inCouncil = $derived(lockState === 'council')
   const councilSettings = $derived(lockView.current.settings ?? DEFAULT_COUNCIL)
-  /** Ведёт консилиум — преподаватель, и после звонка тоже (may.ts · council). */
+  /** The teacher runs the council, after the bell too (may.ts · council). */
   const leads = $derived(may.council)
-  /** Тело ячейки — свой редактор, а не общий: студент в открытом консилиуме. */
+  /** The body is one's own editor, not the shared one: a student in an open council. */
   const ownSheet = $derived(inCouncil && !leads)
   const mine = $derived(session.council.mine[id] ?? null)
   /**
-   * Письма преподавателя — по отдельности и в порядке отправки.
+   * The teacher's letters, separately and in the order they were sent.
    *
-   * Их не больше двух: личное и рассылка группе, и живут они рядом, не
-   * затирая друг друга (shared/protocol · councilLetters). Склейка в
-   * `mine.reply` осталась только для клиентов постарше — в одном абзаце два
-   * письма читаются одним: «Проверьте знак Всем: поправка».
+   * There are at most two: a personal one and a message to the group, and
+   * they live side by side without overwriting each other
+   * (shared/protocol · councilLetters). The glued version in `mine.reply`
+   * remains only for older clients: in one paragraph two letters read as
+   * one: "Check the sign Everyone: a correction".
    */
   const letters = $derived(councilLetters(mine))
   const count = $derived(session.council.counts[id] ?? null)
   const board = $derived(session.council.boards[id] ?? null)
   /**
-   * Что преподаватель вывел на экран по этой ячейке — приезжает ВСЕЙ комнате.
+   * What the teacher put on screen for this cell; it arrives for the WHOLE
+   * room.
    *
-   * Показ больше не переписывает общий текст ячейки: он приходит подписанной
-   * плашкой под той же ячейкой (shared/protocol.ts · CouncilShown), а заготовка
-   * преподавателя остаётся на месте у всех.
+   * Showing no longer rewrites the cell's shared text: it arrives as a
+   * signed banner under the same cell (shared/protocol.ts · CouncilShown),
+   * and the teacher's starter text stays in place for everyone.
    */
   const onScreen = $derived(session.council.shown[id] ?? null)
   /**
-   * Автору второй плашки нет: его код и так перед ним, а два одинаковых блока
-   * подряд читаются как ошибка. Про себя он узнаёт раньше всех — по зелёному
-   * «Ваш вариант на экране» в подвале своего листа.
+   * The author gets no second banner: their code is in front of them anyway,
+   * and two identical blocks in a row read as a mistake. The author learns
+   * about it before anyone else, from the green "Your answer is on screen"
+   * in the footer of their own sheet.
    */
   /*
-   * И замок тут ни при чём — это просьба с пары 20.09.2026.
+   * And the lock has nothing to do with it: this is a request from the class
+   * of 20 Sep 2026.
    *
-   * Преподаватель закрывает консилиум, чтобы остановить работу: чтобы перестали
-   * править листы, сдавать и занимать очередь. Показанное решение при этом
-   * пропадало у всего класса — вместе с разговором, ради которого его и
-   * вывели. Показ живёт своей жизнью: сервер его хранит и снимает только по
-   * «убрать с экрана» (control.ts · council:show:clear, замка не спрашивает),
-   * так что здесь условие было лишним, а не защитным.
+   * The teacher closes the council to stop the work: so that people stop
+   * editing sheets, submitting and taking places in the queue. The shown
+   * solution used to vanish for the whole class at that point, together
+   * with the discussion it had been put up for. Showing lives a life of its
+   * own: the server stores it and removes it only on "take off the screen"
+   * (control.ts · council:show:clear, which does not ask about the lock), so
+   * the condition here was superfluous, not protective.
    */
   const showsOnScreen = $derived(
     onScreen !== null && onScreen.participantId !== session.me.id,
   )
   /*
-   * Консилиум на этой ячейке закрыт — по замку или по слову сервера. Замок
-   * приезжает кадром CRDT, `mine.closed` — сокетом; какой из двух дойдёт
-   * первым, неизвестно, и закрывает любой.
+   * The council on this cell is closed, by the lock or by the server's word.
+   * The lock arrives as a CRDT frame, `mine.closed` over the socket; which of
+   * the two gets here first is unknown, and either one closes it.
    */
   const councilClosed = $derived(!inCouncil || (mine?.closed ?? false))
   const mayAttempt = $derived(mayWriteThisCouncil(may, councilClosed))
@@ -331,16 +348,16 @@
   const attemptWhy = $derived(inCouncil ? may.attemptWhy : tr(COUNCIL_CLOSED))
 
   /**
-   * Свой лист: локальный документ Yjs, ни к чему не подключённый.
+   * One's own sheet: a local Yjs document, connected to nothing.
    *
-   * Тот же CodeEditor, что у ячейки, — он умеет только Y.Text с присутствием и
-   * отменой, — поэтому вместо второго редактора здесь второй документ: свой
-   * Y.Doc, своё присутствие (никуда не уходит), своя отмена. Ни одной правки в
-   * общий Y.Text отсюда нет и быть не может — общего текста в этом документе
-   * нет.
+   * The same CodeEditor as the cell's, which only knows Y.Text with presence
+   * and undo, so instead of a second editor there is a second document here:
+   * its own Y.Doc, its own presence (going nowhere), its own undo. Not a
+   * single edit to the shared Y.Text comes from here, nor can it: there is
+   * no shared text in this document.
    *
-   * Живёт до размонтирования, а не до закрытия консилиума: закрытый консилиум
-   * оставляет текст человеку черновиком, и черновик — это он.
+   * It lives until unmount, not until the council closes: a closed council
+   * leaves the text to the person as a draft, and the draft is this.
    */
   interface Sheet {
     doc: Y.Doc
@@ -348,7 +365,7 @@
     awareness: Awareness
     undo: Y.UndoManager
   }
-  /** Происхождение правок, которые пришли с сервера, а не с клавиатуры. */
+  /** The origin of edits that came from the server, not from the keyboard. */
   const SEED = 'council:seed'
 
   function openSheet(seed: string): Sheet {
@@ -365,30 +382,34 @@
 
   let sheet = $state.raw<Sheet | null>(null)
   /**
-   * Печатал ли человек в своём листе хоть раз.
+   * Whether the person has typed in their sheet even once.
    *
-   * Обычный `let`, не `$state`: читают его эффекты, которые пишут в Y.Text, и
-   * сигнал здесь означал бы эффект, зависящий от собственного следствия.
+   * A plain `let`, not `$state`: it is read by effects that write into the
+   * Y.Text, and a signal here would mean an effect depending on its own
+   * consequence.
    */
   let typed = false
   /**
-   * Что сейчас на листе — строкой, ради двух вопросов о ней.
+   * What is on the sheet right now, as a string, for the sake of two
+   * questions about it.
    *
-   * Сигнал, в отличие от `typed`: по нему рисуется счётчик знаков под листом и
-   * сверяется «сдано». Строка тут не лишняя копия — `toString()` наблюдатель
-   * всё равно делает на каждую правку, чтобы отдать снимок в очередь.
+   * A signal, unlike `typed`: the character counter under the sheet is drawn
+   * from it and "submitted" is checked against it. The string is not an
+   * extra copy here: the observer does `toString()` on every edit anyway, to
+   * hand the snapshot to the queue.
    */
   let sheetText = $state('')
-  /** Сколько знаков в попытке — или null, пока до потолка далеко. */
+  /** How many characters the attempt has, or null while the ceiling is far off. */
   const attemptCount = $derived(attemptCounter(sheetText.length))
-  /** Лист не влезает: снимок такого сервер не примет, и он никуда не уезжает. */
+  /** The sheet is too long: the server would reject its snapshot, so none is sent. */
   const attemptOver = $derived(attemptTooLong(sheetText))
   /**
-   * У преподавателя лежит ровно то, что человек видит на листе.
+   * The teacher holds exactly what the person sees on the sheet.
    *
-   * Сверяется только ради «сдано»: сдаётся ТО, ЧТО ЛЕЖИТ У СЕРВЕРА, и после
-   * снимка, который не уехал (лист сверх потолка, отказ, потерянный черновик),
-   * «сдано» под длинным текстом было бы неправдой в важном.
+   * Checked only for the sake of "submitted": what gets submitted is WHAT
+   * THE SERVER HOLDS, and after a snapshot that did not go out (a sheet over
+   * the ceiling, a refusal, a lost draft), "submitted" under a long text
+   * would be untrue in what matters.
    */
   const attemptSynced = $derived(attemptInSync(mine, sheetText))
 
@@ -396,38 +417,41 @@
     if (!ownSheet) return
     if (untrack(() => sheet)) return
     /*
-     * Исходный текст — своя попытка, если сервер её уже прислал, иначе задание
-     * (sheetSeed: пустая строка от сервера — не попытка). Заданием считается
-     * `mine.seed` — текст ячейки на момент перевода замка в консилиум, — а не
-     * то, что в ячейке лежит сейчас: после «Показать классу» там уже чужое
-     * решение. Пока сервер seed не шлёт, остаётся прежнее поведение.
-     * Читается без отслеживания — лист заводят один раз, а не на каждую букву
-     * эталона.
+     * The initial text is one's own attempt, if the server has already sent
+     * it, otherwise the task (sheetSeed: an empty string from the server is
+     * not an attempt). The task is `mine.seed`, the cell's text at the moment
+     * the lock was switched to council, not what is in the cell now: after
+     * "Show to class" someone else's solution is there. Until the server
+     * sends a seed, the old behaviour stays. Read without tracking: the sheet
+     * is started once, not on every letter of the reference.
      */
     const seed = untrack(() => sheetSeed(mine?.text, mine?.seed ?? liveText.current))
     sheet = openSheet(seed)
   })
 
   /*
-   * Попытка приехала после того, как лист уже завели с общего текста, — и
-   * человек ещё ничего не печатал: заменить. Печатал — его текст главнее
-   * любого снимка, включая эхо его же снимка.
+   * The attempt arrived after the sheet had already been started from the
+   * shared text, and the person has not typed anything yet: replace. If they
+   * typed, their text outranks any snapshot, including the echo of their own
+   * snapshot.
    *
-   * Пустой текст с сервера — не попытка, а «попытки ещё нет» (приветственная
-   * пачка по ячейке с открытым консилиумом): стирать им задание из листа
-   * нельзя.
+   * An empty text from the server is not an attempt but "no attempt yet"
+   * (the welcome batch for a cell with an open council): it must not be
+   * used to wipe the task off the sheet.
    */
   /*
-   * И то же для задания: `mine.seed` может доехать после того, как лист уже
-   * завели с общего текста (приветственная пачка и кадр CRDT приходят в любом
-   * порядке). Пока человек не печатал, задание главнее снимка общей ячейки.
+   * And the same for the task: `mine.seed` may arrive after the sheet has
+   * already been started from the shared text (the welcome batch and the
+   * CRDT frame arrive in any order). While the person has not typed, the
+   * task outranks the snapshot of the shared cell.
    */
   $effect(() => {
     const current = sheet
-    // То же правило, что у `sheetSeed`: своя попытка старше задания. Разница с
-    // прежним кодом — в проверке: `undefined` значит «сервер ничего не сказал»
-    // (старый сервер, поля нет), а пустая строка — «задание пустое», и ею лист
-    // как раз надо очистить: иначе в нём останется показанное решение.
+    // The same rule as `sheetSeed`: one's own attempt outranks the task. The
+    // difference from the old code is in the check: `undefined` means "the
+    // server said nothing" (an old server, no field), while an empty string
+    // means "the task is empty", and that is exactly what the sheet must be
+    // cleared with: otherwise the shown solution would remain in it.
     const text = mine?.text || mine?.seed
     if (!current || text === undefined || typed) return
     if (current.text.toString() === text) return
@@ -435,23 +459,26 @@
   })
 
   /*
-   * Снимок при паузе в наборе. Наблюдатель на Y.Text, а не на нажатиях: так
-   * ловится и вставка, и отмена, и автодополнение. Правки с происхождением SEED
-   * — не набор и не уезжают: иначе эхо снимка порождало бы следующий снимок.
+   * A snapshot on a pause in typing. An observer on the Y.Text, not on key
+   * presses: that way pasting, undo and autocompletion are caught too. Edits
+   * with the SEED origin are not typing and do not go out: otherwise a
+   * snapshot's echo would spawn the next snapshot.
    */
   $effect(() => {
     const current = sheet
     if (!current) return
     const onChange = (_event: Y.YTextEvent, transaction: Y.Transaction) => {
-      // Зеркало — раньше всех выходов: счётчик под листом обязан считать и то,
-      // что приехало заданием, и то, что снимком уже не уедет.
+      // The mirror comes before every exit: the counter under the sheet must
+      // count both what arrived as the task and what will no longer go out as
+      // a snapshot.
       sheetText = current.text.toString()
       if (transaction.origin === SEED) return
       typed = true
       if (!mayAttempt) return
-      // Сверх потолка `draft` снимок не берёт и не шлёт (council.svelte.ts):
-      // сервер отвергает его словами, то есть тостом на каждую паузу в наборе.
-      // Вместо тоста — счётчик под листом, один и молчащий, пока не важно.
+      // Over the ceiling `draft` neither takes nor sends a snapshot
+      // (council.svelte.ts): the server rejects it in words, that is, with a
+      // toast on every pause in typing. Instead of a toast, the counter under
+      // the sheet: a single one, silent while it does not matter.
       session.council.draft(id, sheetText)
     }
     sheetText = current.text.toString()
@@ -459,7 +486,7 @@
     return () => current.text.unobserve(onChange)
   })
 
-  // Присутствие держит таймер, документ — память; оба уходят с ячейкой.
+  // Presence holds a timer, the document holds memory; both leave with the cell.
   $effect(() => () => {
     const current = untrack(() => sheet)
     if (!current) return
@@ -469,15 +496,17 @@
   })
 
   /*
-   * «Сдать» и «Изменить» ждут эха сервера — и до него кнопка это показывает.
+   * "Submit" and "Edit" wait for the server's echo, and until then the
+   * button shows it.
    *
-   * Вид попытки меняет только `council:mine` с сервера, а между нажатием и им
-   * не было ничего: ни погашенной кнопки, ни слова. При пятистах одновременных
-   * сдачах на нагруженной сети человек жмёт снова и снова, и каждое нажатие —
-   * ещё один `council:submit`. Признак местный и честный: он говорит
-   * «отправлено», а не «сдано», и снимается ЛИБО эхом, либо своим сроком —
-   * молчания на восемь секунд не бывает без причины, и о ней надо сказать
-   * словами.
+   * The attempt's look is changed only by `council:mine` from the server,
+   * and between the press and that there was nothing: no dimmed button, no
+   * word. With five hundred simultaneous submissions on a loaded network a
+   * person presses again and again, and every press is one more
+   * `council:submit`. The flag is local and honest: it says "sent", not
+   * "submitted", and it is cleared EITHER by the echo or by its own
+   * deadline: eight seconds of silence do not happen without a reason, and
+   * that reason must be put into words.
    */
   let awaitingMine = $state<'submit' | 'withdraw' | null>(null)
   let awaitTimer: number | undefined
@@ -507,23 +536,25 @@
 
   $effect(() => () => window.clearTimeout(awaitTimer))
 
-  /** «Сдать». Возвращает, дошло ли до отправки, — для клавиш. */
+  /** "Submit". Returns whether it got as far as sending, for the keys. */
   function submitAttempt(): boolean {
     if (!mayAttempt) {
       session.showError(attemptWhy + '.')
       return false
     }
-    // Второе нажатие, пока первое в пути, — это второй `council:submit`, и
-    // ровно его и жмут, когда «ничего не произошло».
+    // A second press while the first is on its way is a second
+    // `council:submit`, and that is exactly what people press when "nothing
+    // happened".
     if (awaitingMine !== null || submittedAt !== null) return false
     /*
-     * Сдать то, чего у сервера нет, нельзя.
+     * What the server does not have cannot be submitted.
      *
-     * Сверх потолка снимок не уезжает, а `council:submit` сдаёт ТО, ЧТО ЛЕЖИТ
-     * У СЕРВЕРА: нажатие пометило бы сданным прошлый, короткий текст — у
-     * студента на экране один лист, у преподавателя в стопке другой, и
-     * выясняется это на разборе, когда переписывать поздно. Отказ словами и с
-     * числом: из него видно, сколько резать.
+     * Over the ceiling the snapshot does not go out, while `council:submit`
+     * submits WHAT THE SERVER HOLDS: the press would mark the previous, short
+     * text as submitted: the student has one sheet on screen, the teacher
+     * another in the stack, and this comes out at the review, when it is too
+     * late to rewrite. A refusal in words and with a number: from it one can
+     * see how much to cut.
      */
     if (attemptOver) {
       session.showError(
@@ -547,7 +578,7 @@
     session.council.withdraw(id)
   }
 
-  /** Запустить свою попытку — только при включённой ручке; отказ словами. */
+  /** Run one's own attempt: only when the setting allows it; refusal in words. */
   function runAttempt(): void {
     if (councilClosed || attemptRunning || attemptOver || !session.connected) return
     if (!mayRunAttempt) {
@@ -593,7 +624,7 @@
   function requestAttemptRun(): void {
     if (!mayRequestRun || attemptRunning || attemptOver || requestSending || !session.connected || !sheetText.trim()) return
     if (mine?.runRequest?.status === 'pending' && attemptSynced) return
-    // В том числе нетронутое условие: его ещё могло не быть среди попыток.
+    // Including an untouched task: it may not be among the attempts yet.
     if (!attemptSynced) session.council.draft(id, sheetText)
     awaitRequest('request')
     session.council.requestRun(id)
@@ -606,35 +637,37 @@
     session.council.cancelRunRequest(id, request.id)
   }
 
-  /* ---- лист: состояние словом, заготовка под рукой и клавиши */
+  /* ---- the sheet: state in words, the starter at hand, and keys */
 
   /**
-   * Заготовка преподавателя — то, с чего лист начинался.
+   * The teacher's starter: what the sheet started from.
    *
-   * Та же пара, что у `sheetSeed`: `mine.seed` (общий текст на момент, когда
-   * замок перевели в консилиум) главнее нынешнего общего текста, потому что
-   * после «Показать классу» в общем лежит уже чьё-то решение. Старый сервер
-   * поля не шлёт — тогда остаётся общий текст, как и при засеве листа.
+   * The same pair as in `sheetSeed`: `mine.seed` (the shared text at the
+   * moment the lock was switched to council) outranks the current shared
+   * text, because after "Show to class" the shared one already holds
+   * somebody's solution. An old server does not send the field: then the
+   * shared text remains, as when seeding the sheet.
    */
   /*
-   * Функцией, а не руной: `liveText` объявлен ниже по файлу (он про ОБЩИЙ
-   * текст ячейки и живёт среди прочего её хозяйства), а руна, читающая его
-   * отсюда, была бы обращением к переменной до объявления. Тело функции
-   * выполняется при чтении — то есть уже после, — и зависимости считаются
-   * там же, где читаются.
+   * A function, not a rune: `liveText` is declared further down the file (it
+   * is about the cell's SHARED text and lives among the rest of its
+   * household), and a rune reading it from here would access a variable
+   * before its declaration. The function body runs when read, that is,
+   * afterwards, and dependencies are tracked right where they are read.
    */
   function stubText(): string {
     return mine?.seed ?? liveText.current
   }
 
   /**
-   * Состояние листа ОДНИМ словом: чип в подвале и цвет полосы слева.
+   * The sheet's state in ONE word: the chip in the footer and the colour of
+   * the bar on the left.
    *
-   * Порядок — по тому, что человеку делать дальше. «Есть правки» впереди
-   * отметки: у преподавателя лежит не то, что на экране, и пока это так,
-   * любая отметка относится к прошлому тексту. Отметку до сегодня автор не
-   * видел вовсе: преподаватель ставил её в стопке, она доезжала в
-   * `council:mine` и умирала в нём.
+   * The order follows what the person has to do next. "Unsent edits" comes
+   * before the mark: the teacher holds something other than what is on
+   * screen, and while that is so, any mark refers to the previous text.
+   * Until now the author never saw the mark at all: the teacher set it in
+   * the stack, it arrived in `council:mine` and died there.
    */
   const sheetState = $derived(
     (submittedAt !== null && !attemptSynced) || (submittedAt === null && mine?.correct != null)
@@ -648,21 +681,23 @@
             : 'submitted',
   )
   /**
-   * Разобрано — когда? Своего времени у отметки в протоколе нет
-   * (`CouncilMine.correct` — голый признак), и придумывать его ради подписи
-   * значило бы менять кадр под оформление. Поэтому берётся время последнего
-   * письма: разбор и письмо пишутся в одну минуту, а если письма нет —
-   * подпись говорит «разобрано» без часов, и это правда.
+   * Reviewed: when? The mark has no time of its own in the protocol
+   * (`CouncilMine.correct` is a bare flag), and inventing one for the sake
+   * of a label would mean changing the frame to suit the styling. So the
+   * time of the last letter is taken: the review and the letter are written
+   * in the same minute, and if there is no letter, the label says
+   * "reviewed" without a clock, and that is the truth.
    */
   const reviewedAt = $derived(letters.length > 0 ? letters[letters.length - 1].at : null)
 
   /**
-   * Вывод попытки, стёртый возвратом к заготовке.
+   * The attempt's output, wiped by going back to the starter.
    *
-   * Стереть его у сервера нечем: кадра «забудь этот запуск» в `council:*` нет,
-   * а заводить его ради одной кнопки — менять протокол под оформление. Поэтому
-   * помним МОМЕНТ СТАРТА того запуска, чей вывод человек убрал вместе с
-   * текстом: следующий запуск придёт со своим `startedAt` и нарисуется сам.
+   * There is nothing to wipe it with on the server: `council:*` has no
+   * "forget this run" frame, and adding one for a single button would mean
+   * changing the protocol to suit the styling. So we remember the START
+   * MOMENT of the run whose output the person removed together with the
+   * text: the next run will come with its own `startedAt` and draw itself.
    */
   let clearedRunAt = $state<number | null>(null)
   const attemptRun = $derived(
@@ -670,40 +705,45 @@
   )
 
   /**
-   * «Восстановить» — вернуть лист к заготовке.
+   * "Restore": bring the sheet back to the starter.
    *
-   * Стёртый каркас переставал существовать: спросить его было не у кого, и
-   * преподаватель диктовал вслух. Нельзя у сданного (сданное правят после
-   * «Изменить») и нельзя, когда лист уже равен заготовке, — возвращать нечего.
+   * A wiped scaffold used to cease to exist: there was nobody to ask for it,
+   * and the teacher dictated it aloud. Not allowed for a submitted sheet (a
+   * submitted one is edited after "Edit") and not when the sheet already
+   * equals the starter: there is nothing to bring back.
    */
   const mayRestore = $derived(mayAttempt && submittedAt === null && sheetText !== stubText())
 
   /**
-   * Запуск и запрос — одна кнопка, потому что для студента это одно движение.
+   * Run and request are one button, because for a student this is one
+   * movement.
    *
-   * Ручка `studentRun` — правило ПРЕПОДАВАТЕЛЯ о том, чья очередь: сам или с
-   * разрешения. Студенту она объясняла себя тремя лишними словами
-   * («Попросить запуск», «Запрошено 14:31», «Отправляю запрос…»), то есть
-   * заставляла его знать про механику, которой он не управляет. Нажатие одно
-   * — «Запустить», — а дальше в обоих случаях ждут: в одном ядра, в другом
-   * преподавателя и ядра. Ожидание и называется одинаково.
+   * The `studentRun` setting is the TEACHER's rule about whose turn it is:
+   * on one's own or with permission. To the student it explained itself
+   * with three extra phrases ("Request a run", "Requested 14:31", "Sending
+   * the request…"), that is, it made them know about mechanics they do not
+   * control. There is one press, "Run", and after it in both cases one
+   * waits: in one case for the kernel, in the other for the teacher and the
+   * kernel. The waiting is called the same too.
    */
   const mayPressRun = $derived(
     councilSettings.studentRun === 'request'
       ? mayRequestRun && sheetText.trim() !== '' && requestSending === null
       : mayRunAttempt,
   )
-  /** Запрос лежит у преподавателя и относится к тому тексту, что на экране. */
+  /** The request is with the teacher and refers to the text that is on screen. */
   const requestPending = $derived(
     councilSettings.studentRun === 'request' &&
       attemptSynced &&
       mine?.runRequest?.status === 'pending',
   )
   /**
-   * Нажатие уже сделано и ждёт — очереди ядра или преподавателя.
+   * The press has been made and is waiting: for the kernel's queue or for
+   * the teacher.
    *
-   * `requestSending` здесь же: между нажатием и эхом сервера кнопка обязана
-   * быть погашенной, иначе на плохой сети её жмут второй раз.
+   * `requestSending` is here too: between the press and the server's echo
+   * the button must be dimmed, otherwise on a bad network it gets pressed a
+   * second time.
    */
   const runWaiting = $derived(
     mine?.queue != null ||
@@ -712,31 +752,35 @@
       requestSending?.action === 'request',
   )
   /**
-   * Отменить можно ЗАПРОС, и только его: очередь ядра отменять нечем —
-   * `council:run:cancel` снимает запрос (server/src/control.ts · resolveRunRequest),
-   * а кадра «убрать из очереди» в протоколе нет. Ссылку рядом с «В очереди»
-   * рисуем поэтому только там, где ей есть что сделать.
+   * What can be cancelled is the REQUEST, and only that: there is nothing to
+   * cancel the kernel queue with: `council:run:cancel` withdraws the request
+   * (server/src/control.ts · resolveRunRequest), and the protocol has no
+   * "remove from queue" frame. So the link next to "Queued" is drawn only
+   * where it has something to do.
    */
   const mayCancelRun = $derived(requestPending && mayRequestRun)
 
   /**
-   * «Подсказка оракула» — по СВОЕЙ упавшей попытке и только по ней.
+   * "Ask the oracle" is for ONE'S OWN failed attempt, and only for it.
    *
-   * Кнопка появляется ровно тогда, когда есть о чём спрашивать: запуск кончился
-   * ошибкой. Без трейсбека вопрос выродился бы в «посмотри мой код и скажи,
-   * верно ли» — то есть в решение за студента, от которого консилиум и
-   * защищают.
+   * The button appears exactly when there is something to ask about: the
+   * run ended in an error. Without a traceback the question would
+   * degenerate into "look at my code and tell me whether it's right", that
+   * is, into solving for the student, which is exactly what the council is
+   * protected from.
    *
-   * Путь у неё свой, не `/ai/ask`: тот пишет вопрос и ответ в общую ленту, а
-   * тексты консилиума частные. Ответ приходит письмом в саму попытку
-   * (`council:hint` в control.ts), и виден он тем же двоим, что видят её текст.
+   * It has its own route, not `/ai/ask`: that one writes the question and
+   * answer into the shared feed, while council texts are private. The answer
+   * arrives as a letter in the attempt itself (`council:hint` in
+   * control.ts), and it is visible to the same two people who see its text.
    *
-   * Остановленный пределом запуск кнопки не получает вовсе (`run.timedOut`).
-   * Упал он не о код: сервер прервал его по регламенту ячейки, трейсбека нет, а
-   * есть одна переведённая строка про предел — и модели остаётся гадать по
-   * тексту попытки, то есть решать за студента. Вдобавок вопрос стоит места в
-   * лимите комнаты, а ответ на него человек уже прочитал в выводе: сократите
-   * расчёт и запустите снова.
+   * A run stopped by the limit gets no button at all (`run.timedOut`). It
+   * did not fail on the code: the server interrupted it by the cell's rules,
+   * there is no traceback, only one translated line about the limit, and
+   * the model would be left guessing from the attempt's text, that is,
+   * solving for the student. On top of that, the question costs a place in
+   * the room's limit, and the person has already read the answer to it in
+   * the output: make the computation shorter and run again.
    */
   const hint = $derived(session.council.hints[id] ?? null)
   const mayHint = $derived(
@@ -746,18 +790,19 @@
       mayAttempt &&
       session.connected,
   )
-  /** Вопрос «вернуть?» — на месте кнопки, без окна браузера. */
+  /** The "restore?" question: in place of the button, with no browser dialog. */
   let restoreAsking = $state(false)
   /**
-   * Ширина подвала — чтобы чип ужимался раньше, чем строка переносится.
+   * The footer's width, so that the chip shrinks before the line wraps.
    *
-   * Подвал живёт в колонке тетради, а её ширину решают боковые панели, а не
-   * окно: на 636 px с обеими открытыми панелями «СДАНО 14:32 · ЖДЁТ РАЗБОРА»
-   * вместе с двумя кнопками не помещалось, и вниз уезжали кнопки — то есть
-   * главное. Медиазапросу этого не видно, поэтому меряется сам элемент.
+   * The footer lives in the notebook column, and its width is decided by
+   * the side panels, not the window: at 636 px with both panels open
+   * "SUBMITTED 14:32 · AWAITING REVIEW" together with two buttons did not
+   * fit, and the buttons slid down, that is, the main thing did. A media
+   * query cannot see this, so the element itself is measured.
    */
   let footerWidth = $state(0)
-  /** Ноль — ещё не мерили: до первого замера чип полный, а не урезанный. */
+  /** Zero means not measured yet: until then the chip is full, not trimmed. */
   const tightFooter = $derived(footerWidth > 0 && footerWidth < 460)
   $effect(() => {
     if (!mayRestore) restoreAsking = false
@@ -768,23 +813,26 @@
     restoreAsking = false
     if (!current || !mayRestore) return
     /*
-     * Происхождение обычное (null), а не SEED, и это несущее решение: снимок
-     * обязан уехать на сервер как всякий набор — иначе у преподавателя
-     * остался бы стёртый текст, — а сам возврат обязан лечь в отмену, чтобы
-     * Cmd+Z вернул написанное. SEED делает ровно наоборот: не уезжает и не
-     * отменяется.
+     * The origin is the ordinary one (null), not SEED, and that is a
+     * load-bearing decision: the snapshot must go to the server like any
+     * typing (otherwise the teacher would be left with the wiped text), and
+     * the restore itself must land in undo, so that Cmd+Z brings back what
+     * was written. SEED does exactly the opposite: it neither goes out nor
+     * gets undone.
      */
     clearedRunAt = untrack(() => mine?.run?.startedAt ?? null)
     current.doc.transact(() => replaceText(current.text, stubText()))
   }
 
   /**
-   * «Сдать заново»: у преподавателя лежит не то, что человек видит на листе.
+   * "Submit again": the teacher holds something other than what the person
+   * sees on the sheet.
    *
-   * `submitAttempt` сюда не годится — он нарочно не пускает второе нажатие по
-   * уже сданному листу (иначе на плохой сети это пятьсот `council:submit`
-   * подряд). А здесь второе нажатие и есть смысл: дослать снимок и сдать ещё
-   * раз. Чип вернётся к «Сдано» тем же эхом, каким разошёлся.
+   * `submitAttempt` is no good here: it deliberately does not let a second
+   * press through on an already submitted sheet (otherwise on a bad network
+   * that is five hundred `council:submit`s in a row). Here the second press
+   * is the whole point: send the snapshot and submit once more. The chip
+   * will return to "Submitted" with the same echo it diverged with.
    */
   function resubmitAttempt(): void {
     if (!mayAttempt) {
@@ -796,32 +844,35 @@
       return
     }
     session.council.draft(id, sheetText)
-    // Снятая попытка сдаётся заново по-настоящему (сервер поставит время), и
-    // тогда ждём эха, как обычная сдача. Сданной сервер время не переносит —
-    // ждать нечего, чип вернётся к «Сдано», как только доедет свежий снимок.
+    // A withdrawn attempt is submitted again for real (the server will set a
+    // time), and then we wait for the echo, as with an ordinary submission.
+    // For a submitted one the server does not move the time: there is
+    // nothing to wait for, and the chip returns to "Submitted" as soon as
+    // the fresh snapshot arrives.
     if (submittedAt === null) awaitMine('submit')
     session.council.submit(id)
   }
 
   /**
-   * ⇧↵ на своём листе СЧИТАЕТ, а не сдаёт.
+   * ⇧↵ on one's own sheet RUNS rather than submits.
    *
-   * Сдавало: запуска у студента не было вовсе, и пальцам, привыкшим к
-   * «выполнить и дальше», надо было куда-то попадать. Запуск появился — и с
-   * ним вернулась обычная мерка тетради: ⇧↵ считает, ⌘↵ считает не уходя,
-   * сдаёт одно ⌘⇧↵. При выключенной ручке клавиша не ругается и ничего не
-   * сдаёт: говорит словами, кто здесь запускает, и гаснет через две секунды.
-   * Тост тут был бы не к месту — это не отказ, а правило ячейки.
+   * It used to submit: the student had no run at all, and fingers used to
+   * "run and move on" had to land somewhere. Running appeared, and with it
+   * the notebook's usual convention came back: ⇧↵ runs, ⌘↵ runs without
+   * moving, and only ⌘⇧↵ submits. With the setting off the key does not
+   * scold and submits nothing: it says in words who runs here and fades
+   * after two seconds. A toast would be out of place here: this is not a
+   * refusal but the cell's rule.
    */
   let runHint = $state(false)
   let runHintTimer: number | undefined
   const RUN_HINT_MS = 2000
 
   function sheetRunKey(): void {
-    // Пауза — прежде всех веток: пока идёт отсчёт (ниже · runPaused), клавиша
-    // не шлёт ничего, потому что сервер это всё равно отвергнет, а отказ здесь
-    // стоил бы тоста на каждое нажатие. Ответ — вспышка чипа, и он же кончится
-    // сам.
+    // The pause comes before every branch: while the countdown runs (below ·
+    // runPaused), the key sends nothing, because the server would reject it
+    // anyway, and a refusal here would cost a toast on every press. The
+    // answer is a flash of the chip, and it ends by itself.
     if (runPaused) {
       nudgePause()
       return
@@ -842,11 +893,11 @@
   $effect(() => () => window.clearTimeout(runHintTimer))
 
   /**
-   * Сдача с клавиатуры — и мигание кнопки в ответ.
+   * Submitting from the keyboard, and the button blinks in response.
    *
-   * Сочетание неудобное нарочно, а неудобное нажатие должно быть видно: без
-   * вспышки ⌘⇧↵ неотличимо от промаха по ⌘↵, потому что «сдано» приезжает
-   * эхом сервера и не мгновенно.
+   * The combination is awkward on purpose, and an awkward press must be
+   * visible: without the flash ⌘⇧↵ is indistinguishable from a miss on ⌘↵,
+   * because "submitted" arrives as the server's echo and not instantly.
    */
   let submitFlash = $state(false)
   let flashTimer: number | undefined
@@ -862,20 +913,21 @@
 
   $effect(() => () => window.clearTimeout(flashTimer))
 
-  /* ---- пауза между запусками: отсчёт на месте кнопки */
+  /* ---- the pause between runs: a countdown in place of the button */
 
   /**
-   * Свой тик — и только пока есть что отсчитывать.
+   * Its own tick, and only while there is something to count down.
    *
-   * Секундомер ячейки (`now` ниже) для этого не годится дважды: он бьёт пятую
-   * долю секунды и живёт ровно столько, сколько ЯЧЕЙКА считается, — а пауза
-   * идёт как раз после того, как всё кончилось. Заводится он поэтому от самой
-   * паузы и снимается, как только она вышла: иначе в тетради на сорок ячеек
-   * консилиума до конца пары висело бы сорок интервалов ни для чего.
+   * The cell's stopwatch (`now` below) is no good for this twice over: it
+   * beats every fifth of a second and lives exactly as long as the CELL is
+   * running, while the pause comes precisely after everything has finished.
+   * So it is started from the pause itself and removed as soon as the pause
+   * is over: otherwise a notebook with forty council cells would keep forty
+   * intervals running for nothing until the end of class.
    *
-   * Полсекунды, а не секунда: интервал заводится не по границе секунды, и на
-   * целом шаге цифра менялась бы с опозданием до секунды — отсчёт, отстающий от
-   * часов, читается как зависший.
+   * Half a second, not a second: the interval is not started on a second
+   * boundary, and with a whole-second step the digit would change up to a
+   * second late; a countdown lagging behind the clock reads as frozen.
    */
   let pauseNow = $state(Date.now())
   const pauseLeft = $derived(
@@ -889,26 +941,30 @@
   })
 
   /**
-   * Отсчёт СТОИТ НА МЕСТЕ КНОПКИ — и только там, где кнопка была бы.
+   * The countdown STANDS IN PLACE OF THE BUTTON, and only where the button
+   * would be.
    *
-   * У сданной попытки и у той, что уже ждёт очереди, место занято тем, что
-   * важнее; там, где запускает преподаватель, паузы нет вовсе — правило про
-   * повтор СВОЕГО запуска. Ноль в `pauseLeft` возвращает кнопку сам, тиком:
-   * спрашивать сервер о конце паузы не у кого и незачем — он то же самое число
-   * и прислал.
+   * For a submitted attempt and for one already waiting in the queue the
+   * place is taken by something more important; where the teacher runs
+   * things there is no pause at all: the rule is about repeating ONE'S OWN
+   * run. Zero in `pauseLeft` brings the button back by itself, on a tick:
+   * there is nobody to ask the server about the end of the pause, and no
+   * reason to: it sent that very number.
    */
   const runPaused = $derived(
     pauseLeft > 0 && submittedAt === null && !runWaiting && (mayRunAttempt || mayRequestRun),
   )
 
   /**
-   * ⇧↵ во время паузы — вспышка отсчёта, а не запрос, который отвергнут.
+   * ⇧↵ during a pause flashes the countdown rather than sending a request
+   * that will be rejected.
    *
-   * Клавиша обязана соглашаться с кнопкой: кнопки на экране нет, значит и
-   * сообщения на сервер нет. Иначе каждое нажатие стоило бы отказа — тоста
-   * поверх набора и строки в журнале, — и всё это ради правила, о котором в
-   * подвале уже написано словами. Мигает сам отсчёт, тем же движением, что и
-   * кнопка сдачи на ⌘⇧↵: смотреть надо туда.
+   * The key must agree with the button: there is no button on screen, so
+   * there is no message to the server either. Otherwise every press would
+   * cost a refusal (a toast over the typing and a line in the log), all for
+   * a rule already written out in words in the footer. The countdown itself
+   * blinks, with the same movement as the submit button on ⌘⇧↵: that is
+   * where to look.
    */
   let pauseNudge = $state(false)
   let nudgeTimer: number | undefined
@@ -921,37 +977,41 @@
 
   $effect(() => () => window.clearTimeout(nudgeTimer))
 
-  /* ---- замок в три положения */
+  /* ---- the three-position lock */
 
   /**
-   * Меню замка: три положения и две ручки консилиума.
+   * The lock menu: three positions and two council settings.
    *
-   * Щелчок остаётся щелчком — закрыта ↔ открыта, без меню и без диалога, по
-   * доводу из разметки замка. Куда именно открывает щелчок, решает правило
-   * комнаты `opens` — общий текст или каждому свой лист, — и то же правило
-   * читают подсказки и второе нажатие (lib/lock-button.ts). Меню открывают
-   * удержанием, правой кнопкой или щелчком по замку в положении, куда щелчком
-   * не попадали: там одно нажатие не знает, куда вернуть.
+   * A click stays a click: closed ↔ open, without a menu and without a
+   * dialog, by the argument in the lock's markup. Where exactly a click
+   * opens to is decided by the room rule `opens` (shared text or a sheet
+   * for everyone), and the same rule is read by the hints and the second
+   * press (lib/lock-button.ts). The menu is opened by holding, by the right
+   * button, or by a click on the lock in a position a click never led to:
+   * there a single press does not know where to go back to.
    */
   let lockMenu = $state(false)
 
-  /* ------------------------------------------- пульт консилиума в окне */
+  /* ----------------------------------------- the council console window */
 
   /**
-   * Открыт ли пульт этой ячейки — на это отвечает одна кнопка под ячейкой.
+   * Whether this cell's console is open: one button under the cell answers
+   * to that.
    *
-   * Приватной консоли в тетради больше нет вовсе: консилиум ведут в окне
-   * пульта, и второго места с именами, черновиками и отметками в продукте
-   * быть не должно — тетрадь зеркалится в зал. Поэтому «открыт» решает только
-   * подпись кнопки: открыт — поднимаем окно, закрыт — открываем.
+   * There is no private console in the notebook anymore at all: the council
+   * is run in the console window, and there must be no second place in the
+   * product with names, drafts and marks: the notebook is mirrored to the
+   * audience. So "open" decides only the button's label: open, we raise the
+   * window; closed, we open it.
    *
-   * Узнаём стуком по BroadcastChannel (lib/council-pult-window.ts), а не по
-   * ссылке на окно: ссылку теряет перезагрузка тетради, а окно при этом живо.
-   * Молчание дольше трёх секунд — закрыто.
+   * We find out by a knock over BroadcastChannel
+   * (lib/council-pult-window.ts), not through a reference to the window: a
+   * notebook reload loses the reference while the window lives on. Silence
+   * longer than three seconds means closed.
    */
   let pultBeat = $state.raw<PultBeat | null>(null)
   let pultNow = $state(Date.now())
-  /** Ссылка на окно, если открывали из этой вкладки, — чтобы поднять его. */
+  /** A reference to the window, if it was opened from this tab, to raise it. */
   let pultWindow: Window | null = null
   const pultOpen = $derived(
     leads && inCouncil && pultBeat?.cellId === id && beatsAlive(pultBeat, pultNow),
@@ -963,7 +1023,7 @@
       pultBeat = beat
       pultNow = Date.now()
     })
-    // Своё затухание: сообщений больше нет, а «открыт» обязан погаснуть сам.
+    // Our own fade-out: no more messages, and "open" must go out by itself.
     const timer = setInterval(() => (pultNow = Date.now()), 1000)
     return () => {
       stop()
@@ -972,27 +1032,30 @@
   })
 
   /**
-   * Окно заблокировано браузером — сказать это словом, а не молчать.
+   * The window was blocked by the browser: say so in words rather than stay
+   * silent.
    *
-   * `window.open` из обработчика щелчка проходит везде, но не всегда: в
-   * Safari с «блокировать всплывающие окна» и в Chrome по политике
-   * предприятия он возвращает `null`. Молчащая кнопка читается как сломанная,
-   * а преподаватель в этот момент стоит перед аудиторией; строка гаснет сама,
-   * потому что она про одно нажатие, а не про состояние комнаты.
+   * `window.open` from a click handler gets through everywhere, but not
+   * always: in Safari with "block pop-up windows" and in Chrome under an
+   * enterprise policy it returns `null`. A silent button reads as broken,
+   * while the teacher at that moment stands in front of an audience; the
+   * line fades by itself, because it is about one press, not about the
+   * room's state.
    */
   let pultBlocked = $state(false)
   let blockedTimer: number | undefined
   const BLOCKED_MS = 6000
 
   /**
-   * «Открывается вкладкой» — та часть жалобы, которую кодом не чинят.
+   * "It opens as a tab" is the part of the complaint that code does not fix.
    *
-   * В полноэкранном Chrome и Safari на macOS всплывающее окно ложится вкладкой
-   * в то же пространство, что бы ни стояло в `features`: система не выпускает
-   * из полноэкранного режима второе окно. Молчать об этом нельзя — владелец
-   * шарит одно окно и ждёт второго рядом, — а рисовать строку всегда тоже
-   * нельзя: она врёт в обычном режиме. Поэтому она появляется на нажатие и
-   * ровно тогда, когда это правда, и гаснет сама, как и отказ выше.
+   * In full-screen Chrome and Safari on macOS a pop-up window lands as a tab
+   * in the same space, whatever `features` says: the system does not let a
+   * second window out of full-screen mode. Staying silent about it is not an
+   * option (the owner shares one window and expects a second one beside
+   * it), and drawing the line always is not an option either: it lies in
+   * normal mode. So it appears on a press and exactly when it is true, and
+   * fades by itself, like the refusal above.
    */
   let pultFullscreen = $state(false)
   let fullscreenTimer: number | undefined
@@ -1003,18 +1066,19 @@
   })
 
   /**
-   * Дотянуться до пульта этой ячейки: открыть, поднять или перевести.
+   * Reach this cell's console: open it, raise it or switch it.
    *
-   * Одна дверь, и открывает её ТОЛЬКО КНОПКА ПОД ЯЧЕЙКОЙ. Замок окон не
-   * открывает: перевести ячейку в консилиум и открыть пульт — два разных
-   * решения, и второе принимает преподаватель, а не тетрадь. Что делать с
-   * окном — открыть, поднять или перевести на эту ячейку — решает `pultReach`
-   * по последнему стуку (lib/council-pult-window.ts); здесь остаются только
-   * окна и отказ.
+   * One door, and ONLY THE BUTTON UNDER THE CELL opens it. The lock does not
+   * open windows: switching a cell to council and opening the console are
+   * two different decisions, and the second is the teacher's, not the
+   * notebook's. What to do with the window (open, raise, or switch it to
+   * this cell) is decided by `pultReach` from the last knock
+   * (lib/council-pult-window.ts); only the windows and the refusal remain
+   * here.
    *
-   * Звать ТОЛЬКО ИЗ ОБРАБОТЧИКА ЩЕЛЧКА: `window.open` вне пользовательского
-   * жеста браузер не пропускает, и на кадре из сети окно не открылось бы
-   * никогда — молча.
+   * Call it ONLY FROM A CLICK HANDLER: the browser does not let
+   * `window.open` through outside a user gesture, and on a frame from the
+   * network the window would never open, silently.
    */
   function reachPult(): void {
     lockMenu = false
@@ -1025,7 +1089,7 @@
           return
         }
       } catch {
-        // Кросс-оконный focus умеет отказывать; окно при этом живо.
+        // Cross-window focus can refuse; the window is still alive.
       }
       const raised = focusPult(session.session.id)
       if (raised) {
@@ -1033,8 +1097,8 @@
         return
       }
     }
-    // Открыть — или перевести уже открытое окно на эту ячейку: имя окна одно
-    // на комнату, и второй `open` его не удваивает, а ведёт сюда.
+    // Open, or switch an already open window to this cell: the window name is
+    // one per room, and a second `open` does not double it but leads it here.
     const opened = openPult(session.session.id, id)
     if (opened) pultWindow = opened
     window.clearTimeout(blockedTimer)
@@ -1047,9 +1111,10 @@
 
   let holdTimer: number | undefined
   /**
-   * Когда удержание открыло меню: щелчок, который приходит вслед за отпусканием,
-   * не в счёт. Метка времени, а не флаг: на сенсорном экране щелчка после
-   * долгого нажатия может и не быть, и флаг съел бы следующее честное нажатие.
+   * When a hold opened the menu: the click that follows the release does
+   * not count. A timestamp, not a flag: on a touch screen there may be no
+   * click after a long press at all, and a flag would eat the next honest
+   * press.
    */
   let heldAt = 0
   const HOLD_MS = 450
@@ -1060,21 +1125,22 @@
     { state: 'council', icon: 'users', label: tr('room.ui.34'), hint: tr('room.ui.419') },
   ]
   const lockIcon = $derived<IconName>(inCouncil ? 'users' : cellOpen ? 'unlock' : 'lock')
-  // Правило комнаты, а не положение ячейки: что значит «открыть» здесь.
+  // The room's rule, not the cell's position: what "open" means here.
   const opens = $derived(may.rules.opens)
 
   /*
-   * Нажатие услышано — местным признаком, пока не вернулся кадр.
+   * The press was heard: a local flag until the frame comes back.
    *
-   * Замок ничего не предугадывает: значок меняется тогда же, когда меняется у
-   * всей комнаты, и это правильно. Но на ретрансляторе кадр идёт 100–300 мс, и
-   * в них преподаватель посреди фразы не видел РОВНО НИЧЕГО — жал второй раз и
-   * возвращал замок обратно. Признак не врёт о положении: он говорит только
-   * «отправлено», гаснет от любого пришедшего кадра и от собственного срока —
-   * сеть может и не ответить, а висеть до конца пары ему нельзя.
+   * The lock predicts nothing: the icon changes exactly when it changes for
+   * the whole room, and that is right. But on the relay a frame takes
+   * 100–300 ms, and during them a teacher mid-sentence saw EXACTLY NOTHING,
+   * pressed a second time and put the lock back. The flag does not lie about
+   * the position: it only says "sent", goes out on any arriving frame and on
+   * its own deadline: the network may not answer, and it must not hang
+   * until the end of class.
    */
   let lockSending = $state(false)
-  /** Обычные `let`: их читает только код, зависеть от них эффекту незачем. */
+  /** Plain `let`s: only code reads them, and no effect needs to depend on them. */
   let sentFrom: CellLock | null = null
   let sentTimer: number | undefined
   const SENT_MS = 2000
@@ -1106,8 +1172,9 @@
       lockMenu = !lockMenu
       return
     }
-    // Два положения — прежним сообщением: сервер читает его как cell:lock и
-    // сам решает по правилу комнаты, общий это текст или консилиум.
+    // Two positions, with the old message: the server reads it as cell:lock
+    // and decides by the room rule itself whether it is shared text or a
+    // council.
     markSending()
     session.send({ t: 'cell:open', cellId: id, open: press.open })
   }
@@ -1131,7 +1198,7 @@
     session.council.lock(id, state)
   }
 
-  // Меню закрывается снаружи: щелчок мимо, Escape, потеря замка.
+  // The menu closes from outside: a click elsewhere, Escape, losing the lock.
   $effect(() => {
     if (!lockMenu) return
     const away = (event: PointerEvent) => {
@@ -1153,46 +1220,50 @@
   })
 
   /*
-   * Ячейка спрятала замок (правила сменились, звонок) — меню ей ни к чему.
-   * `lock` здесь читается, `lockMenu` пишется: круга нет.
+   * The cell hid its lock (the rules changed, the bell): it has no use for
+   * the menu. `lock` is read here and `lockMenu` written: there is no loop.
    */
   $effect(() => {
     if (!lock || may.role !== 'host') lockMenu = false
   })
 
-  /** Показать черновик закрытого консилиума — свёрнут по умолчанию. */
+  /** Show the draft of a closed council; collapsed by default. */
   let showDraft = $state(false)
 
   /*
-   * Ячейка остановилась внутри input().
+   * The cell stopped inside input().
    *
-   * Это единственное состояние, в котором ядро ждёт ЧЕЛОВЕКА, а не машину.
-   * Что ячейка ждёт ответа, видит вся комната — приглашение ко вводу живёт в
-   * документе. А отвечает тот, чья ячейка спрашивает, или преподаватель: так
-   * решает сервер (`control.ts`, case 'input', тем же `startedTheRunningCell`,
-   * что и «остановить»), и `input()` под паролем — как раз про то, почему
-   * видеть и отвечать не одно и то же.
+   * This is the only state in which the kernel waits for a PERSON, not a
+   * machine. That the cell is waiting for an answer is seen by the whole
+   * room: the input prompt lives in the document. But the answer comes from
+   * whoever's cell is asking, or from the teacher: so the server decides
+   * (`control.ts`, case 'input', with the same `startedTheRunningCell` as
+   * "stop"), and a password `input()` is exactly why seeing and answering
+   * are not the same thing.
    *
-   * Поле и фокус идут за этим правом. Пока не шли, подпись звала отвечать всю
-   * комнату, курсор выпрыгивал из чужой ячейки в каждом браузере, а набранный
-   * ответ стирался вместе с отказом сервера.
+   * The field and the focus follow this right. Until they did, the label
+   * called the whole room to answer, the caret jumped out of someone else's
+   * cell in every browser, and the typed answer was wiped together with the
+   * server's refusal.
    */
   const stdin = $derived(meta.current.stdin)
   let answer = $state('')
   let answerField = $state<HTMLInputElement | null>(null)
 
   /*
-   * Фокус — только тому, ЧЬЯ ячейка спрашивает.
+   * Focus goes only to the one WHOSE cell is asking.
    *
-   * `canAnswer` у преподавателя истинно на ЛЮБОЙ ячейке, так что в
-   * лаборатории с `run: room` каждый `input()` любого студента вырывал у него
-   * курсор из ячейки, в которой он печатает, и — фокусом без `preventScroll` —
-   * уносил экран к чужой ячейке двумя сотнями строк ниже. Поле ему по-прежнему
-   * рисуют: ответить он вправе, — но приходит к нему он сам.
+   * `canAnswer` is true for the teacher on ANY cell, so in a lab with
+   * `run: room` every `input()` of any student yanked the caret out of the
+   * cell the teacher was typing in, and (through a focus without
+   * `preventScroll`) carried the screen off to someone else's cell two
+   * hundred lines below. The teacher still gets the field drawn: they have
+   * the right to answer, but they come to it themselves.
    *
-   * `preventScroll` и отдельный `scrollIntoView` — не одно и то же с обычным
-   * `focus()`: браузер прокручивает к полю ЛЮБОЙ предок, в том числе
-   * горизонтально, а здесь нужно ровно «подвести ячейку, если её не видно».
+   * `preventScroll` plus a separate `scrollIntoView` is not the same as a
+   * plain `focus()`: the browser scrolls ANY ancestor to the field,
+   * horizontally too, while here exactly "bring the cell into view if it is
+   * not visible" is needed.
    */
   $effect(() => {
     if (stdin && canAnswer && mineIsRunning) {
@@ -1205,28 +1276,30 @@
     event.preventDefault()
     if (!stdin) return
     session.send({ t: 'input', value: answer, cellId: id })
-    // Поле чистит эффект выше, когда ядро перестало ждать. Стереть здесь
-    // значило бы потерять набранное вместе с любым отказом.
+    // The field is cleared by the effect above when the kernel stops
+    // waiting. Wiping it here would mean losing what was typed along with
+    // any refusal.
   }
   const cellState = $derived(meta.current.state)
 
   /*
-   * Мгновенная ячейка не мигает.
+   * An instant cell does not blink.
    *
-   * `print(1)` проходит очередь и выполнение за десятки миллисекунд, и на этих
-   * десятках миллисекунд интерфейс успевал показать всё: полоса вспыхивала
-   * акцентом, номер менял цвет, снизу появлялась и пропадала строка состояния,
-   * кнопка в тулбаре оборачивалась в квадрат и обратно. Получалось моргание на
-   * ровном месте — и тем заметнее, чем быстрее ячейка.
+   * `print(1)` passes the queue and execution in tens of milliseconds, and
+   * in those tens of milliseconds the interface managed to show everything:
+   * the bar flashed with the accent, the ordinal changed colour, a status
+   * line appeared and disappeared at the bottom, the toolbar button turned
+   * into a square and back. The result was blinking out of nowhere, and the
+   * faster the cell, the more noticeable.
    *
-   * Поэтому состояние занятости показывают не сразу: если выполнение кончилось
-   * раньше порога, показывать было нечего и никто ничего не увидел. Если оно
-   * живёт дольше — всё появляется разом, и появляется уже надолго.
+   * So the busy state is not shown at once: if execution finished before
+   * the threshold, there was nothing to show and nobody saw anything. If it
+   * lives longer, everything appears at once, and appears for a while.
    *
-   * Порог местный и в документ не попадает: это про то, как рисуют, а не про
-   * то, что происходит. Двести миллисекунд — обычная граница, за которой
-   * человек начинает замечать ожидание; ниже неё указатель успевает только
-   * мигнуть.
+   * The threshold is local and does not get into the document: it is about
+   * how things are drawn, not about what is happening. Two hundred
+   * milliseconds is the usual boundary beyond which a person starts to
+   * notice waiting; below it the pointer only has time to blink.
    */
   const BUSY_VISIBLE_MS = 200
   const busy = $derived(cellState === 'running' || cellState === 'queued')
@@ -1241,15 +1314,15 @@
   })
 
   /**
-   * Состояние, каким его рисуют, — против того, каким оно есть.
+   * The state as drawn, against the state as it is.
    *
-   * Отличаются они только в те двести миллисекунд, пока занятость ещё не
-   * показывают. Решения принимаются по настоящему `cellState` (см. `run`),
-   * рисуется — по этому.
+   * They differ only in the two hundred milliseconds while the busy state is
+   * not shown yet. Decisions are made by the real `cellState` (see `run`);
+   * drawing goes by this one.
    */
   const shownState = $derived(busy && !showBusy ? 'idle' : cellState)
   const running = $derived(cellState === 'running')
-  /** То же для разметки: полоса, строка состояния и лицо кнопки ждут порога. */
+  /** Same for the markup: the bar, status line and button face await the threshold. */
   const shownRunning = $derived(running && showBusy)
 
   let editing = $state(false)
@@ -1261,16 +1334,19 @@
 
   const outputs = watchOutputs(() => cell.current)
   const peersHere = watchCellPeers(session.awareness, () => id)
-  // Очередь — СВОЕЙ тетради: у каждой своё ядро и своя очередь, и «третий в
-  // очереди» из соседнего листа не имеет к этой ячейке никакого отношения.
+  // The queue is of ITS OWN notebook: each has its own kernel and its own
+  // queue, and "third in the queue" from a neighbouring sheet has nothing to
+  // do with this cell.
   const notebook = watchBookKernel(session.doc, () => bookRoot)
 
   const ytext = $derived(cell.current ? cellSource(cell.current) : null)
 
   /**
-   * Текст ячейки в буфер — единственное, что делает слот копирования в тулбаре.
+   * The cell's text to the clipboard: the only thing the copy slot in the
+   * toolbar does.
    *
-   * Отказ буфера (настройка браузера) молчит: текст остаётся выделяемым.
+   * A clipboard refusal (a browser setting) stays silent: the text remains
+   * selectable.
    */
   let copied = $state(false)
   let copiedTimer: number | undefined
@@ -1281,7 +1357,7 @@
       window.clearTimeout(copiedTimer)
       copiedTimer = window.setTimeout(() => (copied = false), NOTICED_MS)
     } catch {
-      // см. выше
+      // see above
     }
   }
   $effect(() => () => window.clearTimeout(copiedTimer))
@@ -1299,11 +1375,11 @@
    * you have clicked on is still, first, a cell that failed.
    */
   /*
-   * Открытая ячейка стоит ВЫШЕ выделенной по той же причине, по какой выше неё
-   * стоят работающая и упавшая: это факт о комнате, а не о твоём курсоре. Ради
-   * него полосу и красят — «открыта» должно читаться из середины аудитории, а
-   * не при разглядывании; выделение при этом остаётся помеченным номером, как и
-   * на работающей ячейке.
+   * An open cell ranks ABOVE a selected one for the same reason the running
+   * and the failed ones rank above it: this is a fact about the room, not
+   * about your cursor. It is what the bar is coloured for: "open" must read
+   * from the middle of the lecture hall, not on close inspection; the
+   * selection meanwhile stays marked by the ordinal, as on a running cell.
    */
   const tone = $derived(
     shownRunning
@@ -1336,33 +1412,36 @@
   } as const
 
   /*
-   * Вертикальная полоса слева от тела ячейки — единственный признак состояния,
-   * который есть у ЛЮБОЙ ячейки: и у кода, и у прочитанного текста, и у
-   * свёрнутой. Поэтому выбор говорит именно ей.
+   * The vertical bar left of the cell body is the only state marker that
+   * EVERY cell has: code, rendered text, and collapsed cells alike. So the
+   * selection speaks through it.
    *
-   * Выбранная — цветом чернил, то есть самым тёмным, что есть на листе: она
-   * должна отличаться от покоящейся (тонкая серая линия) на расстоянии
-   * проектора, а не при разглядывании.
+   * Selected is in ink colour, that is, the darkest thing on the sheet: it
+   * must differ from a resting one (a thin grey line) at projector distance,
+   * not on close inspection.
    */
   const RULE = {
     /*
-     * Работающая — приглушённая, и это не описка: поверх неё лежит дышащая
-     * полоса той же ширины и на том же месте (см. разметку ниже). Пара даёт
-     * линию, которая ходит между полным акцентом и 55 % — ярче всех на листе
-     * в верхней точке и близко к очереди в нижней. Различает их не яркость, а
-     * то, что одна движется: ядро выполняет по одной ячейке, так что в тетради
-     * движется ровно одна вещь.
+     * Running is muted, and that is not a typo: on top of it lies a breathing
+     * bar of the same width in the same place (see the markup below). The
+     * pair gives a line that moves between the full accent and 55 %: the
+     * brightest thing on the sheet at the top and close to queued at the
+     * bottom. What tells them apart is not brightness but that one of them
+     * moves: the kernel executes one cell at a time, so exactly one thing
+     * moves in the notebook.
      *
-     * Врозь эти два значения бессмысленны: без полосы работающая ячейка станет
-     * бледнее стоящей в очереди. Менять их можно только вместе.
+     * Apart, these two values are meaningless: without the bar a running
+     * cell would be paler than a queued one. They can only be changed
+     * together.
      */
     running: 'border-accent/40',
     error: 'border-danger',
     queued: 'border-accent/50',
     /*
-     * Открытая — полным акцентом и без дышащей полосы поверх: она не работает,
-     * она разрешена. Это единственное спокойное состояние, которому дан цвет, и
-     * дан он ровно затем, чтобы в закрытой тетради нашлась глазом одна ячейка.
+     * Open is in the full accent and without the breathing bar on top: it is
+     * not running, it is allowed. It is the only calm state that is given a
+     * colour, and it is given one precisely so that in a closed notebook the
+     * eye can find the one cell.
      */
     open: 'border-accent',
     selected: 'border-ink',
@@ -1383,14 +1462,16 @@
   const mineIsRunning = $derived(meta.current.runById === session.me.id)
   const canInterrupt = $derived(session.me.role === 'host' || mineIsRunning)
   /*
-   * Ответить в input() — тот же круг людей и та же серверная проверка, что у
-   * «остановить». Отдельным именем, потому что это другой вопрос к комнате: не
-   * «чью работу ты прерываешь», а «чья ячейка спрашивает».
+   * Answering input() is the same circle of people and the same server
+   * check as "stop". A separate name, because it is a different question to
+   * the room: not "whose work are you interrupting" but "whose cell is
+   * asking".
    *
-   * И конец занятия: правилом это не выражается — правил про `input()` нет, —
-   * поэтому здесь та же `actsAfterClass`, которой отвечает сервер. Случай
-   * редкий и настоящий: занятие заканчивают, пока чья-то ячейка стоит в
-   * ожидании ввода, и поле, которому сервер откажет, лучше не рисовать.
+   * And the end of class: no rule expresses this (there are no rules about
+   * `input()`), so here it is the same `actsAfterClass` the server answers
+   * with. The case is rare and real: class is ended while someone's cell is
+   * waiting for input, and a field the server would refuse is better not
+   * drawn.
    */
   const canAnswer = $derived(canInterrupt && acts)
   /*
@@ -1401,32 +1482,33 @@
    */
   const canCancel = $derived(session.me.role === 'host' || meta.current.runById === session.me.id)
   /*
-   * Два одинаковых по виду выражения не сливаются в одно намеренно: сервер
-   * отвечает на них из разных записей — на «остановить» из среды исполнения,
-   * на «убрать из очереди» из очереди, — и совпадают они по сегодняшнему
-   * правилу, а не по устройству.
+   * Two expressions that look the same are deliberately not merged into one:
+   * the server answers them from different records ("stop" from the
+   * execution environment, "remove from queue" from the queue), and they
+   * coincide by today's rule, not by design.
    */
 
   /*
-   * Первое место в тулбаре: запуск, отмена или стоп — смотря что делает ячейка.
+   * The first place in the toolbar: run, cancel or stop, depending on what
+   * the cell is doing.
    *
-   * Раньше здесь всегда была кнопка запуска, и на работающей ячейке она была
-   * включена и не делала ничего: `requestRun` на сервере пропускает и то, что
-   * уже выполняется, и то, что уже в очереди. Решение вынесено в отдельный
-   * модуль — там же оно и проверяется тестами.
+   * There used to be a run button here always, and on a running cell it was
+   * enabled and did nothing: `requestRun` on the server lets through both
+   * what is already running and what is already queued. The decision lives
+   * in a separate module, and that is where tests check it.
    */
   /*
-   * Тик секундомера — здесь, а не в документе.
+   * The stopwatch tick lives here, not in the document.
    *
-   * Пятая доля секунды, а не целая: десятая доля — это и есть та цифра, по
-   * которой видно, работает ячейка или висит. Интервал заводится только на
-   * время выполнения и снимается в уборке, так что при выключенном ядре в
-   * тетради не тикает ничего.
+   * A fifth of a second, not a whole one: the tenth of a second is exactly
+   * the digit that shows whether a cell is working or hanging. The interval
+   * is started only for the duration of execution and removed in cleanup,
+   * so with the kernel off nothing ticks in the notebook.
    *
-   * Ядро выполняет по одной ячейке, поэтому во всей вкладке живёт не больше
-   * одного такого интервала — сколько бы ячеек в тетради ни было, и без
-   * какого-либо согласования между ними: эффект смотрит на `running` своей
-   * ячейки, и этого достаточно.
+   * The kernel executes one cell at a time, so no more than one such
+   * interval lives in the whole tab, however many cells the notebook has,
+   * and without any coordination between them: the effect looks at its own
+   * cell's `running`, and that is enough.
    */
   let now = $state(Date.now())
   $effect(() => {
@@ -1435,30 +1517,30 @@
     return () => window.clearInterval(id)
   })
 
-  /* --------------------------------------- переход к определению */
+  /* ------------------------------------------ jump to definition */
 
   /**
-   * «Тебя привели сюда» — метка для ЭТОЙ ячейки или ничего.
+   * "You were brought here": a mark for THIS cell, or nothing.
    *
-   * Не событие, а состояние, и потому `$derived`: ячейку, к которой ведёт
-   * переход, тетрадь часто строит уже ПОСЛЕ ответа сервера (далёкие стоят
-   * заглушками, см. Notebook.svelte · data-cell-deferred), и посланное ей
-   * событие слушать было бы некому. Ячейка, собранная через кадр после
-   * прокрутки, читает метку сама — см. lib/goto.svelte.ts.
+   * Not an event but a state, hence `$derived`: the notebook often builds
+   * the cell a jump leads to only AFTER the server has answered (distant
+   * ones stand as stubs, see Notebook.svelte · data-cell-deferred), and
+   * there would be nobody to listen to an event sent to it. A cell built a
+   * frame after the scroll reads the mark itself: see lib/goto.svelte.ts.
    *
-   * Разовое значение вместо сигнала тоже не годится: `landingInCell` читает
-   * `$state`, и переданное в редактор один раз навсегда осталось бы тем, каким
-   * было в первый рендер, — то есть пустым.
+   * A one-off value instead of a signal will not do either: `landingInCell`
+   * reads `$state`, and what was passed to the editor once would stay
+   * forever as it was on the first render, that is, empty.
    */
   const landing = $derived(landingInCell(id))
 
-  /* ------------------------------------------------- место под вывод */
+  /* ------------------------------------------------- room for output */
 
-  /** Сколько область намерила собой сейчас; пишется на внутренний узел. */
+  /** How much the area measures itself now; written onto the inner node. */
   let outputsMeasured = $state(0)
-  /** Сколько она занимала, когда в ней последний раз что-то было, и чем это было. */
+  /** How much it took the last time it held something, and what that was. */
   let heldOutput = $state<Held>(NO_HELD)
-  /** Сколько картинок ещё не сообщили свой размер; приходит из CellOutputs. */
+  /** How many images have not reported their size yet; comes from CellOutputs. */
   let outputsPending = $state(0)
 
   const outputFloor = $derived(
@@ -1479,22 +1561,24 @@
       }),
   )
 
-  // Запоминание высоты. Обе проверки внутри nextHeld несущие — см. модуль.
+  // Remembering the height. Both checks inside nextHeld are load-bearing: see the module.
   /*
-   * Запоминание высоты — и две ловушки Svelte, в которые я уже попал.
+   * Remembering the height, and two Svelte traps I have already fallen into.
    *
-   * Эффект читает прошлое значение и пишет новое, а `nextHeld` возвращает
-   * ОБЪЕКТ. Значит, даже когда ничего не изменилось, присваивается новая
-   * ссылка — эффект зависит от того, что сам же и пишет, и перезапускается
-   * вечно. Svelte это ловит и валит всё приложение целиком:
-   * effect_update_depth_exceeded, тетрадь перестаёт рисоваться, ячейки
-   * двоятся. Первый раз это прошло незамеченным ровно потому, что раньше
-   * функция возвращала число, и 900 === 900 останавливало круг само.
+   * The effect reads the previous value and writes a new one, and `nextHeld`
+   * returns an OBJECT. So even when nothing has changed, a new reference is
+   * assigned: the effect depends on what it writes itself and restarts
+   * forever. Svelte catches this and brings down the whole app:
+   * effect_update_depth_exceeded, the notebook stops rendering, cells get
+   * doubled. The first time this went unnoticed precisely because the
+   * function used to return a number, and 900 === 900 stopped the loop by
+   * itself.
    *
-   * Поэтому: прошлое значение читается через untrack — эффект зависит только
-   * от входов, — и присваивание происходит, лишь когда что-то правда стало
-   * другим. Любой из этих двух приёмов закрывает дыру; здесь стоят оба,
-   * потому что цена ошибки — не «чуть дёргается», а «приложение не работает».
+   * Hence: the previous value is read through untrack (the effect depends
+   * only on its inputs), and the assignment happens only when something
+   * really became different. Either of these two tricks closes the hole;
+   * both are here, because the price of the mistake is not "twitches a
+   * little" but "the app does not work".
    */
   $effect(() => {
     const input = {
@@ -1518,10 +1602,10 @@
     }),
   )
   /**
-   * Метка выполнения в поле — `[ ]`, `[7]`, `[*]`, `[—]`. См. lib/output-seat.
+   * The run mark in the gutter: `[ ]`, `[7]`, `[*]`, `[—]`. See lib/output-seat.
    *
-   * Одна колонка под номером отвечает на «запускалась ли она», и отвечает у
-   * всякой ячейки, а не только у той, что что-то напечатала.
+   * One column under the ordinal answers "has it been run", and answers for
+   * every cell, not only for one that printed something.
    */
   const mark = $derived(
     runMark({
@@ -1533,16 +1617,17 @@
     }),
   )
   /*
-   * Цвет метки — тот же язык, что у полосы и номера: акцент у идущей, красный
-   * у упавшей, охра у той, чей номер потеряли. Спокойная метка приглушена и не
-   * спорит с номером ячейки, который на полтора размера крупнее.
+   * The mark's colour speaks the same language as the bar and the ordinal:
+   * accent for a running one, red for a failed one, ochre for one whose
+   * number was lost. A calm mark is muted and does not argue with the cell
+   * ordinal, which is one and a half sizes larger.
    */
   const MARK = {
     /*
-     * Пустые скобки и скобки с числом — одного тона, и это решение, а не
-     * недосмотр: приглушить «не считалась» значило бы сделать тихим ровно тот
-     * случай, ради которого метку и завели. Так же у Jupyter — различает их
-     * содержимое, а не яркость.
+     * Empty brackets and brackets with a number share one tone, and that is
+     * a decision, not an oversight: muting "not run" would make quiet
+     * exactly the case the mark was introduced for. Jupyter does the same:
+     * the content tells them apart, not the brightness.
      */
     idle: 'text-muted',
     busy: 'text-accent-text',
@@ -1552,13 +1637,15 @@
   } as const
 
   /*
-   * «Чужая» и «чьё лицо» — по имени участника, а не по его имени собственному.
+   * "Someone else's" and "whose face" go by the participant id, not by the
+   * participant's own name.
    *
-   * Имена в комнате не уникальны, и сервер это знает: двое «Анна» — два
-   * человека. Пока сравнивали строкой, второй Анне под её же ячейкой не
-   * рисовали «Ran by Анна», а под бегущей висел аватар той Анны, которая
-   * раньше попала в `session.peers`. Имя остаётся тем, что ЧИТАЮТ; решает
-   * `runById`, который лежит в той же meta и рядом уже используется.
+   * Names in a room are not unique, and the server knows it: two "Anna"s
+   * are two people. While they were compared as strings, the second Anna did
+   * not get "Ran by Anna" drawn under her own cell, and under a running one
+   * hung the avatar of whichever Anna got into `session.peers` first. The
+   * name stays what people READ; the decision is made by `runById`, which
+   * lives in the same meta and is already used next to it.
    */
   const ranByOther = $derived(
     runBy &&
@@ -1571,11 +1658,11 @@
   /**
    * The runner's face, when the person who pressed Run is still in the room.
    *
-   * По карте, а не поиском по списку: этот вопрос задаёт каждая ячейка с
-   * выводом, и перебор по всем вкладкам комнаты в каждой из них — работа,
-   * растущая произведением (двести ячеек на пятьсот вкладок — сто тысяч
-   * сравнений на кадр присутствия). Карта считается один раз на тик, рядом со
-   * списком (lib/peers.ts · peersById).
+   * By a map, not a search through a list: every cell with output asks this
+   * question, and iterating over all the room's tabs in each of them is work
+   * that grows as a product (two hundred cells times five hundred tabs is a
+   * hundred thousand comparisons per presence frame). The map is computed
+   * once per tick, next to the list (lib/peers.ts · peersById).
    */
   const runner = $derived.by(() => {
     const who = meta.current.runById
@@ -1591,14 +1678,16 @@
   }
 
   /*
-   * Кто правит ЭТУ ячейку — и почему строки нет под своим листом.
+   * Who is editing THIS cell, and why there is no line under one's own
+   * sheet.
    *
-   * Присутствие здесь про общий Y.Text: в консилиуме его правит преподаватель,
-   * готовя эталон. У студента на экране в это время только свой лист — и
-   * строка «Мария Кузнецова редактирует здесь» читалась под ним как «она сидит
-   * в вашем листе». Что текст видит преподаватель, лист говорит подписью в
-   * шапке; больше про чужие каретки сказать нечего — их тут физически нет
-   * (свой документ, своё пустое присутствие).
+   * Presence here is about the shared Y.Text: in a council the teacher edits
+   * it while preparing the reference. The student meanwhile has only their
+   * own sheet on screen, and the line "Maria Kuznetsova is editing here"
+   * read under it as "she is sitting in your sheet". That the teacher sees
+   * the text, the sheet says with a label in the header; there is nothing
+   * more to say about other people's carets: they are physically not here
+   * (one's own document, one's own empty presence).
    */
   const editingHere = $derived.by(() => {
     if (ownSheet) return null
@@ -1615,9 +1704,9 @@
   // fails never asks. The promise behind it is shared across every cell.
   $effect(() => {
     if (!hasError) return
-    // Правила читаются синхронно, а не внутри .then: из промиса эффект их не
-    // отслеживает, и семинар, переключённый с hints на full посреди пары, не
-    // перерисовывал кнопку до смены состояния ячейки.
+    // The rules are read synchronously, not inside .then: from a promise the
+    // effect does not track them, and a seminar switched from hints to full
+    // mid-class did not redraw the button until the cell's state changed.
     const rules = readRules(session.session.rules)
     let alive = true
     void oracleStatus().then(
@@ -1627,7 +1716,7 @@
         const here = oracleModeIn(rules, mode)
         if (alive) aiReady = enabled && actionAllowedIn(here, 'fix')
       },
-      // Спросим снова со следующим трейсбеком: кеш отказ не запомнил.
+      // Ask again with the next traceback: the cache did not keep the refusal.
       () => {
         if (alive) aiReady = false
       },
@@ -1638,17 +1727,18 @@
   })
 
   /*
-   * «Попросить оракула переписать ячейку» — и та же ловушка, что у «Fix with AI».
+   * "Ask the oracle to rewrite the cell", and the same trap as with "Fix
+   * with AI".
    *
-   * Кнопка гасла только по `may.ask` (то есть по концу занятия). А `edit` —
-   * действие, которое режим `hints` не принимает вовсе (protocol.ts ·
-   * actionAllowedIn), и режим `off` тем более: студент открывал строку, писал
-   * фразу, жал «Ask for a rewrite» и получал 403 уже после работы. Шапка этого
-   * файла описывает ровно эту ловушку и закрывает её — но закрывала только для
-   * `fix`.
+   * The button went dark only on `may.ask` (that is, at the end of class).
+   * But `edit` is an action the `hints` mode does not accept at all
+   * (protocol.ts · actionAllowedIn), let alone `off`: a student opened the
+   * line, wrote a sentence, pressed "Ask for a rewrite" and got 403 after
+   * the work was done. The header of this file describes exactly this trap
+   * and closes it, but closed it only for `fix`.
    *
-   * Спрашиваем тем же общим на вкладку обещанием и той же парой функций, что и
-   * маршрут, который отказывает.
+   * We ask with the same tab-wide promise and the same pair of functions as
+   * the route that refuses.
    */
   const REWRITE_OFF = $derived(tr('room.ui.425'))
   const REWRITE_HINTS = $derived(tr('room.ui.426'))
@@ -1656,8 +1746,9 @@
   let rewriteWhy = $state<string | null>(null)
 
   $effect(() => {
-    // После звонка спрашивать всё равно нечем: `mayRewrite` уже false, и
-    // тревожить инстанс двумястами обещаний из-за одной погашенной кнопки незачем.
+    // After the bell there is nothing to ask with anyway: `mayRewrite` is
+    // already false, and there is no reason to bother the instance with two
+    // hundred promises over one dimmed button.
     if (!may.ask) return
     const rules = readRules(session.session.rules)
     let alive = true
@@ -1668,7 +1759,7 @@
         rewriteReady = actionAllowedIn(here, 'edit')
         rewriteWhy = rewriteReady ? null : here === 'hints' ? REWRITE_HINTS : REWRITE_OFF
       },
-      // Спросим снова со следующей перерисовкой: отказ кеш не запомнил.
+      // Ask again on the next render: the cache did not keep the refusal.
       () => {
         if (!alive) return
         rewriteReady = false
@@ -1681,28 +1772,30 @@
   })
 
   /**
-   * И — только там, где эту ячейку вообще можно менять.
+   * And only where this cell can be changed at all.
    *
-   * «Попросить оракула изменить ячейку» кончается предложением с кнопкой
-   * «Применить»: это правка тетради, а не ответ. В лекции (`edit: host`) и в
-   * запертой ячейке править её участник не может — а строку вопроса ему
-   * рисовали, он писал фразу, тратил вопрос из лимита комнаты и получал
-   * предложение, которое сам же и не может принять. Отказ при этом молчал бы
-   * дважды: и про правило, и про потраченный вопрос.
+   * "Ask the oracle to change the cell" ends in a suggestion with an "Apply"
+   * button: that is an edit of the notebook, not an answer. In a lecture
+   * (`edit: host`) and in a locked cell a participant cannot edit it, yet
+   * they were drawn the question line, wrote a sentence, spent a question
+   * from the room's limit and got a suggestion they themselves could not
+   * accept. The refusal would then be silent twice over: about the rule and
+   * about the spent question.
    *
-   * Консилиум — отдельным слагаемым, и это не придирка. Правило `edit` в
-   * открытой комнате разрешает участнику править ячейки, но общая ячейка
-   * консилиума — не его: в ней задание, и переписывать его под себя означало
-   * бы переписать задание всему классу. Свой лист у него при этом есть, и у
-   * листа есть своя подсказка оракула — личная и без правки чужого текста.
+   * The council is a separate term, and that is not nit-picking. The `edit`
+   * rule in an open room allows a participant to edit cells, but the shared
+   * council cell is not theirs: it holds the task, and rewriting it for
+   * oneself would mean rewriting the task for the whole class. They do have
+   * their own sheet, and the sheet has its own oracle hint: personal and
+   * without editing someone else's text.
    *
-   * Преподаватель сохраняет действие везде, включая консилиум: эталон в общей
-   * ячейке — его текст.
+   * The teacher keeps the action everywhere, the council included: the
+   * reference in the shared cell is their text.
    */
   const mayPatchHere = $derived(mayEdit && (leads || !inCouncil))
-  /** Один отказ на оба нажатия: попросить правку и принять её. */
+  /** One refusal for both presses: asking for an edit and accepting it. */
   const patchWhy = $derived(inCouncil && !leads ? tr(COUNCIL_SHARED_CELL) : editWhy)
-  /** Строка вопроса живая ровно тогда, когда её примут. */
+  /** The question line is live exactly when it will be accepted. */
   const mayRewrite = $derived(may.ask && rewriteReady && mayPatchHere)
   const rewriteRefusal = $derived(
     !may.ask
@@ -1712,8 +1805,9 @@
         : (rewriteWhy ?? tr('room.ui.427')),
   )
 
-  // Право пропало под руками — открытую строку закрыть, иначе она обещает то,
-  // чего уже нет (тот же довод, что у выхода из исходника заметки).
+  // The right vanished under the hands: close the open line, otherwise it
+  // promises what is no longer there (the same argument as for leaving a
+  // note's source).
   $effect(() => {
     if (!mayRewrite) asking = false
   })
@@ -1745,13 +1839,13 @@
    * live outside the parked region, so a parked cell still shows its place.
    */
   /*
-   * Якорь, а не всё выделение.
+   * The anchor, not the whole selection.
    *
-   * Выделенная ячейка не паркуется — иначе экран прыгал бы под курсором. Но
-   * выделенных теперь бывает много: выделив сорок ячеек, чтобы спросить про
-   * них разом, человек построил бы сорок редакторов CodeMirror — ровно ту
-   * работу, ради избавления от которой парковка и написана. Курсор всё равно
-   * в одной.
+   * A selected cell is not parked, otherwise the screen would jump under the
+   * cursor. But now there can be many selected ones: having selected forty
+   * cells to ask about them at once, a person would build forty CodeMirror
+   * editors, exactly the work parking was written to get rid of. The cursor
+   * is in one of them anyway.
    */
   const pinned = $derived(anchor || focusWithin || editing || running)
   const mounted = $derived(near || pinned)
@@ -1760,19 +1854,21 @@
     /*
      * A note with nothing in it has nothing to render; drop straight into edit.
      *
-     * Только у того, кто её завёл. Ячейка приезжает по CRDT пустой и монтируется
-     * у всей комнаты в тот же миг, а выйти из редактора зрителю нечем: `editing`
-     * сбрасывают только свой blur, Escape и смена вида, а в лекционной комнате
-     * редактор ещё и не берёт фокус. Тридцать человек до конца пары смотрели на
-     * markdown-исходник вместо прозы — и на живой CodeMirror, который из-за
-     * `editing` не паркуется.
+     * Only for whoever created it. The cell arrives empty over the CRDT and
+     * mounts for the whole room at the same instant, and a viewer has no way
+     * out of the editor: `editing` is reset only by one's own blur, Escape
+     * and a change of view, and in a lecture room the editor does not even
+     * take focus. Thirty people stared at the markdown source instead of
+     * prose until the end of class, and at a live CodeMirror that, because of
+     * `editing`, does not get parked.
      *
-     * `selected` и есть «завёл я»: вставка выделяет ячейку в той же синхронной
-     * паре, что и создаёт её (см. addAt в Notebook.svelte).
+     * `selected` is exactly "I created it": inserting selects the cell in the
+     * same synchronous pair that creates it (see addAt in Notebook.svelte).
      */
     if (!selected) return
-    // И только если печатать в ней можно: пустая закрытая заметка — это тупик
-    // из разбора выше, просто открытый не щелчком, а появлением ячейки.
+    // And only if one may type in it: an empty closed note is the dead end
+    // from the analysis above, only opened not by a click but by the cell's
+    // appearance.
     if (!mayEdit) return
     if (meta.current.type === 'markdown' && liveText.current.trim() === '') {
       focusOnEdit = true
@@ -1785,14 +1881,15 @@
     const find = () => root?.querySelector<HTMLElement>('.cm-content') ?? null
     const node = find()
     /*
-     * `preventScroll` — потому что экран ведёт тетрадь, а не фокус.
+     * `preventScroll` because the notebook drives the screen, not the focus.
      *
-     * Голый `focus()` прокручивает КАЖДЫЙ прокручиваемый предок так, чтобы
-     * поле стало видно «как-нибудь», и делает это минимальным ходом. Именно он
-     * и оставлял Shift+Enter посреди следующей ячейки: тетрадь уже вела экран
-     * к её верху с местом под тулбар, а фокус тут же обрывал ход и доводил до
-     * первой строки у самого края. Куда везти — решено одним местом
-     * (`reveal` в Notebook.svelte); здесь берут только курсор.
+     * A bare `focus()` scrolls EVERY scrollable ancestor so that the field
+     * becomes visible "somehow", and does so with the minimal move. That is
+     * exactly what left Shift+Enter in the middle of the next cell: the
+     * notebook was already taking the screen to its top with room for the
+     * toolbar, and the focus immediately broke off the move and brought it
+     * to the first line at the very edge. Where to go is decided in one
+     * place (`reveal` in Notebook.svelte); here only the caret is taken.
      */
     if (node) {
       node.focus({ preventScroll: true })
@@ -1809,19 +1906,21 @@
       void focusEditor()
     } else {
       /*
-       * У закрытой ячейки исходник не открывается вовсе.
+       * For a closed cell the source does not open at all.
        *
-       * Два вида у заметки — прочитанный и исходник, — и второй существует
-       * ровно затем, чтобы в нём печатать. Пока сюда пускали всех, студент
-       * двойным щелчком (или Enter из командного режима) разбирал прозу
-       * семинара в сырой markdown и оставался в нём: выйти было нечем. Выход
-       * висит на редакторе — Escape внутри CodeMirror и уход фокуса, — а
-       * закрытый редактор фокуса не берёт: `contenteditable=false` не
-       * фокусируется, значит ни одно из двух событий не наступает никогда.
+       * A note has two views, rendered and source, and the second exists
+       * precisely for typing in it. While everyone was let in here, a student
+       * with a double click (or Enter from command mode) took the seminar's
+       * prose apart into raw markdown and stayed in it: there was no way out.
+       * The exit hangs on the editor (Escape inside CodeMirror and focus
+       * leaving), and a closed editor does not take focus:
+       * `contenteditable=false` is not focusable, so neither of the two
+       * events ever happens.
        *
-       * Вслух, а не молча: сюда приходят намеренным жестом, и жест, не
-       * сделавший ничего, читается как поломка. Слова те же, что у кнопки
-       * «править» в тулбаре и у отказа на Cmd+Enter.
+       * Out loud, not silently: people arrive here with a deliberate
+       * gesture, and a gesture that did nothing reads as a breakage. The
+       * words are the same as for the "edit" button in the toolbar and the
+       * refusal on Cmd+Enter.
        */
       if (!mayEdit) {
         session.showError(editWhy + '.')
@@ -1838,73 +1937,79 @@
   }
 
   /*
-   * А если человек уже в исходнике — выйти он обязан в любом случае.
+   * And if the person is already in the source, they must be able to leave
+   * in any case.
    *
-   * Право пропадает под ногами: преподаватель закрывает ячейку, меняет правило
-   * или звенит звонок, — и заметка, открытая честно, превращается в тот же
-   * тупик, из которого нет Escape. Возврат к прочитанному виду здесь и есть
-   * выход, и он не спрашивает, откуда в неё вошли.
+   * The right vanishes underfoot: the teacher closes the cell, changes the
+   * rule, or the bell rings, and a note opened honestly turns into the same
+   * dead end with no Escape. Going back to the rendered view is the way out
+   * here, and it does not ask how one got in.
    */
   $effect(() => {
     if (!isCode && editing && !mayEdit) commitMarkdown()
   })
 
   /**
-   * Запустить — и сказать, получилось ли.
+   * Run, and say whether it worked.
    *
-   * Кнопку в тулбаре мы починили, но клавиши шли мимо неё: Cmd+Enter на уже
-   * работающей ячейке отправлял `run`, сервер его молча выбрасывал, и человек
-   * оставался с ощущением, что нажатие не дошло. Возвращаемое значение нужно
-   * тем двум, кто вызывает `run` перед тем, как что-то сделать с тетрадью:
-   * шагнуть и вставить ячейку от имени выполнения, которого не было, — это
-   * правка документа у всей комнаты за чужой счёт.
+   * We fixed the toolbar button, but the keys went around it: Cmd+Enter on
+   * an already running cell sent `run`, the server silently threw it out,
+   * and the person was left feeling that the press did not get through. The
+   * return value is needed by the two callers that call `run` before doing
+   * something to the notebook: stepping and inserting a cell on behalf of
+   * an execution that did not happen is an edit of the document for the
+   * whole room at someone else's expense.
    */
   function run(): boolean {
     if (!isCode) {
       /*
-       * Текстовая ячейка «выполняется» тем, что превращается в текст.
+       * A text cell is "executed" by turning into text.
        *
-       * Возвращать здесь false нельзя, хотя запускать нечего: на этом значении
-       * стоят Shift+Enter и Alt+Enter, и с false заметка отрисовывалась, но
-       * курсор больше никуда не шёл и новая ячейка не появлялась. Правку
-       * состояния выполнения это не касается — её тут просто нет.
+       * Returning false here is not an option, even though there is nothing
+       * to run: Shift+Enter and Alt+Enter depend on this value, and with
+       * false the note rendered but the caret went nowhere and no new cell
+       * appeared. This does not touch the execution state: there simply is
+       * none here.
        */
       commitMarkdown()
       /*
-       * И экран идёт за ней так же, как за ячейкой с кодом.
+       * And the screen follows it just as it follows a code cell.
        *
-       * За кодом лист ведёт Notebook — по смене работающей ячейки у ядра. У
-       * заметки ядра нет, и события не было вовсе: человек шёл Shift+Enter вниз
-       * по тетради, лист спускался за каждой ячейкой с кодом и вставал на
-       * первой же текстовой — курсор уходил дальше, экран нет (19.09.2026).
-       * Говорим Notebook сами; куда и надо ли ехать, решает то же правило
-       * (cell-scroll.ts · afterRun): только вниз и только если низа не видно.
+       * For code the sheet is driven by Notebook, on the kernel's change of
+       * running cell. A note has no kernel, and there was no event at all: a
+       * person went down the notebook with Shift+Enter, the sheet followed
+       * every code cell and stopped at the first text one: the caret moved
+       * on, the screen did not (19 Sep 2026). We tell Notebook ourselves;
+       * where to go and whether to go is decided by the same rule
+       * (cell-scroll.ts · afterRun): only down, and only if the bottom is not
+       * visible.
        */
       window.dispatchEvent(new CustomEvent('colloq:cell-settled', { detail: { cellId: id } }))
       return true
     }
     if (!mayRun) {
-      // Словами сервера, дословно. Кнопка, которая молчит, — это сообщение об
-      // ошибке; кнопка, которая объясняет, — это правило.
+      // In the server's words, verbatim. A button that stays silent is an
+      // error message; a button that explains is a rule.
       /*
-       * Из `may`, а не литералом: здесь стояла английская фраза про правило
-       * комнаты, и после звонка она рассказывала про правило, которого никто не
-       * менял, — человек шёл искать преподавателя вместо того, чтобы узнать,
-       * что пара кончилась. То же самое уже починено в командном режиме
-       * (Notebook.svelte), в редакторе оставалось.
+       * From `may`, not a literal: an English phrase about the room rule
+       * stood here, and after the bell it talked about a rule nobody had
+       * changed: the person went looking for the teacher instead of learning
+       * that class was over. The same thing was already fixed in command
+       * mode (Notebook.svelte); it remained in the editor.
        */
-      // Тетрадь говорит раньше комнаты — тот же довод, что у `editWhy` выше.
+      // The notebook speaks before the room: the same argument as `editWhy` above.
       session.showError((may.bookWhy ?? (shut ? tr(LECTURE_CELL) : may.runWhy)) + '.')
       return false
     }
-    // Молча: ячейка сама показывает, что она делает, — и полосой, и строкой
-    // состояния, и лицом кнопки. Плашка про то, что и так видно, — это шум.
+    // Silently: the cell itself shows what it is doing, with the bar, the
+    // status line and the button's face. A banner about what is visible
+    // anyway is noise.
     if (cellState === 'running' || cellState === 'queued') return false
     /*
-     * «По одной»: сервер возьмёт у участника одну ячейку зараз и на вторую
-     * ответит отказом — а Shift+Enter и Alt+Enter к тому моменту уже шагнули и
-     * дописали пустую ячейку в общую тетрадь. Проверяем тем же счётом и теми
-     * же словами.
+     * "One at a time": the server will take one cell at a time from a
+     * participant and refuse the second, while Shift+Enter and Alt+Enter
+     * will by then have stepped and appended an empty cell to the shared
+     * notebook. We check with the same count and the same words.
      */
     if (
       may.rules.run === 'single' &&
@@ -1921,9 +2026,10 @@
 
   async function runAndAdd() {
     if (!run()) return
-    // Alt+Enter дописывает ячейку — а дописывать в этой комнате может быть
-    // нельзя. Тогда запуск состоялся, а ячейка не появляется, и это правильно:
-    // без проверки она появлялась бы у автора и отказывалась сервером.
+    // Alt+Enter appends a cell, and appending may not be allowed in this
+    // room. Then the run happened but the cell does not appear, and that is
+    // right: without the check it would appear for the author and be
+    // refused by the server.
     if (!may.add) {
       session.showError(may.structureWhy + '.')
       return
@@ -1951,12 +2057,12 @@
   /**
    * Only Notebook knows the cell order, so hand-offs go through it.
    *
-   * `scroll` отдельно от `focus` — потому что это разные вопросы. Курсор после
-   * Shift+Enter переходит в следующую ячейку (пальцы этого ждут), а экран
-   * остаётся на выводе той, которую запустили: «запускаю ячейку и хочу
-   * посмотреть на её вывод, а меня перекидывает вниз». Переход же стрелкой из
-   * последней строки — наоборот, обязан довести ячейку до глаза, иначе курсор
-   * уходит за край.
+   * `scroll` is separate from `focus` because these are different questions.
+   * After Shift+Enter the caret moves to the next cell (fingers expect this),
+   * while the screen stays on the output of the one that was run: "I run a
+   * cell and want to look at its output, and it throws me down". Moving
+   * with an arrow from the last line is the opposite: it must bring the cell
+   * into view, otherwise the caret goes past the edge.
    */
   function step(direction: -1 | 1, focus = true, fallback = false, grow = false, scroll = true) {
     window.dispatchEvent(
@@ -1967,13 +2073,13 @@
   }
 
   /**
-   * Backspace на опустевшей ячейке — но не на той, под которой лежит вывод.
+   * Backspace on an emptied cell, but not on one that has output under it.
    *
-   * Текст стёрли, а вывод остался: график, таблица, трейсбек, ради которого
-   * ячейку и держат. Удаление уносит его у всей комнаты и без истории — а
-   * жест, которым сюда пришли, это стирание последней буквы, а не решение.
-   * Убрать её по-настоящему по-прежнему можно — корзиной в тулбаре и `d d`, —
-   * и оба места об этом говорят.
+   * The text was erased, but the output stayed: a chart, a table, a
+   * traceback, the very reason the cell is kept. Deleting takes it away from
+   * the whole room and without history, while the gesture that led here is
+   * erasing the last letter, not a decision. It can still be removed for
+   * real, with the bin in the toolbar and `d d`, and both places say so.
    */
   function deleteIfEmpty() {
     if (!emptyCellIsRemovable(outputs.current.length)) {
@@ -2042,20 +2148,22 @@
   const patch = watchPatchFor(session.doc, () => id)
   const proposal = $derived(patch.current)
   /**
-   * Текст ячейки — ОДИН наблюдатель, и только там, где текст правда читают.
+   * The cell's text: ONE watcher, and only where the text is really read.
    *
-   * Их было два: `source` следил за заметками (из него рисуется прочитанный
-   * вид), а этот — за всеми ячейками подряд, ради диффа предложения, которого
-   * обычно нет. На заметке они дублировали друг друга, а на кодовой ячейке
-   * второй нарушал ровно то правило, о котором предупреждает шапка yreactive:
-   * `Y.Text.toString()` пересобирает всю строку на КАЖДОЕ нажатие — своё и
-   * чужое, у всех пятисот, — и перезапускает за собой `proposedLines`,
-   * `proposedCounts` и `proposedTokens`.
+   * There used to be two: `source` watched notes (the rendered view is drawn
+   * from it), and this one watched every cell in a row, for the sake of a
+   * suggestion diff that usually does not exist. On a note they duplicated
+   * each other, and on a code cell the second broke exactly the rule the
+   * yreactive header warns about: `Y.Text.toString()` rebuilds the whole
+   * string on EVERY keystroke, one's own and others', for all five hundred,
+   * and restarts `proposedLines`, `proposedCounts` and `proposedTokens`
+   * after it.
    *
-   * Текст кодовой ячейки живёт в CodeMirror и отсюда не рисуется. Он нужен
-   * ровно в двух случаях: пока стоит открытое предложение оракула (дифф) и в
-   * консилиуме, где студенту показывают общую ячейку эталоном. Вне их
-   * подписки нет вовсе, и `current` отдаёт пустую строку — её никто не читает.
+   * A code cell's text lives in CodeMirror and is not drawn from here. It is
+   * needed in exactly two cases: while an oracle suggestion is open (the
+   * diff), and in a council, where the student is shown the shared cell as
+   * the reference. Outside them there is no subscription at all, and
+   * `current` returns an empty string that nobody reads.
    */
   const liveText = watchText(() => (!isCode || proposal || ownSheet ? cell.current : null))
 
@@ -2076,8 +2184,8 @@
   const proposalStale = $derived(proposal ? patchIsStale(session.doc, proposal) : false)
 
   /*
-   * Решает сервер, а не эта вкладка. См. ChatTurn.decide: две вкладки,
-   * читающие `'open'` каждая в своей копии, писали патч в ячейку дважды.
+   * The server decides, not this tab. See ChatTurn.decide: two tabs, each
+   * reading `'open'` in its own copy, wrote the patch into the cell twice.
    */
   function accept(): void {
     const id = proposal?.get('id')
@@ -2093,12 +2201,13 @@
     const id = proposal?.get('id')
     if (typeof id !== 'string') return
     /*
-     * После звонка отклонять нельзя, хотя правила про это нет.
+     * After the bell declining is not allowed, although there is no rule
+     * about it.
      *
-     * Пока занятие идёт, «Отклонить» ничего не рушит: не понравилось —
-     * спросили ещё раз. После конца пары спрашивать нечем, оракул отвечает
-     * одному преподавателю, — и снятая плашка уносит с собой чужую работу
-     * навсегда. Та же граница стоит на сервере.
+     * While class is on, "Decline" breaks nothing: did not like it, asked
+     * again. After the end of class there is nothing to ask with, the oracle
+     * answers only the teacher, and a removed banner takes someone else's
+     * work with it forever. The same boundary stands on the server.
      */
     if (!acts) {
       session.showError(tr(CLASS_IS_OVER) + '.')
@@ -2132,17 +2241,19 @@
   })
 
   /*
-   * Запуск из командного режима — сюда, а не своими проверками в тетради.
+   * Running from command mode comes here, not through checks of its own in
+   * the notebook.
    *
-   * Notebook.svelte спрашивал `may.run` — правило КОМНАТЫ, — а здесь и на
-   * сервере правило складывается с замком (`mayRunThisCell`). На лекции
-   * преподаватель открывает ячейку: кнопка на ней живая, Cmd+Enter в редакторе
-   * работает, а Shift+Enter из командного режима отвечал тостом про правило —
-   * про ячейку, которая открыта. Заодно уходит вторая беда: командный
-   * Shift+Enter слал `run` и для заметки, которую сервер молча выбрасывает.
+   * Notebook.svelte asked `may.run`, the ROOM's rule, while here and on the
+   * server the rule is combined with the lock (`mayRunThisCell`). In a
+   * lecture the teacher opens a cell: the button on it is live, Cmd+Enter in
+   * the editor works, and Shift+Enter from command mode answered with a
+   * toast about the rule, about a cell that is open. A second trouble goes
+   * away with it: command-mode Shift+Enter sent `run` for a note too, which
+   * the server silently throws out.
    *
-   * `focus: false` у шага — потому что пришли с клавиатуры в командном режиме
-   * и в редактор не входим.
+   * `focus: false` for the step, because we came from the keyboard in
+   * command mode and do not enter the editor.
    */
   $effect(() => {
     const onRunCell = (event: Event) => {
@@ -2174,27 +2285,29 @@
    */
   const CAPS = 'text-2xs font-bold uppercase tracking-label'
   /**
-   * Чип состояния и полоса слева говорят одно и то же двумя способами: словом
-   * и цветом. Врозь они бессмысленны — цвет без слова не переживает ни
-   * проектор, ни дальтонизм, слово без цвета не читается из середины
-   * аудитории, — поэтому обе таблицы стоят рядом и меняются вместе.
+   * The state chip and the bar on the left say the same thing in two ways:
+   * in words and in colour. Apart they are meaningless (colour without a
+   * word survives neither a projector nor colour blindness, a word without
+   * colour cannot be read from the middle of the lecture hall), so both
+   * tables stand side by side and change together.
    */
   const SHEET_CHIP = {
     edited: 'bg-warning/15 text-warning',
     correct: 'bg-positive/15 text-positive',
     wrong: 'bg-danger/10 text-danger',
     submitted: 'bg-brand/10 text-brand-2',
-    /* Черновик чипа не получает вовсе — см. подвал: сказать о нём нечего. */
+    /* A draft gets no chip at all (see the footer): there is nothing to say about it. */
     draft: '',
   } as const
   /**
-   * Полоса — на всю высоту листа: код, вывод и письмо преподавателя стоят под
-   * одним цветом, потому что всё это одна попытка.
+   * The bar runs the full height of the sheet: the code, the output and the
+   * teacher's letter stand under one colour, because all of it is one
+   * attempt.
    *
-   * Покой и правка цвета не берут вовсе и отдают полосу обычной ячейке: пока
-   * человек пишет, важнее, что ячейка выбрана, стоит в очереди или упала.
-   * Старая отметка при этом перестаёт быть правдой — она уходит в слово
-   * «было:» рядом с чипом, а не остаётся цветом.
+   * Rest and edited take no colour at all and hand the bar to the ordinary
+   * cell: while a person writes, it matters more that the cell is selected,
+   * queued or failed. The old mark meanwhile stops being true: it moves into
+   * the word "was:" next to the chip rather than staying as a colour.
    */
   const SHEET_RULE = {
     edited: '',
@@ -2207,18 +2320,19 @@
 
 {#snippet openMark()}
   <!--
-    «Открыта для всех» — метка, а не второй орган управления: закрывают ту же
-    ячейку тем же замком слева. Стоит она внутри тела, над первой строкой: это
-    свойство КОДА, который ниже, и читаться должно вместе с ним, а не отдельной
-    плашкой над ячейкой.
+    "Open to everyone" is a mark, not a second control: the same cell is
+    closed with the same lock on the left. It stands inside the body, above
+    the first line: it is a property of the CODE below, and must be read
+    together with it, not as a separate banner above the cell.
   -->
   {#if lock && cellOpen}
     <p class={cn(CAPS, 'pb-1 pt-0.5 text-accent-text')}>{tr('room.ui.333')}</p>
   {:else if inCouncil && leads}
     <!--
-      У преподавателя в консилиуме общий текст — эталон: то, что он покажет,
-      ляжет сюда. Подпись говорит, что это за текст, потому что под ним стоит
-      пульт с чужими попытками, и без слов их легко перепутать.
+      For the teacher in a council the shared text is the reference: what
+      they show will land here. The label says what this text is, because
+      under it stands the console with other people's attempts, and without
+      words they are easy to mix up.
     -->
     <p class={cn(CAPS, 'flex flex-wrap items-center gap-x-2 pb-1 pt-0.5 text-accent-text')}>
       <span>{tr('room.ui.34')}</span>
@@ -2243,51 +2357,56 @@
     <!-- Gutter: one ordinal, coloured by state. It stays put on hover — the
          artboard draws the toolbar over a cell whose number is still legible,
          and Run lives in that toolbar rather than under the number. -->
-    <!-- Номер прижат вправо флексом, а не `text-align` на блоке во всю ширину:
-         залитая метка выделения обязана обнимать две цифры, а не красить всё
-         поле от края до края. -->
+    <!-- The ordinal is pushed right by flex, not by `text-align` on a
+         full-width block: the filled selection mark must hug two digits, not
+         paint the whole gutter from edge to edge. -->
     <!--
-      Замок стоит в поле слева, рядом с номером, — и только там, где он что-то
-      решает (см. `lock`). Поле в этой комнате шире у ВСЕХ ячеек, а не у
-      запертых: замок то появлялся бы, то исчезал вместе с открытием одной
-      ячейки, и вся тетрадь ездила бы вбок на каждое нажатие преподавателя.
+      The lock stands in the gutter on the left, next to the ordinal, and only
+      where it decides something (see `lock`). The gutter in this room is
+      wider for ALL cells, not just locked ones: otherwise the lock would
+      appear and disappear as a single cell opened, and the whole notebook
+      would slide sideways on every press of the teacher's.
     -->
     <div
       class={cn(
         'flex h-7 shrink-0 select-none items-start justify-end gap-1.5',
-        // 3.5rem вместе с `gap-4` соседа даёт 4.5rem до тела ячейки — то же
-        // число, которым Notebook.svelte отодвигает свою черту и нижний ряд
-        // кнопок. Меняя одно, менять и там: иначе линия вставки повиснет левее
-        // ячеек, под которые она подводится.
+        // 3.5rem together with the neighbour's `gap-4` gives 4.5rem to the
+        // cell body: the same number by which Notebook.svelte pushes its line
+        // and the bottom row of buttons. Change one, change the other too:
+        // otherwise the insertion line would hang to the left of the cells it
+        // leads under.
         lock ? 'w-14' : 'w-8',
       )}
     >
       {#if lock}
         <!--
-          Нажимается он у преподавателя, и только у него: `cell:open` сервер
-          принимает от ведущего. Проверка тут по роли, а не по правам на эту
-          ячейку, — иначе участник, которому ячейку ТОЛЬКО ЧТО открыли, получил
-          бы живую кнопку «закрыть» и отказ в ответ на нажатие.
+          It can be pressed by the teacher, and only by them: the server
+          accepts `cell:open` from the host. The check here is by role, not by
+          permissions on this cell; otherwise a participant who had JUST been
+          given the cell would get a live "close" button and a refusal in
+          response to pressing it.
         -->
         {#if may.role === 'host'}
           <!--
-            У преподавателя замок нажимается, и второе нажатие возвращает всё
-            назад. Диалога нет намеренно: ячейку открывают посреди фразы, не
-            отводя глаз от аудитории, и подтверждение здесь стоило бы дороже
-            любой ошибки — ошибка чинится тем же нажатием.
+            For the teacher the lock can be pressed, and a second press puts
+            everything back. There is no dialog on purpose: a cell is opened
+            mid-sentence without taking one's eyes off the audience, and a
+            confirmation here would cost more than any mistake: a mistake is
+            fixed by the same press.
 
-            Поле выставляет сервер, обратно оно приезжает обычным кадром CRDT;
-            здесь ничего не предугадывается, поэтому значок меняется тогда же,
-            когда меняется у всей комнаты.
+            The field is set by the server and comes back as an ordinary CRDT
+            frame; nothing is predicted here, so the icon changes exactly when
+            it changes for the whole room.
           -->
           <!--
-            Третье положение — за меню: удержание, правая кнопка или щелчок по
-            замку в положении, куда щелчком не попадали. Куда попадают щелчком,
-            решает правило комнаты `opens`: в лекции — общий текст, в консилиуме
-            — каждому свой лист, и тогда именно консилиум чинится вторым
-            нажатием, а меню на каждый щелчок стоило бы секунды молчания посреди
-            фразы. Подсказка обязана обещать ровно то, что случится, — слова
-            считает lib/lock-button.ts по тому же правилу.
+            The third position is behind the menu: holding, the right button,
+            or a click on the lock in a position a click never led to. Where a
+            click leads is decided by the room rule `opens`: in a lecture, the
+            shared text; in a council, a sheet for everyone, and then it is
+            the council that a second press fixes, while a menu on every click
+            would cost a second of silence mid-sentence. The hint must promise
+            exactly what will happen: the words are computed by
+            lib/lock-button.ts by the same rule.
           -->
           <div class="relative">
             <button
@@ -2295,17 +2414,19 @@
               data-lock-button
               class={cn(
                 /*
-                 * 24×24 — пол WCAG 2.5.8, тот самый, ради которого сделаны
-                 * 24-пиксельными все соседние кнопки тулбара (TOOL_BASE ниже).
-                 * Замок был 20×20 — при том что это самая частая кнопка
-                 * преподавателя в лекции и единственная с удержанием.
-                 * Отрицательные поля возвращают цели прежнее МЕСТО в раскладке
-                 * (20 px, центр там же), так что колонка с номером не едет.
+                 * 24×24 is the WCAG 2.5.8 floor, the very one for which all the
+                 * neighbouring toolbar buttons were made 24 pixels (TOOL_BASE
+                 * below). The lock was 20×20, even though it is the teacher's
+                 * most frequent button in a lecture and the only one with a
+                 * hold. Negative margins give the target back its old PLACE in
+                 * the layout (20 px, same centre), so the ordinal column does
+                 * not move.
                  *
-                 * Переход перечислен свойствами, а не `transition-colors` плюс
-                 * `.press`: утилита Tailwind переписывает transition-property
-                 * целиком, и transform из помощника в список бы не попал —
-                 * ровно та ловушка, что описана у CAP в Notebook.svelte.
+                 * The transition is listed as properties, not
+                 * `transition-colors` plus `.press`: the Tailwind utility
+                 * rewrites transition-property entirely, and the helper's
+                 * transform would not make it into the list: exactly the trap
+                 * described at CAP in Notebook.svelte.
                  */
                 'mt-0.5 -mx-0.5 inline-flex h-6 w-6 items-center justify-center',
                 'transition-[color,background-color,transform] duration-press ease-out',
@@ -2333,8 +2454,9 @@
                 lockMenu = true
               }}
             >
-              <!-- Приглушённый значок = «нажатие ушло, кадра ещё нет». Не
-                   предугаданное положение, а признак отправки: см. markSending. -->
+              <!-- A dimmed icon = "the press went out, the frame has not come
+                   yet". Not a predicted position but a sign of sending: see
+                   markSending. -->
               <Icon
                 name={lockIcon}
                 size={13}
@@ -2343,12 +2465,13 @@
             </button>
             {#if lockMenu}
               <!--
-                Слева от тетради места нет — меню раскрывается вправо, поверх
-                тела ячейки. В меню ТОЛЬКО ТРИ ПОЛОЖЕНИЯ ЗАМКА — ни ручек
-                консилиума, ни строки «открыть пульт»: всё, чем консилиум
-                ведут, живёт в окне пульта, а меню отвечает на один вопрос —
-                чья эта ячейка сейчас. Пульт открывают кнопкой под ячейкой,
-                где видно, сколько уже сдали.
+                There is no room to the left of the notebook, so the menu opens
+                to the right, over the cell body. The menu has ONLY THE THREE
+                LOCK POSITIONS: no council settings, no "open console" row:
+                everything the council is run with lives in the console window,
+                and the menu answers one question: whose cell is this now. The
+                console is opened with the button under the cell, where one can
+                see how many have already submitted.
               -->
               <div
                 role="menu"
@@ -2387,8 +2510,9 @@
             {/if}
           </div>
         {:else}
-          <!-- Тому, кто открыть не может, замок только показывает. Он всё
-               равно нужен: иначе непонятно, почему ячейка не берёт набор. -->
+          <!-- For someone who cannot open it, the lock only shows. It is still
+               needed: otherwise it is unclear why the cell does not take
+               typing. -->
           <span
             class={cn(
               'mt-1 inline-flex h-5 w-5 items-center justify-center',
@@ -2405,20 +2529,21 @@
         {/if}
       {/if}
       <!--
-        Цвет номера меняется мгновенно, и это не экономия, а правило: `tone`
-        переключается стрелкой, Enter и j/k, то есть сотни раз за пару. Метка
-        «вот эта ячейка сейчас живая» — единственное, по чему двадцать человек
-        в комнате понимают, куда смотреть; переход в 100ms сдвигает её на сто
-        миллисекунд позже нажатия, и на быстром переборе ячеек цвет всё время
-        догоняет курсор, вместо того чтобы стоять под ним.
+        The ordinal's colour changes instantly, and that is not economy but a
+        rule: `tone` is switched by the arrow keys, Enter and j/k, that is,
+        hundreds of times per class. The mark "this cell is the live one now"
+        is the only thing by which twenty people in the room understand where
+        to look; a 100ms transition shifts it a hundred milliseconds after the
+        press, and when flipping through cells quickly the colour keeps
+        chasing the cursor instead of standing under it.
 
-        Тот же довод, что двадцатью строками ниже про кольцо фокуса: подсказка,
-        пришедшая с опозданием, хуже пришедшей резко.
+        The same argument as twenty lines below about the focus ring: a cue
+        that arrives late is worse than one that arrives abruptly.
       -->
       <!--
-        Подпись на номере — единственное место, где о времени может сказать
-        ячейка без вывода: строка «Out [n]» рисуется только под выводом, а у
-        текстовой ячейки её нет вовсе.
+        The label on the ordinal is the only place where a cell without output
+        can say something about time: the "Out [n]" line is drawn only under
+        output, and a text cell has none at all.
       -->
       <div
         class="flex flex-col items-end gap-[3px]"
@@ -2434,14 +2559,15 @@
           .join(' · ') || undefined}
       >
       <!--
-        Номер нажимается и выделяет свою ячейку — тем же обработчиком и с теми
-        же Shift и Cmd, что и тело: диапазон и снятие одной из нескольких
-        работают отсюда так же, как из кода.
+        The ordinal can be pressed and selects its cell, with the same handler
+        and the same Shift and Cmd as the body: a range and deselecting one of
+        several work from here just as from the code.
 
-        Признак и обработчик висят на самом номере, а не на колонке: пустое
-        место под ним — это уже «мимо ячейки», и снимать выделение оно обязано
-        по-прежнему. Две цифры — мишень небольшая, но у выбранной ячейки это
-        залитый прямоугольник, то есть ровно то, во что и целятся.
+        The marker and the handler hang on the ordinal itself, not on the
+        column: the empty space under it is already "outside the cell", and
+        must still clear the selection. Two digits are a small target, but on
+        a selected cell it is a filled rectangle, that is, exactly what people
+        aim at.
       -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <span
@@ -2450,18 +2576,19 @@
         class={cn(
           'text-head font-black tabular-nums tracking-tight',
           /*
-           * Выделенная ячейка помечена НОМЕРОМ, а не подложкой, и это
-           * единственная метка, которая переживает любое состояние.
+           * A selected cell is marked by the ORDINAL, not by a background,
+           * and it is the only mark that survives every state.
            *
-           * Подложка гаснет у работающей и у упавшей — там свои цвета, и
-           * закрашивать их было бы враньём. А спрашивают оракула чаще всего
-           * ровно про упавшую: не видеть, попала она в выделение или нет, —
-           * это вопрос, заданный вслепую.
+           * The background goes out on a running and a failed cell: they have
+           * their own colours, and painting over them would be a lie. And the
+           * oracle is asked most often precisely about the failed one: not
+           * seeing whether it is in the selection is a question asked blind.
            *
-           * Цвет состояния при этом НЕ добавляется: `cn` — это clsx, он классы
-           * не разрешает, и `text-ink` из `ORDINAL.selected` вместе с
-           * `text-canvas` давали цифры цвета фона на фоне того же цвета —
-           * тёмный прямоугольник вместо номера.
+           * The state colour is NOT added meanwhile: `cn` is clsx, it does
+           * not resolve classes, and `text-ink` from `ORDINAL.selected`
+           * together with `text-canvas` gave digits of the background colour
+           * on a background of the same colour: a dark rectangle instead of
+           * an ordinal.
            */
           selected ? 'bg-ink px-1 text-canvas' : ORDINAL[tone],
         )}
@@ -2469,31 +2596,35 @@
         {ordinal}
       </span>
       <!--
-        Метка выполнения — под номером, моноширинным, ровно три знака.
+        The run mark is under the ordinal, monospaced, exactly three characters.
         
-        Три знака — это вертикаль: `[ ]`, `[7]` и `[*]` встают друг под другом,
-        и лист читается одной колонкой сверху вниз. Ради неё же метка стоит в
-        поле, а не под выводом: под выводом её нет у тех ячеек, у которых нет
-        вывода, — а это половина тетради.
+        Three characters make a vertical: `[ ]`, `[7]` and `[*]` line up under
+        one another, and the sheet reads as one column from top to bottom. For
+        its sake, too, the mark stands in the gutter and not under the output:
+        under the output it would be missing for cells without output, and
+        that is half the notebook.
       -->
       <!--
-        Оракул взял эту ячейку — и говорит об этом поле с НОМЕРОМ.
+        The oracle has taken this cell, and says so in the ORDINAL's gutter.
         
-        Место то же, где стоит метка выполнения: это слот «что сейчас с этой
-        ячейкой делают», и оракул — такой же работник, как ядро. Пока он занят,
-        метка уступает: `[7]` — про прошлый запуск, а звёздочка про то, что
-        происходит сейчас, и сейчас важнее. Вернётся она сама, как только ход
-        кончится.
+        The place is the same as the run mark's: it is the "what is being done
+        to this cell right now" slot, and the oracle is a worker just like the
+        kernel. While it is busy, the mark gives way: `[7]` is about the
+        previous run, while the asterisk is about what is happening now, and
+        now matters more. The mark comes back by itself as soon as the turn
+        ends.
         
-        Ядро старше: если ячейку взяли оба, слот остаётся за `[*]`. Ядро эту
-        ячейку МЕНЯЕТ, а оракул пока только читает, и путать их в одном знаке
-        нельзя. Что оракул при этом занят, говорит строка под ячейкой.
+        The kernel outranks it: if both took the cell, the slot stays with
+        `[*]`. The kernel CHANGES this cell, while the oracle so far only reads
+        it, and they must not be confused in one sign. That the oracle is busy
+        meanwhile is said by the line under the cell.
         
-        Мерцает сама звёздочка — две её половины по очереди (index.css ·
-        cell-sparkle). Это не бегущая полоса и не второе дыхание рядом с
-        дыханием ядра: в поле номера и так смотрят, когда спрашивают «а что с
-        этой ячейкой», и знак оракула там узнаётся без объяснений — им же
-        помечены и кнопка над ячейкой, и панель.
+        The asterisk itself twinkles, its two halves in turn (index.css ·
+        cell-sparkle). This is not a running bar and not a second breathing
+        next to the kernel's: people look at the ordinal gutter anyway when
+        asking "what about this cell", and the oracle's sign is recognised
+        there without explanation: the button above the cell and the panel
+        are marked with it too.
       -->
       {#if oracleBusy && !shownRunning}
         <Icon name="sparkles" size={12} class="cell-sparkle shrink-0 text-accent-text" />
@@ -2501,9 +2632,9 @@
         <span class={cn('font-mono text-2xs leading-none', MARK[mark.tone])}>{mark.label}</span>
       {/if}
       <!--
-        Сколько это заняло — здесь же, и только когда заняло сколько-нибудь
-        заметное время. Под две секунды цифра сообщает, что компьютер справился
-        быстро, а таких ячеек в тетради к концу пары сорок.
+        How long it took, right here, and only when it took a noticeable time.
+        Under two seconds the number reports that the computer coped quickly,
+        and by the end of class a notebook has forty such cells.
       -->
       {#if meta.current.ranMs !== null && meta.current.ranMs >= NOTICED_MS && !shownRunning}
         <span class="font-mono text-micro leading-none text-faint">{spell(meta.current.ranMs)}</span>
@@ -2512,28 +2643,31 @@
     </div>
 
     <!--
-      Ячейка нажимается там, где человек видит ячейку.
+      A cell is pressed where a person sees the cell.
 
-      Нажатие ловил внешний блок — а он шире того, что считают ячейкой: в него
-      входит поле с номером, пустое место под ним и просвет до тела. Щелчок в
-      пустоту слева выделял ячейку, и это выглядело как промах интерфейса, а не
-      как выбор: целились мимо, попали в ячейку.
+      The press used to be caught by the outer block, and it is wider than
+      what counts as the cell: it includes the gutter with the ordinal, the
+      empty space under it and the gap to the body. A click into the void on
+      the left selected the cell, and it looked like an interface miss, not a
+      choice: people aimed past it and hit the cell.
 
-      Теперь нажатие слушает колонка тела — код, вывод, форма ввода, тулбар над
-      ними, — а просветы вокруг остаются нейтральными: там не выделяют.
+      Now the press is listened to by the body column (code, output, the input
+      form, the toolbar above them), and the gaps around stay neutral: they do
+      not select.
 
-      И снимают выделение они тоже. Половины дела было мало: колонка с номером
-      перестала выделять, но для снятия по-прежнему считалась ячейкой (проверка
-      шла по `data-cell-id`, а он на корне), и щелчок в белое место под номером
-      не делал ничего — приходилось целиться в поля тетради. Поэтому признак
-      стоит не на корне, а на том, что нажимают: `data-cell-pick` и говорит,
-      где кончается ячейка на ощупь.
+      And they clear the selection too. Half the job was not enough: the
+      ordinal column stopped selecting, but for clearing it still counted as
+      the cell (the check went by `data-cell-id`, and that is on the root),
+      and a click on the white space under the ordinal did nothing: one had to
+      aim at the notebook's margins. So the marker sits not on the root but on
+      what gets pressed: `data-cell-pick` says where the cell ends to the
+      touch.
 
-      САМ НОМЕР — исключение, и он тоже несёт этот признак (см. ниже). Выбранная
-      ячейка помечена именно номером, залитым прямоугольником, так что человек
-      целится в метку выделения — и промахивался: нажатие на неё выделение
-      СНИМАЛО. Пустое поле под номером по-прежнему снимает, как и просят поля
-      тетради вокруг.
+      THE ORDINAL ITSELF is the exception, and it carries this marker too (see
+      below). A selected cell is marked precisely by its ordinal, a filled
+      rectangle, so people aim at the selection mark, and missed: a press on
+      it CLEARED the selection. The empty gutter under the ordinal still
+      clears it, as the notebook's margins around ask.
     -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -2551,48 +2685,53 @@
     >
       <!-- Out of flow and above the body: a toolbar that appeared in flow would
            push the cell down the moment the pointer arrived. -->
-      <!-- Признак для тетради: она меряет этот ряд, чтобы оставить ему место
-           над ячейкой, к которой ведёт экран (см. lib/cell-scroll.ts). Ряд
-           стоит вне потока, и без замера Shift+Enter увозил его за верхний
-           край — тулбар оказывался ровно там, куда не смотрят. -->
+      <!-- A marker for the notebook: it measures this row to leave room for it
+           above the cell the screen leads to (see lib/cell-scroll.ts). The
+           row stands out of flow, and without the measurement Shift+Enter
+           carried it past the top edge: the toolbar ended up exactly where
+           nobody looks. -->
       <div
         data-cell-toolbar
         class={cn(
           'absolute bottom-full right-0 z-10 flex items-center gap-0.5 bg-raised px-1.5 py-0.5',
           'opacity-0 group-hover:opacity-100 focus-within:opacity-100',
-          // Переход живёт только у невыбранной ячейки, и поэтому достаётся
-          // ровно наведению: мышь ведут медленно и плавное проявление ей
-          // помогает. У выбранной перехода нет — значит стрелка открывает
-          // тулбар в том же кадре, в котором нажата. Уход с ячейки снова
-          // возвращает переход, и тулбар соседа успокаивается, а не пропадает.
+          // The transition lives only on an unselected cell, and so it goes
+          // exactly to hover: the mouse is moved slowly and a smooth fade-in
+          // helps it. A selected cell has no transition, so an arrow key
+          // opens the toolbar in the same frame it is pressed in. Leaving the
+          // cell brings the transition back, and the neighbour's toolbar
+          // settles down rather than vanishing.
           !selected && 'transition-opacity duration-[var(--speed-quick)]',
           selected && 'opacity-100',
         )}
       >
         <!--
-          У запертой ячейки первого слота нет вовсе — ни «запустить», ни
-          погашенного «запустить». Обычно здесь гасят, а не прячут (довод ниже
-          про раскладку), но в лекции у участника гаснет ВЕСЬ ряд: переставлять,
-          дублировать, править и стирать ему тоже нельзя, и двигать под курсором
-          нечего. Обещать кнопкой действие, которого в этой комнате нет, дороже.
+          A locked cell has no first slot at all: neither "run" nor a dimmed
+          "run". Usually things are dimmed here rather than hidden (the
+          layout argument below), but in a lecture the WHOLE row goes dark for
+          a participant: they may not move, duplicate, edit or delete either,
+          and nothing moves under the cursor. Promising with a button an
+          action this room does not have costs more.
         -->
         {#if isCode && !shut}
           <!--
-            Одно место, три лица: запустить, убрать из очереди, остановить.
+            One place, three faces: run, remove from the queue, stop.
 
-            Гасим, а не прячем, в каждом отказе — включая чужую ячейку в
-            очереди, где внизу «отменить» как раз прячут. Асимметрия
-            намеренная и про раскладку: внизу это последняя кнопка в ряду и
-            её исчезновение ничего не двигает, а здесь пропажа первого слота
-            подвинет «вверх» и «вниз» под курсор, который целился в одну из
-            них. Ради этого же в run-slot.ts пришлось сочинить фразу отказа
-            для «отменить», которой в продукте не было.
+            We dim rather than hide, in every refusal, including someone
+            else's queued cell, where below "cancel" is exactly what gets
+            hidden. The asymmetry is deliberate and about layout: below it is
+            the last button in the row and its disappearance moves nothing,
+            while here losing the first slot would shift "up" and "down" under
+            a cursor that was aiming at one of them. For the same reason a
+            refusal phrase for "cancel" had to be invented in run-slot.ts,
+            which the product did not have.
 
-            Перехода на смене лица нет. `transition-colors` в TOOL отвечает
-            курсору, а не состоянию, и цвет живёт на самом значке. Лицо здесь
-            меняется от состояния ядра, пришедшего по сети, — плавное
-            перетекание нарисовало бы кнопку, наполовину «пуск», наполовину
-            «стоп», ровно в тот момент, когда человек решает, нажимать ли.
+            There is no transition on the change of face. `transition-colors`
+            in TOOL answers the cursor, not the state, and the colour lives on
+            the icon itself. The face here changes with the kernel state that
+            arrived over the network: a smooth blend would draw a button half
+            "start", half "stop" exactly at the moment the person decides
+            whether to press.
           -->
           <button
             type="button"
@@ -2641,15 +2780,16 @@
           <Icon name="chevron-down" size={13} />
         </button>
         <!--
-          Этот слот копирует текст ячейки в буфер — у всех и всегда.
+          This slot copies the cell's text to the clipboard, for everyone,
+          always.
 
-          Раньше тем, кому можно добавлять ячейки, он создавал копию ячейки в
-          общей тетради, а значок у копии тот же, что у «скопировать». 19.09.2026
-          на занятии трое студентов, желая унести код к себе, нажали его по
-          шесть–девять раз: в общей тетради выросли стопки одинаковых ячеек с
-          импортами, и убирал их преподаватель руками посреди пары. Копия ячейки
-          — это «скопировать, добавить ячейку, вставить»; отдельной кнопки под
-          неё нет намеренно.
+          It used to create a copy of the cell in the shared notebook for
+          those allowed to add cells, and the icon for a copy is the same as
+          for "copy". On 19 Sep 2026, in class, three students wanting to take
+          the code with them pressed it six to nine times each: stacks of
+          identical cells with imports grew in the shared notebook, and the
+          teacher removed them by hand mid-class. A copy of a cell is "copy,
+          add a cell, paste"; there is no separate button for it on purpose.
         -->
         <button
           type="button"
@@ -2671,17 +2811,18 @@
         >
           <Icon name={isCode ? 'text' : 'code'} size={13} />
         </button>
-        <!-- Спросить — тоже действие: после конца занятия оракул отвечает
-             одному преподавателю (may.ask), и строка, в которую человек успеет
-             написать фразу, — это отказ, полученный уже после работы. То же и с
-             режимом оракула: `hints` переписывать ячейку отказывается, и знать
-             об этом надо ДО набранной фразы (см. `rewriteReady`). -->
+        <!-- Asking is an action too: after the end of class the oracle answers
+             only the teacher (may.ask), and a line in which a person manages
+             to write a sentence is a refusal received after the work is done.
+             The same with the oracle mode: `hints` refuses to rewrite a cell,
+             and one must know that BEFORE typing the sentence (see
+             `rewriteReady`). -->
         <!--
-          Там, где ячейку не правят (лекция, общая ячейка консилиума), значок
-          стоит на месте, но погашен — с причиной в подсказке. Не исчезает:
-          тулбар у всех ячеек один, и пропавшая кнопка читается как поломка,
-          а не как правило. Спросить ПРО ячейку при этом можно по-прежнему —
-          вопрос живёт в панели, а не здесь.
+          Where the cell cannot be edited (a lecture, the shared council
+          cell), the icon stays in place but dimmed, with the reason in the
+          tooltip. It does not disappear: all cells have one toolbar, and a
+          missing button reads as a breakage, not as a rule. Asking ABOUT the
+          cell is still possible: the question lives in the panel, not here.
         -->
         <button
           type="button"
@@ -2696,13 +2837,14 @@
         </button>
         {#if isCode}
           <!--
-            Прибрать за собой в своей ячейке.
+            Clean up after yourself in your own cell.
 
-            Правило «стирать общее» про доску целиком, и сервер это различает
-            (`clearOutputs` с именем ячейки спрашивает право печатать, а не
-            право стирать). В комнате с `wipe: host` подсказка под правилом
-            обещала, что свою ячейку человек чистит всегда, — а нажать было
-            нечего: клиент умел стирать только всю тетрадь разом.
+            The "wipe shared" rule is about the whole board, and the server
+            tells the difference (`clearOutputs` with a cell name asks for the
+            right to type, not the right to wipe). In a room with `wipe: host`
+            the hint under the rule promised that a person can always clear
+            their own cell, yet there was nothing to press: the client could
+            only wipe the whole notebook at once.
           -->
           <button
             type="button"
@@ -2728,41 +2870,44 @@
       </div>
 
       <!--
-        Обёртка ради одной дышащей полосы, лежащей поверх левой кромки.
+        A wrapper for the sake of one breathing bar lying over the left edge.
 
-        Просто блок вокруг блочных соседей, так что раскладка не меняется, а
-        `bind:clientHeight` остаётся на том же внутреннем div — парковка не
-        затронута. Полоса стоит вне `{#if mounted}` намеренно: работающая
-        ячейка сейчас никогда не паркуется (`pinned` включает `running`), но
-        если это правило когда-нибудь изменят, припаркованная работающая
-        ячейка получит зажжённую кромку, а не полосу бледнее очереди.
+        Just a block around block siblings, so the layout does not change, and
+        `bind:clientHeight` stays on the same inner div: parking is not
+        affected. The bar stands outside `{#if mounted}` on purpose: a running
+        cell is never parked now (`pinned` includes `running`), but if that
+        rule ever changes, a parked running cell will get a lit edge rather
+        than a bar paler than the queue.
       -->
       <div class="relative">
       {#if mounted}
         <div bind:clientHeight={contentHeight}>
           {#if ownSheet && sheet}
             <!--
-              Свой лист студента в консилиуме — и это ВСЯ ячейка.
+              A student's own sheet in a council, and it is the WHOLE cell.
 
-              Тот же CodeMirror, но привязан к локальному документу (см.
-              `openSheet`): в общий Y.Text отсюда не уходит ни буквы. Снимок
-              уезжает сам при паузе в наборе и на уходе фокуса; сдаёт кнопка
-              справа и одно сочетание ⌘⇧↵.
+              The same CodeMirror, but bound to a local document (see
+              `openSheet`): not a single letter goes from here into the shared
+              Y.Text. The snapshot goes out by itself on a pause in typing and
+              when focus leaves; the button on the right and the single
+              combination ⌘⇧↵ submit.
 
-              Над листом больше нет второй ячейки. Общий текст стоял здесь
-              только чтением — «Общая ячейка, видна всей группе», — и платой за
-              него был второй блок кода на экране у человека, который пишет
-              свой. Задание и так читается сверху, в маркдаун-ячейке над этой, а
-              показанное классу видно на проекторе; в тетради студента ему
-              места нет. Вывод общей ячейки по той же причине не рисуется вовсе
-              (см. область вывода ниже): под листом лежит вывод СВОЕЙ попытки, и
-              два разных вывода подряд читаются как один.
+              There is no second cell above the sheet anymore. The shared text
+              stood here read-only ("Shared cell, visible to the whole group"),
+              and the price of it was a second block of code on the screen of
+              a person writing their own. The task is read above anyway, in
+              the markdown cell over this one, and what was shown to the class
+              is visible on the projector; it has no place in the student's
+              notebook. The shared cell's output is not drawn at all for the
+              same reason (see the output area below): under the sheet lies
+              the output of ONE'S OWN attempt, and two different outputs in a
+              row read as one.
 
-              Полос здесь одна на всё: лист, вывод и письмо преподавателя стоят
-              под одной кромкой одного цвета, потому что это одна попытка, а не
-              три соседних блока. Подвал из-под кромки выходит — он про то, что
-              с попыткой можно СДЕЛАТЬ, и выровнен по коду, как у обычной
-              ячейки.
+              There is one bar here for everything: the sheet, the output and
+              the teacher's letter stand under one edge of one colour, because
+              this is one attempt, not three neighbouring blocks. The footer
+              comes out from under the edge: it is about what can be DONE with
+              the attempt, and is aligned to the code, as in an ordinary cell.
             -->
             <div
               onfocusout={(event) => {
@@ -2772,10 +2917,12 @@
             >
               <div class={cn('border-l-4 px-3 py-1', SHEET_RULE[sheetState] || RULE[tone], 'bg-surface')}>
                 <!--
-                  Шапка листа: чем эта ячейка отличается от соседних (чип) и что
-                  с попыткой уже произошло (подпись). Чип не меняется никогда —
-                  по нему ячейку узнают; подпись меняется с состоянием и говорит
-                  ровно то, чего не умещается в одно слово чипа в подвале.
+                  The sheet's header: what sets this cell apart from its
+                  neighbours (the chip) and what has already happened to the
+                  attempt (the label). The chip never changes: the cell is
+                  recognised by it; the label changes with the state and says
+                  exactly what does not fit into the one word of the chip in
+                  the footer.
                 -->
                 <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1 pt-0.5">
                   <span class={cn(CAPS, 'bg-accent/10 px-1.5 py-px text-accent-text')}>
@@ -2792,47 +2939,51 @@
                       {letters.length > 0 ? tr('room.ui.1244') : tr('room.ui.1241')}
                     {:else} {tr('room.ui.1222')} {/if}
                   </span>
-                  <!-- Счёт класса стоит здесь, а не в подвале: это сведение о
-                       комнате, а не действие, и в подвале он спорил за место с
-                       кнопками — на узкой колонке они от него уезжали вниз. -->
+                  <!-- The class count stands here, not in the footer: it is
+                       information about the room, not an action, and in the
+                       footer it competed with the buttons for space: on a
+                       narrow column they slid down away from it. -->
                   {#if count && !councilClosed}
                     <span class="font-mono text-2xs tabular-nums text-muted">{countLine(count)}</span>
                   {/if}
                 </div>
                 <!--
-                  Сданный текст не приглушён.
+                  Submitted text is not dimmed.
 
-                  Приглушение стояло здесь и читалось как «выцвело»: сданная
-                  попытка — ровно та вещь, которую после сдачи и перечитывают,
-                  а половина контраста на коде мешает именно перечитывать. Что
-                  правка закрыта, говорят чип в подвале и пропавшие кнопки
-                  запуска — словом и отсутствием, а не туманом.
+                  Dimming stood here and read as "faded": a submitted attempt
+                  is exactly the thing that is reread after submitting, and
+                  half the contrast on code gets in the way of precisely the
+                  rereading. That editing is closed is said by the chip in the
+                  footer and the missing run buttons: by a word and by absence,
+                  not by fog.
 
-                  Подсказки ядра здесь такие же, как в обычной ячейке, и имя
-                  ячейки едет вместе с вопросом: им сервер и отличает свой лист
-                  консилиума от прочих (control.ts · mayComplete). Без него в
-                  лекционной комнате студент получал в ЕДИНСТВЕННОЙ ячейке, где
-                  ему велено писать код, только слова из неё же — `df.` не знал
-                  ни одного настоящего столбца.
+                  Kernel completions here are the same as in an ordinary cell,
+                  and the cell's name travels with the question: by it the
+                  server tells one's own council sheet from the rest
+                  (control.ts · mayComplete). Without it, in a lecture room, a
+                  student in the ONLY cell where they are told to write code
+                  got only words from that very cell: `df.` knew not a single
+                  real column.
 
-                  ПЕРЕХОД К ОПРЕДЕЛЕНИЮ здесь тоже есть, и это решение, а не
-                  симметрия с ячейкой. Лист — единственное место, где студент в
-                  лекционной комнате пишет код сам, и пишет его поверх модулей
-                  семинара: `from utils import helper` в первой строке, а
-                  дальше весь разбор в том, что там внутри у `helper`. Без
-                  перехода он туда не попадает вовсе.
+                  JUMP TO DEFINITION is here too, and that is a decision, not
+                  symmetry with the cell. The sheet is the only place where a
+                  student in a lecture room writes code themselves, and writes
+                  it on top of the seminar's modules: `from utils import helper`
+                  on the first line, and then the whole exercise is about what
+                  is inside `helper`. Without the jump they never get there.
 
-                  А вот имя ячейки в вопрос НЕ идёт, хотя в дополнение идёт.
-                  Лист не живёт в общей тетради — у него свой Y.Doc, ни к чему
-                  не подключённый (выше · openSheet), — и `cellId` означал бы
-                  «спрашиваю из этой ячейки», то есть увёл бы поиск в чужой
-                  текст, которого студент не писал. Без него сервер разбирает
-                  свой исходник из присланного кода, а ищет по тетрадям комнаты
-                  и файлам семинара.
+                  But the cell's name does NOT go into this question, although
+                  it goes into completion. The sheet does not live in the
+                  shared notebook (it has its own Y.Doc connected to nothing:
+                  above · openSheet), and `cellId` would mean "I am asking from
+                  this cell", that is, it would take the search into someone
+                  else's text the student did not write. Without it the server
+                  parses its own source from the code sent and searches the
+                  room's notebooks and the seminar's files.
 
-                  Метки приземления (`mark`) нет по той же причине: в лист
-                  привести некуда — он есть только у автора, и в ответе сервера
-                  появиться не может.
+                  There is no landing mark (`mark`) for the same reason: there
+                  is nowhere to lead into the sheet: it exists only for its
+                  author and cannot appear in the server's answer.
                 -->
                 <CodeEditor
                   text={sheet.text}
@@ -2858,13 +3009,14 @@
                     )}
                 />
                 <!--
-                  Счётчик знаков — под листом и только к концу.
+                  The character counter: under the sheet and only near the end.
 
-                  Раньше про потолок говорил сервер: отказ на каждую паузу в
-                  наборе, то есть тост раз в секунду, из которого не следовало ни
-                  сколько набрано, ни сколько можно. Счётчик появляется на
-                  девяти десятых пути (council.svelte.ts · attemptCounter) и
-                  говорит одно и то же число, что и отказ.
+                  The ceiling used to be reported by the server: a refusal on
+                  every pause in typing, that is, a toast once a second, from
+                  which one could learn neither how much was typed nor how much
+                  is allowed. The counter appears nine tenths of the way
+                  (council.svelte.ts · attemptCounter) and states the same
+                  number as the refusal.
                 -->
                 {#if attemptCount}
                   <p
@@ -2880,13 +3032,14 @@
                   </p>
                 {/if}
               </div>
-              <!-- Вывод запуска — к попытке, не к общей ячейке: приезжает автору
-                   вместе с попыткой и лежит прямо под ней, под той же кромкой.
-                   У общей ячейки вывода на этом экране нет вовсе, так что
-                   спутать их нечем. -->
+              <!-- The run's output belongs to the attempt, not to the shared
+                   cell: it arrives for the author together with the attempt
+                   and lies right under it, under the same edge. The shared
+                   cell has no output on this screen at all, so there is
+                   nothing to confuse them with. -->
               {#if attemptRun}
-                <!-- Та же пара, что у обычной ячейки: вывод на листе, код на
-                     плите, между ними волосяная линия. -->
+                <!-- The same pair as in an ordinary cell: output on the sheet,
+                     code on the slab, a hairline between them. -->
                 <div
                   class={cn(
                     'border-l-4 border-t',
@@ -2906,15 +3059,16 @@
                 </div>
               {/if}
               <!--
-                Письмо преподавателя — ПОД выводом и внутри той же кромки: это
-                часть попытки, а не соседний чат. Подпись — того, кто отвечал: в
-                комнате может быть два преподавателя, а черновик оракула сюда
-                приходит уже его словами.
+                The teacher's letter is UNDER the output and inside the same
+                edge: it is part of the attempt, not a neighbouring chat. The
+                signature is of whoever answered: a room may have two teachers,
+                and an oracle draft arrives here already in their words.
 
-                Письмо на строку, а не все в одном абзаце: личный ответ и
-                рассылка группе написаны в разное время и разным людям, и
-                слитно они читаются одним письмом. Групповое помечено словом —
-                тогда молчание на личном значит «это вам».
+                One letter per line, not all in one paragraph: the personal
+                answer and the message to the group are written at different
+                times and to different people, and run together they read as
+                one letter. The group one is marked with a word: then silence
+                on the personal one means "this is for you".
               -->
               {#if letters.length > 0}
                 <div
@@ -2948,18 +3102,21 @@
                 </div>
               {/if}
               <!--
-                Показанное классу — приставкой к СВОЕЙ ячейке, а не второй ячейкой.
+                What was shown to the class is an attachment to ONE'S OWN cell,
+                not a second cell.
 
-                Преподаватель вывел чей-то вариант: свой текст у человека
-                остаётся своим, чужой прирастает снизу — под той же кромкой, без
-                зазора, со сменой цвета полосы на positive и с подписью. Это
-                единственное место в тетради, где кромка меняет цвет посередине,
-                и живёт оно ровно столько, сколько показывают: «убрать с экрана»
-                сворачивает блок, и ячейка возвращается к одной колонке.
+                The teacher put up someone's answer: the person's own text
+                stays their own, and the other one grows on underneath, under
+                the same edge, with no gap, with the bar changing colour to
+                positive and with a signature. It is the only place in the
+                notebook where the edge changes colour midway, and it lives
+                exactly as long as the showing does: "take off the screen"
+                collapses the block, and the cell returns to one column.
 
-                Складка мерена высотой (`slide`), как складка шапки: блок
-                отдаёт своё место тетради целиком, а не растворяется, оставив
-                дыру. Под `prefers-reduced-motion` — ноль, то есть мгновенно.
+                The fold is measured by height (`slide`), like the header's
+                fold: the block gives its place back to the notebook entirely
+                rather than dissolving and leaving a hole. Under
+                `prefers-reduced-motion`, zero, that is, instant.
               -->
               {#if showsOnScreen && onScreen}
                 <div
@@ -2969,13 +3126,14 @@
                 </div>
               {/if}
               <!--
-                Переспрос про возврат — полосой во всю ячейку, а не окном
-                браузера.
+                The restore question is a bar across the whole cell, not a
+                browser dialog.
 
-                `window.confirm` выбивает из страницы и выглядит чужим ровно
-                там, где ответ виден тут же: в листе, который заменят. Охра —
-                потому что это не ошибка и не опасность, а незаконченное
-                движение: одно нажатие туда, одно обратно.
+                `window.confirm` knocks one out of the page and looks foreign
+                exactly where the answer is visible right here: in the sheet
+                that will be replaced. Ochre, because this is neither an error
+                nor a danger but an unfinished movement: one press there, one
+                back.
               -->
               {#if restoreAsking}
                 <div
@@ -2984,9 +3142,9 @@
                 >
                   <span class="text-ui font-bold text-ink">{tr('room.ui.1233')}</span>
                   <span class="text-2xs text-muted">{tr('room.ui.1250')}</span>
-                  <!-- Пара ответов держится вместе: на узкой колонке строка
-                       переносится, и «Отмена», прижатая к краю в одиночку,
-                       уезжала на строку выше своего «Вернуть». -->
+                  <!-- The pair of answers stays together: on a narrow column
+                       the line wraps, and "Cancel", pressed alone against the
+                       edge, ended up a line above its "Restore". -->
                   <span class="ml-auto flex items-center gap-3">
                     <button
                       type="button"
@@ -3002,13 +3160,14 @@
                 </div>
               {/if}
               <!--
-                Подвал: слева тихое «начать заново», справа — действия по
-                возрастанию веса: состояние словом, запуск, сдача.
+                The footer: on the left a quiet "start over", on the right the
+                actions in increasing weight: the state in words, run, submit.
 
-                «Восстановить» стоит на другом конце подвала от «Запустить» и
-                «Сдать» нарочно: между ними половина ширины ячейки, мимо не
-                попадёшь. Вес у него тихий — значок и muted, без рамки и
-                заливки: спасательный круг видно, но он не спорит с главным.
+                "Restore" stands at the opposite end of the footer from "Run"
+                and "Submit" on purpose: there is half the cell's width between
+                them, one cannot miss. Its weight is quiet (an icon and muted,
+                no border or fill): the life buoy is visible but does not argue
+                with the main thing.
               -->
               <div
                 class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-5 pr-1"
@@ -3031,9 +3190,10 @@
                     <span class="text-2xs text-muted">{tr('room.ui.1249')}</span>
                   {/if}
                   <!--
-                    Подсказка стоит слева, рядом с «Восстановить», а не среди
-                    действий справа: и то и другое — помощь застрявшему, и оба
-                    тихие. Справа живёт то, что двигает попытку вперёд.
+                    The hint stands on the left, next to "Restore", not among
+                    the actions on the right: both are help for someone stuck,
+                    and both are quiet. On the right lives what moves the
+                    attempt forward.
                   -->
                   {#if mayHint || hint?.asking}
                     <button
@@ -3055,36 +3215,37 @@
                 {/if}
 
                 <!--
-                  Действия — одной группой, прижатой вправо.
+                  The actions are one group, pressed to the right.
 
-                  Не россыпью в общем флексе: там при нехватке места вниз
-                  уезжала ОДНА крайняя кнопка, оставляя чип наверху, — то есть
-                  ломалась ровно та связка, ради которой подвал и читают.
-                  Группа переносится целиком и остаётся выровненной по правому
-                  краю, как на досках.
+                  Not scattered in the common flex: there, when space ran out,
+                  ONE outermost button slid down, leaving the chip on top, that
+                  is, exactly the pairing the footer is read for broke. The
+                  group wraps as a whole and stays aligned to the right edge,
+                  as on the artboards.
                 -->
                 <span class="ml-auto flex flex-wrap items-center justify-end gap-x-2.5 gap-y-1.5">
                 {#if councilClosed}
                   <span class={cn(CAPS, 'bg-surface px-2 py-0.5 text-muted')}>{tr('room.ui.370')}</span>
                 {:else}
                   {#if sheetState === 'edited' && mine?.correct != null}
-                    <!-- Старая отметка больше не правда — но и не пустое место:
-                         ради неё и правят. Остаётся памятью, приглушённо. -->
+                    <!-- The old mark is no longer true, but it is not an empty
+                         place either: it is what the edits are for. It stays as
+                         a memory, muted. -->
                     <span class="text-2xs text-muted">
                       {tr('room.ui.1247')} {mine.correct ? tr('room.ui.1225') : tr('room.ui.1226')}
                     </span>
                   {/if}
                   <!--
-                    У черновика чипа нет.
+                    A draft has no chip.
 
-                    Стоял «ЧЕРНОВИК · СОХРАНЯЕТСЯ» — два слова про то, что и так
-                    происходит с каждой буквой в каждом поле продукта, на самом
-                    видном месте подвала и при этом в самом частом состоянии
-                    ячейки: девяносто процентов времени человек читал сообщение
-                    о том, что ничего не случилось. Чип появляется там, где есть
-                    что сказать: сдано, есть правки, отметка, на экране. Что
-                    текст уходит преподавателю, говорит подпись в шапке — один
-                    раз и наверху.
+                    It used to say "DRAFT · SAVING": two words about what
+                    happens anyway with every letter in every field of the
+                    product, in the most visible spot of the footer and in the
+                    cell's most frequent state: ninety percent of the time a
+                    person read a message that nothing had happened. The chip
+                    appears where there is something to say: submitted, unsent
+                    edits, a mark, on screen. That the text goes to the teacher
+                    is said by the label in the header, once and at the top.
                   -->
                   {#if sheetState !== 'draft'}
                     <span class={cn(CAPS, 'px-2 py-0.5', SHEET_CHIP[sheetState])} role="status">
@@ -3105,18 +3266,20 @@
                   {/if}
 
                   <!--
-                    Кнопок запуска у сданной попытки нет вовсе: сдано — значит
-                    закрыто, и погашенная кнопка сказала бы, что дело в связи.
-                    Возвращаются они вместе с правом писать — после «Изменить».
+                    A submitted attempt has no run buttons at all: submitted
+                    means closed, and a dimmed button would say the problem is
+                    the connection. They come back together with the right to
+                    write, after "Edit".
                   -->
                   {#if submittedAt === null}
                     {#if runWaiting}
                       <!--
-                        Ожидание стоит НА МЕСТЕ кнопки, а не рядом с ней: ядро
-                        одно на комнату, нажимать второй раз нечего, и кнопка,
-                        оставшаяся живой рядом с номером в очереди, ровно это и
-                        предлагала. Номер называется, когда он известен; пока
-                        запрос у преподавателя, известно только, что ждём.
+                        The waiting stands IN PLACE OF the button, not next to
+                        it: there is one kernel per room, there is nothing to
+                        press a second time, and a button left live next to the
+                        queue number offered exactly that. The number is given
+                        when it is known; while the request is with the teacher,
+                        all that is known is that we are waiting.
                       -->
                       <span
                         class={cn(CAPS, 'inline-flex h-7 items-center gap-2 border border-accent px-3 text-accent-text')}
@@ -3136,17 +3299,20 @@
                       </span>
                     {:else if runPaused}
                       <!--
-                        Отсчёт — в ТОМ ЖЕ МЕСТЕ и тем же чипом, что «В очереди:
-                        3», но без акцента: очередь — про твой запуск, который
-                        уже идёт, а пауза — правило преподавателя, и тревожить
-                        ею незачем. Кромка и приглушённый текст говорят ровно
-                        это: не беда и не действие, а условие.
+                        The countdown is IN THE SAME PLACE and with the same
+                        chip as "Queued · 3", but without the accent: the queue
+                        is about your run, which is already under way, while
+                        the pause is the teacher's rule, and there is no reason
+                        to alarm anyone with it. The edge and the muted text say
+                        exactly this: not trouble and not an action, but a
+                        condition.
 
-                        `aria-live="off"` при `role="status"`: цифра меняется
-                        дважды в секунду, и обычная вежливая лента заставила бы
-                        экранный диктор читать её весь отсчёт. Имя при этом
-                        несёт и остаток, и причину целиком — их и прочитают,
-                        когда дойдут до чипа.
+                        `aria-live="off"` with `role="status"`: the digit
+                        changes twice a second, and an ordinary polite live
+                        region would make a screen reader read the whole
+                        countdown. The name meanwhile carries both the
+                        remainder and the reason in full: they will be read
+                        when the reader gets to the chip.
                       -->
                       <span
                         class={cn(
@@ -3163,11 +3329,12 @@
                       </span>
                     {:else if mayRunAttempt || mayRequestRun}
                       <!--
-                        Отказ преподавателя — единственное, о чём тут говорят
-                        словами: кнопка вернулась в исходное, и без строки это
-                        читалось бы как «нажатие не дошло». Разошедшийся текст
-                        (запрос был про прошлую версию) молчит: кнопка снова
-                        живая, и нажать её — и есть весь ответ.
+                        The teacher's refusal is the only thing spoken about in
+                        words here: the button went back to its initial state,
+                        and without the line this would read as "the press did
+                        not get through". Diverged text (the request was about
+                        the previous version) stays silent: the button is live
+                        again, and pressing it is the whole answer.
                       -->
                       {#if mine?.runRequest?.status === 'declined' && attemptSynced}
                         <span class="text-2xs text-muted" role="status">{tr('room.ui.364')}</span>
@@ -3186,18 +3353,19 @@
                         <span class="font-mono text-2xs text-muted">⇧↵</span>
                       </button>
                     {:else}
-                      <!-- Ручка выключена: кнопки нет, и это сказано словом, а не
-                           погашенной кнопкой — гасить нечего, запуск здесь не
-                           ваш. -->
+                      <!-- The setting is off: there is no button, and that is
+                           said with a word, not a dimmed button: there is
+                           nothing to dim, running here is not yours. -->
                       <span class="text-2xs text-muted">{tr('room.ui.1230')}</span>
                     {/if}
                   {/if}
 
                   <!--
-                    Сдача — одна кнопка на одном месте, меняющая слово: «Сдать»
-                    → «Изменить» → «Сдать заново». «Исправить» — то же
-                    «Изменить», названное по делу: после «есть ошибка» кнопка
-                    ведёт к выходу, а не повторяет беду.
+                    Submitting is one button in one place that changes its
+                    word: "Submit" → "Edit" → "Submit again". "Fix" is the same
+                    "Edit", named for what it does: after "there is an error"
+                    the button leads to the way out rather than repeating the
+                    trouble.
                   -->
                   {#if sheetState === 'edited'}
                     <button
@@ -3239,11 +3407,13 @@
                 </span>
               </div>
               <!--
-                Подсказка на ⇧↵ при выключенной ручке: две секунды и гаснет.
+                The hint on ⇧↵ when the setting is off: two seconds and it
+                fades.
 
-                Не тост: тост уезжает в угол экрана, а вопрос был задан здесь,
-                пальцами в этой ячейке. И не отказ — запуск не «не удался», его
-                тут просто нет.
+                Not a toast: a toast drifts off into a corner of the screen,
+                while the question was asked here, with fingers in this cell.
+                And not a refusal: the run did not "fail", it simply does not
+                exist here.
               -->
               {#if runHint}
                 <p class="ml-5 mt-1.5 inline-flex items-center gap-2 bg-ink px-2.5 py-1 text-2xs text-canvas" role="status">
@@ -3261,20 +3431,21 @@
                  than one that arrives hard. -->
             <div
               class={cn(
-                // Без перехода — по тому же правилу, что и номер выше: и
-                // кромка, и подложка держатся на `tone`, который переключает
-                // клавиатура.
+                // No transition, by the same rule as the ordinal above: both
+                // the edge and the background hang on `tone`, which the
+                // keyboard switches.
                 'border-l-4 px-3 py-1',
                 RULE[tone],
                 /*
-                 * Одна подложка из трёх, а не три класса стопкой: `cn` — это
-                 * clsx, он ничего не разрешает, и два `bg-*` рядом решает
-                 * порядок в собранном CSS, а не порядок здесь.
+                 * One background of three, not three classes stacked: `cn` is
+                 * clsx, it resolves nothing, and with two `bg-*` side by side
+                 * the order in the built CSS decides, not the order here.
                  *
-                 * Запертая холоднее обычной — подмешанный brand, а не другой
-                 * уровень поверхности: она не «глубже» и не «выше» соседних,
-                 * она просто не твоя. И только холоднее: гасить её целиком
-                 * нельзя, за выводами на лекцию и приходят.
+                 * A locked one is colder than an ordinary one (brand mixed in,
+                 * not another surface level): it is not "deeper" or "higher"
+                 * than its neighbours, it is simply not yours. And only colder:
+                 * it must not be dimmed entirely, people come to a lecture for
+                 * the outputs.
                  */
                 selected && !shownRunning && !hasError
                   ? 'bg-raised'
@@ -3295,19 +3466,21 @@
             >
               {@render openMark()}
               <!--
-                Подсказки от ядра получает только этот редактор — тот, в
-                котором пишут в общую тетрадь. Лист консилиума и черновик ниже
-                по файлу про ядро комнаты ничего не спрашивают: там пишут СВОЙ
-                текст, которого в ядре нет, а показывать по нему чужие
-                переменные значило бы открывать состояние ядра тем, кому
-                правило `run` его не открывает. Markdown-ячейка отсеивается уже
-                в самом редакторе: там пишут прозой.
+                Only this editor gets kernel completions: the one in which
+                people write into the shared notebook. The council sheet and the
+                draft further down the file ask nothing of the room's kernel:
+                there people write THEIR OWN text, which the kernel does not
+                have, and showing other people's variables from it would mean
+                opening the kernel's state to those whom the `run` rule does not
+                open it to. A markdown cell is filtered out in the editor
+                itself: prose is written there.
 
-                Тем же порядком прокинут и переход к определению. Имя ячейки
-                едет с вопросом, потому что по нему сервер считает и порядок
-                поиска (своя тетрадь раньше чужих), и относительные импорты
-                (lib/goto.svelte.ts). Обратно приезжает не событие, а метка
-                `landing`: пока ответ шёл, ячейку могли построить заново.
+                Jump to definition is wired the same way. The cell's name
+                travels with the question, because by it the server computes
+                both the search order (one's own notebook before others) and
+                relative imports (lib/goto.svelte.ts). What comes back is not an
+                event but the `landing` mark: while the answer was on its way,
+                the cell may have been rebuilt.
               -->
               <CodeEditor
                 text={ytext}
@@ -3337,18 +3510,19 @@
                 onarrowout={(direction) => step(direction)}
               />
               <!--
-                Одна строка под кодом — вместо погашенной ячейки.
+                One line under the code, instead of a dimmed cell.
 
-                Редактор молча не берёт набор, и молчание читается как поломка:
-                человек жмёт клавиши, ничего не появляется, и он идёт проверять
-                клавиатуру. Слова стоят там, где он смотрит, — под самой
-                ячейкой, а не в тосте у края экрана, — и говорят про занятие, а
-                не про правило: открыть эту ячейку может преподаватель, и он
-                рядом.
+                The editor silently refuses typing, and silence reads as a
+                breakage: a person presses keys, nothing appears, and they go
+                check the keyboard. The words stand where they are looking,
+                right under the cell rather than in a toast at the edge of the
+                screen, and speak about the class, not the rule: the teacher
+                can open this cell, and the teacher is nearby.
               -->
               {#if shut}
-                <!-- И здесь тетрадь говорит раньше комнаты: `editWhy` уже
-                     сложила это одним местом (см. её объяснение выше). -->
+                <!-- Here too the notebook speaks before the room: `editWhy`
+                     has already combined this in one place (see its
+                     explanation above). -->
                 <p class="flex items-center gap-2 pb-1 pt-1.5 text-2xs text-muted">
                   <span aria-hidden="true" class="h-px w-3.5 shrink-0 bg-line"></span>
                   {editWhy}
@@ -3359,18 +3533,19 @@
             <!-- A note at rest carries no chrome at all: it is the seminar's
                  prose, and the editor is a thing you go and get. -->
             <!--
-              Рельса есть и у прочитанного текста. Её тут не было вовсе: она
-              рисовалась только внутри редактора, поэтому у текстовой ячейки при
-              выборе менялся один номер в поле слева — по нему невозможно
-              сказать, какая ячейка выбрана, если смотреть на текст, а не на
-              поля. Теперь у всех ячеек одна и та же вертикальная полоса, и
-              выбранная отличается от остальных так же, как работающая.
+              Rendered text has a rail too. It used to have none at all: the
+              rail was drawn only inside the editor, so on selection a text cell
+              changed only its ordinal in the gutter on the left: from that it
+              is impossible to tell which cell is selected when looking at the
+              text rather than the margins. Now all cells have the same vertical
+              bar, and a selected one differs from the rest the same way a
+              running one does.
             -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class={cn(
-                // См. выше: `tone` переключается стрелкой, переходу здесь не
-                // место.
+                // See above: `tone` is switched by an arrow key, a transition
+                // has no place here.
                 'note border-l-4 px-3 py-1',
                 RULE[tone],
                 selected ? 'bg-surface/70' : 'bg-transparent',
@@ -3381,11 +3556,11 @@
               {#if liveText.current.trim()}
                 <Markdown source={liveText.current} class="text-prose text-muted" />
               {:else}
-                <!-- Приглашение — только тому, кого пустят: двойной щелчок по
-                     запертой заметке отвечает отказом, и звать к нему значит
-                     обещать действие, которого в этой комнате нет. Тот же
-                     довод, по которому у запертой ячейки убран первый слот
-                     тулбара. -->
+                <!-- The invitation is only for someone who will be let in: a
+                     double click on a locked note answers with a refusal, and
+                     inviting to it means promising an action this room does
+                     not have. The same argument by which a locked cell's
+                     first toolbar slot was removed. -->
                 <p class="text-prose text-muted">
                   {mayEdit ? tr('room.ui.366') : tr('room.ui.367')}
                 </p>
@@ -3394,18 +3569,21 @@
           {/if}
 
           <!--
-            Консилиум у преподавателя — ОДНА СТРОКА И КНОПКА. Всегда.
+            The council for the teacher is ONE LINE AND A BUTTON. Always.
 
-            Тетрадь зеркалится на проектор, а консоль консилиума полна имён,
-            черновиков, ошибок и отметок: место у неё одно — окно пульта
-            (components/council/pult). Под ячейкой остаётся ровно то, что зал и
-            так видит на проекторе, — сколько сдали и сколько ещё пишут, — и
-            дверь в пульт. Приватной стопки здесь нет НИ В КАКОМ случае, в том
-            числе при закрытом окне: запасной путь, рисующий имена в тетради, и
-            есть та самая утечка, ради которой окно заводили.
+            The notebook is mirrored to the projector, while the council
+            console is full of names, drafts, errors and marks: it has one
+            place, the console window (components/council/pult). Under the
+            cell stays exactly what the audience sees on the projector anyway
+            (how many have submitted and how many are still writing) and the
+            door to the console. There is NO private stack here IN ANY case,
+            including when the window is closed: a fallback that draws names
+            in the notebook is precisely the leak the window was introduced
+            to prevent.
 
-            Блок стоит и после закрытия консилиума, пока есть попытки: сданное
-            смотрят до конца занятия, и смотрят там же, в пульте.
+            The block stays after the council is closed too, while there are
+            attempts: submitted work is looked at until the end of class, and
+            looked at in the same place, in the console.
           -->
           {#if leads && (inCouncil || (board?.counts.attempts ?? 0) > 0)}
             <div
@@ -3420,9 +3598,10 @@
                 {/if}
               </span>
               <!--
-                Главная кнопка ячейки в консилиуме — и она заливается: всё
-                остальное здесь только числа. Пока окно живо, она не открывает
-                второе, а поднимает то (`pultReach`), и говорит об этом словом.
+                The cell's main button in a council, and it is filled:
+                everything else here is only numbers. While the window is
+                alive, it does not open a second one but raises that one
+                (`pultReach`), and says so with a word.
               -->
               <button
                 type="button"
@@ -3431,13 +3610,14 @@
                 onclick={reachPult}
               >{pultOpen ? tr('room.ui.1401') : tr('room.ui.1400')} ↗</button>
               {#if pultBlocked}
-                <!-- Браузер не дал открыть окно: молчащая кнопка читается как
-                     сломанная, поэтому причина стоит строкой и гаснет сама. -->
+                <!-- The browser did not let the window open: a silent button
+                     reads as broken, so the reason stands as a line and fades
+                     by itself. -->
                 <p class="basis-full text-2xs text-warning" role="status">{tr('room.ui.1402')}</p>
               {/if}
               {#if pultFullscreen}
-                <!-- Окно открылось, но легло вкладкой: из полноэкранного
-                     режима macOS второго окна не выпускает никто. -->
+                <!-- The window opened but landed as a tab: nobody lets a
+                     second window out of macOS full-screen mode. -->
                 <p class="basis-full text-2xs text-muted" role="status" data-council-pult-fullscreen>
                   {tr('room.pult.v3.fullscreen')}
                 </p>
@@ -3446,12 +3626,13 @@
           {/if}
 
           <!--
-            Та же плашка — преподавателю, под стопкой.
+            The same banner for the teacher, under the stack.
 
-            Он ведёт по ней разговор и должен видеть ровно то, что видит класс:
-            ту же подпись (имя или «Вариант N» при выключенной ручке имён), тот
-            же код, тот же свой вывод. Разница в одной ссылке справа — «убрать с
-            экрана», и она есть только здесь.
+            They lead the discussion by it and must see exactly what the class
+            sees: the same signature (a name, or "Variant N" with the names
+            setting off), the same code, the same output of its own. The
+            difference is one link on the right, "take off the screen", and it
+            exists only here.
           -->
           {#if leads && showsOnScreen && onScreen}
             <div transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}>
@@ -3464,16 +3645,17 @@
           {/if}
 
           <!--
-            Консилиум закрыли, а лист остался.
+            The council was closed, but the sheet stayed.
 
-            Замок ушёл в другое положение — тело ячейки снова общее, а то, что
-            человек написал, никуда не пропало: оно здесь, черновиком, свёрнуто.
-            Строка обязана это сказать — иначе пропавший из-под рук редактор
-            читается как «вашу работу стёрли».
+            The lock moved to another position: the cell body is shared again,
+            and what the person wrote has not gone anywhere: it is here, as a
+            draft, collapsed. The line must say so, otherwise an editor that
+            vanished from under one's hands reads as "your work was erased".
 
-            Спрашивать отсюда нечего и некуда: ни подсказок ядра, ни перехода к
-            определению черновику не передано. Это архив — его перечитывают, а
-            не пишут, и редактор здесь только показывает текст.
+            There is nothing to ask from here and nowhere to ask: neither
+            kernel completions nor jump to definition are passed to the draft.
+            It is an archive: it is reread, not written, and the editor here
+            only shows the text.
           -->
           {#if !inCouncil && !leads && sheet}
             <div class={cn('border-l-4 px-3 py-1.5', RULE[tone], 'bg-surface/70')}>
@@ -3549,9 +3731,9 @@
 
           {#if proposal}
             <!--
-              Та же пара, что у формы ввода: сплошной акцент здесь перекрывал
-              и RULE.running на работающей ячейке, и RULE.error на упавшей, ради
-              исправления которой предложение и просили.
+              The same pair as for the input form: a solid accent here covered
+              both RULE.running on a running cell and RULE.error on a failed
+              one, the very one whose fix the suggestion was asked for.
             -->
             <div class={cn('border-l-4 bg-accent/[0.04]', shownRunning ? 'border-accent/40' : 'border-accent')}>
               <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2">
@@ -3569,13 +3751,15 @@
               </div>
               <div class="overflow-x-auto whitespace-pre px-3 py-2 font-mono text-code-lg leading-[21px]"><div class="w-max min-w-full">{#each proposedLines as line, index (index)}<span class={cn('block min-h-[21px]', line.kind === 'added' && 'bg-positive/10', line.kind === 'removed' && 'bg-danger/10', line.kind === 'same' && 'opacity-55')}><span class="inline-block w-5 select-none text-center text-faint">{line.kind === 'added' ? '+' : line.kind === 'removed' ? '\u2212' : ' '}</span><CodeLine tokens={proposedTokens[index] ?? []} /></span>{/each}</div></div>
               <div class="flex flex-wrap items-center gap-2.5 border-t border-line-soft px-3 py-2">
-                <!-- Когда почва ушла, залитая кнопка меняет владельца: рефлекс
-                     после пяти принятий — нажать заполненную, и он обязан
-                     попадать в безопасный исход. Так же в панели оракула. -->
-                <!-- «Принять» — правка общей тетради, и спрашивает она у ЯЧЕЙКИ:
-                     в лекции и в общей ячейке консилиума правит преподаватель.
-                     Кнопка гаснет и называет причину; «Отклонить» остаётся
-                     всем — снятая плашка ничего не рушит, пока идёт занятие. -->
+                <!-- When the ground has shifted, the filled button changes
+                     owner: the reflex after five accepts is to press the
+                     filled one, and it must land on the safe outcome. The same
+                     in the oracle panel. -->
+                <!-- "Accept" is an edit of the shared notebook, and it asks the
+                     CELL: in a lecture and in the shared council cell the
+                     teacher edits. The button dims and names the reason;
+                     "Decline" stays for everyone: a removed banner breaks
+                     nothing while class is on. -->
                 {#if proposalStale}
                   <button type="button" class="btn-primary h-8" onclick={decline}>{tr('room.ui.380')}</button>
                   <button
@@ -3601,75 +3785,81 @@
           {/if}
 
           <!--
-            Область вывода не сжимается, пока в неё нечего положить.
+            The output area does not shrink while there is nothing to put in
+            it.
 
-            Вывод стирается в момент старта — прошлое число, выглядящее свежим,
-            на проекторе хуже любого рывка, — но высота остаётся. Перезапуск
-            ячейки, печатающей то же самое, не двигает страницу вовсе; ячейка,
-            у которой вывод правда изменился в размере, двигается один раз и на
-            настоящую разницу. Сейчас каждая двигается дважды.
+            Output is wiped at the moment of start (an old number that looks
+            fresh is worse on a projector than any jerk), but the height
+            stays. Rerunning a cell that prints the same thing does not move
+            the page at all; a cell whose output really changed in size moves
+            once and by the real difference. Right now every one moves twice.
 
-            Это пол, а не обещание: у блока нет ни верхней, ни нижней, ни правой
-            границы и нет скругления, так что пустым он неотличим от отступа.
-            Не предмет, стоящий пустым, а ячейка, которая ещё не сжалась. Что
-            происходит, объясняют дышащая полоса слева и строка Running под ней
-            — добавлять сюда третью подпись значило бы сказать одно и то же
-            трижды.
+            It is a floor, not a promise: the block has no top, bottom or right
+            border and no rounding, so empty it cannot be told from padding.
+            Not an object standing empty, but a cell that has not shrunk yet.
+            What is happening is explained by the breathing bar on the left and
+            the Running line under it: adding a third label here would say the
+            same thing three times.
 
-            Читается настоящее `running`, а не `shownRunning`: это раскладка, а
-            не сигнал занятости. Порог в двести миллисекунд к ней не относится
-            — привязать место к нему значило бы схлопывать быстрые ячейки и
-            держать медленные, то есть вывернуть оба механизма наизнанку.
+            The real `running` is read, not `shownRunning`: this is layout, not
+            a busy signal. The two-hundred-millisecond threshold does not apply
+            to it: tying the space to it would mean collapsing fast cells and
+            holding slow ones, that is, turning both mechanisms inside out.
           -->
           <!--
-            `!ownSheet`: у студента в открытом консилиуме общей ячейки на
-            экране нет — ни кода, ни вывода. Вывод остался бы последним её
-            следом: чужой запуск (или «Показать классу») печатал бы числа прямо
-            под СВОИМ листом человека, и прочитать их как не свои нечем. Свой
-            вывод у попытки есть, и лежит он там же — сразу под листом.
+            `!ownSheet`: a student in an open council has no shared cell on
+            screen, neither code nor output. The output would remain its last
+            trace: someone else's run (or "Show to class") would print numbers
+            right under the person's OWN sheet, and there would be no way to
+            read them as not their own. The attempt has its own output, and it
+            lies in the same place, right under the sheet.
           -->
           {#if isCode && !ownSheet && (outputs.current.length > 0 || outputFloor > 0)}
             <!--
-              Пустое место не рисует ничего — ни фона, ни кромки.
+              An empty space draws nothing: no background, no edge.
 
-              Первая версия оставляла блоку и `bg-surface/50`, и цветную кромку,
-              и утверждала в комментарии, что пустым он «неотличим от отступа».
-              Это была неправда: получался серый прямоугольник с полосой, ростом
-              с прошлый вывод. На трейсбеке — в полэкрана. Не неподвижность, а
-              дыра, и именно так о ней и сообщили.
+              The first version left the block both `bg-surface/50` and a
+              coloured edge, and claimed in a comment that empty it was
+              "indistinguishable from padding". That was untrue: the result
+              was a grey rectangle with a bar, as tall as the previous output.
+              On a traceback, half a screen. Not stillness but a hole, and that
+              is exactly how it was reported.
 
-              Смысл резерва в том, что страница не двигается, а не в том, что на
-              ней что-то стоит. Поэтому пока класть нечего, блок — чистая
-              высота.
+              The point of the reserve is that the page does not move, not that
+              something stands on it. So while there is nothing to put in, the
+              block is pure height.
             -->
             {@const seatOnly = outputs.current.length === 0}
             <!--
-              Вывод лежит на ЛИСТЕ, код — на плите: разные подложки плюс
-              волосяная линия по границе.
+              Output lies on the SHEET, code on the slab: different backgrounds
+              plus a hairline along the border.
 
-              Раньше обе половины ячейки стояли на surface — код сплошным, вывод
-              тем же цветом в половину силы, — и на белой теме различить их было
-              нечем: 243→249 при фоне страницы 255. Ночью пара читалась, и
-              именно поэтому беда жила так долго: смотрели в тёмной.
+              Both halves of the cell used to stand on surface (code solid,
+              output the same colour at half strength), and in the light theme
+              there was nothing to tell them apart with: 243→249 against a page
+              background of 255. At night the pair read, and that is exactly why
+              the trouble lived so long: people looked in the dark theme.
 
-              Направление выбрано не из вкуса, а по тому, что уже напечатано:
-              опубликованная страница (server/src/publish/render.ts) и читальня
-              рисуют ровно это — код на подложке, вывод на фоне карточки, между
-              ними линия в `line`. Комната была единственным местом, где тетрадь
-              выглядела иначе. Заодно счёт сходится в обе стороны: на свету лист
-              светлее плиты, ночью — темнее её, и «это напечатал компьютер»
-              читается одинаково.
+              The direction was chosen not by taste but by what is already
+              printed: the published page (server/src/publish/render.ts) and the
+              reader draw exactly this: code on a backing, output on the card
+              background, a `line` rule between them. The room was the only
+              place where the notebook looked different. Besides, the account
+              balances both ways: in the light the sheet is lighter than the
+              slab, at night darker, and "the computer printed this" reads the
+              same.
 
-              Полоса состояния идёт сквозь обе половины и цвета не меняет: она
-              про ЯЧЕЙКУ — работает, упала, открыта, выбрана, — а не про то,
-              где кончается код. Разорвать её значило бы завести второй язык
-              там, где уже есть первый.
+              The state bar runs through both halves and does not change colour:
+              it is about the CELL (running, failed, open, selected), not about
+              where the code ends. Breaking it would mean starting a second
+              language where there is already a first.
 
-              Цвет самой линии — стилем, а не классом: `RULE[tone]` красит
-              border-color целиком, и `border-t-line` рядом с ним решался бы
-              порядком утилит в собранном CSS, а не тем, что написано здесь. А
-              линия обязана остаться серой и у работающей, и у упавшей: она не
-              сигнал, она граница.
+              The colour of the rule itself is a style, not a class:
+              `RULE[tone]` paints the whole border-color, and a `border-t-line`
+              next to it would be decided by the order of utilities in the built
+              CSS, not by what is written here. And the line must stay grey for
+              both a running and a failed cell: it is not a signal, it is a
+              border.
             -->
             <div
               class={cn(
@@ -3682,12 +3872,12 @@
               style:min-height={outputFloor > 0 ? `${outputFloor}px` : undefined}
             >
               <!--
-                Мерит один узел, держит другой — и это обязательно.
+                One node measures, another holds, and that is mandatory.
 
-                Повесь `min-height` и `bind:clientHeight` на один элемент, и
-                резерв начнёт читать сам себя: запомненная высота дорастёт до
-                самой большой, какая когда-либо была, и обратно уже не
-                опустится. В быстром тесте это выглядит совершенно правильно.
+                Put `min-height` and `bind:clientHeight` on one element, and the
+                reserve starts reading itself: the remembered height grows to
+                the largest there has ever been and never comes back down. In a
+                quick test this looks perfectly right.
               -->
               <div bind:clientHeight={outputsMeasured}>
                 {#if outputs.current.length > 0}
@@ -3695,24 +3885,26 @@
                     <CellOutputs outputs={outputs.current} bind:pending={outputsPending} />
                   </div>
                   <!--
-                    Строка под выводом — только там, где ей есть что СКАЗАТЬ.
+                    The line under the output, only where it has something to SAY.
                     
-                    Стояли здесь черта во всю ширину и «Out [2] · 1.4 s» в
-                    дальнем углу: линия делила экран пополам ради одного числа,
-                    а само число читалось раз в час и не рисовалось вовсе у
-                    ячеек без вывода. Число уехало в поле, к номеру ячейки
-                    (см. `mark`), черта ушла совсем — вывод кончается там, где
-                    кончается вывод. Остались слова: кто запускал и что номер
-                    потерян, — их в поле не уместить, а сказать надо.
+                    There used to be a full-width rule here and "Out [2] · 1.4 s"
+                    in the far corner: the line split the screen in half for the
+                    sake of one number, and the number itself was read once an
+                    hour and was not drawn at all for cells without output. The
+                    number moved into the gutter, next to the cell's ordinal (see
+                    `mark`), the rule went away entirely: the output ends where
+                    the output ends. What remained are the words: who ran it and
+                    that the number was lost; they do not fit into the gutter,
+                    and they must be said.
                   -->
                   {#if ranByOther || unnumbered}
                     <div class="flex items-center gap-3 px-4 pb-1.5 pt-0.5">
                       {#if unnumbered}
                         <!--
-                          Словами, а не оттенком: язык переживает и проектор, и
-                          скриншот в чате, и дальтонизм. Это состояние, а не
-                          промелькнувший переход, — оно висит ровно столько,
-                          сколько остаётся правдой.
+                          In words, not by shade: language survives a projector,
+                          a screenshot in a chat and colour blindness. This is a
+                          state, not a passing transition: it hangs exactly as
+                          long as it stays true.
                         -->
                         <span class="text-2xs text-warning"> {tr('room.ui.384')} </span>
                       {/if}
@@ -3732,15 +3924,17 @@
 
       {#if stdin}
         <!--
-          Форма стоит под ячейкой, а не в тосте: ждёт именно эта ячейка, и
-          смотреть надо на неё. Кромка цветом бегущей — потому что ячейка и
-          правда бежит, просто остановилась о человека.
+          The form stands under the cell, not in a toast: it is exactly this
+          cell that is waiting, and it is this cell one must look at. The edge
+          is in the running colour, because the cell really is running, it has
+          just stopped against a person.
         -->
         <form
           class={cn(
             'mt-1.5 flex items-center gap-2 border-l-4 bg-accent/[0.07] px-3 py-2',
-            // В пару к RULE.running: на работающей ячейке кромка приглушена, и
-            // сплошной акцент здесь читался бы как третий оттенок в столбце.
+            // Paired with RULE.running: on a running cell the edge is muted,
+            // and a solid accent here would read as a third shade in the
+            // column.
             shownRunning ? 'border-accent/40' : 'border-accent',
           )}
           onsubmit={sendAnswer}
@@ -3750,8 +3944,9 @@
             <span class="shrink-0 font-mono text-code text-ink">{stdin.prompt}</span>
           {/if}
           <!--
-            Поле — только тому, чей ответ примут. Остальным остаётся сама
-            плашка: что ячейка встала и чего она ждёт, комната видеть должна.
+            The field is only for someone whose answer will be accepted.
+            Everyone else gets the banner itself: the room must see that the
+            cell has stopped and what it is waiting for.
           -->
           {#if canAnswer}
             <input
@@ -3763,10 +3958,11 @@
               spellcheck="false"
               aria-label={stdin.prompt || tr('room.cell.waitingInput')}
             />
-            <!-- Нажатие — здесь же: ответ уходит в ядро, и до него на экране
-                 не меняется ничего. Свойства перечислены, а не `.press`:
-                 утилита `transition-*` переписала бы transition-property и
-                 оставила transform за списком (см. CAP в Notebook.svelte). -->
+            <!-- The press is right here too: the answer goes into the kernel,
+                 and nothing changes on screen until it gets there. The
+                 properties are listed, not `.press`: a `transition-*` utility
+                 would rewrite transition-property and leave transform out of
+                 the list (see CAP in Notebook.svelte). -->
             <button
               type="submit"
               class={cn(
@@ -3781,19 +3977,19 @@
       {/if}
 
       <!--
-        Единственное, что движется в тетради.
+        The only thing that moves in the notebook.
         
-        Ширина в 4px — это ровно `border-l-4`, и стоит она на том же месте: не
-        вторая линия рядом, а та же самая, зажжённая. Под ней приглушённый
-        `RULE.running`, поверх — акцент, дышащий с 1 до 0.25; вместе выходит
-        кромка, ходящая между полным акцентом и 55 %.
+        A width of 4px is exactly `border-l-4`, and it stands in the same place:
+        not a second line next to it, but the same one, lit. Under it the muted
+        `RULE.running`, on top the accent breathing from 1 to 0.25; together
+        they give an edge that moves between the full accent and 55 %.
         
-        Дыхание остаётся и при prefers-reduced-motion, и это записано в
-        политике в index.css: непрерывные указатели не гасят, потому что
-        остановившийся указатель — это ложь о системе. Полоса никуда не едет,
-        меняет одно композитное свойство, не доходит до нуля и делает меньше
-        одного удара в секунду — то есть ничего из того, ради чего движение
-        убирают.
+        The breathing stays even under prefers-reduced-motion, and that is
+        written into the policy in index.css: continuous indicators are not
+        switched off, because a stopped indicator is a lie about the system.
+        The bar goes nowhere, changes one compositor property, never reaches
+        zero and does less than one beat per second, that is, none of the
+        things motion is removed for.
       -->
       {#if shownRunning}
         <span
@@ -3804,40 +4000,44 @@
       </div>
 
       <!--
-        Подпись под формой ввода стоит ВНЕ обёртки с полосой.
+        The label under the input form stands OUTSIDE the wrapper with the bar.
 
-        Полоса растянута на всю обёртку (`inset-y-0`), а у этой подписи кромки
-        `border-l-4` нет — как нет её и у отступа `mt-1.5` над самой формой.
-        Пока подпись лежала внутри, светящаяся линия уходила на пару десятков
-        пикселей ниже кромки, которую она подсвечивает, и повисала в воздухе.
+        The bar is stretched over the whole wrapper (`inset-y-0`), while this
+        label has no `border-l-4` edge, just as the `mt-1.5` gap above the form
+        itself has none. While the label lay inside, the glowing line went a
+        couple of dozen pixels below the edge it lights up and hung in the air.
       -->
       {#if stdin}
         <p class="px-3 pt-1 text-2xs text-muted">
           {#if canAnswer} {tr('room.ui.387')} {:else if !acts}
-            <!-- Две разные причины, и звонок из них старше: звать к полю того,
-                 кто эту ячейку и запустил, после конца занятия — значит звать
-                 человека к отказу. Имени здесь поэтому нет. --> {tr('room.ui.388')} {:else} {tr('room.ui.389')} {runBy ?? tr('room.ui.390')} {tr('room.ui.391')} {/if}
+            <!-- Two different reasons, and the bell outranks the other:
+                 inviting to the field the person who ran this cell, after the
+                 end of class, means inviting them to a refusal. Hence no name
+                 here. --> {tr('room.ui.388')} {:else} {tr('room.ui.389')} {runBy ?? tr('room.ui.390')} {tr('room.ui.391')} {/if}
         </p>
       {/if}
 
       <!--
-        Оракул занят этой ячейкой — и об этом сказано словами, а не только
-        кромкой.
+        The oracle is busy with this cell, and that is said in words, not only
+        by the edge.
 
-        Кромка говорит всей комнате, ЧТО тут занято, и читается через зал;
-        строка говорит одному человеку, КТО занят, и читается с расстояния
-        вытянутой руки. Та же пара и по той же причине, что у работающей
-        ячейки ниже, — и здесь она нужнее: жест делают кнопкой над ячейкой, а
-        ответ приходит в панель, которая может быть свёрнута. Без слова
-        движение у кромки означает «что-то происходит», а не «оракул взял».
+        The edge tells the whole room WHAT is busy here and reads across the
+        hall; the line tells one person WHO is busy and reads at arm's length.
+        The same pair, for the same reason, as for the running cell below, and
+        here it is needed more: the gesture is made with a button above the
+        cell, and the answer comes into a panel that may be collapsed. Without
+        a word, movement at the edge means "something is happening", not "the
+        oracle took it".
 
-        Стоит ВЫШЕ строки выполнения и не вместо неё: ядро и оракул — два
-        разных работника, и заняв одну ячейку, каждый говорит о себе сам.
+        It stands ABOVE the execution line and not instead of it: the kernel
+        and the oracle are two different workers, and having taken one cell,
+        each speaks for itself.
       -->
       {#if oracleBusy}
         <div class={FOOTER}>
-          <!-- Тот же приглушённый значок, что у выполнения: он про то, что
-               система жива, и спорить с акцентным словом рядом не должен. -->
+          <!-- The same muted icon as for execution: it is about the system
+               being alive, and must not argue with the accent word next to
+               it. -->
           <Icon name="spinner" size={12} class="shrink-0 animate-spin text-accent-text/70" />
           <span class={cn(CAPS, 'text-accent-text')}>{tr('room.oracle.working')}</span>
         </div>
@@ -3845,23 +4045,24 @@
 
       {#if shownRunning}
         <!--
-          Строка состояния этой ячейки для всей комнаты.
+          This cell's status line, for the whole room.
 
-          Остаётся, хотя «стоп» теперь есть и в тулбаре, — и вот почему.
-          Тулбар открывается по наведению, а работающая ячейка сплошь и рядом
-          не та, под которой курсор: Run All считает седьмую, пока правят
-          двенадцатую. Сделать единственную кнопку остановки той, до которой
-          надо ещё доехать мышью, — худший из возможных разменов ровно в тот
-          момент, когда кто-то хочет убить бесконечный цикл; на планшете
-          наведения нет вовсе. К тому же строка рисуется вне `{#if mounted}` и
-          говорит про ячейку, чей редактор припаркован, и несёт то, чего в
-          значок 24×24 не положишь: кто запустил, его лицо и сколько идёт.
+          It stays, although "stop" is now in the toolbar too, and here is why.
+          The toolbar opens on hover, and the running cell is very often not
+          the one under the cursor: Run All computes the seventh while the
+          twelfth is being edited. Making the only stop button one that has to
+          be reached with the mouse first is the worst possible trade exactly
+          when someone wants to kill an infinite loop; on a tablet there is no
+          hover at all. Besides, the line is drawn outside `{#if mounted}` and
+          speaks for a cell whose editor is parked, and carries what cannot be
+          put into a 24×24 icon: who ran it, their face and how long it has
+          been going.
 
-          Секундомер здесь. Раньше на этом месте стояло «времени выполнения нет
-          в документе, поэтому мы его и не заявляем» — теперь есть: одна
-          отметка, записанная ядром в той же транзакции, что начинает
-          выполнение. Считает её этот компонент, потому что то, что ещё идёт,
-          считают там, где смотрят.
+          The stopwatch is here. This place used to say "execution time is not
+          in the document, so we do not claim it"; now it is: one timestamp,
+          written by the kernel in the same transaction that starts execution.
+          This component counts it, because what is still going on is counted
+          where people look.
         -->
         <div class={FOOTER}>
           {#if runner}
@@ -3874,23 +4075,23 @@
             />
           {/if}
           <!--
-            «Ждёт», когда ячейка остановилась о человека: она правда
-            выполняется, но сказать «Running» прямо над формой, которая
-            говорит «ядро ждёт ответа», значит дать листу поспорить с собой.
-            Полоса при этом дышит, а секундомер считает: прошедшее время
-            выполнения — всё ещё прошедшее время выполнения.
+            "Waiting" when the cell has stopped against a person: it really is
+            executing, but saying "Running" right above a form that says "the
+            kernel is waiting for an answer" means letting the sheet argue with
+            itself. The bar meanwhile breathes and the stopwatch counts: elapsed
+            execution time is still elapsed execution time.
           -->
           <!--
-            Крутящийся значок у самого слова.
+            A spinning icon right by the word.
 
-            Полоса слева говорит комнате, КАКАЯ ячейка занята, и читается через
-            весь зал; этот значок говорит одному человеку, что система жива, и
-            читается с расстояния вытянутой руки. Разные вопросы и разные
-            дистанции, поэтому их двое. Значок приглушённый: спорить с
-            акцентным словом рядом он не должен.
+            The bar on the left tells the room WHICH cell is busy and reads
+            across the whole hall; this icon tells one person that the system
+            is alive and reads at arm's length. Different questions and
+            different distances, hence two of them. The icon is muted: it must
+            not argue with the accent word next to it.
 
-            У ожидания ввода не крутится — там ничего не происходит, пока
-            кто-нибудь не ответит, и вертящийся значок обещал бы работу.
+            It does not spin while waiting for input: nothing happens there
+            until somebody answers, and a spinning icon would promise work.
           -->
           {#if !stdin}
             <Icon name="spinner" size={12} class="shrink-0 animate-spin text-accent-text/70" />
@@ -3900,10 +4101,10 @@
             <span class="text-2xs text-muted">{tr('room.ui.394')} {runBy}</span>
           {/if}
           <!--
-            Секундомер и «стоп» — одна группа, прижатая вправо: группа растёт
-            влево, поэтому правый край кнопки не двигается, когда появляются
-            цифры. `tabular-nums` и `shrink-0`, иначе ряд дёргается пять раз в
-            секунду.
+            The stopwatch and "stop" are one group pressed to the right: the
+            group grows to the left, so the button's right edge does not move
+            when the digits appear. `tabular-nums` and `shrink-0`, otherwise
+            the row twitches five times a second.
           -->
           <div class="ml-auto flex items-center gap-2">
           {#if meta.current.startedAt !== null}
@@ -3922,9 +4123,9 @@
             class={cn(
               'inline-flex h-6 items-center border border-line px-2 text-ink',
               CAPS,
-              // Кнопка паники: сервер отвечает не мгновенно, и нажатие — это
-              // единственное, что подтверждает, что его услышали. Тот же
-              // рецепт, что у «Cancel» ниже и у всей полосы Run.
+              // A panic button: the server does not answer instantly, and the
+              // press is the only thing that confirms it was heard. The same
+              // recipe as "Cancel" below and the whole Run bar.
               'transition-[color,background-color,border-color,transform] duration-press ease-out',
               'enabled:active:scale-[0.97] hover:bg-raised',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',

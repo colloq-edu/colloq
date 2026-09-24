@@ -1,16 +1,17 @@
 /**
- * Выложить опубликованные семинары на сайт.
+ * Put the published seminars on the site.
  *
- * Страница нужна студенту в среду вечером, когда ноутбук преподавателя закрыт.
- * Пока её отдаёт тот же процесс, что ведёт занятия, «всегда доступно» значит
- * «пока он включён», то есть не значит ничего. Поэтому: статика в репозиторий
- * сайта и `git push` — дальше страницу держит GitHub Pages.
+ * A student needs the page on Wednesday evening, when the teacher's laptop is
+ * closed. As long as it is served by the same process that runs the classes,
+ * "always available" means "while it is switched on", that is, nothing at all.
+ * Hence: static files into the site repository and `git push`; from there on
+ * GitHub Pages keeps the page up.
  *
- *   make site                 — собрать и запушить
- *   make site DRY=1           — собрать и показать, что получилось
+ *   make site                 — build and push
+ *   make site DRY=1           — build and show what came out
  *
- * Видимость репозитория тут ни при чём: Pages отдаёт публичный сайт и из
- * приватного, и из открытого.
+ * The repository's visibility has nothing to do with it: Pages serves a public
+ * site from a private repository and from a public one alike.
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -27,11 +28,12 @@ const { values } = parseArgs({
 });
 
 /*
- * Сайт лежит в этом же репозитории, в `site/`.
+ * The site lives in this same repository, in `site/`.
  *
- * Был отдельный, с оговоркой «Pages не умеет приватные репозитории» — неправда:
- * Pages отдаёт публичный сайт из репозитория любой видимости. Отдельный стоил
- * второго клона рядом, без которого выкладка просто не собиралась.
+ * There used to be a separate one, with the caveat "Pages cannot do private
+ * repositories", which is not true: Pages serves a public site from a
+ * repository of any visibility. The separate one cost a second clone next to
+ * this one, without which publishing simply did not build.
  */
 const site = path.resolve(values.site ?? process.env.SITE_DIR ?? "site");
 const base = (
@@ -46,12 +48,12 @@ process.env.KERNEL_ISOLATION ??= "off";
 
 if (!existsSync(site)) {
   console.error(
-    `${site} — такого каталога нет. Укажите его: make site SITE=site`,
+    `${site} — no such directory. Name it: make site SITE=site`,
   );
   process.exit(1);
 }
 
-/** Репозиторий, в котором лежит сайт: обычно этот же. */
+/** The repository that holds the site: usually this same one. */
 const repo = path.resolve(site, "..");
 
 const git = (...args: string[]): { code: number; out: string } => {
@@ -62,7 +64,7 @@ const git = (...args: string[]): { code: number; out: string } => {
   };
 };
 
-/** Путь внутри репозитория — им оперирует git, а не абсолютным. */
+/** A path inside the repository: git works with that, not with an absolute one. */
 const inRepo = (dir: string): string =>
   path.relative(repo, path.join(site, dir));
 
@@ -78,64 +80,67 @@ const { exportSite } = await import("../server/src/publish/export.js");
 const report = exportSite(site, base);
 
 /*
- * «Публиковать нечего» — не повод выйти отсюда: если сняли последнюю
- * публикацию, выгрузка только что стёрла её каталог, и это удаление надо
- * довезти до Pages. Выход здесь оставлял снятую страницу открытой по прямой
- * ссылке; дальше всё равно решает `git status`.
+ * "Nothing to publish" is no reason to exit here: if the last publication was
+ * withdrawn, the export has just erased its directory, and that deletion has
+ * to be carried to Pages. Exiting here left the withdrawn page open by direct
+ * link; `git status` decides further down anyway.
  */
 if (
   report.courses.length === 0 &&
   report.seminars.length === 0 &&
   report.withdrawn.length === 0
 ) {
-  console.log("публиковать нечего: ни курсов, ни опубликованных семинаров");
+  console.log("nothing to publish: no courses and no published seminars");
 }
 
 for (const course of report.courses) {
   console.log(
-    `курс    ${base}/c/${course.handle}/  ${course.name} · ${course.rows} строк`,
+    `course    ${base}/c/${course.handle}/  ${course.name} · ${course.rows} rows`,
   );
 }
 for (const seminar of report.seminars) {
-  const blobs = seminar.blobs > 0 ? ` · ${seminar.blobs} картинок` : "";
+  const blobs = seminar.blobs > 0 ? ` · ${seminar.blobs} images` : "";
   console.log(
-    `семинар ${base}/p/${seminar.handle}/  ${seminar.title} · ${seminar.steps} шагов${blobs}`,
+    `seminar   ${base}/p/${seminar.handle}/  ${seminar.title} · ${seminar.steps} steps${blobs}`,
   );
 }
 /*
- * Снятая страница остаётся адресом с надгробием, а не исчезает: ссылка,
- * розданная классу, обязана сказать «её сняли», а не ответить 404 GitHub.
+ * A withdrawn page stays as an address with a tombstone instead of vanishing:
+ * a link handed out to the class must say "it was withdrawn", not answer with
+ * GitHub's 404.
  */
 for (const stone of report.withdrawn) {
-  console.log(`снята   ${base}/p/${stone.handle}/  ${stone.title}`);
+  console.log(`withdrawn ${base}/p/${stone.handle}/  ${stone.title}`);
 }
 
 const status = git("status", "--porcelain", "--", inRepo("c"), inRepo("p"));
 if (status.out.length === 0) {
-  console.log("\nна сайте всё то же самое — пушить нечего");
+  console.log("\nthe site is exactly the same — nothing to push");
   process.exit(0);
 }
-console.log(`\nизменилось файлов: ${status.out.split("\n").length}`);
+console.log(`\nfiles changed: ${status.out.split("\n").length}`);
 
 if (values.dry) {
-  console.log("--dry: собрано на месте, ничего не отправлено");
+  console.log("--dry: built in place, nothing sent");
   process.exit(0);
 }
 
 /*
- * В индекс идут только свои каталоги. В репозитории сайта лежит лендинг, CNAME
- * и workflow — чужие файлы, которые эта команда трогать не должна: `git add -A`
- * однажды унёс бы туда чью-то незакоммиченную правку.
+ * Only our own directories go into the index. The site repository holds the
+ * landing page, CNAME and the workflow: other files that this command must not
+ * touch; `git add -A` would one day have carried someone's uncommitted edit in
+ * there.
  */
 /*
- * В индекс идут только те каталоги, о которых git вообще знает: `git add -- p`
- * падает целиком, если ни одного семинара ещё не публиковали, — а курс на сайте
- * уже лежит и должен доехать.
+ * Only the directories git knows about at all go into the index: `git add -- p`
+ * fails entirely if no seminar has been published yet, while a course is
+ * already on the site and has to get through.
  *
- * «Знает» — это в рабочем дереве ИЛИ в индексе. Каталог, стёртый выгрузкой
- * (сняли последнюю публикацию), из дерева пропал, но в индексе остался: без
- * второй половины условия его удаление не стейджилось, в коммит не попадало — и
- * снятая страница продолжала открываться на Pages по прямой ссылке.
+ * "Knows" means in the working tree OR in the index. A directory erased by the
+ * export (the last publication was withdrawn) has vanished from the tree but
+ * stayed in the index: without the second half of the condition its deletion
+ * was not staged and did not make it into the commit, and the withdrawn page
+ * kept opening on Pages by direct link.
  */
 const dirs = ["c", "p"]
   .filter(
@@ -146,32 +151,33 @@ const dirs = ["c", "p"]
   .map(inRepo);
 
 /*
- * Ветка — только main: Pages слушает push именно в неё (.github/workflows/pages.yml).
- * С фиче-ветки скрипт бодро печатал «выложено», push проходил, а на сайте не
- * менялось ничего — и узнать об этом было неоткуда, кроме как открыть colloq.ru.
+ * The branch must be main: Pages listens for pushes to exactly that one
+ * (.github/workflows/pages.yml). From a feature branch the script cheerfully
+ * printed "published", the push went through, and nothing changed on the
+ * site, with no way to find out except by opening colloq.ru.
  */
 const branch = git("rev-parse", "--abbrev-ref", "HEAD").out;
 if (branch !== "main") {
   console.error(
-    `сейчас ветка ${branch || "неизвестна"}, а Pages выкладывает только main:\n` +
-      "перейдите на main (git switch main) и повторите — иначе «выложено» будет неправдой.",
+    `the current branch is ${branch || "unknown"}, and Pages publishes only main:\n` +
+      "switch to main (git switch main) and try again, otherwise \"published\" would not be true.",
   );
   process.exit(1);
 }
 
 /*
- * Коммит по этим же путям (`-- c p`), а не всем индексом.
+ * The commit is by these same paths (`-- c p`), not by the whole index.
  *
- * `git commit -m …` без путей забирает и то, что автор застейджил до этого:
- * чужая незакоммиченная правка уезжала в коммит «публикации: …» и дальше в
- * main — вместе с сайтом и без всякого об этом слова.
+ * `git commit -m …` without paths also takes whatever the author staged
+ * before: someone else's uncommitted edit went into the "publications: …"
+ * commit and on into main, along with the site and without a word about it.
  */
 for (const step of [
   ["add", "--", ...dirs],
   [
     "commit",
     "-m",
-    `публикации: ${report.courses.length} курсов, ${report.seminars.length} семинаров`,
+    `publications: ${report.courses.length} courses, ${report.seminars.length} seminars`,
     "--",
     ...dirs,
   ],
@@ -179,8 +185,8 @@ for (const step of [
 ]) {
   const res = git(...step);
   if (res.code !== 0) {
-    console.error(`git ${step[0]} не прошёл:\n${res.out}`);
+    console.error(`git ${step[0]} failed:\n${res.out}`);
     process.exit(1);
   }
 }
-console.log("выложено");
+console.log("published");

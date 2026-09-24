@@ -1,30 +1,36 @@
 /**
- * Страницы ошибок ретранслятора: что именно они говорят и на каком языке.
+ * The relay's error pages: what exactly they say and in which language.
  *
- * До этой правки любая ошибка веб-сервера показывала одну страницу — «комната
- * ещё не открыта» — с советом проверить адрес. Она врала трижды: комнаты с
- * таким именем могло не быть вовсе, Colloq на машине преподавателя мог
- * молчать при живом туннеле, а ретранслятор — падать сам по себе, и адрес был
- * ни при чём. Теперь состояний четыре, и проверяется здесь не вёрстка, а то,
- * из-за чего правка и случилась:
+ * Before this change, any web server error showed one page — "the room is not
+ * open yet" — with advice to check the address. It lied three times over: a
+ * room with that name might not exist at all, Colloq on the teacher's machine
+ * could be silent while the tunnel was alive, and the relay could fail on its
+ * own, with the address having nothing to do with it. Now there are four
+ * states, and what is checked here is not the layout but what the change was
+ * made for:
  *
- *  • у каждого состояния есть текст на обоих языках, и они разные. Английский
- *    добавлялся вручную, строка за строкой, — забыть одну проще простого, и
- *    тогда посреди английской страницы встанет русская фраза;
- *  • опрос комнаты идёт только там, где есть чему вернуться. «Такой комнаты
- *    нет» не ждёт: возвращаться нечему, а дышащая точка обещала бы обратное;
- *  • метка, по которой страница отличает «всё ещё мы» от «комната открылась»,
- *    лежит в разметке, а ищется в скрипте. Разъедутся — опрос замолчит
- *    навсегда, и никто не заметит: страница будет исправно висеть;
- *  • фигурных скобок в файле ровно три, и это подстановки caddy. Любая
- *    четвёртая — «{{» в JS или в тексте — ломает шаблон, и вместо страницы
- *    ошибки приедет пустой ответ от самого caddy;
- *  • разметка без JS обязана говорить то же, что скрипт по-русски: с
- *    выключенным JS видно именно её.
+ *  • every state has text in both languages, and the two differ. The English
+ *    was added by hand, line by line — forgetting one is the easiest thing in
+ *    the world, and then a Russian phrase stands in the middle of the English
+ *    page;
+ *  • the room is polled only where there is something to come back to. "No
+ *    such room" does not wait: there is nothing to come back to, and a
+ *    breathing dot would promise the opposite;
+ *  • the mark by which the page tells "still us" from "the room has opened"
+ *    lives in the markup but is searched for in the script. If they drift
+ *    apart, polling goes silent forever, and nobody notices: the page will
+ *    hang there dutifully;
+ *  • there are exactly three curly-brace pairs in the file, and they are caddy
+ *    placeholders. Any fourth — "{{" in the JS or in the text — breaks the
+ *    template, and instead of the error page an empty response comes from
+ *    caddy itself;
+ *  • the markup without JS has to say the same as the script does in Russian:
+ *    with JS turned off, the markup is exactly what is visible.
  *
- * Страницу отдаёт настоящая служба очков (scripts/relay-capy.py с CAPY_PAGE):
- * она отвечает тем же кодом 404, что и frps на живой машине, — так проверяется
- * и то, что страница цела, и то, что снаружи ей ничего не нужно.
+ * The page is served by the real score service (scripts/relay-capy.py with
+ * CAPY_PAGE): it answers with the same 404 code as frps on a live machine —
+ * which checks both that the page is intact and that it needs nothing from
+ * outside.
  */
 import './_env.mts'
 import test from 'node:test'
@@ -41,16 +47,16 @@ const html = fs.readFileSync(PAGE, 'utf8')
 const python = spawnSync('python3', ['--version'])
 const HAVE_PYTHON = python.status === 0
 
-/* ------------------------------------------------------------- текст страницы
+/* -------------------------------------------------------------- the page text
  *
- * Словарь берётся из самой страницы, а не переписывается сюда: проверять копию
- * значило бы проверять себя. Кусок от помощников до `let lang` — это и есть
- * весь текст, и ничего, кроме текста, в нём нет.
+ * The dictionary is taken from the page itself rather than copied here:
+ * checking a copy would mean checking ourselves. The slice from the helpers to
+ * `let lang` is the whole text, and there is nothing but text in it.
  */
 function texts(): any {
   const from = html.indexOf('// 1 очко, 2 очка')
   const to = html.indexOf('let lang = pickLang();')
-  assert.ok(from > 0 && to > from, 'словарь текстов на странице не найден — переехал?')
+  assert.ok(from > 0 && to > from, 'the text dictionary was not found on the page: has it moved?')
   const src = html.slice(from, to)
   return new Function(`${src}\nreturn TEXT;`)()
 }
@@ -59,7 +65,7 @@ const TEXT = texts()
 const STATES = ['waiting', 'missing', 'down', 'fault']
 const FACT = { host: 'hse.colloq.ru', code: 0, text: '', id: '', reason: '' }
 
-/** Все пути словаря: ru и en должны совпадать по ним до последнего ключа. */
+/** All the dictionary paths: ru and en must match on them down to the last key. */
 function paths(node: any, at = ''): string[] {
   if (typeof node !== 'object' || node === null) return [at]
   return Object.keys(node).flatMap((k) => paths(node[k], at ? `${at}.${k}` : k))
@@ -67,8 +73,8 @@ function paths(node: any, at = ''): string[] {
 
 const CYRILLIC = /[А-Яа-яЁё]/
 
-test('в словаре оба языка и ни одного пропущенного ключа', () => {
-  assert.deepEqual(Object.keys(TEXT).sort(), ['en', 'ru'], 'языков не два')
+test('the dictionary has both languages and not a single missing key', () => {
+  assert.deepEqual(Object.keys(TEXT).sort(), ['en', 'ru'], 'there are not two languages')
   const ru = paths(TEXT.ru).sort()
   const en = paths(TEXT.en).sort()
   const lost = ru.filter((k) => !en.includes(k))
@@ -76,53 +82,53 @@ test('в словаре оба языка и ни одного пропущен�
   assert.deepEqual(
     lost,
     [],
-    `по-английски нет того, что есть по-русски: ${lost.join(', ')}. ` +
-      'Посреди английской страницы встанет русская фраза — и увидит её тот, ' +
-      'кто по-русски не читает.',
+    `English lacks what Russian has: ${lost.join(', ')}. ` +
+      'A Russian phrase will stand in the middle of the English page, and it will be seen by ' +
+      'someone who does not read Russian.',
   )
-  assert.deepEqual(extra, [], `лишнее по-английски: ${extra.join(', ')}`)
+  assert.deepEqual(extra, [], `extra in English: ${extra.join(', ')}`)
 })
 
-test('у каждого из четырёх состояний свой текст на обоих языках', () => {
+test('each of the four states has its own text in both languages', () => {
   for (const state of STATES) {
     for (const lang of ['ru', 'en'] as const) {
       const s = TEXT[lang].states[state]
-      assert.ok(s, `нет состояния «${state}» на ${lang}`)
+      assert.ok(s, `no "${state}" state in ${lang}`)
       const fact = { ...FACT, code: state === 'fault' ? 502 : 0 }
       for (const part of ['head', 'lede', 'wait', 'foot']) {
         const said = typeof s[part] === 'function' ? s[part](fact) : s[part]
-        // Заголовок короткий по замыслу, остальное — живые фразы.
+        // The heading is short by design; the rest are real sentences.
         const least = part === 'head' ? 8 : 40
         assert.ok(
           typeof said === 'string' && said.trim().length > least,
-          `${state}.${part} на ${lang} — пусто или обрывок: «${said}»`,
+          `${state}.${part} in ${lang} is empty or a fragment: "${said}"`,
         )
-        // Английская страница по-русски не говорит. Обратное не проверяем:
-        // «Colloq» в русской фразе — это имя, а не забытый перевод.
+        // The English page does not speak Russian. The reverse is not checked:
+        // "Colloq" in a Russian phrase is a name, not a forgotten translation.
         if (lang === 'en') {
           assert.doesNotMatch(
             said,
             CYRILLIC,
-            `${state}.${part}: английский текст с кириллицей — строку забыли перевести`,
+            `${state}.${part}: English text with Cyrillic — a line was left untranslated`,
           )
         }
       }
       assert.notEqual(
         TEXT.ru.states[state].head,
         TEXT.en.states[state].head,
-        `заголовок «${state}» на обоих языках одинаковый — перевода нет`,
+        `the "${state}" heading is the same in both languages: there is no translation`,
       )
     }
   }
-  // Четыре состояния — четыре разных заголовка: иначе они снова слипнутся в
-  // один, с чего эта правка и началась.
+  // Four states, four different headings: otherwise they would stick together
+  // into one again, which is where this change began.
   for (const lang of ['ru', 'en'] as const) {
     const heads = STATES.map((s) => TEXT[lang].states[s].head)
-    assert.equal(new Set(heads).size, heads.length, `заголовки повторяются (${lang})`)
+    assert.equal(new Set(heads).size, heads.length, `headings repeat (${lang})`)
   }
 })
 
-test('«не отвечает» честно называет, кто именно молчит', () => {
+test('"not responding" honestly names who exactly is silent', () => {
   for (const lang of ['ru', 'en'] as const) {
     const s = TEXT[lang].states.down
     const cls = s.lede({ ...FACT, reason: 'class' })
@@ -130,69 +136,69 @@ test('«не отвечает» честно называет, кто именн
     assert.notEqual(
       cls,
       relay,
-      `${lang}: поломка ретранслятора и молчание машины преподавателя описаны одной фразой — ` +
-        'а это разные новости и разные люди, к которым идти',
+      `${lang}: a relay failure and a silent teacher machine are described by one phrase — ` +
+        'yet these are different news and different people to go to',
     )
     assert.notEqual(s.foot({ ...FACT, reason: 'class' }), s.foot({ ...FACT, reason: 'relay' }))
   }
 })
 
-test('«такой комнаты нет» показывает адрес, по которому пришли', () => {
+test('"no such room" shows the address the request came to', () => {
   for (const lang of ['ru', 'en'] as const) {
     assert.match(
       TEXT[lang].states.missing.lede(FACT),
       /hse\.colloq\.ru/,
-      `${lang}: имя, которого нет, не названо — человеку нечего сверять с ссылкой`,
+      `${lang}: the missing name is not named: the person has nothing to check the link against`,
     )
   }
 })
 
-test('«что-то пошло не так» показывает код и номер записи в журнале', () => {
+test('"something went wrong" shows the code and the log entry number', () => {
   for (const lang of ['ru', 'en'] as const) {
     const line = TEXT[lang].fact({ ...FACT, code: 413, text: 'Payload Too Large', id: 'nqeb5jn18' })
-    assert.match(line, /413/, `${lang}: кода нет в строке — по чему искать в журнале?`)
-    assert.match(line, /nqeb5jn18/, `${lang}: номер запроса потерян`)
+    assert.match(line, /413/, `${lang}: the code is not in the line: what would the log be searched by?`)
+    assert.match(line, /nqeb5jn18/, `${lang}: the request number is lost`)
     const big = TEXT[lang].states.fault.lede({ ...FACT, code: 413 })
     const other = TEXT[lang].states.fault.lede({ ...FACT, code: 500 })
-    assert.notEqual(big, other, `${lang}: 413 объясняется тем же, чем 500`)
-    assert.match(other, /500/, `${lang}: код не назван в тексте`)
+    assert.notEqual(big, other, `${lang}: 413 is explained the same way as 500`)
+    assert.match(other, /500/, `${lang}: the code is not named in the text`)
   }
 })
 
-test('опрос комнаты идёт только там, где есть чему вернуться', () => {
+test('the room is polled only where there is something to come back to', () => {
   const body = /function polls\(\) \{([^}]*)\}/.exec(html)?.[1]
-  assert.ok(body, 'функции polls() на странице нет')
+  assert.ok(body, 'there is no polls() function on the page')
   const named = [...body.matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort()
   assert.deepEqual(
     named,
     ['down', 'waiting'],
-    'опрос ждёт не то: ждать имеет смысл только «ещё не открыта» и «не отвечает». ' +
-      '«Такой комнаты нет» возвращаться неоткуда, а поломке 413 нечего перечитывать — ' +
-      'дышащая точка и счётчик проверок обещали бы им то, чего не будет.',
+    'polling waits for the wrong thing: waiting makes sense only for "not open yet" and "not responding". ' +
+      '"No such room" has nowhere to come back from, and a 413 failure has nothing to reread — ' +
+      'a breathing dot and a check counter would promise them what will not happen.',
   )
-  // Точка дышит ровно в тех же состояниях — иначе страница обещает глазами то,
-  // чего не делает.
+  // The dot breathes in exactly the same states — otherwise the page promises
+  // with its looks what it does not do.
   assert.match(html, /\[data-state='missing'\] \.dot \{[^}]*animation: none/)
   assert.match(html, /\[data-state='fault'\] \.dot \{[^}]*animation: none/)
 })
 
-test('метка опроса в разметке и в скрипте — одна и та же', () => {
+test('the polling mark in the markup and in the script is one and the same', () => {
   const meta = /<meta name="colloq-page" content="([a-z]+)" \/>/.exec(html)?.[1]
   const mark = /const MARK = '([^']+)'/.exec(html)?.[1]
-  assert.ok(meta && mark, 'метки страницы или её поиска в скрипте нет')
+  assert.ok(meta && mark, 'the page mark or the search for it in the script is missing')
   assert.equal(
     mark,
     `name="colloq-page" content="${meta}"`,
-    'разметка и скрипт разошлись: опрос будет искать в ответе слово, которого там нет, — ' +
-      'и вкладка перезагрузится в ту же страницу навсегда либо не перезагрузится никогда',
+    'the markup and the script drifted apart: polling will look in the response for a word that is not there — ' +
+      'and the tab will reload into the same page forever or never reload at all',
   )
 })
 
-test('подстановок ровно три, и это подстановки caddy', () => {
-  // Скобки нарочно не те, что у шаблонов Go по умолчанию: пара фигурных
-  // встречается в JS и в тексте сама собой, и первая же попытка упала на
-  // комментарии, где такая пара стояла в объяснении. Пара с процентом не
-  // встречается ни в HTML, ни в CSS, ни в JS.
+test('there are exactly three placeholders, and they are caddy placeholders', () => {
+  // The delimiters are deliberately not the Go template defaults: a pair of curly
+  // braces turns up in JS and in text on its own, and the very first attempt failed
+  // on a comment where such a pair stood in an explanation. A pair with a percent
+  // sign occurs neither in HTML, nor in CSS, nor in JS.
   const open = (html.match(/<%/g) ?? []).length
   const found = [...html.matchAll(/<%([^%]*)%>/g)].map((m) => m[1].trim())
   assert.deepEqual(
@@ -202,37 +208,37 @@ test('подстановок ровно три, и это подстановки
       'placeholder "http.error.status_text"',
       'placeholder "http.error.id"',
     ],
-    'подстановки caddy разъехались с тем, что читает страница',
+    'the caddy placeholders drifted apart from what the page reads',
   )
   assert.equal(
     open,
     3,
-    'директива templates разбирает весь файл как шаблон Go: лишняя пара скобок ' +
-      'где угодно — хоть в комментарии — это ошибка разбора, а значит пустой ответ ' +
-      'вместо страницы ошибки. Белый экран ровно тогда, когда нужно объяснение.',
+    'the templates directive parses the whole file as a Go template: an extra pair of delimiters ' +
+      'anywhere — even in a comment — is a parse error, which means an empty response ' +
+      'instead of the error page. A white screen exactly when an explanation is needed.',
   )
 })
 
-test('разметка без JS говорит то же, что скрипт по-русски', () => {
+test('the markup without JS says the same as the script in Russian', () => {
   const flat = (s: string) => s.replace(/\s+/g, ' ').trim()
   const pick = (re: RegExp) => flat(re.exec(html)?.[1] ?? '')
   const waiting = TEXT.ru.states.waiting
-  assert.equal(pick(/<h1 id="head">([^<]*)<\/h1>/), waiting.head, 'заголовок в разметке отстал')
+  assert.equal(pick(/<h1 id="head">([^<]*)<\/h1>/), waiting.head, 'the heading in the markup fell behind')
   assert.equal(pick(/<p class="lede" id="lede">([^<]*)<\/p>/), flat(waiting.lede(FACT)))
   assert.equal(pick(/<span id="wait-text">([^<]*)<\/span>/), flat(waiting.wait(FACT)))
   assert.equal(pick(/<p class="note" id="foot">([^<]*)<\/p>/), flat(waiting.foot(FACT)))
-  assert.match(html, /<main id="page" data-state="waiting">/, 'разметка без JS не в том состоянии')
+  assert.match(html, /<main id="page" data-state="waiting">/, 'the markup without JS is in the wrong state')
 })
 
-test('страница открыта проверкам: игра и состояние', () => {
-  assert.match(html, /window\.capy = \{/, 'игра больше не доступна проверкам вживую')
-  assert.match(html, /window\.colloqPage = \{/, 'состояние страницы не видно проверкам')
+test('the page is open to checks: the game and the state', () => {
+  assert.match(html, /window\.capy = \{/, 'the game is no longer available to live checks')
+  assert.match(html, /window\.colloqPage = \{/, 'the page state is not visible to checks')
   for (const key of ['setState', 'setLang', 'get state()', 'get lang()', 'get polls()']) {
-    assert.ok(html.includes(key), `в window.colloqPage нет ${key}`)
+    assert.ok(html.includes(key), `window.colloqPage has no ${key}`)
   }
 })
 
-/* ------------------------------------------------------ страница на сервере */
+/* --------------------------------------------------- the page on the server */
 
 let service: ChildProcess | null = null
 let base = ''
@@ -262,11 +268,11 @@ async function up(): Promise<void> {
       const r = await fetch(`${base}/.relay/capy/scores`)
       if (r.ok) return
     } catch {
-      /* ещё не поднялся */
+      /* not up yet */
     }
     await new Promise((r) => setTimeout(r, 100))
   }
-  throw new Error('сервис капибары не поднялся')
+  throw new Error('the capybara service did not come up')
 }
 
 function down(): void {
@@ -276,38 +282,38 @@ function down(): void {
 
 const suite = test.suite ?? test.describe
 
-suite('страница ошибки на сервере', { skip: HAVE_PYTHON ? false : 'нет python3' }, () => {
+suite('the error page on the server', { skip: HAVE_PYTHON ? false : 'no python3' }, () => {
   test.before(up)
   test.after(down)
 
-  test('отдаётся целиком и тем же кодом, что у frps', async () => {
+  test('it is served whole and with the same code as frps', async () => {
     const r = await fetch(`${base}/`)
-    assert.equal(r.status, 404, 'страница ошибки ушла с кодом успеха — снаружи её примут за комнату')
+    assert.equal(r.status, 404, 'the error page went out with a success code: from outside it would pass for the room')
     const body = await r.text()
-    assert.equal(body, html, 'сервер отдал не тот файл, который лежит в репозитории')
+    assert.equal(body, html, 'the server served a different file than the one in the repository')
     assert.match(body, /<meta name="colloq-page" content="offline" \/>/)
   })
 
-  test('снаружи странице не нужно ничего', async () => {
+  test('the page needs nothing from outside', async () => {
     const body = await (await fetch(`${base}/`)).text()
-    // Ни шрифтов, ни картинок, ни библиотек: её открывают с телефона в
-    // аудитории, где может не грузиться вообще ничего.
-    assert.doesNotMatch(body, /https?:\/\//, 'в странице появился внешний адрес')
-    assert.doesNotMatch(body, /(?:src|href)="\/\//, 'в странице появился адрес без схемы')
+    // No fonts, no images, no libraries: it is opened from a phone in a classroom
+    // where nothing at all may load.
+    assert.doesNotMatch(body, /https?:\/\//, 'an external address appeared in the page')
+    assert.doesNotMatch(body, /(?:src|href)="\/\//, 'a scheme-less address appeared in the page')
     const asked = [...body.matchAll(/fetch\((['"])([^'"]+)\1/g)].map((m) => m[2])
     assert.deepEqual(
       asked.sort(),
       ['/.relay/capy/start', '/.relay/state'].sort(),
-      'страница просит не то и не там: всё, кроме своего адреса и путей /.relay/*, ' +
-        'в аудитории без интернета просто не приедет',
+      'the page asks for the wrong things in the wrong places: everything except its own address and ' +
+        'the /.relay/* paths simply will not arrive in a classroom without internet',
     )
   })
 
-  test('таблица рекордов у страницы своя и живая', async () => {
+  test('the page has its own live high-score table', async () => {
     const r = await fetch(`${base}/.relay/capy/scores`)
     assert.equal(r.status, 200)
     const board = (await r.json()) as { top: unknown[] }
-    assert.ok(Array.isArray(board.top), 'служба очков отвечает не таблицей')
-    assert.match(html, /const API = '\/\.relay\/capy\/scores'/, 'страница ходит за очками не туда')
+    assert.ok(Array.isArray(board.top), 'the score service does not answer with a table')
+    assert.match(html, /const API = '\/\.relay\/capy\/scores'/, 'the page fetches scores from the wrong place')
   })
 })

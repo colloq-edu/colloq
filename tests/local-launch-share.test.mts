@@ -1,11 +1,12 @@
 /**
- * `colloq start --share`: замок изоляции, блок ссылки, метка host.sh, флаги.
+ * `colloq start --share`: the isolation lock, the link block, the host.sh
+ * marker, the flags.
  *
- * Всё здесь — чистые функции супервизора (cli/src/launch-share.ts и
- * launch-config.ts), без процессов и без сети. Как они собраны вместе —
- * супервизор, host.sh, туннель, Ctrl+C — проверяет стенд в
- * tests/local-launch-process.test.mts, а сам host.sh со своей меткой и своим
- * замком — tests/local-host-lease.test.mts.
+ * Everything here is pure functions of the supervisor (cli/src/launch-share.ts
+ * and launch-config.ts), with no processes and no network. How they are put
+ * together — supervisor, host.sh, tunnel, Ctrl+C — is checked by the stand in
+ * tests/local-launch-process.test.mts, and host.sh itself with its own marker
+ * and its own lock by tests/local-host-lease.test.mts.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -23,7 +24,7 @@ import {
 } from '../cli/src/launch-share.js'
 import { parseLaunchArgs } from '../cli/src/launch-config.js'
 
-/* ------------------------------------------------------------ замок */
+/* ------------------------------------------------------------ lock */
 
 const ISOLATED = { ok: true, kernel: true, isolation: 'docker' }
 
@@ -33,7 +34,7 @@ test('gate: a local class with Docker and a confirming server may go online', ()
     publishRefusal({ env: { KERNEL_BACKEND: 'docker' }, dockerReachable: true, health: ISOLATED }),
     null,
   )
-  // Брокер — тоже изоляция: у каждой комнаты свой под (k3s).
+  // The broker is isolation too: each room has its own pod (k3s).
   assert.equal(
     publishRefusal({
       env: { KERNEL_BACKEND: 'broker' },
@@ -76,7 +77,7 @@ test('gate: the refusal says why it matters and where the class is now', () => {
   assert.doesNotMatch(refusalText('x'), /keeps running locally/)
 })
 
-/* ------------------------------------------------------------ метка */
+/* ------------------------------------------------------------ marker */
 
 test('marker: only the exact line from host.sh is taken', () => {
   assert.deepEqual(parseShareMarker('@colloq-share ok https://a-b-c.trycloudflare.com'), {
@@ -98,7 +99,7 @@ test('marker: only the exact line from host.sh is taken', () => {
     assert.equal(parseShareMarker(line), null, line)
 })
 
-/* ------------------------------------------------------------ блок */
+/* ------------------------------------------------------------ block */
 
 const BASE: ShareBlock = {
   url: 'https://orange-bird.trycloudflare.com',
@@ -124,7 +125,7 @@ test('block: the teacher link on the public address carries the token, like Jupy
   for (const out of [text({}), text({ classes: [{ id: 'a', name: 'A' }], total: 1 })]) {
     assert.match(out, /Your panel on this address \(the link signs you in — keep it to yourself\):/)
     assert.match(out, /^ {2}│ {3}https:\/\/orange-bird\.trycloudflare\.com\/admin\/t\/Tok_en-1$/m)
-    // Ссылка входа — одна, и она выше ссылок для студентов.
+    // There is one sign-in link, and it is above the links for students.
     assert.equal(out.match(/\/admin\/t\//g)?.length, 2, 'the link and the warning that names /admin/t/…')
   }
   const one = text({ classes: [{ id: 'k3mnp7qr', name: 'L' }], total: 1 })
@@ -149,7 +150,7 @@ test('block: several classes — newest first, the rest counted, names made safe
   })
   assert.match(out, /the link of the class you teach \(newest first\)/)
   assert.match(out, /… and 2 more: the panel lists every class/)
-  // ESC из имени не доходит до терминала, длинное имя обрезано.
+  // An ESC from the name does not reach the terminal, a long name is cut.
   assert.doesNotMatch(out, /\u001b/)
   assert.match(out, /Week 3 \[2J wiped/)
   assert.match(out, /x{47}…/)
@@ -176,7 +177,7 @@ test('block: an unverified check, a detached run and a relay each change their l
   assert.match(text({ relayDomain: 'colloq.ru' }), /colloq start --host <name>\.colloq\.ru$/m)
 })
 
-/* ------------------------------------------------------------ база */
+/* ------------------------------------------------------------ database */
 
 test('classes come from the database: newest first, archived ones left out', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-share-db-'))
@@ -219,7 +220,7 @@ test('no database or a foreign one reads as "no class yet", never as a failure',
   }
 })
 
-/* ------------------------------------------------------------ флаги */
+/* ------------------------------------------------------------ flags */
 
 test('flags: --share is a flag of run and dev, never together with --host', () => {
   assert.equal(parseLaunchArgs(['run', '--share']).share, true)
@@ -234,6 +235,6 @@ test('flags: --share is a flag of run and dev, never together with --host', () =
     () => parseLaunchArgs(['run', '--host', 'class.example.ru', '--share']),
     /do not work together/,
   )
-  // Служебное слово для host.sh: найти или скачать cloudflared.
+  // A service word for host.sh: find or download cloudflared.
   assert.equal(parseLaunchArgs(['cloudflared']).action, 'cloudflared')
 })

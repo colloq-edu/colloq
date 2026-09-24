@@ -1,34 +1,38 @@
 /**
- * Метка, с которой стучатся в комнату, — и МОМЕНТ, в который её выбирают.
+ * The mark you knock on the room's door with — and the MOMENT it is chosen.
  *
- * Экран входа обещает: «Picked from the ones nobody in this room has taken».
- * Обещание выполнялось ровно один раз — при монтировании, — а класс открывает
- * ссылку в одну минуту: у всех тридцати ростер пустой, все выбирают из полного
- * списка независимо, и одинаковые метки получаются не по невезению, а по
- * построению. С сорока метками на тридцать человек ожидание — около одиннадцати
- * пар с одним и тем же зверем, то есть с одним и тем же курсором в тетради.
+ * The join screen promises: "Picked from the ones nobody in this room has
+ * taken". The promise was kept exactly once — on mount — while a class opens
+ * the link within the same minute: all thirty have an empty roster, all pick
+ * from the full list independently, and identical marks come not from bad
+ * luck but by construction. With forty marks for thirty people the
+ * expectation is about eleven pairs with the same animal, that is, with the
+ * same cursor in the notebook.
  *
- * Здесь — то, что от этого лечится на клиенте: ростер перечитывается ПЕРЕД
- * входом и при открытии подборщика, и метка пересчитывается по нему. Гонку это
- * сужает до круга сети (две вкладки, стучащиеся в одну и ту же секунду), а не
- * закрывает: единственный судья уникальности — сервер, и он же говорит
- * последнее слово (routes/sessions.ts · `markToHand`). Правило ниже — то, с
- * чем к нему приходят: выданную нами метку он волен подменить, а про
- * выбранную руками узнаёт по полю `picked` в теле /join и не трогает её.
+ * Here is the part of this that can be cured on the client: the roster is
+ * re-read BEFORE joining and when the picker opens, and the mark is
+ * recomputed from it. That narrows the race to a network round trip (two
+ * tabs knocking in the same second) but does not close it: the only judge of
+ * uniqueness is the server, and it has the last word too (routes/sessions.ts
+ * · `markToHand`). The rule below is what the client comes to it with: a
+ * mark we handed out it is free to replace, while a hand-picked one it
+ * learns about from the `picked` field in the /join body and leaves alone.
  *
- * Функции чистые и живут отдельно от формы: обе ломаются молча — выбранная
- * руками метка, отменённая обновлением ростера, читается как «экран сам
- * передумал», а не пересчитанная — как невезение.
+ * The functions are pure and live apart from the form: both break silently —
+ * a hand-picked mark cancelled by a roster update reads as "the screen
+ * changed its mind by itself", and one that was not recomputed reads as bad
+ * luck.
  */
 import type { Participant } from '@shared/protocol'
 import { freeMark } from '../../lib/marks'
 
 /**
- * Метка → цвет того, кто её сейчас носит.
+ * Mark → the colour of whoever wears it now.
  *
- * Только те, кто В КОМНАТЕ: таблица участников помнит всех, кто когда-либо
- * входил, и метка человека, ушедшего неделю назад, никому не мешает. `exceptId`
- * — своё же прошлое место: вход по нему и есть то, чем оно занято.
+ * Only those IN THE ROOM: the participants table remembers everyone who ever
+ * joined, and the mark of someone who left a week ago is in nobody's way.
+ * `exceptId` is one's own previous seat: joining through it is the very thing
+ * it is taken by.
  */
 export function takenMarks(
   roster: readonly Participant[],
@@ -44,15 +48,17 @@ export function takenMarks(
 }
 
 /**
- * С какой меткой стучаться, зная, кто в комнате прямо сейчас.
+ * Which mark to knock with, knowing who is in the room right now.
  *
- * Выбранную руками не трогаем никогда: человек ткнул в конкретного зверя, и
- * подменить его молча — худшее из двух зол (в комнате будут два ежа, зато
- * никто не решит, что экран его не послушал). Выданную самими — пересчитываем.
+ * A hand-picked mark is never touched: the person tapped a particular animal,
+ * and swapping it silently is the worse of two evils (the room will have two
+ * hedgehogs, but nobody will conclude the screen did not listen to them). One
+ * we handed out ourselves is recomputed.
  *
- * `pickedByHand` едет и на сервер (`picked` в /join): без него подмену делали
- * бы обоим, и ткнувший в ежа входил бы выдрой — а сказать ему об этом уже
- * негде, карточка входа к тому времени уехала.
+ * `pickedByHand` goes to the server too (`picked` in /join): without it both
+ * kinds would be swapped, and someone who tapped the hedgehog would join as
+ * an otter — with nowhere left to tell them, since the join card is gone by
+ * then.
  */
 export function markToClaim(
   chosen: string,

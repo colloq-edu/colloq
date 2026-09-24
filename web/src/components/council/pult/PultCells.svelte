@@ -4,28 +4,31 @@
   import { cellNotes, cellTaskTitle, type PultCellRow } from '@/lib/council-pult'
 
   /**
-   * Номер ячейки в шапке — и список всех ячеек консилиума за ним.
+   * The cell number in the header — and the list of all council cells behind
+   * it.
    *
-   * Пульт один на комнату (одно имя окна, council-pult-window.ts), а
-   * консилиумов в тетради идёт несколько, и до 20.09 переход между ними был
-   * возвращением в тетрадь, прокруткой до другой ячейки и нажатием «Пульт ↗».
-   * «Будет круто иметь один общий пульт, в котором можно перемещаться между
-   * ячейками: пусть „ячейка 60“ вверху слева станет выпадающим списком.»
+   * There is one console per room (one window name, council-pult-window.ts),
+   * while a notebook runs several councils, and until 20 Sep 2026 moving
+   * between them meant going back to the notebook, scrolling to another cell
+   * and pressing "Console ↗". "It would be great to have one shared console
+   * where you can move between cells: let "cell 60" at the top left become a
+   * dropdown."
    *
-   * Список — своё меню, не `<select>`: в строке стоит не одно слово, а четыре
-   * факта («сдали 12 из 25», «идёт запуск», «на экране», «просмотр»), и
-   * выбирают по ним, а не по номеру. Манера — та же, что у меню доступа на
-   * вкладке тетради (reader/TabStrip.svelte) и у меню бана: `position: fixed` от
-   * кнопки, потому что шапка пульта сжата до 56 px и обрезает всё, что из неё
-   * выпадает; Escape и щелчок мимо закрывают, фокус возвращается на кнопку.
+   * The list is a menu of its own, not a `<select>`: a row holds not one word
+   * but four facts ("12 of 25 submitted", "running", "on screen", "review
+   * only"), and people choose by them, not by the number. The manner is the
+   * same as the access menu on the notebook tab (reader/TabStrip.svelte) and
+   * the ban menu: `position: fixed` from the button, because the console
+   * header is squeezed to 56 px and clips everything that falls out of it;
+   * Escape and a click outside close it, and focus returns to the button.
    *
-   * Одна ячейка — кнопки нет вовсе: меню из одной строки не выбор, а лишняя
-   * дверь в шапке, где счёт идёт на пиксели.
+   * With one cell there is no button at all: a one-row menu is not a choice
+   * but an extra door in a header where every pixel counts.
    */
 
   interface Props {
     cells: readonly PultCellRow[]
-    /** Ячейка, на которой пульт стоит сейчас. */
+    /** The cell the console is on right now. */
     current: string
     onpick: (cellId: string) => void
   }
@@ -35,27 +38,30 @@
   const here = $derived(cells.find((cell) => cell.cellId === current) ?? null)
   const many = $derived(cells.length > 1)
   /**
-   * Что стоит в строке и на кнопке: НАЗВАНИЕ задания, а не только номер.
+   * What stands in the row and on the button: the task's NAME, not only the
+   * number.
    *
-   * «Ячейка 60» и «ячейка 65» в меню неразличимы: номер — это место в файле, а
-   * выбирают между ячейками по заданию. Правило названия целиком лежит в
-   * council-pult.ts (`cellHeadline` / `markdownHeadline`) и проверяется без
-   * браузера; сюда приезжает готовая строка, и «ячейка NN» остаётся честным
-   * запасным словом, когда выводить название не из чего.
+   * "Cell 60" and "cell 65" are indistinguishable in a menu: the number is a
+   * place in the file, while people choose between cells by task. The naming
+   * rule lives entirely in council-pult.ts (`cellHeadline` /
+   * `markdownHeadline`) and is checked without a browser; a ready string
+   * arrives here, and "cell NN" remains an honest fallback word when there
+   * is nothing to derive a name from.
    */
   const nameOf = (cell: PultCellRow | null): string =>
     cell === null ? tr('room.ui.34') : cellTaskTitle(cell)
-  /** Номер отдельной меткой: он всё ещё нужен, чтобы найти ячейку в тетради. */
+  /** The number as a separate label: still needed to find the cell in the notebook. */
   const numberOf = (cell: PultCellRow | null): string =>
     cell?.index != null ? String(cell.index).padStart(2, '0') : '—'
   /**
-   * Тетради в списке: одна — называем её один раз в шапке, несколько — в
-   * каждой строке.
+   * Notebooks in the list: with one, we name it once in the header; with
+   * several, in every row.
    *
-   * Номер ячейки уникален только внутри тетради, и «09» в семинаре и «09» в
-   * лекции — разные ячейки с одинаковой подписью. Пока тетрадь одна, имя в
-   * каждой строке было бы шумом; как только их две, молчание становится
-   * ложью — по номеру уже не понять, куда идёшь.
+   * A cell number is unique only within a notebook, and "09" in the seminar
+   * and "09" in the lecture are different cells with the same caption. While
+   * there is one notebook, its name in every row would be noise; as soon as
+   * there are two, silence becomes a lie — the number no longer tells where
+   * you are going.
    */
   const books = $derived([...new Set(cells.map((cell) => cell.book).filter(Boolean))])
   const book = $derived(books.length === 1 ? books[0] : '')
@@ -66,11 +72,12 @@
   let sheet = $state<HTMLElement | null>(null)
   let at = $state<{ x: number; y: number } | null>(null)
 
-  /* 380 — ширина, на которой в строку встают название, строка внимания и
-     «13 из 24» с полоской; в 900-пиксельном окне она зажимается по месту. */
+  /* 380 is the width at which the name, the attention line and "13 of 24"
+     with its bar fit in a row; in a 900-pixel window it is squeezed to fit. */
   const WIDTH = 380
-  /* Измеренная, а не вычисленная: нужна ровно затем, чтобы меню не ушло под
-     нижнюю кромку окна 900×650, и ошибка в большую сторону безобидна. */
+  /* Measured, not computed: it is needed exactly so that the menu does not
+     go under the bottom edge of a 900×650 window, and erring on the large
+     side is harmless. */
   const MAX_HEIGHT = 320
 
   function toggle(): void {
@@ -85,8 +92,8 @@
       y: Math.max(8, Math.min(box.bottom + 2, window.innerHeight - MAX_HEIGHT - 8)),
     }
     open = true
-    // Клавиатура забирается сразу, и первой берётся строка, на которой стоим:
-    // список открывают, чтобы уйти с неё, и видеть её положение обязательно.
+    // The keyboard is taken at once, and the current row comes first: the
+    // list is opened to leave it, and its position has to be visible.
     void tick().then(() =>
       (sheet?.querySelector<HTMLButtonElement>('[aria-checked="true"]') ??
         sheet?.querySelector<HTMLButtonElement>('button'))?.focus(),
@@ -114,7 +121,8 @@
     }
     const escape = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
-      // Не доходит до окна: иначе Esc закрыл бы заодно поиск в списке работ.
+      // Does not reach the window: otherwise Esc would also close the search
+      // in the work list.
       event.stopPropagation()
       close()
     }
@@ -126,7 +134,7 @@
     }
   })
 
-  /* Ячейку убрали из комнаты, пока меню открыто, — закрывать нечего. */
+  /* The cell was taken out of the room while the menu was open — nothing is left to pick. */
   $effect(() => {
     if (open && cells.length === 0) close(false)
   })
@@ -157,8 +165,9 @@
     aria-label={tr('room.pult.v3.cells.title')}
     style={`left:${at.x}px; top:${at.y}px; width:${WIDTH}px; max-width:calc(100vw - 16px)`}
   >
-    <!-- Шапка меню: где мы и сколько тут ячеек. Имя тетради стоит здесь, пока
-         она одна на весь список; с двумя тетрадями оно уезжает в строки. -->
+    <!-- The menu header: where we are and how many cells there are. The
+         notebook's name stands here while there is one for the whole list;
+         with two notebooks it moves into the rows. -->
     <div class="pult-cells-head">
       <span class="pult-cells-where">{#if book}{book} · {/if}{tr('room.pult.v3.cells.headCount', { count: cells.length })}</span>
       <span class="pult-cells-where">{tr('room.pult.v3.cells.headSubmitted')}</span>
@@ -180,8 +189,9 @@
           {#if manyBooks && cell.book}
             <span class="pult-cells-book">{cell.book}</span>
           {/if}
-          <!-- Строка внимания: не «сколько там всего», а «за чем туда идти».
-               Состав и порядок — cellNotes (council-pult.ts), одно место. -->
+          <!-- The attention line: not "how much is there" but "what to go
+               there for". Content and order come from cellNotes
+               (council-pult.ts), in one place. -->
           <span class="pult-cells-notes">
             {#each cellNotes(cell) as note, index (note.text)}
               {#if index > 0}<span class="pult-cells-dot" aria-hidden="true">·</span>{/if}
@@ -195,8 +205,9 @@
         </span>
         <span class="pult-cells-tail">
           <span class="pult-cells-counts">{tr('room.pult.v3.cells.submitted', { submitted: cell.submitted, total: cell.total })}</span>
-          <!-- Доля сдавших полоской: три пикселя высоты отвечают на «далеко ли
-               им ещё» быстрее, чем два числа, которые надо поделить в уме. -->
+          <!-- The share who submitted as a bar: three pixels of height answer
+               "how far do they still have to go" faster than two numbers
+               that have to be divided in your head. -->
           <span class="pult-cells-bar" aria-hidden="true">
             <span class="pult-cells-bar-fill" data-tone={cell.review ? 'done' : cell.submitted >= cell.total ? 'full' : 'part'}
               style={`width:${cell.total > 0 ? Math.round((Math.min(cell.submitted, cell.total) / cell.total) * 100) : 0}%`}></span>
@@ -209,20 +220,22 @@
 
 <style>
   /*
-   * Кнопка выбора — коробка с номером и названием, а не подчёркнутое слово.
+   * The picker button is a box with a number and a name, not an underlined
+   * word.
    *
-   * Слово «ячейка 03» под пунктиром было дверью в список, но самим названием
-   * задания не было: на него смотрят весь семинар, и оно заслуживает рамки, а
-   * не служебного пунктира. Номер остаётся меткой слева — по нему ячейку ищут
-   * в тетради.
+   * The dotted-underlined word "cell 03" was a door into the list, but it
+   * was not the task's name: people look at it for the whole seminar, and it
+   * deserves a frame, not a utility dotted line. The number stays a label on
+   * the left — it is how the cell is found in the notebook.
    */
   /*
-   * Кнопка не сжимается в ничто.
+   * The button does not shrink into nothing.
    *
-   * `min-width` здесь несущий: без него в шапке 1120 px предложение регламента
-   * съедало всю свободную ширину, кнопка схлопывалась в 40 px, и от «60 Задача
-   * 1» оставалось «60» с наползающей сверху подписью. Название задания — то,
-   * ради чего кнопку и завели; место ей уступает предложение (PultHeader).
+   * The `min-width` here is load-bearing: without it, in a 1120 px header
+   * the rules sentence ate all the free width, the button collapsed to 40
+   * px, and of "60 Task 1" only "60" remained, with the caption creeping over
+   * it from above. The task's name is what the button was made for; it is
+   * the sentence that gives way (PultHeader).
    */
   .pult-cell-open, .pult-cell-plain {
     flex: 0 1 auto; min-width: 140px; max-width: 300px; overflow: hidden;
@@ -233,8 +246,8 @@
   .pult-cell-open { cursor: pointer; }
   .pult-cell-open:hover { border-color: rgb(var(--primary)); background: rgb(var(--raised)); }
   .pult-cell-open[aria-expanded='true'] { border-color: rgb(var(--primary)); background: rgb(var(--raised)); }
-  /* Одна ячейка — та же коробка без двери: дверь в меню из одной строки это
-     лишнее нажатие в шапке, где счёт идёт на пиксели. */
+  /* One cell — the same box without a door: a door into a one-row menu is an
+     extra press in a header where every pixel counts. */
   .pult-cell-plain { border-style: dashed; border-color: rgb(var(--line) / .7); }
   .pult-cell-no { flex-shrink: 0; padding: 0 4px; background: rgb(var(--raised)); color: rgb(var(--primary)); font-family: var(--font-mono); font-size: 12px; line-height: 16px; font-weight: 700; }
   .pult-cell-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--ink)); font-size: 14px; line-height: 18px; font-weight: 600; }
@@ -263,7 +276,7 @@
   }
   .pult-cells-row:last-child { border-bottom: 0; }
   .pult-cells-row:hover { background: rgb(var(--surface)); }
-  /* Текущая — левым рельсом и тоном: её ищут глазами первой, чтобы уйти с неё. */
+  /* Current row: left rail and tone — the eye seeks it first, in order to leave it. */
   .pult-cells-row.selected { border-left-color: rgb(var(--primary)); background: rgb(var(--raised)); }
   .pult-cells-row.closed { color: rgb(var(--faint)); }
   .pult-cells-row:focus-visible { outline: 2px solid rgb(var(--accent-text)); outline-offset: -2px; }
@@ -273,8 +286,8 @@
   .pult-cells-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--ink)); font-size: 14px; line-height: 19px; font-weight: 600; }
   .pult-cells-row.selected .pult-cells-name { font-weight: 700; }
   .pult-cells-row.closed .pult-cells-name { color: rgb(var(--muted)); font-weight: 400; }
-  /* Тетрадь — тише названия задания и выше строки внимания: это адрес, а не
-     то, ради чего в ячейку идут. */
+  /* The notebook is quieter than the task name and above the attention line:
+     it is an address, not what people go into the cell for. */
   .pult-cells-book { font-size: 12px; line-height: 16px; color: rgb(var(--faint)); }
   .pult-cells-notes { display: flex; align-items: center; flex-wrap: nowrap; gap: 5px; min-width: 0; overflow: hidden; }
   .pult-cells-note { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--muted)); font-size: 12px; line-height: 16px; }
@@ -290,10 +303,11 @@
   .pult-cells-bar-fill[data-tone='full'] { background: rgb(var(--positive)); }
   .pult-cells-bar-fill[data-tone='done'] { background: rgb(var(--faint) / .6); }
   @media (max-width: 650px) {
-    /* Палец: строка меню не опускается ниже собственной цели нажатия. */
+    /* A finger: a menu row does not get smaller than its own touch target. */
     .pult-cells-row { padding: 11px 12px 11px 9px; }
-    /* На 390 px кнопка берёт всю оставшуюся ширину и обрезает название
-       многоточием: держать 140 px нечем — рядом стоят ещё три цели. */
+    /* At 390 px the button takes all the remaining width and cuts the name
+       with an ellipsis: there is no room to hold 140 px — three more targets
+       stand next to it. */
     .pult-cell-open, .pult-cell-plain { flex: 1 1 auto; min-width: 0; max-width: none; height: 34px; }
     .pult-cell-title { font-size: 15px; }
   }

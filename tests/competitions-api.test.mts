@@ -1,17 +1,18 @@
 /**
- * Двери панели к соревнованиям: право, отказы и то, что наружу не уезжает.
+ * The panel's doors to competitions: rights, refusals and what does not get
+ * out.
  *
- * Проверяется то, что ломается тихо и дорого. Открытое соревнование, у
- * которого базовое решение не проходит, — это сто человек, ищущих ошибку у
- * себя. Адрес, занятый вторым соревнованием, — это розданная классу ссылка,
- * ведущая не туда. Файл ответов, уехавший наружу хоть одной дверью, — это
- * конец соревнования, причём незаметный: лидерборд после такого выглядит
- * ровно так же.
+ * What is checked is what breaks quietly and expensively. An open competition
+ * whose baseline does not pass means a hundred people looking for the bug in
+ * their own code. An address taken by a second competition means a link
+ * handed out to the class that leads to the wrong place. An answer file that
+ * got out through even one door means the end of the competition, and an
+ * unnoticed one: the leaderboard looks exactly the same afterwards.
  *
- * Отдельно и подробно — чистые решения панели (`competitions/panel.ts`) и
- * разбор того, что кладут в форму (`competitions/intake.ts`): у них есть
- * правильный ответ, и проверять его через HTTP значит проверять заодно
- * печенье, маршрутизацию и JSON.
+ * Separately and in detail: the panel's pure decisions
+ * (`competitions/panel.ts`) and the parsing of what goes into the form
+ * (`competitions/intake.ts`): they have a right answer, and checking it over
+ * HTTP would mean checking the cookie, routing and JSON along with it.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -58,7 +59,7 @@ import {
 import { baseName, columnsLine, csvShape, notebookCells } from '../server/src/competitions/intake.js'
 import type { CompetitionView } from '../shared/competitions-api.js'
 
-/* --------------------------------------------------- чистые решения панели */
+/* ---------------------------------------------- the panel's pure decisions */
 
 const READY: Readiness = {
   openFiles: 3,
@@ -70,23 +71,24 @@ const READY: Readiness = {
   deadlineAt: Date.UTC(2026, 8, 27, 20, 59),
 }
 
-test('открывать нечего, пока чего-то не хватает, и отказ называет что', () => {
+test('there is nothing to open while something is missing, and the refusal names what', () => {
   assert.equal(openRefusal(READY), null)
   assert.equal(openRefusal({ ...READY, openFiles: 0 }), 'noData')
   assert.equal(openRefusal({ ...READY, hiddenFiles: 0 }), 'noSolution')
   assert.equal(openRefusal({ ...READY, metricCode: '   \n' }), 'noMetric')
   assert.equal(openRefusal({ ...READY, baseline: false }), 'noBaseline')
-  // Загружена — не значит проверена: ровно эта разница и держит дверь.
+  // Uploaded does not mean checked: exactly this difference holds the door.
   assert.equal(openRefusal({ ...READY, baselineState: null }), 'baselineNotChecked')
   assert.equal(openRefusal({ ...READY, baselineState: 'notebookFailed' }), 'baselineNotChecked')
   assert.equal(openRefusal({ ...READY, deadlineAt: null }), 'noDeadline')
-  // Открывать приватный лидерборд рукой — это и есть согласие жить без даты.
+  // Opening the private leaderboard by hand is exactly the consent to live
+  // without a date.
   assert.equal(openRefusal({ ...READY, deadlineAt: null, privateRelease: 'manual' }), null)
 })
 
-test('порядок отказов — порядок секций формы, сверху вниз', () => {
-  // Нет вообще ничего: человек должен услышать про первую секцию, а не про
-  // последнюю, иначе он чинит форму снизу вверх.
+test('the order of refusals is the order of the form sections, top to bottom', () => {
+  // Nothing at all: the person must hear about the first section, not the last
+  // one, otherwise they fix the form bottom up.
   assert.equal(
     openRefusal({
       openFiles: 0,
@@ -101,9 +103,10 @@ test('порядок отказов — порядок секций формы, 
   )
 })
 
-test('пересчитать можно то, что оставило ответ', () => {
+test('what left an answer can be rescored', () => {
   assert.equal(rescorable('scored'), true)
-  // Отвергнутый метрикой ответ после правки кода может оказаться принятым.
+  // An answer rejected by the metric may turn out accepted after the code is
+  // fixed.
   assert.equal(rescorable('rejected'), true)
   assert.equal(rescorable('metricFailed'), true)
   for (const state of ['queued', 'running', 'notebookFailed', 'timedOut', 'outOfMemory', 'cancelled'] as const) {
@@ -111,14 +114,15 @@ test('пересчитать можно то, что оставило ответ
   }
 })
 
-test('оценка ожидания считается по местам, а не умножением номера', () => {
-  // Без среднего оценивать нечем — и «≈ 0 мин» было бы обещанием.
+test('the wait estimate is computed per slot, not by multiplying the number', () => {
+  // Without an average there is nothing to estimate with — and "≈ 0 min" would
+  // be a promise.
   assert.deepEqual(waitEtas(2, { runningLeftMs: [], averageMs: null, slots: 1 }), [null, null])
   assert.deepEqual(
     waitEtas(3, { runningLeftMs: [60_000], averageMs: 120_000, slots: 1 }),
     [60_000, 180_000, 300_000],
   )
-  // Два места — пятый ждёт вдвое меньше, чем при одном.
+  // Two slots: the fifth waits half as long as with one.
   assert.deepEqual(
     waitEtas(4, { runningLeftMs: [0, 0], averageMs: 100, slots: 2 }),
     [0, 0, 100, 100],
@@ -126,16 +130,16 @@ test('оценка ожидания считается по местам, а н�
   assert.deepEqual(waitEtas(0, { runningLeftMs: [], averageMs: 100, slots: 1 }), [])
 })
 
-test('«сегодня исполнено» считает только законченное и только за сутки', () => {
+test('"executed today" counts only finished ones, and only for the day', () => {
   const now = Date.UTC(2026, 8, 20, 18)
   const since = Date.UTC(2026, 8, 20, 0)
   const stats = executedToday(
     [
       { acceptedAt: since + 1000, state: 'scored', durationMs: 120_000 },
       { acceptedAt: since + 2000, state: 'notebookFailed', durationMs: 60_000 },
-      // Ещё идёт — не «исполнено».
+      // Still running is not "executed".
       { acceptedAt: since + 3000, state: 'running', durationMs: null },
-      // Вчерашняя.
+      // Yesterday's.
       { acceptedAt: since - 60_000, state: 'scored', durationMs: 999_000 },
     ],
     since,
@@ -146,14 +150,14 @@ test('«сегодня исполнено» считает только зако
   assert.equal(executedToday([], since, now).averageMs, null)
 })
 
-test('медиана — то, что показывают в сводке', () => {
+test('the median is what the summary shows', () => {
   assert.equal(medianOf([]), null)
   assert.equal(medianOf([5]), 5)
   assert.equal(medianOf([3, 1, 2]), 2)
   assert.equal(medianOf([1, 2, 3, 4]), 3)
 })
 
-test('сводка не считает базовое решение ни посылкой, ни участником', () => {
+test('the summary counts the baseline neither as a submission nor as an entrant', () => {
   const counts = {
     submissions: 143,
     scored: 101,
@@ -174,39 +178,41 @@ test('сводка не считает базовое решение ни пос
   assert.equal(trimmed.submissions, 141)
   assert.equal(trimmed.scored, 100)
   assert.equal(trimmed.notebookFailed, 26)
-  // Один служебный участник, сколько бы заходов у него ни было.
+  // One service entrant, however many attempts it had.
   assert.equal(trimmed.entrants, 28)
-  // Лучший публичный — класса, а не бейзлайна: в макете это две разные строки.
+  // The best public score is the class's, not the baseline's: in the mockup
+  // these are two different lines.
   assert.equal(trimmed.bestPublic, 0.0412)
 })
 
-test('очередь честная: у кого уже что-то идёт, тот пропускает вперёд', () => {
+test('the queue is fair: whoever already has something running lets others go ahead', () => {
   const rows = [
     { submissionId: 'b', entrantId: 'anna', turn: 1, enqueuedAt: 200 },
     { submissionId: 'a', entrantId: 'timur', turn: 2, enqueuedAt: 100 },
     { submissionId: 'c', entrantId: 'lev', turn: 1, enqueuedAt: 300 },
   ]
-  // Никто не занят: сперва первые заходы по времени, потом второй заход.
+  // Nobody is busy: first attempts in time order first, then the second
+  // attempt.
   assert.deepEqual(
     fairOrder(rows, new Set()).map((row) => row.submissionId),
     ['b', 'c', 'a'],
   )
-  // У Анны уже что-то исполняется — её посылка уходит в хвост.
+  // Anna already has something running, so her submission goes to the back.
   assert.deepEqual(
     fairOrder(rows, new Set(['anna'])).map((row) => row.submissionId),
     ['c', 'a', 'b'],
   )
 })
 
-/* ------------------------------------------------------------ разбор формы */
+/* ------------------------------------------------------------ form parsing */
 
-test('форма принимает свой кусок и не трогает остального', () => {
+test('the form takes its own piece and leaves the rest alone', () => {
   const parsed = parseCompetitionInput({ blurb: '  одна строка  ', description: 'хвост \n' })
   assert.ok('input' in parsed)
   assert.deepEqual(parsed.input, { blurb: 'одна строка', description: 'хвост \n' })
 })
 
-test('адрес соревнования проверяется буквами и списком занятых', () => {
+test('a competition address is checked by its letters and against the taken ones', () => {
   for (const [slug, why] of [
     ['', 'empty'],
     ['Rohlik!', 'chars'],
@@ -221,7 +227,7 @@ test('адрес соревнования проверяется буквами 
   assert.equal(ok.input.slug, 'rohlik')
 })
 
-test('числа формы сторожит сервер, а не экран', () => {
+test("the form's numbers are guarded by the server, not by the screen", () => {
   const low = parseCompetitionInput({ publicPercent: 0 })
   assert.ok('refusal' in low)
   assert.deepEqual(low.refusal, {
@@ -238,7 +244,7 @@ test('числа формы сторожит сервер, а не экран', 
   assert.deepEqual(good.input, { publicPercent: 30, limits: { perDay: 5 } })
 })
 
-test('перечисления и даты: чужое значение не доезжает до базы', () => {
+test('enums and dates: a foreign value does not reach the database', () => {
   const direction = parseCompetitionInput({ metric: { direction: 'sideways' } })
   assert.ok('refusal' in direction)
   assert.equal((direction.refusal as { field: string }).field, 'metric.direction')
@@ -251,18 +257,19 @@ test('перечисления и даты: чужое значение не д�
   assert.ok('refusal' in broken)
 })
 
-/* ----------------------------------------------------------- разбор файлов */
+/* ------------------------------------------------------------ file parsing */
 
-test('строки CSV считаются так же, как их прочтёт pandas', () => {
+test('CSV rows are counted the way pandas will read them', () => {
   const plain = csvShape(Buffer.from('id,orders\n1,5\n2,7\n'))
   assert.deepEqual(plain, { rows: 2, columns: ['id', 'orders'] })
-  // Без перевода строки в конце — последняя строка всё равно строка.
+  // Without a trailing newline the last line is still a line.
   assert.equal(csvShape(Buffer.from('id,orders\n1,5'))?.rows, 1)
   assert.equal(csvShape(Buffer.from('id,orders\r\n1,5\r\n'))?.rows, 1)
   assert.deepEqual(csvShape(Buffer.from('id,orders\r\n1,5\r\n'))?.columns, ['id', 'orders'])
-  // Пустые строки не строки: иначе доля публичной части считается не от того.
+  // Blank lines are not rows: otherwise the public share is computed from the
+  // wrong number.
   assert.equal(csvShape(Buffer.from('id,orders\n1,5\n\n\n'))?.rows, 1)
-  // Перевод строки внутри кавычек — часть значения, а не новая строка.
+  // A newline inside quotes is part of the value, not a new row.
   assert.equal(csvShape(Buffer.from('id,note\n1,"первая\nвторая"\n2,x\n'))?.rows, 2)
   assert.deepEqual(csvShape(Buffer.from('"id","order, count"\n1,5\n'))?.columns, [
     'id',
@@ -273,20 +280,20 @@ test('строки CSV считаются так же, как их прочтё�
   assert.equal(columnsLine(['id', 'orders']), 'id, orders')
 })
 
-test('тетрадь узнаётся по ячейкам, а не по расширению', () => {
+test('a notebook is recognized by its cells, not by its extension', () => {
   assert.equal(notebookCells(Buffer.from(JSON.stringify({ cells: [{}, {}] }))), 2)
   assert.equal(notebookCells(Buffer.from(JSON.stringify({ cells: [] }))), 0)
   assert.equal(notebookCells(Buffer.from('{"nbformat": 4}')), null)
   assert.equal(notebookCells(Buffer.from('не json')), null)
 })
 
-test('имя файла — без пути, каким бы его ни прислал браузер', () => {
+test('a file name comes without a path, however the browser sends it', () => {
   assert.equal(baseName('C:\\Users\\anna\\train.csv'), 'train.csv')
   assert.equal(baseName('data/train.csv'), 'train.csv')
   assert.equal(baseName('  train.csv '), 'train.csv')
 })
 
-/* ------------------------------------------------------------------ двери */
+/* ------------------------------------------------------------------ doors */
 
 let base = ''
 let server: http.Server
@@ -309,8 +316,8 @@ let owner = ''
 let teacher = ''
 
 before(async () => {
-  // Монтируется приложение целиком — вместе с проверкой происхождения и
-  // печеньем: копия порядка middleware расхождений не ловит, она их повторяет.
+  // The whole app is mounted — with the origin check and the cookie: a copy of
+  // the middleware order does not catch divergences, it repeats them.
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
@@ -349,7 +356,7 @@ function upload(
 const bytes = (text: string) => new TextEncoder().encode(text)
 const NOTEBOOK = JSON.stringify({ nbformat: 4, cells: [{ cell_type: 'code', source: 'pass' }] })
 
-test('без печенья панель не отвечает ничем', async () => {
+test('without a cookie the panel answers nothing', async () => {
   for (const [method, path] of [
     ['GET', '/api/admin/competitions'],
     ['GET', '/api/admin/competitions/queue'],
@@ -362,7 +369,7 @@ test('без печенья панель не отвечает ничем', asyn
   }
 })
 
-test('панель считает реальные строки Usage, а не процент от размера файла', async () => {
+test('the panel counts the real Usage rows, not a percentage of the file size', async () => {
   const c = createCompetition({ slug: 'usage-counts', title: 'Разметка строк', publicPercent: 30 })
   for (const [usage, expected] of [
     ['Public,Private,Public,Public', { total: 4, publicRows: 3, privateRows: 1, byUsage: true }],
@@ -377,7 +384,7 @@ test('панель считает реальные строки Usage, а не �
   }
 })
 
-test('соревнование заводит любой преподаватель, а адрес занимает один', async () => {
+test('any teacher can create a competition, but only one can take an address', async () => {
   const made = await call('POST', '/api/admin/competitions', {
     cookie: teacher,
     body: { slug: 'rohlik', title: 'Rohlik: сколько заказов будет завтра' },
@@ -385,7 +392,7 @@ test('соревнование заводит любой преподавате�
   assert.equal(made.status, 201)
   const view = (await made.json()) as CompetitionView
   assert.equal(view.competition.slug, 'rohlik')
-  // Родится черновиком: открывает его отдельное действие с проверкой.
+  // It is born a draft: a separate action with a check opens it.
   assert.equal(view.competition.state, 'draft')
   assert.equal(view.ready, 'noData')
 
@@ -403,14 +410,14 @@ test('соревнование заводит любой преподавате�
   assert.equal(badSlug.status, 400)
 })
 
-test('удалить соревнование может только владелец', async () => {
+test('only the owner can delete a competition', async () => {
   const doomed = createCompetition({ slug: 'doomed', title: 'На снос' })
   assert.ok(doomed)
   const refused = await call('DELETE', `/api/admin/competitions/${doomed.id}`, { cookie: teacher })
   assert.equal(refused.status, 403)
   const body = (await refused.json()) as { reason: string; error: string }
   assert.equal(body.reason, 'forbidden')
-  // Отказ называет то, что отказано, а не «список преподавателей».
+  // The refusal names what was refused, not "the teacher list".
   assert.match(body.error, /удалить соревнование/)
   assert.ok(getCompetition(doomed.id))
 
@@ -419,7 +426,7 @@ test('удалить соревнование может только владе
   assert.equal(getCompetition(doomed.id), null)
 })
 
-test('завершить, снять ответы, выдать новый ключ и снять посылку — владельцем', async () => {
+test('finishing, removing answers, issuing a new key and dropping a submission are for the owner', async () => {
   const c = createCompetition({ slug: 'owneronly', title: 'Право' })
   assert.ok(c)
   const doors: [string, string][] = [
@@ -452,7 +459,7 @@ test('завершить, снять ответы, выдать новый кл�
   assert.notEqual(minted.key, entrant.key)
 })
 
-test('ключ входа виден в списке — другого места, где его прочесть, нет', async () => {
+test('the sign-in key is visible in the list: there is no other place to read it', async () => {
   const res = await call('GET', '/api/admin/competitions/entrants', { cookie: teacher })
   assert.equal(res.status, 200)
   const body = (await res.json()) as { entrants: { name: string; key: string | null }[] }
@@ -461,7 +468,7 @@ test('ключ входа виден в списке — другого мест
   assert.match(String(anna.key), /^[A-Z0-9]{3}-[A-Z0-9]{3}-[A-Z0-9]{3}$/)
 })
 
-test('соревнование не открыть, пока базовое решение не прошло весь путь', async () => {
+test('a competition cannot be opened until the baseline has gone the whole way', async () => {
   const c = createCompetition({ slug: 'bpm', title: 'BPM: что даёт базовый прогноз' })
   assert.ok(c)
   const id = c.id
@@ -487,7 +494,7 @@ test('соревнование не открыть, пока базовое ре
   ])
   assert.equal(solution.status, 200)
   const withSolution = (await solution.json()) as CompetitionView
-  // Имя на диске всегда одно: его ждёт контейнер метрики.
+  // The name on disk is always the same: the metric container expects it.
   assert.equal(withSolution.hiddenFiles[0].name, 'solution.csv')
   assert.equal(withSolution.split?.total, 3)
   assert.equal(withSolution.split?.publicRows, 1)
@@ -509,7 +516,7 @@ test('соревнование не открыть, пока базовое ре
   assert.equal(withBaseline.baseline?.cells, 1)
   assert.equal(withBaseline.ready, 'baselineNotChecked')
 
-  // Загружена — но ещё не проверена: дверь обязана отказать.
+  // Uploaded but not checked yet: the door must refuse.
   const early = await call('POST', `/api/admin/competitions/${id}/open`, { cookie: teacher })
   assert.equal(early.status, 409)
   assert.match(((await early.json()) as { error: string }).error, /до числа/)
@@ -519,12 +526,14 @@ test('соревнование не открыть, пока базовое ре
   })
   assert.equal(check.status, 202)
   const { submissionId } = (await check.json()) as { submissionId: string }
-  // Проверка идёт настоящей посылкой в общей очереди — не «режимом проверки».
+  // The check runs as a real submission in the shared queue — not as a "check
+  // mode".
   const queued = getSubmission(submissionId)
   assert.ok(queued)
   assert.equal(queued.state, 'queued')
 
-  // Исполнитель досчитал (в этом процессе его нет — пишем то же, что написал бы он).
+  // The executor finished (it is not in this process, so we write what it
+  // would have written).
   updateSubmission(submissionId, { state: 'scored', publicScore: 0.0587, privateScore: 0.0601 })
 
   const noDeadline = await call('POST', `/api/admin/competitions/${id}/open`, { cookie: teacher })
@@ -537,17 +546,17 @@ test('соревнование не открыть, пока базовое ре
   const live = (await opened.json()) as CompetitionView
   assert.equal(live.competition.state, 'live')
   assert.equal(live.ready, null)
-  // Базовое решение — не участник и не посылка класса.
+  // The baseline is neither an entrant nor one of the class's submissions.
   assert.equal(live.counts.entrants, 0)
   assert.equal(live.counts.submissions, 0)
   assert.equal(live.baseline?.publicScore, 0.0587)
 
-  // Второй раз открывать нечего.
+  // There is nothing to open a second time.
   const twice = await call('POST', `/api/admin/competitions/${id}/open`, { cookie: teacher })
   assert.equal(twice.status, 409)
 })
 
-test('ответы не отдаёт наружу ни одна дверь', async () => {
+test('no door gives the answers out', async () => {
   const c = createCompetition({ slug: 'secrets', title: 'Ответы' })
   assert.ok(c)
   const id = c.id
@@ -558,12 +567,13 @@ test('ответы не отдаёт наружу ни одна дверь', asy
   await upload(`/api/admin/competitions/${id}/solution`, teacher, [
     { name: 'solution.csv', body: bytes(answers) },
   ])
-  // На диске они есть — и лежат в закрытом каталоге, не в открытом.
+  // They are on disk — in the closed directory, not the open one.
   assert.equal(String(readSecretFile(id, 'solution.csv')), answers)
 
   const view = await call('GET', `/api/admin/competitions/${id}`, { cookie: teacher })
   const text = await view.text()
-  // Имена, строки и колонки преподаватель видит (так нарисован A2), байты — нет.
+  // The teacher sees names, rows and columns (that is how A2 is drawn), but
+  // not the bytes.
   assert.ok(text.includes('solution.csv'))
   assert.equal(text.includes('\\n1,5'), false)
 
@@ -579,7 +589,8 @@ test('ответы не отдаёт наружу ни одна дверь', asy
   assert.equal(sideways.status, 404)
   assert.equal((await sideways.text()).includes('1,5'), false)
 
-  // Открытый файл — отдаётся, и это ровно то, что скачает участник.
+  // An open file is given out, and that is exactly what an entrant will
+  // download.
   const open = await call('GET', `/api/admin/competitions/${id}/files/test.csv`, {
     cookie: teacher,
   })
@@ -587,7 +598,7 @@ test('ответы не отдаёт наружу ни одна дверь', asy
   assert.equal(await open.text(), 'id\n1\n2\n')
 })
 
-test('тетрадь больше предела не доезжает до очереди', async () => {
+test('a notebook over the limit does not reach the queue', async () => {
   const c = createCompetition({ slug: 'toobig', title: 'Предел' })
   assert.ok(c)
   const huge = new Uint8Array(LIMITS.notebookBytes + 4096).fill(0x61)
@@ -600,7 +611,7 @@ test('тетрадь больше предела не доезжает до оч
   assert.match(body.error, /20 МБ/)
 })
 
-test('не тетрадь и негодное имя файла отказываются вслух', async () => {
+test('a non-notebook and an invalid file name are refused out loud', async () => {
   const c = createCompetition({ slug: 'names', title: 'Имена' })
   assert.ok(c)
   const notNotebook = await upload(`/api/admin/competitions/${c.id}/baseline`, teacher, [
@@ -624,7 +635,7 @@ test('не тетрадь и негодное имя файла отказыва
   assert.equal(notForm.status, 400)
 })
 
-test('очередь инстанса приостанавливается и пускается обратно', async () => {
+test("the instance's queue pauses and resumes", async () => {
   const paused = await call('POST', '/api/admin/competitions/queue/pause', {
     cookie: teacher,
     body: { paused: true },
@@ -642,7 +653,7 @@ test('очередь инстанса приостанавливается и п
   assert.equal(((await resumed.json()) as { paused: boolean }).paused, false)
 })
 
-test('убить можно только то, что идёт', async () => {
+test('only what is running can be killed', async () => {
   const res = await call('POST', '/api/admin/competitions/queue/kill', {
     cookie: teacher,
     body: { submissionId: 'нет такой' },
@@ -651,7 +662,7 @@ test('убить можно только то, что идёт', async () => {
   assert.match(((await res.json()) as { error: string }).error, /не идёт/)
 })
 
-test('лента посылок фильтруется и помечает базовое решение', async () => {
+test('the submission feed is filtered and marks the baseline', async () => {
   const c = getCompetition(
     (await (await call('GET', '/api/admin/competitions', { cookie: teacher })).json() as {
       competitions: { competition: { id: string; slug: string } }[]
@@ -675,7 +686,7 @@ test('лента посылок фильтруется и помечает ба�
   assert.equal(((await filtered.json()) as { total: number }).total, 0)
 })
 
-test('живое состояние отдаётся одним снимком', async () => {
+test('the live state is given as one snapshot', async () => {
   const list = (await (await call('GET', '/api/admin/competitions', { cookie: teacher })).json()) as {
     competitions: { competition: { id: string; slug: string } }[]
     queue: { slots: number; running: unknown[] }
@@ -692,7 +703,7 @@ test('живое состояние отдаётся одним снимком',
   assert.equal(body.queue.paused, false)
 })
 
-test('чужая посылка по прямой ссылке не открывается', async () => {
+test("another competition's submission does not open by a direct link", async () => {
   const a = createCompetition({ slug: 'alpha-k', title: 'Альфа' })
   const b = createCompetition({ slug: 'beta-k', title: 'Бета' })
   assert.ok(a && b)
@@ -702,7 +713,7 @@ test('чужая посылка по прямой ссылке не открыв
   assert.equal(res.status, 404)
 })
 
-test('меню строки: исполнить заново, пересчитать, не засчитывать', async () => {
+test('the row menu: rerun, rescore, drop from counting', async () => {
   const c = createCompetition({ slug: 'rowmenu', title: 'Меню строки' })
   assert.ok(c)
   const entrant = createEntrant('Тимур Ахметов')
@@ -715,7 +726,7 @@ test('меню строки: исполнить заново, пересчита
   putSubmissionNotebook(c.id, submission.id, bytes(NOTEBOOK))
   updateSubmission(submission.id, { state: 'notebookFailed', cellsDone: 7, durationMs: 41_000 })
 
-  // Упавшая тетрадь ответа не оставила — пересчитывать нечего.
+  // A failed notebook left no answer, so there is nothing to rescore.
   const noAnswer = await call(
     'POST',
     `/api/admin/competitions/${c.id}/submissions/${submission.id}/rescore`,
@@ -729,10 +740,12 @@ test('меню строки: исполнить заново, пересчита
     { cookie: teacher },
   )
   assert.equal(rerun.status, 202)
-  // Строка обязана сразу показать, что кнопка сработала: до очереди минуты.
+  // The row must show at once that the button worked: it is minutes until the
+  // queue gets to it.
   assert.equal(getSubmission(submission.id)?.state, 'queued')
 
-  // Ответ лёг на диск — то есть посылка дошла до числа и её есть чем считать.
+  // The answer landed on disk — that is, the submission reached a score and
+  // there is something to score it with.
   updateSubmission(submission.id, { state: 'scored', publicScore: 0.44, privateScore: 0.45 })
   competitionsFs.writeFileSync(
     path.join(resultDir(c.id, submission.id), 'submission.csv'),
@@ -766,11 +779,12 @@ test('меню строки: исполнить заново, пересчита
   )
   assert.equal(dropped.status, 200)
   assert.equal(getSubmission(submission.id)?.state, 'cancelled')
-  // И строка очереди уходит вместе с ней: пересчитывать снятое незачем.
+  // And the queue row goes with it: there is no point rescoring something
+  // dropped.
   assert.equal(queueRow(submission.id), null)
 })
 
-test('исполнить заново нечего, если тетради на диске уже нет', async () => {
+test('there is nothing to rerun if the notebook is no longer on disk', async () => {
   const c = createCompetition({ slug: 'swept', title: 'Убрано уборкой' })
   assert.ok(c)
   const entrant = createEntrant('Платон Г.')
@@ -780,8 +794,8 @@ test('исполнить заново нечего, если тетради на
     fileName: 'v1.ipynb',
     bytes: 10,
   })
-  // Числа в базе живут вечно, тяжёлое уходит уборкой — и «исполнить заново»
-  // после неё обязано сказать об этом, а не поставить в очередь пустоту.
+  // Scores live in the database forever, heavy files go away with the sweep —
+  // and "rerun" after it must say so rather than queue emptiness.
   updateSubmission(submission.id, { state: 'scored' })
   const res = await call(
     'POST',
@@ -792,7 +806,7 @@ test('исполнить заново нечего, если тетради на
   assert.match(((await res.json()) as { error: string }).error, /убрана с диска|ещё идёт/)
 })
 
-test('весь вывод посылки — прогоны и то, что осталось на диске', async () => {
+test("a submission's whole output: the runs and what is left on disk", async () => {
   const c = createCompetition({ slug: 'output', title: 'Вывод' })
   assert.ok(c)
   const entrant = createEntrant('Марфа Соколова')
@@ -819,7 +833,7 @@ test('весь вывод посылки — прогоны и то, что ос
   assert.equal(body.entrant.name, 'Марфа Соколова')
   assert.equal(body.runs.length, 1)
   assert.equal(body.runs[0].container, 'zz-comp-x')
-  // Контейнера не было — исполненной тетради на диске тоже нет.
+  // There was no container, so there is no executed notebook on disk either.
   assert.deepEqual(body.artifacts, [])
 
   const missing = await call(
@@ -830,7 +844,7 @@ test('весь вывод посылки — прогоны и то, что ос
   assert.equal(missing.status, 404)
 })
 
-test('живой поток отдаёт состояние сразу, а не по таймеру', async () => {
+test('the live stream gives the state at once, not on a timer', async () => {
   const c = createCompetition({ slug: 'stream', title: 'Поток' })
   assert.ok(c)
   const res = await fetch(`${base}/api/admin/competitions/${c.id}/stream`, {
@@ -845,7 +859,7 @@ test('живой поток отдаёт состояние сразу, а не 
   await reader.cancel()
 })
 
-test('файлы данных кладутся пачкой и снимаются по одному', async () => {
+test('data files are uploaded as a batch and removed one at a time', async () => {
   const c = createCompetition({ slug: 'dataset', title: 'Данные' })
   assert.ok(c)
   const put = await upload(`/api/admin/competitions/${c.id}/files`, teacher, [
@@ -871,7 +885,8 @@ test('файлы данных кладутся пачкой и снимаютс�
   assert.equal(dropped.status, 200)
   const left = (await dropped.json()) as CompetitionView
   assert.deepEqual(left.openFiles.map((file) => file.name), ['sample_submission.csv'])
-  // И с диска тоже: строка без файла — это данные, которых участник не увидит.
+  // And from the disk too: a row without a file is data the entrant will not
+  // see.
   assert.equal(readOpenFile(c.id, 'train.csv'), null)
 
   const missing = await call(

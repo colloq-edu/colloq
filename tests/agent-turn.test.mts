@@ -1,12 +1,12 @@
 /**
- * Ход как целое: часы, переписка и вторая кнопка «сделать».
+ * A turn as a whole: the clock, the conversation and a second "do" button.
  *
- * Здесь проверяется не инструмент (это `agent-cells`) и не потолок действий
- * (это `agent-step-limit`), а то, что держит ход в рамках, когда модель ведёт
- * себя не так, как в примере из документации: пишет вызов текстом, думает
- * дольше пары, получает отказ и забывает его через десять шагов. Модель —
- * подделка: настоящая отвечала бы каждый раз по-своему, и проверять пришлось
- * бы её.
+ * What is checked here is not a tool (that is `agent-cells`) and not the
+ * action ceiling (that is `agent-step-limit`), but what keeps a turn within
+ * bounds when the model behaves differently from the example in the docs:
+ * writes a call as text, thinks longer than a class, gets a refusal and
+ * forgets it ten steps later. The model is a fake: a real one would answer
+ * differently every time, and it is the model that would have to be tested.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -22,16 +22,16 @@ import { writeText } from '../server/src/workspace.js'
 import { chatAnswer, chatSteps, findChatEntry } from '../shared/notebook.js'
 import { getOracleSettings, updateOracleSettings } from '../server/src/admin/settings.js'
 
-/** Что подделка ответит на очередной запрос; `null` — «словами и без вызовов». */
+/** What the fake answers to the next request; `null` means "in words, with no calls". */
 type Reply = { tool: string; args?: unknown } | { text: string } | null
 
 let script: Reply[] = []
 let round = 0
-/** Тела запросов, как их получил «провайдер»: по ним видно, что доехало. */
+/** Request bodies as the "provider" received them: they show what got through. */
 let heard: string[] = []
-/** Сколько подделка тянет с ответом: так держат ход идущим. */
+/** How long the fake delays its answer: this keeps a turn running. */
 let delayMs = 0
-/** На сколько подделка двигает часы перед ответом: так проверяют срок хода. */
+/** How far the fake moves the clock before answering: this tests the turn deadline. */
 let tickMs = 0
 let was = 0
 
@@ -61,8 +61,9 @@ before(async () => {
                 },
               ],
             }
-      // Со второго круга: первый вызов должен успеть выполниться, иначе тест
-      // проверял бы «ход не начался», а не «ход кончился по времени».
+      // From the second round on: the first call must have time to run,
+      // otherwise the test would check "the turn did not start" rather than
+      // "the turn ran out of time".
       if (tickMs > 0 && round > 1) mock.timers.tick(tickMs)
       const send = () => {
         response.setHeader('content-type', 'application/json')
@@ -103,7 +104,7 @@ async function turn(id: string, plan: Reply[], message = 'сделай тетр�
   try {
     createSession(id, `Turn ${id}`)
   } catch {
-    /* комната уже заведена этим же файлом — так и задумано */
+    /* the room was already created by this same file; that is intended */
   }
   const entryId = work({
     sessionId: id,
@@ -114,9 +115,9 @@ async function turn(id: string, plan: Reply[], message = 'сделай тетр�
     message,
   })
   const doc = getSessionDoc(id).doc
-  // Счётом кругов, а не по часам: один из тестов ниже переводит часы процесса
-  // на шесть минут вперёд, и ожидание «до Date.now() + 8 с» кончилось бы
-  // раньше, чем ход успел бы ответить.
+  // By counting rounds, not by the clock: one of the tests below moves the
+  // process clock six minutes ahead, and waiting "until Date.now() + 8 s"
+  // would end before the turn had time to answer.
   for (let waited = 0; waited < 800; waited++) {
     const entry = findChatEntry(doc, entryId)!
     if (entry.get('state') !== 'streaming') {
@@ -125,36 +126,37 @@ async function turn(id: string, plan: Reply[], message = 'сделай тетр�
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   stopAll(id)
-  throw new Error('ход не закончился')
+  throw new Error('the turn did not finish')
 }
 
-test('вызов, написанный текстом вместо поля tool_calls, всё равно вызов', async () => {
+test('a call written as text instead of the tool_calls field is still a call', async () => {
   const result = await turn('text-call', [
     { text: '```json\n{"name": "list_files", "arguments": {}}\n```' },
-    // Дважды: на первый ответ без вызова ход отвечает толчком, а не концом.
+    // Twice: to the first answer without a call the turn replies with a nudge, not an end.
     { text: 'Посмотрел папку.' },
     { text: 'Посмотрел папку.' },
   ])
-  assert.equal(result.steps.length, 1, 'вызов в тексте остался словами')
+  assert.equal(result.steps.length, 1, 'the call in the text stayed words')
   assert.equal(result.steps.get(0)!.get('kind'), 'read')
   assert.equal(result.answer, 'Посмотрел папку.')
 })
 
-test('JSON, который не называет известного инструмента, вызовом не становится', async () => {
+test('JSON that does not name a known tool does not become a call', async () => {
   const result = await turn('text-data', [{ text: '{"path": "train.py", "lines": 40}' }])
-  assert.equal(result.steps.length, 0, 'кусок данных приняли за вызов')
+  assert.equal(result.steps.length, 0, 'a piece of data was taken for a call')
 })
 
-test('отказ остаётся в переписке, когда прочитанные файлы из неё уже выпали', async () => {
+test('a refusal stays in the conversation after the files that were read have dropped out of it', async () => {
   const id = 'keep-refusals'
   createSession(id, 'Refusals')
-  // Короткими строками, а не одной длинной: чтение идёт постранично, и файл из
-  // одной строки на тридцать тысяч знаков приехал бы в переписку одной строкой.
+  // Short lines, not one long one: reading goes page by page, and a file of
+  // one thirty-thousand-character line would arrive in the conversation as
+  // one line.
   for (const name of ['a', 'b']) {
     const lines = Array.from({ length: 400 }, (_, i) => `МЕТКА_${name.toUpperCase()} ${i} ${'x'.repeat(50)}`)
     writeText(id, `${name}.py`, lines.join('\n'))
   }
-  // Узкое окно: переписка перестаёт помещаться уже после первого чтения.
+  // A narrow window: the conversation stops fitting right after the first read.
   updateOracleSettings({ contextChars: 2_000 })
   try {
     const result = await turn(id, [
@@ -166,14 +168,15 @@ test('отказ остаётся в переписке, когда прочит
     ])
     assert.equal(result.steps.length, 3)
     /*
-     * Признаками, а не самими телами запросов: `assert.match` по строке в
-     * двенадцать тысяч знаков печатает её целиком в отчёт, и на неудаче это
-     * вешает сам прогон.
+     * By flags, not by the request bodies themselves: `assert.match` on a
+     * twelve-thousand-character string prints it whole into the report, and
+     * on failure that hangs the run itself.
      */
     /*
-     * Четвёртый запрос: в нём уже есть и отказ, и свежее чтение, а старое из
-     * него выпало. Последний брать нельзя — к нему ход дописывает толчок, и
-     * свежая пачка перестаёт быть последней, то есть тоже становится выбрасываемой.
+     * The fourth request: it already has both the refusal and the fresh read,
+     * and the old one has dropped out of it. The last one cannot be taken: the
+     * turn appends a nudge to it, and the fresh batch stops being the last,
+     * that is, it also becomes droppable.
      */
     const last = heard[3] ?? ''
     const kept = {
@@ -187,17 +190,17 @@ test('отказ остаётся в переписке, когда прочит
   }
 })
 
-test('ход, не уложившийся в отведённое время, называет сделанное и останавливается', async () => {
+test('a turn that did not fit into its allotted time names what was done and stops', async () => {
   mock.timers.enable({ apis: ['Date'] })
   tickMs = 6 * 60_000
   try {
     const result = await turn('out-of-time', [
       { tool: 'list_files' },
-      // Второй круг начнётся уже за отведённым временем: часы двигает сама
-      // подделка, между ответом и следующим вопросом.
+      // The second round will start already past the allotted time: the fake
+      // itself moves the clock, between the answer and the next question.
       { tool: 'list_files', args: { nth: 2 } },
     ])
-    assert.equal(result.steps.length, 1, 'ход продолжился после конца отведённого времени')
+    assert.equal(result.steps.length, 1, 'the turn went on after the end of its allotted time')
     assert.match(result.answer, /5 мин/)
   } finally {
     tickMs = 0
@@ -205,11 +208,12 @@ test('ход, не уложившийся в отведённое время, н
   }
 })
 
-test('второй ход в той же комнате не начинается, пока идёт первый, — и у ведущего тоже', async () => {
+test('a second turn in the same room does not start while the first one runs, even for the host', async () => {
   const id = 'one-turn-room'
   createSession(id, 'One turn')
-  // `tokenHost`: роль решается на каждом запросе по таблице, а не по токену
-  // (routes/sessions.ts · roleFor) — без этой метки ведущий приехал бы участником.
+  // `tokenHost`: the role is decided on every request from the table, not
+  // from the token (routes/sessions.ts · roleFor); without this mark the host
+  // would arrive as a participant.
   upsertParticipant({ id: 'teacher', sessionId: id, name: 'Teacher', avatar: null, role: 'host', tokenHost: true })
   const token = signToken({ sessionId: id, participantId: 'teacher', role: 'host' })
   const ask = () =>

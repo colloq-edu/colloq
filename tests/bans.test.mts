@@ -1,19 +1,20 @@
 /**
- * Бан: кого комната перестаёт пускать и на чём это держится.
+ * A ban: whom the room stops letting in, and what that rests on.
  *
- * Аккаунтов в продукте нет, поэтому бан опирается на две дырявые метки —
- * идентификатор участника и метку устройства в куке, — и первое, что здесь
- * проверяется, это ровно то, что обещано: обе ловят возврат в тот же браузер,
- * и ни одна не ловит чистый. Обещать герметичность нельзя, а тест, который
- * притворялся бы, что она есть, был бы хуже отсутствующего.
+ * There are no accounts in the product, so a ban rests on two leaky marks,
+ * the participant id and the device mark in a cookie, and the first thing
+ * checked here is exactly what is promised: both catch a return in the same
+ * browser, and neither catches a clean one. Airtightness cannot be promised,
+ * and a test pretending it exists would be worse than no test.
  *
- * Второе — цена промаха. Забанить себя со второй вкладки легко: список
- * участников состоит из имён, а не из лиц. Штат обязан проходить любой бан,
- * иначе одно нажатие запирает преподавателя снаружи его собственной комнаты
- * посреди пары.
+ * The second is the cost of a slip. Banning yourself from a second tab is
+ * easy: the participant list is made of names, not faces. Staff must pass
+ * any ban, otherwise one press locks a teacher out of their own room in the
+ * middle of a class.
  *
- * Ни сети, ни ядра: комната настоящая, вход настоящий, соседняя комната рядом —
- * чтобы бан, поставленный в одной, было видно, если он потечёт в другую.
+ * No network, no kernel: the room is real, the entry is real, and a
+ * neighbouring room is next to it, so that a ban set in one would be seen if
+ * it leaked into the other.
  */
 import './_env.mts'
 import { after, before, test } from 'node:test'
@@ -43,9 +44,9 @@ import type { JoinResponse } from '../shared/protocol.js'
 const ROOM = 'bans-room'
 const OTHER = 'bans-other'
 /**
- * Метка — 32 символа алфавита base64url; настоящие такие же, только случайные.
- * Своя на тест: метка — это браузер, а забаненный браузер и должен оставаться
- * забаненным до конца прогона.
+ * A mark is 32 characters of the base64url alphabet; real ones are the same,
+ * only random. One per test: a mark is a browser, and a banned browser must
+ * stay banned until the end of the run.
  */
 const mark = (letter: string) => letter.repeat(32)
 const PHONE = mark('p')
@@ -58,8 +59,9 @@ before(async () => {
   createSession(ROOM, 'Семинар', null)
   createSession(OTHER, 'Соседняя', null)
   /*
-   * Приложение целиком (server/src/app.ts), а не свой express рядом: копия
-   * порядка middleware расхождений с продуктом не ловит, она их повторяет.
+   * The whole app (server/src/app.ts), not an express of our own next to it:
+   * a copy of the middleware order does not catch divergences from the
+   * product, it repeats them.
    */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -101,19 +103,19 @@ interface Answer {
   body: Record<string, unknown>
 }
 
-/** Вошёл и запомнил, чем доказывать, что он — это он. */
+/** Came in and remembered how to prove that they are themselves. */
 async function newcomer(name: string, device?: string): Promise<JoinResponse> {
   const res = await join({ name, device })
-  assert.equal(res.status, 200, `${name} не вошёл`)
+  assert.equal(res.status, 200, `${name} did not get in`)
   return res.body as unknown as JoinResponse
 }
 
 const ban = (participantId: string, until?: number) =>
   banParticipant({ sessionId: ROOM, participantId, ip: null, byTeacher: 'Ада', until })
 
-/* ------------------------------------------------------------ две метки */
+/* ------------------------------------------------------------ two marks */
 
-test('бан по идентификатору не пускает того же человека обратно', async () => {
+test('a ban by id does not let the same person back in', async () => {
   const kostya = await newcomer('Костя')
   assert.ok(ban(kostya.participant.id))
 
@@ -123,43 +125,44 @@ test('бан по идентификатору не пускает того же
     token: kostya.token,
   })
   assert.equal(back.status, 403)
-  // Человек обязан понять, что это решение преподавателя, а не поломка
-  // комнаты, — поэтому в отказе стоит его имя.
+  // The person must understand that this is the teacher's decision, not a
+  // broken room, which is why the refusal carries their name.
   assert.match(String(back.body.error), /Костя/)
   assert.match(String(back.body.error), /преподаватель/i)
-  // Время — числом: часы рисует браузер, сервер в контейнере живёт по UTC.
+  // The time as a number: the browser draws the clock, the server in a container lives in UTC.
   assert.equal(typeof back.body.until, 'number')
   assert.ok(Number(back.body.until) > Date.now())
 })
 
-test('бан ловит и по метке устройства — вернувшегося «новым человеком»', async () => {
+test('a ban also catches by device mark someone returning as a "new person"', async () => {
   const nina = await newcomer('Нина', mark('n'))
   assert.ok(ban(nina.participant.id))
 
-  // Чистый localStorage: ни идентификатора, ни токена. Кука на месте — это тот
-  // же браузер, и это единственный случай, который бан обязан ловить.
+  // A clean localStorage: neither id nor token. The cookie is in place: it is
+  // the same browser, and that is the only case the ban must catch.
   const again = await join({ name: 'Не Нина', device: mark('n') })
   assert.equal(again.status, 403)
   assert.match(String(again.body.error), /Нина/)
 })
 
-test('чистый браузер проходит — и это сказано вслух, а не забыто', async () => {
+test('a clean browser gets through, and that is said out loud, not forgotten', async () => {
   const oleg = await newcomer('Олег', mark('o'))
   assert.ok(ban(oleg.participant.id))
 
-  // Инкогнито: другая кука, другой идентификатор. Такой возврат бан не ловит и
-  // не обещал ловить; преподаватель видит его в списке участников.
+  // Incognito: a different cookie, a different id. The ban does not catch
+  // such a return and never promised to; the teacher sees it in the
+  // participant list.
   const incognito = await join({ name: 'Олег', device: mark('i') })
   assert.equal(incognito.status, 200)
 })
 
-test('снятие возвращает вход', async () => {
+test('lifting restores entry', async () => {
   const petya = await newcomer('Петя')
   const row = ban(petya.participant.id)
   assert.ok(row)
 
   assert.equal(liftBan(ROOM, row.id), true)
-  assert.equal(liftBan(ROOM, row.id), false, 'снимать нечего дважды')
+  assert.equal(liftBan(ROOM, row.id), false, 'there is nothing to lift twice')
   const back = await join({
     name: 'Петя',
     participantId: petya.participant.id,
@@ -168,19 +171,19 @@ test('снятие возвращает вход', async () => {
   assert.equal(back.status, 200)
 })
 
-test('просроченный бан не действует и убирается первым же чтением', async () => {
+test('an expired ban has no effect and is removed by the very first read', async () => {
   const sveta = await newcomer('Света')
   const stale = ban(sveta.participant.id, Date.now() - 1000)
   assert.ok(stale)
-  assert.equal(rowsFor(ROOM, stale.id), 1, 'строка легла в базу')
+  assert.equal(rowsFor(ROOM, stale.id), 1, 'the row landed in the database')
 
   const back = await join({
     name: 'Света',
     participantId: sveta.participant.id,
     token: sveta.token,
   })
-  assert.equal(back.status, 200, 'срок вышел — бан не держит ни секунды сверх')
-  // Таймера нет: строку убирает тот, кто следующим пришёл читать баны комнаты.
+  assert.equal(back.status, 200, 'the term is over: the ban holds not a second longer')
+  // There is no timer: the row is removed by whoever next comes to read the room's bans.
   assert.equal(rowsFor(ROOM, stale.id), 0)
 })
 
@@ -191,9 +194,9 @@ function rowsFor(sessionId: string, banId: string): number {
   return row.n
 }
 
-/* --------------------------------------------------------- цена промаха */
+/* --------------------------------------------------- the cost of a slip */
 
-test('штат проходит любой бан — промах не запирает вас снаружи', async () => {
+test('staff pass any ban: a slip does not lock you out', async () => {
   const ada = await newcomer('Ада', mark('a'))
   assert.ok(ban(ada.participant.id))
 
@@ -214,7 +217,7 @@ test('штат проходит любой бан — промах не запи
   )
 })
 
-test('преподавателя комнаты забанить нельзя вовсе', () => {
+test('the teacher of a room cannot be banned at all', () => {
   upsertParticipant({
     id: 'p_host',
     sessionId: ROOM,
@@ -224,24 +227,24 @@ test('преподавателя комнаты забанить нельзя в
     tokenHost: true,
   })
   assert.equal(ban('p_host'), null)
-  // И того, кого в комнате нет, — тоже: банить некого.
+  // Nor someone who is not in the room: there is nobody to ban.
   assert.equal(ban('p_nobody'), null)
 })
 
-/* ------------------------------------------------------- границы комнаты */
+/* ------------------------------------------------------- room boundaries */
 
-test('бан в одной комнате не закрывает соседнюю', async () => {
+test('a ban in one room does not close the neighbouring one', async () => {
   const grisha = await newcomer('Гриша', mark('g'))
   assert.ok(ban(grisha.participant.id))
 
   const next = await join({ name: 'Гриша', device: mark('g'), room: OTHER })
-  assert.equal(next.status, 200, 'соседний семинар — не тот, из которого закрыли')
+  assert.equal(next.status, 200, 'the neighbouring seminar is not the one they were closed out of')
   assert.equal(banFor(OTHER, grisha.participant.id, `${DEVICE_COOKIE}=${mark('g')}`), null)
 })
 
-/* ------------------------------------------------ что видит преподаватель */
+/* -------------------------------------------------- what the teacher sees */
 
-test('в списке стоит имя, кто закрыл и своё ли это устройство', async () => {
+test('the list shows the name, who closed them off, and whether it is your own device', async () => {
   const room = 'bans-list'
   createSession(room, 'Список', null)
   upsertParticipant({
@@ -263,14 +266,14 @@ test('в списке стоит имя, кто закрыл и своё ли э
   assert.equal(row.byTeacher, 'Ада')
   assert.ok(row.until - row.createdAt === BAN_MS)
 
-  // «Своё устройство» — только про совпавшую метку.
+  // "Your own device" is only about a matching mark.
   const asPhone = listBans(room, PHONE)
   assert.equal(asPhone.length, 1)
   assert.equal(asPhone[0].mine, true)
   assert.equal(listBans(room, LAPTOP)[0].mine, false)
-  assert.equal(listBans(room, null)[0].mine, false, 'два браузера без метки — не одно устройство')
+  assert.equal(listBans(room, null)[0].mine, false, 'two browsers without a mark are not one device')
 
-  // Метка и адрес легли в строку, но наружу в списке их нет.
+  // The mark and the address landed in the row, but the list does not expose them.
   const stored = db.prepare('SELECT device, ip FROM bans WHERE id = ?').get(row.id) as {
     device: string | null
     ip: string | null
@@ -281,20 +284,20 @@ test('в списке стоит имя, кто закрыл и своё ли э
   assert.equal('ip' in asPhone[0], false)
 
   discardBans(room)
-  assert.deepEqual(listBans(room, PHONE), [], 'семинар удалили — адрес ушёл с ним')
+  assert.deepEqual(listBans(room, PHONE), [], 'the seminar was deleted, and the address went with it')
 })
 
-test('отказ называет человека и момент конца, а часы оставляет браузеру', () => {
+test('the refusal names the person and the end moment, and leaves the clock to the browser', () => {
   const until = Date.now() + BAN_MS
   const said = banRefusal({ id: 'b_x', name: 'Костя', until })
   assert.equal(said.until, until)
   assert.match(said.error, /^Костя, /)
-  // Ни «15:40», ни ISO: сервер в контейнере живёт по UTC, и собранное им время
-  // указывало бы в аудитории не на тот час.
+  // Neither "15:40" nor ISO: the server in a container lives in UTC, and a
+  // time it assembled would point to the wrong hour in the classroom.
   assert.equal(/\d{1,2}:\d{2}/.test(said.error), false)
 })
 
-/* ------------------------------------------------------- метка устройства */
+/* ------------------------------------------------------------ device mark */
 
 function mintStaffCookie(teacher: Parameters<typeof issueStaffCookie>[1]): string {
   let value = ''
@@ -328,7 +331,7 @@ function pageRequest(opts: { cookie?: string; forwardedProto?: string; secure?: 
   return { req, written }
 }
 
-test('метка ставится один раз и переживает возврат', () => {
+test('the mark is set once and survives a return', () => {
   const first = pageRequest({})
   assert.equal(first.written.length, 1)
   const [mark] = first.written
@@ -338,37 +341,37 @@ test('метка ставится один раз и переживает воз
   assert.equal(mark.options.sameSite, 'lax')
   assert.ok((mark.options.maxAge ?? 0) >= 365 * 24 * 60 * 60 * 1000)
 
-  // Пришли снова с этой же кукой — второй метки не заводится.
+  // Came again with the same cookie: no second mark is created.
   const again = pageRequest({ cookie: `${DEVICE_COOKIE}=${mark.value}` })
   assert.deepEqual(again.written, [])
 })
 
-test('Secure — по схеме этого запроса, иначе кука не сохранится вовсе', () => {
+test('Secure follows the scheme of this request, otherwise the cookie is not stored at all', () => {
   assert.equal(pageRequest({}).written[0].options.secure, false)
   assert.equal(pageRequest({ secure: true }).written[0].options.secure, true)
-  // За ретранслятором сервер видит http всегда; про https говорит caddy.
+  // Behind the relay the server always sees http; caddy tells it about https.
   assert.equal(pageRequest({ forwardedProto: 'https' }).written[0].options.secure, true)
 })
 
-test('кривая или чужая кука — это отсутствие метки, а не метка', () => {
+test('a malformed or foreign cookie means no mark, not a mark', () => {
   assert.equal(deviceOf(undefined), null)
   assert.equal(deviceOf('colloq_staff=abc'), null)
   assert.equal(deviceOf(`${DEVICE_COOKIE}=слишком-коротко`), null)
   assert.equal(deviceOf(`${DEVICE_COOKIE}=${'x'.repeat(4096)}`), null)
-  assert.equal(deviceOf(`${DEVICE_COOKIE}=%`), null, 'кривая печенька не роняет разбор')
+  assert.equal(deviceOf(`${DEVICE_COOKIE}=%`), null, 'a malformed cookie does not crash the parsing')
   assert.equal(deviceOf(`${DEVICE_COOKIE}=${PHONE}; other=1`), PHONE)
 })
 
-/* ---------------------------------------------------------------- адрес */
+/* -------------------------------------------------------------- address */
 
-test('заголовку с адресом верим только от прокси на этой же машине', () => {
+test('the address header is trusted only from a proxy on the same machine', () => {
   const headers = { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' }
-  // За ретранслятором сосед по сокету — петля, и настоящий адрес только в
-  // заголовке.
+  // Behind the relay the socket peer is loopback, and the real address is
+  // only in the header.
   assert.equal(addressOf({ headers, socket: { remoteAddress: '127.0.0.1' } }), '203.0.113.7')
   assert.equal(addressOf({ headers, socket: { remoteAddress: '::1' } }), '203.0.113.7')
-  // А присланный кем угодно напрямую — выдумка: подсказка «кажется, вернулся»
-  // указала бы на человека, который сидел тихо.
+  // But one sent directly by anybody is made up: the "seems to have come
+  // back" hint would point at a person who sat quietly.
   assert.equal(addressOf({ headers, socket: { remoteAddress: '198.51.100.4' } }), '198.51.100.4')
   assert.equal(addressOf({ headers: {}, socket: { remoteAddress: '127.0.0.1' } }), '127.0.0.1')
   assert.equal(addressOf({ headers: {} }), null)

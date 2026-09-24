@@ -1,17 +1,17 @@
 import { tr } from './i18n.js'
 /**
- * Имя, которое кто-то напечатал, — одной меркой на все двери.
+ * A name someone typed, held to one standard at every door.
  *
- * Имя семинара, имя человека, имя преподавателя приходят из четырёх мест
- * (комната, панель, штат, импорт) и рисуются в одних и тех же строках: заголовок
- * зала, подпись ячейки, строка списка. Правило чистки было списано в трёх файлах
- * дословно, а четвёртая дверь — импорт — обходилась `trim()`, и имя семинара из
- * GitHub уносило в список переводы строк и табуляции, от которых остальные три
- * защищают вёрстку.
+ * A seminar name, a person's name and a teacher's name come from four places
+ * (room, panel, staff, import) and are drawn in the same rows: the hall
+ * header, the cell caption, a list row. The cleaning rule was copied word for
+ * word into three files, while the fourth door, import, made do with
+ * `trim()`, and a seminar name from GitHub carried into the list the line
+ * breaks and tabs from which the other three protect the layout.
  *
- * Управляющий символ заменяется пробелом, а не выбрасывается: перевод строки
- * посреди имени — это граница слов, и склеивать их значило бы поправить
- * человека молча.
+ * A control character is replaced with a space rather than dropped: a line
+ * break in the middle of a name is a word boundary, and gluing the words
+ * together would mean silently correcting the person.
  */
 export function normalizeLabel(value: unknown): string {
   if (typeof value !== 'string') return ''
@@ -22,17 +22,19 @@ export function normalizeLabel(value: unknown): string {
 }
 
 /**
- * Длительность словами: «30 с», «1 мин», «2 мин 30 с».
+ * Duration in words: "30 s", "1 min", "2 min 30 s".
  *
- * Регламент консилиума хранится в секундах, а читается предложением, и обе
- * фразы про него — «запуск шёл дольше 5 мин» на сервере и «следующий запуск
- * через 1 мин» под кнопкой у студента — берут одно и то же число. «300 с» в
- * такой строке читается как опечатка: пять минут человек узнаёт, только
- * посчитав их в уме, а отсчёт под кнопкой он читает на бегу.
+ * The council rules are stored in seconds but read as a sentence, and both
+ * phrases about them, "the run took longer than 5 min" on the server and
+ * "next run in 1 min" under the student's button, take the same number.
+ * "300 s" in such a line reads as a typo: a person recognizes five minutes
+ * only after counting them in their head, and the countdown under the button
+ * is read on the fly.
  *
- * Секунды не округляются в ноль: предел ставят из списка круглых чисел, а вот
- * отсчёт идёт по живым часам и попадает в любую щель — «через 1 мин» за
- * полторы минуты до кнопки было бы обещанием, которого сервер не держит.
+ * Seconds are not rounded to zero: the limit is picked from a list of round
+ * numbers, but the countdown runs on the live clock and lands in any gap;
+ * "in 1 min" a minute and a half before the button would be a promise the
+ * server does not keep.
  */
 export function durationWords(totalSeconds: number): string {
   const total = Math.max(0, Math.round(totalSeconds))

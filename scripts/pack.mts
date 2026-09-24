@@ -1,37 +1,38 @@
 /**
- * Дистрибутив Colloq — то, что уезжает в колесо pip.
+ * The Colloq distribution: what goes into the pip wheel.
  *
- *   npx tsx scripts/pack.mts          собрать заново и положить в python/colloq/_app
- *   npx tsx scripts/pack.mts --skip-build   упаковать то, что уже собрано
+ *   npx tsx scripts/pack.mts          build afresh and put it into python/colloq/_app
+ *   npx tsx scripts/pack.mts --skip-build   pack what has already been built
  *   make pack · make wheel
  *
- * Зачем это вообще. На машине преподавателя нет ни репозитория, ни make, ни
- * tsx: `pip install colloq` и `colloq`. Значит, всё, что сегодня считается от
- * исходников — сборка фронтенда, отпечаток дерева, вызовы npm run, — должно
- * быть посчитано ЗДЕСЬ, один раз, и приехать готовым. Признак «приехало
- * готовым» — файл .colloq-dist.json в корне приложения: увидев его, запуск не
- * собирает ничего и npm не зовёт вовсе.
+ * Why this exists at all. The teacher's machine has no repository, no make and
+ * no tsx: `pip install colloq` and `colloq`. So everything that today is
+ * computed from the sources (the frontend build, the tree fingerprint, npm run
+ * calls) must be computed HERE, once, and arrive ready. The sign of "arrived
+ * ready" is the .colloq-dist.json file at the application root: on seeing it,
+ * the launch builds nothing and does not call npm at all.
  *
- * Раскладка внутри app/ повторяет репозиторий, и это не украшение. Три места
- * в коде ищут свои файлы относительно себя, и все три работают только при
- * такой раскладке:
+ * The layout inside app/ repeats the repository, and that is not decoration.
+ * Three places in the code look for their files relative to themselves, and
+ * all three work only with this layout:
  *
- *   · server/src/config.ts:26 — repoRoot это `../..` от собранного
- *     server/dist/server.js, то есть корень приложения. Положи сервер в
- *     app/server.js — и data/ с workspace/ уедут этажом выше;
- *   · server/src/environments.ts:23 — ищет kernel/environments, шагая вверх от
- *     себя. Поэтому kernel/ лежит рядом с server/, а не где попало;
- *   · cli/src/launch-config.ts:104 — STATIC_DIR это <корень>/web/dist.
+ *   · server/src/config.ts:26: repoRoot is `../..` from the built
+ *     server/dist/server.js, that is, the application root. Put the server in
+ *     app/server.js, and data/ with workspace/ move one level up;
+ *   · server/src/environments.ts:23: looks for kernel/environments, stepping
+ *     up from itself. That is why kernel/ lies next to server/ and not just
+ *     anywhere;
+ *   · cli/src/launch-config.ts:104: STATIC_DIR is <root>/web/dist.
  *
- * Скрипты эксплуатации (scripts/) едут вместе со всем остальным, и это не
- * «на всякий случай». `colloq host <имя>` — единственная команда, которой класс
- * получает ссылку, — это `make host`, а тот зовёт scripts/host.sh. Пока их в
- * пакете не было, у поставленного colloq публикация умирала: make нет, скрипта
- * нет, `colloq start --host` отваливался кодом 127, в расписку ложилось
- * hosting: 'failed', а человек читал «локальная работа продолжается» и шёл на
- * пару с занятием, которого снаружи не видно. Едет ровно то, что зовут:
- * host.sh с тем, что он сорсит и запускает, и пара backup/restore со своими
- * помощниками — список и причины у SCRIPTS ниже.
+ * The ops scripts (scripts/) travel with everything else, and not "just in
+ * case". `colloq host <name>`, the only command by which a class gets its
+ * link, is `make host`, and that calls scripts/host.sh. While they were not in
+ * the package, publishing died in an installed colloq: no make, no script,
+ * `colloq start --host` fell over with code 127, the receipt got
+ * hosting: 'failed', and the person read "local work continues" and went to
+ * class with a session nobody could see from outside. Exactly what is called
+ * travels: host.sh with what it sources and runs, and the backup/restore pair
+ * with their helpers; the list and the reasons are at SCRIPTS below.
  *
  * What this universal wheel deliberately lacks: node_modules. Two of the
  * server's dependencies are native (better-sqlite3 and @resvg/resvg-js), and a
@@ -41,13 +42,14 @@
  * built on top of this one by scripts/platform-wheels.py: they add Node and
  * node_modules for macOS and Linux, and pip prefers them where they fit.
  *
- * node_modules нет и у самого CLI: бандлы собраны с --packages=external, и
- * снаружи им нужны только dotenv и better-sqlite3 (последний — одному
- * launch.mjs, отложенным импортом: --share читает список занятий из базы), а
- * оба и так в зависимостях сервера. colloq.mjs не нужно ничего вовсе: --help
- * работает до npm install. Проверять это глазами не надо: сборка сама сверяет
- * список внешних имён с тем, что встанет по package.json, и падает, если
- * кто-то добавил в CLI новую библиотеку.
+ * The CLI itself has no node_modules either: the bundles are built with
+ * --packages=external, and from outside they need only dotenv and
+ * better-sqlite3 (the latter only for launch.mjs, as a deferred import:
+ * --share reads the list of classes from the database), and both are among
+ * the server's dependencies anyway. colloq.mjs needs nothing at all: --help
+ * works before npm install. There is no need to check this by eye: the build
+ * itself compares the list of external names with what package.json will
+ * install, and fails if someone has added a new library to the CLI.
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -74,20 +76,21 @@ const appDir = path.join(outDir, 'app')
 const pythonApp = path.join(root, 'python/colloq/_app')
 
 /**
- * Дата сборки приходит снаружи, а не из Date.now().
+ * The build date comes from outside, not from Date.now().
  *
- * Штамп лежит в файле, который попадает в колесо, — значит, два прогона подряд
- * давали бы два разных колеса при одинаковых исходниках. Кто собирает
- * воспроизводимо, передаёт SOURCE_DATE_EPOCH (так это называется везде — от
- * Debian до pypa) или --date; кто собирает для себя, получает текущее время, и
- * это ровно то, что он хочет видеть в `colloq --version`.
+ * The stamp lies in a file that goes into the wheel, so two runs in a row
+ * would give two different wheels from identical sources. Whoever builds
+ * reproducibly passes SOURCE_DATE_EPOCH (that is what it is called
+ * everywhere, from Debian to pypa) or --date; whoever builds for themselves
+ * gets the current time, and that is exactly what they want to see in
+ * `colloq --version`.
  */
 const builtAt = values.date
   ? new Date(values.date).toISOString()
   : process.env.SOURCE_DATE_EPOCH
     ? new Date(Number(process.env.SOURCE_DATE_EPOCH) * 1000).toISOString()
     : new Date().toISOString()
-if (Number.isNaN(Date.parse(builtAt))) throw new Error('Некорректная дата сборки: --date <ISO>')
+if (Number.isNaN(Date.parse(builtAt))) throw new Error('Invalid build date: --date <ISO>')
 
 type Json = Record<string, unknown>
 function readJson(file: string): Json {
@@ -101,19 +104,20 @@ function run(command: string, args: string[]): void {
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit' })
   if (result.error) throw result.error
   if (result.status !== 0)
-    throw new Error(`${command} ${args.join(' ')} — код ${result.status ?? 'сигнал'}`)
+    throw new Error(`${command} ${args.join(' ')} — code ${result.status ?? 'signal'}`)
 }
 
 /**
- * Копия каталога — с двумя отсевами, и оба не косметические.
+ * A copy of a directory, with two filters, and neither is cosmetic.
  *
- * .DS_Store на macOS заводится в каждом каталоге, который открывали в Finder, и
- * уезжал бы в колесо как часть дистрибутива.
+ * .DS_Store on macOS appears in every directory that was opened in Finder, and
+ * would go into the wheel as part of the distribution.
  *
- * kernel/environments/.<имя>.built — это штамп «какой список пакетов запечён в
- * образ ядра на ЭТОЙ машине» (см. .gitignore). Состояние машины, а не исходник:
- * приехав к преподавателю, он рассказывал бы про образ, которого у того нет, и
- * запуск считал бы окружение готовым, не собрав ничего.
+ * kernel/environments/.<name>.built is the stamp "which package list is baked
+ * into the kernel image on THIS machine" (see .gitignore). Machine state, not
+ * source: arriving at the teacher's, it would speak of an image they do not
+ * have, and the launch would consider the environment ready without building
+ * anything.
  */
 const JUNK = new Set(['.DS_Store', '.vite'])
 function junk(source: string): boolean {
@@ -137,9 +141,9 @@ function weigh(target: string): { files: number; bytes: number } {
   return { files, bytes }
 }
 function human(bytes: number): string {
-  if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' МБ'
-  if (bytes >= 1024) return Math.round(bytes / 1024) + ' КБ'
-  return bytes + ' Б'
+  if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+  if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB'
+  return bytes + ' B'
 }
 
 const rootPkg = readJson(path.join(root, 'package.json'))
@@ -147,42 +151,43 @@ const serverPkg = readJson(path.join(root, 'server/package.json'))
 const version = String(rootPkg.version ?? '0.0.0')
 const dependencies = (serverPkg.dependencies ?? {}) as Record<string, string>
 
-// ---------------------------------------------------------------- сборка
+// ---------------------------------------------------------------- build
 
 if (!values['skip-build']) {
-  // Тот же конвейер, что зовёт сегодня colloq run: web/dist со сжатием и
-  // server/dist. Разница в том, что здесь он проходит ОДИН раз — у себя, а не у
-  // преподавателя на паре.
+  // The same pipeline that colloq run calls today: web/dist with compression
+  // and server/dist. The difference is that here it runs ONCE, on our side,
+  // not at the teacher's during class.
   run('npm', ['run', 'build:optimized'])
 }
 for (const required of ['web/dist/index.html', 'server/dist/server.js']) {
   if (!fs.existsSync(path.join(root, required)))
     throw new Error(
-      `Нечего паковать: нет ${required}. Уберите --skip-build или соберите: npm run build:optimized`,
+      `Nothing to pack: no ${required}. Drop --skip-build or build it: npm run build:optimized`,
     )
 }
 if (values['skip-build'])
-  console.log('— беру уже собранные web/dist и server/dist как есть (--skip-build)')
+  console.log('— taking the already built web/dist and server/dist as they are (--skip-build)')
 
 fs.rmSync(outDir, { recursive: true, force: true })
 fs.mkdirSync(appDir, { recursive: true })
 /*
- * dist-pkg игнорирует сам себя: в корневом .gitignore этого каталога нет, а
- * шесть мегабайт собранного фронтенда в `git status` — верный способ однажды
- * закоммитить их целиком.
+ * dist-pkg ignores itself: the root .gitignore does not list this directory,
+ * and six megabytes of built frontend in `git status` is a sure way to commit
+ * them whole one day.
  */
 fs.writeFileSync(path.join(outDir, '.gitignore'), '*\n')
 
 // ---------------------------------------------------------------- CLI
 
 /**
- * Точка входа бандла.
+ * The bundle's entry point.
  *
- * main.ts запускает себя сам, только если argv[1] кончается на cli/src/main.ts
- * или .js (main.ts:788) — бандл под именем colloq.mjs эту проверку не проходит
- * и молча выходит с нулём. Поэтому у дистрибутива своя точка входа, cli/src/bin.ts,
- * которая просто зовёт cli(). Пока её нет в дереве, собираем такую же на лету
- * из stdin: пакет от этого не зависит, а проверить упаковку можно уже сегодня.
+ * main.ts runs itself only if argv[1] ends in cli/src/main.ts or .js
+ * (main.ts:788): a bundle named colloq.mjs does not pass this check and
+ * silently exits with zero. So the distribution has its own entry point,
+ * cli/src/bin.ts, which simply calls cli(). While it is not in the tree, we
+ * build the same one on the fly from stdin: the package does not depend on it,
+ * and the packing can already be checked today.
  */
 const binFile = path.join(root, 'cli/src/bin.ts')
 const hasBin = fs.existsSync(binFile)
@@ -219,10 +224,11 @@ const cliBundle = await build({
 collectExternal(cliBundle.metafile)
 
 /*
- * launch.ts собирается отдельно, потому что и живёт отдельно: CLI запускает его
- * как самостоятельный процесс (cli/src/commands/local.ts · launch), и именно этот
- * процесс остаётся супервизором занятия — он держит расписку, pid-файл и ядра.
- * Одним бандлом их не склеить: у launch.ts свой main() на верхнем уровне.
+ * launch.ts is built separately because it also lives separately: the CLI
+ * starts it as a process of its own (cli/src/commands/local.ts · launch), and
+ * it is exactly this process that remains the supervisor of the class: it
+ * holds the receipt, the pid file and the kernels. They cannot be glued into
+ * one bundle: launch.ts has its own top-level main().
  */
 const launchBundle = await build({
   entryPoints: [path.join(root, 'cli/src/launch.ts')],
@@ -237,14 +243,14 @@ const launchBundle = await build({
 collectExternal(launchBundle.metafile)
 
 /*
- * Расписка внешнего адреса — третий отдельный бандл, и ровно по той же
- * причине, что и launch.mjs: её запускают процессом, а не импортируют.
- * Запускает её scripts/host.sh, и до сих пор — командой
- * `node --import tsx scripts/public-url-lease.mts`. В дистрибутиве tsx нет
- * вовсе: у локальной сессии первый же вызов (discover) умирал на «Cannot find
- * package 'tsx'», и вместе с ним умирала публикация. Бандл ложится рядом с
- * launch.mjs, а host.sh сам выбирает: есть файл — голый node, нет — прежний
- * tsx рядом с репозиторием.
+ * The external address receipt is a third separate bundle, for exactly the
+ * same reason as launch.mjs: it is started as a process, not imported.
+ * scripts/host.sh starts it, and until now it did so with the command
+ * `node --import tsx scripts/public-url-lease.mts`. The distribution has no
+ * tsx at all: in a local session the very first call (discover) died on
+ * "Cannot find package 'tsx'", and publishing died along with it. The bundle
+ * goes next to launch.mjs, and host.sh chooses on its own: if the file is
+ * there, plain node; if not, the old tsx next to the repository.
  */
 const leaseBundle = await build({
   entryPoints: [path.join(root, 'scripts/public-url-lease.mts')],
@@ -259,10 +265,11 @@ const leaseBundle = await build({
 collectExternal(leaseBundle.metafile)
 
 /*
- * Внешние имена бандлов обязаны найтись в node_modules, которые встанут по
- * app/package.json. Сегодня там dotenv и better-sqlite3; завтра кто-нибудь добавит в CLI
- * ещё одну библиотеку — и на машине преподавателя первый же запуск умрёт на
- * ERR_MODULE_NOT_FOUND, а не здесь. Пусть умирает здесь.
+ * The external names of the bundles must be found in the node_modules that
+ * app/package.json will install. Today those are dotenv and better-sqlite3;
+ * tomorrow someone adds one more library to the CLI, and on the teacher's
+ * machine the very first launch dies on ERR_MODULE_NOT_FOUND, not here. Let
+ * it die here.
  */
 const missing = [...external].filter((name) => {
   const owner = name.startsWith('@') ? name.split('/').slice(0, 2).join('/') : name.split('/')[0]
@@ -270,95 +277,101 @@ const missing = [...external].filter((name) => {
 })
 if (missing.length)
   throw new Error(
-    `CLI просит снаружи то, чего нет в зависимостях сервера: ${missing.join(', ')}. ` +
-      'Добавьте их в server/package.json или уберите из CLI.',
+    `The CLI asks from outside for what is not among the server's dependencies: ${missing.join(', ')}. ` +
+      'Add them to server/package.json or remove them from the CLI.',
   )
 
-// ---------------------------------------------------------------- куски
+// ---------------------------------------------------------------- pieces
 
 copyInto(path.join(root, 'server/dist'), path.join(appDir, 'server/dist'))
 copyInto(path.join(root, 'web/dist'), path.join(appDir, 'web/dist'))
-// Ядро приезжает исходником, а не образом: образ Python собирается на месте, из
-// этого Dockerfile и этих списков пакетов, и у каждого преподавателя он свой.
+// The kernel arrives as source, not as an image: the Python image is built on
+// the spot, from this Dockerfile and these package lists, and every teacher
+// has their own.
 for (const item of ['Dockerfile', 'requirements.txt', 'environments']) {
   copyInto(path.join(root, 'kernel', item), path.join(appDir, 'kernel', item))
 }
-// Шрифты для карточек ссылок (satori + resvg). Их читает сервер, и без них
-// превью комнаты молча выходит без текста.
+// Fonts for link cards (satori + resvg). The server reads them, and without
+// them the room preview silently comes out without text.
 if (fs.existsSync(path.join(root, 'server/assets')))
   copyInto(path.join(root, 'server/assets'), path.join(appDir, 'server/assets'))
-// Лицензия и чужие лицензии — в корень приложения, то есть внутрь колеса. MIT
-// требует, чтобы текст ехал с каждой копией, а колесо — копия; в бандлах при
-// этом лежат pdf.js, satori, resvg и шрифты под своими лицензиями, и
-// THIRD_PARTY_NOTICES.md — единственное место, где это сказано. В dist-info
-// hatchling их не положит: он ищет LICENSE рядом с pyproject.toml, в python/.
+// The license and the third-party licenses go to the application root, that
+// is, inside the wheel. MIT requires the text to travel with every copy, and a
+// wheel is a copy; the bundles also hold pdf.js, satori, resvg and fonts under
+// their own licenses, and THIRD_PARTY_NOTICES.md is the only place that says
+// so. hatchling will not put them into dist-info: it looks for LICENSE next to
+// pyproject.toml, in python/.
 for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
   const from = path.join(root, name)
-  if (!fs.existsSync(from)) throw new Error(`Нечего паковать: нет ${name} в корне репозитория`)
+  if (!fs.existsSync(from)) throw new Error(`Nothing to pack: no ${name} at the repository root`)
   copyInto(from, path.join(appDir, name))
 }
 
 /**
- * Скрипты эксплуатации — ровно те, которые зовут, и ровно те, которые зовут
- * они. Список составлен чтением, а не на глаз: каждая строка отвечает на
- * вопрос «кто его запускает».
+ * The ops scripts: exactly those that get called, and exactly those that they
+ * call in turn. The list was made by reading, not by eye: each line answers
+ * the question "who runs it".
  *
- * Лишнего здесь нет намеренно. vast.sh, relay-setup.sh, release.py и прочее
- * ставят и обслуживают ЧУЖИЕ машины — это работа мастерской, у неё есть
- * репозиторий. В колесо едет то, без чего не живёт машина преподавателя.
+ * Nothing extra is here on purpose. vast.sh, relay-setup.sh, release.py and
+ * the rest set up and maintain OTHER machines: that is the workshop's job, and
+ * it has the repository. The wheel carries what the teacher's machine cannot
+ * live without.
  */
 const SCRIPTS: Record<string, string> = {
-  // Единственная команда, которой класс получает ссылку: colloq host и
-  // colloq start --host — это он.
-  'host.sh': 'публикация занятия наружу',
-  // Его сорсят host.sh, dns.sh и restore.sh: чтение .env и корень состояния.
-  'lib.sh': 'общее чтение .env и каталог состояния',
-  // Прямой режим (colloq host --direct) пишет им A-запись.
-  'dns.sh': 'записи в зоне Cloudflare',
-  // host.sh отдаёт ему адрес на установке с k3s; из него же стоят и
-  // останавливаются службы, которых ждут backup и restore.
-  'cluster.sh': 'установка k3s: адрес, службы, состояние',
-  // Пара к colloq backup/restore целиком: сами команды и их помощники.
+  // The only command by which a class gets its link: colloq host and
+  // colloq start --host are this script.
+  'host.sh': 'publishing the class to the outside',
+  // Sourced by host.sh, dns.sh and restore.sh: reading .env and the state root.
+  'lib.sh': 'shared .env reading and the state directory',
+  // Direct mode (colloq host --direct) writes the A record with it.
+  'dns.sh': 'records in the Cloudflare zone',
+  // host.sh hands it the address on an installation with k3s; it also starts
+  // and stops the services that backup and restore wait for.
+  'cluster.sh': 'k3s installation: address, services, state',
+  // The whole pair for colloq backup/restore: the commands themselves and
+  // their helpers.
   //
-  // Локальная копия — единственная, что нужна преподавателю: переносимая
-  // копия k3s есть чем снять только там, где стоит кластер. Рецепт жил в
-  // Makefile, и `colloq backup` из колеса умирал на «make: command not
-  // found»; теперь это скрипт, и он едет сюда.
-  'backup-local.sh': 'копия занятия на этой машине: база и файлы',
-  'backup.sh': 'переносимая копия',
-  'restore.sh': 'разворачивание копии',
-  'runtime-backup.py': 'формат архива: сборка, проверка, разворачивание',
-  'state-lock.py': 'замок состояния: две копии разом не делаются',
+  // The local backup is the only one a teacher needs: a portable k3s backup
+  // can be taken only where the cluster runs. The recipe lived in the
+  // Makefile, and `colloq backup` from the wheel died on "make: command not
+  // found"; now it is a script, and it travels here.
+  'backup-local.sh': 'a backup of the class on this machine: database and files',
+  'backup.sh': 'portable backup',
+  'restore.sh': 'restoring a backup',
+  'runtime-backup.py': 'archive format: building, checking, restoring',
+  'state-lock.py': 'state lock: no two backups at once',
 }
 for (const [name, why] of Object.entries(SCRIPTS)) {
   const from = path.join(root, 'scripts', name)
-  // Переименованный или удалённый скрипт — это отказ сборки, а не колесо без
-  // него: пропажу всё равно нашли бы, но на паре и кодом 127.
-  if (!fs.existsSync(from)) throw new Error(`Нечего паковать: нет scripts/${name} — ${why}`)
+  // A renamed or deleted script is a build failure, not a wheel without it:
+  // the loss would be found anyway, but during class and with code 127.
+  if (!fs.existsSync(from)) throw new Error(`Nothing to pack: no scripts/${name} — ${why}`)
   copyInto(from, path.join(appDir, 'scripts', name))
 }
 
-// ------------------------------------------------------- package.json рядом
+// ------------------------------------------------------- package.json alongside
 
 /*
- * Три package.json, и каждый нужен.
+ * Three package.json files, and each one is needed.
  *
- * app/package.json — по нему `npm install --omit=dev` ставит node_modules
- * сервера. Зависимости берутся из server/package.json как есть.
+ * app/package.json: `npm install --omit=dev` installs the server's
+ * node_modules from it. The dependencies are taken from server/package.json
+ * as they are.
  *
- * app/cli/package.json и app/server/package.json — про "type": "module".
- * Формально хватило бы верхнего (Node ищет ближайший package.json вверх по
- * дереву), но оба каталога — это чужой код в чужих руках: стоит кому-нибудь
- * скопировать app/server отдельно, и .js-файл без "type" читается как CommonJS,
- * а он ESM. Заодно в app/cli лежит version: `colloq --version` читает её
- * из cli/package.json относительно корня приложения (cli/src/main.ts:229).
+ * app/cli/package.json and app/server/package.json are about "type":
+ * "module". Formally the top one would be enough (Node looks for the nearest
+ * package.json up the tree), but both directories are code in other people's
+ * hands: someone only has to copy app/server separately, and a .js file
+ * without "type" is read as CommonJS, while it is ESM. Also, app/cli holds
+ * version: `colloq --version` reads it from cli/package.json relative to the
+ * application root (cli/src/main.ts:229).
  */
 writeJson(path.join(appDir, 'package.json'), {
   name: 'colloq',
   version,
   private: true,
   type: 'module',
-  description: 'Colloq — собранное приложение. Зависимости ставит colloq при первом запуске.',
+  description: 'Colloq — the built application. colloq installs its dependencies on the first run.',
   dependencies,
 })
 writeJson(path.join(appDir, 'cli/package.json'), { name: 'colloq', version, type: 'module' })
@@ -369,7 +382,7 @@ writeJson(path.join(appDir, 'server/package.json'), {
   type: 'module',
 })
 
-// ---------------------------------------------------------------- штамп
+// ---------------------------------------------------------------- stamp
 
 const parts = [
   'cli/colloq.mjs',
@@ -390,7 +403,7 @@ writeJson(path.join(appDir, '.colloq-dist.json'), {
   builtAt,
   builtBy: 'scripts/pack.mts',
   node: process.version,
-  /* Куда смотреть тому, кто читает этот файл вместо того, чтобы гадать. */
+  /* Where to look, for whoever reads this file instead of guessing. */
   layout: {
     cli: 'cli/colloq.mjs',
     launch: 'cli/launch.mjs',
@@ -400,24 +413,26 @@ writeJson(path.join(appDir, '.colloq-dist.json'), {
     kernel: 'kernel',
     scripts: 'scripts',
   },
-  /* node_modules ставятся на месте: см. шапку этого файла и python/colloq/__main__.py. */
+  /* node_modules are installed on the spot: see the header of this file and python/colloq/__main__.py. */
   install: { manager: 'npm', args: ['install', '--omit=dev'], cwd: '.' },
   parts,
 })
 
-// ---------------------------------------------------------- бандл говорит
+// ---------------------------------------------------------- the bundle speaks
 
 /*
- * Собранный CLI обязан ответить на --help — и это не формальность.
+ * The built CLI must answer --help, and that is not a formality.
  *
- * main.ts запускает себя, только узнав своё имя в argv[1] (main.ts:788):
- * бандл под другим именем проходил эту проверку мимо и завершался кодом 0, не
- * напечатав ни строки. Молчание с нулём — худший из отказов: сборка зелёная,
- * колесо собрано, а команда «работает», ничего не делая. Поэтому бандл здесь
- * зовут по-настоящему и требуют слов.
+ * main.ts runs itself only on recognizing its own name in argv[1]
+ * (main.ts:788): a bundle under another name slipped past this check and
+ * exited with code 0 without printing a line. Silence with a zero is the worst
+ * of failures: the build is green, the wheel is built, and the command
+ * "works" while doing nothing. So here the bundle is called for real and
+ * required to say something.
  *
- * COLLOQ_HOME уводится во временный каталог: без него проверка завела бы у
- * сборщика настоящий ~/.colloq — состояние занятия там, где его не просили.
+ * COLLOQ_HOME is redirected to a temporary directory: without that the check
+ * would create a real ~/.colloq for whoever builds, class state where nobody
+ * asked for it.
  */
 const probeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-pack-'))
 try {
@@ -434,14 +449,15 @@ try {
   })
   if (probe.status !== 0 || !(probe.stdout ?? '').trim())
     throw new Error(
-      'Собранный CLI не ответил на --help ' +
-        `(код ${probe.status ?? 'сигнал'}). ${(probe.stderr ?? '').trim().slice(0, 400)}\n` +
-        'Похоже, точка входа не зовёт cli(): см. cli/src/bin.ts и хвост cli/src/main.ts.',
+      'The built CLI did not answer --help ' +
+        `(code ${probe.status ?? 'signal'}). ${(probe.stderr ?? '').trim().slice(0, 400)}\n` +
+        'It looks like the entry point does not call cli(): see cli/src/bin.ts and the tail of cli/src/main.ts.',
     )
   /*
-   * И версия — та самая, что в корневом package.json. `colloq --version` читает
-   * app/cli/package.json, записанный выше; проверка ловит день, когда кто-то
-   * поменяет, откуда он читает, а колесо уедет с «0.0.0» из запасной ветки.
+   * And the version is the very one in the root package.json. `colloq
+   * --version` reads app/cli/package.json, written above; the check catches the
+   * day someone changes where it reads from, and the wheel ships with "0.0.0"
+   * from the fallback branch.
    */
   const said = spawnSync(process.execPath, [path.join(appDir, 'cli/colloq.mjs'), '--version'], {
     cwd: appDir,
@@ -451,41 +467,44 @@ try {
   })
   if (said.status !== 0 || (said.stdout ?? '').trim() !== version)
     throw new Error(
-      `Собранный CLI назвал версию «${(said.stdout ?? '').trim()}» вместо ${version} ` +
-        `(код ${said.status ?? 'сигнал'}). ${(said.stderr ?? '').trim().slice(0, 400)}`,
+      `The built CLI named the version "${(said.stdout ?? '').trim()}" instead of ${version} ` +
+        `(code ${said.status ?? 'signal'}). ${(said.stderr ?? '').trim().slice(0, 400)}`,
     )
 } finally {
   fs.rmSync(probeHome, { recursive: true, force: true })
 }
 
-// ---------------------------------------------------------------- в питон
+// ---------------------------------------------------------------- into python
 
 if (!values['no-python']) {
   /*
-   * Колесо собирается из python/, и приложение обязано лежать ВНУТРИ пакета:
-   * hatchling кладёт в колесо то, что лежит под colloq/, а _app там и лежит.
-   * Каталог сносится целиком, а не докладывается поверх: иначе от прошлой
-   * сборки остались бы чужие assets-хеши, и колесо тащило бы оба набора.
+   * The wheel is built from python/, and the application must lie INSIDE the
+   * package: hatchling puts into the wheel what lies under colloq/, and that is
+   * where _app lies. The directory is wiped entirely rather than topped up:
+   * otherwise stale asset hashes from the previous build would remain, and the
+   * wheel would drag both sets along.
    */
   fs.rmSync(pythonApp, { recursive: true, force: true })
   copyInto(appDir, pythonApp)
-  // Версия пакета Python — из корневого package.json, одним числом на весь
-  // проект. pyproject.toml читает её отсюда (tool.hatch.version), поэтому
-  // разъехаться им негде. Текст файла — общий шаблон pythonVersionFile
-  // (scripts/version.mts): файл отслеживается git-ом, и в PR выпуска его же
-  // правит release-please — только число в строке с пометкой, которую шаблон
-  // и несёт. Потеряй упаковка пометку или шапку, каждый `make wheel` пачкал бы
-  // дерево, а следующий выпуск оставил бы _version.py на старом числе.
+  // The Python package version comes from the root package.json, one number
+  // for the whole project. pyproject.toml reads it from here
+  // (tool.hatch.version), so there is nowhere for them to drift apart. The
+  // file's text is the shared pythonVersionFile template (scripts/version.mts):
+  // the file is tracked by git, and in the release PR release-please edits it
+  // too, only the number on the line with the marker that the template
+  // carries. Should packing lose the marker or the header, every `make wheel`
+  // would dirty the tree, and the next release would leave _version.py at the
+  // old number.
   fs.writeFileSync(path.join(root, 'python/colloq/_version.py'), pythonVersionFile(version))
 }
 
-// ---------------------------------------------------------------- отчёт
+// ---------------------------------------------------------------- report
 
 const total = weigh(appDir)
-console.log(`\nColloq ${version} — дистрибутив собран: ${appDir}`)
+console.log(`\nColloq ${version} — distribution built: ${appDir}`)
 for (const part of parts)
   console.log(
-    `  ${part.path.padEnd(24)} ${String(part.files).padStart(5)} ф.  ${human(part.bytes)}`,
+    `  ${part.path.padEnd(24)} ${String(part.files).padStart(5)} files  ${human(part.bytes)}`,
   )
-console.log(`  ${'всего'.padEnd(24)} ${String(total.files).padStart(5)} ф.  ${human(total.bytes)}`)
-if (!values['no-python']) console.log(`\nВ пакете Python: ${pythonApp}\nКолесо: make wheel`)
+console.log(`  ${'total'.padEnd(24)} ${String(total.files).padStart(5)} files  ${human(total.bytes)}`)
+if (!values['no-python']) console.log(`\nIn the Python package: ${pythonApp}\nWheel: make wheel`)

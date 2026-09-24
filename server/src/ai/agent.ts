@@ -2,52 +2,58 @@ import { tr } from '@shared/i18n'
 import { appendActivity } from '../activity.js'
 import type { ActivityOutcome } from '@shared/activity'
 /**
- * Оракул, который не отвечает, а делает.
+ * The oracle that does not answer but acts.
  *
- * Обычный ход — это вопрос и ответ: модель говорит словами, а руки остаются у
- * человека. Здесь модель сама читает папку семинара, правит файлы и запускает
- * скрипты, а комната смотрит на ленту шагов, пока это происходит.
+ * An ordinary turn is a question and an answer: the model speaks in words, and
+ * the hands stay with the person. Here the model itself reads the seminar
+ * folder, edits files and runs scripts, and the room watches the feed of steps
+ * while this happens.
  *
- * Четыре решения, на которых всё держится.
+ * Four decisions that everything rests on.
  *
- * **Правки применяются сразу, а не предлагаются.** В режиме «спросить» оракул
- * предлагает — у патча есть кнопка «принять»; здесь нет, и это не
- * непоследовательность. Агент обязан посмотреть на собственную ошибку: написал,
- * запустил, увидел трейсбек, починил. Режим, где каждая правка ждёт нажатия,
- * этого не умеет — он не агент, а тот же ответ в другой обёртке. Взамен есть
- * возврат, и он у всех разный: файлам — снимок до хода и кнопка отмены под
- * ходом, тетради комнаты — отметка в истории версий, остальным тетрадям —
- * копия файла рядом, потому что истории у них нет вовсе (см. `safety`).
+ * **Edits are applied at once, not proposed.** In "Ask" mode the oracle
+ * proposes — a patch has an "accept" button; here it does not, and that is not
+ * inconsistency. An agent has to look at its own error: wrote, ran, saw the
+ * traceback, fixed. A mode where every edit waits for a click cannot do that —
+ * it is not an agent but the same answer in a different wrapper. In exchange
+ * there is a way back, and it differs for each: files get a snapshot from
+ * before the turn and an undo button under the turn, the room's notebook gets a
+ * mark in the version history, other notebooks get a copy of the file next to
+ * them, because they have no history at all (see `safety`).
  *
- * **Тетрадь правится ячейками, а не файлом.** Файл .ipynb — проекция: запись в
- * него вернулась бы обратно через полторы секунды и пропала бы молча. Поэтому у
- * тетради свои инструменты, и пишут они в документ комнаты — тем же путём,
- * каким пишет человек, и от имени того, кто попросил ход: по его правам (`edit`,
- * `structure`, замок на ячейке) и с его именем у версии в истории. Оракул здесь
- * руки человека, а не отдельное лицо со своими правами.
+ * **A notebook is edited by cells, not as a file.** The .ipynb file is a
+ * projection: a write into it would come back a second and a half later and
+ * vanish silently. So the notebook has its own tools, and they write into the
+ * room's document — the same way a person writes, and on behalf of whoever
+ * asked for the turn: by their rights (`edit`, `structure`, the lock on the
+ * cell) and with their name on the version in the history. The oracle here is
+ * the person's hands, not a separate party with rights of its own.
  *
- * **Обход не запрещаем, а называем вслух.** `write_file` по тетради откажет, а
- * `run_file` с питоновским скриптом — нет: запускать скрипты этому режиму
- * разрешено, и отнять это значило бы отнять половину работы. Значит, ловим не
- * запретом: отпечаток файла каждой тетради снимается до шага и после, и файл,
- * переписанный мимо комнаты, называется на том же шаге — модели и в ответе
- * хода. Иначе получается то, ради чего это и написано: «в тетради очищены
- * ячейки», а в тетради не изменилось ничего.
+ * **We do not forbid the bypass, we name it out loud.** `write_file` on a
+ * notebook will refuse, but `run_file` with a Python script will not: this mode
+ * is allowed to run scripts, and taking that away would take away half the
+ * work. So we catch it not with a ban: a fingerprint of every notebook's file
+ * is taken before a step and after it, and a file rewritten past the room is
+ * named on the same step — to the model and in the turn's answer. Otherwise you
+ * get exactly what this was written against: "cleared cells in the notebook",
+ * while nothing in the notebook changed.
  *
- * **Без потока.** Аргументы инструмента приезжают в потоке кусками
- * незавершённого JSON, и собирать их обратно приходится по-разному у разных
- * провайдеров — ровно та зависимость от конкретного эндпоинта, которой этот
- * продукт избегает. Прогресс показывает лента шагов, и «прочитал src/model.py»
- * полезнее половины предложения.
+ * **No streaming.** Tool arguments arrive in a stream as pieces of incomplete
+ * JSON, and reassembling them has to be done differently for different
+ * providers — exactly the dependence on a specific endpoint that this product
+ * avoids. Progress is shown by the feed of steps, and "read src/model.py" is
+ * more useful than half a sentence.
  *
- * **Удалять нельзя.** Ни файл, ни папку. Удаление в этом продукте — право
- * преподавателя при любых правилах, и отдать его модели значило бы отдать ей
- * то, чего нет и у комнаты. Опустошить файл она может — и это отменяется.
+ * **No deleting.** Neither a file nor a folder. Deleting in this product is a
+ * teacher's right under any rules, and giving it to the model would mean giving
+ * it what even the room does not have. It can empty a file — and that can be
+ * undone.
  *
- * Ячейка — исключение, и оно оплачено: `remove_cell` спрашивает то же правило
- * `structure`, что и рука человека, а то, что было до хода, лежит либо в
- * истории версий, либо копией файла рядом. Возврат есть у всякой ячейки — вся
- * разница в том, одна это кнопка или руки.
+ * A cell is the exception, and it is paid for: `remove_cell` asks the same
+ * `structure` rule as a person's hand, and what was there before the turn lies
+ * either in the version history or in a copy of the file next to it. Every cell
+ * has a way back — the whole difference is whether it is one button or manual
+ * work.
  */
 import { createHash } from 'node:crypto'
 import type * as Y from 'yjs'
@@ -123,28 +129,31 @@ import { recentTurns } from './index.js'
 
 const ORIGIN = 'server'
 
-/** Что сказать комнате про ошибку, у которой нет своих слов: читают её студенты. */
+/** What to tell the room about an error that has no words of its own: students read it. */
 const WENT_WRONG = () => tr("server.private.wentWrong")
 
-/** Сколько ждать один запуск. Дольше — это не «медленно», а «зависло». */
+/** How long to wait for one run. Longer is not "slow" but "hung". */
 const RUN_TIMEOUT_MS = 90_000
 
 /**
- * Сколько текста файла отдаём модели за раз — и почему это не одно число.
+ * How much of a file's text we give the model at a time — and why it is not
+ * one number.
  *
- * Стояло шестьдесят тысяч знаков — потолок, взятый под большое окно. Беда в
- * том, что прочитанное не уходит: оно остаётся в переписке и повторяется в
- * КАЖДОМ следующем шаге хода, много раз. Одного `read_file` хватало,
- * чтобы окно на 8k токенов переполнилось на втором шаге, `completeWithTools`
- * бросил 400 и ход оборвался, — а сделанные до этого правки уже лежали в
- * файлах, и объяснить их было некому.
+ * It used to be sixty thousand characters — a ceiling taken for a big window.
+ * The trouble is that what was read does not go away: it stays in the
+ * conversation and is repeated in EVERY following step of the turn, many
+ * times. One `read_file` was enough for an 8k-token window to overflow on the
+ * second step, `completeWithTools` threw 400 and the turn broke off — while
+ * the edits made before that already sat in the files, and there was nobody to
+ * explain them.
  *
- * Потому потолок считается от `contextChars`: четверть бюджета, который
- * преподаватель поставил под свою модель. Четверть — чтобы в ту же переписку
- * поместились ещё три таких чтения, а дальше их подчищает `budgetTools`. При
- * потолке инстанса в 100 000 это до 25 000 знаков за раз, при умолчании в
- * 20 000 — пять тысяч, то есть сто тридцать строк: столько и читают глазами,
- * когда спрашивают «почему тут падает».
+ * So the ceiling is counted from `contextChars`: a quarter of the budget the
+ * teacher set for their model. A quarter so that three more such reads fit
+ * into the same conversation, and after that `budgetTools` cleans them up.
+ * With an instance ceiling of 100 000 that is up to 25 000 characters at a
+ * time; with the default of 20 000, five thousand, that is, a hundred and
+ * thirty lines: about as much as people read by eye when they ask "why does it
+ * fail here".
  */
 const MIN_READ = 12_000
 
@@ -152,43 +161,46 @@ function maxRead(): number {
   return Math.max(MIN_READ, Math.floor(getOracleSettings().contextChars / 2))
 }
 
-/** Прочитанное — до потолка; про обрезку сказано вслух, чтобы модель не дописывала конец. */
+/** Read text up to the ceiling; the cut is stated so the model does not make up the end. */
 function clipRead(text: string): string {
   const room = maxRead()
   return text.length > room ? text.slice(0, room) + tr("server.truncated.fdb0c3") : text
 }
 
 /**
- * Сколько знаков переписки ход уносит с собой — отдельно от кадра.
+ * How many characters of conversation the turn carries with it — separately
+ * from the frame.
  *
- * `contextChars` — это бюджет КАДРА: тетради, файлы, вывод ячеек, всё, что
- * `buildContext` укладывает в один системный блок. Ответы инструментов
- * считались тем же числом, и получалось, что одно и то же число стоит в двух
- * местах и значит разное: при потолке в 20 000 кадр съедал двадцать тысяч, а
- * ответы инструментов — ещё двадцать, и «уложились в бюджет» было неправдой
- * вдвое. Здесь это названо своим числом: переписка живёт дольше кадра (её
- * читают все шаги хода подряд), поэтому её бюджет вдвое больше, и общая
- * граница хода — три `contextChars`, а не два неизвестно чего.
+ * `contextChars` is the budget of the FRAME: notebooks, files, cell output,
+ * everything `buildContext` packs into one system block. Tool replies were
+ * counted with the same number, and so one and the same number stood in two
+ * places and meant different things: with a ceiling of 20 000 the frame ate
+ * twenty thousand and the tool replies another twenty, and "stayed within the
+ * budget" was untrue by a factor of two. Here it is named with its own number:
+ * the conversation lives longer than the frame (every step of the turn reads
+ * it in a row), so its budget is twice as large, and the turn's overall bound
+ * is three `contextChars`, not two of who knows what.
  */
 function toolChars(): number {
   return getOracleSettings().contextChars * 2
 }
 
 /**
- * Кусок текста по строкам — и слова о том, что осталось.
+ * A piece of text by lines — and words about what is left.
  *
- * Потолок чтения был один на файл: «первые N знаков, дальше обрезано», и
- * дальше у модели не было дороги вовсе — она либо дописывала конец файла сама,
- * либо звала `read_file` ещё раз и получала то же начало. Страницы дешевле
- * большого потолка: восемьсот строк лога стоят одного шага по сто строк там,
- * где нужен хвост, а не весь файл.
+ * The read ceiling used to be one per file: "the first N characters, the rest
+ * truncated", and beyond that the model had no road at all — it either wrote
+ * the end of the file itself or called `read_file` again and got the same
+ * beginning. Pages are cheaper than a big ceiling: eight hundred lines of a log
+ * cost one step of a hundred lines where the tail is needed, not the whole
+ * file.
  */
 interface Page {
-  /** Что едет модели. */
+  /** What goes to the model. */
   text: string
-  /** Строка для ленты шагов. */
+  /** A line for the feed of steps. */
   note: string
-  /** Что показали и как взять остальное; пусто, когда показали всё. */
+  /** What was shown and how to get the rest; empty when everything was shown. */
   rest: string
 }
 
@@ -199,18 +211,19 @@ function pageOfLines(text: string, args: Record<string, unknown>, path: string):
   const asked = intArg(args.offset, 0)
   const wanted = intArg(args.limit, 0)
   /*
-   * Отрицательное смещение — с конца.
+   * A negative offset counts from the end.
    *
-   * Так читают ровно одно: хвост лога и хвост трейсбека, то есть то место, где
-   * поломка и лежит. Без него модель читала файл с начала страницами до конца —
-   * шесть шагов хода ради последних тридцати строк.
+   * That is how exactly one thing is read: the tail of a log and the tail of a
+   * traceback, that is, the place where the breakage lies. Without it the model
+   * read the file from the start page by page to the end — six steps of the
+   * turn for the last thirty lines.
    */
   const from = asked < 0 ? Math.max(0, total + asked) : Math.min(Math.max(0, asked), total)
   let to = wanted > 0 ? Math.min(total, from + wanted) : total
   /*
-   * Режем по строкам, а не по знакам: половина строки в ответе — это строка,
-   * которую модель допишет по догадке и ошибётся, а `find` у `edit_file`
-   * промахнётся по ней молча.
+   * We cut by lines, not by characters: half a line in the answer is a line the
+   * model will finish by guesswork and get wrong, and `edit_file`'s `find` will
+   * silently miss it.
    */
   let used = 0
   let kept = 0
@@ -221,13 +234,13 @@ function pageOfLines(text: string, args: Record<string, unknown>, path: string):
   }
   to = from + kept
   /*
-   * И жёсткий потолок по знакам поверх строк.
+   * And a hard ceiling by characters on top of the lines.
    *
-   * Одна строка всегда остаётся, иначе страница бывает пустой, — а одна строка
-   * бывает и в двести килобайт: свёрнутый в строку JSON, датасет одной строкой,
-   * минифицированный файл. Без этой обрезки такой файл проезжал бы мимо всякого
-   * бюджета и переполнял окно на первом же шаге. Про обрезку сказано вслух —
-   * теми же словами, что и раньше.
+   * One line always stays, otherwise a page can be empty — and one line can be
+   * two hundred kilobytes: JSON collapsed into a line, a dataset on one line, a
+   * minified file. Without this cut such a file would slip past any budget and
+   * overflow the window on the very first step. The cut is stated out loud — in
+   * the same words as before.
    */
   const page = lines.slice(from, to).join('\n')
   const shown = page.length > room ? page.slice(0, room) + tr("server.truncated.fdb0c3") : page
@@ -246,8 +259,8 @@ function pageOfLines(text: string, args: Record<string, unknown>, path: string):
 
 function intArg(value: unknown, fallback: number): number {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
-  // Модели присылают числа строкой чаще, чем хотелось бы: отказывать в ответ на
-  // "offset": "130" значит потратить шаг хода на разбор кавычек.
+  // Models send numbers as strings more often than one would like: refusing
+  // "offset": "130" means spending a turn step on parsing quotes.
   if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) {
     return Math.trunc(Number(value))
   }
@@ -255,27 +268,30 @@ function intArg(value: unknown, fallback: number): number {
 }
 
 /**
- * Уложить переписку хода в окно модели.
+ * Fit the turn's conversation into the model's window.
  *
- * Кадр (`buildContext`) в `contextChars` уложен, а ответы инструментов — нет:
- * они копятся шаг за шагом и уезжают провайдеру целиком на каждом. Значит,
- * лишнее из переписки надо убирать — вопрос только в том, как именно.
+ * The frame (`buildContext`) fits into `contextChars`, but tool replies do not:
+ * they pile up step by step and go to the provider in full on every step. So
+ * the excess has to be removed from the conversation — the only question is
+ * how exactly.
  *
- * Убираются ЦЕЛЫЕ пачки с начала, а не содержимое посередине. Прежний код
- * переписывал i-е сообщение в одну строку «(содержимое опущено)», и это ломало
- * две вещи сразу. Первая — кеш промпта: у всех эндпоинтов, которые его умеют,
- * он считается по префиксу, а правка в середине переписки делает
- * недействительным весь хвост за ней, на каждом шаге в новом месте; ход из
- * двадцати шагов платил полную цену двадцать раз. Вторая — форма запроса:
- * опустошалась реплика инструмента, а вызов, на который она отвечает,
- * оставался, так что модель видела свой вызов без ответа и звала то же самое
- * снова. Пачка уходит вместе со своим вызовом — переписка остаётся связной, а
- * у каждого пережившего сообщения текст ровно тот же, что и был.
+ * WHOLE batches are removed from the start, not contents in the middle. The old
+ * code rewrote the i-th message into a single line "(contents omitted)", and
+ * that broke two things at once. The first is the prompt cache: on every
+ * endpoint that supports it, it is keyed by prefix, and an edit in the middle
+ * of the conversation invalidates the whole tail after it, in a new place on
+ * every step; a turn of twenty steps paid the full price twenty times. The
+ * second is the shape of the request: the tool reply was emptied while the
+ * call it answers remained, so the model saw its call without an answer and
+ * called the same thing again. A batch goes together with its call — the
+ * conversation stays coherent, and every surviving message has exactly the
+ * same text it had.
  *
- * Последняя пачка не трогается никогда: она и есть то, что модель только что
- * попросила, и ход без неё пошёл бы по кругу. Отказы тоже не трогаются — см.
- * `keep`: правило, узнанное ходом («так нельзя, сделайте иначе»), стоит
- * дороже прочитанного файла, потому что забытый отказ модель нарушает заново.
+ * The last batch is never touched: it is exactly what the model just asked
+ * for, and without it the turn would go in circles. Refusals are not touched
+ * either — see `keep`: a rule the turn has learned ("that is not allowed, do it
+ * differently") is worth more than a file that was read, because a forgotten
+ * refusal is one the model breaks again.
  */
 const OMITTED =
   () => tr("server.private.omitted")
@@ -289,7 +305,7 @@ function budgetTools(messages: ChatTurn[], budget: number, keep: ReadonlySet<str
     )
   let used = weigh()
   if (used <= budget) return
-  // Одна метка на всю переписку: две подряд говорят то же самое и стоят места.
+  // One marker for the whole conversation: two in a row say the same thing and cost space.
   let marked = messages.some(
     (turn) => turn.callId === undefined && !turn.calls && turn.content === OMITTED(),
   )
@@ -303,7 +319,7 @@ function budgetTools(messages: ChatTurn[], budget: number, keep: ReadonlySet<str
     const ids = new Set(turn.calls.map((call) => call.id))
     let end = i + 1
     while (end < messages.length && messages[end].callId && ids.has(messages[end].callId!)) end += 1
-    // Пачка, доходящая до конца переписки, и есть последняя: её не трогаем.
+    // A batch that reaches the end of the conversation is the last one: we leave it alone.
     if (end >= messages.length) break
     if (turn.calls.some((call) => keep.has(call.id))) {
       i = end
@@ -322,14 +338,16 @@ function budgetTools(messages: ChatTurn[], budget: number, keep: ReadonlySet<str
 }
 
 /**
- * Сколько записей треда комнаты берёт ход — и почему меньше, чем берёт вопрос.
+ * How many entries of the room's thread a turn takes — and why fewer than a
+ * question takes.
  *
- * Тред (`recentTurns`) не считался вообще: он клался в переписку целиком и
- * жил в ней все двадцать шагов хода, рядом с ответами инструментов, за которые
- * бюджет уже борется. Ходу он нужен меньше, чем вопросу: вопрос продолжает
- * разговор, а ход получает поручение и работает по тетради, которая у него
- * перед глазами в кадре. Три последних обмена — это «как мы сюда пришли»,
- * дальше — чужой разбор недельной давности.
+ * The thread (`recentTurns`) was not counted at all: it was put into the
+ * conversation whole and lived there for all twenty steps of the turn, next to
+ * the tool replies that the budget is already fighting over. A turn needs it
+ * less than a question does: a question continues a conversation, while a
+ * turn gets a task and works on the notebook that is right in front of it in
+ * the frame. The last three exchanges are "how we got here"; beyond that is
+ * someone else's walkthrough from a week ago.
  */
 const THREAD_TURNS_IN_WORK = 3
 
@@ -344,48 +362,51 @@ function threadForWork(history: ChatTurn[]): ChatTurn[] {
     )
 }
 
-/** Сколько хвоста вывода кладём в ленту шагов и отдаём модели. */
+/** How much of the output's tail we put into the feed of steps and give the model. */
 const MAX_OUTPUT = 4_000
 
 /**
- * Сколько строк дерева файлов уезжает модели.
+ * How many lines of the file tree go to the model.
  *
- * `listFiles` держит две тысячи строк — это потолок для панели, которая рисует
- * дерево один раз. Здесь список ложится в переписку и повторяется в КАЖДОМ
- * следующем шаге хода, много раз: распакованный датасет стоил бы
- * дороже всей остальной работы и переполнил бы окно небольшой модели на
- * третьем шаге. Из каждой папки едет начало, про остальное сказано числом.
+ * `listFiles` holds two thousand lines — that is the ceiling for the panel,
+ * which draws the tree once. Here the list goes into the conversation and is
+ * repeated in EVERY following step of the turn, many times: an unpacked
+ * dataset would cost more than all the rest of the work and would overflow a
+ * small model's window on the third step. Each folder sends its beginning, and
+ * the rest is stated as a number.
  */
 const MAX_TREE_LINES = 200
 const MAX_PER_DIR = 20
 
-/* ----------------------------------------------------------------- отмена */
+/* ----------------------------------------------------------------- undo */
 
-/** Каким файл был до хода и каким его оставил ход. */
+/** What a file was like before the turn and how the turn left it. */
 interface Snapshot {
-  /** Текст до хода. `null` — файла не было вовсе: отмена его опустошит. */
+  /** Text before the turn. `null` means there was no file: undo will empty it. */
   was: string | null
   /**
-   * Текст, которым ход закончил.
+   * The text the turn finished with.
    *
-   * Ради этого поля отмена перестала быть слепой: если сейчас в файле лежит не
-   * он, значит после хода файл правил человек — и «вернуть как было» стёрло бы
-   * его работу. `null` — записать не удалось, возвращать нечего.
+   * Thanks to this field undo stopped being blind: if the file now holds
+   * something else, a person edited the file after the turn — and "put it back
+   * as it was" would erase their work. `null` means the write failed, and there
+   * is nothing to put back.
    */
   left: string | null
 }
 
 /**
- * Что было в файлах до хода — чтобы было куда вернуться.
+ * What was in the files before the turn — so there is somewhere to go back to.
  *
- * В памяти процесса, а не в базе, и это названная цена: перезапуск сервера
- * уносит отменяемость вместе с очередью запуска и общим экраном. Ход, который
- * уже посмотрели и оставили, от этого не страдает; страдает тот, кто ушёл
- * пить чай ровно в момент перезапуска.
+ * In process memory, not in the database, and that is a named price: a server
+ * restart takes the ability to undo along with the run queue and the shared
+ * screen. A turn that was already looked at and kept does not suffer from
+ * this; the one who suffers is whoever went for tea exactly at the moment of
+ * the restart.
  */
 const before = new Map<string, Map<string, Snapshot>>()
 
-/** Ходов на комнату, дальше самые старые забываются. */
+/** Turns per room; beyond that the oldest are forgotten. */
 const MAX_REMEMBERED_TURNS = 20
 
 function remember(sessionId: string, entryId: string, path: string, text: string | null): void {
@@ -397,28 +418,29 @@ function remember(sessionId: string, entryId: string, path: string, text: string
     const mine = [...before.keys()].filter((other) => other.startsWith(`${sessionId}\u0000`))
     while (mine.length > MAX_REMEMBERED_TURNS) before.delete(mine.shift()!)
   }
-  // Только первый раз: отменять надо к тому, что было ДО хода, а не до
-  // последней из его правок.
+  // Only the first time: undo has to go back to what was there BEFORE the
+  // turn, not before the last of its edits.
   if (!files.has(path)) files.set(path, { was: text, left: null })
 }
 
-/** Чем ход закончил этот файл — с этим отмена и сверяется. */
+/** What the turn left this file with — undo checks against this. */
 function leftBehind(sessionId: string, entryId: string, path: string, text: string): void {
   const seen = before.get(`${sessionId}\u0000${entryId}`)?.get(path)
   if (seen) seen.left = text
 }
 
 /**
- * Вернуть файлы к тому, что было до хода.
+ * Return the files to what they were before the turn.
  *
- * Возвращает число тронутых файлов, или `null`, если возвращать нечего —
- * например, сервер перезапускали.
+ * Returns the number of files touched, or `null` if there is nothing to put
+ * back — for example, the server was restarted.
  *
- * Возвращаются только те файлы, которых после хода никто не касался. Кнопка
- * живёт в треде до конца пары, и ход часовой давности иначе переписывал бы
- * поверх всего, что человек написал после него, — молча и безвозвратно:
- * истории версий у файлов рабочей папки нет. Рядом, у предложения для ячейки,
- * ровно такая проверка есть и называется тем же словом: с тех пор изменилось.
+ * Only files that nobody has touched since the turn are put back. The button
+ * lives in the thread until the end of the class, and an hour-old turn would
+ * otherwise overwrite everything the person wrote after it — silently and
+ * irreversibly: files in the working folder have no version history. Next
+ * door, for a cell proposal, exactly this check exists and is called by the
+ * same word: changed since.
  */
 export function undoTurn(sessionId: string, entryId: string, by: string): number | null {
   const key = `${sessionId}\u0000${entryId}`
@@ -432,11 +454,12 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
   const failed: string[] = []
   for (const [path, snapshot] of files) {
     /*
-     * `null` — файла на этом пути больше нет: его переименовали или убрали.
-     * Тогда возвращать нечего и незачем: запись завела бы призрак рядом с
-     * настоящим файлом, а если на старое имя успели завести новый — стёрла бы
-     * его. Чужой текст на месте нашего значит то же самое: файл правили после
-     * хода, и отмена стёрла бы эту правку.
+     * `null` means the file is no longer at this path: it was renamed or
+     * removed. Then there is nothing to put back and no reason to: a write
+     * would create a ghost next to the real file, and if a new one was already
+     * created under the old name, it would erase it. Someone else's text in
+     * place of ours means the same thing: the file was edited after the turn,
+     * and undo would erase that edit.
      */
     const now = currentText(sessionId, path)
     if (now === null || snapshot.left === null || now !== snapshot.left) {
@@ -444,9 +467,9 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
       files.delete(path)
       continue
     }
-    // Файла до хода не было: оракул его завёл. Убирать его целиком — не наше
-    // право (удаление в этой комнате преподавательское и проходит через
-    // дерево), поэтому он остаётся пустым — и это видно.
+    // There was no file before the turn: the oracle created it. Removing it
+    // entirely is not our right (deleting in this room is the teacher's and
+    // goes through the tree), so it stays empty — and that is visible.
     if (!putText(sessionId, path, snapshot.was ?? '')) {
       failed.push(path)
       continue
@@ -457,8 +480,9 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
   if (files.size === 0) before.delete(key)
   doc.transact(() => {
     if (skipped.length > 0) {
-      // Тред пишет «файлы вернулись к тому, что было»; про те, что не
-      // вернулись, надо сказать здесь, иначе подпись под ходом соврёт.
+      // The thread says "the files are back to what they were"; about the ones
+      // that did not come back we have to say it here, or the caption under
+      // the turn will lie.
       const answer = chatAnswer(entry)
       answer.insert(
         answer.length,
@@ -477,16 +501,19 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
 }
 
 /**
- * Комнаты в памяти больше нет — помнить нечего и работать не для кого.
+ * The room is no longer in memory — nothing to remember and nobody to work
+ * for.
  *
- * Зовётся из `dropSessionDoc`, где всё про то, чтобы удаление стало
- * окончательным. Идущий ход обрывается здесь же: без этого он ещё десяток
- * шагов писал бы файлы и поднимал контейнер комнаты, которой больше нет.
+ * Called from `dropSessionDoc`, which is all about making deletion final. A
+ * running turn is aborted right here: without that it would spend another
+ * dozen steps writing files and starting up the container of a room that no
+ * longer exists.
  *
- * Второй зовущий — `evictRoom` в `collab/index.ts`, и там комнату не удалили,
- * а отпустили из памяти после десяти минут пустоты: снимок «как было до хода»
- * уходит вместе с ней, поэтому кнопка в треде остаётся, а отменять уже нечего —
- * отказ на неё написан словами в `ai:undo` (`control.ts`).
+ * The second caller is `evictRoom` in `collab/index.ts`, and there the room was
+ * not deleted but released from memory after ten minutes of emptiness: the "as
+ * it was before the turn" snapshot goes with it, so the button in the thread
+ * stays, but there is nothing left to undo — the refusal for it is written in
+ * words in `ai:undo` (`control.ts`).
  */
 export function forgetUndo(sessionId: string): void {
   for (const key of [...before.keys()]) {
@@ -498,15 +525,15 @@ export function forgetUndo(sessionId: string): void {
   stopAll(sessionId)
 }
 
-/* ------------------------------------------------------------ инструменты */
+/* ------------------------------------------------------------ tools */
 
 /**
- * Инструменты — списком, который строится на каждый ход.
+ * Tools — as a list built for every turn.
  *
- * Не константой: описания уезжают модели, а язык инстанса меняется на ходу
- * (`tr` читает его при каждом обращении). Константа, посчитанная на импорте,
- * держала бы язык, который стоял в момент запуска сервера, — то самое
- * расхождение, из-за которого английский инстанс получал русские подсказки.
+ * Not a constant: the descriptions go to the model, and the instance language
+ * changes on the fly (`tr` reads it on every call). A constant computed at
+ * import would hold the language that was set when the server started — the
+ * very mismatch that gave an English instance Russian hints.
  */
 function fileTools(): ToolSpec[] {
   return [
@@ -566,12 +593,12 @@ function fileTools(): ToolSpec[] {
 }
 
 /**
- * Инструменты по ячейкам — те, что правят тетрадь.
+ * Cell tools — the ones that edit the notebook.
  *
- * Отдельным списком, потому что достаются не всем: их получает тот, кому в этой
- * комнате можно править тетрадь своими руками. Участнику в лекции их не видно
- * вовсе — предложить инструмент, который ответит отказом, значит потратить шаг
- * хода на то, чтобы узнать правило, известное заранее.
+ * A separate list, because not everyone gets them: they go to whoever may edit
+ * the notebook with their own hands in this room. A participant in a lecture
+ * does not see them at all — offering a tool that will answer with a refusal
+ * means spending a turn step on learning a rule known in advance.
  */
 function cellTools(): ToolSpec[] {
   return [
@@ -614,18 +641,19 @@ function cellTools(): ToolSpec[] {
 }
 
 /**
- * Завести тетрадь.
+ * Create a notebook.
  *
- * Того, ради чего этот инструмент написан, в режиме не было вовсе: попросили
- * «сделай простейшую тетрадь», а завести её было нечем. Модель делала
- * единственное, что оставалось, — писала .ipynb через `write_file`, получала
- * тихий успех (файл-то записался) и дальше упиралась в `add_cell`, который про
- * этот файл ничего не знает: тетрадь комнаты — это запись в документе, а не
- * JSON на диске. Один вызов закрывает весь этот тупик.
+ * What this tool was written for did not exist in the mode at all: someone
+ * asked to "make the simplest notebook", and there was nothing to create it
+ * with. The model did the only thing left — wrote an .ipynb through
+ * `write_file`, got a quiet success (the file did get written) and then ran
+ * into `add_cell`, which knows nothing about that file: a room notebook is an
+ * entry in the document, not JSON on disk. One call closes this whole dead end.
  *
- * Право — не одно, а два, и оба уже есть у человека рядом: `files` (завести
- * файл) и `structure` с мерой `add` (добавить в тетрадь). Заводить тетрадь,
- * в которую потом нельзя добавить ячейку, незачем.
+ * The right is not one but two, and the person next door already has both:
+ * `files` (create a file) and `structure` with the `add` measure (add to the
+ * notebook). There is no point in creating a notebook that cells cannot then
+ * be added to.
  */
 function createNotebookTool(): ToolSpec {
   return {
@@ -640,14 +668,14 @@ function createNotebookTool(): ToolSpec {
 }
 
 /**
- * Запустить одну ячейку и посмотреть, что получилось.
+ * Run one cell and see what came of it.
  *
- * Без него у хода не было способа проверить код тетради: `run_file` запускает
- * скрипт, и модель, которой велели «запустите и убедитесь», переписывала код
- * тетради в .py — то есть делала вторую копию того же кода, проверяла её и
- * отчитывалась про тетрадь. Ячейка ставится в ту же очередь и тем же путём,
- * каким её ставит человек кнопкой Run: от имени просящего, по его правилу
- * `run`, с его местом в очереди.
+ * Without it the turn had no way to check the notebook's code: `run_file` runs
+ * a script, and a model told to "run it and make sure" rewrote the notebook's
+ * code into a .py — that is, made a second copy of the same code, checked it
+ * and reported on the notebook. The cell is put into the same queue the same
+ * way a person puts it with the Run button: on behalf of the asker, by their
+ * `run` rule, with their place in the queue.
  */
 function runCellTool(): ToolSpec {
   return {
@@ -661,7 +689,7 @@ function runCellTool(): ToolSpec {
   }
 }
 
-/** Чтение тетради — всем, кому вообще дали ход: тетрадь и так у комнаты перед глазами. */
+/** Reading notebooks: for anyone given a turn at all — the room sees the notebook anyway. */
 function readNotebookTool(): ToolSpec {
   return {
     name: 'read_notebook',
@@ -680,14 +708,14 @@ function readNotebookTool(): ToolSpec {
 }
 
 /**
- * Чем этот человек работает в этом ходе.
+ * What this person works with in this turn.
  *
- * Считается один раз на ход, а не на шаг: правила могут поменяться посреди
- * работы, и на этот случай каждый инструмент спрашивает их ещё раз у себя —
- * список нужен модели, а не для проверки.
+ * Computed once per turn, not per step: the rules can change in the middle of
+ * the work, and for that case every tool asks for them again on its own — the
+ * list is for the model, not for checking.
  *
- * Экспортируется ради теста: «участнику в лекции инструментов не видно» — это
- * про список, и проверить его иначе, чем спросив, нечем.
+ * Exported for the test: "a participant in a lecture sees no tools" is about
+ * the list, and there is no way to check it other than asking.
  */
 export function toolsFor(hands: Hands): ToolSpec[] {
   const doc = peekSessionDoc(hands.sessionId)?.doc
@@ -696,18 +724,19 @@ export function toolsFor(hands: Hands): ToolSpec[] {
     tool.name === 'edit_cell' ? rights.edit : tool.name === 'add_cell' ? rights.add : rights.remove,
   )
   /*
-   * Файлы и запуск — по тем же правилам комнаты, что и у пальцев просящего.
+   * Files and running — by the same room rules as the asker's own fingers.
    *
-   * Список режется по тому же доводу, что и у ячеек: инструмент, который
-   * ответит отказом, стоит шага хода на то, чтобы узнать правило, известное
-   * заранее. Смотреть можно всегда — `list_files` и `read_file` не правят
-   * ничего, а правило `files` в этом продукте про запись.
+   * The list is cut for the same reason as with cells: a tool that will answer
+   * with a refusal costs a turn step spent learning a rule known in advance.
+   * Looking is always allowed — `list_files` and `read_file` edit nothing, and
+   * the `files` rule in this product is about writing.
    */
   const rules: RoomRules = getRules(hands.sessionId)
   const mayWrite = allows(rules.files, hands.role)
-  // Запуск ячейки — «хоть где-нибудь»: своя тетрадь считает и в лекции.
-  // Запуск ФАЙЛА остаётся комнатным: скрипт из дерева — это ядро комнаты, а
-  // не чья-то тетрадь, и личная тетрадь его не открывает.
+  // Running a cell — "anywhere at all": one's own notebook runs even in a
+  // lecture. Running a FILE stays at room level: a script from the tree is the
+  // room's kernel, not somebody's notebook, and a personal notebook does not
+  // open it.
   const mayRun = allowsRun(rules.run, hands.role, 'one')
   const mayRunCells = mayRunAnyBook(hands, doc)
   const files = fileTools().filter((tool) =>
@@ -719,8 +748,8 @@ export function toolsFor(hands: Hands): ToolSpec[] {
   )
   return [
     ...files,
-    // Завести тетрадь — это и файл, и структура: без второго права новая
-    // тетрадь осталась бы пустой навсегда.
+    // Creating a notebook is both a file and structure: without the second
+    // right the new notebook would stay empty forever.
     ...(mayWrite && rights.add ? [createNotebookTool()] : []),
     readNotebookTool(),
     ...(mayRunCells ? [runCellTool()] : []),
@@ -729,27 +758,27 @@ export function toolsFor(hands: Hands): ToolSpec[] {
 }
 
 export interface Ran {
-  /** Что показать в ленте шагов. */
+  /** What to show in the feed of steps. */
   step: AgentStep
-  /** Что сказать модели. */
+  /** What to tell the model. */
   said: string
   /**
-   * Инструмент отказал или упал.
+   * The tool refused or failed.
    *
-   * Нужно ровно одному месту — `budgetTools`: отказ из переписки не выбрасывают.
-   * Прочитанный файл модель перечитает одним шагом, а забытое правило («тетрадь
-   * файлом не правят») она нарушит заново — и потратит на это не шаг, а весь
-   * остаток хода, второй раз подряд.
+   * Needed in exactly one place — `budgetTools`: a refusal is not thrown out of
+   * the conversation. The model will re-read a file it read in one step, but a
+   * forgotten rule ("a notebook is not edited as a file") it will break again —
+   * and spend on it not a step but the whole rest of the turn, twice in a row.
    */
   failed?: boolean
   /**
-   * Ещё один шаг в ленту — рядом с первым, а не вместо него.
+   * One more step in the feed — next to the first, not instead of it.
    *
-   * Нужно двум местам, и обоим по одной причине: у шага есть то, что инструмент
-   * СДЕЛАЛ, и то, что при этом случилось мимо него. «Запустил train.py, код
-   * выхода 0» и «скрипт снёс data.csv» — это две разные строки в ленте, и
-   * склеенные в одну они читаются как подробность запуска, а не как то, ради
-   * чего эту проверку писали.
+   * Needed in two places, and in both for one reason: a step has what the tool
+   * DID and what happened past it along the way. "Ran train.py, exit code 0"
+   * and "the script wiped data.csv" are two different lines in the feed, and
+   * glued into one they read as a detail of the run rather than as the thing
+   * this check was written for.
    */
   also?: AgentStep
 }
@@ -759,27 +788,28 @@ export interface Hands {
   entryId: string
   by: { name: string; color: string; participantId: string }
   /**
-   * Роль того, кто попросил ход, — та же, с которой он сам нажимает кнопки.
+   * The role of whoever asked for the turn — the same one they press buttons
+   * with themselves.
    *
-   * Приезжает от маршрута, а не спрашивается у базы: в таблице лежит роль, с
-   * которой человек вошёл в комнату, а действует он с ЭФФЕКТИВНОЙ (см.
-   * `roleFor` в routes/sessions.ts). Преподаватель, открывший свою же лекцию по
-   * ссылке из чата, в таблице участник — и его собственная тетрадь оказалась бы
-   * для его же оракула чужой.
+   * Comes from the route rather than being asked of the database: the table
+   * holds the role the person entered the room with, while they act with the
+   * EFFECTIVE one (see `roleFor` in routes/sessions.ts). A teacher who opened
+   * their own lecture from a link in a chat is a participant in the table — and
+   * their own notebook would turn out to be someone else's for their own
+   * oracle.
    */
   role: 'host' | 'participant'
 }
 
 /**
- * Выполнить один инструмент — и посмотреть, не переписал ли он тетрадь мимо
- * комнаты.
+ * Run one tool — and check whether it rewrote a notebook past the room.
  *
- * Экспортируется ради теста: здесь живут все границы режима «сделать» — что
- * можно, чего нельзя и что сказать, когда нельзя, — и проверять их через живую
- * модель значило бы проверять модель.
+ * Exported for the test: all the boundaries of the "Act" mode live here — what
+ * is allowed, what is not and what to say when it is not — and checking them
+ * through a live model would mean checking the model.
  *
- * `signal` нужен одному инструменту: запуск идёт минутами, и «Стоп» посреди
- * него должен останавливать скрипт, а не только цикл шагов.
+ * `signal` is needed by one tool: a run takes minutes, and "Stop" in the
+ * middle of it must stop the script, not only the loop of steps.
  */
 export async function useTool(
   hands: Hands,
@@ -793,8 +823,9 @@ export async function useTool(
   if (faked.length === 0) return ran
   const work = bookWork(hands)
   for (const path of faked) work.faked.add(path)
-  // К тому, что инструмент уже сказал, а не вместо: скрипт мог и посчитать
-  // что-то полезное, и его вывод модели нужен — неправда только про тетрадь.
+  // In addition to what the tool already said, not instead of it: the script
+  // may well have computed something useful, and the model needs its output —
+  // only the part about the notebook is untrue.
   return {
     step: ran.step,
     said: `${ran.said}\n\n${sayFaked(faked)}`,
@@ -823,12 +854,13 @@ async function runTool(
     args = JSON.parse(rawArgs || '{}') as Record<string, unknown>
   } catch {
     /*
-     * Со схемой, а не просто «повторите».
+     * With the schema, not just "retry".
      *
-     * «Аргументы пришли не как JSON» — это тупик: модель не знает, чем именно
-     * её JSON плох, и шлёт тот же самый ещё раз. Схема в ответе — то же, что
-     * она получила в описании инструмента, но здесь и сейчас, рядом с отказом;
-     * небольшие модели с этого места чинятся с первой попытки.
+     * "The arguments did not come as JSON" is a dead end: the model does not
+     * know what exactly is wrong with its JSON and sends the same one again.
+     * The schema in the reply is the same thing it got in the tool
+     * description, but here and now, next to the refusal; small models fix
+     * themselves from this point on the first try.
      */
     const spec = known.find((tool) => tool.name === name)
     return {
@@ -840,12 +872,12 @@ async function runTool(
     }
   }
   /*
-   * Имя инструмента — раньше всего остального.
+   * The tool name — before anything else.
    *
-   * Промах именем (`readNotebook` вместо `read_notebook`) приезжал в проверку
-   * пути и получал «такой путь в этой комнате невозможен»: отказ про путь на
-   * вызов, у которого пути нет вовсе. Модель чинила путь, промахивалась именем
-   * снова и тратила на это шаги хода.
+   * A miss in the name (`readNotebook` instead of `read_notebook`) reached the
+   * path check and got "such a path is impossible in this room": a refusal
+   * about the path for a call that has no path at all. The model fixed the
+   * path, missed the name again and spent turn steps on it.
    */
   if (!ALL_TOOLS.has(name)) return unknownTool(name, known)
   const wanted = typeof args.path === 'string' ? normalizePath(args.path) : null
@@ -857,8 +889,8 @@ async function runTool(
     }
   }
 
-  // Раньше файловой проверки пути: у тетради адресуют ячейку по имени, а путь
-  // если и есть, то необязательный.
+  // Before the file path check: in a notebook a cell is addressed by name, and
+  // the path, if there is one, is optional.
   if (
     name === 'read_notebook' ||
     name === 'edit_cell' ||
@@ -881,16 +913,17 @@ async function runTool(
   if (name === 'create_notebook') return createNotebook(hands, wanted)
 
   if (name === 'read_file') {
-    // У тетради правда в комнате, а файл отстаёт на секунду: читаем комнату.
+    // For a notebook the truth is in the room and the file lags a second: read the room.
     const text = bookText(hands.sessionId, wanted) ?? currentText(hands.sessionId, wanted)
     if (text === null) {
       /*
-       * `currentText` молчит одинаково про три разных случая, а модели они
-       * говорят разное. «Файла нет» на месте шестимегабайтного датасета —
-       * приглашение завести его заново, то есть ровно та потеря хвоста, ради
-       * которой потолок и поставлен. Поэтому про большой файл говорится
-       * отдельно — и начало его всё-таки показывается: по нему видно, что это
-       * за файл, а править его всё равно нельзя.
+       * `currentText` stays equally silent about three different cases, and
+       * they tell the model different things. "No such file" in place of a
+       * six-megabyte dataset is an invitation to create it anew, that is,
+       * exactly the loss of the tail that the ceiling was set up against. So a
+       * large file is spoken of separately — and its beginning is shown after
+       * all: it tells what kind of file it is, and editing it is not possible
+       * anyway.
        */
       const disk = readText(hands.sessionId, wanted)
       if (disk?.binary) {
@@ -936,13 +969,14 @@ async function runTool(
 
   if (name === 'write_file' || name === 'edit_file') {
     /*
-     * Правило `files` — и здесь тоже.
+     * The `files` rule — here too.
      *
-     * Шапка этого файла обещает, что ход правит «по правам того, кто попросил»,
-     * и для ячеек это выполнялось (`rightsFor`, `mayEditCell`), а для файлов —
-     * нет: вход в режим открывало одно `agent`, и участник в лекции с
-     * `files: 'host'` писал через оракула любой файл папки семинара. Правило
-     * комнаты, которое обходится одной кнопкой, — не правило.
+     * The header of this file promises that a turn edits "by the rights of
+     * whoever asked", and for cells that held (`rightsFor`, `mayEditCell`), but
+     * for files it did not: entry into the mode was opened by `agent` alone,
+     * and a participant in a lecture with `files: 'host'` wrote any file of the
+     * seminar folder through the oracle. A room rule that one button bypasses
+     * is not a rule.
      */
     if (!allows(getRules(hands.sessionId).files, hands.role)) {
       return {
@@ -956,16 +990,17 @@ async function runTool(
       }
     }
     /*
-     * Тетрадь — не текстовый файл, что бы ни говорило её расширение.
+     * A notebook is not a text file, whatever its extension says.
      *
-     * Отказ спрашивает РАСШИРЕНИЕ, а не список тетрадей комнаты. Спрашивал он
-     * список (`isBookFile`), и это была дыра ровно в том месте, ради которого
-     * написан: тетради ЕЩЁ НЕТ в комнате, значит путь не в списке, значит
-     * запись разрешена — и `write_file` с готовым .ipynb отвечал «готово».
-     * Файл ложился на диск, комната о нём ничего не знала, `add_cell` по нему
-     * отказывал «не тетрадь этой комнаты», и ход упирался в стену, которую сам
-     * же и построил. Теперь .ipynb не пишется файлом никогда: известная
-     * тетрадь правится ячейками, неизвестная заводится `create_notebook`.
+     * The refusal checks the EXTENSION, not the room's list of notebooks. It
+     * used to check the list (`isBookFile`), and that was a hole in exactly the
+     * place it was written for: the notebook is NOT YET in the room, so the
+     * path is not on the list, so the write is allowed — and `write_file` with
+     * a ready-made .ipynb answered "done". The file landed on disk, the room
+     * knew nothing about it, `add_cell` on it refused with "not a notebook of
+     * this room", and the turn ran into a wall it had built itself. Now an
+     * .ipynb is never written as a file: a known notebook is edited by cells,
+     * an unknown one is created with `create_notebook`.
      */
     if (kindOf(wanted) === 'notebook') {
       const doc = peekSessionDoc(hands.sessionId)?.doc
@@ -991,14 +1026,15 @@ async function runTool(
     }
     const existed = statPath(hands.sessionId, wanted) !== null
     /*
-     * Файл, которого не берёт редактор, не берёт и оракул.
+     * A file the editor does not take, the oracle does not take either.
      *
-     * `currentText` отдаёт первые полтора мегабайта большого файла как весь его
-     * текст, а запись обрезка поверх целого — это потерянный хвост, о котором
-     * никто не узнает: ни кода выхода, ни строки в ленте, ни возврата (отмена
-     * вернула бы тот же обрезок). Ровно этот потолок стоит и у человека —
-     * `isEditable`, и над `MAX_TEXT_BYTES` про него сказано теми же словами.
-     * Двоичный файл — та же история: `write_file` перетёр бы его текстом.
+     * `currentText` returns the first megabyte and a half of a large file as
+     * its whole text, and writing a truncated copy over the whole is a lost
+     * tail nobody will learn about: no exit code, no line in the feed, no way
+     * back (undo would put back the same truncated copy). Exactly this ceiling
+     * applies to a person too — `isEditable`, and above `MAX_TEXT_BYTES` it is
+     * described in the same words. A binary file is the same story:
+     * `write_file` would overwrite it with text.
      */
     const disk = existed ? readText(hands.sessionId, wanted) : null
     if (existed && (!disk || disk.binary || disk.truncated)) {
@@ -1011,10 +1047,11 @@ async function runTool(
     }
     const was = currentText(hands.sessionId, wanted)
     /*
-     * Файл на месте, а текста нет: между двумя чтениями он перестал быть
-     * правимым — ядро дописало в него лог, сверху лёг pickle. Записать в снимок
-     * `null` значит сказать отмене, что файла до хода не было, и она опустошила
-     * бы чужой файл вместо возврата.
+     * The file is there but has no text: between two reads it stopped being
+     * editable — the kernel appended a log to it, a pickle landed on top.
+     * Writing `null` into the snapshot would tell undo that the file did not
+     * exist before the turn, and it would empty someone else's file instead of
+     * restoring it.
      */
     if (existed && was === null) {
       return {
@@ -1061,10 +1098,10 @@ async function runTool(
     }
 
     /*
-     * Того, что не открывается, оракул не пишет и сам. Файл сверх потолка не
-     * возьмут ни редактор, ни следующий шаг этого же хода, а сохранение
-     * открытого документа откажет молча — уже после того, как в ленте будет
-     * написано «готово».
+     * What does not open, the oracle does not write itself either. A file over
+     * the ceiling will be taken neither by the editor nor by the next step of
+     * this same turn, and saving the open document will fail silently — after
+     * "done" has already been written in the feed.
      */
     if (next.length > MAX_TEXT_BYTES) {
       return {
@@ -1076,23 +1113,24 @@ async function runTool(
     }
 
     /*
-     * Запись может и БРОСИТЬ, а не вернуть `false`: под путём оказалась не
-     * папка, диск не дал, права сменились. Раньше такая ошибка вылетала из
-     * инструмента наружу и роняла весь ход — вместо шага «не удалось записать»,
-     * после которого модель может сказать об этом словами и продолжить.
+     * A write can also THROW rather than return `false`: something other than
+     * a folder turned up under the path, the disk refused, permissions changed.
+     * Before, such an error flew out of the tool and brought down the whole
+     * turn — instead of a "could not write" step after which the model can say
+     * so in words and carry on.
      */
     let wrote = false
     try {
       wrote = putText(hands.sessionId, wanted, next)
     } catch (err) {
-      console.error(`[session ${hands.sessionId}] не записал ${wanted}:`, reason(err, WENT_WRONG()))
+      console.error(`[session ${hands.sessionId}] could not write ${wanted}:`, reason(err, WENT_WRONG()))
     }
     if (!wrote) {
       /*
-       * Отказ бывает двух родов. Файл, перешагнувший потолок, пока мы его
-       * читали, править нельзя вовсе — и повторять попытку незачем; всё
-       * остальное («файла не стало», «диск не дал») стоит того, чтобы модель
-       * попробовала иначе.
+       * A refusal comes in two kinds. A file that crossed the ceiling while we
+       * were reading it cannot be edited at all — and there is no point in
+       * retrying; everything else ("the file is gone", "the disk refused") is
+       * worth the model trying another way.
        */
       const now = statPath(hands.sessionId, wanted)
       const over = now !== null && !now.dir && now.size > MAX_TEXT_BYTES
@@ -1102,14 +1140,15 @@ async function runTool(
       }
     }
     /*
-     * Снимок — ПОСЛЕ удачной записи, а не до неё.
+     * The snapshot comes AFTER a successful write, not before it.
      *
-     * `was` прочитан выше, до всякой записи, так что запомненное по-прежнему то,
-     * что было до хода. Порядок важен для другого: снимок, положенный до
-     * `putText`, оставался лежать и когда запись не прошла — диск не дал,
-     * потолок сдвинулся, — и ход, не тронувший ни одного файла, получал кнопку
-     * «отменить», а нажатие отвечало «не тронул: X — после этого хода файл
-     * меняли или убрали». Файл никто не трогал, и ход не менял ничего.
+     * `was` was read above, before any write, so what is remembered is still
+     * what was there before the turn. The order matters for something else: a
+     * snapshot taken before `putText` stayed around even when the write failed
+     * — the disk refused, the ceiling moved — and a turn that touched not a
+     * single file got an "undo" button, and pressing it answered "did not
+     * touch: X — the file was changed or removed after this turn". Nobody
+     * touched the file, and the turn changed nothing.
      */
     remember(hands.sessionId, hands.entryId, wanted, was)
     leftBehind(hands.sessionId, hands.entryId, wanted, next)
@@ -1129,11 +1168,11 @@ async function runTool(
 
   if (name === 'run_file') {
     /*
-     * Правило `run` — по той же причине, что `files` выше.
+     * The `run` rule — for the same reason as `files` above.
      *
-     * Мерка — одна ячейка (`'one'`), а не Run All: запуск скрипта по просьбе
-     * человека стоит ровно столько же, сколько запуск его ячейки, и правило
-     * `single` («по одному») запускать не запрещает.
+     * The measure is one cell (`'one'`), not Run All: running a script at a
+     * person's request costs exactly as much as running their cell, and the
+     * `single` rule ("one at a time") does not forbid running.
      */
     if (!allowsRun(getRules(hands.sessionId).run, hands.role, 'one')) {
       return {
@@ -1156,17 +1195,19 @@ async function runTool(
       return { step: note(tr("server.fileNotFound.f1ab8a"), wanted), said: tr("server.fileDoesNotExist.5febf3", { p0: wanted }) }
     }
     /*
-     * Оболочка в комнате одна, и очередь к ней людская: команда, поставленная
-     * в неё сейчас, начнётся неизвестно когда, а ждать её агенту нечем —
-     * очередь колбэков не хранит. Честнее сказать, что запустить не вышло, чем
-     * простоять полторы минуты и объявить оболочку мёртвой, пока чужой
-     * `pip install` идёт своим чередом.
+     * The room has one shell, and its queue belongs to people: a command put
+     * into it now will start who knows when, and the agent has nothing to wait
+     * for it with — the queue does not keep callbacks. It is more honest to say
+     * the run did not work out than to stand for a minute and a half and
+     * declare the shell dead while someone else's `pip install` goes on its
+     * way.
      *
-     * Занятость — по живой строке команды (`terminalBusy`), а не по фазе.
-     * Фаза врёт в двух обычных случаях, перечисленных над `runCommand`: обрыв
-     * сокета к Jupyter ставит `starting`, хотя pty продолжает считать, и
-     * `Clear` посреди чужой команды. Ровно через эти две щели запуск агента и
-     * уезжал в очередь, которой он ждать не умеет.
+     * Busyness is judged by the live command line (`terminalBusy`), not by the
+     * phase. The phase lies in two ordinary cases listed above `runCommand`: a
+     * dropped socket to Jupyter sets `starting` although the pty keeps
+     * computing, and `Clear` in the middle of someone else's command. Exactly
+     * through these two gaps the agent's run used to end up in a queue it
+     * cannot wait in.
      */
     if (terminalBusy(hands.sessionId)) {
       return {
@@ -1177,30 +1218,31 @@ async function runTool(
       }
     }
     /*
-     * Сначала — на диск всё, что там ещё не лежит.
+     * First — to disk, everything that is not there yet.
      *
-     * У открытого файла правда живёт в документе комнаты, а на диск он уезжает
-     * через 700 мс после последнего нажатия. Скрипт же читает диск: и сам
-     * `train.py`, и `open('data.csv')` внутри него достались бы запуску без
-     * последней секунды набора — оракул объяснял бы комнате ошибку, которой в
-     * файле уже нет. То же самое делает ядро перед выполнением ячейки
-     * (`flushToDisk` в kernel/index.ts), и по той же причине.
+     * For an open file the truth lives in the room's document, and it goes to
+     * disk 700 ms after the last keystroke. A script, though, reads the disk:
+     * both `train.py` itself and the `open('data.csv')` inside it would reach
+     * the run without the last second of typing — the oracle would explain to
+     * the room an error that is no longer in the file. The kernel does the same
+     * before running a cell (`flushToDisk` in kernel/index.ts), and for the
+     * same reason.
      *
-     * Сбрасывается только эта комната: запуск здесь ничего не знает о чужих
-     * открытых файлах, а они уедут на диск сами теми же семьюстами
-     * миллисекундами позже.
+     * Only this room is flushed: a run here knows nothing about other rooms'
+     * open files, and they will reach the disk on their own the same seven
+     * hundred milliseconds later.
      */
     try {
       projectBooks(hands.sessionId)
       flushSessionFiles(hands.sessionId)
     } catch (err) {
-      // Запуск всё равно состоится — просто по тому, что уже лежит на диске.
-      console.error(`[session ${hands.sessionId}] не дописал файлы перед запуском:`, err)
+      // The run happens anyway — just on what is already on disk.
+      console.error(`[session ${hands.sessionId}] could not flush files before the run:`, err)
     }
     const quoted = `'${wanted.replace(/'/g, `'\\''`)}'`
     const command = `${runner === 'python' ? 'python -u' : 'bash'} ${quoted}; echo "[код выхода $?]"`
-    // Снимок дерева ДО запуска: скрипт правит диск мимо инструментов, и
-    // назвать это можно только сравнением. См. `sayMoved`.
+    // Snapshot of the tree BEFORE the run: the script edits the disk past the
+    // tools, and that can only be named by comparing. See `sayMoved`.
     const treeWas = treePrint(hands.sessionId)
     const result = await runInRoom(hands, command, signal)
     const shown = tail(result.output)
@@ -1233,21 +1275,20 @@ function note(what: string, target: string): AgentStep {
 }
 
 /**
- * Отказ, который называет то, что есть.
+ * A refusal that names what exists.
  *
- * «Инструмента X нет» — это тупик на ровном месте: модель промахнулась именем
- * и без списка промахивается ещё раз, потратив на это шаги хода. Список у неё
- * и так был — в описании инструментов, — но рядом с отказом он стоит дешевле,
- * чем ещё один круг к провайдеру.
+ * "There is no tool X" is a dead end out of nothing: the model missed the name
+ * and without the list misses it again, spending turn steps on it. It had the
+ * list anyway — in the tool descriptions — but next to the refusal it costs
+ * less than another round trip to the provider.
  */
 /**
- * Все имена инструментов, какие вообще бывают, — не только доступные этому
- * человеку.
+ * All tool names that exist at all — not only those available to this person.
  *
- * Разница важна: инструмент, которого человеку не дали, отвечает СВОИМ отказом
- * («ячейки здесь правит преподаватель»), и подменять его на «такого
- * инструмента нет» значило бы соврать про устройство комнаты. Здесь ловится
- * только настоящий промах именем.
+ * The difference matters: a tool the person was not given answers with ITS OWN
+ * refusal ("the teacher edits cells here"), and replacing it with "there is no
+ * such tool" would mean lying about how the room is set up. Only a real miss
+ * in the name is caught here.
  */
 const ALL_TOOLS = new Set([
   'list_files',
@@ -1274,20 +1315,23 @@ function unknownTool(name: string, known: ToolSpec[]): Ran {
   }
 }
 
-/* ------------------------------------------------------------ новая тетрадь */
+/* ------------------------------------------------------------ new notebook */
 
 /**
- * Завести тетрадь по просьбе модели — тем же вызовом, каким её заводит человек.
+ * Create a notebook at the model's request — with the same call a person
+ * creates it with.
  *
- * `createBook` — то, что стоит за «новый файл .ipynb» в дереве комнаты
- * (control.ts · tree:new): файл на диске и запись в документе заводятся вместе,
- * иначе получается ровно та половинка, ради которой этот инструмент и написан.
+ * `createBook` is what stands behind "new .ipynb file" in the room's tree
+ * (control.ts · tree:new): the file on disk and the entry in the document are
+ * created together, otherwise you get exactly the half that this tool was
+ * written against.
  *
- * Расширение дописывается молча. «Сделай тетрадь Разбор» — обычная просьба, и
- * отказ «путь должен кончаться на .ipynb» стоил бы шага хода на то, что сервер
- * знает сам. Список ячеек возвращается сразу: тетрадь пустая, но имя первой
- * ячейки модели нужно уже сейчас — иначе следующий её шаг это `read_notebook`
- * ради одной строки.
+ * The extension is added silently. "Make a notebook called Review" is an
+ * ordinary request, and a refusal "the path must end in .ipynb" would cost a
+ * turn step on something the server knows itself. The list of cells is
+ * returned right away: the notebook is empty, but the model needs the first
+ * cell's name already now — otherwise its next step is `read_notebook` for one
+ * line.
  */
 function createNotebook(hands: Hands, wanted: string): Ran {
   const rules = getRules(hands.sessionId)
@@ -1300,9 +1344,9 @@ function createNotebook(hands: Hands, wanted: string): Ran {
   }
   const path = kindOf(wanted) === 'notebook' ? wanted : `${wanted}.ipynb`
   /*
-   * Автор — тот, кто попросил ход, а не оракул: тетрадь, заведённая по просьбе
-   * студента, принадлежит студенту ровно так же, как если бы он нажал «новый
-   * файл» сам. Преподавателя `createBook` отсеет по роли.
+   * The author is whoever asked for the turn, not the oracle: a notebook created
+   * at a student's request belongs to the student exactly as if they had
+   * pressed "new file" themselves. `createBook` filters out the teacher by role.
    */
   const made = createBook(hands.sessionId, path, {
     participantId: hands.by.participantId,
@@ -1317,14 +1361,15 @@ function createNotebook(hands: Hands, wanted: string): Ran {
     }
   }
   /*
-   * В снимок отмены тетрадь НЕ кладётся, и это выбор, а не забывчивость.
+   * The notebook is NOT put into the undo snapshot, and that is a choice, not
+   * forgetfulness.
    *
-   * Отмена хода возвращает файлам их прежний текст (`undoTurn`), а прежнего
-   * текста у заведённой тетради нет: «вернуть как было» значило бы опустошить
-   * её файл, оставив запись в комнате живой, — то есть развести диск и комнату
-   * ровно так, как этот модуль не даёт делать всем остальным. Убрать тетрадь
-   * целиком — право преподавателя и проходит через дерево; про это и сказано в
-   * ответе.
+   * Undoing a turn gives files back their previous text (`undoTurn`), and a
+   * created notebook has no previous text: "put it back as it was" would mean
+   * emptying its file while leaving the entry in the room alive — that is,
+   * pulling the disk and the room apart exactly the way this module does not
+   * let anything else do. Removing the notebook entirely is the teacher's right
+   * and goes through the tree; that is what the answer says.
    */
   bookWork(hands).made.add(path)
   const doc = peekSessionDoc(hands.sessionId)?.doc
@@ -1335,23 +1380,23 @@ function createNotebook(hands: Hands, wanted: string): Ran {
   }
 }
 
-/* --------------------------------------------------------- запуск ячейки */
+/* --------------------------------------------------------- running a cell */
 
-/** Как часто спрашиваем документ, досчиталась ли ячейка. */
+/** How often we ask the document whether the cell has finished computing. */
 const RUN_POLL_MS = 200
 
 /**
- * Запустить ячейку и дождаться вывода.
+ * Run a cell and wait for its output.
  *
- * Той же дорогой, что и кнопка Run у человека: `requestRun` ставит ячейку в
- * общую очередь комнаты от имени просящего и с его местом в ней
- * (`runQueueCap`). Своего пути к ядру у оракула нет и быть не должно — иначе
- * его запуск обходил бы и очередь, и потолок, и отметку «кто запустил» в
- * документе.
+ * The same road as a person's Run button: `requestRun` puts the cell into the
+ * room's shared queue on behalf of the asker and with their place in it
+ * (`runQueueCap`). The oracle has no road of its own to the kernel and must not
+ * have one — otherwise its run would bypass the queue, the ceiling and the
+ * "who ran it" mark in the document.
  *
- * Ждём опросом документа, а не колбэком: колбэков очередь не хранит, а
- * состояние ячейки — ровно то, на что смотрит комната. Потолок ожидания тот
- * же, что у скрипта: дольше — это не «медленно», а «зависло».
+ * We wait by polling the document, not with a callback: the queue does not
+ * keep callbacks, and the cell's state is exactly what the room looks at. The
+ * waiting ceiling is the same as for a script: longer is not "slow" but "hung".
  */
 async function runCell(
   hands: Hands,
@@ -1381,15 +1426,16 @@ async function runCell(
     }
   }
   /*
-   * Правила ТОЙ тетради, где ячейка лежит: в собственной тетради студент
-   * считает и посреди лекции, а в чужой личной — не считает и в открытой
-   * комнате. Ядро при этом одно на всех, и очередь к нему общая: потолок
-   * очереди (`runQueueCap`) остаётся комнатным.
+   * The rules of THE notebook where the cell lies: in their own notebook a
+   * student runs code even in the middle of a lecture, and in someone else's
+   * personal one does not run it even in an open room. The kernel, though, is
+   * one for everyone, and its queue is shared: the queue ceiling (`runQueueCap`)
+   * stays at room level.
    */
   const rules = rulesForBook(getRules(hands.sessionId), home.root, askerOf(hands))
   /*
-   * Мерка — одна ячейка (`'one'`), та же, что у `run_file`: запуск ячейки по
-   * просьбе человека стоит ровно столько же, сколько его собственное нажатие.
+   * The measure is one cell (`'one'`), the same as for `run_file`: running a
+   * cell at a person's request costs exactly as much as their own press.
    */
   if (!allowsRun(rules.run, hands.role, 'one')) {
     return {
@@ -1399,11 +1445,13 @@ async function runCell(
     }
   }
   /*
-   * Уже считает или стоит в очереди — не ставим второй раз.
+   * Already computing or waiting in the queue — we do not queue it a second
+   * time.
    *
-   * Та же проверка, что у `remove_cell`, и по той же причине: вторая постановка
-   * той же ячейки очередь пропустит молча (`requestRun` её отсеет), а ход
-   * встанет ждать вывода, которого он не заказывал, — и присвоит себе чужой.
+   * The same check as in `remove_cell`, and for the same reason: a second
+   * queueing of the same cell will be silently skipped by the queue
+   * (`requestRun` filters it out), while the turn would sit waiting for output
+   * it did not order — and take someone else's as its own.
    */
   const state = (found.cell.get('state') as CellState) ?? 'idle'
   if (state === 'running' || state === 'queued') {
@@ -1432,8 +1480,9 @@ async function runCell(
   const now = findCell(peekSessionDoc(hands.sessionId)?.doc ?? doc, id)
   const shown = now ? tail(renderOutputs(now.cell, MAX_OUTPUT).join('\n')) : ''
   if (!ended) {
-    // Ячейка всё ещё в очереди или считает: своё из очереди снимаем, чужой счёт
-    // не трогаем — прерывать ядро посреди чужой ячейки этому ходу не право.
+    // The cell is still queued or computing: we take ours off the queue and
+    // leave someone else's computation alone — interrupting the kernel in the
+    // middle of someone else's cell is not this turn's right.
     cancelRun(hands.sessionId, [id], hands.by.participantId, hands.role === 'host')
     return {
       step: {
@@ -1467,7 +1516,7 @@ async function runCell(
   }
 }
 
-/** Чем ячейка кончила — или `null`, если так и не кончила за отпущенное время. */
+/** How the cell ended — or `null` if it did not finish in the allotted time. */
 async function waitForCell(
   sessionId: string,
   cellId: string,
@@ -1477,7 +1526,7 @@ async function waitForCell(
   for (;;) {
     const doc = peekSessionDoc(sessionId)?.doc
     const found = doc ? findCell(doc, cellId) : null
-    // Ячейки не стало или комнату закрыли: ждать больше нечего и не для кого.
+    // The cell is gone or the room closed: nothing to wait for, and no one to wait for.
     if (!found) return null
     const state = (found.cell.get('state') as CellState) ?? 'idle'
     if (state === 'ok') return 'ok'
@@ -1491,20 +1540,21 @@ async function waitForCell(
   }
 }
 
-/* --------------------------------------------- правки мимо инструментов */
+/* --------------------------------------------- edits past the tools */
 
 /**
- * Отпечаток дерева комнаты: путь → размер и время правки.
+ * A fingerprint of the room's tree: path → size and modification time.
  *
- * Снимается вокруг каждого `run_file` по тому же доводу, по какому вокруг
- * каждого шага снимается отпечаток тетрадей (`bookPrints`): запускать скрипты
- * этому режиму разрешено, и запретить им трогать диск нельзя, не отняв половину
- * работы. Значит, ловим не запретом, а именем — «скрипт снёс data.csv» на том
- * же шаге, где это случилось, а не в тишине.
+ * Taken around every `run_file` for the same reason a fingerprint of the
+ * notebooks is taken around every step (`bookPrints`): this mode is allowed to
+ * run scripts, and forbidding them to touch the disk is impossible without
+ * taking away half the work. So we catch it not with a ban but by naming it —
+ * "the script wiped data.csv" on the same step where it happened, not in
+ * silence.
  *
- * Размер и mtime, а не содержимое: обход дерева и так стоит readdir+lstat на
- * запись, а читать все файлы комнаты дважды на каждый запуск — это датасет в
- * памяти ради строки в ответе.
+ * Size and mtime, not contents: walking the tree already costs a readdir+lstat
+ * per entry, and reading all of the room's files twice on every run means a
+ * dataset in memory for the sake of one line in an answer.
  */
 export function treePrint(sessionId: string): Map<string, string> {
   const print = new Map<string, string>()
@@ -1513,24 +1563,24 @@ export function treePrint(sessionId: string): Map<string, string> {
       if (!entry.dir) print.set(entry.path, `${entry.size}:${entry.modifiedAt}`)
     }
   } catch {
-    /* дерева не прочитать — сравнивать будет нечего, и это честнее выдумки */
+    /* tree unreadable: nothing to compare, which is more honest than inventing */
   }
   return print
 }
 
-/** Сколько путей называем поимённо, дальше — числом: список в ответ, не отчёт. */
+/** Paths named one by one; the rest as a number: a list in an answer, not a report. */
 const MAX_MOVED_NAMED = 12
 
 /**
- * Что скрипт сделал с файлами мимо инструментов — или пустая строка.
+ * What the script did to files past the tools — or an empty string.
  *
- * Заведённые файлы тоже называются, и это не придирка: скрипт, положивший
- * рядом `_archive.py` или `out.csv`, сделал работу, о которой ход обязан
- * отчитаться комнате, — иначе преподаватель находит их через неделю и не знает,
- * чьи они.
+ * Created files are named too, and that is not nitpicking: a script that put
+ * `_archive.py` or `out.csv` next to the others did work the turn owes the room
+ * a report about — otherwise the teacher finds them a week later and does not
+ * know whose they are.
  *
- * Экспортируется вместе с `treePrint` ради теста — по тому же доводу, что и
- * `useTool`: проверять это через живую оболочку значило бы проверять оболочку.
+ * Exported together with `treePrint` for the test — for the same reason as
+ * `useTool`: checking this through a live shell would mean checking the shell.
  */
 export function movedFiles(sessionId: string, was: Map<string, string>): string {
   if (was.size === 0) return ''
@@ -1557,53 +1607,57 @@ function named(paths: string[]): string {
   return `${paths.slice(0, MAX_MOVED_NAMED).join(', ')} ${tr('server.agent.andMore', { p0: paths.length - MAX_MOVED_NAMED })}`
 }
 
-/* ---------------------------------------------------------- ячейки тетради */
+/* ---------------------------------------------------------- notebook cells */
 
-/** Сколько исходника одной ячейки уезжает в список. */
+/** How much of one cell's source goes into the list. */
 const MAX_CELL_SOURCE = 4_000
 
-/** Имя отметки, которую ход ставит перед первой своей правкой тетради. */
+/** The name of the mark the turn sets before its first edit of the notebook. */
 const CHECKPOINT_LABEL = () => tr("server.private.checkpoint")
 
-/** Что ход уже сделал с тетрадями. */
+/** What the turn has already done to notebooks. */
 interface BookWork {
   /**
-   * Отметка в истории уже стоит.
+   * The mark in the history is already set.
    *
-   * Один раз на ход, а не на ячейку: «убери решения из пяти ячеек» — это одно
-   * решение человека, и возвращаться из него надо в одну точку. Пять отметок
-   * подряд вытолкнули бы из окна панели то, ради чего в историю и лезут.
+   * Once per turn, not per cell: "remove the solutions from five cells" is one
+   * decision of a person, and going back from it should lead to one point. Five
+   * marks in a row would push out of the panel's window the very thing people
+   * go into the history for.
    *
-   * Одна на ход, а не на тетрадь: история версий пишет в корень `cells`
-   * прибито (collab/history.ts · restoreInto), то есть отмечает ровно одну
-   * тетрадь комнаты. Остальным — `copies`.
+   * One per turn, not per notebook: the version history writes to the `cells`
+   * root, hard-wired (collab/history.ts · restoreInto), that is, it marks
+   * exactly one notebook of the room. The rest get `copies`.
    */
   marked: boolean
-  /** Путь тетради без истории → куда легла копия её файла перед первой правкой. */
+  /** Notebook without history → where the copy of its file went before the first edit. */
   copies: Map<string, string>
   /**
-   * Тетради, которые завёл сам этот ход.
+   * Notebooks this very turn created.
    *
-   * Копию «как было до хода» им класть не надо и нечего: до хода их не было
-   * вовсе. Первая же настоящая работа этого инструмента положила рядом с
-   * новенькой тетрадью пустой `Тревога_Сириус.before-oracle.ipynb`, а ход
-   * честно дописал в ответ, что убрать его не может, — это к преподавателю.
-   * Комната получила мусор и извинение вместо результата.
+   * A copy "as it was before the turn" is neither needed nor possible for them:
+   * before the turn they did not exist. The very first real piece of work by
+   * this tool put an empty `Тревога_Сириус.before-oracle.ipynb` next to the
+   * brand-new notebook, and the turn honestly added to its answer that it could
+   * not remove it — that is for the teacher. The room got junk and an apology
+   * instead of a result.
    */
   made: Set<string>
-  /** Имя ячейки → что с ней сделали и где. Порядок — тот, в котором делали. */
-  touched: Map<string, { book: string; what: 'правил' | 'добавил' | 'убрал' }>
-  /** Тетради, чей файл на ходу переписали мимо комнаты. */
+  /** Cell name → what was done to it and where. The order is the order it was done in. */
+  touched: Map<string, { book: string; what: 'edited' | 'added' | 'removed' }>
+  /** Notebooks whose file was rewritten past the room during the turn. */
   faked: Set<string>
 }
 
 /**
- * Что ход сделал с тетрадью — до конца хода, а дальше не нужно.
+ * What the turn did to a notebook — until the end of the turn, and not needed
+ * after that.
  *
- * Отсюда берётся строка «поправил 03 и 05» в ответе; конец хода — удачный или
- * упавший — её составляет и запись убирает. Возврат живёт не здесь, а в истории версий: тетрадь, в
- * отличие от файлов рабочей папки, переживает перезапуск сервера вместе со
- * своей точкой возврата.
+ * The line "edited 03 and 05" in the answer is taken from here; the end of the
+ * turn — successful or failed — composes it and removes the entry. The way back
+ * does not live here but in the version history: a notebook, unlike the files
+ * of the working folder, survives a server restart together with its restore
+ * point.
  */
 const inBook = new Map<string, BookWork>()
 
@@ -1619,7 +1673,7 @@ function bookWork(hands: Hands): BookWork {
   return work
 }
 
-/** Права этого человека на ячейки — те же вопросы, что задают гейт и браузер. */
+/** This person's rights on cells — the same questions the gate and the browser ask. */
 interface CellRights {
   edit: boolean
   add: boolean
@@ -1627,29 +1681,31 @@ interface CellRights {
 }
 
 /**
- * Что этому человеку можно делать с тетрадью своими руками.
+ * What this person may do to the notebook with their own hands.
  *
- * Оракул в режиме «сделать» не получает прав сверх его собственных: правило
- * `agent` говорит, можно ли ему вообще запустить ход, а что этот ход сделает с
- * тетрадью, решают те же `edit` и `structure`, что и для его пальцев. Правила
- * приезжают действующими (`db.ts · getRules`), то есть после звонка
- * преподавательскими, — конец занятия здесь добавляет только слова отказа.
+ * The oracle in "Act" mode gets no rights beyond the person's own: the `agent`
+ * rule says whether they may start a turn at all, and what that turn does to
+ * the notebook is decided by the same `edit` and `structure` as for their
+ * fingers. The rules arrive as effective ones (`db.ts · getRules`), that is,
+ * after the bell they are the teacher's — the end of the class adds only the
+ * words of the refusal here.
  *
- * Замок считается открытым, если открыта ХОТЬ ОДНА ячейка: это ответ на вопрос
- * «есть ли ему что править вообще», по которому собирается список инструментов.
- * На вопрос «эту ли ячейку» отвечает `mayEditCell` у самой ячейки, перед
- * записью.
+ * The lock counts as open if AT LEAST ONE cell is open: this answers the
+ * question "is there anything for them to edit at all", from which the list of
+ * tools is assembled. The question "this particular cell" is answered by
+ * `mayEditCell` at the cell itself, before the write.
  */
 function rightsFor(hands: Hands, doc: Y.Doc, root: string | null = null): CellRights {
   /*
-   * Правила ТОЙ тетради, о которой речь, — той же функцией, что и везде
-   * (shared/rules.ts · rulesForBook). Оракул здесь руки просящего, и руки у
-   * него в личной тетради те же, что и у него самого: свою он правит и в
-   * лекции, чужую не правит и в открытой комнате.
+   * The rules of THE notebook in question — with the same function as
+   * everywhere (shared/rules.ts · rulesForBook). The oracle here is the asker's
+   * hands, and those hands in a personal notebook are the same as the asker's
+   * own: they edit their own even in a lecture, and do not edit someone else's
+   * even in an open room.
    *
-   * `root` по умолчанию `null` — «тетрадь не названа», правила комнаты. Такой
-   * ответ нужен ровно одному месту: списку инструментов, и тот спрашивает не
-   * этим, а `anyCellRights` ниже.
+   * `root` defaults to `null` — "no notebook named", the room's rules. Such an
+   * answer is needed in exactly one place: the tool list, and that one does not
+   * ask with this but with `anyCellRights` below.
    */
   const rules: RoomRules = rulesForBook(getRules(hands.sessionId), root, askerOf(hands))
   const finished = isFinished(hands.sessionId)
@@ -1660,20 +1716,21 @@ function rightsFor(hands: Hands, doc: Y.Doc, root: string | null = null): CellRi
   }
 }
 
-/** Кто просит — в той форме, в какой это читают правила тетради. */
+/** Who is asking — in the form the notebook rules read it. */
 function askerOf(hands: Hands): Asker {
   return { role: hands.role, participantId: hands.by.participantId }
 }
 
 /**
- * Есть ли этому человеку что править ХОТЬ В ОДНОЙ тетради комнаты.
+ * Whether this person has anything to edit IN AT LEAST ONE notebook of the
+ * room.
  *
- * Вопрос списка инструментов, а не проверки: инструмент, который откажет
- * всегда, не стоит шага хода на то, чтобы узнать заранее известное правило, —
- * но спрятать `edit_cell` у студента, которому открыли собственную тетрадь,
- * значит оставить его без оракула ровно там, где он работает. Поэтому «или»
- * по всем тетрадям, а «эту ли» решает `rightsFor` у самой ячейки, перед
- * записью.
+ * A question for the tool list, not for checking: a tool that will always
+ * refuse is not worth a turn step to learn a rule known in advance — but hiding
+ * `edit_cell` from a student who was given their own notebook means leaving
+ * them without the oracle exactly where they work. Hence an "or" over all
+ * notebooks, and "this one?" is decided by `rightsFor` at the cell itself,
+ * before the write.
  */
 function anyCellRights(hands: Hands, doc: Y.Doc): CellRights {
   const out = rightsFor(hands, doc)
@@ -1687,7 +1744,7 @@ function anyCellRights(hands: Hands, doc: Y.Doc): CellRights {
   return out
 }
 
-/** То же про запуск: есть ли хоть одна тетрадь, где этот человек считает. */
+/** The same for running: is there at least one notebook where this person runs code. */
 function mayRunAnyBook(hands: Hands, doc: Y.Doc | undefined): boolean {
   const rules = getRules(hands.sessionId)
   if (allowsRun(rules.run, hands.role, 'one')) return true
@@ -1706,36 +1763,39 @@ function hasOpenCell(doc: Y.Doc): boolean {
 }
 
 /**
- * Слова отказа — свои, пока занятие идёт, и общие, когда оно кончилось.
+ * The words of a refusal — its own while the class is on, and the general ones
+ * once it is over.
  *
- * Ровно как в гейте: по одним правилам «преподаватель закрыл тетрадь» и
- * «занятие кончилось» неотличимы, а человеку надо сказать второе — иначе он
- * пойдёт искать преподавателя, который ничего не менял.
+ * Exactly as in the gate: by the rules alone "the teacher closed the notebook"
+ * and "the class is over" are indistinguishable, and the person needs to be
+ * told the second — otherwise they will go looking for a teacher who changed
+ * nothing.
  */
 function refuseCells(hands: Hands, own: string, root: string | null = null): string {
   if (!actsAfterClass(isFinished(hands.sessionId), hands.role)) return tr(CLASS_IS_OVER)
   /*
-   * И слова САМОЙ ТЕТРАДИ, когда закрыла она, а не комната: «в этом семинаре
-   * печатает преподаватель» про чужую личную тетрадь отправляет модель
-   * объяснять человеку не то — и человека к преподавателю, который ничего не
-   * запрещал.
+   * And the words of THE NOTEBOOK ITSELF, when it is the notebook that closed,
+   * not the room: "the teacher types in this seminar" about someone else's
+   * personal notebook sends the model to explain the wrong thing to the person
+   * — and the person to a teacher who forbade nothing.
    */
   const book = bookRefusal(getRules(hands.sessionId), root, askerOf(hands))
   return book ? tr(book.key, { p0: book.name }) : own
 }
 
-/** Тетрадь комнаты — та, что сидит на корне `cells` и умеет в историю версий. */
+/** The room's notebook — the one on the `cells` root that has version history. */
 function roomBook(doc: Y.Doc): Book | null {
   return bookList(doc).find((book) => book.root === CELLS_KEY) ?? null
 }
 
 /**
- * Тетрадь, в которой лежит этот лист ячеек. Один корень — один `Y.Array`.
+ * The notebook this list of cells belongs to. One root, one `Y.Array`.
  *
- * `null` у документа без списка тетрадей — того самого, где `allCellArrays`
- * отдаёт голый корень `cells`. Такой документ бывает у комнаты, открытой
- * впервые после появления нескольких тетрадей: список ей припишут через
- * мгновение, а до тех пор лист ровно один и он — тетрадь комнаты.
+ * `null` for a document without a notebook list — the very one where
+ * `allCellArrays` returns the bare `cells` root. Such a document belongs to a
+ * room opened for the first time since several notebooks appeared: the list
+ * will be added to it in a moment, and until then there is exactly one list
+ * and it is the room's notebook.
  */
 function bookOfCells(doc: Y.Doc, cells: Y.Array<YCell>): Book | null {
   const found = bookList(doc).find((book) => bookCells(doc, book.root) === cells)
@@ -1744,11 +1804,12 @@ function bookOfCells(doc: Y.Doc, cells: Y.Array<YCell>): Book | null {
 }
 
 /**
- * Тетрадь, о которой речь: названная путём или, если не назвали, тетрадь комнаты.
+ * The notebook in question: named by path or, if none was named, the room's
+ * notebook.
  *
- * Одно место на все инструменты: отказ «такой тетради нет» должен звучать
- * одинаково, откуда бы в него ни пришли, и перечислять то, что есть, — иначе
- * модель второй раз промахнётся тем же именем.
+ * One place for all tools: the refusal "there is no such notebook" must sound
+ * the same wherever it is reached from, and list what exists — otherwise the
+ * model will miss with the same name a second time.
  */
 function bookAsked(
   doc: Y.Doc,
@@ -1769,14 +1830,15 @@ function bookAsked(
   if (book) return book
   const known = bookList(doc).map((one) => one.path)
   /*
-   * Отказ с выходом, а не в стену.
+   * A refusal with a way out, not a wall.
    *
-   * «Такой тетради в комнате нет» и точка — это тупик, в который ход и приезжал:
-   * тетрадь, которую модель только что положила файлом, в списке не значилась,
-   * и дальше ей оставалось либо звать тот же `add_cell` ещё раз, либо лезть
-   * писать .ipynb скриптом. Выход называется прямо здесь и разный для разных
-   * прав: кому можно заводить тетради — `create_notebook`, кому нельзя — слова
-   * преподавателю, потому что завести её может он.
+   * "There is no such notebook in the room", full stop, is the dead end the
+   * turn used to drive into: a notebook the model had just put down as a file
+   * was not on the list, and all that was left was to call the same `add_cell`
+   * again or to go writing an .ipynb with a script. The way out is named right
+   * here and differs by rights: those who may create notebooks get
+   * `create_notebook`, those who may not get words for the teacher, because the
+   * teacher can create it.
    */
   const remedy = allowsStructure(getRules(sessionId).structure, role, 'add')
     ? tr('server.agent.useCreateNotebook', { p0: path ?? tr("server.roomNotebook.05515c") })
@@ -1796,8 +1858,8 @@ function bookAsked(
 
 function useCellTool(hands: Hands, name: string, args: Record<string, unknown>): Ran {
   /*
-   * Заглянуть, а не завести: ход, доехавший до удалённой комнаты, поднимал бы
-   * её заново — с таймерами, строкой в истории и папкой на диске.
+   * Peek, do not create: a turn that reached a deleted room would raise it
+   * again — with timers, a line in the history and a folder on disk.
    */
   const doc = peekSessionDoc(hands.sessionId)?.doc
   if (!doc) {
@@ -1814,12 +1876,13 @@ function useCellTool(hands: Hands, name: string, args: Record<string, unknown>):
 }
 
 /**
- * Ячейки живой тетради — то, чего нет в файле.
+ * The cells of the live notebook — what is not in the file.
  *
- * Имя ячейки не хранится в .ipynb и не показывается человеку: адресовать
- * ячейку в комнате можно только им, и взять его больше неоткуда. Вывод не
- * приводится целиком — он уже уехал в контекст вопроса, а списку хватает
- * знать, что он есть: по нему видно, что перезапускать.
+ * A cell's name is not stored in the .ipynb and is not shown to the person: a
+ * cell in the room can be addressed only by it, and there is nowhere else to
+ * get it. The output is not included in full — it has already gone into the
+ * question's context, and the list only needs to know it exists: that shows
+ * what to rerun.
  */
 function listCells(
   doc: Y.Doc,
@@ -1832,26 +1895,27 @@ function listCells(
 
   const cells = bookCells(doc, book.root)
   /*
-   * Страницами — по тем же двум доводам, что и у файла.
+   * In pages — for the same two reasons as with a file.
    *
-   * Первый: тетрадь на сто ячеек не помещается в потолок чтения, и обрезка «до
-   * N знаков» рубит её посреди исходника — а значит, посреди имени следующей
-   * ячейки, которое модели и нужно. Второй: в ход эта простыня приезжает
-   * ОДИН раз, а уезжает провайдеру на каждом следующем шаге. `from`/`count` —
-   * это «покажи мне двадцатую по сороковую», то есть ровно тот запрос, ради
-   * которого сюда и приходят второй раз.
+   * First: a notebook of a hundred cells does not fit under the read ceiling,
+   * and a cut "up to N characters" chops it in the middle of a source — and so
+   * in the middle of the next cell's name, which is exactly what the model
+   * needs. Second: this sheet arrives in the turn ONCE, but goes to the
+   * provider on every following step. `from`/`count` is "show me the twentieth
+   * through the fortieth", exactly the request people come back here for.
    */
   const asked = intArg(args.from, 1)
   const from = Math.max(0, (asked < 0 ? cells.length + asked + 1 : asked) - 1)
   const wanted = intArg(args.count, 0)
   const upTo = wanted > 0 ? Math.min(cells.length, from + wanted) : cells.length
   /*
-   * Выводы — по просьбе, а не всегда.
+   * Outputs — on request, not always.
    *
-   * Список ячеек зовут, чтобы узнать имена и увидеть код; выводы — это ещё
-   * столько же текста, и обычно они уже уехали модели в кадре вопроса. Но
-   * после `run_cell` и после чужого запуска в комнате нужны именно они, и до
-   * сих пор взять их было неоткуда: «есть вывод» — это не вывод.
+   * The cell list is called to learn names and see code; outputs are as much
+   * text again, and usually they already went to the model in the question's
+   * frame. But after `run_cell` and after someone else's run in the room they
+   * are exactly what is needed, and until now there was nowhere to get them:
+   * "has output" is not output.
    */
   const withOutputs = args.outputs === true || args.outputs === 'true'
   const lines: string[] = [
@@ -1891,11 +1955,12 @@ function listCells(
     )
   }
   /*
-   * Про соседние тетради — здесь же.
+   * About the neighbouring notebooks — right here.
    *
-   * Тетрадей в комнате несколько, а инструмент без пути показывает одну: не
-   * назвав остальные, мы оставляем модель уверенной, что она видела всё, — и
-   * «убери решения» проходит мимо той тетради, ради которой ход и затевали.
+   * A room has several notebooks, and the tool without a path shows one: by not
+   * naming the others we leave the model sure it has seen everything — and
+   * "remove the solutions" goes past the very notebook the turn was started
+   * for.
    */
   const others = bookList(doc)
     .map((one) => one.path)
@@ -1915,10 +1980,10 @@ function listCells(
       note: `${cells.length} ${cellsWord(cells.length)}`,
     },
     /*
-     * Без `clipRead`: список уже уложен в тот же потолок постранично, а
-     * повторная обрезка по знакам срезала бы ровно хвост — строку «показаны
-     * ячейки 3–4 из 10, дальше — from: 5», то есть единственное указание на то,
-     * как дочитать. Обрезка, съедающая объяснение обрезки, — это тупик.
+     * No `clipRead`: the list is already fitted under the same ceiling page by
+     * page, and clipping again by characters would cut exactly the tail — the
+     * line "cells 3–4 of 10 shown, next — from: 5", that is, the only hint on
+     * how to read on. A cut that eats the explanation of the cut is a dead end.
      */
     said,
   }
@@ -1938,11 +2003,12 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
   if (!home) return missingCell(id)
 
   /*
-   * По правилам ТОЙ тетради, в которой ячейка лежит, и по замку ЭТОЙ ячейки.
+   * By the rules of THE notebook the cell lies in, and by the lock of THIS
+   * cell.
    *
-   * Не через `rightsFor`: тот отвечает на вопрос списка инструментов — «есть ли
-   * вообще что править», и замок у него общий по документу. Здесь вопрос про
-   * одну ячейку, и замок у неё свой.
+   * Not through `rightsFor`: that one answers the tool-list question — "is
+   * there anything to edit at all", and its lock is shared across the document.
+   * Here the question is about one cell, and it has a lock of its own.
    */
   if (
     !mayEditCell(
@@ -1973,17 +2039,17 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
   if (stop) return stop
 
   const next = args.source
-  // От имени того, кто попросил ход: у версии в истории должен быть автор, а не
-  // «комната», — тот же путь, каким сервер применяет принятый патч оракула.
+  // On behalf of whoever asked for the turn: a version in the history must have
+  // an author, not "the room" — the same path by which the server applies an
+  // accepted oracle patch.
   applyOnBehalf(hands.sessionId, hands.by.participantId, () => replaceText(text, next))
-  bookWork(hands).touched.set(id, { book: home.path, what: 'правил' })
+  bookWork(hands).touched.set(id, { book: home.path, what: 'edited' })
 
   const counts = countChanges(was, next)
   /*
-   * Вывод остаётся. Правка исходника рукой его тоже не стирает: вывод —
-   * свидетельство того, что ячейка показывала, и он честно становится
-   * устаревшим. Сказать об этом надо, иначе преподаватель не узнает, что
-   * перезапускать.
+   * The output stays. Editing the source by hand does not erase it either: the
+   * output is evidence of what the cell showed, and it honestly becomes stale.
+   * This has to be said, otherwise the teacher will not know what to rerun.
    */
   const stale =
     cellOutputs(found.cell).length > 0
@@ -2012,11 +2078,12 @@ function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
   const after = typeof args.after === 'string' && args.after.trim() ? args.after.trim() : null
 
   /*
-   * Соседка решает, куда встать, — путь только когда соседки не назвали.
+   * The neighbour decides where to stand — the path only when no neighbour was
+   * named.
    *
-   * `after` точнее: он показывает место, а не тетрадь, и спорить ему с `path`
-   * не о чем. Разбирать несогласие двух аргументов значило бы заводить третье
-   * правило там, где хватает порядка.
+   * `after` is more precise: it shows a place, not a notebook, and there is
+   * nothing for it to argue about with `path`. Resolving a disagreement between
+   * two arguments would mean inventing a third rule where order is enough.
    */
   let home: Book
   let cells: Y.Array<YCell>
@@ -2053,7 +2120,7 @@ function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
   const cell = createCell(type, source)
   applyOnBehalf(hands.sessionId, hands.by.participantId, () => cells.insert(at, [cell]))
   const id = cellId(cell)
-  bookWork(hands).touched.set(id, { book: home.path, what: 'добавил' })
+  bookWork(hands).touched.set(id, { book: home.path, what: 'added' })
 
   const label = tr("server.cell.47aead", { p0: home.path, p1: pad(at + 1) })
   return {
@@ -2088,12 +2155,13 @@ function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ra
   }
   const label = tr("server.cell.47aead", { p0: home.path, p1: pad(found.index + 1) })
   /*
-   * Ячейку, стоящую в очереди на ядро, ход не убирает.
+   * A cell waiting in the kernel queue is not removed by the turn.
    *
-   * Когда её убирает человек, сервер тут же снимает её с очереди
-   * (`onCellsRemoved` в control.ts) — этой дороги у хода нет, и убранная на
-   * ходу ячейка ловила бы свой вывод в пустоту, а очередь считала бы её живой.
-   * Ждать конца счёта ход не умеет тоже, поэтому честнее отказать.
+   * When a person removes it, the server immediately takes it off the queue
+   * (`onCellsRemoved` in control.ts) — the turn has no such road, and a cell
+   * removed during the turn would catch its output into the void while the
+   * queue considered it alive. The turn cannot wait for the computation to end
+   * either, so it is more honest to refuse.
    */
   const state = (found.cell.get('state') as CellState) ?? 'idle'
   if (state === 'running' || state === 'queued') {
@@ -2106,15 +2174,16 @@ function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ra
   if (stop) return stop
 
   /*
-   * Запомнить ДО удаления: после него читать уже нечего, а Ctrl+Z в комнате
-   * возвращает ячейку копией — вывод к ней достаётся из этой записи сервера.
-   * Тот же порядок, что у удаления рукой (collab/index.ts · rememberDeleted).
+   * Remember BEFORE deleting: after it there is nothing left to read, and
+   * Ctrl+Z in the room brings the cell back as a copy — its output comes from
+   * this server record. The same order as a deletion by hand
+   * (collab/index.ts · rememberDeleted).
    */
   rememberDeleted(hands.sessionId, doc, [id])
   const cells = found.cells
   const index = found.index
   applyOnBehalf(hands.sessionId, hands.by.participantId, () => cells.delete(index, 1))
-  bookWork(hands).touched.set(id, { book: home.path, what: 'убрал' })
+  bookWork(hands).touched.set(id, { book: home.path, what: 'removed' })
 
   return {
     step: { kind: 'write', target: label, added: 0, removed: 1, exit: null, note: tr("server.cellRemoved.d30a05") },
@@ -2132,33 +2201,36 @@ function missingCell(id: string): Ran {
 }
 
 /**
- * Куда возвращаться, если правка не понравится, — и до того, как её сделать.
+ * Where to go back to if the edit is not liked — and before making it.
  *
- * У тетради комнаты это отметка в истории версий: одна кнопка, и тетрадь
- * такая, какой была до хода. У остальных тетрадей истории нет вовсе — возврат
- * пишет в корень `cells` прибито (collab/history.ts · restoreInto), — и раньше
- * им поэтому просто отказывали. Отказ оказался хуже дыры: модель, получив его,
- * обошла инструменты и переписала .ipynb скриптом, а комната этого не увидела.
+ * For the room's notebook it is a mark in the version history: one button, and
+ * the notebook is as it was before the turn. Other notebooks have no history at
+ * all — restoring writes to the `cells` root, hard-wired (collab/history.ts ·
+ * restoreInto) — and so they used to be simply refused. The refusal turned out
+ * worse than the hole: the model, having got it, went around the tools and
+ * rewrote the .ipynb with a script, and the room did not see it.
  *
- * Поэтому — копия файла рядом. Она честнее обещания «одна кнопка вернёт как
- * было», которого для этих тетрадей нет: вернуть из копии — значит открыть её
- * в комнате и перенести руками, то есть дольше и внимательнее, чем нажать. Эта
- * цена названа в ответе хода, а не оставлена на потом.
+ * Hence a copy of the file next to it. It is more honest than the promise "one
+ * button brings it back", which these notebooks do not have: restoring from a
+ * copy means opening it in the room and carrying things over by hand, that is,
+ * longer and more carefully than a click. This price is named in the turn's
+ * answer, not left for later.
  *
- * Не вышло положить копию — не правим вовсе: правка без точки возврата это
- * ровно то, чего этому режиму не отдают.
+ * If the copy could not be saved, we do not edit at all: an edit without a
+ * restore point is exactly what this mode is not given.
  */
 function safety(hands: Hands, doc: Y.Doc, book: Book): Ran | null {
   if (book.root === CELLS_KEY) return checkpoint(hands, doc)
   const work = bookWork(hands)
-  // Тетрадь завёл сам этот ход: возвращаться некуда, и копия была бы пустым
-  // файлом рядом с настоящим — с именем, которое обещает возврат.
+  // This very turn created the notebook: there is nowhere to go back to, and a
+  // copy would be an empty file next to the real one — with a name that
+  // promises a way back.
   if (work.made.has(book.path)) return null
   if (work.copies.has(book.path)) return null
   /*
-   * Копия снимается с ячеек, а не с файла: файл отстаёт на полторы секунды, и
-   * в нём не хватало бы как раз того, что человек дописал перед тем, как
-   * попросить ход.
+   * The copy is taken from the cells, not from the file: the file lags a second
+   * and a half behind, and it would lack exactly what the person typed just
+   * before asking for the turn.
    */
   const text = bookText(hands.sessionId, book.path)
   if (text === null) {
@@ -2169,8 +2241,8 @@ function safety(hands: Hands, doc: Y.Doc, book: Book): Ran | null {
         tr("server.iWillNotEditItWithoutA.3b0423"),
     }
   }
-  // Рядом и с числом, а не поверх: две попытки подряд — это два разных «как
-  // было», и второе не должно затирать первое.
+  // Next to it and with a number, not on top: two attempts in a row are two
+  // different "as it was", and the second must not overwrite the first.
   const where = freeName(hands.sessionId, copyName(book.path))
   if (makeFile(hands.sessionId, where, text) !== 'ok') {
     return {
@@ -2184,7 +2256,7 @@ function safety(hands: Hands, doc: Y.Doc, book: Book): Ran | null {
   return null
 }
 
-/** `разбор/Семинар.ipynb` → `разбор/Семинар.before-oracle.ipynb`. */
+/** `review/Seminar.ipynb` → `review/Seminar.before-oracle.ipynb`. */
 function copyName(path: string): string {
   const dir = parentOf(path)
   const base = baseOf(path)
@@ -2195,15 +2267,16 @@ function copyName(path: string): string {
 }
 
 /**
- * Отметить тетрадь в истории — один раз за ход и до первой правки.
+ * Mark the notebook in the history — once per turn and before the first edit.
  *
- * Это и есть то, на чём держится право оракула трогать ячейки: одна кнопка в
- * панели истории возвращает тетрадь ровно к тому, что было до хода. Ставится
- * тем же вызовом, что и чекпоинт от руки (routes/history.ts), и от имени того,
- * кто попросил ход, — строка в ленте не должна быть ничьей.
+ * This is exactly what the oracle's right to touch cells rests on: one button
+ * in the history panel returns the notebook exactly to what it was before the
+ * turn. Set with the same call as a manual checkpoint (routes/history.ts), and
+ * on behalf of whoever asked for the turn — a line in the feed must not belong
+ * to nobody.
  *
- * Не вышло отметить — не правим вовсе: правка без точки возврата это ровно то,
- * чего этому режиму не отдают.
+ * If it could not be marked, we do not edit at all: an edit without a restore
+ * point is exactly what this mode is not given.
  */
 function checkpoint(hands: Hands, doc: Y.Doc): Ran | null {
   const work = bookWork(hands)
@@ -2218,7 +2291,7 @@ function checkpoint(hands: Hands, doc: Y.Doc): Ran | null {
       CHECKPOINT_LABEL(),
     )
   } catch (err) {
-    console.error(`[session ${hands.sessionId}] не отметил тетрадь перед правкой:`, err)
+    console.error(`[session ${hands.sessionId}] could not mark the notebook before editing:`, err)
     return {
       step: note(tr("server.couldNotMarkHistory.6777c1"), tr("server.notebook.02497c")),
       said:
@@ -2230,14 +2303,15 @@ function checkpoint(hands: Hands, doc: Y.Doc): Ran | null {
   return null
 }
 
-/* ------------------------------------------------- запись мимо комнаты */
+/* ------------------------------------------------- writes past the room */
 
 /**
- * Отпечаток файла каждой тетради комнаты — до шага и после него.
+ * A fingerprint of every room notebook's file — before a step and after it.
  *
- * Два чтения на тетрадь на шаг, и это вся цена: тетрадей в комнате единицы, а в
- * файл уходит один исходник, без выводов. Дешевле, чем разбирать, что именно
- * сделал чужой скрипт, и надёжнее, чем верить его словам.
+ * Two reads per notebook per step, and that is the whole price: a room has a
+ * handful of notebooks, and the file gets one source without outputs. Cheaper
+ * than working out what exactly someone else's script did, and more reliable
+ * than trusting its words.
  */
 function bookPrints(sessionId: string): Map<string, string> {
   const doc = peekSessionDoc(sessionId)?.doc
@@ -2249,8 +2323,8 @@ function bookPrints(sessionId: string): Map<string, string> {
 
 function printOf(sessionId: string, path: string): string {
   const read = readText(sessionId, path)
-  // Файла нет, он двоичный или не дочитан — все три случая один: сравнивать
-  // нечего, и «не изменился» тут значит «так же нечего».
+  // No file, a binary one or one not read to the end — all three cases are one:
+  // there is nothing to compare, and "unchanged" here means "just as nothing".
   if (!read || read.binary) return '—'
   return digest(read.text)
 }
@@ -2260,17 +2334,19 @@ function digest(text: string): string {
 }
 
 /**
- * Тетради, чей файл на диске переписали мимо комнаты.
+ * Notebooks whose file on disk was rewritten past the room.
  *
- * Скрипты запускать можно — это заявленная возможность режима, и запретить их
- * значило бы отнять у оракула половину работы. Значит, обход ловится не
- * запретом, а именем: `nbformat` переписал .ipynb, комната этого не прочитала,
- * и сказать об этом надо на том же шаге — иначе ход отчитывается «в тетради
- * очищены ячейки», а в тетради не изменилось ничего.
+ * Running scripts is allowed — it is a declared capability of the mode, and
+ * forbidding them would take half the work away from the oracle. So the bypass
+ * is caught not with a ban but by naming it: `nbformat` rewrote the .ipynb, the
+ * room did not read it, and this has to be said on the same step — otherwise
+ * the turn reports "cleared cells in the notebook", while nothing in the
+ * notebook changed.
  *
- * Своя же проекция сюда не попадает: файл, ставший ровно тем, что комната в
- * него и пишет, никого не обманул — а пишет она его в том числе посреди шага,
- * через полторы секунды после чужой правки ячейки.
+ * The room's own projection does not count here: a file that became exactly
+ * what the room writes into it fooled nobody — and the room writes it, among
+ * other times, in the middle of a step, a second and a half after someone
+ * else's cell edit.
  */
 function rewrittenBooks(sessionId: string, was: Map<string, string>): string[] {
   const doc = peekSessionDoc(sessionId)?.doc
@@ -2278,8 +2354,8 @@ function rewrittenBooks(sessionId: string, was: Map<string, string>): string[] {
   const out: string[] = []
   for (const book of bookList(doc)) {
     const before = was.get(book.path)
-    // Тетради до шага не было: её внесли в комнату им же, и «переписали» про
-    // неё неправда.
+    // The notebook did not exist before the step: this step brought it into
+    // the room, and "rewritten" would be untrue about it.
     if (before === undefined) continue
     const now = printOf(sessionId, book.path)
     if (now === before) continue
@@ -2290,7 +2366,7 @@ function rewrittenBooks(sessionId: string, was: Map<string, string>): string[] {
   return out
 }
 
-/** Что сказать модели про переписанный файл — прямо на том шаге, где это вышло. */
+/** What to tell the model about a rewritten file — right on the step where it happened. */
 function sayFaked(paths: string[]): string {
   return (
     tr("server.fileWasChangedOutsideTheRoomThe.52b9a3", { p0: paths.join(', ') }) +
@@ -2302,26 +2378,28 @@ function sayFaked(paths: string[]): string {
 }
 
 /**
- * Что сказать про тронутые ячейки — в самом ответе, а не только в ленте.
+ * What to say about the touched cells — in the answer itself, not only in the
+ * feed.
  *
- * Лента шагов рассказывает, как шла работа; преподавателю после неё нужно одно:
- * что перезапустить и куда вернуться, если не понравилось. Номера считаются
- * сейчас, а не в момент правки: человек читает ответ, глядя на тетрадь, какой
- * она стала.
+ * The feed of steps tells how the work went; after it the teacher needs one
+ * thing: what to rerun and where to go back to if they do not like it. The
+ * numbers are computed now, not at the moment of the edit: the person reads the
+ * answer looking at the notebook as it has become.
  *
- * По тетрадям, а не одной строкой: у каждой свой счёт ячеек и свой возврат —
- * кнопка в истории у тетради комнаты и копия файла у остальных. Строка, где
- * «поправил 02» относится сразу к трём тетрадям, не значит ничего.
+ * By notebook, not in one line: each has its own cell count and its own way
+ * back — a button in the history for the room's notebook and a copy of the
+ * file for the others. A line where "edited 02" refers to three notebooks at
+ * once means nothing.
  *
- * Экспортируется ради теста — по тому же доводу, что и `useTool`: проверять
- * эту строку через живую модель значило бы проверять модель.
+ * Exported for the test — for the same reason as `useTool`: checking this line
+ * through a live model would mean checking the model.
  */
 export function saidAboutCells(sessionId: string, entryId: string): string {
   const work = inBook.get(`${sessionId}\u0000${entryId}`)
   if (!work) return ''
   const doc = peekSessionDoc(sessionId)?.doc
-  // Имена ячеек в комнате одни на все тетради, поэтому карта одна: номер у
-  // ячейки тот, что нарисован в её собственной тетради.
+  // Cell names in the room are shared across all notebooks, so there is one
+  // map: a cell's number is the one drawn in its own notebook.
   const numbers = new Map<string, string>()
   if (doc) {
     for (const { cells } of allBooks(doc)) {
@@ -2333,8 +2411,8 @@ export function saidAboutCells(sessionId: string, entryId: string): string {
     let row = byBook.get(done.book)
     if (!row) byBook.set(done.book, (row = { edited: [], added: [], gone: 0 }))
     const no = numbers.get(id)
-    if (done.what === 'убрал') row.gone += 1
-    else if (no && done.what === 'правил') row.edited.push(no)
+    if (done.what === 'removed') row.gone += 1
+    else if (no && done.what === 'edited') row.edited.push(no)
     else if (no) row.added.push(no)
   }
 
@@ -2352,10 +2430,11 @@ export function saidAboutCells(sessionId: string, entryId: string): string {
           ? tr("server.editedCellsRetainTheirPreviousOutputWhich.8ba614")
           : '') +
         /*
-         * Куда возвращаться — три разных ответа, и третий появился вместе с
-         * `create_notebook`. Говорить «как было до хода — в истории версий» про
-         * тетрадь, которой до хода не было, значит обещать возврат в пустоту:
-         * первый же настоящий прогон так и отчитался.
+         * Where to go back to — three different answers, and the third came
+         * with `create_notebook`. Saying "as it was before the turn — in the
+         * version history" about a notebook that did not exist before the
+         * turn means promising a way back into the void: the very first real
+         * run reported exactly that.
          */
         (work.made.has(path)
           ? tr('server.agent.notebookIsNew')
@@ -2365,9 +2444,9 @@ export function saidAboutCells(sessionId: string, entryId: string): string {
     )
   }
   /*
-   * Про переписанный файл говорится и тогда, когда ячеек ход не тронул вовсе, —
-   * это и есть тот случай, ради которого проверка написана: скрипт «почистил
-   * тетрадь», ход отчитался «готово», а в комнате не изменилось ничего.
+   * The rewritten file is mentioned even when the turn did not touch any cells
+   * — that is exactly the case the check was written for: the script "cleaned
+   * the notebook", the turn reported "done", and nothing changed in the room.
    */
   for (const path of work.faked) {
     lines.push(
@@ -2380,12 +2459,13 @@ export function saidAboutCells(sessionId: string, entryId: string): string {
 }
 
 /**
- * Что сказать про файл, который целиком не читается.
+ * What to say about a file that cannot be read in full.
  *
- * Полтора мегабайта — тот же потолок, что у редактора (`MAX_TEXT_BYTES`), и
- * называть его надо своими словами. «Файла нет или он не текст» отправляет
- * модель заводить файл заново поверх датасета, а «не получилось записать» —
- * пробовать снова и снова: оба ответа правдивы по букве и врут по делу.
+ * A megabyte and a half is the same ceiling as the editor's (`MAX_TEXT_BYTES`),
+ * and it has to be named in its own words. "No such file or it is not text"
+ * sends the model to create the file anew over the dataset, and "could not
+ * write" to try again and again: both answers are true to the letter and lie in
+ * substance.
  */
 function tooBig(path: string): string {
   return (
@@ -2396,15 +2476,16 @@ function tooBig(path: string): string {
 }
 
 /**
- * Что сказать модели про запуск.
+ * What to tell the model about a run.
  *
- * Прерванный запуск — не «оболочка умерла»: скрипт был жив, его остановили, и
- * вывод до этого момента у нас есть. Модель, поверившая в мёртвую оболочку,
- * чинит несуществующую поломку и запускает снова.
+ * An interrupted run is not "the shell died": the script was alive, it was
+ * stopped, and we have the output up to that moment. A model that believes in
+ * a dead shell fixes a non-existent breakage and runs again.
  *
- * И слово здесь равно делу: `stopRun` в ветке ожидания снимает свою команду из
- * очереди (`dropPendingOf`), поэтому обещать «начнётся позже» нельзя — модель
- * пересказала бы комнате запуск, которого уже не будет.
+ * And the word here equals the deed: `stopRun` in the waiting branch takes its
+ * command off the queue (`dropPendingOf`), so promising "it will start later"
+ * is not possible — the model would retell to the room a run that will never
+ * happen.
  */
 function sayRun(result: RunResult, shown: string): string {
   if (result.cut === 'waiting') {
@@ -2428,17 +2509,18 @@ function sayRun(result: RunResult, shown: string): string {
 }
 
 /**
- * Папка семинара для модели — с потолком на строки.
+ * The seminar folder for the model — with a ceiling on lines.
  *
- * Из каждой папки едет начало, про остальное сказано числом: за подробностями
- * модель сходит в конкретную папку сама, а список, который повторяется в каждом
- * следующем запросе хода, не должен стоить дороже самой работы.
+ * Each folder sends its beginning, and the rest is stated as a number: the
+ * model will go into a specific folder itself for details, and a list that is
+ * repeated in every following request of the turn must not cost more than the
+ * work itself.
  */
 function describeTree(sessionId: string): string {
   const lines: string[] = []
   const shown = new Map<string, number>()
   const hidden = new Map<string, number>()
-  /** Куда потом вписать «… ещё N»: строка занимает место сразу, в порядке обхода. */
+  /** Where to write "… N more" later: the line takes its place right away, in walk order. */
   const placeholder = new Map<string, number>()
   let over = 0
   for (const entry of listFiles(sessionId)) {
@@ -2468,7 +2550,7 @@ function describeTree(sessionId: string): string {
   return lines.join('\n') || tr("server.theFolderIsEmpty.5c7445")
 }
 
-/** Сколько строк прибавилось и убавилось. Достаточно для строки «+9 −2». */
+/** How many lines were added and removed. Enough for a "+9 −2" line. */
 function countChanges(was: string, next: string): { added: number; removed: number } {
   const a = was ? was.split('\n') : []
   const b = next ? next.split('\n') : []
@@ -2485,7 +2567,7 @@ function countChanges(was: string, next: string): { added: number; removed: numb
   return { added: b.length - kept, removed: a.length - kept }
 }
 
-/** Первая появившаяся строка — чтобы в ленте было видно, о чём правка. */
+/** The first new line — so the feed shows what the edit is about. */
 function firstAdded(was: string, next: string): string {
   const had = new Set(was.split('\n'))
   for (const line of next.split('\n')) {
@@ -2496,9 +2578,10 @@ function firstAdded(was: string, next: string): string {
 }
 
 function tail(output: string): string {
-  // ESC записан escape-последовательностью, а не самим байтом: байт в
-  // исходнике невидим, и выражение читается как «вырезать всё в квадратных
-  // скобках» — то есть как порча трейсбека, которой на самом деле нет.
+  // ESC is written as an escape sequence, not as the byte itself: the byte is
+  // invisible in the source, and the expression reads as "cut out everything in
+  // square brackets" — that is, as damage to the traceback that is not really
+  // there.
   const clean = output.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trimEnd()
   if (clean.length <= MAX_OUTPUT) return clean
   return '…\n' + clean.slice(clean.length - MAX_OUTPUT)
@@ -2509,24 +2592,23 @@ interface RunResult {
   exit: number | null
   finished: boolean
   /**
-   * Запуск оборвали: истёк срок, нажали «Стоп» — или он так и не начался
-   * (`waiting`: наша команда всё ещё стояла в очереди к общей оболочке).
-   * `null` — дошёл сам.
+   * The run was cut off: the deadline passed, "Stop" was pressed — or it never
+   * started (`waiting`: our command was still queued for the shared shell).
+   * `null` means it finished on its own.
    */
   cut: 'timeout' | 'stop' | 'waiting' | null
 }
 
-/** Сколько ждать вывод после Ctrl+C: оболочка возвращается к строке за миг. */
+/** How long to wait for output after Ctrl+C: the shell is back at the prompt in a blink. */
 const INTERRUPT_GRACE_MS = 5_000
 
 /**
- * Запустить в терминале комнаты и дождаться конца.
+ * Run in the room's terminal and wait for the end.
  *
- * Именно в комнатном терминале, а не в отдельном невидимом заходе: комната
- * должна видеть, что оракул запустил, ровно там же, где видит собственные
- * запуски. Код выхода приезжает отпечатком в самом выводе — оболочка ничем
- * другим о нём не сообщает, а знать его надо, чтобы отличить «посчиталось» от
- * «упало».
+ * Exactly in the room's terminal, not in a separate invisible session: the
+ * room must see what the oracle ran exactly where it sees its own runs. The
+ * exit code arrives as a mark in the output itself — the shell reports it in
+ * no other way, and it has to be known to tell "it computed" from "it failed".
  */
 async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): Promise<RunResult> {
   await openTerminal(hands.sessionId)
@@ -2549,35 +2631,38 @@ async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): P
         resolve({ ...result, cut })
       }
       /*
-       * Прервать, а не бросить.
+       * Interrupt, do not abandon.
        *
-       * Раньше по сроку промис просто резолвился, скрипт оставался в общей
-       * оболочке, а модели говорили, что оболочка умерла: она правила
-       * несуществующую ошибку и запускала снова — в очередь за той же живой
-       * командой. Ctrl+C идёт от того, кто попросил ход, то есть по тому же
-       * правилу, что и кнопка «Стоп» у человека.
+       * Before, on the deadline the promise simply resolved, the script stayed
+       * in the shared shell, and the model was told the shell had died: it
+       * fixed a non-existent error and ran again — queueing behind the same
+       * live command. Ctrl+C comes from whoever asked for the turn, that is, by
+       * the same rule as a person's "Stop" button.
        */
       const stopRun = (why: 'timeout' | 'stop') => {
         if (settled || cut) return
         /*
-         * Ctrl+C — только в СВОЮ команду.
+         * Ctrl+C — only into OUR OWN command.
          *
-         * Занятость оболочки спрашивается до запуска (`terminalBusy`), но
-         * между вопросом и `runCommand` в неё успевает встать чужая команда:
-         * очередь общая и людская. Прежний код всё равно слал ETX по сроку,
-         * не спросив, чья команда идёт, — девяностая секунда ожидания
-         * убивала идущий у преподавателя скрипт, а модели говорили «не уложился
-         * в 90 с — прервал запуск» про запуск, которого не было.
+         * The shell's busyness is asked before the run (`terminalBusy`), but
+         * between the question and `runCommand` someone else's command can get
+         * in: the queue is shared and belongs to people. The old code sent ETX
+         * on the deadline anyway, without asking whose command was running —
+         * the ninetieth second of waiting killed a script the teacher was
+         * running, and the model was told "did not fit in 90 s — interrupted
+         * the run" about a run that never happened.
          *
-         * Своя очередь при этом снимается (`dropPendingOf`), а не оставляется
-         * в оболочке: команда, начавшаяся через минуту после конца хода, — это
-         * чужой вывод посреди чужого занятия, которого никто не просил и
-         * который некому прочитать. Что запуска не было, названо вслух в
-         * ответе модели, чтобы она не «чинила» несуществующую ошибку.
+         * Our own queue entry is dropped (`dropPendingOf`), not left in the
+         * shell: a command that starts a minute after the end of the turn is
+         * someone else's output in the middle of someone else's class, which
+         * nobody asked for and nobody is there to read. That there was no run
+         * is stated out loud in the model's answer, so it does not "fix" a
+         * non-existent error.
          */
         if (!typedRunningCommand(hands.sessionId, hands.by.participantId)) {
-          // Метка — до снятия: `dropPendingOf` отвечает ждущему сам, то есть
-          // зовёт этот же `done`, и запись хода должна знать, чем всё кончилось.
+          // The mark comes before the removal: `dropPendingOf` answers the
+          // waiter itself, that is, it calls this same `done`, and the turn's
+          // record has to know how everything ended.
           cut = 'waiting'
           dropPendingOf(hands.sessionId, hands.by.participantId)
           done({ output: '', finished: false })
@@ -2607,19 +2692,20 @@ async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): P
   }
 }
 
-/* ---------------------------------------------------------------- сам ход */
+/* ---------------------------------------------------------------- the turn */
 
 /**
- * Ходы, которые прямо сейчас идут.
+ * Turns that are running right now.
  *
- * Нужны ради одной кнопки — «Стоп» под записью. Без них она была бы нарисована
- * и ничего не делала: обычный вопрос обрывается на середине потока, а здесь
- * потока нет, и оборвать надо цикл. Проверяется между шагами, а не внутри них:
- * запись в файл, брошенная на середине, — это половина файла.
+ * Needed for one button — "Stop" under the entry. Without them it would be
+ * drawn and do nothing: an ordinary question is cut off in the middle of the
+ * stream, but here there is no stream, and it is the loop that has to be cut.
+ * Checked between steps, not inside them: a write to a file abandoned in the
+ * middle is half a file.
  */
 const running = new Map<string, AbortController>()
 
-/** Остановить ход. Уже сделанное остаётся сделанным — и отменяется отменой. */
+/** Stop a turn. What is already done stays done — and is undone by undo. */
 export function stopWork(sessionId: string, entryId: string): boolean {
   const controller = running.get(`${sessionId} ${entryId}`)
   if (!controller) return false
@@ -2628,11 +2714,12 @@ export function stopWork(sessionId: string, entryId: string): boolean {
 }
 
 /**
- * Сколько ходов идёт в этой комнате прямо сейчас.
+ * How many turns are running in this room right now.
  *
- * Спрашивает маршрут: у комнаты один потолок на всё, что оракул делает разом
- * (routes/ai.ts · MAX_ROOM_STREAMS), и ход в нём считается наравне с потоком —
- * он держит запрос к провайдеру много раз подряд и правит файлы.
+ * The route asks: a room has one ceiling on everything the oracle does at once
+ * (routes/ai.ts · MAX_ROOM_STREAMS), and a turn counts in it on a par with a
+ * stream — it holds a request to the provider many times in a row and edits
+ * files.
  */
 export function turnsInRoom(sessionId: string): number {
   const prefix = `${sessionId} `
@@ -2642,12 +2729,13 @@ export function turnsInRoom(sessionId: string): number {
 }
 
 /**
- * Остановить всё, что оракул делает в этой комнате.
+ * Stop everything the oracle is doing in this room.
  *
- * Стирание треда и удаление семинара — оба про «прекратить», и оба оставляли
- * ход идти дальше: лента исчезала, а файлы ещё десяток шагов менялись сами, без
- * записи в треде и, значит, без кнопки отмены. Для потока такой случай был
- * предусмотрен с самого начала (см. `generate` в index.ts), для хода — нет.
+ * Erasing the thread and deleting the seminar are both about "stop", and both
+ * left the turn going: the feed disappeared, while files kept changing on their
+ * own for another dozen steps, with no entry in the thread and so with no undo
+ * button. For the stream this case was provided for from the very start (see
+ * `generate` in index.ts), for the turn it was not.
  */
 export function stopAll(sessionId: string): void {
   const prefix = `${sessionId} `
@@ -2661,19 +2749,19 @@ export interface WorkOptions {
   participantId: string
   participantName: string
   participantColor: string
-  /** Роль просящего — с ней ход и работает с тетрадью. См. `Hands.role`. */
+  /** The asker's role — the turn works with the notebook under it. See `Hands.role`. */
   role: 'host' | 'participant'
   message: string
   usageId?: number
-  /** Уровень размышлений — тот же, что у вопроса: режим отличается инструментами. */
+  /** The reasoning level — the same as for a question: the mode differs by its tools. */
   effort?: ReasoningEffort
 }
 
 /**
- * Поставить поручение в тред и начать работать.
+ * Put the task into the thread and start working.
  *
- * Возвращает идентификатор записи сразу, как и обычный вопрос: комната видит
- * поручение в ту же секунду, а шаги приезжают по одному.
+ * Returns the entry id right away, like an ordinary question: the room sees the
+ * task in the same second, and the steps arrive one by one.
  */
 export function work(options: WorkOptions): string {
   const doc = getSessionDoc(options.sessionId).doc
@@ -2691,7 +2779,7 @@ export function work(options: WorkOptions): string {
   appendActivity(options.sessionId, options.participantId, 'oracle.work_started', { entryId, action: 'work', source: 'participant' }, options.role)
 
   void loop(options, entryId, history).catch((err: unknown) => {
-    console.error(`[session ${options.sessionId}] агент упал:`, reason(err, WENT_WRONG()))
+    console.error(`[session ${options.sessionId}] agent crashed:`, reason(err, WENT_WRONG()))
     settle(options.sessionId, entryId, 'error', reason(err, WENT_WRONG()))
   })
 
@@ -2721,28 +2809,29 @@ async function loop(options: WorkOptions, entryId: string, history: ChatTurn[]):
 }
 
 /**
- * Сколько ход работает по часам, а не по шагам.
+ * How long a turn works by the clock, not by steps.
  *
- * Потолок шагов считает ДЕЙСТВИЯ, и в этом его слепое пятно: ход, где каждый
- * шаг — девяностасекундный запуск, укладывается в двадцать четыре действия и
- * идёт полчаса, а комната всё это время смотрит на «думает». Пять минут — это
- * граница терпения пары: дольше преподаватель всё равно нажимает «Стоп», и
- * лучше пусть об этом скажет ход сам, назвав сделанное, чем оборванная кнопка.
+ * The step ceiling counts ACTIONS, and that is its blind spot: a turn where
+ * every step is a ninety-second run fits into twenty-four actions and goes on
+ * for half an hour, while the room watches "thinking" all that time. Five
+ * minutes is the limit of a class's patience: beyond it the teacher presses
+ * "Stop" anyway, and it is better that the turn says so itself, naming what
+ * was done, than a cut-off button.
  */
 const TURN_BUDGET_MS = 5 * 60_000
 
 /**
- * Через сколько шагов кадр пересобирается.
+ * After how many steps the frame is rebuilt.
  *
- * Кадр (`buildContext`) снимается один раз, перед первым запросом, и дальше
- * ход правит тетрадь, о которой модель читает устаревшее описание: ячейки,
- * которые она сама добавила, в кадре не появляются, выводы, которые она
- * получила, — тоже. Восемь шагов — это примерно «прочитал, завёл, написал
- * пять ячеек»: столько кадр ещё похож на правду, дальше перестаёт.
+ * The frame (`buildContext`) is taken once, before the first request, and after
+ * that the turn edits a notebook of which the model reads an outdated
+ * description: cells it added itself do not show up in the frame, and neither
+ * do outputs it got. Eight steps is roughly "read, created, wrote five cells":
+ * that long the frame still resembles the truth, after that it stops.
  */
 const FRAME_EVERY = 8
 
-/** Инструменты, после которых кадр устарел наверняка. */
+/** Tools after which the frame is certainly outdated. */
 const CHANGES_ROOM = new Set([
   'create_notebook',
   'add_cell',
@@ -2751,15 +2840,15 @@ const CHANGES_ROOM = new Set([
   'run_cell',
 ])
 
-/** Инструменты, после которых прежние ответы могли перестать быть правдой. */
+/** Tools after which earlier answers may have stopped being true. */
 const CHANGES_WORLD = new Set([...CHANGES_ROOM, 'write_file', 'edit_file', 'run_file'])
 
 /**
- * Отпечаток вызова: имя и аргументы, приведённые к одному виду.
+ * A fingerprint of a call: the name and the arguments, brought to one form.
  *
- * Ключи в JSON от модели приезжают в разном порядке от шага к шагу, так что
- * сравнивать строку аргументов как есть значило бы не поймать ровно тот
- * случай, ради которого это написано: один и тот же `read_file` по кругу.
+ * Keys in the model's JSON arrive in a different order from step to step, so
+ * comparing the argument string as is would miss exactly the case this was
+ * written for: the same `read_file` in a circle.
  */
 function fingerprint(name: string, rawArgs: string): string {
   let args: unknown
@@ -2808,24 +2897,24 @@ async function steps(
     { role: 'user', content: options.message.trim() },
   ]
 
-  // Строка расхода одна на весь ход, а шагов может быть много: каждый отчитывается
-  // за себя, а складывает их `noteTokens` — иначе в панели оставался бы
-  // последний шаг вместо цены всего хода.
+  // One usage row for the whole turn, while there can be many steps: each
+  // reports for itself, and `noteTokens` adds them up — otherwise the panel
+  // would show the last step instead of the price of the whole turn.
   const bill = (tokens: number) => {
     if (options.usageId !== undefined) noteTokens(options.usageId, tokens)
   }
 
   const began = Date.now()
-  /** Ответы, которые из переписки не выбрасывают: отказы и падения. См. budgetTools. */
+  /** Replies never dropped from the conversation: refusals, failures. See budgetTools. */
   const keep = new Set<string>()
-  /** Что уже звали и чем это кончилось — против кругов. */
+  /** What was already called and how it ended — against circles. */
   const seen = new Map<string, { times: number; said: string }>()
   let taken = 0
   let spoke = ''
   let stopped = false
   let ranOut = false
   let looped = false
-  /** Молчаливых ответов подряд: первый — подсказка, второй — конец хода. */
+  /** Silent answers in a row: the first gets a nudge, the second ends the turn. */
   let silent = 0
   let framedAt = 0
   let stale = false
@@ -2841,48 +2930,50 @@ async function steps(
       break
     }
     /*
-     * Кадр пересобирается тут же, перед запросом: модель должна увидеть
-     * СВОЮ работу — тетрадь с добавленными ячейками и выводом, который она
-     * только что получила, — а не ту комнату, какой она была до хода.
+     * The frame is rebuilt right here, before the request: the model must see
+     * ITS OWN work — the notebook with the cells it added and the output it
+     * just got — not the room as it was before the turn.
      */
     if ((stale || taken - framedAt >= FRAME_EVERY) && peekSessionDoc(options.sessionId)) {
       /*
-       * `peekSessionDoc` в условии — не придирка: кадр собирает `buildContext`,
-       * а тот ходит в `getSessionDoc`, который комнату ЗАВОДИТ. Ход, доехавший
-       * до удалённой комнаты, поднял бы её заново — с таймерами, строкой в
-       * истории и папкой на диске, — и сделал бы это ради строки, которую
-       * некому прочитать. Само по себе это почти невозможно (удаление зовёт
-       * `stopAll`, а прерывание проверено строкой выше), но правило над
-       * `peekSessionDoc` не про вероятность.
+       * `peekSessionDoc` in the condition is not nitpicking: the frame is
+       * assembled by `buildContext`, which goes to `getSessionDoc`, which
+       * CREATES the room. A turn that reached a deleted room would raise it
+       * again — with timers, a line in the history and a folder on disk — and
+       * do it for a line nobody is there to read. By itself this is almost
+       * impossible (deletion calls `stopAll`, and the abort is checked a line
+       * above), but the rule above `peekSessionDoc` is not about probability.
        */
       messages[0] = { role: 'system', content: systemPrompt(hands, tools, options.effort) }
       framedAt = taken
       stale = false
     }
-    // Перед каждым запросом, а не после каждого шага: резать надо ровно то, что
-    // сейчас поедет провайдеру, и по бюджету, который мог смениться на ходу.
+    // Before every request, not after every step: what has to be cut is exactly
+    // what goes to the provider now, and by a budget that may have changed on
+    // the fly.
     budgetTools(messages, toolChars(), keep)
     const answer = await completeWithTools(messages, tools, signal, bill, options.effort)
-    // Прерванный запрос возвращается пустым ответом без вызовов, и без этой
-    // проверки ход заканчивался бы пустотой: ни текста, ни «Остановлено».
+    // An aborted request comes back as an empty answer without calls, and
+    // without this check the turn would end in emptiness: no text, no "Stopped".
     if (signal.aborted || !allowsAgent(getRules(options.sessionId).agent, options.role)) {
       stopped = true
       break
     }
     if (answer.calls.length === 0) {
       /*
-       * Ответ без вызова — не всегда конец хода.
+       * An answer without a call is not always the end of the turn.
        *
-       * Небольшие модели сплошь и рядом ОПИСЫВАЮТ следующий вызов прозой —
-       * «теперь я создам тетрадь и добавлю ячейки» — вместо того, чтобы его
-       * сделать. Прежний цикл считал такой ответ итогом и заканчивал ход после
-       * первого же прочитанного файла: в ленте два шага, в тетради ничего, а в
-       * ответе — план, который никто не выполнил. Один толчок это чинит;
-       * второй молчаливый ответ подряд — уже правда конец, и спорить с ним
-       * значит ходить по кругу за деньги владельца ключа.
+       * Small models all too often DESCRIBE the next call in prose — "now I
+       * will create the notebook and add cells" — instead of making it. The
+       * old loop took such an answer for the result and ended the turn after
+       * the very first file read: two steps in the feed, nothing in the
+       * notebook, and in the answer a plan nobody carried out. One nudge fixes
+       * this; a second silent answer in a row really is the end, and arguing
+       * with it means going in circles on the key owner's money.
        *
-       * До первого вызова толкать некуда: ход, начавшийся со слов, — это
-       * обычный ответ на вопрос, который просто не потребовал инструментов.
+       * Before the first call there is nothing to nudge towards: a turn that
+       * started with words is an ordinary answer to a question that simply did
+       * not need tools.
        */
       if (taken > 0 && silent === 0 && (answer.text.trim() || answer.reasoning.trim())) {
         silent = 1
@@ -2891,15 +2982,16 @@ async function steps(
         continue
       }
       /*
-       * Пусто во всём: ни текста, ни следа рассуждения, ни вызова. Это не
-       * итог, а молчание эндпоинта — фильтр, обрезанный лимит вывода, пустой
-       * choices, — и пустая подпись под ходом читается как поломка Colloq.
+       * Empty in everything: no text, no reasoning trace, no call. This is not
+       * a result but the endpoint's silence — a filter, a truncated output
+       * limit, empty choices — and an empty caption under the turn reads as a
+       * Colloq breakage.
        */
       spoke =
         answer.text.trim() ||
-        // След рассуждения вместо ответа — у моделей, весь ответ которых уходит
-        // в `reasoning`. Пересказ работы в нём есть; пустой подписи под лентой
-        // шагов быть не должно.
+        // The reasoning trace instead of an answer — for models whose whole
+        // answer goes into `reasoning`. It has a retelling of the work; there
+        // must be no empty caption under the feed of steps.
         tail(answer.reasoning.trim()) ||
         tr('server.agent.saidNothing')
       break
@@ -2907,8 +2999,8 @@ async function steps(
     silent = 0
     messages.push({ role: 'assistant', content: answer.text, calls: answer.calls })
     for (const call of answer.calls) {
-      // Между шагами, а не внутри: правка, брошенная на середине, — это
-      // половина файла, и никакая отмена такого не ждёт.
+      // Between steps, not inside them: an edit abandoned in the middle is half
+      // a file, and no undo expects that.
       if (signal.aborted || !allowsAgent(getRules(options.sessionId).agent, options.role)) {
         stopped = true
         break
@@ -2921,14 +3013,14 @@ async function steps(
       const mark = fingerprint(call.name, call.args)
       const before = seen.get(mark)
       /*
-       * Тот же вызов с теми же аргументами.
+       * The same call with the same arguments.
        *
-       * Наблюдалось прямо в ленте: модель звала `read_notebook` четыре раза
-       * подряд, получала один и тот же список и каждый раз объявляла, что
-       * теперь-то поправит ячейку. Второй раз отвечаем из памяти и говорим
-       * вслух, что ответ тот же, — шаг стоит ноль обращений к комнате. Третий
-       * — это не заминка, а круг, и ход на нём заканчивается: дальше он тратит
-       * только деньги.
+       * Seen right in the feed: the model called `read_notebook` four times in
+       * a row, got the same list and each time announced that now it would fix
+       * the cell. The second time we answer from memory and say out loud that
+       * the answer is the same — the step costs zero calls to the room. The
+       * third is not a hiccup but a circle, and the turn ends on it: from there
+       * on it only spends money.
        */
       if (before && before.times >= 2) {
         looped = true
@@ -2939,9 +3031,9 @@ async function steps(
         before.times += 1
         const said = `${before.said}\n\n${tr('server.agent.sameCall')}`
         push(options.sessionId, entryId, note(tr('server.agent.repeatedNote'), call.name))
-        // В журнал — тоже, и как отказ: шаг потрачен, а комната от него ничего
-        // не получила. Строка «оракул девять раз позвал read_notebook» и есть
-        // тот разговор, ради которого журнал заводят.
+        // Into the log too, and as a refusal: the step was spent, and the room
+        // got nothing from it. The line "the oracle called read_notebook nine
+        // times" is exactly the conversation the log is kept for.
         record(options, entryId, call.name, 'error', 0)
         messages.push({ role: 'assistant', content: said, callId: call.id })
         keep.add(call.id)
@@ -2951,28 +3043,30 @@ async function steps(
       const startedAt = Date.now()
       const ran = await useTool(hands, call.name, call.args, signal)
       /*
-       * Удавшаяся правка обнуляет память о вызовах — и это не поблажка кругу.
+       * A successful edit resets the memory of calls — and that is no
+       * indulgence for circles.
        *
-       * «Прочитал, поправил, перечитал» — это тот же `read_file` с теми же
-       * аргументами и совершенно другой ответ: файл между двумя чтениями
-       * изменился. Отдать на это старый ответ из памяти значило бы соврать
-       * модели ровно в той точке, где она проверяет собственную работу. Круг
-       * при этом остаётся пойманным: он и состоит в том, что между двумя
-       * одинаковыми вызовами НИЧЕГО не произошло. Свой собственный вызов
-       * правка из памяти не убирает — иначе `add_cell` с тем же текстом
-       * набивал бы тетрадь копиями, каждый раз обнуляя счётчик.
+       * "Read, edited, re-read" is the same `read_file` with the same arguments
+       * and a completely different answer: the file changed between the two
+       * reads. Handing out the old answer from memory for it would mean lying
+       * to the model exactly at the point where it checks its own work. A
+       * circle stays caught: it consists precisely in NOTHING having happened
+       * between two identical calls. An edit does not remove its own call from
+       * memory — otherwise `add_cell` with the same text would stuff the
+       * notebook with copies, resetting the counter each time.
        */
       if (CHANGES_WORLD.has(call.name) && !ran.failed && ran.step.kind !== 'note') seen.clear()
       seen.set(mark, { times: 1, said: ran.said })
       push(options.sessionId, entryId, ran.step)
       if (ran.also) push(options.sessionId, entryId, ran.also)
       /*
-       * Один шаг — одна строка в истории занятия.
+       * One step — one line in the class history.
        *
-       * Лента живёт в документе комнаты и уходит вместе с ней; история занятия
-       * остаётся. «Оракул семнадцать раз читал файлы и ни разу не написал» —
-       * это разговор о том, как прошла пара, и до сих пор его вести было не по
-       * чему: в истории лежал один «ход начался» и один «ход кончился».
+       * The feed lives in the room's document and leaves with it; the class
+       * history stays. "The oracle read files seventeen times and never wrote"
+       * is a conversation about how the class went, and until now there was
+       * nothing to hold it by: the history had one "turn started" and one
+       * "turn ended".
        */
       record(
         options,
@@ -3002,16 +3096,16 @@ async function steps(
 }
 
 /**
- * Один шаг — одна строка в истории занятия.
+ * One step — one line in the class history.
  *
- * Лента шагов живёт в документе комнаты и уходит вместе с ним; история занятия
- * остаётся. «Оракул семнадцать раз читал файлы и ни разу не написал» — это
- * разговор о том, как прошла пара, и до сих пор его вести было не по чему: в
- * журнале лежал один «ход начался» и один «ход кончился».
+ * The feed of steps lives in the room's document and leaves with it; the class
+ * history stays. "The oracle read files seventeen times and never wrote" is a
+ * conversation about how the class went, and until now there was nothing to
+ * hold it by: the log had one "turn started" and one "turn ended".
  *
- * `durationMs` — про САМ вызов, а не про ход: запуск ячейки, стоивший минуту,
- * и чтение, стоившее миллисекунду, — это разные строки, и складывать их в одну
- * значит потерять единственное, что журнал про них знает.
+ * `durationMs` is about the call ITSELF, not about the turn: a cell run that
+ * took a minute and a read that took a millisecond are different lines, and
+ * adding them into one means losing the only thing the log knows about them.
  */
 function record(
   options: WorkOptions,
@@ -3033,9 +3127,9 @@ function push(sessionId: string, entryId: string, step: AgentStep): void {
   const found = liveEntry(sessionId, entryId)
   if (!found) {
     /*
-     * Записи больше нет: тред стёрли или комнату удалили. Показать шаг некому,
-     * а следующий шаг правил бы файлы вслепую и без кнопки отмены — значит,
-     * работать больше не для кого.
+     * The entry is gone: the thread was erased or the room deleted. There is
+     * nobody to show the step to, and the next step would edit files blind and
+     * without an undo button — so there is nobody left to work for.
      */
     stopWork(sessionId, entryId)
     return
@@ -3044,12 +3138,12 @@ function push(sessionId: string, entryId: string, step: AgentStep): void {
 }
 
 /**
- * Запись хода в живой комнате — или `null`.
+ * The turn's entry in a live room — or `null`.
  *
- * `peekSessionDoc`, а не `getSessionDoc`: ход, доехавший до удалённой комнаты,
- * заводил её заново — с таймерами, строкой в истории и папкой на диске. Правило
- * записано над самим `peekSessionDoc`: документ заводит только то, что делает
- * человек.
+ * `peekSessionDoc`, not `getSessionDoc`: a turn that reached a deleted room
+ * used to create it again — with timers, a line in the history and a folder on
+ * disk. The rule is written above `peekSessionDoc` itself: only what a person
+ * does may create a document.
  */
 function liveEntry(sessionId: string, entryId: string): { doc: Y.Doc; entry: YChatEntry } | null {
   const doc = peekSessionDoc(sessionId)?.doc
@@ -3058,11 +3152,11 @@ function liveEntry(sessionId: string, entryId: string): { doc: Y.Doc; entry: YCh
 }
 
 /**
- * Сколько файлов ход ПРАВДА оставил за собой.
+ * How many files the turn REALLY left behind.
  *
- * Не размер карты снимков: снимок без `left` — это тот, чья запись не прошла,
- * и возвращать по нему нечего. Кнопка «отменить» под ходом, который ничего не
- * изменил, — обещание, которое отмена не выполнит.
+ * Not the size of the snapshot map: a snapshot without `left` is one whose
+ * write failed, and there is nothing to restore from it. An "undo" button under
+ * a turn that changed nothing is a promise undo will not keep.
  */
 function touchedFiles(sessionId: string, entryId: string): number {
   const files = before.get(`${sessionId}\u0000${entryId}`)
@@ -3078,11 +3172,11 @@ function finish(sessionId: string, entryId: string, text: string): void {
   const { doc, entry } = found
   const touched = touchedFiles(sessionId, entryId)
   /*
-   * Про ячейки говорит сервер, а не модель.
+   * The server, not the model, speaks about cells.
    *
-   * Что перезапустить и куда вернуться — это факт хода, а не его пересказ, и
-   * зависеть от того, вспомнит ли модель перечислить ячейки, он не должен:
-   * устаревший вывод под свежим кодом выглядит как настоящий.
+   * What to rerun and where to go back to is a fact of the turn, not a
+   * retelling of it, and it must not depend on whether the model remembers to
+   * list the cells: stale output under fresh code looks like the real thing.
    */
   const cells = saidAboutCells(sessionId, entryId)
   inBook.delete(`${sessionId}\u0000${entryId}`)
@@ -3093,8 +3187,8 @@ function finish(sessionId: string, entryId: string, text: string): void {
       answer.insert(answer.length, say)
     }
     entry.set('state', 'done' as ChatState)
-    // Отменять можно только то, что меняли: у хода, который ничего не тронул,
-    // кнопки нет вовсе, а не есть и ничего не делает.
+    // Only what was changed can be undone: a turn that touched nothing has no
+    // button at all, rather than one that is there and does nothing.
     entry.set('undo', (touched > 0 ? 'available' : 'none') as UndoState)
   }, ORIGIN)
 }
@@ -3104,7 +3198,7 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
   if (!found) return
   const { doc, entry } = found
   const touched = touchedFiles(sessionId, entryId)
-  // И у упавшего хода: тетрадь он мог успеть поправить до того, как упасть.
+  // Even for a failed turn: it may have edited the notebook before failing.
   const cells = saidAboutCells(sessionId, entryId)
   inBook.delete(`${sessionId}\u0000${entryId}`)
   doc.transact(() => {
@@ -3112,46 +3206,48 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
     const say = [note, cells].filter(Boolean).join('\n\n')
     answer.insert(answer.length, answer.length > 0 ? `\n\n${say}` : say)
     entry.set('state', state)
-    // Даже у упавшего хода: он мог успеть поправить два файла из трёх, и это
-    // ровно то состояние, из которого хочется вернуться назад.
+    // Even for a failed turn: it may have managed to edit two files out of
+    // three, and that is exactly the state one wants to go back from.
     entry.set('undo', (touched > 0 ? 'available' : 'none') as UndoState)
   }, ORIGIN)
 }
 
 function systemPrompt(hands: Hands, tools: ToolSpec[], effort?: ReasoningEffort): string {
   /*
-   * Правила преподавателя — и здесь тоже.
+   * The teacher's rules — here too.
    *
-   * Панель обещает «Appended to the system prompt» безусловно, а выполнялось
-   * это только в режиме вопроса. «Pandas ещё не проходили» — забор
-   * педагогический, и в режиме «сделать» он дороже: там нарушение не читается,
-   * а ложится в файл комнаты и запускается.
+   * The panel promises "Appended to the system prompt" unconditionally, but
+   * that was only done in question mode. "We have not covered pandas yet" is a
+   * pedagogical fence, and in "Act" mode it matters more: there a violation is
+   * not read but goes into a room file and gets run.
    */
   const houseRules = getOracleSettings().houseRules
   /*
-   * Про ячейки промпт говорит ровно то, что этому человеку дали.
+   * About cells the prompt says exactly what this person was given.
    *
-   * Список инструментов и слова о них считаются из одного места: обещание
-   * «поправлю ячейку», за которым инструмента нет, стоит шага хода и кончается
-   * отказом на глазах у комнаты — а в лекции ещё и звучит как чужое право.
+   * The tool list and the words about it are computed from one place: a
+   * promise "I will fix the cell" with no tool behind it costs a turn step and
+   * ends in a refusal in front of the room — and in a lecture it also sounds
+   * like someone else's right.
    */
   const cellNames = tools
     .map((tool) => tool.name)
     .filter((name) => name === 'edit_cell' || name === 'add_cell' || name === 'remove_cell')
-  // То же и про файлы: обещание «поправлю файл» там, где инструмента нет,
-  // кончается отказом на глазах у комнаты и звучит как чужое право.
+  // The same goes for files: a promise "I will fix the file" where there is no
+  // tool ends in a refusal in front of the room and sounds like someone else's
+  // right.
   const has = (name: string) => tools.some((tool) => tool.name === name)
   const mayWrite = has('write_file')
   const mayRun = has('run_file')
   const mayRunCell = has('run_cell')
   const mayCreate = has('create_notebook')
   /*
-   * Тетради комнаты — поимённо и в начале.
+   * The room's notebooks — by name and at the start.
    *
-   * Модель узнавала о них только из ответа `read_notebook`, то есть после
-   * шага, потраченного на вопрос «а что тут есть». Хуже того: не увидев
-   * списка, она считала, что тетради нет вовсе, и шла заводить её файлом. Одна
-   * строка в промпте снимает и то и другое.
+   * The model learned about them only from the `read_notebook` reply, that is,
+   * after a step spent on the question "what is here". Worse: not seeing the
+   * list, it assumed there was no notebook at all and went to create one as a
+   * file. One line in the prompt removes both.
    */
   const doc = peekSessionDoc(hands.sessionId)?.doc
   const books = doc ? bookList(doc).map((book) => book.path) : []
@@ -3194,21 +3290,22 @@ function systemPrompt(hands: Hands, tools: ToolSpec[], effort?: ReasoningEffort)
       ? [
           '',
           /*
-           * «Что делать», а не «вместо чего».
+           * "What to do", not "instead of what".
            *
-           * Стояло «они важнее всего сказанного выше», и это была дыра в
-           * тексте, который сам себя и открывает: строка преподавателя
-           * «пиши тетради прямо в .ipynb» или «можешь удалять лишнее»
-           * объявлялась главнее механики, которую механика всё равно не
-           * пропустит, — и ход тратился на вызовы, обречённые на отказ.
-           * Правила семинара про содержание работы; границы выше — про то,
-           * как эта комната устроена, и отменить их словами нельзя.
+           * It used to say "they outrank everything said above", and that was
+           * a hole in a text that opens itself: a teacher's line "write
+           * notebooks straight into .ipynb" or "you may delete what is not
+           * needed" was declared more important than the mechanics, which the
+           * mechanics would not let through anyway — and the turn was spent on
+           * calls doomed to refusal. The seminar's rules are about the content
+           * of the work; the limits above are about how this room is built,
+           * and they cannot be cancelled with words.
            */
           tr('server.agent.prompt.houseRules', { p0: houseRules }),
         ]
       : []),
-    // «Сразу» — просьбой, а не только параметром: у половины моделей ручки
-    // рассуждений нет, а у части её нельзя выключить (см. ai/text.ts).
+    // "Instant" as a request, not only as a parameter: half of the models have
+    // no reasoning knob, and some cannot switch it off (see ai/text.ts).
     ...(effortNote(effort) ? ['', effortNote(effort)] : []),
     '',
     tr('server.ai.answerLanguage'),
@@ -3216,8 +3313,8 @@ function systemPrompt(hands: Hands, tools: ToolSpec[], effort?: ReasoningEffort)
     '',
     tr('server.agent.prompt.nowHead'),
     '',
-    // Агент не «сосредоточен» ни на чём: он получает поручение, а не вопрос
-    // про ячейку.
+    // The agent is not "focused" on anything: it gets a task, not a question
+    // about a cell.
     buildContext(hands.sessionId, [], hands.by.participantId),
   ].join('\n')
 }

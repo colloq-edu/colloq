@@ -1,16 +1,17 @@
 /**
- * Курс, каким его видят снаружи, — в одном месте.
+ * The course as the outside world sees it, in one place.
  *
- * Сборка «курс с живыми именами» была написана дважды: здесь (для панели и для
- * `/api/c/:id`) и в publish/export.ts (для выгрузки на сайт). Делали они одно и
- * то же, но по-разному — выгрузка подставляла `session?.name ?? item.name` и
- * перечитывала публикацию, а маршрут при пропавшей комнате возвращал строку как
- * есть, вместе с устаревшей ссылкой на чтение. То есть сервер и сайт показывали
- * РАЗНЫЕ курсы, и следующая правка правил надгробий попала бы в одну копию из
- * двух.
+ * Assembling "the course with live names" was written twice: here (for the
+ * panel and `/api/c/:id`) and in publish/export.ts (for exporting to the
+ * site). They did the same thing differently: the export substituted
+ * `session?.name ?? item.name` and re-read the publication, while the route,
+ * when the room was gone, returned the row as is, together with a stale read
+ * link. That is, the server and the site showed DIFFERENT courses, and the
+ * next change to the tombstone rules would have landed in one copy of the
+ * two.
  *
- * Здесь же и путь наверх со страницы публикации: `courseOfPublication` тоже
- * существовал в двух экземплярах.
+ * The way up from a publication page is here too: `courseOfPublication` also
+ * existed in two copies.
  */
 import type { Course, CourseItem, PublicCourseView } from '@shared/publish'
 import { getSession } from '../db.js'
@@ -18,17 +19,18 @@ import { getPublication, listCourses, publicationOf, stepCount } from '../publis
 import type { Publication } from '../publish/store.js'
 
 /**
- * Строки курса с живыми именами и живыми ссылками на чтение.
+ * Course rows with live names and live read links.
  *
- * Имя семинара могли поменять после добавления, страницу — снять или вернуть,
- * а комнату — удалить. Записанное в курсе остаётся адресом, всё остальное
- * спрашивается заново.
+ * The seminar's name may have changed after it was added, the page may have
+ * been withdrawn or restored, and the room deleted. What is recorded in the
+ * course stays the address; everything else is asked for afresh.
  */
 export function freshCourseItems(items: CourseItem[]): CourseItem[] {
   return items.map((item): CourseItem => {
     /*
-     * У надгробия ссылка на оставшееся чтение — но страницу могли снять уже
-     * после удаления комнаты, и тогда вести на неё некуда.
+     * A tombstone has a link to the remaining reading, but the page may have
+     * been withdrawn after the room was deleted, and then there is nowhere to
+     * lead.
      */
     if (item.kind === 'gone') {
       if (!item.publication) return item
@@ -39,11 +41,11 @@ export function freshCourseItems(items: CourseItem[]): CourseItem[] {
     }
     if (item.kind !== 'seminar') return item
     /*
-     * Комнаты может не быть вовсе: удаление ставит надгробие, но если запись
-     * состава в этот момент не прошла (гонка в entombSeminar), строка семинара
-     * остаётся сиротой. Имя тогда — то, под которым её записали в курс, а
-     * чтение спрашивается всё равно: оно живёт своими строками и комнаты не
-     * требует.
+     * The room may not exist at all: deletion puts up a tombstone, but if the
+     * write of the contents failed at that moment (a race in entombSeminar),
+     * the seminar row stays an orphan. The name is then the one it was
+     * recorded under in the course, and the reading is asked for anyway: it
+     * lives in its own rows and does not need the room.
      */
     const session = getSession(item.sessionId)
     const pub = publicationOf(item.sessionId)
@@ -65,10 +67,10 @@ export function freshCourseItems(items: CourseItem[]): CourseItem[] {
 }
 
 /**
- * Курс для публичной страницы — и для выгрузки, это одна и та же страница.
+ * The course for the public page, and for the export: it is the same page.
  *
- * Идентификатор комнаты наружу не уходит: восемь его символов — это всё право
- * писать в неё.
+ * The room id does not go out: its eight characters are the whole right to
+ * write in it.
  */
 export function publicCourseView(course: Course): PublicCourseView {
   return {
@@ -83,22 +85,25 @@ export function publicCourseView(course: Course): PublicCourseView {
 }
 
 /**
- * «В каком курсе этот семинар» — индексом, а не перебором всех курсов.
+ * "Which course is this seminar in", by index rather than by scanning all
+ * courses.
  *
- * Спрашивают это на входе в комнату (`GET /api/sessions/:id`) и на публичной
- * странице шага — то есть до пятисот раз в первую минуту пары и на каждое
- * обновление вкладки. Ответ собирался перебором: `listCourses()` читает все
- * курсы семестра, разбирает JSON состава у каждого и ищет строку линейно.
+ * It is asked on entering a room (`GET /api/sessions/:id`) and on a step's
+ * public page, that is, up to five hundred times in the first minute of a
+ * lesson and on every tab refresh. The answer used to be assembled by a scan:
+ * `listCourses()` reads all of the semester's courses, parses the contents
+ * JSON of each and searches for the row linearly.
  *
- * Индекс живёт пять секунд, и это ровно то, чего он стоит: состав курса правят
- * с панели раз в неделю, а видеть правку через пять секунд — не то же самое,
- * что видеть её через пять минут. Инвалидации по записи здесь нет намеренно:
- * курсы правит publish/store.ts, и просить его звать нас обратно значило бы
- * завести вторую связь между модулями ради задержки, которую никто не заметит.
+ * The index lives five seconds, and that is exactly what it is worth: course
+ * contents are edited from the panel once a week, and seeing an edit after
+ * five seconds is not the same as seeing it after five minutes. There is
+ * deliberately no invalidation on write: publish/store.ts edits the courses,
+ * and asking it to call us back would mean a second link between the modules
+ * for the sake of a delay nobody will notice.
  *
- * Ключи с приставкой: `s:` — комната, `p:` — страница из надгробия. Восемь
- * символов у тех и других из одного алфавита, и общий ключ однажды показал бы
- * семинару чужой курс.
+ * Keys have a prefix: `s:` for a room, `p:` for a page from a tombstone. Both
+ * have eight characters from the same alphabet, and a shared key would one
+ * day show a seminar someone else's course.
  */
 const INDEX_TTL_MS = 5_000
 
@@ -108,9 +113,9 @@ function courseIndex(): Map<string, Course> {
   const now = Date.now()
   if (index && now - index.at < INDEX_TTL_MS) return index.byHandle
   const byHandle = new Map<string, Course>()
-  // Порядок тот же, что был у перебора (`listCourses` — свежие сверху), и
-  // первый победивший тоже: семинар, попавший в два курса, показывает тот же
-  // из них, что и раньше.
+  // The order is the same as the scan's (`listCourses` puts the newest on
+  // top), and so is the first winner: a seminar that ended up in two courses
+  // shows the same one of them as before.
   for (const course of listCourses()) {
     for (const item of course.items) {
       const key =
@@ -126,19 +131,20 @@ function courseIndex(): Map<string, Course> {
   return byHandle
 }
 
-/** Курс, в котором состоит комната, — подсказка на экране входа. */
+/** The course the room belongs to: a hint on the entry screen. */
 export function courseOfSeminar(sessionId: string): Course | null {
   return courseIndex().get(`s:${sessionId}`) ?? null
 }
 
 /**
- * Курс, в котором состоит публикация, — путь наверх со страницы шага.
+ * The course the publication belongs to: the way up from a step page.
  *
- * У осиротевшей страницы комнаты нет, и по `sessionId` курс не найдётся:
- * обратно её держит надгробие, и только оно связывает её с курсом.
+ * An orphaned page has no room, and the course will not be found by
+ * `sessionId`: only the tombstone holds it back, and only the tombstone ties
+ * it to the course.
  *
- * Со списком курсов на руках (выгрузка сайта строит его один раз на все
- * страницы) ищется в нём; без него — индексом выше.
+ * With the course list at hand (the site export builds it once for all
+ * pages), it is searched in that list; without it, by the index above.
  */
 export function courseOfPublication(
   pub: Pick<Publication, 'id' | 'sessionId'>,

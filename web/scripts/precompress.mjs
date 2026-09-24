@@ -7,11 +7,12 @@ import { brotliCompressSync, gzipSync, constants } from 'node:zlib'
  * Compress immutable application assets and the two bundles copied in beside
  * them: the PDF worker and plotly.js.
  *
- * Пять мегабайт plotly сжимаются до 1.1 МБ brotli, и разница видна не в
- * графике на экране, а в аудитории на общем вайфае: без этого шага первый
- * график занятия качается вчетверо дольше. Сжимается он здесь, а не сборщиком,
- * по той же причине, что и воркер pdf.js, — оба приезжают в `public/` мимо
- * Rollup, файлами, которые положил туда скрипт.
+ * Five megabytes of plotly compress to 1.1 MB of brotli, and the difference
+ * shows not in the chart on the screen but in a lecture hall on shared Wi-Fi:
+ * without this step the first chart of a class takes four times longer to
+ * download. It is compressed here rather than by the bundler for the same
+ * reason as the pdf.js worker — both arrive in `public/` bypassing Rollup, as
+ * files a script put there.
  */
 export async function precompress(directory) {
   const root = path.resolve(directory)

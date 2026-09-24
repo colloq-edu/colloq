@@ -1,56 +1,60 @@
 /**
- * `colloq start --share`: одна ссылка для класса — и что стоит за ней.
+ * `colloq start --share`: one link for the class, and what stands behind it.
  *
- * Сам туннель открывает scripts/host.sh, как и у --host: он же держит
- * расписку временного адреса, проверяет адрес снаружи и убирает за собой.
- * Здесь три вещи, которых у скрипта нет.
+ * The tunnel itself is opened by scripts/host.sh, as with --host: it also
+ * keeps the receipt of the temporary address, checks the address from outside
+ * and cleans up after itself. Here are three things the script does not have.
  *
- * Замок (publishRefusal). Решение автора: занятие уходит в интернет только
- * тогда, когда ядро каждой комнаты сидит в своём контейнере. Ссылка — это
- * дверь: кто её получил, тот запускает код на этом компьютере, и общее ядро
- * на всех за такой дверью — это чужой код рядом с тетрадями всего класса.
- * Проверка стоит дважды — до запуска по настройкам и перед туннелем по
- * живому серверу, — а третья, та же по смыслу, стоит в host.sh: её проходят
- * и `colloq host`, и `make host`, которые супервизора не видят.
+ * The lock (publishRefusal). The author's decision: a class goes out to the
+ * internet only when every room's kernel sits in its own container. The link
+ * is a door: whoever gets it runs code on this computer, and one kernel shared
+ * by everyone behind such a door means someone else's code right next to the
+ * notebooks of the whole class. The check stands twice, before the start by
+ * the settings and before the tunnel by the live server, and a third one, the
+ * same in meaning, stands in host.sh: both `colloq host` and `make host`,
+ * which do not see the supervisor, go through it.
  *
- * Блок ссылки (renderShareBlock). Скрипт печатает адрес туннеля, но студенту
- * нужен не он, а /s/<id> занятия, — а про занятия знает только база. Блок
- * печатается один раз, когда host.sh сказал «адрес поднят и проверен»
- * строкой-меткой (parseShareMarker), и повторяет всё, что преподавателю надо
- * знать про эту ссылку, в одном месте.
+ * The link block (renderShareBlock). The script prints the tunnel address, but
+ * the student needs not that, but the class's /s/<id>, and only the database
+ * knows about classes. The block is printed once, when host.sh has said "the
+ * address is up and checked" with a marker line (parseShareMarker), and it
+ * repeats in one place everything the teacher needs to know about this link.
  *
- * Список занятий (readClasses) — из базы, только чтение. Спрашивать сервер
- * нечем: список занятий отдают только вошедшему в панель, а открытый
- * маршрут со списком ушёл бы в туннель вместе со всем остальным — к серверу
- * cloudflared приходит с того же 127.0.0.1, что и мы.
+ * The list of classes (readClasses) comes from the database, read-only. There
+ * is no way to ask the server: the list of classes is given only to someone
+ * signed in to the panel, and an open route with the list would go into the
+ * tunnel along with everything else, since cloudflared reaches the server
+ * from the same 127.0.0.1 as we do.
  *
- * Имя начинается с launch: стенд tests/local-launch-process.test.mts
- * копирует cli/src/launch*.ts, и другое имя там бы не нашлось.
+ * The name starts with launch: the test rig tests/local-launch-process.test.mts
+ * copies cli/src/launch*.ts, and another name would not be found there.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 
-/** Как ядра комнат отделены друг от друга — словами /api/health · isolation. */
+/** How room kernels are kept apart from each other, in the words of /api/health · isolation. */
 type Isolation = 'docker' | 'broker'
 
 export interface PublishCheck {
-  /** Действующее окружение сервера: .env плюс переменные, как их увидит сервер. */
+  /** The server's effective environment: .env plus variables, as the server will see them. */
   env: Record<string, string | undefined>
-  /** Отвечает ли демон docker; не спрашивали — undefined. */
+  /** Whether the docker daemon answers; not asked means undefined. */
   dockerReachable?: boolean
-  /** Ответ /api/health живого сервера; не спрашивали — undefined, не ответил — null. */
+  /** The /api/health answer of the live server; not asked means undefined, no answer means null. */
   health?: Record<string, unknown> | null
 }
 
 /**
- * Можно ли выставлять это занятие наружу: null — можно, строка — почему нет.
+ * Whether this class may be exposed to the outside: null means yes, a string
+ * says why not.
  *
- * Отказ — только словами о том, что видно отсюда. KERNEL_BACKEND по
- * умолчанию — docker: так его выбирает сервер без NODE_ENV=production
- * (server/src/kernel/runtime-client.ts · selectKernelBackend), и так его
- * ставит супервизор (launch-config.ts). test — бэкенд тестов без изоляции.
- * Последнее слово за сервером: он называет то, чем разделены комнаты на
- * самом деле, полем isolation — и ставит его, только когда ядро готово.
+ * The refusal speaks only of what is visible from here. KERNEL_BACKEND
+ * defaults to docker: that is how the server picks it without
+ * NODE_ENV=production (server/src/kernel/runtime-client.ts ·
+ * selectKernelBackend), and that is how the supervisor sets it
+ * (launch-config.ts). test is the test backend, without isolation. The last
+ * word is the server's: it names what actually keeps the rooms apart in the
+ * isolation field, and sets it only when the kernel is ready.
  */
 export function publishRefusal(check: PublishCheck): string | null {
   const backend = (check.env.KERNEL_BACKEND ?? '').trim() || 'docker'
@@ -70,7 +74,7 @@ export function publishRefusal(check: PublishCheck): string | null {
   return null
 }
 
-/** Отказ целиком: что случилось, почему это важно, где занятие теперь. */
+/** The whole refusal: what happened, why it matters, where the class is now. */
 export function refusalText(reason: string, local?: string): string {
   return [
     `Not published: ${reason}.`,
@@ -81,7 +85,7 @@ export function refusalText(reason: string, local?: string): string {
   ].join('\n')
 }
 
-/** Строка-метка host.sh под COLLOQ_SHARE=1: адрес поднят, проверка снаружи прошла или нет. */
+/** The marker line of host.sh under COLLOQ_SHARE=1: the address is up, the outside check passed or not. */
 export const SHARE_MARKER = '@colloq-share'
 
 export function parseShareMarker(line: string): { url: string; verified: boolean } | null {
@@ -95,10 +99,12 @@ export interface ShareClass {
 }
 
 /**
- * Имя занятия для терминала: без управляющих байтов и не длиннее строки.
+ * The class name for the terminal: without control bytes and no longer than a
+ * line.
  *
- * Имя пишет преподаватель (или импорт из таблицы), и печатаем мы его в
- * терминал: ESC внутри имени перекрасил бы экран или стёр строку со ссылкой.
+ * The name is written by the teacher (or by an import from a spreadsheet), and
+ * we print it to the terminal: an ESC inside the name would recolour the
+ * screen or erase the line with the link.
  */
 function printable(name: string): string {
   // eslint-disable-next-line no-control-regex
@@ -107,34 +113,35 @@ function printable(name: string): string {
 }
 
 export interface ShareBlock {
-  /** Публичный адрес туннеля, без / в конце. */
+  /** The public address of the tunnel, without a trailing /. */
   url: string
   /**
-   * Вход преподавателя на публичном адресе — с токеном установки, как у
-   * Jupyter (launch-banner.ts · teacherLink). Без токена на диске — /admin.
+   * The teacher's sign-in on the public address, with the setup token, as
+   * with Jupyter (launch-banner.ts · teacherLink). With no token on disk,
+   * /admin.
    */
   teacher: string
-  /** Локальный адрес: панель на этом компьютере. */
+  /** The local address: the panel on this computer. */
   local: string
-  /** Самые новые занятия, не больше трёх. */
+  /** The newest classes, no more than three. */
   classes: ShareClass[]
-  /** Сколько занятий всего (неархивных). */
+  /** How many classes there are in total (not archived). */
   total: number
-  /** Проверка снаружи прошла; null — не проверяли (фоновый запуск). */
+  /** The outside check passed; null means it was not checked (a background start). */
   verified: boolean | null
-  /** Занятие ушло в фон: закрывает его colloq stop, а не Ctrl+C. */
+  /** The class went to the background: colloq stop closes it, not Ctrl+C. */
   detached: boolean
-  /** RELAY_DOMAIN из .env — чтобы совет про Россию был готовой командой. */
+  /** RELAY_DOMAIN from .env, so that the advice about Russia is a ready command. */
   relayDomain: string
 }
 
 /**
- * Блок ссылки. Строки — без цвета: они же ложатся в .colloq.log.
+ * The link block. The lines have no colour: they also go into .colloq.log.
  *
- * Порядок — порядок вопросов преподавателя: что дать студентам; чего не
- * давать никому; сколько живёт ссылка; почему в следующий раз она другая;
- * откроется ли она в России. Каждое — одной-двумя строками, иначе блок
- * пролистывают целиком.
+ * The order is the order of the teacher's questions: what to give the
+ * students; what to give nobody; how long the link lives; why it is different
+ * next time; whether it opens in Russia. Each takes one or two lines,
+ * otherwise the block gets scrolled past entirely.
  */
 export function renderShareBlock(block: ShareBlock): string[] {
   const out: string[] = [
@@ -188,14 +195,16 @@ export function renderShareBlock(block: ShareBlock): string[] {
 }
 
 /**
- * Занятия этой базы — самые новые, неархивные; ошибка чтения = «занятий нет».
+ * The classes of this database, the newest and not archived; a read error
+ * means "no classes".
  *
- * better-sqlite3 — тот же драйвер, что у сервера, и он уже лежит в
- * node_modules рядом (в пакете их ставит шим, в репозитории — npm ci);
- * импорт отложен, чтобы stop и restart не грузили нативный модуль зря.
- * База открыта только на чтение: сервер пишет её в WAL, и читатель ему не
- * мешает. Промах здесь не срывает публикацию — блок скажет «создайте занятие
- * в панели», и это будет правдой с точностью до уже созданного.
+ * better-sqlite3 is the same driver the server uses, and it already lies in
+ * node_modules nearby (in the package the shim installs them, in the
+ * repository npm ci does); the import is deferred so that stop and restart do
+ * not load the native module for nothing. The database is opened read-only:
+ * the server writes it in WAL mode, and a reader does not get in its way. A
+ * miss here does not break publishing: the block will say "create a class in
+ * the panel", and that will be true up to the classes already created.
  */
 export async function readClasses(
   dataDir: string,

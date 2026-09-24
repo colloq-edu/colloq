@@ -1,11 +1,11 @@
 /**
- * Не-Linux путь secure-files: ни один симлинк не должен быть ПРОЙДЕН.
+ * The non-Linux path of secure-files: no symlink may ever be FOLLOWED.
  *
- * Проверяется поведение, а не текст модуля, и почти всё — на любой платформе:
- * на Linux работает дескрипторный обход, на macOS — цепочка открытий с
- * O_NOFOLLOW, но снаружи обещание одно и то же. Файл дополняет
- * workspace-fd-security.test.mts (тот про гонки на /proc/self/fd, только Linux)
- * и не повторяет его.
+ * What is checked is behaviour, not the module's text, and almost all of it on
+ * any platform: on Linux a descriptor-based walk runs, on macOS a chain of
+ * opens with O_NOFOLLOW, but from the outside the promise is the same. This
+ * file complements workspace-fd-security.test.mts (that one is about races on
+ * /proc/self/fd, Linux only) and does not repeat it.
  */
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -17,8 +17,8 @@ import { createAnchoredFilesystem } from '../server/src/secure-files.js'
 const bases: string[] = []
 after(() => bases.forEach(base => fs.rmSync(base, { recursive: true, force: true })))
 
-/** Корень занятия, чужой каталог рядом и три способа уйти наружу ссылкой:
- * последним звеном (room/sub/link), первым (escape) и в СЕРЕДИНЕ (room/escape). */
+/** The class root, a foreign directory next to it, and three ways to get out by a link:
+ * as the last component (room/sub/link), the first (escape) and in the MIDDLE (room/escape). */
 function fixture() {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-nofollow-')))
   bases.push(base)
@@ -33,7 +33,7 @@ function fixture() {
   fs.symlinkSync(path.join(outside, 'file'), path.join(root, 'room/sub/link'))
   return { base, root, outside, safe: createAnchoredFilesystem(root, { allowUnsafeDevelopment: false }) }
 }
-/** Ни одна попытка не имеет права оставить след в чужом каталоге. */
+/** No attempt may leave a trace in the foreign directory. */
 function outsideIntact(outside: string) {
   assert.equal(fs.readFileSync(path.join(outside, 'file'), 'utf8'), 'secret')
   assert.equal(fs.readFileSync(path.join(outside, 'deep/file'), 'utf8'), 'deep secret')
@@ -41,7 +41,7 @@ function outsideIntact(outside: string) {
   assert.deepEqual(fs.readdirSync(path.join(outside, 'deep')), ['file'])
 }
 
-test('обычная работа не требует ни Linux, ни флага UNSAFE', () => {
+test('ordinary work needs neither Linux nor the UNSAFE flag', () => {
   const { root, safe } = fixture()
   try {
     safe.mkdirSync(path.join(root, 'room/new/inner'), { recursive: true })
@@ -65,10 +65,10 @@ test('обычная работа не требует ни Linux, ни флаг�
   } finally { safe.close() }
 })
 
-test('симлинк последним звеном не проходится ни чтением, ни записью', () => {
+test('a symlink as the last component is followed by neither reads nor writes', () => {
   const { root, outside, safe } = fixture()
   const link = path.join(root, 'room/sub/link')
-  const before = fs.statSync(path.join(outside, 'file')).mode  // umask у всех свой, сравниваем с собой же
+  const before = fs.statSync(path.join(outside, 'file')).mode  // umasks differ, so compare with itself
   try {
     assert.throws(() => safe.readFileSync(link, 'utf8'))
     assert.throws(() => safe.openSync(link, 'r'))
@@ -78,15 +78,15 @@ test('симлинк последним звеном не проходится �
     assert.throws(() => safe.writeFileSync(link, 'overwrite'))
     assert.throws(() => safe.createWriteStream(link))
     assert.throws(() => safe.chmodSync(link, 0o777))
-    // lstat и есть-нет отвечают про саму ссылку — это не проход по ней.
+    // lstat and exists answer about the link itself: that is not following it.
     assert.equal(safe.lstatSync(link).isSymbolicLink(), true)
     assert.equal(safe.existsSync(link), true)
     outsideIntact(outside)
-    assert.equal(fs.statSync(path.join(outside, 'file')).mode, before, 'права чужого файла менять было нечем')
+    assert.equal(fs.statSync(path.join(outside, 'file')).mode, before, 'nothing could have changed the mode of the foreign file')
   } finally { safe.close() }
 })
 
-test('симлинк в середине пути не проходит ни одна операция', () => {
+test('no operation follows a symlink in the middle of the path', () => {
   const { root, outside, safe } = fixture()
   const through = (rest: string) => path.join(root, 'room/escape', rest)
   const attempts: Array<[string, () => unknown]> = [
@@ -99,20 +99,20 @@ test('симлинк в середине пути не проходит ни о�
     ['realpathSync', () => safe.realpathSync(through('file'))],
     ['chmodSync', () => safe.chmodSync(through('file'), 0o600)],
     ['readdirSync', () => safe.readdirSync(through('deep'))],
-    ['readdirSync самой ссылки', () => safe.readdirSync(path.join(root, 'room/escape'))],
+    ['readdirSync of the link itself', () => safe.readdirSync(path.join(root, 'room/escape'))],
     ['mkdirSync', () => safe.mkdirSync(through('made'), { recursive: true })],
-    ['renameSync источника', () => safe.renameSync(through('file'), path.join(root, 'room/sub/stolen'))],
-    ['renameSync цели', () => safe.renameSync(path.join(root, 'room/sub/file'), through('planted'))],
-    ['linkSync источника', () => safe.linkSync(through('file'), path.join(root, 'room/sub/hard'))],
-    ['linkSync цели', () => safe.linkSync(path.join(root, 'room/sub/file'), through('hard'))],
+    ['renameSync of the source', () => safe.renameSync(through('file'), path.join(root, 'room/sub/stolen'))],
+    ['renameSync of the target', () => safe.renameSync(path.join(root, 'room/sub/file'), through('planted'))],
+    ['linkSync of the source', () => safe.linkSync(through('file'), path.join(root, 'room/sub/hard'))],
+    ['linkSync of the target', () => safe.linkSync(path.join(root, 'room/sub/file'), through('hard'))],
     ['unlinkSync', () => safe.unlinkSync(through('file'))],
     ['rmSync', () => safe.rmSync(through('file'), { force: true })],
-    ['rmSync рекурсивный', () => safe.rmSync(through('deep'), { recursive: true, force: true })],
+    ['rmSync recursive', () => safe.rmSync(through('deep'), { recursive: true, force: true })],
     ['createReadStream', () => safe.createReadStream(through('file'))],
     ['createWriteStream', () => safe.createWriteStream(through('planted'))],
   ]
   try {
-    for (const [name, attempt] of attempts) assert.throws(attempt, `${name} прошёл по симлинку в середине пути`)
+    for (const [name, attempt] of attempts) assert.throws(attempt, `${name} followed a symlink in the middle of the path`)
     assert.equal(safe.existsSync(through('file')), false)
     outsideIntact(outside)
     assert.equal(fs.readFileSync(path.join(root, 'room/sub/file'), 'utf8'), 'room')
@@ -120,16 +120,16 @@ test('симлинк в середине пути не проходит ни о�
   } finally { safe.close() }
 })
 
-test('удаление через симлинк не трогает чужое, а саму ссылку снимает ссылкой', () => {
+test('deleting through a symlink leaves foreign files alone, and removes the link itself as a link', () => {
   const { root, outside, safe } = fixture()
   try {
-    // Через ссылку — отказ, каким бы способом ни звали.
+    // Through the link: a refusal, whichever way it is called.
     assert.throws(() => safe.rmSync(path.join(root, 'escape/file'), { force: true }))
     assert.throws(() => safe.unlinkSync(path.join(root, 'escape/file')))
     assert.throws(() => safe.rmSync(path.join(root, 'escape/deep'), { recursive: true, force: true }))
     outsideIntact(outside)
-    // Снять саму ссылку — законно: unlink и rmdir по ссылке не идут, удаляется
-    // запись каталога. Цель обязана остаться на месте целой.
+    // Removing the link itself is legitimate: unlink and rmdir do not follow the
+    // link, the directory entry is removed. The target has to stay in place, intact.
     safe.rmSync(path.join(root, 'room/sub/link'), { force: true })
     assert.equal(fs.existsSync(path.join(root, 'room/sub/link')), false)
     safe.unlinkSync(path.join(root, 'room/escape'))
@@ -139,7 +139,7 @@ test('удаление через симлинк не трогает чужое,
   } finally { safe.close() }
 })
 
-test('рекурсивное удаление комнаты снимает ссылки, но не их цели', () => {
+test('a recursive deletion of a room removes the links but not their targets', () => {
   const { root, outside, safe } = fixture()
   try {
     safe.rmSync(path.join(root, 'room'), { recursive: true, force: true })
@@ -152,24 +152,25 @@ test('рекурсивное удаление комнаты снимает сс
   } finally { safe.close() }
 })
 
-test('жёсткая ссылка никогда не делается на чужой inode', () => {
+test('a hard link is never made to a foreign inode', () => {
   const { root, outside, safe } = fixture()
   const target = fs.statSync(path.join(outside, 'file'))
   const made = path.join(root, 'room/sub/hard')
   try {
-    // На macOS link() ИДЁТ по симлинку-источнику (замер это подтвердил), поэтому
-    // там операция обязана отказать. На Linux link() копирует саму ссылку, и это
-    // тоже допустимый исход — недопустим один: ссылка на inode чужого файла.
+    // On macOS link() DOES follow a symlink source (a measurement confirmed it), so
+    // there the operation has to refuse. On Linux link() copies the link itself, and
+    // that is an acceptable outcome too — only one is unacceptable: a link to the
+    // inode of a foreign file.
     let result: fs.Stats | undefined
     try { safe.linkSync(path.join(root, 'room/sub/link'), made); result = fs.lstatSync(made) } catch { result = undefined }
-    if (process.platform !== 'linux') assert.equal(result, undefined, 'macOS обязан отказать: link() пошёл бы по ссылке')
-    if (result) assert.ok(result.isSymbolicLink() && result.ino !== target.ino, 'жёсткая ссылка ушла на чужой inode')
+    if (process.platform !== 'linux') assert.equal(result, undefined, 'macOS has to refuse: link() would follow the link')
+    if (result) assert.ok(result.isSymbolicLink() && result.ino !== target.ino, 'the hard link went to a foreign inode')
     assert.equal(fs.statSync(path.join(outside, 'file')).nlink, 1)
     outsideIntact(outside)
   } finally { safe.close() }
 })
 
-test('открытый файл читается из своего inode даже после подмены имени ссылкой', () => {
+test('an open file reads from its own inode even after its name is swapped for a link', () => {
   const { root, outside, safe } = fixture()
   const file = path.join(root, 'room/sub/file')
   const opened = safe.openRead(file)
@@ -179,13 +180,13 @@ test('открытый файл читается из своего inode даж�
   } finally { opened.close(); safe.close() }
 })
 
-test('подмена каталога между проверкой и действием ловится, чужой список наружу не уходит',
+test('a directory swapped between check and action is caught, and the foreign listing does not leak out',
   { skip: process.platform === 'linux' }, () => {
     const { root, outside, safe } = fixture()
     const original = fs.openSync
     let swapped = false
-    // Подменяем проверенный каталог ровно в окне гонки: сразу после того, как
-    // модуль открыл его с O_NOFOLLOW, и до того, как readdir пойдёт по имени.
+    // Swap the checked directory exactly in the race window: right after the
+    // module opened it with O_NOFOLLOW and before readdir goes by name.
     fs.openSync = ((p: any, flags: any, mode: any) => {
       const fd = original(p, flags, mode)
       if (!swapped && String(p) === path.join(root, 'room/sub')) {
@@ -197,19 +198,19 @@ test('подмена каталога между проверкой и дейс�
     }) as typeof fs.openSync
     try {
       assert.throws(() => safe.readdirSync(path.join(root, 'room/sub')), /symlink|ссыл|replaced/i)
-      assert.ok(swapped, 'подмена должна была произойти')
+      assert.ok(swapped, 'the swap should have happened')
     } finally { fs.openSync = original; safe.close() }
   })
 
-test('отказ после открытия файла не оставляет висящего дескриптора',
+test('a refusal after the file was opened leaves no dangling descriptor',
   { skip: process.platform === 'linux' }, () => {
     const { root, outside, safe } = fixture()
-    safe.existsSync(root)  // корневой дескриптор объект держит открытым всегда — пусть возьмёт его до замера
+    safe.existsSync(root)  // the root descriptor stays open for good: take it before measuring
     const original = fs.openSync
     let swapped = false
-    // Подменяем каталог уже ПОСЛЕ того, как файл открыт: модуль обязан заметить
-    // это проверкой цепочки, отказать — и закрыть открытое, иначе дескриптор
-    // утечёт на каждый такой отказ.
+    // Swap the directory only AFTER the file is open: the module has to notice it
+    // by checking the chain, refuse — and close what it opened, otherwise a
+    // descriptor leaks on every such refusal.
     fs.openSync = ((p: any, flags: any, mode: any) => {
       const fd = original(p, flags, mode)
       if (!swapped && String(p) === path.join(root, 'room/sub/file')) {
@@ -222,12 +223,12 @@ test('отказ после открытия файла не оставляет 
     const before = fs.readdirSync('/dev/fd').length
     try {
       assert.throws(() => safe.readFileSync(path.join(root, 'room/sub/file'), 'utf8'), /symlink|ссыл|replaced/i)
-      assert.ok(swapped, 'подмена должна была произойти')
-      assert.ok(fs.readdirSync('/dev/fd').length <= before, 'открытый файл должен быть закрыт при отказе')
+      assert.ok(swapped, 'the swap should have happened')
+      assert.ok(fs.readdirSync('/dev/fd').length <= before, 'the open file should be closed on refusal')
     } finally { fs.openSync = original; safe.close() }
   })
 
-test('пути вне корня и сам корень остаются под запретом', () => {
+test('paths outside the root and the root itself stay forbidden', () => {
   const { root, outside, base, safe } = fixture()
   try {
     assert.throws(() => safe.readFileSync(path.join(outside, 'file'), 'utf8'), /outside|вне/i)

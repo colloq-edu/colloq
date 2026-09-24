@@ -1,18 +1,20 @@
 <script lang="ts">
   /**
-   * Заглушка списка: строки там, где через миг будут строки.
+   * List placeholder: rows where there will be rows in a moment.
    *
-   * Раньше этот файл звался ContentSkeleton и умел ещё две вещи — «страницу»
-   * (шапка и текст) и «тетрадь» (серые ячейки). Обе рисовали НЕ ТО, что
-   * загружается: на их месте мог оказаться вход штата вместо панели, пустая
-   * тетрадь вместо десяти ячеек, экран отказа вместо всего, — и появлялись они
-   * там, где интерфейса ещё не было вовсе, сразу после ухода заставки. Их
-   * заменила Splash.svelte, то есть та же заставка, что рисует index.html.
+   * This file used to be called ContentSkeleton and could do two more things —
+   * a "page" (header and text) and a "notebook" (grey cells). Both drew NOT
+   * what was loading: in their place there could turn out to be the staff
+   * sign-in instead of the panel, an empty notebook instead of ten cells, a
+   * refusal screen instead of everything — and they appeared where there was no
+   * interface at all yet, right after the splash went away. They were replaced
+   * by Splash.svelte, that is, the same splash that index.html draws.
    *
-   * Строки списка остались, потому что здесь заглушка не врёт: и панель файлов,
-   * и таблица занятий уже нарисованы вокруг, известно, что приедет именно
-   * список, и серая строка стоит ровно там, где встанет настоящая, — то есть
-   * держит место и не двигает вёрстку под рукой.
+   * The list rows stayed, because here the placeholder does not lie: the files
+   * panel and the classes table are both already drawn around it, it is known
+   * that what arrives will be a list, and the grey row stands exactly where the
+   * real one will — that is, it holds the place and does not shift the layout
+   * under the hand.
    */
   import { tr } from '@shared/i18n'
   import Skeleton from './Skeleton.svelte'

@@ -1,19 +1,21 @@
 /**
- * Что едет пульту в стопке консилиума — и чего в ней больше нет.
+ * What travels to the console in the council stack — and what no longer does.
  *
- * Три вещи, каждая ценой в мегабайты на паре из пятисот человек. Полная стопка
- * везла вывод КАЖДОЙ попытки — до 64 КБ текста и до 2 МБ картинок на карточку,
- * — и уходила она на каждый щелчок ручки, на каждое переподключение пульта и
- * дважды на каждый вопрос оракула. Теперь у кадра бюджет вывода, вывод одной
- * карточки просят отдельно (`council:attempt`), а оракул едет своим кадром и
- * стопку за собой не тащит.
+ * Three things, each costing megabytes in a class of five hundred people. The
+ * full stack carried the output of EVERY attempt — up to 64 KB of text and up
+ * to 2 MB of images per card — and it went out on every click of a settings
+ * knob, on every reconnect of the console, and twice for every Oracle
+ * question. Now the frame has an output budget, a single card's output is
+ * requested separately (`council:attempt`), and the Oracle travels in its own
+ * frame without dragging the stack along.
  *
- * И четвёртое, не про размер: номер в очереди. Он считает и обычные ячейки
- * впереди, а пересылался только на конце чужой ПОПЫТКИ — то есть Run All
- * преподавателя двигал студента с шестого места на первое молча.
+ * And a fourth, not about size: the queue number. It counts ordinary cells
+ * ahead as well, yet it was resent only when someone else's ATTEMPT finished —
+ * that is, the teacher's Run All moved a student from sixth place to first
+ * silently.
  *
- * Ни сети, ни ядра: сокеты поддельные, комната настоящая, диспетчер тот же, что
- * слушает провод.
+ * No network, no kernel: the sockets are fake, the room is real, and the
+ * dispatcher is the same one that listens to the wire.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -54,9 +56,9 @@ function socket(): Fake {
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
-      // (рассылка, дерево, чернила), уходят уже закодированными — см.
-      // control.ts · sendFrame. Настоящий сокет тут разницы не делает.
+      // As a string or as bytes: the frames the server builds once per room
+      // (the broadcast, the tree, the ink) go out already encoded — see
+      // control.ts · sendFrame. A real socket makes no difference here.
       if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
         heard.push(JSON.parse(String(frame)) as ControlServerMessage)
       }
@@ -95,9 +97,9 @@ function join(
 
 interface Room {
   id: string
-  /** Ячейка консилиума. */
+  /** The council cell. */
   cell: string
-  /** Обычная ячейка — ею забивается очередь впереди. */
+  /** An ordinary cell, used to fill up the queue ahead. */
   plain: string
   teacher: Person
   class: Person[]
@@ -132,7 +134,7 @@ function lastBoard(at: Room): CouncilBoard {
     const m = at.teacher.sock.heard[i]
     if (m.t === 'council:board' && m.cellId === at.cell) return m.board
   }
-  assert.fail('хосту не приехала стопка')
+  assert.fail('the stack never reached the host')
 }
 
 function boards(at: Room): number {
@@ -140,7 +142,7 @@ function boards(at: Room): number {
   return at.teacher.sock.heard.filter((m) => m.t === 'council:board' && m.cellId === at.cell).length
 }
 
-/** Картинка на N знаков base64 — ровно то, чем весит карточка с графиком. */
+/** An image of N base64 chars: exactly what a card with a plot weighs. */
 function ran(chars: number): CouncilRun {
   return {
     state: 'ok',
@@ -152,7 +154,7 @@ function ran(chars: number): CouncilRun {
   }
 }
 
-/** Сколько знаков вывода в этой карточке. */
+/** How many characters of output this card holds. */
 function weight(attempt: CouncilAttempt): number {
   let total = 0
   for (const output of attempt.run?.outputs ?? []) {
@@ -161,28 +163,28 @@ function weight(attempt: CouncilAttempt): number {
   return total
 }
 
-/* -------------------------------------------------------------- бюджет */
+/* -------------------------------------------------------------- budget */
 
-test('стопка не везёт мегабайты вывода — и отдаёт их по одной карточке', () => {
+test('the stack does not carry megabytes of output, and hands them out one card at a time', () => {
   const at = room(5)
   assert.equal(say(at, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council' }), null)
 
-  // Пятеро сдали, и все пятеро прогнаны с графиком по мегабайту — потолок
-  // картинки у попытки как раз два (kernel/council.ts).
+  // Five have submitted, and all five were run with a one-megabyte plot each —
+  // the image ceiling for an attempt is exactly two (kernel/council.ts).
   for (const [i, student] of at.class.entries()) {
     assert.equal(say(at, student, { t: 'council:draft', cellId: at.cell, text: `x = ${i}` }), null)
     assert.equal(say(at, student, { t: 'council:submit', cellId: at.cell }), null)
-    // Первый кадр — «в очереди»: он и есть заявка на запуск под этим текстом,
-    // без неё вывод считается опоздавшим (council.ts · recordRun).
+    // The first frame is "queued": it is the very request to run this text,
+    // and without it the output counts as late (council.ts · recordRun).
     recordRun(at.id, at.cell, student.payload.participantId, { ...ran(0), state: 'queued' })
     assert.equal(
       recordRun(at.id, at.cell, student.payload.participantId, ran(1024 * 1024)),
       true,
-      'вывод не записался к попытке',
+      'the output was not recorded for the attempt',
     )
   }
 
-  // Общее сменилось (ручка) — едет вся стопка.
+  // A shared setting changed (a knob): the whole stack travels.
   assert.equal(
     say(at, at.teacher, {
       t: 'cell:lock',
@@ -196,14 +198,15 @@ test('стопка не везёт мегабайты вывода — и отд
   assert.equal(board.attempts.length, 5)
 
   const total = board.attempts.reduce((n, a) => n + weight(a), 0)
-  assert.ok(total <= 4 * 1024 * 1024, `стопка увезла ${total} знаков вывода — бюджет не соблюдён`)
+  assert.ok(total <= 4 * 1024 * 1024, `the stack carried ${total} characters of output: the budget was not kept`)
   const omitted = board.attempts.filter((a) => a.run?.outputsOmitted === true)
-  assert.equal(omitted.length, 1, 'из пяти карточек по мегабайту должна не поместиться одна')
-  assert.deepEqual(omitted[0].run?.outputs, [], 'признак есть, а вывод всё равно поехал')
-  // Остальные — как были: бюджет режет хвост, а не весь кадр.
+  assert.equal(omitted.length, 1, 'of five one-megabyte cards, exactly one must not fit')
+  assert.deepEqual(omitted[0].run?.outputs, [], 'the flag is set, yet the output travelled anyway')
+  // The rest are as they were: the budget cuts the tail, not the whole frame.
   assert.equal(board.attempts.filter((a) => weight(a) === 1024 * 1024).length, 4)
 
-  // И это ТОЛЬКО про кадр: у попытки в базе вывод на месте, и автор его видит.
+  // And this is ONLY about the frame: the attempt keeps its output in the
+  // database, and its author sees it.
   const stored = attemptsOf(at.id, at.cell).find(
     (a) => a.participantId === omitted[0].participantId,
   )
@@ -212,9 +215,9 @@ test('стопка не везёт мегабайты вывода — и отд
     .reverse()
     .find((m) => m.t === 'council:mine' && m.cellId === at.cell)
   assert.ok(mine && mine.t === 'council:mine')
-  assert.notEqual(mine.state.run?.outputsOmitted, true, 'своему листу вывод обрезали')
+  assert.notEqual(mine.state.run?.outputsOmitted, true, "the author's own sheet had its output cut")
 
-  // Вторая половина сделки: «покажи вот эту» — с выводом целиком.
+  // The other half of the deal: "show me this one", with the full output.
   const before = at.teacher.sock.heard.length
   assert.equal(
     say(at, at.teacher, {
@@ -225,13 +228,13 @@ test('стопка не везёт мегабайты вывода — и отд
     null,
   )
   const patch = at.teacher.sock.heard.slice(before).find((m) => m.t === 'council:patch')
-  assert.ok(patch && patch.t === 'council:patch', 'попытка по запросу не приехала')
+  assert.ok(patch && patch.t === 'council:patch', 'the requested attempt did not arrive')
   assert.equal(patch.attempts.length, 1)
   assert.equal(patch.attempts[0].participantId, omitted[0].participantId)
-  assert.equal(weight(patch.attempts[0]), 1024 * 1024, 'по запросу приехала та же обрезка')
+  assert.equal(weight(patch.attempts[0]), 1024 * 1024, 'the request brought the same trimmed version')
   assert.notEqual(patch.attempts[0].run?.outputsOmitted, true)
 
-  // Чужую попытку по запросу получает только ведущий.
+  // Only the host gets someone else's attempt on request.
   assert.match(
     say(at, at.class[0], {
       t: 'council:attempt',
@@ -243,9 +246,9 @@ test('стопка не везёт мегабайты вывода — и отд
   closeControlRoom(at.id)
 })
 
-/* -------------------------------------------------------------- оракул */
+/* -------------------------------------------------------------- oracle */
 
-test('ответ оракула не тащит за собой всю стопку', async () => {
+test("the Oracle's answer does not drag the whole stack along", async () => {
   const at = room(1)
   assert.equal(say(at, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council' }), null)
   assert.equal(say(at, at.class[0], { t: 'council:draft', cellId: at.cell, text: 'x = 1' }), null)
@@ -253,10 +256,10 @@ test('ответ оракула не тащит за собой всю стоп�
   const was = boards(at)
 
   /*
-   * Настоящий путь оракула: `askCouncilOracle` объявляет «читаю» сразу, а
-   * ответ (здесь — отказ, шлюза в тестах нет) приезжает следом. Оба объявления
-   * идут через слушателя control.ts — того самого, что раньше слал за каждым
-   * ещё и полную стопку.
+   * The Oracle's real path: `askCouncilOracle` announces "reading" right away,
+   * and the answer (here a refusal, since tests have no gateway) arrives after
+   * it. Both announcements go through the control.ts listener — the very one
+   * that used to send the full stack after each of them as well.
    */
   askCouncilOracle({
     sessionId: at.id,
@@ -273,23 +276,24 @@ test('ответ оракула не тащит за собой всю стоп�
     store: { oracleOf, setOracle },
     question: 'Как класс?',
   })
-  // Ответу дать доехать: он приходит отдельным кадром, и стопки за ним тоже
-  // быть не должно.
+  // Let the answer arrive: it comes as a separate frame, and no stack should
+  // follow it either.
   await sleep(200)
 
   const oracles = at.teacher.sock.heard.filter((m) => m.t === 'council:oracle')
-  assert.ok(oracles.length >= 1, 'пульт не узнал, что оракул читает')
-  assert.equal(boards(at), was, 'за кадром оракула снова уехала вся стопка')
+  assert.ok(oracles.length >= 1, 'the console was not told that the Oracle is reading')
+  assert.equal(boards(at), was, "the whole stack went out after the Oracle's frame again")
   closeControlRoom(at.id)
 })
 
-/* ------------------------------------------------------------- очередь */
+/* --------------------------------------------------------------- queue */
 
-test('«вы 2-й» становится «вы 1-й», когда впереди снялась обычная ячейка', async () => {
+test('"you are 2nd" becomes "you are 1st" when an ordinary cell ahead is cancelled', async () => {
   /*
-   * Очередь одна на ячейки и попытки, и номер студенту считает ячейки впереди.
-   * Пересылался он только на конце ЧУЖОЙ ПОПЫТКИ — то есть пять ячеек Run All
-   * преподавателя, досчитавшись, двигали студента молча.
+   * There is one queue for cells and attempts, and a student's number counts
+   * the cells ahead. It was resent only when SOMEONE ELSE'S ATTEMPT finished —
+   * that is, five cells of the teacher's Run All, once done, moved the student
+   * silently.
    */
   const at = room(1)
   const student = at.class[0]
@@ -303,15 +307,15 @@ test('«вы 2-й» становится «вы 1-й», когда вперед�
     null,
   )
   assert.equal(say(at, student, { t: 'council:draft', cellId: at.cell, text: 'print(1)' }), null)
-  // Ячейка преподавателя встала в очередь первой, попытка — за ней.
+  // The teacher's cell went into the queue first, the attempt after it.
   assert.equal(say(at, at.teacher, { t: 'run', cellId: at.plain }), null)
   assert.equal(say(at, student, { t: 'council:run', cellId: at.cell }), null)
 
   /*
-   * Номер — тем же способом, что и вкладка: лист (`council:mine`) привозит его
-   * на момент отправки, а дальше двигает очередь комнаты (`council:queue`),
-   * одним кадром на всех. Свой номер в ней каждый читает сам
-   * (web/src/lib/council-queue.ts).
+   * The number is computed the same way the tab does it: the sheet
+   * (`council:mine`) brings it as of submission, and from then on the room's
+   * queue (`council:queue`) moves it, in one frame for everyone. Each reads
+   * their own number from it (web/src/lib/council-queue.ts).
    */
   const queue = () => {
     let mine: Record<string, CouncilMine> = {}
@@ -324,14 +328,14 @@ test('«вы 2-й» становится «вы 1-й», когда вперед�
         mine = withQueuePosition(mine, m.cellId, m.at)
       }
     }
-    return seen ? (mine[at.cell]?.queue ?? null) : 'кадра нет'
+    return seen ? (mine[at.cell]?.queue ?? null) : 'no frame'
   }
-  assert.equal(queue(), 2, 'номер за ячейкой преподавателя посчитан неверно')
+  assert.equal(queue(), 2, "the number behind the teacher's cell was computed wrong")
 
-  // Ячейку сняли с очереди — впереди никого. Ни одного события консилиума при
-  // этом не произошло.
+  // The cell was taken off the queue, so nobody is ahead. Not a single council
+  // event happened meanwhile.
   assert.equal(say(at, at.teacher, { t: 'cancel', cellId: at.plain }), null)
   await sleep(400)
-  assert.equal(queue(), 1, 'номер в очереди не сдвинулся')
+  assert.equal(queue(), 1, 'the queue number did not move')
   closeControlRoom(at.id)
 })

@@ -1,18 +1,20 @@
 /**
- * Потолок истории: она перестала расти без края — и повтор при этом цел.
+ * The history ceiling: it no longer grows without bound — and replay is
+ * still intact.
  *
- * `doc_history` рос до удаления семинара: единственный DELETE во всём db.ts
- * стоял в `discardHistory`. На оживлённой паре всплеск закрывается несколько
- * раз в секунду, а полный снимок приходит всякий раз, когда дельты догоняют
- * объём тетради, — семестровая комната писала сотни мегабайт в базу, лежащую
- * на том же диске, что и файлы всех остальных комнат.
+ * `doc_history` grew until the seminar was deleted: the only DELETE in all of
+ * db.ts was in `discardHistory`. In a lively class a burst closes several
+ * times a second, and a full snapshot comes every time the deltas catch up
+ * with the notebook's size — a semester-long room wrote hundreds of megabytes
+ * into a database that sits on the same disk as the files of all other rooms.
  *
- * Резать при этом можно не что угодно. Повтор версии начинается с ближайшего
- * снимка НЕ ПОЗЖЕ неё и накатывает все строки между ними (`updatesUpTo`), так
- * что выброшенная строка ломает возврат не себя, а всех, кто стоит за ней до
- * следующего снимка. Отсюда правило: граница — ровно на keyframe, и всё, что
- * старше него, уходит целиком. Здесь это и проверяется — вместе с тем, что
- * комната, не упёршаяся в потолок, не теряет ни строки.
+ * Not just anything can be cut, though. Replaying a version starts from the
+ * nearest snapshot NO LATER than it and applies all rows in between
+ * (`updatesUpTo`), so a dropped row breaks restoring not itself but everyone
+ * behind it up to the next snapshot. Hence the rule: the boundary is exactly
+ * at a keyframe, and everything older than it goes as a whole. That is what
+ * is checked here — together with a room below the ceiling not losing a
+ * single row.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -26,7 +28,7 @@ import {
   updatesUpTo,
 } from '../server/src/db.js'
 
-/** Строка истории с телом заданного размера; возвращает её seq. */
+/** A history row with a body of the given size; returns its seq. */
 function row(sessionId: string, kind: string, bytes: number): number {
   return appendVersion({
     sessionId,
@@ -49,7 +51,7 @@ const seqs = (sessionId: string): number[] =>
     }[]
   ).map((r) => r.seq)
 
-test('история под потолком не теряет ни строки', () => {
+test('a history under the ceiling does not lose a single row', () => {
   const id = 'trim-under'
   createSession(id, 'Под потолком', null)
   db.prepare('DELETE FROM doc_history WHERE session_id = ?').run(id)
@@ -60,12 +62,13 @@ test('история под потолком не теряет ни строки
   row(id, 'edit', 64)
   const before = seqs(id)
 
-  // Потолок — мегабайт, в комнате четверть килобайта: резать не за что.
+  // The ceiling is a megabyte, the room holds a quarter of a kilobyte: there
+  // is nothing to cut.
   assert.equal(trimHistory(id, 1024 * 1024), 0)
   assert.deepEqual(seqs(id), before)
 })
 
-test('потолок режет целыми отрезками — до снимка, а не до строки', () => {
+test('the ceiling cuts in whole segments — up to a snapshot, not up to a row', () => {
   const id = 'trim-over'
   createSession(id, 'За потолком', null)
   db.prepare('DELETE FROM doc_history WHERE session_id = ?').run(id)
@@ -77,22 +80,23 @@ test('потолок режет целыми отрезками — до сни�
   const kept = row(id, 'quiet', 1000)
   const last = row(id, 'edit', 1000)
 
-  // Потолок в 3500 байт: последний отрезок (снимок + две строки, 3000) влезает,
-  // предыдущий (ещё 3000) — уже нет.
+  // A ceiling of 3500 bytes: the last segment (snapshot + two rows, 3000)
+  // fits, the one before it (another 3000) no longer does.
   const dropped = trimHistory(id, 3500)
-  assert.equal(dropped, 3, 'ушли ровно строки старше снимка')
+  assert.equal(dropped, 3, 'exactly the rows older than the snapshot went away')
   assert.deepEqual(seqs(id), [secondBase, kept, last])
   assert.ok(oldQuiet < secondBase && oldEdit < secondBase)
 
   /*
-   * И главное: то, что осталось, по-прежнему разворачивается. Повтор последней
-   * версии начинается со снимка и берёт всё, что между, — ни одной дыры.
+   * And the main thing: what remains still unfolds. Replaying the last version
+   * starts from the snapshot and takes everything in between — not a single
+   * hole.
    */
   assert.equal(updatesUpTo(id, last).length, 3)
   assert.equal(updatesUpTo(id, kept).length, 2)
 })
 
-test('единственный снимок не режется, даже если он один больше потолка', () => {
+test('the only snapshot is not cut, even if it alone exceeds the ceiling', () => {
   const id = 'trim-one'
   createSession(id, 'Один снимок', null)
   db.prepare('DELETE FROM doc_history WHERE session_id = ?').run(id)
@@ -101,14 +105,14 @@ test('единственный снимок не режется, даже есл
   const base = row(id, 'keyframe', 9000)
   const tail = row(id, 'edit', 10)
 
-  // Влезть не может ничто, но повторить комнату должно быть с чего.
+  // Nothing can fit, but there must be something to replay the room from.
   assert.equal(trimHistory(id, 100), 1)
   assert.deepEqual(seqs(id), [base, tail])
   assert.ok(opened < base)
   assert.equal(updatesUpTo(id, tail).length, 2)
 })
 
-test('без единого снимка не режется ничего: повторить будет не с чего', () => {
+test('without a single snapshot nothing is cut: there would be nothing to replay from', () => {
   const id = 'trim-none'
   createSession(id, 'Без снимка', null)
   db.prepare('DELETE FROM doc_history WHERE session_id = ?').run(id)
@@ -122,26 +126,27 @@ test('без единого снимка не режется ничего: по�
 })
 
 /**
- * Обрезка молчаливой быть не может: панель истории показывает остаток так же,
- * как показывала бы целую ленту, и по ней не отличить «тут ничего не писали» от
- * «до этого места не сохранилось». Признак — состояние, а не память о событии:
- * самая старая строка комнаты либо `opened`, либо начало срезано.
+ * Trimming cannot be silent: the history panel shows the remainder the same
+ * way it would show a whole feed, and from it one cannot tell "nothing was
+ * written here" from "nothing before this point survived". The flag is state,
+ * not memory of an event: the room's oldest row is either `opened`, or the
+ * beginning was cut off.
  */
-test('обрезанная история сама говорит, что начинается позже комнаты', () => {
+test('a trimmed history says itself that it starts later than the room', () => {
   const id = 'trim-says'
   createSession(id, 'Про начало', null)
   db.prepare('DELETE FROM doc_history WHERE session_id = ?').run(id)
 
-  // Пустая — не обрезанная: комнате, где ещё ничего не записано, панель
-  // говорит своими словами.
+  // Empty is not trimmed: for a room where nothing has been written yet, the
+  // panel has words of its own.
   assert.equal(historyTrimmed(id), false)
 
   row(id, 'opened', 1000)
   row(id, 'edit', 1000)
-  assert.equal(historyTrimmed(id), false, 'лента начинается с открытия — она целая')
+  assert.equal(historyTrimmed(id), false, 'the feed starts with the opening — it is whole')
 
   row(id, 'keyframe', 1000)
   row(id, 'edit', 1000)
-  assert.ok(trimHistory(id, 2500) > 0, 'проба должна упереться в потолок')
-  assert.equal(historyTrimmed(id), true, 'начало ушло — об этом надо сказать словом')
+  assert.ok(trimHistory(id, 2500) > 0, 'the probe must hit the ceiling')
+  assert.equal(historyTrimmed(id), true, 'the beginning is gone — this must be said in words')
 })

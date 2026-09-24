@@ -83,23 +83,25 @@
   --shadow-pop: 0.18;
 
   /*
-   * ГАРНИТУРА КОДА — одна строка на весь продукт.
+   * CODE TYPEFACE — one line for the whole product.
    *
-   * Стек живёт здесь, а не в tailwind.config.js и не в scoped-стилях: у
-   * тетради, терминала и выводов ядра он обязан совпадать до последнего имени.
-   * Каждая своя копия однажды отстала — так и вышло, что подменные лица с
-   * правками метрик (index.html) доезжали только до утилиты `font-mono`, а
-   * ящик терминала и html-вывод продолжали прыгать строками на swap.
+   * The stack lives here, not in tailwind.config.js and not in scoped styles:
+   * the notebook, the terminal and kernel outputs must agree on it down to the
+   * last name. Every private copy fell behind at some point — which is how the
+   * fallback faces with metric overrides (index.html) reached only the
+   * `font-mono` utility, while the terminal drawer and HTML output kept
+   * jumping lines on swap.
    *
-   * Порядок обязателен. Настоящий шрифт первым; за ним два подменных семейства
-   * — тот же системный, но с метриками JetBrains Mono, — и лишь потом обычный
-   * системный моноширинный на случай, когда не нашлось ни одного из них.
-   * Порядок между двумя подменными не решает ничего: обе правки приводят свой
-   * шрифт к одним и тем же метрикам, так что победи хоть Consolas на маке с
-   * установленным Office — строка и колонка встанут туда же.
+   * The order is mandatory. The real font first; after it the two fallback
+   * families — the same system font, but with JetBrains Mono's metrics — and
+   * only then the plain system monospace, for when none of them was found.
+   * The order between the two fallbacks decides nothing: both overrides bring
+   * their font to the same metrics, so even if Consolas wins on a Mac with
+   * Office installed, the line and the column land in the same place.
    *
-   * `font-mono` из tailwind.config.js — это var(--font-mono) и ничего больше;
-   * scoped-стили берут отсюда же (переменная наследуется и в теневой корень).
+   * `font-mono` in tailwind.config.js is var(--font-mono) and nothing more;
+   * scoped styles take it from here too (the variable is inherited into a
+   * shadow root as well).
    */
   --font-mono:
     'JetBrains Mono', 'JetBrains Mono Fallback Consolas', 'JetBrains Mono Fallback Menlo',
@@ -274,18 +276,20 @@
 }
 
 /*
- * `[data-pult]` — тот же ночной набор, но не по выбору человека, а по адресу.
+ * `[data-pult]` — the same night set, chosen not by the person but by the
+ * address.
  *
- * Ставит его index.html, до первого кадра и на всё время, пока открыт пульт:
- * /s/:id/pult держат в тёмной аудитории, и светлая палитра там — не «другая
- * тема», а плита 1180×820, светящая преподавателю в лицо. Живёт признак в
- * палитре, а не в компоненте, ровно потому, что перекрыть надо палитру: пульт
- * появляется на экране не сразу, и всё, что рисуется до него — оболочка,
- * экран входа, ожидание куска с комнатой, — обязано быть уже ночным.
+ * index.html sets it before the first frame and for as long as the console is
+ * open: /s/:id/pult is used in a dark lecture hall, and a light palette there
+ * is not "another theme" but a 1180×820 slab shining into the teacher's face.
+ * The flag lives in the palette rather than in a component precisely because
+ * it is the palette that must be overridden: the console does not appear on
+ * screen at once, and everything drawn before it — the shell, the sign-in
+ * screen, the wait for the room chunk — must already be dark.
  *
- * Селектором, а не третьей копией значений: два набора уже приходится держать
- * в согласии (см. выше), третий согласовать не удастся. Кернельных цветов
- * (ANSI ниже) это не касается — трассировок на пульте не бывает.
+ * A selector, not a third copy of the values: two sets already have to be
+ * kept in agreement (see above), and a third could never be. Kernel colours
+ * (ANSI below) are not affected — the console never shows tracebacks.
  */
 :root[data-theme='dark'],
 :root[data-pult] {
@@ -328,29 +332,32 @@
 }
 
 /*
- * ПУЛЬТ: касания принадлежат приложению, а не системе.
+ * CONSOLE: touches belong to the app, not to the system.
  *
- * Правила живут здесь, а не в scoped-стилях ConsoleView, потому что лист
- * пульта собран из ТРЁХ компонентов (ConsoleView, LecturePage, InkLayer), а
- * scoped-стиль достаёт только до своей разметки. Так и вышло в прошлый раз:
- * корень запрещал лупу и вспышку, но не выделение, а `touch-action: none`
- * стоял только на мокром холсте — и ладонь, легшая на ПОЛЯ листа, получала
- * системное выделение и прокрутку страницы. Преподаватель видел, как
- * «окошко начинает выделяться, если держать там руку».
+ * The rules live here, not in ConsoleView's scoped styles, because the
+ * console sheet is assembled from THREE components (ConsoleView, LecturePage,
+ * InkLayer), and a scoped style reaches only its own markup. That is exactly
+ * what happened last time: the root banned the magnifier and the flash but
+ * not selection, and `touch-action: none` sat only on the wet canvas — so a
+ * palm resting on the sheet's MARGINS got system selection and page
+ * scrolling. The teacher saw "the little window starts getting selected if
+ * you keep your hand there".
  *
- *  · корень — ни выделения, ни лупы, ни серой вспышки, ни резинового
- *    оттягивания страницы (`overscroll-behavior`): Safari на iPad иначе
- *    тянет всю страницу вслед за пальцем, который всего лишь опёрся;
- *  · коробка листа с полями — `touch-action: none` ЦЕЛИКОМ, а не только
- *    холст: штрих начинают на поле, и ладонь лежит на поле;
- *  · поле заметок — единственное место, где текст выделяют осмысленно; оно
- *    возвращает себе `text`, потому что вебкитовский запрет на предке
- *    наследуется на потомков и без этой строки заметку нельзя было бы даже
- *    поправить курсором.
+ *  · the root — no selection, no magnifier, no grey flash, no rubber-band
+ *    pull of the page (`overscroll-behavior`): otherwise Safari on iPad drags
+ *    the whole page after a finger that was merely resting;
+ *  · the sheet box with its margins — `touch-action: none` on the WHOLE of
+ *    it, not only the canvas: strokes start in the margin, and the palm lies
+ *    in the margin;
+ *  · the notes field — the only place where selecting text makes sense; it
+ *    takes `text` back, because WebKit's ban on an ancestor is inherited by
+ *    descendants, and without this line a note could not even be corrected
+ *    with the caret.
  *
- * Только под `[data-pult]`: за пределами пульта те же классы не встречаются,
- * но признак адреса — единственное, что гарантирует, что эти запреты не
- * доедут до тетради, где текст выделяют и по документу ведут щипком.
+ * Only under `[data-pult]`: the same classes do not occur outside the
+ * console, but the address flag is the only thing that guarantees these bans
+ * never reach the notebook, where text is selected and the document is
+ * navigated with a pinch.
  */
 [data-pult] .pult-root {
   user-select: none;
@@ -740,17 +747,18 @@
 /* --------------------------------------------------------------- Markdown */
 
 /**
- * Звёздочка оракула в поле номера: две её половины мерцают по очереди.
+ * The oracle's sparkle in the number gutter: its two halves twinkle in turn.
  *
- * Знак `sparkles` — это два пути в одном svg, большая звезда и маленькая, и
- * мерцание берётся из них самих: каждая по очереди притухает, в противофазе.
- * Ничего не едет и не меняет размера — только прозрачность, поэтому у этой
- * анимации нет тихого близнеца и она не отнимается при `prefers-reduced-motion`
- * (та же политика, что у дыхания работающей ячейки и у всех спиннеров, записана
- * выше в этом файле: остановленный указатель — ложь о системе).
+ * The `sparkles` glyph is two paths in one svg, a big star and a small one,
+ * and the twinkle comes from them: each dims in turn, in antiphase. Nothing
+ * travels or changes size — only opacity — so this animation has no quiet
+ * twin and is not taken away under `prefers-reduced-motion` (the same policy
+ * as the breathing of a running cell and all the spinners, written down
+ * earlier in this file: a stopped indicator is a lie about the system).
  *
- * 1.6 с против 1.1 с у ядра: два указателя рядом обязаны отличаться не только
- * знаком, но и ритмом, а ответ оракула идёт дольше одного запуска.
+ * 1.6 s against the kernel's 1.1 s: two indicators side by side must differ
+ * not only in glyph but in rhythm, and an oracle answer takes longer than a
+ * single run.
  */
 @keyframes cell-sparkle-big {
   0%,
@@ -783,43 +791,46 @@
 .prose-note {
   @apply text-prose text-ink;
   /*
-   * Проза не прокручивается вбок — ни в ячейке, ни в ленте оракула.
+   * Prose never scrolls sideways — neither in a cell nor in the oracle feed.
    *
-   * Оракул отвечает кодом внутри предложения: `data['GarageYrBlt'] =
-   * data['GarageYrBlt'].fillna(data['GarageYrBlt'].median())` — это ОДНО слово
-   * для переносчика строк, потому что пробелов в нём нет. При `overflow-wrap:
-   * normal` такое слово не разрывается нигде и вылезает за край колонки: в
-   * панели шириной 380 px оно торчало на 78 px, а окно прокрутки ленты
-   * (`overflow-y: auto`, то есть `overflow-x: auto` по спецификации) честно
-   * предлагало эти 78 px пролистать — лента ездила влево-вправо на каждом
-   * касании трекпада.
+   * The oracle answers with code inside a sentence: `data['GarageYrBlt'] =
+   * data['GarageYrBlt'].fillna(data['GarageYrBlt'].median())` is ONE word to
+   * the line breaker, because it has no spaces. With `overflow-wrap: normal`
+   * such a word breaks nowhere and sticks out past the column edge: in a
+   * 380 px panel it stuck out by 78 px, and the feed's scroll box
+   * (`overflow-y: auto`, which means `overflow-x: auto` by the spec) duly
+   * offered those 78 px to scroll — the feed slid left and right on every
+   * touch of the trackpad.
    *
-   * `anywhere`, а не `break-word`: только он входит в расчёт минимальной
-   * ширины содержимого, то есть длинная строка не распирает ни колонку, ни
-   * flex-предка, а не просто переносится в уже растянутом блоке. Горизонтально
-   * ездят ровно две вещи, и обе внутри себя: блок кода и широкая таблица.
+   * `anywhere`, not `break-word`: only it takes part in the min-content width
+   * calculation, so a long line does not stretch the column or a flex
+   * ancestor, instead of merely wrapping inside an already stretched box.
+   * Exactly two things travel horizontally, each inside itself: a code block
+   * and a wide table.
    */
   overflow-wrap: anywhere;
 }
 
 /*
- * Ответ ассистента. Тот же набор правил, один шаг вверх: колонка вдвое уже
- * ноутбука, и 14px в ней читаются плотнее, чем те же 14px в текстовой ячейке.
+ * The assistant's answer. The same rule set, one step up: the column is half
+ * the width of the notebook, and 14px in it reads denser than the same 14px
+ * in a text cell.
  *
- * Ставится рядом с .prose-note, а не вместо: обе — селекторы из одного класса,
- * то есть спор решает порядок в файле, и этот стоит ниже. Код внутри ответа
- * поднимается вместе с текстом — 12px под 15px проваливались бы.
+ * Applied next to .prose-note, not instead of it: both are single-class
+ * selectors, so the conflict is settled by order in the file, and this one
+ * comes later. Code inside the answer grows with the text — 12px under 15px
+ * would sink.
  */
 .prose-answer {
   @apply text-answer;
 }
 
 /*
- * Проза опубликованной страницы. Тот же набор правил, один шаг вверх: страницу
- * читают с телефона через неделю после занятия, а не в колонке рядом с кодом.
+ * Prose of a published page. The same rule set, one step up: the page is read
+ * on a phone a week after the class, not in a column beside the code.
  *
- * Ставится рядом с .prose-note и НИЖЕ него — как .prose-answer и по той же
- * причине: селекторы одного веса, спор решает порядок в файле.
+ * Applied next to .prose-note and BELOW it — like .prose-answer and for the
+ * same reason: selectors of equal weight, order in the file settles it.
  */
 .prose-cell {
   @apply text-ui-lg;
@@ -918,11 +929,11 @@
 .prose-note code {
   @apply bg-raised px-1 py-0.5 font-mono text-code text-ink;
   /*
-   * Перенос у инлайнового кода приходит сверху, от .prose-note. Здесь —
-   * только то, что без этого разваливается: подложка и отбивки рисуются на
-   * КАЖДОМ куске перенесённого инлайна, а не одной коробкой на всю строку.
-   * Иначе `fillna(...)`, разрезанный на две строки, получал бы фон с одним
-   * левым полем наверху и одним правым внизу.
+   * Wrapping for inline code comes from above, from .prose-note. Here is only
+   * what falls apart without it: the backing and the padding are drawn on
+   * EACH piece of a wrapped inline, not as one box for the whole line.
+   * Otherwise `fillna(...)`, cut across two lines, would get a background
+   * with one left padding at the top and one right padding at the bottom.
    */
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
@@ -934,10 +945,10 @@
   @apply bg-transparent p-0 text-code;
 }
 /*
- * Обёртка широкой таблицы: её ставит рендерер (lib/render.svelte.ts), потому
- * что markdown таблицу ничем не оборачивает, а прокручиваться она обязана
- * внутри себя. `overscroll-behavior-x: contain` — чтобы, доехав до края
- * таблицы, жест не продолжился лентой и страницей.
+ * The wrapper for a wide table: the renderer adds it (lib/render.svelte.ts),
+ * because markdown wraps a table in nothing, and the table must scroll inside
+ * itself. `overscroll-behavior-x: contain` — so that a gesture that reaches
+ * the table's edge does not carry on into the feed and the page.
  */
 .prose-note .table-scroll {
   @apply max-w-full overflow-x-auto overscroll-x-contain;
@@ -945,9 +956,9 @@
 .prose-note table {
   @apply w-full border-collapse text-ui;
   /*
-   * В ячейке таблицы «где угодно» переносить нельзя: двенадцать колонок с
-   * `anywhere` сжались бы в двенадцать столбиков по букве. Широкая таблица
-   * едет в обёртке выше — это и есть её способ поместиться.
+   * A table cell must not wrap "anywhere": twelve columns with `anywhere`
+   * would shrink into twelve columns one letter wide. A wide table travels
+   * in the wrapper above — that is its way of fitting.
    */
   overflow-wrap: break-word;
 }
@@ -963,50 +974,52 @@
 }
 
 /*
- * Две страховки под оформление, которое заметка приносит своим `style`
- * (shared/note-css.ts). Белый список свойств отвечает за то, чтобы чужая
- * заметка не дотянулась до экрана; эти два правила — за то, чтобы она не
- * разъехалась внутри колонки.
+ * Two safety nets under the styling a note brings in its own `style`
+ * (shared/note-css.ts). The property allowlist makes sure someone else's
+ * note cannot reach the screen; these two rules make sure it does not spill
+ * out inside the column.
  *
- * `max-width` — селектором из двух частей, то есть слабее инлайнового стиля:
- * автор, написавший `max-width` сам, своё получит, а `width: 1200px` в колонке
- * на 700 упрётся в край ячейки вместо горизонтальной прокрутки всей страницы.
+ * `max-width` — with a two-part selector, i.e. weaker than an inline style:
+ * an author who wrote `max-width` themselves gets their own, while
+ * `width: 1200px` in a 700 column stops at the cell's edge instead of
+ * scrolling the whole page horizontally.
  *
- * Обтекание закрывается собой: `float: right` у картинки — обычный приём
- * учебной заметки, но без этого поплавок вылезает за низ ячейки и ложится на
- * следующую.
+ * Floats are closed by the note itself: `float: right` on an image is a
+ * common trick in a teaching note, but without this the float sticks out
+ * below the cell and lands on the next one.
  */
 .prose-note [style] {
   max-width: 100%;
 }
 /*
- * Врезка со своим фоном получает и свои чернила.
+ * An inset with its own background gets its own ink too.
  *
- * `background: #eef` человек пишет, думая о белом листе, и о тёмной теме не
- * думает никогда — а в ней текст заметки светлый, и светлое по светлому
- * читается никак: коробка есть, слов в ней нет. Селектор из двух частей, то
- * есть слабее инлайнового стиля: автор, назвавший `color` сам, своё получит.
+ * A person writes `background: #eef` thinking of a white page and never of
+ * the dark theme — but there the note's text is light, and light on light
+ * cannot be read at all: the box is there, the words in it are not. A
+ * two-part selector, i.e. weaker than an inline style: an author who named
+ * `color` themselves gets their own.
  */
 .prose-note [style*='background'] {
   color: #1b2233;
 }
 /*
- * И обе страховки обязаны пропустить формулу.
+ * And both safety nets must let a formula through.
  *
- * KaTeX строит своё дерево уже ПОСЛЕ фильтра оформления (lib/render.svelte.ts)
- * и раскладывает его такими же инлайновыми `style`: высотами в `em` у
- * `.vlist`, фоном у `\colorbox`. Под общим правилом дробь получала бы
- * `max-width` от ширины строки, а подкрашенная формула — чужие чернила.
- * Селектор на ступень длиннее, поэтому спор решается в её пользу.
+ * KaTeX builds its tree AFTER the style filter (lib/render.svelte.ts) and
+ * lays it out with the same inline `style`: heights in `em` on `.vlist`, a
+ * background on `\colorbox`. Under the general rule a fraction would get a
+ * `max-width` from the line width, and a tinted formula someone else's ink.
+ * The selector is one step longer, so the conflict is settled in its favour.
  */
 .prose-note .katex,
 .prose-note .katex [style] {
   max-width: none;
   /*
-   * И перенос «где угодно» формулу обязан пропустить тоже: KaTeX сам решает,
-   * где строку рвать можно (после знака операции), а «где угодно» разорвало бы
-   * её посреди подкоренного выражения. Выключная формула вместо этого едет
-   * внутри себя — правило ниже.
+   * And wrapping "anywhere" must let a formula through as well: KaTeX decides
+   * itself where a line may break (after an operator sign), while "anywhere"
+   * would break it in the middle of a radicand. A display formula instead
+   * scrolls inside itself — the rule below.
    */
   overflow-wrap: normal;
 }
@@ -1014,10 +1027,10 @@
   color: inherit;
 }
 /*
- * Выключная формула — та же широкая коробка, что и блок кода: `\begin{align}`
- * на полстраницы шире колонки оракула, а разорвать её негде. Едет внутри
- * себя; `.katex` внутри остаётся без `max-width` (правило выше), иначе дробь
- * сложилась бы в кашу.
+ * A display formula is the same wide box as a code block: a `\begin{align}`
+ * half a page wider than the oracle column has nowhere to break. It scrolls
+ * inside itself; the `.katex` inside stays without `max-width` (the rule
+ * above), otherwise a fraction would collapse into mush.
  */
 .prose-note .katex-display {
   /* overflow-x:auto otherwise turns the vertical axis into auto as well.

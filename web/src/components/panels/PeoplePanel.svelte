@@ -1,13 +1,13 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   /**
-   * Кто в комнате — и, у преподавателя, кого в неё не пускают.
+   * Who is in the room — and, for the teacher, who is not let in.
    *
-   * Два списка в одной панели, потому что это один и тот же вопрос, заданный с
-   * двух сторон: удаляют человека отсюда же, правой кнопкой по его строке, и
-   * возвращают строкой ниже. Разносить их по разным местам значило бы прятать
-   * снятие бана от того, кто его поставил, — а ошибиться строкой в списке имён
-   * легко, лиц там нет.
+   * Two lists in one panel, because it is one and the same question asked from
+   * two sides: a person is removed right here, with a right click on their row,
+   * and brought back one row below. Putting them in different places would mean
+   * hiding the lifting of a ban from whoever set it — and it is easy to hit the
+   * wrong row in a list of names, there are no faces there.
    */
   import type { Ban } from '@shared/protocol'
   import { getSessionState } from '@/lib/session.svelte'
@@ -47,24 +47,26 @@
   const shown = $derived(expanded ? people : people.slice(0, CAP))
   const rest = $derived(people.length - shown.length)
 
-  /* ------------------------------------------------------------------ баны */
+  /* ------------------------------------------------------------------ bans */
 
   const isHost = $derived(session.me.role === 'host')
 
   let bans = $state.raw<Ban[]>([])
   /**
-   * Пометки про браузеры — только те, что прислал сервер.
+   * Notes about browsers — only those the server sent.
    *
-   * Пусто у всех, пока он о них не знает: список людей от этого выглядит ровно
-   * так, как выглядел, — пометка по догадке хуже отсутствующей.
+   * Empty for everyone until the server knows about them: the people list then
+   * looks exactly as it did — a note based on a guess is worse than a missing
+   * one.
    */
   let marks = $state.raw<Record<string, PersonMark>>({})
   /**
-   * Час, по которому считаются сроки и свежесть пометок.
+   * The moment by which ban terms and the freshness of notes are computed.
    *
-   * Переставляется вместе с перечитыванием списка: «впервые, только что»
-   * перестаёт быть правдой через пять минут, а бан кончается сам — и строка
-   * «до 18:40», висящая в семь вечера, предлагает снять снятое.
+   * Reset together with re-reading the list: "first time, just now" stops being
+   * true after five minutes, and a ban ends by itself — and a line "until
+   * 18:40" still hanging there at seven in the evening offers to lift what has
+   * already been lifted.
    */
   let now = $state(Date.now())
   let lifting = $state<string | null>(null)
@@ -77,15 +79,15 @@
       bans = body.bans
       marks = body.marks ?? {}
     } catch {
-      /* сеть моргнула; следующий круг перечитает — на списке людей это не сказывается */
+      /* network blip: the next round re-reads; the people list is unaffected */
     }
     now = Date.now()
   }
 
   /*
-   * Раз в минуту, и только у преподавателя. Запрос дешёвый — десяток строк на
-   * комнату, — а платит за него один человек в комнате; студенту эта панель не
-   * задаёт ни одного вопроса, которого не задавала раньше.
+   * Once a minute, and only for the teacher. The request is cheap — a dozen
+   * rows per room — and only one person in the room pays for it; for a student
+   * this panel does not ask a single question it did not ask before.
    */
   $effect(() => {
     if (!isHost) return
@@ -100,11 +102,12 @@
   })
 
   /**
-   * Правая кнопка по строке — единственный вход в меню отсюда.
+   * A right click on a row is the only way into the menu from here.
    *
-   * Не значок в строке: удаление с занятия нажимают раз в семестр, а строку
-   * списка людей — по десять раз за пару, чтобы дойти до чужой ячейки. Кнопка
-   * рядом с этим маршрутом попадала бы под палец у того, кто целился в имя.
+   * Not an icon in the row: removal from class is pressed once a semester, and
+   * a row of the people list ten times per class, to get to someone else's
+   * cell. A button next to that route would end up under the finger of whoever
+   * aimed at the name.
    */
   function offerBan(event: MouseEvent, person: Person): void {
     if (!mayBan(session.me.role, person.user.role)) return
@@ -123,8 +126,9 @@
     lifting = ban.id
     try {
       await api.liftBan(session.session.id, session.token, ban.id)
-      // Строка уходит сразу: сервер ответил, и ждать следующего круга опроса
-      // значит держать под нажатой кнопкой того, кого уже вернули.
+      // The row goes away at once: the server has answered, and waiting for the
+      // next polling round would mean keeping someone who has already been
+      // brought back under a pressed button.
       bans = bans.filter((other) => other.id !== ban.id)
     } catch (cause) {
       session.showError(cause instanceof Error ? tr(cause.message) : tr('room.ui.668'))
@@ -133,7 +137,7 @@
     }
   }
 
-  /** Ячейки, запуск и кто его нажал — всё, из чего считается «где кто». */
+  /** Cells, the run and who started it: what "who is where" is built from. */
   const view = $derived({
     numbers: cellNumbers.current,
     runningCellId: meta.current.runningCellId,
@@ -141,27 +145,28 @@
   })
 
   /**
-   * Подпись на наведение: куда именно уведёт нажатие.
+   * The hover caption: where exactly a press will take you.
    *
-   * По-русски, как и всё вокруг: список удалённых под этой же панелью, окно
-   * бана, пульт правил и дерево файлов — русские, и английская подсказка среди
-   * них читалась бы как чужая вставка. (Здесь долго стоял обратный довод — он
-   * был верен, когда по-русски в приложении было четыре строки, и перестал
-   * быть верным, когда русской стала половина интерфейса.)
+   * In Russian, like everything around it: the list of the removed under this
+   * same panel, the ban window, the rules console and the file tree are
+   * Russian, and an English hint among them would read as a foreign insertion.
+   * (The opposite argument stood here for a long time — it was right when the
+   * app had four lines of Russian, and stopped being right when half of the
+   * interface became Russian.)
    */
   function hintFor(person: Person, place: RevealTarget): string {
     const who = person.isSelf ? tr('room.ui.669') : person.user.name
     if (place.where === 'terminal') return tr('room.ui.670', { p0: who })
     if (place.where === 'oracle') return tr('room.ui.671', { p0: who })
     /*
-     * Сюда доходит только ячейка, и проверка стоит ради этого.
+     * Only a cell gets this far, and the check is there for that reason.
      *
-     * У `RevealTarget` появился вариант `file` — им переход к определению
-     * открывает .py-файл (lib/goto.svelte.ts), — но список людей такого места
-     * не показывает: он говорит, кто где РАБОТАЕТ, а работают в ячейке, в
-     * терминале и у оракула. Раньше вариантов было три, и после двух проверок
-     * оставался ровно один; теперь их четыре, и молчаливое «всё остальное —
-     * ячейка» стало неправдой.
+     * `RevealTarget` gained a `file` variant — go-to-definition uses it to open
+     * a .py file (lib/goto.svelte.ts) — but the people list does not show such
+     * a place: it says who is WORKING where, and people work in a cell, in the
+     * terminal and at the oracle. There used to be three variants, and after
+     * two checks exactly one remained; now there are four, and the silent
+     * "everything else is a cell" became untrue.
      */
     if (place.where !== 'cell') return tr('room.ui.672')
     const number = view.numbers.get(place.cellId)
@@ -173,7 +178,7 @@
     else reveal(place)
   }
 
-  /** Кто человек — вместо строки о том, что он делает; и метка преподавателя. */
+  /** Who the person is, instead of what they are doing; and the teacher tag. */
   function badgeFor(person: Person): string | null {
     const host = person.user.role === 'host'
     if (person.isSelf) return host ? tr('room.ui.674') : tr('room.ui.544')
@@ -201,14 +206,14 @@
       ? personNotes(marks[person.user.id], { bansActive: live.length > 0, now })
       : []}
     <!--
-      Строка становится кнопкой ровно тогда, когда ей есть куда вести. Про
-      человека, о котором нечего сказать, и показать нечего: он в комнате, но
-      не в каком-то её месте — и подсветка под курсором на такой строке
-      обещала бы переход, которого не будет.
+      The row becomes a button exactly when it has somewhere to lead. When there
+      is nothing to say about a person, there is nothing to show either: they
+      are in the room, but not in any particular place in it — and a highlight
+      under the cursor on such a row would promise a jump that will not happen.
 
-      svelte:element, а не два одинаковых блока разметки: у ряда семь
-      вложенных элементов, и вторая копия разошлась бы с первой на первой же
-      правке отступа.
+      svelte:element, not two identical blocks of markup: the row has seven
+      nested elements, and a second copy would drift from the first at the very
+      first indentation edit.
     -->
     <svelte:element
       this={place ? 'button' : 'div'}
@@ -245,10 +250,10 @@
           <span class="truncate text-2xs tracking-caps text-muted">{activity}</span>
         {/if}
         <!--
-          Пометки — третьей строкой и тем же тихим цветом, что и всё
-          остальное здесь. Они ничего не запрещают и могут ошибаться, поэтому
-          не спорят за внимание ни с именем, ни с тем, что человек делает: за
-          что именно комната зацепилась, написано под курсором.
+          Notes — as a third line and in the same quiet colour as everything
+          else here. They forbid nothing and can be wrong, so they do not
+          compete for attention with the name or with what the person is doing:
+          what exactly the room caught on to is written under the cursor.
         -->
         {#if notes.length > 0}
           <span class="flex flex-wrap items-center gap-x-1 text-micro leading-snug text-muted">
@@ -287,11 +292,11 @@
 </section>
 
 <!--
-  Кого не пускают — и одна кнопка, которая это отменяет.
+  Who is not let in — and one button that undoes it.
 
-  Списка нет вовсе, пока никого не удаляли: пустой раздел «Удалены» в каждой
-  комнате рассказывал бы про наказание всем преподавателям, включая тех, кому
-  оно никогда не понадобится.
+  There is no list at all until someone has been removed: an empty "Removed"
+  section in every room would tell every teacher about punishment, including
+  those who will never need it.
 -->
 {#if isHost && live.length > 0}
   <section class="flex shrink-0 flex-col gap-0.5 px-4 pb-5" aria-label={tr('room.ui.662')}>
@@ -323,12 +328,13 @@
     {/each}
 
     <!--
-      Здесь стояло «их возвращает восстановление версии в истории» — обещание,
-      которого продукт не выполняет: история хранит ячейки тетради (`cellsOf` в
-      collab/history.ts), и возврат версии ленту вопросов не трогает вовсе.
-      Преподаватель, прочитавший это, нажимал «Restore all» на чекпоинте «до
-      бана» и получал нетронутую тетрадь и ту же пустую ленту. Пока возврат не
-      умеет ленту, сказано то, что есть.
+      This used to say "restoring a version in the history brings them back" — a
+      promise the product does not keep: the history stores the notebook's cells
+      (`cellsOf` in collab/history.ts), and restoring a version does not touch
+      the question feed at all. A teacher who read that pressed "Restore all" on
+      a "before the ban" checkpoint and got an untouched notebook and the same
+      empty feed. Until restoring can handle the feed, what is said is what
+      there is.
     -->
     <p class="px-2 pt-1.5 text-micro leading-snug text-muted"> {tr('room.ui.667')} </p>
   </section>

@@ -3,125 +3,134 @@ import { tr, formatNumber } from '@shared/i18n'
 import { COLLOQ_REFUSED, GUARD_MODULE, guardCouncilSettings, guardInstallLine } from './danger.js'
 
 /**
- * Личные копии данных на одну попытку консилиума — и точный возврат после неё.
+ * Personal copies of the data for one council attempt, and an exact return
+ * afterwards.
  *
- * Ядро у тетради одно, и это устройство продукта: попытка обязана видеть `df`,
- * `np` и всё, что преподаватель подготовил в общей ячейке. Но пока «личный лист»
- * означал только личный ТЕКСТ, общим оставалось всё остальное, и на семинаре
- * 19.09 это стоило пары: в задании стояла закомментированная строка
- * `# data = data.dropna()`, один человек её раскомментировал и запустил — и
- * `data` стал другим у ВСЕХ, включая тех, кто уже сдал.
+ * A notebook has one kernel, and that is by product design: an attempt must see
+ * `df`, `np` and everything the teacher prepared in a shared cell. But while a
+ * "personal sheet" meant only personal TEXT, everything else stayed shared, and
+ * at the seminar of 19 Sep 2026 this cost a class: the task had a commented-out
+ * line `# data = data.dropna()`, one person uncommented it and ran it, and
+ * `data` changed for EVERYONE, including those who had already submitted.
  *
- * Ломалось это двумя разными способами, и прежняя уборка (снимок имён до
- * попытки, снятие новых после) не закрывала ни одного:
- *   1. перепривязка — `data = data.dropna()` меняет ИМЯ, которое было, а
- *      снимались только имена, которых не было;
- *   2. мутация на месте — `df.drop(..., inplace=True)`, `df['x'] = 1`,
- *      `lst.append(...)` портят сам объект, и снимать тут нечего вовсе.
+ * It broke in two different ways, and the previous cleanup (a snapshot of the
+ * names before the attempt, removing the new ones after) closed neither:
+ *   1. rebinding: `data = data.dropna()` changes a NAME that existed, while
+ *      only names that had not existed were removed;
+ *   2. in-place mutation: `df.drop(..., inplace=True)`, `df['x'] = 1`,
+ *      `lst.append(...)` spoil the object itself, and there is nothing to
+ *      remove at all.
  *
- * Отдельное ядро на студента отвергнуто по цене (≈2 ГБ на ядро и хрупкость
- * zmq/matplotlib), `fork` — по тем же причинам плюс общий сокет Jupyter.
- * Осталось единственное дешёвое: перед попыткой подменить привязки личными
- * копиями, после — вернуть пространство имён в точности к тому, что было.
+ * A separate kernel per student was rejected on cost (≈2 GB per kernel and the
+ * fragility of zmq/matplotlib), `fork` for the same reasons plus the shared
+ * Jupyter socket. The only cheap option left: before an attempt, replace the
+ * bindings with personal copies; after it, return the namespace to exactly
+ * what it was.
  *
- * Цена копии здесь не теоретическая. В образе `colloq-kernel:base` стоит
- * pandas 3, где Copy-on-Write включён всегда: `obj.copy(deep=False)` стоит
- * O(1) и при этом любая запись в копию исходника не трогает — то есть самый
- * частый и самый тяжёлый случай семинара (таблица на сотни мегабайт) закрыт
- * бесплатно. Глубокие копии остаются для numpy, контейнеров и pandas без CoW,
- * и на них стоит бюджет: то, что в него не влезло, остаётся общим, а попытке об
- * этом говорят вслух — молчаливое «у одних копия, у других нет» было бы хуже
- * прежней дыры.
+ * The cost of a copy here is not theoretical. The `colloq-kernel:base` image has
+ * pandas 3, where Copy-on-Write is always on: `obj.copy(deep=False)` costs O(1),
+ * and any write to the copy leaves the original alone, i.e. the most frequent
+ * and heaviest case of a seminar (a table of hundreds of megabytes) is covered
+ * for free. Deep copies remain for numpy, containers and pandas without CoW,
+ * and they have a budget: whatever does not fit stays shared, and the attempt
+ * is told so out loud; a silent "some have a copy, others do not" would be
+ * worse than the old hole.
  *
- * Копиями дело не кончается. Тем же входом закрыто то, чем ОДНА попытка гасила
- * занятие целиком, — всё найдено вопросом «а если кто-то сделает так?»:
- *   · `exit()` и `quit()`: в ipykernel это `shell.ask_exit()`, то есть конец
- *     процесса. Воспроизведено на живом ядре — после такой попытки переменных
- *     нет ни у кого. Теперь отвечают отказом; `sys.exit()` ядро переживает и
- *     без нас, его не трогаем;
- *   · `os._exit()` и `os.abort()`: конец процесса без единого слова — ни
- *     трассировки, ни стека, ни сигнала в dmesg, ни счётчика в cgroup. 20.09
- *     занятие на тридцать человек потеряло ядро девять раз за одиннадцать
- *     минут на попытке в две строки; воспроизведено в одноразовом контейнере.
- *     Теперь отвечают отказом — кроме ребёнка после `fork()`, где `_exit` и
- *     есть правильный конец. С 20.09 это не своя копия, а ОБЩАЯ защита
- *     комнаты (`danger.ts`), которую попытка держит включённой на своё
- *     время, что бы ни стояло в правиле «Опасные команды»;
- *   · жадность: `np.ones((40000, 40000))` или неудачное декартово соединение
- *     звали OOM-killer, и он убивал ядро тетради. Проверено контрольным
- *     опытом. Теперь попытке ставится потолок адресного пространства от
- *     предела контейнера, и то же самое кончается `MemoryError` у автора;
- *   · состояние процесса, которое молча меняет результаты следующим: поток
- *     случайных чисел, `sys.stdout`, `sys.path`, `os.environ`, `builtins`,
- *     фильтры предупреждений, опции печати numpy и pandas, `%pdb`, хуки
- *     IPython, фигуры matplotlib, дочерние процессы. Снимок до, возврат после.
+ * Copies are not the end of it. The same entry closes what let ONE attempt take
+ * down the whole class, all of it found by asking "what if someone does this?":
+ *   · `exit()` and `quit()`: in ipykernel that is `shell.ask_exit()`, i.e. the
+ *     end of the process. Reproduced on a live kernel: after such an attempt
+ *     nobody has any variables. Now they are refused; the kernel survives
+ *     `sys.exit()` without our help, so that one is left alone;
+ *   · `os._exit()` and `os.abort()`: the end of the process without a single
+ *     word: no traceback, no stack, no signal in dmesg, no counter in the
+ *     cgroup. On 20 Sep 2026 a class of thirty lost its kernel nine times in
+ *     eleven minutes on a two-line attempt; reproduced in a throwaway
+ *     container. Now they are refused, except in a child after `fork()`, where
+ *     `_exit` is the right ending. Since 20 Sep 2026 this is not a copy of our
+ *     own but the room's SHARED guard (`danger.ts`), which the attempt keeps on
+ *     for its duration, whatever the "Dangerous commands" rule says;
+ *   · greed: `np.ones((40000, 40000))` or an unlucky cartesian join called the
+ *     OOM killer, and it killed the notebook's kernel. Checked with a control
+ *     experiment. Now the attempt gets an address-space ceiling derived from
+ *     the container limit, and the same thing ends in a `MemoryError` for the
+ *     author;
+ *   · process state that silently changes the results of whoever comes next:
+ *     the random number stream, `sys.stdout`, `sys.path`, `os.environ`,
+ *     `builtins`, warning filters, numpy and pandas print options, `%pdb`,
+ *     IPython hooks, matplotlib figures, child processes. A snapshot before, a
+ *     return after.
  *
- * Чего здесь НЕТ и не будет, пока не решат иначе: файлы на диске (chmod на
- * время попытки ломает редактор файлов и терминал, перехват `open` ломает
- * обычное «каждый пишет out.csv»), песочница против умысла (`ctypes`,
- * `signal.raise_signal`, снос этого модуля из `sys.modules` проходят мимо) и
- * модули, которые попытка импортировала. Консилиум — приём преподавания, а не
- * экзаменационная песочница: закрыт тот способ погасить пару, которым её
- * гасят на самом деле, а не все мыслимые.
+ * What is NOT here, and will not be until decided otherwise: files on disk
+ * (chmod for the duration of an attempt breaks the file editor and the
+ * terminal, intercepting `open` breaks the ordinary "everyone writes out.csv"),
+ * a sandbox against intent (`ctypes`, `signal.raise_signal`, deleting this
+ * module from `sys.modules` get past it), and modules the attempt imported.
+ * The council is a teaching technique, not an exam sandbox: what is closed is
+ * the way a class really gets taken down, not every conceivable one.
  *
- * Чистый модуль: исходники на Python, сборка и разбор отчёта, ни сети, ни Yjs
- * — ради теста (тот же приём, что в council.ts).
+ * A pure module: the Python sources, building and parsing the report, no
+ * network, no Yjs, for the sake of the test (the same trick as in council.ts).
  */
 
-/** Скрытый модуль, в котором живёт состояние изоляции. Не имя в `globals()`. */
+/** The hidden module the isolation state lives in. Not a name in `globals()`. */
 export const COUNCIL_MODULE = '_colloq_council'
 
-/** Ключ, под которым отчёт едет в `user_expressions` ответа ядра. */
+/** The key the report travels under in the kernel reply's `user_expressions`. */
 export const COUNCIL_REPORT_KEY = 'colloq'
 
 /**
- * Выражение, которое ядро посчитает и положит в `execute_reply`.
+ * The expression the kernel evaluates and puts into `execute_reply`.
  *
- * `user_expressions` отвечает ДАЖЕ при `silent: true` (ipykernel ·
- * IPythonKernel.do_execute: они считаются после запуска, если статус `ok`), а
- * при `silent: true` ядро не шлёт в IOPUB ничего — значит другого способа
- * услышать вход и не было бы. Модуль спрятан в `sys.modules`, поэтому до него
- * приходится добираться через `__import__`: в `user_ns` его нет нарочно.
+ * `user_expressions` answers EVEN with `silent: true` (ipykernel ·
+ * IPythonKernel.do_execute: they are evaluated after the run if the status is
+ * `ok`), and with `silent: true` the kernel sends nothing over IOPUB, so there
+ * would be no other way to hear the entry. The module is hidden in
+ * `sys.modules`, so it has to be reached through `__import__`: it is
+ * deliberately not in `user_ns`.
  */
 export const COUNCIL_REPORT_EXPR = `__import__('sys').modules['${COUNCIL_MODULE}'].report`
 
 /**
- * Отчёт ВЫХОДА — и он, в отличие от входного, необязателен.
+ * The EXIT report, and unlike the entry one it is optional.
  *
- * Выход не решает, запускать ли попытку; он только рассказывает про хвосты,
- * которые вернуть было нечем (оставленные потоки, убитые процессы). Молчание
- * здесь — не беда попытки, а всего лишь отсутствие приписки в её выводе.
+ * The exit does not decide whether to run the attempt; it only tells about the
+ * leftovers that could not be returned (threads left running, killed
+ * processes). Silence here is not the attempt's trouble, just the absence of a
+ * note in its output.
  */
 export const COUNCIL_LEFTOVERS_EXPR = `__import__('sys').modules['${COUNCIL_MODULE}'].leftovers`
 
 /**
- * Имя исключения, которым изоляция отказывает попытке её же словами.
+ * The name of the exception with which the isolation refuses an attempt in its
+ * own words.
  *
- * То же самое, что у глобальной защиты (danger.ts · COLLOQ_REFUSED), и это не
- * совпадение: отказ «эта команда гасит ядро всем» с 20.09 реализован ОДИН раз,
- * а попытка консилиума просто держит его включённым поверх правила комнаты.
- * Имя оставлено здесь псевдонимом, чтобы вызывающие не переписывались.
+ * The same as the global guard's (danger.ts · COLLOQ_REFUSED), and that is no
+ * coincidence: since 20 Sep 2026 the refusal "this command takes the kernel
+ * down for everyone" is implemented ONCE, and a council attempt simply keeps it
+ * on above the room rule. The name is kept here as an alias so callers do not
+ * have to be rewritten.
  */
 export const COUNCIL_REFUSED = COLLOQ_REFUSED
 
-/** Сколько байт личных копий разрешено одной попытке, если не сказано иначе. */
+/** How many bytes of personal copies one attempt may have, unless told otherwise. */
 export const COUNCIL_DEFAULT_COPY_BYTES = 512 * 1024 * 1024
 
-/** Меньше этого потолок памяти не опускается: под ним не работает и импорт. */
+/** The memory ceiling never goes below this: under it not even an import works. */
 export const COUNCIL_MEMORY_FLOOR_BYTES = 512 * 1024 * 1024
 
-/** Запас, который остаётся ядру комнаты сверх того, что отдано попытке. */
+/** Headroom left to the room's kernel beyond what is given to the attempt. */
 export const COUNCIL_MEMORY_HEADROOM_BYTES = 256 * 1024 * 1024
 
-/** Столько строк про «осталась общей» помещается в шапку вывода; дальше — счёт. */
+/** This many "stayed shared" lines fit into the output header; beyond, a count. */
 export const MAX_SKIP_NOTES = 3
 
-/** Размер, которого не сосчитать: обход упёрся в потолок узлов. */
+/** A size that cannot be counted: the walk hit the node ceiling. */
 export const SIZE_UNKNOWN = -1
 
 export interface CouncilCopySkip {
   name: string
-  /** Байты; `SIZE_UNKNOWN` — объект оказался слишком ветвистым, чтобы мерить. */
+  /** Bytes; `SIZE_UNKNOWN` means the object was too branchy to measure. */
   bytes: number
 }
 
@@ -132,50 +141,50 @@ export interface CouncilCopyFailure {
 
 export interface CouncilIsolationReport {
   ok: boolean
-  /** Сколько имён получили личную копию. */
+  /** How many names got a personal copy. */
   copied: number
-  /** Что не влезло в бюджет и осталось общим. */
+  /** What did not fit into the budget and stayed shared. */
   skipped: CouncilCopySkip[]
-  /** Что не скопировалось по своей причине (и тоже осталось общим). */
+  /** What failed to copy for its own reason (and also stayed shared). */
   failed: CouncilCopyFailure[]
-  /** Сколько байт копий насчитал вход. */
+  /** How many bytes of copies the entry counted. */
   bytes: number
-  /** Потолок памяти на попытку, байтами; `null` — потолка нет. */
+  /** The memory ceiling per attempt, in bytes; `null` means no ceiling. */
   memory: number | null
   ms: number
-  /** Заполнено, только когда `ok` ложно. */
+  /** Filled only when `ok` is false. */
   error: string | null
 }
 
-/** Что после попытки вернуть было нечем. */
+/** What could not be returned after the attempt. */
 export interface CouncilLeftovers {
-  /** Потоки, которые попытка оставила работать: остановить их нечем. */
+  /** Threads the attempt left running: there is no way to stop them. */
   threads: number
-  /** Дочерние процессы, которые пришлось убить за неё. */
+  /** Child processes that had to be killed on its behalf. */
   processes: number
 }
 
-/** Тексты и ручки, которые вход получает от сервера, а не носит в себе. */
+/** Texts and knobs the entry gets from the server rather than carrying itself. */
 export interface CouncilIsolationSettings {
   budgetBytes?: number
-  /** Ставить ли потолок адресного пространства на время попытки. */
+  /** Whether to set an address-space ceiling for the duration of the attempt. */
   memoryGuard?: boolean
 }
 
 /**
- * Реализация входа и выхода — одним куском Python, который исполняется НЕ в
- * пространстве студента.
+ * The entry and exit implementation, as one chunk of Python that runs NOT in
+ * the student's namespace.
  *
- * Всё, что объявлено ниже, ложится в `__dict__` скрытого модуля: ячейка входа
- * (`councilEnterSource`) делает ровно два действия, и ни одно из них не
- * связывает имён в `globals()` попытки. Иначе вход сам себе противоречил бы —
- * обещая точный возврат пространства имён и одновременно оставляя в нём
- * `sys`, `copy` и собственные переменные.
+ * Everything declared below lands in the hidden module's `__dict__`: the entry
+ * cell (`councilEnterSource`) does exactly two things, and neither binds names
+ * in the attempt's `globals()`. Otherwise the entry would contradict itself,
+ * promising an exact return of the namespace while leaving `sys`, `copy` and
+ * its own variables in it.
  *
- * `state` и `report` заводятся через `setdefault` в конце: исходник
- * исполняется перед КАЖДОЙ попыткой (так дешевле, чем сверять версии), и
- * обычное присваивание стирало бы состояние прошлого, ещё не закрытого входа —
- * то есть ровно то, ради чего состояние и держат.
+ * `state` and `report` are created with `setdefault` at the end: the source is
+ * executed before EVERY attempt (cheaper than comparing versions), and a plain
+ * assignment would erase the state of a previous entry not yet closed, i.e.
+ * exactly what the state is kept for.
  */
 const IMPL = `
 import builtins
@@ -188,12 +197,14 @@ import time
 import types
 
 
-# Снимок самих встроенных, снятый ПРИ УСТАНОВКЕ, когда они ещё целы.
+# A snapshot of the builtins themselves, taken AT INSTALL time while they are
+# still intact.
 #
-# Попытка вправе написать \`builtins.list = "сломал"\` — и возврат, который как
-# раз это и чинит, падал бы на первой своей строке: \`list(ns)\` больше не
-# вызывается. Проверено, именно так и падало. Поэтому всё, чем пользуется
-# ВОЗВРАТ, берётся отсюда, а не из builtins, которые к тому моменту чужие.
+# An attempt is free to write \`builtins.list = "broken"\`, and the return,
+# which is exactly what fixes that, would fail on its very first line:
+# \`list(ns)\` can no longer be called. Checked, that is exactly how it failed.
+# So everything the RETURN uses is taken from here, not from builtins, which by
+# then are someone else's.
 _list = list
 _vars = vars
 _getattr = getattr
@@ -203,13 +214,14 @@ _id = id
 
 
 def _guard():
-    """Общая защита от опасных команд — та же, что стоит в обычной ячейке.
+    """The shared guard against dangerous commands, the same as in a plain cell.
 
-    Своей копии отказа у консилиума больше нет: \`exit()\`, \`os._exit()\`,
-    смертельный сигнал в ядро, \`!kill -9 -1\`, \`%reset\` закрывает один
-    модуль (kernel/danger.ts), а попытка лишь ДЕРЖИТ его включённым на своё
-    время — что бы ни стояло в правиле комнаты. Две реализации одного отказа
-    разошлись бы на первой же правке, и разошлись бы молча.
+    The council no longer has its own copy of the refusal: \`exit()\`,
+    \`os._exit()\`, a deadly signal to the kernel, \`!kill -9 -1\` and
+    \`%reset\` are closed by one module (kernel/danger.ts), and the attempt only
+    KEEPS it on for its duration, whatever the room rule says. Two
+    implementations of one refusal would drift apart at the very first edit,
+    and drift silently.
     """
     return sys.modules.get('${GUARD_MODULE}')
 
@@ -217,9 +229,9 @@ def _guard():
 def _hold(words):
     guard = _guard()
     if guard is None:
-        # Установка защиты идёт ПЕРВОЙ строкой той же ячейки входа, так что
-        # сюда попадают только ядра, где она не встала вовсе, — и тогда вход
-        # честно отчитается неудачей, а попытка не запустится.
+        # The guard is installed by the FIRST line of the same entry cell, so
+        # only kernels where it did not go in at all get here, and then the
+        # entry honestly reports failure, and the attempt does not run.
         return False
     try:
         guard.hold(words)
@@ -240,33 +252,36 @@ def _release(current):
         pass
 
 
-# Служебные имена IPython: они принадлежат ядру, а не студенту, и копия
-# журнала ввода никому не нужна. \`_1\`, \`_i7\` — эхо ячеек, туда же.
+# IPython's service names: they belong to the kernel, not the student, and a
+# copy of the input log helps nobody. \`_1\`, \`_i7\` are cell echoes, same
+# thing.
 _SERVICE = frozenset((
     'In', 'Out', '_', '__', '___', '_i', '_ii', '_iii',
     '_ih', '_oh', '_dh', 'exit', 'quit', 'get_ipython',
 ))
 
-# Модуль, функция, класс, метод: у попытки нет способа их испортить так, чтобы
-# это пережило выход, а копировать модуль numpy было бы и дорого, и бессмысленно.
+# A module, function, class, method: an attempt has no way to spoil them so
+# that it outlives the exit, and copying the numpy module would be both
+# expensive and pointless.
 _NOCOPY = (
     types.ModuleType, types.FunctionType, types.BuiltinFunctionType,
     types.MethodType, types.MethodWrapperType, type,
 )
 
-# Потолок обхода при ОЦЕНКЕ размера контейнера. Дерево из миллиона узлов
-# дороже мерить, чем копировать: такое объявляем слишком большим и не трогаем.
+# The walk ceiling when ESTIMATING a container's size. A tree of a million nodes
+# costs more to measure than to copy: we declare such a thing too big and leave
+# it alone.
 _WALK_NODES = 200000
 _MISS = object()
 
 
 class _Report(object):
-    """Отчёт серверу: его repr и есть готовый JSON.
+    """A report for the server: its repr is ready-made JSON.
 
-    user_expressions возвращает mimebundle, а text/plain в нём — repr()
-    значения. Отдавать строку нельзя: её repr приехал бы в кавычках и с
-    экранированием, то есть JSON внутри JSON. Объект с нужным repr снимает
-    вопрос целиком.
+    user_expressions returns a mimebundle, and its text/plain is the repr() of
+    the value. A string cannot be handed over: its repr would arrive in quotes
+    and escaped, i.e. JSON inside JSON. An object with the right repr settles
+    the question entirely.
     """
     __slots__ = ('text',)
 
@@ -310,8 +325,8 @@ def _numpy():
 
 
 def _torch():
-    # Только уже импортированный: свой import здесь стоил бы секунды на первой
-    # же попытке в комнате, где torch никому не нужен.
+    # Only an already imported one: our own import here would cost seconds on
+    # the very first attempt in a room where nobody needs torch.
     return sys.modules.get('torch')
 
 
@@ -320,7 +335,7 @@ def _sparse():
 
 
 def _shell():
-    """Оболочка IPython, если мы в ядре; в голом python её нет, и это нормально."""
+    """IPython's shell when inside a kernel; plain python has none, which is fine."""
     mod = sys.modules.get('IPython')
     if mod is None:
         return None
@@ -336,9 +351,9 @@ def _threading():
 
 def _main_thread():
     thr = _threading()
-    # threading не импортирован — значит поток ровно один, и он главный.
-    # Раньше здесь стояло False, и обработчик SIGINT не возвращался никогда в
-    # самом обычном случае: в комнате, где никто не звал threading.
+    # threading is not imported, so there is exactly one thread, and it is the
+    # main one. There used to be False here, and the SIGINT handler never came
+    # back in the most ordinary case: a room where nobody called threading.
     if thr is None:
         return True
     try:
@@ -348,13 +363,13 @@ def _main_thread():
 
 
 def _own(obj):
-    """Экземпляр класса, объявленного в самой тетради.
+    """An instance of a class declared in the notebook itself.
 
-    \`class Dataset: ...\` в общей ячейке — это код преподавателя, и объект
-    такого класса ведёт себя как данные: попытка его меняет, а следующая
-    получает испорченный. Чужие классы (библиотечные) сюда не попадают
-    нарочно: соединение с базой, окно matplotlib, сессия requests копируются
-    либо неправильно, либо катастрофически дорого.
+    \`class Dataset: ...\` in a shared cell is the teacher's code, and an object
+    of such a class behaves like data: an attempt changes it, and the next one
+    gets it spoiled. Other classes (from libraries) are deliberately kept out: a
+    database connection, a matplotlib window, a requests session are copied
+    either wrongly or catastrophically expensively.
     """
     try:
         return getattr(type(obj), '__module__', None) == '__main__'
@@ -363,7 +378,7 @@ def _own(obj):
 
 
 def _fields(obj):
-    """Поля экземпляра: __dict__ и __slots__ по всей цепочке классов."""
+    """The instance's fields: __dict__ and __slots__ across the whole class chain."""
     out = []
     try:
         own = getattr(obj, '__dict__', None)
@@ -390,12 +405,12 @@ def _fields(obj):
 
 
 def _cow(pd):
-    """Ленивая копия pandas безопасна только при Copy-on-Write.
+    """A lazy pandas copy is safe only under Copy-on-Write.
 
-    В pandas 3 он включён всегда и отключить его нечем; до того — ручка
-    options.mode.copy_on_write. Без CoW copy(deep=False) отдаёт вид на те же
-    данные: запись в копию доехала бы до исходника, то есть ровно та беда,
-    ради которой всё это и заведено.
+    In pandas 3 it is always on and cannot be turned off; before that there is
+    the options.mode.copy_on_write knob. Without CoW copy(deep=False) hands out
+    a view onto the same data: a write to the copy would reach the original,
+    i.e. exactly the trouble all of this exists for.
     """
     try:
         if int(str(pd.__version__).split('.')[0]) >= 3:
@@ -412,7 +427,7 @@ def _frame_bytes(obj):
     try:
         used = obj.memory_usage(index=True, deep=False)
     except TypeError:
-        # Index.memory_usage не знает index=True — у него нет своего индекса.
+        # Index.memory_usage does not know index=True: it has no index of its own.
         try:
             used = obj.memory_usage(deep=False)
         except Exception:
@@ -431,15 +446,15 @@ def _frame_bytes(obj):
 
 
 def _tensor_bytes(obj):
-    """Вес тензора — элементы, а не обёртка; у разреженного считаем по nnz."""
+    """A tensor weighs its elements, not the wrapper; a sparse one counts by nnz."""
     try:
         item = int(obj.element_size())
     except Exception:
         return 0
     try:
         if getattr(obj, 'is_sparse', False):
-            # nelement() у разреженного — это ПЛОТНЫЙ размер (бывает 1e12), и
-            # по нему любая матрица смежности ушла бы в «слишком большая».
+            # nelement() of a sparse tensor is the DENSE size (it can be 1e12),
+            # and by it any adjacency matrix would land in "too large".
             return int(obj._nnz()) * item * (1 + int(obj.dim()))
     except Exception:
         return 0
@@ -450,7 +465,7 @@ def _tensor_bytes(obj):
 
 
 def _module_bytes(obj):
-    """Модель весит своими параметрами и буферами — остальное в ней мелочь."""
+    """A model weighs its parameters and buffers; the rest of it is small change."""
     total = 0
     try:
         for part in obj.parameters(recurse=True):
@@ -463,11 +478,12 @@ def _module_bytes(obj):
 
 
 def _optimizer_bytes(obj, memo):
-    """Оптимизатор весит своим состоянием: моменты Adam — это вторые веса.
+    """An optimizer weighs its state: Adam's moments are a second set of weights.
 
-    Сами параметры сюда не идут: они лежат ключами \`state\` и принадлежат
-    модели, которую посчитали (или посчитают) отдельно. Всё, что уже решено в
-    этом входе, узнаётся по memo и не считается дважды.
+    The parameters themselves do not count here: they are the keys of \`state\`
+    and belong to the model, which was (or will be) counted separately.
+    Everything already decided in this entry is recognised by memo and is not
+    counted twice.
     """
     total = 0
     try:
@@ -488,7 +504,7 @@ def _optimizer_bytes(obj, memo):
 
 
 def _sparse_bytes(obj):
-    """Разреженная матрица весит своими массивами — какие из них у неё есть."""
+    """A sparse matrix weighs its arrays, whichever of them it has."""
     total = 0
     for name in ('data', 'indices', 'indptr', 'row', 'col', 'offsets', 'coords'):
         part = getattr(obj, name, None)
@@ -504,10 +520,10 @@ def _sparse_bytes(obj):
 
 
 def _leaf_bytes(obj):
-    """Вес тяжёлого листа: массив, таблица и тензор весят не тем, что getsizeof.
+    """A heavy leaf's weight: arrays, tables, tensors weigh not what getsizeof says.
 
-    Без этого список из десяти CUDA-тензоров по гигабайту стоил бы по
-    \`getsizeof\` восемьдесят байт и проходил мимо бюджета целиком.
+    Without this a list of ten one-gigabyte CUDA tensors would cost eighty bytes
+    by \`getsizeof\` and slip past the budget entirely.
     """
     np = _numpy()
     if np is not None and isinstance(obj, np.ndarray):
@@ -538,7 +554,7 @@ def _leaf_bytes(obj):
 
 
 def _deep_bytes(root):
-    """Вес дерева обходом; None — узлов больше потолка, мерить нечем."""
+    """A tree's weight by walking it; None: over the node ceiling, cannot measure."""
     seen = set()
     stack = [root]
     total = 0
@@ -554,8 +570,8 @@ def _deep_bytes(root):
             return None
         leaf = _leaf_bytes(cur)
         if leaf:
-            # DataFrame внутри словаря считается своим весом, а не весом
-            # обёртки: deepcopy скопирует его целиком, даже под CoW.
+            # A DataFrame inside a dict counts at its own weight, not the
+            # wrapper's: deepcopy will copy it whole, even under CoW.
             total += leaf
             continue
         try:
@@ -568,15 +584,16 @@ def _deep_bytes(root):
         elif isinstance(cur, (list, tuple, set, frozenset, collections.deque)):
             stack.extend(cur)
         elif _own(cur):
-            # Объект класса из тетради — такой же контейнер: deepcopy заберёт
-            # его поля целиком, значит и мерить надо их. В чужие объекты не
-            # спускаемся: там окна, сокеты и половина библиотеки.
+            # An object of a class from the notebook is a container just the
+            # same: deepcopy takes all its fields, so those are what has to be
+            # measured. We do not descend into other objects: windows, sockets
+            # and half a library live in there.
             stack.extend(_fields(cur))
     return total
 
 
 def _estimator_bytes(obj):
-    """Оценщик sklearn весит своими массивами: один-два уровня по __dict__."""
+    """A sklearn estimator weighs its arrays: one or two levels down __dict__."""
     total = 0
     try:
         fields = vars(obj)
@@ -594,19 +611,20 @@ def _estimator_bytes(obj):
 
 
 def _plan(obj, memo):
-    """Чем копировать и во сколько это встанет; None — не копируем вовсе.
+    """What to copy with and what it will cost; None means do not copy at all.
 
-    Список типов закрытый, и это нарочно: открытый файл, генератор, сокет,
-    соединение с базой копируются либо неправильно, либо катастрофически
-    дорого, а попытка, которой такое подменили, падает не своей ошибкой. Что
-    не скопировано — названо в отчёте и в выводе попытки.
+    The list of types is closed, and on purpose: an open file, a generator, a
+    socket, a database connection get copied either wrongly or catastrophically
+    expensively, and an attempt that had such a thing swapped in fails with an
+    error that is not its own. Whatever was not copied is named in the report
+    and in the attempt's output.
 
-    Порядок проверок — от дешёвого к дорогому, и это не вкусовщина: \`_plan\`
-    зовётся на каждое имя каждой попытки. Сначала два isinstance по уже
-    импортированным numpy и pandas, потом встроенные контейнеры (чистый
-    isinstance без единого обращения к sys.modules), и только потом торчащие
-    наружу библиотеки — каждая за одним словарным поиском в sys.modules,
-    который на комнате без torch стоит ноль.
+    The order of checks goes from cheap to expensive, and that is not a matter
+    of taste: \`_plan\` is called on every name of every attempt. First two
+    isinstance calls against the already imported numpy and pandas, then the
+    built-in containers (a plain isinstance without a single sys.modules
+    lookup), and only then the libraries sticking out, each behind one dict
+    lookup in sys.modules, which costs nothing in a room without torch.
     """
     np = _numpy()
     if np is not None:
@@ -616,9 +634,10 @@ def _plan(obj, memo):
             except Exception:
                 return ('ndarray', 0)
         try:
-            # Генератор случайных чисел в переменной — это состояние, и общее
-            # оно тоже: \`rng.random()\` у одного сдвигает поток у следующего,
-            # и одинаковые попытки дают разные числа. Весит он байты.
+            # A random number generator in a variable is state, and shared
+            # state at that: \`rng.random()\` for one person shifts the stream
+            # for the next, and identical attempts get different numbers. It
+            # weighs bytes.
             if isinstance(obj, (np.random.Generator, np.random.RandomState)):
                 return ('deep', 0)
         except Exception:
@@ -635,28 +654,29 @@ def _plan(obj, memo):
         if _cow(pd):
             return ('pandas-lazy', 0)
         return ('pandas-deep', _frame_bytes(obj))
-    # Кортеж — тоже контейнер: сам он неизменяем, а список или таблица внутри
-    # него — нет. deepcopy кортежа, в котором менять нечего, возвращает его же.
+    # A tuple is a container too: it is immutable itself, but a list or a table
+    # inside it is not. deepcopy of a tuple with nothing to change returns the
+    # tuple itself.
     if isinstance(obj, (list, dict, set, tuple, bytearray, collections.deque)):
         return ('deep', _deep_bytes(obj))
     torch = _torch()
     if torch is not None:
         try:
-            # Раньше \`_own\`: \`class Net(nn.Module)\` в тетради — это и то и
-            # другое, а вес модели честнее считать по параметрам, чем обходом
-            # её полей.
+            # Before \`_own\`: \`class Net(nn.Module)\` in a notebook is both,
+            # and a model's weight is more honestly counted by its parameters
+            # than by walking its fields.
             if isinstance(obj, torch.nn.Module):
                 return ('deep', _module_bytes(obj))
             if isinstance(obj, torch.Tensor):
-                # Параметр модели — тот же тензор, той же дорогой. deepcopy
-                # бережёт requires_grad, устройство и то, лист ли это; на
-                # не-листовом тензоре с историей градиента он бросит, и объект
-                # уйдёт в failed — общим, но названным.
+                # A model parameter is the same tensor, down the same road.
+                # deepcopy preserves requires_grad, the device and whether it
+                # is a leaf; on a non-leaf tensor with gradient history it will
+                # throw, and the object goes into failed: shared, but named.
                 return ('deep', _tensor_bytes(obj))
             if isinstance(obj, torch.optim.Optimizer):
-                # Общий memo — единственное, что связывает оптимизатор с его
-                # моделью: параметры в обоих одни и те же объекты, и копия
-                # должна быть одна на двоих, в каком бы порядке имена ни шли.
+                # The shared memo is the only thing tying an optimizer to its
+                # model: the parameters in both are the same objects, and there
+                # must be one copy for the two, whatever order the names come in.
                 return ('deep', _optimizer_bytes(obj, memo))
         except Exception:
             return None
@@ -687,7 +707,7 @@ def _make(kind, obj, memo):
     if kind == 'pandas-deep':
         return obj.copy(deep=True)
     if kind == 'sparse':
-        # Свой copy() у scipy дешевле deepcopy и знает про формат.
+        # scipy's own copy() is cheaper than deepcopy and knows the format.
         return obj.copy()
     return copy.deepcopy(obj, memo)
 
@@ -704,7 +724,7 @@ def _read_int(path):
         value = int(raw)
     except Exception:
         return None
-    # cgroup v1 пишет «нет предела» как 2**63-1 — это не предел, а его отсутствие.
+    # cgroup v1 writes "no limit" as 2**63-1: that is not a limit but its absence.
     if value <= 0 or value > (1 << 60):
         return None
     return value
@@ -719,13 +739,13 @@ def _cgroup(*names):
 
 
 def _reclaimable():
-    """Файловый кэш, который cgroup считает занятым, а отдаст по первому требованию.
+    """File cache the cgroup counts as used but will give back on first demand.
 
-    memory.current включает страницы прочитанных файлов: после read_csv на
-    гигабайт «занято» на гигабайт больше, хотя OOM-killer за этими страницами
-    не придёт — ядро Linux просто выбросит их. Считать их занятыми значило бы
-    отказывать попытке в памяти, которая на самом деле свободна. Так же считает
-    docker stats: usage минус inactive_file.
+    memory.current includes the pages of files that were read: after a
+    one-gigabyte read_csv, "used" is a gigabyte higher, although the OOM killer
+    will not come for those pages; the Linux kernel simply drops them. Counting
+    them as used would mean refusing the attempt memory that is in fact free.
+    docker stats counts the same way: usage minus inactive_file.
     """
     for path, key in (
         ('/sys/fs/cgroup/memory.stat', 'inactive_file '),
@@ -742,7 +762,7 @@ def _reclaimable():
 
 
 def _vmsize():
-    """Адресное пространство процесса прямо сейчас, байтами."""
+    """The process's address space right now, in bytes."""
     try:
         with open('/proc/self/status') as handle:
             for line in handle:
@@ -754,11 +774,11 @@ def _vmsize():
 
 
 def _gpu_near():
-    """Есть ли рядом CUDA — при ней потолок адресного пространства ставить нельзя.
+    """Whether CUDA is nearby: with it an address-space ceiling must not be set.
 
-    Драйвер резервирует десятки терабайт ВИРТУАЛЬНОГО адресного пространства
-    (это не занятая память), и RLIMIT_AS ломает инициализацию наглухо. Лучше
-    без потолка, чем комната, где не работает torch.
+    The driver reserves tens of terabytes of VIRTUAL address space (not used
+    memory), and RLIMIT_AS breaks initialisation for good. Better no ceiling
+    than a room where torch does not work.
     """
     torch = _torch()
     if torch is not None:
@@ -779,31 +799,34 @@ def _gpu_near():
 
 
 def _memory_cap(floor, headroom):
-    """Сколько адресного пространства отдать попытке; None — потолка не будет.
+    """How much address space to give the attempt; None means no ceiling.
 
-    Считаем от предела контейнера, а не от машины: ядро тетради живёт в cgroup,
-    и убивает его именно её OOM-killer. Из предела вычитается то, что уже
-    занято (данными преподавателя в том числе) и запас на само ядро; меньше
-    пола не опускаемся — потолок, под которым не работает даже импорт, хуже,
-    чем никакого.
+    Counted from the container's limit, not the machine's: the notebook's kernel
+    lives in a cgroup, and it is that cgroup's OOM killer that kills it. From the
+    limit we subtract what is already used (by the teacher's data too) and a
+    reserve for the kernel itself; we never go below the floor, since a ceiling
+    under which not even an import works is worse than none.
 
-    ЗАМЕРЕНО 20.09 на том же образе, том же железе и настоящих данных занятия
-    (три HistGradientBoostingClassifier на 240 000 строк, OMP_NUM_THREADS=10):
+    MEASURED on 20 Sep 2026 on the same image, the same hardware and the real
+    class data (three HistGradientBoostingClassifier on 240,000 rows,
+    OMP_NUM_THREADS=10):
 
-        без потолка   VmPeak 2,37 ГБ   VmHWM 0,45 ГБ
-        с потолком    VmPeak 2,33 ГБ   VmHWM 0,46 ГБ, запас под потолком 14,2 ГБ
+        no ceiling     VmPeak 2.37 GB   VmHWM 0.45 GB
+        with ceiling   VmPeak 2.33 GB   VmHWM 0.46 GB, headroom under the ceiling 14.2 GB
 
-    Два вывода, и оба важны. Первый: потолок НЕ убивает процесс — проверено и
-    на жадности (\`np.ones((40000, 40000))\`, декартово соединение), и на самой
-    попытке под тесным потолком; наверх приходит честный \`MemoryError\`, а не
-    \`std::bad_alloc\` и не сигнал. Второй, неприятный: адресное пространство
-    больше настоящего потребления В ПЯТЬ РАЗ, а бюджет считается от ЗАНЯТОГО,
-    то есть от настоящего. На 16 ГБ комнате разница тонет в запасе, а на
-    маленькой (пол 512 МБ) обычный \`fit\` упирается в потолок и отвечает
-    \`RuntimeError: can't allocate read lock\` — ошибкой, из которой автор
-    попытки ничего не поймёт. Это известный недочёт, а не причина смертей ядра
-    20.09: те были от \`os._exit(0)\` в попытке (см. \`_hold\` и danger.ts), при
-    нетронутом cgroup (\`oom_kill 0\`, пик 5,2 из 16 ГБ).
+    Two conclusions, and both matter. First: the ceiling does NOT kill the
+    process; checked both on greed (\`np.ones((40000, 40000))\`, a cartesian
+    join) and on the attempt itself under a tight ceiling; an honest
+    \`MemoryError\` comes up, not \`std::bad_alloc\` and not a signal. Second,
+    an unpleasant one: the address space is FIVE TIMES larger than the real
+    consumption, while the budget is counted from what is USED, i.e. the real
+    thing. In a 16 GB room the difference drowns in the reserve, but in a small
+    one (the 512 MB floor) an ordinary \`fit\` hits the ceiling and answers
+    \`RuntimeError: can't allocate read lock\`, an error from which the
+    attempt's author will understand nothing. This is a known shortcoming, not
+    the cause of the kernel deaths on 20 Sep 2026: those came from
+    \`os._exit(0)\` in an attempt (see \`_hold\` and danger.ts), with the cgroup
+    untouched (\`oom_kill 0\`, peak 5.2 of 16 GB).
     """
     if not sys.platform.startswith('linux'):
         return None
@@ -822,7 +845,7 @@ def _memory_cap(floor, headroom):
 
 
 def _arm_memory(floor, headroom):
-    """Поставить потолок и вернуть, что было (для выхода) и сколько дали."""
+    """Set the ceiling, returning the old one (for the exit) and the amount given."""
     res = sys.modules.get('resource')
     if res is None:
         try:
@@ -843,7 +866,7 @@ def _arm_memory(floor, headroom):
     if hard != res.RLIM_INFINITY and wanted > hard:
         wanted = hard
     if soft != res.RLIM_INFINITY and wanted >= soft:
-        # Кто-то уже поставил потолок ниже нашего — он главнее, не трогаем.
+        # Someone already set a ceiling below ours: it takes precedence, leave it.
         return None
     try:
         res.setrlimit(res.RLIMIT_AS, (wanted, hard))
@@ -865,14 +888,16 @@ def _disarm_memory(saved):
 
 
 def _snapshot():
-    """Состояние ПРОЦЕССА, которое попытка может сдвинуть на всю комнату.
+    """The PROCESS state an attempt can shift for the whole room.
 
-    Не имена — их держит saved, — а всё вокруг: поток случайных чисел, потоки
-    вывода, sys.path, окружение, настройки печати numpy и pandas, обработчик
-    прерывания, открытые фигуры matplotlib. Каждая строка здесь — «кто-то
-    сделает так, и следующие двадцать попыток посчитаются иначе».
+    Not the names (saved holds those) but everything around them: the random
+    number stream, the output streams, sys.path, the environment, numpy and
+    pandas print settings, the interrupt handler, open matplotlib figures.
+    Every line here is "someone will do this, and the next twenty attempts will
+    compute differently".
 
-    Ничего не импортируем: то, чего в ядре нет, попытка сдвинуть и не может.
+    We import nothing: what the kernel does not have, an attempt cannot shift
+    either.
     """
     snap = {}
     rnd = sys.modules.get('random')
@@ -934,8 +959,8 @@ def _snapshot():
     thr_hooks = _threading()
     if thr_hooks is not None:
         try:
-            # Те же крючки, но для потоков, которые заведут ПОСЛЕ попытки:
-            # оставленный профилировщик замедлял бы всю комнату молча.
+            # The same hooks, but for threads started AFTER the attempt: a
+            # profiler left behind would silently slow the whole room down.
             snap['thread_trace'] = (thr_hooks.gettrace(), thr_hooks.getprofile())
         except Exception:
             pass
@@ -968,8 +993,8 @@ def _snapshot():
     pd = _pandas()
     if pd is not None:
         try:
-            # Приватный API pandas, и потому строго в try: сломается — просто
-            # не вернём опции, а не уроним вход.
+            # A private pandas API, and so strictly inside try: if it breaks, we
+            # simply do not restore the options instead of failing the entry.
             snap['pd_options'] = copy.deepcopy(pd._config.config._global_config)
         except Exception:
             pass
@@ -982,8 +1007,8 @@ def _snapshot():
     shell = _shell()
     if shell is not None:
         try:
-            # %pdb on — и ядро садится в отладчик на ЧУЖОМ исключении,
-            # занимая очередь всей комнаты до перезапуска.
+            # With %pdb on, the kernel sits down in the debugger on SOMEONE
+            # ELSE'S exception, holding the whole room's queue until a restart.
             snap['call_pdb'] = shell.call_pdb
         except Exception:
             pass
@@ -998,9 +1023,9 @@ def _snapshot():
             snap['fignums'] = set(plt.get_fignums())
         except Exception:
             pass
-    # Пустое множество, а не отсутствие ключа: попытка может САМА первой
-    # позвать threading или multiprocessing, и тогда её же потоки оказались бы
-    # незаметны — ровно тот случай, ради которого этот счёт и заведён.
+    # An empty set, not a missing key: the attempt may ITSELF be the first to
+    # call threading or multiprocessing, and then its own threads would go
+    # unnoticed, which is exactly the case this count exists for.
     snap['children'] = set()
     snap['threads'] = set()
     mp = sys.modules.get('multiprocessing')
@@ -1019,11 +1044,12 @@ def _snapshot():
 
 
 def _restore(snap):
-    """Вернуть состояние процесса. Каждая строка глотает свою беду отдельно.
+    """Return the process state. Each line swallows its own trouble separately.
 
-    Возвращает счёт того, что вернуть НЕЛЬЗЯ: потоки, которые попытка оставила
-    работать. Их сервер называет преподавателю в выводе попытки — остановить
-    чужой поток нечем, а молчать о нём хуже.
+    Returns a count of what CANNOT be returned: threads the attempt left
+    running. The server names them to the teacher in the attempt's output:
+    there is no way to stop someone else's thread, and keeping quiet about it
+    is worse.
     """
     left = {'threads': 0, 'processes': 0}
     if not snap:
@@ -1178,8 +1204,9 @@ def _restore(snap):
             try:
                 live = shell.events.callbacks
                 for key in live:
-                    # На месте, а не подменой списка: на эти же списки смотрят
-                    # и сам IPython, и всё, что подписалось до попытки.
+                    # In place, not by swapping the list: IPython itself and
+                    # everything that subscribed before the attempt look at
+                    # these same lists.
                     live[key][:] = snap['events'].get(key, [])
             except Exception:
                 pass
@@ -1210,8 +1237,9 @@ def _restore(snap):
     thr = _threading()
     if thr is not None and 'threads' in snap:
         try:
-            # Свой поток и главный — не хвост попытки, даже если снимок пуст
-            # (его снимали до того, как в ядре вообще появился threading).
+            # Our own thread and the main one are not the attempt's leftovers,
+            # even if the snapshot is empty (it was taken before threading
+            # appeared in the kernel at all).
             skip = set()
             try:
                 skip.add(_id(thr.current_thread()))
@@ -1229,21 +1257,22 @@ def _restore(snap):
 
 
 def leave(ns):
-    """Вернуть пространство имён к тому, что было до попытки.
+    """Return the namespace to what it was before the attempt.
 
-    Каждая неудача глотается отдельно: возврат cwd не должен отменяться тем,
-    что кто-то удалил из ns имя прямо сейчас, а rcParams — тем, что не стало
-    каталога. Половина возврата лучше, чем ничего.
+    Each failure is swallowed separately: restoring the cwd must not be undone
+    by someone deleting a name from ns right now, nor rcParams by a directory
+    having disappeared. Half a return is better than none.
     """
     global state, leftovers
     current = state
     if not current:
         return
-    # Потолок памяти снимается ПЕРВЫМ: под ним не должен идти ни один возврат,
-    # иначе чужой np.set_printoptions отменится из-за нехватки адресов.
+    # The memory ceiling is removed FIRST: no part of the return may run under
+    # it, or someone else's np.set_printoptions would be undone for lack of
+    # addresses.
     _disarm_memory(current.get('memory'))
-    # Защита отпускается ровно на один счёт: при правиле «не исполняются» она
-    # остаётся стоять и после попытки, при «исполняются» — снимается здесь.
+    # The guard is released by exactly one count: under the "Blocked" rule it
+    # stays on after the attempt too, under "Allowed" it is removed here.
     _release(current)
     saved = current.get('saved')
     if saved is not None:
@@ -1277,8 +1306,8 @@ def leave(ns):
     except Exception:
         left = {'threads': 0, 'processes': 0}
     state = None
-    # Отчёт выхода необязателен: сервер читает его, если он доехал, и молчание
-    # здесь не беда попытки — в отличие от молчания входа.
+    # The exit report is optional: the server reads it if it arrived, and
+    # silence here is no trouble for the attempt, unlike silence at the entry.
     try:
         leftovers = _Report(json.dumps(left, separators=(',', ':')))
     except Exception:
@@ -1286,15 +1315,16 @@ def leave(ns):
 
 
 def enter(ns, budget, settings=None):
-    """Подменить привязки личными копиями и отчитаться серверу.
+    """Replace the bindings with personal copies and report to the server.
 
-    Отчёт ставится ВСЕГДА, в том числе на своей ошибке: сервер читает его как
-    единственное подтверждение, и молчание он обязан считать отказом —
-    запускать попытку на общих объектах нельзя ни при какой неудаче.
+    The report is set ALWAYS, including on our own error: the server reads it
+    as the only confirmation and must treat silence as a refusal; an attempt
+    must not run on shared objects after any failure whatsoever.
 
-    \`settings\` приезжает от сервера, а не зашито сюда: там и тексты на языке
-    комнаты, и выключатель потолка памяти. Язык меняют в панели посреди пары —
-    собирать исходник с ним внутри значило бы держать в ядре вчерашний.
+    \`settings\` comes from the server rather than being baked in here: it
+    holds the texts in the room's language and the memory ceiling switch. The
+    language gets changed in the panel in the middle of class, and building the
+    source with it inside would mean keeping yesterday's in the kernel.
     """
     global state, report, leftovers
     started = time.time()
@@ -1303,17 +1333,18 @@ def enter(ns, budget, settings=None):
     settings = settings or {}
     try:
         if state:
-            # Прошлый выход не дошёл (ядро умерло, сервер перезапустился) —
-            # сначала он, иначе saved этого входа запомнит чужие копии как
-            # исходники, и настоящие данные пропадут навсегда.
+            # The previous exit did not get through (the kernel died, the
+            # server restarted): it goes first, otherwise this entry's saved
+            # would remember someone else's copies as originals, and the real
+            # data would be lost for good.
             leave(ns)
         saved = dict(ns)
         rc = None
         mpl = sys.modules.get('matplotlib')
         if mpl is not None:
             try:
-                # backend не возвращаем: он ленивый, и update() по нему
-                # означал бы переключение бэкенда на ровном месте.
+                # The backend is not restored: it is lazy, and update() on it
+                # would mean switching the backend for no reason.
                 rc = dict((k, v) for k, v in mpl.rcParams.items() if k != 'backend')
             except Exception:
                 rc = None
@@ -1321,24 +1352,26 @@ def enter(ns, budget, settings=None):
             cwd = os.getcwd()
         except Exception:
             cwd = None
-        # Состояние ставится ДО копирования: прерывание пределом посреди входа
-        # не должно оставить попытке половину подмены без пути назад.
+        # The state is set BEFORE copying: an interrupt by the limit in the
+        # middle of the entry must not leave the attempt with half a swap and
+        # no way back.
         state = {'saved': saved, 'cwd': cwd, 'rc': rc, 'process': _snapshot(),
                  'guard': _hold(settings.get('guard')),
                  'memory': None}
         if not state['guard']:
-            # Без защиты попытку не запускают вовсе: студент на ОБЩЕМ ядре не
-            # должен уметь уронить класс ни при каком правиле комнаты, и
-            # «кажется, встало» здесь не ответ.
+            # Without the guard the attempt does not run at all: a student on
+            # the SHARED kernel must not be able to bring the class down under
+            # any room rule, and "it seems to have gone in" is no answer here.
             raise RuntimeError('guard unavailable')
 
         copies = {}
         skipped = []
         failed = []
-        # Один memo на весь вход: он и хранит решения по id объекта, и служит
-        # памятью deepcopy. Два имени на один объект получают ОДНУ копию, и
-        # a is b внутри попытки остаётся правдой; объект, оставленный общим,
-        # записан сам в себя и потому не копируется внутри чужой копии.
+        # One memo for the whole entry: it both stores the decisions by object
+        # id and serves as deepcopy's memory. Two names for one object get ONE
+        # copy, and a is b stays true inside the attempt; an object left shared
+        # is recorded as itself and so is not copied inside someone else's
+        # copy.
         memo = {}
         used = 0
         for key in list(saved):
@@ -1370,8 +1403,9 @@ def enter(ns, budget, settings=None):
             try:
                 made = _make(kind, obj, memo)
             except Exception as err:
-                # Одна неудачная копия — не отказ входа: объект остаётся общим
-                # и назван в отчёте, остальные попытка получает своими.
+                # One failed copy is not a refusal of the entry: the object
+                # stays shared and is named in the report, and the attempt gets
+                # the rest as its own.
                 failed.append({'name': key[:80], 'error': _short(err)})
                 memo[id(obj)] = obj
                 continue
@@ -1379,18 +1413,20 @@ def enter(ns, budget, settings=None):
             memo[id(obj)] = made
             copies[key] = made
 
-        # Подмена — одним проходом и только теперь, когда готовы ВСЕ копии:
-        # попытка не должна увидеть половину своих данных и половину общих.
+        # The swap happens in one pass and only now, when ALL copies are
+        # ready: the attempt must not see half of its data personal and half
+        # shared.
         for key in copies:
             ns[key] = copies[key]
 
         cap = None
         if settings.get('memory'):
-            # Потолок ставится ПОСЛЕ копий и по свежему замеру: жадная попытка
-            # (np.ones((40000, 40000)), декартово соединение) иначе зовёт
-            # OOM-killer, а тот убивает ядро тетради — вместе с разбором
-            # преподавателя и работой всех, кто уже сдал. Под потолком то же
-            # самое кончается MemoryError в одной попытке.
+            # The ceiling is set AFTER the copies and from a fresh measurement:
+            # otherwise a greedy attempt (np.ones((40000, 40000)), a cartesian
+            # join) calls the OOM killer, and that kills the notebook's kernel,
+            # together with the teacher's analysis and the work of everyone who
+            # has already submitted. Under the ceiling the same thing ends in a
+            # MemoryError in a single attempt.
             armed = _arm_memory(int(settings.get('floor') or 0),
                                 int(settings.get('headroom') or 0))
             if armed:
@@ -1422,23 +1458,24 @@ def enter(ns, budget, settings=None):
 globals().setdefault('state', None)
 globals().setdefault('report', None)
 globals().setdefault('leftovers', None)
-# Последней строкой, и это важно: по ней вход узнаёт, что установка ДОШЛА до
-# конца. Прерванный на середине exec оставил бы модуль без version, и
-# следующая попытка переустановила бы его целиком, а не понадеялась на половину.
+# As the last line, and this matters: by it the entry knows the install got to
+# the END. An exec interrupted halfway would leave the module without version,
+# and the next attempt would reinstall it whole rather than rely on half.
 version = '__VERSION__'
 `
 
-/** Версия установки — короткий хеш самого исходника, считается один раз. */
+/** The install version: a short hash of the source itself, computed once. */
 let version: string | null = null
 function implVersion(): string {
   return (version ??= createHash('sha1').update(IMPL).digest('hex').slice(0, 12))
 }
 /**
- * Исходник с проставленной версией, уже экранированный в литерал Python.
+ * The source with the version filled in, already escaped into a Python
+ * literal.
  *
- * Считается один раз на процесс: вход собирается на каждую попытку (в нём
- * тексты на языке комнаты), а экранировать двадцать килобайт по десять раз в
- * секунду на потоке в пятьсот человек незачем.
+ * Computed once per process: the entry is built for every attempt (it holds
+ * texts in the room's language), and there is no reason to escape twenty
+ * kilobytes ten times a second for a cohort of five hundred people.
  */
 let literal: string | null = null
 function implLiteral(): string {
@@ -1446,12 +1483,13 @@ function implLiteral(): string {
 }
 
 /**
- * Ячейка входа: два выражения, ни одного связанного имени.
+ * The entry cell: two expressions, not a single bound name.
  *
- * `exec` в `__dict__` скрытого модуля — единственный способ занести сюда сотню
- * строк Python, не оставив в пространстве студента ни `sys`, ни временных
- * переменных. `setdefault` делает установку идемпотентной, а повторный `exec`
- * переопределяет функции, не трогая `state` (см. хвост IMPL).
+ * `exec` into the hidden module's `__dict__` is the only way to bring a hundred
+ * lines of Python in here without leaving either `sys` or temporary variables
+ * in the student's namespace. `setdefault` makes the install idempotent, and a
+ * repeated `exec` redefines the functions without touching `state` (see the
+ * tail of IMPL).
  */
 export function councilEnterSource(
   budgetBytes: number = COUNCIL_DEFAULT_COPY_BYTES,
@@ -1463,18 +1501,19 @@ export function councilEnterSource(
   const source = implLiteral()
   const module = JSON.stringify(COUNCIL_MODULE)
   /*
-   * Настройки — литералом в самом вызове, а не внутри исходника.
+   * Settings as a literal in the call itself, not inside the source.
    *
-   * Текст отказа зависит от языка комнаты, а его меняют в панели посреди пары:
-   * запёкши его в исходник, мы бы держали в живом ядре вчерашний перевод (или
-   * переустанавливали модуль на каждой смене языка). Строки через
-   * `JSON.stringify` (их экранирование в Python то же), булево — словом
-   * Python: `false` в ядре — это NameError, а не значение.
+   * The refusal text depends on the room's language, and that gets changed in
+   * the panel in the middle of class: had we baked it into the source, the live
+   * kernel would hold yesterday's translation (or we would reinstall the module
+   * on every language change). Strings go through `JSON.stringify` (Python
+   * escapes them the same way), booleans as Python words: `false` in the kernel
+   * is a NameError, not a value.
    */
   const settings = [
-    // Слова отказа для защиты — её же, комнатные, но с другим хвостом: внутри
-    // попытки разрешить эти команды нельзя ничем, и советовать правило было бы
-    // неправдой (danger.ts · guardCouncilSettings).
+    // The refusal words for the guard: its own room ones, but with a different
+    // tail: inside an attempt nothing can allow these commands, and pointing to
+    // the rule would be untrue (danger.ts · guardCouncilSettings).
     `{'guard': ${guardCouncilSettings()}`,
     `'memory': ${options.memoryGuard === true ? 'True' : 'False'}`,
     `'floor': ${COUNCIL_MEMORY_FLOOR_BYTES}`,
@@ -1482,19 +1521,20 @@ export function councilEnterSource(
   ].join(', ')
   return [
     /*
-     * Защита от опасных команд ставится ПЕРВОЙ строкой, до самой изоляции: её
-     * модуль и есть то, что вход тут же берёт в удержание, и порядок здесь не
-     * вкусовой — `_hold` ищет модуль в `sys.modules` и без него отказывает.
+     * The guard against dangerous commands is installed by the FIRST line,
+     * before the isolation itself: its module is exactly what the entry
+     * immediately takes a hold on, and the order here is not a matter of taste:
+     * `_hold` looks for the module in `sys.modules` and refuses without it.
      */
     guardInstallLine(),
     /*
-     * Установка — только когда её ещё нет или она другая.
+     * Install only when it is not there yet or is a different one.
      *
-     * Исходник растёт с каждым новым типом (двадцать с лишним килобайт), а
-     * `compile` его стоил около полумиллисекунды КАЖДОЙ попытке, при том что
-     * между попытками он не меняется никогда. Сверка по версии снимает это
-     * целиком и остаётся честной: другая сборка сервера — другой хеш, и
-     * живое ядро получит новый код без перезапуска.
+     * The source grows with every new type (twenty-odd kilobytes), and its
+     * `compile` cost about half a millisecond for EVERY attempt, while between
+     * attempts it never changes. The version check removes that entirely and
+     * stays honest: a different server build means a different hash, and a
+     * live kernel gets the new code without a restart.
      */
     `if getattr(__import__('sys').modules.get(${module}), 'version', None) != ` +
       `${JSON.stringify(implVersion())}: ` +
@@ -1506,10 +1546,11 @@ export function councilEnterSource(
 }
 
 /**
- * Ячейка выхода — и она обязана отработать даже там, где входа не было.
+ * The exit cell, and it has to work even where there was no entry.
  *
- * Модуля может не быть вовсе (вход не доехал, ядро успели перезапустить), и
- * KeyError тогда — нормальный исход, а не беда попытки: возвращать нечего.
+ * The module may not exist at all (the entry did not arrive, the kernel was
+ * restarted in the meantime), and a KeyError is then a normal outcome, not the
+ * attempt's trouble: there is nothing to return.
  */
 export const COUNCIL_EXIT_SOURCE = [
   'try:',
@@ -1541,11 +1582,12 @@ function failList(value: unknown): CouncilCopyFailure[] {
 }
 
 /**
- * Разобрать ответ ядра в отчёт входа; `null` — подтверждения не было.
+ * Parse the kernel's answer into an entry report; `null` means there was no
+ * confirmation.
  *
- * Принимает и то, что приезжает в `user_expressions` (`{status, data}` с
- * `text/plain` внутри), и голую строку JSON — второе ради теста, который
- * гоняет те же исходники настоящим python3 и читает отчёт со stdout.
+ * Accepts both what arrives in `user_expressions` (`{status, data}` with
+ * `text/plain` inside) and a bare JSON string; the latter for the test that
+ * runs the same sources with a real python3 and reads the report from stdout.
  */
 export function parseCouncilReport(raw: unknown): CouncilIsolationReport | null {
   const row = readBundle(raw)
@@ -1562,7 +1604,7 @@ export function parseCouncilReport(raw: unknown): CouncilIsolationReport | null 
   }
 }
 
-/** Отчёт выхода; `null` — его не было, и это не повод ни для чего. */
+/** The exit report; `null` means there was none, and that is no reason for anything. */
 export function parseCouncilLeftovers(raw: unknown): CouncilLeftovers | null {
   const row = readBundle(raw)
   if (!row) return null
@@ -1572,14 +1614,14 @@ export function parseCouncilLeftovers(raw: unknown): CouncilLeftovers | null {
   return { threads, processes }
 }
 
-/** Общее для обоих отчётов: достать JSON из mimebundle или из голой строки. */
+/** Shared by both reports: get the JSON out of a mimebundle or a bare string. */
 function readBundle(raw: unknown): Record<string, unknown> | null {
   let text: string | null = null
   if (typeof raw === 'string') text = raw
   else if (raw && typeof raw === 'object') {
     const wrapper = raw as { status?: unknown; data?: Record<string, unknown> }
-    // status !== 'ok' — это `_user_obj_error()` IPython: выражение не
-    // посчиталось, то есть модуля или отчёта в нём нет.
+    // status !== 'ok' is IPython's `_user_obj_error()`: the expression was not
+    // evaluated, i.e. the module or its report is missing.
     if (wrapper.status !== undefined && wrapper.status !== 'ok') return null
     const plain = wrapper.data?.['text/plain']
     if (typeof plain === 'string') text = plain
@@ -1595,7 +1637,7 @@ function readBundle(raw: unknown): Record<string, unknown> | null {
   return parsed as Record<string, unknown>
 }
 
-/** Байты словами: «1,2 ГБ». Число — по языку инстанса, как и всё остальное. */
+/** Bytes in words: "1.2 GB". The number follows the instance language, like the rest. */
 export function sizeWords(bytes: number): string {
   const round = (value: number) =>
     formatNumber(value, { maximumFractionDigits: value < 10 ? 1 : 0 })
@@ -1605,14 +1647,15 @@ export function sizeWords(bytes: number): string {
 }
 
 /**
- * Что сказать попытке про то, что осталось общим.
+ * What to tell the attempt about what stayed shared.
  *
- * Строки едут в начало её вывода, по одной на переменную и не больше трёх:
- * карточка попытки рисуется в стопке из сотен, и десять строк предупреждений
- * вытеснили бы оттуда сам ответ. Остальные — числом.
+ * The lines go at the start of its output, one per variable and no more than
+ * three: an attempt card is drawn in a stack of hundreds, and ten lines of
+ * warnings would push the answer itself out of it. The rest as a number.
  *
- * Неудачные копии (`failed`) говорят ровно то же самое: для студента разницы
- * между «не влезло» и «не скопировалось» нет — данные общие, и правило одно.
+ * Failed copies (`failed`) say exactly the same: for a student there is no
+ * difference between "did not fit" and "did not copy"; the data is shared, and
+ * the rule is the same.
  */
 export function councilSkipNotes(report: CouncilIsolationReport): string[] {
   const shared: CouncilCopySkip[] = [
@@ -1631,7 +1674,7 @@ export function councilSkipNotes(report: CouncilIsolationReport): string[] {
   return lines.map((line) => `${line}\n`)
 }
 
-/** Почему вход не состоялся — одной строкой, без трейсбека, на языке комнаты. */
+/** Why the entry failed: one line, no traceback, in the room's language. */
 export function councilEnterRefusal(reason: string | null): string {
   return tr('server.council.copyFailed', {
     p0: reason && reason.trim().length > 0 ? reason.trim() : tr('server.council.copyNoAnswer'),
@@ -1639,12 +1682,13 @@ export function councilEnterRefusal(reason: string | null): string {
 }
 
 /**
- * Попытка упёрлась в потолок памяти — и это хорошая новость, которую надо
- * рассказать хорошо.
+ * The attempt hit the memory ceiling, and that is good news that has to be
+ * told well.
  *
- * Без потолка тот же `np.ones((40000, 40000))` звал бы OOM-killer, а тот
- * убивает ядро тетради: разбор преподавателя, данные всех, кто уже сдал, и
- * очередь. Студент должен понять, что упал ОН, а не занятие.
+ * Without the ceiling the same `np.ones((40000, 40000))` would call the OOM
+ * killer, and that kills the notebook's kernel: the teacher's analysis, the
+ * data of everyone who has already submitted, and the queue. The student has
+ * to understand that it is THEY who failed, not the class.
  */
 export function councilMemoryNote(bytes: number | null): string {
   return `${bytes && bytes > 0
@@ -1653,12 +1697,12 @@ export function councilMemoryNote(bytes: number | null): string {
 }
 
 /**
- * Что попытка оставила после себя работать.
+ * What the attempt left running behind it.
  *
- * Поток, запущенный попыткой, переживает её и продолжает писать в общее ядро;
- * остановить его нечем — `Thread.stop()` в Python нет. Поэтому не чиним, а
- * называем: преподаватель, читающий вывод, должен знать, почему в комнате
- * что-то шевелится само.
+ * A thread started by an attempt outlives it and keeps writing into the shared
+ * kernel; there is no way to stop it, since Python has no `Thread.stop()`. So
+ * we do not fix it, we name it: the teacher reading the output should know why
+ * something in the room moves on its own.
  */
 export function councilLeftoverNotes(left: CouncilLeftovers | null): string[] {
   if (!left) return []

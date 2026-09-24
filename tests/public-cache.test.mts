@@ -1,16 +1,18 @@
 /**
- * Публичная половина под потоком: что она отдаёт дважды и чего не считает заново.
+ * The public half under load: what it serves twice and what it does not
+ * recompute.
  *
- * Страницу разбора открывают пятьсот человек в одну минуту, с телефонов, и
- * каждый листает шаги. До этого каждый такой заход шёл в базу целиком: рельса
- * шагов считалась разбором ПОЛНОГО текста каждой страницы (все текстовые
- * выводы шага — лог обучения на мегабайты) ради сорока маленьких чисел, а
- * ответы не несли ни метки версии, ни срока жизни, так что второй заход стоил
- * ровно столько же, сколько первый.
+ * A walkthrough page is opened by five hundred people within one minute, from
+ * phones, and every one of them flips through the steps. Before this, every
+ * such visit went all the way to the database: the rail of steps was computed
+ * by parsing the FULL text of every page (all the text outputs of a step — a
+ * training log of megabytes) for the sake of forty small numbers, and the
+ * responses carried neither a version tag nor a lifetime, so the second visit
+ * cost exactly as much as the first.
  *
- * Опасность починки — противоположная: кэш, переживший переиздание, показывает
- * классу прошлую неделю. Поэтому здесь проверяется и то, и другое: что
- * неизменившееся отвечает 304, и что переизданное отвечает новым.
+ * The danger of the fix is the opposite: a cache that survives a republish
+ * shows the class last week. So both are checked here: that what has not
+ * changed answers 304, and that what was republished answers with the new.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -63,21 +65,21 @@ after(() => {
   shutdownCollab()
 })
 
-/* ------------------------------------------------------------ метка версии */
+/* ------------------------------------------------------------- version tag */
 
-test('страница отдаётся с меткой версии и сроком жизни', async () => {
+test('the page is served with a version tag and a lifetime', async () => {
   const res = await fetch(`${base}/api/p/${pubId}`)
   assert.equal(res.status, 200)
   const tag = res.headers.get('etag')
-  assert.ok(tag, 'ответ без метки версии — второй заход стоит столько же, сколько первый')
+  assert.ok(tag, 'a response without a version tag: the second visit costs as much as the first')
   assert.match(res.headers.get('cache-control') ?? '', /max-age=\d+/)
 
   const again = await fetch(`${base}/api/p/${pubId}`, { headers: { 'if-none-match': tag } })
-  assert.equal(again.status, 304, 'та же страница приехала вторично целиком')
-  assert.equal(await again.text(), '', '304 с телом — это не 304')
+  assert.equal(again.status, 304, 'the same page arrived in full a second time')
+  assert.equal(await again.text(), '', 'a 304 with a body is not a 304')
 })
 
-test('шаг — самое тяжёлое, и у него метка своя', async () => {
+test('a step is the heaviest part, and it has its own tag', async () => {
   const first = await fetch(`${base}/api/p/${pubId}/step/3`)
   assert.equal(first.status, 200)
   const tag = first.headers.get('etag') ?? ''
@@ -86,14 +88,14 @@ test('шаг — самое тяжёлое, и у него метка своя',
   const same = await fetch(`${base}/api/p/${pubId}/step/3`, { headers: { 'if-none-match': tag } })
   assert.equal(same.status, 304)
 
-  // Метка шага — про ЭТОТ шаг: соседний по ней отвечать не должен.
+  // A step tag is about THIS step: the neighbouring one must not answer to it.
   const other = await fetch(`${base}/api/p/${pubId}/step/0`, { headers: { 'if-none-match': tag } })
-  assert.equal(other.status, 200, 'метка одного шага сошлась с другим — читателю уехал не тот шаг')
+  assert.equal(other.status, 200, 'the tag of one step matched another: the reader got the wrong step')
 })
 
-/* ------------------------------------------------- переиздание всё отменяет */
+/* ----------------------------------------------- a republish cancels it all */
 
-test('переизданная страница отвечает новым — и метка, и рельса', async () => {
+test('a republished page answers with the new: both the tag and the rail', async () => {
   const before = await fetch(`${base}/api/p/${pubId}`)
   const oldTag = before.headers.get('etag') ?? ''
   const seen = (await before.json()) as { seminar: { steps: { label: string }[] } }
@@ -110,15 +112,15 @@ test('переизданная страница отвечает новым — 
     blobs: [],
   })
 
-  // Рельса шагов кэширована в памяти — и обязана была забыться при записи.
+  // The rail of steps is cached in memory — and had to be forgotten on write.
   assert.deepEqual(
     stepHeadings(pubId).map((h) => h.label),
     ['разобрали заново'],
-    'кэш рельсы пережил переиздание и показывает прошлую неделю',
+    'the rail cache survived the republish and shows last week',
   )
 
   const after = await fetch(`${base}/api/p/${pubId}`, { headers: { 'if-none-match': oldTag } })
-  assert.equal(after.status, 200, 'прошлая метка сошлась с переизданной страницей')
+  assert.equal(after.status, 200, 'the old tag matched the republished page')
   const now = (await after.json()) as { seminar: { steps: { label: string }[] } }
   assert.deepEqual(
     now.seminar.steps.map((s) => s.label),
@@ -126,13 +128,13 @@ test('переизданная страница отвечает новым — 
   )
 })
 
-/* ------------------------------------------------------- тетрадь по шагам */
+/* ------------------------------------------------------- notebook by step */
 
-test('тетрадь скачивается по шагу, а незнакомый номер — это последний шаг', async () => {
+test('the notebook downloads by step, and an unknown number means the last step', async () => {
   const at = Date.now()
   const other: PublicCell[] = [
-    // Ячейка страницы всегда несёт вывод и номер запуска: страница — это снимок
-    // тетради, а не её исходник (shared/publish.ts · PublicCell).
+    // A page cell always carries output and a run number: a page is a snapshot of
+    // the notebook, not its source (shared/publish.ts · PublicCell).
     {
       id: 'c-late',
       type: 'code',
@@ -155,14 +157,14 @@ test('тетрадь скачивается по шагу, а незнакомы
 
   const asked = await fetch(`${base}/api/p/${pubId}/notebook.ipynb?step=3`)
   assert.equal(asked.status, 200)
-  assert.match(await asked.text(), /import numpy as np/, 'скачался не тот шаг, на котором стоят')
+  assert.match(await asked.text(), /import numpy as np/, 'the downloaded step is not the one being viewed')
 
-  // Без номера — как было всегда: тетрадь на момент публикации.
+  // Without a number, as always: the notebook at the time of publication.
   const last = await fetch(`${base}/api/p/${pubId}/notebook.ipynb`)
   assert.match(await last.text(), /поздний шаг/)
 
-  // Промах мимо номера — не место для объяснений про адреса: файл в руках
-  // лучше пустого отказа.
+  // A missed number is no place for explanations about addresses: a file in hand
+  // beats an empty refusal.
   const nonsense = await fetch(`${base}/api/p/${pubId}/notebook.ipynb?step=99`)
   assert.equal(nonsense.status, 200)
   assert.match(await nonsense.text(), /поздний шаг/)

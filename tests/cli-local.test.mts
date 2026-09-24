@@ -1,19 +1,20 @@
 /**
- * Группа «Локально»: run (он же start), stop, restart, logs, link, backup,
- * restore — занятие на этой машине.
+ * The "Locally" group: run (a.k.a. start), stop, restart, logs, link, backup,
+ * restore — a class on this machine.
  *
- * Здесь не запускается ни один процесс и не читается ни один настоящий файл:
- * исполнитель подменён массивом вызовов, файловая система — картой в памяти.
- * Проверяется ровно то, за что отвечает группа: какая строка уходит
- * супервизору или скрипту, где команда отказывает до делегирования и кто
- * спрашивает.
+ * No process is started here and no real file is read: the executor is
+ * replaced by an array of calls, the file system by an in-memory map. What is
+ * checked is exactly what the group is responsible for: which line goes to the
+ * supervisor or a script, where a command refuses before delegating, and who
+ * asks.
  *
- * Отдельно стережётся одно обещание: команда ведёт себя одинаково, запущена
- * она из колеса или из исходников. ctx.dist меняет только то, чем зовут
- * супервизор, — и больше ничего.
+ * One promise is guarded separately: a command behaves the same whether it is
+ * run from the wheel or from the sources. ctx.dist changes only how the
+ * supervisor is invoked — and nothing else.
  *
- * Общее (уникальность имён, английский summary, вопрос у каждой опасной
- * команды, --dry-run без единого запуска) стережёт tests/cli-core.test.mts.
+ * The shared parts (unique names, an English summary, a question for every
+ * destructive command, --dry-run without a single launch) are guarded by
+ * tests/cli-core.test.mts.
  */
 import './_cli.mjs'
 import { test } from 'node:test'
@@ -36,7 +37,7 @@ type Harness = {
   out: string[]
   err: string[]
   calls: Call[]
-  /** Окружение каждого настоящего запуска — в том же порядке, что calls без capture. */
+  /** The env of each real launch, in the order of calls without capture. */
   envs: (Record<string, string> | undefined)[]
   asked: string[]
 }
@@ -51,14 +52,14 @@ async function run(
     tty?: boolean
     exit?: number
     capture?: (cmd: string, args: string[]) => Capture
-    /** Установленный colloq: супервизор приезжает бандлом, tsx и исходников нет. */
+    /** Installed colloq: the supervisor ships as a bundle, no tsx or sources. */
     dist?: boolean
     /**
-     * Каталог состояния, когда он не совпадает с каталогом приложения.
+     * The state directory, when it differs from the app directory.
      *
-     * Так живёт установленный colloq: код в site-packages, а .env, журнал,
-     * расписка сессии и data/ — в ~/.colloq. Не назван — оба корня это /repo,
-     * как в клоне.
+     * This is how an installed colloq lives: the code in site-packages, while
+     * .env, the log, the session receipt and data/ are in ~/.colloq. When not
+     * given, both roots are /repo, as in a clone.
      */
     home?: string
   } = {},
@@ -101,25 +102,26 @@ async function run(
   return { code, out, err, calls, envs, asked }
 }
 
-/** Настоящие запуски: чтение состояния (capture) вызовом не считается. */
+/** Real launches: reading the state (capture) does not count as a call. */
 function spawned(result: Harness): Call[] {
   return result.calls.filter((call) => call[0] !== 'capture')
 }
 
-/** Процесс по pid отвечает: kill -0 даёт 0. */
+/** The process answers by pid: kill -0 gives 0. */
 const ALIVE = (cmd: string): Capture => ({ code: cmd === 'kill' ? 0 : 1, stdout: '', stderr: '' })
 
-// ------------------------------------------------------------------ запуск
+// ------------------------------------------------------------------ launch
 
 const LAUNCH = 'node --import tsx /repo/cli/src/launch.ts'
 const SOURCE = ['node', '--import', 'tsx', '/repo/cli/src/launch.ts']
 
 /**
- * Расписка идущего занятия так, как её пишет супервизор.
+ * The receipt of a class in progress, as the supervisor writes it.
  *
- * Полем, а не огрызком `{pid, port, mode}`: читает её общий readSession
- * (cli/src/session.ts), и без url с runId он честно отвечает «расписки нет» —
- * то же, что видит человек, когда файл дописан наполовину.
+ * In full, not as a stub `{pid, port, mode}`: it is read by the shared
+ * readSession (cli/src/session.ts), and without url and runId it honestly
+ * answers "no receipt" — the same thing a person sees when the file is only
+ * half written.
  */
 const RECEIPT = {
   pid: 4242,
@@ -133,7 +135,7 @@ const RECEIPT = {
   leaseFile: '',
 }
 
-/** Каталог состояния установленного colloq: код отдельно, занятие отдельно. */
+/** State dir of an installed colloq: the code separate, the class separate. */
 const HOME = '/home/teacher/.colloq'
 
 const SESSION = {
@@ -164,7 +166,7 @@ test('run: the alias and the flags give one exact dry-run command', async () => 
     ).out,
     [LAUNCH + ' run --host hse.colloq.ru --detach --port 4100 --no-open --fast'],
   )
-  // --share — флаг супервизора, как --host: ни переменных, ни второго вызова.
+  // --share is a supervisor flag, like --host: no variables, no second call.
   assert.deepEqual((await run(['start', '--share', '--dry-run'])).out, [LAUNCH + ' run --share'])
   assert.deepEqual((await run(['start', '--share', '--dry-run'], { dist: true })).out, [
     'node /repo/cli/launch.mjs run --share',
@@ -195,10 +197,10 @@ test('run: a bare colloq starts nothing', async () => {
 })
 
 /**
- * Пары ВИДА=ЗНАЧЕНИЕ больше не снимаются каркасом: это позиционный аргумент,
- * а у run позиционных нет. Молча принять `FAST=1` за --fast или, хуже,
- * отдать `DATA_DIR=…` окружением супервизору значило бы держать второй язык
- * флагов, которого нет в help.
+ * KEY=VALUE pairs are no longer stripped by the framework: they are a
+ * positional argument, and run has no positionals. Silently taking `FAST=1`
+ * for --fast or, worse, handing `DATA_DIR=…` to the supervisor as environment
+ * would mean keeping a second flag language that help does not mention.
  */
 test('run: a KEY=VALUE pair is an extra argument, not a flag', async () => {
   for (const pair of ['FAST=1', 'HOST=hse.colloq.ru', 'DATA_DIR=/tmp/elsewhere']) {
@@ -216,7 +218,8 @@ test('run: the launch never asks and hands back the supervisor exit code', async
     assert.equal(result.code, 3)
     assert.deepEqual(result.asked, [])
     assert.deepEqual(result.calls, [[...SOURCE, 'run']])
-    // Окружение супервизору не добавляется: всё, что ему нужно, — в argv.
+    // No environment is added for the supervisor: everything it needs is in
+    // argv.
     assert.deepEqual(result.envs, [undefined])
   }
 })
@@ -262,7 +265,7 @@ test('stop/restart: a receipt leads to the supervisor', async () => {
   assert.deepEqual((await run(['restart', '--build', '--fast', '--dry-run'], SESSION)).out, [
     LAUNCH + ' restart --build --fast',
   ])
-  // stop не несёт ни --build, ни --fast: у остановки их нет.
+  // stop carries neither --build nor --fast: stopping has neither.
   assert.deepEqual(spawned(await run(['stop', '--yes'], SESSION)), [[...SOURCE, 'stop']])
 })
 
@@ -282,7 +285,8 @@ test('stop without a receipt: nothing to stop, code 0, no question and no make',
     const result = await run(argv, {
       tty: true,
       answer: 'y',
-      // Старый pid-файл рядом — не расписка: он уводил в make stop, больше нет.
+      // An old pid file nearby is not a receipt: it used to lead to make stop,
+      // no longer.
       files: { '/repo/.colloq.pid': '4242\n' },
       capture: ALIVE,
     })
@@ -325,7 +329,8 @@ test('restart without a receipt refuses in words: no make, no npm, no question',
     const result = await run(argv, {
       tty: true,
       answer: 'y',
-      // Прежний запуск на хосте: pid-файл есть, и раньше он уводил в make.
+      // A former launch on the host: the pid file exists, and it used to lead
+      // to make.
       files: { '/repo/.colloq.pid': '4242\n', '/repo/.env': 'COLLOQ_CLUSTER=1\nPORT=4000' },
       capture: ALIVE,
     })
@@ -340,7 +345,7 @@ test('restart without a receipt refuses in words: no make, no npm, no question',
   }
 })
 
-// ------------------------------------------------------------------ журнал
+// --------------------------------------------------------------------- log
 
 const LOG = { files: { '/repo/.colloq.log': 'line' } }
 
@@ -365,7 +370,7 @@ test('logs: conflicting or removed flags are code 2, nothing runs', async () => 
     ['logs', '-f', '--no-follow'],
     ['logs', '-n', 'many'],
     ['logs', '-n', '0'],
-    // Другие журналы — докера и службы — остались мастерской.
+    // The other logs — docker's and the service's — stayed with the workshop.
     ['logs', '--server'],
     ['logs', '--docker'],
     ['logs', '--service'],
@@ -390,7 +395,7 @@ test('logs without the log file: refusal 3 naming the path and colloq start', as
   assert.deepEqual(spawned(there), [['tail', '-f', '/repo/.colloq.log']])
 })
 
-// ------------------------------------------------------------------ адрес
+// ---------------------------------------------------------------- address
 
 test('link: the address is printed, the token never', async () => {
   assert.deepEqual((await run(['link', '--dry-run'])).out, [
@@ -415,14 +420,16 @@ test('link: the address is printed, the token never', async () => {
 })
 
 test('link: without a receipt and without .env — refusal 3', async () => {
-  // Каталог состояния отдельно, и .env в нём нет: адрес брать неоткуда.
+  // A separate state directory with no .env in it: there is nowhere to take
+  // the address from.
   const none = await run(['link'], { home: HOME })
   assert.equal(none.code, 3)
   assert.deepEqual(spawned(none), [])
   assert.match(none.err.join('\n'), /no \.env/)
   assert.match(none.err.join('\n'), /colloq run/)
 
-  // Пустой .env — это всё-таки .env: адреса нет, но и отказывать не в чем.
+  // An empty .env is still a .env: there is no address, but nothing to refuse
+  // either.
   const empty = await run(['link'], { files: { '/repo/.env': '' } })
   assert.equal(empty.code, 0)
   assert.match(empty.out.join('\n'), /not published/)
@@ -502,7 +509,7 @@ test('link: the local receipt wins over .env and only its current lease is publi
   assert.doesNotMatch(dead.out.join('\n'), /https:\/\/hse\.colloq\.ru|old\.example/)
 })
 
-// ------------------------------------------------------------ копии
+// ---------------------------------------------------------- backups
 
 const HERE = 'COLLOQ_HOME=/repo '
 
@@ -514,7 +521,8 @@ test('backup: without flags a local backup, taken by the script itself', async (
     assert.deepEqual(dry.calls, [], argv.join(' '))
   }
 
-  // Настоящий вызов — тот же скрипт, и COLLOQ_HOME уходит ему окружением.
+  // The real call is the same script, and COLLOQ_HOME goes to it through the
+  // environment.
   const real = await run(['backup'], { tty: true, answer: 'n' })
   assert.equal(real.code, 0)
   assert.deepEqual(real.asked, [])
@@ -536,7 +544,8 @@ test('backup: a portable flag leads to backup.sh, everything by environment', as
   assert.deepEqual((await run(['backup', '--release', 'release.json', '--dry-run'])).out, [
     HERE + 'MODE=live RELEASE=/repo/release.json ./scripts/backup.sh',
   ])
-  // Путь с пробелом копируется целиком: строка --dry-run для того и печатается.
+  // A path with a space is copied whole: that is what the --dry-run line is
+  // printed for.
   assert.deepEqual((await run(['backup', '--out', 'backup of the day.tar.gz', '--dry-run'])).out, [
     HERE + "MODE=live OUT='/repo/backup of the day.tar.gz' ./scripts/backup.sh",
   ])
@@ -624,7 +633,8 @@ test('restore: the portable path needs both files and asks itself', async () => 
     { tty: true, files },
   )
   assert.deepEqual(yes.asked, [])
-  // Как у цели restore: ключи — аргументами, имя среды — окружением.
+  // As in the restore target: switches as arguments, the name through the
+  // environment.
   assert.deepEqual(spawned(yes), [
     [
       './scripts/restore.sh',
@@ -654,7 +664,8 @@ test('restore: over a live database only with --replace, never by --yes', async 
     assert.equal(result.envs[0]?.REPLACE, undefined, argv.join(' '))
   }
 
-  // Переносимой копии разрешение уходит ключом, локальной — переменной REPLACE=1.
+  // A portable backup gets the permission as a switch, a local one as the
+  // variable REPLACE=1.
   const portable = await run(
     [
       'restore',
@@ -686,7 +697,7 @@ test('restore: over a live database only with --replace, never by --yes', async 
   assert.deepEqual(spawned(local), [['./scripts/restore.sh', '/repo/colloq-20260914.db']])
   assert.deepEqual(local.envs, [{ COLLOQ_HOME: '/repo', REPLACE: '1' }])
 
-  // Пара REPLACE=1 больше не разрешение, а лишний аргумент.
+  // The pair REPLACE=1 is no longer a permission but an extra argument.
   const paired = await run(['restore', '--legacy', '--db', 'colloq-20260914.db', 'REPLACE=1'], {
     tty: true,
     files,
@@ -710,8 +721,9 @@ test('restore --legacy: we do not ask, the script does; paths go as arguments', 
     ).out,
     [HERE + './scripts/restore.sh /repo/colloq-20260914.db /repo/colloq-20260914-files.tar.gz'],
   )
-  // Архива в аргументах не было — пустой строкой он не уходит: restore.sh
-  // разбирает аргументы по расширению и на пустой умирает «не понимаю «»».
+  // There was no archive among the arguments, so it is not passed as an empty
+  // string: restore.sh sorts its arguments by extension and dies on an empty
+  // one with 'I do not understand ""'.
   assert.deepEqual(
     (
       await run([
@@ -772,16 +784,17 @@ test('restore: the worlds do not mix, a missing file is refusal 3', async () => 
   assert.deepEqual(noRelease.asked, [])
 })
 
-// ------------------------------------------------------ колесо и исходники
+// ------------------------------------------------------- wheel and sources
 
 /**
- * Одна команда — одно поведение, откуда бы её ни позвали.
+ * One command, one behaviour, wherever it is called from.
  *
- * Ошибки, ради которых это записано: из колеса `colloq backup` снимал одну
- * копию, а из клона — другую; `colloq stop` без расписки в клоне звал make
- * stop, а в колесе отвечал словами. То, что проверено в клоне, у
- * преподавателя оказывалось другой командой. Теперь ctx.dist выбирает только
- * бандл или исходник супервизора — и эта проверка держит именно это.
+ * The bugs this records: from the wheel `colloq backup` took one kind of
+ * backup, and from a clone another; `colloq stop` without a receipt called
+ * make stop in a clone and answered in words in the wheel. What was checked
+ * in a clone turned out to be a different command for the teacher. Now
+ * ctx.dist chooses only the bundle or the source of the supervisor — and this
+ * check holds exactly that.
  */
 test('the wheel and the sources behave the same, only the launcher differs', async () => {
   const same: string[][] = [
@@ -806,24 +819,24 @@ test('the wheel and the sources behave the same, only the launcher differs', asy
     assert.deepEqual(wheel.calls, source.calls, argv.join(' '))
   }
 
-  // С распиской разница ровно в том, чем звать супервизор.
+  // With a receipt the only difference is how the supervisor is invoked.
   for (const command of ['stop', 'restart']) {
     const wheel = await run([command, '--yes'], { ...SESSION, dist: true })
     assert.deepEqual(spawned(wheel), [['node', '/repo/cli/launch.mjs', command]])
   }
 })
 
-// ------------------------------------------------------------ два корня
+// ------------------------------------------------------------ two roots
 
 /**
- * Два корня: код отдельно, занятие отдельно.
+ * Two roots: the code separate, the class separate.
  *
- * Ошибка, ради которой записано: расписку сессии команды искали как
- * ctx.env.path('.colloq/local-session.json') — от каталога ПРИЛОЖЕНИЯ, — а
- * супервизор пишет её в каталог состояния. У установленного colloq это
- * разные каталоги, и `colloq stop` под работающим сервером отвечал «занятие
- * не идёт — останавливать нечего». Проверяется главное: расписка читается
- * там, где её пишут, и только там.
+ * The bug this records: commands looked for the session receipt as
+ * ctx.env.path('.colloq/local-session.json') — relative to the APP directory —
+ * while the supervisor writes it into the state directory. For an installed
+ * colloq these are different directories, and `colloq stop` under a running
+ * server answered "no class is running — nothing to stop". What is checked is
+ * the main thing: the receipt is read where it is written, and only there.
  */
 test('the session receipt is read in the state directory, not beside the code', async () => {
   const live = await run(['stop', '--yes'], {
@@ -835,7 +848,8 @@ test('the session receipt is read in the state directory, not beside the code', 
   assert.deepEqual(spawned(live), [['node', '/repo/cli/launch.mjs', 'stop']])
   assert.doesNotMatch(live.out.join('\n'), /nothing to stop/)
 
-  // Та же расписка рядом с кодом — чужой корень: её нет для нас вовсе.
+  // The same receipt beside the code is under a foreign root: for us it does
+  // not exist at all.
   const beside = await run(['stop', '--yes'], {
     dist: true,
     home: HOME,
@@ -844,7 +858,7 @@ test('the session receipt is read in the state directory, not beside the code', 
   assert.deepEqual(beside.calls, [])
   assert.match(beside.out.join('\n'), /nothing to stop/)
 
-  // Тот же корень ведёт и перезапуск.
+  // The same root drives the restart too.
   const restart = await run(['restart', '--yes'], {
     dist: true,
     home: HOME,
@@ -873,9 +887,11 @@ test('link: the class address and the sign-in paths come from the state director
   })
   assert.equal(result.code, 0)
   const text = result.out.join('\n')
-  // Локальный адрес в расписке есть — и он же единственный, откуда его берут.
+  // The receipt has the local address, and it is the only place it is taken
+  // from.
   assert.match(text, /local.*http:\/\/localhost:4100/)
-  // Пути называются целиком: в рабочей папке человека этих файлов нет.
+  // Paths are named in full: these files are not in the person's working
+  // folder.
   assert.ok(text.includes(HOME + '/.colloq.log'), text)
   assert.ok(text.includes(HOME + '/data/setup-token'), text)
   assert.doesNotMatch(text, /admin\/t\//)
@@ -889,7 +905,8 @@ test('logs: the tail of the log in the state directory', async () => {
   })
   assert.deepEqual(spawned(there), [['tail', '-f', HOME + '/.colloq.log']])
 
-  // Журнал рядом с кодом — не наш: отказ называет тот путь, где его ждут.
+  // A log beside the code is not ours: the refusal names the path where it is
+  // expected.
   const beside = await run(['logs'], { home: HOME, files: { '/repo/.colloq.log': 'line' } })
   assert.equal(beside.code, 3)
   assert.deepEqual(spawned(beside), [])

@@ -1,22 +1,23 @@
 /**
- * .env как файл настроек, а не как программа для оболочки.
+ * .env as a settings file, not as a program for the shell.
  *
- * Две ошибки, обе стоившие пары. Первая: `set -a; . ./.env` перед запуском
- * сервера. Это не чтение файла, а его исполнение, и строка вида
- * `INSTITUTION=Высшая школа экономики` — ровно та форма, которую просят
- * .env.example и README, — для bash есть команда `школа` с префиксным
- * присваиванием: rc=127. В `scripts/host.sh` под `set -euo pipefail` это
- * убивало подоболочку уже ПОСЛЕ того, как строкой выше убит старый сервер:
- * преподаватель перед парой оставался без сервера вовсе.
+ * Two bugs, each of which cost a class. The first: `set -a; . ./.env` before
+ * starting the server. That is not reading the file but executing it, and a
+ * line like `INSTITUTION=Высшая школа экономики` — exactly the form that
+ * .env.example and README ask for — is, for bash, the command `школа` with a
+ * prefix assignment: rc=127. In `scripts/host.sh` under `set -euo pipefail`
+ * this killed the subshell AFTER the line above had already killed the old
+ * server: the teacher was left with no server at all right before class.
  *
- * Вторая: `read_env`, списанный в трёх скриптах, вырезал `tr -d ' \r'` каждый
- * пробел, где бы тот ни стоял. Имена карт в API vast пишутся с пробелом, и
- * `VAST_GPU=RTX 4090` превращался в «RTX4090», под который предложений нет, —
- * а скрипт советовал вписать в .env то, что уже вписано.
+ * The second: `read_env`, copied into three scripts, stripped every space
+ * with `tr -d ' \r'`, wherever it stood. GPU names in the vast API are written
+ * with a space, and `VAST_GPU=RTX 4090` turned into "RTX4090", for which
+ * there are no offers — and the script advised putting into .env what was
+ * already there.
  *
- * Здесь проверяется и то, и другое: что запуск сервера ничего не сорсит, что
- * dotenv (тот путь, которым сервер и читает .env) значение с пробелами берёт
- * целиком, и что общий read_env трогает только края.
+ * Both are checked here: that starting the server sources nothing, that
+ * dotenv (the path the server actually reads .env through) takes a value with
+ * spaces whole, and that the shared read_env touches only the edges.
  */
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -28,10 +29,10 @@ import { fileURLToPath } from 'node:url'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-/** Значение, на котором всё и ломалось: пробелы внутри, кириллица. */
+/** The value everything broke on: spaces inside, Cyrillic. */
 const INSTITUTION = 'Высшая школа экономики'
 
-/** Каталоги этого файла — и уборка за ними: без неё /tmp растёт с каждым прогоном. */
+/** This file's directories — and cleanup after them: without it /tmp grows with every run. */
 const made: string[] = []
 after(() => {
   for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
@@ -43,7 +44,7 @@ function tmpdir(): string {
   return dir
 }
 
-/** Одна строка из .env глазами общего read_env (scripts/lib.sh). */
+/** One line from .env as the shared read_env (scripts/lib.sh) sees it. */
 function readEnv(dir: string, name: string): string {
   return execFileSync(
     'bash',
@@ -52,10 +53,10 @@ function readEnv(dir: string, name: string): string {
   )
 }
 
-test('запуск сервера не сорсит .env: ни Makefile, ни host.sh', () => {
+test('starting the server does not source .env: neither the Makefile nor host.sh', () => {
   /*
-   * Стереги именно форму, а не строку целиком: `. ./.env`, `source .env`,
-   * `set -a` рядом с запуском — всё это возвращает тот же отказ.
+   * Guard the form, not the whole line: `. ./.env`, `source .env`, `set -a`
+   * next to the start — all of these bring back the same failure.
    */
   const suspects = [
     'Makefile',
@@ -68,27 +69,27 @@ test('запуск сервера не сорсит .env: ни Makefile, ни ho
     const text = fs.readFileSync(path.join(repo, file), 'utf8')
     const lines = text.split('\n')
     for (const [i, line] of lines.entries()) {
-      // Комментарии рассказывают об этой ошибке — их не ловим.
+      // Comments tell about this bug — we do not catch them.
       const code = line.replace(/^\s*@?#.*/, '').replace(/^\s*@?:\s+'.*/, '')
       assert.ok(
         !/(^|[;&(\s])(\.|source)\s+\.?\/?\.env(\s|$|;|\))/.test(code),
-        `${file}:${i + 1} сорсит .env оболочкой: ${line.trim()}`,
+        `${file}:${i + 1} sources .env with the shell: ${line.trim()}`,
       )
     }
   }
 })
 
-test('значение с пробелами доезжает до сервера через dotenv, а не через оболочку', () => {
+test('a value with spaces reaches the server through dotenv, not through the shell', () => {
   const dir = tmpdir()
   fs.writeFileSync(
     path.join(dir, '.env'),
     `PORT=3000\nINSTITUTION=${INSTITUTION}\nVAST_GPU=RTX 4090\n`,
   )
   /*
-   * Ровно тот путь, которым читает сервер: `import 'dotenv/config'` первой
-   * строкой server/src/config.ts, файл берётся из рабочего каталога процесса.
-   * Пакет назван полным путём только потому, что процесс запускается вне
-   * репозитория — читает он всё равно .env из своего cwd.
+   * Exactly the path the server reads through: `import 'dotenv/config'` as the
+   * first line of server/src/config.ts, the file taken from the process's
+   * working directory. The package is named by its full path only because the
+   * process runs outside the repository — it still reads .env from its cwd.
    */
   const dotenvConfig = path.join(repo, 'node_modules/dotenv/config.js')
   const env = { ...process.env }
@@ -101,18 +102,18 @@ test('значение с пробелами доезжает до сервер�
   assert.equal(out.trim(), INSTITUTION)
 })
 
-test('а прежний способ — исполнение файла оболочкой — на этой же строке падает', () => {
+test('while the old way — executing the file with the shell — fails on this very line', () => {
   const dir = tmpdir()
   fs.writeFileSync(path.join(dir, '.env'), `INSTITUTION=${INSTITUTION}\n`)
   const r = spawnSync('bash', ['-c', 'set -euo pipefail; ( set -a; . ./.env; set +a; true )'], {
     cwd: dir,
     encoding: 'utf8',
   })
-  assert.notEqual(r.status, 0, 'source .env со значением-с-пробелом обязан падать — ради этого он и убран')
+  assert.notEqual(r.status, 0, 'source .env with a value containing a space must fail — that is why it was removed')
   assert.match(r.stderr, /command not found|не найдена/i)
 })
 
-test('read_env оставляет пробелы внутри значения и снимает только края', () => {
+test('read_env keeps spaces inside a value and strips only the edges', () => {
   const dir = tmpdir()
   fs.writeFileSync(
     path.join(dir, '.env'),
@@ -133,41 +134,41 @@ test('read_env оставляет пробелы внутри значения �
   assert.equal(readEnv(dir, 'MISSING'), '')
 })
 
-test('read_env: возврат каретки из Windows не уезжает внутрь значения', () => {
+test('read_env: a Windows carriage return does not end up inside the value', () => {
   const dir = tmpdir()
   fs.writeFileSync(path.join(dir, '.env'), 'RELAY_ADDR=1.2.3.4\r\nPORT=3000\r\n')
   assert.equal(readEnv(dir, 'RELAY_ADDR'), '1.2.3.4')
 })
 
-test('read_env берёт последнюю строку: дописанное в конец главнее', () => {
+test('read_env takes the last line: what is appended at the end wins', () => {
   const dir = tmpdir()
   fs.writeFileSync(path.join(dir, '.env'), 'KERNEL_ENV=base\nKERNEL_ENV=gpu\n')
   assert.equal(readEnv(dir, 'KERNEL_ENV'), 'gpu')
 })
 
-test('копия read_env осталась одна — в scripts/lib.sh', () => {
+test('only one copy of read_env is left — in scripts/lib.sh', () => {
   const others = ['scripts/host.sh', 'scripts/vast.sh', 'scripts/restore.sh', 'scripts/dns.sh']
   for (const file of others) {
     const text = fs.readFileSync(path.join(repo, file), 'utf8')
     assert.ok(
       !/^\s*read_env\(\)/m.test(text),
-      `${file} завёл свою копию read_env — правка в одной из них разъедется с остальными`,
+      `${file} has its own copy of read_env — an edit to one of them will drift from the rest`,
     )
-    assert.ok(/lib\.sh/.test(text), `${file} должен сорсить scripts/lib.sh`)
+    assert.ok(/lib\.sh/.test(text), `${file} must source scripts/lib.sh`)
   }
 })
 
-test('dns.sh спрашивает адрес ретранслятора у .env и без него зону не трогает', () => {
+test('dns.sh asks .env for the relay address and does not touch the zone without it', () => {
   const dir = tmpdir()
   fs.mkdirSync(path.join(dir, 'scripts'))
   for (const f of ['dns.sh', 'lib.sh']) {
     fs.copyFileSync(path.join(repo, 'scripts', f), path.join(dir, 'scripts', f))
   }
   fs.chmodSync(path.join(dir, 'scripts/dns.sh'), 0o755)
-  // Токен есть, адреса ретранслятора нет: до сети дело дойти не должно.
+  // There is a token but no relay address: it must not get as far as the network.
   fs.writeFileSync(path.join(dir, '.env'), 'CF_TOKEN=not-a-real-token\nCF_ZONE=zzz\n')
-  // Переменная оболочки сильнее файла — у того, кто гоняет тесты, она может
-  // быть выставлена, и тогда проверялся бы не файл.
+  // A shell variable is stronger than the file — whoever runs the tests may
+  // have it set, and then it would not be the file being checked.
   const env = { ...process.env }
   delete env.RELAY_ADDR
   const r = spawnSync('bash', [path.join(dir, 'scripts/dns.sh')], {
@@ -178,11 +179,12 @@ test('dns.sh спрашивает адрес ретранслятора у .env 
   assert.notEqual(r.status, 0)
   assert.match(r.stderr, /RELAY_ADDR/)
 
-  // И прибитого адреса в скрипте больше нет — именно он молча возвращал
-  // `*.colloq.ru` на прежнюю машину после переезда ретранслятора.
+  // And the hard-wired address is gone from the script — it was exactly what
+  // silently pointed `*.colloq.ru` back at the old machine after the relay
+  // moved.
   const text = fs.readFileSync(path.join(repo, 'scripts/dns.sh'), 'utf8')
   assert.ok(
     !/RELAY=\$\{RELAY_ADDR:-[0-9]/.test(text),
-    'умолчание-адрес вернулось в dns.sh',
+    'the default address is back in dns.sh',
   )
 })

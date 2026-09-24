@@ -1,30 +1,33 @@
 import { tr } from '@shared/i18n'
 /**
- * Подсказка оракула одному студенту — по его упавшей попытке в консилиуме.
+ * An oracle hint for one student — about their failed attempt in the council.
  *
- * Сосед оракула о решениях (ai/council.ts), и нарочно не он. Тот смотрит СВЕРХУ:
- * пятьсот листов, шесть групп, три абзаца преподавателю. Этот смотрит в один
- * лист, знает трейсбек и отвечает одному человеку — и всё, что их роднит,
- * это задание в шапке кадра и провайдер на том конце.
+ * A neighbour of the oracle about solutions (ai/council.ts), and deliberately
+ * not that oracle. That one looks FROM ABOVE: five hundred sheets, six groups,
+ * three paragraphs for the teacher. This one looks at one sheet, knows the
+ * traceback and answers one person — and all they have in common is the task
+ * in the frame header and the provider at the other end.
  *
- * Три вещи держатся здесь нарочно.
+ * Three things are held here on purpose.
  *
- * Модель не видит имени. Ей едут задание, заготовка преподавателя, текст
- * попытки и трейсбек — ни имени, ни аватара, ни соседей по группе. Подсказка
- * личная, и личным в ней должен быть ответ, а не то, что ушло чужому провайдеру.
+ * The model does not see the name. It gets the task, the teacher's stub, the
+ * text of the attempt and the traceback — no name, no avatar, no groupmates.
+ * The hint is personal, and what should be personal in it is the answer, not
+ * what went off to someone else's provider.
  *
- * Она подталкивает, а не решает. Человек сам написал этот код и сам нажал
- * «Запустить»; готовое решение, приехавшее письмом, отменяет и то, и другое.
- * Поэтому в системном кадре стоит потолок: назвать причину и строку, дать не
- * больше одного конкретного совета и НЕ писать исправленный код. Правило
- * держится словами, а не разбором ответа: модель, решившая ослушаться, всё
- * равно напишет что-нибудь, и лучше это будет многословная подсказка, чем
- * красная ошибка посреди занятия.
+ * It nudges rather than solves. The person wrote this code themselves and
+ * pressed "Run" themselves; a finished solution arriving as a letter cancels
+ * both. That is why the system frame sets a ceiling: name the cause and the
+ * line, give at most one concrete piece of advice, and do NOT write corrected
+ * code. The rule is held by words, not by parsing the answer: a model that
+ * decides to disobey will write something anyway, and better that it be a
+ * wordy hint than a red error in the middle of a class.
  *
- * Тексты частные. Ни вопрос, ни ответ не ложатся в общий тред комнаты
- * (routes/ai.ts · `/ai/ask` пишет в него, и это читает весь класс): ответ
- * возвращается письмом внутрь самой попытки, где его видят автор и
- * преподаватель — те же двое, что видят её текст.
+ * The texts are private. Neither the question nor the answer goes into the
+ * room's shared thread (routes/ai.ts · `/ai/ask` writes to it, and the whole
+ * class reads it): the answer comes back as a letter inside the attempt
+ * itself, where its author and the teacher see it — the same two people who
+ * see its text.
  */
 import type { CellOutput } from '@shared/notebook'
 import type { CouncilRun } from '@shared/protocol'
@@ -34,24 +37,25 @@ import { streamChat, type ChatTurn } from './provider.js'
 import { COUNCIL_WATCH, watchSilence } from './watch.js'
 import { clip as clipTo, flatten } from './text.js'
 
-/** Что подсказке нужно от попытки: код, задание вокруг и то, чем всё кончилось. */
+/** What the hint needs from an attempt: the code, the task around it, how it ended. */
 export interface HintInput {
-  /** Условие: маркдаун-ячейка над заданием, если она есть. */
+  /** The problem statement: the markdown cell above the task, if there is one. */
   before: string | null
-  /** Заготовка преподавателя — текст ячейки на момент открытия консилиума. */
+  /** The teacher's stub: the cell's text at the moment the council was opened. */
   stub: string | null
-  /** Что человек написал. */
+  /** What the person wrote. */
   attempt: string
-  /** Чем кончился запуск. */
+  /** How the run ended. */
   run: CouncilRun | null
 }
 
 /*
- * Сколько кода и трейсбека едет модели.
+ * How much code and traceback goes to the model.
  *
- * Полторы тысячи знаков на попытку — сорок строк, целый лист почти всегда.
- * Трейсбек короче: в нём важны последний кадр и строка с исключением, а
- * середина — это стек библиотеки, из которого не следует ничего.
+ * Fifteen hundred characters per attempt is forty lines, almost always a whole
+ * sheet. The traceback is shorter: what matters in it is the last frame and the
+ * line with the exception, and the middle is the library's stack, from which
+ * nothing follows.
  */
 const MAX_ATTEMPT = 1_500
 const MAX_TASK = 2_000
@@ -62,12 +66,13 @@ function clip(text: string, limit: number): string {
 }
 
 /**
- * Трейсбек одной строкой блока — тот, что видит человек под своей ячейкой.
+ * The traceback as one block of text — the one the person sees under their cell.
  *
- * Jupyter отдаёт его списком строк с ANSI-раскраской; цвета модели не нужны, а
- * вот последний кадр — нужен, поэтому режется НАЧАЛО (`clip` оставляет голову и
- * хвост, и хвост здесь важнее). Пусто — значит запуск упал без трейсбека
- * (прерывание, смерть ядра), и тогда остаётся одно имя исключения.
+ * Jupyter returns it as a list of lines with ANSI colouring; the model does not
+ * need the colours, but it does need the last frame, so the BEGINNING is cut
+ * (`clip` keeps the head and the tail, and here the tail matters more). Empty
+ * means the run failed without a traceback (an interrupt, the kernel dying),
+ * and then only the exception name remains.
  */
 export function tracebackOf(outputs: readonly CellOutput[]): string {
   const error = outputs.find((output): output is Extract<CellOutput, { kind: 'error' }> =>
@@ -80,13 +85,13 @@ export function tracebackOf(outputs: readonly CellOutput[]): string {
   return text.includes(error.ename) ? text : `${head}\n${text}`
 }
 
-/** Раскраска терминала — шум в кадре модели и лишние токены в каждой строке. */
+/** Terminal colouring is noise in the model's frame and extra tokens on every line. */
 function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/\[[0-9;]*[A-Za-z]/g, '')
 }
 
-/** Упал ли запуск — единственное состояние, в котором подсказку есть о чём просить. */
+/** Did the run fail — the only state in which there is anything to ask a hint for. */
 export function runFailed(run: CouncilRun | null | undefined): boolean {
   if (!run || run.state !== 'error') return false
   return true
@@ -104,7 +109,7 @@ const SYSTEM = [
   '4. Три-четыре предложения, на «вы», без вступлений и без списков.',
 ].join('\n')
 
-/** Кадр для модели. Отдельной функцией — её и читает тест, а не поход в сеть. */
+/** The frame for the model. A function of its own: the test reads it, not the network. */
 export function hintPrompt(
   input: HintInput,
   budget: number = getOracleSettings().contextChars,
@@ -120,10 +125,11 @@ export function hintPrompt(
   if (traceback) parts.push('ТРЕЙСБЕК:', '```', clip(traceback, MAX_TRACEBACK), '```')
   const user = parts.join('\n')
   /*
-   * Бюджет режет ЗАДАНИЕ, а не трейсбек: без условия подсказка выйдет общей, а
-   * без трейсбека её не о чем давать вовсе. Случай редкий — весь кадр здесь
-   * укладывается в шесть тысяч знаков, — но бюджет инстанса может стоять и
-   * ниже, и тогда выбирать должен не порядок строк в этой функции.
+   * The budget cuts the TASK, not the traceback: without the statement the hint
+   * comes out generic, and without the traceback there is nothing to give it
+   * about at all. A rare case — the whole frame here fits in six thousand
+   * characters — but the instance budget may be set lower, and then it should
+   * not be the order of lines in this function that chooses.
    */
   const over = system.length + user.length - budget
   if (over > 0 && parts[0] === 'УСЛОВИЕ:') {
@@ -140,27 +146,29 @@ export function hintPrompt(
 }
 
 export interface AskHint extends HintInput {
-  /** Строка расхода, заведённая при приёме: токены лягут на неё. */
+  /** The usage row created at intake: the tokens will be added to it. */
   usageId?: number
   signal?: AbortSignal
 }
 
 /**
- * Спросить и вернуть текст подсказки. Бросает то же, что и провайдер: словами,
- * которые можно показать человеку.
+ * Ask and return the hint text. Throws what the provider throws: in words that
+ * can be shown to a person.
  *
- * Под тем же сторожем, что и оракул консилиума (ai/watch.ts). Подсказку просит
- * один студент по одной упавшей попытке — ждать её полчаса некому, и висящая
- * «оракул думает» в карточке ничем не лучше висящей сводки. Сроки те же:
- * полторы минуты до первого кадра, сорок пять секунд между кадрами, три минуты
- * на всё.
+ * Under the same watchdog as the council oracle (ai/watch.ts). A hint is asked
+ * for by one student about one failed attempt — nobody is going to wait half
+ * an hour for it, and a hanging "the oracle is thinking" in the card is no
+ * better than a hanging summary. The deadlines are the same: a minute and a
+ * half until the first frame, forty-five seconds between frames, three minutes
+ * for everything.
  */
 export async function askCouncilHint(input: AskHint): Promise<string> {
   /*
-   * Свой контроллер поверх чужого сигнала: сторожу нужно, что обрывать, а
-   * отмена снаружи (человек ушёл, комнату снесли) должна доходить сюда как
-   * была. Слушатель снимается в `finally` — иначе долгоживущий сигнал комнаты
-   * копил бы по слушателю на каждую подсказку.
+   * Our own controller on top of someone else's signal: the watchdog needs
+   * something to abort, and a cancellation from outside (the person left, the
+   * room was torn down) must reach here as it was. The listener is removed in
+   * `finally` — otherwise the room's long-lived signal would accumulate a
+   * listener for every hint.
    */
   const controller = new AbortController()
   const relay = () => controller.abort()
@@ -176,8 +184,9 @@ export async function askCouncilHint(input: AskHint): Promise<string> {
         if (input.usageId !== undefined) noteTokens(input.usageId, tokens)
       },
     )
-    // Оборвал сторож, а не человек — это отказ, и назвать его надо словами:
-    // пустая подсказка выглядит как «модели нечего сказать», а она молчит.
+    // The watchdog cut it off, not the person — that is a refusal, and it has
+    // to be named in words: an empty hint looks like "the model has nothing to
+    // say", while in fact it is silent.
     if (guard.why !== null) {
       throw new Error(
         guard.spoke

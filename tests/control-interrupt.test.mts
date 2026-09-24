@@ -1,21 +1,24 @@
 /**
- * Ctrl+C из пульта: чью команду он снимает и чью очередь оставляет.
+ * Ctrl+C from the control channel: whose command it stops and whose queue it
+ * leaves alone.
  *
- * Оболочка в комнате одна, и кнопка «стоп» у преподавателя и у студента значит
- * разное. У преподавателя — «прекратить в этой комнате всё»; у студента —
- * «останови мою зависшую команду», и раньше она значила то же, что у
- * преподавателя: студент, прервав свой `pip install`, молча уносил всё, что
- * успел поставить в очередь преподаватель. Развилка, которая это держит, стоит
- * одной строкой в пульте (`role === 'host' ? undefined : participantId`), и
- * через `dispatch` её не проходил ни один тест: отказ тому, у кого своей
- * бегущей команды нет, проверен (control-dispatch), а РАЗРЕШАЮЩАЯ половина —
- * та самая, где пропадала чужая очередь, — нет. Замена этой строки на голое
- * `undefined` до сих пор оставляла сюиту зелёной.
+ * There is one shell per room, and the "stop" button means different things
+ * for the teacher and for a student. For the teacher it is "stop everything in
+ * this room"; for a student it is "stop my stuck command", and it used to mean
+ * the same as for the teacher: a student who interrupted their own
+ * `pip install` silently took away everything the teacher had managed to
+ * queue. The fork that keeps this apart is one line in the control code
+ * (`role === 'host' ? undefined : participantId`), and no test went through it
+ * via `dispatch`: the refusal to someone with no running command of their own
+ * is checked (control-dispatch), but the ALLOWING half — the very one where
+ * someone else's queue got lost — was not. Replacing that line with a bare
+ * `undefined` still left the suite green.
  *
- * Поэтому здесь всё идёт настоящим путём нажатия: `term:run` и `term:interrupt`
- * через `dispatch`, а не `interruptTerminal` руками. Подделка терминадо вместо
- * настоящей оболочки — под проверкой порядок команд и то, что уходит в stdin, а
- * настоящий shell эту гонку надёжно не отдаёт.
+ * So here everything goes the real path of a press: `term:run` and
+ * `term:interrupt` through `dispatch`, not `interruptTerminal` by hand. A fake
+ * terminado stands in for a real shell: what is checked is the order of
+ * commands and what goes to stdin, and a real shell does not reproduce this
+ * race reliably.
  */
 import './_env.mts'
 import { createServer, type Server } from 'node:http'
@@ -26,14 +29,15 @@ import { getTerminal } from '../shared/notebook.js'
 import { OPEN_ROOM } from '../shared/rules.js'
 import type { ControlClientMessage } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
-// Ни одного статического импорта серверных модулей: config читает JUPYTER_URL
-// на импорте, а подделка поднимается в before(). Так же устроен terminal.test.
+// Not a single static import of server modules: config reads JUPYTER_URL on
+// import, while the fake starts in before(). terminal.test is built the same
+// way.
 
-/* ---------------------------------------------------------- подделка терминадо */
+/* -------------------------------------------------------------- fake terminado */
 
 let http: Server
 let wss: WebSocketServer
-/** Что оболочка получила в stdin. */
+/** What the shell received on stdin. */
 let typed: string[] = []
 let live: WebSocket | null = null
 let minted = 0
@@ -58,7 +62,7 @@ before(async () => {
     wss.handleUpgrade(req, socket, head, (ws) => {
       live = ws
       ws.send(JSON.stringify(['setup', {}]))
-      // Приглашение: сервер по нему считает оболочку устоявшейся.
+      // The prompt: seeing it, the server considers the shell settled.
       ws.send(JSON.stringify(['stdout', '$ ']))
       ws.on('message', (raw: RawData) => {
         const frame = JSON.parse(String(raw)) as [string, string]
@@ -84,10 +88,10 @@ after(async () => {
   await new Promise<void>((resolve) => http.close(() => resolve()))
 })
 
-/* ------------------------------------------------------------------ помощники */
+/* -------------------------------------------------------------------- helpers */
 
 const ROOM = 'interrupt-room'
-/** Тот самый байт, который шлёт Ctrl+C. */
+/** The very byte that Ctrl+C sends. */
 const ETX = '\u0003'
 const PETYA = 'p_petya'
 const ADA = 'p_ada'
@@ -102,7 +106,7 @@ async function until(what: () => boolean | Promise<boolean>, ms = 6000): Promise
   return false
 }
 
-/** Ровно то, что читает `send`: состояние и приём кадра. */
+/** Exactly what `send` reads: the state and taking in a frame. */
 function socket(): { ws: WebSocket; said: string[] } {
   const said: string[] = []
   const ws = {
@@ -119,7 +123,7 @@ function who(role: 'host' | 'participant'): TokenPayload {
   return { sessionId: ROOM, participantId: role === 'host' ? ADA : PETYA, role }
 }
 
-/** Что сказал пульт в ответ на сообщение. `null` — не сказал ничего. */
+/** What the control said in reply to a message; `null` if it said nothing. */
 async function say(
   role: 'host' | 'participant',
   message: ControlClientMessage,
@@ -140,9 +144,9 @@ async function transcript(): Promise<{ kind: string; text: string }[]> {
     }))
 }
 
-/* ---------------------------------------------------------------------- тест */
+/* ------------------------------------------------------------------ the test */
 
-test('студент снимает свою команду, очередь преподавателя остаётся', async () => {
+test("a student stops their own command, the teacher's queue stays", async () => {
   const { createSession, setRules, upsertParticipant } = await import('../server/src/db.js')
   const { openTerminal } = await import('../server/src/kernel/terminal.js')
   createSession(ROOM, 'Оболочка', null)
@@ -150,49 +154,51 @@ test('студент снимает свою команду, очередь пр
   upsertParticipant({ id: PETYA, sessionId: ROOM, name: 'Петя', avatar: null, role: 'participant' })
   upsertParticipant({ id: ADA, sessionId: ROOM, name: 'Ада', avatar: null, role: 'host' })
   await openTerminal(ROOM)
-  await wait(500) // прогрев: сервер ждёт первого приглашения
+  await wait(500) // warm-up: the server waits for the first prompt
   typed = []
 
-  // Петя запускает своё — своей кнопкой, а не мимо пульта.
+  // Petya runs his own command, with his own button, not around the control
+  // path.
   assert.equal(await say('participant', { t: 'term:run', command: 'sleep 30' }), null)
   assert.ok(
     await until(() => typed.some((line) => line.includes('sleep 30'))),
-    'команда студента не дошла до оболочки',
+    "the student's command did not reach the shell",
   )
-  // Преподаватель ставит свою следом — оболочка занята, значит в очередь.
+  // The teacher sends theirs right after: the shell is busy, so it is queued.
   assert.equal(await say('host', { t: 'term:run', command: 'pytest -q' }), null)
   assert.ok(
     await until(async () => (await transcript()).some((l) => /ждёт свободной оболочки/.test(l.text))),
-    'команда преподавателя не встала в очередь',
+    "the teacher's command was not queued",
   )
   typed = []
 
-  // И Петя жмёт «стоп».
+  // And Petya presses "stop".
   assert.equal(await say('participant', { t: 'term:interrupt' }), null)
 
   assert.ok(
     await until(() => typed.some((line) => line.includes(ETX))),
-    'Ctrl+C не ушёл в оболочку: своя бегущая команда так и идёт',
+    'Ctrl+C did not reach the shell: his own running command is still going',
   )
   const said = await transcript()
   assert.ok(
     said.some((l) => l.kind === 'system' && /Ctrl\+C — команду останавливает Петя/.test(l.text)),
-    'комната не узнала, кто остановил команду',
+    'the room was not told who stopped the command',
   )
   /*
-   * Вот она, развилка: с голым `undefined` вместо `participantId` очередь
-   * преподавателя ушла бы вместе со студенческой командой — и сказано об этом
-   * было бы вслух, строкой «команда снята из очереди».
+   * Here is the fork: with a bare `undefined` instead of `participantId`, the
+   * teacher's queue would have gone along with the student's command — and it
+   * would have been said out loud, with the line "команда снята из очереди"
+   * (command removed from the queue).
    */
   assert.ok(
     !said.some((l) => l.kind === 'system' && /снята из очереди|из очереди снято/.test(l.text)),
-    'студент унёс из очереди чужую команду',
+    "the student took someone else's command out of the queue",
   )
-  // И это не молчание кода, а живая очередь: оболочка освободилась — пошло то,
-  // что в ней стояло.
+  // And this is not the code keeping quiet but a live queue: once the shell is
+  // free, whatever was waiting in it runs.
   live?.send(JSON.stringify(['stdout', '^C\r\n$ ']))
   assert.ok(
     await until(() => typed.some((line) => line.includes('pytest -q'))),
-    'команда преподавателя не дождалась своей очереди',
+    "the teacher's command never got its turn",
   )
 })

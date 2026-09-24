@@ -1,15 +1,18 @@
 /**
- * Версия, которую сервер называет о себе: `/api/health` и журнал старта.
+ * The version the server reports about itself: `/api/health` and the startup
+ * log.
  *
- * Число — из КОРНЕВОГО package.json, того же, из которого его берут колесо,
- * веб (vite define) и теги выпуска: другого источника у версии нет, и копии в
- * package.json воркспейсов лишь сверяются с ним (scripts/version.mts check).
+ * The number comes from the ROOT package.json, the same one the wheel, the web
+ * app (vite define) and the release tags take it from: the version has no
+ * other source, and the copies in the workspaces' package.json files are only
+ * checked against it (scripts/version.mts check).
  *
- * Импорт JSON, а не чтение файла на старте. esbuild встраивает объект в бандл
- * на сборке, поэтому собранный server.js знает свою версию, где бы он ни
- * лежал: в образе рядом с ним нет корневого package.json (Dockerfile кладёт
- * туда серверный), а в колесе — свой, от pack.mts. Под tsx (make dev, тесты)
- * тот же импорт читает файл из дерева.
+ * A JSON import, not a file read at startup. esbuild inlines the object into
+ * the bundle at build time, so the built server.js knows its version wherever
+ * it lies: in the image there is no root package.json next to it (the
+ * Dockerfile puts the server's own there), and in the wheel there is another
+ * one, from pack.mts. Under tsx (make dev, tests) the same import reads the
+ * file from the tree.
  */
 import rootPackage from '../../package.json' with { type: 'json' }
 

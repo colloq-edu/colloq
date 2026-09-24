@@ -1,9 +1,11 @@
 /**
- * Версия проекта — строка из корневого package.json. Её подставляет Vite
- * (`define` в vite.config.ts) и на сборке, и в dev-сервере: своей копии числа у
- * веба нет, иначе панель показывала бы одну версию, а /api/health — другую.
+ * The project version — the string from the root package.json. Vite
+ * substitutes it (`define` in vite.config.ts) both in the build and in the dev
+ * server: the web has no copy of the number of its own, otherwise the panel
+ * would show one version and /api/health another.
  *
- * Глобальная константа, а не импорт package.json: импорт унёс бы в бандл весь
- * корневой манифест со скриптами ради одной строки.
+ * A global constant, not an import of package.json: the import would drag the
+ * whole root manifest with its scripts into the bundle for the sake of one
+ * string.
  */
 declare const __COLLOQ_VERSION__: string

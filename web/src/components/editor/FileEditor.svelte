@@ -2,16 +2,19 @@
   import { tr, getLocale } from '@shared/i18n'
   import { editorPhrases } from '@/lib/editor-locale'
   /*
-   * Редактор файла — тот же CodeMirror, что и в ячейках, собранный по-другому.
+   * The file editor — the same CodeMirror as in the cells, assembled
+   * differently.
    *
-   * У ячейки нет высоты: она ровно такая, как её текст, а прокручивается
-   * страница. У файла высота есть — он занимает центр целиком и прокручивается
-   * сам, — и отсюда все различия: свой скроллер, номера строк, поиск и то, что
-   * клавиши тут не про соседнюю ячейку, а про сам файл.
+   * A cell has no height: it is exactly as tall as its text, and the page
+   * scrolls. A file has a height — it takes up the whole centre and scrolls
+   * itself — and every difference comes from that: its own scroller, line
+   * numbers, search, and keys that are not about the neighbouring cell but
+   * about the file itself.
    *
-   * Грамматика грузится отдельным куском на язык, а не все сразу: комната, где
-   * открыли один .py, не платит за разбор YAML и HTML. Ядро — общее с
-   * ячейками, и Vite складывает его в один кусок на обоих.
+   * Each language's grammar loads as a separate chunk, not all at once: a
+   * room where one .py was opened does not pay for parsing YAML and HTML.
+   * The core is shared with the cells, and Vite puts it into one chunk for
+   * both.
    */
   import type { Highlight } from '@shared/paths'
   import type { DecorationSet, EditorView } from '@codemirror/view'
@@ -84,7 +87,7 @@
 
   type Core = Awaited<ReturnType<typeof importCore>>
 
-  /** Обе стороны «можно ли печатать» — одним куском, чтобы их нельзя было развести. */
+  /** Both sides of "can I type" in one piece, so they cannot drift apart. */
   function writableExtensions(cm: Core, editable: boolean) {
     return [cm.state.EditorState.readOnly.of(!editable), cm.view.EditorView.editable.of(editable)]
   }
@@ -95,11 +98,11 @@
   }
 
   /**
-   * Грамматика для языка — или ничего.
+   * The grammar for a language — or nothing.
    *
-   * JSON и YAML разбираются своими грамматиками, а не JavaScript «примерно
-   * похоже»: в тетради `.ipynb` кавычки внутри строк и запятые в конце — ровно
-   * то, ради чего в неё вообще заглядывают руками.
+   * JSON and YAML are parsed by their own grammars, not by JavaScript as
+   * "close enough": in an `.ipynb` notebook the quotes inside strings and the
+   * trailing commas are exactly what anyone opens it by hand for.
    */
   const grammars: Record<Highlight, () => Promise<{ extension: unknown }>> = {
     python: () => import('@codemirror/lang-python').then(({ python }) => python()),
@@ -121,32 +124,36 @@
     return made
   }
 
-  /** Сколько горит полоса под строкой, к которой привёл переход. */
+  /** How long the bar under the line a jump led to stays lit. */
   const LANDED_MS = 2000
 
   /**
-   * Номер последнего применённого приземления — на весь модуль, а не на экземпляр.
+   * The number of the last applied landing — for the whole module, not per
+   * instance.
    *
-   * SessionScreen держит этот редактор под `{#key activePath}`: уход на соседнюю
-   * вкладку и возврат — это НОВЫЙ CodeMirror и новый прогон эффекта, а метка в
-   * lib/goto.svelte.ts всё ещё лежит и всё ещё про этот файл (она состояние, а
-   * не событие, — почему, написано там же). Счётчик, живущий в экземпляре,
-   * обнулялся бы вместе с ним, и каждое возвращение на вкладку заново уносило
-   * бы каретку к определению — хоть через час после самого перехода.
+   * SessionScreen keeps this editor under `{#key activePath}`: leaving for a
+   * neighbouring tab and coming back means a NEW CodeMirror and a new run of
+   * the effect, while the mark in lib/goto.svelte.ts is still there and still
+   * about this file (it is state, not an event — why is written there too).
+   * A counter living in the instance would be reset along with it, and every
+   * return to the tab would carry the caret off to the definition again —
+   * even an hour after the jump itself.
    */
   let appliedSeq = 0
 
   /**
-   * Переход к определению: подчёркивание под зажатым модификатором и сам жест.
+   * Go to definition: the underline under a held modifier, and the gesture
+   * itself.
    *
-   * Вторая копия того, что стоит в ячейке (notebook/CodeEditor.svelte), и по
-   * той же причине, по которой копией живёт весь этот редактор: набор
-   * расширений у файла свой. Общее — там, где оно и должно быть: разбор в
-   * shared/python-defs.ts, ответ на «куда вести» на сервере, а решение, что
-   * делать с ответом, — в lib/goto.svelte.ts.
+   * A second copy of what the cell has (notebook/CodeEditor.svelte), for the
+   * same reason this whole editor lives as a copy: the file has its own set
+   * of extensions. What is shared sits where it belongs: the parsing in
+   * shared/python-defs.ts, the answer to "where to go" on the server, and
+   * the decision about what to do with the answer in lib/goto.svelte.ts.
    *
-   * Ставится ТОЛЬКО на Python (см. место сборки): `questionAt` разбирает
-   * Python, и подчёркнутое имя в YAML обещало бы переход, которого не будет.
+   * It is installed ONLY for Python (see where the editor is assembled):
+   * `questionAt` parses Python, and an underlined name in YAML would promise
+   * a jump that never comes.
    */
   function gotoGesture(cm: Core, jump: (code: string, cursor: number) => void) {
     const { Decoration, ViewPlugin } = cm.view
@@ -157,30 +164,33 @@
     const underline = StateField.define<DecorationSet>({
       create: () => Decoration.none,
       update(deco, tr) {
-        // Звено зовётся `sent`, а не `effect`: svelte2tsx роняет разбор ВСЕГО
-        // файла на локальном имени `effect` рядом с рунами (проверено —
-        // 34 ошибки на пустом месте, начиная с `of` в этой строке).
+        // The loop variable is called `sent`, not `effect`: svelte2tsx breaks
+        // parsing of the WHOLE file on a local name `effect` next to runes
+        // (verified — 34 errors out of nowhere, starting with `of` on the line
+        // below).
         for (const sent of tr.effects) {
           if (sent.is(setGoto)) {
             const at = sent.value
             return at ? Decoration.set([mark.range(at.from, at.to)]) : Decoration.none
           }
         }
-        // Текст поехал под указателем — сосед печатает выше по файлу, и
-        // подчёркнуто уже не то имя. Следующее движение мыши поставит заново.
+        // The text moved under the pointer — a neighbour is typing higher up
+        // in the file, and the underlined name is no longer the right one.
+        // The next mouse move sets it again.
         return tr.docChanged ? Decoration.none : deco
       },
       provide: (self) => cm.view.EditorView.decorations.from(self),
     })
 
     /*
-     * Текст файла целиком — но не на каждое движение мыши.
+     * The file's whole text — but not on every mouse move.
      *
-     * `questionAt` читает исходник от начала: состояние тройных кавычек к
-     * щёлкнутой строке иначе не узнать. В редактор пускают файлы до 1,5 МБ
-     * (server/src/workspace.ts · MAX_TEXT_BYTES), и `doc.toString()` на каждый
-     * пиксель — это мегабайт мусора в секунду. Документ CodeMirror неизменяем,
-     * значит его можно сверить по ссылке и не собирать строку заново.
+     * `questionAt` reads the source from the start: there is no other way to
+     * know the triple-quote state at the clicked line. Files up to 1.5 MB are
+     * let into the editor (server/src/workspace.ts · MAX_TEXT_BYTES), and
+     * `doc.toString()` on every pixel is a megabyte of garbage per second. A
+     * CodeMirror document is immutable, so it can be compared by reference
+     * instead of building the string again.
      */
     let lastDoc: unknown = null
     let lastText = ''
@@ -192,7 +202,7 @@
       return lastText
     }
 
-    /** Что подчёркнуто прямо сейчас — чтобы не слать кадр на каждый пиксель. */
+    /** What is underlined right now, so nothing is dispatched on every pixel. */
     const shown = (view: EditorView): { from: number; to: number } | null => {
       const at = view.state.field(underline, false)?.iter()
       return at?.value ? { from: at.from, to: at.to } : null
@@ -215,10 +225,11 @@
     const handlers = cm.view.EditorView.domEventHandlers({
       mousemove(event, view) {
         /*
-         * Разбор — только пока модификатор зажат, и это не экономия ради
-         * экономии: `questionAt` на полуторамегабайтном файле стоит миллисекунд,
-         * а движений мыши в секунду бывает сотня. Под зажатой клавишей их
-         * считанные единицы, да и кадр уходит только когда имя правда сменилось.
+         * Parsing happens only while the modifier is held, and that is not
+         * saving for the sake of saving: `questionAt` on a 1.5 MB file costs
+         * milliseconds, and there can be a hundred mouse moves a second. With
+         * the key held there are only a handful, and even then a transaction
+         * is dispatched only when the name has really changed.
          */
         if (!isJumpClick(event)) {
           put(view, null)
@@ -232,20 +243,21 @@
         return false
       },
       keyup(_event, view) {
-        // Модификатор отпустили — подчёркивания быть не должно, даже если мышь
-        // с тех пор не двигалась.
+        // The modifier was released — there must be no underline, even if the
+        // mouse has not moved since.
         put(view, null)
         return false
       },
       mousedown(event, view) {
         if (event.button !== 0 || !isJumpClick(event)) return false
         const found = nameAt(view, event)
-        // Под указателем не имя — щелчок остаётся обычным щелчком.
+        // Not a name under the pointer — the click stays an ordinary click.
         if (!found) return false
         /*
-         * Своё же поведение и перехватываем: без этого CodeMirror поставит по
-         * щелчку каретку, и человек, вернувшийся назад, найдёт её не там, где
-         * оставил. Возврат `true` говорит редактору то же самое.
+         * The editor's own behaviour is intercepted too: without this
+         * CodeMirror would place the caret at the click, and a person who
+         * comes back would not find it where they left it. Returning `true`
+         * tells the editor the same thing.
          */
         event.preventDefault()
         put(view, null)
@@ -255,10 +267,11 @@
     })
 
     /*
-     * Cmd+Tab уносит `keyup` с собой: модификатор отпускают уже в другом окне,
-     * и подчёркивание осталось бы висеть до следующего движения мыши — а
-     * вернувшийся человек щёлкнул бы по нему, ожидая обычного щелчка. Поэтому
-     * гасим ещё и по уходу окна из фокуса и по уходу вкладки.
+     * Cmd+Tab takes the `keyup` away with it: the modifier is released in
+     * another window already, and the underline would stay hanging until the
+     * next mouse move — and a person who came back would click it expecting
+     * an ordinary click. So it is also cleared when the window loses focus
+     * and when the tab is hidden.
      */
     const watch = ViewPlugin.fromClass(
       class {
@@ -282,11 +295,11 @@
   }
 
   /**
-   * Полоса под строкой, к которой привёл переход, — и то, чем её зажигают.
+   * The bar under the line a jump led to — and what lights it.
    *
-   * Отдельная от подчёркивания вещь: подчёркивание — про «сюда можно уйти», а
-   * это — про «вот куда я тебя привёл», и живёт оно секунды, а не пока держат
-   * клавишу.
+   * A separate thing from the underline: the underline is about "you can go
+   * here", while this is about "here is where I brought you", and it lives
+   * for seconds, not for as long as a key is held.
    */
   function landingMark(cm: Core) {
     const { Decoration } = cm.view
@@ -304,11 +317,12 @@
           if (sent.is(hide)) return Decoration.none
         }
         /*
-         * Первое же собственное движение каретки гасит полосу: она отвечает на
-         * вопрос «куда меня привели», и после того, как человек поставил
-         * каретку сам, остаётся непонятной полосой посреди кода. Кадр самого
-         * приземления сюда не доходит — он несёт `show`, и цикл выше выходит
-         * раньше, хотя каретку двигает тоже он.
+         * The very first caret move of the person's own clears the bar: it
+         * answers the question "where was I brought", and once the person has
+         * placed the caret themselves, it is left as a puzzling bar in the
+         * middle of the code. The landing's own transaction does not get here
+         * — it carries `show`, and the loop above returns earlier, even though
+         * it moves the caret too.
          */
         if (deco.size && (tr.selection || tr.docChanged)) return Decoration.none
         return deco.map(tr.changes)
@@ -329,9 +343,9 @@
 
   interface Props {
     file: FileDoc
-    /** Правит ли этот человек, или только читает. */
+    /** Whether this person edits or only reads. */
     readOnly: boolean
-    /** Запустить файл — Cmd+Enter. Ничего, если файл нечем запускать. */
+    /** Run the file — Cmd+Enter. Nothing if there is no runner for it. */
     onrun?: (() => void) | null
   }
 
@@ -343,11 +357,12 @@
   let ready = $state(false)
 
   /*
-   * Кто здесь я — для чужих курсоров в этом файле.
+   * Who I am here — for the cursors others see in this file.
    *
-   * Присутствие файла своё, отдельное от комнатного: в нём живут курсоры внутри
-   * текста, и до комнаты они не доходят вовсе. Имя и цвет берутся те же самые,
-   * иначе один человек оказался бы двумя разными людьми в двух местах экрана.
+   * The file has its own presence, separate from the room's: the cursors
+   * inside the text live in it, and they never reach the room at all. The
+   * name and colour are the very same, otherwise one person would turn into
+   * two different people in two places on the screen.
    */
   $effect(() => {
     const me = session.me
@@ -361,9 +376,10 @@
   })
 
   /*
-   * Обработчики живут в держателе, а не читаются раскладкой напрямую: иначе
-   * редактор оказался бы зависимым от них, и пересборка на каждое нажатие
-   * родителя выбрасывала бы курсор и историю отмен.
+   * The handlers live in a holder instead of being read by the keymap
+   * directly: otherwise the editor would depend on them, and a rebuild on
+   * every press in the parent would throw away the cursor and the undo
+   * history.
    */
   const handlers: { onrun?: (() => void) | null } = {}
   $effect(() => {
@@ -372,22 +388,23 @@
 
   let view: EditorView | null = null
   /**
-   * Переключить правило в живом редакторе. `null`, пока редактора нет.
+   * Switch the rule in the live editor. `null` while there is no editor.
    *
-   * `$state.raw`, потому что второй эффект должен проснуться и когда редактор
-   * построился заново (другой файл), а не только когда правило поменялось.
+   * `$state.raw`, because the second effect must also wake up when the editor
+   * has been built anew (another file), not only when the rule has changed.
    */
   let setWritable = $state.raw<((editable: boolean) => void) | null>(null)
-  /** Что стоит в живом редакторе сейчас — чтобы не переконфигурировать впустую. */
+  /** What the live editor has now — so it is not reconfigured for nothing. */
   let writableNow = true
   let setLabels = $state.raw<(() => void) | null>(null)
   /**
-   * Поставить каретку туда, куда привёл переход, и подсветить строку.
+   * Put the caret where the jump led and highlight the line.
    *
-   * `null`, пока редактора нет вовсе, — и это не мелочь: до прихода текста
-   * здесь стоит заглушка «читаем файл…», а метка перехода может лежать уже
-   * сейчас. `$state.raw`, по тому же доводу, что и у соседей выше: эффект
-   * приземления должен проснуться и когда редактор построился заново.
+   * `null` while there is no editor at all — and that is no trifle: until the
+   * text arrives there is a "reading the file…" placeholder here, while the
+   * jump's mark may already be waiting. `$state.raw`, for the same reason as
+   * with the neighbours above: the landing effect must also wake up when the
+   * editor has been built anew.
    */
   let landOn = $state.raw<((line: number, column: number) => void) | null>(null)
 
@@ -395,21 +412,22 @@
     const parent = host
     const doc = file
     /*
-     * `readOnly` здесь НЕ отслеживается, и это несущее решение.
+     * `readOnly` is NOT tracked here, and that is a load-bearing decision.
      *
-     * Пока отслеживался, преподаватель, поменявший правило `files` посреди
-     * пары, разбирал редактор у всех: `destroy` уносит сфокусированный
-     * `.cm-content` вместе с курсором, выделением и прокруткой, и человек,
-     * писавший в файл, оказывался в никуда прокрученном чужом тексте. Теперь
-     * правило живёт в отсеке и меняется на месте — см. эффект ниже; так же
-     * сделано в ячейках (CodeEditor.svelte).
+     * While it was tracked, a teacher who changed the `files` rule in the
+     * middle of a class tore down everyone's editor: `destroy` takes away the
+     * focused `.cm-content` together with the cursor, the selection and the
+     * scroll, and a person who was writing into the file ended up in
+     * unfamiliar text scrolled to nowhere. Now the rule lives in a
+     * compartment and changes in place — see the effect below; the cells do
+     * the same (CodeEditor.svelte).
      */
     const editable = untrack(() => !readOnly)
     if (!parent) return
 
     let disposed = false
     let made: EditorView | null = null
-    /** Таймер, гасящий полосу приземления. Снимается вместе с редактором. */
+    /** The timer that clears the landing bar. Removed along with the editor. */
     let fade: number | undefined
 
     void Promise.all([loadCore(), loadGrammar(highlightFor(doc.path))]).then(([cm, grammar]) => {
@@ -425,10 +443,10 @@
         keymap.of([
           {
             /*
-             * Ctrl+S ничего не сохраняет — файл и так лежит на диске через
-             * секунду после последнего нажатия. Перехвачен ради того, чтобы не
-             * открылось окно «сохранить страницу»: человек, нажавший его по
-             * привычке, не должен получить в ответ диалог браузера.
+             * Ctrl+S saves nothing — the file is on disk anyway a second
+             * after the last keystroke. It is intercepted so that the "save
+             * page" window does not open: a person who pressed it out of habit
+             * should not get a browser dialog in return.
              */
             key: 'Mod-s',
             preventDefault: true,
@@ -447,11 +465,11 @@
       )
 
       /*
-       * Переход к определению — только по Python.
+       * Go to definition — only for Python.
        *
-       * Язык здесь тот же, по которому выбрана грамматика: .py и .pyi. В
-       * остальных файлах жеста нет вовсе — ни подчёркивания, ни перехвата
-       * щелчка, — и Cmd+клик по .md остаётся обычным щелчком.
+       * The language here is the same one the grammar was picked by: .py and
+       * .pyi. Other files have no gesture at all — no underline, no click
+       * interception — and Cmd+click on a .md stays an ordinary click.
        */
       const goto =
         highlightFor(doc.path) === 'python'
@@ -475,8 +493,9 @@
             bracketMatching(),
             closeBrackets(),
             indentOnInput(),
-            // Четыре пробела: файлы на семинаре — это Python, а Python в этом
-            // продукте пишут в ячейках, где отступ уже такой (lib/indent.ts).
+            // Four spaces: the files at a seminar are Python, and Python in
+            // this product is written in cells, where the indent is already
+            // that (lib/indent.ts).
             indentUnit.of(INDENT),
             autocompletion({ activateOnTyping: true, icons: false }),
             highlightSelectionMatches(),
@@ -487,22 +506,23 @@
             grammar ? (grammar.extension as never) : [],
             goto,
             landed.field,
-            // Общий текст — источник правды; своей истории у редактора нет,
-            // Mod-Z принадлежит общему UndoManager.
+            // The shared text is the source of truth; the editor has no
+            // history of its own, Mod-Z belongs to the shared UndoManager.
             cm.collab.yCollab(doc.text, doc.awareness, { undoManager: doc.undoManager }),
             fileKeys,
             keymap.of([...closeBracketsKeymap, ...searchKeymap, ...cm.commands.defaultKeymap]),
             /*
-             * Tab — отступ, а не переход по фокусу.
+             * Tab is an indent, not a focus move.
              *
-             * Мягкий: пробелы встают В КУРСОР, до следующей отметки, а строки
-             * целиком двигают выделение и Shift-Tab. Правило общее с ячейкой —
-             * lib/indent.ts, там же доводы.
+             * A soft one: spaces go in AT THE CURSOR, up to the next tab
+             * stop, while whole lines are moved by a selection and by
+             * Shift-Tab. The rule is shared with the cell — lib/indent.ts,
+             * where the reasons are too.
              *
-             * Стоит последним и потому проигрывает всем, кто уже занял Tab, —
-             * подсказчику в первую очередь. Ценой ловушки для клавиатуры: выйти
-             * из редактора Tab'ом нельзя, для этого есть Escape. Для поля, в
-             * котором пишут отступами, это правильный размен.
+             * It comes last and so loses to everyone who has already claimed
+             * Tab — the completer first of all. At the cost of a keyboard
+             * trap: you cannot leave the editor with Tab, Escape is there for
+             * that. For a field written in indents, that is the right trade.
              */
             keymap.of([
               tabKey({
@@ -543,20 +563,22 @@
       landOn = (line, column) => {
         const text = built.state.doc
         /*
-         * Номер строки приехал от сервера и про ТОТ текст, который был у него
-         * на руках: файл с тех пор мог укоротить сосед, правящий его рядом.
-         * Промахнуться в конец файла честнее, чем уронить редактор исключением
-         * на несуществующей строке.
+         * The line number came from the server and is about THE text it had
+         * at hand: since then a neighbour editing the file alongside may have
+         * shortened it. Missing to the end of the file is more honest than
+         * crashing the editor with an exception on a line that does not
+         * exist.
          */
         const row = text.line(Math.min(Math.max(1, line), text.lines))
         const pos = Math.min(row.from + column, row.to)
         built.dispatch({
           selection: cm.state.EditorSelection.cursor(pos),
           /*
-           * Везёт сам редактор, а не экран комнаты, и это ровно то, чем файл
-           * отличается от ячейки: у него свой скроллер (`.cm-scroller` ниже),
-           * снаружи его двигать нечем. Ячейку, наоборот, везёт тетрадь — см.
-           * lib/goto.svelte.ts.
+           * The editor itself scrolls there, not the room's screen, and that
+           * is exactly how a file differs from a cell: it has its own
+           * scroller (`.cm-scroller` below), and there is nothing outside to
+           * move it with. A cell, on the contrary, is scrolled to by the
+           * notebook — see lib/goto.svelte.ts.
            */
           effects: [EditorView.scrollIntoView(pos, { y: 'center' }), landed.show.of(pos)],
         })
@@ -583,9 +605,10 @@
   })
 
   /*
-   * Правило `files` меняется посреди пары, и редактор его переживает: меняется
-   * один отсек, а фокус, курсор и прокрутка остаются на месте. Строится
-   * редактор уже с верным значением, так что первый прогон — холостой.
+   * The `files` rule changes in the middle of a class, and the editor
+   * survives it: one compartment changes, while focus, cursor and scroll stay
+   * in place. The editor is built with the right value already, so the first
+   * run does nothing.
    */
   $effect(() => {
     getLocale()
@@ -600,26 +623,29 @@
     apply(editable)
   })
 
-  /* Первый показ файла ставит курсор в редактор: человек его открыл, чтобы читать
-     и править, и лишнее нажатие мышью здесь ничего не решает. */
+  /* The file's first showing puts the cursor into the editor: the person
+     opened it to read and edit, and an extra mouse click here settles
+     nothing. */
   $effect(() => {
     if (!ready) return
     untrack(() => view)?.focus()
   })
 
-  /** Метка «сюда привёл переход» — или ничего. Живёт в lib/goto.svelte.ts. */
+  /** The "a jump led here" mark — or nothing. Lives in lib/goto.svelte.ts. */
   const landing = $derived(landingInFile(file.path))
 
   /*
-   * Приземление.
+   * The landing.
    *
-   * Стоит ПОСЛЕ эффекта с фокусом нарочно: `view.focus()` возвращает браузер к
-   * каретке, а в только что построенном редакторе она в начале файла, — и,
-   * случись фокус вторым, он увёз бы экран от найденной строки обратно наверх.
+   * It stands AFTER the focus effect on purpose: `view.focus()` brings the
+   * browser back to the caret, and in a freshly built editor that is at the
+   * start of the file — so if focus came second, it would carry the screen
+   * away from the found line back to the top.
    *
-   * Ждёт `landOn`, а не `ready`: пока текст не приехал, вместо редактора стоит
-   * заглушка, и приземляться попросту некуда. Метка это переживает — она
-   * состояние, а не событие, и дождётся построенного редактора сама.
+   * It waits for `landOn`, not `ready`: until the text has arrived there is a
+   * placeholder instead of the editor, and there is simply nowhere to land.
+   * The mark survives this — it is state, not an event, and waits for the
+   * built editor by itself.
    */
   $effect(() => {
     const land = landOn
@@ -636,12 +662,13 @@
     <div bind:this={host} class="cm-file min-h-0 flex-1 overflow-hidden"></div>
   {:else}
     <!--
-      До прихода текста редактора нет вовсе.
+      Until the text arrives there is no editor at all.
 
-      Пустой документ до `sync` значит «ещё не прочитан», а не «файл пуст», —
-      и редактор, показавший пустоту, приглашает в неё печатать, тем более что
-      сам ставит в неё курсор. Напечатанное не пропадало, а сливалось с
-      приехавшим файлом и через секунду уезжало на диск ко всей комнате.
+      An empty document before `sync` means "not read yet", not "the file is
+      empty" — and an editor that shows emptiness invites typing into it, all
+      the more since it puts the cursor there itself. What was typed did not
+      vanish: it merged with the arriving file and a second later went to
+      disk for the whole room.
     -->
     <div class="flex min-h-0 flex-1 items-center justify-center text-ui text-muted"> {tr('room.ui.107')} {baseOf(file.path)}…
     </div>
@@ -649,9 +676,9 @@
 </div>
 
 <style>
-  /* Редактор занимает колонку целиком и прокручивается сам: страница под ним
-     не двигается, потому что двигать её значило бы уводить из вида строку
-     вкладок и панель файлов. */
+  /* The editor takes up the whole column and scrolls itself: the page under
+     it does not move, because moving it would take the tab row and the file
+     panel out of view. */
   .cm-file :global(.cm-editor) {
     height: 100%;
   }
@@ -660,12 +687,13 @@
   }
 
   /*
-   * Одежда перехода к определению — здесь, а не в теме.
+   * The go-to-definition styling lives here, not in the theme.
    *
-   * Тема файла (editor-theme.ts) собрана из общей одежды редактора и того, что
-   * есть только у файла, и обе половины — общие с ячейкой. Эти два класса
-   * ставит расширение, объявленное прямо в этом компоненте, и держать их в
-   * третьем месте значило бы разводить жест и его вид по разным файлам.
+   * The file theme (editor-theme.ts) is assembled from the editor's shared
+   * styling and what only the file has, and both halves are general styling,
+   * as with the cell. These two classes are set by an extension declared
+   * right in this component, and keeping them in a third place would split
+   * the gesture and its look across different files.
    */
   .cm-file :global(.cm-goto) {
     text-decoration: underline;
@@ -673,9 +701,10 @@
     text-underline-offset: 3px;
     cursor: pointer;
   }
-  /* Полоса перебивает фон активной строки: каретка после перехода стоит ровно
-     на ней, и без `!important` видно было бы только обычную подсветку строки
-     под курсором — тем же приёмом и по тому же поводу, что в editor-theme.ts. */
+  /* The bar overrides the active line's background: after a jump the caret
+     sits right on it, and without `!important` only the ordinary highlight of
+     the line under the cursor would show — the same trick for the same reason
+     as in editor-theme.ts. */
   .cm-file :global(.cm-landed) {
     background-color: rgb(var(--accent) / 0.14) !important;
     box-shadow: inset 2px 0 0 rgb(var(--accent-text));

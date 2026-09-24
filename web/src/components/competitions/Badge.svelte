@@ -1,14 +1,16 @@
 <script lang="ts">
   /**
-   * Плашка состояния — одна на все экраны соревнований.
+   * The state badge — one for all competition screens.
    *
-   * Тон и форму называет `@shared/competitions` (`entrantBadge`), здесь только
-   * краски. Разведены они так же, как в макете: залитая бледным — исход,
-   * залитая насыщенным — то, что происходит прямо сейчас («ВЫПОЛНЯЕТСЯ») или
-   * то, что видит только преподаватель («УПАЛА МЕТРИКА»), контурная — ожидание.
+   * `@shared/competitions` (`entrantBadge`) names the tone and the form; only
+   * the paint is here. They are split the same way as in the mockup: a pale
+   * fill is an outcome, a saturated fill is what is happening right now
+   * ("RUNNING") or what only the teacher sees ("METRIC FAILED"), an outline
+   * is waiting.
    *
-   * Подложки ошибок и результатов берутся от цветовых токенов. В светлой
-   * теме заливка слабее: насыщенный фон снижает контраст цветного текста.
+   * The backgrounds of errors and results come from the colour tokens. In
+   * the light theme the fill is weaker: a saturated background lowers the
+   * contrast of coloured text.
    */
   import type { BadgeForm, BadgeTone } from '@shared/competitions'
 
@@ -16,7 +18,7 @@
     word: string
     tone: BadgeTone
     form: BadgeForm
-    /** На телефоне компактнее отступы, размер текста сохраняется. */
+    /** On a phone the padding is tighter; the text size stays the same. */
     phone?: boolean
   }
 
@@ -51,8 +53,9 @@
   }
 
   const paint = $derived(PAINT[tone][form])
-  // Контурная плашка на пиксель ниже залитой: рамка съедает свою строку, и без
-  // этого «В ОЧЕРЕДИ» стоит на два пикселя выше соседнего «ГОТОВО».
+  // The outline badge gets a pixel less padding than the filled one: the
+  // border eats its own row of pixels, and without this "IN QUEUE" stands two
+  // pixels taller than the neighbouring "DONE".
   const pad = $derived(
     phone
       ? form === 'outline' ? 'px-1.5 py-px' : 'px-1.5 py-0.5'

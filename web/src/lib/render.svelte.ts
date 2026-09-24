@@ -38,16 +38,18 @@ export interface Renderers {
  * CodeMirror when the editor was split the same way.
  */
 /*
- * Математика в заметках — как в Jupyter: `$…$` внутри строки, `$$…$$` блоком.
+ * Math in notes — as in Jupyter: `$…$` inside a line, `$$…$$` as a block.
  *
- * Свои два расширения marked вместо готового marked-katex-extension: тому
- * нужно рисовать формулу сразу, а здесь она должна пережить санитайзер (см.
- * ниже в `markdown`). Разметка получает пустой узел с TeX в атрибуте —
- * закодированным, чтобы ни кавычка, ни `<` из формулы не стали разметкой.
+ * Two marked extensions of our own instead of the ready-made
+ * marked-katex-extension: that one has to draw the formula at once, while here
+ * it must survive the sanitizer (see `markdown` below). The markup gets an
+ * empty node with the TeX in an attribute — encoded, so that neither a quote
+ * nor a `<` from the formula becomes markup.
  *
- * `$5 и $10` — не формула: после открывающего доллара и перед закрывающим не
- * бывает пробела, а за закрывающим — цифры. Это правило Pandoc, и оно же
- * спасает цены в тексте задачи.
+ * `$5 and $10` is not a formula: there is never a space right after the
+ * opening dollar or right before the closing one, and never a digit right
+ * after the closing one. This is Pandoc's rule, and it also saves prices in a
+ * task's text.
  */
 const mathSlot = (tex: string, display: boolean): string =>
   `<${display ? 'div' : 'span'} data-math="${encodeURIComponent(tex)}"${display ? ' data-display=""' : ''}></${display ? 'div' : 'span'}>`
@@ -82,9 +84,9 @@ async function importRenderers(): Promise<Renderers> {
     import('dompurify').then(({ default: DOMPurify }) => ({ DOMPurify })),
     import('ansi_up').then(({ AnsiUp }) => ({ AnsiUp })),
     import('katex').then(({ default: katex }) => ({ katex })),
-    // Стили KaTeX вместе с его шрифтами — отдельным куском, только когда на
-    // экране тетрадь: остальным страницам формулы не нужны.
-    // @ts-expect-error — у css нет типов, а нужен только побочный эффект
+    // KaTeX's styles together with its fonts — as a separate chunk, only when a
+    // notebook is on screen: the other pages need no formulas.
+    // @ts-expect-error — css has no types, and only the side effect is needed
     import('katex/dist/katex.min.css'),
   ])
   marked.use({ extensions: [blockMath, inlineMath] })
@@ -103,7 +105,7 @@ async function importRenderers(): Promise<Renderers> {
     return converter
   }
 
-  /** Уже отрисованный кусок вывода и конвертер, которым его рисовали. */
+  /** An already rendered piece of output and the converter that rendered it. */
   interface Trail {
     text: string
     html: string
@@ -111,10 +113,10 @@ async function importRenderers(): Promise<Renderers> {
   }
 
   /*
-   * Записей несколько: на экране бывает несколько выводов сразу, и одна запись
-   * означала бы, что они по очереди выбивают друг друга и каждый платит полную
-   * цену. Восьми хватает на видимую часть тетради, а держат они то, что и так
-   * лежит в документе.
+   * There are several entries: there can be several outputs on screen at once,
+   * and a single entry would mean they take turns knocking each other out and
+   * each pays the full price. Eight is enough for the visible part of the
+   * notebook, and they hold what lies in the document anyway.
    */
   const trails: Trail[] = []
 
@@ -143,25 +145,26 @@ async function importRenderers(): Promise<Renderers> {
         }),
       )
       /*
-       * Оформление заметки — по белому списку свойств, и считается оно ЗДЕСЬ:
-       * после санитайзера, но ДО того, как формулы станут разметкой.
+       * A note's styling goes through a property allowlist, and it is computed
+       * HERE: after the sanitizer, but BEFORE formulas become markup.
        *
-       * Порядок не косметический. KaTeX раскладывает формулу теми самыми
-       * свойствами, которые заметке запрещены, — `position: absolute`, `top`,
-       * отрицательными сдвигами в `em`, — и, попади его собственный вывод под
-       * этот же фильтр, дроби и радикалы сложились бы в кашу. Отделить своё от
-       * чужого по классу `.katex` нельзя: сырой HTML в markdown проходит как
-       * есть, и `<span class="katex">` напишет кто угодно. Поэтому чужое
-       * чистится, пока своего ещё нет.
+       * The order is not cosmetic. KaTeX lays a formula out with the very
+       * properties a note is forbidden — `position: absolute`, `top`, negative
+       * offsets in `em` — and if its own output went through this same filter,
+       * fractions and radicals would collapse into mush. Our own cannot be told
+       * from foreign by the `.katex` class: raw HTML in markdown passes as is,
+       * and anyone can write `<span class="katex">`. So the foreign is cleaned
+       * while our own is not there yet.
        *
-       * Работа идёт по отцепленному `holder`: узел вне документа ничего не
-       * применяет и ничего по себе не загружает, так что `position: fixed` из
-       * чужой заметки не успевает накрыть экран, а `background: url(…)` — уйти
-       * запросом из браузера каждого в комнате. В страницу уезжает уже строка,
-       * в которой от `style` осталось только разрешённое (shared/note-css.ts).
+       * The work happens on the detached `holder`: a node outside the document
+       * applies nothing and loads nothing by itself, so a `position: fixed`
+       * from someone's note does not get to cover the screen, and a
+       * `background: url(…)` does not get to leave as a request from the
+       * browser of everyone in the room. What goes into the page is a string
+       * in which only the allowed part of `style` remains (shared/note-css.ts).
        *
-       * Пустой результат снимает атрибут целиком: `style=""` в разметке ничем
-       * не лучше его отсутствия, а в сравнении версий читается как правка.
+       * An empty result removes the attribute entirely: `style=""` in markup is
+       * no better than its absence, and in a version diff it reads as an edit.
        */
       for (const styled of holder.querySelectorAll('[style]')) {
         const kept = safeStyle(styled.getAttribute('style') ?? '')
@@ -169,16 +172,16 @@ async function importRenderers(): Promise<Renderers> {
         else styled.removeAttribute('style')
       }
       /*
-       * Формулы рисуются ПОСЛЕ санитайзера, и это не случайный порядок.
+       * Formulas are drawn AFTER the sanitizer, and the order is no accident.
        *
-       * KaTeX раскладывает формулу инлайновыми `style` — высота, сдвиг,
-       * отбивка, `position: absolute` в дробях, — то есть ровно тем, чего
-       * заметке нельзя (shared/note-css.ts) и правильно нельзя. Поэтому
-       * разметка несёт не готовую формулу, а её TeX в атрибуте: санитайзер
-       * проходит по нему как по тексту, фильтр оформления выше — тоже, и лишь
-       * потом KaTeX строит своё дерево из TeX, уже за их спиной. А в TeX ни
-       * стиля, ни тега не пронести: `trust` выключен, ошибка разбора
-       * выводится текстом.
+       * KaTeX lays a formula out with inline `style` — height, offset,
+       * padding, `position: absolute` in fractions — that is, exactly what a
+       * note may not use (shared/note-css.ts), and rightly so. So the markup
+       * carries not a finished formula but its TeX in an attribute: the
+       * sanitizer passes over it as over text, and so does the styling filter
+       * above, and only then does KaTeX build its tree from the TeX, behind
+       * their backs. And neither a style nor a tag can be smuggled in through
+       * TeX: `trust` is off, and a parse error is output as text.
        */
       for (const slot of holder.querySelectorAll('[data-math]')) {
         const tex = decodeURIComponent(slot.getAttribute('data-math') ?? '')
@@ -194,17 +197,19 @@ async function importRenderers(): Promise<Renderers> {
         })
       }
       /*
-       * Широкая таблица едет внутри своей обёртки, а не распирает колонку.
+       * A wide table scrolls inside its own wrapper instead of stretching the
+       * column.
        *
-       * Двенадцать колонок не помещаются ни в ячейку тетради, ни тем более в
-       * панель оракула на 380 px, а переносить в них текст «где угодно» —
-       * значит получить двенадцать столбиков по букве. Обёртка с
-       * `overflow-x: auto` (.table-scroll в index.css) — единственное место,
-       * где такой прокрутке место: сама лента вбок не ездит.
+       * Twelve columns fit neither in a notebook cell nor, all the more, in the
+       * 380 px oracle panel, and wrapping text in them "anywhere" means getting
+       * twelve columns one letter wide. A wrapper with `overflow-x: auto`
+       * (.table-scroll in index.css) is the only place where such scrolling
+       * belongs: the feed itself does not scroll sideways.
        *
-       * Здесь, а не в правиле CSS у `table`, потому что markdown обёртки не
-       * даёт, а `display: block` на самой таблице ломает её же раскладку. И
-       * после санитайзера: узел строится нами, а не приезжает из чужого текста.
+       * Here and not in a CSS rule on `table`, because markdown provides no
+       * wrapper, and `display: block` on the table itself breaks its own
+       * layout. And after the sanitizer: we build the node, it does not arrive
+       * from someone else's text.
        */
       for (const table of holder.querySelectorAll('table')) {
         const box = document.createElement('div')
@@ -222,24 +227,25 @@ async function importRenderers(): Promise<Renderers> {
     },
 
     /*
-     * Растущий вывод дорисовывается ХВОСТОМ, а не пересобирается целиком.
+     * Growing output is drawn by its TAIL, not rebuilt whole.
      *
-     * Сюда всегда приходит весь накопленный текст ячейки, а сервер дописывает
-     * его каждые 50 мс: обучение, печатающее по строке лога, к концу доходит до
-     * сотен килобайт, и полный ansi_to_html плюс DOMPurify на каждый флеш — это
-     * цена, растущая квадратично от объёма вывода, у КАЖДОГО в комнате, у кого
-     * ячейка на экране. Поэтому конвертер и уже готовый HTML держатся рядом с
-     * текстом, из которого получены: пришло продолжение — разбирается только
-     * продолжение.
+     * The cell's whole accumulated text always arrives here, and the server
+     * appends to it every 50 ms: training that prints a log line at a time
+     * reaches hundreds of kilobytes by the end, and a full ansi_to_html plus
+     * DOMPurify on every flush is a cost that grows quadratically with the
+     * output size, for EVERYONE in the room who has the cell on screen. So the
+     * converter and the ready HTML are kept next to the text they came from: a
+     * continuation arrives — only the continuation is parsed.
      *
-     * Цвет от этого не теряется, а наоборот, только так и работает: AnsiUp несёт
-     * состояние от куска к куску сам — ровно поэтому конвертер живёт вместе со
-     * своим текстом, а не создаётся заново. Начатый, но не дописанный escape
-     * остаётся ждать следующего флеша: разрезанный пополам, он покрасил бы
-     * остаток лога наугад.
+     * Colour is not lost by this; on the contrary, this is the only way it
+     * works: AnsiUp carries its state from chunk to chunk by itself — which is
+     * exactly why the converter lives with its text rather than being created
+     * anew. An escape that has started but is not finished stays to wait for
+     * the next flush: cut in half, it would colour the rest of the log at
+     * random.
      *
-     * Текст, который не продолжает ничего (другая ячейка, `clear_output`),
-     * заводит свою запись и рисуется с нуля — то есть как раньше.
+     * Text that continues nothing (another cell, `clear_output`) starts an
+     * entry of its own and is drawn from scratch — that is, as before.
      */
     ansi(text) {
       const body = text.slice(0, text.length - pendingEscape(text))
@@ -266,10 +272,11 @@ let inFlight: Promise<Renderers> | null = null
  * Idempotent: a notebook with forty output blocks fetches the chunk once.
  * Safe to call from component init purely to warm it.
  *
- * Отказ не кешируется. Один оборванный запрос — семинарский вайфай, редеплой
- * под открытой вкладкой — оставлял бы вкладку без markdown, цветов и графиков
- * НАВСЕГДА: обещание уже отклонено, а нового никто не создаст. Следующий, кому
- * рендереры понадобятся (соседняя ячейка, переход в тетрадь), пробует снова.
+ * A failure is not cached. One cut-off request — seminar Wi-Fi, a redeploy
+ * under an open tab — would leave the tab without markdown, colours and plots
+ * FOREVER: the promise is already rejected, and nobody would create a new one.
+ * The next one to need the renderers (a neighbouring cell, a switch to the
+ * notebook) tries again.
  */
 export function loadRenderers(): Promise<Renderers> {
   return (inFlight ??= importRenderers()

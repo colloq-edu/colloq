@@ -1,19 +1,20 @@
 /**
- * Присутствие одной ячейки: редактор видит только тех, кто стоит в НЕЙ.
+ * Presence for one cell: the editor sees only those who stand IN IT.
  *
- * `yCollab` получал присутствие комнаты целиком, и его плагин чужих кареток на
- * ЛЮБОЙ чужой кадр диспатчил транзакцию в свой редактор, а потом обходил все
- * состояния и резолвил по две относительные позиции на каждый курсор. В тетради
- * смонтировано десять–двадцать пять редакторов, так что один чужой курсор стоил
- * «редакторы × состояния». Здесь проверяется, что вид отдаёт только своих, что
- * обход общий на присутствие (а не на редактор), что кадр вообще не приходит,
- * если в этой ячейке ничего не изменилось, — и что уход СЧИТАЕТСЯ изменением:
- * выбывший обязан приехать в `removed`.
+ * `yCollab` got the whole room's presence, and its remote-caret plugin
+ * dispatched a transaction into its editor on ANY remote frame, then walked
+ * all states and resolved two relative positions per cursor. A notebook has
+ * ten to twenty-five editors mounted, so one remote cursor cost "editors ×
+ * states". What is checked here: that the view hands out only its own, that
+ * the walk is shared per presence (not per editor), that no frame arrives at
+ * all if nothing changed in this cell — and that leaving DOES COUNT as a
+ * change: whoever left must arrive in `removed`.
  *
- * Ломается всё это молча: без сравнения снимков лишний кадр просто «немного
- * дороже», с неверным фильтром чужая каретка перестаёт рисоваться вовсе, а без
- * `removed` она, наоборот, остаётся нарисованной в покинутой ячейке — плагин
- * диспатчит транзакцию только на кадр, в котором есть хоть один чужой клиент.
+ * All of this breaks silently: without comparing snapshots an extra frame is
+ * just "a bit more expensive", with a wrong filter a remote caret stops being
+ * drawn at all, and without `removed` it, on the contrary, stays drawn in the
+ * abandoned cell — the plugin dispatches a transaction only for a frame that
+ * has at least one remote client.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -22,7 +23,7 @@ import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { cellAwareness, type AwarenessDiff } from '../web/src/components/notebook/cell-awareness.js'
 
-/** Склейка кадров — вручную: рамки отрисовки в node не наступает. */
+/** Frame batching by hand: an animation frame never comes in node. */
 function manualSchedule() {
   const queue: (() => void)[] = []
   const schedule = (run: () => void) => {
@@ -40,8 +41,9 @@ function manualSchedule() {
 }
 
 /*
- * Присутствие держит свой таймер устаревания, а документ — память: без уборки
- * файл теста не завершается вовсе. Тот же порядок, что и в самом компоненте.
+ * Presence holds its own staleness timer, and the document holds memory:
+ * without cleanup the test file does not finish at all. The same order as in
+ * the component itself.
  */
 const opened: { doc: Y.Doc; awareness: Awareness }[] = []
 after(() => {
@@ -59,7 +61,7 @@ function room() {
   return { doc, awareness }
 }
 
-/** Чужой клиент в общем присутствии — так, как его туда кладёт сеть. */
+/** A remote client in the shared presence — the way the network puts it there. */
 function peer(
   awareness: Awareness,
   clientId: number,
@@ -74,19 +76,19 @@ function peer(
   awareness.emit('change', [{ added: [clientId], updated: [], removed: [] }, 'test'])
 }
 
-/** Вкладка закрылась: присутствие выкидывает состояние и говорит `removed`. */
+/** A tab closed: presence drops the state and says `removed`. */
 function leave(awareness: Awareness, clientId: number): void {
   awareness.getStates().delete(clientId)
   awareness.emit('change', [{ added: [], updated: [], removed: [clientId] }, 'test'])
 }
 
-/** То самое условие, по которому плагин чужих кареток решает диспатчить. */
+/** The very condition by which the remote-caret plugin decides to dispatch. */
 function wakesEditor(diff: AwarenessDiff, self: number): boolean {
   const clients = diff.added.concat(diff.updated).concat(diff.removed)
   return clients.findIndex((id) => id !== self) >= 0
 }
 
-test('вид ячейки показывает своих и себя, а чужих не показывает', () => {
+test('the cell view shows its own people and itself, but not others', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   peer(awareness, 2, 'c1')
@@ -96,14 +98,14 @@ test('вид ячейки показывает своих и себя, а чуж
   const view = cellAwareness(awareness, 'c1', clock.schedule)
   const states = view.getStates()
   assert.deepEqual([...states.keys()].sort((a, b) => a - b), [awareness.clientID, 2].sort((a, b) => a - b))
-  // Локальное состояние остаётся на месте: свой курсор объявляется по-прежнему
-  // в настоящее присутствие, вид только читает.
+  // The local state stays in place: one's own cursor is still announced in
+  // the real presence, the view only reads.
   assert.equal(view.getLocalState()?.user !== undefined, true)
   assert.equal(view.clientID, awareness.clientID)
   view.destroy()
 })
 
-test('человек без объявленной ячейки в вид не попадает', () => {
+test('a person without an announced cell does not get into the view', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   peer(awareness, 7, null)
@@ -112,7 +114,7 @@ test('человек без объявленной ячейки в вид не �
   view.destroy()
 })
 
-test('чужой курсор в ДРУГОЙ ячейке кадра не даёт', () => {
+test('a remote cursor in ANOTHER cell gives no frame', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   const view = cellAwareness(awareness, 'c1', clock.schedule)
@@ -121,15 +123,15 @@ test('чужой курсор в ДРУГОЙ ячейке кадра не да�
 
   peer(awareness, 5, 'c2')
   clock.flush()
-  assert.equal(frames, 0, 'сосед печатает в другой ячейке — этому редактору всё равно')
+  assert.equal(frames, 0, 'a neighbour typing in another cell does not concern this editor')
 
   peer(awareness, 6, 'c1')
   clock.flush()
-  assert.equal(frames, 1, 'а тот, кто встал сюда, обязан появиться')
+  assert.equal(frames, 1, 'but whoever stepped in here must appear')
   view.destroy()
 })
 
-test('движение курсора в своей ячейке — кадр; повтор того же — нет', () => {
+test('cursor movement in its own cell gives a frame; a repeat of the same does not', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   const view = cellAwareness(awareness, 'c1', clock.schedule)
@@ -140,19 +142,19 @@ test('движение курсора в своей ячейке — кадр; �
   clock.flush()
   assert.equal(frames, 1)
 
-  // Присутствие раскодирует состояния заново на каждый тик, поэтому объект
-  // всегда новый: сравнение по ссылке дало бы кадр на ровном месте.
+  // Presence decodes states anew on every tick, so the object is always new:
+  // comparing by reference would give a frame out of nothing.
   peer(awareness, 8, 'c1', { anchor: { item: 1 }, head: { item: 1 } })
   clock.flush()
-  assert.equal(frames, 1, 'то же положение — нечего перерисовывать')
+  assert.equal(frames, 1, 'the same position — nothing to redraw')
 
   peer(awareness, 8, 'c1', { anchor: { item: 4 }, head: { item: 9 } })
   clock.flush()
-  assert.equal(frames, 2, 'каретка поехала — кадр')
+  assert.equal(frames, 2, 'the caret moved — a frame')
   view.destroy()
 })
 
-test('десять кадров подряд склеиваются в один обход', () => {
+test('ten frames in a row are batched into one walk', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   const view = cellAwareness(awareness, 'c1', clock.schedule)
@@ -160,14 +162,14 @@ test('десять кадров подряд склеиваются в один 
   view.on('change', () => (frames += 1))
 
   for (let i = 0; i < 10; i++) peer(awareness, 20 + i, 'c1')
-  assert.equal(clock.size, 1, 'обход отложен ровно один, а не десять')
+  assert.equal(clock.size, 1, 'exactly one walk is deferred, not ten')
   clock.flush()
   assert.equal(frames, 1)
   assert.equal(view.getStates().size, 11)
   view.destroy()
 })
 
-test('двадцать пять редакторов делят один обход присутствия', () => {
+test('twenty-five editors share one presence walk', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   const views = Array.from({ length: 25 }, (_, i) => cellAwareness(awareness, `c${i}`, clock.schedule))
@@ -175,33 +177,34 @@ test('двадцать пять редакторов делят один обх�
   views.forEach((view, index) => view.on('change', () => (seen[index] += 1)))
 
   peer(awareness, 99, 'c7')
-  assert.equal(clock.size, 1, 'обход один на присутствие, а не по одному на редактор')
+  assert.equal(clock.size, 1, 'one walk per presence, not one per editor')
   clock.flush()
   assert.deepEqual(
     seen.map((count, index) => (count > 0 ? index : -1)).filter((index) => index >= 0),
     [7],
-    'разбудить обязано ровно ту ячейку, в которую встали',
+    'exactly the cell someone stepped into must be woken',
   )
   for (const view of views) view.destroy()
 })
 
-test('вид отпускает присутствие: после destroy слушателей не остаётся', () => {
+test('the view lets go of presence: no listeners remain after destroy', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   const view = cellAwareness(awareness, 'c1', clock.schedule)
   const handler = () => {}
   view.on('change', handler)
-  // `listenerCount` есть не у всякой сборки y-protocols, поэтому спрашивается
-  // через необязательный вызов: где его нет, проверять нечего.
+  // Not every y-protocols build has `listenerCount`, so it is asked through an
+  // optional call: where it is missing, there is nothing to check.
   const observed = awareness as unknown as { listenerCount?: (name: string) => number }
   assert.ok((observed.listenerCount?.('change') ?? 1) > 0)
   view.destroy()
   peer(awareness, 42, 'c1')
-  // Ничего не отложено: подписка на присутствие снята вместе с последним видом.
+  // Nothing is deferred: the presence subscription is gone together with the
+  // last view.
   assert.equal(clock.size, 0)
 })
 
-test('сосед ушёл в другую ячейку — кадр несёт его в removed', () => {
+test('a neighbour moved to another cell — the frame carries them in removed', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   const view = cellAwareness(awareness, 'c1', clock.schedule)
@@ -212,8 +215,9 @@ test('сосед ушёл в другую ячейку — кадр несёт �
   clock.flush()
   assert.deepEqual(frames.at(-1), { added: [11], updated: [], removed: [] })
 
-  // Перешёл в соседнюю ячейку: здесь его больше нет — и кадр обязан это сказать
-  // словом, а не пустотой, иначе каретка с его именем останется висеть.
+  // They moved to the next cell: they are no longer here — and the frame must
+  // say so explicitly, not by silence, otherwise the caret with their name
+  // stays hanging.
   peer(awareness, 11, 'c2')
   clock.flush()
   assert.deepEqual(frames.at(-1), { added: [], updated: [], removed: [11] })
@@ -222,7 +226,7 @@ test('сосед ушёл в другую ячейку — кадр несёт �
   view.destroy()
 })
 
-test('вкладка соседа закрылась — снимают его одного, остальных не трогают', () => {
+test('the tab of a neighbour closed — only they are removed, the others are left alone', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   const view = cellAwareness(awareness, 'c1', clock.schedule)
@@ -236,14 +240,14 @@ test('вкладка соседа закрылась — снимают его �
 
   leave(awareness, 13)
   clock.flush()
-  // Двенадцатый не двигался — в `updated` ему делать нечего.
+  // Number twelve did not move — it has no business in `updated`.
   assert.deepEqual(frames.at(-1), { added: [], updated: [], removed: [13] })
   assert.equal(wakesEditor(frames.at(-1)!, awareness.clientID), true)
   assert.deepEqual([...view.getStates().keys()].sort((a, b) => a - b), [awareness.clientID, 12].sort((a, b) => a - b))
   view.destroy()
 })
 
-test('движение стоящего — updated, а не повторное added', () => {
+test('movement of someone already there is updated, not a repeated added', () => {
   const { awareness } = room()
   const clock = manualSchedule()
   const view = cellAwareness(awareness, 'c1', clock.schedule)
@@ -258,11 +262,11 @@ test('движение стоящего — updated, а не повторное 
   view.destroy()
 })
 
-test('последний ушёл из ячейки, где никого не осталось, — кадр всё равно приходит', () => {
+test('the last one left a cell where nobody remains — the frame still arrives', () => {
   const { awareness } = room()
   const clock = manualSchedule()
-  // Два вида на одну ячейку: так же, как два смонтированных редактора одной
-  // ячейки (перестройка компонента). Дифф у каждого свой, но одинаковый.
+  // Two views on one cell: just like two mounted editors of one cell (a
+  // component rebuild). Each has its own diff, but they are identical.
   const first = cellAwareness(awareness, 'c1', clock.schedule)
   peer(awareness, 15, 'c1')
   clock.flush()

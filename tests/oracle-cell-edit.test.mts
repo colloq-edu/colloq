@@ -1,25 +1,29 @@
 /**
- * «Переписать ячейку» спрашивает у ЯЧЕЙКИ, а не только у правила комнаты.
+ * "Rewrite the cell" asks the CELL, not just the room's rule.
  *
- * Действие `edit` — единственное, которое кончается предложением с кнопкой
- * «Применить», то есть правкой общей тетради. Остальные (`ask`, `explain`,
- * `fix`, `debug`, `improve`, `hint`) про ячейку рассказывают, и в лекции они
- * студенту не заказаны: спрашивать про запертую ячейку можно и нужно.
+ * The `edit` action is the only one that ends in a proposal with an "Apply"
+ * button, that is, an edit of the shared notebook. The others (`ask`,
+ * `explain`, `fix`, `debug`, `improve`, `hint`) tell about the cell, and in a
+ * lecture they are not closed to a student: asking about a locked cell is
+ * allowed and encouraged.
  *
- * Две дыры, которые здесь закрыты.
+ * Two holes are closed here.
  *
- * Лекция. Правило `edit: host` гасило кнопку «Применить» — и только её. Просить
- * переписать ячейку участник мог: писал фразу, тратил вопрос из часового лимита
- * комнаты, получал предложение и упирался в собственное бессилие. Вопрос при
- * этом уже потрачен, и вернуть его нечем.
+ * The lecture. The `edit: host` rule dimmed the "Apply" button — and only it.
+ * A participant could ask for the cell to be rewritten: they wrote a phrase,
+ * spent a question from the room's hourly limit, got a proposal and ran into
+ * their own powerlessness. The question is spent by then, and there is no way
+ * to give it back.
  *
- * Консилиум. Там правило `edit` вообще ни при чём: в открытой комнате оно
- * разрешает участнику править ячейки, а общая ячейка консилиума — это ЗАДАНИЕ.
- * Замок «открытой» её не считает (`open === 'council'`), поэтому прежняя
- * проверка `mayEditCell` её попросту не замечала: и попросить переписать, и
- * принять предложение можно было одним нажатием — на задание всему классу.
+ * The council. There the `edit` rule is beside the point: in an open room it
+ * lets a participant edit cells, but the shared council cell is an
+ * ASSIGNMENT. The lock does not count it as "open" (`open === 'council'`), so
+ * the old `mayEditCell` check simply did not notice it: both asking for a
+ * rewrite and accepting the proposal took one press — on an assignment for the
+ * whole class.
  *
- * Шлюз поддельный, комната и документ настоящие — как в oracle-flow.test.mts.
+ * The gateway is fake, the room and the document are real — as in
+ * oracle-flow.test.mts.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -43,7 +47,7 @@ after(() => {
   shutdownCollab()
 })
 
-/** Шлюз, который ничего не успеет ответить: проверяются двери, а не модель. */
+/** A gateway that has no time to answer anything: the doors are checked, not the model. */
 async function gateway(): Promise<void> {
   const app = express()
   app.use(express.json())
@@ -78,7 +82,7 @@ interface Room {
   base: string
 }
 
-/** Комната с этими правилами и одной ячейкой кода в этом положении замка. */
+/** A room with these rules and one code cell in this lock position. */
 async function room(rules: typeof LECTURE_ROOM, lock: 'closed' | 'open' | 'council'): Promise<Room> {
   const id = `edit-gate-${++seq}`
   createSession(id, 'Тетрадь', null)
@@ -97,7 +101,7 @@ async function room(rules: typeof LECTURE_ROOM, lock: 'closed' | 'open' | 'counc
   const { doc } = getSessionDoc(id)
   const made = createCell('code', 'total = sum(xs)', cellId)
   doc.transact(() => {
-    // Положение замка живёт в ключе `open` (notebook.ts · cellLock).
+    // The lock position lives in the `open` key (notebook.ts · cellLock).
     if (lock === 'open') made.set('open', true)
     if (lock === 'council') made.set('open', 'council')
     getCells(doc).push([made])
@@ -128,52 +132,52 @@ function ask(r: Room, who: 'p_teacher' | 'p_student', body: unknown): Promise<Re
 
 /* ----------------------------------------------------------------- ask */
 
-test('в лекции участник спрашивает про ячейку, но переписать её не просит', async () => {
+test('in a lecture a participant asks about a cell but does not ask to rewrite it', async () => {
   await gateway()
   const r = await room(LECTURE_ROOM, 'closed')
 
   const edit = await ask(r, 'p_student', { message: 'перепиши', action: 'edit', cellId: r.cellId })
-  assert.equal(edit.status, 403, 'участник в лекции заказал правку ячейки')
+  assert.equal(edit.status, 403, 'a participant in a lecture ordered a cell edit')
   const said = (await edit.json()) as { error: string }
   assert.match(said.error, /менять её может преподаватель/)
 
-  // А вопрос про ту же ячейку проходит: правило про ПРАВКУ, а не про разговор.
+  // But a question about the same cell goes through: the rule is about EDITING, not about talking.
   const asked = await ask(r, 'p_student', { message: 'что тут не так?', cellId: r.cellId })
-  assert.equal(asked.status, 202, 'участнику в лекции запретили спрашивать')
+  assert.equal(asked.status, 202, 'a participant in a lecture was forbidden to ask')
 
-  // И преподавателю правка ячейки в той же комнате разрешена.
+  // And the teacher may edit the cell in the same room.
   const mine = await ask(r, 'p_teacher', { message: 'перепиши', action: 'edit', cellId: r.cellId })
-  assert.equal(mine.status, 202, 'преподавателю отказали в его же тетради')
+  assert.equal(mine.status, 202, 'the teacher was refused in their own notebook')
 })
 
-test('открытая ячейка возвращает участнику и правку: замок сильнее правила', async () => {
+test('an open cell gives the participant editing back too: the lock beats the rule', async () => {
   await gateway()
   const r = await room(LECTURE_ROOM, 'open')
   const edit = await ask(r, 'p_student', { message: 'перепиши', action: 'edit', cellId: r.cellId })
-  assert.equal(edit.status, 202, 'в открытой ячейке правку не дали')
+  assert.equal(edit.status, 202, 'editing was refused in an open cell')
 })
 
-test('общую ячейку консилиума участник не переписывает даже в открытой комнате', async () => {
+test('a participant does not rewrite the shared council cell even in an open room', async () => {
   await gateway()
   const r = await room(OPEN_ROOM, 'council')
 
-  // Правило `edit` здесь разрешает участнику всё — и именно поэтому проверка
-  // замка обязана стоять отдельно: в ячейке лежит задание.
+  // The `edit` rule allows the participant everything here — which is exactly why
+  // the lock check has to stand on its own: the cell holds the assignment.
   const edit = await ask(r, 'p_student', { message: 'перепиши', action: 'edit', cellId: r.cellId })
-  assert.equal(edit.status, 403, 'участник переписал задание консилиума')
+  assert.equal(edit.status, 403, 'a participant rewrote the council assignment')
 
-  // Преподавателю — можно: эталон в общей ячейке его.
+  // The teacher may: the reference solution in the shared cell is theirs.
   const mine = await ask(r, 'p_teacher', { message: 'перепиши', action: 'edit', cellId: r.cellId })
   assert.equal(mine.status, 202)
 
-  // Той же ячейке вопрос по-прежнему задаётся: разговор не заперт.
+  // A question about the same cell can still be asked: talking is not locked.
   const asked = await ask(r, 'p_student', { message: 'о чём задание?', cellId: r.cellId })
   assert.equal(asked.status, 202)
 })
 
 /* -------------------------------------------------------------- accept */
 
-/** Ровно то, что читает `send`: состояние и отказы словами. */
+/** Exactly what `send` reads: the state and refusals in words. */
 function socket(): { ws: WebSocket; said: string[] } {
   const said: string[] = []
   const ws = {
@@ -191,7 +195,7 @@ function who(role: 'host' | 'participant', sessionId: string): TokenPayload {
   return { sessionId, participantId: `p_${role}`, role }
 }
 
-/** Готовое предложение оракула на эту ячейку — и его имя. */
+/** A ready oracle proposal for this cell — and its id. */
 function propose(sessionId: string, cellId: string, text: string): string {
   const { doc } = getSessionDoc(sessionId)
   const entry = createChatEntry({
@@ -211,22 +215,22 @@ function propose(sessionId: string, cellId: string, text: string): string {
 
 function sourceOf(sessionId: string, cellId: string): string {
   const found = findCell(getSessionDoc(sessionId).doc, cellId)
-  return found ? (found.cell.get('source') as { toString(): string }).toString() : 'нет такой'
+  return found ? (found.cell.get('source') as { toString(): string }).toString() : 'no such cell'
 }
 
-test('принять предложение в ячейку консилиума участник не может и на сервере', async () => {
+test('a participant cannot accept a proposal into the council cell on the server either', async () => {
   await gateway()
   const r = await room(OPEN_ROOM, 'council')
   const entryId = propose(r.id, r.cellId, 'total = 0')
 
   const student = socket()
   dispatch(student.ws, r.id, who('participant', r.id), { t: 'ai:decide', entryId, accept: true })
-  assert.match(student.said[0] ?? '', /преподавател/i, 'участник принял правку в задание')
-  assert.equal(sourceOf(r.id, r.cellId), 'total = sum(xs)', 'текст задания всё-таки переписали')
+  assert.match(student.said[0] ?? '', /преподавател/i, 'a participant accepted an edit into the assignment')
+  assert.equal(sourceOf(r.id, r.cellId), 'total = sum(xs)', 'the assignment text was rewritten after all')
 
-  // Преподаватель принимает — и ячейка меняется.
+  // The teacher accepts, and the cell changes.
   const teacher = socket()
   dispatch(teacher.ws, r.id, who('host', r.id), { t: 'ai:decide', entryId, accept: true })
-  assert.deepEqual(teacher.said, [], 'преподавателю отказали в его же тетради')
+  assert.deepEqual(teacher.said, [], 'the teacher was refused in their own notebook')
   assert.equal(sourceOf(r.id, r.cellId), 'total = 0')
 })

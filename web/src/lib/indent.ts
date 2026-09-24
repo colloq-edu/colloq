@@ -1,35 +1,37 @@
 /**
- * Отступ в редакторах Colloq: сколько его и что делает Tab.
+ * Indentation in Colloq's editors: how much of it and what Tab does.
  *
- * Общее на два редактора — ячейку тетради и файл, — потому что код между ними
- * ездит копированием, а разъехавшиеся отступы видно только ядру: половина
- * функции на четырёх пробелах, половина на двух, и IndentationError в месте,
- * которое глазами не отличить. Одна из двух правок уже расходилась: Tab был
- * привязан в файле и не был в ячейке.
+ * Shared by the two editors — the notebook cell and the file — because code
+ * travels between them by copying, and drifted indentation is visible only to
+ * the kernel: half a function on four spaces, half on two, and an
+ * IndentationError at a place the eye cannot tell apart. One of the two had
+ * already diverged: Tab was bound in the file and not in the cell.
  *
- * Чистое — здесь, привязка к клавише — в компонентах: CodeMirror у обоих
- * подгружается лениво, и статический импорт отсюда утащил бы его в общий
- * бандл (см. importCodeMirror в CodeEditor.svelte).
+ * The pure part is here, the key binding in the components: both load
+ * CodeMirror lazily, and a static import from here would drag it into the
+ * shared bundle (see importCodeMirror in CodeEditor.svelte).
  */
 import type { Command, KeyBinding } from '@codemirror/view'
 import type { EditorSelection as Selection } from '@codemirror/state'
 
 /**
- * Отступ — четыре пробела.
+ * An indent is four spaces.
  *
- * Не два (умолчание CodeMirror) и не табы: в тетради пишут Python, а в нём
- * смешанные отступы — это TabError, и правит его не тот, кто их смешал.
+ * Not two (the CodeMirror default) and not tabs: the notebook holds Python,
+ * and there mixed indentation is a TabError, fixed by someone other than the
+ * one who mixed it.
  */
 export const INDENT = '    '
 
-/** Ширина отступа в колонках. */
+/** The indent width in columns. */
 export const INDENT_WIDTH = INDENT.length
 
 /**
- * В какой колонке стоит курсор, если перед ним на строке этот текст.
+ * Which column the cursor is in, if this text precedes it on the line.
  *
- * Таб считается не за знак, а до следующей отметки: своих табов редакторы не
- * ставят, но вставить чужой текст в ячейку никто не мешает.
+ * A tab counts not as one character but up to the next stop: the editors put
+ * no tabs of their own, but nothing stops someone pasting foreign text into a
+ * cell.
  */
 export function columnOf(before: string, tabSize: number): number {
   let column = 0
@@ -40,16 +42,16 @@ export function columnOf(before: string, tabSize: number): number {
 }
 
 /**
- * Что вставляет Tab, нажатый без выделения.
+ * What Tab inserts when pressed without a selection.
  *
- * НЕ «четыре пробела всегда» и не сдвиг строки целиком: отступ добивается до
- * следующей отметки, как в любом редакторе с мягким табом. Курсор в середине
- * `return  1` получает столько пробелов, чтобы встать на отметку, а не столько,
- * чтобы уехала вся строка вместе с уже написанным.
+ * NOT "four spaces always" and not a shift of the whole line: the indent is
+ * padded up to the next stop, as in any editor with soft tabs. A cursor in the
+ * middle of `return  1` gets as many spaces as it takes to land on a stop, not
+ * as many as would push the whole line along with what is already written.
  *
- * Сдвиг СТРОК остаётся у выделения (indentMore) и у Shift-Tab (indentLess) —
- * это разные жесты, и путать их нельзя: первым набирают, вторым перестраивают
- * уже написанное.
+ * Shifting LINES stays with the selection (indentMore) and with Shift-Tab
+ * (indentLess) — these are different gestures and must not be confused: the
+ * first is for typing, the second for restructuring what is already written.
  */
 export function tabInsert(before: string, tabSize: number): string {
   const column = columnOf(before, tabSize)
@@ -57,9 +59,10 @@ export function tabInsert(before: string, tabSize: number): string {
 }
 
 /**
- * Tab и Shift-Tab для CodeMirror — одни и те же в ячейке и в файле.
+ * Tab and Shift-Tab for CodeMirror — the same in a cell and in a file.
  *
- * Части CodeMirror приходят параметрами, а не импортом: см. заголовок файла.
+ * CodeMirror's parts come in as parameters, not as an import: see the file
+ * header.
  */
 export function tabKey(cm: {
   EditorSelection: typeof Selection
@@ -70,11 +73,11 @@ export function tabKey(cm: {
     key: 'Tab',
     run: (view) => {
       const { state } = view
-      /* Ячейку под замком (лекция, чужая попытка, законченное занятие) Tab не
-         правит — и не держит: нажатие достаётся браузеру, и фокус уходит
-         дальше, как и должен уходить из нередактируемого текста. */
+      /* Tab does not edit a locked cell (a lecture, someone else's attempt, a
+         finished class) — and does not hold on to it: the press goes to the
+         browser, and focus moves on, as it should from non-editable text. */
       if (state.readOnly) return false
-      // Выделение — это про строки целиком, даже если оно внутри одной.
+      // A selection is about whole lines, even if it lies within one.
       if (state.selection.ranges.some((range) => !range.empty)) return cm.indentMore(view)
       view.dispatch(
         state.changeByRange((range) => {

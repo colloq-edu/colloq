@@ -1,15 +1,18 @@
 /**
- * Отклик на нажатие в лекции: полоса ноутбука, кружки пера, мёртвый пульт.
+ * Press feedback in the lecture: the notebook bar, the pen circles, the dead
+ * console.
  *
- * Ни у одной из этих строк нет ни функции, ни сокета — они живут в атрибуте
- * class и в ветке разметки, и ломаются молча: `transition-colors` вместо
- * перечисленных свойств выбрасывает из перехода transform, то есть само
- * нажатие, и на экране это ничем не отличается от «сервер задумался».
- * Проверять такое в браузере на каждой правке никто не будет, а откатывается
- * оно одной строкой — ровно так находка design-9 и появилась.
+ * None of these lines has a function or a socket — they live in a class
+ * attribute and a markup branch, and they break silently: `transition-colors`
+ * instead of the listed properties throws transform out of the transition,
+ * that is, the press itself, and on screen this looks no different from "the
+ * server is thinking". Nobody will check this in a browser on every edit, and
+ * it reverts with a single line — which is exactly how finding design-9 came
+ * about.
  *
- * Читается прямо из компонентов, тем же приёмом, что и panels-craft: тест со
- * своей копией правила проходит вечно, пока файл уезжает.
+ * It is read straight from the components, with the same trick as
+ * panels-craft: a test with its own copy of the rule passes forever while the
+ * file drifts away.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -20,7 +23,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка и стили без комментариев: объяснение — не обещание. */
+/** Markup and styles without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -28,51 +31,53 @@ function code(source: string): string {
 const VIEW = 'web/src/components/lecture/LectureView.svelte'
 const CONSOLE = 'web/src/components/lecture/ConsoleView.svelte'
 
-/* ------------------------------------------------------------- нажатие */
+/* ------------------------------------------------------------- press */
 
-test('тулбар лекции прессуется, и transform не выброшен утилитой перехода', () => {
+test('the lecture toolbar presses, and transform is not thrown out by a transition utility', () => {
   const view = code(read(VIEW))
   const tool = /const TOOL =\s*((?:'[^']*'\s*\+?\s*)+)/.exec(view)
-  assert.ok(tool, 'константа TOOL пропала из LectureView')
+  assert.ok(tool, 'the TOOL constant is gone from LectureView')
   const classes = tool[1]
   /*
-   * Свойства перечислены, а не `transition-colors` плюс `.press`: утилита
-   * Tailwind переписывает transition-property целиком, и transform из
-   * помощника в список бы не попал — нажатие бы не анимировалось вовсе.
+   * The properties are listed, rather than `transition-colors` plus `.press`:
+   * the Tailwind utility rewrites transition-property wholesale, and the
+   * helper's transform would not make it into the list — the press would not
+   * animate at all.
    */
-  assert.match(classes, /transition-\[[^\]]*\btransform\b[^\]]*\]/, 'transform не в списке перехода')
-  assert.match(classes, /\bduration-press\b/, 'нажатие идёт не по --speed-press')
-  assert.match(classes, /enabled:active:scale-\[0\.97\]/, 'полоса лекции не отвечает на нажатие')
+  assert.match(classes, /transition-\[[^\]]*\btransform\b[^\]]*\]/, 'transform is not in the transition list')
+  assert.match(classes, /\bduration-press\b/, 'the press does not follow --speed-press')
+  assert.match(classes, /enabled:active:scale-\[0\.97\]/, 'the lecture bar does not respond to a press')
 })
 
-test('кружок пера меняет размер мгновенно, а нажатие отдано пальцу', () => {
+test('the pen circle changes size instantly, and the press is left to the finger', () => {
   const view = code(read(VIEW))
   const each = /\{#each INKS as choice[\s\S]*?\{\/each\}/.exec(view)
-  assert.ok(each, 'ряд перьев пропал из полосы лекции')
+  assert.ok(each, 'the row of pens is gone from the lecture bar')
   const inks = each[0]
-  // Состояние приходит само; анимировать его — рисовать его позже, чем оно
-  // случилось. scale-110 остаётся, transition-transform уходит.
-  assert.doesNotMatch(inks, /transition-transform/, 'смена состояния кружка снова анимирована')
-  assert.match(inks, /scale-110/, 'выбранное перо перестало отличаться размером')
-  // Помощник взят именем: других утилит перехода на кнопке нет, переписывать
-  // transition-property некому.
-  assert.match(inks, /class="press flex w-8/, 'кнопка пера не прессуется')
+  // State arrives on its own; animating it means drawing it later than it
+  // happened. scale-110 stays, transition-transform goes.
+  assert.doesNotMatch(inks, /transition-transform/, 'the state change of the circle is animated again')
+  assert.match(inks, /scale-110/, 'the selected pen no longer differs in size')
+  // The helper is used by name: the button has no other transition utilities,
+  // so nothing can rewrite transition-property.
+  assert.match(inks, /class="press flex w-8/, 'the pen button does not press')
 })
 
-/* --------------------------------------------------- мёртвый пульт */
+/* --------------------------------------------------- dead console */
 
-test('пульт объясняет расхождение с сервером своими словами и даёт перезагрузку', () => {
+test('the console explains a mismatch with the server in its own words and offers a reload', () => {
   const pult = code(read(CONSOLE))
   assert.match(
     pult,
     /import \{ reloadByHand \} from '@\/lib\/refusal'/,
-    'перезагрузка рукой берётся не из общей копии правила',
+    'the manual reload does not come from the shared copy of the rule',
   )
   /*
-   * Плашка комнаты лежит выше пульта (SessionScreen, z-[100]), но собрана она
-   * для окна с мышью. У пульта до этой ветки не оставалось ничего, кроме
-   * красного шва рейла: клавиши погашены, лист висит, слов нет.
+   * The room's banner sits above the console (SessionScreen, z-[100]), but it
+   * is built for a window with a mouse. Before this branch the console had
+   * nothing left but the rail's red seam: keys dimmed, the sheet hanging, no
+   * words.
    */
-  assert.match(pult, /\{:else if session\.stuck\}/, 'пульт снова молчит про расхождение')
-  assert.match(pult, /onclick=\{\(\) => reloadByHand\(\)\}/, 'на пульте нет кнопки перезагрузки')
+  assert.match(pult, /\{:else if session\.stuck\}/, 'the console is silent about the mismatch again')
+  assert.match(pult, /onclick=\{\(\) => reloadByHand\(\)\}/, 'the console has no reload button')
 })

@@ -1,17 +1,19 @@
 import type { CompetitionCapabilities } from './capabilities.js'
 /**
- * Что панель преподавателя спрашивает у сервера про соревнования, и что он
- * отвечает.
+ * What the teacher's panel asks the server about competitions, and what it
+ * answers.
  *
- * Отдельным файлом от `shared/competitions.ts` намеренно: там — правила, по
- * которым сервер и браузер обязаны дать один ответ, а здесь — форма проводов.
- * Форма меняется от экрана (добавили колонку — добавили поле), правила не
- * меняются вовсе, и держать их в одном файле значит пересматривать правила
- * каждый раз, когда в макете переехала подпись.
+ * A file separate from `shared/competitions.ts` on purpose: that one holds the
+ * rules by which the server and the browser must give the same answer, this
+ * one the shape of the wires. The shape changes with the screen (a column
+ * added means a field added), the rules do not change at all, and keeping
+ * them in one file would mean revisiting the rules every time a label moved
+ * in the mockup.
  *
- * Ни одна строка отсюда не уезжает участнику: это ответы дверей `/api/admin`,
- * и в них есть и код метрики, и приватные числа, и ключи входа. Участнику
- * отвечают свои двери `/k`, своими типами и через `publicCompetition`.
+ * Not a single row from here travels to a participant: these are the answers
+ * of the `/api/admin` doors, and they carry the metric code, private numbers
+ * and sign-in keys. Participants are answered by their own `/k` doors, with
+ * their own types and through `publicCompetition`.
  */
 import type {
   Competition,
@@ -28,15 +30,15 @@ import type {
   SubmissionState,
 } from './competitions.js'
 
-/* --------------------------------------------------------------- запросы */
+/* -------------------------------------------------------------- requests */
 
 /**
- * Что форма редактора (A2) посылает серверу.
+ * What the editor form (A2) sends to the server.
  *
- * Всё необязательно, и это не лень: панель шлёт ТОЛЬКО те поля, которые
- * показывала. Редактор черновика и вкладка «Настройки» идущего соревнования —
- * разные куски одной формы, и «сохранить всё» означало бы, что вторая затирает
- * поля, которых никогда не видела.
+ * Everything is optional, and that is not laziness: the panel sends ONLY the
+ * fields it showed. The draft editor and the "Settings" tab of a running
+ * competition are different pieces of one form, and "save everything" would
+ * mean the second one wipes fields it has never seen.
  */
 export interface CompetitionInput {
   slug?: string
@@ -53,66 +55,66 @@ export interface CompetitionInput {
   scoring?: ScoringRule
 }
 
-/* ------------------------------------------------------- список и очередь */
+/* --------------------------------------------------------- list and queue */
 
 /**
- * Почему соревнование ещё нельзя открыть.
+ * Why the competition cannot be opened yet.
  *
- * Причина, а не `false`: кнопка «ОТКРЫТЬ СОРЕВНОВАНИЕ» гаснет в A2 молча, и
- * человек, у которого не хватает одного файла ответов, ищет пропажу глазами по
- * шести секциям. Считает её сервер — он же и отказывает, — чтобы экран и дверь
- * не разошлись во мнении о готовности.
+ * A reason, not `false`: the "OPEN COMPETITION" button in A2 goes dim
+ * silently, and a person who is missing one answers file hunts for the gap by
+ * eye across six sections. The server computes it — it is also the one that
+ * refuses — so that the screen and the door do not disagree about readiness.
  */
 export type OpenRefusal =
   | 'noData'
   | 'noSolution'
   | 'noMetric'
   | 'noBaseline'
-  /** Сэмпл-тетрадь загружена, но весь путь до числа ещё не прошла. */
+  /** The sample notebook is uploaded but has not yet gone the whole way to a number. */
   | 'baselineNotChecked'
-  /** Приватный лидерборд открывается дедлайном, а дедлайна нет. */
+  /** The private leaderboard is opened by the deadline, and there is no deadline. */
   | 'noDeadline'
 
-/** Строка списка A1 — соревнование плюс всё, что в его строке нарисовано числами. */
+/** A row of the A1 list — a competition plus everything its row draws as numbers. */
 export interface CompetitionRow {
   competition: Competition
-  /** Людей, приславших хотя бы одну посылку. Базовое решение сюда не входит. */
+  /** People who sent at least one submission. The baseline solution is not counted here. */
   entrants: number
-  /** Посылок участников — без заходов сэмпл-тетради. */
+  /** Participants' submissions — without the sample notebook's runs. */
   submissions: number
-  /** «ЛУЧШИЙ ПУБЛИЧНЫЙ» — без базового решения: оно показано рядом отдельно. */
+  /** "BEST PUBLIC" — without the baseline solution: that one is shown separately beside it. */
   bestPublic: number | null
-  /** «бейзлайн 0.0587» под лучшим результатом. */
+  /** "baseline 0.0587" under the best result. */
   baselineScore: number | null
-  /** Чем кончился последний заход сэмпл-тетради; null — её ещё не проверяли. */
+  /** How the sample notebook's last run ended; null — it has not been checked yet. */
   baselineState: SubmissionState | null
-  /** `null` — открывать можно. */
+  /** `null` — it can be opened. */
   ready: OpenRefusal | null
 }
 
-/** Идущий прогон — блок «ИСПОЛНЯЕТСЯ СЕЙЧАС» (A3) и полоса исполнителя (A1). */
+/** A run in progress — the "RUNNING NOW" block (A3) and the runner strip (A1). */
 export interface RunningNow {
   submissionId: string
   competitionId: string
   competitionSlug: string
   entrantId: string
   entrantName: string
-  /** «#12». */
+  /** "#12". */
   number: number
   fileName: string
   kind: RunKind
   cellsDone: number
   cellsTotal: number
   startedAt: number
-  /** Правая половина «01:12 из 10:00», в миллисекундах. */
+  /** The right half of "01:12 of 10:00", in milliseconds. */
   limitMs: number
-  /** Имя контейнера — та же строка, что в подписи под полосой прогресса. */
+  /** The container's name — the same string as in the caption under the progress bar. */
   container: string | null
-  /** Заход сэмпл-тетради, а не посылка участника. */
+  /** A run of the sample notebook, not a participant's submission. */
   baseline: boolean
 }
 
-/** Строка списка «ЖДУТ · N». */
+/** A row of the "WAITING · N" list. */
 export interface WaitingRow {
   submissionId: string
   competitionId: string
@@ -121,28 +123,29 @@ export interface WaitingRow {
   number: number
   /** Delayed resource retries have no claimable place yet. */
   place: number | null
-  /** «≈ 3 мин»; null — оценить не из чего (ещё ничего не исполнялось). */
+  /** "≈ 3 min"; null — nothing to estimate from (nothing has run yet). */
   etaMs: number | null
   resourcePending: boolean
   baseline: boolean
 }
 
 /**
- * Очередь инстанса — одна на все соревнования, потому что исполнитель один.
+ * The instance queue — one for all competitions, because there is one runner.
  *
- * Едет и со списком A1 (полоса исполнителя), и с живым состоянием A3: это одно
- * и то же хозяйство, и показывать его двумя разными числами нельзя.
+ * It travels both with the A1 list (the runner strip) and with the live state
+ * of A3: it is one and the same machinery, and it must not be shown as two
+ * different numbers.
  */
 export interface QueueSnapshot {
   paused: boolean
   pausedAt: number | null
   running: RunningNow[]
   waiting: number
-  /** Сколько посылок за раз берёт исполнитель. */
+  /** How many submissions the runner takes at a time. */
   slots: number
-  /** «сегодня исполнено 37» — по местному поясу машины. */
+  /** "37 run today" — by the machine's local time zone. */
   doneToday: number
-  /** «в среднем 2 мин 40 с»; null — сегодня ещё ничего не досчиталось. */
+  /** "2 min 40 s on average"; null — nothing has finished today yet. */
   averageMs: number | null
 }
 
@@ -151,42 +154,42 @@ export interface CompetitionsList {
   queue: QueueSnapshot
 }
 
-/* ---------------------------------------------------------- редактор (A2) */
+/* ------------------------------------------------------------ editor (A2) */
 
-/** Открытый файл данных или файл ответов глазами A2. */
+/** An open data file or an answers file, as A2 sees it. */
 export interface FileView extends CompetitionFile {
-  /** Колонки CSV — «397 строк · id, orders». null: не CSV или файл слишком велик. */
+  /** CSV columns — "397 rows · id, orders". null: not CSV, or the file is too big. */
   columns: string[] | null
 }
 
-/** Карточка сэмпл-тетради и её проверки. */
+/** The card of the sample notebook and of its check. */
 export interface BaselineView {
   inputsCurrent?: boolean
   inputRevision?: number | null
   notebookInputRevision?: number | null
   fileName: string
   bytes: number
-  /** «14 ячеек»; null — файл не разобрался как тетрадь. */
+  /** "14 cells"; null — the file did not parse as a notebook. */
   cells: number | null
   uploadedAt: number
-  /** Посылка последнего захода; null — тетрадь загружена, но не проверялась. */
+  /** The submission of the last run; null — the notebook is uploaded but was not checked. */
   submissionId: string | null
   state: SubmissionState | null
   publicScore: number | null
   privateScore: number | null
   durationMs: number | null
-  /** Текст, который прочёл бы участник: ParticipantVisibleError метрики. */
+  /** The text a participant would read: the metric's ParticipantVisibleError. */
   participantError: string | null
-  /** Трейс — только преподавателю, и только здесь. */
+  /** The traceback — for the teacher only, and only here. */
   teacherError: string | null
 }
 
-/** Как поделятся строки ответов: «119 строк считаются сразу, 278 — после дедлайна». */
+/** How the answer rows will be split: "119 rows count right away, 278 after the deadline". */
 export interface SplitView {
   total: number
   publicRows: number
   privateRows: number
-  /** Деление задано колонкой Usage в файле ответов, а не зерном. */
+  /** The split is set by the Usage column in the answers file, not by the seed. */
   byUsage: boolean
 }
 
@@ -194,22 +197,22 @@ export interface CompetitionView {
   capabilities?: CompetitionCapabilities
   competition: Competition
   openFiles: FileView[]
-  /** Скрытые ответы: имена, строки и колонки — содержимое не отдаётся никогда. */
+  /** Hidden answers: names, rows and columns — the contents are never handed out. */
   hiddenFiles: FileView[]
   baseline: BaselineView | null
   split: SplitView | null
   counts: CompetitionCounts
   ready: OpenRefusal | null
-  /** Сколько весят открытые файлы против потолка `LIMITS.dataBytes`. */
+  /** How much the open files weigh against the `LIMITS.dataBytes` ceiling. */
   dataBytes: number
 }
 
-/* -------------------------------------------------------- соревнование идёт */
+/* --------------------------------------------------------- live competition */
 
-/** Пять чисел сводки A3 плюс то, что нужно строке A1. */
+/** The five numbers of the A3 summary plus what the A1 row needs. */
 export interface CompetitionCounts {
   submissions: number
-  /** «ДОШЛИ ДО ЧИСЛА». */
+  /** "REACHED A SCORE". */
   scored: number
   notebookFailed: number
   rejected: number
@@ -221,63 +224,63 @@ export interface CompetitionCounts {
   bestPublic: number | null
 }
 
-/** Строка ленты посылок (A3). */
+/** A row of the submission feed (A3). */
 export interface SubmissionRow {
   submission: Submission
   entrantName: string
-  /** Заход сэмпл-тетради: в ленте он есть, но в счёт участников не идёт. */
+  /** A run of the sample notebook: it is in the feed, but it does not count as a participant's. */
   baseline: boolean
-  /** Лучший публичный результат соревнования — «новый лучший результат». */
+  /** The competition's best public result — "a new best result". */
   best: boolean
 }
 
 export interface SubmissionFeed {
   rows: SubmissionRow[]
-  /** Сколько строк отвечает фильтру целиком — для «и ещё N». */
+  /** How many rows match the filter in total — for "and N more". */
   total: number
 }
 
-/** Живое состояние экрана A3: то, что меняется само, пока на него смотрят. */
+/** The live state of the A3 screen: what changes by itself while someone watches it. */
 export interface CompetitionLive {
   revision?: number
   counts: CompetitionCounts
   queue: QueueSnapshot
-  /** Ждущие ЭТОГО соревнования; очередь общая, а экран один. */
+  /** Those waiting in THIS competition; the queue is shared, but the screen is about one. */
   waiting: WaitingRow[]
-  /** Медиана исполнения посылок этого соревнования, мс. */
+  /** Median run time of this competition's submissions, ms. */
   medianMs: number | null
 }
 
-/** Весь вывод одной посылки — меню строки, пункт «весь вывод». */
+/** All the output of one submission — the row menu, the "All output" item. */
 export interface SubmissionDetail {
   submission: Submission
   entrant: Pick<Entrant, 'id' | 'name'>
   runs: SubmissionRun[]
-  /** Файлы, оставшиеся от прогона: `run.json`, `submission.csv`, тетрадь с выводом. */
+  /** Files left over from the run: `run.json`, `submission.csv`, the notebook with output. */
   artifacts: { name: string; bytes: number }[]
 }
 
-/* ------------------------------------------------------------- участники */
+/* ---------------------------------------------------------- participants */
 
 /**
- * Участник в списке преподавателя — вместе с ключом входа.
+ * A participant in the teacher's list — together with the sign-in key.
  *
- * Ключ здесь есть намеренно: его диктуют вслух и вставляют в чат курса, это
- * единственный способ вернуть человека с другого устройства. Дверь, которая
- * это отдаёт, — панельная (`requireStaff`), и другого места, где ключ виден,
- * в продукте нет.
+ * The key is here on purpose: it is dictated aloud and pasted into the course
+ * chat, and it is the only way to bring a person back from another device.
+ * The door that hands it out is a panel door (`requireStaff`), and there is
+ * no other place in the product where the key is visible.
  */
 export interface EntrantRow extends Entrant {
   /**
-   * `K7Q-M2X-9FD` — расшифрованный ключ входа; null, если секрет инстанса
-   * сменили и старый ключ больше не работает ни у кого.
+   * `K7Q-M2X-9FD` — the decrypted sign-in key; null if the instance secret was
+   * changed and the old key no longer works for anyone.
    */
   key: string | null
-  /** Посылок в этом соревновании; в общем списке инстанса — 0. */
+  /** Submissions in this competition; in the instance-wide list — 0. */
   submissions: number
-  /** Место в публичном лидерборде этого соревнования; null — его там нет. */
+  /** Place on this competition's public leaderboard; null — they are not on it. */
   place: number | null
-  /** Сэмпл-тетрадь записана на служебного участника — его не показывают людям. */
+  /** The sample notebook is recorded under a service participant — never shown to people. */
   baseline: boolean
 }
 

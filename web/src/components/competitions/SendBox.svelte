@@ -1,15 +1,17 @@
 <script lang="ts">
   /**
-   * Зона отправки тетради: перетаскивание и кнопка (P2), одна кнопка (P4).
+   * The notebook drop zone: drag-and-drop plus a button (P2), a single button
+   * (P4).
    *
-   * Загрузки «из тетради в занятии» здесь нет — владелец убрал её из макета, и
-   * это не упрощение, а правило: проверка исполняет тетрадь С НУЛЯ, а тетрадь
-   * в комнате живёт с сохранёнными переменными и чужими правками. Единственный
-   * способ — файл, который человек сам выбрал и сам видел.
+   * There is no upload "from the notebook in the class" here — the owner
+   * removed it from the mockup, and that is not a simplification but a rule:
+   * the check runs the notebook FROM SCRATCH, while the notebook in the room
+   * lives with saved variables and other people's edits. The only way is a
+   * file the person chose and saw themselves.
    *
-   * Расширение проверяется здесь, до сети: двадцать мегабайт по телефонному
-   * интернету ради ответа «принимается только .ipynb» — это не проверка, это
-   * наказание.
+   * The extension is checked here, before the network: twenty megabytes over
+   * mobile internet just to hear "only an .ipynb notebook is accepted" is not
+   * a check, it is a punishment.
    */
   import { onMount } from 'svelte'
   import type { DependencyOverview } from '@shared/dependencies'
@@ -22,7 +24,7 @@
     mine: EntrantSubmissions
     phone: boolean
     busy: boolean
-    /** Отказ отправки — словами сервера или своими про расширение. */
+    /** A send refusal — in the server's words, or our own about the extension. */
     refusal: string | null
     onsend: (file: File, bundleId?: string | null) => Promise<boolean>
     onrefuse: (message: string) => void
@@ -59,12 +61,13 @@
   const minutes = $derived(Math.max(1, Math.round(view.competition.limits.wallSeconds / 60)))
   const quota = $derived.by(() => {
     /*
-     * У закрытого приёма нормы дня нет.
+     * Closed submissions have no daily quota.
      *
-     * «Сегодня можно отправить ещё 4 посылки из 5» над кнопкой, которая больше
-     * ничего не примет, — обещание, и прочитать его можно ровно одним
-     * способом: «значит, что-то сломалось». Под зоной и так стоит фраза о том,
-     * почему приём закрыт, и она здесь единственная правда.
+     * "You can send 4 more submissions today, out of 5" above a button that
+     * will not accept anything any more is a promise, and it can be read in
+     * exactly one way: "so something is broken". Under the zone there is
+     * already a sentence saying why submissions are closed, and it is the
+     * only truth here.
      */
     if (mine.accepting !== 'open') return ''
     if (mine.leftToday === null) return tr('competitions.p.dropNoLimit')
@@ -195,8 +198,9 @@
     onchange={(event) => {
       const target = event.currentTarget
       take(target.files)
-      // Поле сбрасывается, иначе повторный выбор ТОГО ЖЕ файла не поднимает
-      // событие вовсе: человек правит тетрадь и шлёт её снова — обычный случай.
+      // The field is reset, otherwise choosing THE SAME file again does not
+      // fire the event at all: a person edits the notebook and sends it again
+      // — the usual case.
       target.value = ''
     }}
   />

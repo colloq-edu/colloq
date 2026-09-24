@@ -19,11 +19,12 @@ const stopBootLanguage = onLanguageChange(updateBootLanguage)
  * before its CSS has applied, so the shell — which is covering an undressed
  * document until then — leaves on the stylesheet, not on the mount.
  *
- * Ждём ПРИМЕНЁННЫЙ лист (`link.sheet`), а не событие загрузки. Ссылка теперь
- * едет как `rel=preload as=style` — так браузер даёт ей высокий приоритет, —
- * и её `load` срабатывает на скачанных байтах, до того как встроенный
- * обработчик переведёт её в `rel=stylesheet` и лист встанет в документ. Уйти
- * по такому событию значило бы показать приложение раздетым на кадр.
+ * We wait for the APPLIED sheet (`link.sheet`), not for the load event. The
+ * link now travels as `rel=preload as=style` — that way the browser gives it
+ * high priority — and its `load` fires on the downloaded bytes, before the
+ * inline handler switches it to `rel=stylesheet` and the sheet lands in the
+ * document. Leaving on that event would mean showing the app undressed for a
+ * frame.
  */
 const STYLE_WAIT = 2000
 
@@ -53,13 +54,14 @@ function stylesApplied(): Promise<void> {
       })
     }
     requestAnimationFrame(check)
-    // A stylesheet that never arrives must not hold the seminar hostage. Ни
-    // одного кадра в норме здесь не бывает — поэтому, если сюда дошли, это
-    // поломка выкладки, и молчать о ней нельзя: приложение сейчас покажут
-    // раздетым, и объяснить это в консоли обязаны мы, а не пользователь.
+    // A stylesheet that never arrives must not hold the seminar hostage. Not
+    // a single frame is normally spent here — so if we got here, the
+    // deployment is broken, and it must not go unmentioned: the app is about
+    // to be shown undressed, and it is on us, not the user, to explain that
+    // in the console.
     setTimeout(() => {
       if (settled) return
-      console.warn('Colloq: стили не применились за 2 с — оболочка уходит без них')
+      console.warn('Colloq: styles did not apply within 2 s — the shell leaves without them')
       finish()
     }, STYLE_WAIT)
   })
@@ -77,18 +79,19 @@ function dismissShell(): void {
 }
 
 /**
- * Кусок приложения не приехал — сказать об этом один раз и предложить выход.
+ * A chunk of the app did not arrive — say so once and offer a way out.
  *
- * Экраны, подсветка, читалка и рендереры вывода лежат отдельными файлами и
- * грузятся по первому требованию. Повторить попытку теперь можно (отказ больше
- * не кешируется), но редеплой под открытой вкладкой этим не лечится: файла с
- * прежним именем на сервере уже нет, а на любой путь сервер отдаёт index.html —
- * импорт падает на разборе HTML как модуля, и так будет всегда. Лечит только
- * перезагрузка, а вкладка при этом выглядит живой: просто ячейка не
- * подсвечивается, разметка заметки остаётся текстом, а PDF не открывается.
+ * Screens, highlighting, the reader and the output renderers live in
+ * separate files and load on first demand. Retrying is possible now (a
+ * failure is no longer cached), but that does not cure a redeploy under an
+ * open tab: the file with the old name is gone from the server, and the
+ * server answers any path with index.html — the import fails parsing HTML as
+ * a module, and it always will. Only a reload cures it, while the tab looks
+ * alive: a cell just is not highlighted, a note's markup stays plain text,
+ * and a PDF does not open.
  *
- * Ничего не отменяем (`preventDefault` заставил бы Vite отдать в импорт
- * `undefined` вместо отказа): здесь только строка поверх экрана.
+ * We cancel nothing (`preventDefault` would make Vite hand the import
+ * `undefined` instead of a failure): there is only a bar over the screen.
  */
 const MODULE_LOAD_FAILURE = /dynamically imported module|Importing a module script failed/i
 
@@ -97,9 +100,10 @@ let offered = false
 function offerReload(): void {
   if (offered) return
   offered = true
-  // Под заставкой, которая больше ничего не дождётся, стоять нечему: кусок
-  // экрана не доехал, и сколько ни жди — не доедет. Оболочка уходит, и строка
-  // с «Обновить» оказывается на виду, а не поверх обещания загрузки.
+  // There is no point staying under a splash that will wait for nothing: a
+  // chunk of the screen did not arrive, and however long you wait, it will
+  // not. The shell leaves, and the bar with "Reload" is in plain view rather
+  // than on top of a loading promise.
   firstScreenReady()
   const bar = document.createElement('div')
   bar.setAttribute('role', 'alert')
@@ -149,10 +153,11 @@ function offerReload(): void {
   document.body.append(bar)
 }
 
-// Своё событие Vite шлёт из помощника предзагрузки — до того, как отказ дойдёт
-// до того, кто импортировал, и независимо от того, поймает ли он его.
+// Vite sends its own event from the preload helper — before the failure
+// reaches the importer, and whether or not the importer catches it.
 window.addEventListener('vite:preloadError', offerReload)
-// А импорт без помощника (и любой пойманный «наверху») виден только так.
+// And an import without the helper (and anything that surfaces "at the
+// top") is visible only this way.
 window.addEventListener('unhandledrejection', (event) => {
   const reason: unknown = event.reason
   const said = reason instanceof Error ? reason.message : String(reason ?? '')
@@ -172,32 +177,34 @@ void (async () => {
   // room. The build's head listener only preloads modules; their evaluation
   // still waits for entry. A saved identity already warmed them in the head.
   //
-  // Стоит ПЕРЕД ожиданием первого экрана, хотя оболочка ещё на месте: событие
-  // говорит «форма отрисована», а не «заставки больше нет», и придерживать его
-  // до конца ожидания значило бы отнять у холодного входа в комнату всю ту
-  // фору, ради которой оно заведено.
+  // It comes BEFORE waiting for the first screen, although the shell is still
+  // in place: the event says "the form is drawn", not "the splash is gone",
+  // and holding it back until the wait is over would rob a cold entry into
+  // the room of the whole head start it exists for.
   requestAnimationFrame(() => {
     requestAnimationFrame(() => window.dispatchEvent(new Event('colloq:ready')))
   })
   /*
-   * И только теперь — оболочку снимают.
+   * And only now is the shell removed.
    *
-   * Смонтированный App — это ещё не экран: под оболочкой в этот миг стоит
-   * `{#await}` над куском маршрута и пустые `session`/`adminAuth`. Уходя
-   * здесь, заставка открывала скелет — серую вёрстку экрана, о котором ещё
-   * ничего не известно. Ждём, пока первому экрану будет что показать
-   * (lib/boot.ts), и не дольше потолка: дальше на месте данных встаёт та же
-   * заставка приложения, в тех же координатах.
+   * A mounted App is not yet a screen: at this moment, under the shell there
+   * is an `{#await}` over the route chunk and empty `session`/`adminAuth`.
+   * Leaving here, the splash uncovered a skeleton — the gray layout of a
+   * screen nothing is known about yet. We wait until the first screen has
+   * something to show (lib/boot.ts), and no longer than the cap: after that
+   * the same app splash takes the place of the data, at the same
+   * coordinates.
    */
   await whenFirstScreen()
   /*
-   * Кадр на отрисовку доложенного: `firstScreenReady` зовут из эффекта, то
-   * есть после правки DOM, но до того, как её покажут. Без этой паузы между
-   * уходящей оболочкой и готовым экраном успевал мелькнуть пустой грунт.
+   * A frame to paint what was reported: `firstScreenReady` is called from an
+   * effect, that is, after the DOM edit but before it is shown. Without this
+   * pause the empty ground managed to flash between the leaving shell and
+   * the ready screen.
    *
-   * С запасным будильником: фоновая вкладка кадров не выдаёт вовсе, и ждать
-   * там нечего — оболочку всё равно никто не видит, а висеть до возвращения
-   * на вкладку она не должна.
+   * With a backup alarm: a background tab produces no frames at all, and
+   * there is nothing to wait for there — nobody sees the shell anyway, and it
+   * must not hang around until the tab is visited again.
    */
   await new Promise<void>((paint) => {
     requestAnimationFrame(() => paint())

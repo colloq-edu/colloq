@@ -1,21 +1,22 @@
 /**
- * Всё, что страницы соревнований считают и произносят, — без единого DOM.
+ * Everything the competition pages compute and say — without a single DOM node.
  *
- * Здесь то, у чего есть правильный и неправильный ответ: сколько осталось до
- * дедлайна, чем набрано число метрики, какая подпись стоит под именем файла,
- * где посылка стоит на полосе этапов. Всё это на экране выглядит одинаково
- * правдоподобно при любом ответе — «0.046» вместо «0.0455», «1 ч» вместо «1 ч
- * 12 мин», зелёный этап вместо текущего, — и ошибку в нём замечают на паре, а
- * не в браузере.
+ * Here is what has a right and a wrong answer: how much time is left until the
+ * deadline, how a metric number is typeset, which caption sits under a file
+ * name, where a submission stands on the stage strip. On screen all of this
+ * looks equally plausible whatever the answer — "0.046" instead of "0.0455",
+ * "1 h" instead of "1 h 12 min", a green stage instead of the current one —
+ * and a mistake in it is noticed during a class, not in the browser.
  *
- * Слова берутся из каталога `competitions` (shared/locales/competitions.ts), и
- * только из него: страницы `/k` не грузят ни комнатный каталог, ни панельный
- * (web/src/lib/messages/competitions-*.ts), так что `spell()` и `elapsed()` из
- * lib/utils.ts, набранные ключами `room.ui.*`, показали бы здесь голый ключ.
+ * The words come from the `competitions` catalog
+ * (shared/locales/competitions.ts), and only from it: the `/k` pages load
+ * neither the room catalog nor the panel one
+ * (web/src/lib/messages/competitions-*.ts), so `spell()` and `elapsed()` from
+ * lib/utils.ts, built on `room.ui.*` keys, would show a bare key here.
  *
- * Плашки, этапы и направление метрики живут не тут, а в `@shared/competitions`:
- * их одинаково произносят сервер и браузер, и вторая копия разошлась бы с
- * первой на первой же правке.
+ * Badges, stages and the metric direction live not here but in
+ * `@shared/competitions`: the server and the browser say them the same way,
+ * and a second copy would drift from the first on the very first edit.
  */
 import { formatNumber, getLocale, tr } from '@shared/i18n'
 import {
@@ -37,20 +38,21 @@ const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 
-/* ------------------------------------------------------------------ число */
+/* ----------------------------------------------------------------- number */
 
 /**
- * Метрика — четырьмя знаками после точки, как во всём макете.
+ * A metric — with four digits after the point, as throughout the mockup.
  *
- * Четыре знака выбраны не размером колонки: разница между 0.0455 и 0.0452 —
- * это разница между четвёртым и седьмым местом, и округление до трёх знаков
- * склеивает соседей в лидерборде. Но метрика бывает и не долей: RMSE в рублях
- * приезжает тысячами, а `log loss` на вырожденной задаче — миллионными
- * долями. Поэтому ступеней три, и каждая держит ЗНАЧАЩИЕ цифры, а не число
- * знаков.
+ * Four digits were not chosen by column width: the difference between 0.0455
+ * and 0.0452 is the difference between fourth and seventh place, and rounding
+ * to three digits glues neighbours together on the leaderboard. But a metric
+ * is not always a fraction: RMSE in roubles arrives in thousands, and `log
+ * loss` on a degenerate task in millionths. So there are three steps, and each
+ * keeps SIGNIFICANT digits, not a number of decimal places.
  *
- * `NaN` и бесконечность — прочерк: число, которого нет, не должно выглядеть
- * как число. Такое приезжает от метрики, которая поделила на ноль и не упала.
+ * `NaN` and infinity are a dash: a number that does not exist must not look
+ * like a number. Such a thing comes from a metric that divided by zero and did
+ * not crash.
  */
 export function formatScore(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—'
@@ -60,18 +62,18 @@ export function formatScore(value: number | null | undefined): string {
   return value.toFixed(4)
 }
 
-/** «0.0412 · 3-й» — число и место одной строкой (колонка «ПУБЛИЧНЫЙ MAPE», P3). */
+/** "0.0412 · 3rd" — number and place on one line (the "PUBLIC MAPE" column, P3). */
 export function scoreWithPlace(score: number | null, place: number | null): string {
   const number = formatScore(score)
   return place === null ? number : `${number} · ${ordinalPlace(place)}`
 }
 
 /**
- * «7-й · 0.0455» — то же самое, но местом вперёд (блок «ВЫ» на P1).
+ * "7th · 0.0455" — the same, but place first (the "YOU" block on P1).
  *
- * Порядок не косметический: в карточке списка человек ищет глазами СЕБЯ, то
- * есть своё место, а в колонке лидерборда — число, по которому эта колонка и
- * названа. Обе формы записаны в макете, и обе здесь.
+ * The order is not cosmetic: in a list card the person looks for THEMSELVES,
+ * that is, their place, while in a leaderboard column they look for the number
+ * the column is named after. Both forms are in the mockup, and both are here.
  */
 export function placeWithScore(place: number | null, score: number | null): string {
   if (place === null) return formatScore(score)
@@ -79,11 +81,12 @@ export function placeWithScore(place: number | null, score: number | null): stri
 }
 
 /**
- * Место порядковым: «7-й», «7th».
+ * The place as an ordinal: "7-й" in Russian, "7th" in English.
  *
- * Всегда мужского рода, хотя макет пишет «1-я» у Марфы и «3-й» у Даниила:
- * согласовать можно только с полом человека, а пол из имени не выводится ни
- * надёжно, ни вежливо. Одна форма честнее угаданной.
+ * Always the masculine form, although the mockup writes the feminine "1-я" for
+ * Marfa and the masculine "3-й" for Daniil: agreement is only possible with
+ * the person's gender, and gender cannot be derived from a name either
+ * reliably or politely. One form is more honest than a guessed one.
  */
 export function ordinalPlace(place: number): string {
   if (getLocale() !== 'en') return `${place}-й`
@@ -93,18 +96,18 @@ export function ordinalPlace(place: number): string {
   return `${place}${mod10 === 1 ? 'st' : mod10 === 2 ? 'nd' : mod10 === 3 ? 'rd' : 'th'}`
 }
 
-/** «MAPE ↓» — метрика со стрелкой направления (P1, P4). */
+/** "MAPE ↓" — the metric with its direction arrow (P1, P4). */
 export function metricArrow(name: string, direction: MetricDirection): string {
   return `${name} ${DIRECTION_ARROW[direction]}`
 }
 
-/* -------------------------------------------------------------- время */
+/* --------------------------------------------------------------- time */
 
 /**
- * Законченная длительность словами: «41 с», «2 мин 51 с», «6 мин», «1 ч 12 мин».
+ * A finished duration in words: "41 s", "2 min 51 s", "6 min", "1 h 12 min".
  *
- * Секунды исчезают, как только появляются часы: «1 ч 12 мин 03 с» — это
- * точность, которой никто не пользуется, и три лишних знака в колонке.
+ * Seconds disappear as soon as hours appear: "1 h 12 min 03 s" is a precision
+ * nobody uses, and three extra characters in the column.
  */
 export function spellDuration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return '—'
@@ -124,10 +127,10 @@ export function spellDuration(ms: number | null | undefined): string {
 }
 
 /**
- * Сколько осталось, словами: «6 дн 4 ч», «1 ч 12 мин», «12 мин».
+ * How much is left, in words: "6 d 4 h", "1 h 12 min", "12 min".
  *
- * Два разряда и не больше: человек читает эту строку, чтобы решить «успею
- * сегодня или нет», и третий разряд на это решение не влияет.
+ * Two units and no more: the person reads this line to decide "will I make it
+ * today or not", and a third unit does not affect that decision.
  */
 export function remainingWords(ms: number): string {
   if (ms <= 0) return tr('competitions.p.closedNow')
@@ -146,11 +149,11 @@ export function remainingWords(ms: number): string {
 }
 
 /**
- * То же время, но часами: «6 дн 04:12», «04:12», «00:07».
+ * The same time, but as a clock: "6 d 04:12", "04:12", "00:07".
  *
- * Крупная цифра в шапке (P2, P4) идёт часами, а не словами, и это не вкус:
- * она обновляется каждую минуту на глазах, и «1 ч 12 мин» → «1 ч 11 мин»
- * меняет ширину строки, а `01:12` → `01:11` не меняет.
+ * The large figure in the header (P2, P4) is a clock, not words, and that is
+ * not taste: it updates every minute in plain sight, and "1 h 12 min" →
+ * "1 h 11 min" changes the width of the line, while `01:12` → `01:11` does not.
  */
 export function remainingClock(ms: number): string {
   if (ms <= 0) return '00:00'
@@ -160,7 +163,7 @@ export function remainingClock(ms: number): string {
   return days > 0 ? tr('competitions.p.durClockDays', { days, clock }) : clock
 }
 
-/** «01:12» — секундомер идущего прогона; часы появляются, только если нужны. */
+/** "01:12" — the stopwatch of a run in progress; hours appear only when needed. */
 export function elapsedClock(ms: number): string {
   const total = Math.max(0, Math.floor(ms / SECOND))
   const minutes = Math.floor(total / 60)
@@ -174,11 +177,11 @@ function pad(value: number): string {
 }
 
 /**
- * Дедлайн горит, когда он ближе шести часов.
+ * A deadline is urgent when it is less than six hours away.
  *
- * Шесть, а не сутки: «осталось 20 ч» — это ещё целый вечер, и красить его
- * тревожным значит приучить не замечать цвет. Шесть часов — это последний
- * заход, в который человек успевает обучить модель и отправить тетрадь.
+ * Six, not a day: "20 h left" is still a whole evening, and painting it as
+ * alarming teaches people to ignore the colour. Six hours is the last round in
+ * which a person can still train a model and send the notebook.
  */
 export const URGENT_MS = 6 * HOUR
 
@@ -188,7 +191,7 @@ export function deadlineUrgent(deadlineAt: number | null, now: number): boolean 
   return left > 0 && left <= URGENT_MS
 }
 
-/** Подпись под таймером: «до 27.09, 23:59» или «сегодня до 21:00». */
+/** The caption under the timer: "until 27.09, 23:59" or "today until 21:00". */
 export function deadlineNote(deadlineAt: number | null, now: number): string {
   if (deadlineAt === null) return tr('competitions.p.noDeadline')
   if (deadlineAt <= now) return tr('competitions.p.closedNow')
@@ -196,7 +199,7 @@ export function deadlineNote(deadlineAt: number | null, now: number): string {
   return tr('competitions.p.untilDate', { date: `${dateOf(deadlineAt)}, ${clockOf(deadlineAt)}` })
 }
 
-/** «Сегодня в 18:40», «Вчера в 22:14», «13.09 в 20:05». */
+/** "Today at 18:40", "Yesterday at 22:14", "13.09 at 20:05". */
 export function whenWords(at: number, now: number): string {
   if (sameDay(at, now)) return tr('competitions.p.todayAt', { time: clockOf(at) })
   if (sameDay(at, now - DAY)) return tr('competitions.p.yesterdayAt', { time: clockOf(at) })
@@ -213,19 +216,19 @@ export function sameDay(a: number, b: number): boolean {
   )
 }
 
-/** «23:59» часовым поясом читателя: сервер шлёт момент, а не строку. */
+/** "23:59" in the reader's time zone: the server sends a moment, not a string. */
 export function clockOf(at: number): string {
   return new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit', hour12: false })
     .format(new Date(at))
 }
 
-/** «27.09» — день и месяц, без года: соревнование живёт недели, а не годы. */
+/** "27.09" — day and month, no year: a competition lives for weeks, not years. */
 export function dateOf(at: number): string {
   return new Intl.DateTimeFormat(getLocale(), { day: '2-digit', month: '2-digit' })
     .format(new Date(at))
 }
 
-/* --------------------------------------------------------- полоса этапов */
+/* ----------------------------------------------------------- stage strip */
 
 export interface StageCell {
   stage: SubmissionStage
@@ -233,7 +236,7 @@ export interface StageCell {
   word: string
 }
 
-/** Пять подписей полосы под идущей посылкой (P2) — с их цветом-состоянием. */
+/** The strip's five captions under a running submission (P2) — with their state colour. */
 export function stageStrip(state: SubmissionState, at: SubmissionStage): StageCell[] {
   return SUBMISSION_STAGES.map((stage) => ({
     stage,
@@ -243,11 +246,11 @@ export function stageStrip(state: SubmissionState, at: SubmissionStage): StageCe
 }
 
 /**
- * Насколько полоса заполнена, 0–100.
+ * How full the strip is, 0–100.
  *
- * Ячейки — единственное, что двигается по-настоящему, поэтому они и считают:
- * пока их число неизвестно (тетрадь ещё не открывали), полоса показывает
- * этап, а не ноль. Ноль под словом «ВЫПОЛНЯЕТСЯ» читается как «висит».
+ * Cells are the only thing that really moves, so they are what counts: while
+ * their number is unknown (the notebook has not been opened yet), the strip
+ * shows the stage, not zero. A zero under the word "RUNNING" reads as "stuck".
  */
 export function runProgress(live: Pick<SubmissionLive, 'stage' | 'cellsDone' | 'cellsTotal'>): number {
   if (live.cellsTotal > 0) {
@@ -262,9 +265,9 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)))
 }
 
-/* --------------------------------------------------------------- очередь */
+/* ----------------------------------------------------------------- queue */
 
-/** «Третья», «11-я» — место в очереди словом, как его произносят вслух. */
+/** "Third", "11th" — the place in the queue as a word, the way it is said aloud. */
 export function queueOrdinal(place: number): string {
   if (place >= 1 && place <= 10) return tr(`competitions.p.ordinal.${place}`)
   return tr('competitions.p.ordinalN', { count: place })
@@ -274,16 +277,18 @@ export interface QueueNote {
   place: number | null
   aheadNumber: number | null
   paused: boolean
-  /** Телефон говорит короче: «запуск после посылки #12», без «завершения». */
+  /** The phone says it shorter: "starts after submission #12", without "finishes". */
   short?: boolean
 }
 
 /**
- * Подпись ждущей посылки: «Третья в очереди · запуск после завершения посылки #12».
+ * The caption of a waiting submission: "Third in the queue · starts once
+ * submission #12 finishes".
  *
- * Хвост про чужой номер не пишется никогда (сервер его и не присылает): «после
- * посылки #7» про чужую посылку — это номер из чужого списка, который человеку
- * нечем сопоставить со своим.
+ * The tail about someone else's number is never written (the server does not
+ * even send it): "after submission #7" about someone else's submission is a
+ * number from someone else's list, which the person has nothing to match
+ * against their own.
  */
 export function queueNote(note: QueueNote): string {
   const parts: string[] = []
@@ -299,16 +304,17 @@ export function queueNote(note: QueueNote): string {
   return parts.join(' · ')
 }
 
-/* ------------------------------------------------- подписи строк посылок */
+/* ----------------------------------------------- submission row captions */
 
 /**
- * Первая фраза отказа — в заголовок, остальное — в подпись.
+ * The first sentence of a refusal goes to the title, the rest to the caption.
  *
- * У «ОТВЕТ НЕ ПРИНЯТ» в заголовке строки стоит не имя файла, а причина: «Не
- * для всех строк test.csv есть прогноз», и это не прихоть макета — участнику
- * важнее причина, чем то, как он назвал файл. Причина приезжает одной строкой
- * от метрики, и режется она по первой точке: так написаны все сообщения
- * каталога («… есть прогноз. В submission.csv 391 строка вместо 397…»).
+ * For "ANSWER REJECTED" the row title is not the file name but the reason:
+ * "Not every row of test.csv has a prediction", and that is not a whim of the
+ * mockup — the reason matters more to an entrant than what they named the
+ * file. The reason arrives as one line from the metric, and it is cut at the
+ * first full stop: that is how all catalog messages are written ("… has a
+ * prediction. submission.csv has 391 rows instead of 397…").
  */
 export function splitError(text: string | null): { head: string; rest: string } {
   const value = (text ?? '').trim()
@@ -319,30 +325,30 @@ export function splitError(text: string | null): { head: string; rest: string } 
 }
 
 export interface RowWords {
-  /** Что стоит в заголовке строки: имя файла или причина отказа. */
+  /** What sits in the row title: the file name or the refusal reason. */
   title: string
-  /** Строки подписи под ним, сверху вниз. */
+  /** The caption lines under it, top to bottom. */
   lines: string[]
 }
 
 export interface RowInput {
   submission: EntrantSubmission
   live: SubmissionLive | null
-  /** Лучший публичный результат среди своих посылок. */
+  /** The best public result among one's own submissions. */
   best: boolean
   paused: boolean
   now: number
-  /** Телефонная раскладка (P4): подписи короче, длительности нет. */
+  /** The phone layout (P4): shorter captions, no duration. */
   phone?: boolean
 }
 
 /**
- * Что написано в строке посылки — заголовком и подписью.
+ * What a submission row says — as title and caption.
  *
- * Одна функция на все восемь исходов нарочно: подпись отличается от исхода к
- * исходу не оформлением, а СОСТАВОМ («ошибка в ячейке 7 из 14 через 41 с»
- * против «остановка на ячейке 11 из 16»), и собранная по месту она разъедется
- * между десктопом и телефоном в первую же правку.
+ * One function for all eight outcomes on purpose: the caption differs from
+ * outcome to outcome not in styling but in CONTENT ("failed at cell 7 of 14
+ * after 41 s" versus "stopped at cell 11 of 16"), and assembled on the spot it
+ * would drift apart between desktop and phone on the very first edit.
  */
 export function rowWords(input: RowInput): RowWords {
   const { submission, live, now } = input
@@ -436,9 +442,10 @@ export function rowWords(input: RowInput): RowWords {
     }
     case 'rejected': {
       /*
-       * Причина — в заголовок, имя файла — в подпись: так в макете, и это тот
-       * единственный исход, где человек смотрит не на «какую тетрадь я слал»,
-       * а на «чем именно ответ не подошёл».
+       * The reason goes to the title, the file name to the caption: that is
+       * the mockup, and this is the one outcome where the person looks not at
+       * "which notebook did I send" but at "what exactly was wrong with the
+       * answer".
        */
       const { head, rest } = splitError(submission.participantError)
       const first = [whenWords(submission.acceptedAt, now), file]
@@ -465,19 +472,21 @@ export function rowWords(input: RowInput): RowWords {
   }
 }
 
-/* ------------------------------------------------------------- лидерборд */
+/* ----------------------------------------------------------- leaderboard */
 
 /**
- * Места в таблице — по ЛЮДЯМ, с базовым решением там, куда оно попало.
+ * Places in the table — by PEOPLE, with the baseline wherever it landed.
  *
- * Сервер ранжирует всех подряд, и базовое решение получает от него обычное
- * место. Пока оно двадцатое из двадцати восьми (как в макете), разницы нет;
- * но на соревновании, где никто ещё не обогнал бейзлайн, он становится первым,
- * и человек читает «ВАШЕ МЕСТО 2 из 3» в шапке рядом со строкой «3» в
- * таблице. Здесь бейзлайн перестаёт занимать место людей и встаёт ровно туда,
- * где стоял бы, будь он участником: после всех, кто его обошёл.
+ * The server ranks everyone in a row, and the baseline gets an ordinary place
+ * from it. While it is twentieth of twenty-eight (as in the mockup), there is
+ * no difference; but in a competition where nobody has beaten the baseline
+ * yet, it becomes first, and the person reads "YOUR PLACE 2 of 3" in the
+ * header next to a row "3" in the table. Here the baseline stops taking
+ * people's places and stands exactly where it would if it were an entrant:
+ * after everyone who has beaten it.
  *
- * Порядок строк не меняется — он уже посчитан сервером по правилу метрики.
+ * The order of the rows does not change — the server has already computed it
+ * by the metric's rule.
  */
 export function boardPlaces<T extends { baseline: boolean }>(
   lines: readonly T[],
@@ -489,24 +498,24 @@ export function boardPlaces<T extends { baseline: boolean }>(
       return { ...line, place: people }
     }
     /*
-     * Базовое решение, которого ещё никто не обошёл, места не занимает вовсе:
-     * «1» в его строке рядом с «1» у первого человека читается как ничья,
-     * которой нет. Прочерк на этом месте — это и есть новость: пока ни одна
-     * посылка не лучше бейзлайна.
+     * A baseline nobody has beaten yet takes no place at all: a "1" in its row
+     * next to the "1" of the first person reads as a tie that does not exist.
+     * A dash in that spot is the news itself: no submission is better than the
+     * baseline yet.
      */
     return { ...line, place: people === 0 ? null : people + 1 }
   })
 }
 
-/* ----------------------------------------------------------------- файлы */
+/* ----------------------------------------------------------------- files */
 
 /**
- * Размер файла данных: «6 КБ», «212 КБ», «4,1 МБ».
+ * The size of a data file: "6 KB", "212 KB", "4.1 MB".
  *
- * Свой, а не `formatBytes` из lib/utils.ts: тот набран ключами `room.*`, а
- * каталог комнаты на эти страницы не приезжает — на экране оказалась бы
- * строка `room.ui.1185`. Десятая доля живёт только до десяти мегабайт: дальше
- * она ничего не говорит и ломает колонку по ширине.
+ * Our own, not `formatBytes` from lib/utils.ts: that one is built on `room.*`
+ * keys, and the room catalog does not reach these pages — the screen would
+ * show the string `room.ui.1185`. The tenth lives only up to ten megabytes:
+ * beyond that it says nothing and breaks the column's width.
  */
 export function fileSize(bytes: number): string {
   if (bytes < 1024) return tr('competitions.p.sizeBytes', { count: bytes })
@@ -520,14 +529,14 @@ export function fileSize(bytes: number): string {
   })
 }
 
-/* --------------------------------------------------------------- аватар */
+/* --------------------------------------------------------------- avatar */
 
 /**
- * Кружок с буквой: шесть пастельных подложек макета, выбор — по имени.
+ * A circle with a letter: the mockup's six pastel backings, chosen by name.
  *
- * По имени, а не по идентификатору: человек узнаёт себя в таблице по цвету, и
- * этот цвет обязан быть тем же на телефоне, где идентификатор другой… и тем
- * же после того, как преподаватель выдаст новый ключ.
+ * By name, not by id: a person recognises themselves in the table by colour,
+ * and that colour must be the same on a phone, where the id is different… and
+ * the same after the teacher issues a new key.
  */
 export const AVATAR_TINTS: readonly string[] = [
   '#CFE3F7',
@@ -544,13 +553,13 @@ export function avatarTint(name: string): string {
   return AVATAR_TINTS[hash % AVATAR_TINTS.length]
 }
 
-/** Одна буква на кружке — первая буква имени, как в макете («Т»). */
+/** One letter on the circle — the first letter of the name, as in the mockup ("T"). */
 export function avatarLetter(name: string): string {
   const trimmed = name.trim()
   return trimmed ? [...trimmed][0].toUpperCase() : '?'
 }
 
-/** «Тимур А.» — как подписан человек в шапке телефона. */
+/** "Timur A." — how the person is labelled in the phone header. */
 export function shortName(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   if (parts.length < 2) return name.trim()

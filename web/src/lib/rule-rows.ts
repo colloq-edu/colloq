@@ -1,36 +1,40 @@
 import { tr } from '@shared/i18n'
 /**
- * Строки, которыми описывается комната, — по одной на правило.
+ * The rows that describe a room — one per rule.
  *
- * Одно место на панель и на пульт в самой комнате — иначе две поверхности
- * спрашивают одно и то же разными словами, и преподаватель, поставивший
- * «только чтение» из панели, ищет в комнате переключатель, который называется
- * иначе.
+ * One place for the panel and for the console inside the room — otherwise two
+ * surfaces ask the same thing in different words, and a teacher who set
+ * "read-only" from the panel looks in the room for a switch that is called
+ * something else.
  *
- * Порядок не алфавитный и не по важности, а по ходу занятия: сначала то, что
- * человек делает руками в тетради, потом ядро, потом всё общее.
+ * The order is neither alphabetical nor by importance but follows the course
+ * of a class: first what a person does by hand in the notebook, then the
+ * kernel, then everything shared.
  *
- * Строки двух видов. У большинства ответ выбирается из двух-трёх слов; у двух
- * потолков оракула ответ — число, и переключателем его не задать. Общего у них
- * ровно столько, сколько рисует RoomRulesRows.svelte: название, подпись и одна
- * ручка справа.
+ * The rows are of two kinds. For most, the answer is chosen from two or three
+ * words; for the two oracle ceilings the answer is a number, and a switch
+ * cannot set it. They share exactly as much as RoomRulesRows.svelte draws: a
+ * title, a caption and one control on the right.
  *
- * Числа строк здесь намеренно не названо: оно уже дважды успело разойтись с
- * массивом ниже. Что каждое правило комнаты названо ровно один раз и что каждый
- * вариант доживает до `readRules` — проверяет tests/weblib-rule-rows.test.mts;
- * `oracle` и `model` спрашивают не здесь, и это записано там же.
+ * The number of rows is deliberately not named here: it has already drifted
+ * from the array below twice. That every room rule is named exactly once and
+ * that every option survives to `readRules` is checked by
+ * tests/weblib-rule-rows.test.mts; `oracle` and `model` are asked elsewhere,
+ * and that is recorded there too.
  *
- * ЯЗЫК этих строк — язык комнаты, а не панели, которая тем же списком
- * пользуется. Панель преподавателя местами английская, и напрашивается
- * перевести подписи заодно с ней. Нельзя: тот же список рисует пульт правил
- * внутри комнаты, а комната по-русски вся — от «Сдать» до «Занятие
- * закончено», — и перевод ради панели дал бы одной настройке два имени, ровно
- * то, от чего второй абзац. Целиком решение записано в шапке
- * components/RoomRulesRows.svelte, здесь важно следствие: переводить эти строки
- * отдельно нельзя, а если язык панели однажды выберут английским, они поедут в
- * него только вместе с текстами комнаты и одним куском — половина оставила бы
- * правило с двумя именами. Что подписи остались в языке комнаты, проверяет тот
- * же тест.
+ * The LANGUAGE of these rows is the room's, not that of the panel that uses
+ * the same list. The teacher panel is English in places, and it is tempting
+ * to translate the captions along with it. It must not be done: the same list
+ * draws the rules console inside the room, and the room is Russian throughout
+ * — from "Submit" to "The class is over" — and translating for the panel's
+ * sake would give one setting two names, exactly what the second paragraph is
+ * about. The whole decision is recorded in the header of
+ * components/RoomRulesRows.svelte; what matters here is the consequence: these
+ * rows must not be translated separately, and if the panel's language is one
+ * day chosen to be English, they will move into it only together with the
+ * room's texts and in one piece — half of it would leave a rule with two
+ * names. That the captions stayed in the room's language is checked by the
+ * same test.
  */
 import { LIMITS } from '@shared/admin'
 import { MAX_CELL_LIMIT_SEC, type RoomRules } from '@shared/rules'
@@ -40,7 +44,7 @@ export interface RuleOption {
   label: string
 }
 
-/** Строка-переключатель: одно правило, два-три значения, одно горит. */
+/** A switch row: one rule, two or three values, one lit. */
 export interface ChoiceRow {
   kind: 'choice'
   key: keyof RoomRules &
@@ -64,11 +68,12 @@ export interface ChoiceRow {
 }
 
 /**
- * Строка-число: потолок оракула, который комната опускает под себя.
+ * A number row: an oracle ceiling the room lowers for itself.
  *
- * Пусто — «как на инстансе»: это умолчание и сегодняшнее поведение любой
- * комнаты. Границы — те же, что у настройки инстанса (shared/admin.ts ·
- * LIMITS), чтобы комната не просила того, чего инстанс не умеет.
+ * Empty means "as on the instance": that is the default and today's behaviour
+ * of any room. The bounds are the same as for the instance setting
+ * (shared/admin.ts · LIMITS), so that a room does not ask for what the
+ * instance cannot do.
  */
 export interface LimitRow {
   kind: 'limit'
@@ -76,20 +81,22 @@ export interface LimitRow {
     ('questionsPerHour' | 'slowModeSeconds' | 'agentSteps' | 'cellLimitSec')
   title: string
   note: string
-  /** Подпись у поля — чтобы число не осталось голым. */
+  /** The caption by the field — so that the number is not left bare. */
   unit: string
   min: number
   max: number
   /**
-   * Как назвать действующее значение инстанса — и `undefined`, когда его нет.
+   * How to name the instance's current value — and `undefined` when there is
+   * none.
    *
-   * Функция, а не шаблон: у потолков оракула ноль значит не «ноль», а особое
-   * состояние, и «0 в час» рядом с полем ввода — это загадка, а не подсказка.
+   * A function, not a template: for the oracle ceilings zero means not "zero"
+   * but a special state, and "0 per hour" next to an input field is a riddle,
+   * not a hint.
    *
-   * Необязательная с тех пор, как числовой строкой стал не только потолок
-   * оракула: у предела ячейки инстансового значения нет вовсе, и пустое поле
-   * там значит «без предела», а не «как на сервере». Выдуманная строка «как на
-   * сервере: —» отвечала бы на вопрос, которого никто не задавал.
+   * Optional since a number row stopped being only an oracle ceiling: the cell
+   * limit has no instance value at all, and an empty field there means "no
+   * limit", not "as on the server". An invented line "as on the server: —"
+   * would answer a question nobody asked.
    */
   atInstance?: (value: number) => string
 }
@@ -99,14 +106,17 @@ export type RuleRow = ChoiceRow | LimitRow
 const EVERYONE = { value: 'room', get label() { return tr('room.ui.1127') } }
 const TEACHER = { value: 'host', get label() { return tr('room.ui.675') } }
 
-/** Слова здесь — комнатные; про язык и про то, почему его не правят отсюда, — шапка файла. */
+/**
+ * The words here are the room's; about the language and why it is not edited
+ * from here — see the file header.
+ */
 export const RULE_ROWS: RuleRow[] = [
   {
     kind: 'choice',
     key: 'opens',
     get title() { return tr('room.ui.1128') },
-    // Это и есть вся разница между лекцией и консилиумом как режимами: права
-    // у них одни, а «открыть ячейку» значит разное.
+    // This is the whole difference between a lecture and a council as modes:
+    // the rights are the same, but "open a cell" means different things.
     get note() { return tr('room.ui.1129') },
     options: [
       { value: 'shared', get label() { return tr('room.ui.1130') } },
@@ -123,29 +133,30 @@ export const RULE_ROWS: RuleRow[] = [
   {
     kind: 'choice',
     key: 'run',
-    // Не только ячейки: под этим же правилом «Запустить» над файлом и команда
-    // в общей оболочке (control.ts, file:run и term:run). Строка, обещавшая
-    // одни ячейки, читалась как «терминал остаётся открытым» — а `python
-    // train.py` там тот же контейнер и то же процессорное время.
+    // Not only cells: the same rule covers "Run" above a file and a command in
+    // the shared shell (control.ts, file:run and term:run). A row that promised
+    // cells alone read as "the terminal stays open" — while `python train.py`
+    // there is the same container and the same CPU time.
     get title() { return tr('room.ui.1134') },
     get note() { return tr('room.ui.1135') },
     options: [EVERYONE, { value: 'single', get label() { return tr('room.ui.1136') } }, TEACHER],
   },
   {
     /*
-     * Сразу ПОСЛЕ «кто запускает», и место выбрано так же, как у личных
-     * тетрадей под файлами: два правила читаются вместе. Первое — кому можно
-     * нажать, второе — сколько нажатому дано считать. Ядро у тетради одно, и
-     * второе правило есть единственное, что мешает одному запуску занять его
-     * до конца пары — включая очередь попыток консилиума, у которой свой предел
-     * есть, а толку от него нет, пока впереди стоит обычная ячейка без предела.
+     * Right AFTER "who runs", and the place is chosen the same way as for
+     * personal notebooks under files: the two rules read together. The first
+     * is who may press, the second how long what was pressed may compute. A
+     * notebook has one kernel, and the second rule is the only thing that
+     * stops one run from occupying it until the end of the class — including
+     * the council attempt queue, which has a limit of its own that is of no
+     * use while an ordinary cell without a limit stands ahead of it.
      */
     kind: 'limit',
     key: 'cellLimitSec',
     get title() { return tr('room.rules.cellLimit.title') },
-    // Подсказка называет и умолчание («пусто — никогда»), и то, что предел
-    // касается преподавательских ячеек тоже: без второго он читается как
-    // ограничение для студентов, а это не так.
+    // The hint names both the default ("empty — never") and that the limit
+    // applies to the teacher's cells too: without the second it reads as a
+    // restriction for students, and that is not so.
     get note() { return tr('room.rules.cellLimit.note') },
     get unit() { return tr('room.rules.cellLimit.unit') },
     min: 1,
@@ -153,20 +164,22 @@ export const RULE_ROWS: RuleRow[] = [
   },
   {
     /*
-     * Третьей строкой про ядро, сразу за «кто запускает» и «сколько ему дано
-     * считать»: все три про одно — ядро у тетради одно на всех. Первая про то,
-     * кому можно нажать, вторая про то, когда запуск обрывается, эта — про
-     * строки, после которых обрывается не запуск, а занятие.
+     * The third row about the kernel, right after "who runs" and "how long it
+     * may compute": all three are about one thing — a notebook has one kernel
+     * for everyone. The first is about who may press, the second about when a
+     * run is cut off, this one about lines after which it is not the run that
+     * is cut off but the class.
      */
     kind: 'choice',
     key: 'danger',
     get title() { return tr('room.rules.danger.title') },
     /*
-     * Подпись обязана сказать четыре вещи, и каждая из них — ответ на вопрос,
-     * с которым сюда приходят: ЧТО именно не исполнится, ПОЧЕМУ (одна строка
-     * гасит ядро или стирает переменные всему классу), КОМУ это выключают
-     * (курс по самому Python) и ЧЕГО здесь не обещают — это лежачий
-     * полицейский, а не песочница, и терминал он не закрывает.
+     * The caption must say four things, and each is an answer to a question
+     * people come here with: WHAT exactly will not execute, WHY (one line
+     * kills the kernel or wipes the variables for the whole class), FOR WHOM
+     * this gets turned off (a course on Python itself) and WHAT is not promised
+     * here — it is a speed bump, not a sandbox, and it does not close the
+     * terminal.
      */
     get note() { return tr('room.rules.danger.note') },
     options: [
@@ -178,9 +191,10 @@ export const RULE_ROWS: RuleRow[] = [
     kind: 'choice',
     key: 'structure',
     get title() { return tr('room.ui.1137') },
-    // «Чужую» здесь было неправдой по умолчанию: правило не знает автора, и
-    // при «только дописывать» участник не уберёт и свою только что заведённую
-    // ячейку тоже. Слова — те же, что комната показывает в отказе (may.ts).
+    // "Someone else's" was untrue here by default: the rule does not know the
+    // author, and under "append only" a participant cannot remove even their
+    // own freshly added cell. The words are the same the room shows in a
+    // refusal (may.ts).
     get note() { return tr('room.ui.1138') },
     options: [EVERYONE, { value: 'add', get label() { return tr('room.ui.1139') } }, TEACHER],
   },
@@ -202,15 +216,16 @@ export const RULE_ROWS: RuleRow[] = [
     kind: 'choice',
     key: 'ownBooks',
     /*
-     * Сразу ПОСЛЕ файлов, и это место выбрано: два правила стоят рядом именно
-     * затем, чтобы разница между ними читалась с одного взгляда. Строка выше —
-     * про общую папку занятия; эта — про собственную тетрадь участника, файл
-     * которой пишет сервер проекцией. Их и путают: «я же разрешил файлы».
+     * Right AFTER files, and the place is chosen: the two rules stand next to
+     * each other precisely so that the difference between them reads at a
+     * glance. The row above is about the class's shared folder; this one is
+     * about the participant's own notebook, whose file the server writes as a
+     * projection. They do get confused: "but I allowed files".
      */
     get title() { return tr('room.rules.ownBooks.title') },
-    // Подсказка называет и умолчание: «по умолчанию выключено» — это половина
-    // ответа на вопрос, с которым сюда приходят («а почему у него нельзя?»), и
-    // без неё переключатель читается как испорченный.
+    // The hint names the default too: "off by default" is half the answer to
+    // the question people come here with ("why can't they?"), and without it
+    // the switch reads as broken.
     get note() { return tr('room.rules.ownBooks.note') },
     options: [
       { value: 'off', get label() { return tr('room.rules.ownBooks.off') } },
@@ -225,11 +240,11 @@ export const RULE_ROWS: RuleRow[] = [
     options: [EVERYONE, TEACHER, { value: 'off', get label() { return tr('room.ui.1146') } }],
   },
   /*
-   * Два потолка оракула стоят здесь, а не в настройках инстанса, потому что
-   * решение про них принимают за минуту до пары: контрольная — это «один
-   * вопрос на человека сегодня», а не новая настройка для всех комнат разом.
-   * Инстанс при этом остаётся потолком: опуститься под него можно, подняться
-   * над ним — нет, за модель платит он.
+   * The two oracle ceilings stand here and not in the instance settings,
+   * because the decision about them is made a minute before class: a test is
+   * "one question per person today", not a new setting for all rooms at once.
+   * The instance stays the ceiling meanwhile: one can go below it, but not
+   * above it — the instance pays for the model.
    */
   {
     kind: 'limit',
@@ -248,9 +263,9 @@ export const RULE_ROWS: RuleRow[] = [
     get note() { return tr('room.ui.1148') },
     get unit() { return tr('room.ui.1149') },
     /*
-     * Пол — один вопрос, а не ноль: «оракула сегодня нет» — это строка выше,
-     * и она говорит об этом словами, а ноль здесь развернул бы класс отказом
-     * «использовано все 0 вопросов».
+     * The floor is one question, not zero: "no oracle today" is the row above,
+     * and it says so in words, while a zero here would turn the class away
+     * with the refusal "all 0 questions used".
      */
     min: 1,
     max: LIMITS.questionsPerHour.max,
@@ -284,8 +299,9 @@ export const RULE_ROWS: RuleRow[] = [
     kind: 'choice',
     key: 'wipe',
     get title() { return tr('room.ui.1161') },
-    // «Чистит всегда» обещало кнопку, которой не было вовсе. Своя ячейка — это
-    // отдельное действие в её тулбаре, и правило у него другое: печатать.
+    // "Always clears" promised a button that did not exist at all. One's own
+    // cell is a separate action in its toolbar, and its rule is a different
+    // one: typing.
     get note() { return tr('room.ui.1162') },
     options: [EVERYONE, TEACHER],
   },

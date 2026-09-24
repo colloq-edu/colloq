@@ -1,17 +1,18 @@
 /**
- * Две двери наружу из памяти: отпустить комнату и снести семинар.
+ * Two doors out of memory: releasing a room and deleting a class.
  *
- * `dropSessionDoc` написан для СНОСА: он закрывает сокеты комнаты и её открытые
- * файлы. Но выселить документ хочет и тот, кто просто заглянул в тетрадь ради
- * одной строки (routes/doc-visit.ts) — переименование в панели, чтение ленты,
- * публикация. Ему нужна дверь, которая ничего не закрывает: файловые сокеты
- * живут в своей карте и документ комнаты не поднимают, так что открытый в
- * редакторе `.py` спокойно переживает выселение — а дверь сноса хлопнула бы ему
- * кодом 1001 «комната закрыта» посреди живого семинара.
+ * `dropSessionDoc` is written for DELETION: it closes the room's sockets and
+ * its open files. But whoever merely looked into the notebook for one line
+ * (routes/doc-visit.ts) — a rename in the panel, reading the feed,
+ * publishing — also wants to evict the document. That caller needs a door that
+ * closes nothing: file sockets live in their own map and do not load the room
+ * document, so a `.py` open in the editor calmly survives eviction — while the
+ * deletion door would slam it with code 1001 "room closed" in the middle of a
+ * live class.
  *
- * Здесь прибито ровно это различие: что отпускает `releaseSessionDoc` (и что
- * при этом обязано доехать до диска), чего он не трогает и чего не делает с
- * комнатой, в которой сидят люди.
+ * Exactly this difference is pinned down here: what `releaseSessionDoc`
+ * releases (and what must reach the disk as it does), what it leaves alone,
+ * and what it does not do to a room with people in it.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -35,10 +36,10 @@ import { cellSource, createCell, getCells } from '../shared/notebook.js'
 after(() => shutdownCollab())
 
 /**
- * Сокет с записанными кадрами вместо настоящего.
+ * A socket that records its frames instead of a real one.
  *
- * `send` зовут и на два аргумента, и на три (сообщение, настройки сжатия,
- * обратный вызов) — последний аргумент и есть тот, кого надо позвать.
+ * `send` is called with two arguments and with three (message, compression
+ * options, callback); the last argument is the one that has to be called.
  */
 function fakeSocket() {
   const handlers = new Map<string, (arg?: unknown) => void>()
@@ -73,7 +74,7 @@ function fakeSocket() {
   }
 }
 
-/** Работа класса: ячейка в тетради и открытый рядом файл. */
+/** The class's work: a cell in the notebook and a file open next to it. */
 function room(id: string, file: string): ReturnType<typeof fakeSocket> {
   createSession(id, 'Прошлогодний семинар', null)
   const { doc } = getSessionDoc(id)
@@ -84,53 +85,53 @@ function room(id: string, file: string): ReturnType<typeof fakeSocket> {
   cellSource(cell).insert(0, 'x = 1')
 
   fs.writeFileSync(path.join(sessionDir(id), file), 'def f():\n    return 1\n')
-  assert.ok(getFileDoc(id, file), 'файл комнаты не открылся — тест ничего не проверяет')
+  assert.ok(getFileDoc(id, file), "the room's file did not open, so the test checks nothing")
   const socket = fakeSocket()
   handleFileSocket(socket.ws, id, file, 'host', 'p_host')
-  assert.equal(socket.closed, null, 'файловый сокет закрылся ещё на рукопожатии')
+  assert.equal(socket.closed, null, 'the file socket closed already during the handshake')
   return socket
 }
 
-test('выселение отпускает документ, дописав его, и не закрывает открытый файл', () => {
+test('eviction releases the document after flushing it and does not close the open file', () => {
   const id = 'release-cold'
   const editor = room(id, 'utils.py')
 
   assert.equal(releaseSessionDoc(id), true)
-  assert.equal(peekSessionDoc(id), null, 'документ остался в памяти')
-  assert.equal(editor.closed, null, 'выселение хлопнуло сокетом открытого файла')
-  assert.ok(getSession(id), 'выселение снесло сам семинар')
+  assert.equal(peekSessionDoc(id), null, 'the document stayed in memory')
+  assert.equal(editor.closed, null, "eviction slammed the open file's socket")
+  assert.ok(getSession(id), 'eviction deleted the class itself')
 
   /*
-   * И записанное доехало до диска: выселение уходит молча, и если снимок не
-   * дописан, следующий вошедший поднимет тетрадь без последней правки — правка
-   * была, а после перезапуска её нет.
+   * And what was written reached the disk: eviction leaves silently, and if the
+   * snapshot is not flushed, the next person to join loads the notebook without
+   * the last edit — the edit happened, and after a restart it is gone.
    */
   const cells = getCells(getSessionDoc(id).doc)
-  assert.equal(cells.length, 1, 'тетрадь поднялась не из своего снимка')
+  assert.equal(cells.length, 1, 'the notebook was not loaded from its own snapshot')
   assert.equal(cellSource(cells.get(0)).toString(), 'x = 1')
 })
 
-test('снос семинара, наоборот, закрывает файловый сокет — тем двери и отличаются', () => {
+test('deleting a class, by contrast, closes the file socket; that is how the doors differ', () => {
   const id = 'release-drop'
   const editor = room(id, 'utils.py')
 
   dropSessionDoc(id)
   assert.equal(peekSessionDoc(id), null)
-  assert.equal(editor.closed?.code, 1001, 'снос оставил открытым файл снесённой комнаты')
+  assert.equal(editor.closed?.code, 1001, 'deletion left the file of the deleted room open')
 })
 
-test('комнату, в которой сидят, выселение не трогает', () => {
+test('eviction leaves a room with people in it alone', () => {
   const id = 'release-live'
   createSession(id, 'Идущая пара', null)
   const { doc } = getSessionDoc(id)
   const tab = fakeSocket()
   handleCollabSocket(tab.ws, id, 'host', 'p_host')
 
-  assert.equal(releaseSessionDoc(id), false, 'документ выселен из-под живого сокета')
-  assert.equal(peekSessionDoc(id)?.doc, doc, 'комната с людьми потеряла свой документ')
+  assert.equal(releaseSessionDoc(id), false, 'the document was evicted from under a live socket')
+  assert.equal(peekSessionDoc(id)?.doc, doc, 'a room with people in it lost its document')
   assert.equal(tab.closed, null)
 })
 
-test('комната, которой в памяти нет, — не ошибка, а «нечего отпускать»', () => {
+test('a room that is not in memory is not an error but "nothing to release"', () => {
   assert.equal(releaseSessionDoc('release-never-opened'), false)
 })

@@ -1,24 +1,27 @@
 /**
- * Чего стоит возврат зала базе: строка комнаты и право по токену.
+ * What the return of a whole hall costs the database: the room row and the
+ * host right behind a token.
  *
- * После перезапуска сервера или моргания ретранслятора пятьсот вкладок
- * возвращаются за одну-две секунды, по два сокета каждая, и на каждом
- * рукопожатии сервер спрашивал одно и то же: жив ли ещё семинар (`getSession`)
- * и ведущий ли этот человек (`isTokenHost`). Тысяча SELECT по первичному ключу
- * — микросекунды каждый и полсекунды занятого цикла событий ровно в ту минуту,
- * когда все ждут возврата комнаты.
+ * After a server restart or a relay blink, five hundred tabs come back within a
+ * second or two, two sockets each, and on every handshake the server asked the
+ * same thing: is the seminar still alive (`getSession`) and is this person the
+ * host (`isTokenHost`). A thousand primary-key SELECTs — microseconds each, and
+ * half a second of a busy event loop exactly in the minute when everyone is
+ * waiting for the room to come back.
  *
- * Здесь закреплено, что ответ теперь берётся из памяти — и, что важнее, что
- * забывается он ВЕЗДЕ, где меняется: кэш прав, который пережил конец занятия
- * или удаление семинара, — это не медленно, это неверно.
+ * This pins that the answer now comes from memory — and, more importantly, that
+ * it is forgotten EVERYWHERE it changes: a rights cache that survived the end
+ * of a class or the deletion of a seminar is not slow, it is wrong.
  *
- * Замер (эта машина, комната на 500 человек, тысяча рукопожатий подряд):
+ * Measurement (this machine, a room of 500 people, a thousand handshakes in a
+ * row):
  *
- *   из базы, как было ......... 6.59 мс
- *   из памяти, как стало ...... 0.08 мс
+ *   from the database, as before ...... 6.59 ms
+ *   from memory, as now ............... 0.08 ms
  *
- * Потолок в тесте — с запасом на порядок: под нагруженной машиной время
- * плавает, и тест, падающий от соседнего процесса, хуже отсутствующего.
+ * The ceiling in the test has an order of magnitude of headroom: on a loaded
+ * machine timings drift, and a test that fails because of a neighbouring
+ * process is worse than no test at all.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -39,15 +42,15 @@ import {
 } from '../server/src/db.js'
 
 /**
- * Запись мимо этого модуля — руками в sqlite3, как в комментарии у кэша, — и
- * есть доказательство: если бы вопрос снова доходил до базы, новое значение
- * приехало бы. Ни один продуктовый путь так не пишет.
+ * A write that bypasses this module — by hand in sqlite3, as in the comment at
+ * the cache — is the proof: if the question still reached the database, the new
+ * value would show up. No product path writes this way.
  */
 const renameBehindTheBack = db.prepare('UPDATE sessions SET name = ? WHERE id = ?')
 const rulesBehindTheBack = db.prepare('UPDATE sessions SET rules = ? WHERE id = ?')
 const hostBehindTheBack = db.prepare('UPDATE participants SET token_host = 1 WHERE id = ?')
 
-/** Сколько миллисекунд заняло — по лучшему из прогонов, а не по первому. */
+/** How many milliseconds it took: the best of the runs, not the first. */
 function fastest(times: number, run: () => void): number {
   let best = Infinity
   for (let i = 0; i < times; i++) {
@@ -58,43 +61,43 @@ function fastest(times: number, run: () => void): number {
   return best
 }
 
-test('строка комнаты читается один раз, а не на каждое рукопожатие', () => {
+test('the room row is read once, not on every handshake', () => {
   const id = 'cache-room'
   createSession(id, 'Комната', null)
   assert.equal(getSession(id)?.name, 'Комната')
 
   renameBehindTheBack.run('Мимо кэша', id)
-  assert.equal(getSession(id)?.name, 'Комната', 'строка комнаты читается на каждый вопрос')
+  assert.equal(getSession(id)?.name, 'Комната', 'the room row is read on every question')
 
-  // Дверь на запись одна, и она забывает: имя, поменянное продуктом, видно
-  // сразу — иначе панель переименовала бы семинар, а комната отвечала бы
-  // прежним именем до перезапуска.
+  // There is one write door, and it forgets: a name changed by the product is
+  // visible at once — otherwise the panel would rename the seminar and the room
+  // would answer with the old name until a restart.
   renameSession(id, 'Переименована')
   assert.equal(getSession(id)?.name, 'Переименована')
 })
 
-test('одна строка — оба кэша: правила приезжают с ней, а не вторым запросом', () => {
+test('one row fills both caches: the rules arrive with it, not in a second query', () => {
   const id = 'cache-one-read'
   createSession(id, 'Одно чтение', null)
   setRules(id, { ...storedRules(id), run: 'host' })
   forgetRoom(id)
 
-  // Первый же вопрос о комнате читает строку целиком — вместе с правилами.
+  // The very first question about the room reads the whole row, rules included.
   assert.equal(getSession(id)?.rules.run, 'host')
   rulesBehindTheBack.run(JSON.stringify({ ...storedRules(id), run: 'room' }), id)
-  assert.equal(getRules(id).run, 'host', 'за правилами сходили в базу второй раз')
+  assert.equal(getRules(id).run, 'host', 'the rules were fetched from the database a second time')
 })
 
-test('правила наружу уезжают своей копией', () => {
+test('rules go out as their own copy', () => {
   const id = 'cache-copy'
   createSession(id, 'Копия', null)
   const seen = getSession(id)
   assert.ok(seen)
   seen.rules.run = 'host'
-  assert.equal(storedRules(id).run, 'room', 'правку чужой копии увидела вся комната')
+  assert.equal(storedRules(id).run, 'room', 'the whole room saw an edit made to a handed-out copy')
 })
 
-test('конец занятия виден сразу, а не после перезапуска', () => {
+test('the end of a class is visible at once, not after a restart', () => {
   const id = 'cache-finished'
   createSession(id, 'Занятие', null)
   assert.equal(getSession(id)?.finishedAt, null)
@@ -105,16 +108,16 @@ test('конец занятия виден сразу, а не после пер
   assert.equal(getSession(id)?.finishedAt, null)
 })
 
-test('«нет такой комнаты» не переживает её создание', () => {
+test('"no such room" does not survive the room being created', () => {
   const id = 'cache-later'
-  // Студент открыл ссылку раньше, чем преподаватель нажал «Создать».
+  // A student opened the link before the teacher pressed "Create".
   assert.equal(getSession(id), null)
 
   createSession(id, 'Появилась', null)
   assert.equal(getSession(id)?.name, 'Появилась')
 })
 
-test('удалённый семинар перестаёт открывать дверь', () => {
+test('a deleted seminar stops opening the door', () => {
   const id = 'cache-gone'
   createSession(id, 'Удалённый', null)
   upsertParticipant({
@@ -128,9 +131,9 @@ test('удалённый семинар перестаёт открывать д
   assert.ok(getSession(id))
   assert.equal(isTokenHost(id, 'p_host'), true)
 
-  // Ровно то, что делает маршрут удаления (routes/admin-instance.ts): строки
-  // нет, комната забыта. Кэш, переживший её, пускал бы старый токен в дверь,
-  // которой уже нет, до истечения самого токена.
+  // Exactly what the deletion route does (routes/admin-instance.ts): the row is
+  // gone, the room is forgotten. A cache that outlived it would let an old token
+  // through a door that no longer exists, until the token itself expires.
   db.prepare('DELETE FROM participants WHERE session_id = ?').run(id)
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
   forgetRules(id)
@@ -139,7 +142,7 @@ test('удалённый семинар перестаёт открывать д
   assert.equal(isTokenHost(id, 'p_host'), false)
 })
 
-test('право по токену помнится на человека и обновляется входом', () => {
+test('the token right is remembered per person and refreshed by a join', () => {
   const id = 'cache-host'
   createSession(id, 'Права', null)
   upsertParticipant({
@@ -152,10 +155,10 @@ test('право по токену помнится на человека и о�
   assert.equal(isTokenHost(id, 'p_student'), false)
 
   hostBehindTheBack.run('p_student')
-  assert.equal(isTokenHost(id, 'p_student'), false, 'право спрашивается у базы на каждый сокет')
+  assert.equal(isTokenHost(id, 'p_student'), false, 'the right is asked of the database on every socket')
 
-  // Вход по ключу ведущего — та самая дверь на запись, и она кладёт в кэш
-  // новое право сразу: первое же рукопожатие спросит именно его.
+  // A join with the host key is that very write door, and it puts the new right
+  // into the cache at once: the very first handshake will ask for exactly that.
   upsertParticipant({
     id: 'p_student',
     sessionId: id,
@@ -166,16 +169,16 @@ test('право по токену помнится на человека и о�
   })
   assert.equal(isTokenHost(id, 'p_student'), true)
 
-  // Незнакомец, которого в комнате нет, — такой же ответ и так же один раз.
+  // A stranger who is not in the room: the same answer, and also only once.
   assert.equal(isTokenHost(id, 'p_ghost'), false)
-  // И право одной комнаты не отвечает за соседнюю: ключ от комнаты остаётся
-  // ключом только от неё.
+  // And the right in one room does not speak for the next one: a room key stays
+  // a key to that room only.
   const other = 'cache-host-other'
   createSession(other, 'Соседняя', null)
   assert.equal(isTokenHost(other, 'p_student'), false)
 })
 
-test('шторм возврата: тысяча рукопожатий стоит зала, а не тысячи чтений', () => {
+test('the return storm: a thousand handshakes cost one hall, not a thousand reads', () => {
   const id = 'cache-storm'
   createSession(id, 'Зал', null)
   const people: string[] = []
@@ -192,8 +195,8 @@ test('шторм возврата: тысяча рукопожатий стои�
   }
   const ids = people.map((who) => `${id}-${who}`)
 
-  // Рукопожатие: жив ли семинар (index.ts) и кто это (routes/sessions.ts ·
-  // roleFor). Два сокета на вкладку — тысяча на зал.
+  // A handshake: is the seminar alive (index.ts) and who is this (routes/sessions.ts ·
+  // roleFor). Two sockets per tab make a thousand per hall.
   const handshakes = (forget: boolean) => () => {
     for (let i = 0; i < 1000; i++) {
       if (forget) forgetRoom(id)
@@ -206,7 +209,7 @@ test('шторм возврата: тысяча рукопожатий стои�
 
   assert.ok(
     warm * 3 < cold,
-    `из памяти ${warm.toFixed(2)} мс против ${cold.toFixed(2)} мс из базы — кэш перестал работать`,
+    `from memory ${warm.toFixed(2)} ms against ${cold.toFixed(2)} ms from the database: the cache stopped working`,
   )
-  assert.ok(warm < 20, `тысяча рукопожатий заняла ${warm.toFixed(2)} мс`)
+  assert.ok(warm < 20, `a thousand handshakes took ${warm.toFixed(2)} ms`)
 })

@@ -183,7 +183,8 @@ test(
     const run = invoke(root, ['run', '--host', 'class.example.test', '--no-open'])
     try {
       await until(() => run.output().includes('Local work continues'))
-      // Замок пройден: сервер назвал изоляцию, и скрипт туннеля запускался.
+      // The lock is passed: the server named the isolation, and the tunnel
+      // script was started.
       assert.match(fs.readFileSync(path.join(root, 'events'), 'utf8'), /tunnel-start/)
       assert.equal((await fetch(`http://127.0.0.1:${p}/api/health`)).status, 200)
       run.child.kill('SIGINT')
@@ -198,11 +199,12 @@ test(
 )
 
 /**
- * --share целиком, кроме настоящего Cloudflare: супервизор находит
- * cloudflared (здесь его называет .env — так же поступает и сам супервизор,
- * передавая host.sh найденный и сверенный файл), поднимает занятие, зовёт
- * host.sh быстрым туннелем, забирает его строку-метку и печатает один блок со
- * ссылкой на занятие из базы. Ctrl+C закрывает туннель вместе с занятием.
+ * --share end to end, except for the real Cloudflare: the supervisor finds
+ * cloudflared (here .env names it — the supervisor itself does the same,
+ * handing host.sh the file it found and verified), starts the class, calls
+ * host.sh with a quick tunnel, picks up its marker line and prints one block
+ * with the link to the class from the database. Ctrl+C closes the tunnel
+ * together with the class.
  */
 test(
   '--share: one link block from the marker, the quick tunnel gets the named cloudflared, Ctrl+C closes it',
@@ -214,7 +216,7 @@ test(
     fs.mkdirSync(path.join(root, 'tools'))
     fs.writeFileSync(cloudflared, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
     fs.appendFileSync(path.join(root, '.env'), `COLLOQ_CLOUDFLARED=${cloudflared}\n`)
-    // Одно занятие в базе — его ссылку блок и назовёт.
+    // One class in the database — its link is what the block will name.
     fs.mkdirSync(path.join(root, 'data'))
     const { default: Database } = await import('better-sqlite3')
     const db = new Database(path.join(root, 'data/colloq.db'))
@@ -270,7 +272,8 @@ test(
     fs.writeFileSync(cloudflared, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
     fs.appendFileSync(path.join(root, '.env'), `COLLOQ_CLOUDFLARED=${cloudflared}\n`)
     fs.mkdirSync(path.join(root, 'scripts'))
-    // Настоящий host.sh берёт адрес в аренду; здесь — та же запись руками.
+    // The real host.sh leases the address; here the same record is written
+    // by hand.
     fs.writeFileSync(
       path.join(root, 'scripts/host.sh'),
       [

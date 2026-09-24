@@ -56,15 +56,16 @@ export function saveIdentity(identity: StoredIdentity): void {
 }
 
 /**
- * Забыть, кем этот браузер был в этой комнате.
+ * Forget who this browser was in this room.
  *
- * Нужно ровно тогда, когда сохранённая личность перестала работать: ключ живёт
- * тридцать дней, а после смены SESSION_SECRET перестаёт проверяться сразу, и
- * оба сокета отвергаются на рукопожатии. Пока запись лежит здесь, App входит
- * по ней мимо формы имени — то есть перезагрузка, которую комната сама и
- * советует, возвращает человека в то же самое «Reconnecting» навсегда.
+ * Needed exactly when the saved identity has stopped working: the key lives
+ * thirty days, but after SESSION_SECRET changes it stops verifying at once, and
+ * both sockets are rejected at the handshake. While the entry lies here, App
+ * enters with it, bypassing the name form — that is, the reload the room
+ * itself recommends returns the person to the same "Reconnecting" forever.
  *
- * Профиль (имя и метка) остаётся: назваться придётся заново, но не набирать.
+ * The profile (name and mark) stays: one will have to introduce oneself again,
+ * but not retype it.
  */
 export function forgetIdentity(sessionId: string): void {
   const map = readMap()
@@ -73,21 +74,26 @@ export function forgetIdentity(sessionId: string): void {
   writeMap(map)
 }
 
-/* ------------------------------------------- почему нас не пускают в комнату */
+/* ------------------------------------------ why we are not let into the room */
 
 /**
- * Четыре разных ответа на «почему сокет не открывается», и путать их дорого.
+ * Four different answers to "why does the socket not open", and mixing them
+ * up is costly.
  *
- *   • `gone`    — комнаты больше нет. Местную копию тетради можно стирать.
- *   • `banned`  — вход закрыл преподаватель. Комната на месте, человека ждут
- *                 завтра, и личность его трогать НЕЛЬЗЯ.
- *   • `expired` — ключ этого браузера комната не признаёт. Назваться заново.
- *   • `unknown` — мы не знаем. Значит — вести себя как при обрыве связи.
+ *   • `gone`    — the room no longer exists. The local copy of the notebook
+ *                 can be erased.
+ *   • `banned`  — the teacher closed the entrance. The room is in place, the
+ *                 person is expected tomorrow, and their identity must NOT be
+ *                 touched.
+ *   • `expired` — the room does not recognise this browser's key. Introduce
+ *                 yourself again.
+ *   • `unknown` — we do not know. So behave as on a dropped connection.
  *
- * Последний и есть вся суть: пока `unknown` не существовал, любой невнятный
- * отказ считался протухшим ключом, и забаненный после перезагрузки читал «место
- * истекло», терял свою личность в комнате и на следующий день входил новым
- * участником — с отвязанными попытками консилиума и авторством в ленте оракула.
+ * The last one is the whole point: while `unknown` did not exist, any vague
+ * refusal counted as a stale key, and a banned person after a reload read "the
+ * seat has expired", lost their identity in the room and the next day entered
+ * as a new participant — with detached council attempts and authorship in the
+ * oracle feed.
  */
 export type EntryVerdict =
   | { why: 'gone' }
@@ -96,15 +102,15 @@ export type EntryVerdict =
   | { why: 'unknown' }
 
 /**
- * Комната ответила про наш ключ — что это значит.
+ * The room answered about our key — what that means.
  *
- * Ключ годен, а нас не пускают, — это `unknown`, а не «всё в порядке»: сокет
- * мог упереться в потолок соединений или в гонку при перезапуске сервера, и
- * лечится это следующей попыткой, а не формой имени.
+ * The key is valid, yet we are not let in — that is `unknown`, not "all is
+ * well": the socket may have hit the connection ceiling or a race during a
+ * server restart, and that is cured by the next attempt, not by the name form.
  *
- * Момент конца бана едет вместе с вердиктом: экран «вас удалили с занятия»
- * показывает не «сейчас нельзя», а «откроется тогда-то», и второго запроса за
- * этим числом делать неоткуда.
+ * The moment the ban ends travels with the verdict: the "you were removed from
+ * the class" screen shows not "not allowed now" but "opens at such-and-such
+ * time", and there is nowhere to make a second request for that number.
  */
 export function verdictOf(me: SessionMe): EntryVerdict {
   if (me.ban) return { why: 'banned', until: me.ban.until }
@@ -112,17 +118,18 @@ export function verdictOf(me: SessionMe): EntryVerdict {
 }
 
 /**
- * Комната не ответила — что это значит.
+ * The room did not answer — what that means.
  *
- * `gone` — только когда сервер сказал это НАШИМИ словами (`saysSessionMissing`).
- * Голый 404 приезжает и от ретранслятора без подключённого frpc, и от статики,
- * отдающей index.html на всё подряд, и от сборки сервера, у которой этой двери
- * ещё нет; по нему когда-то стирался офлайн-набор у всего класса.
+ * `gone` — only when the server said it in OUR words (`saysSessionMissing`). A
+ * bare 404 comes from a relay without a connected frpc, from static hosting
+ * that serves index.html for everything, and from a server build that does not
+ * have this door yet; it once erased the whole class's offline typing.
  *
- * 403 со сроком — это бан, и читается он здесь тоже. Дверь `/me` заведена ровно
- * затем, чтобы отвечать забаненному, и вешать на неё общий `banDoor` нельзя, —
- * но если её однажды туда всё-таки повесят, ответ придёт отказом со сроком в
- * теле, и человек всё равно прочитает про бан, а не про истёкшее место.
+ * A 403 with a deadline is a ban, and it is read here too. The `/me` door
+ * exists precisely to answer a banned person, and the shared `banDoor` must
+ * not be hung on it — but if one day it is hung there after all, the answer
+ * will come as a refusal with a deadline in the body, and the person will
+ * still read about the ban rather than about an expired seat.
  */
 export function verdictOnFailure(error: unknown): EntryVerdict {
   if (saysSessionMissing(error)) return { why: 'gone' }

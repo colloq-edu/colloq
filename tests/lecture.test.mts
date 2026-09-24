@@ -1,14 +1,14 @@
 /**
- * Память лекции: страница, чернила и потолки.
+ * The lecture's memory: the page, the ink and the ceilings.
  *
- * Всё, что здесь проверяется, ломается молча и посреди пары. Штрих, у которого
- * сервер потерял продолжение, — это линия, оборванная на середине формулы у
- * двадцати человек сразу; потолок, который не сработал, — это браузер
- * опоздавшего, который минуту разбирает приветственную пачку; ведущий,
- * определённый неверно, — это чужой планшет, листающий вашу лекцию.
+ * Everything checked here breaks silently and in the middle of class. A
+ * stroke whose continuation the server lost is a line cut off in the middle
+ * of a formula for twenty people at once; a ceiling that did not kick in is a
+ * latecomer's browser spending a minute parsing the welcome batch; a host
+ * determined wrongly is someone else's tablet flipping through your lecture.
  *
- * Никакой сети: это чистая память процесса, и проверять её надо там, где она
- * живёт, а не через сокет.
+ * No network: this is pure process memory, and it has to be checked where it
+ * lives, not through a socket.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -31,14 +31,14 @@ import {
 } from '../server/src/lecture.js'
 
 let n = 0
-/** Своя комната на каждый тест: модуль — общая память процесса. */
+/** A room of its own for each test: the module is shared process memory. */
 function room(): string {
   const id = `lec${++n}`
   startLecture(id, { file: 'slides.pdf', by: 'teacher', byName: 'Ада', color: '#d4162f' })
   return id
 }
 
-test('лекция начинается с первой страницы и не погашенной', () => {
+test('a lecture starts on the first page and not blanked', () => {
   const id = room()
   const state = lectureOf(id)
   assert.equal(state?.page, 1)
@@ -46,18 +46,19 @@ test('лекция начинается с первой страницы и не
   assert.equal(state?.file, 'slides.pdf')
 })
 
-test('ведущий — тот, кто начал, и только он', () => {
+test('the host is whoever started it, and only them', () => {
   const id = room()
   assert.equal(isPresenter(id, 'teacher'), true)
   assert.equal(isPresenter(id, 'student'), false)
-  // Комната без лекции не даёт пульт никому: иначе `lecture:page` от вкладки,
-  // не узнавшей о конце лекции, воскресил бы её у всех.
+  // A room without a lecture gives the console to nobody: otherwise a
+  // `lecture:page` from a tab that did not learn the lecture ended would bring
+  // it back to life for everyone.
   assert.equal(isPresenter('нет такой комнаты', 'teacher'), false)
 })
 
-test('лекция по другому документу начинается начисто', () => {
-  // Другой документ — другая лекция, и чернила от прошлой на его страницах
-  // означали бы разметку, сделанную поверх чужого текста.
+test('a lecture on a different document starts clean', () => {
+  // A different document is a different lecture, and ink from the previous one
+  // on its pages would mean markup drawn over someone else's text.
   const id = room()
   addInk(id, { id: 's1', page: 1, color: '#000', width: 0.004, points: [0.1, 0.1] })
   startLecture(id, { file: 'other.pdf', by: 'second', byName: 'Борис', color: '#0f2d69' })
@@ -66,12 +67,13 @@ test('лекция по другому документу начинается �
   assert.deepEqual(inkOf(id), [])
 })
 
-test('передача пульта меняет руки и не трогает саму лекцию', () => {
+test('handing over the console changes hands and does not touch the lecture itself', () => {
   /*
-   * Второму преподавателю нечем сказать «возьму управление»: кнопка «взять
-   * пульт» шлёт тот же `lecture:start` по тому же файлу. Если он уйдёт в
-   * `startLecture`, нажатие на сороковой минуте вернёт страницу на первую,
-   * сотрёт всю разметку и обнулит часы — при всех, на проекторе.
+   * A second teacher has no other way to say "I will take over": the "take
+   * the console" button sends the same `lecture:start` for the same file. If
+   * it went into `startLecture`, a press in the fortieth minute would send the
+   * page back to the first one, erase all the markup and reset the clock — in
+   * front of everyone, on the projector.
    */
   const id = room()
   turnTo(id, 14)
@@ -84,76 +86,80 @@ test('передача пульта меняет руки и не трогает
   assert.equal(taken?.byName, 'Борис')
   assert.equal(taken?.color, '#0f2d69')
 
-  assert.equal(taken?.page, 14, 'страница вернулась к началу')
-  assert.equal(taken?.blank, true, 'пауза снялась сама собой')
-  assert.equal(taken?.startedAt, began, 'часы лекции пошли заново')
-  assert.equal(inkOf(id).length, 1, 'разметка стёрлась')
+  assert.equal(taken?.page, 14, 'the page went back to the start')
+  assert.equal(taken?.blank, true, 'the pause lifted by itself')
+  assert.equal(taken?.startedAt, began, 'the lecture clock started over')
+  assert.equal(inkOf(id).length, 1, 'the markup was erased')
   assert.equal(isPresenter(id, 'second'), true)
   assert.equal(isPresenter(id, 'teacher'), false)
 })
 
-test('передавать нечего, если файл другой или лекции нет вовсе', () => {
-  // По другому документу это уже не передача рук, а новая лекция, и начинать
-  // её надо начисто — здесь мы про это молчим и отдаём решение вызывающему.
+test('there is nothing to hand over if the file is different or there is no lecture at all', () => {
+  // On a different document this is no longer a handover but a new lecture,
+  // and it has to start clean — here we stay quiet about it and leave the
+  // decision to the caller.
   const id = room()
   assert.equal(handOver(id, 'other.pdf', 'second', 'Борис', '#0f2d69'), null)
   assert.equal(lectureOf(id)?.by, 'teacher')
   assert.equal(handOver('нет такой комнаты', 'slides.pdf', 'second', 'Борис', '#0f2d69'), null)
 })
 
-test('страница не уходит ниже первой и не рассылается, когда не менялась', () => {
+test('the page does not go below the first and is not broadcast when unchanged', () => {
   const id = room()
   assert.equal(turnTo(id, 4)?.page, 4)
-  // Ноль — не страница, а мусор из вкладки: рассылать по нему нечего.
+  // Zero is not a page but junk from a tab: there is nothing to broadcast for
+  // it.
   assert.equal(turnTo(id, 0), null)
-  assert.equal(lectureOf(id)?.page, 4, 'нулевая страница доехала до зала')
-  assert.equal(turnTo(id, 4), null, 'та же страница — рассылать нечего')
-  assert.equal(turnTo(id, 2.7)?.page, 2, 'дробная страница округляется вниз')
+  assert.equal(lectureOf(id)?.page, 4, 'page zero reached the hall')
+  assert.equal(turnTo(id, 4), null, 'the same page — nothing to broadcast')
+  assert.equal(turnTo(id, 2.7)?.page, 2, 'a fractional page is rounded down')
 })
 
-test('чистый лист — такая же страница, только с минусом', () => {
+test('a blank sheet is just a page, only with a minus', () => {
   /*
-   * Слайд кончился, а вывод формулы нет: преподаватель заводит белое поле
-   * прямо посреди лекции. Отдельным полем состояния это было бы вторым
-   * источником правды о том, что сейчас на экране, и он разъехался бы с
-   * номером страницы на первом же перелистывании. Поэтому чистый лист —
-   * страница с отрицательным номером, и всё остальное про него уже работает.
+   * The slide ran out, but the derivation of the formula did not: the teacher
+   * opens a white field right in the middle of the lecture. As a separate
+   * state field this would be a second source of truth about what is on the
+   * screen now, and it would drift apart from the page number on the very
+   * first page turn. So a blank sheet is a page with a negative number, and
+   * everything else about it already works.
    */
   const id = room()
   assert.equal(turnTo(id, -1)?.page, -1)
   addInk(id, { id: 'b1', page: -1, color: '#111', width: 0.004, points: [0.1, 0.1, 0.2, 0.2] })
   assert.deepEqual(inkOf(id).map((stroke) => stroke.page), [-1])
 
-  // И возвращение к слайду ничего с ним не делает: чернила листа остаются на нём.
+  // And going back to the slide does nothing to it: the sheet's ink stays on
+  // it.
   assert.equal(turnTo(id, 3)?.page, 3)
   assert.equal(inkOf(id).length, 1)
 
-  // Заевшая кнопка не заводит листов без конца.
+  // A stuck button does not create sheets without end.
   assert.equal(turnTo(id, -5000)?.page, -50)
 })
 
-test('пауза переключается один раз', () => {
+test('the pause toggles once', () => {
   const id = room()
   assert.equal(setBlank(id, true)?.blank, true)
   assert.equal(setBlank(id, true), null)
   assert.equal(setBlank(id, false)?.blank, false)
 })
 
-test('штрих дописывается по имени, а рассылаются только новые точки', () => {
+test('a stroke is extended by name, and only the new points are broadcast', () => {
   const id = room()
   const first = addInk(id, { id: 's1', page: 2, color: '#111', width: 0.004, points: [0, 0, 0.1, 0.1] })
   assert.deepEqual(first?.stroke?.points, [0, 0, 0.1, 0.1])
 
   const more = addInk(id, { id: 's1', page: 2, color: '#111', width: 0.004, points: [0.2, 0.2] })
-  assert.deepEqual(more?.stroke?.points, [0.2, 0.2], 'в рассылку идёт только продолжение')
+  assert.deepEqual(more?.stroke?.points, [0.2, 0.2], 'only the continuation goes into the broadcast')
   assert.equal(more?.stroke?.id, 's1')
 
-  // А в памяти — целый штрих: опоздавший получает его одним куском.
+  // While memory holds the whole stroke: a latecomer gets it in one piece.
   assert.deepEqual(inkOf(id)[0].points, [0, 0, 0.1, 0.1, 0.2, 0.2])
   assert.equal(inkOf(id).length, 1)
 })
 
-test('точка без пары и нечисла не доезжают', () => {
+test('a point without a pair and non-numbers do not get through', () => {
   const id = room()
   assert.equal(addInk(id, { id: 's1', page: 1, color: '#111', width: 0.004, points: [0.5] }), null)
   assert.equal(
@@ -163,7 +169,7 @@ test('точка без пары и нечисла не доезжают', () =>
   assert.deepEqual(inkOf(id), [])
 })
 
-test('чернила в комнату без лекции не пишутся вовсе', () => {
+test('ink is not written at all into a room without a lecture', () => {
   assert.equal(
     addInk('пусто', { id: 's1', page: 1, color: '#111', width: 0.004, points: [0, 0] }),
     null,
@@ -171,10 +177,10 @@ test('чернила в комнату без лекции не пишутся �
   assert.deepEqual(inkOf('пусто'), [])
 })
 
-test('потолки: точек в кадре, точек в штрихе, штрихов на странице, страниц', () => {
+test('ceilings: points per frame, points per stroke, strokes per page, pages', () => {
   const id = room()
 
-  // Кадр обрезается, а не отбрасывается: лучше кусок линии, чем её отсутствие.
+  // A frame is trimmed, not dropped: a piece of a line is better than no line.
   const flood = Array.from({ length: 2_000 }, () => 0.5)
   assert.equal(
     addInk(id, { id: 'big', page: 1, color: '#111', width: 0.004, points: flood })?.stroke?.points
@@ -182,29 +188,30 @@ test('потолки: точек в кадре, точек в штрихе, шт
     512,
   )
 
-  // Штрих: палец, забытый на экране, перестаёт расти.
+  // Stroke: one from a finger left resting on the screen stops growing.
   for (let i = 0; i < 20; i += 1) {
     addInk(id, { id: 'big', page: 1, color: '#111', width: 0.004, points: flood })
   }
   assert.ok(inkOf(id)[0].points.length <= 4_000 + 512)
   /*
-   * И это отказ ПО ИМЕНИ, а не молчание: `null` здесь означал бы «добавлять
-   * нечего», и пульт восемь раз досылал бы штрих целиком, прежде чем молча
-   * убрать его с листа. Три потолка — три разных слова человеку.
+   * And this is a refusal BY NAME, not silence: `null` here would mean
+   * "nothing to add", and the console would resend the whole stroke eight
+   * times before silently removing it from the sheet. Three ceilings — three
+   * different words for the person.
    */
   assert.deepEqual(
     addInk(id, { id: 'big', page: 1, color: '#111', width: 0.004, points: [0.1, 0.1] }),
     { full: 'stroke-full' },
-    'дописать переполненный штрих нельзя, и об этом надо сказать',
+    'an overflowing stroke cannot be extended, and that must be said',
   )
 
-  // Штрихи на странице.
+  // Strokes per page.
   for (let i = 0; i < 700; i += 1) {
     addInk(id, { id: `s${i}`, page: 3, color: '#111', width: 0.004, points: [0, 0] })
   }
   assert.equal(inkOf(id).filter((stroke) => stroke.page === 3).length, 600)
 
-  // Исписанные страницы: приветственная пачка обязана оставаться конечной.
+  // Written-on pages: the welcome batch must stay finite.
   for (let page = 10; page < 400; page += 1) {
     addInk(id, { id: `p${page}`, page, color: '#111', width: 0.004, points: [0, 0] })
   }
@@ -212,7 +219,7 @@ test('потолки: точек в кадре, точек в штрихе, шт
   assert.equal(pages.size, 200)
 })
 
-test('отменяется последний штрих и только на своей странице', () => {
+test('undo removes the last stroke, and only on its own page', () => {
   const id = room()
   addInk(id, { id: 'a', page: 1, color: '#111', width: 0.004, points: [0, 0] })
   addInk(id, { id: 'b', page: 1, color: '#111', width: 0.004, points: [0, 0] })
@@ -220,15 +227,15 @@ test('отменяется последний штрих и только на с
 
   assert.equal(undoInk(id, 1), 'b')
   assert.equal(undoInk(id, 1), 'a')
-  assert.equal(undoInk(id, 1), null, 'на пустой странице отменять нечего')
+  assert.equal(undoInk(id, 1), null, 'there is nothing to undo on an empty page')
   assert.equal(inkOf(id).length, 1)
 })
 
-test('ластик убирает названный штрих, а не последний', () => {
+test('the eraser removes the named stroke, not the last one', () => {
   /*
-   * Отмена снимает ПОСЛЕДНИЙ, ластик — тот, до которого дотронулись. Разница
-   * видна ровно тогда, когда она дорога: провели ластиком по первой из трёх
-   * линий и получили бы вместо неё стёртую третью.
+   * Undo removes the LAST one, the eraser the one it touched. The difference
+   * shows exactly when it matters: you run the eraser over the first of three
+   * lines and would get the third one erased instead.
    */
   const id = room()
   addInk(id, { id: 'a', page: 1, color: '#111', width: 0.004, points: [0, 0] })
@@ -239,28 +246,28 @@ test('ластик убирает названный штрих, а не пос�
   assert.deepEqual(inkOf(id).map((stroke) => stroke.id), ['b', 'c'])
 })
 
-test('ластик отвечает, был ли там штрих', () => {
+test('the eraser answers whether there was a stroke there', () => {
   /*
-   * Ластик проходит по одному штриху десяток раз за движение руки, и без
-   * этого ответа каждое попадание рассылало бы «сотрите штрих, которого нет»
-   * — двадцать браузеров перерисовывали бы страницу впустую.
+   * The eraser passes over one stroke a dozen times per hand movement, and
+   * without this answer every hit would broadcast "erase a stroke that does
+   * not exist" — twenty browsers would redraw the page for nothing.
    */
   const id = room()
   addInk(id, { id: 'a', page: 1, color: '#111', width: 0.004, points: [0, 0] })
 
   assert.equal(eraseInk(id, 1, 'a'), true)
-  assert.equal(eraseInk(id, 1, 'a'), false, 'второй проход по тому же штриху')
+  assert.equal(eraseInk(id, 1, 'a'), false, 'a second pass over the same stroke')
   assert.equal(eraseInk(id, 1, 'нет такого'), false)
-  // Страница называется в сообщении, и чужая не должна годиться: иначе ластик
-  // на восьмом слайде стирал бы разметку с седьмого.
+  // The page is named in the message, and another page must not do: otherwise
+  // the eraser on the eighth slide would erase markup from the seventh.
   addInk(id, { id: 'b', page: 2, color: '#111', width: 0.004, points: [0, 0] })
   assert.equal(eraseInk(id, 1, 'b'), false)
-  assert.equal(eraseInk(id, 9, 'b'), false, 'страницы без чернил вовсе')
+  assert.equal(eraseInk(id, 9, 'b'), false, 'a page with no ink at all')
   assert.equal(inkOf(id).length, 1)
   assert.equal(eraseInk('нет такой комнаты', 1, 'a'), false)
 })
 
-test('стирается страница или вся лекция', () => {
+test('a page or the whole lecture is erased', () => {
   const id = room()
   addInk(id, { id: 'a', page: 1, color: '#111', width: 0.004, points: [0, 0] })
   addInk(id, { id: 'b', page: 2, color: '#111', width: 0.004, points: [0, 0] })
@@ -271,14 +278,14 @@ test('стирается страница или вся лекция', () => {
   assert.deepEqual(inkOf(id), [])
 })
 
-test('переименование файла уводит за собой лекцию, а чужую не трогает', () => {
+test('renaming a file takes the lecture along and leaves another one alone', () => {
   const id = room()
   assert.equal(moveLecture(id, 'other.pdf', 'renamed.pdf'), null)
   assert.equal(moveLecture(id, 'slides.pdf', 'lecture-01.pdf')?.file, 'lecture-01.pdf')
   assert.equal(lectureOf(id)?.file, 'lecture-01.pdf')
 })
 
-test('конец лекции уносит и чернила', () => {
+test('the end of the lecture takes the ink away too', () => {
   const id = room()
   addInk(id, { id: 'a', page: 1, color: '#111', width: 0.004, points: [0, 0] })
   stopLecture(id)

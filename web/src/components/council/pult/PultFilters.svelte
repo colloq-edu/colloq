@@ -12,29 +12,33 @@
     type PultTab,
   } from '@/lib/council-pult'
   /**
-   * Шапка списка: три вкладки со счётчиками, ряд чипов и лупа.
+   * The list header: three tabs with counters, a row of chips and a
+   * magnifier.
    *
-   * Было: строка чисел «13 сдано · 11 черновиков», поиск и ПЯТЬ чипов отбора в
-   * одном ряду. Чипы на ширине колонки переносились на вторую строку, отнимая у
-   * списка ещё одну работу, а «черновики» стоял среди них пятым — хотя это не
-   * отбор внутри стопки, а ДРУГАЯ стопка, с другим вопросом.
+   * Before: a line of numbers "13 submitted · 11 drafts", the search and FIVE
+   * filter chips in one row. At the column's width the chips wrapped onto a
+   * second line, taking one more piece of work away from the list, and
+   * "drafts" stood fifth among them — although it is not a filter within a
+   * pile but a DIFFERENT pile, with a different question.
    *
-   * Стало: «Сдали · Пишут · Все» вкладками, и у каждой свой ряд чипов. У
-   * сдавших спрашивают «что я ещё не оценил» (Без оценки · Новые · С ошибкой),
-   * у пишущих — «кто застрял» (Молчат · Упало · Просят запуск). Числа стоят на
-   * самих вкладках: обе стопки видны, не переключаясь.
+   * Now: "Submitted · Writing · All" as tabs, each with its own row of chips.
+   * Of those who submitted one asks "what have I not graded yet" (Ungraded ·
+   * New · With an error), of those writing "who is stuck" (Silent · Failed ·
+   * Run requested). The numbers are on the tabs themselves: both piles are
+   * visible without switching.
    *
-   * Ряд чипов НЕ ПЕРЕНОСИТСЯ никогда — ни на какой ширине. Перенос стоит строку
-   * списка, а строк в окне 900×650 всего несколько; поэтому ряд один, а если
-   * ему тесно, он листается вбок, как на телефоне. Пятый чип «не запущены» из
-   * набора убран: в 280 px (колонка при ширине окна 860) он не помещался.
+   * The chip row NEVER wraps — at any width. A wrap costs a row of the list,
+   * and a 900×650 window shows only a few rows; so there is one row, and if
+   * it is cramped it scrolls sideways, as on a phone. The fifth chip, "not
+   * run", was removed from the set: in 280 px (the column at a window width
+   * of 860) it did not fit.
    */
   interface Props {
     tab: PultTab
     filter: PultFilter
-    /** Числа на вкладках: сколько сдали, сколько пишут, сколько всего. */
+    /** Tab numbers: how many submitted, how many are writing, how many in all. */
     tabs: Record<PultTab, number>
-    /** Числа в чипах текущей вкладки — тем же ситом, каким чип и отбирает. */
+    /** Chip numbers for the current tab — by the same sieve the chip filters with. */
     chips: Record<PultFilter, number>
     search: string
     searching: boolean
@@ -53,12 +57,13 @@
   let field = $state<HTMLInputElement | null>(null)
   $effect(() => { if(searching) field?.focus() })
   /**
-   * Открытое поле поиска забирает ряд вкладок себе.
+   * An open search field takes the tab row for itself.
    *
-   * На 336 px три вкладки со счётчиками занимают почти весь ряд, и поле,
-   * втиснутое рядом, было бы шириной в четыре буквы. Вкладки при этом никуда не
-   * деваются: поиск закрывают крестиком или Esc, и они возвращаются на место —
-   * а искать в пульте ищут по имени, то есть по всему классу сразу.
+   * At 336 px three tabs with counters take up almost the whole row, and a
+   * field squeezed in next to them would be four letters wide. The tabs do
+   * not go anywhere: the search is closed with the cross or Esc, and they
+   * come back — and in the console people search by name, that is, across
+   * the whole class at once.
    */
   const openField = $derived(searching || search !== '')
 </script>
@@ -97,11 +102,12 @@
   .pult-tab-row { display:flex; align-items:stretch; gap:16px; min-width:0; flex:1; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; }
   .pult-tab-row::-webkit-scrollbar { display:none; }
   /*
-   * Вкладка — подчёркиванием, а не кнопкой.
+   * A tab is an underline, not a button.
    *
-   * Кнопки уже стоят строкой выше (Работы · Очередь · Оракул), и второй ряд
-   * кнопок под ними читался бы как продолжение того же ряда. Подчёркивание —
-   * общий знак «это вкладки внутри», и оно не занимает высоты.
+   * The buttons already stand a row above (Work · Queue · Oracle), and a
+   * second row of buttons under them would read as a continuation of the
+   * same row. An underline is the common sign for "these are tabs inside",
+   * and it takes no height.
    */
   .pult-tab { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; padding:2px 0 0; border-bottom:3px solid transparent; background:transparent; color:rgb(var(--muted)); font-size:15px; line-height:20px; white-space:nowrap; cursor:pointer; }
   .pult-tab[aria-selected="true"] { border-bottom-color:rgb(var(--primary)); color:rgb(var(--ink)); font-weight:700; }
@@ -115,11 +121,12 @@
   .pult-search-open { display:flex; align-items:center; justify-content:center; width:32px; min-height:32px; align-self:center; flex-shrink:0; color:rgb(var(--muted)); font-size:18px; cursor:pointer; }
   .pult-search-open:hover { color:rgb(var(--ink)); }
   /*
-   * Ряд чипов — ОДНА строка на любой ширине.
+   * The chip row is ONE line at any width.
    *
-   * `nowrap` без оговорок: перенос отдал бы списку на работу меньше ровно там,
-   * где работ и так видно три. Тесно — ряд листается вбок (полоса скрыта: её
-   * место тоже стоит пикселей, а листают здесь пальцем и колесом).
+   * `nowrap` with no exceptions: a wrap would give the list one piece of
+   * work less exactly where only three are visible anyway. When cramped, the
+   * row scrolls sideways (the scrollbar is hidden: its room costs pixels
+   * too, and here people scroll with a finger and a wheel).
    */
   .pult-chips { display:flex; flex-wrap:nowrap; gap:3px; align-items:center; padding:5px 10px; overflow-x:auto; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
   .pult-chips::-webkit-scrollbar { display:none; }
@@ -129,12 +136,13 @@
   .pult-chips .selected { background:rgb(var(--raised)); font-weight:700; }
   .pult-chip-n { font-variant-numeric:tabular-nums; }
   /*
-   * Колонка 280 px (окно 860) — самая узкая, какая бывает у списка.
+   * A 280 px column (an 860 window) is the narrowest the list ever gets.
    *
-   * Четыре чипа «Все · Без оценки 9 · Новые 2 · С ошибкой 3» не влезали в неё
-   * на 17 px. Уступает ВОЗДУХ, а не состав ряда: поля строки, зазоры между
-   * чипами и вокруг числа внутри чипа. Убрать один чип стоило бы отбора,
-   * который на этой ширине нужен ровно так же, как на широкой.
+   * The four Russian chips "All · Ungraded 9 · New 2 · With an error 3" did
+   * not fit into it by 17 px. What gives way is the AIR, not the row's
+   * content: the row's padding, the gaps between chips and around the number
+   * inside a chip. Removing a chip would cost a filter that is needed at
+   * this width just as much as at a wide one.
    */
   @media(max-width:900px) {
     .pult-tabs { gap:6px; padding:0 10px; }

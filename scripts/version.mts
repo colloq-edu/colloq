@@ -1,42 +1,44 @@
 /**
- * Версия Colloq: одно число и все его копии.
+ * Colloq's version: one number and all its copies.
  *
  *   node --import tsx scripts/version.mts current
  *   node --import tsx scripts/version.mts check [--tag vX.Y.Z]
  *   node --import tsx scripts/version.mts sync [--dry-run]
  *   make version
  *
- * Источник один — поле "version" корневого package.json. Всё остальное его
- * копии, и у каждой копии есть причина существовать, поэтому их не убрать, а
- * только держать равными:
+ * There is one source: the "version" field of the root package.json. Everything
+ * else is a copy of it, and every copy has a reason to exist, so they cannot be
+ * removed, only kept equal:
  *
- *   · package.json воркспейсов и shared/ — npm требует поле в каждом, а
- *     `colloq --version` в рабочей копии читает именно cli/package.json;
- *   · package-lock.json — в нём записаны версии корня и каждого воркспейса, и
- *     `npm ci` сверяет замок с манифестами;
- *   · python/colloq/_version.py — из него hatchling берёт версию колеса, и он же
- *     нужен sdist-у, который собирается без node;
- *   · .release-please-manifest.json — последняя выпущенная версия для
+ *   · package.json of the workspaces and of shared/ — npm requires the field in
+ *     each, and `colloq --version` in a working copy reads cli/package.json
+ *     specifically;
+ *   · package-lock.json — it records the versions of the root and of every
+ *     workspace, and `npm ci` checks the lock against the manifests;
+ *   · python/colloq/_version.py — hatchling takes the wheel version from it, and
+ *     the sdist, which is built without node, needs it as well;
+ *   · .release-please-manifest.json — the last released version, for
  *     release-please.
  *
- * Поднимает число только release-please (.github/workflows/release-please.yml):
- * он держит PR выпуска, и в этом PR правит все копии разом — те, что знает
- * release-type node (package.json, корень замка), и те, что перечислены в
- * extra-files release-please-config.json. Этот скрипт ничего не поднимает. Он
- * сверяет копии и заранее, офлайн, проигрывает правку release-please
- * (simulateRelease): копия, которую тот не тронет, разъехалась бы с корнем
- * прямо в PR выпуска, и CI уронил бы его уже после того, как владелец решил
- * выпускать. Новый воркспейс без строки в extra-files ловится так на первом же
- * PR, который его приносит.
+ * Only release-please bumps the number (.github/workflows/release-please.yml):
+ * it maintains the release PR, and in that PR it edits every copy at once —
+ * the ones release-type node knows about (package.json, the lock root) and the
+ * ones listed in extra-files of release-please-config.json. This script bumps
+ * nothing. It checks the copies and replays release-please's edit ahead of
+ * time, offline (simulateRelease): a copy that release-please would not touch
+ * would drift from the root right in the release PR, and CI would fail it only
+ * after the owner had decided to release. This way a new workspace without a
+ * line in extra-files is caught on the very first PR that brings it in.
  *
- * Производные (веб, сервер, образы, release.json) копий не держат: веб и сервер
- * берут число из корневого package.json на сборке, образы — из тега. См.
- * RELEASING.md.
+ * Derived artifacts (web, server, images, release.json) keep no copies: web and
+ * server take the number from the root package.json at build time, images take
+ * it from the tag. See RELEASING.md.
  *
- * npm install здесь не зовётся намеренно: он переразрешил бы дерево и принёс бы
- * в замок чужие изменения под видом правки версии. Версии в замке правятся как
- * JSON, и правка отказывается, если файл не в каноническом виде npm (тогда
- * запись переформатировала бы его целиком, и diff стал бы нечитаемым).
+ * npm install is deliberately not called here: it would re-resolve the tree and
+ * bring unrelated changes into the lock disguised as a version edit. Versions in
+ * the lock are edited as JSON, and the edit refuses if the file is not in npm's
+ * canonical layout (writing it would then reformat the whole file, and the diff
+ * would become unreadable).
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -51,23 +53,25 @@ export const LOCK_FILE = 'package-lock.json'
 export const RELEASE_PLEASE_CONFIG = 'release-please-config.json'
 export const RELEASE_PLEASE_MANIFEST = '.release-please-manifest.json'
 /*
- * shared/ — не воркспейс, его package.json существует ради "type": "module".
- * Версия там всё равно записана, и 0.0.0 рядом с 0.1.0 выглядело как забытая
- * копия. Держим равной, чтобы вопрос не возникал.
+ * shared/ is not a workspace; its package.json exists for "type": "module".
+ * A version is written there anyway, and 0.0.0 next to 0.1.0 looked like a
+ * forgotten copy. We keep it equal so that the question does not come up.
  */
 const EXTRA_MANIFESTS = ['shared/package.json']
 
 // ------------------------------------------------------------------ semver
 
 /*
- * Не весь semver, а его часть, которую понимают все три потребителя.
+ * Not all of semver, only the part that all three consumers understand.
  *
- * Предвыпуск — только alpha|beta|rc с номером. Это не вкус: версия уходит в
- * колесо, а PEP 440 знает ровно эти три слова (0.2.0-rc.1 → 0.2.0rc1), и
- * «0.2.0-next.1» собралось бы в npm и в тег, а на `pip wheel` упало бы — в
- * середине выпуска, когда тег уже в origin. Сборочные метаданные (+sha)
- * отрезаны по той же причине: у тега и образа Docker символа «+» нет.
- * release-please такое число сам не придумает, но Release-As в коммите — может.
+ * A pre-release is only alpha|beta|rc with a number. This is not a matter of
+ * taste: the version goes into the wheel, and PEP 440 knows exactly these three
+ * words (0.2.0-rc.1 → 0.2.0rc1), so "0.2.0-next.1" would build in npm and in the
+ * tag but fail on `pip wheel` — in the middle of a release, when the tag is
+ * already in origin. Build metadata (+sha) is cut off for the same reason:
+ * Docker tags and image names have no "+" character.
+ * release-please will not come up with such a number itself, but Release-As in
+ * a commit can.
  */
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?$/
 
@@ -75,10 +79,10 @@ export function isVersion(text: string): boolean {
   return SEMVER.test(text)
 }
 
-// ------------------------------------------------------------------ файлы
+// ------------------------------------------------------------------ files
 
 type Json = Record<string, unknown>
-/** Текст файла по пути от корня репозитория; null — файла нет. */
+/** File text by path from the repository root; null means there is no file. */
 export type Reader = (file: string) => string | null
 
 export function diskReader(root: string): Reader {
@@ -99,7 +103,7 @@ function parseJson(file: string, text: string): Json {
   }
 }
 
-/** Канонический вид npm — отступ 2 и перевод строки в конце. */
+/** npm's canonical layout: 2-space indent and a trailing newline. */
 function stringify(value: unknown): string {
   return JSON.stringify(value, null, 2) + '\n'
 }
@@ -129,26 +133,28 @@ export function manifests(read: Reader): string[] {
 }
 
 /*
- * Файл версии для hatchling. Пишут его двое: release-please в PR выпуска и
- * scripts/pack.mts при каждой упаковке. Текст обязан быть один: иначе упаковка
- * на CI (`make wheel`, затем `git diff --exit-code`) нашла бы в PR выпуска
- * «грязное» дерево. release-please меняет только число в строке с пометкой
- * x-release-please-version (его Generic updater, extra-files), остальной текст
- * не трогает, — поэтому пометка живёт здесь, в общем шаблоне, а не дописана
- * руками в файл. В шапке файла её нет нарочно: строку с пометкой release-please
- * правит целиком, где бы та ни стояла.
+ * The version file for hatchling. Two parties write it: release-please in the
+ * release PR and scripts/pack.mts on every pack. The text must be the same:
+ * otherwise packing on CI (`make wheel`, then `git diff --exit-code`) would find
+ * a "dirty" tree in the release PR. release-please changes only the number in
+ * the line marked x-release-please-version (its Generic updater, extra-files)
+ * and leaves the rest of the text alone, so the marker lives here, in the
+ * shared template, instead of being added to the file by hand. The file header
+ * does not carry it on purpose: release-please edits a marked line as a whole,
+ * wherever that line is.
  */
 export function pythonVersionFile(version: string): string {
   return (
-    '# Версия пакета для hatchling: pyproject.toml берёт версию колеса отсюда.\n' +
-    '# Число поднимает release-please в PR выпуска (по пометке в конце строки),\n' +
-    '# а scripts/pack.mts переписывает файл тем же текстом при упаковке. Руками\n' +
-    '# не править: `make version` сверяет число с корневым package.json.\n' +
+    '# Package version for hatchling: pyproject.toml reads the wheel version from\n' +
+    '# here. release-please bumps the number in the release PR (by the marker at\n' +
+    '# the end of the line), and scripts/pack.mts rewrites the file with the same\n' +
+    '# text when packing. Do not edit by hand: `make version` checks the number\n' +
+    '# against the root package.json.\n' +
     `__version__ = "${version}"  # x-release-please-version\n`
   )
 }
 
-// Хвостовой комментарий — та самая пометка release-please.
+// The trailing comment is that very release-please marker.
 const PY_VERSION = /^__version__\s*=\s*["']([^"']*)["']\s*(?:#.*)?$/m
 
 export interface Copy {
@@ -156,7 +162,7 @@ export interface Copy {
   version: string | null
 }
 
-/** Все места, где записано число, кроме самого источника. */
+/** Every place where the number is written, except the source itself. */
 export function collectCopies(read: Reader): Copy[] {
   const out: Copy[] = []
   for (const file of manifests(read)) {
@@ -179,8 +185,8 @@ export function collectCopies(read: Reader): Copy[] {
 }
 
 /**
- * Новые тексты всех копий под корневое число. Ничего не пишет: и --dry-run, и
- * тесты смотрят на результат, а запись — одна строка у вызывающего.
+ * New texts of all copies for the root number. Writes nothing: both --dry-run
+ * and the tests look at the result, and writing is one line in the caller.
  */
 export function versionEdits(read: Reader, version: string): Map<string, string> {
   const edits = new Map<string, string>()
@@ -219,15 +225,16 @@ export function versionEdits(read: Reader, version: string): Map<string, string>
 // ------------------------------------------------------------- CHANGELOG
 
 /*
- * Заголовки выпусков, которые бывают в журнале: прежний рукописный
- * «## [0.1.0] - 2026-09-13» и то, что пишет release-please, —
- * «## [0.2.0](…/compare/v0.1.0...v0.2.0) (2026-09-20)», а без прошлого тега
- * «## 0.2.0 (2026-09-20)». ### — у старых версий release-please для patch.
- * «### Features» и прочие подзаголовки сюда не попадают: версия начинается с цифры.
+ * Release headings that occur in the changelog: the old handwritten
+ * "## [0.1.0] - 2026-09-13" and what release-please writes,
+ * "## [0.2.0](…/compare/v0.1.0...v0.2.0) (2026-09-20)", or, without a previous
+ * tag, "## 0.2.0 (2026-09-20)". ### is what older release-please versions use
+ * for a patch. "### Features" and other subheadings do not match: a version
+ * starts with a digit.
  */
 const VERSION_HEADING = /^#{2,3} \[?v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\]?(?:[\s(]|$)/
 
-/** Версии разделов журнала сверху вниз. */
+/** Versions of the changelog sections, top to bottom. */
 export function changelogVersions(text: string): string[] {
   const out: string[] = []
   for (const line of text.split('\n')) {
@@ -238,10 +245,10 @@ export function changelogVersions(text: string): string[] {
 }
 
 /*
- * Куда release-please вставит раздел нового выпуска: перед первым совпадением
- * этой строки (updaters/changelog.ts, DEFAULT_VERSION_HEADER_REGEX). Любой
- * заголовок вида «## [», «## 1» или «### v» выше настоящих выпусков —
- * например, рукописный «## [Unreleased]» — перехватил бы вставку.
+ * Where release-please inserts the section of a new release: before the first
+ * match of this pattern (updaters/changelog.ts, DEFAULT_VERSION_HEADER_REGEX).
+ * Any heading like "## [", "## 1" or "### v" above the real releases — for
+ * example, a handwritten "## [Unreleased]" — would hijack the insertion.
  */
 const RELEASE_PLEASE_INSERT_AT = /\n###? v?[0-9[]/s
 
@@ -274,10 +281,10 @@ function releasePleaseConfig(read: Reader): ReleasePleaseConfig | null {
 }
 
 /*
- * Подмножество JSONPath, которого хватает extra-files: $.a.b и $.a["b-c"].
- * release-please понимает весь JSONPath (jsonpath-plus), но сверке нужно знать
- * точно, какое поле он тронет, а путь сложнее этого — повод упростить конфиг,
- * а не сверку.
+ * The subset of JSONPath that extra-files needs: $.a.b and $.a["b-c"].
+ * release-please understands all of JSONPath (jsonpath-plus), but the check
+ * needs to know exactly which field it will touch, and a path more complex than
+ * this is a reason to simplify the config, not the check.
  */
 function jsonPathKeys(expression: string): string[] | null {
   if (!expression.startsWith('$')) return null
@@ -296,21 +303,25 @@ function jsonPathKeys(expression: string): string[] | null {
 const RP_VERSION = /(\d+)\.(\d+)\.(\d+)(-[\w.]+)?(\+[-\w.]+)?/
 
 /**
- * Что release-please сделает с деревом, выпуская `next`, — без сети и без
- * самого release-please. Повторены ровно те правки, которые он делает для
- * этого репозитория (release-please 17, strategies/node.ts и base.ts):
+ * What release-please will do to the tree when releasing `next` — without the
+ * network and without release-please itself. It repeats exactly the edits
+ * release-please makes for this repository (release-please 17,
+ * strategies/node.ts and base.ts):
  *
- *   · package.json → version; package-lock.json → version и packages[""]
+ *   · package.json → version; package-lock.json → version and packages[""]
  *     (release-type node, updaters/node/*);
- *   · extra-files: type json — строка по jsonpath (GenericJson), type generic
- *     или путь строкой — число в строках с пометкой x-release-please-version
- *     (Generic); путь строкой на .json — ещё и $.version;
+ *   · extra-files: type json — the string at jsonpath (GenericJson); type
+ *     generic or a plain string path — the number in lines marked
+ *     x-release-please-version (Generic); a plain string path to a .json also
+ *     gets $.version;
  *   · .release-please-manifest.json → {".": next};
- *   · CHANGELOG.md — раздел выпуска вставляется перед первым заголовком версии.
+ *   · CHANGELOG.md — the release section is inserted before the first version
+ *     heading.
  *
- * Файла нет или путь не ведёт к строке с числом — release-please молча
- * пропускает правку (createIfMissing: false, «No string in …. Skipping.»),
- * поэтому такие места возвращаются в `problems`, а не глотаются.
+ * If a file is missing or the path does not lead to a string with a number,
+ * release-please silently skips the edit (createIfMissing: false, "No string
+ * in …. Skipping."), so such places are returned in `problems` instead of
+ * being swallowed.
  */
 export function simulateRelease(read: Reader, next: string): { files: Map<string, string>; problems: string[] } {
   const files = new Map<string, string>()
@@ -362,8 +373,9 @@ export function simulateRelease(read: Reader, next: string): { files: Map<string
   }
 
   // extra-files.
-  // quiet: путь строкой на .json release-please прогоняет и через Generic, но
-  // без пометки там просто нечего менять — это не ошибка конфига.
+  // quiet: release-please also runs a plain string path to a .json through
+  // Generic, but without the marker there is simply nothing to change there;
+  // that is not a config error.
   const generic = (file: string, what: string, quiet = false) => {
     const text = current(file)
     if (text === null) {
@@ -414,20 +426,20 @@ export function simulateRelease(read: Reader, next: string): { files: Map<string
   return { files, problems }
 }
 
-/** Следующее число для пробного выпуска: patch, из предвыпуска — сам выпуск. */
+/** Next number for the trial release: patch; from a pre-release, the release itself. */
 function probeVersion(version: string): string {
   const m = SEMVER.exec(version)
   if (!m) return '0.0.1'
   return m[4] ? `${m[1]}.${m[2]}.${m[3]}` : `${m[1]}.${m[2]}.${Number(m[3]) + 1}`
 }
 
-// ------------------------------------------------------------------ сверка
+// ------------------------------------------------------------------ check
 
 export interface CheckOptions {
   tag?: string
 }
 
-/** Список расхождений. Пустой — всё сходится. */
+/** The list of mismatches. Empty means everything agrees. */
 export function checkVersions(root: string = ROOT, options: CheckOptions = {}, read: Reader = diskReader(root)): string[] {
   const problems: string[] = []
   const version = rootVersion(root, read)
@@ -439,8 +451,8 @@ export function checkVersions(root: string = ROOT, options: CheckOptions = {}, r
     else if (copy.version !== version) problems.push(`${copy.where} says ${copy.version}, package.json says ${version}`)
   }
 
-  // Число поднимает release-please, и его манифест — та же копия. Разошлись —
-  // значит, package.json подняли мимо PR выпуска.
+  // release-please bumps the number, and its manifest is one more copy. If they
+  // diverge, package.json was bumped outside the release PR.
   const manifest = readJson(read, RELEASE_PLEASE_MANIFEST)
   if (manifest === null) problems.push(`${RELEASE_PLEASE_MANIFEST} is missing`)
   else if (manifest['.'] !== version) {
@@ -454,23 +466,23 @@ export function checkVersions(root: string = ROOT, options: CheckOptions = {}, r
   if (changelog === null) problems.push(`${CHANGELOG_FILE} is missing`)
   else {
     const versions = changelogVersions(changelog)
-    // Верхний раздел — текущая версия: release-please кладёт новый раздел
-    // наверх в том же PR, где поднимает число.
+    // The top section is the current version: release-please puts the new
+    // section at the top in the same PR where it bumps the number.
     if (versions[0] !== version) {
       problems.push(
         `${CHANGELOG_FILE}: the top section is ${versions[0] ?? 'missing'}, package.json says ${version}; ` +
           'release-please writes this file, do not add sections by hand',
       )
     }
-    // Второй раздел того же числа — это второй PR «release X» после выпуска X:
-    // так бывает, если release-as в конфиге забыли убрать (RELEASING.md).
+    // A second section with the same number is a second "release X" PR after
+    // release X: it happens when release-as was left in the config (RELEASING.md).
     const seen = new Set<string>()
     for (const v of versions) {
       if (seen.has(v)) problems.push(`${CHANGELOG_FILE} has two sections for ${v}`)
       seen.add(v)
     }
-    // Всё, что выше раздела текущей версии и похоже на заголовок выпуска,
-    // перехватило бы вставку release-please.
+    // Anything above the current version's section that looks like a release
+    // heading would hijack release-please's insertion.
     const first = changelog.search(RELEASE_PLEASE_INSERT_AT)
     const heading = first === -1 ? null : changelog.slice(first + 1).split('\n')[0]!
     if (heading !== null && VERSION_HEADING.exec(heading)?.[1] !== versions[0]) {
@@ -478,7 +490,7 @@ export function checkVersions(root: string = ROOT, options: CheckOptions = {}, r
     }
   }
 
-  // Пробный выпуск: всё, что release-please правит, и всё, что не правит.
+  // Trial release: everything release-please edits, and everything it does not.
   const next = probeVersion(version)
   const simulated = simulateRelease(read, next)
   problems.push(...simulated.problems)
@@ -492,8 +504,8 @@ export function checkVersions(root: string = ROOT, options: CheckOptions = {}, r
         )
       }
     }
-    // Упаковка перепишет _version.py шаблоном; разойдись он с правкой
-    // release-please — PR выпуска упал бы на `git diff --exit-code` в CI.
+    // Packing rewrites _version.py from the template; if it diverged from
+    // release-please's edit, the release PR would fail `git diff --exit-code` in CI.
     const py = after(PYTHON_VERSION_FILE)
     if (py !== null && py !== pythonVersionFile(next)) {
       problems.push(`${PYTHON_VERSION_FILE} differs from pythonVersionFile() after release-please edits it`)
@@ -544,9 +556,9 @@ export function main(argv: string[], root: string = ROOT): number {
   if (command === 'check') {
     const problems = checkVersions(root, { tag: values.tag }, read)
     const version = rootVersion(root, read)
-    // Первый выпуск идёт с release-as; после него строку нужно убрать, иначе
-    // release-please снова предложит то же число. Не ошибка: в PR выпуска
-    // это число и должно совпадать.
+    // The first release goes out with release-as; after it the line must be
+    // removed, or release-please will offer the same number again. Not an error:
+    // in the release PR this number is supposed to match.
     const pinned = releasePleaseConfig(read)?.releaseAs
     if (pinned && pinned === version) {
       console.log(
@@ -564,9 +576,10 @@ export function main(argv: string[], root: string = ROOT): number {
   }
 
   /*
-   * Починка расхождения без нового числа: копии догоняют корень. Нужна тому,
-   * кто принёс воркспейс или поправил копию руками. Манифест release-please
-   * не трогается: если руками подняли сам package.json, check это и покажет.
+   * Repairs a mismatch without a new number: the copies catch up with the root.
+   * Needed by whoever adds a workspace or edits a copy by hand. The
+   * release-please manifest is left alone: if someone bumped package.json
+   * itself by hand, check will show it.
    */
   if (command === 'sync') {
     const version = rootVersion(root, read)

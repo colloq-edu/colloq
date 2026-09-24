@@ -1,19 +1,19 @@
 /**
- * Базовая точка истории — живой документ, а не сборка на каждый всплеск.
+ * The history's base point is a live document, not a rebuild on every burst.
  *
- * Закрытие всплеска обязано знать, как тетрадь выглядит после него. Знало оно
- * это единственным способом: собрать документ заново из базовой точки и
- * склеенного обновления — полный разбор всей тетради, замер на 2.2 МБ дал 37 мс
- * заблокированного цикла событий ради полутора килобайт разницы. И платила за
- * это не запись в историю, а комната: всплеск закрывается на каждом добавлении,
- * удалении и перетаскивании ячейки, то есть эти миллисекунды стоят между
- * нажатиями клавиш у всех остальных.
+ * Closing a burst has to know what the notebook looks like after it. It knew
+ * this in only one way: rebuild the document from the base point and the
+ * merged update — a full parse of the whole notebook; a measurement on 2.2 MB
+ * gave 37 ms of blocked event loop for the sake of a kilobyte and a half of
+ * difference. And it was not the history write that paid for it but the room:
+ * a burst closes on every add, delete and drag of a cell, so those
+ * milliseconds stand between everyone else's keystrokes.
  *
- * Теневая тетрадь держится живой и двигается тем же обновлением. Сломаться это
- * может тихо и одинаково страшно в обе стороны: слова версии посчитаются
- * относительно СДВИНУТОЙ тетради («ничего не менялось»), или полный снимок
- * запишется из одного всплеска вместо всей тетради — и «Вернуть» отдаст комнате
- * пустую страницу. Проверяется здесь и то и другое.
+ * The shadow notebook is kept alive and moves with the same update. This can
+ * break quietly and equally badly in both directions: the version's word
+ * counts get computed against a SHIFTED notebook ("nothing changed"), or a
+ * full snapshot gets written from one burst instead of the whole notebook —
+ * and "Restore" hands the room an empty page. Both are checked here.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -46,7 +46,7 @@ function write(doc: Y.Doc, index: number, text: string): void {
   source.insert(source.length, text)
 }
 
-/** Строка ленты хранит список ячеек текстом — как он лежит в базе. */
+/** A feed row keeps the cell list as text — the way it lies in the database. */
 const touched = (row: { cells: string | string[] }): string[] =>
   typeof row.cells === 'string' ? (JSON.parse(row.cells) as string[]) : row.cells
 
@@ -55,7 +55,7 @@ const sources = (doc: Y.Doc) =>
     .toArray()
     .map((cell) => (cell.get('source') as Y.Text).toString())
 
-test('двадцать всплесков подряд: каждая версия про своё, и лента совпадает с тетрадью', () => {
+test('twenty bursts in a row: each version is about its own change, and the feed matches the notebook', () => {
   const id = 'shadow-steps'
   const doc = room(id)
   beginHistory(id, doc)
@@ -67,12 +67,13 @@ test('двадцать всплесков подряд: каждая верси�
     flushHistory(id)
     const rows = listVersions(id, 40).filter((v) => v.kind === 'edit')
     const last = rows[0]
-    assert.ok(last, `всплеск ${i} не записался`)
-    assert.equal(touched(last).length, 1, `всплеск ${i} описан не одной ячейкой`)
-    assert.ok(last.added > 0, `всплеск ${i} записан как «ничего не менялось»`)
+    assert.ok(last, `burst ${i} was not recorded`)
+    assert.equal(touched(last).length, 1, `burst ${i} is not described by a single cell`)
+    assert.ok(last.added > 0, `burst ${i} is recorded as "nothing changed"`)
   }
 
-  // И самое главное: последняя версия — это ровно то, что в тетради сейчас.
+  // And most importantly: the last version is exactly what the notebook holds
+  // now.
   const rows = listVersions(id, 40)
   assert.deepEqual(
     cellsAt(id, rows[0].seq).map((c) => c.source),
@@ -80,7 +81,7 @@ test('двадцать всплесков подряд: каждая верси�
   )
 })
 
-test('всплеск после выселения комнаты собирается заново и ничего не теряет', () => {
+test('a burst after the room was evicted is rebuilt and loses nothing', () => {
   const id = 'shadow-evicted'
   const doc = room(id)
   beginHistory(id, doc)
@@ -89,9 +90,9 @@ test('всплеск после выселения комнаты собирае
   flushHistory(id)
 
   /*
-   * Комнату выселили из памяти (десять минут пустоты) — теневой тетради больше
-   * нет. Следующая правка обязана описаться относительно всей тетради, а не
-   * относительно пустоты: это и есть запасной ход.
+   * The room was evicted from memory (ten minutes of emptiness) — the shadow
+   * notebook is gone. The next edit must be described against the whole
+   * notebook, not against emptiness: that is exactly the fallback path.
    */
   forgetHistory(id)
   beginHistory(id, doc)
@@ -100,21 +101,21 @@ test('всплеск после выселения комнаты собирае
 
   const rows = listVersions(id, 40)
   const last = rows[0]
-  assert.equal(touched(last).length, 1, 'правка тронула одну ячейку')
+  assert.equal(touched(last).length, 1, 'the edit touched one cell')
   assert.deepEqual(cellsAt(id, last.seq).map((c) => c.source), [
     'первая ячейка',
     'вторая ячейка с дополнением',
   ])
 })
 
-test('полный снимок содержит всю тетрадь, а не последний всплеск', () => {
+test('a full snapshot contains the whole notebook, not the last burst', () => {
   const id = 'shadow-keyframe'
   const doc = room(id)
   beginHistory(id, doc)
   doc.transact(() => getCells(doc).push([createCell('code', 'начало')]))
   flushHistory(id)
 
-  // Много мелких правок подряд: где-то здесь ляжет полный снимок.
+  // Many small edits in a row: a full snapshot will land somewhere in here.
   for (let i = 0; i < 40; i++) {
     write(doc, 0, `\nстрока ${i} ${'y'.repeat(2048)}`)
     flushHistory(id)
@@ -122,17 +123,17 @@ test('полный снимок содержит всю тетрадь, а не 
 
   const rows = listVersions(id, 200)
   const keyframes = rows.filter((v) => v.kind === 'keyframe')
-  assert.ok(keyframes.length > 0, 'полный снимок так и не лёг — проверять нечего')
+  assert.ok(keyframes.length > 0, 'a full snapshot never landed — nothing to check')
 
   /*
-   * Снимок читается сам по себе: `cellsAt` для его версии начинает повтор
-   * ровно с него. Если бы он был записан из одного всплеска, здесь была бы
-   * тетрадь из одной строки — и «Вернуть» отдал бы комнате её.
+   * A snapshot is read on its own: `cellsAt` for its version starts the replay
+   * right from it. Had it been written from one burst, here there would be a
+   * one-line notebook — and "Restore" would hand that to the room.
    */
   const at = cellsAt(id, keyframes[0].seq)
   assert.equal(at.length, 1)
   assert.ok(
     at[0].source.startsWith('начало') && at[0].source.includes('строка 0'),
-    'снимок потерял всё, что было до последнего всплеска',
+    'the snapshot lost everything before the last burst',
   )
 })

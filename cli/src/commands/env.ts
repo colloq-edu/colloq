@@ -1,39 +1,45 @@
 /**
- * Окружения ядра — какой Python и какие пакеты видит занятие.
+ * Kernel environments: which Python and which packages a class sees.
  *
- * Четыре команды: env list, env show, env new, env use. Все четыре работают
- * с одними файлами — читают и пишут через ctx.io — и не запускают ни одного
- * процесса. Цели env-* в Makefile делают то же самое, но звать их отсюда
- * нечем: CLI едет в колесе pip вместе с приложением, а Makefile в колесо не
- * едет. Совпадать с ними команды обязаны устройством файлов и экраном, а не
- * вызовом.
+ * Four commands: env list, env show, env new, env use. All four work with the
+ * same files (they read and write through ctx.io) and start not a single
+ * process. The env-* targets in the Makefile do the same thing, but there is
+ * no way to call them from here: the CLI travels in the pip wheel together
+ * with the application, and the Makefile does not travel into the wheel. The
+ * commands must match them in the layout of the files and in the screen, not
+ * by calling them.
  *
- * Образа окружения здесь не собирает никто, и это решение, а не пробел.
- * Собирает colloq start, перед занятием (launch-prepare.ts · prepare): там
- * цепочка `# colloq: from`, отпечаток исходников, склейка двух каталогов в
- * один контекст docker и прогресс в .colloq.log. Вторая сборка отсюда
- * оказалась бы третьей копией рядом с запуском и панелью
- * (server/src/environments.ts · buildCommand), а три копии разъезжаются на
- * первой же правке Dockerfile. Поэтому `env use` только переписывает
- * KERNEL_ENV, а о цене — минутах сборки — честно предупреждает словами.
+ * Nobody builds the environment image here, and that is a decision, not a
+ * gap. colloq start builds it, before the class (launch-prepare.ts ·
+ * prepare): that is where the `# colloq: from` chain, the source fingerprint,
+ * merging two directories into one docker context and the progress in
+ * .colloq.log live. A second build from here would turn out to be a third
+ * copy next to the start and the panel (server/src/environments.ts ·
+ * buildCommand), and three copies drift apart on the very first edit of the
+ * Dockerfile. So `env use` only rewrites KERNEL_ENV, and honestly warns in
+ * words about the price, minutes of building.
  *
- * ГДЕ ЛЕЖАТ ОКРУЖЕНИЯ — главное решение группы, и оно такое.
+ * WHERE THE ENVIRONMENTS LIE is the main decision of the group, and it is
+ * this.
  *
- *   · Привезённые с продуктом (base, base-gpu, cv, gpu) — в <app>/kernel/
- *     environments и только читаются: у установленного colloq это
- *     site-packages, и писать туда нельзя ни в каком смысле (см. env.ts ·
- *     ownEnvDir).
- *   · Свои — в <home>/environments, рядом с .env и data/. В репозитории это
- *     тот же самый kernel/environments, и там ничего не меняется.
- *   · Список — объединение двух каталогов; своё имя перекрывает привезённое,
- *     потому что переопределить cv под свой курс — законное желание.
+ *   · The ones shipped with the product (base, base-gpu, cv, gpu) are in
+ *     <app>/kernel/environments and are only read: for an installed colloq
+ *     that is site-packages, and it cannot be written to in any sense (see
+ *     env.ts · ownEnvDir).
+ *   · One's own are in <home>/environments, next to .env and data/. In the
+ *     repository that is the very same kernel/environments, and nothing
+ *     changes there.
+ *   · The list is the union of the two directories; one's own name overrides
+ *     a shipped one, because redefining cv for one's course is a legitimate
+ *     wish.
  *
- * Имя в путь превращает ровно одна функция — envFile(); всё остальное зовёт
- * её. Второй ответ на вопрос «где лежит cv» развёл бы список с показом, а
- * показ — с тем, что потом соберёт запуск, причём молча.
+ * Exactly one function turns a name into a path, envFile(); everything else
+ * calls it. A second answer to the question "where does cv lie" would split
+ * the list from the view, and the view from what the start then builds, and
+ * silently at that.
  *
- * node:child_process и node:fs импортировать нельзя: только ctx.io, а
- * ctx.sh — ради одной строки --dry-run.
+ * node:child_process and node:fs must not be imported: only ctx.io, and
+ * ctx.sh for the sake of one --dry-run line.
  */
 import type { Command, Ctx } from '../registry.js'
 import { joinPath, type Io } from '../env.js'
@@ -41,23 +47,23 @@ import { localClassEnv } from '../launch-config.js'
 import { countWord, PreconditionError, UsageError } from '../ui.js'
 import { PYTHON_VERSIONS } from '../../../shared/admin.js'
 
-/** Потолок цепочки `# colloq: from` — тот же, что у сборки в Makefile. */
+/** The ceiling of the `# colloq: from` chain: the same as the Makefile build has. */
 const CHAIN_LIMIT = 8
 
-/** Две директивы шапки. Для pip это комментарии, для нас — устройство. */
+/** The two header directives. For pip they are comments, for us they are structure. */
 const FROM = /^[ \t]*#[ \t]*colloq:[ \t]*from[ \t]+([^\s]+)[ \t]*$/m
 const PYTHON = /^[ \t]*#[ \t]*colloq:[ \t]*python[ \t]+(3\.[0-9]+)[ \t]*$/m
 
-/** Имя окружения: им зовётся и файл, и тег образа colloq-kernel:<имя>. */
+/** The environment name: both the file and the colloq-kernel:<name> image tag are called by it. */
 const NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
-/** Строка, которую в списке пакетов не видно: комментарий, пусто, ключ pip. */
+/** A line that is not visible in the package list: a comment, empty, a pip option. */
 const NOT_A_PACKAGE = /^[ \t]*(#|-|$)/
 
-/** Комментарий и пустая строка — то, что прячет и цель env-show. */
+/** A comment and an empty line: what the env-show target hides too. */
 const NOT_A_LINE = /^[ \t]*(#|$)/
 
-/** Два каталога окружений: привезённый с продуктом и свой. */
+/** The two directories of environments: the one shipped with the product and one's own. */
 type Dirs = { app: string; own: string }
 
 function envDirs(ctx: Ctx): Dirs {
@@ -65,26 +71,27 @@ function envDirs(ctx: Ctx): Dirs {
 }
 
 /**
- * Имя окружения в путь к файлу — единственное место, где это решается.
+ * An environment name to a file path: the only place where this is decided.
  *
- * Своё перекрывает привезённое: если <home>/environments/cv.txt есть, дальше
- * всё (показ, версия Python, счёт пакетов, сборка) работает с ним, а не с тем
- * cv, который приехал в пакете. Обратный порядок означал бы, что завести своё
- * окружение с занятым именем можно, а пользоваться им нельзя.
+ * One's own overrides a shipped one: if <home>/environments/cv.txt exists,
+ * from then on everything (the view, the Python version, the package count,
+ * the build) works with it, not with the cv that arrived in the package. The
+ * reverse order would mean one could create an environment of one's own with
+ * a taken name but not use it.
  *
- * В репозитории оба каталога — один и тот же путь, и выбор сводится к нулю:
- * строка получается та же самая.
+ * In the repository both directories are the same path, and the choice comes
+ * to nothing: the resulting string is the very same.
  */
 export function envFileIn(io: Io, dirs: Dirs, name: string): string {
   const own = joinPath(dirs.own, name + '.txt')
   return io.exists(own) ? own : joinPath(dirs.app, name + '.txt')
 }
 
-/** Имена всех окружений: объединение двух каталогов, без повторов. */
+/** The names of all environments: the union of the two directories, without repeats. */
 export function listEnvNames(io: Io, dirs: Dirs): string[] {
   const names = new Set<string>()
-  // Set, а не два списка подряд: в репозитории каталоги совпадают, и без него
-  // каждое окружение печаталось бы дважды.
+  // A Set, not two lists in a row: in the repository the directories coincide,
+  // and without it every environment would be printed twice.
   for (const dir of [dirs.app, dirs.own]) {
     for (const file of io.list(dir)) {
       if (file.endsWith('.txt')) names.add(file.slice(0, -'.txt'.length))
@@ -97,12 +104,12 @@ function envFile(ctx: Ctx, name: string): string {
   return envFileIn(ctx.io, envDirs(ctx), name)
 }
 
-/** Куда пишет `env new`: всегда свой каталог, что бы ни лежало в привезённом. */
+/** Where `env new` writes: always one's own directory, whatever lies in the shipped one. */
 function ownFile(ctx: Ctx, name: string): string {
   return joinPath(ctx.env.paths.ownEnvDir, name + '.txt')
 }
 
-/** Своё ли это окружение — то есть лежит ли оно в каталоге, куда мы пишем. */
+/** Whether this is one's own environment, that is, whether it lies in the directory we write to. */
 function isOwn(ctx: Ctx, name: string): boolean {
   const dirs = envDirs(ctx)
   if (dirs.own === dirs.app) return false
@@ -110,9 +117,10 @@ function isOwn(ctx: Ctx, name: string): boolean {
 }
 
 /**
- * Путь покороче: от корня приложения — как его печатает Makefile, от дома
- * человека — с тильдой. У установленного colloq оба каталога абсолютные и
- * длинные, и целиком они в строку про окружение не помещаются.
+ * A shorter path: from the application root, the way the Makefile prints it;
+ * from the person's home, with a tilde. For an installed colloq both
+ * directories are absolute and long, and in full they do not fit into the
+ * line about an environment.
  */
 function short(ctx: Ctx, path: string): string {
   const root = ctx.env.root() + '/'
@@ -122,7 +130,7 @@ function short(ctx: Ctx, path: string): string {
   return path
 }
 
-/** Где искать окружения — одной строкой для шапки списка. */
+/** Where to look for environments, in one line for the list header. */
 function places(ctx: Ctx): string {
   const dirs = envDirs(ctx)
   const app = short(ctx, dirs.app) + '/'
@@ -134,7 +142,7 @@ function textOf(ctx: Ctx, path: string): string | null {
   return text === null ? null : text.replace(/\r/g, '')
 }
 
-/** Имя окружения из первого позиционного — сразу через сито имени. */
+/** The environment name from the first positional, straight through the name sieve. */
 function wantName(ctx: Ctx, usage: string): string {
   const name = (ctx.positionals[0] ?? '').trim()
   if (!name) throw new UsageError('no environment given', 'Usage: ' + usage)
@@ -150,7 +158,7 @@ function checkName(name: string): void {
   )
 }
 
-/** Нет файла окружения — отказ здесь, до вопросов и до записи. */
+/** No environment file: refuse here, before questions and before writing. */
 function needFile(ctx: Ctx, name: string, fix: string): void {
   if (ctx.io.exists(envFile(ctx, name))) return
   throw new PreconditionError(
@@ -160,24 +168,27 @@ function needFile(ctx: Ctx, name: string, fix: string): void {
 }
 
 /**
- * Версии, на которых вообще собирается ядро: те же, что предлагает панель.
+ * The versions the kernel builds on at all: the same ones the panel offers.
  *
- * Значением из импорта, а не разбором текста shared/admin.ts, как было
- * здесь раньше. Тот файл искался по корню ПРИЛОЖЕНИЯ, а каталога shared/ в
- * дистрибутиве нет вовсе (scripts/pack.mts кладёт server/dist, web/dist,
- * server/assets и kernel/*) — список у установленного colloq всегда выходил
- * пустым, и проверка в wantPython вместе с ним молча выключалась:
- * `colloq env new ml --python 3.99` проходил без отказа и писал в шапку
- * «# colloq: python 3.99», а env list и env show потом показывали это как версию
- * окружения, которое не соберётся. Импорт esbuild впечатывает в бандл, и
- * читать на машине становится нечего — и разойтись с панелью тоже нечему.
+ * As a value from an import, not by parsing the text of shared/admin.ts, as
+ * it was done here before. That file was looked up from the APPLICATION root,
+ * and a distribution has no shared/ directory at all (scripts/pack.mts ships
+ * server/dist, web/dist, server/assets and kernel/*): for an installed colloq
+ * the list always came out empty, and the check in wantPython was silently
+ * switched off along with it: `colloq env new ml --python 3.99` went through
+ * without a refusal and wrote "# colloq: python 3.99" into the header, and env
+ * list and env show then showed it as the version of an environment that will
+ * not build. esbuild bakes the import into the bundle, so there is nothing
+ * left to read on the machine, and nothing to drift apart from the panel
+ * either.
  *
- * readonly string[], а не сам кортеж: у `as const` у includes() тип аргумента —
- * литерал из списка, а нам нужно спросить про произвольную строку от человека.
+ * readonly string[], not the tuple itself: with `as const` the argument type
+ * of includes() is a literal from the list, and we need to ask about an
+ * arbitrary string from a person.
  */
 const PYTHONS: readonly string[] = PYTHON_VERSIONS
 
-/** Версия Python из --python; пусто — значит умолчание. */
+/** The Python version from --python; empty means the default. */
 function wantPython(ctx: Ctx): string | undefined {
   const value = ((ctx.values.python as string | undefined) ?? '').trim()
   if (!value) return undefined
@@ -190,28 +201,31 @@ function wantPython(ctx: Ctx): string | undefined {
   return value
 }
 
-/** Умолчание — из самого kernel/Dockerfile, а не вторым списком. */
+/** The default comes from kernel/Dockerfile itself, not from a second list. */
 function defaultPython(ctx: Ctx): string {
   const text = textOf(ctx, ctx.env.path('kernel/Dockerfile')) ?? ''
   return /^ARG PARENT=python:([0-9]+\.[0-9]+)-/m.exec(text)?.[1] ?? '3.11'
 }
 
 /**
- * Цепочка наследования `# colloq: from`, от корня к названному окружению, и
- * беда, если цепочка негодная.
+ * The `# colloq: from` inheritance chain, from the root to the named
+ * environment, and the trouble if the chain is unfit.
  *
- * Беда возвращается, а не бросается, потому что читателей у цепочки два с
- * разным отношением к ней. Списку важнее показать список: одно окружение,
- * сославшееся на себя, не должно гасить экран целиком, — он берёт то, что
- * прочиталось, и молчит. Показу и переключению важнее сказать правду: строить
- * такое окружение всё равно нечем, и узнать об этом лучше сейчас, чем на
- * colloq start перед парой, когда сборка упадёт.
+ * The trouble is returned, not thrown, because the chain has two readers with
+ * different attitudes to it. For the list, showing the list matters more: one
+ * environment that references itself must not blank the whole screen, so it
+ * takes what could be read and stays silent. For the view and the switch,
+ * telling the truth matters more: there is no way to build such an
+ * environment anyway, and it is better to learn about it now than at colloq
+ * start before class, when the build falls over.
  *
- * Меры ровно те же, что у сборки в запуске (launch-config.ts · kernelInputs)
- * и у цели env-build в Makefile: петля, потолок в восемь звеньев,
- * имя-не-имя, пропавший родитель. Своя реализация, а не вызов kernelInputs,
- * по двум причинам: та ходит в настоящую файловую систему мимо ctx.io (в
- * тестах группы её нет) и знает один каталог окружений из двух.
+ * The measures are exactly the same as in the build at start
+ * (launch-config.ts · kernelInputs) and in the env-build target in the
+ * Makefile: a loop, a ceiling of eight links, a name that is not a name, a
+ * missing parent. Our own implementation rather than a call of kernelInputs,
+ * for two reasons: that one goes to the real file system bypassing ctx.io
+ * (the group's tests have none) and knows one directory of environments out
+ * of two.
  */
 type Chain = { names: string[]; trouble?: string }
 
@@ -239,8 +253,8 @@ function chainOf(io: Io, dirs: Dirs, name: string): Chain {
             : 'environment "' + current + '" is named as a parent, and it does not exist',
       }
     }
-    // unshift, а не push: первым в списке стоит корень цепочки — тот, с кого
-    // начинается сборка и чей интерпретатор достаётся всем, кто ниже.
+    // unshift, not push: first in the list stands the root of the chain, the
+    // one the build starts from and whose interpreter everyone below gets.
     names.unshift(current)
     if (names.length > CHAIN_LIMIT) {
       return { names, trouble: 'the environment chain is longer than eight links' }
@@ -251,9 +265,9 @@ function chainOf(io: Io, dirs: Dirs, name: string): Chain {
 }
 
 /**
- * На каком Python поедет окружение. Версию задаёт КОРЕНЬ цепочки: она
- * приходит из базового образа, а слой поверх готового образа интерпретатор не
- * меняет.
+ * Which Python the environment will run on. The ROOT of the chain sets the
+ * version: it comes from the base image, and a layer on top of a ready image
+ * does not change the interpreter.
  */
 function pythonOf(ctx: Ctx, name: string, fallback: string): string {
   const root = chainOf(ctx.io, envDirs(ctx), name).names[0]
@@ -262,33 +276,35 @@ function pythonOf(ctx: Ctx, name: string, fallback: string): string {
   return (text === null ? undefined : PYTHON.exec(text)?.[1]) ?? fallback
 }
 
-/** Цепочка или отказ: для тех, кому с негодной цепочкой дальше идти некуда. */
+/** The chain or a refusal: for those who have nowhere to go with an unfit chain. */
 function needChain(ctx: Ctx, name: string, fix: string): Chain {
   const chain = chainOf(ctx.io, envDirs(ctx), name)
   if (chain.trouble) throw new PreconditionError(chain.trouble, fix)
   return chain
 }
 
-/** Сколько пакетов сверх базы — тем же правилом, что у цели env-list. */
+/** How many packages on top of the base, by the same rule as the env-list target. */
 function packagesOf(text: string): number {
   return text.split('\n').filter((line) => !NOT_A_PACKAGE.test(line)).length
 }
 
-/** Строки файла, которые человек вписал сам: без комментариев и пустых. */
+/** The lines of the file the person wrote in themselves: without comments and empty ones. */
 function meaningful(text: string): string[] {
   return text.split('\n').filter((line) => !NOT_A_LINE.test(line))
 }
 
-/** Шапка нового окружения — строка в строку та, что пишет цель env-new, только по-английски. */
+/** The header of a new environment: line for line the one the env-new target writes, only in English. */
 function starter(name: string, python: string | undefined, fallback: string): string {
   const lines: string[] = []
   /*
-   * Версия — директивой в шапке, и только если её просили НЕ по умолчанию.
+   * The version goes in as a directive in the header, and only if what was
+   * asked for is NOT the default.
    *
-   * Файл без строки и файл со строкой про умолчание значат сегодня одно и то
-   * же, но завтра — разное: умолчание живёт в ARG PARENT самого
-   * kernel/Dockerfile, и когда его однажды поднимут, записанная строка станет
-   * враньём, которое никто не просил. Не записанная — просто согласится.
+   * A file without the line and a file with a line about the default mean the
+   * same thing today, but different things tomorrow: the default lives in ARG
+   * PARENT of kernel/Dockerfile itself, and when it is raised one day, the
+   * written line will become a lie nobody asked for. An unwritten one will
+   * simply agree.
    */
   if (python && python !== fallback) lines.push('# colloq: python ' + python, '#')
   lines.push(
@@ -305,30 +321,33 @@ function starter(name: string, python: string | undefined, fallback: string): st
 }
 
 /**
- * Перелить KERNEL_ENV в .env, не трогая остальные строки.
+ * Pour KERNEL_ENV into .env without touching the other lines.
  *
- * Содержимое переписывается в существующий файл, а не кладётся поверх новым:
- * та же причина, что в Makefile и в scripts/host.sh. На Linux, где docker
- * просит sudo, перенос файла из /tmp уносил вместе с ним владельца root и
- * права 0600 — и следующий запуск от человека не мог прочитать собственный
- * .env: инстанс поднимался с умолчаниями, то есть с чужим токеном ядра и
- * localhost в ссылках для аудитории. Запись в тот же путь владельца и права
- * оставляет как были.
+ * The content is rewritten into the existing file rather than a new one being
+ * put on top: the same reason as in the Makefile and in scripts/host.sh. On
+ * Linux, where docker asks for sudo, moving the file from /tmp carried along
+ * with it the root owner and 0600 permissions, and the next start by the
+ * person could not read their own .env: the instance came up with the
+ * defaults, that is, with someone else's kernel token and localhost in the
+ * links for the audience. Writing to the same path leaves the owner and the
+ * permissions as they were.
  */
 function writeKernelEnv(ctx: Ctx, name: string): void {
   /*
-   * Файла ещё нет — значит его здесь и заводят, целым.
+   * The file does not exist yet, so it is created here, whole.
    *
-   * Строка «KERNEL_ENV=…» в пустом месте выглядела бы безобидно, но она и есть
-   * .env: дальше `colloq start` видит файл на месте и своего не пишет (launch.ts
-   * создаёт его ТОЛЬКО когда файла нет). Занятие поднималось с умолчаниями —
-   * то есть с общеизвестным JUPYTER_TOKEN из .env.example, и сервер честно
-   * ругался на это в журнал. Поймано живьём: `colloq env use` из колеса до
-   * первого `colloq start`.
+   * A "KERNEL_ENV=…" line in an empty place would look harmless, but it is the
+   * .env: from then on `colloq start` sees the file in place and does not
+   * write its own (launch.ts creates it ONLY when there is no file). The class
+   * came up with the defaults, that is, with the well-known JUPYTER_TOKEN from
+   * .env.example, and the server honestly complained about it in the log.
+   * Caught live: `colloq env use` from the wheel before the first `colloq
+   * start`.
    *
-   * Поэтому основой берётся тот же самый текст, который написал бы запуск
-   * (launch-config.ts · localClassEnv) — один файл на двоих, и расходиться им
-   * негде. Права 0600 по той же причине, что и там: внутри ключи входа.
+   * So the basis is the very same text the start would have written
+   * (launch-config.ts · localClassEnv): one file for both, and nowhere for
+   * them to diverge. Permissions 0600 for the same reason as there: the
+   * sign-in keys are inside.
    */
   const existing = ctx.io.readText(ctx.env.paths.envFile)
   const text = existing ?? localClassEnv(ctx.dist)
@@ -338,7 +357,7 @@ function writeKernelEnv(ctx: Ctx, name: string): void {
   ctx.io.writeText(ctx.env.paths.envFile, kept.join('\n'), existing === null ? 0o600 : undefined)
 }
 
-/** Экран `env list` — тот же, что печатает цель env-list, вплоть до ширины колонки. */
+/** The `env list` screen: the same one the env-list target prints, down to the column width. */
 function renderList(ctx: Ctx): void {
   const current = ctx.env.kernelEnv()
   const fallback = defaultPython(ctx)
@@ -349,8 +368,8 @@ function renderList(ctx: Ctx): void {
     ctx.ui.line('  ' + ctx.ui.dim('no environment files: create one with colloq env new <name>'))
     return
   }
-  // Колонка в 14 знаков — из Makefile (%-14s); длинное имя её раздвигает, а не
-  // ломает строку.
+  // The 14-character column comes from the Makefile (%-14s); a long name widens
+  // it rather than breaking the line.
   const width = Math.max(14, ...names.map((name) => name.length))
   for (const name of names) {
     const text = textOf(ctx, envFile(ctx, name)) ?? ''
@@ -369,7 +388,7 @@ function renderList(ctx: Ctx): void {
   ctx.ui.line(ctx.ui.dim('* — the default for new classes. Change it: colloq env use <name>'))
 }
 
-/** Экран `env show` — то же, что печатает цель env-show, но про любое окружение. */
+/** The `env show` screen: the same as the env-show target prints, but about any environment. */
 function renderShow(ctx: Ctx, name: string): void {
   const file = envFile(ctx, name)
   const python = pythonOf(ctx, name, defaultPython(ctx))
@@ -401,8 +420,8 @@ export const commands: Command[] = [
     notes:
       'The star marks the default for new classes: KERNEL_ENV from .env, otherwise base. The Python version comes from the root of the "# colloq: from" chain, which is at most eight links long. "your own" is an environment you created yourself: it lives next to .env and survives an update of the package.',
     async run(ctx) {
-      // Намерение одной строкой — и для человека, и для --json: расходиться
-      // им незачем, а два раза написанная строка разъезжается.
+      // The intent in one line, both for the person and for --json: they have
+      // no reason to differ, and a line written twice drifts apart.
       const intent = 'native: env list (reads ' + places(ctx) + ' and KERNEL_ENV from .env)'
       if (ctx.dryRun) {
         if (!ctx.json) return ctx.sh.dry(intent)
@@ -450,9 +469,9 @@ export const commands: Command[] = [
       const asked = (ctx.positionals[0] ?? '').trim() || ctx.env.kernelEnv()
       checkName(asked)
       needFile(ctx, asked, 'colloq env list')
-      // Негодная цепочка — отказ до показа: строка «Python 3.11» над
-      // окружением, которое ссылается на себя, выглядит как ответ, а ответом
-      // не является.
+      // An unfit chain means a refusal before the view: a "Python 3.11" line
+      // over an environment that references itself looks like an answer, but
+      // is not one.
       needChain(ctx, asked, 'colloq env show ' + asked + ': fix the "# colloq: from" line')
       if (ctx.dryRun) {
         return ctx.sh.dry(
@@ -502,8 +521,9 @@ export const commands: Command[] = [
           'colloq env show ' + name + ': what is in it now',
         )
       }
-      // Перекрытие — не ошибка, но и не мелочь: человек должен видеть, что
-      // теперь cv значит его файл, а не тот, что приехал с продуктом.
+      // Overriding is not an error, but not a trifle either: the person must
+      // see that cv now means their file, not the one that came with the
+      // product.
       const shadows = ctx.io.exists(joinPath(ctx.env.paths.envDir, name + '.txt'))
       if (ctx.dryRun) {
         return ctx.sh.dry(
@@ -543,17 +563,19 @@ export const commands: Command[] = [
     flags: [],
     destructive: true,
     confirm: 'cli',
-    // Проверка до вопроса: окружения нет или цепочка негодная — отказ, а не
-    // вопрос перед отказом. Негодную цепочку не соберёт и запуск, и узнать об
-    // этом сейчас дешевле, чем на colloq start перед парой.
+    // The check before the question: no environment or an unfit chain means a
+    // refusal, not a question before a refusal. The start will not build an
+    // unfit chain either, and learning about it now is cheaper than at colloq
+    // start before class.
     check(ctx) {
       const name = wantName(ctx, 'colloq env use <name>')
       needFile(ctx, name, 'colloq env new ' + name)
       needChain(ctx, name, 'fix the "# colloq: from" line in the chain')
     },
-    // Вопрос обещает ровно то, что команда сделает, — одну строку в .env.
-    // Сборки здесь нет, значит нет и обещания долгого ожидания: о минутах
-    // сборки на colloq start команда говорит уже после записи.
+    // The question promises exactly what the command will do: one line in
+    // .env. There is no build here, so no promise of a long wait either: the
+    // command speaks about the minutes of building at colloq start only after
+    // the write.
     confirmQuestion: (ctx) =>
       'make environment ' +
       wantName(ctx, 'colloq env use <name>') +
@@ -563,7 +585,7 @@ export const commands: Command[] = [
     notes:
       'The KERNEL_ENV= line is written into the existing .env instead of a fresh file put on top of it: under sudo the file would stay root:0600, and the next start would bring an instance up with the defaults. Classes that are already open stay on their own environment. The image is not built here: colloq start builds it before the class, together with the rest of the preparation, and the first time that can take minutes.',
     async run(ctx) {
-      // Файл и цепочку уже проверил check() — до вопроса и под --dry-run тоже.
+      // check() has already checked the file and the chain, before the question and under --dry-run too.
       const name = wantName(ctx, 'colloq env use <name>')
       if (ctx.dryRun) {
         return ctx.sh.dry(

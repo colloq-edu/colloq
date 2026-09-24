@@ -48,15 +48,16 @@ function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
     return null
   }
   /*
-   * Лента — по правилу комнаты. По умолчанию её видит вся комната: тетрадь
-   * общая, и кто что менял — не секрет от тех, при ком это менялось. Но
-   * семинар, где тетрадь показывают, а не пишут вместе, вправе её закрыть:
-   * там лента — это черновики преподавателя, которые он не показывал.
+   * The feed follows the room's rule. By default the whole room sees it: the
+   * notebook is shared, and who changed what is no secret from those in whose
+   * presence it changed. But a seminar where the notebook is shown rather
+   * than written together has the right to close it: there the feed is the
+   * teacher's drafts, which they never showed.
    *
-   * Конец занятия это правило намеренно не трогает (shared/rules.ts ·
-   * rulesAfterClass): история — чтение, а после пары за ней и приходят —
-   * посмотреть, что было в ячейке до того, как её переписали. Закрываются
-   * восстановление и чекпоинт, но они и так преподавательские.
+   * The end of class deliberately does not touch this rule (shared/rules.ts ·
+   * rulesAfterClass): history is reading, and after the lesson is exactly when
+   * people come for it, to see what was in a cell before it was rewritten.
+   * Restore and checkpoint are closed, but they are teacher-only anyway.
    */
   if (!allows(getRules(req.params.id).history, payload.role)) {
     res.status(403).json({ error: tr("server.onlyTheTeacherCanViewThisSeminar.4c05e0") })
@@ -68,18 +69,18 @@ function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
 /**
  * The timeline is read whole; a seminar that produced more than this is an outlier.
  *
- * Столько же берётся и названных моментов, отдельным окном: чекпоинт нельзя
- * вытеснить правками (см. listStoryVersions).
+ * The same number of named moments is taken too, in a separate window: a
+ * checkpoint must not be pushed out by edits (see listStoryVersions).
  */
 const MAX_VERSIONS = 400
 
 /**
- * Кто это написал — из одной карты на запрос, а не запросом на строку.
+ * Who wrote it, from one map per request rather than a query per row.
  *
- * `getParticipant` на каждую из четырёхсот строк — четыреста синхронных SELECT
- * на один GET, и лента открывается у всей комнаты разом: преподаватель сказал
- * «посмотрите историю», пятьсот человек нажали. Список участников комнаты —
- * один запрос, и дальше это поиск по Map.
+ * `getParticipant` for each of four hundred rows is four hundred synchronous
+ * SELECTs for one GET, and the feed opens for the whole room at once: the
+ * teacher said "look at the history", and five hundred people clicked. The
+ * room's participant list is one query, and after that it is a Map lookup.
  */
 type People = Map<string, { name: string; color: string }>
 
@@ -126,20 +127,21 @@ function toVersion(
 export function historyRoutes(): Router {
   const router = Router()
 
-  // Лента — тоже комната: закрытый доступ закрывает и её (routes/sessions.ts · banDoor).
+  // The feed is the room too: blocked access blocks it as well (routes/sessions.ts · banDoor).
   router.use('/api/sessions/:id', banDoor)
 
   /**
    * The timeline.
    *
-   * НЕ сбрасывает открытый всплеск, хотя когда-то сбрасывал и комментарий об
-   * этом пережил правку на несколько месяцев. Сбрасывать нельзя: чтение
-   * истории — это чтение, а закрытие всплеска пишет версию, и панель, открытая
-   * посреди набора, разрезала бы чужую строку пополам (коммит 862ca42).
+   * Does NOT flush the open burst, although it once did, and the comment
+   * saying so outlived that change by several months. It must not flush:
+   * reading history is reading, while closing a burst writes a version, and a
+   * panel opened mid-typing would cut someone else's line in half (commit
+   * 862ca42).
    *
-   * Последняя минута появляется не здесь, а у того, кто смотрит: панель
-   * перечитывает список ещё раз через BURST_IDLE_MS после последней правки —
-   * ровно тогда, когда сервер её и запишет.
+   * The last minute appears not here but on the viewer's side: the panel
+   * re-reads the list once more BURST_IDLE_MS after the last edit, exactly
+   * when the server writes it.
    */
   router.get('/api/sessions/:id/history', (req: Request, res: Response) => {
     if (!whoever(req, res)) return
@@ -154,36 +156,39 @@ export function historyRoutes(): Router {
      * looking for something they lost. Binding it is what the first person
      * through the door would have done anyway.
      *
-     * И тем же движением отпускаем: чужую тетрадь, поднятую ради одного
-     * чтения, незачем держать в памяти до уборки простаивающих комнат
-     * (routes/doc-visit.ts).
+     * And with the same motion we let it go: someone else's notebook brought
+     * up for a single read has no reason to stay in memory until the idle
+     * sweep (routes/doc-visit.ts).
      */
     visitSessionDoc(sessionId, () => {})
     /*
-     * Служебные строки отсеивает SQL, а не этот обработчик.
+     * Internal rows are filtered out by SQL, not by this handler.
      *
-     * Два вида — бухгалтерия, а не история: keyframe, с которого начинается
-     * повтор, и quiet, байты которого повтору нельзя пропустить. Пока окно в
-     * четыреста строк резалось до фильтра, их было столько, что окно уходило
-     * на них целиком: пара с работающими ячейками писала тихую строку каждые
-     * несколько секунд, и панель показывала горстку правок или пустоту — при
-     * сотне правок и чекпоинте «до упражнения» в базе.
+     * Two kinds are bookkeeping, not history: keyframe, where a replay starts,
+     * and quiet, whose bytes the replay must not skip. While the window of four
+     * hundred rows was cut before the filter, there were so many of them that
+     * the window went to them entirely: a lesson with running cells wrote a
+     * quiet row every few seconds, and the panel showed a handful of edits or
+     * nothing, with a hundred edits and a "before the exercise" checkpoint in
+     * the database.
      *
-     * И названные моменты запрос берёт своим окном: даже из одних правок
-     * четыреста строк на активной паре набираются за час, а чекпоинт ставят,
-     * чтобы к нему вернуться в конце.
+     * And the query takes the named moments in their own window: even edits
+     * alone add up to four hundred rows within an hour of an active lesson,
+     * and a checkpoint is set so as to return to it at the end.
      */
     const people = peopleOf(sessionId)
     const versions = listStoryVersions(sessionId, MAX_VERSIONS).map((r) => toVersion(people, r))
 
     /*
-     * Признак неполноты едет вместе со строками, потому что по самим строкам
-     * его не видно: обрезка по объёму (db.ts · trimHistory) убирает начало
-     * ленты целиком, и остаток выглядит как полная история короткой пары.
+     * The incompleteness flag travels with the rows, because the rows
+     * themselves do not show it: trimming by size (db.ts · trimHistory)
+     * removes the start of the feed entirely, and the rest looks like the
+     * complete history of a short lesson.
      *
-     * Он ровно про удалённое. Окно `MAX_VERSIONS` выше тоже отдаёт не всё, но
-     * те версии в базе есть и открываются по ссылке — смешивать эти два вида
-     * неполноты в одном слове нельзя.
+     * It is exactly about what was deleted. The `MAX_VERSIONS` window above
+     * does not return everything either, but those versions are in the
+     * database and open by link: the two kinds of incompleteness must not be
+     * mixed in one word.
      */
     const body: VersionList = { versions, trimmed: historyTrimmed(sessionId) }
     res.json(body)
@@ -244,11 +249,11 @@ export function historyRoutes(): Router {
 
     const onlyCell = typeof req.body?.cellId === 'string' ? req.body.cellId : null
     /*
-     * Время здесь не собирается. Сервер форматировал его по своему поясу — в
-     * образе node это UTC, — а строки ленты рисует браузер по своему: в
-     * аудитории UTC+3 подпись «restored the version from 15:04» указывала на
-     * строку, которой в списке нет. Версия называется адресом (`targetSeq`),
-     * а часы рисует тот, кто смотрит.
+     * The time is not assembled here. The server used to format it in its own
+     * zone (UTC in the node image), while the browser draws the feed rows in
+     * its own: in a UTC+3 lecture hall the caption "restored the version from
+     * 15:04" pointed at a row that is not in the list. The version is named by
+     * address (`targetSeq`), and the clock is drawn by whoever looks.
      */
     const changed = visitSessionDoc(sessionId, (doc) =>
       restoreInto(
@@ -257,9 +262,10 @@ export function historyRoutes(): Router {
         seq,
         identity.participantId,
         onlyCell,
-        // Кто сейчас печатает — перестановке ячеек: подвинуть ячейку она может
-        // только пересоздав её клоном, а клон уносит нажатия, ушедшие в старый
-        // `Y.Text` за круг до сервера. Где выбор есть, останется та, где курсор.
+        // Who is typing right now, for the cell reordering: it can move a cell
+        // only by recreating it as a clone, and the clone loses keystrokes that
+        // went into the old `Y.Text` a round trip before the server. Where
+        // there is a choice, the one with the caret stays.
         cellsWithCarets(doc),
       ),
     )

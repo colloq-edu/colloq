@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# Один раз завести постоянный адрес для семинаров.
+# Set up a permanent address for seminars, once.
 #
-# Быстрый туннель (make host) выдаёт случайное имя вида
-# https://calm-fox-rides.trycloudflare.com и новое на каждый запуск. Для одной
-# пары это нормально, но ссылку из прошлой недели уже не переоткрыть, и в
-# расписание её не поставишь. Постоянный адрес заводится один раз и живёт.
+# A quick tunnel (make host) hands out a random name like
+# https://calm-fox-rides.trycloudflare.com, and a new one on every run. For a
+# single class that is fine, but last week's link cannot be reopened, and it
+# cannot go into the timetable. A permanent address is set up once and stays.
 #
 #     ./scripts/tunnel-setup.sh seminar.example.org
 #
-# После этого `make host HOST=seminar.example.org` всегда поднимает этот адрес.
+# After that, `make host HOST=seminar.example.org` always brings up this address.
 #
 set -euo pipefail
 
@@ -20,56 +20,58 @@ say() { printf '%s\n' "$*"; }
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
 HOSTNAME_ARG="${1:-}"
-[ -n "$HOSTNAME_ARG" ] || die "Укажите адрес: ./scripts/tunnel-setup.sh seminar.example.org"
+[ -n "$HOSTNAME_ARG" ] || die "Give the address: ./scripts/tunnel-setup.sh seminar.example.org"
 
 command -v cloudflared >/dev/null 2>&1 || die \
-  "cloudflared не установлен. brew install cloudflared — и запустите снова."
+  "cloudflared is not installed. brew install cloudflared — and run this again."
 
 TUNNEL="${COLLOQ_TUNNEL_NAME:-colloq}"
 
-# Логин кладёт ~/.cloudflared/cert.pem — сертификат, которым cloudflared имеет
-# право заводить туннели и писать DNS в вашей зоне. Это не тот же токен, что
-# CF_TOKEN в .env: тот выдан только на DNS-записи и туннель создать не может.
+# The login leaves ~/.cloudflared/cert.pem — the certificate that entitles
+# cloudflared to create tunnels and write DNS in your zone. It is not the same
+# token as CF_TOKEN in .env: that one is issued for DNS records only and cannot
+# create a tunnel.
 if [ ! -f "$HOME/.cloudflared/cert.pem" ]; then
-  say "${BOLD}1/3${OFF} нужен вход в Cloudflare — откроется браузер"
-  say "${DIM}    выберите зону, которой принадлежит ${HOSTNAME_ARG}${OFF}"
+  say "${BOLD}1/3${OFF} a Cloudflare login is needed — a browser will open"
+  say "${DIM}    pick the zone that ${HOSTNAME_ARG} belongs to${OFF}"
   cloudflared tunnel login
 else
-  say "${BOLD}1/3${OFF} вход в Cloudflare уже есть"
+  say "${BOLD}1/3${OFF} already logged in to Cloudflare"
 fi
 
-say "${BOLD}2/3${OFF} туннель «${TUNNEL}»"
+say "${BOLD}2/3${OFF} tunnel \"${TUNNEL}\""
 if cloudflared tunnel list 2>/dev/null | awk '{print $2}' | grep -qx "$TUNNEL"; then
-  say "${DIM}    уже существует, повторно не создаю${OFF}"
+  say "${DIM}    already exists, not creating it again${OFF}"
 else
   cloudflared tunnel create "$TUNNEL"
 fi
 
-# route dns создаёт CNAME <hostname> -> <tunnel-id>.cfargotunnel.com.
-# Если запись уже есть и указывает не туда, Cloudflare откажет — это защита от
-# того, чтобы туннель молча перехватил чужой поддомен.
-say "${BOLD}3/3${OFF} адрес ${HOSTNAME_ARG}"
+# route dns creates CNAME <hostname> -> <tunnel-id>.cfargotunnel.com.
+# If the record already exists and points elsewhere, Cloudflare refuses — this
+# keeps a tunnel from silently taking over somebody else's subdomain.
+say "${BOLD}3/3${OFF} address ${HOSTNAME_ARG}"
 #
-# Отказ здесь — это отказ, а не «Готово».
+# A failure here is a failure, not "Done".
 #
-# Раньше статус брался у grep в конце конвейера: любая ошибка cloudflared —
-# зона не в аккаунте, cert.pem от другой зоны, нет прав, сеть — не совпадала со
-# словами «already exists», ветка пропускалась, и скрипт печатал «Готово. Теперь
-# семинар поднимается так: make host HOST=…». Записи при этом не было, и
-# узнавали об этом на паре: `make host` минуту ждёт и говорит про DNS сети.
+# The status used to come from grep at the end of the pipeline: any cloudflared
+# error — the zone is not in the account, cert.pem is for another zone, no
+# permission, the network — did not match the words "already exists", the
+# branch was skipped, and the script printed "Done. From now on the seminar
+# comes up with: make host HOST=…". There was no record, and people found out
+# in class: `make host` waits a minute and talks about the network's DNS.
 #
 if out="$(cloudflared tunnel route dns "$TUNNEL" "$HOSTNAME_ARG" 2>&1)"; then
   printf '%s\n' "$out"
 else
   printf '%s\n' "$out" >&2
   printf '%s' "$out" | grep -qi 'already exists' \
-    || die "не удалось завести DNS-запись для ${HOSTNAME_ARG} — см. ошибку выше."
-  say "${DIM}    запись уже была — оставляю как есть${OFF}"
+    || die "could not create the DNS record for ${HOSTNAME_ARG} — see the error above."
+  say "${DIM}    the record was already there — leaving it as it is${OFF}"
 fi
 
 printf '\n'
-say "${BOLD}Готово.${OFF} Теперь семинар поднимается так:"
+say "${BOLD}Done.${OFF} From now on the seminar comes up with:"
 say "  ${CYAN}make host HOST=${HOSTNAME_ARG}${OFF}"
 printf '\n'
-say "${DIM}Постоянный адрес имеет смысл поставить в расписание: он не меняется${OFF}"
-say "${DIM}между парами, в отличие от быстрого туннеля.${OFF}"
+say "${DIM}The permanent address is worth putting in the timetable: unlike a quick${OFF}"
+say "${DIM}tunnel, it does not change between classes.${OFF}"

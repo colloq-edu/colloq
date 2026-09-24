@@ -1,30 +1,32 @@
 /**
- * Картинки вывода — рядом с комнатой, а не внутри её документа.
+ * Output images — next to the room, not inside its document.
  *
- * Документ комнаты разъезжается ЦЕЛИКОМ каждому, кто вошёл, и переписывается
- * целиком в каждый снимок и в каждый ключевой кадр истории. Пока график
- * matplotlib лежал в нём base64-строкой, одна картинка на двести килобайт
- * стоила: 270 КБ в документе (base64 — это +33%), столько же в каждом кадре
- * синхронизации КАЖДОМУ из пятисот зрителей, столько же в снимке каждые пять
- * секунд, пока в комнате печатают, и столько же в ключевом кадре истории.
- * Замер на настоящем занятии: 100 МБ исходящего и 2.2 секунды zlib на одну
- * картинку в зале на пятьсот человек.
+ * The room's document goes out WHOLE to everyone who joins, and is rewritten
+ * whole into every snapshot and every history keyframe. While a matplotlib
+ * chart sat in it as a base64 string, one two-hundred-kilobyte image cost:
+ * 270 KB in the document (base64 is +33%), the same in every sync frame to EACH
+ * of five hundred viewers, the same in a snapshot every five seconds while
+ * people type in the room, and the same in a history keyframe. Measured in a
+ * real class: 100 MB outgoing and 2.2 seconds of zlib for one image in a hall
+ * of five hundred.
  *
- * Здесь байты лежат один раз, по хэшу своего содержимого, а в документе
- * остаётся ссылка на полторы сотни байт (`shared/notebook.ts · OutputBlob`).
- * Раздаёт их `routes/blobs.ts` с вечным кэшем: хэш и есть версия, так что
- * второй раз за той же картинкой браузер не придёт.
+ * Here the bytes are stored once, by the hash of their contents, and the
+ * document keeps a link of about a hundred and fifty bytes
+ * (`shared/notebook.ts · OutputBlob`). `routes/blobs.ts` serves them with a
+ * permanent cache: the hash is the version, so the browser does not come back
+ * for the same image a second time.
  *
- * Почему файлы, а не строки SQLite (как у публикаций): снимок публикации
- * собирают раз в семестр, а вывод пишется посреди занятия — блоб в базе
- * означал бы двести килобайт в WAL на каждый график, то есть ровно ту цену, от
- * которой уходили. Файл ложится мимо базы и раздаётся системным вызовом.
+ * Why files and not SQLite rows (as with publications): a publication snapshot
+ * is assembled once a semester, while output is written in the middle of a
+ * class — a blob in the database would mean two hundred kilobytes in the WAL
+ * for every chart, exactly the price we were moving away from. A file goes
+ * past the database and is served by a system call.
  *
- * Уборка — по комнате: `deleteRoomBlobs` зовут при удалении семинара, а
- * `sweepOrphans` подметает за путями удаления, которые об этом хранилище не
- * знают (и за теми, которые появятся). Внутри живой комнаты байты не
- * собираются: на старую картинку смотрит не только нынешняя тетрадь, но и
- * каждая версия истории, в которой эта ячейка ещё не перезапускалась.
+ * Cleanup is per room: `deleteRoomBlobs` is called when a seminar is deleted,
+ * and `sweepOrphans` sweeps up after deletion paths that do not know about this
+ * store (and after those that will appear). Inside a live room the bytes are
+ * not collected: an old image is looked at not only by the current notebook
+ * but by every history version in which that cell has not been rerun yet.
  */
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
@@ -32,15 +34,15 @@ import path from 'node:path'
 import { config } from './config.js'
 import { db } from './db.js'
 
-/** Ссылка, какой её кладут в документ: хэш, тип и вес. */
+/** The link as it is put into the document: hash, type and size. */
 export interface StoredBlob {
   sha: string
   bytes: number
 }
 
-/** Имя комнаты едет в путь на диске, поэтому проверяется буквами. */
+/** The room id goes into a path on disk, so its characters are checked. */
 const ID_OK = /^[A-Za-z0-9_-]{1,64}$/
-/** sha256 в шестнадцатеричном виде — и ничего, кроме него. */
+/** sha256 in hex — and nothing else. */
 const SHA_OK = /^[0-9a-f]{64}$/
 
 function roomDir(sessionId: string): string | null {
@@ -49,13 +51,14 @@ function roomDir(sessionId: string): string | null {
 }
 
 /**
- * Тип содержимого — по его первым байтам, а не по тому, что сказал зовущий.
+ * The content type — by its first bytes, not by what the caller said.
  *
- * Заголовок ответа собирается из этого, а заголовок — это то, чем браузер
- * решает, показать байты картинкой или исполнить их документом на origin
- * инстанса. Ядро присылает mime само, и доверять ему тут нечего: `display_data`
- * формирует библиотека, работающая в коде студента. Сигнатура файла такого
- * выбора не оставляет — `text/html` из неё не выйдет никогда.
+ * The response header is built from this, and the header is what the browser
+ * uses to decide whether to show the bytes as an image or execute them as a
+ * document on the instance's origin. The kernel sends the mime itself, and
+ * there is no reason to trust it here: `display_data` is produced by a library
+ * running in the student's code. A file signature leaves no such choice —
+ * `text/html` will never come out of it.
  */
 export function sniffMime(body: Uint8Array): string {
   const at = (i: number) => body[i]
@@ -72,27 +75,28 @@ export function sniffMime(body: Uint8Array): string {
     return 'image/webp'
   }
   /*
-   * Фигура plotly — единственное непиксельное, что сюда кладут (shared/publish
-   * · SPILL_MIMES), и лежит она текстом JSON. Судить о ней приходится по
-   * первому знаку: подписи у JSON нет.
+   * A plotly figure is the only non-pixel thing put here (shared/publish ·
+   * SPILL_MIMES), and it is stored as JSON text. It has to be judged by the
+   * first character: JSON has no signature.
    *
-   * Довод, по которому здесь вообще нюхают, это не ослабляет. Опасен был
-   * `text/html` — документ на origin инстанса, то есть чужой скрипт с печеньем
-   * того, кто открыл ссылку. `application/json` документом не становится ни
-   * при каком заголовке, тем более с `nosniff`, — а картинка фигурой не
-   * притворится: ни один из форматов выше с фигурной скобки не начинается.
+   * This does not weaken the argument for sniffing here at all. What was
+   * dangerous was `text/html` — a document on the instance's origin, that is,
+   * someone else's script with the cookie of whoever opened the link.
+   * `application/json` does not become a document under any header, let alone
+   * with `nosniff` — and an image will not pretend to be a figure: none of the
+   * formats above starts with a curly brace.
    */
   if (at(0) === 0x7b) return 'application/json'
   return 'application/octet-stream'
 }
 
 /**
- * Положить байты и назвать их хэшем.
+ * Store the bytes and name them by their hash.
  *
- * Содержимое адресует само себя: одна и та же картинка, нарисованная дважды
- * (перезапуск ячейки без изменений — обычное дело на семинаре), ложится один
- * раз и в документе выглядит той же ссылкой. `null` — не положили: тогда
- * зовущий пишет вывод как раньше, прямо в документ.
+ * The contents address themselves: the same image drawn twice (rerunning a cell
+ * without changes is common in a seminar) is stored once and looks like the
+ * same link in the document. `null` means it was not stored: the caller then
+ * writes the output as before, straight into the document.
  */
 export function putBlob(sessionId: string, body: Uint8Array): StoredBlob | null {
   const dir = roomDir(sessionId)
@@ -100,14 +104,15 @@ export function putBlob(sessionId: string, body: Uint8Array): StoredBlob | null 
   const sha = createHash('sha256').update(body).digest('hex')
   const file = path.join(dir, sha)
   try {
-    // Существующий не переписываем: те же байты дали тот же хэш, а лишняя
-    // запись посреди занятия — это лишний fsync под чужим набором текста.
+    // An existing file is not rewritten: the same bytes gave the same hash, and
+    // an extra write in the middle of a class is an extra fsync under someone
+    // else's typing.
     if (fs.existsSync(file)) return { sha, bytes: body.length }
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
     /*
-     * Через временный файл: читатель приходит за картинкой в тот же миг, в
-     * какой она появилась в документе, — и недописанный файл он получил бы
-     * битой картинкой с вечным кэшем, то есть навсегда.
+     * Through a temporary file: a reader comes for the image the moment it
+     * appears in the document — and a half-written file would reach them as a
+     * broken image with a permanent cache, that is, forever.
      */
     const tmp = `${file}.${process.pid}.tmp`
     fs.writeFileSync(tmp, body, { mode: 0o600 })
@@ -115,12 +120,12 @@ export function putBlob(sessionId: string, body: Uint8Array): StoredBlob | null 
     sweepSometimes()
     return { sha, bytes: body.length }
   } catch (err) {
-    console.error(`[blobs] не удалось записать вывод комнаты ${sessionId}`, err)
+    console.error(`[blobs] could not write output for room ${sessionId}`, err)
     return null
   }
 }
 
-/** Байты по ссылке — или `null`, если такой записи нет. */
+/** The bytes by link — or `null` if there is no such entry. */
 export function readBlob(sessionId: string, sha: string): Buffer | null {
   const dir = roomDir(sessionId)
   if (!dir || !SHA_OK.test(sha)) return null
@@ -131,7 +136,7 @@ export function readBlob(sessionId: string, sha: string): Buffer | null {
   }
 }
 
-/** Сколько весит запись, не читая её. `null` — записи нет. */
+/** How much an entry weighs, without reading it. `null` means there is no entry. */
 export function blobBytes(sessionId: string, sha: string): number | null {
   const dir = roomDir(sessionId)
   if (!dir || !SHA_OK.test(sha)) return null
@@ -142,7 +147,7 @@ export function blobBytes(sessionId: string, sha: string): number | null {
   }
 }
 
-/** Убрать всё, что комната нарисовала. Говорит, сколько записей унесла. */
+/** Remove everything the room has drawn. Returns how many entries it took. */
 export function deleteRoomBlobs(sessionId: string): number {
   const dir = roomDir(sessionId)
   if (!dir) return 0
@@ -156,19 +161,21 @@ export function deleteRoomBlobs(sessionId: string): number {
   return count
 }
 
-/* ------------------------------------------------- чей это документ */
+/* ------------------------------------------------- whose document this is */
 
 /**
- * Какой комнате принадлежит этот `Y.Doc`.
+ * Which room this `Y.Doc` belongs to.
  *
- * Ссылка в выводе адресуется хэшем, а полка — комнатой, и тот, кто читает
- * тетрадь, комнату знает не всегда: `pageOfDoc` для публикации получает один
- * документ и всё. Спрашивать её вторым параметром через пять уровней вызовов
- * значило бы тащить идентификатор туда, где он больше ни для чего не нужен, —
- * а документ комнаты и так рождается в одном-единственном месте, где имя
- * известно: привязке к диску (`collab/persistence.ts · bindPersistence`).
+ * A link in the output is addressed by hash, while the shelf is addressed by
+ * room, and whoever reads a notebook does not always know the room:
+ * `pageOfDoc` for a publication gets a single document and nothing else. Asking
+ * for it as a second parameter through five levels of calls would mean
+ * dragging the id to where it is needed for nothing else — and the room's
+ * document is born in one single place where the name is known anyway: the
+ * binding to disk (`collab/persistence.ts · bindPersistence`).
  *
- * `WeakMap`: запись уходит вместе с выселенным документом, ничего не удерживая.
+ * `WeakMap`: the entry goes away together with an evicted document, holding
+ * nothing back.
  */
 const docRooms = new WeakMap<object, string>()
 
@@ -180,21 +187,20 @@ export function roomOfDoc(doc: object): string | null {
   return docRooms.get(doc) ?? null
 }
 
-/* --------------------------------------------------------------- уборка */
+/* --------------------------------------------------------------- cleanup */
 
 /**
- * Подмести за удалёнными комнатами.
+ * Sweep up after deleted rooms.
  *
- * Удаление семинара зовёт `deleteRoomBlobs` само, и этого достаточно ровно до
- * первого нового пути удаления, который про это хранилище не узнает. Цена
- * ошибки несимметрична: забытая папка — это картинки удалённого занятия,
- * лежащие на диске неограниченно долго. Поэтому вторая линия: раз в час, на
- * запись, сверяем имена папок со строками семинаров.
+ * Deleting a seminar calls `deleteRoomBlobs` itself, and that is enough exactly
+ * until the first new deletion path that will not know about this store. The
+ * cost of a mistake is asymmetric: a forgotten folder is images of a deleted
+ * class lying on disk indefinitely. Hence a second line: once an hour, on a
+ * write, we check folder names against the seminar rows.
  *
- * Строку спрашиваем честным SELECT мимо кэша комнат по той же причине, по
- * какой это делает persistence.ts: промах кэша стоит один поиск по первичному
- * ключу раз в час, а ошибка в другую сторону стёрла бы картинки живого
- * занятия.
+ * The row is asked for with an honest SELECT past the room cache for the same
+ * reason persistence.ts does it: a cache miss costs one primary-key lookup an
+ * hour, while a mistake the other way would erase the images of a live class.
  */
 const SWEEP_EVERY_MS = 60 * 60_000
 const selectSessionRow = db.prepare('SELECT 1 FROM sessions WHERE id = ?')
@@ -207,7 +213,7 @@ function sweepSometimes(): void {
   sweepOrphans()
 }
 
-/** То же самое, но сейчас и вслух: сколько комнат убрано. */
+/** The same, but now and out loud: how many rooms were removed. */
 export function sweepOrphans(): number {
   const root = path.join(config.dataDir, 'blobs')
   let rooms: string[]

@@ -1,18 +1,20 @@
 /**
- * Номера в очереди консилиума — одним проходом, и именно они едут в листы.
+ * Council queue positions — in one pass, and exactly those travel into the
+ * sheets.
  *
- * Очередь дёргается дважды на каждую работу ядра, а ждущих на паре столько же,
- * сколько людей. Раньше `tellQueued` спрашивал номер поштучно — поиск по всей
- * очереди на каждого её участника, — и второй раз то же самое делал `mineMessage`
- * внутри листа: два квадрата на один сдвиг. Теперь номера считаются разом
- * (`kernel/index.ts · councilQueuePositions`) и передаются в лист готовыми.
+ * The queue is poked twice for every kernel job, and there are as many
+ * waiting in a class as there are people. `tellQueued` used to ask for the
+ * position one by one — a search through the whole queue for each of its
+ * members — and `mineMessage` did the same once more inside the sheet: two
+ * squares for one shift. Now the positions are counted at once
+ * (`kernel/index.ts · councilQueuePositions`) and handed to the sheet ready.
  *
- * Проверяется не скорость, а то, ради чего скорость меняли: число в листе —
- * то же самое, что даёт массовый счёт, и оно по-прежнему двигается, когда
- * впереди снимают ячейку.
+ * What is checked is not the speed but what the speed was changed for: the
+ * number in the sheet is the same one the bulk count gives, and it still
+ * moves when a cell ahead is cancelled.
  *
- * Ни сети, ни ядра: сокеты поддельные, комната настоящая, диспетчер тот же, что
- * слушает провод.
+ * No network, no kernel: the sockets are fake, the room is real, the
+ * dispatcher is the same one that listens to the wire.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -53,9 +55,9 @@ function join(
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
-      // (рассылка, дерево, чернила), уходят уже закодированными — см.
-      // control.ts · sendFrame. Настоящий сокет тут разницы не делает.
+      // As a string or as bytes: frames the server builds once per room
+      // (broadcast, tree, ink) go out already encoded — see control.ts ·
+      // sendFrame. A real socket makes no difference here.
       if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
         heard.push(JSON.parse(String(frame)) as ControlServerMessage)
       }
@@ -75,7 +77,7 @@ function join(
   return { payload, heard, ws }
 }
 
-test('номер в листе — тот, что дал массовый счёт, и он двигается вместе с очередью', async () => {
+test('the number in the sheet is the one the bulk count gave, and it moves with the queue', async () => {
   const id = 'queue-bulk-1'
   createSession(id, 'Консилиум', null)
   setRules(id, { ...LECTURE_ROOM })
@@ -105,7 +107,8 @@ test('номер в листе — тот, что дал массовый счё
     null,
   )
 
-  // Ячейка преподавателя встала в очередь первой — все три попытки за ней.
+  // The teacher's cell got into the queue first — all three attempts are
+  // behind it.
   assert.equal(say(teacher, { t: 'run', cellId: cellId(plain) }), null)
   for (const [i, student] of class_.entries()) {
     assert.equal(say(student, { t: 'council:draft', cellId: cell, text: `x = ${i}` }), null)
@@ -113,14 +116,17 @@ test('номер в листе — тот, что дал массовый счё
   }
 
   /**
-   * Номер, который этот человек видит сейчас, — тем же способом, что и вкладка.
+   * The number this person sees right now — computed the same way the tab
+   * does.
    *
-   * Лист (`council:mine`) привозит номер на момент своей отправки, дальше его
-   * двигает очередь комнаты (`council:queue`), одним кадром на всех: свой номер
-   * в ней каждый читает сам (web/src/lib/council-queue.ts). Сборка здесь — та
-   * же самая, иначе проверялся бы не тот путь, которым номер доезжает до глаз.
+   * The sheet (`council:mine`) brings the number as of its sending; after
+   * that the room's queue (`council:queue`) moves it, with one frame for
+   * everyone: each reads their own number in it
+   * (web/src/lib/council-queue.ts). The assembly here is the very same,
+   * otherwise it would test a different path from the one by which the
+   * number reaches the eyes.
    */
-  const queue = (who: Person): number | null | 'кадра нет' => {
+  const queue = (who: Person): number | null | 'no frame' => {
     let mine: Record<string, CouncilMine> = {}
     let seen = false
     for (const m of who.heard) {
@@ -131,7 +137,7 @@ test('номер в листе — тот, что дал массовый счё
         mine = withQueuePosition(mine, m.cellId, m.at)
       }
     }
-    return seen ? (mine[cell]?.queue ?? null) : 'кадра нет'
+    return seen ? (mine[cell]?.queue ?? null) : 'no frame'
   }
 
   const bulk = (who: Person): number | undefined =>
@@ -139,63 +145,66 @@ test('номер в листе — тот, что дал массовый счё
       (item) => item.cellId === cell && item.participantId === who.payload.participantId,
     )?.position
 
-  // Массовый счёт видит всех троих по порядку — и ячейку преподавателя впереди.
-  assert.deepEqual(class_.map(bulk), [2, 3, 4], 'массовый счёт разошёлся с очередью')
-  // И ровно эти числа приехали в листы: лист берёт готовый номер, а не считает
-  // его заново.
-  assert.deepEqual(class_.map(queue), [2, 3, 4], 'в лист поехал не тот номер, что посчитан разом')
+  // The bulk count sees all three in order — and the teacher's cell ahead.
+  assert.deepEqual(class_.map(bulk), [2, 3, 4], 'the bulk count diverged from the queue')
+  // And exactly these numbers arrived in the sheets: the sheet takes the
+  // ready number instead of counting it again.
+  assert.deepEqual(class_.map(queue), [2, 3, 4], 'the sheet got a different number from the one counted at once')
 
-  // Ячейку сняли — впереди никого, и каждому уехал НОВЫЙ номер, хотя ни одного
-  // события консилиума не произошло.
+  // The cell was cancelled — nobody is ahead, and everyone got a NEW number,
+  // although not a single council event happened.
   assert.equal(say(teacher, { t: 'cancel', cellId: cellId(plain) }), null)
   await sleep(400)
   assert.deepEqual(class_.map(bulk), [1, 2, 3])
   assert.deepEqual(
     class_.map(queue),
     [1, 2, 3],
-    'после сдвига очереди номера в листах остались старыми',
+    'after the queue shifted, the numbers in the sheets stayed old',
   )
 
   closeControlRoom(id)
 })
 
-test('рассылка номеров не ищет в очереди на каждого ждущего', () => {
+test('broadcasting positions does not search the queue for every waiting person', () => {
   /*
-   * Числа выше сойдутся и при поштучном поиске — он даёт тот же ответ, только
-   * дороже. Поэтому здесь читается сам текст рассылки: в теле `tellQueued`
-   * поштучного `councilQueuePosition` быть не должно ни на прямой строке, ни
-   * внутри листа (номер уезжает в `mineOut` готовым), а `councilQueued`,
-   * который отдавал ждущих без номеров, не нужен во всём сервере.
+   * The numbers above would match with a one-by-one search as well — it
+   * gives the same answer, only more expensively. So the text of the
+   * broadcast itself is read here: in the body of `tellQueued` there must be
+   * no one-by-one `councilQueuePosition`, neither on a direct line nor inside
+   * the sheet (the number goes into `mineOut` ready), and `councilQueued`,
+   * which handed out the waiting without numbers, is not needed anywhere in
+   * the server.
    */
   const root = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
   const source = fs.readFileSync(path.join(root, 'server/src/control.ts'), 'utf8')
 
   const from = source.indexOf('function tellQueued(')
-  assert.ok(from > 0, 'в control.ts не нашлось tellQueued')
+  assert.ok(from > 0, 'tellQueued was not found in control.ts')
   const to = source.indexOf('\n}\n', from)
   const body = source.slice(from, to)
 
-  assert.match(body, /councilQueuePositions\(sessionId\)/, 'номера считаются не одним проходом')
+  assert.match(body, /councilQueuePositions\(sessionId\)/, 'the numbers are not counted in one pass')
   assert.doesNotMatch(
     body.replace(/councilQueuePositions/g, ''),
     /councilQueuePosition\(/,
-    'номер снова ищется в очереди на каждого ждущего',
+    'the number is again searched in the queue for every waiting person',
   )
   /*
-   * И лист ради номера больше не собирается вовсе. Он стоил чтения попытки из
-   * базы и вёз её текст целиком — на каждого из пятисот ждущих, на каждый конец
-   * любой работы ядра. Очередь уезжает одним кадром на комнату.
+   * And the sheet is no longer built for the sake of the number at all. It
+   * cost reading the attempt from the database and carried its whole text —
+   * for each of five hundred waiting, on every end of any kernel job. The
+   * queue travels as one frame per room.
    */
-  assert.doesNotMatch(body, /mineOut\(/, 'номер снова везут полным листом')
-  assert.match(body, /t: 'council:queue'/, 'номер в очереди никуда не уезжает')
+  assert.doesNotMatch(body, /mineOut\(/, 'the number is again carried in a full sheet')
+  assert.match(body, /t: 'council:queue'/, 'the queue number does not go anywhere')
   assert.equal(
     /\bcouncilQueued\b/.test(source),
     false,
-    'councilQueued больше ничей — его незачем звать',
+    'councilQueued belongs to no one — there is no reason to call it',
   )
 })
 
-/* ------------------------------------------- свой номер в чужой очереди */
+/* ---------------------------------------- your number in a shared queue */
 
 const sheet = (queue: number | null): CouncilMine => ({
   text: '',
@@ -209,32 +218,34 @@ const sheet = (queue: number | null): CouncilMine => ({
   closed: false,
 })
 
-test('номер ложится в лист этой ячейки — и не трогает соседние', () => {
+test('the number lands in this cell\'s sheet — and does not touch the neighbouring ones', () => {
   const mine = { c1: sheet(null), c2: sheet(7) }
   const next = withQueuePosition(mine, 'c1', 5)
   assert.equal(next.c1.queue, 5)
-  assert.equal(next.c2.queue, 7, 'номер уехал не в ту ячейку')
+  assert.equal(next.c2.queue, 7, 'the number went to the wrong cell')
 })
 
-test('null — это ответ: в очереди человека больше нет', () => {
-  // Его попытка дошла до ядра, и «считается сейчас» говорит `run.state`, а не
-  // место в очереди. Раньше об этом не говорил никто — рассылка шла только по
-  // тем, кто в очереди остался, — и «вы 1-й» висел над считающейся попыткой.
+test('null is an answer: the person is no longer in the queue', () => {
+  // Their attempt has reached the kernel, and "running now" is said by
+  // `run.state`, not by the place in the queue. Nobody used to say so — the
+  // broadcast went only to those who stayed in the queue — and "you are 1st"
+  // hung over a running attempt.
   assert.equal(withQueuePosition({ c1: sheet(1) }, 'c1', null).c1.queue, null)
 })
 
-test('кадр без перемен не будит перерисовку стопки', () => {
+test('a frame without changes does not wake a re-render of the stack', () => {
   /*
-   * Снимок листов заменяется целиком и будит все карточки консилиума, а
-   * очередь дёргается четыре раза в секунду: на своей ячейке студент
-   * перерисовывал бы редактор под собственными руками.
+   * The sheets snapshot is replaced as a whole and wakes all council cards,
+   * while the queue is poked four times a second: on their own cell a
+   * student would re-render the editor under their own hands.
    */
   const mine = { c1: sheet(3) }
-  assert.equal(withQueuePosition(mine, 'c1', 3), mine, 'снимок листов заменили без перемен')
+  assert.equal(withQueuePosition(mine, 'c1', 3), mine, 'the sheets snapshot was replaced without changes')
 })
 
-test('лист, которого ещё нет, номером не заводится', () => {
-  // Лист приедет своим кадром и привезёт номер с собой; завести его здесь
-  // значило бы показать человеку пустую попытку с номером в очереди.
+test('a sheet that does not exist yet is not created by a number', () => {
+  // The sheet will arrive in its own frame and bring the number with it;
+  // creating it here would mean showing the person an empty attempt with a
+  // queue number.
   assert.deepEqual(withQueuePosition({}, 'c1', 2), {})
 })

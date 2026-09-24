@@ -1,15 +1,16 @@
 /**
- * Уборка простоя и остановленные контейнеры.
+ * The idle sweep and stopped containers.
  *
- * Она спрашивала `docker ps` без `-a`, то есть видела только живые контейнеры.
- * Остановленный (а после перезагрузки машины при `--restart=no` такими
- * становятся ВСЕ вчерашние) для неё не существовал вовсе — и не убирался
- * никогда, ни через два часа, ни через неделю: только руками или при новом
- * открытии той же комнаты. На машине с GPU это значит, что срезы держат
- * комнаты, которых больше никто не откроет, и новый семинар слышит «свободных
- * срезов нет: их два, и все заняты другими семинарами».
+ * It asked `docker ps` without `-a`, that is, it saw only live containers. A
+ * stopped one (and after a machine reboot with `--restart=no` ALL of
+ * yesterday's become stopped) did not exist for it at all — and was never
+ * removed, neither after two hours nor after a week: only by hand or when the
+ * same room was opened again. On a GPU machine this means that slices are held
+ * by rooms nobody will open again, and a new seminar hears "no free slices:
+ * there are two, and both are taken by other seminars".
  *
- * Правило вынесено отдельно от докера, потому что ошибка была именно в нём.
+ * The rule is kept separate from docker because that is exactly where the bug
+ * was.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -19,31 +20,32 @@ import { idleVerdict } from '../server/src/kernel/index.js'
 const MINUTE = 60 * 1000
 const now = 1_700_000_000_000
 
-test('занятая комната не убирается никогда', () => {
-  // Считающая ячейка, очередь, команда в оболочке или живые вкладки — всё это
-  // работа с хозяином, и сносить контейнер под ней нельзя.
+test('a busy room is never swept', () => {
+  // A computing cell, a queue, a shell command or live tabs — all of this is
+  // work with an owner, and the container must not be torn down under it.
   assert.equal(idleVerdict({ running: true, busy: true, since: now - 300 * MINUTE, now }), 'busy')
   assert.equal(idleVerdict({ running: false, busy: true, since: now - 300 * MINUTE, now }), 'busy')
 })
 
-test('пустую комнату сначала берут на заметку, а не убирают', () => {
-  // Первый взгляд — начало отсчёта, а не приговор: иначе перезапуск сервера
-  // сносил бы контейнеры всех идущих пар разом.
+test('an empty room is first put on watch, not swept', () => {
+  // The first look starts the clock, it is not a verdict: otherwise a server
+  // restart would tear down the containers of all running classes at once.
   assert.equal(idleVerdict({ running: true, busy: false, since: undefined, now }), 'watch')
   assert.equal(idleVerdict({ running: false, busy: false, since: undefined, now }), 'watch')
 })
 
-test('живой контейнер держится два часа — пара плюс кофе', () => {
+test('a live container is kept for two hours — a class plus coffee', () => {
   assert.equal(idleVerdict({ running: true, busy: false, since: now - 90 * MINUTE, now }), 'watch')
   assert.equal(idleVerdict({ running: true, busy: false, since: now - 121 * MINUTE, now }), 'drop')
 })
 
-test('остановленный контейнер убирается — и раньше живого', () => {
-  // Терять там нечего: его Python убит вместе с ним, а держит он слой на диске
-  // и срез GPU. Два часа ожидания — это целое утро без карты.
+test('a stopped container is swept — and sooner than a live one', () => {
+  // There is nothing to lose there: its Python died with it, while it still
+  // holds a layer on disk and a GPU slice. Two hours of waiting is a whole
+  // morning without the card.
   assert.equal(idleVerdict({ running: false, busy: false, since: now - 10 * MINUTE, now }), 'watch')
   assert.equal(idleVerdict({ running: false, busy: false, since: now - 31 * MINUTE, now }), 'drop')
-  // И главное: он вообще попадает под приговор, а не живёт вечно.
+  // And the main thing: it gets a verdict at all instead of living forever.
   assert.equal(
     idleVerdict({ running: false, busy: false, since: now - 24 * 60 * MINUTE, now }),
     'drop',

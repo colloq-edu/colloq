@@ -1,14 +1,15 @@
 /**
- * Комната, которой на узле нет места, — от ответа брокера до того, что читают люди.
+ * A room with no space for it on the node — from the broker's answer to what
+ * people read.
  *
- * 18.09: память комнаты на k3s резервируется целиком, и на занятом узле Pod
- * стоит в Pending с «Insufficient memory». Комната при этом читала «Room
- * startup timed out: pending» — одинаково для студента и преподавателя, и
- * ничего о том, что делать. Теперь брокер отвечает словом и числами
- * (runtime-lifecycle проверяет его против подделки API), а здесь закреплён
- * путь веб-стороны: студентам в ячейке и журнале ядра — короткое и без
- * устройства сервера, преподавателю — слово в meta документа, из которого
- * комната рисует совет с числами.
+ * 18 Sep 2026: a room's memory on k3s is reserved in full, and on a busy node
+ * the Pod sits in Pending with "Insufficient memory". Meanwhile the room read
+ * "Room startup timed out: pending" — the same for a student and a teacher,
+ * and nothing about what to do. Now the broker answers with a word and numbers
+ * (runtime-lifecycle checks it against a fake API), and this pins down the
+ * web side's path: for students in the cell and the kernel log, something
+ * short and free of server internals; for the teacher, a word in the
+ * document's meta from which the room draws advice with numbers.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -31,7 +32,7 @@ const catalog = {
   defaultEnvironment: 'base',
   environments: [{ name: 'base', image: `registry.example/base@sha256:${digest}`, gpu: false }],
 }
-/** Что брокер ответит на подъём: статус и тело. */
+/** What the broker will answer to a start: status and body. */
 let answer: { status: number; body: unknown } = { status: 503, body: {} }
 let broker: http.Server
 const saved = { ...process.env }
@@ -73,7 +74,7 @@ function lastKernelLine(id: string): string {
   return readTerminalLine(lines[lines.length - 1]!).text
 }
 
-test('студент читает короткое «преподаватель видит причину», преподаватель получает совет с числом', async () => {
+test('a student reads a short "the teacher can see why", the teacher gets advice with a number', async () => {
   setLocaleResolver(() => 'ru')
   const id = 'unschedulable-room'
   createSession(id, 'Занятие на полном узле', 'base')
@@ -93,7 +94,7 @@ test('студент читает короткое «преподаватель 
   assert.equal(meta.get('kernelStatus'), 'dead')
   assert.deepEqual(meta.get(KERNEL_PROBLEM_KEY), { unschedulable: 'memory', memoryMb: 6144, cpus: 2 })
 
-  // То, что видит вся комната: ни слова брокера, ни слова Kubernetes.
+  // What the whole room sees: no broker wording and no Kubernetes wording.
   const note = lastKernelLine(id)
   assert.equal(
     note,
@@ -101,7 +102,7 @@ test('студент читает короткое «преподаватель 
   )
   assert.doesNotMatch(JSON.stringify(getTerminal(doc).toJSON()), /allocatable|timed out|Insufficient/)
 
-  // То, что комната рисует ведущему из слова в документе.
+  // What the room draws for the host from the word in the document.
   const problem = readKernelProblem(meta.get(KERNEL_PROBLEM_KEY))
   assert.ok(problem)
   assert.equal(
@@ -115,14 +116,15 @@ test('студент читает короткое «преподаватель 
   )
   setLocaleResolver(() => 'ru')
 
-  // Другая причина отказа снимает совет: «уменьшите память» к ней неправда.
+  // A different refusal reason removes the advice: "reduce the memory" would
+  // be untrue for it.
   answer = { status: 503, body: { error: 'Room startup timed out: ErrImagePull' } }
   await assert.rejects(ensureKernel(id))
   assert.equal(meta.has(KERNEL_PROBLEM_KEY), false)
   assert.match(lastKernelLine(id), /ErrImagePull/)
 })
 
-test('совет называет ядра, видеокарту или отсылает к администратору — и не верит мусору в документе', () => {
+test('the advice names cores or the GPU, or refers to the administrator — and does not trust junk in the document', () => {
   setLocaleResolver(() => 'ru')
   assert.match(kernelProblemAdvice({ unschedulable: 'cpu', cpus: 2 }), /^Сервер не может выделить комнате 2 ядра:/)
   assert.match(kernelProblemAdvice({ unschedulable: 'cpu', cpus: 5 }), /5 ядер/)

@@ -3,33 +3,33 @@
   import { cn, spell } from '@/lib/utils'
 
   /**
-   * Четыре действия над работой — и они всегда на экране.
+   * Four actions on a piece of work — and they are always on screen.
    *
-   * До этого ряд стоял последним в колонке, которая целиком прокручивалась в
-   * невысоком окне: «Показать классу», «Запустить» и обе отметки уезжали под
-   * сгиб, и чтобы отметить работу верной, надо было сначала долистать до них.
-   * Теперь ряд — дно дока, прибитого к низу панели, и прокручивается над ним
-   * только код с выводом.
+   * Before this the row stood last in a column that scrolled as a whole in a
+   * short window: "Show the class", "Run" and both marks slid below the
+   * fold, and to mark a piece of work correct you first had to scroll down
+   * to them. Now the row is the bottom of a dock pinned to the bottom of the
+   * panel, and only the code with its output scrolls above it.
    *
-   * На телефоне четыре кнопки равной ширины по 44 px: подписи там короткие
-   * («Классу», «Запуск», «Верно», «Правки») — не ради краткости, а потому что
-   * четыре цели нажатия в 360 px шириной иначе не помещаются, а уменьшать их
-   * ниже пальца нельзя.
+   * On a phone there are four equal-width buttons of 44 px: the labels there
+   * are short ("Show", "Run", "Correct", "Revise") — not for brevity's sake,
+   * but because four touch targets do not otherwise fit into 360 px of
+   * width, and they must not be made smaller than a finger.
    */
   interface Props {
-    /** Эта работа сейчас в зале. */
+    /** This work is shown to the room right now. */
     onScreen: boolean
-    /** Эта работа считается в ядре. */
+    /** This work is running in the kernel. */
     running: boolean
     queued: boolean
-    /** Сколько уже считает. */
+    /** How long it has been running. */
     elapsed: number
-    /** Сколько уже в кадре. */
+    /** How long it has been in the frame. */
     inFrame: number
-    /** Запускали ли её раньше — «Запустить» или «Запустить снова». */
+    /** Whether it was run before — "Run" or "Run again". */
     ran: boolean
     correct: boolean | null
-    /** Работа — черновик: показывать классу нечего. */
+    /** The work is a draft: there is nothing to show the class. */
     writing: boolean
     disabled: boolean
     onshow: () => void
@@ -108,9 +108,9 @@
   .actions-run-state { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 8px; }
   .actions-queued { margin: 8px 0 0; }
   .act-short { display: none; }
-  /* Узкая панель работы: подписи короткие, но кнопки остаются кнопками.
-     760 — та ширина окна, на которой четыре полных подписи перестают
-     помещаться в панель работы рядом со списком. */
+  /* A narrow work panel: the labels are short, but the buttons stay buttons.
+     760 is the window width at which four full labels stop fitting into the
+     work panel next to the list. */
   @media (max-width: 760px) {
     .actions :global(.pult-button) { padding: 8px 10px; }
     .act-long { display: none; }

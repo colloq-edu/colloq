@@ -1,59 +1,65 @@
-# Общее для скриптов эксплуатации. Не программа — его сорсят.
+# Shared by the ops scripts. Not a program: it is sourced.
 #
-#   . ./scripts/lib.sh   из корня репозитория (host.sh, service.sh, vast.sh)
-#   . ./lib.sh           из scripts/, назвав ENV_FILE заранее (dns.sh)
+#   . ./scripts/lib.sh   from the repository root (host.sh, service.sh, vast.sh)
+#   . ./lib.sh           from scripts/, with ENV_FILE named beforehand (dns.sh)
 #
-# Живут здесь две вещи, и обе — про один и тот же файл: где искать каталог
-# состояния (COLLOQ_STATE_ROOT, см. ниже) и как прочитать из .env строку.
+# Two things live here, and both are about the same file: where to look for
+# the state directory (COLLOQ_STATE_ROOT, see below) and how to read a line
+# from .env.
 #
-# Чтение строки было списано в трёх скриптах слово в слово, и все три несли
-# одну и ту же ошибку — `tr -d ' \r'`, то есть «удалить каждый пробел, где бы
-# он ни стоял». Имена карт в API vast пишутся с пробелом («RTX 4090»), и
-# `VAST_GPU=RTX 4090` из .env превращался в «RTX4090», под который на рынке нет
-# ни одного предложения; скрипт при этом советовал вписать в .env ровно то,
-# что уже вписано. Название учреждения, путь с пробелом, имя ретранслятора —
-# та же история.
+# Reading a line used to be copied word for word into three scripts, and all
+# three carried the same bug: `tr -d ' \r'`, that is, "delete every space,
+# wherever it stands". Card names in the vast API are written with a space
+# ("RTX 4090"), and `VAST_GPU=RTX 4090` from .env turned into "RTX4090", for
+# which the market has not a single offer; meanwhile the script advised
+# writing into .env exactly what was already written there. The institution
+# name, a path with a space, the relay name: the same story.
 #
-# Правило теперь одно и записано один раз: обрезаются только края, кавычки по
-# краям снимаются парой — как это делает сервер, читая PUBLIC_URL
-# (server/src/config.ts). Внутренность значения не трогается вовсе.
+# Now there is one rule, and it is written once: only the edges are trimmed,
+# quotes at the edges are removed as a pair, the way the server does it when
+# reading PUBLIC_URL (server/src/config.ts). The inside of the value is not
+# touched at all.
 
-# Корень СОСТОЯНИЯ: .env, расписка идущего занятия, .colloq.pid, data/.
+# The STATE root: .env, the receipt of the running class, .colloq.pid, data/.
 #
-# Корней два, и совпадают они не везде. Каталог ПРИЛОЖЕНИЯ — тот, что над
-# scripts/: web/dist, kernel/, эти самые скрипты. У поставленного через pip
-# colloq он лежит в <site-packages>/colloq/_app, доступен только на чтение и
-# сносится целиком каждым `pip install -U`; состояние живёт отдельно, в
-# ~/.colloq, и его адрес приезжает сюда переменной COLLOQ_HOME.
+# There are two roots, and they do not coincide everywhere. The APPLICATION
+# directory is the one above scripts/: web/dist, kernel/, these very scripts.
+# For colloq installed through pip it lies in <site-packages>/colloq/_app, is
+# read-only and is wiped entirely by every `pip install -U`; the state lives
+# separately, in ~/.colloq, and its address arrives here in the COLLOQ_HOME
+# variable.
 #
-# Скрипты же считали корнем состояния себя — «cd $(dirname $0)/..» в шапке, —
-# и у установленного colloq публикация «удавалась» вникуда: PUBLIC_URL уходил
-# в .env каталога приложения, которого не читает никто, а `colloq link` смотрел
-# в <home>/.env и продолжал говорить «наружу не выставлен».
+# The scripts, though, took themselves for the state root ("cd $(dirname
+# $0)/.." in the header), and for installed colloq publishing "succeeded" into
+# nowhere: PUBLIC_URL went into the .env of the application directory, which
+# nobody reads, while `colloq link` looked into <home>/.env and kept saying
+# "not exposed to the outside".
 #
-# Без COLLOQ_HOME — ровно как раньше: текущий каталог, то есть тот самый
-# каталог над scripts/, в который скрипт уже перешёл сам. В репозитории оба
-# корня — это он и есть, поэтому там не сдвинулся ни один путь.
+# Without COLLOQ_HOME it is exactly as before: the current directory, that is,
+# the very directory above scripts/ that the script has already moved into on
+# its own. In the repository both roots are that directory, so not a single
+# path moved there.
 COLLOQ_STATE_ROOT="${COLLOQ_HOME:-.}"
 
-# Файл настроек. Скрипты работают из корня репозитория, dns.sh — из scripts/,
-# и путь у него другой; больше между ними разницы нет.
+# The settings file. The scripts work from the repository root, dns.sh from
+# scripts/, and its path is different; there is no other difference between
+# them.
 ENV_FILE="${ENV_FILE:-$COLLOQ_STATE_ROOT/.env}"
 
-# read_env ИМЯ — значение строки `ИМЯ=…` из .env, пустая строка, если её нет.
-# Берётся последняя: дописанное в конец файла главнее, и так же смотрит на
-# него сервер.
+# read_env NAME: the value of the line `NAME=…` from .env, an empty string if
+# there is none. The last one is taken: what was appended to the end of the
+# file wins, and the server looks at it the same way.
 read_env() {
   local v
   v="$(grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
-  # CRLF: .env, побывавший в Windows, иначе принёс бы возврат каретки внутрь
-  # имени контейнера и адреса.
+  # CRLF: a .env that has been through Windows would otherwise bring a carriage
+  # return into a container name and an address.
   v="${v%$'\r'}"
-  # Пробелы и табуляции по краям — и только по краям.
+  # Spaces and tabs at the edges, and only at the edges.
   v="${v#"${v%%[![:space:]]*}"}"
   v="${v%"${v##*[![:space:]]}"}"
-  # Кавычки снимаются только парой: одиночная кавычка внутри значения — это
-  # часть значения, а не половина обёртки.
+  # Quotes are removed only as a pair: a single quote inside the value is part
+  # of the value, not half of a wrapper.
   case "$v" in
     '"'*'"') v="${v#\"}"; v="${v%\"}" ;;
     "'"*"'") v="${v#\'}"; v="${v%\'}" ;;

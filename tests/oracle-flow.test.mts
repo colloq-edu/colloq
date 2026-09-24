@@ -1,15 +1,16 @@
 /**
- * Оракул от нажатия до записи в тетради — весь путь, а не только статус ответа.
+ * The oracle from the press to the entry in the notebook — the whole path, not
+ * just the response status.
  *
- * Два теста в сюите слали POST `ai/ask` и смотрели на 202/403/429; дальше
- * начиналась темнота. Сломать `settle` — не ставить состояние `done`, не
- * вытащить предложение из последнего блока, не написать «(stopped)» — и сюита
- * оставалась зелёной, хотя в комнате не появлялось ни одного ответа. Здесь
- * проверяется то, что видит класс: запись в общем документе, её текст,
- * состояние и предложение под ячейкой.
+ * Two tests in the suite sent POST `ai/ask` and looked at 202/403/429; beyond
+ * that lay darkness. Break `settle` — not set the `done` state, not pull the
+ * proposal out of the last block, not write "(stopped)" — and the suite stayed
+ * green, although not a single answer appeared in the room. What is checked
+ * here is what the class sees: the entry in the shared document, its text, its
+ * state and the proposal under the cell.
  *
- * Шлюз поддельный, комната настоящая, документ настоящий: подделан ровно один
- * слой — тот, за которым живёт чужая модель.
+ * The gateway is fake, the room is real, the document is real: exactly one
+ * layer is faked — the one behind which someone else's model lives.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -29,23 +30,23 @@ import { aiRoutes, roomQuestionCeiling } from '../server/src/routes/ai.js'
 
 after(() => shutdownCollab())
 
-/* ------------------------------------------------------------- подделки */
+/* ---------------------------------------------------------------- fakes */
 
 interface Gateway {
   base: string
-  /** Тела запросов, как их правда прислали: по ним видно, что ушло эндпоинту. */
+  /** Request bodies exactly as they were sent: they show what went to the endpoint. */
   seen: Record<string, unknown>[]
-  /** Отпустить зависшие ответы. */
+  /** Release the held responses. */
   release: () => void
   close: () => Promise<void>
 }
 
 /**
- * OpenAI-совместимый шлюз, которым правит тест.
+ * An OpenAI-compatible gateway the test controls.
  *
- * `answer` — что отдать одним кадром SSE. `refuse` — на какие тела отвечать 400
- * (так проверяется «голая» повторная попытка). `hold` — не отвечать вовсе, пока
- * не отпустят: так держатся одновременные потоки.
+ * `answer` is what to send in one SSE frame. `refuse` decides which bodies get
+ * a 400 (that is how the "bare" retry is checked). `hold` means not answering
+ * at all until released: that is how concurrent streams are kept open.
  */
 async function gateway(options: {
   answer?: string
@@ -145,8 +146,8 @@ async function room(): Promise<Room> {
     getCells(doc).push([createCell('code', 'total = sum(xs)', cellId)])
   })
   const app = express()
-  // Тот же потолок тела, что у настоящего сервера: на нём и держится счёт
-  // «сколько мусора может унести один вопрос».
+  // The same body ceiling as the real server: the count of "how much junk one
+  // question can carry" rests on it.
   app.use(express.json({ limit: '1mb' }))
   app.use(aiRoutes())
   const server = http.createServer(app)
@@ -171,7 +172,7 @@ function ask(r: Room, who: string, body: unknown): Promise<Response> {
   })
 }
 
-/** Запись треда по идентификатору — то, что видит вся комната. */
+/** A thread entry by id: what the whole room sees. */
 function entryOf(r: Room, entryId: string) {
   const chat = getChat(getSessionDoc(r.id).doc)
   for (let i = 0; i < chat.length; i++) {
@@ -181,19 +182,19 @@ function entryOf(r: Room, entryId: string) {
   return null
 }
 
-/** Дождаться, пока ответ перестанет писаться. */
+/** Wait until the answer stops being written. */
 async function settled(r: Room, entryId: string) {
   for (let i = 0; i < 300; i++) {
     const entry = entryOf(r, entryId)
     if (entry && (entry.get('state') as ChatState) !== 'streaming') return entry
     await new Promise((done) => setTimeout(done, 10))
   }
-  throw new Error('ответ так и не дописался')
+  throw new Error('the answer never finished')
 }
 
-/* ------------------------------------------------------------ весь путь */
+/* ------------------------------------------------------- the whole path */
 
-test('вопрос доезжает до документа: ответ, состояние и предложение под ячейкой', async () => {
+test('a question reaches the document: the answer, the state and the proposal under the cell', async () => {
   const gate = await gateway({
     answer:
       'Складывать надо после проверки на пустоту.\n\n```python\ntotal = sum(xs) if xs else 0\n```',
@@ -208,10 +209,11 @@ test('вопрос доезжает до документа: ответ, сос�
     })
     assert.equal(res.status, 202)
     const { entryId } = (await res.json()) as { entryId: string }
-    assert.ok(entryId, 'маршрут не назвал запись')
+    assert.ok(entryId, 'the route did not name the entry')
 
-    // Вопрос виден в ту же секунду, ещё до всякого ответа: в этом весь смысл
-    // 202 — комната смотрит, как ответ наливается, а не ждёт чужой HTTP.
+    // The question is visible in the same second, before any answer: that is the
+    // whole point of the 202 — the room watches the answer fill in instead of
+    // waiting on someone else's HTTP.
     const asked = entryOf(r, entryId)
     assert.equal(asked?.get('question'), 'почини')
     assert.equal(asked?.get('name'), 'Петя')
@@ -219,8 +221,8 @@ test('вопрос доезжает до документа: ответ, сос�
     const entry = await settled(r, entryId)
     assert.equal(entry!.get('state'), 'done')
     assert.match(chatAnswer(entry!).toString(), /после проверки на пустоту/)
-    // Предложение вынимается в конце и только у хода `edit`: половина блока —
-    // не патч, а ячейка, предлагающая сломать себя.
+    // The proposal is extracted at the end and only for an `edit` turn: half a
+    // block is not a patch but a cell offering to break itself.
     assert.equal(entry!.get('patch'), 'total = sum(xs) if xs else 0')
     assert.equal(entry!.get('patchBase'), 'total = sum(xs)')
   } finally {
@@ -229,7 +231,7 @@ test('вопрос доезжает до документа: ответ, сос�
   }
 })
 
-test('«Стоп» ставит на запись «(stopped)», а не пустоту', async () => {
+test('"Stop" puts "(stopped)" on the entry, not emptiness', async () => {
   const gate = await gateway({ hold: true })
   const r = await room()
   try {
@@ -254,7 +256,7 @@ test('«Стоп» ставит на запись «(stopped)», а не пус�
   }
 })
 
-test('пустой ответ модели не советует комнате чинить переменную окружения', async () => {
+test('an empty model answer does not advise the room to fix an environment variable', async () => {
   const gate = await gateway({ answer: '' })
   const r = await room()
   try {
@@ -263,8 +265,8 @@ test('пустой ответ модели не советует комнате 
     const entry = await settled(r, entryId)
     assert.equal(entry!.get('state'), 'error')
     const said = chatAnswer(entry!).toString()
-    // Текст читают студенты: переменной окружения им не видно, а панель — не их
-    // дверь. То же разделение, что у отказа про ключ в routes/ai.ts.
+    // Students read this text: they cannot see the environment variable, and the
+    // panel is not their door. The same split as for the key refusal in routes/ai.ts.
     assert.doesNotMatch(said, /OPENAI_MODEL/)
     assert.match(said, /владельца Colloq/i)
   } finally {
@@ -273,7 +275,7 @@ test('пустой ответ модели не советует комнате 
   }
 })
 
-test('шлюз, не знающий stream_options, получает вторую попытку без него', async () => {
+test('a gateway that does not know stream_options gets a second attempt without it', async () => {
   const gate = await gateway({
     answer: 'Ответ есть.',
     refuse: (body) => 'stream_options' in body,
@@ -284,43 +286,43 @@ test('шлюз, не знающий stream_options, получает втору�
     const { entryId } = (await res.json()) as { entryId: string }
     const entry = await settled(r, entryId)
     /*
-     * Комментарий над `usage` в provider.ts обещал ровно это: кто не понимает
-     * поля — ответит 400, и сработает голая попытка. Она не была голой —
-     * `stream_options` ехало в обе, — так что на таком шлюзе оракул не работал
-     * вовсе, а комната читала «rejected the request … stream_options».
+     * The comment above `usage` in provider.ts promised exactly this: whoever does
+     * not understand the field answers 400, and the bare attempt kicks in. It was
+     * not bare — `stream_options` went into both — so on such a gateway the oracle
+     * did not work at all, and the room read "rejected the request … stream_options".
      */
     assert.equal(entry!.get('state'), 'done', chatAnswer(entry!).toString())
     assert.match(chatAnswer(entry!).toString(), /Ответ есть/)
-    assert.equal(gate.seen.length, 2, 'повторной попытки не было')
+    assert.equal(gate.seen.length, 2, 'there was no retry')
     assert.ok('stream_options' in gate.seen[0])
-    assert.ok(!('stream_options' in gate.seen[1]), 'голая попытка снова со stream_options')
+    assert.ok(!('stream_options' in gate.seen[1]), 'the bare attempt carries stream_options again')
   } finally {
     r.close()
     await gate.close()
   }
 })
 
-/* ---------------------------------------------------------------- потолки */
+/* --------------------------------------------------------------- ceilings */
 
-test('одновременных ответов в комнате не больше дюжины', async () => {
+test('no more than a dozen concurrent answers in a room', async () => {
   const gate = await gateway({ hold: true })
   const r = await room()
   try {
     for (let i = 0; i < 12; i++) {
       const res = await ask(r, r.student, { message: `вопрос ${i}` })
-      assert.equal(res.status, 202, `отказ на ${i}-м вопросе`)
+      assert.equal(res.status, 202, `refused on question ${i}`)
     }
     /*
-     * Тринадцатый — ожидание, а не ошибка: по слову преподавателя «спросите
-     * оракула» жмут двести человек разом, и без этого потолка комната шлёт
-     * сотни тысяч кадров в секунду на пятистах сокетах, пропускает пинги и
-     * разваливается — именно на самой большой аудитории.
+     * The thirteenth is a wait, not an error: at the teacher's "ask the oracle"
+     * two hundred people press at once, and without this ceiling the room sends
+     * hundreds of thousands of frames a second over five hundred sockets, misses
+     * pings and falls apart — precisely with the largest audience.
      */
     const refused = await ask(r, r.student, { message: 'тринадцатый' })
     assert.equal(refused.status, 429)
     const body = (await refused.json()) as { error: string; retryAfter?: number }
     assert.match(body.error, /выполняется 12 запросов/)
-    assert.ok((body.retryAfter ?? 0) > 0, 'панель нарисует это красной ошибкой, а не отсчётом')
+    assert.ok((body.retryAfter ?? 0) > 0, 'the panel would draw this as a red error instead of a countdown')
     assert.equal(refused.headers.get('retry-after'), String(body.retryAfter))
   } finally {
     r.close()
@@ -329,18 +331,18 @@ test('одновременных ответов в комнате не боль�
   }
 })
 
-test('часовой потолок комнаты считается от её размера и не обещает чужой ручки', async () => {
+test('the hourly room ceiling scales with its size and promises no control the teacher lacks', async () => {
   const gate = await gateway({ answer: 'ответ' })
   const r = await room()
   try {
-    // Пустая комната — прежние тридцать личных пределов: маленькой комнате
-    // достаётся ровно столько же, сколько доставалось.
+    // An empty room gets the former thirty personal limits: a small room gets
+    // exactly as much as it used to.
     assert.equal(roomQuestionCeiling(r.id, 20), 600)
 
     /*
-     * А теперь в комнате поток. Присутствие — то же, по которому комната
-     * рисует людей; таблица участников не годится, она помнит всех, кто
-     * заходил за все пары этого семинара.
+     * And now the room holds a whole cohort. Presence is the same one the room
+     * draws people from; the participants table will not do, it remembers
+     * everyone who came in over all the classes of this seminar.
      */
     const { awareness } = getSessionDoc(r.id)
     const states = awareness.getStates()
@@ -348,12 +350,12 @@ test('часовой потолок комнаты считается от её 
     assert.equal(
       roomQuestionCeiling(r.id, 20),
       5_000,
-      'зал в 500 человек живёт по мерке зала на 30',
+      'a hall of 500 people lives by the measure of a hall of 30',
     )
     for (let i = 0; i < 500; i++) states.delete(1_000 + i)
 
-    // Слова отказа. Прежние обещали «попросите преподавателя, он поднимет
-    // предел в панели» — ручки, которой у преподавателя нет.
+    // The refusal wording. The old one promised "ask the teacher, they will raise
+    // the limit in the panel" — a control the teacher does not have.
     updateOracleSettings({ questionsPerHour: 1 })
     for (let i = 0; i < 30; i++) {
       recordQuestion({ sessionId: r.id, participantId: `p_ghost_${i}`, action: 'ask' })
@@ -371,7 +373,7 @@ test('часовой потолок комнаты считается от её 
   }
 })
 
-test('имена ячеек не проносят мегабайт мусора в общий документ', async () => {
+test('cell names do not smuggle megabytes of junk into the shared document', async () => {
   const gate = await gateway({ answer: 'ответ' })
   const r = await room()
   try {
@@ -384,8 +386,8 @@ test('имена ячеек не проносят мегабайт мусора 
     assert.equal(res.status, 202)
     const { entryId } = (await res.json()) as { entryId: string }
     const entry = entryOf(r, entryId)
-    // Отбрасываются, а не режутся: имя ячейки — это ключ, и обрезанный ключ уже
-    // не тот, что просили.
+    // They are dropped, not cut: a cell name is a key, and a truncated key is no
+    // longer the one asked for.
     assert.equal(entry!.get('cellId'), null)
     assert.deepEqual((entry!.get('cellIds') as string[]) ?? [], [r.cellId])
     await settled(r, entryId)
@@ -395,9 +397,9 @@ test('имена ячеек не проносят мегабайт мусора 
   }
 })
 
-/* --------------------------------------------------------------- история */
+/* --------------------------------------------------------------- history */
 
-test('в историю едут только состоявшиеся ходы — по паре реплик, а не два вопроса подряд', () => {
+test('only completed turns go into the history, as pairs of lines, not two questions in a row', () => {
   const id = `oracle-history-${++seq}`
   createSession(id, 'История', null)
   const { doc } = getSessionDoc(id)
@@ -418,11 +420,11 @@ test('в историю едут только состоявшиеся ходы 
 
   const turns = recentTurns(doc)
   /*
-   * Роли обязаны чередоваться: строгие шаблоны чата (vLLM с Mistral или
-   * Llama-2) отвечают на два user-хода подряд 400 — «Conversation roles must
-   * alternate» — и бесплатный повтор шлёт ту же историю и получает то же 400.
-   * В большой комнате два вопроса в минуту — норма, так что каждый второй
-   * вопрос падал бы.
+   * The roles have to alternate: strict chat templates (vLLM with Mistral or
+   * Llama-2) answer two user turns in a row with a 400 — "Conversation roles
+   * must alternate" — and the free retry sends the same history and gets the
+   * same 400. In a big room two questions a minute is normal, so every other
+   * question would fail.
    */
   assert.deepEqual(
     turns.map((turn) => turn.role),

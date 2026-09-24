@@ -160,19 +160,20 @@ test('seeding a notebook is safe to repeat', () => {
   assert.equal(getMeta(doc).get('title'), 'Computer Vision Seminar')
 })
 
-test('пустой заголовок — не «документ пуст», и участник его не вписывает', () => {
+test('an empty title is not "the document is empty", and a participant does not write it in', () => {
   /*
-   * Хост выделил имя семинара в шапке и стёр — в документе осталось ''. Эту
-   * функцию зовёт КАЖДЫЙ браузер на каждом sync, и по значению условие снова
-   * истинно: заголовок писал бы студент, а гейт заголовок не-хосту отказывает —
-   * закрытый сокет, стёртый кэш, перезагрузка, снова sync, снова запись. Круг,
-   * из которого вкладка выходила только когда хост допечатает имя.
+   * The host selected the seminar name in the header and erased it — '' was
+   * left in the document. EVERY browser calls this function on every sync,
+   * and by value the condition is true again: a student would write the
+   * title, while the gate refuses the title to a non-host — a closed socket, a
+   * wiped cache, a reload, sync again, write again. A loop the tab got out of
+   * only when the host finished typing the name.
    */
   const doc = blank()
   ensureInitialNotebook(doc, 'Семинар')
   getMeta(doc).set('title', '')
   ensureInitialNotebook(doc, 'Семинар')
-  assert.equal(getMeta(doc).get('title'), '', 'участник вписал заголовок обратно')
+  assert.equal(getMeta(doc).get('title'), '', 'a participant wrote the title back in')
 })
 
 test('seeding never overwrites a notebook that has content', () => {
@@ -220,14 +221,15 @@ test('a terminal line streams its output the way a shell does', () => {
   assert.match(readTerminalLine(out).text, /Successfully installed/)
 })
 
-test('принятая правка переписывает только то, что изменилось', () => {
+test('an accepted edit rewrites only what changed', () => {
   const doc = new Y.Doc()
   const text = new Y.Text()
   doc.getMap('holder').set('t', text)
   text.insert(0, 'import pandas as pd\ndf = pd.read_csv("a.csv")\nprint(df)\n')
 
-  // Курсор соседа — то, ради чего всё это. Y.RelativePosition переживает
-  // правку соседних строк и не переживает «удалить всё и вставить заново».
+  // A neighbour's cursor is what all this is for. Y.RelativePosition survives
+  // an edit of adjacent lines and does not survive "delete everything and
+  // insert again".
   const caret = Y.createRelativePositionFromTypeIndex(text, text.length - 1)
 
   replaceText(text, 'import pandas as pd\ndf = pd.read_csv("b.csv")\nprint(df)\n')
@@ -237,7 +239,7 @@ test('принятая правка переписывает только то, 
   assert.equal(after?.index, text.length - 1)
 })
 
-test('replaceText на одинаковом тексте не пишет ничего', () => {
+test('replaceText on identical text writes nothing', () => {
   const doc = new Y.Doc()
   const text = new Y.Text()
   doc.getMap('holder').set('t', text)
@@ -249,7 +251,7 @@ test('replaceText на одинаковом тексте не пишет нич�
   assert.equal(updates, 0)
 })
 
-test('replaceText справляется с дописыванием и с полной заменой', () => {
+test('replaceText handles appending and full replacement', () => {
   const doc = new Y.Doc()
   const text = new Y.Text()
   doc.getMap('holder').set('t', text)
@@ -265,16 +267,18 @@ test('replaceText справляется с дописыванием и с по�
   assert.equal(text.toString(), '')
 })
 
-test('клон несёт секундомер, время выполнения и форму ввода', () => {
+test('a clone carries the stopwatch, the run time and the input form', () => {
   /*
-   * `moveCell` пересоздаёт клоном соседнюю ячейку, а не ту, которую двигают:
-   * подвинуть пятую, пока считается шестая, значит пересобрать шестую целиком.
-   * Ключ, забытый в cloneCell, исчезает у неё посреди выполнения — с
-   * `startedAt` это остановившийся секундомер на работающей ячейке, а с
-   * `stdin` пропавшая у всей комнаты форма ввода, пока ядро ждёт ответа.
+   * `moveCell` recreates the neighbouring cell as a clone, not the one being
+   * moved: moving the fifth while the sixth is computing means rebuilding the
+   * sixth entirely. A key forgotten in cloneCell vanishes from it mid-run —
+   * with `startedAt` that is a stopped stopwatch on a running cell, and with
+   * `stdin` an input form gone for the whole room while the kernel waits for
+   * an answer.
    *
-   * Клон читается после того, как попал в документ: Yjs не отвечает на get()
-   * у типа, который ещё никуда не вставлен, и молча отдаёт undefined.
+   * The clone is read after it has landed in the document: Yjs does not
+   * answer get() on a type that has not been inserted anywhere yet and
+   * silently returns undefined.
    */
   const doc = blank()
   const cell = createCell('code', 'x = 1')
@@ -294,15 +298,15 @@ test('клон несёт секундомер, время выполнения 
   assert.deepEqual(copy.get('stdin'), { prompt: 'Имя: ', password: false })
 })
 
-test('свежая ячейка заводится без секундомера, и старая читается без него', () => {
+test('a fresh cell is created without a stopwatch, and an old one reads without it', () => {
   const doc = blank()
   const fresh = createCell('code', 'x = 1')
   doc.transact(() => getCells(doc).push([fresh]))
   assert.equal(readCell(fresh).startedAt, null)
   assert.equal(readCell(fresh).ranMs, null)
 
-  // Тетрадь, записанная до появления этих ключей: get() отдаёт undefined, а
-  // весь просмотр сравнивает с null.
+  // A notebook written before these keys existed: get() returns undefined,
+  // while the whole view compares with null.
   const old = createCell('code', 'y = 2')
   doc.transact(() => {
     getCells(doc).push([old])
@@ -314,39 +318,40 @@ test('свежая ячейка заводится без секундомера
 })
 
 /*
- * «ЗАПУСК python3» у комнаты, в которой ничего не запускается.
+ * "STARTING python3" in a room where nothing is starting.
  *
- * Ядро поднимается лениво — первым Run или первым наведением за справкой, — то
- * есть у только что заведённой комнаты и у комнаты после перезапуска сервера
- * его нет и никто его не поднимает. Пока такое состояние называлось
- * `starting`, шапка часами обещала подъём, которого не было; жалоба с занятия
- * 20.09 звучала так: «это всё-таки не запуск, потому что он ничего не
- * запускает, просто висит».
+ * The kernel comes up lazily — on the first Run or the first hover for help —
+ * that is, a freshly created room and a room after a server restart have none,
+ * and nobody brings one up. While that state was called `starting`, the
+ * header promised for hours a start that was not happening; the complaint
+ * from the class of 20 Sep 2026 went like this: "it is not really starting,
+ * because it does not start anything, it just hangs".
  */
-test('у комнаты без ядра состояние «не запущено», а не «запускается»', () => {
+test('a room without a kernel is "not started", not "starting"', () => {
   const doc = blank()
   ensureInitialNotebook(doc, 'ZZ')
-  // Новая вкладка читает карту тетрадей; записи там ещё нет вовсе.
+  // A new tab reads the notebook map; there is no entry there at all yet.
   assert.equal(bookKernel(doc, CELLS_KEY).status, 'off')
-  // Прежний ключ не засевается вовсе: пусто читается как «не запущено», а
-  // старая вкладка видит своё прежнее умолчание и ничего не теряет.
+  // The old key is not seeded at all: empty reads as "not started", and an
+  // old tab sees its former default and loses nothing.
   assert.equal(getMeta(doc).has('kernelStatus'), false)
-  // А когда сервер напишет `off`, в прежний ключ уедет слово из словаря
-  // старой вкладки — иначе её плашка осталась бы пустой.
+  // And when the server writes `off`, the old key gets a word from the old
+  // tab's vocabulary — otherwise its badge would stay empty.
   assert.equal(legacyKernelStatus('off'), 'idle')
-  // Остальные состояния через зеркало проходят как есть.
+  // The other states pass through the mirror as they are.
   for (const status of ['starting', 'idle', 'busy', 'restarting', 'dead'] as const) {
     assert.equal(legacyKernelStatus(status), status)
   }
 })
 
-test('перезапуск сервера гасит и состояние ядра: процесса нет ни у одной тетради', () => {
+test('a server restart clears the kernel state too: no notebook has a process', () => {
   const doc = blank()
   ensureInitialNotebook(doc, 'ZZ')
   const second = addBook(doc, 'Семинар.ipynb')
   doc.transact(() => {
-    // Так документ выглядит на диске после падения: лекция считала, семинар
-    // был готов, а смерть ядра — факт, который перезапуск не отменяет.
+    // This is how the document looks on disk after a crash: the lecture was
+    // computing, the seminar was ready, and a kernel death is a fact that a
+    // restart does not undo.
     kernelEntry(doc, CELLS_KEY).set(KERNEL_STATUS_FIELD, 'busy')
     kernelEntry(doc, second.root).set(KERNEL_STATUS_FIELD, 'idle')
     getMeta(doc).set('kernelStatus', 'busy')
@@ -355,24 +360,24 @@ test('перезапуск сервера гасит и состояние яд�
   clearStaleExecution(doc)
 
   assert.equal(bookKernel(doc, CELLS_KEY).status, 'off')
-  assert.equal(bookKernel(doc, second.root).status, 'off', 'вторая тетрадь осталась «готовой» без ядра')
-  assert.equal(getMeta(doc).get('kernelStatus'), 'idle', 'старой вкладке уехало незнакомое слово')
+  assert.equal(bookKernel(doc, second.root).status, 'off', 'the second notebook stayed "ready" without a kernel')
+  assert.equal(getMeta(doc).get('kernelStatus'), 'idle', 'an old tab was sent an unfamiliar word')
 })
 
-test('настоящая смерть ядра перезапуск сервера не стирает', () => {
+test('a real kernel death is not erased by a server restart', () => {
   const doc = blank()
   ensureInitialNotebook(doc, 'ZZ')
   doc.transact(() => kernelEntry(doc, CELLS_KEY).set(KERNEL_STATUS_FIELD, 'dead'))
   clearStaleExecution(doc)
   /*
-   * `dead` — это OOM, падение или «не поднялось», и у него своя красная плашка
-   * с кнопкой и свой совет преподавателю. Перекрасить его в «не запущено»
-   * значило бы спрятать причину, ради которой этот статус и заведён.
+   * `dead` is an OOM, a crash or "did not come up", and it has its own red
+   * badge with a button and its own advice for the teacher. Repainting it as
+   * "not started" would hide the very reason this status exists.
    */
   assert.equal(bookKernel(doc, CELLS_KEY).status, 'dead')
 })
 
-test('перезапуск сервера гасит секундомер, но не стирает измеренное время', () => {
+test('a server restart clears the stopwatch but does not erase the measured time', () => {
   const doc = blank()
   const wasRunning = createCell('code', 'a')
   const wasDone = createCell('code', 'b')
@@ -382,8 +387,8 @@ test('перезапуск сервера гасит секундомер, но 
     wasRunning.set('startedAt', 1_700_000_000_000)
     wasDone.set('state', 'ok')
     wasDone.set('ranMs', 4_200)
-    // Протухшая отметка на успокоившейся ячейке: так выглядит слияние от
-    // вкладки, пережившей падение сервера.
+    // A stale mark on a cell that has settled: this is what a merge from a tab
+    // that survived a server crash looks like.
     wasDone.set('startedAt', 1_700_000_000_000)
   })
 
@@ -391,12 +396,14 @@ test('перезапуск сервера гасит секундомер, но 
 
   assert.equal(wasRunning.get('state'), 'idle')
   assert.equal(wasRunning.get('startedAt'), null)
-  // Отметка погашена и у второй, но она не считается сброшенной работой:
-  // `cleared` уходит в строку «Cells that were running or queued were put back
-  // to rest», и приписать туда лишнюю ячейку значит сказать классу неправду.
+  // The mark is cleared on the second one too, but it does not count as
+  // interrupted work: `cleared` goes into the line "Cells that were running or
+  // queued were put back to rest", and adding an extra cell there would mean
+  // telling the class something untrue.
   assert.equal(wasDone.get('startedAt'), null)
   assert.equal(wasDone.get('state'), 'ok')
   assert.equal(cleared, 1)
-  // Измеренное время — факт с одних серверных часов; перезапуск его не отменяет.
+  // The measured time is a fact from a single server clock; a restart does
+  // not undo it.
   assert.equal(wasDone.get('ranMs'), 4_200)
 })

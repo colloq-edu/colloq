@@ -1,10 +1,11 @@
 /**
- * Каркас colloq: разбор argv, диспетчер, отказы, вопрос, вёрстка.
+ * The colloq framework: argv parsing, the dispatcher, refusals, the question,
+ * output layout.
  *
- * Здесь не запускается ни один процесс и не читается ни один настоящий файл:
- * sh подменяется исполнителем, который пишет вызовы в массив, io — картой
- * файлов в памяти, вывод — массивом строк. Тест стережёт ровно те свойства
- * каркаса, на которые опираются четыре группы команд.
+ * No process is started here and no real file is read: sh is replaced by an
+ * executor that writes calls into an array, io by an in-memory file map,
+ * output by an array of lines. The test guards exactly those properties of the
+ * framework that the four command groups rely on.
  */
 import './_cli.mjs'
 import { test } from 'node:test'
@@ -92,7 +93,7 @@ async function run(
   return { code, out, err, calls, asked }
 }
 
-/** Крошечный реестр: три группы, двухсловное имя, опасная команда. */
+/** A tiny registry: three groups, a two-word name, a destructive command. */
 function fakeCommands(): Command[] {
   return [
     {
@@ -159,7 +160,7 @@ function fakeCommands(): Command[] {
   ]
 }
 
-test('имя команды и алиас ведут в один вызов', async () => {
+test("a command's name and its alias lead to the same call", async () => {
   const byName = await run(['logs'], { commands: fakeCommands() })
   assert.equal(byName.code, 0)
   assert.deepEqual(byName.calls, [['tail', '-f', '.colloq.log']])
@@ -168,7 +169,7 @@ test('имя команды и алиас ведут в один вызов', as
   assert.deepEqual(byAlias.calls, [['tail', '-f', '.colloq.log']])
 })
 
-test('двухсловное имя разбирается жадно, аргумент и флаг доезжают', async () => {
+test('a two-word name is parsed greedily, and the argument and the flag get through', async () => {
   const result = await run(['env', 'use', 'cv', '--python', '3.12'], {
     commands: fakeCommands(),
   })
@@ -176,28 +177,28 @@ test('двухсловное имя разбирается жадно, аргу�
   assert.deepEqual(result.calls, [['./scripts/env.sh', 'cv', '--python', '3.12']])
 })
 
-test('нет обязательного аргумента — код 2 и строка употребления', async () => {
+test('a missing required argument gives code 2 and the usage line', async () => {
   const result = await run(['env', 'use'], { commands: fakeCommands() })
   assert.equal(result.code, 2)
   assert.equal(result.calls.length, 0)
   assert.match(result.err.join('\n'), /missing required argument <name>/)
 })
 
-test('лишний позиционный — код 2: опечатка не сводится молча к другой команде', async () => {
+test('an extra positional gives code 2: a typo does not silently turn into another command', async () => {
   const extra = await run(['logs', 'cv'], { commands: fakeCommands() })
   assert.equal(extra.code, 2)
   assert.equal(extra.calls.length, 0)
   assert.match(extra.err.join('\n'), /extra argument: cv/)
 })
 
-test('пара ВИДА=ЗНАЧЕНИЕ — обычное слово: её никто не снимает и не передаёт дальше', async () => {
+test('a KEY=VALUE pair is an ordinary word: nobody strips it or passes it on', async () => {
   const pair = await run(['logs', 'MODE=consistent'], { commands: fakeCommands() })
   assert.equal(pair.code, 2)
   assert.deepEqual(pair.calls, [])
   assert.match(pair.err.join('\n'), /extra argument: MODE=consistent/)
 })
 
-test('односложный алиас двухсловной команды не съедает значение флага', async () => {
+test("a one-word alias of a two-word command does not eat a flag's value", async () => {
   const commands = fakeCommands()
   const use = commands.find((command) => command.name === 'env use')
   if (use) use.aliases = ['use']
@@ -207,7 +208,7 @@ test('односложный алиас двухсловной команды н
   assert.deepEqual(short.calls, [['./scripts/env.sh', 'cv', '--python', '3.12']])
 })
 
-test('check срабатывает раньше вопроса: без терминала это код 2, а не 3', async () => {
+test('check fires before the question: without a terminal it is code 2, not 3', async () => {
   const commands = fakeCommands()
   const stop = commands.find((command) => command.name === 'stop')
   if (stop) {
@@ -221,7 +222,7 @@ test('check срабатывает раньше вопроса: без терм�
   assert.deepEqual(result.err, ['✗ that is not allowed', 'and here is why', '→ colloq stop'])
 })
 
-test('вопрос бывает функцией от ctx и умеет не считать комнаты', async () => {
+test('the question can be a function of ctx and can skip counting rooms', async () => {
   const commands = fakeCommands()
   const stop = commands.find((command) => command.name === 'stop')
   if (stop) {
@@ -232,54 +233,55 @@ test('вопрос бывает функцией от ctx и умеет не с�
   const result = await run(['stop', '--port', '4100'], { commands, tty: true, answer: 'n' })
   assert.equal(result.code, 4)
   assert.match(result.asked[0] ?? '', /stop 4100\?/)
-  // rooms:false — docker о комнатах не спрашивают вовсе.
+  // rooms:false: docker is not asked about rooms at all.
   assert.deepEqual(result.calls, [])
 })
 
-test('неизвестный флаг — код 2, ничего не запущено', async () => {
+test('an unknown flag gives code 2, nothing is started', async () => {
   const result = await run(['logs', '--no-such-flag'], { commands: fakeCommands() })
   assert.equal(result.code, 2)
   assert.equal(result.calls.length, 0)
 })
 
-test('опечатка во флаге говорит своими словами и подсказывает соседний', async () => {
+test('a flag typo is reported in our own words and suggests the nearest flag', async () => {
   const result = await run(['status', '--jsno'], { commands: fakeCommands() })
   assert.equal(result.code, 2)
   assert.deepEqual(result.calls, [])
   const text = result.err.join('\n')
   assert.match(text, /command status has no flag --jsno/)
   assert.match(text, /did you mean --json\?/)
-  // Английского текста Node в потоке не остаётся.
+  // None of Node's own English text is left in the stream.
   assert.equal(/Unknown option|positional argument/.test(text), false)
 })
 
-test('--dry-run печатает одну строку и не порождает ни одного вызова', async () => {
+test('--dry-run prints one line and spawns no calls', async () => {
   const result = await run(['env', 'use', 'cv', '--dry-run'], { commands: fakeCommands() })
   assert.equal(result.code, 0)
   assert.deepEqual(result.calls, [])
   assert.deepEqual(result.out, ['./scripts/env.sh cv'])
 })
 
-test('--dry-run не порождает вызовов ни у одной команды настоящего реестра', async () => {
+test('--dry-run spawns no calls for any command of the real registry', async () => {
   for (const command of registry) {
     const result = await run([...command.name.split(' '), '--dry-run'], {})
     const spawned = result.calls.filter((call) => call[0] !== 'capture')
-    assert.deepEqual(spawned, [], 'команда ' + command.name + ' что-то запустила под --dry-run')
+    assert.deepEqual(spawned, [], 'command ' + command.name + ' started something under --dry-run')
   }
 })
 
-test('опасная команда спрашивает, «нет» даёт код 4 и «cancelled»', async () => {
+test('a destructive command asks; "no" gives code 4 and "cancelled"', async () => {
   const result = await run(['stop'], { commands: fakeCommands(), answer: 'n', tty: true })
   assert.equal(result.code, 4)
   assert.deepEqual(result.calls, [
-    // Считаются ЗАНЯТИЯ, а не контейнеры: у одного их два (pool.ts · KernelRole).
+    // CLASSES are counted, not containers: one class has two of them (pool.ts ·
+    // KernelRole).
     ['capture', 'docker', 'ps', '--filter', 'label=colloq.kind=room-kernel', '--format', '{{.Label "colloq.session"}}'],
   ])
   assert.match(result.asked[0] ?? '', /stop the server\? \[y\/N\]/)
   assert.deepEqual(result.out, ['cancelled'])
 })
 
-test('«да» пропускает, --yes снимает вопрос вовсе', async () => {
+test('"yes" lets it through, --yes removes the question altogether', async () => {
   const yes = await run(['stop'], { commands: fakeCommands(), answer: 'y', tty: true })
   assert.equal(yes.code, 0)
   assert.ok(yes.calls.some((call) => call[0] === './scripts/stop.sh'))
@@ -290,26 +292,26 @@ test('«да» пропускает, --yes снимает вопрос вовс�
   assert.deepEqual(forced.calls, [['./scripts/stop.sh']])
 })
 
-test('confirm:script не спрашивает: скрипт спросит сам', async () => {
+test('confirm:script does not ask: the script will ask itself', async () => {
   const result = await run(['env', 'use', 'cv'], { commands: fakeCommands(), tty: true })
   assert.equal(result.code, 0)
   assert.deepEqual(result.asked, [])
 })
 
-test('нет терминала и нет --yes — отказ с кодом 3, а не «да»', async () => {
+test('no terminal and no --yes means a refusal with code 3, not "yes"', async () => {
   const result = await run(['stop'], { commands: fakeCommands(), tty: false })
   assert.equal(result.code, 3)
   assert.equal(result.calls.filter((call) => call[0] !== 'capture').length, 0)
 })
 
-test('неизвестная команда — код 2 и одна подсказка по Левенштейну', async () => {
+test('an unknown command gives code 2 and one Levenshtein suggestion', async () => {
   const result = await run(['statsu'], { commands: fakeCommands() })
   assert.equal(result.code, 2)
   assert.equal(result.calls.length, 0)
   assert.match(result.err.join('\n'), /did you mean colloq status\?/)
 })
 
-test('дефисное имя — это сама команда: её проверки, её вопрос, её флаги', async () => {
+test('the hyphenated name is the command itself: its checks, its question, its flags', async () => {
   const result = await run(['env-use', 'cv', '--python', '3.12'], { commands: fakeCommands() })
   assert.equal(result.code, 0)
   assert.deepEqual(result.calls, [['./scripts/env.sh', 'cv', '--python', '3.12']])
@@ -321,7 +323,7 @@ test('дефисное имя — это сама команда: её пров�
   assert.deepEqual(respell(['env-use', 'cv'], 'env-use', 'env use'), ['env', 'use', 'cv'])
 })
 
-test('--help не выполняет ничего: ни дефисного двойника, ни неизвестного слова', async () => {
+test('--help runs nothing: neither the hyphenated twin nor an unknown word', async () => {
   const twin = await run(['env-use', '--help'], { tty: true, answer: 'y' })
   assert.equal(twin.code, 0)
   assert.deepEqual(twin.calls, [])
@@ -333,7 +335,7 @@ test('--help не выполняет ничего: ни дефисного дв�
   assert.match(nothing.out.join('\n'), /Locally/)
 })
 
-test('голое имя группы показывает её команды, а не гадает по буквам', async () => {
+test("a bare group name shows the group's commands instead of guessing by letters", async () => {
   const result = await run(['env'], { commands: fakeCommands(), tty: false })
   assert.equal(result.code, 2)
   assert.deepEqual(result.calls, [])
@@ -343,7 +345,7 @@ test('голое имя группы показывает её команды, �
   assert.equal(/did you mean/.test(text), false)
 })
 
-test('--json есть только там, где объявлен', async () => {
+test('--json exists only where it is declared', async () => {
   const ok = await run(['status', '--json'], { commands: fakeCommands() })
   assert.equal(ok.code, 0)
   assert.deepEqual(ok.out, ['{"ok":true,"port":4000}'])
@@ -352,7 +354,7 @@ test('--json есть только там, где объявлен', async () =>
   assert.equal(no.code, 2)
 })
 
-test('голый вызов ничего не запускает: три строки о том, что здесь живёт', async () => {
+test('a bare call starts nothing: three lines about what lives here', async () => {
   for (const tty of [false, true]) {
     const result = await run([], { tty })
     assert.equal(result.code, 0)
@@ -369,7 +371,7 @@ test('голый вызов ничего не запускает: три стр�
   assert.match(help.out.join('\n'), /Most used: colloq start/)
 })
 
-test('help перечисляет ровно команды преподавателя, без мастерской и меню', async () => {
+test("help lists exactly the teacher's commands, without the workshop and the menu", async () => {
   const result = await run(['help'])
   assert.equal(result.code, 0)
   const text = result.out.join('\n')
@@ -382,7 +384,7 @@ test('help перечисляет ровно команды преподават
   assert.equal((await run(['menu'])).code, 2)
 })
 
-test('help по команде показывает употребление и строку делегирования', async () => {
+test('help for a command shows the usage and the delegation line', async () => {
   const result = await run(['env', 'use', '--help'], { commands: fakeCommands() })
   assert.equal(result.code, 0)
   const text = result.out.join('\n')
@@ -390,7 +392,7 @@ test('help по команде показывает употребление и 
   assert.match(text, /delegates: \.\/scripts\/env\.sh <name>/)
 })
 
-test('ни одного байта escape, когда цвета нет', async () => {
+test('not a single escape byte when there is no colour', async () => {
   const result = await run(['logs'], { commands: fakeCommands(), processEnv: { NO_COLOR: '1' } })
   const text = [...result.out, ...result.err].join('\n')
   assert.equal(text.includes('\u001b'), false)
@@ -400,7 +402,7 @@ test('ни одного байта escape, когда цвета нет', async 
   assert.equal(colorAllowed({}, false), false)
 })
 
-test('таблица считает ширину по строке без escape-последовательностей', () => {
+test('the table measures width on the line without escape sequences', () => {
   const out: string[] = []
   const ui = createUi({ color: true, out: (line) => void out.push(line) })
   ui.table([
@@ -411,7 +413,7 @@ test('таблица считает ширину по строке без escape
   assert.deepEqual(plain, ['  logs     watch the log', '  env use  make it the default'])
 })
 
-test('kv и hint держат отступы, а пояснение отделено точкой и без цвета', () => {
+test('kv and hint keep their indents, and the note is separated by a dot and uncoloured', () => {
   const out: string[] = []
   const ui = createUi({ out: (line) => void out.push(line) })
   ui.kv('port', '4000')
@@ -424,7 +426,7 @@ test('kv и hint держат отступы, а пояснение отделе
   ])
 })
 
-test('отказ — ровно три строки в stderr', () => {
+test('a refusal is exactly three lines on stderr', () => {
   const err: string[] = []
   const ui = createUi({ err: (line) => void err.push(line) })
   ui.refuse('no docker', 'without it a room has nowhere to compute', 'install docker and repeat')
@@ -435,7 +437,7 @@ test('отказ — ровно три строки в stderr', () => {
   ])
 })
 
-test('json гасит весь остальной вывод', () => {
+test('json silences all other output', () => {
   const out: string[] = []
   const err: string[] = []
   const ui = createUi({
@@ -449,7 +451,7 @@ test('json гасит весь остальной вывод', () => {
   assert.deepEqual(out, ['{"ok":false,"code":3,"error":"no .env","hint":"copy .env.example"}'])
 })
 
-test('.env читается как в scripts/lib.sh: края обрезаются, внутренность нет', () => {
+test('.env is read as in scripts/lib.sh: the ends are trimmed, the inside is not', () => {
   const env = createEnv({ io: createMemoryIo(FILES), root: ROOT, cwd: ROOT, processEnv: {} })
   assert.equal(env.port(), 4000)
   assert.equal(env.kernelEnv(), 'cv')
@@ -458,7 +460,7 @@ test('.env читается как в scripts/lib.sh: края обрезают�
   assert.equal(env.relay().port, 7000)
 })
 
-test('read на секретном ключе бросает, has отвечает', () => {
+test('read on a secret key throws, has answers', () => {
   const env = createEnv({ io: createMemoryIo(FILES), root: ROOT, cwd: ROOT, processEnv: {} })
   for (const key of SECRET_KEYS) {
     assert.throws(() => env.read(key), new RegExp(key))
@@ -467,7 +469,7 @@ test('read на секретном ключе бросает, has отвечае
   assert.equal(env.has('CF_TOKEN'), false)
 })
 
-test('userPath считается от каталога человека, не от корня', () => {
+test("userPath resolves from the person's directory, not from the root", () => {
   const env = createEnv({
     io: createMemoryIo(FILES),
     root: ROOT,
@@ -478,7 +480,7 @@ test('userPath считается от каталога человека, не �
   assert.equal(env.userPath('/tmp/release.json'), '/tmp/release.json')
 })
 
-test('строка --dry-run квотируется безопасно и не подставляет .env', () => {
+test('the --dry-run line is quoted safely and does not substitute .env', () => {
   assert.equal(quote('hse.colloq.ru'), 'hse.colloq.ru')
   assert.equal(quote('RTX 4090'), "'RTX 4090'")
   assert.equal(quote(''), "''")
@@ -488,35 +490,36 @@ test('строка --dry-run квотируется безопасно и не �
   )
 })
 
-test('сигнал у ребёнка — 128 + номер: 130 остаётся ровно за Ctrl+C', () => {
+test("a child's signal is 128 + its number: 130 stays reserved for Ctrl+C", () => {
   assert.equal(exitFromSignal('SIGINT'), 130)
   assert.equal(exitFromSignal('SIGKILL'), 137)
   assert.equal(exitFromSignal('SIGTERM'), 143)
 })
 
-test('вспомогательное: Левенштейн, счёт комнат', () => {
+test('helpers: Levenshtein, counting rooms', () => {
   assert.equal(levenshtein('statsu', 'status'), 2)
   assert.equal(roomsPhrase(1), '1 room is running')
   assert.equal(roomsPhrase(3), '3 rooms are running')
   assert.equal(roomsPhrase(5), '5 rooms are running')
   assert.equal(roomsPhrase(11), '11 rooms are running')
-  // Слово одно на весь CLI: каркас и «Инструменты» считают его одинаково.
+  // One word for the whole CLI: the framework and "Tools" count it the same
+  // way.
   assert.equal(roomsWord(1), '1 room')
   assert.equal(roomsWord(3), '3 rooms')
   assert.equal(roomsWord(11), '11 rooms')
-  // Правило счёта тоже одно, и оно не про комнаты: пакеты в списке окружений
-  // считаются тем же помощником, а не вторым его списыванием.
+  // The counting rule is also one, and it is not about rooms: packages in the
+  // environment list are counted by the same helper, not by a second copy of it.
   assert.equal(countWord(0, 'package'), '0 packages')
   assert.equal(countWord(1, 'package'), '1 package')
   assert.equal(countWord(2, 'package'), '2 packages')
   assert.equal(countWord(21, 'package'), '21 packages')
-  // Неправильное множественное называется вторым словом, иначе вышло бы
-  // «classs»: 's' — умолчание, а не правило.
+  // An irregular plural is given as the second word, otherwise it would come
+  // out as "classs": 's' is the default, not a rule.
   assert.equal(countWord(1, 'class', 'classes'), '1 class')
   assert.equal(countWord(2, 'class', 'classes'), '2 classes')
 })
 
-test('реестр: только команды преподавателя — мастерская живёт в Makefile', () => {
+test("registry: only the teacher's commands; the workshop lives in the Makefile", () => {
   assert.deepEqual(registry.map((command) => command.name).sort(), [
     'backup',
     'doctor',
@@ -535,60 +538,60 @@ test('реестр: только команды преподавателя — �
   ])
 })
 
-test('реестр: имена и алиасы уникальны, группа известна', () => {
+test('registry: names and aliases are unique, the group is known', () => {
   const seen = new Set<string>()
   const groups = new Set(GROUPS.map((group) => group.name))
   for (const command of registry) {
     for (const name of [command.name, ...(command.aliases ?? [])]) {
-      assert.equal(seen.has(name), false, 'имя занято дважды: ' + name)
+      assert.equal(seen.has(name), false, 'name taken twice: ' + name)
       seen.add(name)
     }
-    assert.ok(groups.has(command.group), 'чужая группа у ' + command.name)
+    assert.ok(groups.has(command.group), 'unknown group for ' + command.name)
   }
 })
 
-test('реестр: usage называет каждый флаг команды', () => {
+test('registry: usage names every flag of the command', () => {
   for (const command of registry) {
     for (const flag of command.flags) {
       const named =
         command.usage.includes('--' + flag.name) ||
         (flag.short !== undefined && command.usage.includes('-' + flag.short))
-      assert.ok(named, 'флаг --' + flag.name + ' не назван в usage: ' + command.name)
+      assert.ok(named, 'flag --' + flag.name + ' is not named in usage: ' + command.name)
     }
   }
 })
 
-test('реестр: summary по-английски, usage с «colloq », delegates не пуст', () => {
+test('registry: summary in English, usage starts with "colloq ", delegates not empty', () => {
   for (const command of registry) {
-    assert.match(command.summary, /[A-Za-z]/, 'summary без единой буквы: ' + command.name)
-    assert.doesNotMatch(command.summary, /[а-яА-ЯёЁ]/, 'summary не по-английски: ' + command.name)
-    assert.ok(command.usage.startsWith('colloq '), 'usage без colloq: ' + command.name)
-    assert.notEqual(command.delegates.trim(), '', 'нет delegates: ' + command.name)
-    assert.ok(command.name.length <= 18, 'имя не влезет в help: ' + command.name)
+    assert.match(command.summary, /[A-Za-z]/, 'summary without a single letter: ' + command.name)
+    assert.doesNotMatch(command.summary, /[а-яА-ЯёЁ]/, 'summary not in English: ' + command.name)
+    assert.ok(command.usage.startsWith('colloq '), 'usage without colloq: ' + command.name)
+    assert.notEqual(command.delegates.trim(), '', 'no delegates: ' + command.name)
+    assert.ok(command.name.length <= 18, 'the name will not fit in help: ' + command.name)
   }
 })
 
-test('реестр: у опасной команды есть вопрос или тот, кто спросит вместо нас', () => {
+test('registry: a destructive command has a question, or someone who will ask instead of us', () => {
   for (const command of registry) {
     if (!command.destructive) continue
     const ok =
       command.confirm === 'script' ||
       command.confirm === 'self' ||
       (command.confirm === 'cli' && Boolean(command.confirmQuestion))
-    assert.ok(ok, 'опасная команда без вопроса: ' + command.name)
+    assert.ok(ok, 'destructive command without a question: ' + command.name)
   }
 })
 
-test('модули групп не открывают дверь к процессам и файлам мимо ctx', () => {
+test('group modules open no door to processes and files around ctx', () => {
   for (const group of ['local', 'host', 'env', 'tools']) {
     const source = readFileSync(
       new URL('../cli/src/commands/' + group + '.ts', import.meta.url),
       'utf8',
     )
     const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '')
-    assert.equal(/process\.env/.test(code), false, group + ': process.env мимо ctx')
+    assert.equal(/process\.env/.test(code), false, group + ': process.env bypassing ctx')
     assert.equal(/node:child_process/.test(code), false, group + ': node:child_process')
     assert.equal(/node:fs/.test(code), false, group + ': node:fs')
-    assert.equal(/from 'node:/.test(code), false, group + ': импорт node: мимо ctx')
+    assert.equal(/from 'node:/.test(code), false, group + ': a node: import bypassing ctx')
   }
 })

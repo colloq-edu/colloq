@@ -1,32 +1,36 @@
 /**
- * Анимации README: пять сцен в .github/assets/readme, каждая на двух языках и
- * в светлом и тёмном варианте (README подставляет их через <picture>).
+ * README animations: five scenes in .github/assets/readme, each in two
+ * languages and in a light and a dark variant (README picks them through
+ * <picture>).
  *
  *   make readme-art
- *   node --import tsx scripts/readme-art.mts [каталог...]
+ *   node --import tsx scripts/readme-art.mts [directory...]
  *
- * Сцены — обычный SVG с CSS @keyframes: без скриптов, SMIL, внешних шрифтов и
- * картинок, потому что GitHub показывает SVG через <img>, а там работает только
- * это. Каждая сцена рисует настоящий интерфейс: строки, цвета участников и
- * порядок событий взяты из кода (shared/locales, shared/protocol.ts,
- * CellView.svelte, PeoplePanel.svelte, ConsoleView.svelte); где сцена
- * отступает от брифа, об этом сказано в её шапке. Сцены независимы друг от
- * друга: у каждой свои помощники внутри своей функции, поэтому правка одной не
- * трогает остальные. Прогон пишет все двадцать файлов в оба каталога и падает,
- * если файл дорос до 40 КБ или в нём появилось то, что <img> не покажет.
+ * The scenes are plain SVG with CSS @keyframes: no scripts, no SMIL, no
+ * external fonts and no images, because GitHub shows SVG through <img>, and
+ * only that works there. Every scene draws the real interface: the strings,
+ * the participants' colors and the order of events are taken from the code
+ * (shared/locales, shared/protocol.ts, CellView.svelte, PeoplePanel.svelte,
+ * ConsoleView.svelte); where a scene departs from the brief, its header says
+ * so. The scenes are independent of each other: each has its own helpers
+ * inside its own function, so editing one does not touch the others. A run
+ * writes all twenty files into both directories and fails if a file has grown
+ * to 40 KB or something has appeared in it that <img> will not show.
  *
- * Два языка. У каждой сцены наверху свой словарь TEXT: en и ru, ключ локали в
- * комментарии рядом со строкой. Русские подписи — это то, что человек правда
- * видит в продукте (shared/locales/*.ts, значения "ru"); выдуманных строк в
- * сценах нет, отступления отмечены комментарием. Код внутри ячеек одинаков на
- * обоих языках — Python остаётся Python.
+ * Two languages. Each scene has its own TEXT dictionary at the top: en and ru,
+ * with the locale key in a comment next to the string. The Russian labels are
+ * what a person really sees in the product (shared/locales/*.ts, the "ru"
+ * values); there are no made-up strings in the scenes, and departures are
+ * marked with a comment. The code inside the cells is the same in both
+ * languages: Python stays Python.
  *
- * Ширины меряются, а не угадываются, и меряются по-разному для языков:
- * кириллические прописные шире латинских, поэтому у каждой сцены свой трекинг
- * прописных (.12em против .04em) и свои измеренные в браузере таблицы ширин.
- * Поправили сцену — перегенерируйте и посмотрите кадры в браузере: сравнить
- * глазами светлый и тёмный вариант на белом и на #0d1117, и кадр перед
- * концом цикла с первым кадром (петля не должна «прыгать»).
+ * Widths are measured, not guessed, and measured differently for the
+ * languages: Cyrillic capitals are wider than Latin ones, so each scene has its
+ * own capitals tracking (.12em versus .04em) and its own width tables measured
+ * in the browser. Edited a scene? Regenerate and look at the frames in a
+ * browser: compare by eye the light and the dark variant on white and on
+ * #0d1117, and the frame before the end of the cycle with the first frame (the
+ * loop must not "jump").
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -51,18 +55,20 @@ type Scene = (theme: Theme, lang: Lang) => string
  * app notification — the product has no such toast.
  */
 function roomArt(): Scene {
-  /* ------------------------------------------------------------- строки --- */
+  /* ------------------------------------------------------------- strings --- */
 
   /**
-   * Всё видимое — здесь, по языкам. Ключ локали стоит рядом со строкой: это
-   * то, что человек правда читает в комнате, а не пересказ.
+   * Everything visible is here, per language. The locale key stands next to
+   * the string: this is what a person really reads in the room, not a
+   * paraphrase.
    *
-   * `caret` и `glyph` — измеренные в браузере позиции (тот же стек шрифтов,
-   * 600 15px): имя в поле набирается по буквам, и накрывающая полоса с
-   * кареткой шагает по этим отсечкам. У кириллицы свои ширины, поэтому и
-   * отсечки свои. `joinLabelX`/`joinArrowX` — центр подписи кнопки и левый
-   * край стрелки: «ВОЙТИ НА ЗАНЯТИЕ» на треть длиннее «JOIN THE CLASS» и при
-   * английской раскладке упёрлось бы в стрелку.
+   * `caret` and `glyph` are positions measured in the browser (the same font
+   * stack, 600 15px): the name in the field is typed letter by letter, and the
+   * covering strip with the caret steps along these marks. Cyrillic has its
+   * own widths, so its marks are its own too. `joinLabelX`/`joinArrowX` are
+   * the center of the button label and the left edge of the arrow: "ВОЙТИ НА
+   * ЗАНЯТИЕ" is a third longer than "JOIN THE CLASS" and with the English
+   * layout would run into the arrow.
    */
   const TEXT = {
     en: {
@@ -328,7 +334,7 @@ function roomArt(): Scene {
       `<circle r="${ring ? r - 1 : r}" fill="${P[who].color}"${ring ? ` stroke="${NAVY}" stroke-width="2"` : ''}/>` +
       `<text class="av" y="4" fill="${inkOn(P[who].color)}">${initials(P[who].name)}</text>`
 
-    /* Живые строки участников — whereabouts() в web/src/lib/room.ts. */
+    /* The participants' live lines: whereabouts() in web/src/lib/room.ts. */
     const live = (s: string, cls = 'ui mu') => `<text class="${cls}" x="${LINE_X}" y="19.5">${esc(s)}</text>`
     const line = (who: Who): string =>
       ({
@@ -376,8 +382,8 @@ function roomArt(): Scene {
     /* ------------------------------------------------------------- styles */
     const style =
       `.s{font-family:${SANS}}` +
-      // Трекинг прописных — по языку: кириллические прописные шире, и при .12em
-      // «В КОМНАТЕ» и «ВАША МЕТКА» вылезали бы из своих колонок.
+      // Capitals tracking goes by language: Cyrillic capitals are wider, and at
+      // .12em "В КОМНАТЕ" and "ВАША МЕТКА" would stick out of their columns.
       `.lb{font:600 11px ${MONO};letter-spacing:${S.caps}}` +
       `.tk{font:600 11px ${MONO};letter-spacing:.08em}` +
       `.nm{font:600 13px ${SANS}}.ui{font:13px ${SANS}}.tt{font:700 15px ${SANS}}` +
@@ -405,7 +411,7 @@ function roomArt(): Scene {
     const card = `<rect x=".5" y=".5" width="879" height="${H - 1}" rx="12" fill="${NAVY}"/>`
 
     // Left: the join card (JoinScreen, abstracted)
-    const NAME_X = 56 // левый край имени в поле
+    const NAME_X = 56 // the left edge of the name in the field
     const last = caret[4]
     const join =
       `<rect x="24.5" y="24.5" width="255" height="279" rx="8" class="c ln"/>` +
@@ -455,7 +461,7 @@ function roomArt(): Scene {
     const pdigit = (n: number, cls: string, hidden = true) =>
       `<text class="lb mu tn ${cls}" x="840" y="111" text-anchor="end"${hidden ? ' opacity="0"' : ''}>${n}</text>`
 
-    /* Линейка после подписи панели: её начало считается от ширины самой подписи. */
+    /* The rule after the panel label: its start is computed from the width of the label itself. */
     const capsW = (s: string) => [...s].length * 6.6 + ([...s].length - 1) * parseFloat(S.caps) * 11
     const ruleX = Math.round((320 + capsW(S.people) + 10) * 2) / 2
     const people =
@@ -532,22 +538,25 @@ function roomArt(): Scene {
  * the status row and the elapsed() timer format follow CellView.svelte.
  */
 function runArt(): Scene {
-  /* ------------------------------------------------------------ строки --- */
+  /* ------------------------------------------------------------ strings --- */
 
   /**
-   * Видимые строки по языкам; ключ локали — рядом. Код в ячейках один и тот
-   * же: Python остаётся Python, меняются только подписи вокруг него.
+   * The visible strings per language; the locale key is next to them. The code
+   * in the cells is one and the same: Python stays Python, only the labels
+   * around it change.
    *
-   * `bold` — ширины букв на 1000 для подписи каретки: латиница взята из Arial
-   * Bold, кириллица измерена в браузере тем же стеком шрифтов на 700/12. Имя в
-   * ярлыке прижимается к коробке через textLength, и коробку надо померить, а
-   * не угадать. `caps` — трекинг прописных: у кириллицы он меньше, иначе
-   * «ВЫПОЛНЯЕТСЯ» и «В ОЧЕРЕДИ» не помещаются в те же места, что RUNNING.
+   * `bold` holds letter widths per 1000 for the caret label: the Latin ones are
+   * taken from Arial Bold, the Cyrillic ones measured in the browser with the
+   * same font stack at 700/12. The name in the tag is fitted to the box through
+   * textLength, and the box has to be measured, not guessed. `caps` is the
+   * capitals tracking: for Cyrillic it is smaller, otherwise "ВЫПОЛНЯЕТСЯ" and
+   * "В ОЧЕРЕДИ" do not fit into the same places as RUNNING.
    *
-   * Имена в русской сцене мужские не случайно: строка запуска в приложении —
-   * это «запустил» плюс имя (room.ui.394), и с женским именем она читалась бы
-   * неверно. «от Ивана» — единственное место, где имя склонено: сам предлог
-   * взят из room.ui.399, склонение добавлено, иначе строка не по-русски.
+   * The names in the Russian scene are male on purpose: the run line in the app
+   * is "запустил" (ran it, masculine) plus a name (room.ui.394), and with a
+   * female name it would read wrong. "от Ивана" is the only place where a name
+   * is declined: the preposition itself is taken from room.ui.399, the
+   * declension is added, otherwise the line is not Russian.
    */
   const TEXT = {
     en: {
@@ -564,7 +573,7 @@ function runArt(): Scene {
       interrupt: 'INTERRUPT', // room.ui.395
       place: (n: number) => `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'} in queue`, // place() + room.ui.397
       queued: 'QUEUED', // room.ui.398
-      by: 'by Ivan', // room.ui.399 + имя
+      by: 'by Ivan', // room.ui.399 + a name
       cancel: 'CANCEL', // room.ui.376
       caption: 'One kernel per room — df from cell 03 is there for everyone in cell 04.',
       people: 'PEOPLE', // room.ui.658
@@ -586,7 +595,7 @@ function runArt(): Scene {
       running: 'ВЫПОЛНЯЕТСЯ',
       startedBy: (who: string) => `запустил ${who}`,
       interrupt: 'ПРЕРВАТЬ',
-      place: (n: number) => `${n}-й в очереди`, // room.ui.1236 пишет место как «{n}-й»
+      place: (n: number) => `${n}-й в очереди`, // room.ui.1236 writes the place as "{n}-й"
       queued: 'В ОЧЕРЕДИ',
       by: 'от Ивана',
       cancel: 'ОТМЕНА',
@@ -733,7 +742,7 @@ function runArt(): Scene {
   const SANS = `-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif`
   const MONO = `ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace`
   const CW = 7.8 // 0.6 × 13px
-  // Трекинг прописных задаётся языком: у кириллицы он меньше (см. TEXT).
+  // Capitals tracking is set by the language: for Cyrillic it is smaller (see TEXT).
   let CAPS_TRACK = 1.32 // mono 11px, .12em
   const CAPS_W = (n: number) => +(n * 6.6 + (n - 1) * CAPS_TRACK).toFixed(2)
   const MONO11_W = (n: number) => +(n * 6.6).toFixed(2)
@@ -1029,22 +1038,24 @@ function runArt(): Scene {
  * "Answer 12" without his name. Students never see Correct / Needs revision.
  */
 function councilArt(): Scene {
-  // ---------------------------------------------------------------- строки ----
+  // ---------------------------------------------------------------- strings ----
 
   /**
-   * Видимые строки по языкам, ключ локали рядом. Код решений один и тот же:
-   * три ответа на Python и KeyError — это данные, а не интерфейс.
+   * The visible strings per language, the locale key next to them. The code of
+   * the solutions is one and the same: three answers in Python and a KeyError
+   * are data, not interface.
    *
-   * `caps` — трекинг прописных. Кириллические прописные шире латинских, и при
-   * .12em «1 ВЫПОЛНЯЕТСЯ · 0 В ОЧЕРЕДИ» налезало на вкладки; .04em оставляет
-   * подписи прописными и укладывает строку в ту же полосу.
+   * `caps` is the capitals tracking. Cyrillic capitals are wider than Latin
+   * ones, and at .12em "1 ВЫПОЛНЯЕТСЯ · 0 В ОЧЕРЕДИ" ran into the tabs; .04em
+   * keeps the labels in capitals and fits the line into the same strip.
    *
-   * `tabs.x` и `tabs.box` — позиции вкладок: они зависят от ширины подписей,
-   * измеренных в браузере (13px/600), и от того, сколько места осталось справа
-   * под счётчик очереди.
+   * `tabs.x` and `tabs.box` are the tab positions: they depend on the width of
+   * the labels, measured in the browser (13px/600), and on how much room is
+   * left on the right for the queue counter.
    *
-   * `counter` — счётчик очереди посимвольно: цифры перещёлкиваются на месте,
-   * поэтому нужны их индексы в строке, а не только сама строка.
+   * `counter` is the queue counter character by character: the digits flip in
+   * place, so their indices in the string are needed, not just the string
+   * itself.
    */
   const TEXT = {
     en: {
@@ -1300,7 +1311,7 @@ function councilArt(): Scene {
 
   const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-  /** Трекинг прописных: задаётся языком сцены (см. TEXT). */
+  /** Capitals tracking: set by the scene's language (see TEXT). */
   let CAPS_TRACK: number = TEXT.en.caps
 
   /** Width of a mono run: chars × 0.6 × size, plus the caps tracking. */
@@ -1820,17 +1831,20 @@ function lectureArt(): Scene {
   type Theme = 'light' | 'dark'
 
   /*
-   * Слайд — это PDF преподавателя, а не интерфейс: его текст взят с лендинга
-   * (site/index.html, секция #lekciya), где тот же слайд нарисован по-русски.
-   * Интерфейсные подписи — из локалей, ключ рядом со строкой.
+   * The slide is the teacher's PDF, not interface: its text is taken from the
+   * landing page (site/index.html, the #lekciya section), where the same slide
+   * is drawn in Russian. The interface labels come from the locales, the key
+   * next to the string.
    *
-   * `hand` — рукописная пометка: настоящие штрихи пером, по одному на букву.
-   * Английское «step size» и русское «размер шага» — разные наборы кривых,
-   * потому что буквы разные; `handScale` подгоняет слово под поле справа от
-   * формулы, чтобы оно не уехало за край страницы.
+   * `hand` is the handwritten note: real pen strokes, one per letter. The
+   * English "step size" and the Russian "размер шага" are different sets of
+   * curves, because the letters differ; `handScale` fits the word into the
+   * space to the right of the formula so that it does not run off the edge of
+   * the page.
    *
-   * `btn` и `tip` — геометрия кнопки «К лекции» и подсказки над ней: русская
-   * подпись короче, а текст подсказки длиннее, и обе коробки меряются по ним.
+   * `btn` and `tip` are the geometry of the "To the lecture" button and of the
+   * hint above it: the Russian label is shorter and the hint text longer, and
+   * both boxes are measured by them.
    */
   const TEXT = {
     en: {
@@ -1898,7 +1912,7 @@ function lectureArt(): Scene {
       btn: { x: 769, w: 82 },
       tip: { x: 603, y: 20, w: 257, h: 22 },
       handScale: 1,
-      /* «размер шага» тем же пером: свой штрих на букву, x-height 8, базовая 0. */
+      /* "размер шага" with the same pen: a stroke of its own per letter, x-height 8, baseline 0. */
       hand:
         'M.4 -7.5C.4 -3 .2 1 0 4.5M.4 -5.8C1.6 -7.8 6 -8.2 6 -4.2C6 -.4 2 .4 .4 -1.6' + // р
         'M13 -5.4C11.8 -7.6 8 -7.2 7.6 -4.2C7.2 -1.2 10.6 -.2 12.6 -2.4M13.1 -6.4C12.8 -3.8 12.6 -1.6 13.3 -.5' + // а
@@ -2020,8 +2034,8 @@ function lectureArt(): Scene {
 
   /* ---------------------------------------------------------------- text */
 
-  /* Язык сцены. Помощники слайда живут снаружи scene(), поэтому строки и
-   * трекинг прописных задаются один раз на прогон сцены. */
+  /* The scene's language. The slide helpers live outside scene(), so the
+   * strings and the capitals tracking are set once per scene run. */
   let STR: (typeof TEXT)[Lang] = TEXT.en
 
   const h = (v: number): number => Math.round(v * 2) / 2
@@ -2330,7 +2344,7 @@ function lectureArt(): Scene {
     )
 
     // The page turn is a swipe on the rail: the sheet itself takes no gestures
-    // (ConsoleView.svelte, "листание свайпом — по рейлу").
+    // (ConsoleView.svelte, "page turning by swipe goes to the rail").
     css.push(
       keyframes('sw', [
         [0, `${hide};transform:none`],
@@ -2590,9 +2604,9 @@ function lectureArt(): Scene {
     )
 
     // "independent reading" under the page while they read on their own.
-    // Русская подпись вдвое длиннее английской: под страницей ей нужны две
-    // строки, они начинаются выше, а ярлык ведущего поднимается, чтобы верхняя
-    // строка не села на него.
+    // The Russian label is twice as long as the English one: under the page it
+    // needs two lines, they start higher, and the host's tag moves up so that
+    // the top line does not land on it.
     {
       const top = S.y + STR.readingY
       out.push(
@@ -2679,18 +2693,20 @@ function lectureArt(): Scene {
 function oracleArt(): Scene {
   type Theme = 'light' | 'dark'
 
-  /* ------------------------------------------------------------------ строки */
+  /* ------------------------------------------------------------------ strings */
 
   /**
-   * Видимые строки по языкам, ключ локали рядом. Ответ оракула — не строка
-   * интерфейса, а его собственный текст; русский вариант взят с лендинга
-   * (site/index.html, секция #konsilium: «Сейчас получилось одно число для всей
-   * таблицы. Сгруппируйте строки по group, а затем посчитайте среднее в каждой
-   * группе»), разбитый на те же шесть кусков, что приходят потоком.
+   * The visible strings per language, the locale key next to them. The
+   * Oracle's answer is not an interface string but its own text; the Russian
+   * version is taken from the landing page (site/index.html, the #konsilium
+   * section: "Сейчас получилось одно число для всей таблицы. Сгруппируйте
+   * строки по group, а затем посчитайте среднее в каждой группе"), split into
+   * the same six pieces that arrive in the stream.
    *
-   * `caps` — трекинг прописных: кириллица шире, .12em не влезал бы в плашки.
-   * Ширины кнопок и плашек измерены в браузере тем же стеком шрифтов: подписи
-   * «Попросить переписать» и «Отклонить» длиннее английских.
+   * `caps` is the capitals tracking: Cyrillic is wider, .12em would not fit
+   * into the badges. The widths of the buttons and badges were measured in the
+   * browser with the same font stack: the labels "Попросить переписать" and
+   * "Отклонить" are longer than the English ones.
    */
   const TEXT = {
     en: {
@@ -2715,11 +2731,11 @@ function oracleArt(): Scene {
       shared: 'Shared ·', // room.ui.490
       ask: 'Ask', // room.ui.513
       act: 'Act', // room.ui.514
-      // Переключатель режима: коробка, активная плашка и центры подписей.
-      // Правый край один и тот же на обоих языках, растёт он влево.
+      // The mode switch: the box, the active badge and the label centers. The
+      // right edge is the same in both languages; it grows to the left.
       seg: { x: 764.5, w: 84, pillX: 767, pillW: 39, askX: 786.5, actX: 827 },
       empty: 'No questions yet.', // room.ui.494
-      // room.ui.495, разложенная по строкам панели
+      // room.ui.495, laid out over the panel lines
       emptyHint: ['Ask about the class materials.', 'Your name, question and answer will be visible', 'to the whole group.'] as readonly string[],
       rewrite: 'Rewrite', // room.ui.578
       thinking: 'thinking', // room.ui.545
@@ -2905,7 +2921,7 @@ function oracleArt(): Scene {
 
   /** Mono advance at a size: chars × 0.6em, so carets and chunks land the same in every font. */
   const monoLen = (chars: number, size = 13): number => chars * 0.6 * size
-  /** Трекинг прописных: задаётся языком сцены (см. TEXT). */
+  /** Capitals tracking: set by the scene's language (see TEXT). */
   let CAPS_TRACK: number = TEXT.en.caps
   /** Caps label: mono 11 with the language's tracking between glyphs. */
   const capsLen = (chars: number): number => chars * 6.6 + (chars - 1) * CAPS_TRACK * 11
@@ -3043,9 +3059,10 @@ function oracleArt(): Scene {
     const typed: string[] = []
     {
       /*
-       * Темп набора — не константа, а следствие длины просьбы: последняя буква
-       * обязана лечь за 92 мс до Enter, иначе она мигнёт уже в закрывающемся
-       * поле. Для английской строки формула даёт ровно прежние 88 мс.
+       * The typing pace is not a constant but a consequence of the length of
+       * the request: the last letter must land 92 ms before Enter, otherwise it
+       * would blink in an already closing field. For the English string the
+       * formula gives exactly the former 88 ms.
        */
       const chars = [...REQUEST]
       const perChar = Math.min(B.perChar, Math.floor((B.send - 92 - B.typeAt) / (chars.length - 1)))
@@ -3148,8 +3165,9 @@ function oracleArt(): Scene {
       rect(72.5, 78.5, 315, 30, 'fld', 4),
       `<g class="${placeholder}">${sans(84, 98, S.askPlaceholder, 'c13 mu')}</g>`,
       ...typed,
-      // Кнопки меряются по своей подписи: «Попросить переписать» длиннее английской,
-      // «Отмена» встаёт на те же 38 px правее края кнопки.
+      // The buttons are measured by their own label: "Попросить переписать" is
+      // longer than the English one, "Отмена" sits the same 38 px to the right
+      // of the button edge.
       rect(72.5, 118.5, S.askBtnW, 28, 'pr', 6),
       sans(72.5 + S.askBtnW / 2, 137, S.askSend, 'c13 w6 pi', 'middle'),
       sans(72.5 + S.askBtnW + 38, 137, S.cancel, 'c13 w6 mu', 'middle'),
@@ -3190,9 +3208,10 @@ function oracleArt(): Scene {
     ]
 
     /*
-     * Ширины, которые зависят от подписи, а не от языка вообще: плашка «общая ·»
-     * с числом за ней и плашка вида запроса. Правый край обеих остаётся там же,
-     * где в английской сцене, — с ними соседствуют фиксированные элементы.
+     * Widths that depend on the label rather than on the language in general:
+     * the "общая ·" badge with a number after it and the request kind badge.
+     * The right edge of both stays where it is in the English scene: fixed
+     * elements neighbour them.
      */
     const countX = r5(524 + capsLen([...S.shared].length)) + 10
     const badgeW = r5(capsLen([...S.rewrite].length) + 12)
@@ -3204,7 +3223,7 @@ function oracleArt(): Scene {
       // Header.
       icon(440, 29.5, 14, SPARKLES, 'ist'),
       caps(462, 40.5, S.oracle, 'ink'),
-      // Плашка «общая · N» меряется по подписи: русская короче английской.
+      // The "общая · N" badge is measured by its label: the Russian one is shorter than the English one.
       rect(518.5, 27.5, S.sharedW, 18, 'rs', 3),
       caps(524, 40.5, S.shared, 'ink'),
       `<g class="${count0}" opacity="0">${mono11(countX, 40.5, '0', 'ink w6')}</g>`,
@@ -3314,20 +3333,20 @@ const SCENES: Record<string, () => Scene> = {
   oracle: oracleArt,
 }
 
-/** То, чего <img> на GitHub не покажет или не должен тянуть: скрипт, чужой файл, шрифт, вложенная картинка. */
+/** What <img> on GitHub will not show or must not fetch: a script, a foreign file, a font, an embedded image. */
 const FORBIDDEN = /<script|foreignObject|<image|@import|base64|url\((?!#)|href="(?!#)/i
 const LIMIT_KB = 40
 
 /**
- * Имя файла сцены. Английский остаётся без пометки языка — на него ссылается
- * README и лендинг, переименование сломало бы обе ссылки; русский получает
- * `-ru` перед темой.
+ * The scene's file name. English stays without a language mark: README and
+ * the landing page link to it, and renaming would break both links; Russian
+ * gets `-ru` before the theme.
  */
 export function sceneFile(slug: string, lang: Lang, theme: Theme): string {
   return `${slug}${lang === 'en' ? '' : `-${lang}`}-${theme}.svg`
 }
 
-/** Все двадцать файлов: пять сцен × два языка × две темы. */
+/** All twenty files: five scenes × two languages × two themes. */
 export function renderAll(): Map<string, string> {
   const out = new Map<string, string>()
   for (const [slug, make] of Object.entries(SCENES)) {
@@ -3341,7 +3360,7 @@ export function renderAll(): Map<string, string> {
   return out
 }
 
-/** Что <img> не покажет, и что переросло предел: одна проверка на файл. */
+/** What <img> will not show, and what has outgrown the limit: one check per file. */
 export function complaints(name: string, svg: string): string[] {
   const out: string[] = []
   if (Buffer.byteLength(svg) / 1024 >= LIMIT_KB) out.push(`${name}: ${LIMIT_KB} KB or larger`)
@@ -3351,16 +3370,17 @@ export function complaints(name: string, svg: string): string[] {
 }
 
 /*
- * Куда писать. Каталогов два, и они не взаимозаменяемы: README читает
- * .github/assets/readme, а лендинг раздаётся Pages из site/ и до .github/ не
- * дотягивается — значит, у него должна быть своя копия тех же файлов.
+ * Where to write. There are two directories, and they are not
+ * interchangeable: README reads .github/assets/readme, while the landing page
+ * is served by Pages from site/ and cannot reach .github/, so it must have its
+ * own copy of the same files.
  */
 export const OUT_DIRS = [
   fileURLToPath(new URL('../.github/assets/readme', import.meta.url)),
   fileURLToPath(new URL('../site/img/scenes', import.meta.url)),
 ]
 
-// Файл и импортируют (тесты зовут renderAll), и запускают. Писать на диск — только во втором случае.
+// The file is both imported (the tests call renderAll) and run. It writes to disk only in the second case.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2)
   const dirs = (args.length ? args : OUT_DIRS).map((d) => resolve(d))

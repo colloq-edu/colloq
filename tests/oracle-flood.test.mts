@@ -1,9 +1,10 @@
 /**
- * Защита оракула от скрипта (13.09.2026, открытое занятие): с одного адреса за два часа
- * пришло пятьсот «участников» по одному вопросу каждый, и медленный режим,
- * считающий по человеку, их не заметил. Три правила: новичок ждёт две минуты,
- * адрес ограничен на все имена сразу, вход в комнату ограничен по адресу —
- * и один запрос преподавателя снимает записи сотни имён из треда.
+ * Protecting the oracle from a script (13 Sep 2026, an open class): five hundred
+ * "participants" came from one address in two hours, one question each, and
+ * the slow mode, which counts per person, did not notice them. Three rules: a
+ * newcomer waits two minutes, an address is limited across all its names at
+ * once, joining a room is limited per address — and one request from the
+ * teacher removes the entries of a hundred names from the thread.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -43,7 +44,7 @@ function ask(room: string, participantId: string, iat: number, address: string):
   })
 }
 
-test('новичок не спрашивает: вопрос с только что выданным токеном ждёт', async () => {
+test('a newcomer does not ask: a question with a freshly issued token waits', async () => {
   const room = 'flood-new'
   createSession(room, 'Новички', null)
   upsertParticipant({ id: 'p_fresh', sessionId: room, name: 'Свежий', avatar: null, role: 'participant' })
@@ -53,36 +54,36 @@ test('новичок не спрашивает: вопрос с только ч�
   assert.match(body.error, /пару минут/)
   assert.ok(body.retryAfter > 0 && body.retryAfter <= 120)
   assert.ok(fresh.headers.get('retry-after'))
-  // Тот же человек с токеном постарше проходит эту дверь.
+  // The same person with an older token gets through this door.
   const settled = await ask(room, 'p_fresh', OLD(), '10.0.0.1')
   assert.notEqual(settled.status, 429)
 })
 
-test('адрес ограничен на все имена сразу: двадцать первое имя за минуту ждёт', async () => {
+test('an address is limited across all names at once: the twenty-first name within a minute waits', async () => {
   const room = 'flood-addr'
   createSession(room, 'Адрес', null)
   for (let i = 0; i < 20; i++) {
     upsertParticipant({ id: `p_a${i}`, sessionId: room, name: `User${i}`, avatar: null, role: 'participant' })
-    // Очередь комнаты (дюжина в полёте) может отказать раньше — это не адрес.
+    // The room queue (a dozen in flight) may refuse earlier — that is not the address.
     const res = await ask(room, `p_a${i}`, OLD(), '10.0.0.7')
-    assert.doesNotMatch(await res.text(), /адреса/, `вопрос ${i} отбили по адресу раньше времени`)
+    assert.doesNotMatch(await res.text(), /адреса/, `question ${i} was turned away by address too early`)
   }
   upsertParticipant({ id: 'p_a20', sessionId: room, name: 'User20', avatar: null, role: 'participant' })
   const extra = await ask(room, 'p_a20', OLD(), '10.0.0.7')
   assert.equal(extra.status, 429)
   assert.match(((await extra.json()) as { error: string }).error, /адреса/)
-  // Соседний адрес в ту же минуту — свободен.
+  // A neighbouring address in the same minute is free.
   upsertParticipant({ id: 'p_b0', sessionId: room, name: 'Другой', avatar: null, role: 'participant' })
-  // Соседний адрес в ту же минуту в адресный предел не упирается (в очередь
-  // комнаты — может: вопросы выше ещё ждут ответа модели).
+  // A neighbouring address in the same minute does not hit the address limit (it
+  // may hit the room queue: the questions above are still waiting for the model).
   const other = await ask(room, 'p_b0', OLD(), '10.0.0.8')
   assert.doesNotMatch(await other.text(), /адреса/)
 })
 
-test('преподаватель снимает записи сотни имён одним запросом, чужие остаются', async () => {
+test('the teacher removes the entries of a hundred names in one request, the others stay', async () => {
   const room = 'flood-prune'
   createSession(room, 'Чистка', null)
-  // Роль ведущего сервер берёт из базы (token_host), а не из подписи токена.
+  // The server takes the host role from the database (token_host), not from the token signature.
   upsertParticipant({ id: 'p_host', sessionId: room, name: 'Преподаватель', avatar: null, role: 'host', tokenHost: true })
   const { doc } = getSessionDoc(room)
   const chat = getChat(doc)
@@ -105,13 +106,13 @@ test('преподаватель снимает записи сотни имён
   assert.deepEqual(await res.json(), { ok: true, removed: 120 })
   assert.equal(chat.length, 2)
   assert.deepEqual(chat.toArray().map((e) => e.get('name')), ['Маша', 'Петя'])
-  // Без списка — прежнее поведение: весь тред.
+  // Without a list, the old behaviour: the whole thread.
   const all = await fetch(`${base}/api/sessions/${room}/ai/thread`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } })
   assert.equal(all.status, 200)
   assert.equal(chat.length, 0)
 })
 
-test('вход в комнату ограничен по адресу: шестьдесят первый новичок с одного адреса ждёт', async () => {
+test('joining a room is limited per address: the sixty-first newcomer from one address waits', async () => {
   const room = 'flood-join'
   createSession(room, 'Входы', null)
   const join = (i: number, address: string) =>
@@ -120,7 +121,7 @@ test('вход в комнату ограничен по адресу: шест�
       headers: { 'content-type': 'application/json', 'x-forwarded-for': address },
       body: JSON.stringify({ name: `Гость ${i}` }),
     })
-  for (let i = 0; i < 60; i++) assert.equal((await join(i, '10.1.0.1')).status, 200, `вход ${i}`)
+  for (let i = 0; i < 60; i++) assert.equal((await join(i, '10.1.0.1')).status, 200, `join ${i}`)
   assert.equal((await join(60, '10.1.0.1')).status, 429)
   assert.equal((await join(61, '10.1.0.2')).status, 200)
 })

@@ -1,17 +1,17 @@
 /**
- * Метка, с которой стучатся в комнату, и момент, в который её выбирают.
+ * The mark a person knocks on the room with, and the moment it is chosen.
  *
- * Экран входа обещает метку, которой никто в комнате не носит. Обещание
- * держалось на одном чтении ростера — при монтировании, — а класс открывает
- * ссылку в одну минуту: у всех тридцати комната пуста, все выбирают из полного
- * списка независимо, и одинаковые метки получаются не по невезению, а по
- * построению. Ошибка тихая: два ежа в комнате — это два одинаковых курсора в
- * тетради (цвет их не различает, он минтуется из id), и заметят это на
- * двадцатой минуте.
+ * The join screen promises a mark nobody in the room is wearing. The promise
+ * rested on a single read of the roster — at mount — while a class opens the
+ * link within one minute: for all thirty the room is empty, everyone picks
+ * from the full list independently, and identical marks come not from bad luck
+ * but by construction. The bug is quiet: two hedgehogs in a room are two
+ * identical cursors in the notebook (the colour does not tell them apart, it
+ * is minted from the id), and someone will notice in the twentieth minute.
  *
- * Здесь проверяется то, что от этого лечится на клиенте: занятость считается
- * по ТЕМ, КТО В КОМНАТЕ, а метка пересчитывается по ростеру, прочитанному
- * перед входом, — и при этом выбранная руками не подменяется никогда.
+ * What is checked here is the part of this that the client cures: a mark is
+ * taken only by THOSE IN THE ROOM, and the mark is recomputed from the roster
+ * read right before joining — while one picked by hand is never replaced.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -29,28 +29,29 @@ const person = (id: string, avatar: string | null, role: Participant['role'] = '
   role,
 })
 
-test('занята метка только того, кто в комнате прямо сейчас', () => {
+test('only the mark of someone in the room right now is taken', () => {
   const roster = [person('p1', all[0]), person('p2', all[1])]
-  // p2 входил неделю назад и давно закрыл вкладку.
+  // p2 joined a week ago and closed the tab long ago.
   const taken = takenMarks(roster, new Set(['p1']), null)
   assert.equal(taken.has(all[0]), true)
-  assert.equal(taken.has(all[1]), false, 'метка ушедшего осталась занятой')
+  assert.equal(taken.has(all[1]), false, 'the mark of someone who left stayed taken')
 })
 
-test('своё же прошлое место комнате не мешает', () => {
+test('your own past seat does not get in the way', () => {
   const roster = [person('me', all[3])]
   assert.equal(takenMarks(roster, new Set(['me']), 'me').size, 0)
   assert.equal(takenMarks(roster, new Set(['me']), null).size, 1)
 })
 
-test('участник без метки ничего не занимает', () => {
+test('a participant without a mark takes nothing', () => {
   assert.equal(takenMarks([person('p1', null)], new Set(['p1']), null).size, 0)
 })
 
-test('выданная нами метка пересчитывается по свежему ростеру', () => {
+test('a mark we handed out is recomputed from a fresh roster', () => {
   /*
-   * Ровно тот случай, ради которого всё это: при монтировании комната пуста,
-   * экран выдал ежа; пока студент печатал имя, ежа занял сосед.
+   * Exactly the case all this is for: at mount the room is empty, the screen
+   * handed out the hedgehog; while the student typed their name, a neighbour
+   * took the hedgehog.
    */
   const mine = all[7]
   const atMount = takenMarks([], new Set(), null)
@@ -58,37 +59,37 @@ test('выданная нами метка пересчитывается по �
 
   const beforeKnock = takenMarks([person('other', mine)], new Set(['other']), null)
   const given = markToClaim(mine, false, beforeKnock, null)
-  assert.notEqual(given, mine, 'постучались меткой, которую при нас уже надели')
+  assert.notEqual(given, mine, 'knocked with a mark that someone had already put on in front of us')
   assert.ok(all.includes(given))
 })
 
-test('выбранную руками не подменяет никто', () => {
+test('nobody replaces a mark picked by hand', () => {
   const chosen = all[11]
   const taken = takenMarks([person('other', chosen)], new Set(['other']), null)
   assert.equal(
     markToClaim(chosen, true, taken, null),
     chosen,
-    'экран отменил выбор человека молча — это хуже двух ежей',
+    'the screen silently undid the choice the person made — worse than two hedgehogs',
   )
 })
 
-test('свободную метку не трогают ни при каком ростере', () => {
+test('a free mark is left alone under any roster', () => {
   const mine = all[2]
   const taken = takenMarks([person('a', all[0]), person('b', all[1])], new Set(['a', 'b']), null)
   for (let i = 0; i < 20; i++) assert.equal(markToClaim(mine, false, taken, null), mine)
 })
 
-test('полная комната делится меткой, а не закрывает дверь', () => {
+test('a full room shares a mark rather than closing the door', () => {
   const roster = all.map((mark, i) => person(`p${i}`, mark))
   const taken = takenMarks(roster, new Set(roster.map((p) => p.id)), null)
   const given = markToClaim(all[0], false, taken, null)
-  assert.ok(all.includes(given), 'вход остался без метки вовсе')
+  assert.ok(all.includes(given), 'the join was left without any mark at all')
 })
 
-test('вернувшемуся отдают его же зверя, если он свободен', () => {
+test('someone coming back gets their own animal if it is free', () => {
   const prefer = all[5]
   const taken = takenMarks([person('a', all[0])], new Set(['a']), null)
-  // Выданная нами метка занята, но у браузера есть своя из прошлого раза.
+  // The mark we handed out is taken, but the browser has its own from last time.
   for (let i = 0; i < 20; i++) {
     assert.equal(markToClaim(all[0], false, taken, prefer), prefer)
   }

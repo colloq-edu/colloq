@@ -1,23 +1,23 @@
 <!--
-  Полоса страниц: миниатюры, по которым прыгают.
+  The page strip: thumbnails to jump by.
 
-  КОЛОНКОЙ, а не накладкой. Накладка была бы дешевле — ширина колонки и есть
-  масштаб, и открыть полосу значит перерисовать документ, — но полоса, по которой
-  ходят, остаётся открытой, а открытая накладка закрывает собой левую треть
-  страницы. Платим перерисовкой ровно там же, где платим за масштаб, и тем же
-  способом: место в документе снимается до и возвращается после.
+  As a COLUMN, not an overlay. An overlay would be cheaper — the column width is
+  the scale, and opening the strip means re-rendering the document — but a strip
+  people navigate with stays open, and an open overlay covers the left third of
+  the page. We pay with a re-render exactly where we pay for scale, and in the
+  same way: the space in the document is taken away before and given back after.
 
-  Закрыта по умолчанию: комнате, которая смотрит слайды подряд, она не нужна ни
-  разу. Выбор страницы её НЕ закрывает — по ней обычно ходят несколько раз
-  подряд, и закрываться после каждого прыжка значит заставлять открывать снова.
+  Closed by default: a room that watches the slides in order never needs it
+  once. Picking a page does NOT close it — people usually go through it several
+  times in a row, and closing after every jump means making them open it again.
 
-  Своей шапки у полосы нет: и заголовок, и крестик повторяли бы кнопку
-  «Страницы» в полосе управления, а два места, говорящие одно и то же,
-  расходятся. Закрывает её то же, что открыло.
+  The strip has no header of its own: both a title and a close cross would
+  repeat the "Pages" button in the control bar, and two places that say the same
+  thing drift apart. It is closed by the same thing that opened it.
 
-  Миниатюры рисуются по мере того, как до них доскроллили. Сорок отрисованных
-  холстов — это сотни мегабайт, и полоса, которая при открытии считает весь
-  документ, хуже полосы, которой нет.
+  Thumbnails are drawn as they are scrolled to. Forty drawn canvases are
+  hundreds of megabytes, and a strip that renders the whole document when it
+  opens is worse than no strip at all.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -27,27 +27,29 @@
   interface Props {
     doc: PDFDocumentProxy
     pages: number
-    /** Где сейчас смотрящий — эта страница отмечена. */
+    /** Where the viewer is now — this page is marked. */
     page: number
-    /** Где преподаватель, если за ним идут: метка его цветом. */
+    /** Where the teacher is, when followed: a mark in their colour. */
     lead: Lead | null
     onpick: (page: number) => void
   }
 
   let { doc, pages, page, lead, onpick }: Props = $props()
 
-  /** Ширина миниатюры. Больше — уже не миниатюра, меньше — уже не страница. */
+  /** Thumbnail width: wider is not a thumbnail, narrower is not a page. */
   const WIDTH = 108
 
   /**
-   * Пропорция места под миниатюру — из первой страницы документа.
+   * The proportion of the thumbnail slot — taken from the document's first
+   * page.
    *
-   * Стоял A4 намертво, и полоса врала на всём, что не A4: лекцию читают по
-   * слайдам, а слайд горизонтальный — то есть в полосе висел столбик высоких
-   * белых прямоугольников, в каждый из которых потом впечатывалась плоская
-   * картинка, и до первой отрисовки полоса показывала документ, которого нет.
-   * Считается один раз по первой странице: миниатюра — это место под картинку,
-   * а не сама картинка, и разнобой в двести страниц её не касается.
+   * It was hard-wired to A4, and the strip lied about everything that is not
+   * A4: a lecture is given from slides, and a slide is landscape — so the strip
+   * showed a column of tall white rectangles, each of which later got a flat
+   * picture stamped into it, and until the first render the strip showed a
+   * document that did not exist. Computed once from the first page: a thumbnail
+   * is a slot for a picture, not the picture itself, and variety across two
+   * hundred pages is not its business.
    */
   let aspect = $state('1 / 1.414')
   $effect(() => {
@@ -61,7 +63,7 @@
         aspect = `${Math.round(view.width)} / ${Math.round(view.height)}`
       })
       .catch(() => {
-        /* документ не читается — полоса и так останется пустой */
+        /* the document cannot be read — the strip will stay empty anyway */
       })
     return () => {
       dropped = true
@@ -69,8 +71,9 @@
   })
 
   /*
-   * Что уже нарисовано. Обычный Set, а не $state: он не читается разметкой —
-   * им пользуется только наблюдатель, чтобы не рисовать одно и то же дважды.
+   * What has already been drawn. A plain Set, not $state: the markup does not
+   * read it — only the observer uses it, so as not to draw the same thing
+   * twice.
    */
   const drawn = new Set<number>()
 
@@ -87,26 +90,27 @@
       node.style.width = '100%'
       node.style.height = 'auto'
       /*
-       * Нарисованная страница знает свою пропорцию сама, а заданная снаружи
-       * пропорция места её бы перекрыла: в документе, где после сотни слайдов
-       * идёт вертикальное приложение, оно оказалось бы сплющенным в слайд.
+       * A drawn page knows its own proportion, and a slot proportion set from
+       * outside would override it: in a document where a hundred slides are
+       * followed by a portrait appendix, the appendix would come out squashed
+       * into a slide.
        */
       node.style.aspectRatio = 'auto'
       const context = node.getContext('2d')
       if (!context) return
       await source.render({ canvas: node, canvasContext: context, viewport }).promise
     } catch {
-      // Страница, которую не удалось нарисовать, остаётся пустым листом — это
-      // честнее, чем красная плашка на полосе, по которой просто прыгают.
+      // A page that could not be drawn stays an empty sheet — that is more
+      // honest than a red pill on a strip people merely jump around with.
       drawn.delete(index)
     }
   }
 
   /**
-   * Рисовать, когда до миниатюры дошли глазами.
+   * Draw when the eyes have reached the thumbnail.
    *
-   * `rootMargin` в две высоты полосы: страница успевает нарисоваться до того,
-   * как её видно, и полоса не мигает пустыми листами под пальцем.
+   * `rootMargin` of two strip heights: the page has time to be drawn before it
+   * is visible, and the strip does not flash empty sheets under the finger.
    */
   function lazy(node: HTMLCanvasElement, index: number) {
     const watcher = new IntersectionObserver(
@@ -125,8 +129,8 @@
     }
   }
 
-  /* Открытую полосу ведёт текущая страница: пролистал документ — метка на
-     месте, а не там, где её оставили. */
+  /* An open strip follows the current page: scroll the document, and the mark
+     is in place rather than where it was left. */
   let rail = $state<HTMLElement | null>(null)
   $effect(() => {
     const at = page
@@ -158,8 +162,9 @@
           {index}
         </span>
         <span class="relative min-w-0 flex-1">
-          <!-- Рамка ставится на обёртку, а не на холст: холст меняет размер,
-               когда страница дорисовывается, и рамка на нём дёргалась бы. -->
+          <!-- The border goes on the wrapper, not on the canvas: the canvas
+               changes size when the page finishes drawing, and a border on it
+               would twitch. -->
           <span
             class="block border bg-white transition-colors duration-100 {here
               ? 'border-accent'
@@ -168,8 +173,9 @@
             <canvas use:lazy={index} class="block w-full" style={`aspect-ratio: ${aspect}`}></canvas>
           </span>
           {#if teacher && lead}
-            <!-- Метка цветом преподавателя: из дизайна, и она отвечает на
-                 вопрос «а где сейчас он», не заставляя листать. -->
+            <!-- A mark in the teacher's colour: it comes from the design, and
+                 it answers the question "where are they now" without making
+                 anyone scroll. -->
             <span
               class="absolute -left-1 top-1 h-2 w-2 rounded-full ring-2 ring-surface"
               style={`background:${lead.color}`}

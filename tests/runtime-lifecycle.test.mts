@@ -29,10 +29,11 @@ class FakeKube implements KubernetesClient {
   failure = 0
   delayedDeletion = false
   /**
-   * Что kubelet делает с изменением памяти: выставляет (`apply`), откладывает,
-   * потому что узлу сейчас нечем (`defer`, k8s 1.33+), или объявляет
-   * невыполнимым условием (`infeasible`, так отвечали 1.33–1.34). Отказ самого
-   * API (403 с нехваткой allocatable, так отвечает 1.35+) — `patchFailures`.
+   * What the kubelet does with a memory change: applies it (`apply`), defers it
+   * because the node has nothing to give right now (`defer`, k8s 1.33+), or
+   * declares it infeasible with a condition (`infeasible`, as 1.33–1.34
+   * answered). A refusal by the API itself (403 for lack of allocatable, as
+   * 1.35+ answers) goes into `patchFailures`.
    */
   kubelet: 'apply' | 'defer' | 'infeasible' = 'apply'
   patchFailures: KubernetesError[] = []
@@ -177,9 +178,9 @@ test('room CPU intent sets quota and threads and resets to the runtime default i
   assert.equal(kernel.resources.limits.cpu, '6')
   assert.equal((await runtime.list()).find((room) => room.sessionId === 'cpuRoom')?.cpus, 6)
   /*
-   * Потоки — по limits.cpu на старте контейнера (Downward API), а не числом
-   * брокера: иначе шаблон Pod зависел бы от ядер, и смена ядер на месте
-   * делала бы Pod «чужим» для следующего ensure.
+   * Threads follow limits.cpu at container start (Downward API), not the
+   * broker's number: otherwise the Pod template would depend on the cores, and
+   * changing cores in place would make the Pod "foreign" to the next ensure.
    */
   for (const name of ['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'])
     assert.deepEqual(kernel.env.find((entry: any) => entry.name === name), {
@@ -191,7 +192,7 @@ test('room CPU intent sets quota and threads and resets to the runtime default i
     { resourceName: 'cpu', restartPolicy: 'NotRequired' },
   ])
   assert.equal((await runtime.ensure('cpuRoom', { environment: 'base', cpus: 6 })).instanceId, first.instanceId)
-  // До 18.09 сброс ядер сносил Pod вместе с переменными семинара.
+  // Before 18 Sep 2026 a core reset tore down the Pod along with the seminar's variables.
   const reset = await runtime.ensure('cpuRoom', { environment: 'base' })
   assert.equal(reset.instanceId, first.instanceId, 'a CPU reset must never replace Python')
   assert.equal(kube.deletes.length, 0)
@@ -500,8 +501,8 @@ test('readiness checks API permissions and catalog without claiming that a room 
     ok: true,
     reason: null,
     defaultCpus: 2,
-    // Умолчание и потолок памяти — чтобы форма занятия подписывала поле
-    // числами брокера, а не docker-пути, которых Pod не получает.
+    // The memory default and ceiling, so that the class form labels the field
+    // with the broker's numbers rather than those of the docker path, which a Pod does not get.
     defaultMemoryMb: 2048,
     maxMemoryMb: 262144,
     recovery: { rollbackRetries: 0, rollbackFailures: 0, rollbacksApplied: 0 },
@@ -559,14 +560,14 @@ test('room census follows Kubernetes continuation pages so cleanup does not omit
   assert.equal((await runtime.list()).length, 2)
 })
 
-/* ------------------------------------------------------------ память комнаты */
+/* --------------------------------------------------------------- room memory */
 
 const podPath = (id: string) => `/api/v1/namespaces/colloq/pods/${roomName(id)}`
 const kernelOf = (pod: KubeObject) => pod.spec.containers.find((c: any) => c.name === 'kernel')
 
 test('room memory intent reaches the Pod as a Guaranteed request/limit and the census reports it', async () => {
-  // 18.09: поле памяти в форме на k3s не делало ничего — брокер его не
-  // принимал, и Pod любой комнаты получал RUNTIME_KERNEL_MEMORY.
+  // 18 Sep 2026: the memory field in the form did nothing on k3s — the broker did
+  // not accept it, and every room's Pod got RUNTIME_KERNEL_MEMORY.
   const { kube, runtime } = setup()
   await runtime.ensure('memRoom', { environment: 'base', memoryMb: 6144 })
   const kernel = kernelOf(kube.creates.find((o) => o.kind === 'Pod')!)
@@ -593,15 +594,15 @@ test('raising memory resizes the live Pod in place: same UID, no deletion, only 
   const [patch] = kube.patches
   assert.equal(patch.path, `${podPath('liveRoom')}/resize`)
   assert.equal(patch.contentType, 'application/strategic-merge-patch+json')
-  // Только память контейнера kernel и предусловие версии — ничего исполняемого.
+  // Only the kernel container's memory and the version precondition: nothing executable.
   assert.deepEqual(patch.body.spec, {
     containers: [
       { name: 'kernel', resources: { requests: { memory: '8192Mi' }, limits: { memory: '8192Mi' } } },
     ],
   })
   assert.ok(patch.body.metadata.resourceVersion)
-  // Следующий ensure с тем же числом усыновляет тот же Pod: хэш шаблона не
-  // зависит от памяти, иначе первый же подъём снёс бы изменённую комнату.
+  // The next ensure with the same number adopts the same Pod: the template hash
+  // does not depend on memory, otherwise the very first start would tear down the changed room.
   const after = await runtime.ensure('liveRoom', { environment: 'base', memoryMb: 8192 })
   assert.equal(after.instanceId, before.instanceId)
   assert.equal(kube.creates.filter((o) => o.kind === 'Pod').length, 1)
@@ -609,8 +610,8 @@ test('raising memory resizes the live Pod in place: same UID, no deletion, only 
 })
 
 test('a memory drift found at ensure is resized in place, not replaced', async () => {
-  // Изменение не доехало раньше (брокер лежал): следующий Run не должен
-  // стоить семинару всех переменных.
+  // The change did not get through earlier (the broker was down): the next Run
+  // must not cost the seminar all its variables.
   const { kube, runtime } = setup()
   const before = await runtime.ensure('driftRoom', { environment: 'base', memoryMb: 2048 })
   const after = await runtime.ensure('driftRoom', { environment: 'base', memoryMb: 4096 })
@@ -620,8 +621,8 @@ test('a memory drift found at ensure is resized in place, not replaced', async (
 })
 
 test('a Run with new memory while the room is still starting queues behind it instead of a 409', async () => {
-  // После OOM все жмут Run разом, а преподаватель тем временем поднимает
-  // память: второй ensure приходит с другим числом, пока первый ждёт Jupyter.
+  // After an OOM everyone presses Run at once while the teacher raises the
+  // memory: a second ensure arrives with another number while the first waits for Jupyter.
   let open!: () => void
   const gate = new Promise<void>((resolve) => (open = resolve))
   const { kube, runtime } = setup(async () => {
@@ -631,9 +632,9 @@ test('a Run with new memory while the room is still starting queues behind it in
   const first = runtime.ensure('startRoom', { environment: 'base', memoryMb: 2048 })
   await new Promise((resolve) => setTimeout(resolve, 20))
   const second = runtime.ensure('startRoom', { environment: 'base', memoryMb: 4096 })
-  // Ядра — тоже очередь: с 18.09 их меняют на месте, как память.
+  // Cores queue too: since 18 Sep 2026 they are changed in place, like memory.
   const third = runtime.ensure('startRoom', { environment: 'base', cpus: 4, memoryMb: 4096 })
-  // Другое окружение — по-прежнему конфликт: его меняют только заменой Pod.
+  // A different environment is still a conflict: it changes only by replacing the Pod.
   await assert.rejects(runtime.ensure('startRoom', { environment: 'gpu' }), (err: any) => err.status === 409)
   open()
   const [a, b, c] = await Promise.all([first, second, third])
@@ -656,8 +657,8 @@ test('memory and CPU together with any other change, or a tampered Pod, is still
   const third = await runtime.ensure('mixRoom', { environment: 'gpu', cpus: 4, memoryMb: 8192 })
   assert.notEqual(third.instanceId, second.instanceId, 'a memory diff must not launder an injected command')
   assert.equal(kube.patches.length, 0)
-  // Потоки из Downward API — часть сравниваемого spec: подменённый источник
-  // (секрет вместо limits.cpu) не отмывается разницей в ядрах.
+  // The threads from the Downward API are part of the compared spec: a swapped
+  // source (a secret instead of limits.cpu) is not laundered by a difference in cores.
   const omp = kernelOf(kube.objects.get(podPath('mixRoom'))!).env.find((e: any) => e.name === 'OMP_NUM_THREADS')
   omp.valueFrom = { secretKeyRef: { name: 'colloq-runtime', key: 'token' } }
   const fourth = await runtime.ensure('mixRoom', { environment: 'gpu', cpus: 6, memoryMb: 8192 })
@@ -686,8 +687,9 @@ test('the ceiling refuses a live resize and caps an ensure instead of breaking t
   const { kube, runtime } = setup(undefined, { ...config, maxMemoryMb: 8192 })
   assert.equal((await runtime.health()).maxMemoryMb, 8192)
   await runtime.ensure('capRoom', { environment: 'base', memoryMb: 16384 })
-  // Отказ на ensure значил бы комнату без Python до ручной правки строки
-  // семинара; потолок честнее, и перепись скажет, что выдано на деле.
+  // A refusal at ensure would mean a room without Python until someone edits the
+  // seminar row by hand; the ceiling is more honest, and the census tells what
+  // was actually granted.
   assert.equal(kernelOf(kube.objects.get(podPath('capRoom'))!).resources.limits.memory, '8192Mi')
   await assert.rejects(runtime.resize('capRoom', { memoryMb: 16384 }), (err: any) =>
     err.status === 400 && /ceiling of 8192/.test(err.message),
@@ -698,12 +700,12 @@ test('the ceiling refuses a live resize and caps an ensure instead of breaking t
 test('an infeasible resize is reported and never left in the spec for the next Pod', async () => {
   const { kube, runtime } = setup()
   await runtime.ensure('bigRoom', { environment: 'base', memoryMb: 2048 })
-  // 1.35+: API отвергает сразу, spec не тронут.
+  // 1.35+: the API rejects at once, the spec is untouched.
   kube.patchFailures.push(new KubernetesError(403, 'Forbidden', 'memory'))
   await assert.rejects(runtime.resize('bigRoom', { memoryMb: 65536 }), (err: any) =>
     err.status === 409 && /infeasible.*memory/i.test(err.message),
   )
-  // 1.33–1.34: kubelet ставит Infeasible — брокер возвращает spec к тому, что есть.
+  // 1.33–1.34: the kubelet sets Infeasible, and the broker returns the spec to what there is.
   kube.kubelet = 'infeasible'
   await assert.rejects(runtime.resize('bigRoom', { memoryMb: 65536 }), /infeasible/i)
   const pod = kube.objects.get(podPath('bigRoom'))!
@@ -733,11 +735,12 @@ test('a status update racing the resize is retried against the fresh resourceVer
   assert.equal(kube.patches.length, 2)
 })
 
-/* ------------------------------------------------------------- ядра комнаты */
+/* --------------------------------------------------------------- room cores */
 
 test('the Pod template hash does not depend on CPU, so a CPU change never makes the Pod foreign', async () => {
-  // До 18.09 ядра стояли в хэше: смена числа в форме сносила Pod на
-  // следующем подъёме (открыли терминал) — со всеми переменными семинара.
+  // Before 18 Sep 2026 the cores were part of the hash: changing the number in the
+  // form tore down the Pod on the next start (a terminal was opened) — with all
+  // the seminar's variables.
   const { kube, runtime } = setup()
   await runtime.ensure('hashRoom', { environment: 'base', cpus: 2 })
   await runtime.remove('hashRoom')
@@ -760,12 +763,12 @@ test('raising CPU resizes the live Pod in place: same UID, no deletion, only cpu
   const [patch] = kube.patches
   assert.equal(patch.path, `${podPath('cpuLive')}/resize`)
   assert.equal(patch.contentType, 'application/strategic-merge-patch+json')
-  // Только ядра: память, которую не просили, не переписывается прочитанным числом.
+  // Only cores: memory nobody asked for is not overwritten with the number that was read.
   assert.deepEqual(patch.body.spec, {
     containers: [{ name: 'kernel', resources: { requests: { cpu: '6' }, limits: { cpu: '6' } } }],
   })
   assert.ok(patch.body.metadata.resourceVersion)
-  // Следующий подъём с тем же числом (открыли терминал) усыновляет тот же Pod.
+  // The next start with the same number (a terminal was opened) adopts the same Pod.
   const after = await runtime.ensure('cpuLive', { environment: 'base', cpus: 6 })
   assert.equal(after.instanceId, before.instanceId)
   assert.equal(kube.creates.filter((o) => o.kind === 'Pod').length, 1)
@@ -774,7 +777,8 @@ test('raising CPU resizes the live Pod in place: same UID, no deletion, only cpu
 })
 
 test('a CPU drift found at ensure is resized in place, not replaced', async () => {
-  // Веб записал ядра, а брокер лежал: следующий Run не должен стоить комнате Python.
+  // The web app wrote the cores while the broker was down: the next Run must not
+  // cost the room its Python.
   const { kube, runtime } = setup()
   const before = await runtime.ensure('cpuDrift', { environment: 'base', cpus: 2, memoryMb: 2048 })
   const after = await runtime.ensure('cpuDrift', { environment: 'base', cpus: 4, memoryMb: 2048 })
@@ -798,7 +802,7 @@ test('memory and CPU change together in one resize, and null returns CPU to the 
     memory: '4096Mi',
     cpu: '8',
   })
-  // Умолчание брокера — той же строкой, что у нового Pod, хоть бы и дробной.
+  // The broker default, as the same string a new Pod gets, even a fractional one.
   assert.deepEqual(await runtime.resize('bothRoom', { cpus: null }), { outcome: 'applied', cpus: 1.5 })
   const kernel = kernelOf(kube.objects.get(podPath('bothRoom'))!)
   assert.equal(kernel.resources.limits.cpu, '1500m')
@@ -826,7 +830,7 @@ test('a deferred CPU resize is pending, and the census shows the cores the Pod r
 test('an infeasible CPU resize is reported and the spec returns to the cores the Pod has', async () => {
   const { kube, runtime } = setup()
   await runtime.ensure('bigCpu', { environment: 'base', cpus: 2 })
-  // 1.35+: «node didn't have enough allocatable resources: cpu» — проверено на k3s 1.36.
+  // 1.35+: "node didn't have enough allocatable resources: cpu" — verified on k3s 1.36.
   kube.patchFailures.push(new KubernetesError(403, 'Forbidden', 'cpu'))
   await assert.rejects(runtime.resize('bigCpu', { cpus: 64 }), (err: any) =>
     err.status === 409 && /infeasible.*cpu/i.test(err.message),
@@ -838,13 +842,15 @@ test('an infeasible CPU resize is reported and the spec returns to the cores the
 })
 
 /*
- * Pod, которому на узле нет места.
+ * A Pod that has no room on the node.
  *
- * Память комнаты зарезервирована целиком (requests = limits), и на занятом узле
- * Pod стоит в Pending с «0/1 nodes are available: 1 Insufficient memory». До
- * 18.09 комната читала про это «Room startup timed out: pending» через две
- * минуты. Подделка ниже — планировщик: Pod создаётся без узла и с условием
- * PodScheduled=False/Unschedulable, а после `schedulesAfter` чтений встаёт.
+ * The room's memory is reserved in full (requests = limits), and on a busy
+ * node the Pod sits in Pending with "0/1 nodes are available: 1 Insufficient
+ * memory". Before 18 Sep 2026 the room read about it as "Room startup timed
+ * out: pending" after two minutes. The fake below is the scheduler: the Pod is
+ * created without a node and with the condition
+ * PodScheduled=False/Unschedulable, and after `schedulesAfter` reads it gets
+ * scheduled.
  */
 class CrowdedKube extends FakeKube {
   reads = 0
@@ -896,9 +902,9 @@ test('an unschedulable room ends with the lacking resource and the Pod numbers, 
     assert.doesNotMatch(err.message, /timed out|nodes are available|preemption/)
     return true
   })
-  // Pod ни разу не стоял на узле: он удалён, и следующий подъём создаст новый
-  // с тем, что к тому времени будет в форме, — а не станет менять память Pod-у
-  // без узла.
+  // The Pod never stood on a node: it is deleted, and the next start creates a
+  // new one with whatever the form says by then — rather than changing the
+  // memory of a Pod that has no node.
   assert.equal(kube.objects.has(`/api/v1/namespaces/colloq/pods/${roomName('fullNode')}`), false)
   assert.equal(kube.deletes.filter((d) => d.path.includes('/pods/')).length, 1)
 })

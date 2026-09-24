@@ -96,7 +96,7 @@ test('private API authenticates every route and accepts only bounded room intent
       await (await fetch(base + '/v1/rooms/roomA', { method: 'DELETE', headers })).json(),
       { ok: true },
     )
-    // Живой комнате — только память и ядра: ни окружения, ни образа, ни шаблона.
+    // A live room gets only memory and cores: no environment, no image, no template.
     for (const body of [
       '{}',
       '{"memoryMb":4096,"environment":"base"}',
@@ -152,17 +152,18 @@ test('configuration fails closed on absent or weak secrets and invalid resource 
     assert.throws(() => loadRuntimeConfig({ ...env, RUNTIME_KERNEL_CPU: 'Infinity' }))
     assert.throws(() => loadRuntimeConfig({ ...env, RUNTIME_KERNEL_MEMORY: '0Gi' }))
     assert.throws(() => loadRuntimeConfig({ ...env, RUNTIME_KUBE_URL: 'http://localhost' }))
-    // Потолок памяти комнаты: явный у оператора, иначе узел минус гигабайт.
+    // Room memory ceiling: explicit from the operator, otherwise the node minus a gigabyte.
     assert.equal(loadRuntimeConfig(env, 73728).maxMemoryMb, 72704)
     assert.equal(loadRuntimeConfig({ ...env, RUNTIME_KERNEL_MEMORY_MAX: '16Gi' }, 73728).maxMemoryMb, 16384)
-    // Умолчание обязано влезать под потолок: иначе каждая комната без своего
-    // числа нарушала бы политику брокера.
+    // The default has to fit under the ceiling: otherwise every room without its
+    // own number would violate the broker's policy.
     assert.throws(
       () => loadRuntimeConfig({ ...env, RUNTIME_KERNEL_MEMORY: '8Gi', RUNTIME_KERNEL_MEMORY_MAX: '4Gi' }),
       /exceeds/,
     )
     assert.throws(() => loadRuntimeConfig({ ...env, RUNTIME_KERNEL_MEMORY_MAX: '16G' }), /MAX/)
-    // Узел меньше умолчания — потолок не ниже умолчания, а не отказ стартовать.
+    // Node smaller than the default: the ceiling is not below the default, rather
+    // than a refusal to start.
     assert.equal(loadRuntimeConfig(env, 1024).maxMemoryMb, 2048)
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -237,7 +238,7 @@ test('Kubernetes HTTPS client verifies CA, rereads rotating token, and bounds re
       (err) =>
         err instanceof Error && err.message.length < 250 && !err.message.includes('secret-value'),
     )
-    // Из тела отказа наружу выходит только имя ресурса, которого не хватило.
+    // Only the name of the resource that ran short gets out of the refusal body.
     await assert.rejects(
       client.request('PATCH', '/resize', {}, 'application/strategic-merge-patch+json'),
       (err: any) => err.insufficient === 'memory' && !err.message.includes('secret-value'),

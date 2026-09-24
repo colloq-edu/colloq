@@ -1,60 +1,62 @@
 /**
- * Почему ядро умерло — словами, а не «ядро умерло».
+ * Why the kernel died, in words, not "the kernel died".
  *
- * Смерть ядра комната видела всегда: очередь сброшена, переменных нет, в
- * журнале строка «Ядро неожиданно перезапустилось». Причины не видел никто.
- * 13.09 семинар пятнадцать раз подряд упирался в одну ячейку, и выяснить, что
- * контейнеру комнаты выдано два гигабайта, а `resnet18` на батче 224×224 просит
- * больше, можно было только по `dmesg` на машине — то есть никак, если ты
- * преподаватель посреди пары.
+ * The room always saw a kernel's death: the queue dropped, the variables
+ * gone, the line "The kernel restarted unexpectedly" in the log. Nobody saw
+ * the cause. On 13 Sep 2026 a seminar hit the same cell fifteen times in a
+ * row, and finding out that the room's container had two gigabytes while
+ * `resnet18` on a 224×224 batch asks for more was only possible through
+ * `dmesg` on the machine, that is, not at all if you are a teacher in the
+ * middle of a lesson.
  *
- * Здесь собирается то, что об этом знает docker и ядро Linux:
+ * This gathers what docker and the Linux kernel know about it:
  *
- *   - `docker inspect` — код выхода контейнера и флаг `OOMKilled`, если лёг
- *     весь контейнер;
- *   - cgroup контейнера — лимит, пик, текущее потребление и СЧЁТЧИК убийств
- *     `memory.events:oom_kill`;
- *   - хвост журнала контейнера — что успел сказать Jupyter.
+ *   - `docker inspect`: the container's exit code and the `OOMKilled` flag,
+ *     if the whole container went down;
+ *   - the container's cgroup: the limit, the peak, current usage and the kill
+ *     COUNTER `memory.events:oom_kill`;
+ *   - the tail of the container's log: what Jupyter managed to say.
  *
- * Счётчик, а не флаг, — главное здесь. Когда cgroup убивает python внутри
- * живого контейнера (а именно так это и выглядит: PID 1 — сам Jupyter, он
- * переживает и поднимает ядро заново), `docker inspect` показывает
- * `OOMKilled: true` ровно один раз и потом залипает на этом значении навсегда.
- * По нему нельзя отличить «убит только что» от «убит утром». Счётчик из
- * `memory.events` растёт на каждое убийство, и разница с прошлым замером —
- * честный ответ на вопрос «эта ли ячейка».
+ * The counter, not the flag, is the main thing here. When the cgroup kills
+ * python inside a live container (and that is exactly how it looks: PID 1 is
+ * Jupyter itself, which survives and starts the kernel again),
+ * `docker inspect` shows `OOMKilled: true` exactly once and then sticks at
+ * that value forever. It cannot tell "killed just now" from "killed this
+ * morning". The counter in `memory.events` grows with every kill, and the
+ * difference from the previous reading is the honest answer to "was it this
+ * cell".
  */
 
 import { formatNumber, getLocale, tr } from '@shared/i18n'
 import { dockerRead, roomContainer, type KernelRole } from './pool.js'
 import { kernelBackend } from './runtime-client.js'
 
-/** Что docker и cgroup рассказали о контейнере комнаты. */
+/** What docker and the cgroup told us about the room's container. */
 export interface MemoryReading {
-  /** Лимит памяти контейнера в байтах; `null`, если прочитать не удалось. */
+  /** The container's memory limit in bytes; `null` if it could not be read. */
   limit: number | null
-  /** Пик потребления за жизнь контейнера. */
+  /** Peak usage over the container's life. */
   peak: number | null
-  /** Сколько занято сейчас — уже после перезапуска ядра, поэтому мало. */
+  /** How much is in use now, already after the kernel restart, hence small. */
   current: number | null
-  /** Сколько раз cgroup убивал процесс в этом контейнере с его рождения. */
+  /** How many times the cgroup has killed a process in this container since its birth. */
   kills: number | null
-  /** Флаг docker: по памяти лёг весь контейнер, а не процесс внутри. */
+  /** The docker flag: the whole container went down on memory, not a process inside. */
   containerOomKilled: boolean
-  /** Статус контейнера: `running`, `exited`, … */
+  /** The container status: `running`, `exited`, … */
   status: string
-  /** Код выхода — осмыслен только у остановленного контейнера. */
+  /** The exit code; meaningful only for a stopped container. */
   exit: number | null
-  /** Хвост журнала контейнера, без болтовни Jupyter про шифрование. */
+  /** The tail of the container's log, without Jupyter's chatter about encryption. */
   tail: string[]
 }
 
-/** Разбор причины: что случилось и что об этом сказать. */
+/** The cause analysis: what happened and what to say about it. */
 export interface Postmortem {
   reading: MemoryReading
-  /** Убила ли память — и убила ли ИМЕННО СЕЙЧАС, а не когда-то раньше. */
+  /** Whether memory killed it, and killed it JUST NOW rather than some time earlier. */
   oom: boolean
-  /** Готовая строка для журнала ядра и для `journalctl`. */
+  /** A ready line for the kernel log and for `journalctl`. */
   text: string
 }
 
@@ -64,60 +66,61 @@ let docker: Docker = dockerRead
 let injected = false
 
 /**
- * Подменить docker — тестам.
+ * Substitute docker, for tests.
  *
- * Настоящего docker в тестах нет, а проверять надо ровно то, что случается
- * только с ним: убитое по памяти ядро и строка, которую после этого читает
- * комната. `null` возвращает всё как было.
+ * There is no real docker in the tests, yet what has to be checked is exactly
+ * what happens only with it: a kernel killed for memory and the line the room
+ * reads afterwards. `null` puts everything back as it was.
  *
- * Подделка заодно отменяет проверку бэкенда. Иначе её пришлось бы ставить
- * вместе с `KERNEL_BACKEND=docker`, а это переключает на настоящий docker весь
- * остальной сервер — и сюита, проверяющая одну строку в журнале, начала бы
- * поднимать контейнеры на машине разработчика.
+ * The fake also skips the backend check. Otherwise it would have to be set
+ * together with `KERNEL_BACKEND=docker`, and that switches the whole rest of
+ * the server to real docker, and a suite checking one line in the log would
+ * start bringing up containers on the developer's machine.
  */
 export function useDockerForPostmortem(fake: Docker | null): void {
   docker = fake ?? dockerRead
   injected = fake !== null
 }
 
-/** Есть ли кого спрашивать: свой docker под рукой или подделка от теста. */
+/** Whether there is anyone to ask: our own docker at hand, or a fake from a test. */
 function available(): boolean {
   return injected || kernelBackend() === 'docker'
 }
 
 /**
- * Последний известный счётчик убийств по каждой комнате.
+ * The last known kill counter for each room.
  *
- * Живёт в памяти сервера и умирает вместе с ним — и это правильно: после
- * перезапуска сервера «сколько раз убивали ДО того, как мы начали смотреть»
- * неизвестно, и притворяться, что известно, значит объявить нехваткой памяти
- * первую же смерть ядра от любой другой причины. Без базы решает пик: он
- * упёрся в лимит — значит, упёрся.
+ * It lives in the server's memory and dies with it, and that is right: after
+ * a server restart "how many kills there were BEFORE we started watching" is
+ * unknown, and pretending it is known would mean declaring the very first
+ * kernel death from any other cause a lack of memory. Without a baseline the
+ * peak decides: if it hit the limit, it hit the limit.
  */
 const killsSeen = new Map<string, number>()
 
 /**
- * Счётчик убийств считается ПО КОНТЕЙНЕРУ, и контейнеров у занятия два.
+ * The kill counter is kept PER CONTAINER, and a class has two containers.
  *
- * Второй — тот, где живут личные тетради студентов (pool.ts · KernelRole): у
- * него свой cgroup, свой лимит и свой счётчик. Считать их одним числом значило
- * бы объявить смерть ядра студента нехваткой памяти у преподавателя — или
- * наоборот промолчать о настоящей.
+ * The second is the one where students' personal notebooks live (pool.ts ·
+ * KernelRole): it has its own cgroup, its own limit and its own counter.
+ * Counting them as one number would mean declaring a student kernel's death a
+ * lack of memory on the teacher's side, or, the other way round, staying
+ * silent about a real one.
  */
 const seenKey = (sessionId: string, role: KernelRole) => `${role}:${sessionId}`
 
-/** Забыть счётчики ОБОИХ контейнеров занятия: их сносят вместе. */
+/** Forget the counters of BOTH of the class's containers: they are removed together. */
 export function forgetKills(sessionId: string): void {
   for (const role of ['room', 'own'] as const) killsSeen.delete(seenKey(sessionId, role))
 }
 
 /**
- * Запомнить счётчик, пока ничего не случилось.
+ * Remember the counter while nothing has happened yet.
  *
- * Зовётся, когда ядро поднялось: с этого момента у нас есть точка отсчёта, и
- * следующая смерть будет отличима от вчерашней. Ошибки глотает молча — это
- * подготовка к диагностике, а не диагностика; сорвать из-за неё старт ядра
- * было бы обменом плохим.
+ * Called when the kernel has started: from that moment we have a baseline,
+ * and the next death can be told apart from yesterday's. Errors are swallowed
+ * silently: this is preparation for diagnostics, not diagnostics, and failing
+ * a kernel start because of it would be a bad trade.
  */
 export async function sampleKills(sessionId: string, role: KernelRole = 'room'): Promise<void> {
   if (!available()) return
@@ -125,35 +128,36 @@ export async function sampleKills(sessionId: string, role: KernelRole = 'room'):
     const reading = await readCgroup(roomContainer(sessionId, role))
     if (reading.kills !== null) killsSeen.set(seenKey(sessionId, role), reading.kills)
   } catch {
-    /* Диагностика не имеет права мешать. */
+    /* Diagnostics have no right to get in the way. */
   }
 }
 
 const NUMBER = /^\d+$/
 
-/** `max` в cgroup v2 — это «без лимита», а не число. */
+/** `max` in cgroup v2 means "no limit", not a number. */
 function bytes(raw: string | undefined): number | null {
   if (raw === undefined) return null
   const value = raw.trim()
   if (value === '' || value === 'max') return null
   if (!NUMBER.test(value)) return null
   const parsed = Number(value)
-  // Docker без `--memory` пишет в cgroup v1 гигантское число вместо «нет
-  // лимита»: считать его лимитом — значит сказать «занято 2 ГБ из 8 эксабайт».
+  // Docker without `--memory` writes a gigantic number into cgroup v1 instead
+  // of "no limit": treating it as a limit means saying "2 GB used of 8 exabytes".
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= Number.MAX_SAFE_INTEGER) return null
   return parsed
 }
 
 /*
- * Одна команда на все четыре числа, и обе версии cgroup сразу.
+ * One command for all four numbers, and both cgroup versions at once.
  *
- * v2 (всё, что новее Ubuntu 22.04) держит их в корне пространства имён
- * контейнера, v1 — в подкаталоге `memory/` и под другими именами. Спрашивать
- * версию отдельным запросом значит платить вторым `docker exec` за знание,
- * которое и так приезжает: файла просто нет, и `cat` молчит.
+ * v2 (everything newer than Ubuntu 22.04) keeps them at the root of the
+ * container's namespace, v1 in the `memory/` subdirectory and under other
+ * names. Asking for the version in a separate request means paying for a
+ * second `docker exec` with knowledge that arrives anyway: the file is simply
+ * missing, and `cat` stays silent.
  *
- * `memory.peak` появился в ядре 5.19; там, где его нет, пиком считается
- * текущее потребление — заведомо заниженное, но не выдуманное.
+ * `memory.peak` appeared in kernel 5.19; where it is missing, current usage
+ * counts as the peak, which is surely too low but not made up.
  */
 const CGROUP_SCRIPT = [
   'r=/sys/fs/cgroup',
@@ -173,13 +177,13 @@ async function readCgroup(container: string): Promise<Pick<MemoryReading, 'limit
   for (const line of res.out.split('\n')) {
     const [key, raw] = line.trim().split(/\s+/, 2)
     if (!(key in found)) continue
-    // Первый непустой ответ выигрывает: v1 и v2 в одном контейнере не бывают.
+    // The first non-empty answer wins: v1 and v2 never coexist in one container.
     if (found[key] === null) found[key] = bytes(raw)
   }
   return found as Pick<MemoryReading, 'limit' | 'peak' | 'current' | 'kills'>
 }
 
-/** Строки, которые Jupyter печатает всегда и которые ничего не объясняют. */
+/** Lines Jupyter always prints that explain nothing. */
 const NOISE = /running over TCP without encryption|Jupyter Server .* is running|http:\/\/127\.0\.0\.1/i
 
 async function readTail(container: string): Promise<string[]> {
@@ -195,12 +199,13 @@ async function readTail(container: string): Promise<string[]> {
 const INSPECT = '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.HostConfig.Memory}}'
 
 /**
- * Спросить docker и cgroup обо всём сразу.
+ * Ask docker and the cgroup about everything at once.
  *
- * Три чтения параллельно, с коротким сроком: это происходит на смерти ядра,
- * когда комната уже ждёт объяснения, и лишняя секунда здесь — секунда чужого
- * семинара. Ни одно из трёх не обязано получиться: контейнера может уже не
- * быть, `exec` в остановленный не заходит, журнала может не быть вовсе.
+ * Three reads in parallel, with a short timeout: this happens at a kernel's
+ * death, when the room is already waiting for an explanation, and an extra
+ * second here is a second of someone's seminar. None of the three is required
+ * to succeed: the container may be gone already, `exec` does not get into a
+ * stopped one, and there may be no log at all.
  */
 export async function readContainer(sessionId: string, role: KernelRole = 'room'): Promise<MemoryReading> {
   const container = roomContainer(sessionId, role)
@@ -223,14 +228,15 @@ export async function readContainer(sessionId: string, role: KernelRole = 'room'
 }
 
 /**
- * Убила ли память — с оглядкой на то, что мы про эту комнату уже знали.
+ * Whether memory killed it, in light of what we already knew about this room.
  *
- * Счётчик вырос с прошлого замера — да, и спорить не о чем. Замера не было
- * (сервер перезапустили, комнату подобрали чужую) — судим по пику: он в
- * пределах трёх процентов от лимита у того, кого только что убили, и заметно
- * ниже у того, кто умер по любой другой причине. Три процента, а не «равно»:
- * cgroup успевает дописать в `memory.peak` часть последней аллокации, и пик
- * бывает чуть БОЛЬШЕ лимита.
+ * If the counter grew since the last reading, yes, and there is nothing to
+ * argue about. If there was no reading (the server was restarted, the room
+ * was adopted from elsewhere), we judge by the peak: it is within three
+ * percent of the limit for one that was just killed, and noticeably lower for
+ * one that died of any other cause. Three percent rather than "equal": the
+ * cgroup manages to add part of the last allocation to `memory.peak`, and the
+ * peak can be slightly ABOVE the limit.
  */
 export function killedByMemory(reading: MemoryReading, seen: number | undefined): boolean {
   if (reading.kills !== null && seen !== undefined) return reading.kills > seen
@@ -250,12 +256,12 @@ function humanBytes(value: number | null): string {
 }
 
 /**
- * Фраза, ради которой всё это и собиралось.
+ * The sentence all of this was gathered for.
  *
- * «Контейнер убит по памяти: лимит 2 ГБ, занято 2 ГБ на ячейке 21» — этого
- * хватает, чтобы понять, что делать дальше, не заходя на машину. Номер ячейки
- * тот же, что нарисован в комнате слева от неё, поэтому ходить искать её не
- * надо.
+ * "The container was killed by memory: limit 2 GB, 2 GB used on cell 21" is
+ * enough to understand what to do next without logging into the machine. The
+ * cell number is the same one drawn to its left in the room, so there is no
+ * need to go looking for it.
  */
 export function describe(reading: MemoryReading, oom: boolean, cell: number | null): string {
   const limit = humanBytes(reading.limit)
@@ -269,23 +275,24 @@ export function describe(reading: MemoryReading, oom: boolean, cell: number | nu
   if (reading.status !== '' && reading.status !== 'running') {
     return tr('server.theRoomContainerStoppedWithCode.b72e19', { p0: String(reading.exit ?? '?'), p1: last })
   }
-  // Память ни при чём, контейнер жив: остаётся то, что сказал сам Python.
+  // Memory has nothing to do with it and the container is alive: what remains is what Python itself said.
   return tr('server.theKernelProcessEndedWithoutRunningOut.4fd8a1', { p0: used, p1: limit, p2: last })
 }
 
 /**
- * Всё вместе: прочитать, решить, сказать.
+ * All together: read, decide, say.
  *
- * `null` — когда сказать нечего: не docker-бэкенд (у брокера свои контейнеры и
- * своя диагностика), docker не ответил, чисел нет. Молчание лучше уверенной
- * выдумки: комната уже получила честное «ядро перезапустилось», и дописывать к
- * нему угаданную причину — ровно тот способ потерять полдня, от которого это
- * всё и делается.
+ * `null` when there is nothing to say: not the docker backend (the broker has
+ * its own containers and its own diagnostics), docker did not answer, there
+ * are no numbers. Silence is better than a confident fabrication: the room
+ * has already received an honest "the kernel restarted", and appending a
+ * guessed cause to it is exactly the way to lose half a day that all of this
+ * exists to prevent.
  */
 export async function explain(
   sessionId: string,
   cell: number | null,
-  /** Где жило умершее ядро: в контейнере занятия или его личных тетрадей. */
+  /** Where the dead kernel lived: in the class's container or its personal notebooks'. */
   role: KernelRole = 'room',
 ): Promise<Postmortem | null> {
   if (!available()) return null
@@ -298,7 +305,7 @@ export async function explain(
   const key = seenKey(sessionId, role)
   const oom = killedByMemory(reading, killsSeen.get(key))
   if (reading.kills !== null) killsSeen.set(key, reading.kills)
-  // Ни одного числа и ни строчки журнала — значит, docker промолчал целиком.
+  // Not a single number and not a line of log means docker kept completely silent.
   if (!oom && reading.limit === null && reading.status === '' && reading.tail.length === 0) return null
   return { reading, oom, text: describe(reading, oom, cell) }
 }

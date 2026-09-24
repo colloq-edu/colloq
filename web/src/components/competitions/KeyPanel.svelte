@@ -1,11 +1,12 @@
 <script lang="ts">
   /**
-   * Ключ входа и вход по сохранённому ключу — правая колонка P1.
+   * The sign-in key and signing in with a saved key — the right column of P1.
    *
-   * Слой инстанса, а не соревнования: ключ один на человека, и он стоит СБОКУ
-   * от списка, а не внутри карточек. Ровно поэтому он показан крупно и каждый
-   * раз, а не однажды после вступления: человек, потерявший его, теряет свои
-   * посылки и своё место, и единственный, кто может вернуть их, — преподаватель.
+   * An instance layer, not a competition one: there is one key per person,
+   * and it stands to the SIDE of the list, not inside the cards. That is
+   * exactly why it is shown large and every time, not once after joining: a
+   * person who loses it loses their submissions and their place, and the
+   * only one who can give them back is the teacher.
    */
   import { tr } from '@shared/i18n'
   import { copyText } from '@/lib/clipboard'
@@ -15,7 +16,7 @@
   interface Props {
     me: EntrantMe | null
     busy: boolean
-    /** Отказ входа — словами сервера: «такого ключа нет», «ключ отключён». */
+    /** A sign-in refusal, in the server's words: "no such key", "key turned off". */
     refusal: string | null
     onsignin: (key: string) => void
     onsignout: () => void
@@ -27,8 +28,9 @@
   let copied = $state<'key' | 'link' | null>(null)
   let copyFailed = $state(false)
 
-  // Ключ диктуют вслух и переписывают с доски: строчные буквы, пробелы вместо
-  // дефисов и лишние дефисы приводит к виду тот же разбор, что на сервере.
+  // The key is dictated out loud and copied from the board: lowercase letters,
+  // spaces instead of dashes and extra dashes are normalised by the same
+  // parsing as on the server.
   const clean = $derived(normalizeEntrantKey(typed))
   const canSignIn = $derived(clean !== null)
 
@@ -55,8 +57,9 @@
         </h2>
       </header>
       <div class="flex flex-col gap-3 px-3.5 py-4">
-        <!-- 22px моноширинного с разрядкой: это число переписывают глазами в
-             телефон, и слипшиеся группы — главный способ ошибиться. -->
+        <!-- 22px of letter-spaced monospace: this number is copied by eye into
+             a phone, and groups run together are the main way to get it
+             wrong. -->
         <p class="select-all font-mono text-[22px] font-bold leading-7 tracking-[0.06em] text-ink">
           {me.key}
         </p>

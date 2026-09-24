@@ -1,10 +1,11 @@
 /*
- * Словарь читалки — один язык; про два вида файла см. room-ru.ts.
+ * The reader's dictionary — one language; about the two kinds of file see
+ * room-ru.ts.
  *
- * Публичные страницы рисуют тетрадь и её вывод, то есть говорят словами
- * комнаты; своего каталога у них нет. Серверный — тот же урезанный набор слов
- * состояния, что и у комнаты: тетрадь в читалке та же самая, и подписи под
- * ячейками в ней те же.
+ * Public pages draw a notebook and its output, that is, they speak in the
+ * room's words; they have no catalog of their own. The server one is the same
+ * trimmed set of status words as the room's: the notebook in the reader is the
+ * very same, and so are the captions under its cells.
  */
 import { registerMessages } from '@shared/i18n-runtime'
 import { commonMessages } from '@shared/locales/common'

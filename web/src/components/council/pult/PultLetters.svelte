@@ -1,24 +1,30 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   /**
-   * Письма по одной работе — три вида, и чужих здесь нет.
+   * Letters about one piece of work — three kinds, and nobody else's are
+   * here.
    *
-   * Оракул — полоса accent и пометка, попросил ли подсказку студент; такое
-   * письмо студент видит у себя, потому что просил сам. Личное письмо
-   * преподавателя — raised без полосы. Письмо всей группе — raised с полосой
-   * muted; отправить такое из пульта больше нельзя (группировка ушла 20.09), но
-   * написанные раньше в ленте остаются: переписку задним числом не переписывают.
+   * The oracle — an accent stripe and a mark saying whether the student
+   * asked for a hint; the student sees such a letter on their side, because
+   * they asked themselves. A teacher's personal letter — raised without a
+   * stripe. A letter to the whole group — raised with a muted stripe; such a
+   * letter can no longer be sent from the console (grouping went away on 20
+   * Sep 2026), but ones written earlier stay in the feed: correspondence is
+   * not rewritten after the fact.
    *
-   * Счёт прочитавших сервер не везёт (`CouncilReply` — текст, время, автор и
-   * адресат), поэтому строка «прочитали N из M» здесь НЕ печатается: число,
-   * которого нет, придумывать нельзя — по нему решают, повторять ли объяснение.
+   * The server does not send a count of readers (`CouncilReply` is text,
+   * time, author and recipient), so a "read by N of M" line is NOT printed
+   * here: a number that does not exist must not be invented — people decide
+   * by it whether to repeat an explanation.
    *
-   * Лента живёт в доке, прибитом к низу работы, и это её главное свойство.
-   * Раньше письма стояли в общей прокрутке под кодом и выводом: чтобы увидеть,
-   * что ты уже написал этому человеку, надо было пролистать чужой код («надо
-   * листать куда-то что-то, нет фиксированной области общения»). Теперь они
-   * всегда на экране, прокручены к последнему, и занимают не больше трети
-   * панели — код важнее переписки ровно до тех пор, пока переписки мало.
+   * The feed lives in a dock pinned to the bottom of the work, and that is
+   * its main property. Letters used to stand in the shared scroll under the
+   * code and output: to see what you had already written to this person you
+   * had to scroll through someone's code ("you have to scroll somewhere for
+   * something, there is no fixed area for communication"). Now they are
+   * always on screen, scrolled to the latest, and take no more than a third
+   * of the panel — code matters more than correspondence exactly as long as
+   * there is little correspondence.
    */
   import type { CouncilReply } from '@shared/protocol'
   import { pultClock } from '@/lib/council-pult'
@@ -31,11 +37,12 @@
 
   let feed = $state<HTMLElement | null>(null)
   /**
-   * Лента стоит на последнем письме.
+   * The feed rests on the latest letter.
    *
-   * Открыли работу — видно то, что написали ей последним, а не то, с чего
-   * переписка началась: разговор продолжают с конца. Прыжок без анимации и
-   * сразу: это не прокрутка, а исходное положение ленты.
+   * When a piece of work is opened, what shows is what was written to it
+   * last, not where the correspondence started: a conversation is continued
+   * from the end. A jump without animation and immediate: this is not a
+   * scroll but the feed's starting position.
    */
   $effect(() => {
     const count = letters.length
@@ -67,7 +74,7 @@
 {/if}
 
 <style>
-  /* Треть панели и ни строкой больше; писем нет — нет и места под них. */
+  /* A third of the panel and not a line more; no letters — no room for them. */
   .letters { display: flex; flex-direction: column; gap: 6px; max-height: min(30dvh, 220px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 8px 10px; background: rgb(var(--canvas)); border: 1px solid rgb(var(--line)); }
   .letter { display: flex; flex-direction: column; gap: 3px; padding: 7px 10px; background: rgb(var(--surface)); }
   .letter-oracle { border-left: 3px solid rgb(var(--accent)); }

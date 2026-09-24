@@ -1,12 +1,12 @@
 import { tr } from '@shared/i18n'
 /**
- * Курсы и публикации: и то, что делает преподаватель, и то, что читает студент.
+ * Courses and publications: both what the teacher does and what the student
+ * reads.
  *
- * Публичная половина не спрашивает ничего — ни имени, ни входа, — и потому
- * отдаёт только то, что уже собрано в `publication_steps`. Никакого
- * разворачивания документа Yjs на публичном запросе: это многомегабайтная
- * работа в том же процессе, который в эту минуту ведёт занятие, и без всякого
- * ограничения частоты.
+ * The public half asks for nothing, neither a name nor a login, and so serves
+ * only what is already assembled in `publication_steps`. No unfolding of a
+ * Yjs document on a public request: that is multi-megabyte work in the same
+ * process that is running a class at that minute, with no rate limit at all.
  */
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { ownerOnly, requireStaff, currentStaff } from '../admin/auth.js'
@@ -67,17 +67,18 @@ function bad(res: Response, message: string): void {
 }
 
 /**
- * Публичный ответ, который не изменился, — 304 и ни одного чтения базы.
+ * A public response that has not changed: a 304 and not a single database
+ * read.
  *
- * Метку версии ставим сами, а не отдаём на откуп ETag'у Express: тот считает
- * хэш ПО СОБРАННОМУ телу, то есть после того, как страница уже прочитана и
- * разобрана, — экономится трафик и не экономится работа. Здесь наоборот:
- * `revision` публикации известен по одной индексированной строке, и всё
- * тяжёлое стоит после этой проверки.
+ * We set the version tag ourselves rather than leaving it to Express's ETag:
+ * that one hashes the ASSEMBLED body, that is, after the page has already
+ * been read and parsed, which saves traffic but not work. Here it is the
+ * other way round: the publication's `revision` is known from one indexed
+ * row, and everything heavy comes after this check.
  *
- * `max-age` небольшой и без `immutable`: адрес у страницы постоянный, а
- * содержимое переиздают — вечный кэш означал бы разбор недельной давности у
- * того, кто открыл ссылку до переиздания.
+ * `max-age` is small and without `immutable`: the page's address is
+ * permanent, but the content is republished, and an eternal cache would mean
+ * a week-old review for whoever opened the link before the republication.
  */
 const PUBLIC_MAX_AGE_S = 300
 
@@ -85,8 +86,8 @@ function fresh(req: Request, res: Response, tag: string): boolean {
   const etag = `W/"${tag}"`
   res.setHeader('etag', etag)
   res.setHeader('cache-control', `public, max-age=${PUBLIC_MAX_AGE_S}`)
-  // Заголовок может нести список меток и `W/` перед каждой — сравниваем по
-  // словам, а не строкой целиком.
+  // The header may carry a list of tags with `W/` before each: we compare word
+  // by word, not the whole string.
   const asked = req.headers['if-none-match']
   if (typeof asked !== 'string') return false
   const matched = asked
@@ -98,11 +99,11 @@ function fresh(req: Request, res: Response, tag: string): boolean {
 }
 
 /**
- * Отклонённое обещание — в обработчик ошибок, а не в пустоту.
+ * A rejected promise goes to the error handler, not into the void.
  *
- * Express 4 не знает про async: брошенное после первого `await` не доходит до
- * error-middleware вовсе, а запрос не отвечает никогда. Та же обёртка, что в
- * routes/admin-import.ts, и по той же причине.
+ * Express 4 knows nothing about async: what is thrown after the first `await`
+ * never reaches the error middleware, and the request never answers. The same
+ * wrapper as in routes/admin-import.ts, for the same reason.
  */
 const wrap =
   (handler: (req: Request, res: Response) => Promise<void>) =>
@@ -111,24 +112,24 @@ const wrap =
   }
 
 /**
- * Курс с живыми именами семинаров — тот же, что уходит в выгрузку сайта.
- * Одна функция на оба места: routes/course-view.ts.
+ * The course with live seminar names, the same one that goes into the site
+ * export. One function for both places: routes/course-view.ts.
  */
 const freshItems = freshCourseItems
 
 export function courseRoutes(): Router {
   const router = Router()
 
-  /* ------------------------------------------------------------ панель */
+  /* ------------------------------------------------------------- panel */
 
   router.get('/api/admin/courses', requireStaff, (_req, res) => {
     res.json({
       courses: listCourses().map((course) => ({
         ...course,
         items: freshItems(course.items),
-        // Прежние имена — вместе с курсом: отказ «этот адрес — прежнее имя
-        // такого-то курса» отсылает в его настройки, и там должно быть что
-        // показать и что отпустить.
+        // Former names travel with the course: the refusal "this address is
+        // the former name of such-and-such course" sends you to its settings,
+        // and there has to be something to show and release there.
         former: formerSlugs('course', course.id),
       })),
     })
@@ -170,11 +171,11 @@ export function courseRoutes(): Router {
   })
 
   /**
-   * Состав и порядок — целиком, со сравнением версии.
+   * The contents and order, whole, with a version comparison.
    *
-   * Несовпадение — не ошибка, а гонка: кто-то переставил курс, пока этот экран
-   * держал его старым. Ответ 409 несёт список таким, какой он сейчас, чтобы
-   * экран показал правду, а не спорил с ней.
+   * A mismatch is not an error but a race: someone rearranged the course
+   * while this screen held the old one. The 409 answer carries the list as it
+   * is now, so the screen shows the truth instead of arguing with it.
    */
   router.put('/api/admin/courses/:id/items', requireStaff, (req, res) => {
     const course = getCourse(req.params.id)
@@ -186,13 +187,15 @@ export function courseRoutes(): Router {
     for (const raw of incoming as Record<string, unknown>[]) {
       if (raw?.kind === 'planned') {
         /*
-         * Строка плана без темы — отказ словами, а не пропажа.
+         * A plan row without a topic is a refusal in words, not a
+         * disappearance.
          *
-         * Раньше такая строка выбрасывалась молча и ответ был 200: пока строки
-         * плана заводил только скрипт из таблицы, пустых тем он не присылал.
-         * Теперь их набирают руками в панели, и «Добавить» с пустой темой
-         * отвечало бы успехом, после которого строки нет, — нумерация
-         * остальных недель при этом уже не та, что в расписании.
+         * Such a row used to be dropped silently with a 200: while plan rows
+         * were created only by the script from the spreadsheet, it never sent
+         * empty topics. Now they are typed by hand in the panel, and "Add"
+         * with an empty topic would answer with a success after which the row
+         * is gone, and the numbering of the other weeks no longer matches the
+         * schedule.
          */
         const name = str(raw.name, MAX_COURSE_NAME)
         if (!name) return bad(res, tr('server.course.plannedNeedsTopic'))
@@ -201,11 +204,12 @@ export function courseRoutes(): Router {
       }
       if (raw?.kind === 'gone') {
         /*
-         * Ссылка на оставшееся чтение переживает перестановку строк.
+         * The link to the remaining reading survives rearranging the rows.
          *
-         * Не прислали — берём из того, что уже записано: экран, который про эту
-         * ссылку ничего не знает, иначе стирал бы её первым же сохранением
-         * курса, и надгробие снова становилось тупиком.
+         * If it was not sent, we take it from what is already recorded: a
+         * screen that knows nothing about this link would otherwise erase it
+         * on the very first save of the course, and the tombstone would become
+         * a dead end again.
          */
         const name = str(raw.name, MAX_COURSE_NAME)
         const at = Number(raw.at) || Date.now()
@@ -248,17 +252,18 @@ export function courseRoutes(): Router {
   })
 
   /**
-   * Стереть курс — владельцем, и только его.
+   * Erase a course: by an owner, and only by an owner.
    *
-   * Курс — единственный адрес, который раздают потоку целиком (`/c/slug`), и
-   * после удаления он отвечает 404 всем, кому его называли: и тем, кто в
-   * запросе, и тем, кого в нём нет. Это ровно та черта, по которой удаление
-   * семинара и «стереть страницу» уже владельческие («takes work away from
-   * people who are not in the request»), а курс жил без неё — любой
-   * преподаватель, одним запросом, без подтверждения и без обратного хода.
+   * A course is the only address handed to a whole cohort (`/c/slug`), and
+   * after deletion it answers 404 to everyone it was given to: both those in
+   * the request and those not in it. That is exactly the line by which
+   * deleting a seminar and "erase the page" are already owner-only ("takes
+   * work away from people who are not in the request"), while the course
+   * lived without it: any teacher, with one request, without confirmation and
+   * with no way back.
    *
-   * И отсутствующий курс — 404, а не бодрое `{ok:true}`: «удалил» про то, чего
-   * не было, — это неправда в ответе.
+   * And a missing course is a 404, not a cheerful `{ok:true}`: "deleted"
+   * about something that did not exist is a lie in the response.
    */
   router.delete('/api/admin/courses/:id', ownerOnly('delete a course'), (req, res) => {
     if (!getCourse(req.params.id)) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
@@ -267,11 +272,11 @@ export function courseRoutes(): Router {
   })
 
   /**
-   * Имя в адресе — курсу или публикации.
+   * A name in the address, for a course or a publication.
    *
-   * Отдельным маршрутом, а не полем в PATCH: занятое имя — это отказ, о
-   * котором надо сказать словами, а не пропажа среди трёх других полей,
-   * сохранившихся успешно.
+   * A separate route rather than a field in PATCH: a taken name is a refusal
+   * that has to be said in words, not a loss among three other fields that
+   * were saved successfully.
    */
   router.put('/api/admin/slug/:kind/:id', requireStaff, (req, res) => {
     const raw = req.body?.slug
@@ -286,22 +291,25 @@ export function courseRoutes(): Router {
     const outcome = course ? setCourseSlug(target.id, slug) : setPublicationSlug(target.id, slug)
     if (outcome === 'taken') {
       /*
-       * Отказ называет держателя, и это не вежливость.
+       * The refusal names the holder, and that is not politeness.
        *
-       * «Адрес «ml-2025» уже занят» — тупик: чаще всего его держит ПРЕЖНЕЕ имя
-       * другого курса (тот переименовали, а старое имя осталось адресом ради
-       * розданной ссылки), и в списке курсов такой строки не видно вовсе.
-       * Преподаватель ищет то, чего нет, и заканчивает адресом с цифрой на
-       * конце.
+       * "The address "ml-2025" is already taken" is a dead end: most often it
+       * is held by the FORMER name of another course (that one was renamed,
+       * and the old name stayed an address for the sake of a link handed
+       * out), and there is no such row in the course list at all. The teacher
+       * looks for something that is not there and ends up with an address
+       * with a digit at the end.
        *
-       * Держатель едет отдельным полем, а не только внутри фразы: панель по
-       * нему решает, показывать ли «Отпустить прежний адрес» у того же поля
-       * (web/src/lib/adminApi.ts · addressHolderOf), а разбирать русский текст
-       * ей нечем. `null` значит «занято, а кем — сказать не могу»: экран тогда
-       * повторяет фразу и ничего не предлагает.
+       * The holder travels as a separate field, not only inside the
+       * sentence: the panel decides by it whether to show "Release the former
+       * address" next to the same field (web/src/lib/adminApi.ts ·
+       * addressHolderOf), and it has no way to parse Russian text. `null`
+       * means "taken, but I cannot say by whom": the screen then repeats the
+       * sentence and offers nothing.
        *
-       * И потому же во фразе больше нет совета идти в настройки чужого курса:
-       * отпускают прямо здесь, в двух сантиметрах от неё.
+       * For the same reason the sentence no longer advises going to another
+       * course's settings: the release happens right here, two centimeters
+       * away from it.
        */
       const holder = addressHolder(course ? 'course' : 'publication', slug!)
       const what = course ? tr("server.course.7c69f0") : tr("server.page.356bb7")
@@ -319,16 +327,17 @@ export function courseRoutes(): Router {
   })
 
   /**
-   * Отпустить своё прежнее имя.
+   * Release one's own former name.
    *
-   * Прежний адрес держится вечно и не зря: ссылка с ним записана в чате группы.
-   * Но курс «ml-2025», переименованный в «ml-2025-fall», держал «ml-2025» и для
-   * курса следующего года — навсегда, и освободить его было нечем, кроме
-   * удаления курса-владельца.
+   * A former address is held forever, and for good reason: a link with it is
+   * written in the group chat. But the course "ml-2025", renamed to
+   * "ml-2025-fall", held "ml-2025" against next year's course too, forever,
+   * and there was no way to free it except deleting the owning course.
    *
-   * Отпускает только владелец и только прежнее: живое имя снимается сменой
-   * имени, чужое не трогается вовсе (publish/store.ts · releaseFormerSlug), и
-   * 404 здесь означает ровно это — такого прежнего имени у вас нет.
+   * Only the owner releases, and only a former name: a live name is dropped
+   * by changing the name, someone else's is not touched at all
+   * (publish/store.ts · releaseFormerSlug), and a 404 here means exactly
+   * that: you have no such former name.
    */
   router.delete('/api/admin/slug/:kind/:id/former/:slug', requireStaff, (req, res) => {
     const kind = req.params.kind === 'course' ? 'course' : 'publication'
@@ -338,15 +347,16 @@ export function courseRoutes(): Router {
     res.json({ ok: true })
   })
 
-  /* -------------------------------------------------------- публикация */
+  /* ------------------------------------------------------- publication */
 
   /**
-   * Из чего можно собрать шаги — и что уже опубликовано.
+   * What steps can be assembled from, and what is already published.
    *
-   * Кандидаты считаются с уступкой цикла событий (`candidatesForAsync`), а не
-   * одним синхронным проходом: на комнате с семестром истории это секунды в том
-   * самом процессе, который в эту минуту держит сокеты занятия. Результат тот
-   * же — уступка не меняет ни одного поля, — а пара рядом продолжает идти.
+   * Candidates are computed yielding the event loop (`candidatesForAsync`)
+   * rather than in one synchronous pass: on a room with a semester of history
+   * that is seconds in the very process that holds the class's sockets at
+   * that minute. The result is the same (yielding changes no field), and the
+   * lesson next door goes on.
    */
   router.get(
     '/api/admin/seminars/:id/publish',
@@ -383,13 +393,14 @@ export function courseRoutes(): Router {
       if (asked.length > MAX_STEPS) return bad(res, tr("server.noMoreThanSteps.63addd", { p0: MAX_STEPS }))
 
       /*
-       * Что просили — и что из этого шагом не станет.
+       * What was asked for, and what of it will not become a step.
        *
-       * Выпавший момент раньше исчезал молча: преподаватель отмечал семь, а на
-       * странице оказывалось шесть. Причины по природе разные — про запрос
-       * («без имени», «уже есть в списке») и про занятие («в тетради пусто»,
-       * «запись не читается»), — и все они уезжают в ответ (shared/publish.ts ·
-       * SkippedStep), чтобы панель могла назвать пропавший момент.
+       * A moment that dropped out used to vanish silently: the teacher marked
+       * seven, and the page had six. The reasons differ in nature: about the
+       * request ("no name", "already in the list") and about the class ("the
+       * notebook is empty", "the record cannot be read"), and all of them go
+       * into the response (shared/publish.ts · SkippedStep), so that the panel
+       * can name the missing moment.
        */
       const wanted: { seq: number; label: string; at: number }[] = []
       const skipped: SkippedStep[] = []
@@ -398,16 +409,18 @@ export function courseRoutes(): Router {
         const label = str(raw?.label, MAX_STEP_LABEL)
         const seq = Number(raw?.seq)
         /*
-         * Адрес шага — номер версии из ленты: целое и больше нуля. Ноль занят
-         * последней страницей (ниже), дробное и отрицательное не адресуют
-         * ничего. Это не «выпавший момент», а неверный запрос, и отвечать на
-         * него надо словами, а не молчанием и не пятисоткой из транзакции.
+         * A step's address is a version number from the feed: an integer
+         * greater than zero. Zero is taken by the last page (below); fractions
+         * and negatives address nothing. That is not "a moment that dropped
+         * out" but a wrong request, and it has to be answered in words, not
+         * with silence and not with a 500 from the transaction.
          */
         if (!Number.isInteger(seq) || seq <= 0) {
           return bad(res, tr("server.chooseAVersionForTheStepA.ec311c"))
         }
-        // Безымянный шаг не публикуется: рельса из «Снимок №14» — это не
-        // названные моменты, а признание, что назвать их забыли.
+        // An unnamed step is not published: a rail of "Snapshot #14" entries
+        // is not named moments but an admission that somebody forgot to name
+        // them.
         if (!label) {
           skipped.push({ seq, label: '', reason: 'unnamed' })
           continue
@@ -421,21 +434,23 @@ export function courseRoutes(): Router {
       }
 
       /*
-       * Все шаги — одним проходом истории, а не по проходу на шаг.
+       * All steps in one pass over the history, not a pass per step.
        *
-       * Каждый шаг разворачивался своим Y.Doc от ближайшего кейфрейма
-       * (`buildPageAt`): тетрадь с картинками — мегабайты на шаг, а шагов до
-       * сорока, то есть до сорока полных повторов истории подряд. Теперь
-       * история проигрывается ОДИН раз на всю публикацию, а к состоянию
-       * предыдущего шага доприменяются только строки между ним и следующим
-       * (publish/replay.ts, `pagesAtAsync`).
+       * Each step used to unfold in its own Y.Doc from the nearest keyframe
+       * (`buildPageAt`): a notebook with images is megabytes per step, and
+       * there are up to forty steps, that is, up to forty full replays of the
+       * history in a row. Now the history is replayed ONCE for the whole
+       * publication, and only the rows between the previous step and the next
+       * are applied on top of the previous step's state (publish/replay.ts,
+       * `pagesAtAsync`).
        *
-       * Уступка цикла событий никуда не делась — она внутри прохода, между
-       * шагами: проекция страницы (хэш каждой картинки, base64 в байты) осталась
-       * своя на каждый шаг, а в том же процессе у коллеги идёт пара. Проход сам
-       * идёт по возрастанию `seq` и сам отбрасывает повторы; в ответ шаги
-       * раскладываются в том порядке, в каком их назвали, потому что порядок
-       * рельсы выбирает преподаватель, а не арифметика.
+       * Yielding the event loop has not gone anywhere: it is inside the pass,
+       * between steps: page projection (a hash of every image, base64 to
+       * bytes) is still done per step, and a colleague is teaching a lesson in
+       * the same process. The pass itself goes in ascending `seq` and drops
+       * duplicates by itself; in the response the steps are laid out in the
+       * order they were named, because the rail's order is chosen by the
+       * teacher, not by arithmetic.
        */
       const blobs = newBlobBag()
       const built = new Map<number, PublicCell[]>()
@@ -454,13 +469,14 @@ export function courseRoutes(): Router {
       }
 
       /*
-       * Последняя страница — тетрадь как она есть сейчас, и она есть всегда.
-       * Публикация без неё была бы рассказом о занятии, обрывающимся на середине;
-       * `seq: 0` — её постоянный адрес, свободный по построению (AUTOINCREMENT
-       * начинается с единицы).
+       * The last page is the notebook as it is now, and it is always there. A
+       * publication without it would be a story of the class that breaks off
+       * in the middle; `seq: 0` is its permanent address, free by
+       * construction (AUTOINCREMENT starts at one).
        *
-       * И документ архивной комнаты не остаётся после этого в памяти: публикуют
-       * вечером, комнату при этом никто не открывал (routes/doc-visit.ts).
+       * And the archived room's document does not stay in memory after this:
+       * people publish in the evening, when nobody has opened the room
+       * (routes/doc-visit.ts).
        */
       steps.push({
         seq: 0,
@@ -484,7 +500,7 @@ export function courseRoutes(): Router {
     }),
   )
 
-  /** Снять страницу. Ссылка остаётся и говорит, что её сняли. */
+  /** Withdraw the page. The link stays and says that the page was withdrawn. */
   router.delete('/api/admin/seminars/:id/publish', requireStaff, (req, res) => {
     const pub = publicationOf(req.params.id)
     if (!pub) return res.status(404).json({ error: tr("server.notPublished.61a0a5") })
@@ -500,13 +516,13 @@ export function courseRoutes(): Router {
   })
 
   /**
-   * Страницы, ключом которым служит их собственный адрес.
+   * Pages keyed by their own address.
    *
-   * Удаление семинара по умолчанию оставляет чтение и обнуляет `session_id` —
-   * и все маршруты выше, ключуемые идентификатором комнаты, начинают отвечать
-   * 404. Страница при этом жива: отдаётся сервером и выкладывается на сайт
-   * каждым `make site`. Снять её было нечем, а на ней мог остаться чужой
-   * персональный вывод.
+   * Deleting a seminar by default keeps the reading and clears `session_id`,
+   * and all the routes above, keyed by the room id, start answering 404. The
+   * page itself is alive: served by the server and deployed to the site by
+   * every `make site`. There was no way to withdraw it, and someone's
+   * personal output might have remained on it.
    */
   router.get('/api/admin/publications', requireStaff, (_req, res) => {
     res.json({
@@ -533,10 +549,11 @@ export function courseRoutes(): Router {
   })
 
   /**
-   * Совсем: строки страницы стираются, надгробие в курсе теряет ссылку.
+   * For good: the page's rows are erased, and the tombstone in the course
+   * loses its link.
    *
-   * Владельцем, как и удаление семинара: снять страницу — это одно нажатие и
-   * обратимо, а стереть её нечем отменить.
+   * By an owner, like deleting a seminar: withdrawing a page is one click and
+   * reversible, while erasing it cannot be undone.
    */
   router.delete('/api/admin/publications/:id/forever', ownerOnly('delete a page'), (req, res) => {
     const pub = getPublication(req.params.id)
@@ -545,36 +562,37 @@ export function courseRoutes(): Router {
     res.json({ ok: true })
   })
 
-  /* ---------------------------------------------------------- публично */
+  /* ------------------------------------------------------------ public */
 
   router.get('/api/c/:id', (req, res) => {
-    // По имени или по идентификатору: ссылка, розданная до того, как курсу
-    // дали имя, обязана работать и после.
+    // By name or by id: a link handed out before the course was given a name
+    // must keep working afterwards.
     const course = findCourse(req.params.id)
     if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
     res.json({ course: publicCourseView(course) })
   })
 
   /**
-   * Страница семинара — с меткой версии, потому что её открывают потоком.
+   * The seminar page, with a version tag, because a whole cohort opens it.
    *
-   * Публикация неизменяема между переизданиями: `revision` растёт при каждой
-   * записи, а состояние (снятая/живая) меняется отдельным нажатием — вдвоём
-   * они и есть версия ответа. Пятьсот человек, открывающих ссылку на разборе
-   * в одну минуту, при совпавшей метке получают 304 и не стоят ни строки
-   * базы; пять минут `max-age` — про то, что читают эти страницы подряд,
-   * листая шаги, а меняются они раз в неделю.
+   * A publication is immutable between republications: `revision` grows with
+   * every write, and the state (withdrawn/live) changes by a separate click;
+   * together they are the version of the response. Five hundred people
+   * opening the link at a review in the same minute get a 304 on a matching
+   * tag and cost not a single database row; the five minutes of `max-age` are
+   * about these pages being read in a row, paging through the steps, while
+   * they change once a week.
    *
-   * Заголовок ставится ДО чтения шагов, и в этом весь смысл: `stepHeadings`
-   * читает таблицу шагов, и отвечать 304 после неё значило бы не сэкономить
-   * ничего.
+   * The header is set BEFORE the steps are read, and that is the whole
+   * point: `stepHeadings` reads the steps table, and answering 304 after it
+   * would save nothing.
    */
   router.get('/api/p/:id', (req, res) => {
     const pub = findPublication(req.params.id)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     if (fresh(req, res, `${pub.id}.${pub.revision}.${pub.state}`)) return
-    // У осиротевшей страницы комнаты нет, и по `sessionId` курс не найдётся:
-    // обратно её держит надгробие. Путь наверх должен оставаться и у неё.
+    // An orphaned page has no room, and the course will not be found by
+    // `sessionId`: the tombstone holds it back. It must keep a way up too.
     const course = courseOfPublication(pub)
     const seminar: PublicSeminar = {
       id: pub.id,
@@ -597,9 +615,9 @@ export function courseRoutes(): Router {
     const asked = req.params.seq === 'first' ? null : Number(req.params.seq)
     if (asked !== null && !Number.isFinite(asked)) return bad(res, tr("server.badStep.8811c6"))
     /*
-     * Шаг — самое тяжёлое, что отдаёт публичная половина: страница целиком,
-     * со всеми текстовыми выводами. И самое неизменное: пока `revision` тот
-     * же, это байт в байт тот же шаг.
+     * A step is the heaviest thing the public half serves: the whole page,
+     * with all its text outputs. And the most unchanging: while `revision` is
+     * the same, it is byte for byte the same step.
      */
     if (fresh(req, res, `${pub.id}.${pub.revision}.${req.params.seq}`)) return
     const step = readStep(pub.id, asked)
@@ -608,27 +626,29 @@ export function courseRoutes(): Router {
   })
 
   /**
-   * Тетрадь файлом .ipynb.
+   * The notebook as an .ipynb file.
    *
-   * Единственный способ унести код с собой целиком: в самой комнате экспорта
-   * нет вовсе, а выделить мышью через несколько ячеек нельзя — каждая из них
-   * отдельный редактор. Отдаётся тот шаг, который назвали в `?step=`; без
-   * номера — последний, то есть тетрадь на момент публикации.
+   * The only way to take the code away whole: the room itself has no export
+   * at all, and selecting across several cells with the mouse is impossible,
+   * since each is a separate editor. The step named in `?step=` is served;
+   * without a number, the last one, that is, the notebook as of publication.
    *
-   * Выводы в файл не кладутся. Notebook без них открывается везде и весит
-   * килобайты; с ними это мегабайты base64 в файле, который студент несёт к
-   * себе, чтобы запустить заново, — и первым делом всё равно нажмёт «Run».
+   * Outputs are not put into the file. A notebook without them opens
+   * anywhere and weighs kilobytes; with them it is megabytes of base64 in a
+   * file the student takes home to run again, and the first thing they do is
+   * press "Run" anyway.
    */
   router.get('/api/p/:id/notebook.ipynb', (req, res) => {
     const pub = findPublication(req.params.id)
     if (!pub || pub.state !== 'published') return res.status(404).end()
     /*
-     * Шаг, на котором стоит читатель, — если он про него сказал.
+     * The step the reader is on, if they said which.
      *
-     * Без `?step=` отдаётся последний, то есть тетрадь на момент публикации:
-     * так эта ссылка работала всегда, и так подписана страница. Незнакомый
-     * номер — тоже последний шаг, а не 404: скачивание не то место, где
-     * человеку объясняют про адреса, и файл в руках лучше пустого отказа.
+     * Without `?step=` the last one is served, that is, the notebook as of
+     * publication: that is how this link always worked, and how the page
+     * labels it. An unknown number also gets the last step, not a 404: a
+     * download is not the place to explain addresses to a person, and a file
+     * in hand beats an empty refusal.
      */
     const wanted = Number(req.query.step)
     const body = notebookOfStep(pub.id, Number.isInteger(wanted) ? wanted : null)
@@ -643,17 +663,18 @@ export function courseRoutes(): Router {
   })
 
   /**
-   * Крупные куски выводов — по хэшу содержимого.
+   * Large pieces of output, by content hash.
    *
-   * Хэш и есть версия, поэтому кэш вечный: страницу открывают с телефона, а
-   * график на полмегабайта не должен приезжать дважды.
+   * The hash is the version, so the cache is eternal: the page is opened from
+   * a phone, and a half-megabyte chart must not arrive twice.
    *
-   * Тип берётся не из записи, а из белого списка: mime вывода приходит из
-   * документа комнаты, то есть от кого угодно, а `content-type` решает, чем
-   * ответ будет при переходе по прямой ссылке. `image/svg+xml` — это документ,
-   * и скрипт внутри него исполнился бы на origin инстанса, с печеньем того,
-   * кто ссылку открыл. Такое и всё незнакомое уходит вложением, которое
-   * браузер не показывает; `sandbox` — на случай, если его всё-таки откроют.
+   * The type is taken not from the record but from a whitelist: an output's
+   * mime comes from the room's document, that is, from anyone, and
+   * `content-type` decides what the response becomes when a direct link is
+   * followed. `image/svg+xml` is a document, and a script inside it would run
+   * on the instance's origin, with the cookie of whoever opened the link.
+   * That and everything unknown goes out as an attachment, which the browser
+   * does not display; `sandbox` is there in case it gets opened anyway.
    */
   router.get('/api/p/:id/blob/:hash', (req, res) => {
     const pub = findPublication(req.params.id)
@@ -661,10 +682,10 @@ export function courseRoutes(): Router {
     const blob = readBlob(pub.id, req.params.hash)
     if (!blob) return res.status(404).end()
     /*
-     * Тип — из белого списка, и не обязательно тот, что записан в строке:
-     * фигура plotly отдаётся `application/json`. Документом ни то ни другое не
-     * становится, а `application/vnd.plotly.v1+json` в заголовке ничего не
-     * добавляет и в чужих руках читается хуже.
+     * The type comes from the whitelist, and is not necessarily the one
+     * written in the row: a plotly figure is served as `application/json`.
+     * Neither becomes a document, and `application/vnd.plotly.v1+json` in the
+     * header adds nothing and reads worse in other hands.
      */
     const type = spillContentType(blob.mime)
     res.setHeader('content-type', type ?? 'application/octet-stream')

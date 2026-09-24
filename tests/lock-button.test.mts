@@ -1,28 +1,28 @@
 /**
- * Замок на ячейке глазами преподавателя: что делает щелчок и что обещает
- * подсказка.
+ * The lock on a cell through the teacher's eyes: what a click does and what
+ * the hint promises.
  *
- * Сервер на `cell:open` открывает так, как заведено в комнате (control.ts ·
- * `opens`), и кнопка обязана читать то же правило. Иначе в консилиумной
- * комнате подсказка обещала «открыть комнате» и намекала, что консилиум —
- * только удержанием, а после первого щелчка второй раскрывал меню вместо
- * того, чтобы закрыть ячейку: «ошибка чинится тем же нажатием» переставало
- * быть правдой ровно там, где нажимают посреди фразы.
+ * On `cell:open` the server opens the way the room is set up (control.ts ·
+ * `opens`), and the button must read the same rule. Otherwise in a council
+ * room the hint promised "open to the room" and implied that council is only
+ * by holding, and after the first click the second one opened the menu
+ * instead of closing the cell: "a mistake is fixed by the same press" stopped
+ * being true exactly where people press mid-sentence.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { lockHint, lockLabel, lockPress } from '../web/src/lib/lock-button.js'
 
-test('в лекции щелчок — закрыта ↔ открыта всем, консилиум за меню', () => {
+test('in a lecture a click toggles closed ↔ open to all, council is behind the menu', () => {
   assert.deepEqual(lockPress('closed', 'shared'), { kind: 'open', open: true })
   assert.deepEqual(lockPress('open', 'shared'), { kind: 'open', open: false })
-  // В консилиум щелчком не попадали — щелчок по нему открывает меню.
+  // A click never led into council — a click on it opens the menu.
   assert.deepEqual(lockPress('council', 'shared'), { kind: 'menu' })
 
   /*
-   * Два режима замка зовутся одинаково везде, где о них говорят: в строке
-   * правил, в меню замка и в подсказке. Разные имена одного и того же и есть
-   * то, из-за чего «открытая ячейка» ничего не объясняла.
+   * The two lock modes are named the same everywhere they are talked about:
+   * in the rules line, in the lock menu and in the hint. Different names for
+   * one and the same thing are exactly why "open cell" explained nothing.
    */
   assert.equal(lockLabel('closed', 'shared'), 'Открыть ячейку: пишут вместе')
   assert.equal(lockLabel('open', 'shared'), 'Закрыть ячейку')
@@ -32,15 +32,16 @@ test('в лекции щелчок — закрыта ↔ открыта все�
   assert.equal(lockHint('council', 'shared'), 'Консилиум · щелчок — настроить доступ к ячейке')
 })
 
-test('в консилиуме щелчок — закрыта ↔ консилиум, и второе нажатие закрывает', () => {
-  // Первый щелчок открывает (сервер сделает из него консилиум по правилу).
+test('in council a click toggles closed ↔ council, and the second press closes', () => {
+  // The first click opens (the server turns it into council by the rule).
   assert.deepEqual(lockPress('closed', 'council'), { kind: 'open', open: true })
-  // Второй — закрывает, а не раскрывает меню: промах чинится тем же нажатием.
+  // The second one closes rather than opening the menu: a miss is fixed by
+  // the same press.
   assert.deepEqual(lockPress('council', 'council'), { kind: 'open', open: false })
-  // Открытую всем через меню тоже закрывает щелчок.
+  // A cell opened to all through the menu is also closed by a click.
   assert.deepEqual(lockPress('open', 'council'), { kind: 'open', open: false })
 
-  // Подсказка обещает ровно то, что случится: консилиум, а не общий текст.
+  // The hint promises exactly what will happen: council, not shared text.
   assert.equal(lockLabel('closed', 'council'), 'Открыть консилиум в этой ячейке')
   assert.equal(lockLabel('council', 'council'), 'Закрыть ячейку')
   assert.equal(lockLabel('open', 'council'), 'Закрыть ячейку')
@@ -50,7 +51,7 @@ test('в консилиуме щелчок — закрыта ↔ консили
   )
   assert.equal(lockHint('council', 'council'), 'Закрыть ячейку · удержать — выбрать доступ')
   assert.equal(lockHint('open', 'council'), 'Закрыть ячейку · удержать — выбрать доступ')
-  // Ни одна подсказка консилиумной комнаты не обещает общий текст щелчком.
+  // No hint in a council room promises shared text on a click.
   for (const state of ['closed', 'open', 'council'] as const) {
     assert.equal(lockHint(state, 'council').includes('комнате'), false)
     assert.equal(lockLabel(state, 'council').includes('комнате'), false)

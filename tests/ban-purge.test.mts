@@ -1,18 +1,20 @@
 /**
- * Что бан делает, кроме закрытой двери.
+ * What a ban does besides closing the door.
  *
- * Дверь — это половина: забанили того, кто уже сидит внутри и прямо сейчас
- * пишет в общую ленту. Значит, надо убрать написанное, оборвать то, что ему
- * дописывает модель, и выставить его из комнаты — не тронув остальных
- * девятнадцать, у которых идёт пара.
+ * The door is half of it: the person banned is already sitting inside and
+ * writing into the shared feed right now. So what they wrote must be
+ * removed, whatever the model is still writing for them must be cut off, and
+ * they must be put out of the room, without touching the other nineteen who
+ * are in the middle of a class.
  *
- * И три вещи, которые ломаются молча. Вычистка, взявшая лишнюю запись, стирает
- * чужой вопрос с ответом на две страницы. Вычистка без отметки в истории стирает
- * его насовсем — вернуть ленту из документа больше нечем. А выселение,
- * закрывшее сокет раньше кадра, показывает человеку «нет соединения» вместо
- * причины и срока, и вкладка молча уходит стучаться обратно.
+ * And three things that break silently. A purge that takes one record too
+ * many erases someone else's question with a two-page answer. A purge
+ * without a mark in the history erases it for good: there is nothing left
+ * to bring the feed back from the document. And an eviction that closed the
+ * socket before the frame shows the person "no connection" instead of the
+ * reason and the term, and the tab silently goes back to knocking.
  *
- * Ни сети, ни ядра: сокеты поддельные, комната настоящая.
+ * No network, no kernel: the sockets are fake, the room is real.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -47,21 +49,21 @@ let seq = 0
 
 interface Room {
   id: string
-  /** Ада — ведущая по хост-токену: роль ей даёт `roleFor`, а не токен запроса. */
+  /** Ada is the host by host token: `roleFor` gives her the role, not the request token. */
   teacher: string
-  /** Петя — тот, кого сейчас закроют. */
+  /** Petya is the one about to be closed off. */
   loud: string
-  /** Мария — та, кого происходящее не касается вовсе. */
+  /** Maria is the one none of this concerns at all. */
   quiet: string
 }
 
 /**
- * Комната с преподавателем, крикуном и той, кто спрашивает по делу.
+ * A room with a teacher, a loudmouth and someone asking to the point.
  *
- * Идентификаторы участников — сквозные по всей базе (`participants.id` —
- * первичный ключ), поэтому у каждой комнаты они свои. Одинаковые `p_loud` в
- * двух комнатах — это ОДНА строка, привязанная к первой из них, и тест на
- * второй комнате молча проверял бы пустоту.
+ * Participant ids are global across the database (`participants.id` is the
+ * primary key), so every room has its own. Identical `p_loud` in two rooms
+ * are ONE row, bound to the first of them, and a test on the second room
+ * would silently be checking emptiness.
  */
 function room(): Room {
   const n = seq++
@@ -87,7 +89,7 @@ function room(): Room {
   return at
 }
 
-/** Вопрос в ленту — той же записью, что кладёт туда оракул. */
+/** A question into the feed, with the same record the oracle puts there. */
 function ask(id: string, participantId: string, question: string): string {
   const doc = getSessionDoc(id).doc
   const entry = createChatEntry({ participantId, name: participantId, color: '#7e82f0', question })
@@ -97,9 +99,9 @@ function ask(id: string, participantId: string, question: string): string {
 
 const banLabel = 'до бана Петя'
 
-/* ------------------------------------------------------------- вычистка */
+/* ---------------------------------------------------------------- purge */
 
-test('вычистка убирает вопросы забаненного и не трогает чужие', () => {
+test('a purge removes the questions of the banned person and leaves the others alone', () => {
   const at = room()
   ask(at.id, at.loud, 'ааааааа')
   const hers = ask(at.id, at.quiet, 'почему loss стал nan?')
@@ -109,25 +111,25 @@ test('вычистка убирает вопросы забаненного и �
 
   assert.equal(gone, 2)
   const chat = getChat(getSessionDoc(at.id).doc)
-  assert.equal(chat.length, 1, 'из ленты убрали не только его')
+  assert.equal(chat.length, 1, 'more than just his were removed from the feed')
   assert.equal(chat.get(0).get('id'), hers)
 })
 
-test('вычистка называет момент в истории — и называет его до удаления', () => {
+test('a purge names a moment in the history, and names it before deleting', () => {
   const at = room()
   ask(at.id, at.loud, 'ааааааа')
 
   purgeQuestions(at.id, { participantId: at.loud, name: 'Петя' }, at.teacher)
 
   const marks = listStoryVersions(at.id, 400).filter((v) => v.kind === 'checkpoint')
-  assert.equal(marks.length, 1, 'названного момента в ленте версий нет')
+  assert.equal(marks.length, 1, 'there is no named moment in the version feed')
   assert.equal(marks[0].label, banLabel)
-  // Подпись — того, кто банил: строка «до бана Петя» без имени преподавателя
-  // читается как ничья правка на дюжину записей.
+  // Signed by whoever banned: a "before the ban of Petya" row without the
+  // teacher's name reads as nobody's edit of a dozen records.
   assert.equal(marks[0].author_id, at.teacher)
 })
 
-test('стёртое возвращается версией', () => {
+test('what was erased comes back with a version', () => {
   const at = room()
   const his = ask(at.id, at.loud, 'ааааааа')
   const hers = ask(at.id, at.quiet, 'почему loss стал nan?')
@@ -135,30 +137,30 @@ test('стёртое возвращается версией', () => {
   purgeQuestions(at.id, { participantId: at.loud, name: 'Петя' }, at.teacher)
 
   const named = listStoryVersions(at.id, 400).find((v) => v.kind === 'checkpoint')
-  assert.ok(named, 'возвращаться неоткуда: момент не назван')
+  assert.ok(named, 'there is nowhere to go back to: the moment is not named')
   const back = new Y.Doc()
   for (const update of updatesUpTo(at.id, named.seq)) Y.applyUpdate(back, update)
   const ids = getChat(back)
     .toArray()
     .map((entry) => entry.get('id') as string)
-  assert.deepEqual(ids, [his, hers], 'версия «до бана» не вернула стёртые вопросы')
+  assert.deepEqual(ids, [his, hers], 'the "before the ban" version did not bring back the erased questions')
   back.destroy()
 })
 
-test('вычищать нечего — и в истории тогда пусто', () => {
+test('nothing to purge, and then the history is empty too', () => {
   const at = room()
   ask(at.id, at.quiet, 'почему loss стал nan?')
 
   assert.equal(purgeQuestions(at.id, { participantId: at.loud, name: 'Петя' }, at.teacher), 0)
-  // Иначе лента версий забивается пустыми «до бана» — по одному на каждого
-  // закрытого, кто в оракула ни разу не написал.
+  // Otherwise the version feed gets clogged with empty "before the ban"
+  // marks, one for every banned person who never wrote to the oracle.
   assert.deepEqual(
     listStoryVersions(at.id, 400).filter((v) => v.kind === 'checkpoint'),
     [],
   )
 })
 
-/* ------------------------------------------------------------- выселение */
+/* -------------------------------------------------------------- eviction */
 
 interface Fake {
   ws: WebSocket
@@ -167,11 +169,11 @@ interface Fake {
 }
 
 /**
- * Ровно то, что читают оба провода: состояние, приём кадра и закрытие.
+ * Exactly what both wires read: the state, receiving a frame and closing.
  *
- * Закрытие ставит `readyState`, а не только флаг, — на этом держится проверка
- * порядка: кадр, отправленный после закрытия, до `heard` уже не доедет, потому
- * что обе отправки сперва спрашивают состояние.
+ * Closing sets `readyState`, not just a flag, and the order check rests on
+ * this: a frame sent after closing never reaches `heard`, because both
+ * senders ask for the state first.
  */
 function socket(): Fake {
   const heard: ControlServerMessage[] = []
@@ -180,9 +182,9 @@ function socket(): Fake {
     binaryType: 'arraybuffer',
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
-      // (рассылка, дерево, чернила), уходят уже закодированными — см.
-      // control.ts · sendFrame. Настоящий сокет тут разницы не делает.
+      // As a string or as bytes: frames the server builds once per room
+      // (broadcast, tree, ink) go out already encoded; see
+      // control.ts · sendFrame. A real socket makes no difference here.
       if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
         heard.push(JSON.parse(String(frame)) as ControlServerMessage)
       }
@@ -196,8 +198,8 @@ function socket(): Fake {
     close() {
       fake.readyState = WebSocket.CLOSED
       out.closed = true
-      // Обработчик обязан отработать: в нём гасится сердцебиение, а без него
-      // интервал переживёт тест и потащит за собой всю сюиту.
+      // The handler must run: it stops the heartbeat, and without it the
+      // interval outlives the test and drags the whole suite along with it.
       for (const fn of handlers.get('close') ?? []) fn()
     },
   }
@@ -205,7 +207,7 @@ function socket(): Fake {
   return out
 }
 
-test('забаненный вылетает сразу — и вылетает он один', () => {
+test('the banned person is thrown out at once, and only they are', () => {
   const at = room()
   const his = socket()
   const hers = socket()
@@ -228,28 +230,28 @@ test('забаненный вылетает сразу — и вылетает �
   const until = Date.now() + 24 * 60 * 60 * 1000
   evictBanned(at.id, at.loud, until)
 
-  // Кадр — раньше закрытия: поддельный сокет после close() ничего не принимает,
-  // так что «услышал» здесь означает «услышал, пока был открыт».
+  // The frame comes before the close: the fake socket accepts nothing after
+  // close(), so "heard" here means "heard while it was open".
   assert.deepEqual(
     his.heard.filter((m) => m.t === 'banned'),
     [{ t: 'banned', until }],
-    'забаненному не сказали ни причины, ни срока',
+    'the banned person was told neither the reason nor the term',
   )
-  assert.ok(his.closed, 'управляющий сокет забаненного остался открытым')
-  assert.ok(hisDoc.closed, 'общая тетрадь у забаненного осталась открытой')
+  assert.ok(his.closed, 'the control socket of the banned person stayed open')
+  assert.ok(hisDoc.closed, 'the shared notebook stayed open for the banned person')
 
   assert.equal(
     hers.heard.some((m) => m.t === 'banned'),
     false,
-    'кадр о бане уехал всей комнате',
+    'the ban frame went to the whole room',
   )
-  assert.equal(hers.closed, false, 'выселили не того')
-  assert.equal(onlineCount(at.id), 1, 'из документа выпал не только он')
+  assert.equal(hers.closed, false, 'the wrong person was evicted')
+  assert.equal(onlineCount(at.id), 1, 'more than just him dropped out of the document')
 
   closeControlRoom(at.id)
 })
 
-/* ----------------------------------------------------------- три двери */
+/* --------------------------------------------------------- three doors */
 
 const app = express()
 app.use(express.json())
@@ -266,10 +268,10 @@ async function listening(): Promise<string> {
 }
 
 /*
- * Роль в токене — всегда 'participant', и это не небрежность: `sessionAuth`
- * пересчитывает её на каждом запросе (`roleFor`), и преподавателем Аду делает
- * хост-токен в её строке, а не слово в подписи. Токен, называющий себя хостом,
- * не открыл бы ничего.
+ * The role in the token is always 'participant', and that is not
+ * carelessness: `sessionAuth` recomputes it on every request (`roleFor`), and
+ * what makes Ada a teacher is the host token in her row, not a word in the
+ * signature. A token calling itself host would open nothing.
  */
 function as(sessionId: string, participantId: string): Record<string, string> {
   return {
@@ -278,10 +280,10 @@ function as(sessionId: string, participantId: string): Record<string, string> {
   }
 }
 
-/** То же, что спрашивают у бана дверь комнаты и каждое рукопожатие. */
+/** The same thing the room door and every handshake ask the ban. */
 const stopped = (id: string, participantId: string) => banFor(id, participantId, undefined)
 
-test('снятие бана пускает обратно', async () => {
+test('lifting a ban lets the person back in', async () => {
   const base = await listening()
   const at = room()
   ask(at.id, at.loud, 'ааааааа')
@@ -295,8 +297,8 @@ test('снятие бана пускает обратно', async () => {
   const { ban } = (await made.json()) as { ban: { id: string; name: string; byTeacher: string } }
   assert.equal(ban.name, 'Петя')
   assert.equal(ban.byTeacher, 'Ада')
-  assert.ok(stopped(at.id, at.loud), 'дверь его пускает — бан не заведён')
-  // И лента прибрана тем же нажатием, а не отдельной кнопкой.
+  assert.ok(stopped(at.id, at.loud), 'the door lets him in: the ban was not created')
+  // And the feed is cleaned up by the same press, not by a separate button.
   assert.equal(getChat(getSessionDoc(at.id).doc).length, 0)
 
   const listed = await fetch(`${base}/api/sessions/${at.id}/bans`, {
@@ -312,8 +314,8 @@ test('снятие бана пускает обратно', async () => {
     headers: as(at.id, at.teacher),
   })
   assert.equal(lifted.status, 200)
-  assert.equal(stopped(at.id, at.loud), null, 'снятый бан всё ещё держит дверь')
-  // Второе снятие — уже нечего снимать, и это не молчание.
+  assert.equal(stopped(at.id, at.loud), null, 'the lifted ban still holds the door')
+  // The second lift has nothing to lift any more, and that is not silence.
   const again = await fetch(`${base}/api/sessions/${at.id}/bans/${ban.id}`, {
     method: 'DELETE',
     headers: as(at.id, at.teacher),
@@ -321,7 +323,7 @@ test('снятие бана пускает обратно', async () => {
   assert.equal(again.status, 404)
 })
 
-test('преподавателя забанить нельзя', async () => {
+test('a teacher cannot be banned', async () => {
   const base = await listening()
   const at = room()
 
@@ -332,10 +334,10 @@ test('преподавателя забанить нельзя', async () => {
   })
 
   assert.equal(refused.status, 403)
-  assert.equal(stopped(at.id, at.teacher), null, 'преподаватель запер себя снаружи')
+  assert.equal(stopped(at.id, at.teacher), null, 'the teacher locked themselves out')
 })
 
-test('банит преподаватель, а не всякий вошедший', async () => {
+test('the teacher bans, not anyone who has come in', async () => {
   const base = await listening()
   const at = room()
   const his = ask(at.id, at.loud, 'ааааааа')
@@ -348,6 +350,6 @@ test('банит преподаватель, а не всякий вошедши
 
   assert.equal(refused.status, 403)
   assert.equal(stopped(at.id, at.loud), null)
-  // И лента цела: отказ обязан случиться раньше любого последствия.
+  // And the feed is intact: the refusal must happen before any consequence.
   assert.equal(getChat(getSessionDoc(at.id).doc).get(0).get('id'), his)
 })

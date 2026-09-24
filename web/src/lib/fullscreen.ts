@@ -1,15 +1,16 @@
 /**
- * Полный экран — там, где он есть.
+ * Full screen — where it exists.
  *
- * Проекция обязана занимать весь экран: полоса вкладок Safari поверх слайда —
- * это полоса вкладок Safari, которую видит вся аудитория. Но API везде разный,
- * и разница не косметическая: на iPad беспрефиксный `requestFullscreen`
- * появился только в Safari 16.4, до него — вебкитовский с префиксом, а на
- * iPhone элементного полного экрана нет вовсе, и кнопку там показывать нельзя
- * — она бы просто ничего не делала.
+ * The projection must take the whole screen: a Safari tab bar over a slide is
+ * a Safari tab bar seen by the whole audience. But the API differs everywhere,
+ * and the difference is not cosmetic: on iPad the unprefixed
+ * `requestFullscreen` appeared only in Safari 16.4, before that there was the
+ * WebKit-prefixed one, and on iPhone there is no element full screen at all,
+ * so the button must not be shown there — it would simply do nothing.
  *
- * Отсюда три функции вместо одной: спросить, есть ли он вообще; попросить;
- * отпустить. Проекция работает и без него — просто с чужой рамкой по краям.
+ * Hence three functions instead of one: ask whether it exists at all; request
+ * it; release it. The projection works without it too — just with someone
+ * else's frame around the edges.
  */
 
 interface WebkitElement extends HTMLElement {
@@ -22,25 +23,25 @@ interface WebkitDocument extends Document {
   webkitExitFullscreen?: () => Promise<void> | void
 }
 
-/** Умеет ли этот браузер разворачивать элемент во весь экран. */
+/** Whether this browser can expand an element to full screen. */
 export function fullscreenPossible(): boolean {
   const doc = document as WebkitDocument
   return doc.fullscreenEnabled === true || doc.webkitFullscreenEnabled === true
 }
 
-/** Разворачивает ли он что-то прямо сейчас. */
+/** Whether it is expanding something right now. */
 export function fullscreenNow(): boolean {
   const doc = document as WebkitDocument
   return (doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null) !== null
 }
 
 /**
- * Развернуть.
+ * Expand.
  *
- * Обязано вызываться из обработчика нажатия: браузер разрешает полный экран
- * только по живому жесту человека, и вызов из эффекта после навигации молча
- * отклоняется. Отказ здесь не ошибка — это «нельзя», и проекция после него
- * продолжает работать в окне.
+ * Must be called from a click handler: the browser allows full screen only on
+ * a live human gesture, and a call from an effect after navigation is
+ * silently rejected. A refusal here is not an error — it is "not allowed", and
+ * after it the projection keeps working in the window.
  */
 export async function goFullscreen(node: HTMLElement): Promise<void> {
   const target = node as WebkitElement
@@ -48,7 +49,7 @@ export async function goFullscreen(node: HTMLElement): Promise<void> {
     if (typeof target.requestFullscreen === 'function') await target.requestFullscreen()
     else if (typeof target.webkitRequestFullscreen === 'function') await target.webkitRequestFullscreen()
   } catch {
-    /* отказали — окно тоже годится */
+    /* refused — the window will do too */
   }
 }
 
@@ -59,6 +60,6 @@ export async function leaveFullscreen(): Promise<void> {
     if (typeof doc.exitFullscreen === 'function') await doc.exitFullscreen()
     else if (typeof doc.webkitExitFullscreen === 'function') await doc.webkitExitFullscreen()
   } catch {
-    /* уже вышли */
+    /* already out */
   }
 }

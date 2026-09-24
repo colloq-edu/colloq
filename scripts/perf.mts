@@ -160,10 +160,11 @@ const LIB_MARKERS: Record<string, string> = {
   yjs: 'Yjs was already imported',
   svelte: 'svelte.dev/e/',
   /*
-   * pdf.js — полтора мегабайта, из них 139 КБ gzip в чанке и 365 КБ в воркере
-   * рядом. Маркер здесь именно затем, чтобы один невнимательный статический
-   * импорт не положил эти байты в блокирующий граф экрана входа: без строки
-   * гейт про pdf.js просто не знает и промолчит.
+   * pdf.js is a megabyte and a half, of which 139 KB gzip is in the chunk and
+   * 365 KB in the worker next to it. The marker is here precisely so that one
+   * careless static import does not put these bytes into the blocking graph of
+   * the join screen: without the string the gate simply does not know about
+   * pdf.js and will stay silent.
    */
   pdfjs: 'PDFWorker',
 }

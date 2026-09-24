@@ -1,38 +1,44 @@
 <!--
-  ЗАМЕТКИ СПИКЕРА — что сказать на этой странице.
+  SPEAKER NOTES — what to say on this page.
 
-  Одна страница — одна заметка. Их пишут накануне, идя по колоде, и правят
-  прямо на паре, между двумя фразами; поэтому здесь нет ни кнопки «Сохранить»,
-  ни режима правки: поле всегда живое, а запись уходит сама.
+  One page, one note. They are written the day before, going through the
+  deck, and edited right in class, between two sentences; that is why there
+  is no "Save" button here and no edit mode: the field is always live, and
+  the text goes out by itself.
 
-  Три решения, без которых эта штука вредна, а не полезна.
+  Three decisions without which this thing does harm rather than good.
 
-  ПЕРВОЕ. Черновик уходит на сервер не только по таймеру, но и ОБЯЗАТЕЛЬНО
-  перед сменой страницы и при размонтировании. Самая частая последовательность
-  в аудитории — дописал полфразы и тут же перелистнул; таймер в этот момент ещё
-  тикает, и без выгрузки в cleanup эта полфразы пропадала бы каждый раз, причём
-  молча. Номер страницы для записи берётся тот, что был у ПОЛЯ, а не текущий:
-  иначе фраза уезжает на чужой слайд.
+  FIRST. The draft goes to the server not only on a timer but also, ALWAYS,
+  before a page change and on unmount. The most common sequence in a lecture
+  hall is: wrote half a sentence and flipped the page right away; the timer
+  is still ticking at that moment, and without the flush in cleanup that half
+  sentence would be lost every time, and silently. The page number for the
+  write is the one the FIELD had, not the current one: otherwise the sentence
+  lands on the wrong slide.
 
-  ВТОРОЕ. Приходящее с сервера не двигает текст под курсором. Ноутбук и планшет
-  — один и тот же человек с одним participantId, эхо собственной правки
-  возвращается на оба экрана, и если принимать его как есть, курсор будет
-  прыгать в конец на каждом четвёртом символе. Пока в поле фокус, пока не ушёл
-  черновик и пока не истекло окно собственного эха — входящее для этой страницы
-  игнорируется. Для всех остальных страниц оно принимается сразу.
+  SECOND. What comes from the server does not move the text under the caret.
+  The laptop and the tablet are one and the same person with one
+  participantId, the echo of one's own edit comes back to both screens, and
+  if it were accepted as is, the caret would jump to the end on every fourth
+  character. While the field has focus, while the draft has not gone out and
+  while the own-echo window has not expired, incoming text for this page is
+  ignored. For every other page it is accepted at once.
 
-  ТРЕТЬЕ. «Заметок нет» и «заметки ещё не приехали» — разные экраны.
-  Преподаватель, увидевший пустоту там, где вчера написал двадцать строк,
-  решит посреди пары, что потерял их. Отличаем по `session.notesFile`.
+  THIRD. "There are no notes" and "the notes have not arrived yet" are
+  different screens. A teacher who sees emptiness where yesterday they wrote
+  twenty lines will decide mid-class that they lost them. We tell the two
+  apart by `session.notesFile`.
 
-  Компонент один на три дома: выдвижной лист поверх страницы на планшетном
-  пульте в ландшафте, пристыкованный под листом блок в портрете (`docked`) и
-  узкая колонка под «дальше» на ноутбуке (`compact`). Разойдясь, они показали
-  бы ведущему в разных местах разный текст — а заметил бы он это в аудитории.
+  One component, three homes: a pull-out sheet over the page on the tablet
+  console in landscape, a block docked under the sheet in portrait
+  (`docked`), and a narrow column under "next" on the laptop (`compact`). If
+  they drifted apart, they would show the presenter different text in
+  different places, and the presenter would notice it in the lecture hall.
 
-  Чего здесь нет: markdown (речь пишут строчками, а не документом), эскиза
-  следующей страницы (это работа листа, а не текста) и показа кому-либо, кроме
-  хоста, — ни залу, ни проекции, ни при каких условиях.
+  What is not here: markdown (a talk is written in lines, not as a
+  document), a thumbnail of the next page (that is the sheet's job, not the
+  text's) and showing it to anyone but the host: not to the audience, not to
+  the projection, under no circumstances.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -43,57 +49,62 @@
   import { stopwatch } from './pult'
 
   interface Props {
-    /** Документ лекции: заметки привязаны к файлу, а не к лекции. */
+    /** The lecture document: notes are tied to the file, not to the lecture. */
     file: string
-    /** Текущая страница. Смена коммитит черновик предыдущей. */
+    /** The current page. Changing it commits the previous page's draft. */
     page: number
     /**
-     * Узкий дом: колонка ведущего на ноутбуке под «дальше».
+     * The narrow home: the presenter's column on the laptop, under "next".
      *
-     * Не «поменьше шрифт», а другая мера места: в колонке в 300 px третья
-     * ступень размера даёт одиннадцать знаков в строке, то есть столбик
-     * обрывков вместо абзаца. Пульт этим флагом больше не пользуется — у него
-     * лист заметок всегда во всю ширину экрана, — но колонка LectureView
-     * осталась ровно той же ширины, что и была, и мера её не изменилась.
+     * Not "a smaller font" but a different measure of space: in a 300 px
+     * column the third size step gives eleven characters per line, that is,
+     * a column of scraps instead of a paragraph. The console no longer uses
+     * this flag (its notes sheet is always the full width of the screen), but
+     * the LectureView column has stayed exactly as wide as it was, and its
+     * measure has not changed.
      */
     compact?: boolean
     /**
-     * Пристыкованы: портрет планшета, где заметки лежат под листом на весь
-     * остаток экрана и никуда не выдвигаются. «Свернуть» тут нечего — блок
-     * не над листом, а рядом, и сворачивать его значило бы оставить голый
-     * колодец на полэкрана, — и свайпа по шапке тоже нет.
+     * Docked: tablet portrait, where the notes lie under the sheet across the
+     * rest of the screen and do not slide anywhere. There is nothing to
+     * "Collapse" here (the block is not over the sheet but beside it, and
+     * collapsing it would leave a bare well half the screen tall), and there
+     * is no swipe on the header either.
      */
     docked?: boolean
-    /** Свёрнут ли лист. Состоянием владеет родитель — он же его и помнит. */
+    /** Is the sheet collapsed. The parent owns the state and remembers it too. */
     folded?: boolean
-    /** Свернуть или развернуть. Не передан — шеврона в шапке нет вовсе. */
+    /** Collapse or expand. Not passed: no chevron in the header at all. */
     onfold?: (folded: boolean) => void
     /**
-     * Открыть лист «Ещё» — полный экран, «Закончить», смена документа, левая
-     * рука, справка про сон экрана и Гид-доступ.
+     * Open the "More" sheet: full screen, "End", changing the document, left
+     * hand, the note on screen sleep and Guided Access.
      *
-     * Кнопка живёт ЗДЕСЬ, а не на рейле: рейл один, и каждая его клавиша —
-     * то, что жмут, не глядя, десять раз за пару; редкому там места нет. Шапка
-     * заметок — единственная горизонталь, оставшаяся на пульте, и «⋯» в её
-     * правом углу — то место, куда за редким тянутся не глядя. Не передан —
-     * троеточия в шапке нет вовсе (в колонке ведущего на ноутбуке открывать
-     * нечего).
+     * The button lives HERE, not on the rail: there is one rail, and each of
+     * its keys is something pressed without looking ten times per class;
+     * there is no room there for the rare. The notes header is the only
+     * horizontal left on the console, and the "⋯" in its right corner is
+     * where one reaches for the rare without looking. Not passed: no ellipsis
+     * in the header at all (in the presenter's column on the laptop there is
+     * nothing to open).
      */
     onmore?: () => void
     /**
-     * ТОЛЬКО ЧТЕНИЕ. Так заметки живут на пульте.
+     * READ ONLY. This is how notes live on the console.
      *
-     * Речь пишут, готовясь к паре, — за столом, с клавиатурой, глядя на весь
-     * документ сразу. На пуле её читают, и ровно в этот момент правка не
-     * помощь, а помеха: планшет держат в руке под ладонью, поле ввода ловит
-     * случайное касание, iPad поднимает клавиатуру на полэкрана, а Pencil,
-     * задевший поле, начинает переводить росчерк в текст. Ни одно из этого не
-     * происходит по желанию человека — всё три происходят ВМЕСТО того, что он
-     * делал.
+     * The talk is written while preparing for class: at a desk, with a
+     * keyboard, looking at the whole document at once. On the console it is
+     * read, and at exactly that moment editing is not a help but a
+     * hindrance: the tablet is held in the hand under the palm, the input
+     * field catches a stray touch, iPad raises the keyboard over half the
+     * screen, and a Pencil brushing the field starts turning the stroke into
+     * text. None of this happens because the person wants it; all three
+     * happen INSTEAD of what they were doing.
      *
-     * Поэтому на пульте заметки прибиты: текст показывается текстом, поля нет
-     * вовсе, счётчика знаков нет, «Править заметку» нет. Править их можно там,
-     * где для этого есть стол, — в колонке ведущего на ноутбуке.
+     * So on the console the notes are nailed down: text is shown as text,
+     * there is no field at all, no character counter, no "Edit note". They
+     * can be edited where there is a desk for it: in the presenter's column
+     * on the laptop.
      */
     readonly?: boolean
   }
@@ -112,92 +123,103 @@
   const session = getSessionState()
 
   /**
-   * Чистый лист — страница с отрицательным номером (см. shared/lecture.ts), и
-   * заметки к ней НЕ БЫВАЕТ: сервер отвечает «Заметка пишется к странице
-   * документа» и текст пропадает на первом же перелистывании. Поле здесь
-   * рисовалось как ни в чём не бывало — с подписью «Заметки к странице −1».
+   * A blank sheet is a page with a negative number (see shared/lecture.ts),
+   * and it NEVER HAS a note: the server answers "A note must belong to a
+   * document page." and the text vanishes at the very first page flip. The
+   * field used to be drawn here as if nothing were wrong, labelled "Notes for
+   * page −1".
    */
   const onBoard = $derived(page < 1)
 
   /*
-   * Потолок длины заметки — ОДИН на оба конца, из `@shared/lecture`.
+   * The note length ceiling is ONE for both ends, from `@shared/lecture`.
    *
-   * Он здесь не для красоты: кадр длиннее потолка управляющего сокета сервер
-   * выбрасывает МОЛЧА — ни ошибки, ни строки в журнале, — а страница речи,
-   * исчезнувшая без единого слова, худшее, что этот экран может сделать. Пока
-   * число стояло копией и здесь, и в control.ts, любая правка одной копии
-   * молча резала бы речь у другой. Комментарий при этом выводил запас из
-   * потолка кадра в 8192 байта, которого нет с тех пор, как под снимок
-   * консилиума кадр подняли до 32 КБ.
+   * It is not here for looks: a frame longer than the control socket's
+   * ceiling is dropped by the server SILENTLY (no error, not a line in the
+   * log), and a page of the talk that vanished without a word is the worst
+   * thing this screen can do. While the number stood as a copy both here and
+   * in control.ts, any edit to one copy would silently cut the talk at the
+   * other. The comment meanwhile derived the margin from an 8192-byte frame
+   * ceiling that has not existed since the frame was raised to 32 KB for the
+   * council snapshot.
    */
   const MAX = MAX_NOTE_CHARS
   /*
-   * С этого места считаем вслух. Было 300 знаков — это половина заметки, и
-   * число висело у ведущего перед глазами всю вторую половину каждой длинной
-   * страницы, ничего не сообщая. 150 — это примерно две строки при умолчании:
-   * ровно тот момент, когда фразу ещё можно дописать короче, а не переписывать.
+   * From here on we count out loud. It used to be 300 characters: that is
+   * half a note, and the number hung before the presenter's eyes for the
+   * whole second half of every long page, telling them nothing. 150 is about
+   * two lines at the default size: exactly the moment when a sentence can
+   * still be finished shorter rather than rewritten.
    */
   const WARN = 2850
   /*
-   * 400 мс после последнего нажатия — пауза между словами, а не между
-   * фразами. Меньше — и каждое слово едет отдельным кадром на два экрана;
-   * больше — и пауза «подумать» успевает стать потерянной работой, если в этот
-   * момент сядет батарея или моргнёт вайфай. Правку это всё равно не теряет:
-   * черновик уходит и на blur, и перед сменой страницы, и при уходе вкладки в
-   * фон — таймер только избавляет от кадра на каждую букву.
+   * 400 ms after the last keystroke is a pause between words, not between
+   * sentences. Less, and every word travels as a separate frame to two
+   * screens; more, and a pause "to think" has time to become lost work if
+   * the battery dies or the Wi-Fi blinks at that moment. Edits are not lost
+   * either way: the draft goes out on blur, before a page change and when
+   * the tab goes to the background; the timer only spares a frame per letter.
    */
   const SAVE_AFTER_MS = 400
   /*
-   * Полторы секунды на возвращение собственного эха. Всё это время входящее
-   * для правленой страницы не трогает поле: наш текст новее любого, что мог
-   * успеть прийти. Окно временное, а не флаг «я тут главный», — если эхо не
-   * вернётся вовсе (обрыв), поле само примет чужое при следующем изменении.
+   * A second and a half for our own echo to return. All that time incoming
+   * text for the edited page does not touch the field: our text is newer
+   * than anything that could have arrived. The window is temporary, not an
+   * "I'm in charge here" flag: if the echo never returns (a dropped
+   * connection), the field will accept the other text itself on the next
+   * change.
    */
   const ECHO_MS = 1500
   /*
-   * Свайп вниз по шапке сворачивает лист. Порог 48 px — это больше, чем
-   * дрожь пальца при нажатии на «⋯» (палец, ложась, едет на 3–8 px), и
-   * меньше, чем высота самой шапки с зазором: жест кончается, не выйдя за
-   * неё. Свайп ВВЕРХ не значит ничего — лист уже открыт.
+   * A swipe down on the header collapses the sheet. The 48 px threshold is
+   * more than a finger's jitter when pressing "⋯" (a finger slides 3–8 px as
+   * it lands) and less than the header's own height with a margin: the
+   * gesture ends without leaving it. A swipe UP means nothing: the sheet is
+   * already open.
    */
   const SWIPE_PX = 48
 
   /*
-   * Ступени размера. Единственное место в продукте, где растут БУКВЫ, а не
-   * коробки, и это сознательно: весь остальной текст читают, уткнувшись в
-   * экран, а заметку — подняв голову, урывками между взглядами в зал.
+   * Size steps. The only place in the product where LETTERS grow rather than
+   * boxes, and deliberately so: all other text is read with one's nose in
+   * the screen, while a note is read with the head raised, in snatches
+   * between glances at the audience.
    *
-   * Ступеней три, и самая мелкая уже крупная (18/26 против рабочих 13/19):
-   * выбор стоит между «читаю», «читаю не глядя» и «читаю через зал», а не
-   * между шестью кеглями, из которых пять мелкие.
+   * There are three steps, and the smallest is already large (18/26 against
+   * the working 13/19): the choice is between "I read", "I read without
+   * looking" and "I read across the hall", not between six point sizes of
+   * which five are small.
    */
   const SIZES = ['text-prompt-sm', 'text-prompt', 'text-prompt-lg'] as const
   /*
-   * Умолчание — СРЕДНЯЯ, а не нижняя.
+   * The default is the MIDDLE step, not the bottom one.
    *
-   * Раньше лестница начиналась снизу, и человек, впервые открывший пульт за
-   * минуту до пары, получал самый мелкий кегль: чтобы прочитать свою же
-   * заметку, надо наклониться к планшету, а наклоняться посреди фразы некогда
-   * — и некогда искать кнопку размера. Умолчание обязано быть тем размером, с
-   * которым лекцию можно провести, ни разу ничего не настроив.
+   * The ladder used to start at the bottom, and a person opening the console
+   * for the first time a minute before class got the smallest point size: to
+   * read their own note they had to lean towards the tablet, and there is no
+   * time to lean in mid-sentence, nor to look for the size button. The
+   * default must be a size with which a lecture can be given without ever
+   * setting anything.
    */
   const DEFAULT_STEP = 1
   /*
-   * В узкой колонке ведущего умолчание другое — НИЖНЕЕ.
+   * In the presenter's narrow column the default is different: the BOTTOM
+   * step.
    *
-   * Средняя ступень обоснована мерой листа заметок: 22 px на 660 px — это
-   * шестьдесят знаков в строке, настоящий абзац речи. В колонке на ноутбуке
-   * мера втрое короче, и те же 22 px дают пятнадцать знаков, то есть столбик
-   * обрывков — ровно то, из-за чего из этого дома убрана верхняя ступень.
-   * Одна и та же ступень значит разное на разной мере, поэтому дом выбирает
-   * себе начало лестницы сам. Явно выбранное человеком уважается в обоих
-   * домах: выбор хранится один на устройство.
+   * The middle step is justified by the measure of the notes sheet: 22 px on
+   * 660 px is sixty characters per line, a real paragraph of speech. In the
+   * laptop column the measure is three times shorter, and the same 22 px
+   * give fifteen characters, that is, a column of scraps, which is exactly
+   * why the top step was removed from this home. The same step means
+   * different things on different measures, so each home picks the start of
+   * its ladder itself. What a person picked explicitly is respected in both
+   * homes: the choice is stored once per device.
    */
   const DEFAULT_COMPACT_STEP = 0
   const SIZE_KEY = 'colloq.pult.notesSize'
 
   const host = $derived(session.me.role === 'host')
-  /** Заметки этого документа уже приехали. `false` — не «их нет», а «их ещё нет». */
+  /** This document's notes have arrived. `false` is not "there are none" but "none yet". */
   const arrived = $derived(session.notesFile === file)
   const stored = $derived(arrived ? (session.notes[page] ?? '') : '')
 
@@ -205,52 +227,55 @@
   let typing = $state(false)
   let field = $state<HTMLTextAreaElement | null>(null)
   let step = $state(readStep())
-  /** Растёт, когда поле перезарядили не с клавиатуры: повод пересчитать высоту. */
+  /** Grows when the field is reloaded not by typing: a cue to recompute the height. */
   let reloads = $state(0)
 
   /*
-   * Плоские зеркала черновика, а не руны: их читает выгрузка, которая
-   * случается ВНЕ реактивного контекста — в cleanup эффекта, в обработчике
-   * ухода вкладки в фон. И держат они ту страницу, которой принадлежит текст,
-   * а не ту, что открыта сейчас.
+   * Plain mirrors of the draft, not runes: they are read by the flush, which
+   * happens OUTSIDE a reactive context, in an effect's cleanup and in the
+   * handler for the tab going to the background. And they hold the page the
+   * text belongs to, not the one open right now.
    */
   let held = ''
-  // Начальное значение и есть то, что нужно: дальше эти два зеркала ведёт
-  // эффект перезарядки, и ведёт с отставанием на одну страницу — в этом вся
-  // их работа.
+  // The initial value is exactly what is needed: from then on these two
+  // mirrors are driven by the reload effect, lagging one page behind, and
+  // that is their whole job.
   // svelte-ignore state_referenced_locally
   let heldFile = file
   // svelte-ignore state_referenced_locally
   let heldPage = page
   let pending = false
   /*
-   * Минус бесконечность, а не ноль: `performance.now()` считает от загрузки
-   * страницы, и с нулём первые полторы секунды жизни вкладки выглядели бы как
-   * «мы только что писали» — приехавшие в это окно заметки лента отвергла бы и
-   * осталась пустой до следующего изменения.
+   * Minus infinity, not zero: `performance.now()` counts from page load, and
+   * with zero the first second and a half of the tab's life would look like
+   * "we were just writing": notes arriving in that window would be rejected
+   * and the pad would stay empty until the next change.
    */
   let sentAt = Number.NEGATIVE_INFINITY
   let timer: number | undefined
 
   /*
-   * В узкой колонке ведущего верхней ступени нет: 28 px на 300 px колонки —
-   * это одиннадцать знаков в строке, то есть столбик обрывков вместо абзаца.
-   * Лестница там кончается на умолчании, и это честнее, чем дать нажать
-   * кнопку, которая делает текст хуже.
+   * The presenter's narrow column has no top step: 28 px in a 300 px column
+   * is eleven characters per line, that is, a column of scraps instead of a
+   * paragraph. The ladder there ends at the default, and that is more honest
+   * than letting someone press a button that makes the text worse.
    */
   const ladder = $derived(compact ? SIZES.slice(0, 2) : SIZES)
   const size = $derived(ladder[Math.min(step, ladder.length - 1)])
   const left = $derived(MAX - draft.length)
 
   /*
-   * СЕКУНДОМЕР ЛЕКЦИИ — в шапке заметок, а не только в приборе на рейле.
+   * THE LECTURE STOPWATCH sits in the notes header, not only in the
+   * instrument on the rail.
    *
-   * Заметки открывают ровно тогда, когда думают «что сказать и сколько на это
-   * есть», и в этот момент взгляд стоит на шапке листа, а прибор — на другом
-   * краю планшета. Тик раз в секунду и только пока лист развёрнут: свёрнутая
-   * шапка секундомера не несёт, а будить раскладку рядом с пером ради цифр,
-   * которых не видно, незачем. Отметка серверная, поправка часов — оттуда же:
-   * секундомер от «когда открыл вкладку» врал бы про пару.
+   * Notes are opened exactly when one thinks "what to say and how much time
+   * there is for it", and at that moment the eyes are on the sheet's header,
+   * while the instrument is on the other edge of the tablet. It ticks once a
+   * second and only while the sheet is expanded: a collapsed header carries
+   * no stopwatch, and there is no reason to wake the layout next to the pen
+   * for digits nobody can see. The timestamp comes from the server, and so
+   * does the clock correction: a stopwatch counting from "when the tab was
+   * opened" would lie about the class.
    */
   let tick = $state(Date.now())
   const lecture = $derived(session.lecture)
@@ -266,16 +291,17 @@
   )
 
   /*
-   * Секундомер — из `./pult`, той же функцией, что и в приборе на рейле. Была
-   * копия слово в слово с оговоркой «как в приборе»: оговорка — не то, чем
-   * держат согласованность двух функций в разных файлах.
+   * The stopwatch comes from `./pult`, the same function as in the instrument
+   * on the rail. There used to be a word-for-word copy with the remark "same
+   * as in the instrument": a remark is not how two functions in different
+   * files are kept in agreement.
    */
 
   /*
-   * Счётчик перезарядок читается ВНЕ отслеживания. Написать `reloads += 1`
-   * прямо в эффекте нельзя: составное присваивание сначала читает, эффект
-   * подписывается на то, что сам же и пишет, и Svelte уходит в круг до
-   * effect_update_depth_exceeded.
+   * The reload counter is read OUTSIDE tracking. Writing `reloads += 1` right
+   * in the effect is not possible: a compound assignment reads first, the
+   * effect subscribes to what it writes itself, and Svelte goes into a loop
+   * ending in effect_update_depth_exceeded.
    */
   function refit(): void {
     reloads = untrack(() => reloads) + 1
@@ -288,7 +314,7 @@
       const value = raw === null ? fallback : Number.parseInt(raw, 10)
       return Number.isFinite(value) && value >= 0 && value < SIZES.length ? value : fallback
     } catch {
-      /* приватный режим — просто начнём с умолчания этого дома */
+      /* private mode: just start from this home's default */
       return fallback
     }
   }
@@ -298,19 +324,19 @@
     try {
       localStorage.setItem(SIZE_KEY, String(step))
     } catch {
-      /* размер переживёт пару и без записи */
+      /* the size lasts through the class even without being stored */
     }
   }
 
-  /** Отправить черновик той страницы, которой он принадлежит. */
+  /** Send the draft of the page it belongs to. */
   function commit(): void {
     if (timer !== undefined) {
       clearTimeout(timer)
       timer = undefined
     }
     if (!pending) return
-    // Заметку к чистому листу сервер отвергает — молчим здесь, чтобы отказ не
-    // прилетал плашкой из cleanup'а на ровном месте.
+    // The server rejects a note on a blank sheet: we stay quiet here so that
+    // the refusal does not fly in as a banner from cleanup out of nowhere.
     if (heldPage < 1) {
       pending = false
       return
@@ -318,10 +344,10 @@
     pending = false
     sentAt = performance.now()
     /*
-     * Шлём ВЕСЬ текст, а не разницу. Очередь клиента при обрыве держит
-     * шестнадцать сообщений и выбрасывает старые: при полном тексте
-     * единственное уцелевшее сообщение и есть верное, при разнице уцелел бы
-     * бессмысленный хвост.
+     * We send the WHOLE text, not a diff. On a dropped connection the client
+     * queue holds sixteen messages and throws out the old ones: with the full
+     * text the one surviving message is the right one, with a diff what
+     * survived would be a meaningless tail.
      */
     session.send({ t: 'notes:set', file: heldFile, page: heldPage, text: held })
   }
@@ -329,26 +355,28 @@
   function onInput(event: Event): void {
     const el = event.currentTarget as HTMLTextAreaElement
     /*
-     * Потолок держит `maxlength` — и при наборе, и при вставке. Эта строка на
-     * случай, когда он не сработал (сборка иероглифа, вставка через системное
-     * меню в Safari): отправить больше, чем видно в поле, нельзя, кадр всё
-     * равно выбросят молча.
+     * The ceiling is held by `maxlength`, both when typing and when pasting.
+     * This line is for when it did not work (IME composition of a character,
+     * pasting through the system menu in Safari): we cannot send more than is
+     * visible in the field, the frame would be dropped silently anyway.
      */
     if (el.value.length > MAX) el.value = el.value.slice(0, MAX)
     draft = el.value
     held = el.value
     pending = true
-    // Высоту правим тут же, синхронно: через эффект она приедет кадром позже,
-    // и строка, перетёкшая на следующую, успеет мигнуть под курсором.
+    // The height is fixed right here, synchronously: through an effect it
+    // would arrive a frame later, and a line wrapping onto the next one would
+    // have time to flicker under the caret.
     fit(el)
     if (timer !== undefined) clearTimeout(timer)
     timer = window.setTimeout(commit, SAVE_AFTER_MS)
   }
 
   /*
-   * Высоту считает сам браузер: сначала «сколько нужно», потом упираемся в
-   * max-height коробки и дальше поле прокручивается. Так поле растёт по
-   * тексту в колонке, где место есть, и не вылезает из листа, где его нет.
+   * The browser computes the height itself: first "how much is needed", then
+   * we hit the box's max-height and from there the field scrolls. That way
+   * the field grows with the text in the column where there is room, and
+   * does not spill out of the sheet where there is none.
    */
   function fit(el: HTMLTextAreaElement | null): void {
     if (!el) return
@@ -357,16 +385,18 @@
   }
 
   /*
-   * СВАЙП ВНИЗ ПО ШАПКЕ — свернуть.
+   * SWIPE DOWN ON THE HEADER to collapse.
    *
-   * Лист выезжает снизу, и рука, которая его вызвала, тянет его обратно тем
-   * же движением — так закрывают всякий лист на iPad, и палец ищет этот жест
-   * раньше, чем глаз найдёт «⌄». Жест живёт на шапке, а не на всём листе:
-   * тело — поле ввода, и вертикальный дрейф там — прокрутка текста.
+   * The sheet slides in from below, and the hand that summoned it pulls it
+   * back with the same movement: that is how any sheet on iPad is closed,
+   * and the finger looks for this gesture before the eye finds the "⌄". The
+   * gesture lives on the header, not on the whole sheet: the body is an
+   * input field, and vertical drift there is scrolling the text.
    *
-   * Только палец: перо на шапке — это промах мимо поля, а мышь на стенде
-   * жмёт кнопки. Кнопки шапки жест не отменяет: `click` у них приходит по
-   * подъёму, и подъём после сдвига в 48 px в кнопку уже не попадает.
+   * Finger only: a pen on the header is a miss beside the field, and a mouse
+   * on the test bench presses buttons. The gesture does not cancel the header
+   * buttons: their `click` comes on lift, and a lift after a 48 px shift no
+   * longer lands on the button.
    */
   let swipe: { id: number; y: number } | null = null
 
@@ -386,17 +416,17 @@
     if (swipe && swipe.id === event.pointerId) swipe = null
   }
 
-  /* Заметки спрашиваем сами: родитель про них знать не обязан. */
+  /* We ask for the notes ourselves: the parent need not know about them. */
   $effect(() => {
     if (host) session.openNotes(file)
   })
 
   /*
-   * Смена страницы или документа. Черновик предыдущей уходит в cleanup —
-   * Svelte зовёт его ДО тела эффекта, когда зеркала ещё держат старую
-   * страницу, — а потом поле перезаряжается заметкой новой. Тот же cleanup
-   * отрабатывает при размонтировании, и это единственная защита от «закрыл
-   * пульт, не отпустив клавишу».
+   * A page or document change. The previous page's draft goes out in
+   * cleanup (Svelte calls it BEFORE the effect body, while the mirrors still
+   * hold the old page), and then the field is reloaded with the new page's
+   * note. The same cleanup runs on unmount, and it is the only protection
+   * against "closed the console without letting go of the key".
    */
   $effect(() => {
     const nextFile = file
@@ -410,9 +440,10 @@
   })
 
   /*
-   * Входящее с сервера. Принимаем, только когда в поле не печатают, свой
-   * черновик уже уехал и окно собственного эха истекло: всё остальное время
-   * текст под курсором не двигается ни при каких обстоятельствах.
+   * Incoming from the server. Accepted only when nobody is typing in the
+   * field, our own draft has already left and our own echo window has
+   * expired: the rest of the time the text under the caret does not move
+   * under any circumstances.
    */
   $effect(() => {
     const fresh = stored
@@ -424,7 +455,7 @@
     refit()
   })
 
-  /* Пересчёт высоты после того, как поле перезарядили или сменили размер. */
+  /* Recompute the height after the field is reloaded or resized. */
   $effect(() => {
     void reloads
     void folded
@@ -433,9 +464,10 @@
   })
 
   /*
-   * Вкладка ушла в фон — на планшете это переключение приложения, блокировка
-   * экрана или свайп в Split View, и вернуться она может уже с мёртвым
-   * сокетом. Дописанное отправляем прямо здесь, не дожидаясь таймера.
+   * The tab went to the background: on a tablet that is switching apps,
+   * locking the screen or a swipe into Split View, and it may come back with
+   * a dead socket. Whatever was typed is sent right here, without waiting for
+   * the timer.
    */
   $effect(() => {
     const hide = () => {
@@ -450,14 +482,16 @@
   })
 
   /*
-   * Поле исчезло, а фокус из него не ушёл.
+   * The field is gone, but focus did not leave it.
    *
-   * `typing` снимается только по `onblur`, а поле удаляется из разметки само —
-   * листом, который свернули, и раскладкой, которая уехала в узкую, когда
-   * планшет открыли в Split View. Браузер не обязан слать `blur` элементу,
-   * удалённому из документа, и в этом случае пульт остаётся с поднятым флагом
-   * «правят заметку»: перо перестаёт рисовать совсем, а на экране ни строки
-   * объяснения. Лечится только повторным входом в поле — которого больше нет.
+   * `typing` is cleared only by `onblur`, while the field is removed from the
+   * markup on its own: by the sheet being collapsed, and by the layout
+   * switching to the narrow one when the tablet is opened in Split View. The
+   * browser is not obliged to send `blur` to an element removed from the
+   * document, and in that case the console is left with the "editing a note"
+   * flag raised: the pen stops drawing altogether, with not a line of
+   * explanation on screen. The only cure is entering the field again, and
+   * the field is no longer there.
    */
   $effect(() => {
     const gone = folded || !arrived
@@ -469,9 +503,10 @@
   })
 
   /*
-   * Нажатие собрано руками: утилита `transition-colors` переписывает
-   * transition-property целиком и выбрасывает из неё transform, то есть
-   * молча отменяет то самое нажатие. В этом продукте на этом уже обжигались.
+   * The press is assembled by hand: the `transition-colors` utility rewrites
+   * transition-property entirely and throws transform out of it, that is, it
+   * silently cancels that very press. This product has been burned by this
+   * before.
    */
   const TAP =
     'transition-[color,background-color,transform] duration-press ease-out ' +
@@ -479,48 +514,54 @@
     'focus-visible:ring-inset focus-visible:ring-accent/40'
 
   /*
-   * Поля листа. 24 px на планшете — как у всякого листа iOS, не 30 как у
-   * прежней ленты: та стояла на одной вертикали с кромкой бумаги, а лист
-   * теперь ЛЕЖИТ НА бумаге, и равняться ему не на что. В колонке ноутбука —
-   * 8, там каждый пиксель ширины — знак в строке.
+   * The sheet's padding. 24 px on the tablet, like any iOS sheet, not 30
+   * like the old strip: that one stood on one vertical with the paper's
+   * edge, while the sheet now LIES ON the paper and has nothing to line up
+   * with. In the laptop column, 8: there every pixel of width is a character
+   * in the line.
    */
   const PAD = $derived(compact ? 'px-2' : 'px-6')
   /*
-   * Цели в шапке — 44 px, минимальная цель пальца, и 40 в высоту — вся шапка.
-   * На ноутбуке 32: там мышь.
+   * Header targets are 44 px, the minimum finger target, and 40 tall, the
+   * whole header. On the laptop, 32: there it is a mouse.
    */
   const CELL = $derived(compact ? 'h-8 w-8' : 'h-10 w-11')
 </script>
 
 {#if host}
   <!--
-    Волоска сверху лист НЕ РИСУЕТ. Кромку выдвижного листа и стык в портрете
-    держит родитель: он один знает, лежит ли лист поверх бумаги (тогда кромка
-    — граница листа) или пристыкован под ней (тогда это шов раскладки). Пока
-    волосок был здесь, над заметками их выходило два.
+    The sheet does NOT DRAW the hairline on top. The edge of the pull-out
+    sheet and the seam in portrait are held by the parent: only it knows
+    whether the sheet lies over the paper (then the edge is the sheet's
+    border) or is docked under it (then it is a seam of the layout). While the
+    hairline was here, there came out two of them above the notes.
 
-    Фон на пульте — прозрачный: выдвижной лист полупрозрачен
-    (`bg-surface/[0.96]`), чтобы сквозь него угадывалась бумага, и грунт задаёт
-    он, а не эта секция. В колонке ноутбука грунт по-прежнему свой — canvas.
+    The background on the console is transparent: the pull-out sheet is
+    translucent (`bg-surface/[0.96]`) so that the paper shows faintly through
+    it, and the ground is set by it, not by this section. In the laptop
+    column the ground is still its own: canvas.
   -->
   <section class="flex min-h-0 flex-1 flex-col overflow-hidden {compact ? 'bg-canvas' : ''}">
     <!--
-      Шапка 40: слева имя места, метка и секундомер, справа кластер целей.
-      Волосяной линии между ними нет — на ночном пульте светящаяся линия во
-      всю ширину читается как шрам, а разделять здесь нечего: имя и кластер
-      разведены пустотой.
+      A 40 header: on the left the section name, the mark and the stopwatch,
+      on the right a cluster of targets. There is no hairline between them:
+      on the night console a glowing full-width line reads as a scar, and
+      there is nothing to separate here: the name and the cluster are set
+      apart by empty space.
 
-      Точка-полоса рядом с именем — единственный признак того, что у ЭТОЙ
-      страницы заметка есть: в свёрнутом виде другого способа узнать нет. Полоса
-      2×12, а не кружок: скруглений в этом продукте нет вовсе, а круглый диск
-      краски на листе читался бы как образец пигмента, которым он не является.
+      The dot-bar next to the name is the only sign that THIS page has a
+      note: when collapsed there is no other way to know. The bar is 2×12,
+      not a circle: this product has no rounded corners at all, and a round
+      disc of paint on the sheet would read as a pigment sample, which it is
+      not.
 
-      `touch-action: pan-x` на шапке: вертикальный дрейф пальца — наш жест
-      (свернуть), и отдавать его прокрутке нельзя; горизонтальный не значит
-      ничего, и пусть его берёт система. Роли у шапки нет и не нужно: свайп
-      здесь — второй способ нажать кнопку «Свернуть заметки», которая стоит в
-      той же шапке и доступна с клавиатуры; читалке экрана заявлять
-      «интерактивную область» было бы ложью.
+      `touch-action: pan-x` on the header: vertical finger drift is our
+      gesture (collapse), and it must not be given away to scrolling;
+      horizontal drift means nothing, and the system may have it. The header
+      has no role and needs none: the swipe here is a second way to press the
+      "Collapse notes" button, which stands in the same header and is
+      reachable from the keyboard; announcing an "interactive region" to a
+      screen reader would be a lie.
     -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header
@@ -542,23 +583,26 @@
       {/if}
       <span class="flex-1" aria-hidden="true"></span>
       <!--
-        Кластер идёт БЕЗ зазоров между целями: пальцем сюда попадают, не
-        отрывая глаз от зала, а зазор между соседними целями — это полоска, на
-        которой нажатие не срабатывает вовсе. Разделяет их размер и глиф, как
-        и на рейле, где между клавишами одного семейства нет ни волоска.
+        The cluster has NO gaps between targets: a finger lands here without
+        taking the eyes off the audience, and a gap between neighbouring
+        targets is a strip where a press does nothing at all. They are told
+        apart by size and glyph, as on the rail, where there is not a single
+        hairline between keys of one family.
 
-        Порядок: размер, «Ещё», и в самом углу — «Свернуть». Угол — то место,
-        куда палец попадает, не целясь, а свернуть лист хотят чаще всего.
+        Order: size, "More", and in the very corner, "Collapse". The corner is
+        where a finger lands without aiming, and collapsing the sheet is what
+        people want most often.
       -->
       <div class="flex items-center">
         {#if arrived}
           <!--
-            Ступень размера. Слова «крупнее» здесь больше нет: его читают один
-            раз в жизни, а светит оно каждую секунду лекции, — работу подписи
-            берёт глиф. «A» и стрелка нарисованы врозь: стрелку рисует SVG, а не
-            знак ↕ из шрифта, потому что HSE Sans его не несёт и система
-            подставила бы под него чужую гарнитуру — на пульте это выглядит как
-            чужая деталь.
+            The size step. The word "larger" is no longer here: it is read
+            once in a lifetime, yet it glows every second of the lecture, so
+            the glyph takes over the label's job. The "A" and the arrow are
+            drawn separately: the arrow is drawn by SVG rather than the ↕
+            character from the font, because HSE Sans does not carry it and
+            the system would substitute another typeface: on the console that
+            looks like a part from a different kit.
           -->
           <button
             type="button"
@@ -611,41 +655,42 @@
 
     {#if !folded}
       <!--
-        Отступ держит КОРОБКА, а не поле: мера текста — ровно 660 px, и если
-        отдать padding полю, тридцать два из них съест сам padding, а мера
-        поедет вслед за ним. Шире 660 строка перестаёт возвращаться глазу с
-        одного взгляда — а её и читают одним взглядом, подняв голову. На
-        12.9" (1366 px и шире) мера 900: те же шестьдесят знаков, но на
-        планшете, который держат дальше от глаз.
+        The indent is held by the BOX, not the field: the text measure is
+        exactly 660 px, and if the padding went to the field, thirty-two of
+        those pixels would be eaten by the padding itself and the measure
+        would drift after it. Wider than 660 a line no longer comes back to
+        the eye in one glance, and it is read in one glance, head raised. On
+        12.9" (1366 px and wider) the measure is 900: the same sixty
+        characters, but on a tablet held further from the eyes.
       -->
       <div class="relative min-h-0 flex-1 overflow-hidden {PAD}">
         {#if !arrived}
           <!--
-            Не «пусто», а «ещё не приехало». Разница в одну строку здесь стоит
-            дороже всего остального файла: пустое поле вместо вчерашних
-            двадцати строк читается как потерянная работа.
+            Not "empty" but "not here yet". That one-line difference is worth
+            more here than the rest of the file: an empty field instead of
+            yesterday's twenty lines reads as lost work.
           -->
           <p class="flex items-center gap-2 py-2 text-2xs text-muted" aria-live="polite">
             <Icon name="spinner" size={14} class="shrink-0 animate-spin" /> {tr('room.ui.196')} </p>
         {:else}
           <!--
-            Поле всегда открыто, а не «двойным щелчком в правку»: на планшете
-            двойное касание — системный зум, а на паре лишнее движение это
-            лишняя секунда молчания в аудитории. Плейсхолдер — muted, а не
-            faint: в пустой заметке приглашение и есть всё содержимое, а faint
-            в этом коде не носит информацию никогда.
+            The field is always open, not "double-click to edit": on a tablet
+            a double tap is the system zoom, and in class an extra movement is
+            an extra second of silence in the lecture hall. The placeholder is
+            muted, not faint: in an empty note the invitation is the whole
+            content, and faint never carries information in this code.
 
-            `pult-prompt` — единственное место на пульте, где текст можно
-            выделять: правило в index.css, потому что запрет на корне пульта
-            (`.pult-root { user-select: none }`) лежит там же, и разрешение
-            обязано стоять рядом с запретом, а не в другом файле.
+            `pult-prompt` is the only place on the console where text can be
+            selected: the rule is in index.css, because the ban at the console
+            root (`.pult-root { user-select: none }`) lives there too, and the
+            permission must stand next to the ban, not in another file.
           -->
           {#if readonly || onBoard}
             <!--
-              Прибитая заметка. Не кнопка: нажимать нечего, а кнопка, которая
-              ничего не делает, — это обещание, которое пульт не сдержит.
-              Прокрутка своя: длинная речь на странице обязана дочитываться, и
-              это единственное движение, которое здесь разрешено.
+              A nailed-down note. Not a button: there is nothing to press, and
+              a button that does nothing is a promise the console will not
+              keep. It scrolls on its own: a long talk on a page must be
+              readable to the end, and that is the only movement allowed here.
             -->
             <div
               class="{size} pult-prompt block max-h-full w-full max-w-[660px] overflow-y-auto
@@ -672,7 +717,8 @@
             onfocus={() => (typing = true)}
             onblur={() => {
               typing = false
-              // Ушли из поля — фраза уходит немедленно, не досиживая таймер.
+              // Left the field: the sentence goes out at once, without
+              // waiting out the timer.
               commit()
             }}
           ></textarea>
@@ -680,15 +726,16 @@
 
           {#if !readonly && left <= MAX - WARN}
             <!--
-              Счётчик стоит у ПРАВОГО КРАЯ МЕРЫ, а не в шапке: он говорит про
-              текст, и смотреть на него надо туда же, куда пишут. В шапке он
-              занимал место цели кластера и переставлял соседей ровно в тот
-              момент, когда до них дотягиваются не глядя.
+              The counter stands at the RIGHT EDGE OF THE MEASURE, not in the
+              header: it is about the text, and one should look at it where
+              one writes. In the header it took the place of a cluster target
+              and shifted the neighbours exactly when they are reached for
+              without looking.
 
-              Грунт под числом — грунт дома: коробка прокручивается вместе с
-              текстом, и без подложки последняя строка проезжала бы сквозь
-              цифры. Лист заметок на пульте лежит на surface, колонка ноутбука
-              — на canvas.
+              The ground under the number is the home's ground: the box
+              scrolls together with the text, and without a backing the last
+              line would ride through the digits. The notes sheet on the
+              console lies on surface, the laptop column on canvas.
             -->
             <span
               class="pointer-events-none absolute bottom-0 max-w-[660px] text-right min-[1300px]:max-w-[900px]
@@ -708,12 +755,13 @@
 
 <style>
   /*
-   * Каретка — акцентом, а не цветом текста.
+   * The caret is in the accent colour, not the text colour.
    *
-   * Глобальная каретка в продукте цвета `ink`, то есть на пульте почти белая:
-   * в тёмном листе её не видно вовсе, и первое, что делает человек, ткнув в
-   * заметку, — ищет, куда он попал. Акцент на этом экране один, и работа у
-   * него ровно эта: «вы пишете сюда».
+   * The product's global caret is `ink` coloured, that is, almost white on
+   * the console: on a dark sheet it cannot be seen at all, and the first
+   * thing a person does after tapping into a note is look for where they
+   * landed. There is one accent on this screen, and this is exactly its job:
+   * "you are writing here".
    */
   .pult-caret {
     caret-color: rgb(var(--accent));

@@ -1,26 +1,27 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   /**
-   * Что видит тот, кого удалили с занятия.
+   * What someone removed from a class sees.
    *
-   * Не ошибка и не авария: человека не пустили, и он должен понять — кто, до
-   * какого часа и к кому идти. Молчание здесь читалось бы как сломанный
-   * Colloq, а красная плашка — как поломка, в которой он не виноват; и то и
-   * другое отправляет его чинить не то.
+   * Not an error and not a crash: the person was not let in, and they need
+   * to understand who did it, until what time, and whom to go to. Silence
+   * here would read as a broken Colloq, and a red banner as a breakage that
+   * is not their fault; either one sends them off to fix the wrong thing.
    *
-   * Ничего сверх того, что делает сервер. Ни «навсегда», ни «во всех
-   * браузерах»: бан живёт сутки и держится на метке, и первое же обещание,
-   * которое комната не сдержит, обесценит и всё остальное на этом экране.
+   * Nothing beyond what the server does. Neither "forever" nor "in all
+   * browsers": a ban lives for a day and rests on a mark, and the very first
+   * promise the room does not keep would devalue everything else on this
+   * screen.
    *
-   * Одна карточка на два места — экран входа и открытая вкладка, — а рамку
-   * вокруг ставит тот, кто зовёт: на входе это страница целиком, в комнате
-   * поверх неё.
+   * One card for two places — the sign-in screen and an open tab — and the
+   * frame around it is set by the caller: at sign-in it is the whole page, in
+   * the room it sits on top of it.
    */
   import { untilWords } from '@/lib/bans'
   import Icon from '@/components/ui/Icon.svelte'
 
   interface Props {
-    /** Момент конца бана — тот же, что назвал сервер. */
+    /** When the ban ends — the same moment the server named. */
     until: number
   }
 

@@ -17,9 +17,9 @@ export interface KubeObject {
 }
 export interface KubernetesClient {
   /**
-   * `contentType` нужен ровно PATCH: подресурс resize принимает стратегическое
-   * слияние, где контейнеры сливаются по имени. Обычный JSON заменил бы список
-   * контейнеров целиком — такой патч API отвергает.
+   * `contentType` is needed exactly by PATCH: the resize subresource accepts a
+   * strategic merge, where containers are merged by name. Plain JSON would
+   * replace the list of containers entirely, and the API rejects such a patch.
    */
   request<T>(method: string, path: string, body?: unknown, contentType?: string): Promise<T>
 }
@@ -28,11 +28,12 @@ export class KubernetesError extends Error {
     readonly status: number,
     reason: string,
     /**
-     * Какого ресурса узлу не хватило — единственное, что из тела ответа API
-     * выходит наружу, и только именем ресурса. 403 на `pods/resize` значит
-     * одно из двух: у брокера нет права или узлу столько не дать (так API
-     * 1.35+ отвечает на невыполнимое изменение, проверено на k3s 1.36).
-     * Преподавателю нужно второе, оператору — первое; путать их нельзя.
+     * Which resource the node ran short of: the only thing from the API
+     * response body that gets out, and only as the resource name. A 403 on
+     * `pods/resize` means one of two things: the broker lacks the permission,
+     * or the node cannot give that much (that is how API 1.35+ answers an
+     * infeasible change, checked on k3s 1.36). The teacher needs the second,
+     * the operator the first; they must not be confused.
      */
     readonly insufficient?: string,
   ) {

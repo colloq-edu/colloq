@@ -52,15 +52,16 @@ function fail(res: Response, status: number, reason: AdminErrorReason, message: 
 const MAX_SOURCE = 16 * 1024
 
 /**
- * Сколько срезов видеокарты названо в KERNEL_GPUS и сколько из них свободно.
+ * How many GPU slices are named in KERNEL_GPUS and how many of them are free.
  *
- * Занят тот срез, который стоит меткой на контейнере комнаты, — остановленной
- * тоже: её поднимут обратно тем же устройством. Занятость, которой больше нет в
- * списке (оператор переписал KERNEL_GPUS), свободных не прибавляет и не
- * убавляет: считаем по настроенным.
+ * A slice is taken if it is the label on a room's container, a stopped one
+ * too: it will be brought back up with the same device. A taken slice that
+ * is no longer in the list (the operator rewrote KERNEL_GPUS) neither adds to
+ * nor subtracts from the free ones: we count by the configured ones.
  *
- * На машине без карт docker не спрашиваем вовсе — `docker ps -a` на каждое
- * открытие экрана ради заведомо пустого списка платить не за что.
+ * On a machine without cards docker is not asked at all: there is no point
+ * paying for `docker ps -a` on every screen open for a list known to be
+ * empty.
  */
 async function gpuState(): Promise<{ total: number; free: number }> {
   if (usingRuntimeBroker()) return { total: 0, free: 0 }
@@ -71,9 +72,10 @@ async function gpuState(): Promise<{ total: number; free: number }> {
 }
 
 /**
- * Откуда маршрут берёт сборку и ответ «что здесь можно». По умолчанию — из
- * environments.ts; подменяется в тестах, потому что настоящая сборка ходит в
- * docker, а проверять надо не её, а то, что ответ уходит раньше неё.
+ * Where the route gets the build and the "what is possible here" answer. By
+ * default from environments.ts; replaced in tests, because the real build
+ * goes to docker, and what has to be checked is not the build but that the
+ * response goes out before it.
  */
 export interface BuildDeps {
   startBuild: typeof startBuild
@@ -87,34 +89,37 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
 
   router.get('/api/admin/environments', requireStaff, async (_req: Request, res: Response) => {
     const body: EnvironmentsState = {
-      // `gpu` у каждой строки — оттуда же, откуда packages: директива читается
-      // тем же чтением файла, что и список пакетов, и тем же разбором, по
-      // которому подъём ядра потом решает, просить ли срез.
+      // Each row's `gpu` comes from the same place as packages: the directive
+      // is read by the same file read as the package list, and by the same
+      // parse by which a kernel start later decides whether to ask for a
+      // slice.
       environments: await listEnvironments(),
       /*
-       * Собрать и назначить умолчанием — два разных «можно ли», и панель гасит
-       * ровно ту кнопку, которой нельзя: в контейнере сборка работает (каталог
-       * kernel примонтирован), а запись KERNEL_ENV — это .env хоста.
+       * Build and set as default are two different "is it allowed"s, and the
+       * panel disables exactly the button that is not allowed: in a container
+       * the build works (the kernel directory is mounted), while writing
+       * KERNEL_ENV means the host's .env.
        */
       ...(await deps.environmentAbilities()),
       /*
-       * Делят ли комнаты одно ядро — правда, которую знает только сервер.
+       * Whether rooms share one kernel: a truth only the server knows.
        *
-       * Экраны обещали контейнер на семинар безусловно («runs in its own
-       * container», «The container mounts this room's folder»), а на установке
-       * без сокета, без сети комнат или с KERNEL_ISOLATION=off это неправда
-       * сразу в двух местах: комнаты видят файлы друг друга, и «Make default»
-       * действительно забирает переменные у открытых семинаров. Признак едет
-       * вместе со списком, потому что показывают его там же.
+       * The screens promised a container per seminar unconditionally ("runs
+       * in its own container", "The container mounts this room's folder"),
+       * and on an install without the socket, without the room network or
+       * with KERNEL_ISOLATION=off that is untrue in two places at once: rooms
+       * see each other's files, and "Make default" really does take the
+       * variables away from open seminars. The flag travels with the list
+       * because it is shown in the same place.
        */
       shared: false,
       managed: usingRuntimeBroker(),
       gpuCapacityKnown: !usingRuntimeBroker(),
       /*
-       * Срезы — рядом со списком по той же причине, что и `shared`: смотрят на
-       * них там же. Без этого числа преподаватель заводит семинар на
-       * GPU-окружении на машине, где карт нет вовсе, и узнаёт об этом отказом
-       * ядра посреди пары.
+       * Slices sit next to the list for the same reason as `shared`: people
+       * look at them in the same place. Without this number a teacher creates
+       * a seminar on a GPU environment on a machine with no cards at all, and
+       * learns about it from a kernel refusal in the middle of the lesson.
        */
       gpus: await gpuState(),
     }
@@ -165,14 +170,16 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
       )
     }
     /*
-     * Создание и правка — разные намерения, хотя запрос один и тот же.
+     * Creating and editing are different intentions, even though the request
+     * is the same.
      *
-     * Перезапись верна, когда открыли существующий список. Но форма «New
-     * environment» шлёт тот же PUT, и на занятом имени она затирала чужой
-     * список пакетов целиком: две вкладки, планшет рядом с ноутбуком, curl —
-     * и от окружения не остаётся ни строки, а истории у этих файлов нет.
-     * `If-None-Match: *` — это и есть «только если такого ещё нет»; тот же
-     * барьер стоит на клиенте и в `make env-new`.
+     * Overwriting is right when an existing list was opened. But the "New
+     * environment" form sends the same PUT, and on a taken name it wiped out
+     * someone else's package list entirely: two tabs, a tablet next to a
+     * laptop, curl, and not a line of the environment is left, and these
+     * files have no history. `If-None-Match: *` means exactly "only if there
+     * is no such one yet"; the same barrier stands on the client and in
+     * `make env-new`.
      */
     if (req.get('if-none-match')?.trim() === '*' && exists(name)) {
       return fail(
@@ -186,10 +193,10 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
       writeSource(name, source)
     } catch (err) {
       /*
-       * Каталог со списками — папка хоста, смонтированная внутрь. Когда её
-       * владелец не совпадает с пользователем, от которого работает сервер,
-       * запись падает EACCES — и раньше это уходило в общий обработчик голым
-       * «internal error», по которому не понять ни что произошло, ни где.
+       * The lists directory is a host folder mounted inside. When its owner
+       * does not match the user the server runs as, the write fails with
+       * EACCES, and this used to go to the common handler as a bare "internal
+       * error", from which one could tell neither what happened nor where.
        */
       return fail(
         res,
@@ -222,16 +229,19 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
       return fail(res, 409, 'protected', tr('server.baseIsWhatEveryEnvironmentIsBuilt.1c36b7'))
     }
     /*
-     * Привезённое с продуктом удалить нельзя, и сказать об этом надо здесь.
+     * What ships with the product cannot be deleted, and this is the place to
+     * say so.
      *
-     * Список такого окружения лежит в каталоге приложения — у установленного
-     * colloq это site-packages: `rm` там либо падает правами (и человек видит
-     * голое «internal error»), либо снимает файл, который вернётся следующим
-     * `pip install -U`. Отказ называет, что делать вместо этого: правка ложится
-     * своей копией рядом с настройками и переживает обновление.
+     * The list of such an environment lies in the application directory,
+     * which for an installed colloq is site-packages: `rm` there either fails
+     * on permissions (and the person sees a bare "internal error") or removes
+     * a file that the next `pip install -U` brings back. The refusal says what
+     * to do instead: an edit goes into a copy of its own next to the settings
+     * and survives an update.
      *
-     * В репозитории каталог один, свой и привезённый совпадают, и эта ветка не
-     * срабатывает никогда — удаление там работает ровно как работало.
+     * In the repository there is one directory, the own and the shipped ones
+     * coincide, and this branch never fires: deletion works there exactly as
+     * it did.
      */
     if (isShipped(name)) {
       return fail(
@@ -242,17 +252,17 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
       )
     }
     /*
-     * Комнаты, которые на нём стоят.
+     * The rooms that stand on it.
      *
-     * Проверялось только «не то ли это окружение, на котором работает
-     * инстанс». Семинар, которому окружение выбрали при создании, держит его
-     * имя в своей строке — и после удаления просыпался в комнате, где ядро не
-     * поднимается вовсе: имя есть, образа нет. Узнавали об этом на первом Run
-     * посреди пары.
+     * Only "is this the environment the instance runs on" used to be checked.
+     * A seminar whose environment was chosen at creation keeps its name in
+     * its row, and after the deletion it woke up in a room where the kernel
+     * does not start at all: the name is there, the image is not. People
+     * found out on the first Run in the middle of the lesson.
      *
-     * Отказ, а не молчаливый перевод на общее окружение: у семинара по
-     * компьютерному зрению и семинара на голом Python разные тетради, и решать
-     * за преподавателя, что «сойдёт и так», нельзя.
+     * A refusal, not a silent move to the common environment: a computer
+     * vision seminar and a plain Python seminar have different notebooks, and
+     * deciding for the teacher that "it will do" is not allowed.
      */
     const attached = sessionsOnEnvironment(name)
     if (attached.length > 0) {
@@ -262,15 +272,15 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         .join(', ')
       const more = attached.length > 3 ? `, and ${attached.length - 3} more` : ''
       /*
-       * Инструкция должна быть выполнимой.
+       * The instruction has to be doable.
        *
-       * Здесь стояло «Move them to another environment first», а перевести
-       * семинар на другое окружение нельзя ничем: имя выбирается при создании и
-       * дальше не меняется ни в панели, ни через PATCH. Архивные семинары
-       * считаются наравне с живыми — они точно так же откроются и потребуют
-       * свой образ, — поэтому сказано и про них: иначе прошлосеместровый
-       * архивный семинар держит имя навсегда, а человек ищет несуществующую
-       * кнопку.
+       * This used to say "Move them to another environment first", yet there
+       * is no way to move a seminar to another environment: the name is
+       * chosen at creation and never changes afterwards, neither in the panel
+       * nor through PATCH. Archived seminars count the same as live ones (they
+       * will open just the same and need their image), so they are mentioned
+       * too: otherwise last semester's archived seminar holds the name
+       * forever, and the person looks for a button that does not exist.
        */
       return fail(
         res,
@@ -302,20 +312,21 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         )
       }
       /*
-       * 202 — это «принято», и уходить оно обязано сейчас.
+       * 202 means "accepted", and it has to go out now.
        *
-       * Здесь стояло `await startBuild(name)`, а сборка — это минуты docker
-       * build: запрос висел всё это время, и «Accepted» приезжало ровно тогда,
-       * когда принимать было уже нечего. Вкладка, нажавшая Build, всё это время
-       * держала строку занятой — то есть не открывала живой журнал, ради
-       * которого сделан /log, и не давала нажать Cancel на своей же сборке; а
-       * ретранслятор, обрывающий десятиминутный запрос, показывал владельцу
-       * ошибку при прекрасно идущей сборке.
+       * There used to be `await startBuild(name)` here, and a build is
+       * minutes of docker build: the request hung all that time, and
+       * "Accepted" arrived exactly when there was nothing left to accept. The
+       * tab that pressed Build kept the row busy all that time, that is, it
+       * did not open the live log that /log exists for and did not let one
+       * press Cancel on its own build; and a relay that cuts off a ten-minute
+       * request showed the owner an error while the build was going perfectly
+       * well.
        *
-       * Слот в `builds` занимается синхронно, до первого await (environments.ts ·
-       * startBuild), так что /log и Cancel находят сборку сразу после ответа.
-       * Провал сборки и так лежит в её журнале — сюда он приехать не может,
-       * незачем и ждать его.
+       * The slot in `builds` is taken synchronously, before the first await
+       * (environments.ts · startBuild), so /log and Cancel find the build
+       * right after the response. A build failure is in its log anyway: it
+       * cannot arrive here, and there is no point waiting for it.
        */
       void deps.startBuild(name).catch((err: unknown) => {
         console.error(
@@ -342,8 +353,8 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
       }
       if (isBuilding(name))
         return fail(res, 409, 'building', tr('server.thatEnvironmentIsStillBuilding.d8f6a6'))
-      // Не «виден ли docker»: умолчание — это строка в .env рядом с
-      // docker-compose.yml, и в контейнере писать её некуда.
+      // Not "is docker visible": the default is a line in .env next to
+      // docker-compose.yml, and inside a container there is nowhere to write it.
       const can = await deps.environmentAbilities()
       if (!can.canSetDefault) {
         return fail(
@@ -354,13 +365,14 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         )
       }
       /*
-       * Ядро compose трогаем только когда комнаты в нём и живут.
+       * The compose kernel is touched only when the rooms actually live in it.
        *
-       * При изоляции у каждой комнаты свой контейнер из образа её окружения, и
-       * «Make default» до них не дотягивается вовсе. Окно churn при этом стояло
-       * всегда: любое настоящее падение ядра в ближайшие две минуты — OOM от
-       * ячейки студента — объяснялось «кто-то переключил окружение», и
-       * преподаватель шёл искать админа вместо своей ячейки.
+       * With isolation every room has its own container from its environment's
+       * image, and "Make default" does not reach them at all. Yet the churn
+       * window was always set: any real kernel crash in the next two minutes
+       * (an OOM from a student's cell) was explained as "someone switched the
+       * environment", and the teacher went looking for the admin instead of
+       * at their own cell.
        */
       const result = await activate(name, false)
       if (!result.ok) {

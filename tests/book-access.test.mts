@@ -1,23 +1,23 @@
 /**
- * Доступ к ОТДЕЛЬНОЙ тетради комнаты.
+ * Access to a SEPARATE notebook of the room.
  *
- * Правила комнаты были одни на все тетради, и на паре это ломалось об самый
- * частый жест: студент заводит себе копию разбора — и в собственной тетради
- * печатать не может, потому что комната лекционная. Теперь у тетради есть свой
- * доступ, и вся развилка живёт в ОДНОЙ функции (`rulesForBook`), которой
- * пользуются и сервер, и браузер.
+ * The room rules were the same for all notebooks, and in class this broke
+ * on the most common gesture: a student makes themselves a copy of the
+ * walkthrough and cannot type in their own notebook, because the room is a
+ * lecture. Now a notebook has its own access, and the whole fork lives in
+ * ONE function (`rulesForBook`), used by both the server and the browser.
  *
- * Отсюда и порядок проверок. Сначала сама функция и чтение правил — там
- * ошибка тихая и стоит либо запертой комнаты, либо открытой чужой тетради.
- * Потом гейт на настоящих кадрах: кнопку можно не нажимать, а кадр послать
- * мимо интерфейса, и отказать обязан сервер. Потом управляющий сокет — запуск,
- * перестановка, форматирование. И наконец запись автора: она делается сервером
- * в тот миг, когда тетрадь заводят, и от неё зависит, кого меню назовёт
- * хозяином.
+ * Hence the order of the checks. First the function itself and reading the
+ * rules: a mistake there is silent and costs either a locked room or
+ * someone else's notebook left open. Then the gate on real frames: a button
+ * can go unpressed while a frame is sent around the interface, and the
+ * server must refuse. Then the control socket: run, move, format. And
+ * finally the author record: the server makes it at the moment the notebook
+ * is created, and it decides whom the menu names as the owner.
  *
- * Ни сети, ни ядра, кроме одного маршрута: «участник не меняет доступ»
- * проверяется через настоящий HTTP, потому что дверь там одна и проверяет её
- * тоже она.
+ * No network and no kernel, except for one route: "a participant does not
+ * change access" is checked over real HTTP, because there is one door there
+ * and it is the door that checks it.
  */
 import './_env.mts'
 import { after, before, test } from 'node:test'
@@ -71,7 +71,7 @@ import { permitsIn } from '../web/src/lib/may.js'
 const AKIM = 'p_akim'
 const BORIS = 'p_boris'
 
-/** Комната, в которой одна тетрадь личная — Акима. */
+/** A room where one notebook is personal: Akim's. */
 function withPersonal(room: Partial<RoomRules>, root = 'nb:one'): RoomRules {
   return {
     ...OPEN_ROOM,
@@ -82,48 +82,49 @@ function withPersonal(room: Partial<RoomRules>, root = 'nb:one'): RoomRules {
 
 const student = (id: string) => ({ role: 'participant' as const, participantId: id })
 
-/* ------------------------------------------------------- сама развилка */
+/* ----------------------------------------------------- the fork itself */
 
-test('личная тетрадь открыта автору и преподавателю, и закрыта всем остальным', () => {
-  // Комната лекционная: печатать и запускать в ней нельзя никому, кроме ведущего.
+test('a personal notebook is open to its author and the teacher, and closed to everyone else', () => {
+  // The room is a lecture: nobody but the host may type or run in it.
   const rules = withPersonal({ edit: 'host', run: 'host', structure: 'host' })
 
   const mine = rulesForBook(rules, 'nb:one', student(AKIM))
   assert.deepEqual(
     [mine.edit, mine.run, mine.structure],
     ['room', 'room', 'room'],
-    'автор не получил свою тетрадь',
+    'the author did not get their notebook',
   )
   const theirs = rulesForBook(rules, 'nb:one', student(BORIS))
   assert.deepEqual([theirs.edit, theirs.run, theirs.structure], ['host', 'host', 'host'])
 
   /*
-   * Ядро и вывод СВОЕЙ тетради — свои, и это ровно две ручки.
+   * The kernel and output of ONE'S OWN notebook are one's own, and that is
+   * exactly two knobs.
    *
-   * У личной тетради своё ядро в отдельном контейнере (`bookHasOwnKernel`):
-   * «перезапустить» в ней уносит переменные одного человека, а «стереть
-   * выводы» — его собственный вывод. Требовать на это преподавателя значило бы
-   * поднимать руку посреди лекции, чтобы заново объявить `x` у себя в
-   * черновике.
+   * A personal notebook has its own kernel in a separate container
+   * (`bookHasOwnKernel`): "restart" in it takes away one person's variables,
+   * and "clear outputs" their own output. Requiring the teacher for this
+   * would mean raising a hand in the middle of a lecture to declare `x`
+   * again in one's own draft.
    */
-  assert.deepEqual([mine.restart, mine.wipe], ['room', 'room'], 'автору не дали своё ядро')
+  assert.deepEqual([mine.restart, mine.wipe], ['room', 'room'], 'the author was not given their own kernel')
   assert.deepEqual(
     [theirs.restart, theirs.wipe],
     [rules.restart, rules.wipe],
-    'чужая личная тетрадь раздала права на своё ядро',
+    'a personal notebook of another person handed out rights to its kernel',
   )
 
-  // Остальные правила комнаты тетрадью не трогаются: доска, файлы, история.
+  // The other room rules are not touched by a notebook: board, files, history.
   assert.equal(mine.files, rules.files)
   assert.equal(mine.board, rules.board)
 
-  // Тетрадь комнаты остаётся комнатной для обоих — и это тот же объект.
+  // The room notebook stays the room's for both, and it is the same object.
   assert.equal(rulesForBook(rules, CELLS_KEY, student(AKIM)), rules)
-  // Преподаватель проходит насквозь: закрытая «только ему» закрыта не от него.
+  // The teacher passes straight through: a notebook closed "to them only" is not closed to them.
   assert.equal(rulesForBook(rules, 'nb:one', { role: 'host', participantId: 'p_host' }), rules)
 })
 
-test('«открыта всем» пускает при закрытой комнате, «только преподаватель» — закрывает при открытой', () => {
+test('"open to everyone" lets in when the room is closed, "teacher only" closes when it is open', () => {
   const open: RoomRules = {
     ...OPEN_ROOM,
     edit: 'host',
@@ -134,12 +135,13 @@ test('«открыта всем» пускает при закрытой ком�
   const all = rulesForBook(open, 'nb:one', student(BORIS))
   assert.deepEqual([all.edit, all.run, all.structure], ['room', 'room', 'room'])
   /*
-   * «Открыта всем» ядра не раздаёт.
+   * "Open to everyone" does not hand out kernels.
    *
-   * Тетрадь, открытая всем, — по-прежнему тетрадь ЗАНЯТИЯ: её ядро живёт в
-   * контейнере комнаты (`bookHasOwnKernel` про неё отвечает «нет»), и
-   * «перезапустить» в ней значит обнулить переменные пары. Разница с личной
-   * ровно здесь, и без этой строки она держалась бы на одном слове в коде.
+   * A notebook open to everyone is still the CLASS's notebook: its kernel
+   * lives in the room's container (`bookHasOwnKernel` answers "no" for it),
+   * and "restart" in it means wiping the class's variables. That is exactly
+   * the difference from a personal one, and without this line it would rest
+   * on a single word in the code.
    */
   assert.deepEqual([all.restart, all.wipe], [open.restart, open.wipe])
 
@@ -149,20 +151,20 @@ test('«открыта всем» пускает при закрытой ком�
   }
   const only = rulesForBook(shut, 'nb:one', student(BORIS))
   assert.deepEqual([only.edit, only.run, only.structure], ['host', 'host', 'host'])
-  // А комната при этом осталась открытой — перекрытие живёт у одной тетради.
+  // And the room stayed open meanwhile: the override lives on one notebook.
   assert.equal(rulesForBook(shut, CELLS_KEY, student(BORIS)).edit, 'room')
 })
 
-test('отказывает тетрадь — говорит тетрадь, а не комната', () => {
+test('when the notebook refuses, the notebook speaks, not the room', () => {
   const rules = withPersonal({ edit: 'host' })
   assert.deepEqual(bookRefusal(rules, 'nb:one', student(BORIS)), {
     key: BOOK_IS_PERSONAL,
     name: 'Аким',
   })
-  // Автору и преподавателю тетрадь не отказывает вовсе.
+  // The notebook does not refuse its author or the teacher at all.
   assert.equal(bookRefusal(rules, 'nb:one', student(AKIM)), null)
   assert.equal(bookRefusal(rules, 'nb:one', { role: 'host', participantId: 'p_host' }), null)
-  // «Открыта всем» тоже не отказ: она разрешает.
+  // "Open to everyone" is no refusal either: it allows.
   const opened: RoomRules = {
     ...OPEN_ROOM,
     books: { 'nb:one': { access: 'all', owner: null, ownerName: null } },
@@ -175,53 +177,53 @@ test('отказывает тетрадь — говорит тетрадь, а 
   assert.deepEqual(bookRefusal(shut, 'nb:one', student(BORIS))?.key, BOOK_IS_THE_TEACHERS)
 })
 
-test('конец занятия сильнее доступа к тетради: после звонка не открывает ничего', () => {
+test('the end of a class is stronger than notebook access: after the bell nothing is opened', () => {
   const rules = withPersonal({})
   const over = rulesAfterClass(rules)
-  assert.equal(over.books, undefined, 'карта тетрадей пережила звонок')
+  assert.equal(over.books, undefined, 'the notebook map survived the bell')
   const mine = rulesForBook(over, 'nb:one', student(AKIM))
   assert.deepEqual([mine.edit, mine.run, mine.structure], ['host', 'host', 'host'])
-  // И «открыта всем» тоже: после звонка действует один преподаватель.
+  // And "open to everyone" too: after the bell only the teacher acts.
   const everyone: RoomRules = {
     ...OPEN_ROOM,
     books: { 'nb:one': { access: 'all', owner: null, ownerName: null } },
   }
   assert.equal(rulesForBook(rulesAfterClass(everyone), 'nb:one', student(BORIS)).edit, 'host')
-  // Хранимые правила при этом целы — занятие открывают обратно.
+  // The stored rules are intact meanwhile: the class gets reopened.
   assert.equal(rules.books?.['nb:one'].access, 'owner')
 })
 
-/* -------------------------------------------------------- чтение правил */
+/* ---------------------------------------------------- reading the rules */
 
-test('правила без карты тетрадей читаются как прежде, а мусор падает на умолчание', () => {
-  // Строка, записанная до того, как доступ к тетради появился.
+test('rules without a notebook map read as before, and garbage falls back to the default', () => {
+  // A row written before notebook access existed.
   const old = readRules('{"run":"host","edit":"host"}')
   assert.equal(old.books, undefined)
-  assert.equal(old.ownBooks, 'off', 'свои тетради разрешились сами')
+  assert.equal(old.ownBooks, 'off', 'own notebooks got allowed by themselves')
 
-  // Мусор на каждом месте.
+  // Garbage in every place.
   const junk = readRules({
     books: {
       'nb:ok': { access: 'owner', owner: AKIM, ownerName: 'Аким' },
       'nb:bad': { access: 'нет такого', owner: AKIM },
       'nb:empty': 7,
       '': { access: 'host' },
-      // «Как в комнате» без автора не значит ничего и не хранится.
+      // "As in the room" without an author means nothing and is not stored.
       'nb:noop': { access: 'room', owner: null },
     },
     ownBooks: 'что угодно',
   })
   assert.deepEqual(Object.keys(junk.books ?? {}), ['nb:ok'])
   assert.equal(junk.ownBooks, 'off')
-  // У поля недолго была другая пара значений; «личные» читается как «можно».
+  // For a short while the field had another pair of values; "personal" reads as "allowed".
   assert.equal(readRules({ ownBooks: 'owner' }).ownBooks, 'on')
   assert.equal(readRules({ ownBooks: 'room' }).ownBooks, 'off')
-  // А запись «как в комнате» С автором остаётся: по ней меню назовёт хозяина.
+  // But an "as in the room" record WITH an author stays: the menu will name the owner by it.
   const kept = readRules({ books: { 'nb:x': { access: 'room', owner: AKIM, ownerName: 'Аким' } } })
   assert.equal(kept.books?.['nb:x'].owner, AKIM)
 })
 
-test('карта тетрадей ограничена по размеру, а имя автора — по длине', () => {
+test('the notebook map is limited in size, and the author name in length', () => {
   const many: Record<string, unknown> = {}
   for (let i = 0; i < MAX_BOOK_RULES + 40; i++) {
     many[`nb:${i}`] = { access: 'owner', owner: AKIM, ownerName: 'Аким' }
@@ -235,7 +237,7 @@ test('карта тетрадей ограничена по размеру, а �
   assert.ok((long.books?.['nb:x'].owner?.length ?? 0) <= 128)
 })
 
-test('доступ переживает круг через базу', () => {
+test('access survives a round trip through the database', () => {
   const id = 'book-db'
   createSession(id, 'Круг', null)
   setRules(id, withPersonal({ edit: 'host' }))
@@ -243,13 +245,14 @@ test('доступ переживает круг через базу', () => {
   assert.equal(getRules(id).books?.['nb:one'].access, 'owner')
 })
 
-/* ------------------------------------------------------------------ гейт */
+/* ------------------------------------------------------------------ gate */
 
 /**
- * Две тетради в одном документе и вкладка, которая шлёт в них кадры.
+ * Two notebooks in one document and a tab that sends frames into them.
  *
- * Кадры настоящие: право проверяется на байтах, а не на выдуманных приговорах.
- * Мимо интерфейса послать можно ровно это, и отказать обязан сервер.
+ * The frames are real: the right is checked on bytes, not on made-up
+ * verdicts. Exactly this can be sent around the interface, and the server
+ * must refuse.
  */
 function twoBooks(): {
   server: Y.Doc
@@ -278,7 +281,7 @@ function twoBooks(): {
   return { server, client, frame }
 }
 
-/** Прошёл бы этот кадр от этого человека при этих правилах. `null` — прошёл. */
+/** Would this frame from this person pass under these rules. `null` means it passes. */
 function passes(
   server: Y.Doc,
   bytes: Uint8Array,
@@ -298,22 +301,23 @@ const typeInto = (client: Y.Doc, root: string): void => {
   ;(cell.get('source') as Y.Text).insert(0, 'ы')
 }
 
-test('кадр в чужую личную тетрадь гейт отвергает, а в свою — принимает при закрытой комнате', () => {
+test('the gate rejects a frame into a personal notebook of another person and accepts one into your own when the room is closed', () => {
   const rules = withPersonal({ edit: 'host', structure: 'host', run: 'host' })
   {
     const { server, client, frame } = twoBooks()
     const bytes = frame(() => typeInto(client, 'nb:one'))
-    // Своя — проходит, хотя комната лекционная.
+    // Your own passes, although the room is a lecture.
     assert.equal(passes(server, bytes, rules, 'participant', AKIM), null)
-    // Чужая — отказ, и отказывает ТЕТРАДЬ, называя автора.
+    // Someone else's is refused, and it is the NOTEBOOK that refuses, naming the author.
     const said = passes(server, bytes, rules, 'participant', BORIS) ?? ''
-    assert.match(said, /Аким/, `отказ не назвал автора: ${said}`)
-    // Преподаватель пишет всюду.
+    assert.match(said, /Аким/, `the refusal did not name the author: ${said}`)
+    // The teacher writes everywhere.
     assert.equal(passes(server, bytes, rules, 'host', 'p_host'), null)
   }
   {
-    // Главную тетрадь комнаты не правит никто из студентов, включая автора
-    // личной: перекрытие живёт у одной тетради, а не у человека.
+    // The room's main notebook is edited by none of the students, including
+    // the author of a personal one: the override lives on one notebook, not
+    // on a person.
     const { server, client, frame } = twoBooks()
     const bytes = frame(() => typeInto(client, CELLS_KEY))
     assert.ok(passes(server, bytes, rules, 'participant', AKIM))
@@ -321,7 +325,7 @@ test('кадр в чужую личную тетрадь гейт отверга
   }
 })
 
-test('состав личной тетради меняет автор, а чужой не меняет', () => {
+test('the author changes the structure of a personal notebook, and nobody else does', () => {
   const rules = withPersonal({ edit: 'host', structure: 'host' })
   const { server, client, frame } = twoBooks()
   const bytes = frame(() => client.getArray('nb:one').push([createCell('code', 'new', 'c9')]))
@@ -329,7 +333,7 @@ test('состав личной тетради меняет автор, а чу�
   assert.match(passes(server, bytes, rules, 'participant', BORIS) ?? '', /Аким/)
 })
 
-test('«открыта всем» пускает кадр в закрытой комнате, «только преподаватель» — не пускает в открытой', () => {
+test('"open to everyone" lets a frame in within a closed room, "teacher only" keeps it out of an open one', () => {
   {
     const { server, client, frame } = twoBooks()
     const bytes = frame(() => typeInto(client, 'nb:one'))
@@ -348,30 +352,30 @@ test('«открыта всем» пускает кадр в закрытой к
       books: { 'nb:one': { access: 'host', owner: null, ownerName: null } },
     }
     assert.ok(passes(server, bytes, shut, 'participant', BORIS))
-    // Преподавателю закрытая «только ему» тетрадь закрытой не является.
+    // A notebook closed "to the teacher only" is not closed to the teacher.
     assert.equal(passes(server, bytes, shut, 'host', 'p_host'), null)
   }
 })
 
-test('после звонка закрыта и своя личная тетрадь — и слова про звонок', async () => {
+test('after the bell even your own personal notebook is closed, and the words are about the bell', async () => {
   const { server, client, frame } = twoBooks()
   const bytes = frame(() => typeInto(client, 'nb:one'))
   const rules = rulesAfterClass(withPersonal({}))
   const said = passes(server, bytes, rules, 'participant', AKIM, true) ?? ''
-  assert.ok(said, 'своя личная тетрадь пережила звонок')
-  assert.doesNotMatch(said, /Аким/, 'после звонка отказ обязан говорить про звонок')
-  // Преподавателю — по-прежнему всё.
+  assert.ok(said, 'your own personal notebook survived the bell')
+  assert.doesNotMatch(said, /Аким/, 'after the bell the refusal must talk about the bell')
+  // The teacher still has everything.
   assert.equal(passes(server, bytes, rules, 'host', 'p_host', true), null)
 })
 
-test('кадр без имени отправителя судится как чужой, а не как авторский', () => {
+test('a frame without a sender name is judged as a stranger, not as the author', () => {
   const { server, client, frame } = twoBooks()
   const bytes = frame(() => typeInto(client, 'nb:one'))
   const rules = withPersonal({ edit: 'host' })
-  assert.ok(passes(server, bytes, rules, 'participant', null), 'безымянный кадр прошёл как свой')
+  assert.ok(passes(server, bytes, rules, 'participant', null), 'a nameless frame passed as the author')
 })
 
-/* --------------------------------------------------- управляющий сокет */
+/* ------------------------------------------------------ control socket */
 
 function socket(): { ws: WebSocket; said: string[] } {
   const said: string[] = []
@@ -399,12 +403,12 @@ function say(
   return said[0] ?? null
 }
 
-/** Комната с двумя тетрадями и настоящими ячейками в обеих. */
+/** A room with two notebooks and real cells in both. */
 function roomWithBooks(id: string): { main: string; own: string } {
   createSession(id, 'Тетради', null)
   const { doc } = getSessionDoc(id)
-  // Свои тетради разрешены: иначе студент не заведёт ни одной, и проверять
-  // доступ было бы не у чего.
+  // Own notebooks are allowed: otherwise the student creates none, and there
+  // would be nothing to check access on.
   setRules(id, { ...OPEN_ROOM, ownBooks: 'on' })
   const made = createBook(id, 'Аким.ipynb', {
     participantId: AKIM,
@@ -420,7 +424,7 @@ function roomWithBooks(id: string): { main: string; own: string } {
   return { main: `${id}-main`, own: `${id}-own` }
 }
 
-test('запуск спрашивает ту тетрадь, в которой нажали', () => {
+test('a run asks the notebook it was pressed in', () => {
   const id = 'book-run'
   const cells = roomWithBooks(id)
   const root = storedRules(id).books ? Object.keys(storedRules(id).books!)[0] : ''
@@ -434,19 +438,19 @@ test('запуск спрашивает ту тетрадь, в которой �
   const akim = who(id, AKIM, 'participant')
   const boris = who(id, BORIS, 'participant')
 
-  // Своя тетрадь считает даже в лекции; тетрадь комнаты — нет.
+  // Your own notebook computes even in a lecture; the room notebook does not.
   assert.equal(say(id, akim, { t: 'run', cellId: cells.own }), null)
   assert.ok(say(id, akim, { t: 'run', cellId: cells.main }))
-  // Чужая личная не считает, и отказ называет автора.
+  // Someone else's personal notebook does not compute, and the refusal names the author.
   assert.match(say(id, boris, { t: 'run', cellId: cells.own }) ?? '', /Аким/)
 
-  // Весь лист — по той же тетради.
+  // The whole sheet goes by the same notebook.
   assert.equal(say(id, akim, { t: 'runAll', book: 'Аким.ipynb' }), null)
-  assert.ok(say(id, akim, { t: 'runAll' }), 'Run All по тетради комнаты прошёл в лекции')
+  assert.ok(say(id, akim, { t: 'runAll' }), 'Run All over the room notebook went through in a lecture')
   assert.ok(say(id, boris, { t: 'runAll', book: 'Аким.ipynb' }))
 })
 
-test('перестановка, форматирование и очистка вывода идут по тетради ячейки', () => {
+test('moving, formatting and clearing output go by the notebook of the cell', () => {
   const id = 'book-move'
   const cells = roomWithBooks(id)
   const root = Object.keys(storedRules(id).books ?? {})[0]
@@ -464,22 +468,23 @@ test('перестановка, форматирование и очистка �
   assert.ok(say(id, akim, { t: 'cells:move', cellId: cells.main, direction: 1 }))
   assert.match(say(id, boris, { t: 'cells:move', cellId: cells.own, direction: 1 }) ?? '', /Аким/)
 
-  // Своя ячейка чистится по праву печатать — значит по правилам своей тетради.
+  // Your own cell is cleared by the right to type, that is, by the rules of your own notebook.
   assert.equal(say(id, akim, { t: 'clearOutputs', cellId: cells.own }), null)
   assert.ok(say(id, akim, { t: 'clearOutputs', cellId: cells.main }))
 
-  // black переписывает КАЖДУЮ ячейку названной тетради — и спрашивает у неё.
+  // black rewrites EVERY cell of the named notebook, and asks that notebook.
   assert.ok(say(id, boris, { t: 'format', book: 'Аким.ipynb' }))
-  assert.ok(say(id, akim, { t: 'format' }), 'форматирование тетради комнаты прошло в лекции')
+  assert.ok(say(id, akim, { t: 'format' }), 'formatting of the room notebook went through in a lecture')
 })
 
-test('ядро и вывод своей тетради перезапускает и стирает её автор', () => {
+test('the author restarts the kernel and clears the output of their own notebook', () => {
   /*
-   * У личной тетради своё ядро в отдельном контейнере, и «перезапустить» в ней
-   * уносит переменные одного человека — его собственные. Требовать на это
-   * преподавателя значило бы поднимать руку посреди лекции, чтобы заново
-   * объявить `x` у себя в черновике. В тетради комнаты и в чужой личной
-   * правило прежнее: перезапуск преподавательский.
+   * A personal notebook has its own kernel in a separate container, and
+   * "restart" in it takes away one person's variables, their own. Requiring
+   * the teacher for this would mean raising a hand in the middle of a
+   * lecture to declare `x` again in one's own draft. In the room notebook
+   * and in someone else's personal one the rule is as before: restart
+   * belongs to the teacher.
    */
   const id = 'book-restart'
   roomWithBooks(id)
@@ -493,20 +498,20 @@ test('ядро и вывод своей тетради перезапускае�
   const akim = who(id, AKIM, 'participant')
   const boris = who(id, BORIS, 'participant')
 
-  assert.equal(say(id, akim, { t: 'restart', book: 'Аким.ipynb' }), null, 'автор не перезапустил своё ядро')
-  assert.equal(say(id, akim, { t: 'clearOutputs', book: 'Аким.ipynb' }), null, 'автор не стёр свой вывод')
+  assert.equal(say(id, akim, { t: 'restart', book: 'Аким.ipynb' }), null, 'the author could not restart their own kernel')
+  assert.equal(say(id, akim, { t: 'clearOutputs', book: 'Аким.ipynb' }), null, 'the author could not clear their own output')
 
-  // Тетрадь комнаты и чужая личная — как было: только преподаватель.
-  assert.ok(say(id, akim, { t: 'restart' }), 'перезапуск ядра занятия достался студенту')
-  assert.ok(say(id, akim, { t: 'clearOutputs' }), 'очистка всей комнаты досталась студенту')
+  // The room notebook and someone else's personal one are as before: teacher only.
+  assert.ok(say(id, akim, { t: 'restart' }), 'the class kernel restart went to a student')
+  assert.ok(say(id, akim, { t: 'clearOutputs' }), 'clearing the whole room went to a student')
   assert.ok(say(id, boris, { t: 'restart', book: 'Аким.ipynb' }))
   assert.ok(say(id, boris, { t: 'clearOutputs', book: 'Аким.ipynb' }))
 
-  // Названная и несуществующая тетрадь отвечает своей фразой, а не правилами.
+  // A named notebook that does not exist answers with its own phrase, not with the rules.
   assert.ok(say(id, who(id, 'p_host', 'host'), { t: 'restart', book: 'Нет.ipynb' }))
 })
 
-test('«только преподаватель» закрывает тетрадь при открытой комнате', () => {
+test('"teacher only" closes a notebook in an open room', () => {
   const id = 'book-hostonly'
   const cells = roomWithBooks(id)
   const root = Object.keys(storedRules(id).books ?? {})[0]
@@ -515,15 +520,15 @@ test('«только преподаватель» закрывает тетра�
     books: { [root]: { access: 'host', owner: AKIM, ownerName: 'Аким' } },
   })
   const akim = who(id, AKIM, 'participant')
-  // Даже автору — тетрадь отдали преподавателю.
+  // Even to the author: the notebook was handed to the teacher.
   assert.ok(say(id, akim, { t: 'run', cellId: cells.own }))
   assert.equal(say(id, akim, { t: 'run', cellId: cells.main }), null)
   assert.equal(say(id, who(id, 'p_host', 'host'), { t: 'run', cellId: cells.own }), null)
 })
 
-/* ------------------------------------------------------------ автор */
+/* ----------------------------------------------------------- author */
 
-test('автора записывает сервер, и запись переживает переименование файла', () => {
+test('the server records the author, and the record survives a file rename', () => {
   const id = 'book-author'
   createSession(id, 'Автор', null)
   getSessionDoc(id)
@@ -538,17 +543,17 @@ test('автора записывает сервер, и запись переж
   const rule = storedRules(id).books?.[root]
   assert.deepEqual(rule, { access: 'owner', owner: AKIM, ownerName: 'Аким' } satisfies BookRule)
 
-  // Переименование файла доступ не трогает: ключ — корень, а не путь.
+  // A file rename does not touch access: the key is the root, not the path.
   moveBook(id, 'Аким.ipynb', 'Разбор.ipynb')
   assert.equal(bookAt(getSessionDoc(id).doc, 'Разбор.ipynb')?.root, root)
   assert.equal(storedRules(id).books?.[root].access, 'owner')
 
-  // Тетрадь убрали — запись ушла вместе с ней.
+  // The notebook was removed, and the record left with it.
   dropBook(id, 'Разбор.ipynb')
   assert.equal(storedRules(id).books?.[root], undefined)
 })
 
-test('тетрадь преподавателя автора не получает, а своя тетрадь студента личная сразу', () => {
+test('a notebook by the teacher gets no author, while a notebook a student creates is personal right away', () => {
   const id = 'book-own'
   createSession(id, 'Свои', null)
   getSessionDoc(id)
@@ -558,7 +563,7 @@ test('тетрадь преподавателя автора не получае
     role: 'host',
   })
   assert.ok(byHost.ok)
-  assert.equal(storedRules(id).books, undefined, 'преподавательская тетрадь получила автора')
+  assert.equal(storedRules(id).books, undefined, 'the teacher notebook got an author')
 
   setRules(id, { ...storedRules(id), ownBooks: 'on' })
   const byStudent = createBook(id, 'Аким.ipynb', {
@@ -568,8 +573,8 @@ test('тетрадь преподавателя автора не получае
   })
   assert.ok(byStudent.ok)
   const root = byStudent.ok ? byStudent.book.root : ''
-  assert.equal(storedRules(id).books?.[root].access, 'owner', 'своя тетрадь не стала личной')
-  // И «Личная» в меню доступна: автор известен.
+  assert.equal(storedRules(id).books?.[root].access, 'owner', 'the own notebook did not become personal')
+  // And "Personal" in the menu is available: the author is known.
   assert.equal(
     accessOptions(storedRules(id).books?.[root] ?? null).find((o) => o.access === 'owner')
       ?.disabled,
@@ -578,63 +583,64 @@ test('тетрадь преподавателя автора не получае
 })
 
 /*
- * Чужой файл из общей папки личным не становится.
+ * Someone else's file from the shared folder does not become personal.
  *
- * 20.09.2026 на живом занятии студент щёлкнул по `seminar.ipynb` — раздатке
- * преподавателя, лежавшей в папке занятия, — и семинар всей группы стал его
- * личной тетрадью: править и запускать в нём мог он один. «Свои тетради
- * студентов» — про черновик, который студент завёл СЕБЕ (createBook); про
- * внесение готового файла это правило не говорит ничего.
+ * On 20 Sep 2026 at a live class a student clicked on `seminar.ipynb`, the
+ * teacher's handout lying in the class folder, and the whole group's
+ * seminar became their personal notebook: only they could edit and run in
+ * it. "Students' own notebooks" is about a draft a student created FOR
+ * THEMSELVES (createBook); this rule says nothing about bringing in a
+ * ready-made file.
  */
-test('студент вносит чужой файл в комнату — тетрадь остаётся комнатной', () => {
+test('a student brings a file of someone else into the room, and the notebook stays the room notebook', () => {
   const id = 'book-brought'
   createSession(id, 'Раздатка', null)
   getSessionDoc(id)
   setRules(id, { ...OPEN_ROOM, files: 'room', ownBooks: 'on' })
   const by = { participantId: AKIM, name: 'Аким', role: 'participant' as const }
 
-  // Файл в папке — как будто его положил преподаватель.
+  // A file in the folder, as if the teacher had put it there.
   assert.equal(makeFile(id, 'Семинар.ipynb', writeIpynb([])), 'ok')
   const brought = openBook(id, 'Семинар.ipynb', by)
-  assert.ok(brought.ok, 'внести файл в комнату студенту не дали')
+  assert.ok(brought.ok, 'the student was not allowed to bring the file into the room')
   const root = brought.ok ? brought.book.root : ''
-  assert.equal(storedRules(id).books?.[root], undefined, 'внесённый файл стал личной тетрадью')
-  assert.equal(ownBooksOf(id, getSessionDoc(id).doc, AKIM), 0, 'чужой файл занял потолок своих тетрадей')
+  assert.equal(storedRules(id).books?.[root], undefined, 'the brought file became a personal notebook')
+  assert.equal(ownBooksOf(id, getSessionDoc(id).doc, AKIM), 0, 'a file of someone else took up the own notebooks ceiling')
 
-  // А своя, заведённая тут же, по-прежнему личная.
+  // But your own, created right here, is still personal.
   const mine = createBook(id, 'Аким.ipynb', by)
   assert.ok(mine.ok)
   assert.equal(storedRules(id).books?.[mine.ok ? mine.book.root : ''].access, 'owner')
 })
 
-/* ------------------------------------------- право завести свою тетрадь */
+/* -------------------------------- the right to create your own notebook */
 
-test('при выключенных своих тетрадях студент не заводит и не вносит ни одной', () => {
+test('with own notebooks off, a student neither creates nor brings in a single one', () => {
   const id = 'book-off'
   createSession(id, 'Нельзя', null)
   getSessionDoc(id)
-  // Файлы комнате открыты, а свои тетради — нет: это разные правила.
+  // Files are open to the room, own notebooks are not: these are different rules.
   setRules(id, { ...OPEN_ROOM, files: 'room', ownBooks: 'off' })
   const by = { participantId: AKIM, name: 'Аким', role: 'participant' as const }
 
   const made = createBook(id, 'Аким.ipynb', by)
   assert.equal(made.ok, false)
   assert.match(made.ok ? '' : made.why, /преподавател/i)
-  // И файла за отказом не осталось: право спрашивается до диска.
-  assert.equal(statPath(id, 'Аким.ipynb'), null, 'отказ оставил после себя файл')
+  // And no file is left behind the refusal: the right is asked before the disk.
+  assert.equal(statPath(id, 'Аким.ipynb'), null, 'the refusal left a file behind')
 
-  // Положить .ipynb в папку можно — внести его в комнату тетрадью нельзя.
+  // An .ipynb may be put into the folder, but not brought into the room as a notebook.
   assert.equal(makeFile(id, 'Готовое.ipynb', writeIpynb([])), 'ok')
   const brought = openBook(id, 'Готовое.ipynb', by)
   assert.equal(brought.ok, false)
   assert.equal(bookAt(getSessionDoc(id).doc, 'Готовое.ipynb'), null)
 
-  // Преподавателю — можно всегда: правила про то, что можно классу.
+  // The teacher always may: the rules are about what the class may do.
   const host = createBook(id, 'Лекция.ipynb', { participantId: 'p_host', name: 'Ада', role: 'host' })
   assert.equal(host.ok, true)
 })
 
-test('при выключенных файлах своя тетрадь всё равно заводится — это разные правила', () => {
+test('with files off, an own notebook is still created: these are different rules', () => {
   const id = 'book-files-host'
   createSession(id, 'Лекция', null)
   getSessionDoc(id)
@@ -644,35 +650,35 @@ test('при выключенных файлах своя тетрадь всё 
     name: 'Аким',
     role: 'participant',
   })
-  assert.equal(made.ok, true, 'файл тетради — её проекция, его пишет сервер')
+  assert.equal(made.ok, true, 'the notebook file is its projection, the server writes it')
   assert.equal(made.ok ? storedRules(id).books?.[made.book.root].access : null, 'owner')
 })
 
-test('своих тетрадей не больше трёх, и убранная место освобождает', () => {
+test('no more than three own notebooks, and a removed one frees its place', () => {
   const id = 'book-limit'
   createSession(id, 'Потолок', null)
   getSessionDoc(id)
   setRules(id, { ...OPEN_ROOM, ownBooks: 'on' })
   const by = { participantId: AKIM, name: 'Аким', role: 'participant' as const }
   for (let i = 0; i < MAX_OWN_BOOKS; i++) {
-    assert.equal(createBook(id, `Аким-${i}.ipynb`, by).ok, true, `не завелась ${i}`)
+    assert.equal(createBook(id, `Аким-${i}.ipynb`, by).ok, true, `notebook ${i} was not created`)
   }
   const extra = createBook(id, 'Аким-лишняя.ipynb', by)
   assert.equal(extra.ok, false)
   assert.match(extra.ok ? '' : extra.why, new RegExp(String(MAX_OWN_BOOKS)))
-  // Потолок личный: у соседа свои три.
+  // The ceiling is per person: the neighbour has their own three.
   assert.equal(
     createBook(id, 'Борис-0.ipynb', { participantId: BORIS, name: 'Борис', role: 'participant' }).ok,
     true,
   )
-  // Свою убрал — место освободилось.
+  // Removed your own, and a place was freed.
   assert.equal(ownsBookAt(id, 'Аким-0.ipynb', AKIM), true)
-  assert.equal(ownsBookAt(id, 'Аким-0.ipynb', BORIS), false, 'чужая личная читается как своя')
+  assert.equal(ownsBookAt(id, 'Аким-0.ipynb', BORIS), false, 'a personal notebook of another person reads as your own')
   dropBook(id, 'Аким-0.ipynb')
   assert.equal(createBook(id, 'Аким-снова.ipynb', by).ok, true)
 })
 
-test('после звонка свою тетрадь не заводят, а до звонка — заводят', () => {
+test('after the bell no own notebook is created, before the bell it is', () => {
   const id = 'book-after-class'
   createSession(id, 'Звонок', null)
   getSessionDoc(id)
@@ -682,13 +688,13 @@ test('после звонка свою тетрадь не заводят, а д
   setFinished(id, Date.now())
   const after = createBook(id, 'После.ipynb', by)
   assert.equal(after.ok, false)
-  // Хранимый выбор цел: занятие открывают обратно.
+  // The stored choice is intact: the class gets reopened.
   assert.equal(storedRules(id).ownBooks, 'on')
   setFinished(id, null)
   assert.equal(createBook(id, 'Снова.ipynb', by).ok, true)
 })
 
-/* ------------------------------------------------------------- маршрут */
+/* --------------------------------------------------------------- route */
 
 let base = ''
 let server: http.Server
@@ -715,7 +721,7 @@ function tokenFor(sessionId: string, role: 'host' | 'participant'): string {
   return signToken({ sessionId, participantId, role, iat: Date.now() - 3 * 60_000 })
 }
 
-test('доступ к тетради меняет преподаватель, и только он', async () => {
+test('notebook access is changed by the teacher, and only by the teacher', async () => {
   const id = 'book-route'
   createSession(id, 'Дверь', null)
   const books = { 'nb:one': { access: 'owner', owner: AKIM, ownerName: 'Аким' } }
@@ -729,7 +735,7 @@ test('доступ к тетради меняет преподаватель, и
     body: JSON.stringify({ rules: { books, ownBooks: 'on' } }),
   })
   assert.equal(asStudent.status, 403)
-  assert.equal(storedRules(id).books, undefined, 'участник записал доступ к тетради')
+  assert.equal(storedRules(id).books, undefined, 'a participant wrote notebook access')
 
   const asHost = await fetch(`${base}/api/sessions/${id}/rules`, {
     method: 'PATCH',
@@ -744,14 +750,15 @@ test('доступ к тетради меняет преподаватель, и
   assert.equal(storedRules(id).ownBooks, 'on')
 })
 
-/* ------------------------------------------------------------ интерфейс */
+/* ------------------------------------------------------------ interface */
 
-test('«своё ядро» — это личная тетрадь, и только она', () => {
+test('"own kernel" means a personal notebook, and only that', () => {
   /*
-   * Маршрутизации по этому признаку сегодня нет: запуск у всех тетрадей идёт в
-   * ядро комнаты. Функция заведена затем, чтобы шаг, который даст личной
-   * тетради свой контейнер, спрашивал ОДНО место, — и проверяется здесь, чтобы
-   * ответ не разъехался со смыслом `owner` по дороге к тому шагу.
+   * There is no routing by this flag today: runs in all notebooks go to the
+   * room kernel. The function exists so that the step that gives a personal
+   * notebook its own container asks ONE place, and it is checked here so that
+   * the answer does not drift from the meaning of `owner` on the way to that
+   * step.
    */
   const rules: RoomRules = {
     ...OPEN_ROOM,
@@ -762,14 +769,14 @@ test('«своё ядро» — это личная тетрадь, и толь�
     },
   }
   assert.equal(bookHasOwnKernel(rules, 'nb:own'), true)
-  assert.equal(bookHasOwnKernel(rules, 'nb:all'), false, '«открыта всем» — общая тетрадь занятия')
+  assert.equal(bookHasOwnKernel(rules, 'nb:all'), false, '"open to everyone" is the shared class notebook')
   assert.equal(bookHasOwnKernel(rules, 'nb:host'), false)
   assert.equal(bookHasOwnKernel(rules, CELLS_KEY), false)
   assert.equal(bookHasOwnKernel(rules, null), false)
   assert.equal(bookHasOwnKernel(OPEN_ROOM, 'nb:own'), false)
 })
 
-test('метка на вкладке появляется только там, где доступ не комнатный', () => {
+test('the tab label appears only where access differs from the room', () => {
   assert.equal(bookMark(null, AKIM), null)
   assert.equal(bookMark({ access: 'room', owner: AKIM, ownerName: 'Аким' }, BORIS), null)
   assert.equal(bookMark({ access: 'owner', owner: AKIM, ownerName: 'Аким' }, AKIM)?.tone, 'mine')
@@ -780,14 +787,14 @@ test('метка на вкладке появляется только там, �
   assert.equal(bookMark({ access: 'host', owner: null, ownerName: null }, BORIS)?.tone, 'host')
 })
 
-test('«Личная» недоступна там, где автора нет, — и объясняет почему', () => {
+test('"Personal" is unavailable where there is no author, and explains why', () => {
   const none = accessOptions(null).find((o) => o.access === 'owner')
   assert.equal(none?.disabled, true)
   assert.ok(none?.hint)
-  assert.equal(accessOptions(null).filter((o) => o.disabled).length, 1, 'погасло что-то ещё')
+  assert.equal(accessOptions(null).filter((o) => o.disabled).length, 1, 'something else got disabled')
 })
 
-test('патч доступа не теряет автора, даже когда доступ вернули к комнатному', () => {
+test('an access patch does not lose the author, even when access is set back to the room', () => {
   const rules = withPersonal({}, 'nb:one')
   const patch = accessPatch(rules, 'nb:one', 'room')
   assert.deepEqual(patch.books?.['nb:one'], {
@@ -795,7 +802,7 @@ test('патч доступа не теряет автора, даже когд�
     owner: AKIM,
     ownerName: 'Аким',
   } satisfies BookRule)
-  // И соседние тетради патч не трогает.
+  // And the patch does not touch neighbouring notebooks.
   const two: RoomRules = {
     ...rules,
     books: { ...rules.books!, 'nb:two': { access: 'all', owner: null, ownerName: null } },
@@ -803,7 +810,7 @@ test('патч доступа не теряет автора, даже когд�
   assert.equal(accessPatch(two, 'nb:one', 'host').books?.['nb:two'].access, 'all')
 })
 
-test('браузер гасит кнопки по той же развилке, что и сервер', () => {
+test('the browser disables buttons by the same fork as the server', () => {
   const rules = withPersonal({ edit: 'host', run: 'host', structure: 'host' })
   const mine = permitsIn(rules, 'participant', false, { root: 'nb:one', participantId: AKIM })
   assert.equal(mine.edit, true)
@@ -812,22 +819,22 @@ test('браузер гасит кнопки по той же развилке, 
 
   const theirs = permitsIn(rules, 'participant', false, { root: 'nb:one', participantId: BORIS })
   assert.equal(theirs.edit, false)
-  assert.match(theirs.editWhy, /Аким/, 'причина отказа промолчала про тетрадь')
+  assert.match(theirs.editWhy, /Аким/, 'the refusal reason said nothing about the notebook')
   assert.match(theirs.runWhy, /Аким/)
 
-  // Тетрадь комнаты — по правилам комнаты, и причина комнатная.
+  // The room notebook goes by the room rules, and the reason is the room one.
   const room = permitsIn(rules, 'participant', false, { root: CELLS_KEY, participantId: AKIM })
   assert.equal(room.edit, false)
   assert.doesNotMatch(room.editWhy, /Аким/)
 
-  // После звонка — одна фраза про звонок, и своя тетрадь не спасает.
+  // After the bell there is one phrase about the bell, and your own notebook does not save you.
   const over = permitsIn(rules, 'participant', true, { root: 'nb:one', participantId: AKIM })
   assert.equal(over.edit, false)
   assert.doesNotMatch(over.editWhy, /Аким/)
 })
 
-test('ячейка личной тетради правится её автором и при закрытой комнате', () => {
-  // То же, что рисует CellView: права считаются по корню тетради ячейки.
+test('a cell of a personal notebook is edited by its author even when the room is closed', () => {
+  // The same thing CellView draws: rights are computed by the root of the cell's notebook.
   const doc = new Y.Doc()
   doc.getArray('nb:one').push([createCell('code', 'x', 'c1')])
   assert.equal(cellSource(doc.getArray('nb:one').get(0) as Y.Map<unknown>).toString(), 'x')
@@ -838,10 +845,10 @@ test('ячейка личной тетради правится её автор�
   )
 })
 
-test('числа личных тетрадей читаются тотально и звонок их не трогает', () => {
+test('personal notebook numbers are read totally and the bell leaves them alone', () => {
   /*
-   * `null` — «как у занятия», и это умолчание: одно число на оба контейнера,
-   * пока преподаватель не решил иначе.
+   * `null` means "as for the class", and that is the default: one number for
+   * both containers until the teacher decides otherwise.
    */
   assert.equal(OPEN_ROOM.ownMemoryMb, null)
   assert.equal(OPEN_ROOM.ownCpus, null)
@@ -850,22 +857,21 @@ test('числа личных тетрадей читаются тотально
   assert.deepEqual([good.ownMemoryMb, good.ownCpus], [2048, 2])
 
   /*
-   * Мусор становится `null`, а не отказом: правила читает каждый кадр
-   * синхронизации, и строка из базы, испорченная чьей-то рукой, не должна
-   * запирать комнату.
+   * Garbage becomes `null`, not a refusal: every sync frame reads the rules,
+   * and a database row spoiled by someone's hand must not lock the room.
    */
   for (const bad of ['4g', 1.5, -1, 0, 1e9, null, undefined, {}, NaN]) {
     const read = readRules({ ...OPEN_ROOM, ownMemoryMb: bad, ownCpus: bad } as never)
     assert.deepEqual([read.ownMemoryMb, read.ownCpus], [null, null], String(bad))
   }
-  // Один процессор — законное число, а для памяти это уже ниже пола.
+  // One CPU is a legitimate number, while for memory it is already below the floor.
   assert.equal(readRules({ ...OPEN_ROOM, ownCpus: 1 } as never).ownCpus, 1)
   assert.equal(readRules({ ...OPEN_ROOM, ownMemoryMb: 1 } as never).ownMemoryMb, null)
 
   /*
-   * Конец занятия — про права, а не про железо: он закрывает дверь к личным
-   * тетрадям (`ownBooks: 'off'`), но число пригодится в ту же секунду, когда
-   * занятие откроют обратно.
+   * The end of a class is about rights, not hardware: it closes the door to
+   * personal notebooks (`ownBooks: 'off'`), but the number will be needed the
+   * very second the class is reopened.
    */
   const after = rulesAfterClass({ ...OPEN_ROOM, ownBooks: 'on', ownMemoryMb: 4096, ownCpus: 2 })
   assert.equal(after.ownBooks, 'off')

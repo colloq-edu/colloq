@@ -67,58 +67,63 @@ const MAX_AVATAR = 512
  * Collapse whitespace and drop control characters so a name cannot break the
  * roster layout.
  *
- * Правило одно на все двери и живёт в shared/text.ts: то же имя приезжает из
- * панели, из списка штата и из импорта, и трёх дословных копий этой функции
- * хватило, чтобы четвёртая дверь обошлась голым trim().
+ * There is one rule for every door, and it lives in shared/text.ts: the same
+ * name arrives from the panel, from the staff list and from an import, and
+ * three verbatim copies of this function were enough for a fourth door to
+ * make do with a bare trim().
  */
 const normalize = normalizeLabel
 
 /**
- * Аватар — знак, а не адрес.
+ * An avatar is a sign, not an address.
  *
- * Проверялась одна длина, а рисуется эта строка как `<img src>`, если
- * начинается с http или data: (web/src/components/ui/Avatar.svelte). То есть
- * один запрос заставлял браузер КАЖДОГО в комнате сходить на чужой сервер — и
- * в ростере, и в подписи каждой его ячейки, включая опоздавших. Схему
- * отвергаем здесь; в комнате аватар приезжает ещё и через awareness, и это
- * закрывается не тут, а на отрисовке.
+ * Only the length used to be checked, while this string is drawn as
+ * `<img src>` when it starts with http or data:
+ * (web/src/components/ui/Avatar.svelte). That is, one request made the
+ * browser of EVERYONE in the room go to a foreign server — both in the roster
+ * and in the caption of each of that person's cells, latecomers included. The
+ * scheme is rejected here; in the room the avatar also arrives through
+ * awareness, and that is closed not here but at rendering.
  */
 function readAvatar(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const avatar = value.replace(/[\u0000-\u001f\u007f]/g, '').trim()
   if (!avatar || avatar.length > MAX_AVATAR) return null
-  // Любая схема, а не только http и data: эмодзи двоеточием не начинается, а
-  // список поддерживаемых картинок у браузера длиннее нашей памяти.
+  // Any scheme, not only http and data: no emoji starts with `word:`, and the
+  // list of what a browser will load as a picture is longer than our memory.
   if (/^[a-z][a-z0-9+.-]*:/i.test(avatar)) return null
   return avatar
 }
 
 /**
- * Сколько НОВЫХ участников комната принимает за минуту.
+ * How many NEW participants a room accepts per minute.
  *
- * Вход не требует ничего, кроме ссылки, и без доказанной пары
- * participantId+token заводит новую строку. Скрипт в цикле раздувал этим
- * ростер и базу семинара до десятков тысяч «людей», которых никто никогда не
- * видел, — и список приезжал каждому настоящему участнику целиком.
- * Возвращающийся со своим токеном сюда не попадает вовсе, и штат тоже.
+ * Joining requires nothing but the link, and without a proven
+ * participantId+token pair it creates a new row. A script in a loop used this
+ * to inflate a seminar's roster and database to tens of thousands of "people"
+ * nobody had ever seen — and the list travelled whole to every real
+ * participant. Someone returning with their own token does not get here at
+ * all, and neither does staff.
  *
- * Число было 120 и опиралось на «больше, чем даёт любая настоящая пара».
- * Это перестало быть правдой: нагрузочный стенд на потоке в пятьсот человек
- * показал 122 вошедших и 378 отказов — вся вторая половина зала упиралась в
- * защиту от скрипта и должна была нажимать заново, а клиент повторять не
- * умеет. Шестьсот — это полный поток плюс перезаходы тех, у кого моргнул
- * вайфай, и по-прежнему на порядки меньше, чем даёт цикл: тот делает тысячи
- * в минуту и упирается сюда в первые секунды.
+ * The number used to be 120 and rested on "more than any real class
+ * produces". That stopped being true: a load test with a cohort of five
+ * hundred people showed 122 joined and 378 refused — the whole second half of
+ * the hall ran into the anti-script protection and had to press again, and
+ * the client does not know how to retry. Six hundred is a full cohort plus
+ * the rejoins of those whose Wi-Fi blinked, and still orders of magnitude
+ * less than a loop produces: that makes thousands a minute and hits this
+ * ceiling within the first seconds.
  */
 const ARRIVAL_WINDOW_MS = 60_000
 const MAX_NEW_PARTICIPANTS = 600
 const arrivals = new Map<string, number[]>()
 
 /*
- * И по адресу тоже. Шестьсот в минуту на комнату — про звонок, когда входит
- * весь поток; но пятьсот «участников» с одного адреса за два часа (13.09.2026,
- * скрипт против оракула) под этот потолок не попали. Класс за одним NAT
- * входит разом, поэтому окно длиннее, а число — с запасом на аудиторию.
+ * And by address too. Six hundred a minute per room is about the bell, when
+ * the whole cohort comes in; but five hundred "participants" from one address
+ * over two hours (13 Sep 2026, a script against the oracle) did not fall
+ * under that ceiling. A class behind one NAT joins all at once, so the window
+ * is longer, and the number leaves headroom for a lecture hall.
  */
 const ADDRESS_WINDOW_MS = 10 * 60_000
 const MAX_NEW_PER_ADDRESS = 60
@@ -154,27 +159,30 @@ function tooManyArrivals(sessionId: string): boolean {
 }
 
 /**
- * Метка выдаётся на входе, и судья у неё один — сервер.
+ * A mark is handed out at the door, and it has one judge — the server.
  *
- * Экран входа выбирает зверя по ростеру и обещает: «Picked from the ones
- * nobody in this room has taken». Клиент это обещание сузил до круга сети
- * (web/src/components/join/pick.ts перечитывает ростер прямо перед стуком), но
- * закрыть не может: две вкладки, постучавшие в одну и ту же секунду, друг
- * друга не видят. Сорок меток на класс из тридцати дают около одиннадцати пар
- * с одним зверем — то есть с одинаковым курсором в тетради, а цвет их не
- * различает (он минтуется из id). Замечают это на двадцатой минуте.
+ * The join screen picks an animal from the roster and promises: "Picked from
+ * the ones nobody in this room has taken". The client narrowed this promise
+ * down to one network round trip (web/src/components/join/pick.ts rereads the
+ * roster right before knocking), but it cannot close it: two tabs knocking in
+ * the same second do not see each other. Forty marks for a class of thirty
+ * give about eleven pairs with the same animal — that is, with the same
+ * cursor in the notebook, and the color does not tell them apart (it is
+ * minted from the id). People notice it at minute twenty.
  *
- * Занятыми считаются двое: те, кто В КОМНАТЕ сейчас (тот же список, что отдаёт
- * `/participants` полем `online`), и те, кому метку выдали здесь только что.
- * Второе — не перестраховка, а весь смысл: между `/join` и первым кадром
- * присутствия проходит секунда, и без короткой памяти класс, открывший ссылку
- * разом, весь укладывается в эту секунду и расходится с одинаковыми зверями.
+ * Two groups count as taken: those who are IN THE ROOM now (the same list
+ * `/participants` returns in its `online` field), and those who were just
+ * handed a mark here. The second is not overcaution but the whole point:
+ * a second passes between `/join` and the first presence frame, and without a
+ * short memory a class that opened the link all at once fits entirely into
+ * that second and scatters with identical animals.
  *
- * Своё прошлое место не в счёт: вернувшийся занимает ровно ту метку, что была
- * его, и подменять её нечем и незачем.
+ * One's own past place does not count: someone returning takes exactly the
+ * mark that was theirs, and there is nothing to replace it with and no reason
+ * to.
  */
 const MARK_HOLD_MS = 60_000
-/** Комнат, после которых память чистится вся: иначе она растёт до перезапуска. */
+/** Rooms beyond which the whole memory is swept: otherwise it grows until a restart. */
 const MARK_ROOMS_KEPT = 200
 
 interface HandedMark {
@@ -194,27 +202,29 @@ function recentMarks(sessionId: string): HandedMark[] {
 }
 
 function rememberMark(sessionId: string, id: string, mark: string): void {
-  // Свою прошлую метку человек не держит: вход второй вкладкой — это он же.
+  // A person's own earlier mark does not block them: joining from a second tab is still them.
   const fresh = recentMarks(sessionId).filter((row) => row.id !== id)
   fresh.push({ id, mark, at: Date.now() })
   handedOut.set(sessionId, fresh)
-  // Комнаты, из которых давно никто не входил, вычищаются оптом: минута
-  // жизни у строки, а сама карта иначе помнит каждую комнату инстанса.
+  // Rooms nobody has joined for a long time are swept wholesale: a row lives a
+  // minute, but the map itself would otherwise remember every room of the instance.
   if (handedOut.size > MARK_ROOMS_KEPT) for (const id of [...handedOut.keys()]) recentMarks(id)
 }
 
 /**
- * Метка, с которой человек войдёт на самом деле.
+ * The mark a person will actually join with.
  *
- * Подменяется занятая И невыбранная: человек мог ткнуть в конкретного зверя
- * руками (`picked`), и менять выбранное просто потому, что нам так удобнее, —
- * худшее из двух зол. Подборщик занятые метки нажать не даёт и перечитывает
- * ростер при открытии (web/src/components/join/MarkPicker.svelte), так что
- * выбранная руками совпадёт разве что в круге сети, — а два ежа в комнате
- * дешевле экрана, который молча сделал вид, что не услышал.
+ * What gets replaced is a mark that is taken AND was not chosen: the person
+ * may have tapped a particular animal by hand (`picked`), and changing a
+ * choice simply because that suits us better is the worse of two evils. The
+ * picker does not let anyone press taken marks and rereads the roster when it
+ * opens (web/src/components/join/MarkPicker.svelte), so a hand-picked one can
+ * collide only within a network round trip — and two hedgehogs in a room are
+ * cheaper than a screen that silently pretended not to hear.
  *
- * Пустую метку не выдумываем: вошедший без неё — это вход мимо экрана (пульт,
- * скрипт), и раздавать ему зверя незачем.
+ * An empty mark is not made up: someone joining without one is a join that
+ * bypasses the screen (the console, a script), and there is no reason to
+ * hand them an animal.
  */
 function markToHand(
   sessionId: string,
@@ -234,16 +244,16 @@ function markToHand(
 }
 
 /**
- * Почему вошедший оказался НОВЫМ человеком, а не собой прежним.
+ * Why the person who joined turned out to be a NEW person rather than their
+ * former self.
  *
- * На боевой машине в одном семинаре набралось пятьсот строк участника с одним
- * и тем же именем, и по коду причина не видна: браузер шлёт и participantId, и
- * токен, а строка всё равно заводится новая. Условие возврата — конъюнкция из
- * четырёх частей, и в журнале нужна та её часть, которая не выполнилась,
- * иначе выяснять это можно только гаданием.
+ * On a production machine one seminar accumulated five hundred participant
+ * rows with the same name, and the code does not show why: the browser sends
+ * both participantId and the token, and a new row is created anyway. The
+ * condition for coming back is a conjunction of four parts, and the log needs
+ * the part that failed, otherwise finding it out is pure guesswork.
  *
- * Ни имени, ни аватара, ни содержимого токена: только то, какая проверка
- * не прошла.
+ * No name, no avatar, no token contents: only which check failed.
  */
 type JoinedAs =
   | 'back'
@@ -264,24 +274,25 @@ function joinedAs(
   if (returning) return 'back'
   if (claimed === null) return 'no id'
   if (typeof sent !== 'string' || !sent) return 'no token'
-  // Разбор проваливается двумя способами сразу — кривая подпись и возраст
-  // старше TOKEN_MAX_AGE_MS, — и различить их снаружи `verifyToken` нельзя.
-  // Для расследования этого хватает: и то и другое означает «предъявить нечего».
+  // Parsing fails in two ways at once — a bad signature and an age beyond
+  // TOKEN_MAX_AGE_MS — and they cannot be told apart from outside `verifyToken`.
+  // For an investigation that is enough: both mean "nothing to show".
   if (proof === null) return 'bad token'
   if (proof.sessionId !== sessionId) return 'other room'
   if (proof.participantId !== claimed) return 'other person'
-  // Всё сошлось, а строки нет: семинар чистили или базу разворачивали заново.
+  // Everything matched, yet the row is gone: the seminar was cleaned up or the database redeployed.
   return 'row gone'
 }
 
 /**
- * Провал прогрева — одной строкой на комнату, а не на каждого вошедшего.
+ * A warmup failure — one line per room, not per person joining.
  *
- * `ensureKernel` отдаёт одно общее обещание всем, кто позвал его в ту же
- * миллисекунду, а `.catch` вешает каждый: в журнале лежало по шестнадцать
- * одинаковых строк на комнату за одну миллисекунду, и настоящая причина в них
- * тонула. Комната узнаёт о провале своим путём — записью в журнал ядра внутри
- * `ensureKernel`; журналу процесса довольно одной строки в минуту.
+ * `ensureKernel` hands one shared promise to everyone who called it in the
+ * same millisecond, and each of them attaches a `.catch`: the log held
+ * sixteen identical lines per room within one millisecond, and the real cause
+ * drowned in them. The room learns about the failure its own way — through an
+ * entry in the kernel log inside `ensureKernel`; the process log is fine with
+ * one line a minute.
  */
 const WARMUP_QUIET_MS = 60_000
 const warmupWarnedAt = new Map<string, number>()
@@ -298,7 +309,7 @@ function noteWarmupFailure(sessionId: string, err: unknown): void {
 }
 
 /**
- * Токен из заголовка, если он про ЭТУ комнату.
+ * The token from the header, if it is for THIS room.
  *
  * Header only. The query string used to be accepted here as well, for the
  * one route that needs it — a download is an `<a href download>` and an
@@ -316,19 +327,21 @@ function bearerFor(req: Request): TokenPayload | null {
 }
 
 /**
- * Бан на пороге всего, что живёт под /api/sessions/:id.
+ * The ban at the threshold of everything that lives under /api/sessions/:id.
  *
- * Одна дверь на все REST-маршруты комнаты — файлы, история, оракул,
- * консилиум, правила, — и висит она в каждом роутере отдельно, потому что
- * порядок монтирования в app.ts — не то место, где такое можно помнить.
- * `sessionAuth` про бан знает и сам; здесь смысл в словах: человек должен
- * прочитать «преподаватель закрыл вам доступ», а не «войдите в семинар».
+ * One door for all of a room's REST routes — files, history, oracle,
+ * council, rules — and it hangs in each router separately, because the
+ * mounting order in app.ts is not a place where such a thing can be
+ * remembered. `sessionAuth` knows about the ban by itself; the point here is
+ * the words: a person should read "the teacher has closed your access", not
+ * "join the seminar".
  *
- * Отказ — только тому, кто предъявил токен этой комнаты. Гость без токена
- * проходит: по этому же пути идёт экран входа и `/join`, а у них про бан свой
- * разговор — и отказать раньше значило бы показать пришедшему «семинар не
- * найден» вместо объяснения. Метка устройства при этом считается: она у
- * `banFor` вторая половина совпадения.
+ * The refusal goes only to someone who presented a token for this room. A
+ * guest without a token passes: the join screen and `/join` go the same way,
+ * and they have their own conversation about bans — refusing earlier would
+ * mean showing the newcomer "seminar not found" instead of an explanation.
+ * The device mark is still counted: for `banFor` it is the second half of the
+ * match.
  */
 export function banDoor(req: Request, res: Response, next: NextFunction): void {
   if (kernelRetirementInProgress(String(req.params.id))) {
@@ -361,15 +374,16 @@ export function sessionAuth(req: Request): TokenPayload | null {
   const payload = bearerFor(req)
   if (!payload) return null
   /*
-   * Забаненный не проходит и здесь.
+   * A banned person does not get through here either.
    *
-   * Проверка бана стояла на двух дверях из трёх — `/join` и рукопожатие
-   * сокета, — а токен участника подписан и живёт до тридцати суток, отобрать
-   * его нечем. То есть закрытый доступ закрывал комнату и не закрывал ничего
-   * по HTTP: раздатка, история, загрузка файлов (тот самый спам, за который и
-   * банят) и вопросы оракулу за ключ инстанса оставались открыты до истечения
-   * токена. Словами про бан отвечает `banDoor` ниже; здесь — чтобы маршрут,
-   * который его забыл повесить, всё равно не пустил.
+   * The ban check stood on two doors out of three — `/join` and the socket
+   * handshake — while a participant's token is signed and lives up to thirty
+   * days, and there is no way to take it back. That is, closing someone's
+   * access closed the room and closed nothing over HTTP: handouts, history,
+   * file uploads (the very spam people get banned for) and oracle questions
+   * on the instance's key stayed open until the token expired. `banDoor`
+   * below answers with words about the ban; this is here so that a route
+   * that forgot to hang it still does not let them in.
    */
   if (banFor(payload.sessionId, payload.participantId, req.headers.cookie)) return null
   /*
@@ -387,30 +401,34 @@ export function sessionAuth(req: Request): TokenPayload | null {
 }
 
 /**
- * Кто это — на этот запрос, а не на момент входа.
+ * Who this is — for this request, not as of joining.
  *
- * Одна функция на оба входа нарочно. Их было две, и они отвечали по-разному:
- * HTTP помнил выданные хост-токены в множестве в памяти, а сокет про это
- * множество не знал вовсе — так что автор семинара, заведённого скриптом,
- * получал `host` на кнопках и `participant` на соединении, которым эти кнопки
- * работают. Расходиться им теперь негде.
+ * One function for both entrances, on purpose. There were two, and they
+ * answered differently: HTTP remembered the host tokens it had issued in an
+ * in-memory set, while the socket did not know about that set at all — so the
+ * author of a seminar created by a script got `host` on the buttons and
+ * `participant` on the connection those buttons work through. Now there is
+ * nowhere for them to drift apart.
  */
 export { roleFor } from '../authorization.js'
 
 /**
- * Греть ли ядро на входе.
+ * Whether to warm the kernel on join.
  *
- * `/join` звал `ensureKernel` безусловно, а при изоляции это старт контейнера
- * комнаты — и он живёт два часа простоя. Вечером перед контрольной класс
- * открывает десяток ЗАКОНЧЕННЫХ семинаров курса перечитать разбор, и каждый
- * такой заход поднимал по контейнеру (порядка двух гигабайт) на той же машине,
- * где в это время идёт живая пара. Запускать студенту там всё равно нельзя:
- * конец занятия отдаёт `run` преподавателю (shared/rules.ts · rulesAfterClass).
+ * `/join` called `ensureKernel` unconditionally, and with isolation that
+ * means starting the room's container — which then lives through two hours
+ * of idleness. The evening before a test, a class opens a dozen FINISHED
+ * seminars of the course to reread the solutions, and every such visit
+ * brought up a container (about two gigabytes) on the same machine where a
+ * live class is running at that moment. A student cannot run anything there
+ * anyway: the end of class hands `run` to the teacher (shared/rules.ts ·
+ * rulesAfterClass).
  *
- * Преподаватель греет всегда: он приходит в законченную комнату как раз затем,
- * чтобы что-то в ней пересчитать, и ждать подъёма ядра после нажатия Run ему
- * незачем. Архивный семинар — то же самое: метка «убран из списка» и означает,
- * что работать в нём больше не собираются.
+ * The teacher always warms it: they come into a finished room precisely to
+ * recompute something in it, and there is no reason for them to wait for the
+ * kernel to come up after pressing Run. An archived seminar is the same
+ * story: the "removed from the list" mark means exactly that nobody intends
+ * to work in it any more.
  */
 export function warmsKernel(sessionId: string, role: ParticipantRole): boolean {
   if (role === 'host') return true
@@ -421,22 +439,24 @@ export function sessionRoutes(): Router {
   const router = Router()
 
   /**
-   * «А меня-то пускают» — единственная дверь, отвечающая забаненному.
+   * "But am I let in?" — the only door that answers a banned person.
    *
-   * Стоит ДО `banDoor` намеренно, и это не оплошность порядка: вкладка, которой
-   * отказали в рукопожатии сокета, не знает, что с ней случилось. Сокет
-   * закрывается до апгрейда и без слов — браузер видит 1006, — и различить
-   * «комнаты нет», «ключ протух» и «преподаватель закрыл доступ» можно только
-   * спросив. Отказ на этот вопрос отказом («вам сюда нельзя») оставлял бы
-   * человека ровно там же, где он был: за 403 без объяснения. Поэтому здесь
-   * `banFor` спрашивается сам и его срок едет в ответе.
+   * It stands BEFORE `banDoor` on purpose, and this is not a slip in the
+   * ordering: a tab refused at the socket handshake does not know what
+   * happened to it. The socket closes before the upgrade and without words —
+   * the browser sees 1006 — and "there is no room", "the key has expired" and
+   * "the teacher has closed access" can only be told apart by asking.
+   * Answering this question with a refusal ("you may not come here") would
+   * leave the person exactly where they were: behind a 403 with no
+   * explanation. So here `banFor` is asked directly and its expiry travels in
+   * the answer.
    *
-   * И дёшево: зовёт её каждая отвалившаяся вкладка примерно раз в полминуты,
-   * то есть на большой лекции — сотнями в минуту. Ни дерева файлов, ни
-   * документа комнаты, ни ростера: строка семинара, разбор подписи и одна
-   * строка бана.
+   * And it is cheap: every tab that dropped off calls it about once every half
+   * minute, that is, hundreds of times a minute at a big lecture. No file
+   * tree, no room document, no roster: the seminar row, parsing the signature
+   * and one ban row.
    *
-   * Что значит каждое поле — у `SessionMe` в shared/protocol.ts.
+   * What each field means is at `SessionMe` in shared/protocol.ts.
    */
   router.get('/api/sessions/:id/me', (req, res) => {
     const sessionId = req.params.id
@@ -444,8 +464,8 @@ export function sessionRoutes(): Router {
 
     const payload = bearerFor(req)
     if (!payload) {
-      // Ключа нет или он про другую комнату — «предъявите ключ», а не «вас
-      // удалили»: про бан без доказанного идентификатора сказать нечего.
+      // No key, or it is for another room — "show your key", not "you have
+      // been removed": nothing can be said about a ban without a proven id.
       const nobody: SessionMe = {
         tokenValid: false,
         ban: null,
@@ -460,17 +480,18 @@ export function sessionRoutes(): Router {
       tokenValid: true,
       ban: ban ? { until: ban.until } : null,
       participantId: payload.participantId,
-      // Роль — та, которой сервер будет действовать на этом ключе прямо
-      // сейчас (кука сильнее токена, см. roleFor). У забаненного её нет: он
-      // ничего не может, и называть его ведущим было бы неправдой.
+      // The role is the one the server will act with on this key right now
+      // (the cookie beats the token, see roleFor). A banned person has none:
+      // they can do nothing, and calling them the host would be untrue.
       role: ban ? null : roleFor(req.headers.cookie, payload),
     }
     res.json(me)
   })
 
-  // Бан закрывает и эту дверь: /rules, /participants, /handoff и всё, что
-  // авторизуется токеном комнаты. `/join` проходит мимо (токен у него в теле,
-  // а не в заголовке) и отказывает сам, своими словами.
+  // The ban closes this door too: /rules, /participants, /handoff and
+  // everything that authorizes with the room's token. `/join` goes past it
+  // (its token is in the body, not in a header) and refuses by itself, in its
+  // own words.
   router.use('/api/sessions/:id', banDoor)
 
   router.post('/api/sessions', (req, res) => {
@@ -497,17 +518,18 @@ export function sessionRoutes(): Router {
     }
 
     /*
-     * Окружение записывается ИМЕНЕМ, и всегда.
+     * The environment is recorded by NAME, and always.
      *
-     * `createSession(id, name)` писал NULL, а NULL для ядра означает «следуй за
-     * инстансом»: следующее «Make default» уводило Python такой комнаты на
-     * другой образ, а панель показывала у неё пустую колонку и не считала её в
-     * тех, кто держит окружение от удаления. Панель это состояние отменила
-     * (routes/admin-instance.ts · «A concrete name is always recorded»), и
-     * скриптовая дверь обязана жить по тому же правилу — иначе их два.
+     * `createSession(id, name)` wrote NULL, and to the kernel NULL means
+     * "follow the instance": the next "Make default" took such a room's Python
+     * to another image, while the panel showed an empty column for it and did
+     * not count it among those keeping an environment from deletion. The
+     * panel abolished that state (routes/admin-instance.ts · "A concrete name
+     * is always recorded"), and the scripted door must live by the same rule
+     * — otherwise there are two.
      *
-     * Имя можно и прислать: та же проверка, что в панели, чтобы в строку
-     * семинара не легло имя несуществующего образа.
+     * The name can also be sent: the same check as in the panel, so that the
+     * name of a nonexistent image does not land in the seminar row.
      */
     const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
     if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
@@ -515,12 +537,14 @@ export function sessionRoutes(): Router {
     }
 
     /*
-     * Память комнаты — только штату, и только в границах машины.
+     * The room's memory is for staff only, and only within the machine's
+     * bounds.
      *
-     * На открытом инстансе эту дверь толкает кто угодно, и «сколько памяти
-     * отдать» — не тот вопрос, который решает гость: комната, взявшая всё,
-     * убивает не себя, а сервер под собой. Штат шлёт число, все остальные —
-     * молчат, и тогда комната живёт умолчанием своего окружения.
+     * On an open instance anyone can push this door, and "how much memory to
+     * give" is not a question for a guest to decide: a room that took
+     * everything kills not itself but the server under it. Staff send a
+     * number, everyone else says nothing, and then the room lives by its
+     * environment's default.
      */
     const memory = readMemoryInput(req.body?.memoryMb)
     if (!memory.ok) {
@@ -563,10 +587,10 @@ export function sessionRoutes(): Router {
     const session = getSession(req.params.id)
     if (!session) return res.status(404).json({ error: SESSION_MISSING })
     /*
-     * Указатель на опубликованную версию — здесь, потому что здесь его читает
-     * экран входа. Это чинит единственный адрес, который у студента правда
-     * есть: ссылка в чате ведёт в комнату, и без подсказки человек через
-     * неделю вводит имя в закончившееся занятие и остаётся в нём один.
+     * The pointer to the published version is here because this is where the
+     * join screen reads it. It repairs the only address a student really has:
+     * the link in the chat leads to the room, and without a hint a person a
+     * week later types their name into a finished class and stays in it alone.
      */
     const pub = publicationOf(session.id)
     const course = pub ? courseOfSeminar(session.id) : null
@@ -589,8 +613,9 @@ export function sessionRoutes(): Router {
     if (!name) return res.status(400).json({ error: tr("server.aNameIsRequired.d1287e") })
 
     const asked = readAvatar(req.body?.avatar)
-    // Строго `=== true`: поле приходит из браузера, и «истинное» вроде строки
-    // или единицы права молчаливо не подменять метку не даёт.
+    // Strictly `=== true`: the field comes from the browser, and a merely
+    // "truthy" value like a string or a 1 does not earn the right to keep the
+    // mark unreplaced.
     const picked = req.body?.picked === true
 
     /*
@@ -606,8 +631,9 @@ export function sessionRoutes(): Router {
      *    cookie is a stronger credential than the token.
      */
     const staff = currentStaff(req)
-    // Два источника роли различаются в журнале, поэтому и считаются порознь.
-    // `!staff &&` сохраняет прежний порядок: куке хост-токен не нужен.
+    // The two sources of the role are told apart in the log, so they are
+    // computed separately. `!staff &&` keeps the old order: a cookie needs no
+    // host token.
     const byHostToken = !staff && verifyHostToken(sessionId, req.body?.hostToken)
     const role: ParticipantRole = staff || byHostToken ? 'host' : 'participant'
 
@@ -637,16 +663,17 @@ export function sessionRoutes(): Router {
     const known = proved ? getParticipant(sessionId, claimed) : null
 
     /*
-     * Забаненный узнаёт об этом здесь, до всего остального.
+     * A banned person learns about it here, before anything else.
      *
-     * Проверяется доказанный идентификатор, а не присланный: «я p_xyz» —
-     * фраза, которую про любого может сказать любой (см. выше), и по ней можно
-     * было бы примерить чужой бан на себя. Второй метки, устройства, это не
-     * касается: её присылает браузер и только свою.
+     * It is the proven id that is checked, not the one sent: "I am p_xyz" is a
+     * sentence anyone can say about anyone (see above), and with it one could
+     * try someone else's ban on oneself. That does not concern the second
+     * mark, the device's: the browser sends it, and only its own.
      *
-     * До счётчика новых участников: наплыв — это про комнату, а бан — про
-     * одного человека, и получить в ответ «слишком много входов» вместо
-     * «преподаватель закрыл вам доступ» значит не понять ничего.
+     * Before the new-participant counter: a rush is about the room, while a
+     * ban is about one person, and getting "too many people are joining"
+     * instead of "the teacher has closed your access" means understanding
+     * nothing.
      */
     const ban = banFor(sessionId, known?.id ?? null, req.headers.cookie)
     if (ban) {
@@ -656,13 +683,14 @@ export function sessionRoutes(): Router {
       return res.status(403).json(banRefusal(ban))
     }
 
-    // Незнакомец заводит строку — и это единственное место, где комната растёт
-    // от чужого запроса. Штат и вернувшиеся со своим токеном проходят мимо.
+    // A stranger creates a row — and this is the only place where the room
+    // grows from someone else's request. Staff and those returning with their
+    // own token pass by.
     if (!known && !staff && (tooManyArrivals(sessionId) || tooManyArrivalsFrom(sessionId, addressOf(req)))) {
       tally('joins')
-      // Первый отказ за минуту — словами, остальные числом в сводке: стенд на
-      // пятистах студентах дал 378 таких подряд, и это ровно тот поток, от
-      // которого журнал и лечим.
+      // The first refusal in a minute goes in words, the rest as a number in
+      // the summary: the load test on five hundred students produced 378 of
+      // these in a row, and that is exactly the flood the log is being cured of.
       if (seldom(`arrivals:${sessionId}`)) {
         console.warn(`[join ${sessionId}] refused — more than ${MAX_NEW_PARTICIPANTS} new/min`)
       }
@@ -672,12 +700,13 @@ export function sessionRoutes(): Router {
     }
     const participantId = known ? known.id : newParticipantId()
     /*
-     * По строке на каждый вход — и это сознательно не считается в сводку.
+     * One line per join — and it is deliberately not counted into the summary.
      *
-     * Пятьсот входов за пару — пятьсот строк, столько журнал выносит; а вот
-     * понять по нему, почему один и тот же человек заводится заново, без такой
-     * строки нельзя вовсе. Ни имени, ни аватара, ни токена здесь нет: только
-     * комната, участник, роль и то, какая проверка возврата не прошла.
+     * Five hundred joins per class is five hundred lines, and the log can bear
+     * that; but without such a line it is impossible to understand from the
+     * log why the same person gets created anew. No name, no avatar, no token
+     * here: only the room, the participant, the role and which return check
+     * failed.
      */
     const how = joinedAs(sessionId, claimed, req.body?.token, proof, known !== null)
     const why = staff ? 'staff' : byHostToken ? 'host-token' : 'link'
@@ -687,15 +716,17 @@ export function sessionRoutes(): Router {
     )
 
     /*
-     * Метка — уже после того, как стало известно, кто вошёл: своё прошлое
-     * место занятым не считается (см. markToHand). Ответ несёт ту, что выдана
-     * на самом деле, — экран входа сохраняет её как есть и рисует ею курсор.
+     * The mark comes after it is known who joined: one's own past place is
+     * not counted as taken (see markToHand). The answer carries the one
+     * actually handed out — the join screen saves it as is and draws the
+     * cursor with it.
      */
     const avatar = markToHand(sessionId, asked, known?.id ?? null, picked)
     if (avatar) rememberMark(sessionId, participantId, avatar)
 
-    // Хост-токен — единственное, что записывается насовсем: куку перечитывают
-    // на каждом запросе, и «ведущий по куке» в строке был бы навсегда.
+    // The host token is the only thing recorded for good: the cookie is
+    // reread on every request, and "host by cookie" in the row would be
+    // forever.
     const participant = upsertParticipant({
       id: participantId,
       sessionId,
@@ -703,15 +734,15 @@ export function sessionRoutes(): Router {
       avatar,
       role,
       tokenHost: role === 'host' && !staff,
-      // Метка браузера — чтобы бан по одному идентификатору закрывал и то
-      // окно, из которого он через минуту придёт «новым человеком».
+      // The browser's mark — so that a ban on one id also closes the window
+      // the same person would come back from as a "new person" a minute later.
       device: deviceOf(req.headers.cookie),
     })
     const token = signToken({ sessionId, participantId, role })
 
     // Warm the kernel while the student is still reading the page; a failure
     // here is not fatal, the control socket reports kernel health on its own.
-    // Но только там, где на нём будут работать, — см. warmsKernel.
+    // But only where it will be worked on — see warmsKernel.
     if (warmsKernel(sessionId, role)) {
       void ensureKernel(sessionId).catch((err: unknown) => noteWarmupFailure(sessionId, err))
     }
@@ -721,23 +752,26 @@ export function sessionRoutes(): Router {
   })
 
   /**
-   * Отдать свой пульт своему планшету.
+   * Hand your own console over to your own tablet.
    *
-   * Лекцию ведут с айпада: страницу листают пальцем, пишут Pencil'ом, а
-   * проектор показывает то, что приезжает по сети. Но чтобы планшет стал
-   * пультом, он должен войти в комнату ТЕМ ЖЕ человеком и с теми же правами —
-   * а прав у преподавателя ровно два источника, и оба на другой машине: кука
-   * панели и токен в её localStorage.
+   * Lectures are given from an iPad: pages are turned with a finger, written
+   * on with the Pencil, and the projector shows what arrives over the
+   * network. But for the tablet to become the console, it has to enter the
+   * room as THE SAME person with the same rights — and a teacher's rights
+   * have exactly two sources, both on another machine: the panel's cookie and
+   * the token in its localStorage.
    *
-   * Эта дверь выдаёт ключ на обмен (см. signHandoffToken): десять минут, один
-   * обмен. Права едут в самом ключе — либо это ведущий по своему хост-токену,
-   * и тогда везти нечего, либо ведущий по куке, и тогда ключ называет его: на
-   * планшете, где куки нет, тот же самый человек иначе оказался бы студентом,
-   * а лекцию по правилу `board` вёл бы не он.
+   * This door issues a key for exchange (see signHandoffToken): ten minutes,
+   * one exchange. The rights travel in the key itself — either this is a host
+   * by their own host token, and then there is nothing to carry, or a host by
+   * cookie, and then the key names them: on a tablet without the cookie the
+   * very same person would otherwise turn out to be a student, and the
+   * lecture under the `board` rule would not be led by them.
    *
-   * Названо вслух: ключ пускает в комнату ВАМИ. Кто откроет ссылку первым, тот
-   * и преподаватель — поэтому она живёт десять минут, гасится первым же
-   * обменом и поэтому экран, который её показывает, говорит об этом прямо.
+   * Said out loud: the key lets someone into the room AS YOU. Whoever opens
+   * the link first is the teacher — which is why it lives ten minutes, is
+   * spent by the very first exchange, and why the screen that shows it says
+   * so plainly.
    */
   router.post('/api/sessions/:id/handoff', (req, res) => {
     const sessionId = req.params.id
@@ -750,31 +784,33 @@ export function sessionRoutes(): Router {
     const known = getParticipant(sessionId, payload.participantId)
     if (!known) return res.status(404).json({ error: tr("server.participantNotFound.d59506") })
     /*
-     * Право переезжает вместе с человеком, но остаётся отзываемым.
+     * The right moves together with the person, but stays revocable.
      *
-     * Здесь стояло `tokenHost: true` — и это ломало главный инвариант ролей:
-     * семинар, заведённый в панели, хост-токена не имеет вовсе, преподаватель
-     * в нём ведущий только по куке, и одно нажатие «Пульт» записывало ему
-     * `token_host` навсегда. Снятый из штата сохранял Restart, Clear и Restore
-     * в каждой комнате, где хоть раз открывал пульт, — ровно та дыра, ради
-     * которой роль сделали невечной.
+     * `tokenHost: true` used to stand here — and it broke the main invariant
+     * of roles: a seminar created in the panel has no host token at all, the
+     * teacher in it is host only by cookie, and one press of "Console" wrote
+     * `token_host` for them forever. Someone removed from staff kept Restart,
+     * Clear and Restore in every room where they had ever opened the console —
+     * exactly the hole for whose sake the role was made non-permanent.
      *
-     * Поэтому в ключ едет не флаг в базе, а имя преподавателя: планшет получит
-     * токен с ним, а `roleFor` на каждом запросе спросит, есть ли такой в
-     * штате. Ведущему по собственному хост-токену вписывать нечего — у него
-     * `token_host` и так стоит, и отбирать его никто не собирался.
+     * So what travels in the key is not a flag in the database but the
+     * teacher's name: the tablet will get a token carrying it, and `roleFor`
+     * will ask on every request whether there is such a person on staff. A
+     * host by their own host token has nothing to add — they already have
+     * `token_host`, and nobody meant to take it away.
      */
     const staff = currentStaff(req)
     const grantedBy = staff?.id ?? payload.staff ?? null
     /*
-     * Адрес отдаём мы, а не браузер преподавателя.
+     * We hand out the address, not the teacher's browser.
      *
-     * Ссылку на пульт строили от `location.origin`, а комнату преподаватель
-     * чаще всего открывает на `http://localhost:3000` — такая ссылка на
-     * планшете не откроется вовсе, хотя семинар выставлен наружу. `PUBLIC_URL`
-     * в комнате взять неоткуда, поэтому он едет в ответе; выбирает из двух
-     * адресов уже клиент тем же правилом, что и панель (seminar-link.ts):
-     * верить настройке, когда она называет адрес, который можно открыть.
+     * The console link used to be built from `location.origin`, and a teacher
+     * most often opens the room at `http://localhost:3000` — such a link will
+     * not open on a tablet at all, even though the seminar is exposed to the
+     * outside. The room has nowhere to take `PUBLIC_URL` from, so it travels
+     * in the answer; the client then picks one of the two addresses by the
+     * same rule as the panel (seminar-link.ts): trust the setting when it
+     * names an address that can be opened.
      */
     const body: HandoffResponse = {
       key: signHandoffToken(sessionId, known.id, grantedBy),
@@ -785,27 +821,29 @@ export function sessionRoutes(): Router {
   })
 
   /**
-   * Планшет меняет ключ на обычный вход.
+   * The tablet exchanges the key for an ordinary join.
    *
-   * Ответ той же формы, что и у `/join`: дальше планшет ничем не отличается от
-   * всякого вошедшего — тот же токен, та же личность в localStorage, тот же
-   * сокет. Имени не спрашивает и спросить не может: человек тут уже известен,
-   * и предлагать ему назваться заново значило бы заводить второго.
+   * The answer has the same shape as `/join`'s: from here on the tablet is no
+   * different from anyone who joined — the same token, the same identity in
+   * localStorage, the same socket. It does not ask for a name and cannot: the
+   * person is already known here, and asking them to introduce themselves
+   * again would mean creating a second one.
    */
   router.post('/api/sessions/:id/handoff/claim', (req, res) => {
     const sessionId = req.params.id
     const session = getSession(sessionId)
     if (!session) return res.status(404).json({ error: SESSION_MISSING })
-    // Гасится здесь же: ключ обещан на один обмен, и это обещание держится
-    // только тем, что второй обмен того же ключа получает отказ.
+    // Spent right here: the key is promised for one exchange, and that promise
+    // holds only because a second exchange of the same key is refused.
     const who = spendHandoffToken(sessionId, req.body?.key)
     if (!who) {
       return res.status(401).json({ error: tr("server.thisPresenterLinkIsInvalidOrHas.0f5b09") })
     }
     const known = getParticipant(sessionId, who.participantId)
     if (!known) return res.status(404).json({ error: tr("server.participantNotFound.d59506") })
-    // Роль в строке — для значка в списке; `token_host` не трогаем: у ведущего
-    // по своему ключу он уже стоит, а ведущему по куке его ставить нельзя.
+    // The role in the row is for the badge in the list; `token_host` is left
+    // alone: a host by their own key already has it, and a host by cookie must
+    // not get it.
     const participant = upsertParticipant({
       id: known.id,
       sessionId,
@@ -827,21 +865,23 @@ export function sessionRoutes(): Router {
   })
 
   /**
-   * Правила комнаты — из самой комнаты.
+   * The room's rules — from the room itself.
    *
-   * Без этой двери модель есть, а настроить её нечем: панель задаёт правила
-   * только при создании, а ведущий по хост-токену в панель вообще не ходит —
-   * семинар может быть целиком его, а правила в нём неизменяемы.
+   * Without this door the model exists but there is nothing to configure it
+   * with: the panel sets rules only at creation, and a host by host token
+   * never goes to the panel at all — the seminar may be entirely theirs,
+   * while the rules in it cannot be changed.
    *
-   * Присланное накладывается на текущее, а не заменяет его: экран, который
-   * трогает один переключатель, не должен уметь молча вернуть остальные к
-   * умолчаниям.
+   * What is sent is laid over the current rules rather than replacing them: a
+   * screen that touches one switch must not be able to silently reset the
+   * rest to defaults.
    *
-   * Законченное занятие эту дверь не закрывает: преподаватель готовит в той же
-   * комнате следующую пару, а правила — выбор, который конец занятия ужесточает
-   * поверх, не переписывая (shared/rules.ts · rulesAfterClass). Поэтому и
-   * накладывается на `storedRules`: возьми проверка действующие, одно нажатие
-   * посреди законченного занятия записало бы «всё преподавателю» насовсем.
+   * A finished class does not close this door: the teacher prepares the next
+   * class in the same room, and the rules are a choice that the end of class
+   * tightens on top without rewriting it (shared/rules.ts · rulesAfterClass).
+   * That is also why they are laid over `storedRules`: had the check taken the
+   * effective rules, a single press in the middle of a finished class would
+   * have written "everything to the teacher" for good.
    */
   router.patch('/api/sessions/:id/rules', (req, res) => {
     const sessionId = req.params.id
@@ -856,13 +896,15 @@ export function sessionRoutes(): Router {
       return res.status(400).json({ error: tr("server.rulesMustBeAnObject.c2a9d1") })
     }
     /*
-     * Числа личных тетрадей меряются машиной — той же меркой, что и память
-     * самого занятия.
+     * The personal-notebook numbers are measured against the machine — by the
+     * same yardstick as the class's own memory.
      *
-     * `readRules` чистит их тотально и до разумных границ, но про докер и про
-     * память этой машины не знает ничего: он общий с браузером. Здесь число,
-     * которого машина не даст, отвергается словами — иначе контейнер просто не
-     * поднялся бы посреди пары, и связать это с нажатием было бы нечем.
+     * `readRules` sanitizes them for any input and clamps them to reasonable
+     * bounds, but it knows nothing about docker or about this machine's
+     * memory: it is shared with the browser. Here a number the machine will
+     * not give is rejected in words — otherwise the container would simply
+     * fail to come up in the middle of a class, and nothing would tie that to
+     * the press.
      */
     const asked = incoming as Record<string, unknown>
     if ('ownMemoryMb' in asked && asked.ownMemoryMb !== null) {
@@ -875,36 +917,41 @@ export function sessionRoutes(): Router {
     }
     const rules = setRules(sessionId, readRules({ ...storedRules(sessionId), ...incoming }))
     /*
-     * Сколько отсыпано личным тетрадям — их контейнеру, и сейчас: преподаватель
-     * выбрал число посреди пары и ждёт, что оно подействует, а не после того,
-     * как занятие однажды закроют. Контейнер комнаты эта дорога не трогает.
+     * What the personal notebooks are allotted goes to their container, and
+     * right now: the teacher chose a number in the middle of a class and
+     * expects it to take effect, not after the class is closed some day. This
+     * path does not touch the room's container.
      */
     void applyOwnLimits(sessionId).catch(() => {})
     /*
-     * Доступ тетради решает, в каком контейнере её ядро: у личной он свой, без
-     * GPU занятия (shared/rules.ts · bookHasOwnKernel). Переселить живой
-     * процесс нельзя — значит, ядро тетради, у которой доступ поменялся,
-     * гасится, и комната читает об этом строкой в журнале ядра.
+     * A notebook's access decides which container its kernel lives in: a
+     * personal one has its own, without the class's GPU (shared/rules.ts ·
+     * bookHasOwnKernel). A live process cannot be moved — so the kernel of a
+     * notebook whose access changed is shut down, and the room reads about it
+     * in a line of the kernel log.
      */
     syncBookKernels(sessionId)
     /*
-     * И защита от опасных команд — во все живые ядра занятия сейчас же.
+     * And the guard against dangerous commands — into every live kernel of the
+     * class right away.
      *
-     * Она живёт подменами ВНУТРИ процесса ядра, а не проверкой на сервере, так
-     * что сама собой новое правило не узнает: переключив строку ради показа
-     * `os._exit` на курсе по Python, преподаватель ждёт, что покажет её
-     * следующая же ячейка, а не следующее занятие. Обратная сторона важнее:
-     * включив защиту посреди пары, он ждёт, что она уже действует.
+     * It lives as substitutions INSIDE the kernel process, not as a check on
+     * the server, so it will not learn the new rule by itself: having flipped
+     * the switch to show `os._exit` in a Python course, the teacher expects
+     * the very next cell to show it, not the next class. The reverse matters
+     * more: having turned the guard on in the middle of a class, they expect
+     * it to be in effect already.
      */
     syncDangerGuard(sessionId)
     /*
-     * Комната узнаёт сейчас, а не при следующей перезагрузке: интерфейс гасит
-     * по этому кнопки, и правило, о котором не сказали, выглядит как поломка —
-     * кнопка перестала работать и никто не знает почему.
+     * The room learns now, not at the next reload: the interface disables
+     * buttons by this, and a rule nobody announced looks like a breakage — a
+     * button stopped working and nobody knows why.
      *
-     * Едет выбранное, а не действующее: конец занятия комната накладывает сама
-     * (web/src/lib/may.ts), и прислать ей уже ужесточённое значило бы показать
-     * преподавателю в настройках не его выбор.
+     * What travels is the chosen rules, not the effective ones: the room
+     * applies the end of class itself (web/src/lib/may.ts), and sending it the
+     * already tightened value would show the teacher, in the settings, a
+     * choice that is not theirs.
      */
     broadcast(sessionId, { t: 'rules', rules })
     res.json({ rules })
@@ -914,15 +961,15 @@ export function sessionRoutes(): Router {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     /*
-     * `participants` — все, кто когда-либо заходил; `online` — кто в комнате
-     * сейчас. Экрану входа нужно второе, чтобы сказать «трое уже внутри» и не
-     * посчитать позапрошлый поток.
+     * `participants` is everyone who has ever come in; `online` is who is in
+     * the room now. The join screen needs the second, to say "three are
+     * already inside" and not count the cohort before last.
      *
-     * И ровно поэтому не вошедшему отдаётся только второе. Ссылка на семинар —
-     * восемь символов, которые читают вслух; она открывает комнату, и это
-     * задумано, но она не должна перечислять поимённо весь курс, ходивший на
-     * него весь семестр. Тот, кто уже внутри, видит список целиком: он и так
-     * видит их курсоры.
+     * And that is exactly why someone who has not joined gets only the
+     * second. The seminar link is eight characters read out loud; it opens
+     * the room, and that is intended, but it must not list by name the whole
+     * course that attended it all semester. Someone already inside sees the
+     * whole list: they see these people's cursors anyway.
      */
     const online = onlineParticipantIds(sessionId)
     const everyone = listParticipants(sessionId)

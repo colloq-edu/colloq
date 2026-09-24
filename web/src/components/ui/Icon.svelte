@@ -12,9 +12,10 @@
     stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
     restart: '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>',
     /*
-     * Отмена — стрелка, ложащаяся обратно на строку, а не круговая: круговую в
-     * этом продукте занял `restart`, и «перезапустить ядро» рядом с «отменить
-     * штрих» — это два разных решения одним значком.
+     * Undo is an arrow that lies back down onto the line, not a circular one:
+     * in this product the circular arrow is taken by `restart`, and "restart
+     * the kernel" next to "undo the stroke" would be two different decisions
+     * with a single icon.
      */
     undo: '<path d="M4 10h10a5 5 0 0 1 0 10h-6"/><path d="M8 6l-4 4 4 4"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
@@ -26,10 +27,11 @@
     'chevron-right': '<path d="M9 6l6 6-6 6"/>',
     copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
     /*
-     * Дублировать — та же пара листов, что у `copy`, но с плюсом: копия не
-     * уезжает в буфер, а ЛОЖИТСЯ рядом, и это разные действия, стоящие в одном
-     * меню друг под другом. Одним `copy` на оба читалось бы как «скопировать
-     * ещё раз», одним `plus` — как «новый файл».
+     * Duplicate is the same pair of sheets as `copy`, but with a plus: the copy
+     * does not go off to the clipboard, it is LAID DOWN next to the original,
+     * and these are different actions that sit one under the other in the same
+     * menu. A single `copy` for both would read as "copy again", a single
+     * `plus` as "new file".
      */
     'copy-plus':
       '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/><path d="M14.5 14.5h-4M12.5 12.5v4"/>',
@@ -51,21 +53,23 @@
     'arrow-right': '<path d="M5 12h13M13 7l5 5-5 5"/>',
     lock: '<rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/>',
     /*
-     * Тот же корпус и та же дужка, снятая с правой стойки: открытый замок
-     * обязан читаться как ЭТОТ замок в другом положении, а не как второй
-     * значок. Пара стоит рядом в тетради — на одной ячейке одно, на соседней
-     * другое, — и различать их должно движение дужки, а не силуэт.
+     * The same body and the same shackle, released from the right post: an open
+     * lock has to read as THIS lock in another position, not as a second icon.
+     * The pair appears side by side in the notebook — one on one cell, the
+     * other on the next — and what tells them apart should be the movement of
+     * the shackle, not the silhouette.
      */
     unlock: '<rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8.5 11V8a3.5 3.5 0 0 1 6.8-.9"/>',
     // The Seminars nav mark: a board with a header rail, not a code glyph.
     board: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/>',
-    // Курс — папка семинаров. Единственное место в продукте, где эта метафора
-    // уместна: остальное к файлам отношения не имеет.
+    // A course is a folder of seminars. The only place in the product where
+    // this metaphor fits: nothing else has anything to do with files.
     folder: '<path d="M3 6.2A1.7 1.7 0 0 1 4.7 4.5h4.1l2 2.4h8.5A1.7 1.7 0 0 1 21 8.6v9.7a1.7 1.7 0 0 1-1.7 1.7H4.7A1.7 1.7 0 0 1 3 18.3V6.2z"/>',
     /*
-     * Значки видов файла. Рисуются в одной сетке 24 и с одной толщиной, чтобы
-     * колонка имён читалась как колонка, а не как набор картинок: разница между
-     * строками должна быть в одном силуэте, а не в весе линии.
+     * Icons for file kinds. Drawn on the same 24 grid and with the same stroke
+     * weight, so that the column of names reads as a column and not as a set of
+     * pictures: the difference between rows should be in the silhouette alone,
+     * not in the line weight.
      */
     notebook:
       '<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H18a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6.5A1.5 1.5 0 0 1 5 19.5v-15z"/><path d="M5 17.5h13.5"/><path d="M9 3v14.5"/>',
@@ -87,41 +91,43 @@
       '<path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.4 5.4l1.6 1.6M17 17l1.6 1.6M18.6 5.4L17 7M7 17l-1.6 1.6"/>',
     moon: '<path d="M20.2 14.4A8.4 8.4 0 0 1 9.6 3.8a8.4 8.4 0 1 0 10.6 10.6z"/>',
     text: '<path d="M5 6h14M5 12h9M5 18h12"/>',
-    // Карандаш: правка того, что уже записано.
+    // Pencil: editing what has already been written.
     pencil: '<path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="M14.5 7.5 16.5 9.5"/>',
     send: '<path d="M4.5 12L20 4.5 15 20l-3.5-6.5z"/><path d="M11.5 13.5L20 4.5"/>',
     more: '<circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/>',
     spinner: '<path d="M12 3a9 9 0 1 0 9 9"/>',
     bolt: '<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>',
     eraser: '<path d="M8 20H5l-2-2 9-9 6 6-5 5z"/><path d="M12 5l4-2 5 5-3 4"/>',
-    // Маркер стоит рядом с ластиком нарочно: в правом рейле пульта они соседи,
-    // и силуэт у них должен различаться с одного взгляда, а не с двух.
+    // The marker sits next to the eraser on purpose: they are neighbours on the
+    // console's right rail, and their silhouettes should be told apart at the
+    // first glance, not the second.
     marker:
       '<path d="M5 20h6"/><path d="M8.5 16.5 6 14l9-9 3.5 3.5-9 9-1 1z"/><path d="M14 6.5 17.5 10"/>',
     /*
-     * Указка — ТОЧКА СО СЛЕДОМ, то есть ровно то, что она оставляет на слайде.
-     * Соседи по рейлу нарисованы тем же правилом: перо, маркер и ластик — это
-     * инструменты, но узнают их по работе, а не по корпусу.
+     * The pointer is a DOT WITH A TRAIL, that is, exactly what it leaves on a
+     * slide. Its rail neighbours are drawn by the same rule: the pen, the
+     * marker and the eraser are tools, but people recognise them by what they
+     * do, not by their bodies.
      *
-     * Первым наброском была звезда лучами во все стороны — «точка света». На
-     * рейле она читалась как ЯРКОСТЬ и стояла в трёх клавишах от «Гасить»,
-     * которое про яркость и есть. Хвост эту путаницу снимает: у яркости хвоста
-     * не бывает.
+     * The first sketch was a star with rays in all directions — "a point of
+     * light". On the rail it read as BRIGHTNESS and stood three keys away from
+     * "Blank", which is precisely about brightness. The tail removes the
+     * confusion: brightness has no tail.
      */
     laser:
       '<path d="M3.6 17.4c3.2-1.1 5.4-3.6 7.2-6.1"/>' +
       '<circle cx="16.4" cy="7.6" r="2.8" fill="currentColor" stroke="none"/>' +
       '<circle cx="16.4" cy="7.6" r="6.2" opacity="0.45"/>',
-    // Четыре угла: «во весь экран». Стрелок внутри нет — они читаются как
-    // направление, а эта кнопка не про направление, а про границы.
+    // Four corners: "full screen". No arrows inside — they read as direction,
+    // and this button is about bounds, not direction.
     expand: '<path d="M4 9V4h5"/><path d="M15 4h5v5"/><path d="M20 15v5h-5"/><path d="M9 20H4v-5"/>',
     // A shipping crate: an environment is a built container image, and the
     // Environments artboard draws it as one.
     box: '<path d="M21 8.5v7a1.6 1.6 0 0 1-.85 1.41l-7.4 3.9a1.6 1.6 0 0 1-1.5 0l-7.4-3.9A1.6 1.6 0 0 1 3 15.5v-7"/><path d="M3.4 7.6l8.6-4.5 8.6 4.5-8.6 4.5-8.6-4.5z"/><path d="M12 12.1V20"/>',
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.6h.01"/>',
-    // Шапка комнаты: оконце с залитой верхней полосой. Не стрелка вверх —
-    // стрелка обещает прокрутку или переход, а здесь складывается ровно та
-    // полоса, которую видно над кнопкой.
+    // The room header: a small window with a filled top band. Not an up arrow —
+    // an arrow promises scrolling or navigation, whereas what folds away here
+    // is exactly the band visible above the button.
     masthead:
       '<rect x="3" y="4" width="18" height="16" rx="2"/>' +
       '<path d="M4.6 4h14.8A1.6 1.6 0 0 1 21 5.6V9.4H3V5.6A1.6 1.6 0 0 1 4.6 4z" fill="currentColor" stroke="none"/>',

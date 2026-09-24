@@ -1,69 +1,73 @@
 /**
- * Инструменты — посмотреть и проверить: status и doctor.
+ * Tools, to look and to check: status and doctor.
  *
- * Два вопроса, которые преподаватель задаёт своему ноутбуку: «что на нём
- * сейчас идёт» и «всё ли на месте перед парой». Оба только читают — ничего
- * не запускают, ничего не пишут и в сеть не ходят: экран, который смотрят за
- * пять минут до звонка, не имеет права ни ждать чужой машины, ни что-то
- * менять.
+ * Two questions a teacher asks their laptop: "what is running on it now" and
+ * "is everything in place before class". Both only read: they start nothing,
+ * write nothing and do not go to the network: a screen looked at five minutes
+ * before the bell has no right either to wait for another machine or to
+ * change anything.
  *
- * Мастерская — таблица активности, лендинг, курс из расписания, нагрузочный
- * стенд, аренда машин — живёт в Makefile и scripts/, и отсюда о ней ни слова:
- * ни строки на экране, ни подсказки. Совет, который нечем выполнить после
- * `pip install colloq`, читается как поломка, поэтому каждая подсказка ниже
- * называет команду этого CLI или то, что ставят руками (brew, pip).
+ * The workshop (the activity sheet, the landing page, a course from the
+ * timetable, the load test rig, renting machines) lives in the Makefile and
+ * scripts/, and there is not a word about it from here: not a line on the
+ * screen, not a hint. Advice there is no way to follow after `pip install
+ * colloq` reads as a breakage, so every hint below names a command of this
+ * CLI or something installed by hand (brew, pip).
  *
- * --json есть ровно у status, doctor и env list: команда
- * объявляет флаг {name:'json'}, иначе каркас откажет с кодом 2.
+ * Exactly status, doctor and env list have --json: the command
+ * declares the {name:'json'} flag, otherwise the framework refuses with code 2.
  *
- * node:child_process и node:fs импортировать нельзя: только ctx.sh и ctx.io.
+ * node:child_process and node:fs must not be imported: only ctx.sh and ctx.io.
  */
 import type { Command, Ctx } from '../registry.js'
 import { SYMBOL } from '../ui.js'
 import { joinPath } from '../env.js'
 import { readSession, type Session } from '../session.js'
 import { leaseUrl } from '../../../shared/local-public-url-lease.js'
-// Те же слова, что говорит colloq host: два места, одна формулировка — см.
-// PERIMETER в host.ts. Расходиться им нельзя, иначе одно из двух окажется
-// неправдой.
+// The same words colloq host says: two places, one wording; see PERIMETER in
+// host.ts. They must not drift apart, otherwise one of the two would turn out
+// to be untrue.
 import { PERIMETER } from './host.js'
 
-// ------------------------------------------------------------------ мелочь
+// ------------------------------------------------------------------ helpers
 
-/** Булев флаг. */
+/** A boolean flag. */
 function on(ctx: Ctx, name: string): boolean {
   return ctx.values[name] === true
 }
 
-/** Ответ несостоявшегося вызова: программы нет, спрашивать нечего. */
+/** The answer of a call that never happened: there is no program, nothing to ask. */
 function missing(): Promise<{ code: number; stdout: string; stderr: string }> {
   return Promise.resolve({ code: 127, stdout: '', stderr: '' })
 }
 
 /**
- * Чем чинить собранное приложение.
+ * What to fix the built application with.
  *
- * Панель приезжает в колесе готовой и уже сжатой (scripts/pack.mts собирает
- * её build:optimized), а собрать её у преподавателя нечем: ни npm-сборки, ни
- * исходников в пакете нет. Нет её или она не сжата — значит, установка
- * неполная, и выход один — поставить пакет заново. Тот же совет даёт и запуск
- * (launch-prepare.ts), чтобы doctor и `colloq start` не советовали разное.
+ * The panel arrives in the wheel ready and already compressed (scripts/pack.mts
+ * builds it with build:optimized), and a teacher has nothing to build it with:
+ * the package has neither an npm build nor the sources. If it is missing or
+ * not compressed, the installation is incomplete, and there is one way out:
+ * install the package again. The start (launch-prepare.ts) gives the same
+ * advice, so that doctor and `colloq start` do not advise different things.
  *
- * Из рабочего дерева совет тот же: CLI ведёт себя одинаково, откуда бы его ни
- * звали, а тот, кто держит исходники, знает `npm run build` и без подсказки.
+ * From a working tree the advice is the same: the CLI behaves the same
+ * wherever it is called from, and whoever holds the sources knows `npm run
+ * build` without a hint.
  */
 const REINSTALL = 'reinstall colloq: pip install --force-reinstall colloq'
 
 /**
- * Чем получить образ ядра.
+ * How to get the kernel image.
  *
- * `colloq env build` у установленного colloq отказывает нарочно — собирать
- * образ заранее незачем, это делает запуск, — и посылать туда человека значит
- * послать его в отказ. Совет один и тот же, откуда бы ни звали CLI.
+ * `colloq env build` refuses on purpose for an installed colloq (there is no
+ * reason to build the image in advance, the start does it), and sending a
+ * person there means sending them into a refusal. The advice is one and the
+ * same wherever the CLI is called from.
  */
 const KERNEL_IMAGE_FIX = 'colloq start — the image is built before the class'
 
-/** «01:14:23», «1-02:03:04», «05:23» → секунды. Формат etime у ps один на обеих системах. */
+/** "01:14:23", "1-02:03:04", "05:23" → seconds. The etime format of ps is the same on both systems. */
 export function parseEtime(value: string): number | null {
   const raw = value.trim()
   if (!/^(\d+-)?(\d+:)?\d+:\d+$/.test(raw)) return null
@@ -81,7 +85,7 @@ export function parseEtime(value: string): number | null {
   return days * 86400 + hours * 3600 + minutes * 60 + seconds
 }
 
-/** «1 ч 14 мин», «47 с», «3 дн 2 ч». */
+/** "1h 14m", "47s", "3d 2h". */
 export function humanDuration(seconds: number): string {
   const total = Math.max(0, Math.round(seconds))
   if (total < 60) return total + 's'
@@ -95,7 +99,7 @@ export function humanDuration(seconds: number): string {
   return restHours ? days + 'd ' + restHours + 'h' : days + 'd'
 }
 
-/** «4 ч назад». */
+/** "4h ago". */
 function humanAge(milliseconds: number): string {
   return humanDuration(milliseconds / 1000) + ' ago'
 }
@@ -104,19 +108,19 @@ function two(value: number): string {
   return String(value).padStart(2, '0')
 }
 
-/** «14:02». */
+/** "14:02". */
 function clock(milliseconds: number): string {
   const date = new Date(milliseconds)
   return two(date.getHours()) + ':' + two(date.getMinutes())
 }
 
-/** «12.09». */
+/** "12.09". */
 function day(milliseconds: number): string {
   const date = new Date(milliseconds)
   return two(date.getDate()) + '.' + two(date.getMonth() + 1)
 }
 
-/** Имя машины из адреса; адреса нет — пустая строка. */
+/** The machine name from an address; no address means an empty string. */
 export function hostOf(url: string): string {
   const value = url.trim()
   if (value === '') return ''
@@ -127,9 +131,10 @@ export function hostOf(url: string): string {
 }
 
 /**
- * Смотрит ли адрес наружу. Три написания петли — те же, что принимает расписка
- * (session.ts · loopback): её адрес приходит сюда наравне с PUBLIC_URL, и
- * `http://[::1]:4100` считался бы чужой машиной, раз уж список был из двух.
+ * Whether the address faces the outside. The three spellings of loopback are
+ * the same ones the receipt accepts (session.ts · loopback): its address
+ * comes here on a par with PUBLIC_URL, and `http://[::1]:4100` would count as
+ * another machine, since the list used to have two.
  */
 function outsideOf(url: string): boolean {
   const host = hostOf(url)
@@ -137,18 +142,20 @@ function outsideOf(url: string): boolean {
 }
 
 /**
- * Адрес идущего занятия: публичный, если у сессии живёт расписка на него.
+ * The address of the running class: the public one, if the session has a
+ * live receipt for it.
  *
- * Занятие выставляют наружу не через .env, а через собственный туннель
- * супервизора, и его адрес лежит в отдельной расписке (leaseFile). Без неё
- * остаётся местный адрес из расписки занятия — он всегда петля.
+ * A class is exposed to the outside not through .env but through the
+ * supervisor's own tunnel, and its address lies in a separate receipt
+ * (leaseFile). Without it, what remains is the local address from the class
+ * receipt, which is always loopback.
  */
 function sessionAddress(ctx: Ctx, session: Session): string {
   if (session.leaseFile === '') return session.url
   return leaseUrl(ctx.io.readText(session.leaseFile), session.runId, ctx.io.now()) ?? session.url
 }
 
-/** Самый свежий файл каталога с одним из расширений; нет каталога — null. */
+/** The newest file of a directory with one of the extensions; no directory means null. */
 function newestFile(
   ctx: Ctx,
   dir: string,
@@ -164,9 +171,9 @@ function newestFile(
   return best
 }
 
-/** Строка «ключ значение» с общей колонкой: у доктора подписи длиннее kv(12). */
+/** A "key value" line with a shared column: doctor's labels are longer than kv(12). */
 function rowPrinter(ctx: Ctx, labels: string[]): (label: string, value: string) => void {
-  // Символ и пробел перед подписью — те же две позиции, что у ● в status.
+  // The symbol and the space before the label are the same two positions as ● in status.
   const width = Math.max(12, ...labels.map((label) => label.length + 4))
   return (label, value) => ctx.ui.line('  ' + label.padEnd(width) + value)
 }
@@ -174,12 +181,12 @@ function rowPrinter(ctx: Ctx, labels: string[]): (label: string, value: string) 
 // ------------------------------------------------------------------ status
 
 /**
- * Один вызов docker на весь экран: метка комнаты, служба compose, состояние — и
- * ЗАНЯТИЕ, которому контейнер принадлежит.
+ * One docker call for the whole screen: the room label, the compose service,
+ * the state, and the CLASS the container belongs to.
  *
- * Занятие нужно потому, что контейнеров у него два: его собственный и тот, где
- * считаются личные тетради его студентов. Считать строки значило бы написать
- * «2 комнаты» там, где идёт одна пара.
+ * The class is needed because it has two containers: its own and the one
+ * where its students' personal notebooks are computed. Counting lines would
+ * mean writing "2 rooms" where a single class is going on.
  */
 const PS_FORMAT =
   '{{.Label "colloq.kind"}}|{{.Label "com.docker.compose.service"}}|{{.State}}|{{.Label "colloq.session"}}'
@@ -213,37 +220,39 @@ async function statusFacts(ctx: Ctx): Promise<Status> {
   const relayDomain = env.relay().domain
 
   /*
-   * Первый источник — расписка занятия, второй — .env.
+   * The first source is the class receipt, the second is .env.
    *
-   * Вопросы у них разные: .env говорит, что настроено, расписка — на чём идёт
-   * занятие ПРЯМО СЕЙЧАС. `colloq run --port 4100` в .env не пишет ничего, и
-   * живьём экран печатал «порт 3000», пока класс сидел на 4100. Потому порт,
-   * адрес и номера процессов берутся из расписки, и только когда её нет — из
-   * .env, как было всегда.
+   * Their questions differ: .env says what is configured, the receipt says what
+   * the class is running on RIGHT NOW. `colloq run --port 4100` writes nothing
+   * into .env, and live the screen printed "port 3000" while the class sat on
+   * 4100. So the port, the address and the process numbers are taken from the
+   * receipt, and only when there is none, from .env, as it always was.
    */
   const session = readSession(io, env.paths.sessionFile)
   const sessionUrl = session === null ? '' : sessionAddress(ctx, session)
   const envUrl = env.publicUrl()
   /*
-   * Чью живость спрашиваем у ps. Порт держит сервер — ребёнок супервизора, и
-   * его номер лежит в расписке полем serverPid; пока сервер не поднялся (phase
-   * preparing), занятие всё равно идёт, и живым считается супервизор. Без
-   * расписки остаётся .colloq.pid: его пишет `make run` в рабочем дереве, и
-   * там лежит номер самого сервера.
+   * Whose liveness we ask ps about. The port is held by the server, the
+   * supervisor's child, and its number lies in the receipt in the serverPid
+   * field; while the server is not up yet (phase preparing), the class is
+   * running all the same, and the supervisor counts as alive. Without a
+   * receipt there remains .colloq.pid: `make run` writes it in a working tree,
+   * and it holds the number of the server itself.
    */
   const pidText = (io.readText(env.paths.pidFile) ?? '').trim()
   const filePid = /^\d+$/.test(pidText) ? Number(pidText) : null
   const pid = session === null ? filePid : (session.serverPid ?? session.pid)
   /*
-   * Туннель ищем, если наружу смотрит хоть один из двух адресов: какой из них
-   * настоящий, станет известно только после ps, а лишний pgrep стоит копейки —
-   * иначе пришлось бы либо ходить к процессам дважды, либо терять строку
-   * «наружу» у занятия с собственным туннелем.
+   * We look for a tunnel if at least one of the two addresses faces the
+   * outside: which of them is the real one becomes known only after ps, and an
+   * extra pgrep costs next to nothing; otherwise we would have either to go to
+   * the processes twice or to lose the "outside" line for a class with its own
+   * tunnel.
    */
   const outside = outsideOf(sessionUrl) || outsideOf(envUrl)
 
-  // Всё, что можно спросить у системы, спрашивается разом: экран должен
-  // успеть за секунду.
+  // Everything that can be asked of the system is asked at once: the screen
+  // must make it within a second.
   const [docker, image, etime, frpc, cloudflared] = await Promise.all([
     sh.capture('docker', ['ps', '--format', PS_FORMAT], { timeoutMs: 700 }),
     sh.capture(
@@ -251,7 +260,7 @@ async function statusFacts(ctx: Ctx): Promise<Status> {
       ['image', 'inspect', 'colloq-kernel:' + kernelEnv, '--format', '{{.Created}}'],
       { timeoutMs: 700 },
     ),
-    // Живость pid и время работы — одной строкой ps, она есть и на macOS, и на Linux.
+    // The pid's liveness and uptime in one ps line, which exists on both macOS and Linux.
     pid === null
       ? missing()
       : sh.capture('ps', ['-p', String(pid), '-o', 'etime='], {
@@ -265,7 +274,7 @@ async function statusFacts(ctx: Ctx): Promise<Status> {
   let appRunning = false
   for (const line of docker.stdout.split('\n')) {
     const [kind, compose, state, session] = line.split('|')
-    // По занятиям, а не по контейнерам: у одной пары их два.
+    // By classes, not by containers: one class has two of them.
     if ((kind ?? '') === 'room-kernel') seen.add((session ?? '').trim() || line)
     if ((compose ?? '') === 'app' && (state ?? '').toLowerCase().includes('running')) {
       appRunning = true
@@ -284,9 +293,10 @@ async function statusFacts(ctx: Ctx): Promise<Status> {
   const uptimeSec = etime.code === 0 ? parseEtime(etime.stdout) : null
   const alive = etime.code === 0 && uptimeSec !== null
   /*
-   * Расписка без живого процесса — след от убитого занятия: kill -9 её не
-   * убирает. Верить ей тогда нельзя, иначе экран печатал бы порт и адрес пары,
-   * которой нет, — и всё возвращается к .env.
+   * A receipt without a live process is a trace of a killed class: kill -9
+   * does not remove it. It cannot be trusted then, otherwise the screen would
+   * print the port and address of a class that does not exist, so everything
+   * falls back to .env.
    */
   const live: Session | null = alive ? session : null
   const port = live ? live.port : env.port()
@@ -294,17 +304,19 @@ async function statusFacts(ctx: Ctx): Promise<Status> {
   const host = hostOf(publicUrl)
   const published = outsideOf(publicUrl)
   /*
-   * Форма — то, чем этот сервер завели, и называется она той командой, которой
-   * его заводят: по ней же человек поймёт, чем его остановить.
+   * The form is what this server was started with, and it is named by the
+   * command that starts it: by it the person will also understand what to stop
+   * it with.
    *
-   * Расписка идёт первой: если она жива, порт и номера уже взяты из неё, и
-   * назвать эту же пару «контейнером» значило бы собрать на одной строке два
-   * разных сервера. Режим dev супервизора заводят `npm run dev` в рабочем
-   * дереве — у CLI такой команды нет, и называть её `colloq dev` значило бы
-   * отправить к слову, которого он не знает. Дальше — то, что бывает на
-   * ноутбуке без расписки: compose-контейнер app (`make up`) и сервер, который
-   * `make run` оставил в .colloq.pid. Служба systemd и кластер — формы
-   * выделенной машины, у преподавательского CLI их нет.
+   * The receipt comes first: if it is alive, the port and the numbers are
+   * already taken from it, and calling this same class a "container" would
+   * mean assembling two different servers on one line. The supervisor's dev
+   * mode is started with `npm run dev` in a working tree: the CLI has no such
+   * command, and calling it `colloq dev` would send people to a word it does
+   * not know. Then comes what happens on a laptop without a receipt: the
+   * compose container app (`make up`) and a server that `make run` left in
+   * .colloq.pid. A systemd service and a cluster are forms of a dedicated
+   * machine; the teacher's CLI does not have them.
    */
   const form = live
     ? live.mode === 'dev'
@@ -348,14 +360,15 @@ async function statusFacts(ctx: Ctx): Promise<Status> {
     relayDomain,
     form,
     /*
-     * Под подписью «сервер» стоит номер СЕРВЕРА, и только он: тем же номером
-     * называет слушателя порта doctor, а до этой правки два экрана звали один
-     * и тот же сервер по-разному — status номером супервизора, doctor номером
-     * его ребёнка. Пока сервер занятия не поднялся, номера нет вовсе, и строка
-     * обойдётся портом и временем: выдать вместо него супервизора значило бы
-     * вернуть ту же путаницу. Номер из .colloq.pid печатается, только если ps
-     * подтвердил, что он жив: рядом с «container» мёртвый номер от прошлого
-     * `make run` выдавал бы себя за сервер контейнера.
+     * Under the "server" label stands the number of the SERVER, and only it:
+     * doctor names the port listener by the same number, and before this fix
+     * the two screens called one and the same server differently, status by
+     * the supervisor's number, doctor by its child's. While the class server
+     * is not up yet, there is no number at all, and the line makes do with the
+     * port and the time: showing the supervisor instead would bring back the
+     * same confusion. The number from .colloq.pid is printed only if ps
+     * confirmed it is alive: next to "container", a dead number from an
+     * earlier `make run` would pass itself off as the container's server.
      */
     pid: live ? live.serverPid : alive ? pid : null,
     uptimeSec,
@@ -374,7 +387,7 @@ async function statusFacts(ctx: Ctx): Promise<Status> {
   }
 }
 
-/** Самый свежий mtime внутри web/dist: корень и assets/. */
+/** The newest mtime inside web/dist: the root and assets/. */
 function newestDist(ctx: Ctx): number | null {
   const dist = ctx.env.paths.dist
   if (!ctx.io.exists(dist)) return null
@@ -412,8 +425,9 @@ function renderStatus(ctx: Ctx, facts: Status): void {
   ui.header('Colloq · ' + (facts.envName || 'local'))
   serverLine(ctx, facts)
 
-  // Клиент — главная строка экрана: собранная панель старше сервера значит,
-  // что класс видит прошлую версию, и по коду этого не понять никак.
+  // The client is the main line of the screen: a built panel newer than the
+  // server means the class sees the previous version, and there is no way to
+  // tell that from the code.
   if (facts.distAt === null) {
     ui.kv(SYMBOL.off + ' client', 'the frontend is not built')
     ui.hint(REINSTALL)
@@ -432,8 +446,9 @@ function renderStatus(ctx: Ctx, facts: Status): void {
   }
 
   publicLine(ctx, facts)
-  // Ссылка отдельной строкой — только когда её есть кому дать: в строке
-  // «наружу» местный адрес уже назван, и второй раз он читается как другой.
+  // The link on a separate line only when there is someone to give it to: the
+  // "outside" line already names the local address, and a second time it
+  // reads as a different one.
   if (facts.transport !== '' && facts.publicUrl !== '') ui.kv('  link', ui.cyan(facts.publicUrl))
 
   if (facts.dockerNote !== '') ui.kv(SYMBOL.off + ' kernels', facts.dockerNote)
@@ -454,9 +469,9 @@ function renderStatus(ctx: Ctx, facts: Status): void {
 }
 
 /**
- * Строка «сервер». hint:false — для --short: две строки обещаны ровно двумя, и
- * подсказка под незапущенным сервером делала их тремя как раз тогда, когда
- * смотреть не на что.
+ * The "server" line. hint:false is for --short: two lines are promised to be
+ * exactly two, and a hint under a server that is not running made them three
+ * precisely when there is nothing to look at.
  */
 function serverLine(ctx: Ctx, facts: Status, hint = true): void {
   const { ui } = ctx
@@ -491,7 +506,7 @@ function publicLine(ctx: Ctx, facts: Status): void {
   ui.kv(SYMBOL.on + ' outside', host + ' · ' + facts.transport + tail)
 }
 
-/** Вторая строка --short: та же, что «наружу», но без подсказки. */
+/** The second line of --short: the same as "outside", but without the hint. */
 function publicLineShort(ctx: Ctx, facts: Status): void {
   const host = hostOf(facts.publicUrl)
   if (facts.transport === '') {
@@ -527,18 +542,20 @@ type Check = {
   hint: string
 }
 
-/** Чем занятие выходит наружу: ретранслятор или быстрый туннель. */
+/** What the class goes outside with: the relay or a quick tunnel. */
 const PROGRAMS = ['frpc', 'cloudflared'] as const
 
 /*
- * Осмотр отвечает на один вопрос: пойдёт ли занятие на ЭТОЙ машине и пустит
- * ли она класс. Ключи чужой инфраструктуры (аренда, ретранслятор как машина,
- * Cloudflare, таблица активности), средства сборки и формы выделенной машины
- * из этого вопроса выпадают — их проверяет мастерская своими скриптами.
+ * The check-up answers one question: will the class run on THIS machine and
+ * will it let the students in. The keys of other people's infrastructure
+ * (renting, the relay as a machine, Cloudflare, the activity sheet), build
+ * tools and the forms of a dedicated machine fall outside this question: the
+ * workshop checks them with its own scripts.
  *
- * Сети здесь нет вовсе. Единственная сетевая проверка была про ретранслятор
- * как машину — вопрос того, кто его держит, а не того, кто ведёт пару; вместе
- * с ней ушёл и флаг --offline, выключать стало нечего.
+ * There is no network here at all. The only network check was about the relay
+ * as a machine, a question for whoever maintains it, not for whoever teaches
+ * the class; the --offline flag went along with it, there was nothing left to
+ * switch off.
  */
 async function doctorChecks(ctx: Ctx): Promise<Check[]> {
   const { env, io, sh } = ctx
@@ -546,15 +563,15 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
   const relay = env.relay()
   const pidText = (io.readText(env.paths.pidFile) ?? '').trim()
   /*
-   * Осмотр идёт по тому порту, на котором идёт занятие, а не по тому, что
-   * записан в .env: `colloq run --port 4100` .env не трогает, и проверка порта
-   * 3000 отвечала бы «свободен» про порт, которого класс в глаза не видел.
+   * The check-up goes by the port the class runs on, not by the one written in
+   * .env: `colloq run --port 4100` does not touch .env, and a check of port
+   * 3000 would answer "free" about a port the class has never laid eyes on.
    */
   const session = readSession(io, env.paths.sessionFile)
   const port = session?.port ?? env.port()
 
   const [programs, info, image, listen, disk] = await Promise.all([
-    // Одна оболочка на обе программы: отдельные вызовы стоили бы вдвое дольше.
+    // One shell for both programs: separate calls would take twice as long.
     sh.capture(
       'sh',
       [
@@ -575,14 +592,16 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
       ['image', 'inspect', 'colloq-kernel:' + kernelEnv, '--format', '{{.Created}}'],
       { timeoutMs: 3000 },
     ),
-    // Только LISTEN: чужой CLOSE_WAIT однажды уже дал ложное «порт занят».
+    // LISTEN only: someone else's CLOSE_WAIT once already gave a false "port taken".
     sh.capture('lsof', ['-nP', '-iTCP:' + port, '-sTCP:LISTEN'], { timeoutMs: 2000 }),
     /*
-     * Место меряем на томе каталога СОСТОЯНИЯ, а не приложения. Растёт всё
-     * там: <home>/data, <home>/workspace, <home>/backups, <home>/.colloq.log —
-     * и подсказка ниже сама зовёт чистить backups/. У поставленного через pip
-     * colloq каталоги разные, и легко на разных томах: осмотр показывал
-     * свободное место под site-packages, а кончалось оно у данных.
+     * We measure space on the volume of the STATE directory, not of the
+     * application. Everything grows there: <home>/data, <home>/workspace,
+     * <home>/backups, <home>/.colloq.log, and the hint below itself asks to
+     * clean up backups/. For colloq installed through pip the directories
+     * differ, and may easily be on different volumes: the check-up showed the
+     * free space under site-packages, while it was the data that ran out of
+     * it.
      */
     sh.capture('df', ['-k', env.paths.home], { timeoutMs: 2000 }),
   ])
@@ -626,18 +645,19 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
 
   const listener = listen.code === 0 ? listenerOf(listen.stdout) : null
   /*
-   * Чей это слушатель — и раньше ответ был «всегда чужой».
+   * Whose listener this is; the answer used to be "always someone else's".
    *
-   * Порт держит сервер, а он ребёнок супервизора; в .colloq.pid лежит номер
-   * САМОГО супервизора, и сравнение с ним не совпадало никогда. Живьём, во
-   * время здорового занятия, doctor печатал «✗ порт 3000 · занят: node pid
-   * 14552 — это второй Colloq», советовал colloq stop и возвращал код 3 — то
-   * есть звал преподавателя остановить собственную пару.
+   * The port is held by the server, and it is the supervisor's child;
+   * .colloq.pid holds the number of the supervisor ITSELF, and the comparison
+   * with it never matched. Live, during a healthy class, doctor printed "✗ port
+   * 3000 · taken: node pid 14552 — a second Colloq", advised colloq stop and
+   * returned code 3, that is, told the teacher to stop their own class.
    *
-   * Наши оба номера из расписки: serverPid — тот, кто слушает сейчас, pid
-   * супервизора — тот, кто окажется слушателем, если сервер перезапустили, а
-   * расписка ещё не переписана. .colloq.pid остаётся третьим: без расписки его
-   * пишет `make run` в рабочем дереве, и там лежит номер самого сервера.
+   * Both of our numbers come from the receipt: serverPid is the one listening
+   * now, the supervisor's pid is the one that will turn out to be the
+   * listener if the server was restarted and the receipt has not been
+   * rewritten yet. .colloq.pid stays the third: without a receipt `make run`
+   * writes it in a working tree, and it holds the number of the server itself.
    */
   const ourPids = new Set<number>()
   if (session !== null) {
@@ -673,12 +693,14 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
   })
 
   /*
-   * Список окружения ищется в ОБОИХ каталогах, как и в `colloq env list`.
+   * The environment list is looked for in BOTH directories, as in `colloq env
+   * list`.
    *
-   * Смотреть только в привезённый значило бы сказать «нет kernel/environments/
-   * mlcourse.txt» про окружение, которое человек минуту назад завёл сам и
-   * которое лежит целым в его каталоге, — и этим послать чинить то, что не
-   * сломано. Каталоги знает env.paths (env.ts · envDir, ownEnvDir).
+   * Looking only into the shipped one would mean saying "no
+   * kernel/environments/mlcourse.txt" about an environment the person created
+   * themselves a minute ago and which lies intact in their directory, and so
+   * sending them to fix what is not broken. env.paths knows the directories
+   * (env.ts · envDir, ownEnvDir).
    */
   const ownEnvFile = joinPath(env.paths.ownEnvDir, kernelEnv + '.txt')
   const appEnvFile = joinPath(env.paths.envDir, kernelEnv + '.txt')
@@ -697,8 +719,8 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
 
   const distNames = io.list(env.paths.dist)
   const assets = io.list(joinPath(env.paths.dist, 'assets'))
-  // Считаем только то, что жмётся: шрифты и картинки .br не получают никогда,
-  // а самые мелкие файлы сборщик пропускает сам — потому доля, а не «все».
+  // We count only what compresses: fonts and images never get a .br, and the
+  // builder skips the smallest files on its own, hence a share, not "all".
   const plain = assets.filter((name) => /\.(js|css|html|json|svg)$/.test(name))
   const squeezed = plain.filter((name) => assets.includes(name + '.br'))
   const hasDist = distNames.length > 0
@@ -717,8 +739,9 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
   })
 
   /*
-   * Обе программы ставят руками, и совет — те же слова, какими отказывает
-   * scripts/host.sh, не найдя их: у доктора и у `colloq host` он один.
+   * Both programs are installed by hand, and the advice is the same words
+   * scripts/host.sh refuses with when it does not find them: doctor and
+   * `colloq host` share it.
    */
   const wantRelay = relay.domain !== ''
   add({
@@ -772,14 +795,15 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
   })
 
   /*
-   * Сеть комнат — проверка настройки, а не слова. По умолчанию ядра не
-   * достают до локальных адресов (LAN, роутер, сам компьютер, метаданные
-   * облака; server/src/kernel/perimeter.ts), и это ✓. COLLOQ_ROOM_NETWORK=open
-   * снимает запрет — ○, как у всякой выключенной возможности: ошибкой это не
-   * считается (так решил тот, кто написал строку), но вслух сказано перед
-   * каждой парой. Встал ли запрет на деле, доктор не знает и не спрашивает —
-   * это видно в журнале на старте сервера, а без запрета комнаты не
-   * поднимаются вовсе, с текстом о том, как быть.
+   * The room network is a check of a setting, not words. By default the
+   * kernels do not reach local addresses (the LAN, the router, the computer
+   * itself, cloud metadata; server/src/kernel/perimeter.ts), and that is ✓.
+   * COLLOQ_ROOM_NETWORK=open lifts the block: ○, as with any switched-off
+   * capability: it does not count as an error (so decided whoever wrote the
+   * line), but it is said out loud before every class. Whether the block
+   * actually took effect doctor does not know and does not ask: that is
+   * visible in the log at server start, and without the block the rooms do not
+   * come up at all, with a text about what to do.
    */
   const roomNetworkOpen = env.read('COLLOQ_ROOM_NETWORK').trim().toLowerCase() === 'open'
   add({
@@ -793,11 +817,12 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
     hint: 'remove COLLOQ_ROOM_NETWORK=open from .env, then colloq restart',
   })
 
-  // Последней строкой — периметр. Это не проверка: чинить тут нечего, и
-  // «сломано» здесь не бывает. Поэтому ○ и optional:true — тот же знак, каким
-  // доктор говорит «возможность выключена, и это не ошибка»: код возврата от
-  // неё не меняется, а подсказка печатается (её показывают у каждой не-ok
-  // строки) и договаривает, что делать, если своего класса мало.
+  // The last line is the perimeter. It is not a check: there is nothing to fix
+  // here, and "broken" never happens here. Hence ○ and optional:true, the same
+  // sign doctor uses to say "a capability is switched off, and that is not an
+  // error": the exit code does not change because of it, and the hint is
+  // printed (it is shown for every non-ok line) and finishes saying what to
+  // do if your own class is not enough.
   add({
     id: 'perimeter',
     label: 'perimeter',
@@ -830,7 +855,7 @@ function freeSpaceGb(result: { code: number; stdout: string }): number | null {
   return Number.isFinite(kb) ? kb / 1024 / 1024 : null
 }
 
-// ------------------------------------------------------------------ реестр
+// ------------------------------------------------------------------ registry
 
 export const commands: Command[] = [
   {
@@ -887,8 +912,8 @@ export const commands: Command[] = [
         return 0
       }
       if (on(ctx, 'short')) {
-        // Ровно две строки и без подсказок: «идёт ли и видно ли снаружи» —
-        // одним взглядом, без остального экрана.
+        // Exactly two lines and no hints: "is it running and is it visible
+        // from outside" at a glance, without the rest of the screen.
         serverLine(ctx, facts, false)
         publicLineShort(ctx, facts)
         return 0

@@ -37,9 +37,9 @@ test('disconnected, the connection is the reason — not who you are', () => {
 })
 
 test('the offline sentence says what to expect, not just what is wrong', () => {
-  // По-русски, как и вся поверхность, куда она приезжает.
+  // In Russian, like the whole surface it lands on.
   assert.match(OFFLINE_REASON, /связ/i)
-  // «возвращения» — это ожидание, а не отказ. Шапка уже крутит спиннер.
+  // "Reconnecting" means a wait, not a refusal. The header is already spinning.
   assert.match(OFFLINE_REASON, /после подключения/i)
 })
 
@@ -109,22 +109,22 @@ test('enqueueControl hands back the same array it was given', () => {
   assert.equal(enqueueControl(q, { t: 'runAll' }), q)
 })
 
-test('«стоп» с целью и «стоп» без цели — два разных нажатия', () => {
+test('"stop" with a target and "stop" without one are two different presses', () => {
   /*
-   * Кнопка на ячейке называет свою цель, комнатная в верхней панели нет: одна
-   * останавливает конкретное выполнение, другая ещё и разбирает очередь, когда
-   * не выполняется ничего. Свернуть их в одно значило бы вернуть ту самую
-   * гонку, из-за которой нажатие в промежутке между двумя ячейками Run All
-   * выносило очередь всей комнаты.
+   * The button on a cell names its target; the room one in the top bar does
+   * not: one stops a specific execution, the other also clears the queue when
+   * nothing is running. Merging them into one would bring back the very race
+   * in which a press in the gap between two Run All cells wiped out the whole
+   * room's queue.
    */
   const queue: ControlClientMessage[] = []
   enqueueControl(queue, { t: 'interrupt' })
   enqueueControl(queue, { t: 'interrupt', cellId: 'c1' })
-  assert.equal(queue.length, 2, 'нажатия слились в одно')
+  assert.equal(queue.length, 2, 'the presses merged into one')
 
-  // А два одинаковых — по-прежнему одно.
+  // And two identical ones are still one.
   enqueueControl(queue, { t: 'interrupt', cellId: 'c1' })
-  assert.equal(queue.length, 2, 'повтор одного и того же нажатия удвоился')
+  assert.equal(queue.length, 2, 'a repeat of the same press was doubled')
 })
 
 test('offline state snapshots persist the final A after A → B → A', () => {

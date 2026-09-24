@@ -1,19 +1,21 @@
 import { translate, tr } from '../shared/i18n.js'
 import './_env.mts'
 /**
- * Что окно бана обещает — и что комната умеет.
+ * What the ban dialog promises — and what the room can do.
  *
- * Бан стирает вопросы человека из общей ленты, и это последствие, о котором
- * никто не догадается сам. Поэтому интерфейс о нём говорит — и в двух местах
- * говорил лишнее: «восстановлением версии вопросы вернутся» (окно
- * подтверждения) и «их возвращает восстановление версии в истории» (подпись
- * под списком удалённых). Ни то, ни другое неправда: история комнаты хранит
- * ЯЧЕЙКИ тетради, и возврат версии ленту не трогает вовсе. Преподаватель
- * нажимал «Удалить», уверенный, что ход обратим, а после «Вернуть целиком» на
- * отметке «до бана» получал нетронутую тетрадь и ту же пустую ленту.
+ * A ban erases the person's questions from the shared feed, and that is a
+ * consequence nobody would guess on their own. So the interface talks about
+ * it — and in two places it said too much: "restoring a version brings the
+ * questions back" (the confirmation dialog) and "restoring a version in the
+ * history brings them back" (the caption under the list of removed people).
+ * Neither is true: the room's history keeps the notebook's CELLS, and
+ * restoring a version does not touch the feed at all. The teacher pressed
+ * "Delete" sure that the move was reversible, and after "Restore notebook" at
+ * the "before the ban" mark got an untouched notebook and the same empty feed.
  *
- * Тест держит обе стороны: что история и правда не про ленту (иначе обещание
- * можно было бы и выполнить), и что подпись в панели этого больше не обещает.
+ * The test holds both sides: that the history really is not about the feed
+ * (otherwise the promise could simply be kept), and that the caption in the
+ * panel no longer promises it.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -23,7 +25,7 @@ import * as Y from 'yjs'
 import { createCell, createChatEntry, getChat, CELLS_KEY } from '../shared/notebook.js'
 import { cellsOf } from '../server/src/collab/history.js'
 
-test('снимок версии — это ячейки тетради, и ленты вопросов в нём нет', () => {
+test('a version snapshot is the notebook cells, and the question feed is not in it', () => {
   const doc = new Y.Doc()
   doc.getArray<Y.Map<any>>(CELLS_KEY).push([createCell('code', 'print(1)')])
   getChat(doc).push([
@@ -36,33 +38,33 @@ test('снимок версии — это ячейки тетради, и ле�
   ])
 
   /*
-   * `cellsAt(seq)` — единственный источник того, что кладёт обратно возврат, и
-   * он сводится к `cellsOf`. Пока это так, «восстановлением версии вопросы
-   * вернутся» — обещание за чужой счёт, сколько бы отметок ни ставил бан.
+   * `cellsAt(seq)` is the only source of what a restore puts back, and it comes
+   * down to `cellsOf`. As long as that holds, "restoring a version brings the
+   * questions back" is a promise at someone else's expense, however many marks the ban sets.
    */
   const restored = cellsOf(doc)
-  assert.equal(restored.length, 1, 'ячейка в снимке одна')
+  assert.equal(restored.length, 1, 'there is one cell in the snapshot')
   assert.equal(restored[0].source, 'print(1)')
   const said = JSON.stringify(restored)
-  assert.doesNotMatch(said, /почему тут ошибка/, 'вопрос в снимок версии не попадает')
+  assert.doesNotMatch(said, /почему тут ошибка/, 'the question does not get into the version snapshot')
   assert.ok(
     !Object.prototype.hasOwnProperty.call(restored[0], 'chat'),
-    'у исторической ячейки нет ленты',
+    'a historical cell has no feed',
   )
 })
 
-test('панель людей больше не обещает, что возврат версии вернёт вопросы', () => {
+test('the people panel no longer promises that restoring a version brings the questions back', () => {
   const source = fs.readFileSync(
     path.resolve(import.meta.dirname, '../web/src/components/panels/PeoplePanel.svelte'),
     'utf8',
   )
-  // Подпись под списком удалённых, без комментариев вокруг неё.
+  // The caption under the list of removed people, without the comments around it.
   const markup = source.slice(source.indexOf('</script>')).replace(/<!--[\s\S]*?-->/g, '')
-  assert.match(markup, /tr\('room\.ui\.667'\)/, 'про стёртые вопросы сказано')
+  assert.match(markup, /tr\('room\.ui\.667'\)/, 'the erased questions are mentioned')
   assert.match(translate('ru', 'room.ui.667'), /не восстанавливает удалённые вопросы и ответы оракула/)
   assert.doesNotMatch(
     translate('ru', 'room.ui.667'),
     /их возвращает восстановление/,
-    'и не сказано, что их вернёт восстановление версии',
+    'nor does it say that restoring a version brings them back',
   )
 })

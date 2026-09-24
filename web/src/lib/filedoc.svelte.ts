@@ -1,28 +1,28 @@
 /**
- * Открытый файл в браузере: документ Yjs, сокет к нему и счётчик вкладок.
+ * An open file in the browser: a Yjs document, a socket to it and a tab count.
  *
- * Каждый файл — свой документ и своё соединение, заведённые в тот момент, когда
- * его открыли, и закрытые, когда закрылась последняя вкладка на нём. Комната
- * этим не платит: семинар без открытых файлов держит ровно те два сокета,
- * которые держал всегда.
+ * Every file is its own document and its own connection, set up the moment it
+ * was opened and closed when the last tab on it closed. The room does not pay
+ * for this: a seminar with no open files holds exactly the two sockets it
+ * always held.
  *
- * **Локального кеша тут нет, и это важное отличие от тетради.** Тетрадь
- * складывается в IndexedDB, потому что её единственная копия — в комнате, и
- * набранное в оффлайне нельзя потерять. У файла копия есть всегда: он лежит на
- * диске семинара, и ядро с терминалом пишут в него мимо всякого браузера.
- * Кешированный вчерашний текст, слитый в сегодняшний файл при открытии вкладки,
- * — это не спасение работы, а её порча: он вернёт строки, которые скрипт
- * переписал, и сделает это молча.
+ * **There is no local cache here, and that is an important difference from
+ * the notebook.** The notebook is stored in IndexedDB because its only copy
+ * is in the room, and what was typed offline must not be lost. A file always
+ * has a copy: it lies on the seminar's disk, and the kernel and the terminal
+ * write to it bypassing any browser. Yesterday's cached text merged into
+ * today's file when a tab opens is not saving work but spoiling it: it brings
+ * back lines a script rewrote, and does so silently.
  *
- * Отсюда же и правило про отказ: сокет, закрытый с 4403, больше не
- * переподключается. Слияние CRDT — объединение, и ничто в протоколе не умеет
- * забрать у клиента текст, который сервер не принял; единственный честный ход —
- * перестать говорить и сказать об этом человеку.
+ * Hence the rule about refusal too: a socket closed with 4403 no longer
+ * reconnects. A CRDT merge is a union, and nothing in the protocol can take
+ * back from a client a text the server did not accept; the only honest move
+ * is to stop talking and tell the person so.
  *
- * Молчание при этом держится ПРИЧИНОЙ, а не навсегда: конец занятия проходит, и
- * вкладка, замолчавшая из-за него, оживает (`reopen`) — иначе студент сидит с
- * мёртвым файлом до перезагрузки страницы, а перезагрузку ему никто не
- * подсказывает.
+ * The silence is held by a REASON, though, not forever: the end of a class
+ * passes, and a tab that fell silent because of it comes back to life
+ * (`reopen`) — otherwise the student sits with a dead file until a page
+ * reload, and nobody suggests the reload to them.
  */
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
@@ -30,28 +30,28 @@ import type { Awareness } from 'y-protocols/awareness'
 import type { AwarenessUser } from '@shared/protocol'
 import { ownChanges, type AwarenessChanges } from './presence'
 
-/** Текст внутри документа файла. Он там один — как и в модуле на сервере. */
+/** The text inside the file document. There is only one — as in the server module. */
 const TEXT_KEY = 'text'
 
-/** Правку не приняли: правило комнаты или подделанный клиент. */
+/** The edit was not accepted: a room rule or a forged client. */
 const REFUSED = 4403
-/** Файла больше нет, или он не открывается как текст. */
+/** The file is gone, or it does not open as text. */
 const MISSING = 4404
 /**
- * Файл есть, но он слишком велик, чтобы его редактировать.
+ * The file exists, but it is too big to edit.
  *
- * Отдельно от 4404, потому что это разные ответы человеку: «файла нет» —
- * вкладку закрыть, «файл на сто мегабайт» — предложить скачать его или
- * прочитать из ячейки. Раньше и то и другое приходило кодом 4404, и вкладка на
- * живой файл молча закрывалась.
+ * Separate from 4404, because these are different answers to the person: "the
+ * file is gone" — close the tab, "the file is a hundred megabytes" — offer to
+ * download it or read it from a cell. Both used to arrive as code 4404, and a
+ * tab on a live file closed silently.
  */
 const TOO_BIG = 4413
 
 /**
- * Имя комнаты для одного файла: путь в base64url.
+ * The room name for one file: the path in base64url.
  *
- * `btoa` работает с байтами, а не с символами, — отсюда TextEncoder: без него
- * `данные/треть.csv` роняет кодирование целиком.
+ * `btoa` works with bytes, not characters — hence TextEncoder: without it
+ * `данные/треть.csv` breaks the encoding entirely.
  */
 function roomFor(path: string): string {
   const bytes = new TextEncoder().encode(path)
@@ -73,34 +73,35 @@ export class FileDoc {
   readonly awareness: Awareness
   readonly undoManager: Y.UndoManager
 
-  /** Сокет открыт. Печатать можно и без него — догонит. */
+  /** The socket is open. Typing works without it too — it will catch up. */
   connected = $state(false)
   /**
-   * Сервер прислал то, что у него есть.
+   * The server has sent what it has.
    *
-   * До этого пустой документ значит «ещё не прочитан», а не «файл пуст», — и
-   * разница между заготовкой и неправдой ровно здесь: редактор, показавший
-   * пустоту, приглашает в неё печатать.
+   * Before that an empty document means "not read yet", not "the file is
+   * empty" — and the difference between a placeholder and an untruth is right
+   * here: an editor showing emptiness invites typing into it.
    */
   ready = $state(false)
-  /** Правку не приняли — дальше документ только читают. */
+  /** The edit was not accepted — from now on the document is read-only. */
   refused = $state(false)
   /**
-   * Почему не приняли — словами сервера, или `null`.
+   * Why it was not accepted — in the server's words, or `null`.
    *
-   * У файлового сокета нет управляющего канала, по которому комната досылает
-   * фразу отказа, и единственное место, куда она помещается, — поле `reason`
-   * кадра закрытия (server/src/collab/files.ts · refuse). Причины там разные:
-   * правило комнаты, конец занятия, файл, переросший потолок, — и человеку,
-   * которому вкладка вдруг стала «только чтение», важна именно эта разница.
+   * The file socket has no control channel through which the room delivers
+   * the refusal phrase, and the only place it fits is the `reason` field of
+   * the close frame (server/src/collab/files.ts · refuse). The reasons vary: a
+   * room rule, the end of a class, a file that outgrew the ceiling — and for a
+   * person whose tab suddenly became "read-only", exactly that difference
+   * matters.
    *
-   * `null` — сервер закрыл молча (старый рядом с новой страницей): тогда
-   * говорит сама вкладка, своей фразой.
+   * `null` — the server closed silently (an old one next to a new page): then
+   * the tab speaks itself, with its own phrase.
    */
   refusedWhy = $state<string | null>(null)
-  /** Файла больше нет. Вкладку надо закрыть, а не показывать пустоту. */
+  /** The file is gone. The tab must be closed, not show emptiness. */
   missing = $state(false)
-  /** Файл слишком велик для редактора. Вкладка остаётся — с объяснением. */
+  /** The file is too big for the editor. The tab stays — with an explanation. */
   tooBig = $state(false)
 
   #tabs = 0
@@ -111,20 +112,22 @@ export class FileDoc {
     this.doc = new Y.Doc()
     this.text = this.doc.getText(TEXT_KEY)
     /*
-     * Путь уезжает в ИМЯ КОМНАТЫ, а не в параметры, и это не косметика.
+     * The path goes into the ROOM NAME, not the parameters, and this is not
+     * cosmetic.
      *
-     * Имя комнаты — это и адрес сокета (`/file/<сессия>/<имя>`, по нему сервер
-     * и находит файл), и ключ BroadcastChannel: `serverUrl + '/' + roomname`,
-     * параметры в него не входят. Оставь путь параметром — и два РАЗНЫХ файла
-     * одного семинара, открытых в двух вкладках браузера, попадали в один
-     * канал: правки `utils.py` применялись к документу `train.py` в соседней
-     * вкладке. Не отказ и не ошибка — просто чужой текст, приехавший в файл, и
-     * Yjs добросовестно сохранял его на диск. Канал теперь выключен вовсе (см.
-     * `disableBc` ниже), но адрес сокета остался, и путать файлы в нём нельзя
-     * ровно так же.
+     * The room name is both the socket address (`/file/<session>/<name>`, by
+     * which the server finds the file) and the BroadcastChannel key:
+     * `serverUrl + '/' + roomname`, parameters are not part of it. Leave the
+     * path as a parameter — and two DIFFERENT files of one seminar, open in two
+     * browser tabs, ended up in one channel: edits to `utils.py` were applied
+     * to the `train.py` document in the neighbouring tab. Not a refusal and not
+     * an error — just someone else's text arriving in the file, and Yjs
+     * diligently saved it to disk. The channel is now switched off entirely
+     * (see `disableBc` below), but the socket address remains, and files must
+     * not be mixed up in it just the same.
      *
-     * base64url, потому что имя комнаты едет в адресе сокета, а в пути бывают и
-     * косые черты, и кириллица.
+     * base64url, because the room name travels in the socket address, and a
+     * path can contain both slashes and Cyrillic.
      */
     this.provider = new WebsocketProvider(
       `${wsBase()}/file/${sessionId}`,
@@ -134,32 +137,31 @@ export class FileDoc {
         params: { token },
         connect: true,
         /*
-         * Без BroadcastChannel — тот же довод, что и у комнаты
-         * (lib/session.svelte.ts). Прямой канал между вкладками одного браузера
-         * — это второй путь, по которому в документ попадает то, что сервер не
-         * принимал: вкладка, замолчавшая после 4403, отдала бы отказанный текст
-         * соседке, и замолчала бы и та. Сходиться вкладкам есть через что —
-         * через сервер, как и любым двум браузерам.
+         * No BroadcastChannel — the same argument as for the room
+         * (lib/session.svelte.ts). A direct channel between tabs of one browser
+         * is a second path by which the document receives what the server did
+         * not accept: a tab silenced after 4403 would hand the refused text to
+         * its neighbour, and that one would fall silent too. Tabs have a way to
+         * converge — through the server, like any two browsers.
          */
         disableBc: true,
       },
     )
     this.awareness = this.provider.awareness
     /*
-     * И серверу — только своё присутствие, как в комнате.
+     * And only one's own presence goes to the server, as in the room.
      *
-     * `y-websocket` в своём обработчике отсылает ВСЕ изменившиеся clientID
-     * подряд: чужое состояние он применяет сам, awareness сообщает об
-     * изменении — и тот же обработчик отправляет его обратно в сокет, из
-     * которого оно приехало. Сервер это эхо отвергает (`ownAwareness` в
-     * collab/files.ts), но чтобы отвергнуть, разбирает: на общем `utils.py`,
-     * открытом у аудитории, это тот же измеренный шум, что и в комнате, только
-     * на втором проводе.
+     * `y-websocket` in its handler sends ALL changed clientIDs in a row: it
+     * applies someone else's state itself, awareness reports the change — and
+     * the same handler sends it back into the socket it came from. The server
+     * rejects this echo (`ownAwareness` in collab/files.ts), but to reject it,
+     * it has to parse it: on a shared `utils.py` open across the lecture hall
+     * that is the same measured noise as in the room, only on a second wire.
      */
     this.awareness.off('update', this.provider._awarenessUpdateHandler)
     this.awareness.on('update', this.#announceSelf)
     this.undoManager = new Y.UndoManager(this.text, {
-      // Отменяется только своё: чужую работу Ctrl+Z не забирает.
+      // Only one's own edits are undone: Ctrl+Z does not take away others' work.
       trackedOrigins: new Set([null, 'local']),
       captureTimeout: 400,
     })
@@ -170,10 +172,10 @@ export class FileDoc {
   }
 
   /**
-   * Кадр присутствия наружу — только про себя. Разбор в конструкторе.
+   * An outgoing presence frame — only about oneself. See the constructor.
    *
-   * Обёртка вокруг провайдерского обработчика, а не замена ему: всё, что
-   * дальше кодирования, остаётся протоколом `y-websocket`.
+   * A wrapper around the provider's handler, not a replacement for it:
+   * everything beyond encoding remains the `y-websocket` protocol.
    */
   #announceSelf = (changes: AwarenessChanges, origin: unknown) => {
     const own = ownChanges(changes, this.doc.clientID)
@@ -191,8 +193,8 @@ export class FileDoc {
   #onClose = (event: CloseEvent | null) => {
     if (event?.code === REFUSED) {
       this.refused = true
-      // Пустая строка — это «сервер не сказал», а не причина: пустой пузырь на
-      // экране хуже, чем своя фраза вкладки.
+      // An empty string means "the server did not say", not a reason: an empty
+      // bubble on screen is worse than the tab's own phrase.
       this.refusedWhy = event.reason || null
       this.#hangUp()
     } else if (event?.code === MISSING) {
@@ -205,10 +207,11 @@ export class FileDoc {
   }
 
   /**
-   * Перестать переподключаться.
+   * Stop reconnecting.
    *
-   * `shouldConnect` — то, на что смотрит сам провайдер, решая, вставать ли
-   * снова: без него `disconnect()` держится ровно до следующего его же таймера.
+   * `shouldConnect` is what the provider itself looks at when deciding whether
+   * to come back up: without it `disconnect()` holds only until its own next
+   * timer.
    */
   #hangUp(): void {
     this.provider.shouldConnect = false
@@ -216,17 +219,18 @@ export class FileDoc {
   }
 
   /**
-   * Причина ушла — снова говорить с сервером.
+   * The reason is gone — talk to the server again.
    *
-   * Тот же документ, а не пересобранный: пересборка означала бы новый `Y.Doc`
-   * под уже привязанным редактором, а текст, который сервер не принял, лежит
-   * здесь — и уедет к нему первым же кадром синхронизации, потому что теперь он
-   * разрешён. Если разрешён не он (замолчали не из-за занятия, а по правилу
-   * комнаты), сервер откажет снова, и вкладка вернётся ровно туда, откуда
-   * вышла, — уже с той причиной, которая действует сейчас.
+   * The same document, not a rebuilt one: a rebuild would mean a new `Y.Doc`
+   * under an editor already bound to this one, while the text the server did
+   * not accept lies here — and it will go to the server with the very first
+   * sync frame, because now it is allowed. If it is not allowed (the silence
+   * came not from the class but from a room rule), the server will refuse
+   * again, and the tab will return exactly to where it left from — now with
+   * the reason that applies at present.
    *
-   * `connect()` сам ставит `shouldConnect` обратно — то самое поле, которым
-   * держится молчание (см. `#hangUp`).
+   * `connect()` itself sets `shouldConnect` back — the very field that holds
+   * the silence (see `#hangUp`).
    */
   reopen(): void {
     if (this.#closed || !this.refused) return
@@ -235,12 +239,12 @@ export class FileDoc {
     this.provider.connect()
   }
 
-  /** Кем показывать курсор в этом файле. */
+  /** Who to show the cursor as in this file. */
   setUser(user: AwarenessUser): void {
     this.awareness.setLocalStateField('user', user)
   }
 
-  /** Столько вкладок на этом файле сейчас открыто. */
+  /** This many tabs are open on this file right now. */
   hold(): void {
     this.#tabs += 1
   }
@@ -261,9 +265,9 @@ export class FileDoc {
 }
 
 /*
- * Открытые документы этой вкладки браузера. Ключ — комната и путь: один
- * человек не бывает в двух комнатах разом, но вкладка при переходе между ними
- * не перезагружается, и файл `train.py` в двух семинарах — это два файла.
+ * The open documents of this browser tab. The key is the room and the path:
+ * one person is never in two rooms at once, but the tab does not reload when
+ * moving between them, and `train.py` in two seminars is two files.
  */
 const live = new Map<string, FileDoc>()
 
@@ -272,10 +276,11 @@ function keyOf(sessionId: string, path: string): string {
 }
 
 /**
- * Открыть файл — или взять уже открытый.
+ * Open a file — or take the one already open.
  *
- * Считает держателей: две вкладки на одном файле (тетрадь и редактор рядом,
- * если такое появится) не заводят два соединения и не рвут одно, закрываясь.
+ * Counts the holders: two tabs on one file (a notebook and an editor side by
+ * side, should that ever appear) do not set up two connections and do not
+ * tear down the one when closing.
  */
 export function holdFile(sessionId: string, path: string, token: string): FileDoc {
   const key = keyOf(sessionId, path)
@@ -290,7 +295,7 @@ export function holdFile(sessionId: string, path: string, token: string): FileDo
   return made
 }
 
-/** Отпустить. Последний закрывает соединение. */
+/** Release. The last one closes the connection. */
 export function releaseFile(sessionId: string, path: string): void {
   const key = keyOf(sessionId, path)
   const existing = live.get(key)
@@ -301,21 +306,21 @@ export function releaseFile(sessionId: string, path: string): void {
 }
 
 /**
- * Оживить файлы комнаты, замолчавшие после отказа.
+ * Bring back to life the room's files that fell silent after a refusal.
  *
- * Живёт здесь, у карты открытых документов, а не у экрана с вкладками: экран
- * знает только то, что открыто прямо сейчас, а замолчать успел и файл, вкладку
- * которого закрыли минуту назад, — он ещё жив в этой карте, если его держит
- * вторая. Зовёт это комната, когда сервер сказал, что занятие продолжили
- * (lib/session.svelte.ts, кадр `class`): повод приезжает сам, и опрашивать
- * что-либо по таймеру незачем.
+ * Lives here, by the map of open documents, not by the screen with the tabs:
+ * the screen knows only what is open right now, while a file whose tab was
+ * closed a minute ago could have fallen silent too — it is still alive in
+ * this map if a second tab holds it. The room calls this when the server says
+ * the class has been resumed (lib/session.svelte.ts, the `class` frame): the
+ * cue arrives by itself, and there is no need to poll anything on a timer.
  */
 export function reopenRefusedFiles(sessionId: string): void {
   const prefix = keyOf(sessionId, '')
   for (const [key, doc] of live) if (key.startsWith(prefix)) doc.reopen()
 }
 
-/** Закрыть всё: человек ушёл из комнаты. */
+/** Close everything: the person has left the room. */
 export function releaseAllFiles(): void {
   for (const doc of live.values()) doc.destroy()
   live.clear()

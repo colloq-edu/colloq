@@ -1,18 +1,18 @@
 /**
- * Кто публикует своё место в документе — и сколько это стоит комнате.
+ * Who publishes their place in the document — and what it costs the room.
  *
- * Присутствие — самый болтливый провод в продукте: сервер ретранслирует каждый
- * кадр всем соединениям без склейки. Пока место публиковали все, один шаг
- * преподавателя на лекции разворачивался в N кадров от N слушателей (у них
- * читалка прокручивается программно, вслед за ведущим) и N×N доставок: на
- * пятистах — четверть миллиона сообщений на шаг и миллионы на прокрученную
- * страницу.
+ * Presence is the chattiest wire in the product: the server relays every frame
+ * to all connections without coalescing. While everybody published their
+ * place, one step of the teacher at a lecture unfolded into N frames from N
+ * listeners (their reader scrolls programmatically, after the leader) and N×N
+ * deliveries: at five hundred, a quarter of a million messages per step and
+ * millions per scrolled page.
  *
- * Читает это место ровно одна функция — `leaderFor`, и берёт она только
- * преподавателя. Значит, правило одно, а сторон у него две: кого выбирают
- * ведущим и кто вообще публикует место. Здесь проверяется, что они не
- * разъехались, — потому что разъехаться они могут молча и в любую сторону:
- * ослабишь `leaderFor` — и за студентом станет некому пойти.
+ * Exactly one function reads this place — `leaderFor`, and it takes only the
+ * teacher. So the rule is one, but it has two sides: who is chosen as the
+ * leader and who publishes a place at all. This checks that they have not
+ * drifted apart — because they can drift silently and in either direction:
+ * loosen `leaderFor`, and following a student will have nothing to follow.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -40,62 +40,62 @@ function peer(role: 'host' | 'participant', id: number): Peer {
   }
 }
 
-test('за кем идут — тот и публикует: одно правило, две стороны', () => {
+test('whoever is followed is the one who publishes: one rule, two sides', () => {
   for (const role of ['host', 'participant'] as const) {
     const followed = leaderFor([peer(role, 7)], FILE, null) !== null
     assert.equal(
       followed,
       mayBeFollowed(role),
       role === 'host'
-        ? 'за преподавателем идти можно, а место он не публикует — комната видит доску и идти не за кем'
-        : 'место студента публикуется, но за ним никто не идёт — чистый расход кадра на всю комнату',
+        ? 'the teacher may be followed but does not publish a place: the room sees the board and has nobody to follow'
+        : 'a student publishes a place nobody follows: a frame wasted on the whole room',
     )
   }
 })
 
-/* --------------------------------------------------- сторона публикации */
+/* -------------------------------------------------- the publishing side */
 
 function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка и код без комментариев: объяснение — не обещание. */
+/** Markup and code without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
 const READER = code(read('web/src/components/reader/PdfReader.svelte'))
 
-test('читалка публикует место только через общее правило', () => {
+test('the reader publishes a place only through the shared rule', () => {
   assert.match(
     READER,
     /mayBeFollowed\(session\.me\.role\)/,
-    'читалка снова решает сама, кому публиковать место, — своей копией правила',
+    'the reader again decides on its own who publishes a place, with its own copy of the rule',
   )
   /*
-   * Каждая публикация места — под проверкой, и проверка видна в той же строке.
-   * Снять место (`setViewing(null)`) можно и без неё: это не кадр на комнату, а
-   * уборка за тем, кому больше нельзя.
+   * Every publication of a place is behind the check, and the check is visible
+   * on the same line. Clearing the place (`setViewing(null)`) is allowed without
+   * it: that is not a frame for the room but cleanup after someone who may no longer publish.
    */
   const lines = READER.split('\n').filter((line) => /session\.setViewing\(\s*\{/.test(line))
-  assert.ok(lines.length > 0, 'читалка вообще перестала сообщать место — за преподавателем не пойти')
+  assert.ok(lines.length > 0, 'the reader stopped reporting a place at all: the teacher cannot be followed')
   for (const line of lines) {
     assert.match(
       line,
       /\bleads\b/,
-      `безусловный setViewing в читалке: ${line.trim()} — кадр присутствия уходит ` +
-        'всей комнате на каждый шаг прокрутки у каждого слушателя',
+      `unconditional setViewing in the reader: ${line.trim()} — a presence frame goes ` +
+        'to the whole room on every scroll step of every listener',
     )
   }
 })
 
-test('прокрутка не публикует место у того, за кем идти нельзя', () => {
+test('scrolling does not publish the place of someone who may not be followed', () => {
   const at = READER.indexOf('function onScroll')
-  assert.ok(at > 0, 'onScroll в читалке не найден — тест смотрит не туда')
+  assert.ok(at > 0, 'onScroll not found in the reader: the test is looking in the wrong place')
   const body = READER.slice(at, at + 500)
   assert.match(
     body,
     /if \(leads\) session\.setViewing/,
-    'onScroll снова шлёт кадр присутствия без проверки, за кем комната может пойти',
+    'onScroll again sends a presence frame without checking whom the room may follow',
   )
 })

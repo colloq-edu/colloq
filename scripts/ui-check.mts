@@ -1,19 +1,21 @@
 /**
- * Проверка интерфейса настоящим браузером.
+ * A check of the interface in a real browser.
  *
- * Появилась после того, как в комнату уехала кнопка, которая ничего не делала:
- * приём сообщения на клиенте не был написан, типы сходились, тесты были
- * зелёными, а нажать её было нечем. Всё остальное в этом репозитории
- * проверяется без браузера — и ровно поэтому дырка была именно здесь.
+ * It appeared after a button went out into the room that did nothing: the
+ * message handler on the client had not been written, the types matched, the
+ * tests were green, and there was nothing to press it with. Everything else in
+ * this repository is checked without a browser — and that is exactly why the
+ * hole was right here.
  *
- * Ведёт Chrome по CDP напрямую, без Playwright: браузер на машине уже есть, а
- * ещё одна зависимость на полтораста мегабайт ради десяти нажатий не окупается.
+ * It drives Chrome over CDP directly, without Playwright: the machine already
+ * has the browser, and one more dependency of a hundred and fifty megabytes for
+ * ten clicks does not pay off.
  *
- *   npx tsx scripts/ui-check.mts            — поднять всё и проверить
- *   npx tsx scripts/ui-check.mts --headed   — то же, но с видимым окном
+ *   npx tsx scripts/ui-check.mts            — bring everything up and check
+ *   npx tsx scripts/ui-check.mts --headed   — the same, but with a visible window
  *
- * Инстанс поднимается свой, во временном каталоге: гонять это по работающему
- * семинару нельзя, а забыть про такое легко.
+ * It brings up an instance of its own, in a temporary directory: running this
+ * against a live seminar is not allowed, and that is easy to forget.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -24,8 +26,8 @@ import WS from 'ws'
 const HEADED = process.argv.includes('--headed')
 const SELECTION_ONLY = process.argv.includes('--cell-selection-only')
 const OUTBOX_ONLY = process.argv.includes('--oracle-outbox-only')
-// Порты переопределяются окружением — чтобы отлаживать сам стенд, пока
-// на штатных идёт полный прогон.
+// Ports can be overridden from the environment — to debug the stand itself
+// while a full run goes on the regular ones.
 const PORT = Number(process.env.UI_CHECK_PORT ?? 3891)
 const CDP_PORT = Number(process.env.UI_CHECK_CDP ?? 9334)
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -33,12 +35,13 @@ const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/M
 const root = mkdtempSync(path.join(tmpdir(), 'colloq-ui-'))
 const ROOM = 'uicheck1'
 
-/* ------------------------------------------------------- маленький PDF */
+/* ------------------------------------------------------- a small PDF */
 
 /**
- * Настоящий PDF на три страницы, собранный руками: без зависимостей.
- * Страницы 16:9 (960×540), как слайды лекции: раскладка пульта меряется
- * долей экрана под листом, и для A4-портрета эти пороги не имеют смысла.
+ * A real three-page PDF, put together by hand: no dependencies. The pages are
+ * 16:9 (960×540), like lecture slides: the console layout is measured by the
+ * share of the screen under the sheet, and for an A4 portrait those thresholds
+ * make no sense.
  */
 function samplePdf(pages = 3): string {
   const obj = (n: number, body: string) => `${n} 0 obj\n${body}\nendobj\n`
@@ -73,26 +76,26 @@ function samplePdf(pages = 3): string {
 mkdirSync(path.join(root, 'workspace', ROOM), { recursive: true })
 writeFileSync(path.join(root, 'workspace', ROOM, 'lecture.pdf'), samplePdf(), 'latin1')
 /*
- * Картинка — настоящая, чтобы браузер правда её разобрал.
+ * The image is real, so that the browser really decodes it.
  *
- * GIF на один пиксель: сорок три байта, ни одной зависимости и ни одной
- * контрольной суммы, которую пришлось бы считать руками. Проверяется по
- * `naturalWidth`: он больше нуля только у картинки, которая доехала и
- * разобралась, — сломанный `<img>` показывает `alt` и ноль.
+ * A one-pixel GIF: forty-three bytes, not a single dependency and not a single
+ * checksum that would have to be computed by hand. It is checked by
+ * `naturalWidth`: that is above zero only for an image that arrived and was
+ * decoded — a broken `<img>` shows `alt` and zero.
  */
 writeFileSync(
   path.join(root, 'workspace', ROOM, 'схема.gif'),
   Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'),
 )
 
-/* ---------------------------------------------------------------- сервер */
+/* ---------------------------------------------------------------- server */
 
 process.env.DATA_DIR = path.join(root, 'data')
 process.env.WORKSPACE_DIR = path.join(root, 'workspace')
 process.env.SESSION_SECRET = 'ui-check'
 process.env.PORT = String(PORT)
 process.env.PUBLIC_URL = `http://127.0.0.1:${PORT}`
-// Ядра у проверки нет и не должно быть: она про интерфейс.
+// The check has no kernel and must not have one: it is about the interface.
 process.env.JUPYTER_URL = 'http://127.0.0.1:1'
 process.env.NODE_ENV = 'test'
 process.env.KERNEL_BACKEND = 'test'
@@ -100,10 +103,10 @@ process.env.KERNEL_ISOLATION = 'off'
 if (SELECTION_ONLY || OUTBOX_ONLY) process.env.UI_LANGUAGE = 'en'
 process.env.STATIC_DIR = path.resolve('web/dist')
 /*
- * Оракул — «настроен», но никуда не ходит: ключ выдуманный, адрес заведомо
- * мёртвый. Проверка не задаёт ни одного вопроса; ключ нужен ровно затем, чтобы
- * панель нарисовала наборную строку, а не заглушку «модель не настроена», —
- * иначе половину панели никакая проверка не видит.
+ * The Oracle is "configured" but goes nowhere: the key is made up, the address
+ * is known to be dead. The check asks no questions; the key is needed exactly
+ * so that the panel draws the input line and not the "model is not configured"
+ * placeholder — otherwise no check sees half of the panel.
  */
 process.env.OPENAI_API_KEY = 'ui-check-not-a-real-key'
 process.env.OPENAI_BASE_URL = 'http://127.0.0.1:1/v1'
@@ -150,52 +153,55 @@ const teacher = createTeacher({ name: 'Ада', email: 'ada@ui.local', role: 'ow
 let cookieValue = ''
 issueStaffCookie({ cookie: (_n: string, v: string) => (cookieValue = v) } as never, teacher)
 
-/* ---------------------------------------------------------------- браузер */
+/* ---------------------------------------------------------------- browser */
 
 const cdp = `http://127.0.0.1:${CDP_PORT}`
 
 /*
- * Убирать за собой надо и на падении.
+ * Clean up after ourselves on a failure too.
  *
- * Скрипт бросает из десятков мест («кнопки нет», «поля вопроса нет»), а Chrome
- * запущен обычным spawn и выход node переживает — вместе со своим профилем во
- * временном каталоге. Следующий прогон открывал вкладки в этой сироте: токен
- * участника — HMAC над постоянными SESSION_SECRET и ROOM, поэтому сохранённый
- * localStorage проходил проверку и на свежем сервере. Вкладка входила молча,
- * экрана входа не видела, и половина проверок обвиняла продукт.
+ * The script throws from dozens of places ("no button", "no question field"),
+ * and Chrome is started with a plain spawn and outlives node's exit — together
+ * with its profile in the temporary directory. The next run opened tabs in that
+ * orphan: a participant token is an HMAC over the constant SESSION_SECRET and
+ * ROOM, so the saved localStorage passed the check on a fresh server too. The
+ * tab entered silently, never saw the login screen, and half the checks blamed
+ * the product.
  */
 let browser: ReturnType<typeof spawn> | null = null
 let cleaned = false
 const cleanUp = () => {
   if (cleaned) return
   cleaned = true
-  /* SIGKILL, а не SIGTERM: по «вежливому» сигналу Chrome прибирается сам и
-     дописывает профиль уже ПОСЛЕ нашего rm — от каталога оставалась папка
-     chrome/, и так их накопилось больше сотни. Профиль всё равно выбрасывается. */
+  /* SIGKILL, not SIGTERM: on the "polite" signal Chrome tidies up by itself
+     and writes the profile AFTER our rm — a chrome/ folder was left over from
+     the directory, and over a hundred of them piled up that way. The profile
+     is thrown away anyway. */
   browser?.kill('SIGKILL')
   spawnSync('rm', ['-rf', root])
 }
 process.on('exit', cleanUp)
-/* Без своего обработчика Ctrl-C не доходит до 'exit' вовсе. */
+/* Without its own handler Ctrl-C never reaches 'exit' at all. */
 process.on('SIGINT', () => process.exit(130))
 process.on('SIGTERM', () => process.exit(143))
 
 /*
- * И если сирота всё-таки осталась (убили прогон -9, чужой Chrome на том же
- * порту) — сказать об этом, а не подключиться. Цикл ожидания ниже достучится
- * до кого угодно, кто отвечает на этом порту, и разницы не заметит.
+ * And if an orphan is left after all (the run was killed with -9, someone
+ * else's Chrome on the same port) — say so rather than connect. The waiting
+ * loop below reaches anyone who answers on that port and would not notice the
+ * difference.
  */
 try {
   const busy = await fetch(`${cdp}/json/version`, { signal: AbortSignal.timeout(600) })
   if (busy.ok) {
     console.error(
-      `На порту отладки ${CDP_PORT} уже кто-то отвечает — скорее всего Chrome от прошлого прогона.\n` +
-        'Закройте его или задайте другой порт: UI_CHECK_CDP=9335 npx tsx scripts/ui-check.mts',
+      `Something already answers on debugging port ${CDP_PORT} — most likely Chrome from the previous run.\n` +
+        'Close it or pick another port: UI_CHECK_CDP=9335 npx tsx scripts/ui-check.mts',
     )
     process.exit(1)
   }
 } catch {
-  /* порт свободен — так и надо */
+  /* the port is free — as it should be */
 }
 
 browser = spawn(
@@ -212,8 +218,9 @@ browser = spawn(
 )
 
 /*
- * Ждём, пока браузер откроет порт отладки. Одной попытки мало и «подождать
- * секунду» тоже: холодный запуск Chrome на занятой машине занимает несколько.
+ * Wait until the browser opens the debugging port. One attempt is not enough,
+ * and neither is "wait a second": a cold Chrome start on a busy machine takes
+ * several.
  */
 let up = false
 for (let i = 0; i < 80; i += 1) {
@@ -224,14 +231,14 @@ for (let i = 0; i < 80; i += 1) {
       break
     }
   } catch {
-    /* ещё не поднялся */
+    /* not up yet */
   }
   await new Promise((r) => setTimeout(r, 250))
 }
 if (!up) {
   console.error(
-    `Chrome не открыл порт отладки. Он вообще есть по пути?\n  ${CHROME}\n` +
-      'Другой путь задаётся переменной CHROME.',
+    `Chrome did not open the debugging port. Is it at this path at all?\n  ${CHROME}\n` +
+      'Another path is set with the CHROME variable.',
   )
   process.exit(1)
 }
@@ -239,7 +246,7 @@ if (!up) {
 interface Tab {
   js: (expr: string) => Promise<unknown>
   send: (method: string, params?: Record<string, unknown>) => Promise<any>
-  /** Что страница успела сломать: исключения и ошибки консоли. */
+  /** What the page has managed to break: exceptions and console errors. */
   trouble: string[]
 }
 
@@ -265,9 +272,9 @@ async function tab(url: string): Promise<Tab> {
       ws.send(JSON.stringify({ id, method, params }))
     })
   /*
-   * Исключения и жалобы консоли собираются с самого начала: проверка, молчащая
-   * о том, что на странице что-то упало, отправляет искать причину в код,
-   * который ни при чём.
+   * Exceptions and console complaints are collected from the very start: a check
+   * that keeps quiet about something having crashed on the page sends people
+   * looking for the cause in code that has nothing to do with it.
    */
   const trouble: string[] = []
   ws.on('message', (raw: Buffer) => {
@@ -275,7 +282,7 @@ async function tab(url: string): Promise<Tab> {
     if (m.method === 'Runtime.exceptionThrown') {
       const d = m.params.exceptionDetails
       trouble.push(
-        'искл: ' +
+        'exception: ' +
           (d?.exception?.description ??
             [d?.text, d?.exception?.value, d?.exception?.className].filter(Boolean).join(' ') ??
             '?'),
@@ -283,7 +290,7 @@ async function tab(url: string): Promise<Tab> {
     }
     if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
       trouble.push(
-        'консоль: ' + m.params.args.map((a: any) => a.value ?? a.description ?? a.type).join(' '),
+        'console: ' + m.params.args.map((a: any) => a.value ?? a.description ?? a.type).join(' '),
       )
     }
   })
@@ -305,7 +312,7 @@ async function tab(url: string): Promise<Tab> {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-/** Пройти экран входа под этим именем. */
+/** Get through the login screen under this name. */
 async function enter(page: Tab, name: string): Promise<void> {
   await wait(3500)
   if (!(await page.js("return !!document.querySelector('input#join-name')"))) return
@@ -321,7 +328,7 @@ async function enter(page: Tab, name: string): Promise<void> {
   await wait(3500)
 }
 
-/* ---------------------------------------------------------------- проверки */
+/* ---------------------------------------------------------------- checks */
 
 const results: { ok: boolean; what: string; got: string }[] = []
 const check = (ok: boolean, what: string, got: unknown) =>
@@ -365,27 +372,30 @@ if (OUTBOX_ONLY) {
 const student = await tab(`http://127.0.0.1:${PORT}/s/${ROOM}`)
 await student.send('Network.clearBrowserCookies')
 /*
- * И localStorage — иначе второй вкладкой в комнату входит ТОТ ЖЕ человек.
+ * And localStorage too — otherwise THE SAME person enters the room in the
+ * second tab.
  *
- * Личность участника лежит в localStorage, а он общий на весь профиль браузера:
- * вкладка молча входила по сохранённому имени, экрана входа не видела, и обе
- * вкладки оказывались одним участником с двумя курсорами. Половина проверок про
- * «двое в комнате» при этом проходила — присутствие различает вкладки, а не
- * людей, — и ровно поэтому подмена не была заметна.
+ * A participant's identity lives in localStorage, which is shared by the whole
+ * browser profile: the tab silently entered under the saved name, never saw
+ * the login screen, and both tabs turned out to be one participant with two
+ * cursors. Half the checks about "two people in the room" still passed —
+ * presence tells tabs apart, not people — and that is exactly why the
+ * substitution went unnoticed.
  */
 await student.js('localStorage.clear(); return 1')
 await student.send('Page.reload')
 await enter(student, 'Нина')
 
 /*
- * Кука преподавателя ставится заново.
+ * The teacher's cookie is set again.
  *
- * `Network.clearBrowserCookies` выше чистит ВЕСЬ браузер, а не одну вкладку, —
- * то есть заодно выкидывает преподавателя из панели. Заметно это не сразу:
- * сокеты, открытые до чистки, живут с прежними правами, а вот следующий
- * HTTP-запрос приходит уже без куки, и сервер честно отвечает «это может
- * преподаватель». В настоящей комнате такого не бывает — там у каждого свой
- * браузер, — так что чинится это здесь, а не в продукте.
+ * `Network.clearBrowserCookies` above clears the WHOLE browser, not one tab —
+ * that is, it also throws the teacher out of the panel. This is not noticeable
+ * at once: sockets opened before the clearing live on with the old rights, but
+ * the next HTTP request already arrives without the cookie, and the server
+ * honestly answers "only the teacher can do this". In a real room this does
+ * not happen — everyone has their own browser there — so it is fixed here, not
+ * in the product.
  */
 await host.send('Network.setCookie', {
   name: STAFF_COOKIE,
@@ -396,14 +406,15 @@ await host.send('Network.setCookie', {
 
 check(
   (await host.js('return !document.querySelector("input#join-name")')) === true,
-  'преподаватель вошёл в комнату',
-  'да',
+  'the teacher entered the room',
+  'yes',
 )
 
 
 /*
- * Кнопки действий лежат absolute и в раскладке не участвуют: полоса,
- * рассчитанная на две, третью выкладывает поверх имени файла. Меряем зазор.
+ * The action buttons are absolutely positioned and take no part in the layout:
+ * a lane sized for two lays the third one over the file name. We measure the
+ * gap.
  */
 const gap = (await host.js(`
   const row=[...document.querySelectorAll('button')].find(b=>(b.title||'').includes('lecture.pdf'));
@@ -412,25 +423,25 @@ const gap = (await host.js(`
   if(!lane) return null;
   return Math.round(lane.getBoundingClientRect().left - row.getBoundingClientRect().right);
 `)) as number | null
-check(gap !== null && gap >= 0, 'кнопки не наезжают на имя файла', `зазор ${gap}px`)
+check(gap !== null && gap >= 0, 'the buttons do not run over the file name', `gap ${gap}px`)
 
 const before = await student.js('return document.querySelectorAll("canvas").length')
-check(before === 0, 'до нажатия у студента документа нет', `канвасов ${before}`)
+check(before === 0, 'before the click the student has no document', `canvases ${before}`)
 
-/* Нажатие по имени файла в дереве открывает его: у преподавателя PDF уезжает
-   на общий экран комнаты, у остальных — открывается себе. */
+/* A click on the file name in the tree opens it: for the teacher the PDF goes
+   to the room's shared screen, for everyone else it opens just for them. */
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').includes('lecture.pdf'));` +
-    `if(!b) throw new Error('строки lecture.pdf в дереве нет'); b.click(); return 1`,
+    `if(!b) throw new Error('no lecture.pdf row in the tree'); b.click(); return 1`,
 )
 
 /**
- * Ждать условия, а не секунд.
+ * Wait for a condition, not for seconds.
  *
- * Первая версия спала фиксированно и обвиняла продукт в том, что у студента
- * нет страниц: библиотека, воркер и сам файл на холодной вкладке приезжают
- * дольше, чем на прогретой. Проверка, зависящая от того, чья вкладка успела,
- * — это не проверка.
+ * The first version slept for a fixed time and blamed the product for the
+ * student having no pages: the library, the worker and the file itself take
+ * longer to arrive in a cold tab than in a warm one. A check that depends on
+ * whose tab was faster is not a check.
  */
 async function until(page: Tab, expr: string, what: string, ms = 20000): Promise<boolean> {
   const deadline = Date.now() + ms
@@ -438,51 +449,52 @@ async function until(page: Tab, expr: string, what: string, ms = 20000): Promise
     if ((await page.js(`return ${expr}`)) === true) return true
     await wait(250)
   }
-  console.log(`  (не дождались: ${what})`)
+  console.log(`  (gave up waiting: ${what})`)
   return false
 }
 
-await until(host, 'document.querySelectorAll("canvas").length === 3', 'страницы у преподавателя')
-await until(student, 'document.querySelectorAll("canvas").length === 3', 'страницы у студента')
+await until(host, 'document.querySelectorAll("canvas").length === 3', 'pages for the teacher')
+await until(student, 'document.querySelectorAll("canvas").length === 3', 'pages for the student')
 
 check(
   (await host.js('return document.querySelectorAll("canvas").length')) === 3,
-  'у преподавателя открылись все страницы',
+  'all pages opened for the teacher',
   await host.js('return document.querySelectorAll("canvas").length'),
 )
 check(
   (await student.js('return document.querySelectorAll("canvas").length')) === 3,
-  'документ сам появился у студента',
+  'the document appeared for the student by itself',
   await student.js('return document.querySelectorAll("canvas").length'),
 )
 check(
   (await student.js('return /Идём за/.test(document.body.innerText)')) === true,
-  'студент идёт за преподавателем',
-  await student.js("return /Идём за[^\\n]*/.exec(document.body.innerText)?.[0] ?? 'строки нет'"),
+  'the student follows the teacher',
+  await student.js("return /Идём за[^\\n]*/.exec(document.body.innerText)?.[0] ?? 'no such line'"),
 )
 
-/* ------------------------------------------------------------------ итог */
+/* ------------------------------------------------------------------ summary */
 
-/* ------------------------------------------------- два режима одного центра */
+/* ------------------------------------------------- two modes of one centre */
 
 check(
   (await host.js('return !!document.querySelector("main.hidden")')) === true,
-  'документ занял центр, а не колонку рядом',
-  'тетрадь скрыта',
+  'the document took the centre, not a column next to it',
+  'notebook hidden',
 )
 
 await host.js(
-  'const t=[...document.querySelectorAll("button")].find(b=>/Тетрадь/.test(b.textContent||"")); if(!t) throw new Error("вкладки «Тетрадь» нет: " + [...document.querySelectorAll("button")].map(b=>JSON.stringify((b.textContent||"").trim().slice(0,20))).join(",")); t.click(); return 1',
+  'const t=[...document.querySelectorAll("button")].find(b=>/Тетрадь/.test(b.textContent||"")); if(!t) throw new Error("the Тетрадь tab is missing: " + [...document.querySelectorAll("button")].map(b=>JSON.stringify((b.textContent||"").trim().slice(0,20))).join(",")); t.click(); return 1',
 )
 await wait(600)
 check(
   (await host.js('return !document.querySelector("main.hidden")')) === true,
-  'вкладка возвращает в тетрадь',
-  'тетрадь видна',
+  'the tab returns to the notebook',
+  'notebook visible',
 )
 /*
- * Метку «где преподаватель» проверяем у СТУДЕНТА: сам преподаватель за собой не
- * идёт, и у него её быть не должно. Спросить об этом его же — проверить не то.
+ * The "where the teacher is" mark is checked for the STUDENT: the teacher does
+ * not follow themselves and must not have it. Asking the teacher about it would
+ * check the wrong thing.
  */
 await student.js(
   'const t=[...document.querySelectorAll("button")].find(b=>/Тетрадь/.test(b.textContent||"")); t&&t.click(); return 1',
@@ -490,20 +502,20 @@ await student.js(
 await wait(600)
 check(
   (await student.js('return /на стр\\. \\d+/.test(document.body.innerText)')) === true,
-  'из тетради студент видит, где преподаватель',
+  'from the notebook the student sees where the teacher is',
   await student.js(
-    'return /[^\\n]*на стр\\. \\d+/.exec(document.body.innerText)?.[0]?.trim() ?? "нет"',
+    'return /[^\\n]*на стр\\. \\d+/.exec(document.body.innerText)?.[0]?.trim() ?? "none"',
   ),
 )
 check(
   (await host.js('return /на стр\\. \\d+/.test(document.body.innerText)')) === false,
-  'преподаватель не идёт за самим собой',
-  'метки нет',
+  'the teacher does not follow themselves',
+  'no mark',
 )
 
 /*
- * «Преподаватель вышел» — только тому, кто за кем-то шёл и потерял. У самого
- * преподавателя ведущего нет никогда: за собой не идут.
+ * "The teacher left" is only for someone who was following somebody and lost
+ * them. The teacher never has anyone to follow: nobody follows themselves.
  */
 await host.js(
   'const t=[...document.querySelectorAll("button")].find(b=>/lecture\\.pdf/.test(b.textContent||"")); t&&t.click(); return 1',
@@ -511,345 +523,349 @@ await host.js(
 await wait(500)
 check(
   (await host.js('return /вышел/.test(document.body.innerText)')) === false,
-  'преподавателю не пишут, что он вышел',
+  'the teacher is not told that they left',
   await host.js(
-    'return /[^\\n]*вышел[^\\n]*/.exec(document.body.innerText)?.[0]?.trim() ?? "не пишут"',
+    'return /[^\\n]*вышел[^\\n]*/.exec(document.body.innerText)?.[0]?.trim() ?? "not told"',
   ),
 )
 
-/* Документ должно быть чем закрыть — и у комнаты, а не только у себя. */
+/* There has to be a way to close the document — for the room, not only for oneself. */
 check(
   (await host.js('return !!document.querySelector(\'[aria-label="Закрыть lecture.pdf"]\')')) ===
     true,
-  'документ есть чем закрыть',
-  'кнопка на вкладке',
+  'the document can be closed',
+  'a button on the tab',
 )
 await host.js('document.querySelector(\'[aria-label="Закрыть lecture.pdf"]\').click(); return 1')
 await until(
   host,
   'document.querySelectorAll("canvas").length === 0',
-  'документ закрылся у преподавателя',
+  'the document closed for the teacher',
 )
 await until(
   student,
   'document.querySelectorAll("canvas").length === 0',
-  'документ закрылся у студента',
+  'the document closed for the student',
 )
 check(
   (await host.js('return document.querySelectorAll("canvas").length')) === 0,
-  'закрытие убирает документ у преподавателя',
+  'closing removes the document for the teacher',
   await host.js('return document.querySelectorAll("canvas").length'),
 )
 check(
   (await student.js('return document.querySelectorAll("canvas").length')) === 0,
-  'и у всей комнаты',
+  'and for the whole room',
   await student.js('return document.querySelectorAll("canvas").length'),
 )
 check(
   (await student.js(
     'return /lecture\\.pdf/.test(document.querySelector("main")?.parentElement?.textContent ?? "")',
   )) === false,
-  'вкладка документа исчезла вместе с ним',
-  'вкладки нет',
+  'the document tab disappeared along with it',
+  'no tab',
 )
 
-/* ------------------------------------------------- редактор и дерево */
+/* ------------------------------------------------- editor and tree */
 
 /**
- * Новый файл, набранный в дереве, доезжает до второго браузера — и обратно.
+ * A new file typed in the tree reaches the second browser — and back.
  *
- * Это и есть то, ради чего файлы стали документами Yjs: два человека в одном
- * скрипте. Проверка идёт через настоящий CodeMirror, а не через запись в Y.Text
- * напрямую: сломаться может ровно то место, где редактор привязывается к
- * общему тексту, и подмена его руками проверила бы всё, кроме него.
+ * That is exactly why files became Yjs documents: two people in one script.
+ * The check goes through a real CodeMirror, not through writing into Y.Text
+ * directly: what can break is exactly the place where the editor binds to the
+ * shared text, and replacing it by hand would check everything except that.
  */
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>x.getAttribute('aria-label')==='Новый файл');` +
-    `if(!b) throw new Error('кнопки «новый файл» нет'); b.click(); return 1`,
+    `if(!b) throw new Error('no "new file" button'); b.click(); return 1`,
 )
 await wait(400)
 await host.js(
   `const i=document.querySelector('input.font-mono');` +
-    `if(!i) throw new Error('поля для имени нет; в панели: ' + (document.querySelector('section[aria-label]')?.innerText||'').slice(0,200));` +
+    `if(!i) throw new Error('no name field; in the panel: ' + (document.querySelector('section[aria-label]')?.innerText||'').slice(0,200));` +
     `const set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;` +
     `set.call(i,'train.py'); i.dispatchEvent(new Event('input',{bubbles:true}));` +
     `i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); return 1`,
 )
 /*
- * Ищем по `title`, а не по тексту строки. Имя в дереве разложено на две части —
- * основу и расширение, — чтобы расширение не съедалось многоточием, и между
- * ними в разметке стоит перенос строки. И `textContent`, и `innerText` отдают
- * его как пробел, так что `train.py` там выглядит как `train .py` и на
- * подстроку не ловится. `title` — это полный путь, тот самый, по которому файл
- * и открывают.
+ * We search by `title`, not by the row text. The name in the tree is split into
+ * two parts — the stem and the extension — so that the extension is not eaten
+ * by an ellipsis, and there is a line break between them in the markup. Both
+ * `textContent` and `innerText` give it as a space, so `train.py` looks like
+ * `train .py` there and is not caught as a substring. `title` is the full path,
+ * the very one the file is opened by.
  */
 const inTree = `[...document.querySelectorAll('button')].some(b=>(b.title||'').startsWith('train.py'))`
-await until(host, inTree, 'файл появился в дереве')
-check((await host.js(`return ${inTree}`)) === true, 'новый файл появился в дереве', 'train.py')
-await until(student, inTree, 'файл доехал до студента')
+await until(host, inTree, 'the file appeared in the tree')
+check((await host.js(`return ${inTree}`)) === true, 'the new file appeared in the tree', 'train.py')
+await until(student, inTree, 'the file reached the student')
 check(
   (await student.js(`return ${inTree}`)) === true,
-  'и у всей комнаты, а не только у автора',
+  'and for the whole room, not only for the author',
   'train.py',
 )
 
-await until(host, `!!document.querySelector('.cm-file .cm-content')`, 'редактор открылся')
+await until(host, `!!document.querySelector('.cm-file .cm-content')`, 'the editor opened')
 check(
   (await host.js(`return !!document.querySelector('.cm-file .cm-content')`)) === true,
-  'новый файл сразу открылся в редакторе',
-  'CodeMirror на месте',
+  'the new file opened in the editor right away',
+  'CodeMirror in place',
 )
 check(
   (await host.js(
     `return [...document.querySelectorAll('button')].some(b=>/запустить/i.test(b.textContent||''))`,
   )) === true,
-  'у скрипта есть чем его запустить',
-  'кнопка «Запустить»',
+  'the script has something to run it with',
+  'the Run button',
 )
 
 /*
- * Печатаем в редакторе преподавателя — как человек, а не в обход.
+ * We type in the teacher's editor — as a person would, not around it.
  *
- * `Input.insertText` доставляет текст в фокус тем же путём, что и клавиатура,
- * так что проверяются и обработчики CodeMirror, и привязка к общему тексту.
- * Дотянуться до `EditorView` из страницы нечем: наружу он не выставлен, и это
- * правильно — тест, который лезет во внутренности, проверяет их, а не продукт.
+ * `Input.insertText` delivers text to the focus the same way the keyboard
+ * does, so both the CodeMirror handlers and the binding to the shared text are
+ * checked. There is no way to reach `EditorView` from the page: it is not
+ * exposed, and rightly so — a test that pokes into the internals checks them,
+ * not the product.
  */
 await host.js(`document.querySelector('.cm-file .cm-content').focus(); return 1`)
 await host.send('Input.insertText', { text: "print('привет из общего файла')" })
 await wait(600)
-// Ждём строку, а не надеемся на неё: список файлов приезжает сообщением, и
-// нажать по нему на кадр раньше — это гонка, а не проверка.
+// We wait for the row rather than hope for it: the file list arrives as a
+// message, and clicking it a frame too early is a race, not a check.
 await until(
   student,
   `[...document.querySelectorAll('button')].some(x=>(x.title||'').includes('train.py'))`,
-  'строка train.py доехала до студента',
+  'the train.py row reached the student',
 )
 await student.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').includes('train.py'));` +
-    `if(!b) throw new Error('строки train.py у студента нет'); b.click(); return 1`,
+    `if(!b) throw new Error('the student has no train.py row'); b.click(); return 1`,
 )
 await until(
   student,
   `(document.querySelector('.cm-file .cm-content')?.textContent||'').includes('привет из общего файла')`,
-  'текст доехал до студента',
+  'the text reached the student',
 )
 check(
   (await student.js(
     `return (document.querySelector('.cm-file .cm-content')?.textContent||'').includes('привет из общего файла')`,
   )) === true,
-  'набранное в файле видно второму человеку',
+  'what was typed in the file is visible to the second person',
   await student.js(
     `return (document.querySelector('.cm-file .cm-content')?.textContent||'').slice(0,40)`,
   ),
 )
 
-/* Панель файлов говорит, кто ещё в этом файле. */
+/* The file panel says who else is in this file. */
 const seesNina = `(document.body.textContent||'').includes('Нина')`
-await until(host, seesNina, 'преподаватель видит студента в файле')
+await until(host, seesNina, 'the teacher sees the student in the file')
 check(
   (await host.js(`return ${seesNina}`)) === true,
-  'видно, кто ещё правит этот файл',
-  'Нина здесь',
+  'it shows who else is editing this file',
+  'Нина is here',
 )
 
-/* Вкладка закрывается у себя и не трогает никого больше. */
+/* A tab closes for oneself and touches nobody else. */
 await student.js(`document.querySelector('[aria-label="Закрыть train.py"]').click(); return 1`)
 await wait(500)
 check(
   (await student.js(`return !document.querySelector('.cm-file .cm-content')`)) === true,
-  'вкладка файла закрывается',
-  'редактора нет',
+  'the file tab closes',
+  'no editor',
 )
 check(
   (await host.js(`return !!document.querySelector('.cm-file .cm-content')`)) === true,
-  'закрытая у себя вкладка не закрылась у соседа',
-  'у преподавателя открыт',
+  'a tab closed for oneself did not close for the neighbour',
+  'open for the teacher',
 )
 
-/* ---------------------------------------------- тетрадь — это файл */
+/* ---------------------------------------------- a notebook is a file */
 
 /**
- * Тетрадь комнаты лежит в её папке файлом и открывается вкладкой, как всё
- * остальное. Это и есть то, ради чего она перестала быть особой: файл видно в
- * дереве, его можно скачать, прочитать из ячейки и открыть рядом со второй.
+ * The room's notebook lies in its folder as a file and opens as a tab, like
+ * everything else. That is exactly why it stopped being special: the file is
+ * visible in the tree, it can be downloaded, read from a cell and opened next
+ * to a second one.
  */
 check(
   (await host.js(
     `return [...document.querySelectorAll('button')].some(b=>(b.title||'').startsWith('Тетрадь.ipynb'))`,
   )) === true,
-  'тетрадь комнаты лежит в дереве файлом',
+  'the room notebook lies in the tree as a file',
   'Тетрадь.ipynb',
 )
 
-/* Вторая тетрадь заводится и открывается рядом с первой. */
+/* A second notebook is created and opens next to the first one. */
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>x.getAttribute('aria-label')==='Новая тетрадь');` +
-    `if(!b) throw new Error('кнопки «новая тетрадь» нет'); b.click(); return 1`,
+    `if(!b) throw new Error('no "new notebook" button'); b.click(); return 1`,
 )
 await wait(400)
 await host.js(
   `const i=document.querySelector('input.font-mono');` +
-    `if(!i) throw new Error('поля для имени нет');` +
+    `if(!i) throw new Error('no name field');` +
     `const set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;` +
     `set.call(i,'разбор.ipynb'); i.dispatchEvent(new Event('input',{bubbles:true}));` +
     `i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); return 1`,
 )
 const twoBooks = `[...document.querySelectorAll('main')].length >= 2`
-await until(host, twoBooks, 'вторая тетрадь открылась')
+await until(host, twoBooks, 'the second notebook opened')
 check(
   (await host.js(`return ${twoBooks}`)) === true,
-  'вторая тетрадь открывается рядом с первой',
-  await host.js(`return document.querySelectorAll('main').length + ' тетрадей'`),
+  'the second notebook opens next to the first',
+  await host.js(`return document.querySelectorAll('main').length + ' notebooks'`),
 )
 check(
   (await host.js(`return document.querySelectorAll('main:not(.hidden)').length`)) === 1,
-  'показана ровно одна из них',
-  'одна',
+  'exactly one of them is shown',
+  'one',
 )
-/* И у неё свой тулбар: «Run all» относится к той тетради, в которой нажали. */
+/* And it has its own toolbar: "Run all" applies to the notebook where it was pressed. */
 check(
   (await host.js(
     `return (document.querySelector('main:not(.hidden)')?.textContent||'').includes('Run all')`,
   )) === true,
-  'у второй тетради свой тулбар',
-  'Run all на месте',
+  'the second notebook has its own toolbar',
+  'Run all in place',
 )
 
 /*
- * Под открытой тетрадью не должно быть ничего лишнего.
+ * There must be nothing extra under an open notebook.
  *
- * Ветка «этот файл — не текст» добиралась до тетради последней и была формально
- * права: .ipynb действительно не открывают редактором. Печаталась она ПОД
- * тетрадью, то есть под работающим листом с ячейками.
+ * The "this file is not text" branch reached the notebook last and was
+ * formally right: .ipynb is indeed not opened in the editor. It was printed
+ * UNDER the notebook, that is, under a working sheet of cells.
  */
 check(
   (await host.js(
     `return (document.querySelector('main:not(.hidden)')?.parentElement?.textContent||'').includes('не текст')`,
   )) === false,
-  'под тетрадью не пишут, что она не текст',
-  'чисто',
+  'nothing under the notebook says it is not text',
+  'clean',
 )
 
-/* ------------------------------------------- выделение нескольких ячеек */
+/* ------------------------------------------- selecting several cells */
 
 /**
- * Выделение — то, чем человек говорит оракулу «смотри сюда».
+ * Selection is how a person tells the Oracle "look here".
  *
- * Всё, что здесь проверяется, до сих пор было невозможно: выделить вторую
- * ячейку, снять выделение вообще. Считаем по aria-label, а не по цвету: цвет
- * читается глазами, метка — и глазами, и экранным диктором.
+ * Everything checked here used to be impossible: selecting a second cell,
+ * clearing the selection at all. We count by aria-label, not by colour: colour
+ * is read by eyes, a label by eyes and by a screen reader.
  */
 const selectedCount = `document.querySelectorAll('[aria-label$="selected"]').length`
 
 /**
- * Нажатие в ячейку — это нажатие туда, где ячейку нажимают, и стенд обязан
- * целиться туда же.
+ * A press on a cell is a press where cells are pressed, and the stand has to
+ * aim at the same place.
  *
- * Выделение слушает `[data-cell-pick]` — колонку тела (код, вывод, тулбар над
- * ними) и сам НОМЕР, — а просветы вокруг и пустое поле под номером нарочно
- * нейтральны: щелчок туда выделение снимает (см. комментарий у этого блока в
- * CellView.svelte). События всплывают вверх, а не вниз, поэтому `pointerdown`,
- * посланный в корень `[data-cell-id]`, до обработчика не доходил вовсе: стенд
- * не выделял ничего и обвинял в этом продукт.
+ * Selection listens to `[data-cell-pick]` — the body column (code, output, the
+ * toolbar above them) and the NUMBER itself — while the gaps around and the
+ * empty field under the number are neutral on purpose: a click there clears
+ * the selection (see the comment at this block in CellView.svelte). Events
+ * bubble up, not down, so a `pointerdown` sent to the `[data-cell-id]` root
+ * never reached the handler at all: the stand selected nothing and blamed the
+ * product for it.
  *
- * Целится он в ТЕЛО: признак теперь на двух узлах, и `querySelector` без
- * уточнения взял бы тот, что раньше в разметке. Номер проверяется отдельно.
+ * It aims at the BODY: the marker is now on two nodes, and `querySelector`
+ * without narrowing would take the one earlier in the markup. The number is
+ * checked separately.
  */
 const pressCell = (n: number, extra = ''): string =>
   `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
-  `if(cells.length < ${n + 1}) throw new Error('в тетради меньше ${n + 1} ячеек');` +
+  `if(cells.length < ${n + 1}) throw new Error('the notebook has fewer than ${n + 1} cells');` +
   `const body=cells[${n}].querySelector('[data-cell-pick]:not(span)');` +
-  `if(!body) throw new Error('у ячейки ${n + 1} нет тела — нажимать нечего');` +
+  `if(!body) throw new Error('cell ${n + 1} has no body — nothing to press');` +
   `body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true${extra}})); return 1`
 
 await host.js(pressCell(0))
 await wait(300)
 check(
   (await host.js(`return ${selectedCount}`)) === 1,
-  'нажатие выделяет одну ячейку',
+  'a press selects one cell',
   await host.js(`return ${selectedCount}`),
 )
 
-/* Cmd (Ctrl) добавляет вторую, не снимая первую. */
+/* Cmd (Ctrl) adds a second one without clearing the first. */
 await host.js(pressCell(1, ',metaKey:true'))
 await wait(300)
 check(
   (await host.js(`return ${selectedCount}`)) === 2,
-  'Cmd добавляет вторую ячейку к выделению',
+  'Cmd adds a second cell to the selection',
   await host.js(`return ${selectedCount}`),
 )
 
-/* Тем же Cmd она снимается обратно. */
+/* The same Cmd takes it back off. */
 await host.js(pressCell(1, ',metaKey:true'))
 await wait(300)
 check(
   (await host.js(`return ${selectedCount}`)) === 1,
-  'тем же нажатием снимается обратно',
+  'the same press takes it back off',
   await host.js(`return ${selectedCount}`),
 )
 
 /*
- * Нажатие мимо ячейки снимает выделение. До сих пор выйти из состояния
- * «выбрано» было нельзя ничем, кроме перезагрузки страницы.
+ * A press outside a cell clears the selection. Until now there was no way out
+ * of the "selected" state other than reloading the page.
  */
 await host.js(`const main=document.querySelector('main:not(.hidden)');` + `main.click(); return 1`)
 await wait(300)
 check(
   (await host.js(`return ${selectedCount}`)) === 0,
-  'нажатие мимо ячейки снимает выделение',
+  'a press outside a cell clears the selection',
   await host.js(`return ${selectedCount}`),
 )
 
 /*
- * Панель называет зону видимости — и добавляет к ней выделенное.
+ * The panel names the field of view — and adds the selection to it.
  *
- * «Видит» стоит всегда: она про то, что уедет в любом случае. «Особенно»
- * появляется только когда есть на чём сосредоточиться — строка, которая горит
- * всегда, ничего не говорит.
+ * "Видит" (sees) is always there: it is about what goes out in any case.
+ * "Особенно" (especially) appears only when there is something to focus on — a
+ * line that is always lit says nothing.
  */
 check(
   (await host.js(`return (document.body.textContent||'').includes('всю комнату')`)) === true,
-  'панель говорит, что оракул видит комнату целиком',
+  'the panel says the Oracle sees the whole room',
   await host.js(
-    `return /всю комнату[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'молчит'`,
+    `return /всю комнату[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'silent'`,
   ),
 )
 check(
   (await host.js(`return (document.body.textContent||'').includes('Особенно')`)) === false,
-  'без выделения «особенно» не показывают',
-  'нет строки',
+  'without a selection "Особенно" is not shown',
+  'no line',
 )
 await host.js(pressCell(1))
 await wait(400)
 check(
   (await host.js(`return (document.body.textContent||'').includes('Особенно')`)) === true,
-  'выделенная ячейка добавляется к зоне видимости',
+  'the selected cell is added to the field of view',
   await host.js(
-    `return /Особенно[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'молчит'`,
+    `return /Особенно[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'silent'`,
   ),
 )
 
-/* ------------------------------------------------ управление читалкой */
+/* ------------------------------------------------ reader controls */
 
 /**
- * Открытым документом можно управлять: приблизить и найти страницу.
+ * An open document can be controlled: zoomed in and searched for a page.
  *
- * Раньше читалка была одной прокруткой без единой кнопки: увеличить лекцию,
- * набранную десятым кеглем, было нечем, а попасть на двадцатую страницу — только
- * пролистав девятнадцать.
+ * The reader used to be one scroll without a single button: there was no way
+ * to enlarge a lecture set in 10 pt, and reaching page twenty meant scrolling
+ * through nineteen.
  */
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('lecture.pdf'));` +
-    `if(!b) throw new Error('lecture.pdf нет в дереве'); b.click(); return 1`,
+    `if(!b) throw new Error('lecture.pdf is not in the tree'); b.click(); return 1`,
 )
-await until(host, `document.querySelectorAll('canvas').length >= 3`, 'документ открылся заново')
+await until(host, `document.querySelectorAll('canvas').length >= 3`, 'the document opened again')
 
 const zoomShown = `[...document.querySelectorAll('button')].find(b=>/^\\d+%$/.test((b.textContent||'').trim()))?.textContent.trim()`
 check(
   (await host.js(`return ${zoomShown}`)) === '100%',
-  'читалка открывается по ширине',
-  await host.js(`return ${zoomShown} ?? 'кнопки масштаба нет'`),
+  'the reader opens at fit width',
+  await host.js(`return ${zoomShown} ?? 'no zoom button'`),
 )
 
 const pageWidth = `Math.round(document.querySelector('[data-page="1"]').getBoundingClientRect().width)`
@@ -860,174 +876,180 @@ await host.js(
 await wait(600)
 check(
   ((await host.js(`return ${pageWidth}`)) as number) > wasWide,
-  'страница правда становится крупнее',
+  'the page really gets bigger',
   `${wasWide} → ${await host.js(`return ${pageWidth}`)}`,
 )
 check(
   (await host.js(`return ${zoomShown}`)) === '125%',
-  'и доля называет, насколько',
+  'and the percentage says by how much',
   await host.js(`return ${zoomShown}`),
 )
 
-/* Нажатие на долю возвращает «по ширине» — единственный масштаб без выбора. */
+/* A press on the percentage returns to "fit width" — the only zoom that needs no choice. */
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.title||'')==='По ширине').click(); return 1`,
 )
 await wait(600)
 check(
   ((await host.js(`return ${pageWidth}`)) as number) === wasWide,
-  'доля возвращает страницу по ширине',
+  'the percentage returns the page to fit width',
   await host.js(`return ${zoomShown}`),
 )
 
 /*
- * Полоса страниц закрыта по умолчанию, открывается кнопкой и НЕ отнимает
- * ширину у страницы: она накладка, а колонка заставила бы перерисовать
- * документ на каждое открытие.
+ * The page strip is closed by default, opens with a button and does NOT take
+ * width from the page: it is an overlay, and a column would force the document
+ * to be redrawn on every opening.
  */
 check(
   (await host.js(`return !!document.querySelector('[data-rail]')`)) === false,
-  'полоса страниц закрыта по умолчанию',
-  'её нет',
+  'the page strip is closed by default',
+  'not there',
 )
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Полоса страниц').click(); return 1`,
 )
-await until(host, `!!document.querySelector('[data-rail]')`, 'полоса открылась')
+await until(host, `!!document.querySelector('[data-rail]')`, 'the strip opened')
 check(
   ((await host.js(`return ${pageWidth}`)) as number) < wasWide,
-  'полоса берёт себе колонку, а не ложится поверх страницы',
+  'the strip takes a column of its own rather than lying over the page',
   `${wasWide} → ${await host.js(`return ${pageWidth}`)}`,
 )
 await until(
   host,
   `[...document.querySelectorAll('[data-rail] canvas')].some(c=>c.width>0)`,
-  'миниатюры нарисовались',
+  'the thumbnails were drawn',
 )
 check(
   ((await host.js(
     `return [...document.querySelectorAll('[data-rail] canvas')].filter(c=>c.width>0).length`,
   )) as number) > 0,
-  'миниатюры страниц рисуются',
+  'page thumbnails are drawn',
   await host.js(
-    `return document.querySelectorAll('[data-rail] canvas').length + ' страниц в полосе'`,
+    `return document.querySelectorAll('[data-rail] canvas').length + ' pages in the strip'`,
   ),
 )
 
-/* Выбрали страницу — полоса закрылась сама. */
+/* A page was chosen — the strip closed by itself. */
 /*
- * Выбор страницы уводит прокрутку к ней.
+ * Choosing a page takes the scroll to it.
  *
- * Меряется в том же вызове, что и нажатие: место в документе — это `scrollTop`,
- * и сравнивать его надо с положением самой страницы, а не со счётчиком в строке
- * вкладок. Счётчик обновляется от события прокрутки, то есть кадром позже, и
- * зависеть от того, успел ли headless-браузер выпустить этот кадр, — значит
- * проверять браузер.
+ * It is measured in the same call as the press: the place in the document is
+ * `scrollTop`, and it has to be compared with the position of the page itself,
+ * not with the counter in the tab row. The counter updates on the scroll event,
+ * that is, a frame later, and depending on whether the headless browser has
+ * managed to put out that frame means testing the browser.
  */
 /*
- * Прыгаем на ВТОРУЮ страницу, а не на последнюю: страницы здесь 16:9, как
- * слайды, и последняя короче окна — до верха её не докрутить ничем, и
- * проверка ругала бы читалку за то, что документ кончился.
+ * We jump to the SECOND page, not the last: the pages here are 16:9, like
+ * slides, and the last one is shorter than the window — nothing can scroll it
+ * up to its top, and the check would scold the reader for the document having
+ * ended.
  */
 const landed = (await host.js(
   `const sc=document.querySelector('[role=document]');` +
     `document.querySelector('[data-thumb="2"]').click();` +
     `const sheet=sc.querySelector('[data-page="2"]');` +
     `const at=sheet.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;` +
-    // Начало страницы обязано остаться ВИДНО: прокрутка не должна уехать за
-    // верх листа. Промах в тридцать четыре пикселя — высоту полосы управления —
-    // выглядел как «прыгает низковато»: сверху был конец предыдущей страницы.
+    // The start of the page must stay VISIBLE: the scroll must not go past the
+    // top of the sheet. A miss of thirty-four pixels — the height of the control
+    // bar — looked like "jumps a bit low": the end of the previous page was at the
+    // top.
     `return JSON.stringify({over: Math.round(sc.scrollTop - at), page: sc.scrollTop})`,
 )) as string
 const over = JSON.parse(landed).over as number
 check(
   over <= 0 && over > -200,
-  'прыжок показывает начало страницы, а не её середину',
-  `верх листа на ${-over}px ниже кромки`,
+  'the jump shows the start of the page, not its middle',
+  `the top of the sheet is ${-over}px below the edge`,
 )
 await wait(700)
 check(
   (await host.js(`return !!document.querySelector('[data-rail]')`)) === true,
-  'выбор страницы не закрывает полосу',
-  'осталась открыта',
+  'choosing a page does not close the strip',
+  'stayed open',
 )
 /*
- * Лекция: пульт у ведущего, страница и чернила — у всех.
+ * Lecture: the console is with the presenter, the page and the ink are with
+ * everyone.
  *
- * Проверяется здесь то, что нельзя увидеть на одной вкладке: страница, которую
- * листает планшет, и линия, которую рисует Pencil, обязаны появиться у
- * СТУДЕНТА. Всё это едет по управляющему сокету и живёт в памяти сервера, то
- * есть ломается молча — у ведущего на экране остаётся ровно то же самое.
+ * What is checked here cannot be seen in one tab: the page turned on the tablet
+ * and the line drawn by the Pencil have to appear for the STUDENT. All of it
+ * travels over the control socket and lives in the server's memory, that is, it
+ * breaks silently — the presenter's screen keeps showing exactly the same.
  */
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='Лекция');` +
-    `if(!b) throw new Error('кнопки «Лекция» в читалке нет'); b.click(); return 1`,
+    `if(!b) throw new Error('no "Лекция" button in the reader'); b.click(); return 1`,
 )
 const presenterBar = `[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='Закончить')`
-await until(host, presenterBar, 'пульт лекции появился')
+await until(host, presenterBar, 'the lecture console appeared')
 check(
   (await host.js(`return ${presenterBar}`)) === true,
-  'у ведущего появляется пульт лекции',
-  'да',
+  'the presenter gets the lecture console',
+  'yes',
 )
 
 const audience = `(document.body.textContent||'').includes('Лекцию ведёт Ада')`
-await until(student, audience, 'студент увидел лекцию')
+await until(student, audience, 'the student saw the lecture')
 check(
   (await student.js(`return ${audience}`)) === true,
-  'студент видит лекцию, не открывая её сам',
+  'the student sees the lecture without opening it',
   await student.js(
-    `return (document.querySelector('canvas.ink')? 'со слоем чернил' : 'без слоя чернил')`,
+    `return (document.querySelector('canvas.ink')? 'with the ink layer' : 'without the ink layer')`,
   ),
 )
 check(
   (await student.js(
     `return [...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='Закончить')`,
   )) === false,
-  'пульта у студента нет',
-  'нет',
+  'the student has no console',
+  'none',
 )
 
-/* Страницу листает ведущий — приезжает она ко всем. */
+/* The presenter turns the page — it arrives for everyone. */
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Следующая страница').click(); return 1`,
 )
 const onSecond = `[...document.querySelectorAll('span')].some(s=>/^2 \\/ 3$/.test((s.textContent||'').trim()))`
-await until(student, onSecond, 'страница доехала до студента')
+await until(student, onSecond, 'the page reached the student')
 check(
   (await student.js(`return ${onSecond}`)) === true,
-  'страница ведущего листается у всей комнаты',
+  'the presenter turns the page for the whole room',
   await student.js(
-    `return [...document.querySelectorAll('span')].map(s=>(s.textContent||'').trim()).find(t=>/^\\d+ \\/ \\d+$/.test(t)) ?? 'счётчика нет'`,
+    `return [...document.querySelectorAll('span')].map(s=>(s.textContent||'').trim()).find(t=>/^\\d+ \\/ \\d+$/.test(t)) ?? 'no counter'`,
   ),
 )
 
 /*
- * Лист занимает место, а не схлопывается в ноль.
+ * The sheet takes up room instead of collapsing to zero.
  *
- * Размер листа считался ТОЛЬКО по наблюдателю за размером, а он молчит, пока
- * браузер не рисует вкладку: проекция, открытая вторым окном и не получившая
- * фокуса, оставалась пустой — белый прямоугольник в ноль пикселей, в который
- * pdf.js не рисует, потому что рисовать некуда. На экране это «лекция не
- * открылась», и виноватым выглядел бы документ.
+ * The sheet size was computed ONLY from the resize observer, and it stays
+ * silent while the browser does not render the tab: a projection opened as a
+ * second window that never got focus stayed empty — a white rectangle of zero
+ * pixels that pdf.js does not draw into, because there is nowhere to draw. On
+ * screen that is "the lecture did not open", and the document would look
+ * guilty.
  */
 const sheetWidth = `Math.round(document.querySelector('canvas.ink-dry').getBoundingClientRect().width)`
-// Ждём, а не спим: лист получает размер, когда приедет сам документ, а он
-// приезжает по сети — на холодной вкладке дольше, чем на прогретой.
-await until(host, `${sheetWidth} > 200`, 'лист лекции получил размер')
+// We wait rather than sleep: the sheet gets its size when the document itself
+// arrives, and it arrives over the network — longer in a cold tab than in a
+// warm one.
+await until(host, `${sheetWidth} > 200`, 'the lecture sheet got its size')
 check(
   ((await host.js(`return ${sheetWidth}`)) as number) > 200,
-  'страница лекции занимает своё место',
+  'the lecture page takes up its room',
   `${await host.js(`return ${sheetWidth}`)}px`,
 )
 
 /*
- * Чернила. Перо берётся нажатием на цвет — двух переключателей ради четырёх
- * цветов нет, — а дальше это обычные PointerEvent'ы: у Pencil тот же путь.
+ * Ink. The pen is taken by pressing a colour — there are no two switches for
+ * four colours — and after that these are ordinary PointerEvents: the Pencil
+ * takes the same path.
  */
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'')==='Перо, красный');` +
-    `if(!b) throw new Error('пера в пульте нет'); b.click(); return 1`,
+    `if(!b) throw new Error('no pen in the console'); b.click(); return 1`,
 )
 await wait(200)
 const strokeOn = (page: Tab) =>
@@ -1037,19 +1059,20 @@ const strokeOn = (page: Tab) =>
       `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
       `let n=0; for(let i=3;i<d.length;i+=4) if(d[i]>16) n+=1; return n`,
   )
-check(((await strokeOn(student)) as number) <= 0, 'до штриха страница чистая', 'пусто')
+check(((await strokeOn(student)) as number) <= 0, 'before the stroke the page is clean', 'empty')
 
 /*
- * Синтетическое перо целится в СЛОЙ ВВОДА, а не в холст.
+ * The synthetic pen aims at the INPUT LAYER, not at a canvas.
  *
- * Касания у слоя чернил принимает один элемент — `div.ink-input` поверх трёх
- * холстов (§1 договора): холсты — соседи, а не родители, и событие, посланное
- * холсту, до обработчиков не доходит. Координаты при этом считаются от холста:
- * слой ввода шире него на поля листа.
+ * Touches on the ink layer are received by one element — `div.ink-input` over
+ * three canvases (§1 of the contract): the canvases are siblings, not parents,
+ * and an event sent to a canvas never reaches the handlers. The coordinates,
+ * though, are counted from the canvas: the input layer is wider than it by the
+ * sheet margins.
  */
 const inkTarget =
   `const c=document.querySelector('canvas.ink-wet');const input=document.querySelector('.ink-input')||c;` +
-  `if(!c) throw new Error('слоя чернил нет');const r=c.getBoundingClientRect();`
+  `if(!c) throw new Error('no ink layer');const r=c.getBoundingClientRect();`
 await host.js(
   inkTarget +
     `const at=(t,fx,fy)=>input.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:1,pointerType:'pen',` +
@@ -1059,26 +1082,27 @@ await host.js(
 )
 await until(student, `(async()=>{const c=document.querySelector('canvas.ink-dry');if(!c||!c.width)return false;` +
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
-  `for(let i=3;i<d.length;i+=4) if(d[i]>16) return true; return false})()`, 'штрих доехал до студента')
+  `for(let i=3;i<d.length;i+=4) if(d[i]>16) return true; return false})()`, 'the stroke reached the student')
 const inked = (await strokeOn(student)) as number
-check(inked > 0, 'штрих ведущего появляется у студента', `${inked} закрашенных точек`)
+check(inked > 0, "the presenter's stroke appears for the student", `${inked} painted pixels`)
 
 /*
- * Указка: нажали и ДЕРЖИТЕ.
+ * The pointer: press and HOLD.
  *
- * Ею чаще всего стоят на месте — «вот здесь», — то есть новых точек не
- * приходит вовсе. Хвост при этом обязан догореть, а сама точка остаться:
- * однажды она гасла вместе с хвостом через четыре десятых секунды, и на
- * экране это выглядело как «нажал, мигнуло, ничего».
+ * Most often it just stays in place — "right here" — that is, no new points
+ * arrive at all. The tail has to burn out meanwhile and the dot itself has to
+ * stay: once it went out together with the tail after four tenths of a second,
+ * and on screen that looked like "pressed, it blinked, nothing".
  *
- * Вкладка ведущего — вперёд: `laser:off` уходит по таймеру догорания (300 мс),
- * а таймеры вкладки, пролежавшей в фоне дольше пяти минут, headless Chrome
- * замедляет до раза в минуту. Проверка тогда ждала не продукт, а браузер.
+ * The presenter's tab comes to the front: `laser:off` goes out on the burn-out
+ * timer (300 ms), and headless Chrome slows the timers of a tab that has lain in
+ * the background for more than five minutes down to once a minute. The check
+ * was then waiting for the browser, not the product.
  */
 await host.send('Page.bringToFront')
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>/указк/i.test((x.textContent||'')+(x.getAttribute('aria-label')||'')));` +
-    `if(!b) throw new Error('указки в пульте лекции нет'); b.click(); return 1`,
+    `if(!b) throw new Error('no pointer in the lecture console'); b.click(); return 1`,
 )
 await wait(200)
 await host.js(
@@ -1088,9 +1112,10 @@ await host.js(
     `at('pointerdown',0.5,0.5); at('pointermove',0.55,0.52); return 1`,
 )
 /*
- * Красное ищется на ЖИВОМ холсте: по §3 договора указка, кольцо ластика и
- * предсказанный кончик живут на `ink-live`, а мокрый — только чернила. Мокрый
- * всё же суммируется — у зала слой может рисовать эхо указки по-своему.
+ * The red is looked for on the LIVE canvas: under §3 of the contract the
+ * pointer, the eraser ring and the predicted tip live on `ink-live`, and the
+ * wet one holds ink only. The wet one is added in anyway — the audience's layer
+ * may draw the pointer echo its own way.
  */
 const redExpr =
   `(()=>{let n=0;for(const cls of ['ink-live','ink-wet']){const c=document.querySelector('canvas.'+cls);` +
@@ -1098,18 +1123,18 @@ const redExpr =
   `for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) n+=1}return n})()`
 const redOn = (page: Tab) => page.js(`return ${redExpr}`)
 /*
- * Меряем у СТУДЕНТА — значит, вперёд выводим студента: живой слой рисуется
- * по requestAnimationFrame, а фоновой вкладке кадров не дают вовсе. Пиксели на
- * холсте, который никто не рисует, — это не «указка не доехала».
+ * We measure at the STUDENT — so the student comes to the front: the live layer
+ * is drawn on requestAnimationFrame, and a background tab gets no frames at
+ * all. Pixels on a canvas nobody draws are not "the pointer did not arrive".
  */
 await student.send('Page.bringToFront')
-await until(student, `${redExpr} > 0`, 'указка доехала до студента')
-// Ждём дольше, чем живёт хвост: голова обязана остаться.
+await until(student, `${redExpr} > 0`, 'the pointer reached the student')
+// Wait longer than the tail lives: the head has to stay.
 await wait(1400)
 const stillLit = (await redOn(student)) as number
-check(stillLit > 0, 'указка не гаснет, пока её держат', `${stillLit} красных точек через 1.4 с`)
+check(stillLit > 0, 'the pointer does not go out while held', `${stillLit} red pixels after 1.4 s`)
 
-/* Отпустили — гаснет у всех. Ведущий вперёд: таймер догорания — его. */
+/* Released — it goes out for everyone. The presenter to the front: the burn-out timer is theirs. */
 await host.send('Page.bringToFront')
 await host.js(
   inkTarget +
@@ -1118,62 +1143,65 @@ await host.js(
 )
 await wait(500)
 await student.send('Page.bringToFront')
-await until(student, `${redExpr} === 0`, 'указка погасла у студента')
-check(((await redOn(student)) as number) <= 0, 'отпущенная указка гаснет у всех', 'погасла')
-/* Возвращаем перо: дальше проверки рисуют им. */
+await until(student, `${redExpr} === 0`, 'the pointer went out for the student')
+check(((await redOn(student)) as number) <= 0, 'a released pointer goes out for everyone', 'out')
+/* Back to the pen: the checks further on draw with it. */
 await host.send('Page.bringToFront')
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'')==='Перо, красный');b&&b.click(); return 1`,
 )
 
 /**
- * Двухтактную кнопку полосы нажимают дважды — и это не описка проверки.
+ * A two-step button of the bar is pressed twice — and that is not a slip of the
+ * check.
  *
- * «Стереть» и «Закончить» необратимы: истории у чернил нет, а конец лекции
- * стирает их сразу на всех страницах. Обе поэтому спрашивают вторым нажатием
- * (LectureView · askWipe/askStop): первое меняет подпись, второе делает.
- * Проверка, нажимавшая один раз, кнопку только вооружала и ждала стёртых
- * чернил до самого таймаута — молча, потому что ждать ей было нечего.
+ * "Erase" and "End" are irreversible: ink has no history, and ending the
+ * lecture erases it on all pages at once. So both ask with a second press
+ * (LectureView · askWipe/askStop): the first changes the label, the second
+ * does it. A check that pressed once only armed the button and waited for the
+ * erased ink right up to the timeout — silently, because there was nothing for
+ * it to wait for.
  *
- * Ищем по обеим подписям: между нажатиями полоса успевает перерисоваться, и
- * второй раз кнопка называется уже вопросом.
+ * We search by both labels: between the presses the bar manages to redraw, and
+ * the second time the button is already labelled with the question.
  */
 const pressTwice = async (page: Tab, labels: [string, string]): Promise<void> => {
   const find =
     `[...document.querySelectorAll('button')]` +
     `.find(b=>${JSON.stringify(labels)}.includes((b.textContent||'').trim()))`
   await page.js(
-    `const b=${find}; if(!b) throw new Error('кнопки «${labels[0]}» в полосе нет'); b.click(); return 1`,
+    `const b=${find}; if(!b) throw new Error('no "${labels[0]}" button in the bar'); b.click(); return 1`,
   )
   await page.js(
-    `const b=${find}; if(!b) throw new Error('«${labels[0]}» не переспросила'); b.click(); return 1`,
+    `const b=${find}; if(!b) throw new Error('"${labels[0]}" did not ask again'); b.click(); return 1`,
   )
 }
 
-/* Стёрли — и стёрлось у всех, а не только у того, кто рисовал. */
+/* Erased — and it is erased for everyone, not only for whoever drew. */
 await pressTwice(host, ['Стереть', 'Стереть всё?'])
 await until(student, `(async()=>{const c=document.querySelector('canvas.ink-dry');if(!c)return true;` +
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
-  `for(let i=3;i<d.length;i+=4) if(d[i]>16) return false; return true})()`, 'чернила стёрлись у студента')
-check(((await strokeOn(student)) as number) <= 0, 'стирание доезжает до всей комнаты', 'чисто')
+  `for(let i=3;i<d.length;i+=4) if(d[i]>16) return false; return true})()`, 'the ink was erased for the student')
+check(((await strokeOn(student)) as number) <= 0, 'erasing reaches the whole room', 'clean')
 
-/* ------------------------------------------------------- имена органов пульта */
+/* ------------------------------------------------------- names of the console controls */
 
 /*
- * Пульт ищется по ARIA-именам, и это не педантичность, а единственный
- * оставшийся способ его найти.
+ * The console is found by ARIA names, and that is not pedantry but the only way
+ * left to find it.
  *
- * Раньше проверка искала клавиши по словам на них — «Лист», «Указка»,
- * «Закончить». Слов на пульте больше нет: подписей осталось четыре на весь
- * прибор, пигмент показывают чипом бумаги с настоящим штрихом, «Назад» — это
- * один шеврон, а «Закончить» уехало последней строкой в лист «Ещё». Проверка
- * по тексту после этого искала бы то, чего на экране нет вовсе, и молчала бы
- * ровно про тот пульт, который держат в руках.
+ * The check used to find keys by the words on them — "Sheet", "Pointer",
+ * "End". There are no more words on the console: four labels are left on the
+ * whole device, the pigment is shown by a paper chip with a real stroke,
+ * "Back" is a single chevron, and "End" moved into the "More" sheet as its last
+ * row. A text-based check would after that look for something that is not on
+ * the screen at all, and would keep quiet about exactly the console that is
+ * held in the hand.
  *
- * Имена ниже — §7 договора, буква в букву. Они же — всё, чем эти клавиши
- * названы для голосового доступа, так что переименование ломает не проверку, а
- * пульт, и ломает молча. Поэтому список один и лежит здесь, а не рассыпан по
- * селекторам.
+ * The names below are §7 of the contract, letter for letter. They are also all
+ * that these keys are called for voice access, so a rename breaks not the check
+ * but the console, and breaks it silently. That is why there is one list and it
+ * lives here, rather than being scattered over selectors.
  */
 const PULT = {
   gauge: 'Выбрать страницу',
@@ -1202,36 +1230,37 @@ const PULT = {
   thick: 'Толстое',
 } as const
 
-/** Выражение «такой орган на экране есть». */
+/** An expression for "such a control is on the screen". */
 const named = (aria: string) => `!!document.querySelector('[aria-label=${JSON.stringify(aria)}]')`
-/** Нажать орган по имени — с внятной жалобой, если его нет. */
+/** Press a control by name — with a clear complaint if it is missing. */
 const press = (aria: string) =>
   `const b=document.querySelector('[aria-label=${JSON.stringify(aria)}]');` +
-  `if(!b) throw new Error('на пульте нет органа «${aria}»'); b.click(); return 1`
-/** Состояние защёлки клавиши: 'true' / 'false' / 'нет'. */
+  `if(!b) throw new Error('the console has no "${aria}" control'); b.click(); return 1`
+/** The latch state of a key: 'true' / 'false' / 'none'. */
 const pressedIs = (aria: string) =>
-  `(document.querySelector('[aria-label=${JSON.stringify(aria)}]')?.getAttribute('aria-pressed') ?? 'нет')`
+  `(document.querySelector('[aria-label=${JSON.stringify(aria)}]')?.getAttribute('aria-pressed') ?? 'none')`
 
 /*
- * Пульт на планшет.
+ * The console on a tablet.
  *
- * Лекцию ведут с айпада, а войти на нём заново нечем: ни пароля, ни аккаунта в
- * этом продукте нет. Ссылка обязана впустить ТЕМ ЖЕ человеком — иначе в
- * комнате появится второй «Ада», а вести лекцию будет некому. Проверяется
- * именно это: открытая в чистой вкладке ссылка не спрашивает имени и даёт
- * пульт, а не место в зале.
+ * The lecture is run from an iPad, and there is no way to log in on it again:
+ * this product has neither a password nor an account. The link has to let in
+ * THE SAME person — otherwise a second "Ада" appears in the room, and there
+ * will be nobody to run the lecture. This is exactly what is checked: the link
+ * opened in a clean tab does not ask for a name and gives the console, not a
+ * seat in the audience.
  */
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('Ссылка, по которой'));` +
-    `if(!b) throw new Error('кнопки «Пульт» нет'); b.click(); return 1`,
+    `if(!b) throw new Error('no "Пульт" button'); b.click(); return 1`,
 )
-await until(host, `!!document.querySelector('[aria-label="Пульт на планшет"]')`, 'ссылка на пульт готова')
+await until(host, `!!document.querySelector('[aria-label="Пульт на планшет"]')`, 'the console link is ready')
 const consoleLink = (await host.js(
   `return document.querySelector('[aria-label="Пульт на планшет"] .select-all')?.textContent?.trim() ?? ''`,
 )) as string
 check(
   consoleLink.includes(`/s/${ROOM}/t/`),
-  'ссылка на пульт выдаётся ведущему',
+  'the presenter is given the console link',
   consoleLink ? consoleLink.slice(0, 34) + '…'
     : await host.js(
         `return (document.querySelector('[aria-label="Пульт на планшет"]')?.textContent||'').trim().slice(0,120)`,
@@ -1240,74 +1269,76 @@ check(
 
 const pad = await tab(consoleLink)
 /*
- * Признак пульта — прибор, а не «Закончить».
+ * The sign of the console is the gauge, not "End".
  *
- * «Закончить» с постоянно видимой поверхности убрано (§8.2 чертежа): красное
- * рядом с пальцем весь час ради нажатия, которое случается один раз. Прибор же
- * есть у пульта всегда — это единственное место в продукте, где живёт номер
- * страницы.
+ * "End" was removed from the always-visible surface (§8.2 of the drawing): red
+ * next to the finger for the whole hour for the sake of a press that happens
+ * once. The gauge, on the other hand, is always on the console — it is the
+ * only place in the product where the page number lives.
  */
 const padHasPult = named(PULT.gauge)
-await until(pad, padHasPult, 'планшет вошёл и получил пульт')
+await until(pad, padHasPult, 'the tablet entered and got the console')
 check(
   (await pad.js(`return !document.querySelector('input#join-name')`)) === true,
-  'планшет не спрашивает имени',
-  'вошёл сразу',
+  'the tablet does not ask for a name',
+  'entered at once',
 )
 check(
   (await pad.js(`return location.pathname`)) === `/s/${ROOM}/pult`,
-  'ключ убран из адреса, а планшет открыт пультом',
+  'the key is removed from the address, and the tablet opens as the console',
   await pad.js('return location.pathname'),
 )
 check(
   (await pad.js(`return ${padHasPult}`)) === true,
-  'планшет получает пульт, а не место в зале',
-  'прибор на месте',
+  'the tablet gets the console, not a seat in the audience',
+  'the gauge is in place',
 )
 /*
- * И вторым человеком в комнате он не становится: список людей считает людей, а
- * не вкладки. Второй «Ада» в списке — это лекция, которую ведёт непонятно кто.
+ * And it does not become a second person in the room: the people list counts
+ * people, not tabs. A second "Ада" in the list is a lecture run by who knows
+ * whom.
  */
 /*
- * Планшет — не второй человек в комнате: он входит тем же участником. Список
- * людей считает ЛЮДЕЙ, а не вкладки, и второй «Ада» в нём означал бы лекцию,
- * которую ведёт непонятно кто.
+ * The tablet is not a second person in the room: it enters as the same
+ * participant. The people list counts PEOPLE, not tabs, and a second "Ада" in
+ * it would mean a lecture run by who knows whom.
  */
 const inRoom = `(document.body.textContent||'').match(/(\\d+) in the room/)?.[1] ?? '?'`
-await until(host, `${inRoom} === '2'`, 'счёт людей в комнате устоялся', 8000)
+await until(host, `${inRoom} === '2'`, 'the head count in the room settled', 8000)
 check(
   (await host.js(`return ${inRoom}`)) === '2',
-  'планшет не стал вторым человеком в комнате',
+  'the tablet did not become a second person in the room',
   (await host.js(`return ${inRoom} + ' · ' + [...document.querySelectorAll('[title]')].map(n=>n.getAttribute('title')).filter(t=>/Ада|Нина/.test(t||'')).join(' | ')`)) as string,
 )
-for (const line of pad.trouble.slice(0, 3)) console.log(`  (планшет) ${line}`)
+for (const line of pad.trouble.slice(0, 3)) console.log(`  (tablet) ${line}`)
 
 /*
- * Проекция — отдельный адрес, а не кнопка: её открывают на машине у проектора,
- * и она обязана пережить перезагрузку. Ни вкладок, ни панелей на ней быть не
- * должно — это единственный экран, который смотрят двадцать человек сразу.
+ * The projection is a separate address, not a button: it is opened on the
+ * machine at the projector, and it has to survive a reload. It must have
+ * neither tabs nor panels — it is the only screen twenty people watch at once.
  */
 const beam = await tab(`http://127.0.0.1:${PORT}/s/${ROOM}/screen`)
-await until(beam, `document.querySelectorAll('canvas').length > 0`, 'проекция открылась')
+await until(beam, `document.querySelectorAll('canvas').length > 0`, 'the projection opened')
 check(
   (await beam.js(`return document.querySelectorAll('[role="tablist"], input#join-name').length === 0`)) === true,
-  'на проекции нет ни вкладок, ни экрана входа',
-  'чистый экран',
+  'the projection has neither tabs nor a login screen',
+  'a clean screen',
 )
 check(
   (await beam.js(
     `return getComputedStyle(document.querySelector('.fixed.inset-0')).backgroundColor`,
   )) === 'rgb(0, 0, 0)',
-  'проекция чёрная, как экран в аудитории',
+  'the projection is black, like a screen in a lecture hall',
   await beam.js(`return getComputedStyle(document.querySelector('.fixed.inset-0')).backgroundColor`),
 )
 
 /*
- * Снимки лекции — по просьбе `--shot`, как и снимок комнаты ниже.
+ * Screenshots of the lecture — on request with `--shot`, like the room
+ * screenshot below.
  *
- * Пульт и проекция проверяются глазами и ничем больше: полоса пульта несёт
- * десяток кнопок, и влезают ли они в ширину планшета — вопрос, на который
- * никакая проверка условием не отвечает.
+ * The console and the projection are checked by eye and by nothing else: the
+ * console bar carries a dozen buttons, and whether they fit the width of a
+ * tablet is a question no condition check answers.
  */
 if (process.argv.includes('--shot')) {
   for (const [who, page] of [
@@ -1315,25 +1346,26 @@ if (process.argv.includes('--shot')) {
     ['ui-projection.png', beam],
   ] as const) {
     await page.send('Page.bringToFront')
-    // Ждём нарисованную страницу, а не секунду: фоновая вкладка не рисует
-    // вовсе, и снимок «через секунду после переключения» ловил чёрный экран.
-    await until(page, `[...document.querySelectorAll('canvas')].some(c=>c.width>1)`, `лист для ${who}`)
+    // We wait for a drawn page, not a second: a background tab does not draw at
+    // all, and a screenshot "a second after switching" caught a black screen.
+    await until(page, `[...document.querySelectorAll('canvas')].some(c=>c.width>1)`, `sheet for ${who}`)
     await wait(400)
     const shot = await page.send('Page.captureScreenshot', { format: 'png' })
     const where = path.resolve(who)
     writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))
-    console.log(`  снимок: ${where}`)
+    console.log(`  screenshot: ${where}`)
   }
   await host.send('Page.bringToFront')
   await wait(400)
 }
 
 /*
- * Пульт — отдельное приложение, и меряется оно планшетом.
+ * The console is a separate application, and it is measured by a tablet.
  *
- * Окно проверки 1600×1000, то есть ноутбук; пульт же держат в руках, и всё в
- * нём рассчитано на 1180×820 с двойным пикселем. Вкладке выдаётся ровно эта
- * геометрия — иначе проверяется раскладка, которой на планшете не бывает.
+ * The check's window is 1600×1000, that is, a laptop; the console, however, is
+ * held in the hand, and everything in it is designed for 1180×820 at double
+ * pixel density. The tab is given exactly this geometry — otherwise a layout
+ * that never happens on a tablet gets checked.
  */
 const pult = await tab(`http://127.0.0.1:${PORT}/s/${ROOM}/pult`)
 await pult.send('Emulation.setDeviceMetricsOverride', {
@@ -1346,41 +1378,43 @@ await pult.send('Page.bringToFront')
 const pultReady = await until(
   pult,
   `!!document.querySelector('.ink-input') && [...document.querySelectorAll('canvas')].some(c=>c.getBoundingClientRect().width>200)`,
-  'пульт нарисовал страницу',
+  'the console drew the page',
 )
-check(pultReady, 'пульт показывает лист лекции', await pult.js(`return location.pathname`))
+check(pultReady, 'the console shows the lecture sheet', await pult.js(`return location.pathname`))
 /*
- * Лекция уже идёт, а пульт открыт по ключу — над листом ложе «Коснитесь,
- * чтобы взять пульт»: полный экран просится только из живого жеста. Клавиши
- * под ним в DOM есть, и `press` их нажал бы и так, но снимок показал бы
- * плиту, а не пульт. Снимается оно так же, как пальцем.
+ * The lecture is already running and the console is opened by key — over the
+ * sheet lies the "Touch to take the console" overlay: full screen can be
+ * requested only from a live gesture. The keys under it are in the DOM, and
+ * `press` would press them anyway, but a screenshot would show the slab, not
+ * the console. It is dismissed the same way as with a finger.
  */
 async function takeConsole(): Promise<void> {
   if (!(await pult.js(`return !!document.querySelector('[aria-label="Коснуться и начать"]')`))) return
   await pult.js(`document.querySelector('[aria-label="Коснуться и начать"]').click(); return 1`)
-  await until(pult, `!document.querySelector('[aria-label="Коснуться и начать"]')`, 'ложе первого касания ушло', 4000)
+  await until(pult, `!document.querySelector('[aria-label="Коснуться и начать"]')`, 'the first-touch overlay went away', 4000)
   await wait(300)
 }
 await takeConsole()
 check(
   (await pult.js(`return ${named(PULT.laser)}`)) === true,
-  'у пульта есть свои инструменты',
-  await pult.js(`return document.querySelectorAll('button').length + ' кнопок'`),
+  'the console has its own tools',
+  await pult.js(`return document.querySelectorAll('button').length + ' buttons'`),
 )
 
 /*
- * Весь §7 разом, а не одно имя.
+ * All of §7 at once, not one name.
  *
- * Проверка по одной клавише ловит переименование ровно этой клавиши; ломается
- * же обычно всё семейство сразу — «перо, красный» вместо «Перо, красное»,
- * «Стереть» вместо «Ластик». Пары — это один орган в двух состояниях, и
- * присутствовать обязано ровно одно из двух.
+ * A check of one key catches a rename of exactly that key; but usually the
+ * whole family breaks at once — "перо, красный" instead of "Перо, красное",
+ * "Стереть" instead of "Ластик". The pairs are one control in two states, and
+ * exactly one of the two has to be present.
  */
 /*
- * Цвета и толщины живут во всплывающей палитре, а «Заметки крупнее» — в
- * шапке выдвижного листа заметок; на рейле их нет. Палитру открывает тап по
- * АКТИВНОМУ «Перу» (по неактивному — выбор пера), лист заметок — клавиша
- * «Заметки». Оба открываются здесь ровно на время переклички и закрываются.
+ * Colours and widths live in the pop-up palette, and "Notes bigger" in the
+ * header of the sliding notes sheet; they are not on the rail. The palette is
+ * opened by a tap on the ACTIVE "Pen" (on an inactive one the tap selects the
+ * pen), the notes sheet by the "Notes" key. Both are opened here just for the
+ * roll call and then closed.
  */
 const has = (aria: string) => `!!document.querySelector('[aria-label=${JSON.stringify(aria)}]')`
 async function openPalette(): Promise<boolean> {
@@ -1416,7 +1450,7 @@ for (const pair of [
   if (!(await pult.js(`return ${has(pair[0])} || ${has(pair[1])}`))) absent.push(pair.join(' / '))
 }
 const paletteOpen = await openPalette()
-if (!paletteOpen) absent.push('палитра [data-pult-palette]')
+if (!paletteOpen) absent.push('palette [data-pult-palette]')
 else for (const n of inPalette) if (!(await pult.js(`return ${has(n)}`))) absent.push(n)
 check(
   paletteOpen &&
@@ -1424,13 +1458,13 @@ check(
       `const p=document.querySelector('[data-pult-palette]');` +
         `return !!p.querySelector('[role="radiogroup"][aria-label="Цвет пера"]') && !!p.querySelector('[role="radiogroup"][aria-label="Толщина"]')`,
     )) === true,
-  'палитра пера — два ряда: цвет и толщина',
-  paletteOpen ? 'radiogroup «Цвет пера» и «Толщина»' : 'палитра не открылась',
+  'the pen palette has two rows: colour and width',
+  paletteOpen ? 'radiogroups "Цвет пера" and "Толщина"' : 'the palette did not open',
 )
 /*
- * ВЫБОР НЕ ЗАКРЫВАЕТ ПАЛИТРУ. Закрывал — и чтобы попробовать синий потолще,
- * приходилось открывать её дважды; а пробуют именно так, подбором, глядя на
- * лист. Проверяется обе половины: и цвет, и толщина.
+ * A CHOICE DOES NOT CLOSE THE PALETTE. It used to — and to try a thicker blue
+ * one had to open it twice; and people try exactly like that, by picking,
+ * looking at the sheet. Both halves are checked: the colour and the width.
  */
 if (paletteOpen) {
   await pult.js(press(PULT.green))
@@ -1441,10 +1475,10 @@ if (paletteOpen) {
   const afterWidth = (await pult.js(`return !!document.querySelector('[data-pult-palette]')`)) === true
   check(
     afterColor && afterWidth,
-    'выбор цвета и толщины не закрывает палитру',
-    `после цвета ${afterColor ? 'открыта' : 'ЗАКРЫЛАСЬ'}, после толщины ${afterWidth ? 'открыта' : 'ЗАКРЫЛАСЬ'}`,
+    'choosing a colour and a width does not close the palette',
+    `after the colour ${afterColor ? 'open' : 'CLOSED'}, after the width ${afterWidth ? 'open' : 'CLOSED'}`,
   )
-  // Возвращаем чёрное среднее — дальше по прогону от них зависят снимки.
+  // Back to black medium — the screenshots further on depend on them.
   await pult.js(press(PULT.black))
   await wait(150)
   await pult.js(press(PULT.mid))
@@ -1453,13 +1487,13 @@ if (paletteOpen) {
 await escape()
 check(
   (await pult.js(`return !document.querySelector('[data-pult-palette]')`)) === true,
-  'палитра закрывается Escape',
-  'закрыта',
+  'Escape closes the palette',
+  'closed',
 )
 
 /*
- * У УКАЗКИ СВОЯ ПАЛИТРА: точкой показывают, линией обводят. Открывается тем же
- * жестом, что и перьевая, — повторным тапом по уже взятому инструменту.
+ * THE POINTER HAS ITS OWN PALETTE: a dot points, a line circles. It opens with
+ * the same gesture as the pen one — a second tap on the tool already taken.
  */
 await pult.js(press(PULT.laser))
 await wait(250)
@@ -1469,35 +1503,38 @@ const laserPalette = (await pult.js(`return !!document.querySelector('[data-pult
 check(
   laserPalette &&
     (await pult.js(`return ${has('Линия')} && ${has('Точка')}`)) === true,
-  'у указки есть выбор: линия или точка',
+  'the pointer offers a choice: line or dot',
   laserPalette
     ? await pult.js(
         `return (document.querySelector('[data-pult-palette]')?.textContent||'').replace(/\\s+/g,' ').trim().slice(0,40)`,
       )
-    : 'палитра указки не открылась',
+    : 'the pointer palette did not open',
 )
 await escape()
 await pult.js(press(PULT.pen))
 await wait(200)
 await pult.js(press(PULT.notes))
 await wait(500)
-// Поля ввода в заметках на пульте нет вовсе — они прибиты (см. §9 ниже).
+// The notes on the console have no input field at all — they are pinned (see §9 below).
 const notesOpen = (await pult.js(`return !!document.querySelector('[data-pult-notes] .pult-prompt')`)) === true
-if (!notesOpen) absent.push('лист заметок [data-pult-notes]')
+if (!notesOpen) absent.push('notes sheet [data-pult-notes]')
 else for (const n of inNotes) if (!(await pult.js(`return ${has(n)}`))) absent.push(n)
-check(absent.length === 0, 'органы пульта названы по договору', absent.length ? absent.join(', ') : 'все имена на месте')
+check(absent.length === 0, 'the console controls are named per the contract', absent.length ? absent.join(', ') : 'all names in place')
 
 /*
- * ВЕРХНЕЙ НИТИ НЕТ ВОВСЕ.
+ * THERE IS NO TOP STRIP AT ALL.
  *
- * Нить 52 px во всю ширину была вторым по яркости предметом ночного пульта
- * после самого листа и ставила стенные часы — их смотрят раз в десять минут —
- * выше номера страницы, который смотрят каждую фразу. Её груз разложен: часы и
- * номер в прибор, имя документа на экран выбора, остальное в лист «Ещё».
+ * A 52 px strip across the whole width was the second brightest object of the
+ * night console after the sheet itself, and it put the wall clock — looked at
+ * once every ten minutes — above the page number, which is looked at every
+ * sentence. Its load has been spread out: the clock and the number into the
+ * gauge, the document name onto the choice screen, the rest into the "More"
+ * sheet.
  *
- * Ищем не класс (класс переименуют и проверка позеленеет), а форму: полосу во
- * всю ширину, прижатую к верхней кромке, ростом с полосу chrome. Поле листа
- * под фильтр не попадает — оно вдвое выше и держит холст.
+ * We look not for a class (the class will be renamed and the check will go
+ * green) but for a shape: a full-width strip pressed against the top edge, as
+ * tall as a chrome strip. The sheet's field does not fall under the filter — it
+ * is twice as tall and holds the canvas.
  */
 const band = (await pult.js(
   `const root=document.querySelector('.pult-root')||document.body;` +
@@ -1509,36 +1546,36 @@ const band = (await pult.js(
     `String(typeof el.className==='string'?el.className:'').slice(0,28)+' '+` +
     `Math.round(el.getBoundingClientRect().height)+'px').join(' | ')`,
 )) as string
-check(band === '', 'верхней нити на пульте нет', band || 'полос chrome нет')
+check(band === '', 'the console has no top strip', band || 'no chrome strips')
 
 /*
- * «Закончить» не висит рядом с пальцем.
+ * "End" does not hang next to the finger.
  *
- * Красное в тёмном зале — самое громкое, что бывает, а нажимают его один раз
- * за лекцию и в момент, когда никто никуда не спешит. Место такому — последней
- * строкой листа «Ещё», и проверяется это с двух сторон: здесь слова нет, ниже —
- * оно есть в поднятом листе.
+ * Red in a dark hall is the loudest thing there is, and it is pressed once per
+ * lecture, at a moment when nobody is in a hurry. Its place is the last row of
+ * the "More" sheet, and this is checked from both sides: here the word is
+ * absent, below it is present in the raised sheet.
  *
- * ПОРЯДОК ЗДЕСЬ — ЧАСТЬ ПРОВЕРКИ: строка обязана стоять ДО того, как «Ещё»
- * открыт. Переставленная вниз, она требует от пульта того, чего договор от
- * него не требует, — и два правила начинают спорить друг с другом на ровном
- * месте. Лист поднимается ниже по файлу и закрывается сразу после.
+ * THE ORDER HERE IS PART OF THE CHECK: the line has to stand BEFORE "More" is
+ * open. Moved down, it demands from the console what the contract does not
+ * demand of it — and the two rules start arguing with each other for no
+ * reason. The sheet is raised further down in the file and closed right after.
  */
 check(
   (await pult.js(`return !/закончить/i.test(document.body.innerText||'')`)) === true,
-  'красного «Закончить» на виду нет',
+  'no red "End" in sight',
   await pult.js(
-    `return /[^\\n]*закончить[^\\n]*/i.exec(document.body.innerText||'')?.[0]?.trim() ?? 'нет'`,
+    `return /[^\\n]*закончить[^\\n]*/i.exec(document.body.innerText||'')?.[0]?.trim() ?? 'none'`,
   ),
 )
 
 /*
- * ПРИБОР И ЗАЛ ВИДЯТ ОДИН НОМЕР.
+ * THE GAUGE AND THE HALL SEE ONE NUMBER.
  *
- * Номер живёт в ОДНОМ месте продукта — в приборе, — и весь смысл этого номера
- * в том, что он не отстаёт от зала. Разойтись они умеют молча: на пульте
- * рисуется своё намерение, а до проектора оно не доехало, и на экране это
- * выглядит исправным пультом.
+ * The number lives in ONE place in the product — the gauge — and the whole
+ * point of that number is that it does not lag behind the hall. They can
+ * diverge silently: the console draws its own intention, it has not reached
+ * the projector, and on screen that looks like a working console.
  */
 const roomPage =
   `(()=>{const t=document.body.innerText||'';` +
@@ -1553,38 +1590,39 @@ const roomNow = (await student.js(`return ${roomPage}`)) as string
 const gaugeNow = (await pult.js(`return ${gaugePage}`)) as string
 check(
   gaugeNow !== '' && gaugeNow === roomNow,
-  'прибор показывает номер страницы',
-  `прибор ${gaugeNow || '—'} · зал ${roomNow || '—'}`,
+  'the gauge shows the page number',
+  `gauge ${gaugeNow || '—'} · hall ${roomNow || '—'}`,
 )
 
 /*
- * И этот номер живой: листаем с пульта и ждём зал. Назад, а не вперёд, когда
- * есть куда: на последней странице «ВПЕРЁД» выключено, и проверка проверяла бы
- * выключенную клавишу.
+ * And this number is live: we turn the page from the console and wait for the
+ * hall. Backwards rather than forwards, when there is somewhere to go: on the
+ * last page "FORWARD" is disabled, and the check would be checking a disabled
+ * key.
  */
 const backwards = Number(roomNow) > 1
 const wantPage = String(Number(roomNow) + (backwards ? -1 : 1))
 await pult.js(press(backwards ? PULT.prev : PULT.next))
-const caught = await until(student, `${roomPage} === ${JSON.stringify(wantPage)}`, 'зал догнал пульт', 8000)
+const caught = await until(student, `${roomPage} === ${JSON.stringify(wantPage)}`, 'the hall caught up with the console', 8000)
 const gaugeAfter = (await pult.js(`return ${gaugePage}`)) as string
 check(
   caught && gaugeAfter === wantPage,
-  'страница с пульта доезжает до зала',
-  `прибор ${gaugeAfter || '—'} · зал ${(await student.js(`return ${roomPage}`)) || '—'}`,
+  'the page from the console reaches the hall',
+  `gauge ${gaugeAfter || '—'} · hall ${(await student.js(`return ${roomPage}`)) || '—'}`,
 )
 
 /*
- * ФЕЙДЕР ЛИСТА.
+ * THE SHEET FADER.
  *
- * Лист — единственный источник света на пульте, и у него обязан быть
- * регулятор, не выходящий из приложения: три ступени пелены поверх листа И
- * чернил, 0 / 0.28 / 0.55, умолчание «зал».
+ * The sheet is the only source of light on the console, and it has to have a
+ * control that does not leave the application: three steps of veil over the
+ * sheet AND the ink, 0 / 0.28 / 0.55, the default is "hall".
  *
- * Меряется не класс пелены, а её работа: самая тёмная полупрозрачная заливка,
- * накрывающая лист целиком. Реализация свободна — `opacity` на плите, alpha в
- * самом цвете, — а вот число обязано меняться, иначе фейдер щёлкает вхолостую
- * и это видно только глазами в тёмном зале. `[data-pult-veil]`, если он есть,
- * снимает всю эту геометрию.
+ * What is measured is not the veil's class but its work: the darkest
+ * semi-transparent fill covering the whole sheet. The implementation is free —
+ * `opacity` on the slab, alpha in the colour itself — but the number has to
+ * change, otherwise the fader clicks idly and that is visible only by eye in a
+ * dark hall. `[data-pult-veil]`, if present, removes all this geometry.
  */
 const veil =
   `(()=>{const alpha=el=>{const cs=getComputedStyle(el);` +
@@ -1608,13 +1646,13 @@ const veil =
   `top=a}` +
   `return Math.round(top*100)/100})()`
 /*
- * Указка на пульте: НАЖАЛИ — и она работает.
+ * The pointer on the console: PRESSED — and it works.
  *
- * Клавиша была чистой пружиной: светила, только пока её держат, — а чтобы
- * точка появилась, надо было держать клавишу на рейле И одновременно вести по
- * листу. Две руки на планшете и ни одной мыши на ноутбуке; на экране это
- * читалось как «кнопка нажимается, и ничего не происходит». Теперь тап
- * оставляет указку включённой, и проверяется именно тап.
+ * The key was a pure spring: it lit only while held — and for the dot to appear
+ * one had to hold the key on the rail AND move along the sheet at the same
+ * time. Two hands on the tablet and no mouse on the laptop; on screen it read
+ * as "the button presses and nothing happens". Now a tap leaves the pointer on,
+ * and it is exactly the tap that is checked.
  */
 await pult.send('Page.bringToFront')
 await pult.js(press(PULT.laser))
@@ -1623,9 +1661,9 @@ check(
   (await pult.js(
     `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') === 'true'`,
   )) === true,
-  'тап по указке оставляет её включённой',
+  'a tap on the pointer leaves it on',
   await pult.js(
-    `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') ?? 'нет клавиши'`,
+    `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') ?? 'no key'`,
   ),
 )
 await pult.js(
@@ -1634,44 +1672,46 @@ await pult.js(
     `buttons:t==='pointerup'?0:1,clientX:r.left+r.width*fx,clientY:r.top+r.height*fy}));` +
     `at('pointerdown',0.4,0.6); at('pointermove',0.45,0.58); return 1`,
 )
-/* Красное — на живом холсте: указка по §3 договора живёт на `ink-live`. */
+/* The red is on the live canvas: under §3 of the contract the pointer lives on `ink-live`. */
 const pultRed =
   `(()=>{const c=document.querySelector('canvas.ink-live');` +
   `if(!c||!c.width) return -1;` +
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
   `let n=0; for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) n+=1; return n})()`
-const litUp = await until(pult, `${pultRed} > 0`, 'указка пульта зажглась', 8000)
-check(litUp, 'указка пульта светит после нажатия', `${await pult.js(`return ${pultRed}`)} красных точек на ink-live`)
+const litUp = await until(pult, `${pultRed} > 0`, 'the console pointer lit up', 8000)
+check(litUp, 'the console pointer shines after a press', `${await pult.js(`return ${pultRed}`)} red pixels on ink-live`)
 await pult.js(
   inkTarget +
     `input.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:7,pointerType:'pen',buttons:0,` +
     `clientX:r.left+r.width*0.45,clientY:r.top+r.height*0.58})); return 1`,
 )
 /*
- * Указка — инструмент палитры, а не отдельный режим: в GoodNotes и Notability
- * выбор пера её снимает, и здесь тоже. Гасится она не вторым тапом по себе,
- * а «Пером» — так её никогда не забудешь гулять по проектору до конца пары.
+ * The pointer is a palette tool, not a separate mode: in GoodNotes and
+ * Notability choosing a pen turns it off, and here too. It is switched off not
+ * by a second tap on itself but by "Pen" — that way you never forget it
+ * wandering over the projector until the end of the class.
  */
 await pult.js(press(PULT.pen))
 /*
- * Обведённая фигура догорает и после смены инструмента — так же, как в зале:
- * гасить её на пульте мгновенно значило бы показывать ведущему не то, что
- * видит зал. Ждём конца горения (HOLD_MS + FADE_MS в InkLayer) и требуем
- * пустоты: указка, забытая нажатой, — это как раз то, чего быть не должно.
+ * A circled figure burns out even after the tool changes — just as in the
+ * hall: putting it out on the console instantly would mean showing the
+ * presenter something other than what the hall sees. We wait for the end of
+ * the burn (HOLD_MS + FADE_MS in InkLayer) and demand emptiness: a pointer left
+ * pressed is exactly what must not happen.
  */
-const wentOut = await until(pult, `${pultRed} === 0`, 'фигура указки догорела', 4000)
+const wentOut = await until(pult, `${pultRed} === 0`, 'the pointer figure burned out', 4000)
 check(
   wentOut &&
     (await pult.js(
       `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') === 'false'`,
     )) === true,
-  'выбор пера снимает указку',
-  `указка aria-pressed=${await pult.js(
+  'choosing the pen turns the pointer off',
+  `pointer aria-pressed=${await pult.js(
     `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') ?? '?'`,
-  )} · красных на ink-live ${await pult.js(`return ${pultRed}`)}`,
+  )} · red on ink-live ${await pult.js(`return ${pultRed}`)}`,
 )
 
-/* Корпус и колодец сюда не попадают: они непрозрачны (alpha 1), пелена — нет. */
+/* The case and the well do not get in here: they are opaque (alpha 1), the veil is not. */
 const faderCells =
   `(()=>{const root=document.querySelector('[aria-label=${JSON.stringify(PULT.fader)}]');` +
   `if(!root) return [];` +
@@ -1680,17 +1720,18 @@ const faderCells =
   `if(!cells.length) cells=[...root.children];` +
   `return cells})()`
 const faderSteps = (await pult.js(`return ${faderCells}.length`)) as number
-check(faderSteps === 3, 'у фейдера листа три ступени', `ячеек ${faderSteps}`)
+check(faderSteps === 3, 'the sheet fader has three steps', `cells ${faderSteps}`)
 /*
- * Меряется ступень В ПОКОЕ, а не через фиксированную паузу.
+ * A step is measured AT REST, not after a fixed pause.
  *
- * У пелены переход 320 мс, а `getComputedStyle` отдаёт значение последнего
- * расчёта стиля — то есть текущий кадр анимации. Кадры на пульте редкие:
- * headless без ускорителя перерисовывает лист лекции целиком, и «подождать
- * 450 мс» на занятой машине ловило пелену ещё на старте перехода. Проверка
- * при этом объявляла сломанным фейдер, у которого в разметке стояло ровно
- * то, что просил договор. Ждём, пока значение перестанет меняться: два
- * одинаковых чтения подряд, кадр между ними вытягивается своим rAF.
+ * The veil has a 320 ms transition, and `getComputedStyle` returns the value of
+ * the last style computation — that is, the current animation frame. Frames on
+ * the console are rare: headless without an accelerator redraws the whole
+ * lecture sheet, and "wait 450 ms" on a busy machine caught the veil still at
+ * the start of the transition. The check then declared broken a fader whose
+ * markup had exactly what the contract asked for. We wait until the value
+ * stops changing: two identical readings in a row, with a frame between them
+ * pulled out by its own rAF.
  */
 async function restingVeil(): Promise<number> {
   let last = Number.NaN
@@ -1719,10 +1760,10 @@ check(
     rungs[1] < 0.36 &&
     rungs[2] > 0.46 &&
     rungs[2] < 0.64,
-  'фейдер меняет непрозрачность пелены',
-  rungs.length ? rungs.join(' · ') : 'пелены не нашли',
+  'the fader changes the opacity of the veil',
+  rungs.length ? rungs.join(' · ') : 'no veil found',
 )
-/* Возвращаем «зал»: это умолчание, и с ним живёт весь остальной прогон. */
+/* Back to "hall": it is the default, and the rest of the run lives with it. */
 const hall = ladder.indexOf(rungs[1])
 if (hall >= 0) {
   await pult.js(`${faderCells}[${hall}].click(); return 1`)
@@ -1730,18 +1771,18 @@ if (hall >= 0) {
 }
 
 /*
- * Заметки в ландшафте — выдвижной лист поверх нижней части страницы: лист
- * лекции занимает весь остаток экрана, и постоянной ленты под ним больше
- * нет. Клавиша «Заметки» на рейле его поднимает и держит `aria-pressed`;
- * выше лист уже открыт перекличкой органов — здесь проверяется, что он
- * закрывается и открывается снова.
+ * In landscape the notes are a sliding sheet over the lower part of the page:
+ * the lecture sheet takes up the whole rest of the screen, and there is no
+ * permanent strip under it any more. The "Notes" key on the rail raises it and
+ * holds `aria-pressed`; above, the sheet has already been opened by the roll
+ * call of controls — here it is checked that it closes and opens again.
  */
 await pult.js(press(PULT.notes))
 await wait(400)
 check(
   (await pult.js(`return !document.querySelector('[data-pult-notes] .pult-prompt')`)) === true &&
     (await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'false',
-  'клавиша «Заметки» сворачивает лист заметок',
+  'the "Notes" key folds the notes sheet',
   `aria-pressed=${await pult.js(`return ${pressedIs(PULT.notes)}`)}`,
 )
 await pult.js(press(PULT.notes))
@@ -1749,61 +1790,63 @@ await wait(500)
 check(
   (await pult.js(`return !!document.querySelector('[data-pult-notes] .pult-prompt')`)) === true &&
     (await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'true',
-  'заметки спикера выдвигаются и читаются',
+  "the speaker's notes slide out and can be read",
   await pult.js(
-    `return (document.querySelector('[data-pult-notes] .pult-prompt')?.textContent||'').trim().slice(0,40) || 'листа нет'`,
+    `return (document.querySelector('[data-pult-notes] .pult-prompt')?.textContent||'').trim().slice(0,40) || 'no sheet'`,
   ),
 )
 /*
- * ЗАМЕТКИ НА ПУЛЬТЕ ПРИБИТЫ. Речь пишут за столом, на пуле её читают: поля
- * ввода здесь нет вовсе, и это проверяется прямо — не «поле не в фокусе», а
- * «поля не существует». Пока оно было, планшет ловил им случайное касание
- * ладони, поднимал клавиатуру на полэкрана, а Pencil начинал переводить
- * росчерк в текст.
+ * THE NOTES ON THE CONSOLE ARE PINNED. A talk is written at a desk and read at
+ * the console: there is no input field here at all, and this is checked
+ * directly — not "the field is not focused" but "the field does not exist".
+ * While it existed, the tablet caught accidental palm touches with it, raised
+ * the keyboard over half the screen, and the Pencil started converting strokes
+ * into text.
  */
 check(
   (await pult.js(`return !document.querySelector('[data-pult-notes] textarea')`)) === true,
-  'заметки на пульте не правятся',
+  'the notes on the console cannot be edited',
   await pult.js(
-    `return 'полей ввода '+document.querySelectorAll('[data-pult-notes] textarea, [data-pult-notes] [contenteditable]').length`,
+    `return 'input fields '+document.querySelectorAll('[data-pult-notes] textarea, [data-pult-notes] [contenteditable]').length`,
   ),
 )
 check(
   (await pult.js(
-    `const t=document.querySelector('[data-pult-notes] .pult-prompt');return t?getComputedStyle(t).userSelect:'нет'`,
+    `const t=document.querySelector('[data-pult-notes] .pult-prompt');return t?getComputedStyle(t).userSelect:'missing'`,
   )) !== 'none',
-  'текст заметок выделяется',
+  'the notes text can be selected',
   await pult.js(
-    `const t=document.querySelector('[data-pult-notes] .pult-prompt');return 'user-select='+(t?getComputedStyle(t).userSelect:'нет')`,
+    `const t=document.querySelector('[data-pult-notes] .pult-prompt');return 'user-select='+(t?getComputedStyle(t).userSelect:'missing')`,
   ),
 )
-/* Комнаты на пульте нет вовсе: ни вкладок, ни панели файлов, ни оракула. */
+/* There is no room on the console at all: no tabs, no file panel, no Oracle. */
 check(
   (await pult.js(
     `return !document.querySelector('[aria-label="Toggle the AI oracle"]') && !document.querySelector('[role="tablist"]')`,
   )) === true,
-  'комната на пульт не переехала',
-  'только лекция',
+  'the room did not move onto the console',
+  'only the lecture',
 )
 /*
- * ЛИСТ «ЕЩЁ» — И ТО, ЧТО ОН ОТКРЫВАЕТСЯ ИЗ ШАПКИ ЗАМЕТОК.
+ * THE "MORE" SHEET — AND THE FACT THAT IT OPENS FROM THE NOTES HEADER.
  *
- * Груз убранной нити лежит здесь: полный экран, «Сменить документ», «Левая
- * рука», справка про сон экрана и «Закончить лекцию». Открывать это неоткуда,
- * кроме «⋯» в шапке ленты заметок, и место кнопки — часть договора: шапка
- * заметок начинается ПОД листом. Кнопка, уехавшая обратно наверх, — это
- * вернувшаяся нить, только из одного знака.
+ * The load of the removed strip lives here: full screen, "Change document",
+ * "Left hand", a note on screen sleep and "End lecture". There is nowhere to
+ * open this from except "⋯" in the header of the notes strip, and the place of
+ * the button is part of the contract: the notes header starts UNDER the sheet.
+ * A button that moved back to the top is the strip come back, only made of one
+ * glyph.
  */
 const morePlace = (await pult.js(
   `const b=document.querySelector('[aria-label=${JSON.stringify(PULT.more)}]');` +
-    `if(!b) return 'кнопки «Ещё» нет';` +
+    `if(!b) return 'no "Ещё" button';` +
     `const notes=document.querySelector('[data-pult-notes]');` +
-    `if(!notes) return 'листа заметок нет';` +
-    `if(!notes.contains(b)) return 'вне листа заметок';` +
+    `if(!notes) return 'no notes sheet';` +
+    `if(!notes.contains(b)) return 'outside the notes sheet';` +
     `const r=b.getBoundingClientRect(),n=notes.getBoundingClientRect();` +
-    `return r.top-n.top<=48 ? 'в шапке заметок' : 'в листе заметок, но на '+Math.round(r.top-n.top)+'px ниже шапки'`,
+    `return r.top-n.top<=48 ? 'in the notes header' : 'in the notes sheet, but '+Math.round(r.top-n.top)+'px below the header'`,
 )) as string
-check(morePlace === 'в шапке заметок', '«Ещё» живёт в шапке листа заметок', morePlace)
+check(morePlace === 'in the notes header', '"More" lives in the header of the notes sheet', morePlace)
 
 await pult.js(press(PULT.more))
 await wait(400)
@@ -1811,16 +1854,16 @@ const endsHere = (await pult.js(
   `return /закончить лекц/i.test(document.body.innerText||'')` +
     ` || !!document.querySelector('[aria-label="Закончить лекцию"]')`,
 )) as boolean
-check(endsHere === true, 'в листе «Ещё» есть «Закончить лекцию»', endsHere ? 'есть' : 'нет')
-/* Там же — «Рисовать пальцем»: единственное место, где палец возвращают перу. */
+check(endsHere === true, 'the "More" sheet has "End lecture"', endsHere ? 'present' : 'none')
+/* In the same place — "Draw with your finger": the only place where the finger is allowed to draw again. */
 check(
   (await pult.js(`return ${has(PULT.finger)}`)) === true,
-  'в листе «Ещё» есть «Рисовать пальцем»',
+  'the "More" sheet has "Draw with your finger"',
   await pult.js(`return ${pressedIs(PULT.finger)}`).then((v) => `aria-pressed=${v}`),
 )
 
-/* Закрываем и ложем, и Escape: закрыть лист обязаны оба, а дальше проверке
-   нужен пульт, а не поднятая плита поверх него. */
+/* Close with both the overlay and Escape: both have to close the sheet, and
+   further on the check needs the console, not a raised slab over it. */
 await pult.js(`document.querySelector('[aria-label="Закрыть"]')?.click(); return 1`)
 for (const type of ['keyDown', 'keyUp'] as const) {
   await pult.send('Input.dispatchKeyEvent', {
@@ -1831,24 +1874,26 @@ for (const type of ['keyDown', 'keyUp'] as const) {
     nativeVirtualKeyCode: 27,
   })
 }
-await until(pult, `!/закончить лекц/i.test(document.body.innerText||'')`, 'лист «Ещё» закрылся', 4000)
+await until(pult, `!/закончить лекц/i.test(document.body.innerText||'')`, 'the "More" sheet closed', 4000)
 
-/* Лист заметок сворачивается: дальше меряется сам лист лекции. */
+/* The notes sheet folds: further on the lecture sheet itself is measured. */
 await pult.js(press(PULT.notes))
 await wait(400)
 
 /*
- * ЛИСТ ВО ВЕСЬ ОСТАТОК ЭКРАНА — на трёх планшетах.
+ * THE SHEET OVER THE WHOLE REST OF THE SCREEN — on three tablets.
  *
- * Раскладка считалась под один iPad 11" в ландшафте, и на 12.9" и в портрете
- * лист тонул в верхней трети экрана: «документ в каком-то окошке». Теперь
- * лист — всё, что осталось от рейла и полей, и проверяется это числом, а не
- * глазами: доля экрана под холстом, верхняя кромка и ширина коробки. Порог
- * доли — от геометрии: 16:9 в ландшафте укладывается на ≈2/3 экрана, в
- * портрете шириной 810 — на треть, остальное отдано заметкам.
+ * The layout was computed for one 11" iPad in landscape, and on 12.9" and in
+ * portrait the sheet drowned in the top third of the screen: "the document in
+ * some little window". Now the sheet is everything left over from the rail and
+ * the margins, and this is checked by a number, not by eye: the share of the
+ * screen under the canvas, the top edge and the width of the box. The share
+ * threshold comes from geometry: 16:9 in landscape fits in ≈2/3 of the screen,
+ * in portrait 810 wide in a third, the rest is given to the notes.
  *
- * Каждая геометрия открывается ЗАНОВО: пульт меряет окно при старте, и
- * вкладка, пересчитанная на ходу, показала бы не то, что рисуется на iPad.
+ * Each geometry is opened ANEW: the console measures the window at start, and
+ * a tab recomputed on the fly would show something other than what an iPad
+ * draws.
  */
 const READY = `!!document.querySelector('.ink-input') && (document.querySelector('canvas.ink-wet')?.getBoundingClientRect().width||0)>200`
 for (const [W, H, file] of [
@@ -1859,11 +1904,11 @@ for (const [W, H, file] of [
   await pult.send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 2, mobile: false })
   await pult.send('Page.reload')
   await pult.send('Page.bringToFront')
-  const drawn = await until(pult, READY, `пульт ${W}×${H} нарисовал лист`)
+  const drawn = await until(pult, READY, `console ${W}×${H} drew the sheet`)
   await wait(500)
   await takeConsole()
   const portrait = H > W
-  // Лист заметок помнится ключом; в ландшафте меряется и снимается голый лист.
+  // The notes sheet is remembered under a key; in landscape the bare sheet is measured and shot.
   if (!portrait && (await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'true') {
     await pult.js(press(PULT.notes))
     await wait(400)
@@ -1877,83 +1922,86 @@ for (const [W, H, file] of [
   const need = portrait ? 0.3 : 0.55
   check(
     drawn && !!g.canvas && share >= need && g.canvas.top <= 24 && g.canvas.width >= 0.8 * (W - railW - 24),
-    `${W}×${H}: лист занимает экран`,
+    `${W}×${H}: the sheet fills the screen`,
     g.canvas
-      ? `${Math.round(g.canvas.width)}×${Math.round(g.canvas.height)} — ${Math.round(share * 100)}% экрана (нужно ≥${Math.round(need * 100)}%), верх ${Math.round(g.canvas.top)}px`
-      : 'холста нет',
+      ? `${Math.round(g.canvas.width)}×${Math.round(g.canvas.height)} — ${Math.round(share * 100)}% of the screen (need ≥${Math.round(need * 100)}%), top ${Math.round(g.canvas.top)}px`
+      : 'no canvas',
   )
   const railPlace = !g.rail
-    ? 'рейла нет'
+    ? 'no rail'
     : portrait
       ? g.rail.bottom >= H - 1
-        ? 'снизу'
-        : `не снизу (bottom ${Math.round(g.rail.bottom)})`
+        ? 'at the bottom'
+        : `not at the bottom (bottom ${Math.round(g.rail.bottom)})`
       : g.rail.left === 0
-        ? 'слева'
-        : `не слева (left ${Math.round(g.rail.left)})`
-  check(railPlace === (portrait ? 'снизу' : 'слева'), `${W}×${H}: рейл ${portrait ? 'снизу' : 'слева'}`, railPlace)
+        ? 'on the left'
+        : `not on the left (left ${Math.round(g.rail.left)})`
+  check(railPlace === (portrait ? 'at the bottom' : 'on the left'), `${W}×${H}: rail ${portrait ? 'at the bottom' : 'on the left'}`, railPlace)
   if (portrait) {
-    // В портрете заметки не выдвигаются, а пристыкованы между листом и рейлом.
+    // In portrait the notes do not slide out but are docked between the sheet and the rail.
     check(
       !!g.notes && !!g.canvas && g.notes.top >= g.canvas.bottom && (!g.rail || g.notes.bottom <= g.rail.top + 1),
-      `${W}×${H}: заметки пристыкованы под листом`,
-      g.notes ? `заметки ${Math.round(g.notes.width)}×${Math.round(g.notes.height)} с y=${Math.round(g.notes.top)}` : 'заметок нет',
+      `${W}×${H}: the notes are docked under the sheet`,
+      g.notes ? `notes ${Math.round(g.notes.width)}×${Math.round(g.notes.height)} at y=${Math.round(g.notes.top)}` : 'no notes',
     )
   }
   if (process.argv.includes('--shot')) {
-    // Снимок делается с ЖИВЫМ пультом: вкладка, ушедшая в фон, теряет сокет, и
-    // без этого ожидания на снимок попадала полоса «нет связи».
+    // The screenshot is taken with a LIVE console: a tab that went into the
+    // background loses its socket, and without this wait the "no connection" bar
+    // got into the shot.
     await wait(400)
     const shot = await pult.send('Page.captureScreenshot', { format: 'png' })
     const where = path.resolve(file)
     writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))
-    console.log(`  снимок: ${where}`)
+    console.log(`  screenshot: ${where}`)
   }
 }
-/* Обратно на 11": с этой геометрией живёт остаток прогона. */
+/* Back to 11": the rest of the run lives with this geometry. */
 await pult.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 820, deviceScaleFactor: 2, mobile: false })
 await pult.send('Page.reload')
-await until(pult, READY, 'пульт вернулся на 11"')
+await until(pult, READY, 'the console is back at 11"')
 await takeConsole()
-for (const line of pult.trouble.slice(0, 3)) console.log(`  (пульт) ${line}`)
+for (const line of pult.trouble.slice(0, 3)) console.log(`  (console) ${line}`)
 await host.send('Page.bringToFront')
 
 /*
- * Проекция показывает страницу, а не чёрный прямоугольник.
+ * The projection shows the page, not a black rectangle.
  *
- * Самая дорогая ошибка этого экрана: он и в исправном виде почти весь чёрный,
- * так что пустой лист на нём не отличить от «ещё не приехало». Окно выводится
- * вперёд нарочно — headless не рисует фоновые вкладки вовсе, а проекция на
- * балке всегда на виду.
+ * The most expensive mistake of this screen: even when it works it is almost
+ * all black, so an empty sheet on it cannot be told from "not arrived yet". The
+ * window is brought to the front on purpose — headless does not draw background
+ * tabs at all, and the projection on the beam is always in view.
  */
 await beam.send('Page.bringToFront')
 const beamDrew = await until(
   beam,
   `[...document.querySelectorAll('canvas')].some(c=>c.getBoundingClientRect().width>200)`,
-  'проекция нарисовала страницу',
+  'the projection drew the page',
 )
 check(
   beamDrew,
-  'проекция показывает лист, а не пустоту',
+  'the projection shows the sheet, not emptiness',
   await beam.js(
-    `return document.querySelector('.shadow-pop')?.getAttribute('style') ?? 'листа нет'`,
+    `return document.querySelector('.shadow-pop')?.getAttribute('style') ?? 'no sheet'`,
   ),
 )
 await host.send('Page.bringToFront')
 
 /*
- * Стрелки на проекции листают лекцию.
+ * Arrows on the projection turn the lecture's pages.
  *
- * Проекция стоит на компьютере у проектора, и в него воткнуты клавиатура и
- * кликер — а кликер шлёт ровно стрелки и PageDown. Листает только тот, чьи
- * это слайды: здесь окно проекции вошло тем же преподавателем, что ведёт.
+ * The projection runs on the computer at the projector, and a keyboard and a
+ * clicker are plugged into it — and a clicker sends exactly arrows and
+ * PageDown. Only the one whose slides these are turns the pages: here the
+ * projection window entered as the same teacher who presents.
  */
 await beam.send('Page.bringToFront')
 /*
- * Нажимаем, пока зал не перевернёт страницу. Окно проекции в headless-браузере
- * долго лежало в фоне, и его сокет мог оборваться: нажатие тогда ждёт
- * переподключения в очереди. Человек так не делает — у проекции свой монитор,
- * — а проверка так делать обязана, иначе она проверяет фоновые вкладки Chrome.
+ * We press until the hall turns the page. The projection window in the
+ * headless browser lay in the background for a long time, and its socket may
+ * have dropped: a press then waits in the queue for the reconnection. A person
+ * does not do this — the projection has its own monitor — but the check has
+ * to, otherwise it checks Chrome's background tabs.
  */
 const onThird = `[...document.querySelectorAll('span')].some(s=>/^3 \\/ 3$/.test((s.textContent||'').trim()))`
 const arrow = (key: string) =>
@@ -1966,55 +2014,56 @@ async function pressUntil(key: string, seen: string, what: string): Promise<bool
   return false
 }
 await wait(400)
-check(await pressUntil('ArrowRight', onThird, 'стрелка на проекции долистала до третьей'), 'стрелки на проекции листают лекцию', 'вперёд: 3 / 3')
-check(await pressUntil('ArrowLeft', onSecond, 'стрелка на проекции вернула вторую'), 'и назад тоже', 'назад: 2 / 3')
+check(await pressUntil('ArrowRight', onThird, 'the arrow on the projection went on to the third page'), 'arrows on the projection turn the lecture pages', 'forward: 3 / 3')
+check(await pressUntil('ArrowLeft', onSecond, 'the arrow on the projection went back to the second page'), 'and back too', 'back: 2 / 3')
 await host.send('Page.bringToFront')
 
 /*
- * «На проектор» из комнаты — отдельным окном, а комната остаётся.
+ * "Project" from the room opens a separate window, and the room stays.
  *
- * Раньше проекция уходила в ту же вкладку, и комната на этом компьютере
- * заканчивалась. Здесь смотрим, что адрес вкладки не сменился, а окно
- * проекции появилось среди целей браузера.
+ * The projection used to go into the same tab, and the room on that computer
+ * ended. Here we check that the tab's address did not change and that the
+ * projection window appeared among the browser's targets.
  */
 /*
- * `window.open` подменён: синтетический клик — не жест человека, и браузер
- * не даёт ему открыть окно, а продукт по запасному пути уводит вкладку сам.
- * Проверяем намерение — куда открывают и что вкладка остаётся, — а не
- * политику всплывающих окон headless-браузера.
+ * `window.open` is replaced: a synthetic click is not a human gesture, and the
+ * browser does not let it open a window, while the product, on its fallback
+ * path, navigates the tab itself. We check the intention — where it opens and
+ * that the tab stays — not the pop-up policy of the headless browser.
  */
 await host.js(
   `window.__opened=null; window.open=(u)=>{window.__opened=String(u); return {focus(){}, closed:false}};` +
     `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='На проектор');` +
-    `if(!b) throw new Error('кнопки «На проектор» нет'); b.click(); return 1`,
+    `if(!b) throw new Error('no "На проектор" button'); b.click(); return 1`,
 )
 await wait(600)
 check(
   (await host.js(`return location.pathname`)) === `/s/${ROOM}`,
-  'комната остаётся на месте после «На проектор»',
+  'the room stays in place after "Project"',
   await host.js(`return location.pathname`),
 )
 check(
   (await host.js(`return window.__opened`)) === `/s/${ROOM}/screen`,
-  'проекция открывается отдельным окном',
+  'the projection opens in a separate window',
   await host.js(`return String(window.__opened)`),
 )
 
 /*
- * Чистый лист.
+ * A blank sheet.
  *
- * Слайд кончился, а вывод формулы — нет. Лист заводится с пульта и обязан
- * доехать до проектора белым полем: страница с отрицательным номером есть в
- * лекции, но её нет в документе, и всё, что умеет только PDF, должно об этом
- * знать. Проверяется именно это — что на балке чисто, а не последний слайд.
+ * The slide has ended, but the derivation has not. The sheet is created from
+ * the console and has to reach the projector as a white field: a page with a
+ * negative number exists in the lecture but not in the document, and
+ * everything that only knows PDF has to know about it. Exactly that is checked
+ * — that the beam is clean, not showing the last slide.
  */
 await pult.send('Page.bringToFront')
 /*
- * Клавиша осталась клавишей, но слова на ней больше нет: чистый лист заводят
- * посреди фразы, и два нажатия (лента страниц → «+ новый лист») для этого —
- * уже отказ. Ищется по имени, не по подписи.
+ * The key stayed a key, but there is no word on it any more: a blank sheet is
+ * created in the middle of a sentence, and two presses (the page strip → "+ new
+ * sheet") for that are already a failure. It is found by name, not by label.
  */
-await until(pult, named(PULT.blank), 'клавиша чистого листа на месте')
+await until(pult, named(PULT.blank), 'the blank sheet key is in place')
 await pult.js(press(PULT.blank))
 const blankSheet =
   `(async()=>{const c=[...document.querySelectorAll('canvas')].find(n=>n.getBoundingClientRect().width>200);` +
@@ -2022,56 +2071,60 @@ const blankSheet =
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
   `for(let i=3;i<d.length;i+=4) if(d[i]>16) return false; return true})()`
 await beam.send('Page.bringToFront')
-const cleared = await until(beam, blankSheet, 'проекция стала чистым листом', 12000)
-check(cleared, 'чистый лист доезжает до проектора', 'белое поле')
+const cleared = await until(beam, blankSheet, 'the projection became a blank sheet', 12000)
+check(cleared, 'the blank sheet reaches the projector', 'a white field')
 /*
- * Говорит об этом прибор, и только он: у чистого листа нет доли колоды, поэтому
- * вместо «7 / 24» там «Л2», а вместо линейки темпа — слово «ЛИСТ». Спрашиваем
- * прибор, а не всю страницу: слово «лист» умеет случайно найтись где угодно.
+ * The gauge says so, and only the gauge: a blank sheet has no share of the
+ * deck, so instead of "7 / 24" it shows "Л2", and instead of the pace ruler
+ * the word "ЛИСТ". We ask the gauge, not the whole page: the word "лист" can
+ * turn up by accident anywhere.
  */
 await pult.send('Page.bringToFront')
 const boardGauge = (await pult.js(`return ${gaugeText}`)) as string
 check(
   /Л\s*\d/i.test(boardGauge) || /лист/i.test(boardGauge),
-  'пульт говорит, что показывает лист, а не страницу',
-  boardGauge || 'прибор молчит',
+  'the console says it shows a sheet, not a page',
+  boardGauge || 'the gauge is silent',
 )
-/* И назад к слайдам — тем же нажатием: исписанный лист никуда не делся. */
-await until(pult, named(PULT.toSlide), 'возврат к слайду появился')
+/* And back to the slides — with the same press: the written sheet has not gone anywhere. */
+await until(pult, named(PULT.toSlide), 'the back-to-slide key appeared')
 await pult.js(press(PULT.toSlide))
 await beam.send('Page.bringToFront')
 await wait(300)
-await until(beam, `!${blankSheet}`, 'проекция вернулась к слайду')
+await until(beam, `!${blankSheet}`, 'the projection returned to the slide')
 await host.send('Page.bringToFront')
 
-/* Пауза гасит проекцию, но не пульт: у ведущего страница остаётся. */
+/* Pause darkens the projection, but not the console: the presenter keeps the page. */
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Пауза').click(); return 1`,
 )
-/* Оба утверждения проверяются, а не одно: непогасший зал раньше проходил эту
-   строку с бодрым «да», потому что результат ожидания никуда не брался. */
-const dimmed = await until(beam, `(document.body.textContent||'').includes('пауза')`, 'проекция погасла')
+/* Both statements are checked, not one: a hall that did not go dark used to
+   pass this line with a cheerful "yes", because the result of the wait went
+   nowhere. */
+const dimmed = await until(beam, `(document.body.textContent||'').includes('пауза')`, 'the projection went dark')
 const hostKept = (await host.js(`return document.querySelectorAll('canvas').length > 0`)) === true
 check(
   dimmed && hostKept,
-  'пауза гасит зал, а у ведущего страница остаётся',
-  dimmed ? (hostKept ? 'да' : 'зал погас, но и у ведущего страницы нет') : 'зал не погас',
+  'pause darkens the hall, and the presenter keeps the page',
+  dimmed ? (hostKept ? 'yes' : 'the hall went dark, but the presenter has no page either') : 'the hall did not go dark',
 )
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Пауза').click(); return 1`,
 )
 
 /*
- * Конец лекции возвращает всех в обычную читалку — со второго нажатия.
+ * The end of the lecture returns everyone to the ordinary reader — on the
+ * second press.
  *
- * Первое только спрашивает, и это проверяется отдельной строкой: «Закончить»
- * стоит вплотную к «На проектор» — к той кнопке, которую ведущий нажимает в
- * начале пары, — а промах на одну уносил разметку всей лекции безвозвратно.
- * Без этой проверки кнопку однажды вернут в один клик, и стенд промолчит.
+ * The first press only asks, and that is checked by a separate line: "End"
+ * stands right next to "Project" — the button the presenter presses at the
+ * start of a class — and a miss by one carried off the markup of the whole
+ * lecture irreversibly. Without this check the button will one day go back to
+ * a single click, and the stand will keep quiet.
  */
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='Закончить');` +
-    `if(!b) throw new Error('кнопки «Закончить» в полосе нет'); b.click(); return 1`,
+    `if(!b) throw new Error('no "Закончить" button in the bar'); b.click(); return 1`,
 )
 await wait(300)
 const stopAsked =
@@ -2083,72 +2136,72 @@ const stillLive =
   (await student.js(`return (document.body.textContent||'').includes('Лекцию ведёт')`)) === true
 check(
   stopAsked && stillLive,
-  'первое «Закончить» спрашивает, а не заканчивает',
-  stopAsked ? (stillLive ? 'спросила' : 'спросила, но лекция уже кончилась') : 'не спросила',
+  'the first "End" asks rather than ends',
+  stopAsked ? (stillLive ? 'asked' : 'asked, but the lecture is already over') : 'did not ask',
 )
 await host.js(
   `const b=[...document.querySelectorAll('button')]` +
     `.find(x=>['Закончить','Закончить лекцию?'].includes((x.textContent||'').trim()));` +
-    `if(!b) throw new Error('«Закончить» пропала между нажатиями'); b.click(); return 1`,
+    `if(!b) throw new Error('"Закончить" vanished between the presses'); b.click(); return 1`,
 )
 await until(
   student,
   `!(document.body.textContent||'').includes('Лекцию ведёт')`,
-  'лекция кончилась у студента',
+  'the lecture ended for the student',
 )
 check(
   (await student.js(`return !(document.body.textContent||'').includes('Лекцию ведёт')`)) === true,
-  'конец лекции убирает её у всех',
-  'убрал',
+  'ending the lecture removes it for everyone',
+  'removed',
 )
-for (const line of beam.trouble.slice(0, 3)) console.log(`  (проекция) ${line}`)
+for (const line of beam.trouble.slice(0, 3)) console.log(`  (projection) ${line}`)
 
 await host.js(`document.querySelector('[aria-label="Закрыть lecture.pdf"]')?.click(); return 1`)
 await wait(400)
 
 /*
- * Номер выделенной ячейки — метка, а не тёмный прямоугольник.
+ * The number of a selected cell is a mark, not a dark rectangle.
  *
- * `cn` — это clsx, он классы не разрешает: цвет состояния и цвет метки
- * оставались оба, и цифры выходили цвета собственного фона. На экране это
- * читалось как залитый квадрат вместо номера.
+ * `cn` is clsx, it does not resolve classes: the state colour and the mark
+ * colour both stayed, and the digits came out in the colour of their own
+ * background. On screen it read as a filled square instead of a number.
  */
 await host.js(pressCell(0))
 await wait(300)
 const inkOnInk = await host.js(
   `const cell=document.querySelector('[aria-label$="selected"]');` +
     `const span=[...cell.querySelectorAll('span')].find(s=>/^\\d\\d$/.test((s.textContent||'').trim()));` +
-    `if(!span) return 'номера не нашли';` +
+    `if(!span) return 'no number found';` +
     `const css=getComputedStyle(span);` +
-    `return css.color === css.backgroundColor ? 'цифры цвета фона' : css.color + ' на ' + css.backgroundColor`,
+    `return css.color === css.backgroundColor ? 'digits in the background colour' : css.color + ' on ' + css.backgroundColor`,
 )
 check(
-  typeof inkOnInk === 'string' && inkOnInk.includes(' на '),
-  'номер выделенной ячейки читается, а не залит',
+  typeof inkOnInk === 'string' && inkOnInk.includes(' on '),
+  'the number of a selected cell is readable, not filled in',
   inkOnInk,
 )
 
 /*
- * Картинка открывается, а не показывает своё имя.
+ * An image opens instead of showing its name.
  *
- * У файла в комнате нет открытого адреса: `<img>` с прямой ссылкой получал 401
- * и рисовал `alt` — то есть имя файла. Выглядело это как «картинки не
- * открываются», и это была правда.
+ * A file in the room has no public address: an `<img>` with a direct link got
+ * 401 and drew `alt` — that is, the file name. It looked like "images do not
+ * open", and that was the truth.
  */
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('схема.gif'));` +
-    `if(!b) throw new Error('картинки нет в дереве'); b.click(); return 1`,
+    `if(!b) throw new Error('the image is not in the tree'); b.click(); return 1`,
 )
 await until(
   host,
   `(document.querySelector('main img, img[alt="схема.gif"]')?.naturalWidth ?? 0) > 0`,
-  'картинка загрузилась',
+  'the image loaded',
 )
 check(
   (await host.js(
     `return (document.querySelector('img[alt="схема.gif"]')?.naturalWidth ?? 0) > 0`,
   )) === true,
-  'картинка открывается, а не показывает своё имя',
+  'the image opens instead of showing its name',
   await host.js(
     `return (document.querySelector('img[alt="схема.gif"]')?.naturalWidth ?? 0) + 'px'`,
   ),
@@ -2156,43 +2209,43 @@ check(
 await host.js(`document.querySelector('[aria-label="Закрыть схема.gif"]')?.click(); return 1`)
 await wait(300)
 
-/* Быстрых действий в панели оракула больше нет. */
+/* There are no more quick actions in the Oracle panel. */
 check(
   (await host.js(
     `return [...document.querySelectorAll('button')].some(b=>/^(Explain|Fix|Debug|Improve|Hint)$/.test((b.textContent||'').trim()))`,
   )) === false,
-  'кнопок «объясни/почини/улучши» в панели нет',
-  'убраны',
+  'no "explain/fix/improve" buttons in the panel',
+  'removed',
 )
 
-/* Закрыть можно и тетрадь — раньше её вкладка была вечной. */
+/* A notebook can be closed too — its tab used to be eternal. */
 await host.js(`document.querySelector('[aria-label="Закрыть разбор.ipynb"]').click(); return 1`)
 await wait(400)
 check(
   (await host.js(`return document.querySelectorAll('main').length`)) === 1,
-  'тетрадь закрывается, как любой другой файл',
-  'осталась одна',
+  'a notebook closes like any other file',
+  'one left',
 )
 
 /*
- * Снимок экрана на память — по просьбе `--shot`.
+ * A screenshot as a keepsake — on request with `--shot`.
  *
- * Проверки отвечают на вопрос «работает ли», и ни одна из них не отвечает на
- * «как это выглядит». Значки видов файла, отступы вкладок и плотность дерева
- * проверяются только глазами, и снимок — единственный способ посмотреть на них,
- * не поднимая всё руками.
+ * The checks answer the question "does it work", and none of them answers
+ * "what does it look like". File-type icons, tab spacing and tree density are
+ * checked only by eye, and a screenshot is the only way to look at them without
+ * bringing everything up by hand.
  */
 if (process.argv.includes('--shot')) {
-  // Снимок делаем с ОТКРЫТЫМ документом и полосой страниц: это самое новое, что
-  // есть на экране, и единственное, что проверяется глазами.
+  // The screenshot is taken with the document OPEN and the page strip: that is
+  // the newest thing on the screen and the only thing checked by eye.
   await host.js(
     `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('lecture.pdf')); b&&b.click(); return 1`,
   )
   await wait(1200)
-  // Ждём сам документ: до его прихода полосы страниц нет по построению, и
-  // слепое нажатие на «Страницы» в этот момент закрывало ровно то, ради чего
-  // снимок и делается.
-  await until(host, `document.querySelectorAll('canvas').length > 0`, 'документ для снимка')
+  // We wait for the document itself: before it arrives there is no page strip by
+  // construction, and a blind press on "Pages" at that moment closed exactly
+  // what the screenshot is taken for.
+  await until(host, `document.querySelectorAll('canvas').length > 0`, 'the document for the screenshot')
   await host.js(
     `if(!document.querySelector('[data-rail]')){` +
       `[...document.querySelectorAll('button')].find(x=>x.getAttribute('aria-label')==='Полоса страниц')?.click()}` +
@@ -2200,10 +2253,10 @@ if (process.argv.includes('--shot')) {
   )
   await wait(900)
   await wait(500)
-  // С выделенной ячейкой: залитый номер — самое мелкое, что стоит смотреть
-  // глазами, и ровно то, что однажды оказалось тёмным квадратом.
+  // With a selected cell: the filled number is the smallest thing worth looking
+  // at by eye, and exactly what once turned out to be a dark square.
   await host.js(
-    // В тело, а не в корень: выделение слушает `[data-cell-pick]` (см. pressCell).
+    // Into the body, not the root: selection listens to `[data-cell-pick]` (see pressCell).
     `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
       `cells[1]?.querySelector('[data-cell-pick]:not(span)')` +
       `?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
@@ -2212,68 +2265,69 @@ if (process.argv.includes('--shot')) {
   const shot = await host.send('Page.captureScreenshot', { format: 'png' })
   const where = path.resolve('ui-check.png')
   writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))
-  console.log(`  снимок: ${where}`)
+  console.log(`  screenshot: ${where}`)
 }
 
 /*
- * Правила комнаты: перезагрузка — не «преподаватель изменил».
+ * Room rules: a reload is not "the teacher changed".
  *
- * Плашка о смене правил всплывала на каждой перезагрузке страницы в любой
- * комнате с неоткрытыми правилами: «первым кадром» считался кадр при
- * отсутствии правил у страницы, а правила у неё есть всегда — из кэша или из
- * умолчания. Поэтому сначала делаем правила неоткрытыми ПО-НАСТОЯЩЕМУ (той же
- * дверью, что и пульт правил), потом перезагружаем студента и смотрим, что
- * плашки нет, — и что настоящая смена её всё-таки показывает.
+ * The rules-changed notice popped up on every page reload in any room with
+ * non-open rules: the frame received while the page had no rules was treated as
+ * "the first frame", but the page always has rules — from the cache or the
+ * default. So first we make the rules non-open FOR REAL (through the same door
+ * as the rules console), then reload the student and check that there is no
+ * notice — and that a real change does show it.
  */
 const RULES_NOTICE = `/Преподаватель изменил, что можно делать/.test(document.body.textContent||'')`
 const patchRules = (rules: Record<string, string>) =>
   `const me=JSON.parse(localStorage.getItem('colloq.identity.v1')||'{}')[${JSON.stringify(ROOM)}];` +
   `const r=await fetch('/api/sessions/${ROOM}/rules',{method:'PATCH',headers:{'content-type':'application/json',authorization:'Bearer '+me.token},body:JSON.stringify({rules:${JSON.stringify(rules)}})});` +
   `return r.status`
-check((await host.js(patchRules({ edit: 'host' }))) === 200, 'правила комнаты меняются с экрана', 'edit: host')
-await until(student, RULES_NOTICE, 'студент увидел смену правил')
+check((await host.js(patchRules({ edit: 'host' }))) === 200, 'the room rules change from the screen', 'edit: host')
+await until(student, RULES_NOTICE, 'the student saw the rules change')
 check(
   (await student.js(`return ${RULES_NOTICE}`)) === true,
-  'настоящая смена правил показывает плашку',
-  'показала',
+  'a real rules change shows the notice',
+  'shown',
 )
 /*
- * «Перезагрузка» — второй вкладкой того же преподавателя, а не Page.reload.
+ * The "reload" is a second tab of the same teacher, not Page.reload.
  *
- * Для ошибки это одно и то же: страница поднимается с правилами из кэша и
- * получает приветственный кадр сокета. А для проверки — нет: перезагруженная
- * вкладка ведущего пересобирает токен и вкладки и сбивает десяток проверок
- * ниже, а перезагруженный студент вошёл бы с кукой преподавателя из общего
- * хранилища браузера. Вторая вкладка ничего из этого не трогает и закрывается
- * сразу после.
+ * For the bug it is the same thing: the page comes up with rules from the cache
+ * and gets the socket's welcome frame. For the check it is not: a reloaded
+ * presenter tab rebuilds its token and tabs and throws off a dozen checks
+ * below, and a reloaded student would enter with the teacher's cookie from the
+ * browser's shared storage. A second tab touches none of this and is closed
+ * right after.
  */
 const again = await tab(`http://127.0.0.1:${PORT}/s/${ROOM}`)
 await until(
   again,
   `!document.querySelector('input#join-name') && [...document.querySelectorAll('button')].some(b=>(b.title||'').startsWith('lecture.pdf'))`,
-  'вторая вкладка преподавателя открылась',
+  "the teacher's second tab opened",
 )
 await wait(1500)
 check(
   (await again.js(`return ${RULES_NOTICE}`)) === false,
-  'перезагрузка страницы не выдаёт себя за смену правил',
-  'плашки нет',
+  'a page reload does not pass itself off as a rules change',
+  'no notice',
 )
 await again.send('Page.navigate', { url: 'about:blank' })
 await wait(400)
-/* Возвращаем открытую комнату — какой она и была. */
-check((await host.js(patchRules({ edit: 'room' }))) === 200, 'правила вернулись к открытым', 'edit: room')
+/* Give back the open room — as it was. */
+check((await host.js(patchRules({ edit: 'room' }))) === 200, 'the rules are back to open', 'edit: room')
 await wait(600)
 
-/* ---------------------------------------------- тред оракула и его низ */
+/* ---------------------------------------------- the Oracle thread and its bottom */
 
 /*
- * Тред обязан ехать за вопросами аудитории, пока читатель стоит внизу, — и
- * замирать, как только он ушёл вверх читать. Ловится это только очередью
- * вопросов: один вопрос успевает дорисоваться, и низ не уезжает.
+ * The thread has to follow the audience's questions while the reader stays at
+ * the bottom — and freeze as soon as they have gone up to read. This is caught
+ * only by a queue of questions: a single question manages to finish drawing,
+ * and the bottom does not move away.
  *
- * Проверка стоит в самом конце: она добавляет в комнату восемь поворотов
- * треда, и любая проверка выше, считающая записи, сбилась бы об них.
+ * The check stands at the very end: it adds eight thread turns to the room, and
+ * any check above that counts entries would trip over them.
  */
 const OPEN_ORACLE =
   `const b=document.querySelector('[aria-label="Toggle the AI oracle"]');` +
@@ -2283,16 +2337,16 @@ await host.js(OPEN_ORACLE)
 await student.js(OPEN_ORACLE)
 await wait(900)
 
-/** Окно прокрутки треда: сколько осталось до низа и где мы стоим. */
+/** The thread's scroll window: how far is left to the bottom and where we stand. */
 const THREAD =
   `const s=[...document.querySelectorAll('div')].filter(d=>(d.className||'').includes('overflow-y-auto')).pop();` +
   `if(!s) return null; return {gap: Math.round(s.scrollHeight - s.scrollTop - s.clientHeight), top: Math.round(s.scrollTop)}`
 
 /*
- * Вопрос длинный намеренно: поворот треда дорастает уже ПОСЛЕ того, как мы
- * прокрутили вниз, и раньше в этот зазор проваливалась вся механика — событие
- * нашей же прокрутки приходило в обработчик, когда высота успела подрасти, и
- * тред отцеплялся от низа сам себе.
+ * The question is long on purpose: the thread turn keeps growing AFTER we have
+ * scrolled down, and the whole mechanism used to fall into that gap — the
+ * event of our own scroll reached the handler when the height had already
+ * grown, and the thread detached itself from the bottom.
  */
 const LONG =
   'Вопрос номер N: не понимаю, почему на третьей ячейке вылезает traceback про то, ' +
@@ -2302,7 +2356,7 @@ const LONG =
 async function askOracle(page: Tab, text: string): Promise<void> {
   await page.js(
     `const t=[...document.querySelectorAll('textarea')].pop();` +
-      `if(!t) throw new Error('поля вопроса нет');` +
+      `if(!t) throw new Error('no question field');` +
       `const set=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;` +
       `set.call(t,${JSON.stringify(text)}); t.dispatchEvent(new Event('input',{bubbles:true})); return 1`,
   )
@@ -2322,11 +2376,11 @@ for (let n = 1; n <= 6; n += 1) {
 }
 check(
   gaps.every((g) => g < 40),
-  'тред оракула держится низа на каждом вопросе',
-  `зазоры: ${gaps.join(', ')}`,
+  'the Oracle thread keeps to the bottom on every question',
+  `gaps: ${gaps.join(', ')}`,
 )
 
-/* Ушедшего вверх читателя новый вопрос не дёргает: чтение важнее слежения. */
+/* A reader who went up is not jerked by a new question: reading matters more than following. */
 await host.js(
   `const s=[...document.querySelectorAll('div')].filter(d=>(d.className||'').includes('overflow-y-auto')).pop();` +
     `s.scrollTop = Math.max(0, s.scrollTop - 260); s.dispatchEvent(new Event('scroll')); return 1`,
@@ -2337,62 +2391,63 @@ await askOracle(student, LONG.replace('N', '7'))
 const stayed = (await host.js(THREAD)) as { top: number } | null
 check(
   parked !== null && stayed !== null && Math.abs(stayed.top - parked.top) < 8,
-  'ушедшего вверх по треду новый вопрос не дёргает',
-  `стоял на ${parked?.top}, остался на ${stayed?.top}`,
+  'a new question does not jerk a reader who went up the thread',
+  `stood at ${parked?.top}, stayed at ${stayed?.top}`,
 )
 check(
   (await host.js(`return !!document.querySelector('button.animate-fade-up')`)) === true,
-  'внизу треда появилась метка о новом ответе',
-  'есть',
+  'a new-answer mark appeared at the bottom of the thread',
+  'present',
 )
 
-/* И метка возвращает вниз, снова прицепляя тред. */
+/* And the mark takes you back down, attaching the thread again. */
 await host.js(`const b=document.querySelector('button.animate-fade-up'); if(b) b.click(); return 1`)
 await wait(500)
 await askOracle(student, LONG.replace('N', '8'))
 const back = (await host.js(THREAD)) as { gap: number } | null
-check((back?.gap ?? 999) < 40, 'по метке тред снова идёт за вопросами', `зазор ${back?.gap}`)
+check((back?.gap ?? 999) < 40, 'after the mark the thread follows the questions again', `gap ${back?.gap}`)
 
 for (const [who, page] of [
-  ['преподаватель', host],
-  ['студент', student],
+  ['teacher', host],
+  ['student', student],
 ] as const) {
   for (const line of page.trouble.slice(0, 4)) console.log(`  (${who}) ${line}`)
 }
 
 /*
- * И то же самое — проверкой, а не строчкой в выводе.
+ * And the same as a check, not as a line in the output.
  *
- * Исключения собираются с самого начала «затем, что проверка, молчащая о том,
- * что на странице что-то упало, отправляет искать причину в код, который ни при
- * чём», — но в итог не попадали: страница, роняющая TypeError на каждом кадре,
- * давала «интерфейс отвечает» и код выхода 0, а три строки про неё тонули среди
- * двух сотен. Молчания не было, отказа не было тоже.
+ * Exceptions are collected from the very start "because a check that keeps
+ * quiet about something having crashed on the page sends people looking for
+ * the cause in code that has nothing to do with it" — but they did not get
+ * into the result: a page throwing a TypeError on every frame gave "the
+ * interface answers" and exit code 0, and the three lines about it drowned
+ * among two hundred. There was no silence, and there was no failure either.
  */
 const pages = [
-  ['преподаватель', host],
-  ['студент', student],
-  ['планшет', pad],
-  ['проекция', beam],
-  ['пульт', pult],
-  ['вторая вкладка', again],
+  ['teacher', host],
+  ['student', student],
+  ['tablet', pad],
+  ['projection', beam],
+  ['console', pult],
+  ['second tab', again],
 ] as const
 const broke = pages.filter(([, page]) => page.trouble.length > 0)
 check(
   broke.length === 0,
-  'страницы не роняют исключений',
+  'pages throw no exceptions',
   broke.length === 0
-    ? 'ни одного'
+    ? 'none'
     : broke.map(([who, page]) => `${who}: ${page.trouble.length} — ${page.trouble[0]}`).join(' · '),
 )
 
 let failed = 0
 for (const r of results) {
   if (!r.ok) failed += 1
-  console.log(`  ${r.ok ? 'ok  ' : 'ПЛОХО'}  ${r.what.padEnd(46)} ${r.got}`)
+  console.log(`  ${r.ok ? 'ok  ' : 'FAIL'}  ${r.what.padEnd(46)} ${r.got}`)
 }
-console.log(failed === 0 ? '\n  интерфейс отвечает' : `\n  провалов: ${failed}`)
+console.log(failed === 0 ? '\n  the interface answers' : `\n  failures: ${failed}`)
 
-/* Браузер и временный каталог убирает cleanUp на 'exit' — и на этом пути, и на
-   любом падении посередине. */
+/* cleanUp on 'exit' removes the browser and the temporary directory — on this
+   path and on any failure halfway. */
 process.exit(failed === 0 ? 0 : 1)

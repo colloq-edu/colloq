@@ -1,22 +1,25 @@
 <!--
-  График plotly — во фрейме-песочнице, а не в странице занятия.
+  A plotly chart — in a sandboxed frame, not in the class page.
 
-  Почему именно так, написано в `shared/plotly.ts` и `server/src/plotly-frame.ts`;
-  здесь — сторона тетради. Три вещи, которые она делает и которых нет в рамке:
+  Why exactly this way is written in `shared/plotly.ts` and
+  `server/src/plotly-frame.ts`; here is the notebook's side. Three things it
+  does that the frame does not:
 
-  ЛЕНИВОСТЬ. Рамка не заводится, пока график не подъехал к экрану, а фигура не
-  качается, пока не заведена рамка. Тетрадь с двадцатью графиками иначе тянула
-  бы двадцать копий пятимегабайтного бандла и двадцать фигур в первую же
-  секунду — при том что на экране помещаются полтора.
+  LAZINESS. The frame is not created until the chart has come close to the
+  screen, and the figure is not downloaded until the frame has been created.
+  Otherwise a notebook with twenty charts would pull twenty copies of a
+  five-megabyte bundle and twenty figures in the very first second — while one
+  and a half fit on the screen.
 
-  МЕСТО ПОД ГРАФИК. Высота считается ДО того, как что-либо загрузится
-  (`figureHeight`), и подложка рисуется сразу в размер: иначе тетрадь прыгает
-  под курсором каждый раз, когда очередная рамка доехала. Белая подложка — та
-  же, что у картинок matplotlib, и она же убирает белую вспышку: сама рамка
-  прозрачная.
+  ROOM FOR THE CHART. The height is computed BEFORE anything loads
+  (`figureHeight`), and the backdrop is drawn at full size right away: otherwise
+  the notebook jumps under the cursor every time another frame arrives. The
+  white backdrop is the same as for matplotlib images, and it also removes the
+  white flash: the frame itself is transparent.
 
-  СЛОВА ВМЕСТО ПУСТОТЫ. Не нарисовалось — строка с причиной. Пустое место под
-  «Out [7]» читается как «код ничего не вывел», и это враньё.
+  WORDS INSTEAD OF EMPTINESS. If nothing got drawn — a line with the reason. An
+  empty space under "Out [7]" reads as "the code printed nothing", and that is a
+  lie.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -34,16 +37,18 @@
 
   interface Props {
     /**
-     * Фигура: текст JSON, если она лежит в документе, или адрес, если она
-     * вынесена в отдельную запись (крупные — всегда, см. `SPILL_MIMES`).
+     * The figure: JSON text if it lies in the document, or an address if it has
+     * been moved out into a separate record (large ones always are, see
+     * `SPILL_MIMES`).
      */
     payload: string
-    /** Адрес — значит, за фигурой надо сходить; иначе она уже здесь. */
+    /** Address: the figure must be fetched; otherwise it is already here. */
     address: boolean
     /**
-     * Ключ в адресе протух — тот же случай, что у картинок: комната открыта
-     * полтора часа, ключ живёт пять минут. Тетрадь берёт новый и перерисовывает
-     * запись с новым адресом; звать это больше одного раза на запись нельзя.
+     * The key in the address has gone stale — the same case as with images: the
+     * room is open for an hour and a half, a key lives five minutes. The
+     * notebook takes a new one and redraws the record with the new address;
+     * this must not be called more than once per record.
      */
     onstale?: () => void
   }
@@ -51,25 +56,27 @@
   let { payload, address, onstale }: Props = $props()
 
   /**
-   * Фигура, приведённая к `{data, layout, frames}`; `null` — читать нечего.
+   * The figure, normalized to `{data, layout, frames}`; `null` means there is
+   * nothing to read.
    *
-   * `$state.raw`, а не обычное состояние, и это не оптимизация: обычное Svelte
-   * оборачивает в Proxy ВСЮ глубину объекта, а `postMessage` клонирует
-   * структурно и на Proxy падает с DataCloneError. Меняется она целиком, так
-   * что следить за её внутренностями и незачем.
+   * `$state.raw`, not ordinary state, and this is not an optimization: ordinary
+   * Svelte state wraps the WHOLE depth of the object in a Proxy, and
+   * `postMessage` clones structurally and fails on a Proxy with DataCloneError.
+   * The figure is replaced as a whole, so there is no point in tracking its
+   * insides anyway.
    */
   let figure = $state.raw<PlotlyFigure | null>(null)
-  /** Причина, по которой графика не будет. Показывается словами. */
+  /** The reason there will be no chart. Shown in words. */
   let failure = $state<string | null>(null)
-  /** График нарисован: рамка сказала свою высоту. До этого видна заставка. */
+  /** Drawn: the frame reported its height. Until then the placeholder shows. */
   let drawn = $state(false)
-  /** Подъехал ли вывод к экрану. До этого не заводится вообще ничего. */
+  /** Whether the output is near the screen. Until then nothing is set up. */
   let near = $state(false)
 
   let frame = $state<HTMLIFrameElement | null>(null)
-  /** Высота: из фигуры до отрисовки, от рамки — после. */
+  /** Height: from the figure before drawing, from the frame after. */
   let height = $state(PLOTLY_DEFAULT_HEIGHT)
-  /** Чтобы не просить новый ключ по кругу на записи, которой на сервере нет. */
+  /** So a record missing on the server does not ask for new keys forever. */
   let asked = false
 
   const src = $derived(
@@ -77,9 +84,9 @@
   )
 
   /**
-   * Наблюдатель видимости — один корень на всю тетрадь не нужен: запас в
-   * пол-экрана снизу даёт рамке время загрузиться до того, как до неё
-   * долистали, и не трогает то, что лежит страницами ниже.
+   * The visibility observer — one root for the whole notebook is not needed: a
+   * margin of half a screen below gives the frame time to load before it is
+   * scrolled to, and leaves alone whatever lies pages further down.
    */
   function watch(node: HTMLElement) {
     if (typeof IntersectionObserver !== 'function') {
@@ -90,8 +97,8 @@
       (entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return
         near = true
-        // Обратно не выключаем: выгруженная рамка потеряла бы масштаб и
-        // положение легенды, которые человек только что выставил руками.
+        // Not switched back off: an unloaded frame would lose the zoom and the
+        // legend position that the person has just set by hand.
         observer.disconnect()
       },
       { rootMargin: '400px 0px' },
@@ -100,7 +107,7 @@
     return { destroy: () => observer.disconnect() }
   }
 
-  /** Разобрать то, что лежит в документе, — или сходить за тем, что вынесено. */
+  /** Parse what lies in the document — or fetch what has been moved out. */
   $effect(() => {
     const body = payload
     const remote = address
@@ -108,8 +115,9 @@
     let alive = true
     failure = null
     if (!remote) {
-      // Через местную переменную: прочитать только что записанное состояние
-      // прямо в эффекте — это цикл обновления, и Svelte роняет его вслух.
+      // Through a local variable: reading state that has just been written,
+      // right inside the effect, is an update loop, and Svelte fails it out
+      // loud.
       const here = read(body)
       figure = here
       failure = here ? null : tr('room.output.plotlyBroken')
@@ -129,9 +137,10 @@
       .catch(() => {
         if (!alive) return
         /*
-         * Отказ по адресу — это почти всегда протухший ключ, и лечится он так
-         * же, как у картинок: попросить новый и перерисоваться. Один раз:
-         * запись, которой на сервере нет вовсе, иначе гоняла бы по кругу.
+         * A refusal at the address is almost always a stale key, and it is
+         * cured the same way as for images: ask for a new one and redraw. Once:
+         * otherwise a record that does not exist on the server at all would go
+         * round in circles.
          */
         if (!asked && onstale) {
           asked = true
@@ -153,18 +162,19 @@
     }
   }
 
-  /** Место под график — из фигуры, пока рамка не сказала своё число. */
+  /** Room for the chart — from the figure, until the frame gives its own. */
   $effect(() => {
     const got = figure
     if (got && !drawn) height = figureHeight(got)
   })
 
   /**
-   * Разговор с рамкой.
+   * Talking to the frame.
    *
-   * Origin у песочницы — строка «null», одинаковая у любой другой песочницы на
-   * странице, и сверять его бессмысленно. Сверяется ИСТОЧНИК: сообщение
-   * принимается только от того окна, которое мы сами и завели.
+   * A sandbox's origin is the string "null", the same as that of any other
+   * sandbox on the page, so checking it is pointless. What is checked is the
+   * SOURCE: a message is accepted only from the window that we created
+   * ourselves.
    */
   $effect(() => {
     const node = frame
@@ -190,7 +200,7 @@
     return () => window.removeEventListener('message', listener)
   })
 
-  /** Фигура доехала позже, чем рамка сказала «готова», — послать ещё раз. */
+  /** The figure arrived after the frame said "ready" — send it again. */
   $effect(() => {
     const node = frame
     const got = figure
@@ -198,15 +208,16 @@
   })
 
   /**
-   * Рамка не ответила совсем — сказать об этом словами.
+   * The frame did not answer at all — say so in words.
    *
-   * Заставка вместо графика — честный ответ ровно до тех пор, пока что-то
-   * правда едет. Если рамка не открылась вовсе (маршрут отказал, сборка без
-   * бандла), ждать нечего, а на экране стояла бы вечная заставка, по которой не
-   * отличить «грузится» от «сломалось».
+   * A placeholder instead of a chart is an honest answer only as long as
+   * something really is on its way. If the frame did not open at all (the route
+   * refused, a build without the bundle), there is nothing to wait for, and the
+   * screen would show an eternal placeholder that does not tell "loading" from
+   * "broken".
    *
-   * Полторы минуты, потому что бандл — пять мегабайт (1,1 МБ brotli), и на
-   * семинарском вайфае это десятки секунд, а не доли.
+   * A minute and a half, because the bundle is five megabytes (1.1 MB brotli),
+   * and on seminar wifi that is tens of seconds, not fractions of one.
    */
   const SILENCE_MS = 90_000
 
@@ -224,13 +235,15 @@
     const got = figure
     if (!got) return
     /*
-     * Высота уезжает вместе с фигурой, чтобы рамка не выдумывала свою: место
-     * под график тетрадь уже зарезервировала этим же числом, и разойтись им
-     * значило бы дёрнуть страницу в момент отрисовки.
+     * The height travels along with the figure so that the frame does not
+     * invent its own: the notebook has already reserved the space for the chart
+     * with this same number, and letting the two diverge would mean jerking the
+     * page at the moment of drawing.
      *
-     * `targetOrigin` — «*», и иначе нельзя: origin песочницы непрозрачный, и
-     * любое другое значение просто не совпадёт. Утечки тут нет: в сообщении
-     * едет ровно то, что и так лежит в тетради у всех на виду.
+     * `targetOrigin` is "*", and it cannot be anything else: a sandbox's origin
+     * is opaque, and any other value simply will not match. There is no leak
+     * here: the message carries exactly what already lies in the notebook in
+     * plain view of everyone.
      */
     node.contentWindow?.postMessage(
       {
@@ -248,10 +261,10 @@
     <div class="px-2 py-1 text-code text-warning">{failure}</div>
   {:else}
     <!--
-      Подложка ровно того же цвета, что у картинок matplotlib: фигуру мы не
-      перекрашиваем (у неё свой шаблон, и в тёмной теме он остаётся светлым),
-      а рамка вокруг неё обязана выглядеть так же, как рамка вокруг графика,
-      нарисованного соседней ячейкой.
+      A backdrop of exactly the same colour as for matplotlib images: we do not
+      recolour the figure (it has its own template, and in the dark theme it
+      stays light), and the frame around it has to look the same as the frame
+      around a chart drawn by the neighbouring cell.
     -->
     <div
       class="relative overflow-hidden rounded bg-white/95 p-1"
@@ -268,22 +281,24 @@
           class="block h-full w-full border-0"
           onload={() => {
             /*
-             * Фигура уезжает по `load`, а не по «готова» от рамки, и это
-             * не дублирование. `load` случается, когда разметка рамки
-             * разобрана, то есть когда её загрузчик УЖЕ поставил свой
-             * слушатель, — а «готова» ждёт ещё пять мегабайт бандла. Кадр,
-             * пришедший раньше бандла, рамка держит у себя и рисует, как
-             * только plotly доедет; так между «видно ячейку» и «виден
-             * график» остаётся ровно одна загрузка, а не две.
+             * The figure is sent on `load`, not on "ready" from the frame, and
+             * this is not duplication. `load` happens when the frame's markup
+             * has been parsed, that is, when its loader has ALREADY installed
+             * its listener — whereas "ready" also waits for five megabytes of
+             * bundle. A message that arrives before the bundle is held by the
+             * frame and drawn as soon as plotly arrives; that way there is
+             * exactly one load between "the cell is visible" and "the chart is
+             * visible", not two.
              */
             if (frame) send(frame)
           }}
         ></iframe>
       {/if}
       {#if !drawn}
-        <!-- Заставка в размер графика: пока едут пять мегабайт plotly, на
-             месте графика должно быть видно, что он там будет. Общая, а не
-             своя: она одна на продукт и одна умеет молчать при
+        <!-- A placeholder the size of the chart: while five megabytes of plotly
+             are on their way, the chart's place should show that a chart will
+             be there. The shared one, not a local one: there is one for the
+             whole product, and only it knows how to keep still under
              `prefers-reduced-motion`. -->
         <div class="pointer-events-none absolute inset-1 flex">
           <Skeleton width="100%" height="100%" radius="3px" />

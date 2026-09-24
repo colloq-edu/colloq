@@ -1,26 +1,29 @@
 /**
- * Файл .ipynb: прочитать и записать.
+ * A .ipynb file: reading and writing it.
  *
- * Тетради комнаты — файлы, и это единственное место, где известно, как они
- * выглядят на диске. Разбор был раньше в github.ts (импорт из репозитория),
- * запись — в publish/notebook.ts (выгрузка опубликованного шага); обе половины
- * жили порознь и не знали друг о друге. Разошлись бы они молча: файл,
- * записанный одной и прочитанный другой, потерял бы ровно то, о чём они не
- * договорились. И разошлись: половина из публикации ставила ячейкам `id`, а
- * половина из комнаты — нет, при том что обе объявляли одну и ту же схему 4.5,
- * которая его требует. Пишет теперь одна, `writeIpynb`; выгрузка публикации
- * зовёт её же (publish/notebook.ts · `notebookFrom`).
+ * The room's notebooks are files, and this is the only place that knows what
+ * they look like on disk. Parsing used to live in github.ts (import from a
+ * repository), writing in publish/notebook.ts (export of a published step);
+ * the two halves lived apart and knew nothing of each other. They would have
+ * drifted apart silently: a file written by one and read by the other would
+ * lose exactly what they had not agreed on. And they did drift: the half from
+ * publishing gave cells an `id` and the half from the room did not, although
+ * both declared the same schema 4.5, which requires it. Now only one writes,
+ * `writeIpynb`; the publishing export calls it too
+ * (publish/notebook.ts · `notebookFrom`).
  *
- * Формат — nbformat 4.5, тот же, что пишет сам Jupyter. Расхождений с ним два,
- * и оба намеренные:
+ * The format is nbformat 4.5, the same one Jupyter itself writes. It differs
+ * from Jupyter in two ways, both deliberate:
  *
- * **Выводы не пишутся.** Тетрадь без них открывается везде и весит килобайты; с
- * ними — мегабайты base64 в файле, который несут к себе, чтобы запустить
- * заново. Тот же довод, что и у выгрузки публикации, и он же означает, что
- * файл на диске — это ИСХОДНИК тетради, а не её снимок.
+ * **Outputs are not written.** A notebook without them opens anywhere and
+ * weighs kilobytes; with them it is megabytes of base64 in a file people take
+ * home to run again. The same argument as for the publishing export, and it
+ * also means that the file on disk is the notebook's SOURCE, not a snapshot
+ * of it.
  *
- * **`source` — массив строк с сохранёнными переводами.** Так пишет Jupyter, и
- * так diff файла в git читается построчно, а не одной строкой на всю ячейку.
+ * **`source` is an array of strings with the line breaks kept.** That is how
+ * Jupyter writes it, and that way a git diff of the file reads line by line
+ * rather than as one line for the whole cell.
  */
 import type { CellType } from './notebook'
 
@@ -28,25 +31,26 @@ export interface FlatCell {
   type: CellType
   source: string
   /**
-   * Идентификатор ячейки, если он у пишущего есть.
+   * The cell's id, if the writer has one.
    *
-   * Необязателен, потому что разбор его не возвращает: чужую тетрадь комната
-   * заводит своими ячейками и своими идентификаторами. А вот при записи он
-   * нужен всегда (см. `cellIdFor`), и тот, у кого он есть, обязан его донести —
-   * иначе файл, переписанный после перестановки ячеек, поменяет им имена.
+   * Optional because parsing does not return it: the room brings in someone
+   * else's notebook with cells and ids of its own. On writing, though, it is
+   * always needed (see `cellIdFor`), and whoever has it must pass it on —
+   * otherwise a file rewritten after cells were reordered renames them.
    */
   id?: string
   /**
-   * Вложения ячейки в том виде, в каком их держит nbformat: имя → набор
-   * «тип → base64».
+   * The cell's attachments in the form nbformat keeps them: name → a set of
+   * "type → base64".
    *
-   * Картинка в заметке живёт в файле двумя способами — вложением и прямо в
-   * тексте (`data:image/png;base64,…`), — и первый из них разбор ТЕРЯЛ: поле
-   * читалось мимо, ссылка `![](attachment:схема.png)` доезжала до комнаты без
-   * своих байтов и рисовалась битой рамкой. Теперь оно доезжает, и на полку
-   * комнаты ложатся оба (server/src/notebook-images.ts).
+   * A picture in a note lives in the file in two ways — as an attachment and
+   * right in the text (`data:image/png;base64,…`) — and parsing LOST the first
+   * of them: the field was skipped, a `![](attachment:diagram.png)` link
+   * reached the room without its bytes and was drawn as a broken frame. Now it
+   * gets through, and both kinds land on the room's shelf
+   * (server/src/notebook-images.ts).
    *
-   * Необязательное: у кода вложений не бывает, а у заметки — почти никогда.
+   * Optional: code never has attachments, and a note almost never does.
    */
   attachments?: Record<string, Record<string, string>>
 }
@@ -57,7 +61,7 @@ interface RawCell {
   attachments?: unknown
 }
 
-/** Jupyter пишет `source` то строкой, то массивом строк — по настроению. */
+/** Jupyter writes `source` either as a string or as an array of strings — as the mood takes it. */
 function sourceText(value: unknown): string {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) {
@@ -67,12 +71,12 @@ function sourceText(value: unknown): string {
 }
 
 /**
- * Вложения ячейки — если они там есть и похожи на вложения.
+ * The cell's attachments — if they are there and look like attachments.
  *
- * Файл пишет кто угодно, а base64 в нём Jupyter хранит то строкой, то массивом
- * строк, как и `source`. Всё, что не уложилось в «имя → тип → строка»,
- * выбрасывается молча: битое вложение — это картинка, которой не будет, а не
- * повод отказать тетради целиком.
+ * Anyone can write the file, and Jupyter keeps the base64 in it either as a
+ * string or as an array of strings, just like `source`. Anything that does not
+ * fit "name → type → string" is dropped silently: a broken attachment is a
+ * picture that will not be there, not a reason to refuse the whole notebook.
  */
 function readAttachments(value: unknown): Record<string, Record<string, string>> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
@@ -90,18 +94,19 @@ function readAttachments(value: unknown): Record<string, Record<string, string>>
 }
 
 /**
- * Ячейки из .ipynb.
+ * Cells from a .ipynb.
  *
- * `raw` становится markdown: в курсовых тетрадях это проза, а тип ячейки,
- * который продукт не умеет рисовать, иначе исчез бы молча — потерять текст
- * преподавателя хуже, чем показать его не тем шрифтом.
+ * `raw` becomes markdown: in course notebooks it is prose, and a cell type
+ * the product cannot draw would otherwise vanish silently — losing the
+ * teacher's text is worse than showing it in the wrong font.
  *
- * Пустые ячейки в конце выбрасываются: это след редактора, который файл
- * сохранял, а не то, что кто-то написал. Пустые ПОСРЕДИ остаются, и это
- * важнее, чем кажется: заготовка «# Задание 1 → пустая ячейка для ответа →
- * # Задание 2 → …» состоит из них наполовину. Выбрасывать их все — значит
- * молча привезти в комнату одни условия без места под решение, а в лекции
- * (structure: host) завести ячейку обратно студенту нечем.
+ * Empty cells at the end are dropped: they are a trace of the editor that
+ * saved the file, not something somebody wrote. Empty cells IN THE MIDDLE
+ * stay, and that matters more than it seems: a template "# Task 1 → an empty
+ * cell for the answer → # Task 2 → …" is half made of them. Dropping them all
+ * would silently bring into the room nothing but problem statements with no
+ * place for a solution, and in a lecture (structure: host) the student has no
+ * way to add the cell back.
  */
 export function readIpynb(json: unknown): FlatCell[] {
   const doc = json as { cells?: unknown } | null
@@ -119,7 +124,7 @@ export function readIpynb(json: unknown): FlatCell[] {
   return all.slice(0, end)
 }
 
-/** Разобрать текст файла. `null` — это не .ipynb, что бы ни говорило имя. */
+/** Parse the file's text. `null` — this is not a .ipynb, whatever the name says. */
 export function parseIpynb(text: string): FlatCell[] | null {
   let json: unknown
   try {
@@ -134,14 +139,14 @@ export function parseIpynb(text: string): FlatCell[] | null {
 }
 
 /**
- * Идентификатор ячейки в том виде, в каком его принимает схема 4.5.
+ * A cell id in the form schema 4.5 accepts.
  *
- * `nbformat_minor: 5` требует `id` у каждой ячейки — без него `nbformat.read`
- * ругается MissingIDFieldWarning и дописывает свой, а `nbformat.validate`
- * (автопроверка, CI студента) просто падает. Схема разрешает
- * `^[a-zA-Z0-9-_]{1,64}$`: наши укладываются, но приходят они из документа
- * комнаты, то есть от кого угодно, — что не уложилось, заменяется на
- * порядковый номер.
+ * `nbformat_minor: 5` requires an `id` on every cell — without one
+ * `nbformat.read` complains with MissingIDFieldWarning and adds its own, and
+ * `nbformat.validate` (autograding, a student's CI) simply fails. The schema
+ * allows `^[a-zA-Z0-9-_]{1,64}$`: ours fit, but they come from the room's
+ * document, that is, from anyone — whatever does not fit is replaced with the
+ * cell's ordinal number.
  */
 const ID_OK = /^[a-zA-Z0-9-_]{1,64}$/
 const cellIdFor = (cell: FlatCell, index: number): string =>
@@ -154,12 +159,13 @@ export function writeIpynb(cells: readonly FlatCell[]): string {
       cell_type: cell.type,
       metadata: {},
       /*
-       * Вложения — рядом с текстом, который на них ссылается.
+       * Attachments go next to the text that refers to them.
        *
-       * Иначе тетрадь, унесённая из комнаты, открывалась бы у студента с
-       * пустыми рамками вместо условий задачи: в документе комнаты картинка
-       * лежит ссылкой на полку (shared/images.ts), а полка осталась на сервере.
-       * Схема 4.5 держит вложения только у markdown — у кода их не бывает.
+       * Otherwise a notebook taken out of the room would open for the student
+       * with empty frames instead of the problem statement: in the room's
+       * document the picture is a link to the shelf (shared/images.ts), and
+       * the shelf stayed on the server. Schema 4.5 keeps attachments only on
+       * markdown — code never has them.
        */
       ...(cell.type === 'markdown' && cell.attachments && Object.keys(cell.attachments).length > 0
         ? { attachments: cell.attachments }

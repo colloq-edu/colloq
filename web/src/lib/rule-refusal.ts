@@ -1,38 +1,42 @@
 import { tr } from '@shared/i18n'
 /**
- * Почему правило не сохранилось — по-русски, как и весь пульт правил в комнате.
+ * Why a rule was not saved — in Russian, like the whole rules console in the
+ * room.
  *
- * Пульт стоит внутри семинара, а семинар русский целиком — от «Сдать» до
- * «Занятие закончено». Причину отказа туда приносил `err.message` из ApiError
- * (lib/api.ts), и она английская с обеих сторон: и запасные фразы самого
- * запроса («Could not reach the server — check the connection and try again.»,
- * «Not found (404)»), и тело маршрута («join the session first»). На оборванном
- * вайфае поверх русского пульта всплывала английская строка — ровно та
- * половинчатость, ради которой окно правил в панели уже перевели (admin-17).
+ * The console stands inside a seminar, and the seminar is Russian throughout —
+ * from "Submit" to "The class is over". The refusal reason used to be brought
+ * there by `err.message` from ApiError (lib/api.ts), and it is English on both
+ * sides: both the request's own fallback phrases ("Could not reach the server
+ * — check the connection and try again.", "Not found (404)") and the route's
+ * body ("join the session first"). On a dropped Wi-Fi an English line popped
+ * up over the Russian console — exactly the half-and-half the rules window in
+ * the panel was already translated to avoid (admin-17).
  *
- * Хвоста сервера здесь нет намеренно, и это то же решение, что у близнеца в
- * панели (web/src/admin/panel.ts · `ruleRefusal`): переводится не фраза, а
- * ПРИЧИНА. Близнецов два, а не один, потому что отказ у них разной формы —
- * панель судит по полю `reason`, которое отдаёт её маршрут, а комната по коду
- * ответа и сроку бана, — и импорт из панели в комнату затащил бы в чанк
- * семинара кусок административного экрана ради пяти строк.
+ * The server's tail is deliberately absent here, and it is the same decision
+ * as its twin in the panel (web/src/admin/panel.ts · `ruleRefusal`): what is
+ * translated is not the phrase but the REASON. There are two twins, not one,
+ * because their refusals have different shapes — the panel judges by the
+ * `reason` field its route returns, the room by the response code and the ban
+ * deadline — and importing from the panel into the room would drag a piece of
+ * the admin screen into the seminar chunk for the sake of five lines.
  *
- * Что здесь считается доказательством, а что догадкой:
+ * What counts here as proof and what as a guess:
  *
- *  • `status === 0` ставит lib/api.ts на отвергнутый fetch — это «связи нет», а
- *    не «сервер отказал»;
- *  • 403 со сроком — бан (тот же признак читают JoinScreen.svelte и
- *    lib/identity.ts · `verdictOnFailure`), 403 без срока — «не преподаватель»,
- *    единственный другой отказ этой двери (routes/sessions.ts · PATCH
- *    /api/sessions/:id/rules);
- *  • «семинара больше нет» — только с наших же слов в теле ответа
- *    (shared/protocol.ts · `saysSessionMissing`): голый 404 отдаёт и
- *    ретранслятор без подключённого frpc, и статика, отвечающая index.html на
- *    всё подряд, а по этой фразе преподаватель посреди пары пойдёт заводить
- *    второй семинар вместо того, чтобы дождаться связи.
+ *  • `status === 0` is set by lib/api.ts on a rejected fetch — that is "no
+ *    connection", not "the server refused";
+ *  • a 403 with a deadline is a ban (JoinScreen.svelte and lib/identity.ts ·
+ *    `verdictOnFailure` read the same sign), a 403 without a deadline is "not
+ *    the teacher", the only other refusal of this door (routes/sessions.ts ·
+ *    PATCH /api/sessions/:id/rules);
+ *  • "the seminar no longer exists" — only from our own words in the response
+ *    body (shared/protocol.ts · `saysSessionMissing`): a bare 404 comes from a
+ *    relay without a connected frpc and from static hosting that answers
+ *    index.html to everything, and on this phrase a teacher in the middle of a
+ *    class would go and create a second seminar instead of waiting for the
+ *    connection.
  *
- * Всё, что этими признаками не названо, кончается «попробуйте ещё раз»:
- * догадка по голому коду хуже честного молчания.
+ * Everything not named by these signs ends in "try again": a guess from a
+ * bare code is worse than honest silence.
  */
 import { saysSessionMissing } from '@shared/protocol'
 

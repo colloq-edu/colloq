@@ -75,25 +75,26 @@ export function foldAnsiColours(text: string): string {
 }
 
 /*
- * Одна escape-последовательность целиком, от начала строки. Те же три вида, что
- * и в ANSI_PATTERN ниже, но с якорем: здесь спрашивают не «где они», а
- * «дописана ли последняя». Отсюда и разница в третьей ветке: `]` из неё убран,
- * иначе начатый OSC (`\x1b]8;;http://…`) считался бы законченным двухсимвольным
- * escape'ом и его разрезали бы пополам.
+ * One whole escape sequence, from the start of the string. The same three kinds
+ * as in ANSI_PATTERN below, but anchored: the question here is not "where are
+ * they" but "is the last one finished". Hence the difference in the third
+ * branch: `]` is removed from it, otherwise a started OSC (`\x1b]8;;http://…`)
+ * would count as a finished two-character escape and be cut in half.
  */
 // eslint-disable-next-line no-control-regex -- escape codes are the subject
 const ANSI_COMPLETE = /^\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\^_])/
 
 /**
- * Длина огрызка escape-последовательности в конце текста; 0 — если его нет.
+ * The length of an escape-sequence stub at the end of the text; 0 if there is
+ * none.
  *
- * Поток ядра приезжает кусками, и кусок кончается где угодно — в том числе
- * посреди `\x1b[38;5;1`. Тому, кто конвертирует буфер целиком, это безразлично:
- * следующий флеш принесёт его вместе с хвостом. А тому, кто дорисовывает
- * ТОЛЬКО хвост (см. `ansi` в render.svelte.ts), резать здесь нельзя — половина
- * кода уйдёт в разбор как мусор, а вторая половина покрасит остаток лога
- * наугад. Такой огрызок оставляют ждать следующего флеша: на экране он всё
- * равно невидим.
+ * The kernel stream arrives in chunks, and a chunk ends anywhere — including in
+ * the middle of `\x1b[38;5;1`. Whoever converts the whole buffer does not care:
+ * the next flush brings it along with its tail. But whoever draws ONLY the tail
+ * (see `ansi` in render.svelte.ts) must not cut here — half of the code would
+ * go to the parser as garbage, and the other half would colour the rest of the
+ * log at random. Such a stub is left to wait for the next flush: on screen it
+ * is invisible anyway.
  */
 export function pendingEscape(text: string): number {
   const at = text.lastIndexOf('\x1b')

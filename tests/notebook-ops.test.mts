@@ -17,9 +17,10 @@ import {
   setCellType,
 } from '../web/src/lib/notebook-ops.js'
 /*
- * Перестановка делается на сервере, а не в браузере: клон соседа несёт её
- * вывод, а запись вывода из браузера закрыта в любой комнате. Свойства
- * перестановки от переезда не изменились, и проверяются они здесь же.
+ * A move is done on the server, not in the browser: the neighbour's clone
+ * carries its output, and writing output from the browser is closed in every
+ * room. The move's properties did not change with the relocation, and they are
+ * checked right here.
  */
 import { moveInCells, resetRetyped } from '../server/src/collab/ops.js'
 
@@ -95,12 +96,13 @@ test('the notebook is never left with nothing in it', () => {
   assert.equal(cellSource(cells.get(0) as never).toString(), '')
 })
 
-test('ставшая текстом ячейка теряет вывод — но гасит его сервер', () => {
+test('a cell turned into text loses its output — but the server clears it', () => {
   /*
-   * Две половины одного действия. Браузер пишет только вид: пока он гасил
-   * здесь состояние выполнения, правило «вывод и состояние пишет только
-   * сервер» имело исключение — то есть не было правилом. Секундомер и вывод
-   * гасит сервер, увидев принятую смену вида.
+   * Two halves of one action. The browser writes only the type: while it
+   * cleared the execution state here, the rule "output and state are written
+   * only by the server" had an exception — that is, it was not a rule. The
+   * server clears the stopwatch and the output once it sees the accepted type
+   * change.
    */
   const { doc, cells, made, ids } = notebook(['print(1)'])
   doc.transact(() => {
@@ -115,7 +117,7 @@ test('ставшая текстом ячейка теряет вывод — н�
   assert.equal(
     (cell.get('outputs') as Y.Array<unknown>).length,
     1,
-    'браузер сам погасил вывод — значит по-прежнему пишет серверные поля',
+    'the browser cleared the output itself — so it still writes server fields',
   )
 
   doc.transact(() => resetRetyped(doc, [ids[0]]))
@@ -124,9 +126,9 @@ test('ставшая текстом ячейка теряет вывод — н�
   assert.equal(cell.get('state'), 'idle')
 })
 
-test('сервер не гасит выполнение у ячейки, оставшейся кодом', () => {
-  // Ячейка, которую сделали текстом и тут же вернули обратно, за один круг: имя
-  // в списке есть, а вид уже снова 'code' — гасить нечего.
+test('the server does not clear execution on a cell that stayed code', () => {
+  // A cell made text and turned right back within one round: its name is in
+  // the list, but the type is 'code' again — there is nothing to clear.
   const { doc, cells, made, ids } = notebook(['print(1)'])
   doc.transact(() => made[0].set('state', 'ok'))
   printed(made[0], '1\n')
@@ -150,36 +152,38 @@ test('an operation on a cell that is gone is a no-op, not a crash', () => {
   assert.deepEqual(order(cells), before)
 })
 
-test('двигают ячейку — пересоздают соседа, а не её', () => {
+test('moving a cell recreates the neighbour, not the cell itself', () => {
   const { doc, cells, made, ids } = notebook(['a = 1', 'b = 2'])
   const moving = made[0]
   const movingText = moving.get('source') as Y.Text
 
   moveInCells(doc, ids[0], 1)
 
-  // Порядок тот же, что и был бы при любом способе.
+  // The order is the same as it would be with any method.
   assert.equal(order(cells).join(','), 'b = 2,a = 1')
 
   /*
-   * Та ячейка, на кнопке которой стоял палец, — тот же самый объект.
+   * The cell whose button the finger was on is the very same object.
    *
-   * У Y.Array нет перемещения, так что одну из двух приходится пересоздавать
-   * клоном, и всё привязанное к ней — редактор, курсор, набранное в этот миг —
-   * пересоздаётся вместе с ней. Пусть это будет сосед.
+   * Y.Array has no move, so one of the two has to be recreated as a clone, and
+   * everything bound to it — the editor, the cursor, what is being typed at
+   * that instant — is recreated along with it. Let that be the neighbour.
    */
   const after = cells.toArray().find((c) => (c.get('id') as string) === ids[0])!
-  assert.equal(after, moving, 'подвинули саму ячейку вместо соседа')
+  assert.equal(after, moving, 'the cell itself was moved instead of the neighbour')
 
-  // И её Y.Text по-прежнему живой: то, что в него пишет CodeMirror, доезжает.
+  // And its Y.Text is still alive: what CodeMirror writes into it gets
+  // through.
   movingText.insert(movingText.length, ' + 1')
   assert.equal(order(cells).join(','), 'b = 2,a = 1 + 1')
 })
 
-test('перестановка соседа не сбивает секундомер работающей ячейки', () => {
+test('moving a neighbour does not reset the stopwatch of a running cell', () => {
   /*
-   * Настоящий путь той же беды: двигают пятую, пересоздаётся шестая. Пока
-   * ячейка считается, её `startedAt` — это то, из чего в комнате растёт цифра
-   * секундомера; исчезнув, он останавливает часы на работающей ячейке.
+   * The real path of the same trouble: the fifth cell is moved, the sixth is
+   * recreated. While a cell is computing, its `startedAt` is what the
+   * stopwatch figure in the room grows from; when it disappears, the clock
+   * stops on a running cell.
    */
   const { doc, cells, made, ids } = notebook(['a = 1', 'b = 2'])
   doc.transact(() => {
@@ -191,16 +195,17 @@ test('перестановка соседа не сбивает секундом
 
   const still = cells.toArray().find((c) => (c.get('id') as string) === ids[1])!
   assert.equal(still.get('state'), 'running')
-  assert.equal(still.get('startedAt'), 1_700_000_000_000, 'секундомер потерялся при перестановке')
+  assert.equal(still.get('startedAt'), 1_700_000_000_000, 'the stopwatch was lost in the move')
 })
 
 /*
- * Потолок «по одной» живёт на сервере, а шаг Shift+Enter — в браузере, и до
- * сих пор они друг о друге не знали: отказанный запуск всё равно шагал вниз и
- * дописывал пустую ячейку в общую тетрадь класса. Клиент считает свои ячейки
- * тем же способом, что и `requestRun`: очередь плюс та, что уже считается.
+ * The "one at a time" ceiling lives on the server, and the Shift+Enter step
+ * in the browser, and until now they knew nothing of each other: a refused
+ * run still stepped down and appended an empty cell to the class's shared
+ * notebook. The client counts its own cells the same way `requestRun` does:
+ * the queue plus the one already computing.
  */
-test('своя ячейка в очереди или в работе видна клиенту', () => {
+test('your own cell in the queue or in work is visible to the client', () => {
   const { doc, made } = notebook(['a = 1', 'b = 2', 'c = 3'])
   assert.equal(hasPendingRun(doc, 'anna'), false)
 
@@ -208,8 +213,8 @@ test('своя ячейка в очереди или в работе видна 
     made[0].set('state', 'queued')
     made[0].set('runById', 'petya')
   })
-  // Чужая очередь потолка не занимает — иначе своя ячейка не запустилась бы
-  // ни разу, пока преподаватель держит ядро.
+  // Someone else's queue does not take up the ceiling — otherwise your own
+  // cell would never run while the teacher holds the kernel.
   assert.equal(hasPendingRun(doc, 'anna'), false)
   assert.equal(hasPendingRun(doc, 'petya'), true)
 
@@ -219,7 +224,7 @@ test('своя ячейка в очереди или в работе видна 
   })
   assert.equal(hasPendingRun(doc, 'anna'), true)
 
-  // Досчитала — потолок снова свободен.
+  // Done computing — the ceiling is free again.
   doc.transact(() => made[1].set('state', 'ok'))
   assert.equal(hasPendingRun(doc, 'anna'), false)
 })

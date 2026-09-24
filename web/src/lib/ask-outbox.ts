@@ -1,39 +1,43 @@
 /**
- * Вопрос, который уже отправлен, но ещё не вернулся из документа.
+ * A question that has already been sent but has not yet come back from the
+ * document.
  *
- * Между Enter и появлением вопроса в общей ленте лежит целый круг: HTTP до
- * сервера через ретранслятор, запись в документ комнаты, рассылка обратно по
- * сокету. На семинаре это доли секунды, и видно их прекрасно — поле опустело,
- * а в ленте пусто, и человек нажимает Enter второй раз. Поэтому вопрос встаёт
- * в ленту сразу, своей строкой, а настоящая запись потом занимает её место.
+ * Between Enter and the question appearing in the shared feed lies a whole
+ * round trip: HTTP to the server through the relay, a write into the room's
+ * document, a broadcast back over the socket. At a seminar that is a fraction
+ * of a second, and it is plainly visible — the field has emptied, the feed is
+ * empty, and the person presses Enter a second time. So the question goes into
+ * the feed at once, as a row of its own, and the real entry takes its place
+ * later.
  *
- * Модуль чистый: сюда ходит тест, и здесь нет ни сокетов, ни документа.
+ * The module is pure: a test comes here, and there are no sockets and no
+ * document in it.
  */
 import type { ChatSnapshot } from '@shared/notebook'
 
 export interface Outgoing {
   /** Server acknowledgement identifies the row even when it supplies the question text. */
   entryId?: string
-  /** Строка, нарисованная этой вкладкой. Формой — та же запись ленты. */
+  /** The row drawn by this tab. In shape — the same feed entry. */
   row: ChatSnapshot
   /**
-   * Записи, которые лежали в ленте, когда вопрос уходил.
+   * The entries that were in the feed when the question went out.
    *
-   * По ним отличают «мой вопрос доехал» от «мой такой же вопрос, заданный
-   * десять минут назад». Без этого Retry на собственном вопросе снимал бы
-   * свежую строку в тот же кадр, в который её поставили, — и человек снова
-   * видел бы пустоту, ровно ту, от которой всё это и заведено.
+   * They tell "my question arrived" from "my identical question, asked ten
+   * minutes ago". Without this, Retry on one's own question would remove the
+   * fresh row in the same frame it was placed in — and the person would again
+   * see emptiness, exactly the one all this was set up against.
    */
   before: ReadonlySet<string>
 }
 
 /**
- * Собрать строку для вопроса, который сейчас уйдёт.
+ * Build the row for a question that is about to go out.
  *
- * Форма — настоящей записи ленты, вплоть до `state: 'streaming'`: строка
- * обязана выглядеть как то, чем станет, иначе замена будет видна рывком. Всё,
- * чего у неё не может быть (ответ, размышление, шаги, предложение), — пусто,
- * и это правда: сервер ещё не сказал ни слова.
+ * The shape is that of a real feed entry, down to `state: 'streaming'`: the
+ * row must look like what it will become, otherwise the swap shows as a jerk.
+ * Everything it cannot have yet (the answer, reasoning, steps, a proposal) is
+ * empty, and that is the truth: the server has not said a word yet.
  */
 export function outgoingRow(input: {
   id: string
@@ -71,13 +75,14 @@ export function outgoingRow(input: {
 }
 
 /**
- * Убрать те строки, чьи записи уже доехали.
+ * Remove the rows whose entries have already arrived.
  *
- * После HTTP-подтверждения запись узнаётся по entryId: сервер может дописать
- * текст для действий вроде «починить». До подтверждения — по автору и тексту,
- * но только среди тех, которых при отправке ещё не было. Одинаковые вопросы разбираются по
- * очереди: первая пришедшая запись достаётся первой отправленной, иначе одна
- * запись сняла бы обе строки и второй вопрос снова провалился бы в пустоту.
+ * After the HTTP acknowledgement the entry is recognised by entryId: the server
+ * may fill in the text for actions like "fix". Before the acknowledgement — by
+ * author and text, but only among entries that did not exist yet when it was
+ * sent. Identical questions are matched in turn: the first entry to arrive goes
+ * to the first one sent, otherwise one entry would remove both rows and the
+ * second question would again fall into the void.
  */
 export function settleOutbox(
   pending: readonly Outgoing[],
@@ -100,11 +105,11 @@ export function settleOutbox(
     return false
   })
   /*
-   * Ничего не сняли — отдаём ТОТ ЖЕ массив, а не его копию.
+   * Nothing removed — return THE SAME array, not a copy of it.
    *
-   * `filter` всегда выделяет новый, и вызывающий, сравнивая по ссылке, писал
-   * бы новое значение на каждый кадр ленты. Один раз это уже стоило комнате
-   * бесконечного цикла эффектов, и подпорка стоит одной строки.
+   * `filter` always allocates a new one, and the caller, comparing by
+   * reference, would write a new value on every frame of the feed. Once this
+   * already cost the room an infinite effect loop, and the guard costs one line.
    */
   return left.length === pending.length ? (pending as Outgoing[]) : left
 }

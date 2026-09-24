@@ -14,103 +14,104 @@ import { OG_HEIGHT, OG_IMAGES, OG_WIDTH, writeOgImages } from '../scripts/site-o
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const html = readFileSync(resolve(ROOT, 'site/index.html'), 'utf8')
 const en = readFileSync(resolve(ROOT, 'site/en/index.html'), 'utf8')
-/** Живые куски лендинга переехали в общий файл: обе страницы читают его. */
+/** The live parts of the landing page moved into a shared file: both pages read it. */
 const demos = readFileSync(resolve(ROOT, 'site/demos.js'), 'utf8')
 
-/** Тот же хеш, что печатает `git hash-object`: sha1 от «blob <длина>\0» и содержимого. */
+/** The same hash `git hash-object` prints: sha1 of "blob <length>\0" and the contents. */
 function blobHash(rel: string): string {
   const buf = readFileSync(resolve(ROOT, rel))
   return createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex')
 }
 
-test('метка кэша у styles.css — хеш самого styles.css', () => {
+test('the cache marker on styles.css is the hash of styles.css itself', () => {
   const marker = /href="styles\.css\?v=([0-9a-f]+)"/.exec(html)?.[1]
-  assert.ok(marker, 'в index.html нет ссылки на styles.css с меткой версии')
+  assert.ok(marker, 'index.html has no link to styles.css with a version marker')
   const want = blobHash('site/styles.css').slice(0, marker.length)
   assert.equal(
     marker,
     want,
-    'styles.css поправили, а метку — нет. Так она и простояла пять правок подряд: ' +
-      'читатель получал новый HTML и старые стили по тому же адресу. ' +
-      `Новое значение: ${want}`,
+    'styles.css was edited, but the marker was not. That is how it stood through five edits in a row: ' +
+      'the reader got new HTML and old styles at the same address. ' +
+      `New value: ${want}`,
   )
 })
 
-test('метка кэша у demos.js — хеш самого demos.js', () => {
+test('the cache marker on demos.js is the hash of demos.js itself', () => {
   const marker = /src="\/?demos\.js\?v=([0-9a-f]+)"/.exec(html)?.[1]
-  assert.ok(marker, 'в index.html нет ссылки на demos.js с меткой версии')
+  assert.ok(marker, 'index.html has no link to demos.js with a version marker')
   const want = blobHash('site/demos.js').slice(0, marker.length)
   assert.equal(
     marker,
     want,
-    'demos.js поправили, а метку — нет: страница приедет новой, а демо на ней ' +
-      `останутся старыми. Новое значение: ${want}`,
+    'demos.js was edited, but the marker was not: the page will arrive new, but the demos on it ' +
+      `will stay old. New value: ${want}`,
   )
 })
 
 /*
- * -------------------------------------------------------- превью ссылки
+ * --------------------------------------------------------- link preview
  *
- * Три картинки 1200×630 рисует scripts/site-og.mts: русская для colloq.ru,
- * английская для /en/ и та же английская с подписью colloq.cc — её подставляет
- * зеркало. Ошибиться тут можно молча и дорого: разворачиватель ссылок кэширует
- * карточку на дни, и страница, показавшая чужой язык или битую картинку,
- * останется такой в чужих чатах надолго.
+ * Three 1200×630 images are drawn by scripts/site-og.mts: a Russian one for
+ * colloq.ru, an English one for /en/, and the same English one captioned
+ * colloq.cc — the mirror substitutes it. Mistakes here are silent and
+ * expensive: link unfurlers cache the card for days, and a page that showed
+ * the wrong language or a broken image stays that way in other people's chats
+ * for a long time.
  */
-test('каждая страница зовёт свою картинку превью', () => {
+test('each page calls for its own preview image', () => {
   assert.match(
     html,
     /property="og:image" content="https:\/\/colloq\.ru\/img\/og\.png\?v=[0-9a-f]+"/,
-    'русская страница показывает не русскую картинку',
+    'the Russian page shows a non-Russian image',
   )
   assert.match(
     en,
     /property="og:image" content="https:\/\/colloq\.ru\/img\/og-en\.png\?v=[0-9a-f]+"/,
-    'английская страница показывает русскую картинку: бот не исполняет JS, ' +
-      'и автовыбор языка до него не доезжает вовсе',
+    'the English page shows the Russian image: the bot does not run JS, ' +
+      'and the automatic language choice never reaches it',
   )
   for (const [name, page] of [['ru', html], ['en', en]] as const) {
-    assert.match(page, /property="og:image:width" content="1200"/, `${name}: нет ширины картинки`)
-    assert.match(page, /property="og:image:height" content="630"/, `${name}: нет высоты картинки`)
+    assert.match(page, /property="og:image:width" content="1200"/, `${name}: no image width`)
+    assert.match(page, /property="og:image:height" content="630"/, `${name}: no image height`)
   }
 })
 
-test('метки кэша у картинок превью — хеши самих картинок', () => {
+test('the cache markers on preview images are the hashes of the images themselves', () => {
   const cases: Array<[string, string, string]> = [
     ['site/index.html', html, 'og.png'],
     ['site/en/index.html', en, 'og-en.png'],
   ]
   for (const [where, page, file] of cases) {
     const marker = new RegExp(`/img/${file.replace('.', '\\.')}\\?v=([0-9a-f]+)"`).exec(page)?.[1]
-    assert.ok(marker, `${where}: у ${file} нет метки версии`)
+    assert.ok(marker, `${where}: ${file} has no version marker`)
     const want = blobHash(`site/img/${file}`).slice(0, marker.length)
     assert.equal(
       marker,
       want,
-      `${where}: картинку перерисовали, а метку — нет. Мессенджер держит превью в ` +
-        `своём кэше днями и покажет старую. Новое значение: ${want}`,
+      `${where}: the image was redrawn, but the marker was not. A messenger keeps the preview in ` +
+        `its cache for days and will show the old one. New value: ${want}`,
     )
   }
 })
 
-test('картинки превью на месте, размером 1200×630 и не тяжелее 150 КБ', () => {
+test('the preview images are in place, 1200×630 in size and no heavier than 150 KB', () => {
   for (const { file } of OG_IMAGES) {
     const png = readFileSync(resolve(ROOT, 'site/img', file))
-    assert.equal(png.readUInt32BE(16), OG_WIDTH, `${file}: ширина`)
-    assert.equal(png.readUInt32BE(20), OG_HEIGHT, `${file}: высота`)
-    // Telegram и WhatsApp качают картинку до показа превью, и тяжёлая просто
-    // не успевает приехать.
+    assert.equal(png.readUInt32BE(16), OG_WIDTH, `${file}: width`)
+    assert.equal(png.readUInt32BE(20), OG_HEIGHT, `${file}: height`)
+    // Telegram and WhatsApp download the image before showing the preview,
+    // and a heavy one simply does not arrive in time.
     const kb = Math.round(png.length / 1024)
-    assert.ok(png.length < 150 * 1024, `${file}: ${kb} КБ — слишком тяжело`)
+    assert.ok(png.length < 150 * 1024, `${file}: ${kb} KB — too heavy`)
   }
 })
 
-test('перерисованные картинки превью совпадают с выложенными побайтно', async () => {
+test('redrawn preview images match the published ones byte for byte', async () => {
   /*
-   * Файл в site/img — единственное, что видит мессенджер, а рисует его скрипт.
-   * Разойдясь однажды (правка текста без перерисовки или наоборот), они будут
-   * расходиться и дальше: сверить их глазами нельзя, а метка ?v= считается по
-   * файлу и о правке скрипта ничего не знает.
+   * The file in site/img is the only thing the messenger sees, and a script
+   * draws it. Once they diverge (a text edit without a redraw or the other way
+   * round), they will keep diverging: they cannot be compared by eye, and the
+   * ?v= marker is computed from the file and knows nothing about script edits.
    */
   const dir = mkdtempSync(join(tmpdir(), 'colloq-og-'))
   try {
@@ -119,7 +120,7 @@ test('перерисованные картинки превью совпада�
       assert.deepEqual(
         readFileSync(join(dir, file)),
         readFileSync(resolve(ROOT, 'site/img', file)),
-        `${file} разошёлся со scripts/site-og.mts — перерисуйте: make site-og`,
+        `${file} diverged from scripts/site-og.mts — redraw it: make site-og`,
       )
     }
   } finally {
@@ -127,13 +128,13 @@ test('перерисованные картинки превью совпада�
   }
 })
 
-test('слой декоративных кареток закрыт от диктора', () => {
+test('the layer of decorative carets is hidden from the screen reader', () => {
   const at = demos.indexOf("layer.className = 'cursors'")
-  assert.ok(at > 0, 'слоя .cursors в скрипте героя нет')
+  assert.ok(at > 0, 'the hero script has no .cursors layer')
   assert.match(
     demos.slice(at, at + 800),
     /layer\.setAttribute\('aria-hidden', 'true'\)/,
-    'слой лежит внутри h1, и без aria-hidden подписи кареток въезжают в его ' +
-      'доступное имя: «Занятия, где делают, а не смотрят НИКИТА ТИМУР»',
+    'the layer sits inside h1, and without aria-hidden the caret labels slip into its ' +
+      'accessible name: "Занятия, где делают, а не смотрят НИКИТА ТИМУР"',
   )
 })

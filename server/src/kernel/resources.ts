@@ -1,21 +1,22 @@
 /**
- * Что за машина под инстансом — и кому из комнат сколько на ней отдано.
+ * What machine is under the instance, and how much of it each room has been
+ * given.
  *
- * 13.09 семинар шестнадцать раз подряд потерял ядро по памяти, и узнать об
- * этом можно было только по `dmesg`: лимит был один на все комнаты, жил в
- * переменной окружения и нигде в продукте не показывался. Поднять его одной
- * комнате было нечем, а поднять всем — значило отдать шестнадцать гигабайт
- * десяти семинарам, которым хватает двух.
+ * On 13 Sep 2026 a seminar lost its kernel to memory sixteen times in a row,
+ * and the only way to find out was `dmesg`: there was one limit for all rooms,
+ * it lived in an environment variable and was shown nowhere in the product.
+ * There was no way to raise it for one room, and raising it for everyone meant
+ * giving sixteen gigabytes to ten seminars that are fine with two.
  *
- * Отсюда этот модуль: он отвечает на три вопроса, без которых поле «сколько
- * памяти» — гадание. Сколько её на машине вообще, сколько свободно прямо
- * сейчас, и что уже роздано живым комнатам. Плюс карта, потому что окружение с
- * GPU просит памяти втрое больше обычного, и преподаватель должен видеть, на
- * чём именно он ставит семинар.
+ * Hence this module: it answers three questions without which a "how much
+ * memory" field is guesswork. How much the machine has at all, how much is
+ * free right now, and what has already been handed out to live rooms. Plus
+ * the card, because a GPU environment asks for three times the usual memory,
+ * and the teacher should see what exactly the seminar is being put on.
  *
- * Ничего здесь не бросает. Все три источника — /proc, `nvidia-smi`, docker —
- * на чужой машине могут отсутствовать, отвечать мусором или висеть; тогда
- * форма семинара просто не покажет подсказку, а не сломается целиком.
+ * Nothing here throws. All three sources (/proc, `nvidia-smi`, docker) may be
+ * missing on someone else's machine, answer with garbage or hang; then the
+ * seminar form simply does not show the hint instead of breaking entirely.
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -31,30 +32,33 @@ import { observeWorkMemory, workBudgetSnapshot } from '../ops/work-budget.js'
 const MB = 1024 * 1024
 
 /*
- * Форма ответа живёт в shared/admin.ts вместе с остальным, что панель читает:
- * один описанный контракт на сервер и браузер, а не два похожих.
+ * The shape of the answer lives in shared/admin.ts with everything else the
+ * panel reads: one documented contract for server and browser, not two
+ * similar ones.
  */
 export type { GpuCard, InstanceResources, RoomResource } from '@shared/admin'
 type Collected = Omit<InstanceResources, 'limits'>
 
-/* --------------------------------------------------------------- память */
+/* --------------------------------------------------------------- memory */
 
 /**
- * Сколько памяти свободно у САМОЙ машины — по мнению её ядра, а не `freemem`.
+ * How much memory the machine ITSELF has free, in its kernel's opinion, not
+ * `freemem`'s.
  *
- * `os.freemem()` не годится ни на одной из двух систем. На Linux это память,
- * не занятая НИЧЕМ, включая кеш страниц: на работающем сервере она всегда
- * близка к нулю, и подсказка «свободно 0,4 ГБ» из 72 честно напугала бы
- * преподавателя на пустой машине. MemAvailable — оценка самого ядра «сколько
- * можно занять, не уходя в swap», и это ровно тот вопрос, который задаёт форма
- * семинара. На macOS `freemem` врёт грубее: система считает свободными только
- * страницы, не занятые ничем, а inactive и purgeable — те, что она отдаёт по
- * первому требованию, — в это число не входят. На Маке с 36 ГБ, где занято
- * хорошо если половина, форма показывала «свободно 0,5 ГБ» и красила поле
- * предупреждением на любом лимите.
+ * `os.freemem()` is no good on either of the two systems. On Linux it is
+ * memory used by NOTHING, page cache included: on a working server it is
+ * always close to zero, and a "0.4 GB free" hint out of 72 would honestly
+ * scare a teacher on an empty machine. MemAvailable is the kernel's own
+ * estimate of "how much can be taken without going to swap", and that is
+ * exactly the question the seminar form asks. On macOS `freemem` lies more
+ * crudely: the system counts as free only pages used by nothing, and inactive
+ * and purgeable pages, the ones it gives up on first demand, are not included.
+ * On a Mac with 36 GB, at most half of it in use, the form showed "0.5 GB
+ * free" and painted the field with a warning at any limit.
  *
- * Поэтому там, где своего /proc нет, ответ — `null`, «не знаю»: форма про
- * свободное тогда молчит. Молчание честнее числа, которое пугает зря.
+ * So where there is no /proc of our own, the answer is `null`, "don't know":
+ * the form then says nothing about free memory. Silence is more honest than a
+ * number that scares for nothing.
  */
 function hostAvailableMb(): number | null {
   try {
@@ -62,50 +66,52 @@ function hostAvailableMb(): number | null {
     const match = /^MemAvailable:\s+(\d+)\s*kB/m.exec(meminfo)
     if (match) return Math.floor(Number(match[1]) / 1024)
   } catch {
-    /* не Linux, или /proc не смонтирован — ниже честное «не знаю» */
+    /* not Linux, or /proc is not mounted: an honest "don't know" below */
   }
   return null
 }
 
-/* ----------------------------------------------------------- демон docker */
+/* ---------------------------------------------------------- docker daemon */
 
 /**
- * Машина, на которой ядра комнат живут НА САМОМ ДЕЛЕ.
+ * The machine the room kernels ACTUALLY live on.
  *
- * На Linux демон docker — то же самое ядро, и его числа совпадают с `os.*`. На
- * Маке и на Windows между ними стоит виртуалка: `colima start --memory 12` —
- * это двенадцать гигабайт на все контейнеры разом, сколько бы их ни было у
- * Мака. Потолок комнаты ставит тот, кто её запускает, поэтому спрашивать надо
- * его: шестнадцатого гигабайта контейнеру в такой виртуалке взять неоткуда,
- * а форма занятия по памяти Мака предлагала бы тридцать пять и принимала их —
- * то есть обещала бы ядро, которое убьют по памяти на первой тяжёлой ячейке.
+ * On Linux the docker daemon is the same kernel, and its numbers match
+ * `os.*`. On a Mac and on Windows a VM stands between them:
+ * `colima start --memory 12` is twelve gigabytes for all containers at once,
+ * however much the Mac has. The room's ceiling is set by whoever runs it, so
+ * that is who has to be asked: a container in such a VM has nowhere to take
+ * a sixteenth gigabyte from, while a class form going by the Mac's memory
+ * would offer thirty-five and accept them, that is, promise a kernel that
+ * gets killed for memory on the first heavy cell.
  */
 interface Daemon {
   totalMb: number
-  /** `NCPU` демона: у виртуалки это её доля ядер, а не все ядра Мака. */
+  /** The daemon's `NCPU`: for a VM it is its share of the cores, not all of the Mac's. */
   cpus: number
 }
 
-/** «12514811904 10» — байты памяти демона и его ядра. */
+/** "12514811904 10": the daemon's memory in bytes and its cores. */
 export function parseDaemonInfo(out: string): Daemon | null {
   const [bytes, cores] = out.trim().split(/\s+/)
   const totalMb = Math.floor(Number(bytes) / MB)
   const cpus = Math.floor(Number(cores))
-  // Ноль и мусор — это «не знаю», а не «нисколько»: нисколько уехало бы в
-  // границы поля и не дало бы задать комнате ничего.
+  // Zero and garbage mean "don't know", not "none": "none" would go into the
+  // field's bounds and leave nothing to set for a room.
   if (!Number.isFinite(totalMb) || totalMb <= 0) return null
   return { totalMb, cpus: Number.isFinite(cpus) && cpus > 0 ? cpus : 0 }
 }
 
 /*
- * Спрашивается раз в минуту, а не на каждый запрос.
+ * Asked once a minute, not on every request.
  *
- * `docker info` — это раунд к демону: тридцать миллисекунд на здоровой машине
- * и вечность на повисшей. Меняется ответ ровно тогда, когда колиму
- * перезапустили с другой памятью, — минуты хватает, чтобы это доехало до формы,
- * и хватает, чтобы панель нескольких преподавателей не превратилась в поток
- * процессов docker. Отказ помнится наравне с успехом: демон лежит — значит,
- * минуту отвечаем числами машины, а не зовём его снова на каждый PATCH.
+ * `docker info` is a round trip to the daemon: thirty milliseconds on a
+ * healthy machine and forever on a hung one. The answer changes exactly when
+ * colima was restarted with different memory; a minute is enough for that to
+ * reach the form, and enough to keep several teachers' panels from turning
+ * into a stream of docker processes. A failure is remembered just like a
+ * success: if the daemon is down, for a minute we answer with the machine's
+ * numbers instead of calling it again on every PATCH.
  */
 const DAEMON_TTL_MS = 60_000
 let seenDaemon: Daemon | null = null
@@ -117,20 +123,22 @@ let askDocker: DockerRead = dockerRead
 let dockerInjected = false
 
 /**
- * Подменить docker — тестам.
+ * Substitute docker, for tests.
  *
- * Ровно как `useDockerForLimits` в pool.ts и по той же причине: настоящего
- * docker в сюите нет, а проверять надо то, что бывает только с ним.
+ * Exactly like `useDockerForLimits` in pool.ts and for the same reason: there
+ * is no real docker in the suite, yet what has to be checked happens only
+ * with it.
  */
 export function useDockerInfo(fake: DockerRead | null): void {
   askDocker = fake ?? dockerRead
   dockerInjected = fake !== null
 }
 
-/** Что говорит о себе демон — с кешем и без единого исключения наружу. */
+/** What the daemon says about itself, cached and without a single exception escaping. */
 export function readDaemon(): Promise<Daemon | null> {
-  // Под брокером контейнерами распоряжаемся не мы, под тестовым бэкендом их
-  // нет вовсе: спрашивать некого, и числа остаются машинные.
+  // Under the broker we do not manage the containers, and under the test
+  // backend there are none at all: nobody to ask, so the numbers stay the
+  // machine's.
   if (kernelBackend() !== 'docker' && !dockerInjected) return Promise.resolve(null)
   if (seenAt && Date.now() - seenAt < DAEMON_TTL_MS) return Promise.resolve(seenDaemon)
   daemonInflight ??= askDocker(['info', '--format', '{{.MemTotal}} {{.NCPU}}'], 3_000)
@@ -148,39 +156,42 @@ export function readDaemon(): Promise<Daemon | null> {
 }
 
 /**
- * Последнее, что сказал демон, — для границ, которые считаются синхронно.
+ * The last thing the daemon said, for bounds computed synchronously.
  *
- * Дверь `/api/instance/resources` считает границы ПОСЛЕ сбора, так что там
- * число всегда свежее. А PATCH лимита комнаты приходит и на холодный сервер;
- * ждать в нём docker незачем — проверка в этот раз пройдёт по числам машины,
- * то есть мягче, чем надо, зато запрос не встанет на секунды из-за
- * неотвечающего демона. Заодно греется кеш к следующему такому запросу.
+ * The `/api/instance/resources` endpoint computes the bounds AFTER
+ * collecting, so the number there is always fresh. But a PATCH of a room's
+ * limit also arrives at a cold server; there is no point waiting for docker
+ * in it: this time the check goes by the machine's numbers, that is, softer
+ * than it should, but the request does not stall for seconds because of an
+ * unresponsive daemon. It also warms the cache for the next such request.
  */
 function lastDaemon(): Daemon | null {
   void readDaemon()
   return seenDaemon
 }
 
-/* ---------------------------------------------------------------- брокер */
+/* ---------------------------------------------------------------- broker */
 
 /**
- * Память комнаты на k3s — число брокера, а не переменных окружения веба.
+ * A room's memory on k3s is the broker's number, not the web's environment
+ * variables.
  *
- * Под брокером Pod комнаты собирает он, и умолчание у него своё
- * (RUNTIME_KERNEL_MEMORY, 2Gi из коробки), одно на все окружения. Форма же
- * подписывала поле умолчаниями docker-пути — «4 ГБ, на GPU 16», — которых Pod
- * не получал никогда. И потолок у брокера свой: узел минус гигабайт или
- * RUNTIME_KERNEL_MEMORY_MAX оператора. Оба числа он отдаёт в /v1/health.
+ * Under the broker it is the broker that assembles the room's Pod, and it has
+ * its own default (RUNTIME_KERNEL_MEMORY, 2Gi out of the box), one for all
+ * environments. The form, meanwhile, labelled the field with the docker path's
+ * defaults, "4 GB, 16 on a GPU", which the Pod never got. And the broker has
+ * its own ceiling: the node minus a gigabyte, or the operator's
+ * RUNTIME_KERNEL_MEMORY_MAX. It reports both numbers in /v1/health.
  */
 interface BrokerMemory {
   defaultMb: number | null
   maxMb: number | null
 }
 /*
- * Если брокер ещё ни разу не ответил — его заводское умолчание. Врать тут
- * нечем лучше: оператор, поменявший RUNTIME_KERNEL_MEMORY, увидит своё число,
- * как только брокер ответит, а до того форма хотя бы не обещает 4 ГБ там, где
- * Pod получит два.
+ * If the broker has never answered yet, its factory default. There is no
+ * better guess to offer here: an operator who changed RUNTIME_KERNEL_MEMORY
+ * sees their number as soon as the broker answers, and until then the form at
+ * least does not promise 4 GB where the Pod will get two.
  */
 const BROKER_FACTORY_DEFAULT_MB = 2048
 const BROKER_TTL_MS = 60_000
@@ -188,7 +199,7 @@ let seenBroker: BrokerMemory = { defaultMb: null, maxMb: null }
 let brokerAt = 0
 let brokerInflight: Promise<void> | null = null
 
-/** Запомнить, что сказал брокер о памяти; молчание о поле не стирает прошлое. */
+/** Remember what the broker said about memory; silence about a field does not erase the previous value. */
 function rememberBroker(health: { defaultMemoryMb?: number; maxMemoryMb?: number }): void {
   seenBroker = {
     defaultMb: health.defaultMemoryMb ?? seenBroker.defaultMb,
@@ -198,11 +209,12 @@ function rememberBroker(health: { defaultMemoryMb?: number; maxMemoryMb?: number
 }
 
 /**
- * Последнее, что брокер сказал о памяти, — для синхронных границ.
+ * The last thing the broker said about memory, for synchronous bounds.
  *
- * Тем же устройством, что `lastDaemon`: PATCH лимита не ждёт брокера, а греет
- * кеш к следующему разу. Форма и так спрашивает /api/instance/resources при
- * открытии, так что к моменту, когда в поле что-то набрали, число свежее.
+ * Built the same way as `lastDaemon`: a limit PATCH does not wait for the
+ * broker but warms the cache for next time. The form asks
+ * /api/instance/resources when it opens anyway, so by the time something is
+ * typed into the field the number is fresh.
  */
 function lastBroker(): BrokerMemory {
   if (kernelBackend() === 'broker' && (!brokerAt || Date.now() - brokerAt >= BROKER_TTL_MS)) {
@@ -210,7 +222,7 @@ function lastBroker(): BrokerMemory {
       try {
         rememberBroker(await kernelRuntimeClient().health())
       } catch {
-        /* брокер не настроен или лежит — остаёмся на прошлом */
+        /* the broker is not configured or is down: we stay with the previous value */
       }
     })().finally(() => {
       brokerInflight = null
@@ -219,26 +231,27 @@ function lastBroker(): BrokerMemory {
   return seenBroker
 }
 
-/** Умолчание комнаты под брокером — одно на все окружения, как у него самого. */
+/** A room's default under the broker: one for all environments, as the broker itself has it. */
 function brokerDefaultMb(): number {
   return lastBroker().defaultMb ?? BROKER_FACTORY_DEFAULT_MB
 }
 
 export interface MemoryPicture {
   totalMb: number
-  /** Сколько ещё можно раздать; `null` — «честно не знаем». */
+  /** How much more can be handed out; `null` means "we honestly don't know". */
   availableMb: number | null
-  /** Чьи это числа: машины сервера или демона docker. */
+  /** Whose numbers these are: the server machine's or the docker daemon's. */
   source: 'host' | 'docker'
 }
 
 /**
- * Два числа формы — из того источника, который про них знает.
+ * The form's two numbers, from the source that knows about them.
  *
- * «Тот же ли это компьютер» решается числом, а не платформой: у нативного
- * демона памяти ровно столько же, сколько у машины, у виртуалки колимы — своя,
- * а DOCKER_HOST может смотреть и вовсе на соседний сервер. Шестнадцатая доля
- * допуска — на расхождение в том, что каждая сторона считает «всей памятью».
+ * "Is this the same computer" is decided by a number, not by the platform: a
+ * native daemon has exactly as much memory as the machine, a colima VM has
+ * its own, and DOCKER_HOST may even point at a neighboring server. The
+ * one-sixteenth tolerance covers the difference in what each side counts as
+ * "all of the memory".
  */
 export function memoryPicture(input: {
   daemonTotalMb: number | null
@@ -253,11 +266,11 @@ export function memoryPicture(input: {
     return { totalMb: hostTotalMb, availableMb: hostAvailableMb, source: 'host' }
   }
   /*
-   * Свободное у виртуалки не спросить: /proc у неё свой, внутрь мы не ходим, а
-   * MemAvailable Мака к её двенадцати гигабайтам отношения не имеет. Зато
-   * известно ровно то, что нужно преподавателю: сколько ещё можно РАЗДАТЬ —
-   * потолок демона минус гигабайт ему самому (тот же, что в границах ниже)
-   * минус то, что уже обещано живым комнатам.
+   * A VM's free memory cannot be asked for: it has its own /proc, we do not go
+   * inside, and the Mac's MemAvailable has nothing to do with its twelve
+   * gigabytes. But exactly what the teacher needs is known: how much more can
+   * be HANDED OUT, the daemon's ceiling minus a gigabyte for itself (the same
+   * one as in the bounds below) minus what is already promised to live rooms.
    */
   return {
     totalMb: daemonTotalMb,
@@ -269,12 +282,12 @@ export function memoryPicture(input: {
 /* ------------------------------------------------------------------ GPU */
 
 /**
- * Карты машины — у `nvidia-smi`, если он на ней есть.
+ * The machine's cards, from `nvidia-smi`, if it is there.
  *
- * Ни ошибки, ни отсутствия бинарника наружу не выходит: пустой список значит
- * «карт не видно», и форма семинара про GPU тогда молчит. Таймаут короткий и
- * настоящий (kill, а не только reject): `nvidia-smi` на машине с повисшим
- * драйвером не возвращается никогда, а это чтение висит на запросе панели.
+ * Neither errors nor a missing binary escape: an empty list means "no cards
+ * visible", and the seminar form then says nothing about GPUs. The timeout is
+ * short and real (kill, not just reject): `nvidia-smi` on a machine with a
+ * hung driver never returns, and this read hangs on the panel's request.
  */
 function readGpus(): Promise<GpuCard[]> {
   return new Promise((resolve) => {
@@ -306,7 +319,7 @@ function readGpus(): Promise<GpuCard[]> {
   })
 }
 
-/** «0, NVIDIA GeForce RTX 3090, 24576» — по строке на карту. */
+/** "0, NVIDIA GeForce RTX 3090, 24576": one line per card. */
 export function parseGpus(out: string): GpuCard[] {
   const cards: GpuCard[] = []
   for (const line of out.split('\n')) {
@@ -320,7 +333,7 @@ export function parseGpus(out: string): GpuCard[] {
   return cards
 }
 
-/* ---------------------------------------------------------------- комнаты */
+/* ------------------------------------------------------------------ rooms */
 
 interface RoomRow {
   id: string
@@ -331,11 +344,12 @@ interface RoomRow {
 }
 
 /**
- * Комнаты, о которых стоит говорить: живые и те, кому память задали руками.
+ * The rooms worth talking about: live ones and those whose memory was set by
+ * hand.
  *
- * Не все подряд: на семестре их шестьдесят, и список «кто держит машину» из
- * шестидесяти строк, пятьдесят девять из которых спят, отвечает не на тот
- * вопрос. Потолок стоит на всякий случай — панель этот список рисует.
+ * Not all of them: a semester has sixty, and a "who holds the machine" list
+ * of sixty rows, fifty-nine of them asleep, answers the wrong question. The
+ * cap is there just in case: the panel draws this list.
  */
 const selectRooms = db.prepare(
   'SELECT id, name, environment, memory_mb, cpus FROM sessions ORDER BY created_at DESC LIMIT 200',
@@ -347,11 +361,12 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
   let complete = true
   const memoryBySlot = new Map<string, number>()
   /*
-   * У кого из занятий есть ВТОРОЙ контейнер — тот, где живут личные тетради.
+   * Which classes have a SECOND container, the one personal notebooks live in.
    *
-   * Спрашивается тем же `docker ps`, что и список живых: иначе панель звала бы
-   * `inspect` на каждую живую комнату вслепую, чтобы у половины узнать «такого
-   * контейнера нет». Под брокером второго контейнера не бывает вовсе.
+   * Asked by the same `docker ps` as the list of live ones: otherwise the panel
+   * would call `inspect` blindly on every live room, only to learn "no such
+   * container" for half of them. Under the broker there is never a second
+   * container.
    */
   let withOwn = new Set<string>()
   let runningRoom = new Set<string>()
@@ -390,25 +405,27 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
       const settledMb = row.memory_mb ?? envDefaultMb(row.environment)
       const settledCpus = row.cpus ?? instanceCpus
       /*
-       * У живой комнаты спрашивается docker, а не строка семинара: разойтись
-       * они могут ровно тогда, когда это важно — лимит подняли между парами, а
-       * контейнер с утра работает на старом. Показывать надо то, что у неё
-       * есть, а не то, что ей записали. Оба числа одним `inspect`: список
-       * зовёт его на каждую живую комнату.
+       * For a live room docker is asked, not the seminar row: they can diverge
+       * exactly when it matters, when the limit was raised between lessons
+       * while the container has been running on the old one since morning.
+       * What has to be shown is what the room has, not what was recorded for
+       * it. Both numbers in one `inspect`: the list calls it for every live
+       * room.
        */
-      // Под брокером то же правило: перепись комнат отдаёт память из status
-      // Pod — то, что kubelet выставил, а не то, что записано в spec.
+      // The same rule under the broker: the room census reports memory from
+      // the Pod's status, what kubelet set, not what is written in the spec.
       const census = runtimeById.get(row.id)
       const real = runningRoom.has(row.id) && kernelBackend() === 'docker'
         ? await containerLimits(row.id).catch(() => ({ memoryMb: null, cpus: null }))
         : { memoryMb: census?.memoryMb ?? null, cpus: census?.cpus ?? null }
       /*
-       * И то же самое у контейнера личных тетрадей — но только когда он есть.
+       * And the same for the personal-notebook container, but only when it
+       * exists.
        *
-       * Числа у него те же, что у комнаты (pool.ts · startContainer), однако
-       * спрашивается всё равно docker: разойтись они могут ровно тогда, когда
-       * это важно — лимит подняли между парами, а один из контейнеров с утра
-       * работает на старом.
+       * Its numbers are the same as the room's (pool.ts · startContainer), yet
+       * docker is asked all the same: they can diverge exactly when it
+       * matters, when the limit was raised between lessons while one of the
+       * containers has been running on the old one since morning.
        */
       const own = withOwn.has(row.id)
         ? await containerLimits(row.id, 'own').catch(() => ({ memoryMb: null, cpus: null }))
@@ -443,15 +460,16 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
   return { rows: allocations.slice(0, 50), takenMb, takenCpus, memoryBySlot, complete }
 }
 
-/* ------------------------------------------------------------------ сбор */
+/* ------------------------------------------------------------ collection */
 
 /**
- * Машина, какой её видит сервер прямо сейчас.
+ * The machine as the server sees it right now.
  *
- * Под тестовым бэкендом числа выдуманные, и выдуманы они правдоподобно —
- * ровно та машина, которую колло́к арендует: 3090, 72 ГБ памяти. Без этого
- * форму семинара нельзя было бы ни посмотреть, ни проверить на ноутбуке
- * разработчика: `nvidia-smi` там нет, и «Ресурсы» рисовались бы наполовину.
+ * Under the test backend the numbers are made up, and made up plausibly:
+ * exactly the machine Colloq rents, a 3090 with 72 GB of memory. Without this
+ * the seminar form could be neither viewed nor tested on a developer's
+ * laptop: there is no `nvidia-smi` there, and "Resources" would be drawn only
+ * halfway.
  */
 async function collect(): Promise<Collected> {
   const censusStartedAt = process.hrtime.bigint()
@@ -472,7 +490,7 @@ async function collect(): Promise<Collected> {
     perEnvironment[name] = { memoryMb: envDefaultMb(name), gpu: safeGpu(name) }
   }
   const allocation = await rooms(instanceCpus, runtimeRooms)
-  // Живая комната свою память уже держит — раздать её второй раз нельзя.
+  // A live room already holds its memory; it cannot be handed out a second time.
   const takenMb = allocation.takenMb
   const daemon = await readDaemon()
   const picture = memoryPicture({
@@ -482,13 +500,14 @@ async function collect(): Promise<Collected> {
     takenMb,
   })
   /*
-   * Под брокером «свободно» — это не MemAvailable, а то, что ещё не обещано.
+   * Under the broker "free" is not MemAvailable but what is not yet promised.
    *
-   * У Pod комнаты requests равны limits, и планировщик считает занятой всю
-   * обещанную память, сколько бы Python её ни трогал. Узел с тремя пустыми
-   * комнатами по 16 ГБ по MemAvailable «почти свободен», а четвёртая комната
-   * не встанет — ровно то, о чём должно предупредить поле. Меньшее из двух:
-   * обещанное мимо нас (сам кластер, приложение) MemAvailable тоже заметит.
+   * A room Pod's requests equal its limits, and the scheduler counts all the
+   * promised memory as taken, however little of it Python touches. A node
+   * with three empty 16 GB rooms is "almost free" by MemAvailable, yet a
+   * fourth room will not fit, which is exactly what the field has to warn
+   * about. The smaller of the two: MemAvailable also notices memory promised
+   * around us (the cluster itself, the application).
    */
   if (kernelBackend() !== 'test') {
     const unpromised = Math.max(0, picture.totalMb - HOST_RESERVE_MB - takenMb)
@@ -506,10 +525,10 @@ async function collect(): Promise<Collected> {
     gpus,
     kernel: {
       defaultMemoryMb: brokerMb ?? defaultMemoryMb(false),
-      // У брокера нет отдельного умолчания для GPU: Pod с картой получает то же.
+      // The broker has no separate GPU default: a Pod with a card gets the same.
       gpuDefaultMemoryMb: brokerMb ?? defaultMemoryMb(true),
-      // Ядра одним числом на инстанс: окружение на них не влияет, в отличие
-      // от памяти, где окружение с GPU просит вчетверо больше.
+      // CPUs are one number per instance: the environment does not affect
+      // them, unlike memory, where a GPU environment asks for four times more.
       defaultCpus: instanceCpus,
       perEnvironment,
     },
@@ -517,7 +536,7 @@ async function collect(): Promise<Collected> {
   }
 }
 
-/** Список окружений читается с диска; пустой каталог — не повод отказать в ответе. */
+/** The environment list is read from disk; an empty directory is no reason to refuse an answer. */
 function safeNames(): string[] {
   try {
     return listNames()
@@ -527,14 +546,14 @@ function safeNames(): string[] {
 }
 
 /**
- * Умолчание окружения — и «не знаю» вместо исключения.
+ * The environment's default, and "don't know" instead of an exception.
  *
- * Имя окружения приезжает из строки семинара, а окружение с тех пор могли
- * удалить или переименовать. Разбор его цепочки бросает, и на этом падал бы
- * весь ответ — ради одной строки в списке комнат.
+ * The environment name comes from the seminar row, and the environment may
+ * have been deleted or renamed since. Resolving its chain throws, and the
+ * whole answer would fail on it, for the sake of one line in the room list.
  */
 function envDefaultMb(name: string | null): number {
-  // KERNEL_MEM_<ОКРУЖЕНИЕ> и 4g/16g — это `docker run`; Pod брокера их не видит.
+  // KERNEL_MEM_<ENVIRONMENT> and 4g/16g belong to `docker run`; the broker's Pod does not see them.
   if (kernelBackend() === 'broker') return brokerDefaultMb()
   try {
     return memoryLimitMb(name ?? '')
@@ -552,14 +571,15 @@ function safeGpu(name: string): boolean {
 }
 
 /*
- * Десять секунд — и почему они вообще нужны.
+ * Ten seconds, and why they are needed at all.
  *
- * Ответ стоит чтения /proc, запуска `nvidia-smi` и `docker inspect` на каждую
- * живую комнату. Форма семинара спрашивает его на открытии и на каждой смене
- * окружения, а панель открыта у нескольких преподавателей сразу — без памяти
- * это десятки процессов в секунду на машине, которая в это время считает
- * чью-то нейросеть. Свежее десяти секунд тут никому не нужно: столько не
- * меняется ни объём машины, ни список карт.
+ * The answer costs a read of /proc, a run of `nvidia-smi` and a
+ * `docker inspect` for every live room. The seminar form asks for it on open
+ * and on every environment change, and the panel is open for several
+ * teachers at once; without memory that is dozens of processes a second on a
+ * machine that is busy training someone's neural network at the time. Nobody
+ * needs anything fresher than ten seconds here: neither the machine's size
+ * nor the list of cards changes that fast.
  */
 const TTL_MS = 10_000
 let cached: { at: number; value: Collected } | null = null
@@ -573,8 +593,8 @@ export async function machineResources(options: { fresh?: boolean; beforeReserva
   }
   // Reservation changes must be visible immediately even while census is cached.
   if (cached && Date.now() - cached.at < TTL_MS) return display(cached.value)
-  // Один сбор на всех, кто спросил, пока он идёт: иначе десять вкладок панели
-  // запускают десять `nvidia-smi` в одну секунду — ровно то, от чего кеш.
+  // One collection for everyone who asked while it runs: otherwise ten panel
+  // tabs start ten `nvidia-smi` in one second, exactly what the cache is for.
   inflight ??= collect()
     .then((value) => {
       cached = { at: Date.now(), value }
@@ -586,22 +606,23 @@ export async function machineResources(options: { fresh?: boolean; beforeReserva
   return display(await inflight)
 }
 
-/** Забыть собранное — после того, как комнате поменяли лимит. Вместе с демоном:
- *  его перенастраивают реже, но помнить о нём дольше, чем о комнатах, незачем. */
+/** Forget what was collected, after a room's limit changed. The daemon too: it
+ *  is reconfigured less often, but there is no point remembering it longer
+ *  than the rooms. */
 export function forgetResources(): void {
   cached = null
   seenDaemon = null
   seenAt = 0
-  // Числа брокера не стираются, а только устаревают: без них границы PATCH
-  // до следующего ответа откатились бы к памяти узла.
+  // The broker's numbers are not erased, only marked stale: without them the
+  // PATCH bounds would fall back to the node's memory until the next answer.
   brokerAt = 0
 }
 
-/* ------------------------------------------------------------- проверка */
+/* ----------------------------------------------------------- validation */
 
-/** Меньше этого ядру не поднять: сам Jupyter с импортами занимает сотни мегабайт. */
+/** A kernel cannot start with less than this: Jupyter itself with its imports takes hundreds of megabytes. */
 export const MIN_ROOM_MB = 512
-/** Машине надо чем-то жить и после того, как комната возьмёт своё. */
+/** The machine needs something to live on after the room takes its share. */
 export const HOST_RESERVE_MB = 1024
 
 export interface MemoryBounds {
@@ -610,26 +631,28 @@ export interface MemoryBounds {
 }
 
 /**
- * Границы, в которых лимит вообще имеет смысл.
+ * The bounds within which a limit makes sense at all.
  *
- * Верхняя — память машины минус гигабайт на саму машину: комната, которой
- * выдали всё, убивает не себя, а сервер под собой. Проверять её надо на
- * сервере, а не в форме: панель числа знает, но браузер — не то место, где
- * решают, сколько можно взять у машины.
+ * The upper one is the machine's memory minus a gigabyte for the machine
+ * itself: a room given everything kills not itself but the server beneath it.
+ * It has to be checked on the server, not in the form: the panel knows the
+ * numbers, but the browser is not the place that decides how much can be
+ * taken from the machine.
  *
- * Машина здесь — та, что запускает контейнеры. Под колимой это её виртуалка, и
- * граница по памяти Мака пропускала бы «шестнадцать гигабайт» в двенадцати
- * гигабайтах докера: `docker run` отвечал бы на это отказом посреди пары.
+ * The machine here is the one that runs the containers. Under colima that is
+ * its VM, and a bound based on the Mac's memory would let "sixteen gigabytes"
+ * through into docker's twelve: `docker run` would answer that with a refusal
+ * in the middle of the lesson.
  */
 export function memoryBounds(): MemoryBounds {
   const totalMb =
     kernelBackend() === 'test' ? 73_728 : (lastDaemon()?.totalMb ?? Math.floor(os.totalmem() / MB))
   let max = Math.max(MIN_ROOM_MB, totalMb - HOST_RESERVE_MB)
   /*
-   * Под брокером последнее слово за ним: его потолок строже, если оператор
-   * задал RUNTIME_KERNEL_MEMORY_MAX. Принять здесь больше значило бы записать
-   * комнате число, которое брокер живой комнате не выставит, а новому Pod
-   * урежет до потолка.
+   * Under the broker it has the last word: its ceiling is stricter if the
+   * operator set RUNTIME_KERNEL_MEMORY_MAX. Accepting more here would mean
+   * recording for the room a number the broker will not set on a live room
+   * and will cut down to the ceiling for a new Pod.
    */
   const brokerMax = kernelBackend() === 'broker' ? lastBroker().maxMb : null
   if (brokerMax !== null) max = Math.max(MIN_ROOM_MB, Math.min(max, brokerMax))
@@ -637,26 +660,27 @@ export function memoryBounds(): MemoryBounds {
 }
 
 /**
- * Сколько ядер на машине — по тому же правилу, что и память.
+ * How many CPUs the machine has, by the same rule as memory.
  *
- * Под тестовым бэкендом число выдуманное и то же самое, что в ответе двери:
- * граница, не совпадающая с подписью под полем, — это отказ, который человеку
- * не объяснить.
+ * Under the test backend the number is made up and the same as in the
+ * endpoint's answer: a bound that does not match the label under the field is
+ * a refusal nobody can explain to a person.
  */
 export function machineCpus(): number {
   if (kernelBackend() === 'test') return 16
-  // И по той же причине, что у памяти: `--cpus 12` докер, которому колима
-  // выдала десять, отвергает целиком — комната просто не поднимется.
+  // And for the same reason as memory: a docker that colima gave ten CPUs
+  // rejects `--cpus 12` outright, and the room simply does not start.
   return Math.max(1, lastDaemon()?.cpus || os.cpus().length)
 }
 
 /**
- * Границы для ядер: от одного до всех, что есть на машине.
+ * The bounds for CPUs: from one to all the machine has.
  *
- * Запаса «оставь машине ядро», как у памяти, здесь нет намеренно: `--cpus` —
- * это доля времени, а не отобранное железо. Комната с восемью ядрами из восьми
- * не оставляет сервер без процессора, она просто конкурирует с ним за него;
- * комната с памятью машины минус ничего — оставляет его без памяти совсем.
+ * There is deliberately no "leave the machine a core" reserve like there is
+ * for memory: `--cpus` is a share of time, not hardware taken away. A room
+ * with eight CPUs out of eight does not leave the server without a processor,
+ * it just competes with it for the processor; a room with the machine's
+ * memory minus nothing leaves it with no memory at all.
  */
 export function cpuBounds(): MemoryBounds {
   return { min: 1, max: Math.min(machineCpus(), kernelBackend() === 'broker' ? 64 : Infinity) }
@@ -664,7 +688,7 @@ export function cpuBounds(): MemoryBounds {
 
 export type CpuInput = { ok: true; cpus: number | null } | { ok: false; error: 'type' | 'range' }
 
-/** Та же мерка, что и у памяти: целое, в границах, и null — «как у инстанса». */
+/** The same measure as for memory: an integer, within bounds, and null means "as for the instance". */
 export function readCpuInput(value: unknown): CpuInput {
   if (value === null || value === undefined) return { ok: true, cpus: null }
   if (typeof value !== 'number' || !Number.isInteger(value)) return { ok: false, error: 'type' }
@@ -676,12 +700,12 @@ export function readCpuInput(value: unknown): CpuInput {
 export type MemoryInput = { ok: true; mb: number | null } | { ok: false; error: 'type' | 'range' }
 
 /**
- * Разобрать присланное «сколько памяти» — одной меркой на все двери.
+ * Parse a submitted "how much memory", with one measure for every endpoint.
  *
- * `null` — законный ответ и значит «как у окружения»: так комнату возвращают к
- * умолчанию, не выдумывая для этого второго поля. Дробное отвергается, а не
- * округляется: форма шлёт мегабайты целыми, и дробь здесь — признак того, что
- * прислал её не она.
+ * `null` is a legitimate answer and means "as for the environment": that is
+ * how a room is returned to the default without inventing a second field for
+ * it. A fraction is rejected, not rounded: the form sends whole megabytes,
+ * and a fraction here is a sign that it was not the form that sent it.
  */
 export function readMemoryInput(value: unknown): MemoryInput {
   if (value === null || value === undefined) return { ok: true, mb: null }
@@ -691,7 +715,7 @@ export function readMemoryInput(value: unknown): MemoryInput {
   return { ok: true, mb: value }
 }
 
-/** Действующий лимит комнаты — своё число или умолчание её окружения. */
+/** A room's effective limit: its own number or its environment's default. */
 export function roomMemoryMb(sessionId: string, environment: string | null): number {
   return sessionMemoryMb(sessionId) ?? envDefaultMb(environment)
 }

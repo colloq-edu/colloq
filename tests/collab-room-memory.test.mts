@@ -1,12 +1,14 @@
 /**
- * Комната в памяти сервера: сколько она там живёт и чего стоит один её кадр.
+ * A room in server memory: how long it lives there and what one of its
+ * frames costs.
  *
- * Три вещи, каждая из которых ломается молча и видна только на пятистах.
- * Комната, в которую за семестр раз вошли, висела в памяти до удаления семинара
- * — вместе со вторым полным слепком в истории и текстами всех ячеек. Одно
- * нажатие уезжало комнате двумя кадрами на каждый сокет без склейки. И запись
- * файла тетради будила обход всей папки и дерево файлов всей комнате на каждый
- * вывод ядра, хотя на диске от вывода не меняется ни байта.
+ * Three things, each of which breaks silently and shows only at five
+ * hundred. A room entered once in a semester hung in memory until the class
+ * was deleted — together with a second full snapshot in the history and the
+ * texts of all the cells. One keystroke went to the room as two frames per
+ * socket with no merging. And writing the notebook file woke a walk of the
+ * whole folder and the whole room's file tree on every kernel output,
+ * although an output does not change a single byte on disk.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -50,12 +52,13 @@ after(() => shutdownCollab())
 
 const MINUTE = 60 * 1000
 
-/** Пустая комната отпускается через десять минут; берём с запасом. */
+/** An empty room is released after ten minutes; we take a margin. */
 const LATER = 11 * MINUTE
 
 /**
- * Отпустило ли уборкой ЭТУ комнату. Именно про эту, а не про список целиком:
- * карта комнат в процессе одна на всю сюиту, и соседний тест держит в ней свою.
+ * Whether the sweep released THIS room. Exactly this one, not the list as a
+ * whole: the process has one room map for the whole suite, and a
+ * neighbouring test keeps its own room in it.
  */
 function released(id: string, at: number = Date.now() + LATER): boolean {
   return sweepIdleRooms(at).includes(id)
@@ -63,12 +66,12 @@ function released(id: string, at: number = Date.now() + LATER): boolean {
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
-/** Окно присутствия и немного сверху: курсоры уезжают по его концу. */
+/** The presence window and a bit more: carets go out when it ends. */
 const faceWindow = (): Promise<void> => wait(FACES_WINDOW_MS + 50)
 
-/* ------------------------------------------------ выселение простаивающих */
+/* ---------------------------------------------------- evicting idle rooms */
 
-test('пустая комната отпускается из памяти и возвращается целой', () => {
+test('an empty room is released from memory and comes back whole', () => {
   const id = 'evict-plain'
   createSession(id, 'Пустеющая', null)
   const { doc } = getSessionDoc(id)
@@ -76,31 +79,31 @@ test('пустая комната отпускается из памяти и в
   const wrote = cellSource(getCells(doc).get(0)).toString()
 
   assert.equal(released(id), true)
-  assert.equal(peekSessionDoc(id), null, 'комната осталась в памяти')
+  assert.equal(peekSessionDoc(id), null, 'the room stayed in memory')
 
-  // Возвращается из снимка — ровно так же, как после перезапуска сервера.
+  // It comes back from the snapshot — exactly as after a server restart.
   const again = getSessionDoc(id).doc
-  assert.equal(cellSource(getCells(again).get(0)).toString(), wrote, 'работа не доехала до диска')
+  assert.equal(cellSource(getCells(again).get(0)).toString(), wrote, 'the work did not reach the disk')
 })
 
-test('комната, в которой считается ячейка, не выселяется из-под неё', () => {
+test('a room with a running cell is not evicted from under it', () => {
   const id = 'evict-busy'
   createSession(id, 'Считающая', null)
   const { doc } = getSessionDoc(id)
   doc.transact(() => getMeta(doc).set('runningCell', 'c1'))
 
-  assert.equal(released(id), false, 'документ снесли из-под ядра')
+  assert.equal(released(id), false, 'the document was torn down from under the kernel')
 
   doc.transact(() => getMeta(doc).set('runningCell', null))
   assert.equal(released(id), true)
 })
 
-test('очередь и перезапуск ядра держат комнату так же, как считающая ячейка', () => {
+test('a queue and a kernel restart hold the room just like a running cell', () => {
   const id = 'evict-queue'
   createSession(id, 'С очередью', null)
   const { doc } = getSessionDoc(id)
   doc.transact(() => getMeta(doc).set('kernelStatus', 'busy'))
-  assert.equal(released(id), false, 'документ снесли из-под перезапуска ядра')
+  assert.equal(released(id), false, 'the document was torn down from under a kernel restart')
 
   doc.transact(() => {
     getMeta(doc).set('kernelStatus', 'idle')
@@ -108,25 +111,25 @@ test('очередь и перезапуск ядра держат комнат�
     getMeta(doc).set('queue', queue)
     queue.push(['c2'])
   })
-  assert.equal(released(id), false, 'очередь осталась без документа')
+  assert.equal(released(id), false, 'the queue was left without a document')
 
   doc.transact(() => (getMeta(doc).get('queue') as Y.Array<string>).delete(0, 1))
   assert.equal(released(id), true)
 })
 
-test('держатель документа не даёт его уничтожить, а отпустив — даёт', () => {
+test('a document holder keeps it from being destroyed, and once released lets it go', () => {
   const id = 'evict-hold'
   createSession(id, 'Занятая', null)
   getSessionDoc(id)
   const release = holdRoom(id)
-  assert.equal(released(id), false, 'документ снесли из-под держателя')
+  assert.equal(released(id), false, 'the document was torn down from under its holder')
   release()
-  // Отпустить дважды — не беда: счётчик уходит в ноль один раз.
+  // Releasing twice is no problem: the counter goes to zero once.
   release()
   assert.equal(released(id), true)
 })
 
-test('застрявший поток оракула держит комнату не дольше трёх часов', () => {
+test('a stuck Oracle stream holds the room for no longer than three hours', () => {
   const id = 'evict-stuck'
   createSession(id, 'Застрявшая', null)
   const { doc } = getSessionDoc(id)
@@ -141,25 +144,26 @@ test('застрявший поток оракула держит комнату
     getChat(doc).push([entry])
   })
 
-  assert.equal(released(id), false, 'ответ оракула оборвали посреди потока')
-  // Ядро сносит контейнер простаивающей комнаты за два часа; после трёх писать
-  // в документ уже некому, а «streaming» остаётся навсегда.
+  assert.equal(released(id), false, "the Oracle's answer was cut off mid-stream")
+  // The kernel tears down an idle room's container after two hours; after
+  // three there is nobody left to write to the document, and "streaming"
+  // stays forever.
   assert.equal(released(id, Date.now() + 4 * 60 * MINUTE), true)
 })
 
-test('комната, в которой кто-то сидит, не выселяется никогда', () => {
+test('a room with someone in it is never evicted', () => {
   const id = 'evict-occupied'
   createSession(id, 'Живая', null)
   const seat = socket()
   handleCollabSocket(seat.ws, id, 'participant', 'p_one')
 
-  assert.equal(released(id, Date.now() + 10 * 60 * MINUTE), false, 'выселили комнату с людьми')
+  assert.equal(released(id, Date.now() + 10 * 60 * MINUTE), false, 'a room with people in it was evicted')
 
   seat.close()
   assert.equal(released(id), true)
 })
 
-/* ------------------------------------------------------- склейка кадров */
+/* -------------------------------------------------------- frame merging */
 
 interface Fake {
   ws: WebSocket
@@ -167,21 +171,23 @@ interface Fake {
   close(): void
 }
 
-/** Ровно то, что читает `handleCollabSocket`, плюс список принятых кадров. */
+/** Exactly what `handleCollabSocket` reads, plus a list of received frames. */
 function socket(): Fake {
   const frames: Uint8Array[] = []
   const handlers = new Map<string, ((...args: unknown[]) => void)[]>()
   const fake = {
     binaryType: 'arraybuffer',
     readyState: WebSocket.OPEN as number,
-    // Сколько байт ждёт отправки: по нему сервер решает, слать ли этому сокету
-    // курсоры и не пора ли его закрыть (collab/index.ts · send). У настоящего
-    // сокета поле есть всегда, и здесь оно тоже должно быть числом.
+    // How many bytes are waiting to be sent: by it the server decides whether
+    // to send this socket carets and whether it is time to close it
+    // (collab/index.ts · send). A real socket always has the field, and here
+    // it must be a number too.
     bufferedAmount: 0,
-    // Ровно та подпись, с которой зовёт сервер: кадр, настройки сжатия и
-    // обратный вызов. Пока настройки сюда не приезжали, подделка принимала их
-    // за обратный вызов и звала объект — сокет закрывался на первом же кадре,
-    // а тест сообщал об этом как о пропавшей склейке.
+    // Exactly the signature the server calls with: the frame, the compression
+    // options and the callback. While the options did not arrive here, the
+    // fake took them for the callback and called an object — the socket
+    // closed on the very first frame, and the test reported it as missing
+    // merging.
     send(frame: unknown, ...rest: unknown[]) {
       if (frame instanceof Uint8Array) frames.push(new Uint8Array(frame))
       const done = rest.find((it) => typeof it === 'function') as
@@ -197,8 +203,8 @@ function socket(): Fake {
     terminate() {},
     close() {
       fake.readyState = WebSocket.CLOSED
-      // Обработчик обязан отработать: в нём гасится сердцебиение, без него
-      // интервал переживёт тест и потащит за собой всю сюиту.
+      // The handler must run: the heartbeat is stopped in it, and without it
+      // the interval outlives the test and drags the whole suite along.
       for (const fn of handlers.get('close') ?? []) fn()
     },
   }
@@ -209,10 +215,10 @@ function socket(): Fake {
   }
 }
 
-/** Кадры синхронизации — те, что несут правки; первый кадр входа не в счёт. */
+/** Sync frames, which carry edits; the first frame on entry does not count. */
 const syncFrames = (fake: Fake): Uint8Array[] => fake.frames.filter((frame) => frame[0] === 0)
 
-/** Байты правки из кадра синхронизации: тип, подтип, содержимое. */
+/** The update bytes from a sync frame: type, subtype, payload. */
 function updateIn(frame: Uint8Array): Uint8Array {
   const decoder = decoding.createDecoder(frame)
   decoding.readVarUint(decoder)
@@ -220,7 +226,7 @@ function updateIn(frame: Uint8Array): Uint8Array {
   return decoding.readVarUint8Array(decoder)
 }
 
-test('пять правок в одном тике уезжают комнате одним кадром, а не пятью', async () => {
+test('five edits in one tick go to the room as one frame, not five', async () => {
   const id = 'coalesce-one'
   createSession(id, 'Склейка', null)
   const { doc } = getSessionDoc(id)
@@ -233,14 +239,14 @@ test('пять правок в одном тике уезжают комнате
   for (const ch of 'abcde') {
     doc.transact(() => cellSource(getCells(doc).get(0)).insert(0, ch))
   }
-  assert.equal(syncFrames(watcher).length, 0, 'кадр уехал, не дождавшись конца тика')
+  assert.equal(syncFrames(watcher).length, 0, 'the frame went out before the end of the tick')
 
   await tick()
   const sent = syncFrames(watcher)
-  assert.equal(sent.length, 1, `комната получила ${sent.length} кадров вместо одного`)
+  assert.equal(sent.length, 1, `the room got ${sent.length} frames instead of one`)
 
-  // И склеенный кадр — это те же самые пять правок: вкладка приходит к тому же
-  // тексту, что и сервер.
+  // And the merged frame is the same five edits: the tab arrives at the same
+  // text as the server.
   const tab = new Y.Doc()
   Y.applyUpdate(tab, before)
   Y.applyUpdate(tab, updateIn(sent[0]))
@@ -253,19 +259,21 @@ test('пять правок в одном тике уезжают комнате
 })
 
 /**
- * Склеенный кадр уезжает ВСЕМ, автору в том числе, — и это дешевле, чем
- * вычитать из него автора.
+ * The merged frame goes to EVERYONE, the author included — and that is
+ * cheaper than subtracting the author from it.
  *
- * Вычитание стоило квадрата: батч склеивался заново на каждый приславший сокет
- * (`mergeUpdates` по всему всплеску минус его правки). Замер стенда: один автор
- * — 0.01 мс на рассылку, сто — 15.75 мс, пятьсот — 1403 мс, то есть полторы
- * секунды занятого цикла событий на один тик комнаты, где печатает полкурса.
+ * The subtraction cost a square: the batch was merged anew for every sending
+ * socket (`mergeUpdates` over the whole burst minus its own edits). Bench
+ * measurement: one author — 0.01 ms per broadcast, a hundred — 15.75 ms, five
+ * hundred — 1403 ms, that is, a second and a half of a busy event loop per
+ * tick of a room where half the course is typing.
  *
- * Своё обратно безопасно потому, что применение уже стоящих структур в Yjs —
- * бездействие: транзакция ничего не меняет, и события `update` из неё не
- * выходит. Проверяется здесь тем же способом, каким это увидит вкладка.
+ * Sending one's own edits back is safe because in Yjs applying structures
+ * that are already there is a no-op: the transaction changes nothing, and no
+ * `update` event comes out of it. It is checked here the same way the tab
+ * will see it.
  */
-test('склеенный кадр уезжает всем, и свои же байты автору ничего не меняют', async () => {
+test("the merged frame goes to everyone, and the author's own bytes change nothing for the author", async () => {
   const id = 'coalesce-author'
   createSession(id, 'Автор', null)
   const { doc } = getSessionDoc(id)
@@ -277,44 +285,44 @@ test('склеенный кадр уезжает всем, и свои же ба
   author.frames.length = 0
   reader.frames.length = 0
 
-  // Вкладка автора: то же, что у сервера, плюс её собственные нажатия.
+  // The author's tab: the same as the server has, plus its own keystrokes.
   const tab = new Y.Doc()
   Y.applyUpdate(tab, Y.encodeStateAsUpdate(doc))
 
-  // Правка, пришедшая по сокету, несёт его в качестве происхождения — так её
-  // и применяет `handleMessage`.
+  // An edit that came over a socket carries it as its origin — that is how
+  // `handleMessage` applies it.
   for (const ch of 'xyz') {
     doc.transact(() => cellSource(getCells(doc).get(0)).insert(0, ch), author.ws)
   }
-  // У вкладки эти нажатия уже есть: она их и набрала.
+  // The tab already has these keystrokes: it typed them.
   Y.applyUpdate(tab, Y.encodeStateAsUpdate(doc))
   await tick()
 
-  assert.equal(syncFrames(author).length, 1, 'автору не уехал общий кадр комнаты')
-  assert.equal(syncFrames(reader).length, 1, 'соседу уехало больше одного кадра')
+  assert.equal(syncFrames(author).length, 1, "the room's common frame did not go to the author")
+  assert.equal(syncFrames(reader).length, 1, 'the neighbour was sent more than one frame')
   assert.deepEqual(
     syncFrames(author)[0],
     syncFrames(reader)[0],
-    'комната получила два разных кадра — склейка считалась дважды',
+    'the room got two different frames: the merge was computed twice',
   )
 
-  // Эха нет: вкладка, применив свои же байты, не рождает обновления, которое
-  // поехало бы обратно на сервер.
+  // No echo: a tab that applies its own bytes does not produce an update that
+  // would travel back to the server.
   const echo: Uint8Array[] = []
   tab.on('update', (update: Uint8Array) => echo.push(update))
   Y.applyUpdate(tab, updateIn(syncFrames(author)[0]), 'провайдер')
-  assert.deepEqual(echo, [], 'свои же байты породили у вкладки обновление')
+  assert.deepEqual(echo, [], "the tab's own bytes produced an update in it")
   assert.equal(
     cellSource(getCells(tab).get(0)).toString(),
     cellSource(getCells(doc).get(0)).toString(),
-    'текст вкладки разъехался с комнатой',
+    "the tab's text diverged from the room",
   )
 
   author.close()
   reader.close()
 })
 
-test('присутствие склеивается окном: десять движений курсора — один кадр', async () => {
+test('presence is merged by a window: ten caret moves make one frame', async () => {
   const id = 'coalesce-faces'
   createSession(id, 'Курсоры', null)
   const entry = getSessionDoc(id)
@@ -326,7 +334,7 @@ test('присутствие склеивается окном: десять д�
   const guest = new Awareness(new Y.Doc())
   for (let i = 0; i < 10; i += 1) {
     guest.setLocalStateField('user', { id: 'p_guest', name: 'Гость', activeCellId: `c${i}` })
-    // Ровно то, что делает сервер, приняв кадр присутствия от вкладки.
+    // Exactly what the server does on receiving a presence frame from a tab.
     applyAwarenessUpdate(
       entry.awareness,
       encodeAwarenessUpdate(guest, [guest.clientID]),
@@ -334,43 +342,44 @@ test('присутствие склеивается окном: десять д�
     )
   }
   const faces = watcher.frames.filter((frame) => frame[0] === 1)
-  assert.equal(faces.length, 0, 'кадр присутствия уехал, не дождавшись окна')
+  assert.equal(faces.length, 0, 'the presence frame went out before the window')
 
-  // Такта уже не хватает: присутствие ждёт окна — четверти секунды на комнату,
-  // а не такта на движение (collab/index.ts · FACES_WINDOW_MS).
+  // A tick is no longer enough: presence waits for the window — a quarter of
+  // a second per room, not a tick per movement (collab/index.ts ·
+  // FACES_WINDOW_MS).
   await tick()
   assert.equal(
     watcher.frames.filter((frame) => frame[0] === 1).length,
     0,
-    'курсор уехал по концу такта, окно не работает',
+    'the caret went out at the end of the tick, the window does not work',
   )
 
   await faceWindow()
   assert.equal(
     watcher.frames.filter((frame) => frame[0] === 1).length,
     1,
-    'десять движений курсора уехали десятью кадрами',
+    'ten caret moves went out as ten frames',
   )
 
   guest.destroy()
   watcher.close()
 })
 
-/* ------------------------------------------------- обратное давление */
+/* ------------------------------------------------------ backpressure */
 
-/** Сколько байт «ждёт отправки» на подделке сокета. */
+/** How many bytes are "waiting to be sent" on the fake socket. */
 function stalled(fake: Fake, bytes: number): void {
   ;(fake.ws as unknown as { bufferedAmount: number }).bufferedAmount = bytes
 }
 
 /**
- * Кадр вывода ячейки с картинкой — сотни килобайт, и уезжает он КАЖДОМУ. Пока
- * `send` смотрел только на `readyState`, сервер складывал по копии такого кадра
- * в очередь каждого из пятисот сокетов, а все следующие нажатия комнаты вставали
- * в эту очередь за картинкой. Теперь у очереди две черты (collab/index.ts ·
- * AWARENESS_STALL_BYTES, HOPELESS_BYTES).
+ * A cell output frame with an image is hundreds of kilobytes, and it goes to
+ * EVERYONE. While `send` looked only at `readyState`, the server put a copy of
+ * such a frame into the queue of each of five hundred sockets, and all the
+ * room's following keystrokes queued up behind the image. Now the queue has
+ * two marks (collab/index.ts · AWARENESS_STALL_BYTES, HOPELESS_BYTES).
  */
-test('отставшему сокету перестают слать курсоры, но правки шлют', async () => {
+test('a lagging socket stops getting carets but still gets edits', async () => {
   const id = 'stall-faces'
   createSession(id, 'Отставший', null)
   const entry = getSessionDoc(id)
@@ -382,23 +391,24 @@ test('отставшему сокету перестают слать курсо
   slow.frames.length = 0
   quick.frames.length = 0
 
-  // Два мегабайта в очереди: за первой чертой (1 МБ), но далеко до второй.
+  // Two megabytes queued: past the first mark (1 MB) but far from the second.
   stalled(slow, 2 * 1024 * 1024)
 
   const guest = new Awareness(new Y.Doc())
   guest.setLocalStateField('user', { id: 'p_guest', name: 'Гость', activeCellId: 'c1' })
   applyAwarenessUpdate(entry.awareness, encodeAwarenessUpdate(guest, [guest.clientID]), 'приезжий')
   entry.doc.transact(() => cellSource(getCells(entry.doc).get(0)).insert(0, 'z'))
-  // Правка уезжает по концу такта, присутствие — по концу окна.
+  // An edit goes out at the end of the tick, presence at the end of the
+  // window.
   await faceWindow()
 
   assert.equal(
     slow.frames.filter((frame) => frame[0] === 1).length,
     0,
-    'курсор поехал в очередь, где и так лежит картинка',
+    'the caret went into a queue that already holds an image',
   )
-  assert.equal(syncFrames(slow).length, 1, 'отставшему не отдали правку — она и есть документ')
-  assert.equal(quick.frames.filter((frame) => frame[0] === 1).length, 1, 'соседу курсор не доехал')
+  assert.equal(syncFrames(slow).length, 1, 'the lagging socket was not given the edit — and the edit is the document')
+  assert.equal(quick.frames.filter((frame) => frame[0] === 1).length, 1, 'the caret did not reach the neighbour')
   assert.equal(syncFrames(quick).length, 1)
 
   guest.destroy()
@@ -406,7 +416,7 @@ test('отставшему сокету перестают слать курсо
   quick.close()
 })
 
-test('безнадёжно отставший сокет закрывают, а не копят ему мегабайты', async () => {
+test('a hopelessly lagging socket is closed instead of piling up megabytes for it', async () => {
   const id = 'stall-hopeless'
   createSession(id, 'Безнадёжный', null)
   const { doc } = getSessionDoc(id)
@@ -416,19 +426,20 @@ test('безнадёжно отставший сокет закрывают, а 
   lost.frames.length = 0
   assert.equal(onlineCount(id), 1)
 
-  // Девять мегабайт: столько уже не догонит и телефон на краю сети — вкладка
-  // соберёт документ заново одним шагом синхронизации, и это дешевле.
+  // Nine megabytes: not even a phone at the edge of the network will catch up
+  // with that — the tab will rebuild the document in one sync step, and that
+  // is cheaper.
   stalled(lost, 9 * 1024 * 1024)
   doc.transact(() => cellSource(getCells(doc).get(0)).insert(0, 'z'))
   await tick()
 
-  assert.equal(syncFrames(lost).length, 0, 'кадр всё-таки положили в мёртвую очередь')
-  assert.equal(onlineCount(id), 0, 'комната продолжает считать безнадёжный сокет своим')
+  assert.equal(syncFrames(lost).length, 0, 'the frame was put into the dead queue after all')
+  assert.equal(onlineCount(id), 0, 'the room still counts the hopeless socket as its own')
 })
 
-/* --------------------------------------------- проекция тетради и дерево */
+/* -------------------------------------- notebook projection and the tree */
 
-test('вывод ячейки не будит запись тетради, а правка ячейки будит', async () => {
+test('a cell output does not wake the notebook write, but a cell edit does', async () => {
   const id = 'books-quiet'
   createSession(id, 'Проекция', null)
   const { doc } = getSessionDoc(id)
@@ -436,11 +447,12 @@ test('вывод ячейки не будит запись тетради, а п
   const told: string[] = []
   onBooksWritten((session) => told.push(session))
 
-  // Первая запись комнаты идёт сразу при открытии — дождаться и забыть.
+  // The room's first write happens right on opening — wait for it and forget
+  // it.
   await wait(1_800)
   told.length = 0
 
-  // Ядро пишет вывод: в файле тетради выводов нет вовсе.
+  // The kernel writes output: the notebook file has no outputs at all.
   doc.transact(() => {
     const cell = getCells(doc).get(0)
     const output = new Y.Map<unknown>()
@@ -451,29 +463,29 @@ test('вывод ячейки не будит запись тетради, а п
     cell.set('state', 'ok')
   }, 'kernel')
   await wait(1_800)
-  assert.deepEqual(told, [], 'дерево файлов уехало комнате из-за вывода ячейки')
+  assert.deepEqual(told, [], 'the file tree went out to the room because of a cell output')
 
-  // А текст ячейки в файле есть — про него комната узнаёт.
+  // But the cell text is in the file — and the room learns about that.
   doc.transact(() => cellSource(getCells(doc).get(0)).insert(0, 'print(1)'))
   await wait(1_800)
-  assert.deepEqual(told, [id], 'комната не узнала о переписанной тетради')
+  assert.deepEqual(told, [id], 'the room was not told about the rewritten notebook')
 
   onBooksWritten(() => {})
 })
 
-test('проекция говорит, записала ли она хоть что-нибудь', () => {
+test('the projection says whether it wrote anything at all', () => {
   const id = 'books-wrote'
   createSession(id, 'Проекция-2', null)
   const { doc } = getSessionDoc(id)
   doc.transact(() => cellSource(getCells(doc).get(0)).insert(0, 'y = 2'))
 
-  assert.equal(projectBooks(id), true, 'первая запись тетради не состоялась')
-  assert.equal(projectBooks(id), false, 'тетрадь переписали, хотя на диске то же самое')
+  assert.equal(projectBooks(id), true, 'the first notebook write did not happen')
+  assert.equal(projectBooks(id), false, 'the notebook was rewritten although the disk holds the same')
 })
 
-/* ------------------------------------------------------ большая тетрадь */
+/* ------------------------------------------------------- large notebook */
 
-/** Тетрадь на заданное число байт: один вывод раздут до нужного размера. */
+/** A notebook of a given number of bytes: one output inflated to the size. */
 function fatNotebook(bytes: number): string {
   const shell = {
     cells: [
@@ -495,24 +507,24 @@ function fatNotebook(bytes: number): string {
   return JSON.stringify(shell)
 }
 
-test('тетрадь с картинками открывается, а не объявляется «не похожей на .ipynb»', () => {
+test('a notebook with images opens instead of being declared "not like an .ipynb"', () => {
   const id = 'book-fat'
   createSession(id, 'Большая', null)
   getSessionDoc(id)
   const file = path.join(sessionDir(id), 'Лекция.ipynb')
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  // Больше потолка редактора (1.5 МБ) — обычная преподавательская тетрадь.
+  // Larger than the editor's ceiling (1.5 MB): an ordinary teacher's notebook.
   fs.writeFileSync(file, fatNotebook(2 * 1024 * 1024))
 
   const opened = openBook(id, 'Лекция.ipynb')
-  assert.equal(opened.ok, true, `не открылась: ${opened.ok ? '' : opened.why}`)
+  assert.equal(opened.ok, true, `did not open: ${opened.ok ? '' : opened.why}`)
   if (!opened.ok) return
   const cells = bookCells(getSessionDoc(id).doc, opened.book.root)
   assert.equal(cells.length, 1)
   assert.equal(cellSource(cells.get(0)).toString(), 'print("привет")')
 })
 
-test('тетрадь сверх своего потолка отказывается словами про размер', () => {
+test('a notebook over its ceiling is refused with words about its size', () => {
   const id = 'book-huge'
   createSession(id, 'Огромная', null)
   getSessionDoc(id)
@@ -523,11 +535,11 @@ test('тетрадь сверх своего потолка отказывает
   const opened = openBook(id, 'Гора.ipynb')
   assert.equal(opened.ok, false)
   if (opened.ok) return
-  assert.match(opened.why, /МБ/, `сказали не про размер: ${opened.why}`)
-  assert.doesNotMatch(opened.why, /не похоже/, 'причина названа неверно')
+  assert.match(opened.why, /МБ/, `the refusal was not about size: ${opened.why}`)
+  assert.doesNotMatch(opened.why, /не похоже/, 'the wrong reason was given')
 })
 
-/* --------------------------------------------------------- форма и всплеск */
+/* --------------------------------------------------------- shape and burst */
 
 function historyRoom(id: string): Y.Doc {
   createSession(id, 'История', null)
@@ -536,7 +548,7 @@ function historyRoom(id: string): Y.Doc {
   return doc
 }
 
-/** Записать, как это делает `collab/index.ts`, — вместе с транзакцией. */
+/** Record the way `collab/index.ts` does it, together with the transaction. */
 function watchFor(id: string, doc: Y.Doc, author: string | null): void {
   doc.on('update', (update: Uint8Array, _origin: unknown, _doc: Y.Doc, tr: Y.Transaction) =>
     record(id, doc, update, author, tr),
@@ -546,7 +558,7 @@ function watchFor(id: string, doc: Y.Doc, author: string | null): void {
 const edits = (id: string): number =>
   listVersions(id, 200).filter((v) => v.kind === 'edit' || v.kind === 'quiet').length
 
-test('набор всплеск не закрывает, а перестановка ячейки — закрывает', () => {
+test('typing does not close a burst, but moving a cell does', () => {
   const id = 'shape-typing'
   const doc = historyRoom(id)
   doc.transact(() => getCells(doc).push([createCell('code', 'a', 'c1'), createCell('code', 'b', 'c2')]))
@@ -554,15 +566,16 @@ test('набор всплеск не закрывает, а перестанов
 
   const before = edits(id)
   for (const ch of 'print(1)') doc.transact(() => cellSource(getCells(doc).get(0)).insert(0, ch))
-  assert.equal(edits(id), before, 'набор закрыл всплеск на каждом нажатии')
+  assert.equal(edits(id), before, 'typing closed the burst on every keystroke')
 
-  // А состав тетради — закрывает сразу: это то, ради чего в панель и лезут.
+  // But the notebook's structure closes it at once: that is what people open
+  // the panel for.
   doc.transact(() => getCells(doc).push([createCell('code', 'c', 'c3')]))
-  assert.equal(edits(id), before + 1, 'добавленная ячейка не стала версией')
+  assert.equal(edits(id), before + 1, 'the added cell did not become a version')
   discardBurst(id)
 })
 
-test('перестановка во ВТОРОЙ тетради тоже закрывает всплеск', () => {
+test('a move in the SECOND notebook closes a burst too', () => {
   const id = 'shape-second'
   const doc = historyRoom(id)
   doc.transact(() => {
@@ -574,17 +587,19 @@ test('перестановка во ВТОРОЙ тетради тоже зак�
 
   const before = edits(id)
   doc.transact(() => cellSource(getCells(doc).get(0)).insert(0, 'z'))
-  assert.equal(edits(id), before, 'набор в первой тетради закрыл всплеск')
+  assert.equal(edits(id), before, 'typing in the first notebook closed the burst')
 
-  // Форма смотрела только в тетрадь комнаты: правка состава второй проезжала
-  // мимо истории и склеивалась с чужим набором.
+  // The shape looked only at the room notebook: a structural edit in the
+  // second one slipped past the history and got merged with someone else's
+  // typing.
   doc.transact(() => bookCells(doc, 'cells-2').delete(0, 1))
-  assert.equal(edits(id), before + 1, 'правка второй тетради не стала версией')
+  assert.equal(edits(id), before + 1, 'the edit in the second notebook did not become a version')
   discardBurst(id)
 })
 
-test('потолок всплеска растёт вместе с числом печатающих', () => {
-  // Латиницей, чтобы символ был байтом: всплеск считает БАЙТЫ обновлений.
+test('the burst ceiling grows with the number of people typing', () => {
+  // In Latin letters, so that a character is a byte: the burst counts update
+  // BYTES.
   const big = 'a'.repeat(BURST_MAX_CHARS + 200)
 
   const alone = 'burst-alone'
@@ -595,12 +610,13 @@ test('потолок всплеска растёт вместе с числом 
   )
   const wasAlone = edits(alone)
   one.transact(() => cellSource(getCells(one).get(0)).insert(0, big))
-  assert.equal(edits(alone), wasAlone + 1, 'у одного печатающего всплеск не закрылся по объёму')
+  assert.equal(edits(alone), wasAlone + 1, "a single typist's burst did not close on volume")
   discardBurst(alone)
 
-  // Тот же объём, но написанный вдвоём, — это два дела, а не одно, и порог у
-  // него вдвое выше: иначе пятьсот печатающих закрывали бы всплеск десятки раз
-  // в секунду, каждый раз разворачивая документ целиком.
+  // The same volume written by two people is two pieces of work, not one, and
+  // its threshold is twice as high: otherwise five hundred typists would close
+  // the burst dozens of times a second, each time unpacking the whole
+  // document.
   const pair = 'burst-pair'
   const two = historyRoom(pair)
   two.transact(() => getCells(two).push([createCell('code', '', 'c1')]))
@@ -613,13 +629,13 @@ test('потолок всплеска растёт вместе с числом 
     two.transact(() => cellSource(getCells(two).get(0)).insert(0, half))
     two.off('update', grab)
   }
-  assert.equal(edits(pair), wasPair, 'всплеск двоих закрылся по порогу одного')
+  assert.equal(edits(pair), wasPair, "the burst of two closed at one person's threshold")
   discardBurst(pair)
 })
 
-/* ------------------------------------------------------------- лица и эхо */
+/* --------------------------------------------------------- faces and echo */
 
-test('комната помнит ушедшее лицо дольше, чем длится смена пятисот вкладок', () => {
+test('the room remembers a departed face longer than it takes five hundred tabs to turn over', () => {
   const room = new Awareness(new Y.Doc())
   const first = {} as WebSocket
   const second = {} as WebSocket
@@ -629,12 +645,13 @@ test('комната помнит ушедшее лицо дольше, чем �
   ])
   const entry = { awareness: room, conns } as never
 
-  // Лицо, которое комната уже видела и потеряло вместе с сокетом.
+  // A face the room has already seen and lost together with its socket.
   const gone = new Awareness(new Y.Doc())
   gone.setLocalStateField('user', { name: 'Ушедший' })
   assert.equal(ownAwareness(entry, first, encodeAwarenessUpdate(gone, [gone.clientID])), true)
 
-  // У соседней вкладки уже есть своё лицо — именно она и присылает эхо.
+  // The neighbouring tab already has its own face — and it is the one that
+  // sends the echo.
   const neighbour = new Awareness(new Y.Doc())
   neighbour.setLocalStateField('user', { name: 'Сосед' })
   assert.equal(
@@ -642,8 +659,9 @@ test('комната помнит ушедшее лицо дольше, чем �
     true,
   )
 
-  // За пару в комнате на пятьсот человек лиц проходит намного больше двухсот
-  // пятидесяти шести — столько помнил прежний потолок.
+  // During a class in a room of five hundred people far more than two hundred
+  // and fifty-six faces pass through — that is how many the old ceiling
+  // remembered.
   for (let i = 0; i < 600; i += 1) {
     const passing = new Awareness(new Y.Doc())
     const seat = {} as WebSocket
@@ -656,12 +674,13 @@ test('комната помнит ушедшее лицо дольше, чем �
     passing.destroy()
   }
 
-  // Эхо соседней вкладки приносит clientID ушедшего. Забудь комната его — и
-  // вкладка присвоила бы себе чужое лицо вместе с курсором и именем.
+  // The neighbouring tab's echo brings the departed one's clientID. Had the
+  // room forgotten it, the tab would have taken someone else's face along with
+  // the caret and the name.
   assert.equal(
     ownAwareness(entry, second, encodeAwarenessUpdate(gone, [gone.clientID])),
     false,
-    'эхо соседней вкладки присвоило себе лицо ушедшего',
+    "the neighbouring tab's echo took the departed one's face",
   )
 
   gone.destroy()
@@ -669,20 +688,20 @@ test('комната помнит ушедшее лицо дольше, чем �
   room.destroy()
 })
 
-/* --------------------------------------------------------- потолок файла */
+/* ---------------------------------------------------------- file ceiling */
 
-test('потолок файла меряется в байтах, а не в символах', () => {
+test('the file ceiling is measured in bytes, not characters', () => {
   const id = 'file-bytes'
   createSession(id, 'Потолок', null)
   fs.mkdirSync(sessionDir(id), { recursive: true })
 
-  // 800 тысяч кириллических символов — это 1.6 МБ в UTF-8: больше потолка,
-  // хотя `length` у такой строки заведомо меньше него.
+  // 800 thousand Cyrillic characters are 1.6 MB in UTF-8: over the ceiling,
+  // although the `length` of such a string is clearly below it.
   const cyrillic = 'я'.repeat(800_000)
   assert.ok(cyrillic.length < 1_500_000 && Buffer.byteLength(cyrillic, 'utf8') > 1_500_000)
-  assert.equal(putText(id, 'русский.txt', cyrillic), false, 'файл сверх потолка лёг на диск')
+  assert.equal(putText(id, 'русский.txt', cyrillic), false, 'a file over the ceiling landed on disk')
   assert.equal(fs.existsSync(path.join(sessionDir(id), 'русский.txt')), false)
 
-  // А то же число байтов латиницей по-прежнему проходит.
+  // While the same number of bytes in Latin letters still passes.
   assert.equal(putText(id, 'latin.txt', 'a'.repeat(800_000)), true)
 })

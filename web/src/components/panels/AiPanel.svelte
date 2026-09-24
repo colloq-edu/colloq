@@ -53,33 +53,35 @@
     reasoningEffort?: ReasoningEffort
   } | null>(null)
   /*
-   * Вопрос переживает закрытие панели.
+   * The question survives closing the panel.
    *
-   * Панель размонтируется вместе со своей кнопкой, а спрашивают обычно про
-   * ячейку, на которую в этот момент и хочется посмотреть: свернул, глянул,
-   * развернул — вопроса нет. Черновик живёт во вкладке, а не в компоненте.
+   * The panel unmounts together with its button, and people usually ask about
+   * the very cell they want to look at at that moment: collapsed it, glanced,
+   * expanded it — the question is gone. The draft lives in the tab, not in the
+   * component.
    */
   const composing = oracleDraft
   let sendErrorRender = $state<() => string | null>(() => null)
   const sendError = $derived(sendErrorRender())
   /*
-   * Слоу-мод — не авария, и красная плашка ему не идёт.
+   * Slow mode is not a failure, and a red banner does not suit it.
    *
-   * «Не частите» стоит рядом с «оракул выключен для семинара»: это правило
-   * инстанса, а не поломка, и человек с ним ничего не делает — он ждёт.
-   * Поэтому спокойная строка того же вида, что и остальные правила ниже.
+   * "Not so often" stands next to "the oracle is switched off for this
+   * seminar": it is an instance rule, not a breakage, and the person does
+   * nothing about it — they wait. So it gets a calm line of the same kind as
+   * the other rules below.
    */
   let slowNoticeRender = $state<() => string | null>(() => null)
   const slowNotice = $derived(slowNoticeRender())
-  /** Момент, до которого сервер просил подождать, или 0. Мс, как Date.now. */
+  /** The moment the server asked to wait until, or 0. Ms, like Date.now. */
   let waitUntil = $state(0)
-  /** Секунды на кнопке. Показ, не право: судья — сервер, см. `ask`. */
+  /** Seconds on the button. Display only: the server judges, see `ask`. */
   let waitLeft = $state(0)
   let armed = $state(false)
   let pinned = $state(true)
 
   let scroller = $state<HTMLDivElement | null>(null)
-  /** Содержимое треда: за его ростом следит наблюдатель размера, см. ниже. */
+  /** The thread's content: a resize observer watches it grow, see below. */
   let thread = $state<HTMLDivElement | null>(null)
   let composer = $state<HTMLTextAreaElement | null>(null)
   /**
@@ -116,29 +118,31 @@
   )
   const hintsOnly = $derived(mode === 'hints')
   /*
-   * Спрашивать негде — по любой из двух причин.
+   * There is nowhere to ask — for either of two reasons.
    *
    * Optimistic until proven otherwise: a null status means "still checking",
    * and a dead input while a fetch is in flight reads as a broken oracle.
    *
-   * Режим комнаты входит сюда наравне с инстансом. Правило «оракул выключен»
-   * ставят на контрольную, и живое поле, отвечающее на каждый вопрос красной
-   * строкой 403, читается классом как поломка, а не как решение
-   * преподавателя. Правило комнаты известно этой вкладке сразу, ждать статуса
-   * ему незачем.
+   * The room's mode counts here on a par with the instance. The "oracle off"
+   * rule is set for a test, and a live field that answers every question with a
+   * red 403 line reads to the class as a breakage, not as the teacher's
+   * decision. This tab knows the room rule right away; it has no reason to wait
+   * for the status.
    */
   const offline = $derived(mode === 'off' || (status !== null && !status.enabled))
 
   /**
-   * Вопросы, отправленные и ещё не вернувшиеся из документа, — см. lib/ask-outbox.
+   * Questions that have been sent and have not yet come back through the
+   * document — see lib/ask-outbox.
    *
-   * Не «показать и забыть»: откажет сервер — слоу-мод, потолок, оборванная
-   * связь — строка снимается вместе с обещанием, а текст возвращается в поле.
+   * Not "show and forget": if the server refuses — slow mode, the ceiling, a
+   * dropped connection — the row is removed together with the promise, and the
+   * text goes back into the field.
    */
   let outbox = $state.raw<Outgoing[]>([])
   let outgoing = 0
 
-  /** Поставить вопрос в ленту до ответа сервера. Возвращает имя строки. */
+  /** Put the question in the feed ahead of the reply; returns the row name. */
   function openOutbox(body: AiAskRequest): string {
     const id = `outgoing:${++outgoing}`
     outbox = [
@@ -160,7 +164,7 @@
     return id
   }
 
-  /** Снять строку: её заменила настоящая запись — или отказ. */
+  /** Remove the row: it was replaced by the real entry — or by a refusal. */
   function closeOutbox(id: string): void {
     outbox = outbox.filter((row) => row.row.id !== id)
   }
@@ -180,21 +184,23 @@
 
   $effect(() => {
     /*
-     * Читает документ и пишет `entries` — и НИЧЕГО не читает из состояния.
+     * Reads the document and writes `entries` — and reads NOTHING from state.
      *
-     * Стоило прочитать здесь `entries` или `outbox` (а подстановка исходящих
-     * читала оба), как эффект стал зависеть от того, что сам же переписывает:
-     * `chat.map` отдаёт новый массив на каждый проход, Svelte видит новое
-     * значение, гоняет эффект заново — и комната встречала не тетрадь, а
-     * `effect_update_depth_exceeded`. Свежий список идёт дальше переменной, а
-     * прежний снимок и очередь исходящих берутся `untrack`.
+     * As soon as `entries` or `outbox` was read here (and substituting the
+     * outgoing rows read both), the effect came to depend on what it rewrites
+     * itself: `chat.map` returns a new array on every pass, Svelte sees a new
+     * value, runs the effect again — and the room greeted people not with a
+     * notebook but with `effect_update_depth_exceeded`. The fresh list goes on
+     * through a variable, and the previous snapshot and the outgoing queue are
+     * taken with `untrack`.
      *
-     * Перечитывается ТОЛЬКО задетое кадром (`rereadRows`): ответ дописывается
-     * в Y.Text внутри одной записи, а прежний код на каждый кусочек собирал
-     * весь тред заново — `toString()` каждого ответа и каждого рассуждения, то
-     * есть работу по длине всего треда на каждый токен. Неизменившиеся снимки
-     * остаются ТЕМИ ЖЕ объектами, поэтому производные каждого хода (дифф
-     * патча, разбор markdown, роль автора) не пересчитываются.
+     * ONLY what the frame touched is re-read (`rereadRows`): an answer is
+     * appended to a Y.Text inside one entry, and the old code rebuilt the whole
+     * thread for every chunk — `toString()` of every answer and every
+     * reasoning, that is, work proportional to the length of the whole thread
+     * on every token. Unchanged snapshots stay THE SAME objects, so each turn's
+     * derived values (the patch diff, the markdown parse, the author's role)
+     * are not recomputed.
      */
     const read = (events: Y.YEvent<any>[] | null) => {
       const previous = untrack(() => entries)
@@ -211,17 +217,18 @@
   })
 
   /*
-   * Записи, занявшие место строки-обещания: им НЕ играют появление.
+   * Entries that took the place of a promise row: they do NOT get the entrance
+   * animation.
    *
-   * Строка-обещание и настоящая запись — один и тот же вопрос, но ключи у них
-   * разные (`outgoing:N` против серверного id), так что Svelte честно сносит
-   * один <article> и монтирует другой. С `animate-fade-up` на нём тот же
-   * вопрос на том же месте проявлялся из прозрачности второй раз — рывок
-   * ровно там, где ask-outbox обещал незаметную замену.
+   * The promise row and the real entry are one and the same question, but their
+   * keys differ (`outgoing:N` versus the server id), so Svelte honestly removes
+   * one <article> and mounts another. With `animate-fade-up` on it, the same
+   * question in the same place faded in from transparency a second time — a
+   * jerk exactly where ask-outbox promised an unnoticeable swap.
    *
-   * Кто кого заменил, спрашивается у самого `settleOutbox`, а не считается
-   * здесь заново: правило совпадения живёт в одном месте, и вторая его копия
-   * разошлась бы с первой на первой же правке.
+   * Who replaced whom is asked of `settleOutbox` itself, not computed here
+   * again: the matching rule lives in one place, and a second copy of it would
+   * drift from the first at the very first edit.
    */
   let inherited = $state.raw<ReadonlySet<string>>(new Set())
 
@@ -244,14 +251,15 @@
   }
 
   /**
-   * Состояние оракула на инстансе — и «не знаю» отдельно от «выключен».
+   * The oracle's state on the instance — and "don't know" separately from
+   * "off".
    *
-   * Отвергнутая выборка (сеть моргнула, 5xx, ретранслятор) раньше ложилась
-   * как `{enabled:false, mode:'off'}`, и класс читал решение админа там, где
-   * была одна неудачная попытка: «оракул выключен для этого инстанса», поля
-   * ввода нет, повтора нет — поправиться могло только перемонтированием
-   * панели. Теперь `status` остаётся `null` (то есть «ещё проверяем», как и
-   * задумано выше), а внизу стоит строка с кнопкой повтора.
+   * A rejected fetch (a network blip, a 5xx, the relay) used to land as
+   * `{enabled:false, mode:'off'}`, and the class read an admin's decision where
+   * there had been one failed attempt: "the oracle is switched off for this
+   * instance", no input field, no retry — only remounting the panel could fix
+   * it. Now `status` stays `null` (that is, "still checking", as intended
+   * above), and at the bottom there is a line with a retry button.
    */
   let statusFailed = $state(false)
   let statusTry = $state(0)
@@ -268,7 +276,7 @@
       })
       .catch(() => {
         if (!alive) return
-        // Именно null: 'off' говорит только сервер.
+        // null exactly: only the server says 'off'.
         status = null
         statusFailed = true
       })
@@ -278,15 +286,17 @@
   })
 
   /*
-   * Здесь стоял наблюдатель `errored` — «где-то в комнате упала ячейка».
+   * An `errored` watcher used to stand here — "a cell failed somewhere in the
+   * room".
    *
-   * Его никто не рисовал: значение писалось и не читалось ни в скрипте, ни в
-   * разметке. Стоил он при этом дорого — на каждую вставку и удаление ячейки
-   * в ЛЮБОЙ тетради комнаты он снимал и заново вешал наблюдателя на все Y.Map
-   * всех тетрадей, в каждой из пятисот вкладок с открытой панелью. Работа без
-   * результата на экране — не оптимизация, а мусор, и убран он целиком: если
-   * красная точка «где-то упало» понадобится, считать её надо по реестру
-   * ячеек (`yreactive`), а не подпиской на каждую.
+   * Nobody drew it: the value was written and never read, neither in the script
+   * nor in the markup. And it was expensive — on every insertion and deletion
+   * of a cell in ANY notebook of the room it detached and re-attached observers
+   * on all Y.Maps of all notebooks, in each of five hundred tabs with the panel
+   * open. Work with no result on screen is not an optimization but garbage, and
+   * it was removed entirely: if a red "something failed" dot is ever needed, it
+   * should be computed from the cell registry (`yreactive`), not by subscribing
+   * to every cell.
    */
 
   // The notebook asks on the student's behalf from "Ask AI" and "Fix with AI".
@@ -321,13 +331,13 @@
   })
 
   /**
-   * Роль автора по его id — один проход по присутствию на всю ленту.
+   * The author's role by id — one pass over presence for the whole feed.
    *
-   * Каждый ход спрашивал её у `session.peers` поиском, а `#readPeers` отдаёт
-   * новый массив на КАЖДЫЙ чужой курсор: двести ходов на пятистах человек —
-   * сто тысяч сравнений на каждый переход студента между ячейками, и так в
-   * каждой вкладке с открытой панелью. Здесь это один проход, и просыпается
-   * он тогда же, когда меняется присутствие.
+   * Every turn asked `session.peers` for it by searching, and `#readPeers`
+   * returns a new array on EVERY remote cursor: two hundred turns with five
+   * hundred people are a hundred thousand comparisons on every move of a
+   * student between cells, and so in every tab with the panel open. Here it is
+   * one pass, and it wakes up whenever presence changes.
    */
   const roles = $derived.by(() => {
     const map = new Map<string, ParticipantRole>()
@@ -354,23 +364,25 @@
   })
 
   /**
-   * Что оракул видит — и на что смотрит особенно.
+   * What the oracle sees — and what it looks at especially.
    *
-   * Две строки вместо ряда чипов, и это не косметика. Чипы перечисляли выбранную
-   * ячейку, трейсбек и несколько имён файлов — то есть КУСКИ того, что и так
-   * едет целиком, — а про тетрадь и остальные файлы молчали, потому что «чип,
-   * который горит всегда, ничего не говорит». Получалось ровно наоборот: список
-   * из трёх имён читался как «вот это он и видит», и человек не понимал, почему
-   * ответ знает про соседнюю ячейку.
+   * Two lines instead of a row of chips, and that is not cosmetics. The chips
+   * listed the selected cell, the traceback and a few file names — that is,
+   * PIECES of what is sent in full anyway — and kept silent about the notebook
+   * and the other files, because "a chip that is always lit says nothing". It
+   * came out exactly the other way round: a list of three names read as "this
+   * is what it sees", and people did not understand why the answer knew about
+   * the neighbouring cell.
    *
-   * Теперь сказано прямо: базово видно всё, что есть в комнате. А выделение и
-   * открытый файл ДОБАВЛЯЮТСЯ к этому — как то, на чём просят сосредоточиться.
+   * Now it is said plainly: by default everything in the room is visible. And
+   * the selection and the open file are ADDED to that — as what it is asked to
+   * focus on.
    */
   const books = watchBooks(session.doc)
 
   /*
-   * Файлы, КРОМЕ тетрадей: тетради названы отдельно, и складывать их дважды
-   * значит обещать больше, чем в комнате есть.
+   * Files OTHER THAN notebooks: notebooks are named separately, and counting
+   * them twice would promise more than the room has.
    */
   const fileCount = $derived(
     session.files.filter((file) => !file.dir && kindOf(file.path) !== 'notebook').length,
@@ -384,7 +396,7 @@
     )
   })
 
-  /** Открытый текстовый файл едет целиком; тетрадь — нет: она и так в ячейках. */
+  /** An open text file goes whole; a notebook does not — it is in the cells. */
   const openFile = $derived(
     session.editingPath && kindOf(session.editingPath) === 'text' ? session.editingPath : null,
   )
@@ -398,11 +410,12 @@
   )
 
   /**
-   * То же самое двумя падежами.
+   * The same thing in two grammatical cases.
    *
-   * Строка «Особенно» перечисляет — там именительный; подсказка в поле стоит
-   * после предлога — там винительный. «Спросить про ячейка 02» бросается в
-   * глаза сильнее, чем стоит эта пара строк.
+   * The "Especially" line lists things — that calls for the nominative; the
+   * hint in the field comes after a preposition — that calls for the
+   * accusative. In Russian, "Спросить про ячейка 02" (the nominative after the
+   * preposition) jars more than this pair of lines costs.
    */
   const focus = $derived.by(() => {
     const parts: string[] = []
@@ -447,17 +460,18 @@
   })
 
   /*
-   * СЛЕДОВАТЬ ЗА РАСТУЩИМ, А НЕ ТОЛЬКО ЗА НОВЫМ.
+   * FOLLOW WHAT GROWS, NOT ONLY WHAT IS NEW.
    *
-   * Прежний эффект просыпался на приход записи. Но высота треда меняется и без
-   * новых записей: ответ дописывается в уже стоящий пузырь, под последним
-   * поворотом появляется строка «Нина печатает», поле вопроса растёт до ста
-   * шестидесяти пикселей и отъедает их у треда. Ни одно из этого не двигает
-   * прокрутку само, и низ тихо уезжает под нижний край: на мерке тред уползал
-   * на 37 пикселей за один вопрос и оставался там до следующего.
+   * The old effect woke up when an entry arrived. But the thread's height
+   * changes without new entries too: an answer is appended to a bubble that is
+   * already there, a "Nina is typing" line appears under the last turn, the
+   * question field grows to a hundred and sixty pixels and takes them away from
+   * the thread. None of this moves the scroll by itself, and the bottom quietly
+   * slides under the bottom edge: when measured, the thread crept away by 37
+   * pixels per question and stayed there until the next one.
    *
-   * Наблюдатель размера смотрит и за содержимым, и за самим окном треда —
-   * второе как раз про выросшее поле ввода.
+   * The resize observer watches both the content and the thread's window
+   * itself — the latter is exactly about the grown input field.
    */
   $effect(() => {
     const box = scroller
@@ -472,8 +486,8 @@
   })
 
   /**
-   * Где тред стоял в прошлый раз, чтобы отличить «читатель ушёл вверх» от
-   * «содержимое выросло». Не руна: её никто не рисует.
+   * Where the thread stood last time, to tell "the reader went up" from "the
+   * content grew". Not a rune: nobody draws it.
    */
   let lastTop = 0
 
@@ -482,18 +496,18 @@
     const el = scroller
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight
     /*
-     * ОТЦЕПИТЬСЯ ОТ НИЗА МОЖЕТ ТОЛЬКО ЧЕЛОВЕК.
+     * ONLY A PERSON CAN UNHOOK FROM THE BOTTOM.
      *
-     * Событие прокрутки приходит и от нашей собственной строки
-     * `scrollTop = scrollHeight`, и раньше оно же тред и отцепляло: пока
-     * событие шло до обработчика, ответ дописывался, `scrollHeight` успевал
-     * подрасти, и мы честно вычисляли «до низа далеко» — то есть сами себе
-     * ставили «читатель ушёл вверх». Дальше тред стоял мёртво, а вопросы
-     * аудитории уходили под край. Ровно на это и пожаловались.
+     * The scroll event also arrives from our own `scrollTop = scrollHeight`
+     * line, and it used to unhook the thread too: while the event travelled to
+     * the handler, the answer grew, `scrollHeight` managed to grow, and we
+     * honestly computed "far from the bottom" — that is, we marked "the reader
+     * went up" ourselves. After that the thread stood dead, and the audience's
+     * questions went under the edge. That is exactly what was complained about.
      *
-     * Признак человека один и надёжный: прокрутка ВВЕРХ. Ни рост содержимого,
-     * ни наша собственная строка `scrollTop` не уменьшают. Пиксель допуска —
-     * на дробную прокрутку при масштабе, отличном от ста процентов.
+     * There is one reliable sign of a person: scrolling UP. Neither content
+     * growth nor our own `scrollTop` line decreases it. A pixel of tolerance is
+     * for fractional scrolling at a zoom other than a hundred percent.
      */
     const wentUp = el.scrollTop < lastTop - 1
     lastTop = el.scrollTop
@@ -558,12 +572,13 @@
   /* ---------------------------------------------------------------- asking */
 
   /*
-   * Обратный отсчёт слоу-мода — только показ.
+   * The slow-mode countdown is display only.
    *
-   * Своего счёта времени у вкладки нет и быть не должно: промежуток
-   * считает сервер по своей таблице расхода, а здесь тикает число, которое он
-   * назвал в отказе. Вкладка с отстающими часами просто получит отказ ещё раз —
-   * гашеная кнопка избавляет от лишнего круга, а не решает за сервер.
+   * The tab has no time accounting of its own and must not have one: the
+   * interval is computed by the server from its own usage table, and here the
+   * number it named in the refusal just ticks down. A tab with a lagging clock
+   * will simply get refused once more — the dimmed button saves an extra round,
+   * it does not decide for the server.
    */
   $effect(() => {
     if (waitUntil === 0) return
@@ -572,8 +587,8 @@
       const left = Math.max(0, Math.ceil((waitUntil - Date.now()) / 1000))
       waitLeft = left
       if (left === 0) {
-        // Строка уходит вместе с ожиданием: «ещё десять секунд», висящее
-        // после того как они прошли, — уже неправда.
+        // The line goes away together with the wait: "ten more seconds" still
+        // hanging after they have passed is no longer true.
         slowNoticeRender = () => (null)
         waitUntil = 0
         return
@@ -586,16 +601,16 @@
 
   async function ask(body: AiAskRequest) {
     if (offline) return
-    // Уровень — на каждый вопрос, включая те, что уходят из тетради («Спросить
-    // оракула», «Починить») и повтором хода: выбран он у поля, а действует на
-    // всё, что спрашивает эта вкладка.
+    // The effort level goes with every question, including those sent from the
+    // notebook ("Ask the oracle", "Fix") and by retrying a turn: it is chosen
+    // at the field, but it applies to everything this tab asks.
     if (effort !== null) body = { ...body, effort }
     stopComposing()
     sendErrorRender = () => (null)
     pinned = true
-    // Строка встаёт в ленту здесь, а не в `submit`: спрашивают ещё из тетради
-    // («Спросить оракула», «Починить») и повтором хода, и ждут они ровно
-    // столько же.
+    // The row enters the feed here, not in `submit`: people also ask from the
+    // notebook ("Ask the oracle", "Fix") and by retrying a turn, and they wait
+    // exactly as long.
     const outgoingId = openOutbox(body)
     try {
       const { entryId } = await api.aiAsk(session.session.id, session.token, body)
@@ -606,26 +621,30 @@
       slowNoticeRender = () => (null)
       waitUntil = 0
     } catch (err) {
-      // Вопрос не принят — значит и в ленте ему не место: строка, оставшаяся
-      // висеть с вертушкой, обещает ответ, которого не будет.
+      // The question was not accepted — so it has no place in the feed either:
+      // a row left hanging with a spinner promises an answer that will not
+      // come.
       closeOutbox(outgoingId)
       // Verbatim: a 403 ("hints mode…", "switched off…") and a 429 with the
       // minutes until the next question are the server explaining an
       // instance's rules, and paraphrasing them would leave the student
       // guessing at a limit only the server knows.
       //
-      // Срок в теле — это ожидание, а не поломка: слоу-мод говорит спокойной
-      // строкой и гасит кнопку, а не красной плашкой, похожей на аварию.
+      // A deadline in the body means waiting, not a breakage: slow mode speaks
+      // in a calm line and dims the button, rather than with a red banner that
+      // looks like a failure.
       /*
-       * И вопрос — обратно в поле, ЛЮБЫМ отказом.
+       * And the question goes back into the field, on ANY refusal.
        *
-       * `submit` очищает поле до ответа сервера, и это правильно: строка уже
-       * стоит в ленте. Но если сервер вопрос не принял — потолок в час (429 с
-       * заголовком Retry-After и без срока в теле), правило комнаты (403,
-       * звонок), обрыв через ретранслятор, любой 5xx, — то вместе с отказом
-       * пропадали и пять набранных строк, и вернуть их было нечем. Возврат
-       * стоит ДО разбора причины, потому что причина на это не влияет; только
-       * если человек уже начал печатать заново — его текст важнее нашего.
+       * `submit` clears the field before the server answers, and that is right:
+       * the row is already in the feed. But if the server did not accept the
+       * question — the hourly ceiling (a 429 with a Retry-After header and no
+       * deadline in the body), a room rule (403, the bell), a drop through the
+       * relay, any 5xx — then the five typed lines disappeared along with the
+       * refusal, and there was nothing to bring them back with. The return
+       * comes BEFORE the reason is examined, because the reason does not affect
+       * it; the only exception is when the person has already started typing
+       * again — their text matters more than ours.
        */
       if (composing.question.trim() === '') composing.question = body.message
       if (err instanceof ApiError && err.retryAfter !== null && err.retryAfter > 0) {
@@ -638,27 +657,29 @@
   }
 
   /**
-   * Спросить или сделать.
+   * Ask or act.
    *
-   * Переключатель, а не догадка по формулировке: «перепиши train.py» — это и
-   * вопрос, и поручение, в зависимости от того, чего человек хочет, и угадывать
-   * тут значит иногда молча трогать чужие файлы. Стоит рядом с полем, помнится
-   * между вопросами и гаснет там, где режим запрещён правилом комнаты.
+   * A toggle, not a guess from the wording: "rewrite train.py" is both a
+   * question and a task, depending on what the person wants, and guessing here
+   * means sometimes silently touching other people's files. It sits next to the
+   * field, is remembered between questions and goes dark where the mode is
+   * forbidden by the room rule.
    */
   let doing = $state(false)
 
   /**
-   * Уровень размышлений — рядом со «Спросить/Сделать» и по той же логике:
-   * выбор, а не догадка, помнится между вопросами, живёт в этом браузере.
+   * The reasoning effort — next to "Ask/Act" and by the same logic: a choice,
+   * not a guess, remembered between questions, living in this browser.
    *
-   * `null` — «как на этом Colloq»: тогда в запросе не уходит ни одного нового
-   * поля, и чужие инстансы ведут себя ровно как до появления ручки.
+   * `null` means "as this Colloq is set": then not a single new field goes out
+   * in the request, and other instances behave exactly as before the control
+   * appeared.
    *
-   * Понизить может любой — ответ придёт быстрее и обойдётся дешевле. Поднять
-   * выше инстансового умолчания может только преподаватель: ждать и платить за
-   * «подробно» на весь класс решает тот, кто ведёт пару. Сервер это правило и
-   * держит (routes/ai.ts), а здесь оно нарисовано — кнопка, которая ничего не
-   * делает, хуже кнопки, которой нет.
+   * Anyone can lower it — the answer will come faster and cost less. Only the
+   * teacher can raise it above the instance default: whether the whole class
+   * waits and pays for "thorough" is decided by whoever runs the class. The
+   * server enforces this rule (routes/ai.ts), and here it is drawn — a button
+   * that does nothing is worse than a button that is not there.
    */
   let effort = $state<ReasoningEffort | null>(rememberedEffort())
   const instanceEffort = $derived<ReasoningEffort>(status?.reasoningEffort ?? 'normal')
@@ -671,7 +692,8 @@
     isHost || effortRank(one) <= effortRank(instanceEffort)
   function pickEffort(next: ReasoningEffort): void {
     if (!mayEffort(next)) return
-    // Тот же уровень второй раз — снять выбор: вернулись к умолчанию инстанса.
+    // The same level a second time clears the choice: back to the instance
+    // default.
     effort = effort === next ? null : next
     rememberEffort(effort)
   }
@@ -679,27 +701,29 @@
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   const mayDo = $derived(may.agent)
   /*
-   * И режим оракула, а не только правило `agent`.
+   * And the oracle mode, not only the `agent` rule.
    *
-   * В режиме подсказок сервер отказывает поручению безусловно: оракул, который
-   * не пишет ответ за студента, тем более не пишет его в файл. Переключателю
-   * там нечего предлагать — «нет вовсе» вместо «есть и отказывает».
+   * In hints mode the server refuses a task unconditionally: an oracle that
+   * does not write the answer for a student all the more does not write it into
+   * a file. The toggle has nothing to offer there — "not there at all" instead
+   * of "there and refusing".
    */
   const canDo = $derived(mayDo && !hintsOnly)
   /*
-   * Правило меняют посреди пары — переключатель уходит вместе со своим
-   * положением. Иначе комната, вернувшаяся из подсказок, встречает человека
-   * взведённым «Сделать», которого он не выбирал.
+   * The rule is changed in the middle of a class — the toggle goes away
+   * together with its position. Otherwise a room returning from hints greets
+   * the person with an armed "Act" they did not choose.
    */
   $effect(() => {
     if (!canDo) doing = false
     /*
-     * И «Иван печатает вопрос…» — тем же движением.
+     * And "Ivan is typing a question…" — with the same movement.
      *
-     * Строка живёт в присутствии, а не в этом компоненте: поле после звонка
-     * исчезает целиком, ни `blur`, ни ввода больше не будет, и снять флаг
-     * некому — он висит у всей комнаты до перезагрузки вкладки. Иван при этом
-     * уже ничего не печатает: спрашивать ему нечем.
+     * The line lives in presence, not in this component: after the bell the
+     * field disappears entirely, there will be no more `blur` or input, and
+     * there is nobody to clear the flag — it hangs there for the whole room
+     * until the tab is reloaded. Ivan, meanwhile, is no longer typing anything:
+     * he has nothing to ask with.
      */
     if (!may.ask) stopComposing()
   })
@@ -719,28 +743,28 @@
     void ask({ message, action: 'ask', cellIds: [...session.selection] })
   }
 
-  /** Отменить ход целиком: файлы возвращаются к тому, что было до него. */
+  /** Undo the whole turn: the files return to what they were before it. */
   function undo(entryId: string) {
     session.send({ t: 'ai:undo', entryId })
   }
 
   function retry(entry: ChatSnapshot) {
     /*
-     * Повтор поручения — поручение.
+     * A retry of a task is a task.
      *
-     * Без `mode` «почини train.py и запусти» уходило обычным вопросом: модель
-     * объясняла, что сделала бы, и не делала ничего, — а нажимали Retry ровно
-     * под ходом «сделать». Действие и ячейка агенту не передаются: у него их
-     * не было и в первый раз.
+     * Without `mode`, "fix train.py and run it" went out as an ordinary
+     * question: the model explained what it would do and did nothing — while
+     * Retry was pressed precisely under an "Act" turn. The action and the cell
+     * are not passed to the agent: it did not have them the first time either.
      */
     if (entry.mode === 'agent') {
       void ask({ message: entry.question, mode: 'agent' })
       return
     }
     /*
-     * Все ячейки, о которых спрашивали, а не только первая: «объясни 02, 03 и
-     * 05», повторённый после обрыва, уходил вопросом про 02, и в шапке нового
-     * хода стояла одна ячейка из трёх.
+     * All the cells that were asked about, not only the first: "explain 02, 03
+     * and 05", retried after a dropped connection, went out as a question about
+     * 02, and the header of the new turn showed one cell out of three.
      */
     void ask({
       message: entry.question,
@@ -829,20 +853,22 @@
 
   <div class="relative flex min-h-0 flex-1 flex-col">
     <!--
-      Вбок лента не ездит НИКОГДА: `overflow-x: hidden` — страховка поверх
-      лечения. Одного `overflow-y-auto` мало и в обратную сторону вредно: по
-      спецификации сосед `visible` при этом сам становится `auto`, то есть
-      панель получала горизонтальную прокрутку от любого слова, вылезшего за
-      край. Причина убрана у прозы (index.css · .prose-note), а это — про то,
-      что следующее такое слово ленту не раскачает.
+      The feed NEVER moves sideways: `overflow-x: hidden` is a safety net on top
+      of the cure. `overflow-y-auto` alone is not enough, and it is harmful the
+      other way: by the spec, its `visible` sibling then becomes `auto` by
+      itself, that is, the panel got horizontal scrolling from any word that
+      poked out past the edge. The cause has been removed in the prose
+      (index.css · .prose-note), and this is about the next such word not
+      rocking the feed.
     -->
     <div
       bind:this={scroller}
       onscroll={onScroll}
       class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
     >
-      <!-- Обёртка нужна наблюдателю размера: он смотрит за высотой СОДЕРЖИМОГО,
-           а у самого окна прокрутки она не меняется, сколько бы туда ни дописали. -->
+      <!-- The wrapper is needed by the resize observer: it watches the height
+           of the CONTENT, and the scroll window's own height does not change,
+           however much is appended to it. -->
       <div bind:this={thread}>
       {#if entries.length === 0 && outbox.length === 0}
         <!--
@@ -854,10 +880,10 @@
           <p class="text-answer text-ink">{tr('room.ui.494')}</p>
           <p class="text-ui text-muted"> {tr('room.ui.495')} </p>
           <!--
-            «Выделите ячейку, чтобы спросить о ней» было неправдой ровно
-            наоборот: вопрос и без выделения уезжал вместе со всей тетрадью, а
-            строка советовала сделать обязательным то, что всего лишь наводит
-            фокус.
+            "Select a cell to ask about it" was untrue in exactly the opposite
+            way: without a selection the question still went along with the
+            whole notebook, and the line advised making mandatory what merely
+            sets the focus.
           -->
           <p class="text-ui text-muted"> {tr('room.ui.496')} </p>
         </div>
@@ -946,12 +972,13 @@
 
     {#if statusFailed}
       <!--
-        «Не знаю» — это не «выключен».
+        "Don't know" is not "off".
 
-        Одна отвергнутая выборка /api/ai/status раньше становилась плашкой
-        «оракул выключен для этого инстанса» и уносила с собой поле ввода:
-        решение админа на месте сетевого сбоя, и без повтора. Поле остаётся —
-        сервер решает всё равно сам, — а строка говорит ровно то, что есть.
+        A single rejected fetch of /api/ai/status used to become a banner "the
+        oracle is switched off for this instance" and took the input field away
+        with it: an admin's decision in place of a network failure, and without
+        a retry. The field stays — the server decides everything by itself
+        anyway — and the line says exactly what is.
       -->
       <p class="flex items-center gap-2 border border-line bg-raised px-3 py-2 text-2xs text-muted">
         <span class="min-w-0 flex-1">{tr('room.ui.500')}</span>
@@ -965,8 +992,9 @@
 
     {#if slowNotice}
       <!--
-        Ожидание, а не ошибка: тот же спокойный вид, что у правил ниже.
-        Сама строка — серверная, слово в слово: промежуток знает только он.
+        Waiting, not an error: the same calm look as the rules below. The line
+        itself is the server's, word for word: only the server knows the
+        interval.
       -->
       <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted" role="status">
         {slowNotice}
@@ -975,15 +1003,16 @@
 
     {#if hintsOnly}
       <!--
-        «Просят подсказку», а не «решения не будет».
+        "Asked for a hint", not "there will be no solution".
 
-        Режим подсказок держится на формулировке запроса к модели: мы просим не
-        давать решение, повторяем эту просьбу после слов студента — и на этом
-        всё, потому что больше сделать нечего. Обещать классу, что решение не
-        появится, значит обещать за модель.
+        Hints mode rests on the wording of the request to the model: we ask it
+        not to give the solution, repeat that request after the student's
+        words — and that is all, because there is nothing more to be done.
+        Promising the class that no solution will appear means making a promise
+        on the model's behalf.
 
-        Строка осталась там, где стояли кнопки: она про комнату, а не про
-        кнопку, и исчезнуть вместе с ними не должна была.
+        The line stayed where the buttons used to be: it is about the room, not
+        about a button, and it should not have disappeared together with them.
       -->
       <p class="text-2xs text-muted"> {tr('room.ui.502')} </p>
     {/if}
@@ -996,13 +1025,14 @@
         an unconfigured one is a fault, and only staff can do anything about it —
         so only staff are told where.
 
-        Выключен — кем: сервер различает решение админа и решение
-        преподавателя (routes/ai.ts), и панель обязана называть то же самое,
-        иначе решение админа приходит классу как решение преподавателя.
+        Off — by whom: the server distinguishes an admin's decision from a
+        teacher's decision (routes/ai.ts), and the panel has to name the same
+        thing, otherwise an admin's decision reaches the class as the teacher's.
 
-        А вот «ключа нет» и «лимит ноль» /api/ai/status одинаково отдаёт как
-        `enabled: false`, и различить их отсюда нечем — поэтому подсказка хосту
-        называет оба места сразу, а не то, которое у него уже настроено.
+        But "no key" and "zero limit" are both returned by /api/ai/status as
+        `enabled: false`, and there is nothing here to tell them apart with — so
+        the hint to the host names both places at once, not the one they have
+        already set up.
       -->
       <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted">
         {#if mode === 'off'}
@@ -1011,9 +1041,9 @@
       </p>
     {:else if !may.ask}
       <!--
-        Занятие кончилось — поля нет вовсе, а не есть и отказывает.
-        Тред при этом остаётся открытым и прокручивается: за разбором,
-        который оракул написал на паре, сюда как раз и возвращаются.
+        The class is over — there is no field at all, rather than a field that
+        refuses. The thread stays open and scrollable, though: people come back
+        here precisely for the review the oracle wrote during the class.
       -->
       <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted">{may.askWhy}</p>
     {:else}
@@ -1036,9 +1066,10 @@
           and a chip that is always lit says nothing.
         -->
         <!--
-          Что уедет с этим вопросом — над самим полем, а не над лентой: это
-          факт про ЭТУ вкладку, а не про комнату. Выделение у каждого своё, и
-          двое, глядящие на одну панель, видят здесь разное.
+          What will go along with this question — above the field itself, not
+          above the feed: it is a fact about THIS tab, not about the room.
+          Everyone has their own selection, and two people looking at the same
+          panel see different things here.
         -->
         <div class="flex flex-col gap-0.5 border-b border-line px-2 py-1.5">
           <div class="flex items-baseline gap-1.5">
@@ -1049,8 +1080,8 @@
             <span class="min-w-0 truncate text-2xs text-muted">{seesAll}</span>
           </div>
           {#if focus.length > 0}
-            <!-- Появляется только когда есть на чём сосредоточиться: строка,
-                 которая горит всегда, ничего не говорит. -->
+            <!-- Appears only when there is something to focus on: a line that
+                 is always lit says nothing. -->
             <div class="flex items-baseline gap-1.5">
               <span
                 class="shrink-0 text-2xs font-bold uppercase tracking-institution text-accent-text"
@@ -1064,11 +1095,11 @@
         </div>
 
         <!--
-          Спросить или сделать — переключателем, а не догадкой по формулировке.
-          «Перепиши train.py» — это и вопрос, и поручение; угадывать значит
-          иногда молча трогать чужие файлы. Там, где режим закрыт — правилом
-          комнаты или режимом подсказок, — переключателя нет вовсе, а не есть и
-          отказывает.
+          Ask or act — with a toggle, not a guess from the wording. "Rewrite
+          train.py" is both a question and a task; guessing means sometimes
+          silently touching other people's files. Where the mode is closed — by
+          the room rule or by hints mode — there is no toggle at all, rather
+          than one that is there and refuses.
         -->
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pb-0.5 pt-1.5">
         {#if canDo}
@@ -1088,8 +1119,8 @@
             </div>
         {/if}
           <!--
-            Уровень размышлений. Выключенных кнопок не рисуем там, где уровень
-            поднять нельзя: студент видит ровно то, что ему доступно.
+            The reasoning effort. Disabled buttons are not drawn where the level
+            cannot be raised: a student sees exactly what is available to them.
           -->
           <div class="flex items-stretch border border-line bg-canvas" data-oracle-effort>
             {#each REASONING_EFFORTS as one (one)}
@@ -1117,11 +1148,12 @@
           avatar={session.me.avatar}
           title={tr('room.oracle.asker', { name: session.me.name })}
         />
-        <!-- Метка для «Спросить оракула» с клавиатуры: ⌘/Ctrl+I и строка
-             палитры ставят фокус сюда (SessionScreen · focusOracle). На самом
-             поле, а не на панели: запасной путь `[data-oracle-panel] textarea`
-             держится на том, что поле ввода в панели ровно одно, и второе поле
-             здесь — правка вопроса, черновик ответа — увело бы фокус молча. -->
+        <!-- A marker for "Ask the oracle" from the keyboard: ⌘/Ctrl+I and the
+             palette row put focus here (SessionScreen · focusOracle). On the
+             field itself, not on the panel: the fallback path
+             `[data-oracle-panel] textarea` relies on there being exactly one
+             input field in the panel, and a second field here — editing a
+             question, a draft answer — would silently take the focus away. -->
         <textarea
           bind:this={composer}
           data-oracle-composer
@@ -1141,10 +1173,10 @@
           }}
         ></textarea>
         <!--
-          Пока идёт промежуток, кнопка показывает секунды вместо самолётика.
-          Число тикает у отправки, а не в строке над полем: там стоит правило,
-          и переписывать его каждую секунду значит мигать текстом, который
-          человек в это время читает.
+          While the interval runs, the button shows seconds instead of the paper
+          plane. The number ticks on the send button, not in the line above the
+          field: that line holds a rule, and rewriting it every second means
+          blinking text that the person is reading at that time.
         -->
         <button
           type="button"

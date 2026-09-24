@@ -1,13 +1,14 @@
 /**
- * Личность участника соревнований и публичные двери `/k`.
+ * A competition entrant's identity and the public `/k` doors.
  *
- * Проверяется то, что ломается тихо и дорого. Ключ входа, оставшийся в базе
- * открытым текстом. Новый ключ, не отобравший силу у старого, — то есть
- * «потерял ключ» без ответа. Два человека с одним именем в лидерборде, где их
- * уже не различить. И главное: дверь, которая шире, чем кажется, — код
- * метрики, зерно деления строк, приватное число до открытия итогов, чужая
- * посылка, чужой трейс. Любое из этого позволяет выиграть соревнование, не
- * решая задачу, и ни одно не видно на экране.
+ * What is checked is what breaks quietly and expensively. A sign-in key left
+ * in the database as plain text. A new key that did not take the power away
+ * from the old one — that is, "I lost my key" with no remedy. Two people with
+ * the same name on the leaderboard, where they can no longer be told apart.
+ * And above all: a door wider than it looks — the metric code, the row-split
+ * seed, the private score before results open, someone else's submission,
+ * someone else's trace. Any of these lets one win a competition without
+ * solving the task, and none of them shows on screen.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -47,7 +48,7 @@ import { app } from '../server/src/app.js'
 let base = ''
 let server: http.Server
 
-/** Соревнование, которое идёт: открытые данные, скрытые ответы, код метрики. */
+/** A live competition: open data, hidden answers, the metric code. */
 const METRIC_CODE = 'def score(solution, submission):\n    return 0.5\n'
 const SEED_MARK = 'zerno-kotoroe-nelzya-otdavat'
 
@@ -64,8 +65,9 @@ before(async () => {
   })
   assert.ok(made)
   competitionId = made.id
-  // Зерно выдаётся при рождении; подменяем на узнаваемое, чтобы его утечку
-  // было видно поиском по телу ответа, а не сравнением со случайной строкой.
+  // The seed is issued at birth; we replace it with a recognizable one so that
+  // a leak shows up by searching the response body rather than by comparing
+  // with a random string.
   db.prepare('UPDATE competitions SET split_seed = ? WHERE id = ?').run(SEED_MARK, competitionId)
   setCompetitionState(competitionId, 'live')
 
@@ -83,9 +85,9 @@ before(async () => {
 
 after(() => server?.close())
 
-/* ------------------------------------------------------------- помощники */
+/* --------------------------------------------------------------- helpers */
 
-/** Печенье участника из ответа — в том виде, в каком его вернёт браузер. */
+/** The entrant cookie from a response, as the browser would send it back. */
 function cookieOf(res: Response): string | null {
   const raw = res.headers.getSetCookie?.() ?? []
   for (const line of raw) {
@@ -110,62 +112,65 @@ async function send(path: string, cookie: string | null, name: string, body: str
   return call(path, { method: 'POST', body: form, cookie })
 }
 
-/** Вступить новым человеком и вернуть его печенье вместе с ключом. */
+/** Join as a new person and return their cookie along with the key. */
 async function join(name: string): Promise<{ cookie: string; key: string; id: string }> {
   const res = await call('/api/k/competitions/rohlik/join', {
     method: 'POST',
     body: JSON.stringify({ name }),
   })
-  assert.equal(res.status, 200, `вступление ${name}`)
+  assert.equal(res.status, 200, `joining ${name}`)
   const payload = (await res.json()) as { entrant: { id: string }; key: string }
   const cookie = cookieOf(res)
-  assert.ok(cookie, 'печенье участника не выдано')
+  assert.ok(cookie, 'no entrant cookie was issued')
   return { cookie, key: payload.key, id: payload.entrant.id }
 }
 
-/* ------------------------------------------------------------------ ключ */
+/* ------------------------------------------------------------------- key */
 
-test('ключ выдаётся один раз, а в базе от него остаются только отпечаток и печать', () => {
+test('a key is issued once, and the database keeps only its fingerprint and seal', () => {
   const minted = createEntrant('Хранимый')
   assert.match(minted.key, /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{3}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{3}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{3}$/)
-  // В записи, которая уезжает в браузер, ключа нет ни под каким именем.
+  // The record that goes to the browser has no key under any name.
   assert.equal((minted.entrant as unknown as Record<string, unknown>).key, undefined)
 
   const row = db.prepare('SELECT * FROM entrants WHERE id = ?').get(minted.entrant.id) as Record<string, unknown>
   for (const [column, value] of Object.entries(row)) {
     assert.ok(
       typeof value !== 'string' || !value.includes(minted.key),
-      `столбец ${column} держит ключ открытым текстом`,
+      `column ${column} holds the key as plain text`,
     )
   }
   assert.equal(row.key_hash, entrantKeyDigest(minted.key))
-  // И обратно он достаётся ровно одной дверью — той, что показывает карточку.
+  // And it is retrieved through exactly one door — the one that shows the
+  // card.
   assert.equal(entrantKeyOf(minted.entrant.id), minted.key)
 })
 
-test('ключ читается как угодно написанным, но чужая буква — это другой ключ', () => {
+test('a key reads however it is written, but a different letter makes a different key', () => {
   const minted = createEntrant('Диктующий вслух')
   const [a, b, c] = minted.key.split('-')
-  // Переписанный с экрана телефона: нижний регистр, пробелы вместо дефисов.
+  // Copied from a phone screen: lower case, spaces instead of hyphens.
   assert.equal(entrantByKey(normalizeEntrantKey(`${a} ${b} ${c}`.toLowerCase())!)?.id, minted.entrant.id)
-  // Алфавит без похожих знаков: `O`, `0`, `I`, `1` и `L` не выпускаются вовсе.
+  // An alphabet without look-alikes: `O`, `0`, `I`, `1` and `L` are never
+  // issued.
   assert.equal(normalizeEntrantKey('OOO-111-LLL'), null)
   assert.equal(normalizeEntrantKey(minted.key.slice(0, -1)), null)
   assert.equal(entrantByKey(''), null)
 })
 
-test('печать переживает только свой секрет и не отдаёт подменённую строку', () => {
+test('a seal survives only its own secret and does not give back a tampered string', () => {
   const key = newEntrantKey()
   const sealed = sealEntrantKey(key)
   assert.notEqual(sealed, key)
   assert.equal(unsealEntrantKey(sealed), key)
-  // Подмена любой из трёх частей — отказ, а не мусор, показанный как ключ.
+  // Tampering with any of the three parts is a refusal, not garbage shown as a
+  // key.
   const parts = sealed.split('.')
   assert.equal(unsealEntrantKey([parts[0], sealEntrantKey(newEntrantKey()).split('.')[1], parts[2]].join('.')), null)
   assert.equal(unsealEntrantKey('не-печать'), null)
 })
 
-test('новый ключ отключает старый — и старое печенье вместе с ним', async () => {
+test('a new key disables the old one, and the old cookie along with it', async () => {
   const person = await join('Потерявший ключ')
   const before = await call('/api/k/me', { cookie: person.cookie })
   assert.equal(((await before.json()) as { entrant: { id: string } | null }).entrant?.id, person.id)
@@ -174,25 +179,26 @@ test('новый ключ отключает старый — и старое п
   assert.ok(rotated)
   assert.notEqual(rotated.key, person.key)
 
-  // Старый ключ больше не вход.
+  // The old key no longer lets you in.
   const refused = await call('/api/k/sign-in', { method: 'POST', body: JSON.stringify({ key: person.key }) })
   assert.equal(refused.status, 404)
   assert.equal(((await refused.json()) as { reason: string }).reason, 'key_unknown')
 
   /*
-   * И старое печенье тоже: отпечаток ключа входит в подпись, поэтому вкладка,
-   * в которой человек вошёл прежним ключом, перестаёт быть им в ту же минуту.
-   * Без этого «старый ключ будет отключён» означало бы только поле ввода.
+   * And the old cookie too: the key fingerprint is part of the signature, so a
+   * tab where the person signed in with the previous key stops being them that
+   * very minute. Without this, "the old key will be disabled" would refer only
+   * to the input field.
    */
   const after = await call('/api/k/me', { cookie: person.cookie })
   assert.equal(((await after.json()) as { entrant: unknown }).entrant, null)
 
   const good = await call('/api/k/sign-in', { method: 'POST', body: JSON.stringify({ key: rotated.key }) })
   assert.equal(good.status, 200)
-  assert.ok(cookieOf(good), 'вход по новому ключу не выдал печенья')
+  assert.ok(cookieOf(good), 'signing in with the new key issued no cookie')
 })
 
-test('отключённый ключ и несуществующий отказывают РАЗНЫМИ словами', async () => {
+test('a disabled key and a nonexistent one are refused in DIFFERENT words', async () => {
   const person = await join('Отключаемый')
   setEntrantDisabled(person.id, true)
   const off = await call('/api/k/sign-in', { method: 'POST', body: JSON.stringify({ key: person.key }) })
@@ -201,19 +207,21 @@ test('отключённый ключ и несуществующий отказ
 
   const nobody = await call('/api/k/sign-in', { method: 'POST', body: JSON.stringify({ key: 'K7Q-M2X-9FD' }) })
   assert.equal(((await nobody.json()) as { reason: string }).reason, 'key_unknown')
-  // И отключённый не ходит по своему печенью — оно выдано до отключения.
+  // And a disabled one does not get in with their cookie either — it was
+  // issued before the disabling.
   const me = await call('/api/k/me', { cookie: person.cookie })
   assert.equal(((await me.json()) as { entrant: unknown }).entrant, null)
 })
 
-test('ссылка для входа ведёт на /k/t/<ключ> и возвращает человека с другого устройства', async () => {
+test('the sign-in link leads to /k/t/<key> and brings a person back from another device', async () => {
   const person = await join('Приехавший с телефона')
   const card = await call('/api/k/me', { cookie: person.cookie })
   const shown = (await card.json()) as { key: string; link: string }
   assert.equal(shown.key, person.key)
   assert.ok(shown.link.endsWith(`${ENTRANT_SIGN_IN_PATH}${person.key}`), shown.link)
 
-  // Ровно то, что делает страница по этой ссылке: меняет ключ на печенье.
+  // Exactly what the page at this link does: it exchanges the key for a
+  // cookie.
   const route = readCompetitionRoute(new URL(shown.link).pathname)
   assert.equal(route?.signInKey, person.key)
   const fresh = await call('/api/k/sign-in', { method: 'POST', body: JSON.stringify({ key: route!.signInKey }) })
@@ -223,9 +231,9 @@ test('ссылка для входа ведёт на /k/t/<ключ> и возв
   assert.equal(mine.status, 200)
 })
 
-/* -------------------------------------------------------------- вступление */
+/* ----------------------------------------------------------------- joining */
 
-test('тёзки в лидерборде не заводятся, и отказ говорит об этом словами', async () => {
+test('namesakes do not appear on the leaderboard, and the refusal says so in words', async () => {
   const first = await join('Анна Ким')
   assert.ok(joinedAt(competitionId, first.id))
 
@@ -238,7 +246,7 @@ test('тёзки в лидерборде не заводятся, и отказ 
   assert.equal(body.reason, 'name_taken')
   assert.match(body.error, /именем/i)
 
-  // Тот же человек вступает повторно своим же именем — это не столкновение.
+  // The same person joining again under their own name is not a clash.
   const again = await call('/api/k/competitions/rohlik/join', {
     method: 'POST',
     body: JSON.stringify({ name: 'Анна Ким' }),
@@ -247,15 +255,15 @@ test('тёзки в лидерборде не заводятся, и отказ 
   assert.equal(again.status, 200)
 })
 
-test('имя сравнивается так, как его читает человек', () => {
+test('a name is compared the way a person reads it', () => {
   assert.equal(entrantNameKey('  Анна   КИМ '), entrantNameKey('анна ким'))
-  // «Артём» и «Артем» в одной таблице — ровно та путаница, ради которой
-  // правило и заведено.
+  // "Артём" and "Артем" in one table are exactly the confusion the rule
+  // exists for.
   assert.equal(entrantNameKey('Артём Сухомлин'), entrantNameKey('Артем Сухомлин'))
   assert.notEqual(entrantNameKey('Анна Ким'), entrantNameKey('Анна Кин'))
 })
 
-test('переименование проверяется во ВСЕХ соревнованиях человека сразу', () => {
+test("a rename is checked across ALL of the person's competitions at once", () => {
   const second = createCompetition({ slug: 'bpm', title: 'BPM' })
   assert.ok(second)
   setCompetitionState(second.id, 'live')
@@ -263,15 +271,16 @@ test('переименование проверяется во ВСЕХ соре
   const two = createEntrant('Второй').entrant
   assert.equal(joinCompetition(second.id, one.id, 'Даниил Орлов'), 'ok')
   assert.equal(joinCompetition(competitionId, two.id, 'Платон Г.'), 'ok')
-  // Второй переименовывается в тёзку первого — но в ДРУГОМ соревновании,
-  // куда он вступает сейчас. Имя одно на человека, поэтому отказ общий.
+  // The second one renames himself to the first one's name — but in ANOTHER
+  // competition, the one he is joining now. A person has one name, so the
+  // refusal applies everywhere.
   assert.equal(joinCompetition(second.id, two.id, 'Даниил Орлов'), 'taken')
-  assert.equal(getEntrant(two.id)?.name, 'Платон Г.', 'имя уехало вместе с отказом')
+  assert.equal(getEntrant(two.id)?.name, 'Платон Г.', 'the name changed even though it was refused')
 })
 
-/* ------------------------------------------------------------ отправка */
+/* ------------------------------------------------------------- sending */
 
-test('до вступления, в полёте и сверх дневной нормы — три разных отказа', async () => {
+test('before joining, in flight and over the daily quota are three different refusals', async () => {
   const outsider = createEntrant('Не вступавший')
   const signed = await call('/api/k/sign-in', {
     method: 'POST',
@@ -288,12 +297,13 @@ test('до вступления, в полёте и сверх дневной н
   const accepted = (await first.json()) as { submission: { id: string; number: number }; leftToday: number }
   assert.equal(accepted.leftToday, 1)
 
-  // Вторая — пока первая в полёте.
+  // The second one, while the first is in flight.
   const busy = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v2.ipynb', notebook())
   assert.equal(busy.status, 409)
   assert.equal(((await busy.json()) as { reason: string }).reason, 'in_flight')
 
-  // Первая досчиталась — вторую приняли, и норма дня кончилась.
+  // The first finished scoring, the second was accepted, and the day's quota
+  // ran out.
   updateSubmission(accepted.submission.id, { state: 'scored', publicScore: 0.4, privateScore: 0.3 })
   const second = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v2.ipynb', notebook())
   assert.equal(second.status, 200)
@@ -306,7 +316,7 @@ test('до вступления, в полёте и сверх дневной н
   assert.equal(((await spent.json()) as { reason: string }).reason, 'quota')
 })
 
-test('не тетрадь, битая тетрадь и не .ipynb разворачиваются ДО очереди', async () => {
+test('a non-notebook, a broken notebook and a non-.ipynb are turned away BEFORE the queue', async () => {
   const person = await join('Присылающий что попало')
 
   const wrongName = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'model.py', notebook())
@@ -319,23 +329,24 @@ test('не тетрадь, битая тетрадь и не .ipynb развор
   const notNotebook = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v1.ipynb', '{"hello": 1}')
   assert.equal(notNotebook.status, 400)
 
-  // Ни одна из трёх не заняла места в очереди и не потратила дневной нормы.
+  // None of the three took a place in the queue or used the day's quota.
   const mine = await call('/api/k/competitions/rohlik/submissions', { cookie: person.cookie })
   const list = (await mine.json()) as { submissions: unknown[]; leftToday: number }
   assert.equal(list.submissions.length, 0)
   assert.equal(list.leftToday, 2)
 })
 
-test('разбор присланного файла отвечает про файл, а не про код участника', () => {
+test("parsing the sent file answers about the file, not about the entrant's code", () => {
   assert.equal(whyNotebookRefused(notebook()), null)
   assert.match(whyNotebookRefused('{')!, /не читается|does not read/i)
   assert.match(whyNotebookRefused('[]')!, /ячеек|cells/i)
   assert.match(whyNotebookRefused('{"cells": [{}]}')!, /повреждена|damaged/i)
-  // Потолок присланной тетради — свой, и он меньше потолка файлов комнаты.
+  // A sent notebook has its own ceiling, and it is lower than the room's file
+  // ceiling.
   assert.equal(LIMITS.notebookBytes, 20 * 1024 * 1024)
 })
 
-test('после дедлайна приём закрыт, до открытия — ещё не открыт', async () => {
+test('after the deadline submissions are closed, before the start they are not open yet', async () => {
   const now = Date.now()
   assert.equal(submissionsOpen({ state: 'live', startsAt: null, deadlineAt: null }, now), 'open')
   assert.equal(submissionsOpen({ state: 'live', startsAt: now + 1000, deadlineAt: null }, now), 'not_open')
@@ -351,7 +362,7 @@ test('после дедлайна приём закрыт, до открытия
   updateCompetition(competitionId, { deadlineAt: null })
 })
 
-test('в завершённое соревнование не вступают: таблица уже посчитана', async () => {
+test('nobody joins a finished competition: the table is already computed', async () => {
   const closed = createCompetition({ slug: 'cmi', title: 'CMI' })
   assert.ok(closed)
   setCompetitionState(closed.id, 'finished')
@@ -361,14 +372,15 @@ test('в завершённое соревнование не вступают: 
   })
   assert.equal(res.status, 403)
   assert.equal(((await res.json()) as { reason: string }).reason, 'closed')
-  // А лидерборд завершённого читается: именно за ним туда и приходят.
+  // But a finished one's leaderboard can be read: that is exactly what people
+  // come there for.
   const board = await call('/api/k/competitions/cmi/leaderboard')
   assert.equal(board.status, 200)
 })
 
-/* ---------------------------------------------------------------- право */
+/* --------------------------------------------------------------- rights */
 
-test('чужую посылку не выбрать в зачёт и не скачать', async () => {
+test("someone else's submission can be neither chosen as counted nor downloaded", async () => {
   const mine = await join('Свой')
   const other = await join('Чужой')
   const sent = await send('/api/k/competitions/rohlik/submissions', mine.cookie, 'ok.ipynb', notebook())
@@ -387,7 +399,7 @@ test('чужую посылку не выбрать в зачёт и не ска
   })
   assert.equal(peek.status, 403)
 
-  // А своя — выбирается и скачивается.
+  // But one's own can be chosen and downloaded.
   const chosen = await call(`/api/k/competitions/rohlik/submissions/${submission.id}/choose`, {
     method: 'POST',
     cookie: mine.cookie,
@@ -400,7 +412,7 @@ test('чужую посылку не выбрать в зачёт и не ска
   assert.match(await own.text(), /cell_type/)
 })
 
-test('без печенья двери посылок отвечают «войдите», а не «нет такого»', async () => {
+test('without a cookie the submission doors answer "sign in", not "no such thing"', async () => {
   for (const path of [
     '/api/k/competitions/rohlik/submissions',
   ]) {
@@ -412,7 +424,7 @@ test('без печенья двери посылок отвечают «вой�
   assert.equal(post.status, 401)
 })
 
-test('черновик на /k не существует ни одной дверью', async () => {
+test('a draft does not exist on /k through any door', async () => {
   const draft = createCompetition({ slug: 'cherno', title: 'Черновик' })
   assert.ok(draft)
   for (const path of [
@@ -428,9 +440,9 @@ test('черновик на /k не существует ни одной две�
   assert.ok(!shown.competitions.some((row) => row.competition.slug === 'cherno'))
 })
 
-/* --------------------------------------------------- что не утекает никуда */
+/* ------------------------------------------------------ what leaks nowhere */
 
-test('ни одна дверь /k не отдаёт кода метрики, зерна, ответов и приватного числа', async () => {
+test('no /k door gives out the metric code, the seed, the answers or the private score', async () => {
   const person = await join('Любопытный')
   const sent = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'peek.ipynb', notebook())
   const { submission } = (await sent.json()) as { submission: { id: string } }
@@ -452,24 +464,25 @@ test('ни одна дверь /k не отдаёт кода метрики, з�
     const res = await call(path, { cookie: person.cookie })
     assert.equal(res.status, 200, path)
     const text = await res.text()
-    assert.ok(!text.includes('def score'), `${path} отдал код метрики`)
-    assert.ok(!text.includes(SEED_MARK), `${path} отдал зерно деления строк`)
-    assert.ok(!text.includes('ZeroDivisionError'), `${path} отдал трейс преподавателя`)
-    assert.ok(!text.includes('0.4402'), `${path} отдал приватное число до открытия итогов`)
+    assert.ok(!text.includes('def score'), `${path} gave out the metric code`)
+    assert.ok(!text.includes(SEED_MARK), `${path} gave out the row-split seed`)
+    assert.ok(!text.includes('ZeroDivisionError'), `${path} gave out the teacher's trace`)
+    assert.ok(!text.includes('0.4402'), `${path} gave out the private score before results opened`)
   }
 
-  // Скрытые ответы не скачиваются ни под своим именем, ни обходом по пути.
+  // Hidden answers cannot be downloaded either under their own name or by path
+  // traversal.
   for (const name of ['solution.csv', '..%2Fsecret%2Fsolution.csv', '%2E%2E%2Fsecret%2Fsolution.csv']) {
     const res = await call(`/api/k/competitions/rohlik/files/${name}`)
     assert.equal(res.status, 404, name)
   }
-  // А открытый файл — скачивается, иначе проверка ничего не проверяет.
+  // But an open file downloads, otherwise the check checks nothing.
   const open = await call('/api/k/competitions/rohlik/files/test.csv')
   assert.equal(open.status, 200)
   assert.match(await open.text(), /^id\n/)
 })
 
-test('приватный лидерборд молчит до открытия и говорит после', async () => {
+test('the private leaderboard is silent before opening and speaks after', async () => {
   const person = await join('Ждущий итогов')
   const sent = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'final.ipynb', notebook())
   const { submission } = (await sent.json()) as { submission: { id: string } }
@@ -481,22 +494,24 @@ test('приватный лидерборд молчит до открытия �
   assert.equal(before.private, null)
   assert.equal(before.privateOpen, false)
 
-  // Дедлайн прошёл и приватный открывается сам — макет A2, «открыть сам после дедлайна».
+  // The deadline passed and the private one opens by itself — mockup A2,
+  // "open by itself after the deadline".
   updateCompetition(competitionId, { deadlineAt: Date.now() - 1000, privateRelease: 'auto' })
   const opened = await call('/api/k/competitions/rohlik/leaderboard', { cookie: person.cookie })
   const after = (await opened.json()) as { private: { score: number }[] | null; privateOpen: boolean }
   assert.equal(after.privateOpen, true)
   assert.ok(after.private && after.private.length > 0)
-  // И теперь приватное число посылки видно её автору — но не раньше.
+  // And now the submission's private score is visible to its author — but not
+  // earlier.
   const mine = await call('/api/k/competitions/rohlik/submissions', { cookie: person.cookie })
   const list = (await mine.json()) as { submissions: { id: string; privateScore: number | null }[] }
   assert.equal(list.submissions.find((s) => s.id === submission.id)?.privateScore, 0.3901)
   updateCompetition(competitionId, { deadlineAt: null, privateRelease: 'manual' })
 })
 
-/* ------------------------------------------------------------- адреса */
+/* ---------------------------------------------------------- addresses */
 
-test('адреса соревнований разбираются, а ключ не спорит с именем соревнования', () => {
+test('competition addresses are parsed, and a key does not clash with a competition name', () => {
   assert.deepEqual(readCompetitionRoute('/k'), { slug: null, view: 'list', signInKey: null })
   assert.deepEqual(readCompetitionRoute('/k/'), { slug: null, view: 'list', signInKey: null })
   assert.deepEqual(readCompetitionRoute('/k/rohlik'), { slug: 'rohlik', view: 'task', signInKey: null })
@@ -508,26 +523,26 @@ test('адреса соревнований разбираются, а ключ 
     view: 'list',
     signInKey: 'K7Q-M2X-9FD',
   })
-  // Не соревнования и не наши адреса.
+  // Not competitions and not our addresses.
   assert.equal(readCompetitionRoute('/kk'), null)
-  assert.equal(readCompetitionRoute('/k/Rohlik'), null, 'адрес соревнования — строчными')
+  assert.equal(readCompetitionRoute('/k/Rohlik'), null, 'a competition address is lower case')
   assert.equal(readCompetitionRoute('/s/abc'), null)
   assert.equal(readCompetitionRoute('/k/rohlik/settings'), null)
 })
 
-test('слишком частый вход с одного адреса разворачивается', async () => {
+test('too frequent sign-ins from one address are turned away', async () => {
   let refused = 0
   for (let i = 0; i < 60; i++) {
     const res = await call('/api/k/sign-in', { method: 'POST', body: JSON.stringify({ key: 'K7Q-M2X-9FE' }) })
     if (res.status === 429) refused += 1
     await res.text()
   }
-  assert.ok(refused > 0, 'перебор ключей с одного адреса ничем не ограничен')
+  assert.ok(refused > 0, 'brute-forcing keys from one address is not limited at all')
 })
 
-/* ------------------------------------------------------------- сводка */
+/* ------------------------------------------------------------ summary */
 
-test('страница соревнования знает, что человек о себе видит', async () => {
+test('the competition page knows what a person sees about themselves', async () => {
   const person = await join('Считающий место')
   const sent = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'place.ipynb', notebook())
   const { submission } = (await sent.json()) as { submission: { id: string } }
@@ -541,22 +556,24 @@ test('страница соревнования знает, что челове�
   }
   assert.equal(body.competition.slug, 'rohlik')
   assert.equal(body.competition.metric.name, 'MAPE')
-  // Открытые файлы — да, скрытые — нет: список один, но берётся он по видимости.
+  // Open files yes, hidden ones no: there is one list, but it is taken by
+  // visibility.
   assert.deepEqual(body.files.map((file) => file.name), ['test.csv'])
   assert.equal(body.mine.joined, true)
-  assert.equal(body.mine.place, 1, 'лучший публичный результат — первое место')
+  assert.equal(body.mine.place, 1, 'the best public result is first place')
   assert.equal(body.mine.submissions, 1)
 
-  // Без печенья тот же ответ, но без блока «ВЫ».
+  // Without a cookie the same answer, but without the "YOU" block.
   const anon = await call('/api/k/competitions/rohlik')
   assert.equal(((await anon.json()) as { mine: unknown }).mine, null)
 })
 
-test('посылка, принятая мимо вступления, всё равно делает человека участником', () => {
+test('a submission accepted without joining still makes the person an entrant', () => {
   const person = createEntrant('Старожил').entrant
   acceptSubmission({ competitionId, entrantId: person.id, fileName: 'old.ipynb', bytes: 10 })
   assert.equal(joinedAt(competitionId, person.id), null)
-  // Списки участников и сводка считают его участником — у него есть посылка.
+  // Entrant lists and the summary count them as an entrant: they have a
+  // submission.
   const summary = db
     .prepare("SELECT COUNT(*) AS n FROM submissions WHERE competition_id = ? AND entrant_id = ?")
     .get(competitionId, person.id) as { n: number }

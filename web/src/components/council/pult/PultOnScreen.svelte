@@ -38,13 +38,14 @@
 
 <style>
   /*
-   * Одна строка, 40 px.
+   * One line, 40 px.
    *
-   * Полоса говорит одно: вот это сейчас на стене. Она стояла в два ряда по
-   * 64 px, и вместе с шапкой и вкладками от окна 650 px высотой оставалось
-   * меньше половины — при том что менялась она за пару дважды. Переносов
-   * больше нет: длинное имя обрезается, время прячется раньше кнопки «Убрать»,
-   * потому что убрать важнее, чем знать, сколько уже висит.
+   * The strip says one thing: this is on the wall right now. It used to
+   * stand in two rows of 64 px, and together with the header and the tabs
+   * less than half of a 650 px tall window was left — while it changed twice
+   * per class. There is no wrapping any more: a long name is cut, the time
+   * hides before the "Clear" button does, because clearing matters more than
+   * knowing how long it has been up.
    */
   .projection-banner { display: flex; align-items: center; flex-wrap: nowrap; flex-shrink: 0; gap: 8px; min-height: 40px; padding: 4px 16px 4px 12px; border-bottom: 1px solid rgb(var(--line)); border-left: 3px solid rgb(var(--positive)); background: rgb(var(--raised)); color: rgb(var(--ink)); }
   .projection-label { flex-shrink: 0; color: rgb(var(--positive)); font-size: 13px; line-height: 18px; font-weight: 700; }

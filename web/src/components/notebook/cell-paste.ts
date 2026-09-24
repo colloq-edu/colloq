@@ -1,27 +1,28 @@
 /**
- * Что редактор принимает, когда у листа есть потолок знаков.
+ * What the editor accepts when the sheet has a character ceiling.
  *
- * Потолок стоит на своей попытке консилиума: снимок сверх `MAX_ATTEMPT_CHARS`
- * сервер не принимает, а значит лист молча перестаёт уезжать — у студента на
- * экране длинный текст, у преподавателя в стопке прошлый, короткий.
+ * The ceiling is set on a student's own council attempt: the server does not
+ * accept a snapshot over `MAX_ATTEMPT_CHARS`, which means the sheet silently
+ * stops going out — the student has the long text on screen, the teacher has
+ * the previous, short one in the stack.
  *
- * Правило намеренно несимметрично. НАБОР руками потолок не запрещает: человек,
- * дописавший попытку до 9 012 знаков, видит счётчик «9 012 из 8 000» и сам
- * решает, что резать, — а редактор, отказывающийся принимать букву, читается
- * как сломанный. ВСТАВКА — другое дело: это одно движение на двенадцать тысяч
- * знаков, после которого лист перестаёт уезжать, и отказать ей надо в тот же
- * момент и словами.
+ * The rule is deliberately asymmetric. The ceiling does not forbid TYPING by
+ * hand: someone who has written the attempt up to 9 012 characters sees the
+ * counter "9 012 of 8 000" and decides for themselves what to cut — whereas an
+ * editor that refuses to accept a letter reads as broken. PASTING is another
+ * matter: it is one move of twelve thousand characters, after which the sheet
+ * stops going out, and it has to be refused at that very moment and in words.
  *
- * Чужие кадры (то, чем y-codemirror применяет правки Y.Text — и наши SEED
- * тоже) вставкой не считаются никогда: отказ им развёл бы редактор с
- * документом, а это хуже любого потолка.
+ * Foreign frames (the way y-codemirror applies Y.Text edits — our SEED
+ * included) never count as a paste: refusing them would pull the editor apart
+ * from the document, and that is worse than any ceiling.
  */
 export interface ChangeCheck {
-  /** Сколько знаков станет, если правку принять. */
+  /** How many characters there will be if the edit is accepted. */
   chars: number
-  /** Потолок листа — или null, если его тут нет. */
+  /** The sheet's ceiling — or null if there is none here. */
   ceiling: number | null
-  /** Правка — вставка или перенос мышью, а не набор и не чужой кадр. */
+  /** The edit is a paste or drag-and-drop, not typing or a foreign frame. */
   pasted: boolean
 }
 

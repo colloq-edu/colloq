@@ -1,49 +1,53 @@
 import type { SyntaxNode, Tree } from '@lezer/common'
 
 /**
- * О чём можно спросить справку, наведя указатель, — и о чём нельзя.
+ * What help can be asked about by hovering the pointer — and what cannot.
  *
- * Раньше цель наведения искалась регуляркой по строке: под указателем ЛЮБОЕ
- * слово. На занятии это оказалось невыносимо — «при любом наведении на код или
- * при написании кода будет что-то всплывать»: окно выскакивало над именем
- * колонки в кавычках, над `x=` в списке аргументов, над собственной переменной,
- * над словом в комментарии. И каждое такое наведение стоило кадра `inspect` в
- * сокете и вопроса к общему ядру комнаты.
+ * The hover target used to be found by a regex over the line: ANY word under
+ * the pointer. In a class this turned out to be unbearable — "whenever you
+ * hover over code or write code, something pops up": the window jumped out
+ * over a quoted column name, over `x=` in an argument list, over one's own
+ * variable, over a word in a comment. And every such hover cost an `inspect`
+ * frame on the socket and a question to the room's shared kernel.
  *
- * Теперь цель ищется по ДЕРЕВУ РАЗБОРА (грамматика Python из @lezer/python, та
- * же, которой редактор красит код), и правило узкое:
+ * Now the target is found by the PARSE TREE (the Python grammar from
+ * @lezer/python, the same one the editor colours code with), and the rule is
+ * narrow:
  *
- *   1. имя в операторе импорта — модуль, подмодуль, импортируемое имя, псевдоним;
- *   2. имя ВЫЗЫВАЕМОГО: за ним сразу идёт список аргументов (`print(`,
- *      `sns.lmplot(`, `LinearRegression(`, `@lru_cache`);
- *   3. звено цепочки вызываемого и обращение через точку — но только если
- *      корень цепочки это известный псевдоним импортированного модуля (`np` в
- *      `np.random.rand(`). `df` в `df.groupby(` псевдонимом не является, и о
- *      нём не спрашивают: что такое `df`, ядро расскажет по его собственному
- *      имени, когда на него наведут в другом месте.
+ *   1. a name in an import statement — module, submodule, imported name, alias;
+ *   2. the name of the CALLEE: an argument list follows it right away
+ *      (`print(`, `sns.lmplot(`, `LinearRegression(`, `@lru_cache`);
+ *   3. a link of the callee's chain and a dotted access — but only if the root
+ *      of the chain is a known alias of an imported module (`np` in
+ *      `np.random.rand(`). `df` in `df.groupby(` is not an alias, and it is not
+ *      asked about: what `df` is, the kernel will tell by its own name when it
+ *      is hovered elsewhere.
  *
- * Всё остальное — молчание, и молчание БЕЗ вопроса к серверу: строки и
- * f-строки целиком, комментарии, числа, имена именованных аргументов, значения
- * аргументов, переменные и атрибуты без вызова, левая часть присваивания,
- * параметры `def`, имена в `for … in`, имя определяемой функции или класса.
+ * Everything else is silence, and silence WITHOUT a question to the server:
+ * strings and f-strings entirely, comments, numbers, keyword argument names,
+ * argument values, variables and attributes without a call, the left side of
+ * an assignment, `def` parameters, names in `for … in`, the name of the
+ * function or class being defined.
  *
- * Чистый модуль: на вход дерево, текст и позиция, на выход цель или причина
- * отказа. Ни CodeMirror, ни DOM — чтобы таблицу случаев можно было проверить
- * настоящим парсером в обычном тесте (tests/hover-target.test.mts).
+ * A pure module: in go the tree, the text and the position, out comes a
+ * target or the reason for refusal. No CodeMirror and no DOM — so that the
+ * table of cases can be checked with the real parser in an ordinary test
+ * (tests/hover-target.test.mts).
  */
 
-/** Узлы, которые мы считаем именем. Всё прочее под указателем — не имя. */
+/** Nodes we consider a name. Anything else under the pointer is not a name. */
 const NAMES = new Set(['VariableName', 'PropertyName'])
 
-/** Чужой текст: внутри него имён нет, сколько бы их там ни виднелось. */
+/** Foreign text: there are no names inside it, however many seem to be visible. */
 const PROSE = new Set(['String', 'FormatString', 'Comment'])
 
-/** Список аргументов вызова — по нему решается, справка это или значение. */
+/** A call's argument list — it decides whether this is help or a value. */
 const ARGS = new Set(['ArgList'])
 
 /**
- * Почему справки не будет. Нужна тесту и объяснению, а не экрану: человеку
- * отказ наведения виден тем, что ничего не произошло, — так и задумано.
+ * Why there will be no help. Needed by the test and by the explanation, not by
+ * the screen: to a person a hover refusal shows as nothing happening — which
+ * is exactly the intent.
  */
 export type HoverRefusal =
   | 'no-name'
@@ -53,20 +57,21 @@ export type HoverRefusal =
   | 'parameter'
 
 export interface HoverTarget {
-  /** Границы имени в документе — их подсвечивает подсказка. */
+  /** The name's bounds in the document — the tooltip highlights them. */
   from: number
   to: number
-  /** О чём спрашиваем ядро: цепочка через точки, кончающаяся этим именем. */
+  /** What we ask the kernel about: a dotted chain ending in this name. */
   ask: string
   /**
-   * Что показывать: полную справку или строчку про значение.
+   * What to show: full help or a line about the value.
    *
-   * `help` — импорт, вызываемое, модуль: сигнатура, документация, пакет; окно
-   * с прокруткой. `value` — обычное имя: `apartments`, `df.shape`, `X` в
-   * списке аргументов. Про такое человек спрашивает другое — «что это и
-   * какого оно размера», — и отвечать на это вагоном текста (жалоба владельца
-   * 21.09: «он там ещё добавлял детальнее вагон текста, это не очень
-   * прикольно») значит не ответить вовсе. Одна строка, без окна.
+   * `help` — an import, a callee, a module: signature, documentation, package;
+   * a scrolling window. `value` — an ordinary name: `apartments`, `df.shape`,
+   * `X` in an argument list. About such a thing a person asks something else —
+   * "what is it and how big is it" — and answering that with a wagonload of
+   * text (the owner's complaint of 21 Sep 2026: "it also added a wagonload of
+   * detailed text there, that's not much fun") means not answering at all. One
+   * line, no window.
    */
   kind: 'help' | 'value'
 }
@@ -78,7 +83,7 @@ export interface HoverAnswer {
 
 const REFUSE = (why: HoverRefusal): HoverAnswer => ({ target: null, why })
 
-/** Поднимаемся по дереву: ближайший предок с этим именем — или `null`. */
+/** Climb the tree: the nearest ancestor with this name — or `null`. */
 function ancestor(node: SyntaxNode, name: string): SyntaxNode | null {
   for (let up: SyntaxNode | null = node.parent; up; up = up.parent) {
     if (up.name === name) return up
@@ -94,11 +99,11 @@ function anyAncestor(node: SyntaxNode, names: Set<string>): SyntaxNode | null {
 }
 
 /**
- * Самое большое обращение через точку, КОНЧАЮЩЕЕСЯ этим именем.
+ * The largest dotted access ENDING in this name.
  *
- * `scatter` в `px.scatter(...)` поднимается до `px.scatter`, а `px` остаётся
- * собой: цепочка растёт только вправо от имени, потому что спрашиваем мы
- * всегда про то, что под указателем, а не про то, что правее него.
+ * `scatter` in `px.scatter(...)` climbs up to `px.scatter`, while `px` stays
+ * itself: the chain grows only to the right of the name, because we always
+ * ask about what is under the pointer, not about what is to its right.
  */
 function chainEndingHere(node: SyntaxNode): SyntaxNode {
   let expr = node
@@ -112,7 +117,7 @@ function chainEndingHere(node: SyntaxNode): SyntaxNode {
   return expr
 }
 
-/** Самое большое обращение через точку, в которое имя входит хоть как-то. */
+/** The largest dotted access the name is part of in any way. */
 function wholeChain(node: SyntaxNode): SyntaxNode {
   let expr = node
   for (let up: SyntaxNode | null = expr.parent; up && up.name === 'MemberExpression'; up = expr.parent) {
@@ -121,7 +126,7 @@ function wholeChain(node: SyntaxNode): SyntaxNode {
   return expr
 }
 
-/** Левое звено цепочки: `np` у `np.random.rand`. */
+/** The chain's leftmost link: `np` of `np.random.rand`. */
 function chainRoot(node: SyntaxNode): SyntaxNode {
   let at = node
   while (at.name === 'MemberExpression') {
@@ -132,19 +137,20 @@ function chainRoot(node: SyntaxNode): SyntaxNode {
   return at
 }
 
-/** Вызов, у которого это выражение — вызываемое (а не аргумент). */
+/** A call in which this expression is the callee (not an argument). */
 function calledHere(expr: SyntaxNode): boolean {
   const up = expr.parent
   return up?.name === 'CallExpression' && up.firstChild?.from === expr.from
 }
 
 /**
- * Цепочка через точки, кончающаяся здесь, — словами, как её задают ядру.
+ * The dotted chain ending here — in words, as it is put to the kernel.
  *
- * По тексту, а не по дереву, и нарочно: `df.groupby("a").agg` из дерева
- * собралось бы целиком, а ядру такой вопрос всё равно не задать — внутри
- * вызов, который никто выполнять не станет. Разбор по знакам останавливается
- * на закрывающей скобке ровно там же, где остановится ядро.
+ * By the text, not by the tree, and on purpose: `df.groupby("a").agg` would be
+ * assembled whole from the tree, but such a question cannot be put to the
+ * kernel anyway — there is a call inside that nobody is going to execute.
+ * Character-level parsing stops at the closing bracket exactly where the
+ * kernel would stop.
  */
 function askFor(doc: string, to: number): { from: number; ask: string } | null {
   const head = doc.slice(0, to)
@@ -154,11 +160,11 @@ function askFor(doc: string, to: number): { from: number; ask: string } | null {
 }
 
 /**
- * Что под указателем — цель для справки или отказ.
+ * What is under the pointer — a target for help, or a refusal.
  *
- * `aliases` — имена, связанные импортом в этой тетради (`moduleAliases`).
- * Пустое множество не ломает ничего: правила 1 и 2 работают и без него, а
- * правило 3 просто не срабатывает.
+ * `aliases` — the names bound by imports in this notebook (`moduleAliases`).
+ * An empty set breaks nothing: rules 1 and 2 work without it, and rule 3
+ * simply does not fire.
  */
 export function hoverTarget(input: {
   tree: Tree
@@ -169,21 +175,23 @@ export function hoverTarget(input: {
   const { tree, doc, at } = input
   const aliases = input.aliases ?? new Set<string>()
   /*
-   * Сначала вправо, потом влево: указатель, стоящий на последней букве имени,
-   * приходит сюда позицией ЗА ней, и разбор со стороны «после» вернул бы
-   * пробел. Дерево с узлами ошибок (а при наборе оно такое почти всегда) от
-   * этого не ломается: не нашли имени — молчим.
+   * First to the right, then to the left: a pointer resting on a name's last
+   * letter arrives here as the position AFTER it, and resolving from the
+   * "after" side would return a space. A tree with error nodes (and while
+   * typing it almost always is one) does not break from this: no name found —
+   * we stay silent.
    */
   let node = tree.resolveInner(at, 1)
   if (!NAMES.has(node.name)) node = tree.resolveInner(at, -1)
   /*
-   * Чужой текст целиком — и проверяется он ДО имени.
+   * Foreign text as a whole — and it is checked BEFORE the name.
    *
-   * Строка и число приходят сюда одним узлом, без имён внутри («area_sqm» —
-   * это String, а не VariableName), а комментарий — тем более: в нём может
-   * лежать хоть весь вчерашний код. Единственное место, где имя внутри
-   * чужого текста всё же есть, — подстановка в f-строке, и она тоже чужой
-   * текст: подставляет её Python, а спрашивают про неё там, где она написана.
+   * A string and a number arrive here as one node, with no names inside
+   * ("area_sqm" is a String, not a VariableName), and a comment all the more
+   * so: it may hold all of yesterday's code. The only place where there is a
+   * name inside foreign text after all is an f-string substitution, and it is
+   * foreign text too: Python substitutes it, and it is asked about where it is
+   * written.
    */
   if (PROSE.has(node.name) || anyAncestor(node, PROSE)) return REFUSE('prose')
   if (!NAMES.has(node.name)) return REFUSE('no-name')
@@ -194,86 +202,91 @@ export function hoverTarget(input: {
   if (!named) return REFUSE('no-name')
   const spot = { from: Math.min(from, named.from), to, ask: named.ask }
   const target: HoverTarget = { ...spot, kind: 'help' }
-  /** То же место, но про значение: одна строка вместо окна. */
+  /** The same spot, but about the value: one line instead of a window. */
   const brief: HoverAnswer = { target: { ...spot, kind: 'value' }, why: null }
 
-  // 1. Оператор импорта: спрашивать можно про каждое имя в нём.
+  // 1. An import statement: every name in it can be asked about.
   if (ancestor(node, 'ImportStatement')) return { target, why: null }
 
-  // 2. Вызываемое. Проверяется РАНЬШЕ отказа по списку аргументов: `g` в
-  // `f(g(x))` — это вызов, а не значение аргумента.
+  // 2. The callee. Checked BEFORE the argument-list refusal: `g` in
+  // `f(g(x))` is a call, not an argument value.
   const ending = chainEndingHere(node)
   if (calledHere(ending)) return { target, why: null }
   /*
-   * Декоратор без скобок — тоже вызов, просто вызывает его сам Python.
-   * `@lru_cache` и `@lru_cache(maxsize=2)`: в первом случае имя стоит прямо
-   * под `Decorator`, во втором его уже поймало правило вызываемого выше.
+   * A decorator without brackets is a call too, only Python itself calls it.
+   * `@lru_cache` and `@lru_cache(maxsize=2)`: in the first case the name sits
+   * right under `Decorator`, in the second the callee rule above has already
+   * caught it.
    */
   if (ancestor(node, 'Decorator') && !ancestor(node, 'ArgList')) return { target, why: null }
 
-  // Дальше — только отказы и правило 3.
+  // From here on — only refusals and rule 3.
   const parent = node.parent
   if (parent?.name === 'ArgList') {
     /*
-     * Имя именованного аргумента — это ключ, а не значение: `x=` в
-     * `px.scatter(df, x="a")` спрашивать не о чем, у него и объекта-то нет.
+     * A keyword argument's name is a key, not a value: there is nothing to ask
+     * about `x=` in `px.scatter(df, x="a")`, it does not even have an object.
      */
     const next = node.nextSibling
     if (next?.name === 'AssignOp') return REFUSE('keyword-argument')
   }
   if (parent?.name === 'ParamList') return REFUSE('parameter')
   if (parent?.name === 'FunctionDefinition' || parent?.name === 'ClassDefinition') {
-    // Имя определяемой функции или класса — не вызов, а объявление.
+    // The name of the function or class being defined is a declaration, not a call.
     return REFUSE('definition')
   }
   /*
-   * Имя слева от `=` и имена в `for … in` — это ЗНАЧЕНИЯ, а не объявления.
+   * A name to the left of `=` and names in `for … in` are VALUES, not
+   * declarations.
    *
-   * До 21.09 они молчали: о переменной ядро рассказывало вагон текста, и
-   * лучше было не спрашивать вовсе. Короткой строкой отвечать про них стоит —
-   * `apartments` слева от `=` это ровно та таблица, размер которой человек и
-   * хочет увидеть, наведя на неё мышь.
+   * Until 21 Sep 2026 they were silent: the kernel told a wagonload of text
+   * about a variable, and it was better not to ask at all. With a short line it
+   * is worth answering about them — `apartments` to the left of `=` is exactly
+   * the table whose size the person wants to see by hovering the mouse over it.
    */
 
   const chain = wholeChain(node)
   const root = chainRoot(chain)
   const rooted = doc.slice(root.from, root.to)
   /*
-   * 3. Известный псевдоним импортированного модуля — и только он.
+   * 3. A known alias of an imported module — and only that.
    *
-   * `np` в `np.random.rand(` спрашивают, `df` в `df.groupby(` — нет. Разница
-   * не в форме, а в том, что про первое мы ТОЧНО знаем: это пакет, человек
-   * сам его импортировал строкой выше. Про второе знает только ядро, и
-   * наводятся на него чаще всего мимоходом.
+   * `np` in `np.random.rand(` is asked about, `df` in `df.groupby(` is not. The
+   * difference is not in the form but in that about the first we know FOR
+   * SURE: it is a package, the person imported it themselves a line above.
+   * Only the kernel knows about the second, and it is mostly hovered in
+   * passing.
    */
   const knows = aliases.has(rooted)
   /*
-   * Псевдоним модуля вне списка аргументов — полная справка: про пакет есть
-   * что рассказать, и человек наводится на него ровно за этим.
+   * A module alias outside an argument list gets full help: there is
+   * something to tell about a package, and the person hovers it for exactly
+   * that.
    */
   if (knows && !anyAncestor(node, ARGS)) return { target, why: null }
   /*
-   * Всё остальное, что всё-таки является именем, — ЗНАЧЕНИЕ.
+   * Everything else that is a name after all is a VALUE.
    *
-   * `apartments` в списке аргументов и он же слева от `=`, `df` отдельной
-   * строкой, `xs` в `for x in xs`, цепочка атрибутов без вызова (`df.shape`,
-   * `model.coef_`), и даже `np.mean`, переданная в `df.apply`. Показывается
-   * про них одна короткая строка — тип и размер, — и стоит она одного тихого
-   * вопроса к ядру, которое и так знает ответ: объект уже посчитан и лежит в
-   * памяти. Ядро ради этого не поднимают и статически не гадают: нет ответа —
-   * нет и строки.
+   * `apartments` in an argument list and also to the left of `=`, `df` on a
+   * line of its own, `xs` in `for x in xs`, an attribute chain without a call
+   * (`df.shape`, `model.coef_`), and even `np.mean` passed into `df.apply`.
+   * One short line is shown about them — type and size — and it costs one
+   * quiet question to a kernel that already knows the answer: the object has
+   * been computed and sits in memory. The kernel is not started for this, and
+   * nothing is guessed statically: no answer — no line.
    */
   return brief
 }
 
 /**
- * То же для КАРЕТКИ — жест Shift+Tab, и он намеренно шире наведения.
+ * The same for the CARET — the Shift+Tab gesture, and it is deliberately
+ * wider than hovering.
  *
- * Клавишу нажимают осознанно и один раз, поэтому к разрешённым именам
- * добавляется главный случай Jupyter: каретка внутри скобок вызова
- * (`px.scatter(apartments, x=|`) показывает сигнатуру того, что вызывают.
- * Наведение так делать не может — иначе окно выскакивало бы над каждым
- * аргументом, который человек в эту секунду печатает.
+ * The key is pressed deliberately and once, so the main Jupyter case is added
+ * to the allowed names: a caret inside a call's brackets
+ * (`px.scatter(apartments, x=|`) shows the signature of what is being called.
+ * Hovering cannot do this — otherwise the window would pop up over every
+ * argument the person is typing at that second.
  */
 export function caretTarget(input: {
   tree: Tree
@@ -285,8 +298,9 @@ export function caretTarget(input: {
   if (direct.target) return direct
   const { tree, doc, at } = input
   /*
-   * Ближайший охватывающий вызов. Именно ближайший: во вложенном
-   * `f(g(x, |))` подсказывают про `g` — про то, чьи аргументы печатают.
+   * The nearest enclosing call. The nearest precisely: in a nested
+   * `f(g(x, |))` the hint is about `g` — the one whose arguments are being
+   * typed.
    */
   for (let node: SyntaxNode | null = tree.resolveInner(at, -1); node; node = node.parent) {
     if (node.name !== 'ArgList') continue
@@ -304,35 +318,36 @@ export function caretTarget(input: {
   return direct
 }
 
-/* ------------------------------------------------------- псевдонимы импорта */
+/* ----------------------------------------------------------- import aliases */
 
-/** Строка импорта верхнего уровня — та же форма, что у серверной шапки. */
+/** A top-level import line — the same form as the server's header uses. */
 const IMPORT_LINE = /^import\s+(.+)$/
 const FROM_LINE = /^from\s+[.\w]+\s+import\s+(.+)$/
 
 /**
- * Имена, которые в этой тетради связаны импортом.
+ * The names bound by imports in this notebook.
  *
- * `import numpy as np` даёт `np`, `import pandas` — `pandas`,
+ * `import numpy as np` gives `np`, `import pandas` — `pandas`,
  * `import matplotlib.pyplot as plt` — `plt`, `from sklearn import
- * linear_model` — `linear_model`. Считается по тексту, без разбора: это
- * подсказка о том, чего спрашивать МОЖНО, и ошибиться она может только в
- * сторону лишнего имени в списке.
+ * linear_model` — `linear_model`. Computed from the text, without parsing:
+ * this is a hint about what MAY be asked about, and it can only err towards
+ * an extra name in the list.
  *
- * Имена из `from … import …` попадают сюда наравне с модулями, хотя среди них
- * бывают и классы (`from pandas import DataFrame`). Отличить одно от другого
- * по тексту нельзя, а цена ошибки ничтожна: человек навёл на имя, которое сам
- * же импортировал, и получил про него справку — ровно то, чего он хотел.
+ * Names from `from … import …` get here on a par with modules, although there
+ * are classes among them too (`from pandas import DataFrame`). One cannot be
+ * told from the other by the text, and the cost of a mistake is negligible: a
+ * person hovered a name they imported themselves and got help about it —
+ * exactly what they wanted.
  */
 export function moduleAliases(sources: readonly string[]): Set<string> {
   const found = new Set<string>()
   for (const source of sources) {
     if (typeof source !== 'string' || !source.includes('import')) continue
-    // Ячейка на чужом языке (`%%bash`) — не Python, и имён в ней нет.
+    // A cell in another language (`%%bash`) is not Python, and it has no names.
     if (/^\s*%%/.test(source)) continue
     for (const row of source.split('\n')) {
       const line = row.trim()
-      if (line !== row.replace(/\s+$/, '')) continue // импорт с отступом — внутри try/функции
+      if (line !== row.replace(/\s+$/, '')) continue // an indented import — inside a try/function
       const plain = IMPORT_LINE.exec(line)?.[1]
       const from = FROM_LINE.exec(line)?.[1]
       const list = plain ?? from
@@ -343,7 +358,7 @@ export function moduleAliases(sources: readonly string[]): Set<string> {
         const words = part.split(/\s+as\s+/)
         const bound = (words[1] ?? words[0]).trim()
         if (bound === '') continue
-        // `import a.b.c` связывает `a`; `import a.b as x` — `x`.
+        // `import a.b.c` binds `a`; `import a.b as x` binds `x`.
         const name = words.length > 1 ? bound : bound.split('.')[0]
         if (/^[A-Za-z_]\w*$/.test(name)) found.add(name)
       }

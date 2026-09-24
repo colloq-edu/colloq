@@ -1,19 +1,22 @@
 import { translate, tr } from '../shared/i18n.js'
 /**
- * Один отказ — один голос, один такт указки — одно число.
+ * One refusal — one voice; one pointer tick — one number.
  *
- * Пульт и сервер лекции говорят об одном и том же двумя кусками кода, и оба
- * раза правило написано словом, а не выведено: «страница исписана» пульт
- * показывает до штриха, сервер — после переподключения, и это ОДНА фраза;
- * кадры указки режет таким-то окном пульт, и тем же окном придерживает точку
- * сервер, и это ОДНО число. Пока копий было по две, обе успели разъехаться
- * ровно так, как расходятся копии: слова совпадали, а комментарий у серверного
- * такта ссылался на такт ЧЕРНИЛ — на другую константу с похожим именем.
+ * The lecture console and server talk about the same things in two pieces of
+ * code, and both times the rule is spelled out rather than derived: the
+ * console shows "the page is full" before a stroke, the server after a
+ * reconnect, and it is ONE phrase; the console cuts pointer frames with a
+ * certain window, and the server holds the dot back with the same window, and
+ * it is ONE number. While there were two copies of each, both managed to
+ * drift apart exactly the way copies do: the words matched, but the comment
+ * on the server's tick referred to the INK tick — a different constant with
+ * a similar name.
  *
- * Тесты ниже сверяют не строки друг с другом (это тавтология, когда функция
- * одна), а два конца на одних и тех же чернилах: там, где сервер отказывает,
- * пульт уже не открыл штрих, и наоборот. Плюс два взгляда в исходники — чтобы
- * вторая копия не завелась заново молча.
+ * The tests below compare not strings with each other (a tautology when there
+ * is one function) but the two ends on the same ink: where the server
+ * refuses, the console has already not opened a stroke, and vice versa. Plus
+ * two looks into the sources — so that a second copy does not quietly appear
+ * again.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -33,7 +36,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Код без комментариев: объяснение — не обещание. */
+/** Code without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
@@ -49,36 +52,38 @@ const dab = (page: number, name: string) => ({
   points: [0, 0],
 })
 
-/* ------------------------------------------------- потолки: два конца */
+/* ------------------------------------------------- ceilings: two ends */
 
-test('полная страница: пульт не открывает штрих ровно там, где сервер его не примет', () => {
+test('a full page: the console does not open a stroke exactly where the server would not accept it', () => {
   const id = 'полная-страница'
   lecture(id)
   for (let i = 0; i < MAX_STROKES_PER_PAGE - 1; i += 1) addInk(id, dab(1, `s${i}`))
 
-  // Страницу не добрали одного штриха: оба конца ещё пускают.
+  // The page is one stroke short: both ends still let it through.
   assert.equal(inkRefusal(inkOf(id), [], 1), null)
   const last = addInk(id, dab(1, 'последний'))
   assert.equal(last?.full, undefined)
 
-  // И оба отказывают на следующем — не раньше и не позже.
+  // And both refuse on the next one — not earlier and not later.
   const known = inkOf(id)
   const refusal = inkRefusal(known, [], 1)
   const server = addInk(id, dab(1, 'лишний'))
   assert.equal(server?.full, 'page-full')
   assert.equal(refusal, server?.full)
   /*
-   * Фраза одна не потому, что совпала, а потому, что функция одна: пульт зовёт
-   * `inkFullSays` из shared (InkLayer · `down`), сервер — её же (control.ts ·
-   * `case 'ink'`). Своя копия на пульте стояла и совпадала слово в слово — до
-   * первой правки формулировки.
+   * The phrase is one not because it happened to match but because the
+   * function is one: the console calls `inkFullSays` from shared (InkLayer ·
+   * `down`), the server calls the same one (control.ts · `case 'ink'`). The
+   * console's own copy used to be there and matched word for word — until the
+   * first edit of the wording.
    */
   assert.equal(inkFullSays(refusal!), inkFullSays(server!.full!))
-  // Соседняя страница к этому потолку отношения не имеет: там пишут дальше.
+  // The neighbouring page has nothing to do with this ceiling: writing goes
+  // on there.
   assert.equal(inkRefusal(known, [], 2), null)
 })
 
-test('страницы кончились: пульт называет тот же потолок, что сервер', () => {
+test('pages ran out: the console names the same ceiling as the server', () => {
   const id = 'много-страниц'
   lecture(id)
   for (let page = 1; page <= MAX_INKED_PAGES; page += 1) addInk(id, dab(page, `p${page}`))
@@ -91,25 +96,26 @@ test('страницы кончились: пульт называет тот ж
   assert.equal(refusal, server?.full)
   assert.equal(inkFullSays(refusal!), inkFullSays(server!.full!))
 
-  // Уже исписанная страница пускает обоих: потолок про число страниц.
+  // A page already written on lets both through: the ceiling is about the
+  // number of pages.
   assert.equal(inkRefusal(known, [], 1), null)
   assert.equal(addInk(id, dab(1, 'ещё на первой'))?.full, undefined)
 })
 
-/* ----------------------------------------------- вторая копия в коде */
+/* ----------------------------------------------- a second copy in the code */
 
-test('слова отказа набраны в одном файле, и это shared', () => {
+test('the refusal words are typed in one file, and that is shared', () => {
   const says = (['page-full', 'too-many-pages', 'stroke-full'] as const).map(inkFullSays)
   const shared = read('shared/lecture.ts')
   for (const phrase of says) {
     const calls = [...shared.matchAll(/tr\("([^"]+)"\)/g)].map(match => match[1])
-    assert.ok(calls.some(key => translate('ru', key) === phrase), `фраза «${phrase}» пропала из shared/lecture.ts и его каталога`)
+    assert.ok(calls.some(key => translate('ru', key) === phrase), `the phrase "${phrase}" is gone from shared/lecture.ts and its catalogue`)
   }
 
   /*
-   * Ищем по всему клиенту и серверу: копия заводится не там, где о ней помнят,
-   * а там, где отказ понадобился второй раз. Тесты не в счёт — они и должны
-   * знать фразу, чтобы её сторожить.
+   * We search the whole client and server: a copy appears not where people
+   * remember it but where the refusal was needed a second time. Tests do not
+   * count — they are supposed to know the phrase in order to guard it.
    */
   const sources: string[] = []
   const walk = (dir: string): void => {
@@ -127,67 +133,68 @@ test('слова отказа набраны в одном файле, и это
   for (const rel of sources) {
     const source = read(rel)
     for (const phrase of says) {
-      assert.ok(!source.includes(phrase), `фраза «${phrase}» набрана второй раз в ${rel}`)
+      assert.ok(!source.includes(phrase), `the phrase "${phrase}" is typed a second time in ${rel}`)
     }
   }
 })
 
-test('пульт сужает отказ от общего типа, а не набирает литералы заново', () => {
+test('the console narrows the refusal from the shared type instead of typing the literals again', () => {
   const pult = code(read('web/src/components/lecture/pult.ts'))
   assert.match(
     pult,
     /export type InkRefusal = Extract<InkFull,/,
-    'у пульта снова свой список отказов: переименованный в shared не уронит сборку',
+    'the console has its own list of refusals again: one renamed in shared will not break the build',
   )
 })
 
-/* ------------------------------------------------------- такт указки */
+/* ------------------------------------------------------- pointer tick */
 
-test('такт указки — одно число на оба конца', () => {
+test('the pointer tick is one number for both ends', () => {
   const ink = code(read('web/src/components/lecture/InkLayer.svelte'))
-  assert.doesNotMatch(ink, /const\s+LASER_EVERY_MS\s*=/, 'у пульта снова своя копия такта')
+  assert.doesNotMatch(ink, /const\s+LASER_EVERY_MS\s*=/, 'the console has its own copy of the tick again')
   assert.match(
     ink,
     /import \{[^}]*\bLASER_EVERY_MS\b[^}]*\} from '@shared\/lecture'/,
-    'слой чернил берёт такт указки не из shared',
+    'the ink layer does not take the pointer tick from shared',
   )
 
   const control = code(read('server/src/control.ts'))
   const own = /const\s+LASER_EVERY_MS\s*=\s*(\d+)/.exec(control)
   if (own) {
     /*
-     * Серверная копия ещё стоит — control.ts правит его владелец. Пока она
-     * здесь, числа держит этот тест: сервер, придерживающий точку дольше
-     * пульта, добавляет к каждому кадру задержку, которой ведущий не
-     * заказывал, а короче — платит полным кругом рассылки за каждый сэмпл.
+     * The server copy is still there — control.ts is edited by its owner.
+     * While it stays, this test holds the numbers: a server holding the dot
+     * longer than the console adds to every frame a delay the host did not
+     * ask for, and a shorter one pays a full broadcast round for every sample.
      */
-    assert.equal(Number(own[1]), LASER_EVERY_MS, 'сервер придерживает указку не тем окном')
+    assert.equal(Number(own[1]), LASER_EVERY_MS, 'the server holds the pointer back with the wrong window')
   } else {
     assert.match(
       control,
       /import \{[^}]*\bLASER_EVERY_MS\b[^}]*\} from '@shared\/lecture'/,
-      'серверный такт указки не из shared и не объявлен рядом',
+      'the server pointer tick is neither from shared nor declared next to it',
     )
   }
 })
 
-test('жёсткость пружины выведена из того такта, который стоит в shared', () => {
+test('the spring stiffness is derived from the tick that sits in shared', () => {
   const source = read('web/src/components/lecture/InkLayer.svelte')
-  const spring = /Жёсткость — ПО ИСТОЧНИКУ СЭМПЛОВ[\s\S]*?const SPRING_WIRE = (\d+)/.exec(source)
-  assert.ok(spring, 'вывод SPRING_WIRE пропал из слоя чернил')
+  const spring = /Stiffness goes BY THE SAMPLE SOURCE[\s\S]*?const SPRING_WIRE = (\d+)/.exec(source)
+  assert.ok(spring, 'the SPRING_WIRE derivation is gone from the ink layer')
   /*
-   * Остаток 4 % набегает примерно за 3.2/k секунды, значит k ≈ 3.2 / такт:
-   * голова доходит ровно к приходу следующего сэмпла и не стоит между ними.
-   * Число выписано руками — тем важнее, чтобы оно осталось от ЭТОГО такта.
+   * The 4 % remainder is reached in about 3.2/k seconds, so k ≈ 3.2 / tick:
+   * the head arrives exactly as the next sample does and does not stand still
+   * between them. The number is written out by hand — all the more reason for
+   * it to stay derived from THIS tick.
    */
   const wanted = Math.round(3.2 / (LASER_EVERY_MS / 1000))
   assert.ok(
     Math.abs(Number(spring[1]) - wanted) <= 1,
-    `SPRING_WIRE = ${spring[1]} при такте ${LASER_EVERY_MS} мс: ждали около ${wanted}`,
+    `SPRING_WIRE = ${spring[1]} with a tick of ${LASER_EVERY_MS} ms: expected about ${wanted}`,
   )
-  // И объяснение считает от него же, а не от числа, которое давно сдвинули.
+  // And the explanation counts from it too, not from a number moved long ago.
   assert.ok(
-    spring[0].includes(`${LASER_EVERY_MS} мс`),
-    'вывод жёсткости объясняет себя другим тактом',
+    spring[0].includes(`${LASER_EVERY_MS} ms`),
+    'the stiffness derivation explains itself with a different tick',
   )
 })

@@ -1,36 +1,39 @@
 /**
- * Подставной прогонщик: чем жить продукту на машине без docker.
+ * A stand-in runner: what the product lives on on a machine without docker.
  *
- * Нужен не тестам ради тестов. Стенд (`KERNEL_BACKEND=test`) и вся сюита
- * работают без docker, а соревнование без прогонщика — это страница, на
- * которой нельзя нажать ни одной кнопки: очередь стоит, лидерборд пуст, выбор
- * посылки нечем проверить. Настоящий docker в сюите поднимать нельзя (минуты
- * на случай и контейнеры на машине разработчика), поэтому подставной обязан
- * давать ту же ФОРМУ ответа, включая исходы, которые бывают только у него.
+ * It is not there for the tests' own sake. The test stand
+ * (`KERNEL_BACKEND=test`) and the whole suite work without docker, and a
+ * competition without a runner is a page on which no button can be pressed:
+ * the queue stands still, the leaderboard is empty, the choice of submission
+ * cannot be checked with anything. Real docker cannot be started in the suite
+ * (minutes per case and containers on the developer's machine), so the
+ * stand-in must give the same SHAPE of answer, including the outcomes that
+ * only real docker produces.
  *
- * ЧЕГО ОН НЕ ДЕЛАЕТ НИКОГДА: не исполняет ни строки кода из присланной
- * тетради. Директива разбирается как json и только из исходника ячеек. Иначе
- * «прогонщик без изоляции» стал бы дырой ровно там, где её меньше всего ждут,
- * — на машине разработчика и в CI.
+ * WHAT IT NEVER DOES: it does not execute a single line of code from the
+ * submitted notebook. The directive is parsed as JSON, and only from the
+ * cells' source. Otherwise "a runner without isolation" would become a hole
+ * exactly where it is least expected — on the developer's machine and in CI.
  *
- * ДВА СЛОЯ, и это ровно тот приём, которым в этом коде уже подменяют docker
- * (pool.ts · useDockerForLimits).
+ * TWO LAYERS, and this is exactly the trick this code already uses to swap
+ * out docker (pool.ts · useDockerForLimits).
  *
- * Слой первый — впрыск (`useCompetitionRunner`): тест, которому нужен OOM на
- * третьей ячейке, говорит это прямо и ничего не разбирает.
+ * Layer one is injection (`useCompetitionRunner`): a test that needs an OOM on
+ * the third cell says so directly and parses nothing.
  *
- * Слой второй — умолчание, работающее само, без единой строчки в тесте.
- * Прогонщик ЧИТАЕТ присланную тетрадь и ищет строку
+ * Layer two is a default that works by itself, without a single line in the
+ * test. The runner READS the submitted notebook and looks for the line
  *
  *     # colloq-test: {"status": "timeout", "cell": 3}
  *
- * Есть — исполняет её; нет — ведёт себя как добросовестная посылка: отдаёт
- * ответ из сэмпла соревнования и даёт УСТОЙЧИВОЕ число, выведенное из
- * содержимого ответа.
+ * If it is there, the runner carries it out; if not, it behaves like a
+ * conscientious submission: it hands over the answer from the competition's
+ * sample and gives a STABLE number derived from the content of the answer.
  *
- * Устойчивость числа — не украшение. Лидерборд, «лучшая посылка участника» и
- * итоговый пересчёт после дедлайна — это сравнение чисел; случайные числа
- * превращают такую проверку в монетку.
+ * The stability of the number is not decoration. The leaderboard, "the
+ * participant's best submission" and the final rescoring after the deadline
+ * are comparisons of numbers; random numbers turn such a check into a coin
+ * toss.
  */
 import { createHash } from 'node:crypto'
 import path from 'node:path'
@@ -47,17 +50,17 @@ import {
 } from './runner-port.js'
 import type { RunVerdict } from '@shared/competitions'
 
-/** `# colloq-test: {...}` — единственное, что подставной прогонщик читает из тетради. */
+/** `# colloq-test: {...}` — all the stand-in runner ever reads from a notebook. */
 const DIRECTIVE = /^\s*#\s*colloq-test:\s*(\{.*\})\s*$/m
 
-/** Образец ответа в открытых данных — так его зовут все соревнования этого рода. */
+/** The sample answer in the open data — all competitions of this kind call it that. */
 export const SAMPLE_ANSWER_FILE = 'sample_submission.csv'
 
 /**
- * Слова прототипа с подчёркиванием — те же исходы, что `RunVerdict` пишет
- * через дефис. Директиву пишет человек, и заставлять его помнить, где в
- * словаре дефис, а где подчёркивание, — способ получить тест, который молча
- * проверяет не то.
+ * The prototype's words with underscores — the same outcomes that `RunVerdict`
+ * writes with a hyphen. A person writes the directive, and making them
+ * remember where the vocabulary has a hyphen and where an underscore is a way
+ * to get a test that silently checks the wrong thing.
  */
 const ALIASES: Record<string, RunVerdict> = {
   out_of_memory: 'out-of-memory',
@@ -86,7 +89,10 @@ function asVerdict(raw: unknown, fallback: RunVerdict): RunVerdict {
   return KNOWN.has(value) ? (value as RunVerdict) : fallback
 }
 
-/** Что тетрадь просит с собой сделать. Мусор в директиве — не беда: обычный путь. */
+/**
+ * What the notebook asks to have done to it. Garbage in the directive is no
+ * trouble: the ordinary path.
+ */
 export function directiveOf(notebook: Buffer | string): Record<string, unknown> {
   let book: unknown
   try {
@@ -113,7 +119,7 @@ export function directiveOf(notebook: Buffer | string): Record<string, unknown> 
   return {}
 }
 
-/** Сколько в тетради ячеек с кодом — то, что участник видит в «ячейка 9 из 14». */
+/** The notebook's code cell count — what the participant sees in "cell 9 of 14". */
 export function cellsOf(notebook: Buffer | string): number {
   try {
     const book: unknown = JSON.parse(
@@ -128,15 +134,16 @@ export function cellsOf(notebook: Buffer | string): number {
 }
 
 /**
- * Число, выведенное из содержимого, — одно и то же при каждом пересчёте.
+ * A number derived from the content — the same on every rescoring.
  *
- * Разные ответы дают разные числа, один и тот же — всегда своё. Без этого
- * «пересчитать всех после правки метрики» проверить нечем: таблица до и после
- * различалась бы всегда, и тест не отличил бы починку от поломки.
+ * Different answers give different numbers, the same answer always its own.
+ * Without this, "rescore everyone after fixing the metric" cannot be checked:
+ * the table before and after would always differ, and a test could not tell a
+ * fix from a breakage.
  */
 export function stableScore(seed: string, low: number, high: number): number {
   const digest = createHash('sha256').update(seed).digest()
-  // Пятьдесят три бита — всё, что double держит целым; больше брать нечем.
+  // Fifty-three bits: all that a double holds as an integer; it cannot hold more.
   const fraction = Number(digest.readBigUInt64BE(0) >> 11n) / 2 ** 53
   return Math.round((low + fraction * (high - low)) * 1e6) / 1e6
 }
@@ -150,22 +157,22 @@ function readFile(file: string): Buffer | null {
 }
 
 /**
- * Прогонщик стенда и сюиты.
+ * The runner of the test stand and the suite.
  *
- * Поля, которые тест может подкрутить, — публичные нарочно: проверка «очередь
- * не берёт работу, когда на машине нет памяти» не должна поднимать машину без
- * памяти.
+ * The fields a test may tweak are public on purpose: the check "the queue does
+ * not take work when the machine has no memory" should not have to bring up a
+ * machine without memory.
  */
 export class FakeCompetitionRunner implements CompetitionRunner {
   readonly backend = 'test' as const
 
-  /** Сколько памяти «есть на машине». `null` — честно не знаем. */
+  /** How much memory "the machine has". `null` means we honestly do not know. */
   availableMb: number | null = 65_536
 
-  /** Идущие прогоны: имя контейнера → как его оборвать. */
+  /** Runs in progress: container name → how to cut it short. */
   private readonly live = new Map<string, () => void>()
 
-  /** Убитые контейнеры — чтобы прогон, который ещё не начался, узнал об этом. */
+  /** Killed containers — so that a run that has not started yet learns about it. */
   private readonly killed = new Set<string>()
 
   async run(request: RunRequest): Promise<RunOutcome> {
@@ -196,24 +203,27 @@ export class FakeCompetitionRunner implements CompetitionRunner {
     }
 
     /*
-     * Добросовестная посылка отдаёт образец ответа соревнования: другого файла
-     * с нужными строками на машине без docker взять неоткуда, а без ответа
-     * нечего считать метрике. Нет образца — посылка честно получает «файл не
-     * записан», и это ровно тот исход, который увидел бы участник.
+     * A conscientious submission hands over the competition's sample answer:
+     * on a machine without docker there is nowhere else to get a file with the
+     * right rows, and without an answer the metric has nothing to score. No
+     * sample — the submission honestly gets "file not written", and that is
+     * exactly the outcome the participant would have seen.
      */
     const sample = this.sampleAnswer(request)
     if (!sample) return this.outcome('no-submission', { cell, cells, started })
     competitionsFs.mkdirSync(request.resultDir, { recursive: true })
     const answer = path.join(request.resultDir, SUBMISSION_FILE)
     /*
-     * Ответ помечается отпечатком ПРИСЛАННОЙ ТЕТРАДИ, и это не украшение: все
-     * посылки копируют один и тот же образец, а число метрика выводит из
-     * содержимого ответа. Без отпечатка весь класс получил бы одинаковый
-     * результат, и лидерборд, «лучшая посылка» и пересчёт проверялись бы на
-     * таблице, где все строки равны.
+     * The answer is stamped with the fingerprint of the SUBMITTED NOTEBOOK, and
+     * that is not decoration: all submissions copy the same sample, and the
+     * metric derives its number from the content of the answer. Without the
+     * stamp the whole class would get the same result, and the leaderboard,
+     * "the best submission" and rescoring would be checked on a table where
+     * all rows are equal.
      */
     const stamp = createHash('sha256').update(notebook ?? Buffer.alloc(0)).digest('hex').slice(0, 16)
-    // Директива едет в метрику через сам ответ: второго шага тетрадь не видит.
+    // The directive travels to the metric through the answer itself: the
+    // second step does not see the notebook.
     const head = Object.keys(asked).length ? `# colloq-test: ${JSON.stringify(asked)}\n` : ''
     const body = Buffer.concat([
       Buffer.from(head, 'utf8'),
@@ -248,7 +258,7 @@ export class FakeCompetitionRunner implements CompetitionRunner {
           asked = parsed as Record<string, unknown>
         }
       } catch {
-        /* мусор в директиве не роняет очередь стенда */
+        /* garbage in the directive does not bring down the stand's queue */
       }
     }
     const held = await this.hold(request.container, asked)
@@ -307,12 +317,12 @@ export class FakeCompetitionRunner implements CompetitionRunner {
   }
 
   /**
-   * Образец ответа — `sample_submission.csv` из открытых данных.
+   * The sample answer — `sample_submission.csv` from the open data.
    *
-   * Там же, где его ищет участник: соревнование выкладывает образец рядом с
-   * `train.csv` и `test.csv`, и это единственный файл с правильным набором
-   * строк, до которого дотягивается прогонщик, не заглядывая в ответы.
-   * Запасной путь — тот же файл, положенный рядом с сэмпл-тетрадью.
+   * In the same place where the participant looks for it: a competition puts
+   * the sample next to `train.csv` and `test.csv`, and it is the only file with
+   * the right set of rows that the runner can reach without looking into the
+   * answers. The fallback is the same file placed next to the sample notebook.
    */
   private sampleAnswer(request: RunRequest): Buffer | null {
     return (
@@ -339,12 +349,13 @@ export class FakeCompetitionRunner implements CompetitionRunner {
   }
 
   /**
-   * Постоять под именем контейнера, пока не убьют.
+   * Stay under the container's name until killed.
    *
-   * Без этого «убить идущий прогон» проверить нечем: подставной прогонщик
-   * отвечает за микросекунду, и убивать в нём попросту некого. Директива
-   * `{"hold": 5000}` даёт работе время, за которое её успевают снять, а
-   * `kill()` обрывает ожидание сразу же, не дожидаясь срока.
+   * Without this, "kill a running run" cannot be checked: the stand-in runner
+   * answers within a microsecond, and there is simply nobody in it to kill.
+   * The directive `{"hold": 5000}` gives the work enough time to be taken
+   * down, and `kill()` cuts the wait short at once, without waiting for the
+   * deadline.
    */
   private hold(container: string, asked: Record<string, unknown>): Promise<'done' | 'killed'> {
     if (this.killed.has(container)) return Promise.resolve('killed')

@@ -1,14 +1,15 @@
 <!--
-  Соревнования: список (A1) и дверь в одно из них.
+  Competitions: the list (A1) and the door into one of them.
 
-  Соревнование — это задача с ответами, которых участник не видит. Список
-  отвечает на один вопрос, ради которого сюда и заходят посреди пары: что с
-  каждым сейчас не так. Поэтому в строке стоят не только числа, но и причина —
-  бейзлайн не прошёл проверку, дедлайн горит, метрика упала.
+  A competition is a task with answers the entrant does not see. The list
+  answers the one question people come here for in the middle of a class:
+  what is wrong with each of them right now. So a row holds not only numbers
+  but also the reason — the baseline has not passed its check, the deadline
+  is burning, the metric crashed.
 
-  Экран одного соревнования выбирается его состоянием, а не отдельным
-  адресом: черновик открывается редактором (A2), идущее и завершённое —
-  пультом (A3). Так же, как их открывает клик по строке.
+  The screen for a single competition is chosen by its state, not by a
+  separate address: a draft opens in the editor (A2), a live or finished one
+  in the console (A3). The same way a click on the row opens them.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -39,9 +40,9 @@
   } from '@/admin/competitions'
 
   interface Props {
-    /** Открытое соревнование, если адрес его называет; `new` — форма заведения. */
+    /** The open competition if the address names one; `new` is the creation form. */
     open: string | null
-    /** Вкладка пульта: адрес несёт и её. */
+    /** The console tab: the address carries it too. */
     tab?: LiveTab
     navigate: (path: string) => void
   }
@@ -59,7 +60,7 @@
   let copied = $state<string | null>(null)
   let openMenu = $state<string | null>(null)
   let doomed = $state<CompetitionRow | null>(null)
-  /** Часы списка: «осталось 1 ч 12 мин» обязано убывать само. */
+  /** The list's clock: "1 h 12 min left" has to count down by itself. */
   let now = $state(Date.now())
 
   const explain = (cause: unknown): string =>
@@ -75,8 +76,8 @@
     loadingList = true
     try {
       list = await adminApi.listCompetitions()
-      // Число в рельсе — отсюда: иначе оболочка спрашивает тот же список второй
-      // раз за тот же переход.
+      // The number in the rail comes from here: otherwise the shell asks for
+      // the same list a second time during the same navigation.
       navCounts.competitions = list.competitions.length
       errorText = null
     } catch (cause) {
@@ -94,8 +95,9 @@
       errorText = null
     } catch (cause) {
       lost(cause)
-      // Пустая область на месте соревнования — не ответ: по этому адресу
-      // приходят из чата и через неделю, когда его уже могло не стать.
+      // An empty area where the competition should be is not an answer:
+      // people arrive at this address from a chat, even a week later, when
+      // it may already be gone.
       view = null
       errorText = () => explain(cause)
     } finally {
@@ -104,9 +106,10 @@
   }
 
   /*
-   * Одна загрузка на открытие. Список нужен и на экране одного соревнования —
-   * полоса исполнителя одна на инстанс, — но идти за ним вторым запросом
-   * незачем: экран соревнования держит свою очередь живым потоком.
+   * One load per opening. The list is needed on a single competition's
+   * screen too — there is one runner strip per instance — but there is no
+   * point in fetching it with a second request: the competition screen keeps
+   * its queue as a live stream.
    */
   $effect(() => {
     const id = open
@@ -118,9 +121,9 @@
     void loadList()
   })
 
-  /* Форма заведения — не адрес: недописанное название за ссылкой обещает, что
-     оно там и останется. Но `/admin/competitions/new` набирают руками, и он
-     обязан привести туда же, куда кнопка. */
+  /* The creation form is not an address: a half-typed title behind a link
+     promises that it will stay there. But `/admin/competitions/new` gets
+     typed by hand, and it must lead to the same place as the button. */
   let creating = $state(false)
   let draftTitle = $state('')
   let draftSlug = $state('')
@@ -143,8 +146,9 @@
   async function create(): Promise<void> {
     const title = draftTitle.trim()
     const slug = parseSlug(proposedSlug)
-    // busy проверяется, а не только выставляется: кнопка по нему гаснет, а
-    // Enter с автоповтором — нет, и полсекунды удержания заводят пять черновиков.
+    // busy is checked, not only set: the button greys out on it, but Enter
+    // with auto-repeat does not, and half a second of holding it creates five
+    // drafts.
     if (!title || busy) return
     if (!slug) {
       const why = slugRefusal(proposedSlug) ?? 'chars'
@@ -155,8 +159,9 @@
     errorText = null
     try {
       const made = await adminApi.createCompetition({ title, slug })
-      // Счётчик в рельсе ведёт список, а список мы сейчас покинем: без этой
-      // строки рядом с «Соревнования» оставался ноль, пока не вернутся назад.
+      // The list keeps the counter in the rail, and we are about to leave the
+      // list: without this line "Competitions" kept showing zero until you
+      // came back.
       navCounts.competitions = (navCounts.competitions ?? 0) + 1
       creating = false
       draftTitle = ''
@@ -207,8 +212,9 @@
     try {
       await copyText(text)
     } catch {
-      // Буфер закрыт (панель по http на чужом хосте — обычное дело для
-      // инстанса кафедры): ссылку тогда показывают словами, а не молчат.
+      // The clipboard is closed (the panel over http on another host is the
+      // usual thing for a department's instance): the link is then shown in
+      // words instead of staying silent.
       errorText = () => tr('admin.competitions.copyFailed', { link: text })
       return
     }
@@ -229,8 +235,8 @@
   })
 
   onMount(() => {
-    // Полминуты: строка дедлайна считает часы и минуты, и секунда здесь была бы
-    // перерисовкой всего списка ради цифры, которой на экране нет.
+    // Half a minute: the deadline line counts hours and minutes, and a second
+    // here would redraw the whole list for a digit that is not on the screen.
     const tick = window.setInterval(() => (now = Date.now()), 30_000)
     const close = () => (openMenu = null)
     const onKey = (event: KeyboardEvent) => {
@@ -247,10 +253,11 @@
 
   const HEAD = 'text-micro font-bold uppercase tracking-caps text-muted'
   /*
-   * Подпись колонки, переезжающая в строку, когда колонок больше нет.
+   * A column caption that moves into the row once there are no columns left.
    *
-   * Шапка на узком экране спрятана, и без подписи «28 · 143 · 0.0412» — это
-   * три числа без имён: список занятий уже проходил ровно это (admin-phone).
+   * On a narrow screen the header is hidden, and without captions "28 · 143 ·
+   * 0.0412" is three numbers with no names: the list of classes has been
+   * through exactly this already (admin-phone).
    */
   const MENU_ITEM =
     'block w-full px-3 py-2 text-left text-ui text-ink transition-colors duration-100 hover:bg-raised'
@@ -270,9 +277,9 @@
       <Live {view} {tab} {navigate} onview={(fresh) => (view = fresh)} />
     {/if}
   {:else}
-    <!-- Соревнования по этому адресу нет. Ссылкой на него делятся с коллегой,
-         так что по устаревшей сюда придут — и пустая область без слов была бы
-         единственным, что человек здесь увидел. -->
+    <!-- There is no competition at this address. Links to it get shared with
+         colleagues, so people will come here by a stale one — and an empty
+         area without words would be the only thing they saw here. -->
     <AdminPage title={tr('competitions.title')}>
       <div class="px-8 py-16 text-center">
         {#if loadingOne}
@@ -315,11 +322,12 @@
     {/snippet}
 
     <!--
-      Полоса исполнителя: состояние очереди ИНСТАНСА, одно на все соревнования.
+      The runner strip: the state of the INSTANCE's queue, one for all
+      competitions.
 
-      Стоит над таблицей, а не в строке каждого соревнования, потому что
-      исполнитель один: две строки с разными числами про одну и ту же очередь —
-      это экран, которому перестают верить.
+      It sits above the table rather than in each competition's row, because
+      there is one runner: two rows with different numbers about the same
+      queue make a screen people stop trusting.
     -->
     {#if list}
       {@const line = runnerLine(list.queue)}
@@ -361,8 +369,9 @@
       {/if}
 
       {#if creating}
-        <!-- Заводят черновиком: адрес и название нужны сразу (по ним его ищут и
-             в списке, и в чате), остальное правится в редакторе. -->
+        <!-- Created as a draft: the address and the title are needed right
+             away (they are what people look it up by, both in the list and in
+             a chat), the rest is edited in the editor. -->
         <div class="mb-5 mt-4 flex flex-wrap items-center gap-3 border border-line bg-surface px-4 py-3">
           <input
             bind:this={titleField}
@@ -490,9 +499,9 @@
                 </p>
               </div>
 
-              <!-- У черновика чисел нет вовсе: ноль участников и ноль посылок —
-                   это утверждение о классе, которому соревнование ещё не
-                   показывали. Прочерк говорит правду. -->
+              <!-- A draft has no numbers at all: zero entrants and zero
+                   submissions would be a claim about a class that has not
+                   been shown the competition yet. A dash tells the truth. -->
               <span class="comp-cell w-[104px] shrink-0 text-right font-mono text-2xs text-ink">
                 {@render caption(tr('admin.competitions.col.entrants'))}{draft
                   ? '—'
@@ -575,7 +584,8 @@
                       </button>
                     {/if}
                     {#if adminAuth.isOwner}
-                      <!-- Удаление уносит и каталог с ответами. Владельцу и вопросом. -->
+                      <!-- Deleting also takes the directory with the answers.
+                           Owner only, and behind a confirmation. -->
                       <button
                         type="button"
                         role="menuitem"
@@ -641,12 +651,13 @@
 
 <style>
   /*
-   * Узкая таблица: название своей строкой, остальное под ним.
+   * The narrow table: the title on its own line, the rest below it.
    *
-   * Порог — по ширине самого списка, а не окна: рельс панели занимает 236px на
-   * столе и 56 на телефоне, так что одна и та же ширина окна оставляет списку
-   * разное место. 880px — это шесть колонок (132 + 176 + 104 + 88 + 200 + 40),
-   * пять зазоров и хоть сколько-то на название.
+   * The threshold goes by the width of the list itself, not the window: the
+   * panel's rail takes 236px on a desktop and 56 on a phone, so the same
+   * window width leaves the list a different amount of room. 880px is six
+   * columns (132 + 176 + 104 + 88 + 200 + 40), five gaps and at least
+   * something for the title.
    */
   .comp-rows {
     container-type: inline-size;
@@ -663,25 +674,25 @@
       row-gap: 0.5rem;
     }
 
-    /* Название забирает первую строку целиком, кроме места под меню. */
+    /* The title takes the whole first line, except the room for the menu. */
     .comp-name {
       flex-basis: calc(100% - 56px);
     }
 
-    /* Ячейки встают под ним в ряд и делят остаток по содержимому: своя
-       колоночная ширина здесь означала бы шесть колонок в 320 пикселях. */
+    /* The cells line up in a row below it and share the rest by content:
+       their own column widths here would mean six columns in 320 pixels. */
     .comp-cell {
       width: auto;
       min-width: 0;
       text-align: left;
     }
 
-    /* Шапка колонок без колонок не значит ничего. */
+    /* A column header without columns means nothing. */
     .comp-head {
       display: none;
     }
 
-    /* Вместо неё подписи едут в саму строку. */
+    /* Instead, the captions move into the row itself. */
     .comp-label {
       display: inline;
     }

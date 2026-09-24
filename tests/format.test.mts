@@ -162,13 +162,14 @@ test('a kernel that answers with nothing readable is reported, not guessed at', 
   assert.equal(text()[0], 'x=1', 'the cell was touched despite the failure')
 })
 
-test('ячейку, которую правили, пока работал black, не перезаписывают', async () => {
+test('a cell edited while black was running is not overwritten', async () => {
   /*
-   * Между снимком текстов и записью — круг до ядра, а если оно занято ячейкой,
-   * то и вся эта ячейка: до минут. Всё, что за это время напечатали, замена
-   * целиком стирала без следа — origin `format` чужой, Ctrl+Z до него не
-   * достаёт. Тут это и проверяется: студент дописывает ячейку, пока black
-   * «думает».
+   * Between the snapshot of the texts and the write there is a round trip to
+   * the kernel, and if the kernel is busy with a cell, that whole cell too: up
+   * to minutes. Replacing the text wholesale erased everything typed in that
+   * time without a trace — the `format` origin is someone else's, and Ctrl+Z
+   * does not reach it. This is what is checked here: a student keeps typing in
+   * the cell while black is "thinking".
    */
   const { id, text } = room([
     { type: 'code', source: 'x=1' },
@@ -182,7 +183,7 @@ test('ячейку, которую правили, пока работал black
     async execute(code: string, handlers: { onStream(n: 'stdout', t: string): void }) {
       const payload = /b64decode\("([^"]+)"\)/.exec(code)?.[1] ?? ''
       const sources = JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) as string[]
-      // Пока ядро занято, вторую ячейку правит другой человек.
+      // While the kernel is busy, another person edits the second cell.
       const live = cells.get(1).get('source') as Y.Text
       live.insert(live.length, ' + 40')
       const formatted = sources.map((s) => `f:${s}`)
@@ -191,11 +192,11 @@ test('ячейку, которую правили, пока работал black
     },
   } as never)
 
-  assert.equal(text()[0], 'f:x=1', 'нетронутую ячейку не отформатировали')
-  assert.equal(text()[1], 'y=2 + 40', 'набранное во время форматирования стёрли')
+  assert.equal(text()[0], 'f:x=1', 'the untouched cell was not formatted')
+  assert.equal(text()[1], 'y=2 + 40', 'what was typed during formatting was erased')
   assert.equal(out.changed, 1)
-  assert.equal(out.edited, 1, 'про пропущенную ячейку не сказали')
-  assert.equal(out.skipped, 1, 'пропущенная ячейка не попала в счёт оставленных')
+  assert.equal(out.edited, 1, 'the skipped cell was not reported')
+  assert.equal(out.skipped, 1, 'the skipped cell is not counted among those left alone')
 })
 
 test('the width is the one a lecture hall can read, not black default', () => {

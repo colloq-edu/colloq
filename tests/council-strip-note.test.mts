@@ -1,27 +1,31 @@
 /**
- * Про общее ядро сказано там, где ручку включают, — и чужими словами.
+ * The shared kernel is mentioned where the control is switched on — and in
+ * borrowed words.
  *
- * Попытки считаются в ОДНОМ ядре комнаты: данные каждая получает свои, а имена
- * и привязки сервер возвращает после неё (kernel/council-isolation.ts), но
- * файлы и состояние модулей остаются общими. Преподаватель ставит «верно» по
- * выводу, поэтому сказать это надо там, где он на вывод смотрит и где решает,
- * кому запускать.
- * Шапка `COUNCIL_SHARED_KERNEL_NOTE` называет три таких места: ручка «кто может
- * запускать», подсказка кнопки запуска у студента, README. Первое было в меню
- * замка, потом в полосе очереди пульта, теперь — в подвале листа регламента,
- * под всеми четырьмя правилами; второе и третье закрыты своими тестами
- * (notebook-craft, docs-promises), первое — здесь.
+ * Attempts run in the room's ONE kernel: each gets its own data, and the
+ * server restores names and bindings after it (kernel/council-isolation.ts),
+ * but files and module state stay shared. The teacher marks "correct" based
+ * on the output, so this has to be said where they look at the output and
+ * where they decide who runs.
+ * The header of `COUNCIL_SHARED_KERNEL_NOTE` names three such places: the
+ * "who can run" control, the run button hint for a student, README. The
+ * first was in the lock menu, then in the console queue bar, now in the
+ * footer of the rules sheet, under all four rules; the second and third are
+ * covered by their own tests (notebook-craft, docs-promises), the first —
+ * here.
  *
- * Проверяется и то, что строка не переписана своими словами: копия одна, в
- * shared/notebook.ts, иначе ручка и строка разъедутся на первой же правке, — и
- * что она стоит текстом, а не подсказкой: пульт ведут с планшета, где наведения
- * нет вовсе.
+ * It is also checked that the line is not rewritten in its own words: there
+ * is one copy, in shared/notebook.ts, otherwise the control and the line
+ * would drift apart at the very first edit — and that it stands as text, not
+ * as a tooltip: the console is driven from a tablet, where there is no hover
+ * at all.
  *
- * С листом регламента (PultRules.svelte) ручка переехала из подвала очереди
- * туда, где стоят все четыре правила ячейки, — и строка про общее ядро уехала
- * вместе с ней: она объясняет цену ИМЕННО этой ручки.
+ * With the rules sheet (PultRules.svelte) the control moved from the queue
+ * footer to where all four cell rules stand — and the line about the shared
+ * kernel moved with it: it explains the cost of EXACTLY this control.
  *
- * Разметка читается прямо из компонента — тот же приём, что в panels-craft.
+ * The markup is read straight from the component — the same technique as in
+ * panels-craft.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -33,36 +37,37 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка без комментариев: объяснение — не обещание. */
+/** Markup without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
 const RULES = code(read('web/src/components/council/pult/PultRules.svelte'))
 
-/** Лист регламента: ряд «Кто запускает» и подвал под всеми правилами. */
+/** The rules sheet: the "Who runs" row and the footer under all rules. */
 function knob(): string {
   const from = RULES.indexOf("PULT_RULES.map")
-  assert.ok(from > 0, 'рядов регламента больше нет')
+  assert.ok(from > 0, 'there are no rules rows any more')
   return RULES.slice(from)
 }
 
-test('ручка запуска говорит про общее ядро — строкой из shared', () => {
+test('the run control speaks about the shared kernel — with a line from shared', () => {
   assert.match(RULES, /import \{ COUNCIL_SHARED_KERNEL_NOTE[^}]*\} from '@shared\/notebook'/)
-  assert.match(knob(), /\{tr\(COUNCIL_SHARED_KERNEL_NOTE\)\}/, 'у ручки строки нет')
+  assert.match(knob(), /\{tr\(COUNCIL_SHARED_KERNEL_NOTE\)\}/, 'the control has no line')
 
-  // Своей копии нет: первые слова фразы в компоненте встретиться не должны.
+  // No copy of its own: the first words of the phrase must not occur in the
+  // component.
   const opening = COUNCIL_SHARED_KERNEL_NOTE.slice(0, 24)
-  assert.ok(!RULES.includes(opening), 'строка переписана копией')
+  assert.ok(!RULES.includes(opening), 'the line was rewritten as a copy')
 })
 
-test('строка видна без наведения — на планшете наведения нет', () => {
+test('the line is visible without hovering — a tablet has no hover', () => {
   assert.doesNotMatch(knob(), /title=\{COUNCIL_SHARED_KERNEL_NOTE\}/)
   assert.doesNotMatch(knob(), /title="\{COUNCIL_SHARED_KERNEL_NOTE\}"/)
 })
 
-test('в тетради ручки запуска не осталось: её место — пульт', () => {
+test('the run control is gone from the notebook: its place is the console', () => {
   const cell = code(read('web/src/components/notebook/CellView.svelte'))
-  assert.doesNotMatch(cell, /setStudentRun|studentRun \}/, 'ручка вернулась в меню замка')
-  assert.doesNotMatch(cell, /tr\('room\.ui\.335'\)/, 'заголовок ручки остался в тетради')
+  assert.doesNotMatch(cell, /setStudentRun|studentRun \}/, 'the control is back in the lock menu')
+  assert.doesNotMatch(cell, /tr\('room\.ui\.335'\)/, 'the control title remained in the notebook')
 })

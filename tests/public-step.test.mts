@@ -1,17 +1,17 @@
 /**
- * Шаг, которого не было, — не то же самое, что страница, которой не стало.
+ * A step that never existed is not the same as a page that is gone.
  *
- * Читалка знает про публикацию два плохих исхода и путает их. «Этой страницы
- * семинара больше нет — его опубликовали заново» она печатает на ЛЮБОЙ 404 при
- * запросе шага: студент, промахнувшийся мимо номера в адресе (или прошедший по
- * ссылке на `-1`, который маршрутизатор клиента до сих пор считает шагом «с
- * конца», хотя такого шага не умеет никто), получает известие о том, что его
- * страницу переопубликовали, — при живой, ничем не тронутой публикации.
+ * The reader knows two bad outcomes of a publication and mixes them up. It
+ * prints "This seminar page no longer exists — it was published again" on ANY
+ * 404 for a step request: a student who missed the number in the address (or
+ * followed a link to `-1`, which the client router still treats as a step
+ * "from the end", although nothing can serve such a step) is told that their
+ * page was republished — while the publication is alive and untouched.
  *
- * Сервер различает эти два случая и всегда различал: у него разные тела ответа
- * на одном и том же коде. Здесь это закрепляется как контракт — потому что
- * различить их в читалке можно только по телу, и стоит его убрать, чинить будет
- * уже нечем.
+ * The server tells these two cases apart and always has: it has different
+ * response bodies for the same code. This pins it as a contract — because the
+ * reader can tell them apart only by the body, and once the body is gone there
+ * will be nothing left to fix it with.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -72,62 +72,62 @@ async function step(seq: string): Promise<{ status: number; error: string }> {
   return { status: res.status, error: body.error ?? '' }
 }
 
-test('шаги публикации читаются по своим номерам, а «первый» — по слову', () => {
+test('publication steps are read by their numbers, and "first" by the word', () => {
   assert.deepEqual(
     stepHeadings(pubId).map((h) => h.seq),
     [0, 4],
   )
   assert.equal(readStep(pubId, 0)?.label, 'начало')
   assert.equal(readStep(pubId, 4)?.label, 'решение')
-  assert.equal(readStep(pubId, null)?.label, 'начало', 'первый шаг перестал быть первым')
+  assert.equal(readStep(pubId, null)?.label, 'начало', 'the first step stopped being first')
 })
 
-test('отрицательный номер — не «шаг с конца», а несуществующий шаг', () => {
+test('a negative number is not a "step from the end" but a step that does not exist', () => {
   /*
-   * `readStep` ищет `seq` буквально, так что −1 — это просто номер, которого
-   * нет. Обратное обещано в двух местах: регулярка адресов на клиенте
-   * (`web/src/lib/routes.ts`, `PUBLIC_PATH` с `-?\\d+`) и комментарий в
-   * `shell.test.mts` — «отрицательный шаг это „с конца“, и он тоже шаг».
-   * Реализации нет ни одной. Пока её нет, это утверждение и есть правда о
-   * продукте; появится — падение здесь будет ровно тем местом, где решают, чем
-   * −1 становится.
+   * `readStep` looks `seq` up literally, so −1 is just a number that is not
+   * there. The opposite is promised in two places: the client's address regex
+   * (`web/src/lib/routes.ts`, `PUBLIC_PATH` with `-?\\d+`) and a comment in
+   * `shell.test.mts` — "a negative step is 'from the end', and it is a step
+   * too". There is no implementation anywhere. As long as there is none, this
+   * assertion is the truth about the product; once one appears, the failure
+   * here will be exactly the place where it is decided what −1 becomes.
    */
   assert.equal(readStep(pubId, -1), null)
   assert.equal(readStep(pubId, 99), null)
 })
 
-test('живая страница со сломанным шагом говорит «нет шага», а не «нет страницы»', async () => {
-  // Ровно та пара ответов, по которой читалка обязана выбирать между «такого
-  // шага нет» и «страницу опубликовали заново». Код у них один — 404, — и
-  // отличаются они только телом.
+test('a live page with a broken step says "no step", not "no page"', async () => {
+  // Exactly the pair of answers by which the reader has to choose between "there
+  // is no such step" and "the page was published again". They share one code —
+  // 404 — and differ only in the body.
   const missing = await step('99')
   assert.equal(missing.status, 404)
   assert.equal(missing.error, 'step not found')
 
   const negative = await step('-1')
   assert.equal(negative.status, 404)
-  assert.equal(negative.error, 'step not found', 'отрицательный шаг отвечает как пропавшая страница')
+  assert.equal(negative.error, 'step not found', 'a negative step answers like a vanished page')
 
-  // А сама публикация при этом жива и отдаёт свои шаги.
+  // And the publication itself is alive meanwhile and serves its steps.
   const page = await fetch(`${base}/api/p/${pubId}`)
   assert.equal(page.status, 200)
   const seen = (await page.json()) as { seminar: { steps: { seq: number }[] } }
   assert.deepEqual(seen.seminar.steps.map((s) => s.seq), [0, 4])
 })
 
-test('не-число шагом не притворяется', async () => {
+test('a non-number does not pass itself off as a step', async () => {
   const nonsense = await step('первый')
-  assert.equal(nonsense.status, 400, 'мусор в адресе прошёл как номер шага')
+  assert.equal(nonsense.status, 400, 'garbage in the address passed as a step number')
 })
 
-test('снятая страница — это уже «нет страницы», и так и отвечает', async () => {
+test('a withdrawn page is "no page" by now, and answers exactly so', async () => {
   setPublicationState(pubId, 'withdrawn')
   const withdrawn = await step('0')
   assert.equal(withdrawn.status, 404)
   assert.equal(
     withdrawn.error,
     'publication not found',
-    'снятая страница отвечает как живая с плохим номером',
+    'a withdrawn page answers like a live one with a bad number',
   )
   setPublicationState(pubId, 'published')
 })

@@ -1,23 +1,26 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   /**
-   * Плашка показанной попытки — то, что видит под ячейкой вся комната.
+   * The banner of a shown attempt — what the whole room sees under the cell.
    *
-   * «Показать классу» раньше переписывало общий текст ячейки чужим решением от
-   * имени преподавателя: заготовка исчезала у всех, автором правки в истории
-   * значился ведущий, а на экране ничто не говорило, что это чьё-то решение —
-   * ни имени, ни чипа, ни строки в событиях. Теперь показ — это приставка к той
-   * же ячейке: подпись, код и преподавательский вывод под одной полосой цвета
-   * positive, а сама ячейка остаётся ячейкой.
+   * "Show to the class" used to overwrite the cell's shared text with someone
+   * else's solution on the teacher's behalf: the starter code vanished for
+   * everyone, the history recorded the host as the author of the edit, and
+   * nothing on the screen said this was someone's solution — no name, no
+   * chip, no line in the events. Now a show is an attachment to the same
+   * cell: a caption, the code and the teacher's output under one stripe of
+   * the positive colour, while the cell itself stays a cell.
    *
-   * Одна разметка на два места: у студента она стоит под его собственным
-   * листом, у преподавателя — под стопкой. Разница ровно в одной ссылке справа
-   * («убрать с экрана»), и она есть только у того, кто вправе её нажать.
+   * One markup for two places: for a student it stands under their own
+   * sheet, for the teacher under the stack. The difference is exactly one
+   * link on the right ("take off screen"), and only the one entitled to
+   * press it has it.
    *
-   * Автор показанного этой плашки не видит НИКОГДА: его код и так перед ним, а
-   * второй такой же блок под ним — это два одинаковых кода подряд. Ему вместо
-   * чипа консилиума горит зелёное «Ваш вариант на экране» (CellView · подвал
-   * листа); решает это вызывающая сторона, здесь об авторстве не знают.
+   * The author of what is shown NEVER sees this banner: their code is in
+   * front of them anyway, and a second identical block under it would be two
+   * identical pieces of code in a row. Instead of the council chip they get
+   * a green "Your answer is on screen" (CellView · sheet footer); the caller
+   * decides that, and nothing here knows about authorship.
    */
   import type { CouncilShown } from '@shared/protocol'
   import { clock } from '@/lib/history'
@@ -28,7 +31,7 @@
 
   interface Props {
     shown: CouncilShown
-    /** Ведущий: только у него справа «убрать с экрана». */
+    /** The host: only they have "take off screen" on the right. */
     mayClear?: boolean
     onclear?: () => void
   }
@@ -38,12 +41,13 @@
   const CAPS = 'text-2xs font-bold uppercase tracking-label'
 
   /**
-   * Подпись под именем: кто вывел, когда и сколько ещё написали то же самое.
+   * The caption under the name: who put it up, when, and how many more wrote
+   * the same thing.
    *
-   * Время — только настоящее: у показа, начатого до того, как его стали
-   * подписывать (комната шла на прежней версии), его нет, и выдуманный час был
-   * бы хуже молчания. «Так же написали ещё K» появляется, когда K есть: ноль в
-   * этой строке — шум рядом с числом, ради которого её и читают.
+   * Only a real time: a show started before shows began to be captioned (the
+   * room was on the previous version) has none, and an invented hour would
+   * be worse than silence. "K more wrote the same" appears when there is a K:
+   * a zero in this line is noise next to the number it is read for.
    */
   const line = $derived.by(() => {
     const parts = [tr('room.ui.1256')]
@@ -54,10 +58,11 @@
 </script>
 
 <!--
-  Полоса одна на всё — плашка, код и вывод: это один объект, а не три соседних
-  блока. Цвет positive — единственное место в тетради, где кромка меняет цвет
-  посередине ячейки, и оправдание у него одно: ниже по колонке другой автор, и
-  живёт этот кусок ровно столько, сколько его показывают.
+  One stripe for everything — banner, code and output: it is one object, not
+  three neighbouring blocks. The positive colour is the only place in the
+  notebook where the edge changes colour in the middle of a cell, and it has
+  one justification: further down the column there is a different author,
+  and this piece lives exactly as long as it is shown.
 -->
 <div class="border-l-4 border-positive" data-council-shown>
   <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 bg-positive/10 px-3.5 py-2">
@@ -67,9 +72,10 @@
       <span class="min-w-0 truncate text-ui-lg font-bold text-ink">{shown.name}</span>
     {:else}
       <!--
-        Имена на проекторе выключены: подписывает номер варианта, и кружок на
-        месте аватара остаётся пустым — не чужое лицо и не дырка в строке.
-        Номер присвоен на показе и не переезжает (protocol · CouncilShown).
+        Names on the projector are off: the answer number is the caption, and
+        the circle in the avatar's place stays empty — neither a stranger's
+        face nor a hole in the line. The number is assigned at the show and
+        does not move (protocol · CouncilShown).
       -->
       <span class="h-5 w-5 shrink-0 rounded-full bg-raised" aria-hidden="true"></span>
       <span class="text-ui-lg font-bold text-ink">{tr('room.ui.1255', { p0: shown.variant })}</span>
@@ -89,11 +95,12 @@
   </div>
 
   <!--
-    Вывод — преподавательский, и подписан как преподавательский.
+    The output is the teacher's, and it is labelled as the teacher's.
 
-    Свой запуск автора сюда не едет: под кодом на экране класс читает то, за
-    что отвечает ведущий, — он же по этому выводу и говорит «верно». Волосяная
-    линия между кодом и выводом — та же пара, что у обычной ячейки.
+    The author's own run does not come here: under the code on screen the
+    class reads what the host answers for — and it is by this output that the
+    host says "correct". The hairline between code and output is the same
+    pair as in an ordinary cell.
   -->
   {#if shown.run}
     <div

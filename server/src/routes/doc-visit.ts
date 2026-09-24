@@ -1,24 +1,24 @@
 /**
- * Заглянуть в тетрадь комнаты, не поселяя её в памяти навсегда.
+ * Look into a room's notebook without settling it in memory for good.
  *
- * `getSessionDoc` заводит документ для любого идентификатора, который ему дали,
- * а поднимают его не только люди в комнате — переименование в панели, открытая
- * лента версий, публикация, импорт, сводка консилиума. Уборка простаивающих
- * комнат (collab/index.ts · sweepIdleRooms) такую тетрадь отпустит, но не
- * раньше чем через десять минут пустоты: переименовать полсотни архивных
- * семинаров подряд — и полсотни чужих тетрадей с картинками (у каждой второй
- * полный слепок в истории и тексты всех ячеек) лежат в памяти разом, рядом с
- * живыми комнатами. Ждать тут нечего: комната, поднятая ради одной строки, не
- * была ничьей ни секунды.
+ * `getSessionDoc` creates a document for any id it is given, and it is
+ * brought up not only by people in the room: a rename in the panel, an open
+ * version feed, a publication, an import, a council summary. The sweep of idle
+ * rooms (collab/index.ts · sweepIdleRooms) will let such a notebook go, but
+ * not before ten minutes of emptiness: rename fifty archived seminars in a
+ * row, and fifty other people's notebooks with images (every second one with
+ * a full snapshot in history and the text of every cell) sit in memory at
+ * once, next to live rooms. There is nothing to wait for: a room brought up
+ * for the sake of one line was nobody's for a single second.
  *
- * Правило простое: у комнаты, в которой кто-то есть, документ уже поднят — с
- * ним и работаем, ничего не трогая. У пустой берём его на время: сбрасываем на
- * диск то, что записали, и выселяем. Следующий вошедший поднимет его из того же
- * снимка, который поднял бы и без нас.
+ * The rule is simple: a room with someone in it already has its document up,
+ * and we work with that one, touching nothing. For an empty one we borrow it:
+ * flush what was written to disk and evict it. The next person to join brings
+ * it up from the same snapshot they would have without us.
  *
- * Гость обязан быть синхронным. Между `peek` и выселением не должно быть ни
- * одного await: иначе кто-то войдёт в комнату посреди визита, и мы уроним
- * документ у него из-под рук.
+ * The visitor has to be synchronous. There must be no await between `peek`
+ * and the eviction: otherwise someone would join the room mid-visit, and we
+ * would pull the document out from under them.
  */
 import type * as Y from 'yjs'
 import { getSessionDoc, peekSessionDoc, releaseSessionDoc } from '../collab/index.js'
@@ -34,28 +34,30 @@ export function visitSessionDoc<T>(sessionId: string, visit: (doc: Y.Doc) => T):
     return visit(doc)
   } finally {
     /*
-     * Сначала история, потом снимок, потом выселение.
+     * First the history, then the snapshot, then the eviction.
      *
-     * Выселение уходит молча, так что всё, что визит записал, надо успеть
-     * положить на диск самим: открытый всплеск правок (иначе правка была бы, а
-     * строки о ней нет) и снимок документа.
+     * The eviction leaves silently, so everything the visit wrote has to be
+     * put on disk by us in time: the open burst of edits (otherwise there
+     * would be an edit but no row about it) and the document snapshot.
      *
-     * Выселяет `releaseSessionDoc` — тот же выход, что у уборки простаивающих
-     * комнат, и он ничего не закрывает. Дверь удаления (`dropSessionDoc`)
-     * гостю не годится: кроме выселения она обрывает ответы оракула, забывает
-     * отменённое и закрывает сокеты комнаты словами «this seminar was
-     * deleted», а файловые сокеты живут в своей карте (collab/files.ts) и
-     * документ комнаты не поднимают — открытый редактор `.py`, переживший
-     * уборку, получил бы от неё код 1001 «комната закрыта» посреди живого
-     * семинара.
+     * `releaseSessionDoc` evicts: the same exit the idle sweep uses, and it
+     * closes nothing. The deletion door (`dropSessionDoc`) is no good for a
+     * visitor: besides evicting, it cuts off the Oracle's answers, forgets
+     * what was cancelled and closes the room's sockets with the words "this
+     * seminar was deleted", while file sockets live in their own map
+     * (collab/files.ts) and do not bring up the room document: an open `.py`
+     * editor that survived the sweep would get code 1001 "room closed" from it
+     * in the middle of a live seminar.
      *
-     * Сброс перед выселением — не лишняя предосторожность на словах:
-     * `evictRoom` дописывает и историю, и снимок сам, но здесь видно
-     * намерение — гость уходит, ничего не потеряв.
+     * The flush before eviction is a statement rather than an extra
+     * precaution: `evictRoom` writes both the history and the snapshot itself,
+     * but here the intent is visible: the visitor leaves without losing
+     * anything.
      *
-     * Ответ `releaseSessionDoc` не проверяем: `false` он говорит про комнату с
-     * людьми, а сюда попадают только те, у кого `peek` вернул null, и между
-     * ним и выселением нет ни одного await — войти посреди визита некому.
+     * We do not check the answer of `releaseSessionDoc`: it says `false` about
+     * a room with people in it, and only rooms for which `peek` returned null
+     * get here, with no await between that and the eviction, so nobody can
+     * join mid-visit.
      */
     flushHistory(sessionId)
     flushPersistence(sessionId)

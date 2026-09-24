@@ -54,9 +54,9 @@
   const isHost = $derived(session.me.role === 'host')
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   /*
-   * Ящик может открыться на вкладке, которой в этой комнате нет: вкладка —
-   * состояние родителя и переживает и смену правила, и переоткрытие. Тогда
-   * показывается терминал — он есть всегда, даже когда в него нельзя писать.
+   * The drawer can open on a tab that this room does not have: the tab is the
+   * parent's state and survives both a rule change and reopening. Then the
+   * terminal is shown — it is always there, even when it cannot be typed into.
    */
   const shownTab = $derived<Tab>(
     tab === 'history' && !may.history ? 'terminal' : tab,
@@ -67,27 +67,28 @@
 
   const terminal = getTerminal(session.doc)
   /*
-   * Raw: массив снимков заменяется целиком, и оборачивать каждую строку в
-   * прокси значило бы платить за то, что через кадр будет выброшено.
+   * Raw: the array of snapshots is replaced as a whole, and wrapping every line
+   * in a proxy would mean paying for what will be thrown away a frame later.
    */
   let lines = $state.raw<TerminalLineSnapshot[]>(terminal.map(readTerminalLine))
 
   $effect(() => {
     /*
-     * Перечитывается ТОЛЬКО та строка, в которую пишут.
+     * ONLY the line being written to is re-read.
      *
-     * Вывод дописывается в Y.Text внутри одной строки, а прежний код на каждый
-     * кусочек собирал всю расшифровку заново: до восьмисот строк и двухсот
-     * килобайт текста на каждый кадр `pip install torch`, в каждой из вкладок
-     * комнаты. Вдобавок объекты были новыми, поэтому `transcriptText` в
-     * разметке пересчитывался для КАЖДОЙ строки, а не для той, что выросла.
-     * Неизменившиеся снимки теперь те же самые — и {@const}, и разбор ANSI
-     * достаются из прошлого кадра.
+     * Output is appended to the Y.Text inside one line, and the old code
+     * rebuilt the whole transcript for every chunk: up to eight hundred lines
+     * and two hundred kilobytes of text on every frame of `pip install torch`,
+     * in every tab of the room. On top of that the objects were new, so
+     * `transcriptText` in the markup was recomputed for EVERY line, not just
+     * the one that grew. Unchanged snapshots are now the same objects — both
+     * the {@const} and the ANSI parse carry over from the previous frame.
      */
     const read = (events: Y.YEvent<any>[] | null) => {
-      // Прежний снимок берётся `untrack`: эффект, прочитавший то, что сам же
-      // пишет, зависел бы от собственной записи — один такой виток однажды
-      // встретил комнату `effect_update_depth_exceeded` вместо тетради.
+      // The previous snapshot is taken with `untrack`: an effect that reads
+      // what it writes itself would depend on its own write — one such loop
+      // once greeted the room with `effect_update_depth_exceeded` instead of
+      // the notebook.
       const previous = untrack(() => lines)
       const fresh = rereadRows(previous, terminal, readTerminalLine, events)
       if (fresh !== previous) lines = fresh
@@ -109,10 +110,11 @@
    * pip and friends redraw one line in place with \r; keeping every frame would
    * print a hundred copies of the same progress bar.
    *
-   * Свёртка — общая с тетрадью (`utils.ts`, и она же под тестом). Своё здесь
-   * одно: хвостовые переводы строк срезаются, потому что в журнале пустая
-   * строка под командой — это дырка между командой и следующей строкой, а в
-   * выводе ячейки — часть текста.
+   * The folding is shared with the notebook (`utils.ts`, and it is under test
+   * there). Only one thing here is our own: trailing newlines are cut off,
+   * because in the log an empty line under a command is a hole between the
+   * command and the next line, whereas in a cell's output it is part of the
+   * text.
    */
   function transcriptText(raw: string): string {
     return collapseCarriage(raw.replace(/\n+$/, ''))
@@ -233,20 +235,20 @@
 
   let input: HTMLInputElement | null = $state(null)
   /*
-   * Черновик и история живут вне ящика.
+   * The draft and the history live outside the drawer.
    *
-   * Ящик размонтируется, когда его закрывают, и раньше вместе с ним пропадала
-   * половина набранной команды и весь список для стрелки вверх: закрыл, чтобы
-   * посмотреть на ячейку, открыл — пусто. Теперь это состояние вкладки, а не
-   * компонента.
+   * The drawer unmounts when it is closed, and it used to take with it half of
+   * a typed command and the whole list for the up arrow: closed it to look at a
+   * cell, opened it — empty. Now this is the tab's state, not the component's.
    */
   const term = terminalDraft
 
   const status = $derived(session.terminalStatus)
   /*
-   * Те же состояния — словами комнаты, одними на продукт (shared/machine.ts).
-   * Русская строка с `idle` посреди неё — это половина панели на машинном
-   * языке; `$derived` ленив, и слово ядра считается только на его вкладке.
+   * The same states — in the room's words, one set for the product
+   * (shared/machine.ts). A Russian line with `idle` in the middle of it is half
+   * a panel in machine language; `$derived` is lazy, and the kernel's word is
+   * only computed on its tab.
    */
   const kernelWord = $derived(KERNEL_WORD[notebook.current.kernelStatus])
   const shellWord = $derived(SHELL_WORD[status])
@@ -254,11 +256,12 @@
    * A command has to reach the server to be a command. Disconnected, the status
    * in hand is the last one the server sent, which says nothing about now.
    *
-   * И правило `run`: `python train.py` в оболочке — тот же контейнер и то же
-   * процессорное время, что и Run на ячейке, и сервер отказывает здесь тем же
-   * правилом. Без гашения человек набирает команду целиком и упирается в отказ
-   * на Enter — правило, которое узнают после работы, читается как поломка.
-   * Читать чужой вывод при этом может вся комната: оболочка общая.
+   * And the `run` rule: `python train.py` in the shell is the same container
+   * and the same CPU time as Run on a cell, and the server refuses here by the
+   * same rule. Without dimming, a person types the whole command and hits the
+   * refusal on Enter — a rule you learn about after the work is done reads as a
+   * breakage. The whole room can still read others' output: the shell is
+   * shared.
    */
   const canType = $derived(session.connected && may.run && (status === 'idle' || status === 'busy'))
 
@@ -277,15 +280,16 @@
   )
 
   /**
-   * Оболочку можно завести заново, пока есть кому её просить.
+   * The shell can be started again while there is someone to ask for it.
    *
-   * Не в 'starting': там уже идёт запуск. Не без связи: сообщение никуда не
-   * уйдёт, а кнопка сделает вид, что ушло. И не после конца занятия: ящик
-   * сервер открывает всем — расшифровка общая, за ней сюда и приходят, — но
-   * оболочку и контейнер участнику не будит и отказа при этом не шлёт.
-   * Кнопка без этой проверки была бы худшим из всего: нажал, и не случилось
-   * ничего, даже слова. Правила про `term:open` нет, поэтому здесь та же
-   * `actsAfterClass`, по которой сервер и решает.
+   * Not in 'starting': a start is already under way. Not without a connection:
+   * the message will go nowhere, and the button will pretend it went. And not
+   * after the class has ended: the server opens the drawer for everyone — the
+   * transcript is shared, and that is what people come here for — but it does
+   * not wake the shell and the container for a participant and sends no refusal
+   * either. A button without this check would be the worst of all: pressed, and
+   * nothing happened, not even a word. There is no rule for `term:open`, so
+   * here it is the same `actsAfterClass` that the server decides by.
    */
   const acts = $derived(actsAfterClass(may.finished, session.me.role))
   const canRevive = $derived(
@@ -343,8 +347,9 @@
       submit()
       return
     }
-    // По коду клавиши: на русской раскладке event.key здесь «с», и Ctrl+C —
-    // единственный путь остановить зависший pip в общем шелле — не работал.
+    // By key code: on a Russian layout event.key here is "с" (Cyrillic), and
+    // Ctrl+C — the only way to stop a stuck pip in the shared shell — did not
+    // work.
     if (event.code === 'KeyC' && event.ctrlKey) {
       // Copying a selection wins; an empty selection means "stop that command".
       const target = event.currentTarget as HTMLInputElement
@@ -458,15 +463,15 @@
   </div>
 
   {#if shownTab === 'history'}
-    <!-- История занимает всё тело ящика и приносит свою нижнюю полосу: у неё
-         две колонки и свои действия, а строка ввода команды к ней отношения не
-         имеет. -->
+    <!-- The history takes the whole body of the drawer and brings its own
+         bottom bar: it has two columns and its own actions, and the command
+         input line has nothing to do with it. -->
     <HistoryTab />
   {:else}
   <div class="term-body" bind:this={scroller} onscroll={onScroll} role="log" aria-live="polite">
     {#if shownTab === 'kernel'}
-      <!-- Состояния — словами, а не именами протокола: 'starting' и 'idle'
-           посреди русской строки читаются как отладочный вывод. -->
+      <!-- States in words, not protocol names: 'starting' and 'idle' in the
+           middle of a Russian line read as debug output. -->
       <div class="term-sys"> {tr('room.ui.687')} {kernelWord} {tr('room.ui.688')} {shellWord}
       </div>
     {/if}
@@ -511,8 +516,8 @@
     {/each}
   </div>
 
-  <!-- У журнала ядра строки ввода нет: пустое приглашение $ под ним обещает
-       то, чего там не бывает. -->
+  <!-- The kernel log has no input line: an empty $ prompt under it promises
+       something that never happens there. -->
   {#if shownTab === 'terminal'}
   <div class="term-prompt" class:off={!canType}>
     <span class="term-av">
@@ -550,34 +555,37 @@
       {#if status === 'busy'}
         <span class="term-live-dot"></span> {tr('room.ui.696')} {:else if canType} {tr('room.ui.697')} {:else if canRevive}
         <!--
-          `exit` в общей оболочке — тупик.
+          `exit` in the shared shell is a dead end.
 
-          Оболочку заказывали при открытии ящика, а мёртвая оболочка ящик не
-          закрывает: строка гасла, надпись говорила «the shell stopped», и
-          выхода из этого не было — надо было догадаться закрыть терминал и
-          открыть заново. Один и тот же term:open, только теперь его видно.
+          The shell was requested when the drawer opened, and a dead shell does
+          not close the drawer: the line went dim, the caption said "the shell
+          stopped", and there was no way out of it — one had to guess to close
+          the terminal and open it again. The same term:open, only now it can be
+          seen.
         -->
         <button type="button" class="term-revive" onclick={revive}> {tr('room.ui.698')} </button>
       {:else if !acts && (status === 'dead' || status === 'closed')}
         <!--
-          На месте кнопки — причина, а не слово `dead`.
+          In place of the button — the reason, not the word `dead`.
 
-          Оболочку после звонка заводит преподаватель, и без этой строки в ящик
-          приходят читать ленту, а встречают английский диагноз мёртвой машины.
-          Про сам звонок сказано рядом — в приглашении строки; здесь только то,
-          чего не хватает на месте кнопки.
+          After the bell the shell is started by the teacher, and without this
+          line people come to the drawer to read the feed and are met by an
+          English diagnosis of a dead machine. The bell itself is mentioned
+          nearby — in the line's prompt; here there is only what is missing in
+          place of the button.
         --> {tr('room.ui.699')} {:else if session.connected && !may.run}
         <!--
-          Здесь приглашение занято правилом («запускает преподаватель»), и место
-          под состояние машины свободно — значит, оно говорит словом, а не
-          именем протокола: `idle` под русской строкой был последним английским
-          диагнозом в ящике.
+          Here the prompt is taken by the rule ("the teacher runs"), and the
+          place for the machine state is free — so it speaks with a word, not a
+          protocol name: `idle` under a Russian line was the last English
+          diagnosis in the drawer.
 
-          Остальные случаи молчат намеренно. Про `starting`, `dead` и `closed`
-          приглашение слева уже сказало теми же словами, и повторить их в той же
-          строке — не сведения, а эхо; а без связи состояние на руках вообще
-          ничего не говорит о «сейчас» (см. `canType` выше), и называть его —
-          выдавать последнее известное за настоящее.
+          The other cases are silent on purpose. About `starting`, `dead` and
+          `closed` the prompt on the left has already spoken in the same words,
+          and repeating them in the same line is not information but an echo;
+          and without a connection the state in hand says nothing at all about
+          "now" (see `canType` above), and naming it would pass off the last
+          known state as the present one.
         --> {tr('room.ui.700')} {shellWord}
       {/if}
     </span>
@@ -608,15 +616,15 @@
     --tm-faint: #78849f;
     --tm-accent: #2eb4e8;
     --tm-live: #3ec9a7;
-    /* Стек кода — один на продукт (web/src/index.css · --font-mono). В своей
-       копии не было подменных семейств с правками метрик, и весь ящик до
-       прихода woff2 набирался неисправленным ui-monospace, а на swap терял 2px
-       на строке при 16px. Имя оставлено алиасом: по нему сюда ходит и вкладка
-       истории. */
+    /* The code stack is one for the product (web/src/index.css · --font-mono).
+       The local copy had no fallback families with metric overrides, so until
+       the woff2 arrived the whole drawer was set in uncorrected ui-monospace,
+       and on swap it lost 2px per line at 16px. The name is kept as an alias:
+       the history tab gets here through it too. */
     --tm-mono: var(--font-mono);
-    /* Гарнитура продукта, а не Inter: ни одного @font-face для Inter в
-       index.html нет — а вкладки ящика молча падали в системный шрифт рядом с
-       той же надписью в панели. */
+    /* The product's typeface, not Inter: there is not a single @font-face for
+       Inter in index.html — and the drawer's tabs silently fell back to the
+       system font next to the same caption in the panel. */
     --tm-sans: 'HSE Sans', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
     /* Output aligns under the command text, not under the avatar. */
     --tm-indent: 40px;
@@ -635,9 +643,9 @@
     box-shadow: 0 -20px 40px -30px rgb(0 0 0 / 0.85);
   }
 
-  /* Полоска остаётся двухпиксельной, а хватают за двенадцать: отрицательные
-     поля растят зону захвата, не сдвигая ни вкладки, ни расшифровку. Тонкую
-     черту ловили промахом — и попадали по вкладке под ней. */
+  /* The bar stays two pixels thick, but it is grabbed across twelve: negative
+     margins grow the grab zone without shifting either the tabs or the
+     transcript. People missed the thin line — and hit the tab under it. */
   .term-grip {
     display: flex;
     height: 12px;
@@ -683,8 +691,8 @@
     gap: 5px;
     padding: 0 2px;
     font-family: var(--tm-sans);
-    /* Вкладки, по которым щёлкают всю пару, стоят на обычной ступени
-       управляющего текста. */
+    /* Tabs that are clicked all class long sit on the ordinary step of control
+       text. */
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.14em;
@@ -706,8 +714,8 @@
     border-radius: 4px;
     padding: 2px 6px;
     font-family: var(--tm-sans);
-    /* Общий контейнер — состояние комнаты, поэтому подпись не мельче другого
-       метатекста в этой полосе. */
+    /* The shared container is room state, so its caption is no smaller than the
+       other meta text in this bar. */
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.1em;
@@ -738,8 +746,8 @@
     }
   }
 
-  /* 24 px по высоте — тот же пол, что у кнопок тетради; «Clear» и крестик
-     нажимают пальцем и пером. */
+  /* 24 px in height — the same floor as the notebook buttons; "Clear" and the
+     cross are pressed with a finger and a pen. */
   .term-act {
     display: inline-flex;
     flex: none;
@@ -760,7 +768,7 @@
       background-color var(--speed-quick, 0.1s) ease,
       transform var(--speed-press, 0.12s) var(--ease-out, ease-out);
   }
-  /* Отклик на нажатие — тот же, что у .btn и .press на светлой стороне. */
+  /* The press response is the same as .btn and .press on the light side. */
   .term-act:active:not(:disabled) {
     transform: scale(0.97);
   }
@@ -922,8 +930,8 @@
     animation: tmblink 1.1s ease-in-out infinite;
   }
 
-  /* Единственная кнопка в этой строке стоит на той же ступени и высоте, что
-     остальные действия ящика. */
+  /* The only button in this line sits on the same step and height as the
+     drawer's other actions. */
   .term-revive {
     display: inline-flex;
     align-items: center;
@@ -967,9 +975,10 @@
   }
 
   /*
-   * Телефон: в полосе 565 px содержимого на 360 экрана, и уезжает за кромку
-   * крестик — то есть ящик нечем закрыть. Уходит то, что ЧИТАЮТ (метка про
-   * общий контейнер и путь), остаётся то, что НАЖИМАЮТ.
+   * Phone: the bar has 565 px of content on a 360 screen, and the cross slides
+   * off the edge — that is, there is nothing to close the drawer with. What
+   * goes is what people READ (the shared-container label and the path); what
+   * stays is what people PRESS.
    */
   @media (max-width: 560px) {
     .term-badge,
@@ -982,7 +991,8 @@
       padding: 0 4px 0 6px;
     }
 
-    /* Три вкладки делят остаток и усыхают многоточием, а не выталкивают. */
+    /* The three tabs share what is left and shrink with an ellipsis instead of
+       pushing out. */
     .term-tab {
       flex: 1 1 auto;
       min-width: 0;

@@ -1,15 +1,17 @@
 /**
- * Кто развернул этот инстанс.
+ * Who deployed this instance.
  *
- * Строка рядом с логотипом была зашита в вёрстку и называла один конкретный
- * университет. Продукт разворачивают разные организации: на одном адресе это
- * ВШЭ, на другом банк, на третьем не нужно ничего, — и на чужом адресе зашитая
- * строка была не умолчанием, а чужим именем в шапке каждой комнаты и на экране
- * входа. Теперь это `INSTITUTION`, и умолчание — пусто.
+ * The line next to the logo was hard-coded into the markup and named one
+ * specific university. The product is deployed by different organisations: at
+ * one address it is HSE, at another a bank, at a third nothing is needed — and
+ * at someone else's address the hard-coded line was not a default but a
+ * stranger's name in the header of every room and on the join screen. Now it
+ * is `INSTITUTION`, and the default is empty.
  *
- * Проверяется то, что видно без браузера: строка едет в карточке семинара — то
- * есть на все экраны комнаты и на экран входа, без единого лишнего запроса, —
- * и обрезана потолком раньше, чем попадёт в вёрстку.
+ * What is checked is what can be seen without a browser: the line rides in the
+ * seminar card — that is, onto every room screen and the join screen, without
+ * a single extra request — and is cut by the ceiling before it reaches the
+ * markup.
  */
 import './_env.mts'
 import { after, before, test } from 'node:test'
@@ -17,13 +19,13 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 
 /**
- * Длиннее потолка — иначе обрезать нечего.
+ * Longer than the ceiling — otherwise there is nothing to cut.
  *
- * Присваивается ДО того, как загружен хоть один модуль сервера: `config` читает
- * окружение один раз, на импорте. Импорты выше безобидны — ни один из них про
- * окружение ничего не знает, — а всё, что знает, приезжает динамическим
- * импортом ниже, потому что статический был бы поднят выше этой строки и она
- * опоздала бы ровно на всё.
+ * Assigned BEFORE a single server module is loaded: `config` reads the
+ * environment once, at import. The imports above are harmless — none of them
+ * knows anything about the environment — and everything that does arrives via
+ * a dynamic import below, because a static one would be hoisted above this
+ * line, and the line would be late for exactly everything.
  */
 const LONG =
   'Национальный исследовательский университет имени очень длинного названия · Факультет чего-нибудь'
@@ -31,32 +33,33 @@ process.env.INSTITUTION = LONG
 
 const { config } = await import('../server/src/config.js')
 const { createSession, getSession } = await import('../server/src/db.js')
-// Приложение целиком (server/src/app.ts): порядок middleware у него тот же,
-// что на паре, а собранный рядом свой — только похожий.
+// The whole app (server/src/app.ts): its middleware order is the same as in
+// class, while one assembled here would only be similar.
 const { app } = await import('../server/src/app.js')
 
-/* ------------------------------------------------------------------ потолок */
+/* ------------------------------------------------------------------ ceiling */
 
-test('длинное название обрезано потолком, а не вёрсткой', () => {
+test('a long name is cut by the ceiling, not by the markup', () => {
   /*
-   * Восемьдесят символов — тот же потолок, что у названия модели в правилах
-   * комнаты (shared/rules.ts). Обрезать в вёрстке было бы поздно: строка едет в
-   * каждом ответе про семинар и ложится в localStorage каждого браузера как
-   * часть карточки комнаты.
+   * Eighty characters — the same ceiling as for the model name in the room
+   * rules (shared/rules.ts). Cutting in the markup would be too late: the line
+   * rides in every response about the seminar and lands in the localStorage of
+   * every browser as part of the room card.
    */
-  assert.ok(LONG.length > 80, 'подопытная строка короче потолка — проверять нечего')
+  assert.ok(LONG.length > 80, 'the test string is shorter than the ceiling — nothing to check')
   assert.equal(config.institution.length, 80)
   assert.equal(config.institution, LONG.slice(0, 80))
 })
 
-/* ------------------------------------------------------------ карточка комнаты */
+/* ------------------------------------------------------------ room card */
 
-test('и новая комната, и прочитанная из базы называют организацию одинаково', () => {
+test('both a new room and one read from the database name the organisation the same way', () => {
   const id = 'inst-card'
   /*
-   * Свойство инстанса, а не поле в строке таблицы: обе сборки карточки берут
-   * его из конфига. Сменив INSTITUTION, оператор меняет надпись сразу во всех
-   * комнатах, включая прошлогодние, — а не только в тех, что создадут дальше.
+   * A property of the instance, not a field in a table row: both ways of
+   * building the card take it from the config. By changing INSTITUTION the
+   * operator changes the label in all rooms at once, including last year's —
+   * not only in those created from now on.
    */
   assert.equal(createSession(id, 'Комната', null).institution, config.institution)
   assert.equal(getSession(id)?.institution, config.institution)
@@ -74,14 +77,14 @@ before(async () => {
 
 after(() => server?.close())
 
-test('экран входа узнаёт организацию из той же карточки комнаты', async () => {
+test('the join screen learns the organisation from the same room card', async () => {
   const id = 'inst-route'
   createSession(id, 'Комната', null)
 
   const res = await fetch(`${base}/api/sessions/${id}`)
   assert.equal(res.status, 200)
   const body = (await res.json()) as { institution: string }
-  // В этом и весь выбор доставки: постер входа рисуется по этому ответу и ни за
-  // чем больше не ходит.
+  // That is the whole choice of delivery: the join poster is drawn from this
+  // response and fetches nothing else.
   assert.equal(body.institution, config.institution)
 })

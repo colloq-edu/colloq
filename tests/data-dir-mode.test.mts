@@ -1,14 +1,15 @@
 /**
- * Каталог данных закрыт для всех, кроме нас.
+ * The data directory is closed to everyone but us.
  *
- * Внутри лежат ключи входа преподавателей, ключ модели инстанса и токен
- * установки. Заводили каталог трое — config.ts, db.ts и admin/auth.ts, — и
- * `mode: 0o700` стоял только у одного; а `mkdirSync(mode)` на уже
- * существующем каталоге не делает ничего. Побеждал тот, кто позвал первым, и
- * это всегда config.ts (он грузится раньше db.ts): каталог выходил 0755 при
- * комментарии в db.ts, обещающем «0700, закрытый для всех». Утечки не было —
- * сами файлы 0600, — но обещание в коде должно быть правдой, иначе следующий
- * положит сюда что-то менее осторожное, поверив ему.
+ * It holds the teachers' sign-in keys, the instance's model key and the
+ * install token. Three places created the directory — config.ts, db.ts and
+ * admin/auth.ts — and `mode: 0o700` was set in only one of them; and
+ * `mkdirSync(mode)` on an already existing directory does nothing. Whoever
+ * called first won, and that is always config.ts (it loads before db.ts):
+ * the directory came out 0755 while a comment in db.ts promised "0700,
+ * closed to everyone". There was no leak — the files themselves are 0600 —
+ * but a promise in the code must be true, otherwise the next person will put
+ * something less careful here, trusting it.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -16,30 +17,31 @@ import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { config, ensureDataDir } from '../server/src/config.js'
-// Импорт ради побочного действия: db.ts заводит каталог при загрузке — ровно
-// так же, как в живом процессе.
+// Imported for its side effect: db.ts creates the directory on load — just
+// as in the live process.
 import '../server/src/db.js'
 
 const modeOf = (p: string): number => fs.statSync(p).mode & 0o777
 
-test('каталог данных — 0700, кем бы из троих он ни был заведён', () => {
+test('the data directory is 0700, whichever of the three created it', () => {
   assert.equal(modeOf(config.dataDir).toString(8), '700')
 })
 
-test('каталог, заведённый до нас чужим umask, чинится, а не остаётся 0755', () => {
+test('a directory created before us with someone else\'s umask gets fixed instead of staying 0755', () => {
   /*
-   * Обычный случай: `make dirs` (или прошлая версия сервера) завёл `data/`
-   * заранее, и на запуске мы приходим к готовому каталогу. Именно здесь
-   * `mkdirSync(mode)` бессилен, и именно поэтому рядом стоит chmod.
+   * The usual case: `make dirs` (or a previous server version) created
+   * `data/` in advance, and on start-up we come to a ready directory. This
+   * is exactly where `mkdirSync(mode)` is powerless, and exactly why a chmod
+   * stands next to it.
    */
   fs.chmodSync(config.dataDir, 0o755)
-  assert.equal(modeOf(config.dataDir).toString(8), '755', 'chmod не сработал — тесту не на чем стоять')
+  assert.equal(modeOf(config.dataDir).toString(8), '755', 'chmod did not work — the test has nothing to stand on')
 
   ensureDataDir()
 
   assert.equal(modeOf(config.dataDir).toString(8), '700')
 })
 
-test('база лежит внутри него и сама закрыта', () => {
+test('the database lies inside it and is closed itself', () => {
   assert.equal(modeOf(path.join(config.dataDir, 'colloq.db')).toString(8), '600')
 })

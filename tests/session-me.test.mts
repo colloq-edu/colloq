@@ -1,18 +1,19 @@
 /**
- * «А меня-то пускают» — единственная дверь, которая обязана ответить закрытому.
+ * "But am I let in?" — the only door that must answer someone who is locked out.
  *
- * Вкладка, которой отказали в рукопожатии, не знает о себе ничего: сокет
- * закрывается ДО апгрейда и без слов, браузер видит 1006. Случая три — комнаты
- * нет, ключ протух, преподаватель закрыл доступ, — и различить их можно только
- * спросив. Пока спрашивать было негде, забаненный после перезагрузки читал
- * «место истекло», терял свою личность в комнате и назавтра входил новым
- * человеком: попытки консилиума и авторство оставались за тем, кого больше нет.
+ * A tab that was refused the handshake knows nothing about itself: the socket
+ * closes BEFORE the upgrade and without a word, the browser sees 1006. There
+ * are three cases — the room is gone, the key has expired, the teacher closed
+ * access — and they can only be told apart by asking. While there was nowhere
+ * to ask, a banned participant read "seat expired" after a reload, lost their
+ * identity in the room and the next day came in as a new person: council
+ * attempts and authorship stayed with someone who no longer exists.
  *
- * Ошибка здесь тихая в обе стороны, поэтому проверяется и то, чего дверь НЕ
- * делает: она не стоит за общим `banDoor` (иначе забаненный получал бы 403 без
- * объяснения), и она отвечает про несуществующую комнату НАШИМИ словами — по
- * ним клиент решает стереть местную копию тетради (shared/protocol.ts ·
- * SESSION_MISSING).
+ * The failure here is silent in both directions, so the test also checks what
+ * the door does NOT do: it does not sit behind the shared `banDoor` (otherwise
+ * a banned participant would get a 403 with no explanation), and it answers
+ * about a nonexistent room in OUR words — by them the client decides to wipe
+ * its local copy of the notebook (shared/protocol.ts · SESSION_MISSING).
  */
 import './_env.mts'
 import http from 'node:http'
@@ -43,9 +44,9 @@ before(async () => {
 
   const app = express()
   app.use(express.json())
-  // Тот же порядок, что в app.ts: маршруты комнаты первыми, файловые следом.
-  // Порядок здесь и есть предмет проверки — `banDoor` файлового роутера висит
-  // на том же префиксе.
+  // The same order as in app.ts: room routes first, file routes after. The
+  // order is the very thing under test — the file router's `banDoor` hangs on
+  // the same prefix.
   app.use(sessionRoutes())
   app.use(fileRoutes())
   server = http.createServer(app)
@@ -66,7 +67,7 @@ async function ask(room: string, token?: string): Promise<{ status: number; body
   return { status: res.status, body: (await res.json()) as SessionMe }
 }
 
-test('свой ключ — комната признаёт его и называет, кем', async () => {
+test('own key — the room recognizes it and says whose it is', async () => {
   const { status, body } = await ask(ROOM, tokenFor(ROOM, 'p_asks'))
   assert.equal(status, 200)
   assert.deepEqual(body, {
@@ -77,28 +78,29 @@ test('свой ключ — комната признаёт его и назыв
   })
 })
 
-test('без ключа — «предъявите ключ», а не «вас удалили»', async () => {
+test('no key — "show your key", not "you were removed"', async () => {
   const { status, body } = await ask(ROOM)
-  assert.equal(status, 200, 'дверь заведена ровно затем, чтобы отвечать; молчать ей нельзя')
+  assert.equal(status, 200, 'the door exists precisely to answer; it must not stay silent')
   assert.deepEqual(body, { tokenValid: false, ban: null, participantId: null, role: null })
 })
 
-test('ключ от другой комнаты — не ключ', async () => {
+test('a key from another room is not a key', async () => {
   const { body } = await ask(ROOM, tokenFor(OTHER, 'p_asks'))
-  assert.equal(body.tokenValid, false, 'чужой ключ признан своим')
+  assert.equal(body.tokenValid, false, 'a key from another room was accepted as our own')
   assert.equal(body.participantId, null)
 })
 
-test('комнаты нет — 404 НАШИМИ словами', async () => {
+test('no such room — a 404 in OUR words', async () => {
   const res = await fetch(`${base}/api/sessions/no-such-room/me`)
   assert.equal(res.status, 404)
   const body = (await res.json()) as { error: string }
-  // По этим словам клиент стирает местную копию тетради. Любой другой 404 —
-  // от ретранслятора, от статики — для него обрыв связи, а не приговор.
+  // By these words the client wipes its local copy of the notebook. Any other
+  // 404 — from the relay, from static hosting — is a lost connection to it,
+  // not a verdict.
   assert.equal(body.error, SESSION_MISSING)
 })
 
-test('забаненному эта дверь отвечает — и говорит, до какого часа', async () => {
+test('this door answers a banned participant — and says until what time', async () => {
   const until = Date.now() + 45 * 60 * 1000
   const ban = banParticipant({
     sessionId: ROOM,
@@ -107,23 +109,24 @@ test('забаненному эта дверь отвечает — и гово�
     byTeacher: 'Ада',
     until,
   })
-  assert.ok(ban, 'бан не завёлся — проверять нечего')
+  assert.ok(ban, 'the ban was not created — nothing to check')
 
   const token = tokenFor(ROOM, 'p_asks')
   const { status, body } = await ask(ROOM, token)
-  assert.equal(status, 200, 'дверь для забаненного ответила отказом — как раз то, чего нельзя')
-  assert.equal(body.tokenValid, true, 'ключ цел: человека закрыли, а не разлогинили')
-  assert.equal(body.ban?.until, until, 'экран бана рисует час окончания по этому числу')
+  assert.equal(status, 200, 'the door refused the banned participant — exactly what it must not do')
+  assert.equal(body.tokenValid, true, 'the key is intact: the person was locked out, not logged out')
+  assert.equal(body.ban?.until, until, 'the ban screen draws the end time from this number')
 
-  // А остальные двери комнаты для него закрыты — то есть дело не в том, что
-  // бан не действует, а в том, что эта дверь заведена отдельно и намеренно.
+  // Yet the room's other doors are closed to them — so the point is not that
+  // the ban does not work, but that this door is set up separately and on
+  // purpose.
   const closed = await fetch(`${base}/api/sessions/${ROOM}/participants`, {
     headers: { authorization: `Bearer ${token}` },
   })
-  assert.equal(closed.status, 403, 'бан перестал закрывать комнату')
+  assert.equal(closed.status, 403, 'the ban stopped closing the room')
 
-  // И файловая дверь, которая вешает свой banDoor на тот же префикс, тоже:
-  // порядок роутеров не должен утаскивать /me за чужую дверь.
+  // And so is the file door, which hangs its own banDoor on the same prefix:
+  // the router order must not drag /me behind someone else's door.
   const files = await fetch(`${base}/api/sessions/${ROOM}/files`, {
     headers: { authorization: `Bearer ${token}` },
   })
@@ -131,5 +134,5 @@ test('забаненному эта дверь отвечает — и гово�
 
   liftBan(ROOM, ban.id)
   const after = await ask(ROOM, token)
-  assert.equal(after.body.ban, null, 'снятый бан остался в ответе')
+  assert.equal(after.body.ban, null, 'the lifted ban stayed in the response')
 })

@@ -1,27 +1,30 @@
 /**
- * Панель: прежний адрес, палец и один язык на одну поверхность.
+ * The panel: a former address, a finger and one language per surface.
  *
- * Три места, где панель обещала больше, чем показывала.
+ * Three places where the panel promised more than it showed.
  *
- * Первое — прежнее имя в адресе. Сервер научился называть держателя и отдавать
- * его прежние имена (server/src/routes/courses.ts · former, addressHolder), а
- * отпускать их всё равно было негде: курс «ML 2025», переименованный в
- * «ml-2025-fall», держит «ml-2025» за собой навсегда, и увидеть, что держит его
- * именно этот курс, владелец не мог — строки с таким адресом в списке нет.
- * Проверяется, что список есть на обоих экранах, что цена названа РЯДОМ с
- * кнопкой, а не только в вопросе после неё, и что необратимое идёт вторым шагом.
+ * The first is a former name in the address. The server learned to name the
+ * holder and to return its former names (server/src/routes/courses.ts ·
+ * former, addressHolder), but there was still nowhere to release them: the
+ * course "ML 2025", renamed to "ml-2025-fall", holds "ml-2025" for itself
+ * forever, and the owner could not see that it is exactly this course that
+ * holds it: there is no row with that address in the list. We check that the
+ * list exists on both screens, that the price is named NEXT to the button
+ * and not only in the question after it, and that the irreversible part
+ * comes as a second step.
  *
- * Второе — значок «скопировать» у адреса семинара. `hoverOnlyWhenSupported`
- * (tailwind.config.js) правильно убрал залипающий hover с сенсорных экранов, но
- * этот значок был у строки ЕДИНСТВЕННОЙ подсказкой, что она нажимается, — и на
- * iPad перестал появляться вовсе.
+ * The second is the "copy" icon at the seminar address.
+ * `hoverOnlyWhenSupported` (tailwind.config.js) rightly removed sticky hover
+ * from touch screens, but this icon was the row's ONLY hint that it can be
+ * pressed, and on the iPad it stopped appearing at all.
  *
- * Третье — язык. Панель и общий компонент правил следуют языку инстанса.
- * Проверяются оба языка: подписи одной поверхности не должны смешиваться.
+ * The third is language. The panel and the shared rules component follow
+ * the instance language. Both languages are checked: captions of one
+ * surface must not mix.
  *
- * Читается прямо из компонентов, как в `panels-craft.test.mts` и
- * `panels-touch.test.mts`: тест со своей копией правила проходит вечно, пока
- * файл уезжает.
+ * It is read straight from the components, as in `panels-craft.test.mts`
+ * and `panels-touch.test.mts`: a test with its own copy of the rule passes
+ * forever while the file drifts away.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -33,7 +36,7 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка без комментариев: объяснение — не обещание. */
+/** Markup without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source
     .replace(/<!--[\s\S]*?-->/g, '')
@@ -46,7 +49,7 @@ function localized(source: string, locale: Locale): string {
   return source.replace(/\btr\(\s*['"]([^'"]+)['"]\s*\)/g, (_match, key: string) => translate(locale, key))
 }
 
-/** Переносы строк — дело форматирования, а не смысла. */
+/** Line breaks are a matter of formatting, not meaning. */
 const flat = (source: string): string => source.replace(/\s+/g, ' ')
 
 const COURSES = 'web/src/admin/screens/Courses.svelte'
@@ -54,125 +57,127 @@ const PUBLISH = 'web/src/admin/screens/Publish.svelte'
 const SEMINARS = 'web/src/admin/screens/Seminars.svelte'
 const ENVIRONMENTS = 'web/src/admin/screens/Environments.svelte'
 
-/* --------------------------------------------------- прежние имена в адресе */
+/* ---------------------------------------------- former names in the address */
 
-test('прежние имена курса видно там, где их и меняли', () => {
+test('former names of a course are visible where they were changed', () => {
   const courses = code(read(COURSES))
-  // Список — с сервера, а не собранный экраном из своих же переименований:
-  // адрес освобождают в сентябре следующего года, из другой вкладки и другими
-  // руками (server/src/routes/courses.ts:128,153 · former).
+  // The list comes from the server, not assembled by the screen from its own
+  // renames: an address is freed in September of the following year, from
+  // another tab and by other hands (server/src/routes/courses.ts:128,153 ·
+  // former).
   assert.match(courses, /const former = \$derived\(course\?\.former \?\? \[\]\)/)
   assert.match(courses, /\{#each former as name \(name\)\}/)
-  assert.match(courses, /\/c\/\{name\}/, 'имя показано адресом, а не голой строкой')
+  assert.match(courses, /\/c\/\{name\}/, 'the name is shown as an address, not as a bare string')
 })
 
-test('цена отпускания названа у самой кнопки, а не только в вопросе', () => {
+test('the price of releasing is named at the button itself, not only in the question', () => {
   const courses = flat(localized(code(read(COURSES)), 'ru'))
   const list = courses.slice(courses.indexOf('Прежние адреса'), courses.indexOf('{#each former'))
-  assert.ok(list.length > 0, 'блок прежних адресов не нашёлся')
-  // Ссылка, записанная в чате прошлогодней группы, после этого отвечает 404 —
-  // и об этом читают ДО нажатия, а не в окне поверх него.
+  assert.ok(list.length > 0, 'the former addresses block was not found')
+  // A link written down in last year's group chat answers 404 after this,
+  // and people read about it BEFORE pressing, not in a dialog on top of it.
   assert.match(list, /перестанет вести сюда/)
-  assert.match(list, /сможет занять другой курс/, 'а зачем это делают — тоже сказано')
+  assert.match(list, /сможет занять другой курс/, 'and why people do it is said too')
 })
 
-test('отпускают вторым шагом: кнопка задаёт вопрос, а не выполняет', () => {
+test('releasing is a second step: the button asks a question, it does not act', () => {
   const courses = code(read(COURSES))
-  // Нажатие в списке только спрашивает; сам запрос уходит из окна.
+  // A press in the list only asks; the request itself goes from the dialog.
   assert.match(courses, /onclick=\{\(\) => \(dropping = name\)\}/)
   const asked = courses.indexOf('id="drop-slug-title"')
-  assert.ok(asked > 0, 'окна с вопросом нет вовсе')
+  assert.ok(asked > 0, 'there is no question dialog at all')
   assert.ok(
     courses.indexOf('void dropFormer()') > asked,
-    'необратимое зовётся мимо вопроса — вторым шагом это не назвать',
+    'the irreversible action is called past the question; that cannot be called a second step',
   )
-  // И вопрос называет тот самый адрес, а не «связанные данные».
+  // And the question names that very address, not "related data".
   assert.match(courses, /tr\('admin\.course\.releaseHeading', \{ address: going \}\)/)
   assert.equal(translate('ru', 'admin.course.releaseHeading', { address: 'old-course' }), 'Освободить адрес /c/old-course?')
   assert.equal(translate('en', 'admin.course.releaseHeading', { address: 'old-course' }), 'Release address /c/old-course?')
 })
 
-test('отпускает владелец и своё: маршрут зовут с идентификатором курса', () => {
+test('the owner releases their own: the route is called with the course id', () => {
   const courses = code(read(COURSES))
   assert.match(courses, /adminApi\.releaseFormerSlug\('course', open\.id, name\)/)
-  // Список пересчитывает сервер: своя копия ответа разошлась бы с ним на
-  // первом же отказе (server/src/publish/store.ts · releaseFormerSlug → 404).
+  // The server recomputes the list: our own copy of the answer would diverge
+  // from it at the very first refusal (server/src/publish/store.ts ·
+  // releaseFormerSlug → 404).
   assert.match(
     code(read(COURSES)).slice(courses.indexOf('async function dropFormer')),
     /await loadOne\(open\.id\)/,
   )
 })
 
-test('страница знает свои прежние имена ещё до того, как её переиздали', () => {
+test('a page knows its former names even before it is republished', () => {
   const publish = code(read(PUBLISH))
-  // Раньше список наполняли только переименования В ЭТОЙ ВКЛАДКЕ: экран,
-  // открытый год спустя, показывал пустоту, и отпускать в нём было нечего.
+  // The list used to be filled only by renames IN THIS TAB: a screen opened a
+  // year later showed emptiness, and there was nothing to release in it.
   assert.match(publish, /former = already\?\.former \?\? \[\]/)
-  assert.match(publish, /\{#snippet formerNames\(\)\}/, 'список нужен в двух местах экрана')
+  assert.match(publish, /\{#snippet formerNames\(\)\}/, 'the list is needed in two places on the screen')
   const renders = publish.match(/\{@render formerNames\(\)\}/g) ?? []
-  assert.equal(renders.length, 2, 'только что опубликованная страница — и опубликованная раньше')
+  assert.equal(renders.length, 2, 'a page just published, and one published earlier')
 })
 
-test('у публикации отпускают то же и так же', () => {
+test('a publication releases the same thing in the same way', () => {
   const publish = code(read(PUBLISH))
   const flatPublish = flat(localized(publish, 'ru'))
   const list = flatPublish.slice(
     flatPublish.indexOf('Прежние адреса'),
     flatPublish.indexOf('{#each former'),
   )
-  assert.match(list, /перестанет вести сюда/, 'цена названа у кнопки')
+  assert.match(list, /перестанет вести сюда/, 'the price is named at the button')
   assert.match(publish, /adminApi\.releaseFormerSlug\('publication', page, name\)/)
-  // Идентификатор — страницы, а не сегодняшнего нажатия «Опубликовать»:
-  // прежние имена принадлежат ей и тогда, когда её публиковали в прошлом году.
+  // The id is the page's, not today's press of "Publish": the former names
+  // belong to it even when it was published last year.
   assert.match(publish, /const pageId = \$derived\(done \?\? already\?\.id \?\? null\)/)
   assert.ok(
     publish.indexOf('void dropFormer()') > publish.indexOf('id="drop-slug-title"'),
-    'необратимое зовётся мимо вопроса',
+    'the irreversible action is called past the question',
   )
 })
 
-/* ------------------------------------------------------------------- палец */
+/* ------------------------------------------------------------------ finger */
 
-test('значок «скопировать» у адреса семинара виден и без наведения', () => {
+test('the "copy" icon at the seminar address is visible without hovering', () => {
   const seminars = code(read(SEMINARS))
-  // Именно та кнопка, что несёт адрес в строке списка: `data-copy` — её метка,
-  // по ней же кнопку находит и сама страница, отвечая на ⌘C.
+  // Exactly the button that carries the address in the list row: `data-copy`
+  // is its mark, and the page itself finds the button by it when answering ⌘C.
   const row = seminars.slice(seminars.indexOf('data-copy={seminar.id}'))
   const icon = row.slice(row.indexOf('<Icon'))
   const shown = flat(icon.slice(0, icon.indexOf('/>')))
-  assert.match(shown, /group-hover:opacity-100/, 'указателю — по наведению')
-  assert.match(shown, /group-focus-within:opacity-100/, 'клавиатуре — по фокусу в строке')
-  // Там, где наведения не бывает вовсе (iPad, с которого панель и открывают),
-  // подсказка о том, что строка нажимается, обязана стоять всегда: hover-утилиты
-  // туда больше не доезжают (tailwind.config.js · hoverOnlyWhenSupported).
+  assert.match(shown, /group-hover:opacity-100/, 'for a pointer, on hover')
+  assert.match(shown, /group-focus-within:opacity-100/, 'for the keyboard, on focus within the row')
+  // Where there is no hover at all (the iPad the panel is opened from), the
+  // hint that the row can be pressed must always be there: hover utilities no
+  // longer reach there (tailwind.config.js · hoverOnlyWhenSupported).
   assert.match(shown, /\[@media\(hover:none\)\]:opacity-100/)
 })
 
-/* -------------------------------------------------- один язык на поверхность */
+/* -------------------------------------------------- one language per surface */
 
-test('меню строки семинара целиком следует языку инстанса', () => {
+test('the seminar row menu follows the instance language entirely', () => {
   const seminars = code(read(SEMINARS))
   const opened = seminars.indexOf('role="menu"')
   const menu = seminars.slice(opened, seminars.indexOf('</tr>', opened))
   const en = localized(menu, 'en')
   const ru = localized(menu, 'ru')
-  assert.ok(en.includes('Copy link') && en.includes('Delete…'), 'меню не нашлось')
+  assert.ok(en.includes('Copy link') && en.includes('Delete…'), 'the menu was not found')
   assert.ok(ru.includes('Копировать ссылку') && ru.includes('Удалить…'))
   assert.doesNotMatch(en, /[А-Яа-яЁё]/)
   assert.doesNotMatch(ru, /Copy link|Delete…|End the class/)
 })
 
-test('рамка окна правил и общий компонент используют язык инстанса', () => {
+test('the rules window frame and the shared component use the instance language', () => {
   const seminars = code(read(SEMINARS))
   const dialog = seminars.slice(seminars.indexOf('aria-labelledby="seminar-rules-title"'))
   const window_ = dialog.slice(0, dialog.indexOf('{#if doomed}'))
-  assert.ok(window_.includes('RoomRulesRows'), 'окно правил не нашлось')
+  assert.ok(window_.includes('RoomRulesRows'), 'the rules window was not found')
   assert.match(localized(window_, 'ru'), /права участников/)
   assert.match(localized(window_, 'en'), /participant permissions/)
   assert.match(read(SEMINARS), /RoomRulesRows\.svelte/)
 })
 
-test('экран окружений целиком следует выбранному языку', () => {
+test('the environments screen follows the chosen language entirely', () => {
   const source = code(read(ENVIRONMENTS))
   assert.doesNotMatch(localized(source, 'en'), /[А-Яа-яЁё]/)
   assert.match(localized(source, 'ru'), /Окружения/)

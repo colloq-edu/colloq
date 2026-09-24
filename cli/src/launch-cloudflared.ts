@@ -1,28 +1,32 @@
 /**
- * cloudflared без ручной установки.
+ * cloudflared without a manual install.
  *
- * Быстрый туннель Cloudflare — это один процесс cloudflared, и до сих пор его
- * надо было поставить самому: `brew install cloudflared`, иначе host.sh
- * умирал отказом. Для преподавателя, который поставил colloq через pip, это
- * второй установщик ради одной ссылки, а на Linux без Homebrew — поиск пакета.
+ * A Cloudflare quick tunnel is one cloudflared process, and until now one had
+ * to install it oneself: `brew install cloudflared`, otherwise host.sh died
+ * with a refusal. For a teacher who installed colloq through pip, that is a
+ * second installer for the sake of one link, and on Linux without Homebrew a
+ * hunt for a package.
  *
- * Порядок поиска (resolveCloudflared) — от явного к скачанному:
- *   1. COLLOQ_CLOUDFLARED=/путь — человек назвал файл сам; ему и верим;
- *   2. cloudflared в PATH — поставленный руками (brew, пакет системы);
- *   3. <home>/bin/cloudflared — наша копия, и только если её байты совпадают
- *      с закреплённой суммой (launch-cloudflared-pin.ts);
- *   4. иначе скачиваем закреплённый выпуск с GitHub в <home>/bin.
- * COLLOQ_CLOUDFLARED_DOWNLOAD=0 запрещает четвёртый шаг: машины, где из сети
- * ничего не качают, получают отказ со словами, а не тихую загрузку.
+ * The search order (resolveCloudflared) goes from explicit to downloaded:
+ *   1. COLLOQ_CLOUDFLARED=/path: the person named the file themselves, and we
+ *      trust it;
+ *   2. cloudflared in PATH: installed by hand (brew, a system package);
+ *   3. <home>/bin/cloudflared: our copy, and only if its bytes match the
+ *      pinned sum (launch-cloudflared-pin.ts);
+ *   4. otherwise we download the pinned release from GitHub into <home>/bin.
+ * COLLOQ_CLOUDFLARED_DOWNLOAD=0 forbids the fourth step: machines that
+ * download nothing from the network get a refusal in words, not a quiet
+ * download.
  *
- * Скачанное запускается только после сверки: сумма архива — до распаковки,
- * сумма исполняемого файла — после неё и ещё раз с диска, до chmod +x.
- * Непроверенный файл не получает права на запуск ни на миг: пишется 0600 под
- * временным именем и становится cloudflared одним rename, уже проверенным.
+ * What was downloaded runs only after checking: the archive sum before
+ * unpacking, the executable's sum after it and once more from disk, before
+ * chmod +x. An unchecked file never gets execute permission, not for an
+ * instant: it is written 0600 under a temporary name and becomes cloudflared
+ * with a single rename, already checked.
  *
- * Здесь только встроенные модули node: бандл CLI не тянет зависимостей
- * (scripts/pack.mts это проверяет), а tar и curl есть не везде одинаковые —
- * архив в одну запись разбирается двадцатью строками ниже.
+ * Only node's built-in modules here: the CLI bundle pulls in no dependencies
+ * (scripts/pack.mts checks this), and tar and curl are not the same
+ * everywhere, so the single-entry archive is parsed in twenty lines below.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -36,7 +40,7 @@ import {
 
 export const CLOUDFLARED_RELEASES = 'https://github.com/cloudflare/cloudflared/releases'
 
-/** Совет, который годится при любом отказе: поставить самому или назвать файл. */
+/** Advice that fits any refusal: install it yourself or name the file. */
 export const INSTALL_HINT =
   'Install cloudflared yourself (brew install cloudflared, or a package from ' +
   CLOUDFLARED_RELEASES +
@@ -49,11 +53,12 @@ export function cloudflaredUrl(asset: CloudflaredAsset, version = CLOUDFLARED_VE
 }
 
 /**
- * Файл выпуска для этой машины — или отказ, который говорит, что делать.
+ * The release file for this machine, or a refusal that says what to do.
  *
- * Windows отказываем отдельными словами: колесо pip собирается для macOS и
- * Linux, супервизор публикует через bash-скрипт, и cloudflared.exe один
- * ничего бы не дал. WSL 2 — это Linux, и там всё работает как на Linux.
+ * Windows is refused in words of its own: the pip wheel is built for macOS
+ * and Linux, the supervisor publishes through a bash script, and
+ * cloudflared.exe alone would give nothing. WSL 2 is Linux, and there
+ * everything works as on Linux.
  */
 export function pickCloudflaredAsset(
   platform: string,
@@ -78,7 +83,7 @@ export function sha256(data: Uint8Array): string {
   return createHash('sha256').update(data).digest('hex')
 }
 
-/** Сверка суммы. Отказ называет обе суммы: так видно, подмена это или обрыв. */
+/** Checking the sum. The refusal names both sums: that shows whether it is a swap or a cut-off. */
 export function verifySha256(data: Uint8Array, expected: string, what: string): void {
   const actual = sha256(data)
   if (actual !== expected)
@@ -89,13 +94,14 @@ export function verifySha256(data: Uint8Array, expected: string, what: string): 
 }
 
 /**
- * Один обычный файл из tar — по имени, без каталогов вокруг.
+ * One regular file from a tar, by name, without the directories around it.
  *
- * Архив cloudflared для macOS — ustar с единственной записью `cloudflared`.
- * Разбор знает ровно то, что встречается в tar от bsdtar и GNU tar: префикс
- * ustar, длинное имя GNU (L) и путь из pax (x). Всё прочее пропускается, а
- * запись с другим именем не берётся никогда: исполняемым станет только файл,
- * названный cloudflared, — и только после сверки его суммы.
+ * The cloudflared archive for macOS is a ustar with a single `cloudflared`
+ * entry. The parser knows exactly what occurs in tars from bsdtar and GNU
+ * tar: the ustar prefix, the GNU long name (L) and the pax path (x).
+ * Everything else is skipped, and an entry with another name is never taken:
+ * only the file named cloudflared becomes executable, and only after its sum
+ * is checked.
  */
 export function untarFile(tar: Uint8Array, wanted: string): Buffer {
   const data = Buffer.from(tar.buffer, tar.byteOffset, tar.byteLength)
@@ -128,7 +134,7 @@ export function untarFile(tar: Uint8Array, wanted: string): Buffer {
   throw new Error(`There is no ${wanted} inside the archive.`)
 }
 
-/** Скачанный файл → исполняемый, с обеими сверками. Бросает до всякой записи на диск. */
+/** Downloaded file → executable, with both checks. Throws before anything is written to disk. */
 export function cloudflaredBinary(asset: CloudflaredAsset, downloaded: Uint8Array): Buffer {
   verifySha256(downloaded, asset.sha256, asset.name)
   const binary =
@@ -148,16 +154,16 @@ export interface CloudflaredLookup {
   env: Record<string, string | undefined>
   platform: string
   arch: string
-  /** Куда colloq кладёт свою копию: <home>/bin. */
+  /** Where colloq puts its copy: <home>/bin. */
   binDir: string
-  /** Есть ли файл и можно ли его запустить. */
+  /** Whether the file exists and can be run. */
   executable(file: string): boolean
-  /** sha256 файла или null, если его не прочесть. */
+  /** The file's sha256, or null if it cannot be read. */
   hashOf(file: string): string | null
   assets?: readonly CloudflaredAsset[]
 }
 
-/** Где взять cloudflared — без единого действия; решение исполняет ensureCloudflared. */
+/** Where to get cloudflared, without a single action; ensureCloudflared carries out the decision. */
 export function resolveCloudflared(lookup: CloudflaredLookup): CloudflaredResolution {
   const named = (lookup.env.COLLOQ_CLOUDFLARED ?? '').trim()
   if (named) {
@@ -175,8 +181,8 @@ export function resolveCloudflared(lookup: CloudflaredLookup): CloudflaredResolu
   }
   const ours = path.join(lookup.binDir, 'cloudflared')
   for (const dir of (lookup.env.PATH ?? '').split(path.delimiter)) {
-    // Свой каталог из PATH не берём: наша копия запускается только сверенной
-    // (ниже), и PATH не должен быть обходом этой сверки.
+    // We do not take our own directory from PATH: our copy runs only once
+    // checked (below), and PATH must not be a way around that check.
     if (!dir || !path.isAbsolute(dir) || path.resolve(dir) === path.resolve(lookup.binDir)) continue
     const candidate = path.join(dir, 'cloudflared')
     if (lookup.executable(candidate)) return { kind: 'use', path: candidate, source: 'path' }
@@ -204,12 +210,14 @@ export function resolveCloudflared(lookup: CloudflaredLookup): CloudflaredResolu
 }
 
 /**
- * Скачать с GitHub, не больше закреплённого размера, говоря о ходе вслух.
+ * Download from GitHub, no more than the pinned size, reporting progress out
+ * loud.
  *
- * Сорок мегабайт на медленной сети — минута-другая, и молчаливая минута
- * читается как «зависло» (то же сказано у шима про первый npm install).
- * Поэтому ход печатается четвертями, а ждём мы не общий срок, а тишину:
- * минута без единого байта — обрыв, а долгая, но идущая загрузка — нет.
+ * Forty megabytes on a slow network take a minute or two, and a silent minute
+ * reads as "it hung" (the shim says the same about the first npm install). So
+ * progress is printed in quarters, and what we wait for is not an overall
+ * deadline but silence: a minute without a single byte is a cut-off, while a
+ * long but progressing download is not.
  */
 async function download(
   url: string,
@@ -253,20 +261,20 @@ async function download(
   } catch (error) {
     if (cancel?.aborted) throw new Error('The download was cancelled.')
     if (controller.signal.aborted) throw new Error('The download stalled: no data for a minute.')
-    // «fetch failed» ничего не говорит; причина — в cause (DNS, TLS, обрыв).
+    // "fetch failed" says nothing; the reason is in cause (DNS, TLS, a cut-off).
     const cause = (error as { cause?: unknown }).cause
     const reason = cause instanceof Error ? cause.message : (error as Error).message
     throw new Error(`Could not download ${asset.name}: ${reason}`)
   } finally {
     if (quiet) clearTimeout(quiet)
     cancel?.removeEventListener('abort', abort)
-    // Брошенное на полпути соединение не держим: отказ по размеру или
-    // статусу иначе дочитывал бы файл в пустоту.
+    // We do not keep a connection abandoned halfway: otherwise a refusal over
+    // the size or the status would keep reading the file into the void.
     controller.abort()
   }
 }
 
-/** Записать сверенные байты: 0600 под временным именем, сверка с диска, chmod, rename. */
+/** Write the checked bytes: 0600 under a temporary name, a check from disk, chmod, rename. */
 function install(binDir: string, binary: Buffer, expected: string): string {
   fs.mkdirSync(binDir, { recursive: true, mode: 0o700 })
   const file = path.join(binDir, 'cloudflared')
@@ -303,20 +311,20 @@ function hashOf(file: string): string | null {
 }
 
 export interface EnsureOptions {
-  /** Каталог состояния: копия ложится в <home>/bin. */
+  /** The state directory: the copy goes into <home>/bin. */
   home: string
   env: Record<string, string | undefined>
-  /** Куда говорить: супервизор — в терминал, host.sh ждёт путь в stdout и берёт слова из stderr. */
+  /** Where to speak: the supervisor, to the terminal; host.sh wants the path on stdout, words on stderr. */
   say(line: string): void
   platform?: string
   arch?: string
   fetch?: typeof fetch
   assets?: readonly CloudflaredAsset[]
-  /** Ctrl+C посреди загрузки. */
+  /** Ctrl+C in the middle of the download. */
   signal?: AbortSignal
 }
 
-/** Путь к cloudflared, которому можно доверить туннель; при нужде — скачав его. */
+/** The path to a cloudflared that can be trusted with the tunnel; downloading it if needed. */
 export async function ensureCloudflared(options: EnsureOptions): Promise<string> {
   const platform = options.platform ?? process.platform
   const arch = options.arch ?? process.arch

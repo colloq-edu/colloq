@@ -6,7 +6,7 @@
   interface Props {
     attempt: CouncilAttempt; presence: PultPresence; unread: boolean; variant: number;
     names: boolean; selected: boolean; focused: boolean; meaning: RowMeaning;
-    /** Часы окна: по ним идёт «Считает 3 с» у того, кто считается прямо сейчас. */
+    /** The window clock: it drives "Running 3 s" for whoever is running right now. */
     now: number;
     onlet: (() => void) | null; onopen: () => void
   }
@@ -15,26 +15,30 @@
   const title = $derived(names ? attempt.name : tr('room.ui.1255',{p0:variant}))
   const draft = $derived(attempt.submittedAt === null)
   /*
-   * Две строки на строку, и вторая у сдавших и пишущих РАЗНАЯ.
+   * Two lines per row, and the second is DIFFERENT for those who submitted
+   * and those writing.
    *
-   * У сдавших — плашка оценки и строка запуска целиком: что случилось, сколько
-   * считалось и когда (час запуска — просьба с пары 19.09, по нему сличают
-   * запуск с тем, что было в аудитории минуту назад).
+   * For those who submitted — the grade badge and the full run line: what
+   * happened, how long it ran and when (the run's hour is a request from the
+   * 19 Sep 2026 class; it is used to match a run with what happened in the
+   * lecture hall a minute ago).
    *
-   * У пишущих плашки нет вовсе: «Черновик» в каждой второй строке — десять
-   * одинаковых слов подряд. Вместо неё одна строка состояния, и она отвечает
-   * на единственный вопрос вкладки «Пишут»: кто застрял. Раньше на этом месте
-   * стояло «не в сети» — подпись, повторённая у половины класса и не
-   * говорящая ничего; присутствие теперь точка на аватаре.
+   * Those writing have no badge at all: "Draft" in every other row is ten
+   * identical words in a row. Instead there is one state line, and it
+   * answers the only question of the "Writing" tab: who is stuck. This spot
+   * used to say "offline" — a caption repeated for half the class and saying
+   * nothing; presence is now a dot on the avatar.
    */
   const execution = $derived(draft ? draftLine(attempt, now) : attemptRunLine(attempt, now))
   /*
-   * Знак от самого состояния, если оно его прислало: у остановленного пределом
-   * тон общий с упавшим (красный), а часы говорят, что ошибки в коде не было.
+   * The icon comes from the state itself, if it sent one: a run stopped by
+   * the limit shares its tone with a failed one (red), while the clock says
+   * there was no error in the code.
    *
-   * У пишущих знака нет вовсе. Там строка состояния — единственная строка
-   * человека, и начинается она со слова, которое и есть ответ («молчит 7 мин»);
-   * значок перед ним читался бы как ещё один вид состояния, которого нет.
+   * Those writing have no icon at all. There the state line is the person's
+   * only line, and it starts with the word that is the answer ("silent 7
+   * min"); an icon before it would read as one more kind of state that does
+   * not exist.
    */
   const runIcon = $derived(draft
     ? ''
@@ -49,8 +53,9 @@
     </span>
     <span class="pult-row-main">
       <span class="pult-row-name">{title}</span>
-      <!-- Плашка — только у сдавшего: у пишущего её место занимает строка
-           состояния, а «Черновик» и так сказан приглушённой строкой. -->
+      <!-- The badge only for someone who submitted: for someone writing its
+           place is taken by the state line, and "Draft" is already said by
+           the muted row. -->
       {#if !draft}
         <span class="pult-row-tags">
           <span class="pult-badge" data-tone={review.tone} data-shape={review.shape}>{#if review.tone==='positive'}<span aria-hidden="true">✓</span>{:else if review.tone==='warning'}<span aria-hidden="true">↺</span>{/if}{review.label}</span>
@@ -72,10 +77,10 @@
 </div>
 <style>
   /*
-   * 72 px на строку вместо 86: в окне 900×650 их было видно две с половиной, и
-   * список переставал быть списком. Три строчки текста (имя, плашка, запуск)
-   * ложатся в 72 без тесноты, а палец на телефоне получает свои 64 — ниже
-   * собственной высоты строки цель нажатия не опускается.
+   * 72 px per row instead of 86: in a 900×650 window two and a half of them
+   * were visible, and the list stopped being a list. Three lines of text
+   * (name, badge, run) fit into 72 without crowding, and a finger on a phone
+   * gets its 64 — the touch target does not drop below the row's own height.
    */
   .pult-row { display:flex; align-items:center; gap:8px; min-height:70px; border-bottom:1px solid rgb(var(--line)); border-left:3px solid transparent; padding:6px 10px 6px 7px; background:rgb(var(--canvas)); }
   .pult-row:hover { background:rgb(var(--surface)); }
@@ -83,7 +88,7 @@
   .pult-row.asking:not(.selected) { border-left-color:rgb(var(--warning)); }
   .pult-row.on-screen:not(.selected) { border-left-color:rgb(var(--positive)); }
   .pult-row.focused { outline:2px solid rgb(var(--accent-text)); outline-offset:-2px; }
-  /* Черновик приглушён: он в списке ради полноты класса, а смотрят на сдавших. */
+  /* A draft is muted: it is listed for completeness, but people look at submissions. */
   .pult-row[data-draft='yes'] .pult-avatar, .pult-row[data-draft='yes'] .pult-row-name { opacity:.65; }
   .pult-row-select { display:flex; align-items:center; gap:9px; min-width:0; flex:1; text-align:left; cursor:pointer; }
   .pult-unread { width:6px; height:6px; flex-shrink:0; border-radius:50%; background:transparent; }
@@ -93,18 +98,19 @@
   .pult-row-main { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
   .pult-row-name { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:15px; font-weight:700; line-height:18px; }
   .pult-row-tags { display:flex; gap:4px; flex-wrap:wrap; }
-  /* Плашка в строке — мельче общей: три строчки должны уложиться в 70 px. */
+  /* A row's badge is smaller than the usual one: three lines must fit in 70 px. */
   .pult-row-tags :global(.pult-badge) { padding:1px 6px; font-size:12px; line-height:16px; }
   .pult-run-state { font-size:12px; line-height:16px; color:rgb(var(--muted)); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .pult-run-state[data-tone="danger"] { color:rgb(var(--danger)); }
   .pult-run-state[data-tone="warning"] { color:rgb(var(--warning)); }
   .pult-run-state[data-tone="accent"] { color:rgb(var(--accent-text)); }
-  /* У пишущего эта строка — единственное, что о нём сказано: тревожная набрана
-     жирным, чтобы «молчит 7 мин» ловилось раньше соседних «пишет · 14 строк». */
+  /* For someone writing this line is all that is said about them: an alarming
+     one is set in bold, so that "silent 7 min" is caught before the
+     neighbouring "writing · 14 lines". */
   .pult-run-state[data-loud="yes"] { font-weight:700; }
   .pult-row-tail { display:flex; flex-direction:column; gap:3px; align-items:flex-end; width:58px; flex-shrink:0; text-align:right; }
   .pult-allow { min-height:34px; padding:5px 8px; background:rgb(var(--warning)/.12); border:1px solid rgb(var(--warning)/.45); color:rgb(var(--warning)); font-size:13px; font-weight:600; cursor:pointer; }
   @media(max-width:800px) { .pult-row { padding-right:8px; }.pult-row-tail { width:54px; } }
-  /* Телефон: строка ведёт на весь экран работы, и нажимают по ней пальцем. */
+  /* Phone: a row opens the full-screen work, and it is pressed with a finger. */
   @media(max-width:650px) { .pult-row { min-height:64px; }.pult-row-name { font-size:16px; line-height:20px; } }
 </style>

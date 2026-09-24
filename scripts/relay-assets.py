@@ -1,56 +1,58 @@
 #!/usr/bin/env python3
-"""Зеркало неизменяемой статики занятия на самом ретрансляторе.
+"""A mirror of the class's immutable static files on the relay itself.
 
-Зачем. Всё, что видит студент, ехало через туннель с ноутбука преподавателя:
-каждый /assets/*, каждый шрифт, каждый кусок pdf.js — по 598 КБ сжатого на
-каждого пришедшего, через Wi-Fi аудитории, через frpc, через frps и обратно.
-Двести человек по звонку — это двести таких проходов по одному и тому же
-каналу, и ими же он и забивается: пока грузится страница, по этому же туннелю
-идут сокеты комнаты.
+Why. Everything a student sees used to travel through the tunnel from the
+teacher's laptop: every /assets/*, every font, every piece of pdf.js, 598 KB
+compressed for everyone who arrives, over the classroom Wi-Fi, through frpc,
+through frps and back. Two hundred people at the bell are two hundred such
+trips over one and the same channel, and they are what clogs it: while the
+page loads, the room's sockets go through that same tunnel.
 
-А файлы-то одинаковые. У /assets/* имя содержит хэш содержимого (их и отдают с
-immutable на год), /fonts/* и /pdf/* меняются только с выкладкой. Значит их
-можно держать на ретрансляторе и отдавать оттуда, а туннель оставить тому,
-ради чего он есть, — живой комнате.
+Yet the files are identical. Under /assets/* the name contains the content
+hash (which is why they are served as immutable for a year), and /fonts/* and
+/pdf/* change only with a deployment. So they can be kept on the relay and
+served from there, leaving the tunnel to what it is there for: the live room.
 
-    PUT /.relay/assets/<имя>   ← tar.gz из web/dist: assets/, fonts/, pdf/
-                                 Authorization: Bearer <общий секрет>
+    PUT /.relay/assets/<name>  ← tar.gz from web/dist: assets/, fonts/, pdf/
+                                 Authorization: Bearer <shared secret>
                                → {"host", "files", "bytes", "kept", "skipped"}
-    GET /.relay/assets/<имя>   → {"host", "files", "bytes", "updated"} — что
-                                 сейчас лежит в зеркале (тем же секретом)
+    GET /.relay/assets/<name>  → {"host", "files", "bytes", "updated"}: what
+                                 is in the mirror now (with the same secret)
 
-Живёт на петле (127.0.0.1:9182) за caddy: тот отдаёт ему путь
-/.relay/assets/* на любом имени под своей зоной. Путь начинается с точки — ни
-один адрес инстанса так не выглядит, и маршрут ничего у комнаты не отнимает.
-Ставится scripts/relay-setup.sh как служба colloq-assets от отдельного
-пользователя; данные в /var/lib/colloq-assets.
+Lives on the loopback (127.0.0.1:9182) behind caddy, which hands it the
+/.relay/assets/* path on any name under its zone. The path starts with a dot:
+no instance address looks like that, and the route takes nothing away from a
+room. Installed by scripts/relay-setup.sh as the colloq-assets service under a
+separate user; data in /var/lib/colloq-assets.
 
-Раздаёт файлы НЕ этот сервис, а caddy, прямо из каталога (file_server с
-precompressed br gzip). Промах зеркала — не отказ: в Caddyfile стоит матчер
-`file`, и если файла нет, запрос идёт в туннель как раньше. Пустое, устаревшее
-или выключенное зеркало не ломает ничего, только возвращает прежнюю скорость.
+The files are served NOT by this service but by caddy, straight from the
+directory (file_server with precompressed br gzip). A mirror miss is not a
+failure: the Caddyfile has a `file` matcher, and if the file is not there the
+request goes to the tunnel as before. An empty, stale or disabled mirror
+breaks nothing; it only brings back the old speed.
 
-Кто чей. Секрет тот же, что у frps: он уже есть у всякого, кто вправе занять
-поддомен. Имя в пути должно совпасть с именем, по которому пришёл запрос
-(X-Forwarded-Host от caddy), — то есть hse.colloq.ru может переписать только
-своё зеркало и только через свой же туннельный адрес.
+Who owns what. The secret is the same as for frps: everyone entitled to take a
+subdomain already has it. The name in the path must match the name the
+request came by (X-Forwarded-Host from caddy), that is, hse.colloq.ru can
+rewrite only its own mirror and only through its own tunnel address.
 
-Почему стандартная библиотека: на ретрансляторе нет ни node, ни pip — это
-машина с тремя демонами и секретом. python3 в Ubuntu есть всегда.
+Why the standard library: the relay has neither node nor pip; it is a machine
+with three daemons and a secret. Ubuntu always has python3.
 
-    ROOT/<имя>                 → символьная ссылка на sets/<имя>/<отметка>
-    ROOT/sets/<имя>/<отметка>/  {assets,fonts,pdf}
-    ROOT/.tmp/                  распаковка до подмены
+    ROOT/<name>                → a symbolic link to sets/<name>/<stamp>
+    ROOT/sets/<name>/<stamp>/   {assets,fonts,pdf}
+    ROOT/.tmp/                  unpacking before the swap
 
-Подмена — переименование ссылки: запрос застаёт либо прежний набор целиком,
-либо новый целиком. Файлы прежнего набора из assets/, которым меньше 30 дней,
-переносятся в новый ЖЁСТКОЙ ССЫЛКОЙ: вкладка, открытая до выкладки, догружает
-свои куски по старым хэшам ещё месяц, а места это не стоит.
+The swap is a rename of the link: a request finds either the previous set
+whole or the new one whole. Files of the previous set from assets/ younger
+than 30 days are carried into the new one as a HARD LINK: a tab opened before
+the deployment keeps loading its pieces by the old hashes for another month,
+and that costs no space.
 
-Проверка руками, без ретранслятора:
+Checking by hand, without the relay:
     ASSETS_ROOT=/tmp/mirror ASSETS_PORT=9182 ASSETS_TOKEN_FILE=/tmp/token \
         ASSETS_DOMAIN=colloq.ru python3 scripts/relay-assets.py
-Уборка раз в сутки (таймер colloq-assets-prune):
+Cleanup once a day (the colloq-assets-prune timer):
     python3 scripts/relay-assets.py --prune
 """
 
@@ -69,24 +71,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.environ.get("ASSETS_ROOT", "/var/lib/colloq-assets")
 PORT = int(os.environ.get("ASSETS_PORT", "9182"))
 DOMAIN = os.environ.get("ASSETS_DOMAIN", "colloq.ru")
-# Секрет читается либо из /etc/colloq-relay/token, либо — под systemd — из
-# каталога учётных данных: LoadCredential= даёт службе копию файла, не пуская
-# её в каталог frps и не заводя лишнего членства в группе.
+# The secret is read either from /etc/colloq-relay/token or, under systemd,
+# from the credentials directory: LoadCredential= gives the service a copy of
+# the file without letting it into the frps directory and without adding an
+# extra group membership.
 TOKEN_FILE = os.environ.get("ASSETS_TOKEN_FILE") or os.path.join(
     os.environ.get("CREDENTIALS_DIRECTORY", "/etc/colloq-relay"), "token"
 )
 PREFIX = "/.relay/assets/"
-# Что вообще бывает в web/dist и стоит зеркалить. Всё остальное — index.html,
-# robots.txt, служебное — отдаёт инстанс: страница живая, её кэшировать нельзя.
+# What there is in web/dist at all that is worth mirroring. Everything else
+# (index.html, robots.txt, service files) is served by the instance: the page is
+# live and must not be cached.
 DIRS = ("assets", "fonts", "pdf")
 MAX_BYTES = int(os.environ.get("ASSETS_MAX_BYTES", str(64 * 1024 * 1024)))
 MAX_FILES = int(os.environ.get("ASSETS_MAX_FILES", "4000"))
-# Сколько живут куски прежней сборки. Месяц — это запас на вкладку, забытую
-# открытой на всё межсессионное время; имена с хэшем не сталкиваются.
+# How long the pieces of the previous build live. A month is headroom for a
+# tab forgotten open through the whole stretch between sessions; names with a
+# hash do not collide.
 KEEP_DAYS = float(os.environ.get("ASSETS_KEEP_DAYS", "30"))
-# Сколько ждать имя, которое перестали выставлять наружу, прежде чем убрать его
-# зеркало целиком. Вдвое дольше срока кусков: удалять то, на что ещё ссылаются
-# живые вкладки, незачем.
+# How long to wait for a name that is no longer exposed before removing its
+# mirror entirely. Twice the lifetime of the pieces: there is no reason to
+# delete what live tabs still refer to.
 FORGET_DAYS = KEEP_DAYS * 2
 
 SETS = os.path.join(ROOT, "sets")
@@ -94,10 +99,11 @@ STAGE = os.path.join(ROOT, ".tmp")
 
 
 def make_staging(host):
-    """Свежий каталог распаковки под STAGE: 0750 с учётом umask, без chmod.
+    """A fresh unpacking directory under STAGE: 0750 subject to umask, no chmod.
 
-    Имя со случайным хвостом, как у mkdtemp; отличие одно — режим задаётся
-    при создании, чтобы не трогать бит setgid, унаследованный от STAGE.
+    The name has a random tail, like mkdtemp's; the one difference is that the
+    mode is set at creation, so as not to touch the setgid bit inherited from
+    STAGE.
     """
     import secrets
     for _ in range(100):
@@ -109,9 +115,9 @@ def make_staging(host):
         return path
     raise RuntimeError("no free staging name")
 
-# Имя файла внутри архива: буквы, цифры, точка, дефис, подчёркивание. Хэши
-# Vite, шрифты и pdf.worker.min.mjs укладываются в это целиком, а всё
-# остальное — повод отказать, а не разбираться.
+# A file name inside the archive: letters, digits, dot, hyphen, underscore.
+# Vite hashes, fonts and pdf.worker.min.mjs fit into that entirely, and
+# anything else is a reason to refuse, not to figure it out.
 PART = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*\Z")
 HOST = re.compile(r"[a-z0-9][a-z0-9-]*\.%s\Z" % re.escape(DOMAIN))
 
@@ -120,8 +126,9 @@ _hosts_lock = threading.Lock()
 
 
 def lock_for(host):
-    # По замку на имя: две выкладки одного семинара не должны подменять набор
-    # друг у друга, а разные семинары друг другу не мешают.
+    # One lock per name: two deployments of the same seminar must not swap the
+    # set out from under each other, while different seminars do not get in
+    # each other's way.
     with _hosts_lock:
         if host not in _hosts:
             _hosts[host] = threading.Lock()
@@ -137,7 +144,7 @@ def secret():
 
 
 class Reject(Exception):
-    """Отказ с кодом и словом для журнала: архив не тот, что обещали."""
+    """A refusal with a code and a word for the log: the archive is not what was promised."""
 
     def __init__(self, code, why):
         super().__init__(why)
@@ -146,7 +153,7 @@ class Reject(Exception):
 
 
 def checked_name(name):
-    """Путь внутри архива — или Reject. Возвращает None для того, что пропускаем."""
+    """A path inside the archive, or Reject. Returns None for what we skip."""
     normalized = posixpath.normpath(name)
     if normalized in (".", "/") or normalized.startswith("/") or "\x00" in normalized:
         raise Reject(400, "path")
@@ -156,8 +163,8 @@ def checked_name(name):
     for part in parts:
         if part == ".." or part == ".":
             raise Reject(400, "path")
-        # Скрытое не зеркалим и не отказываем из-за него: .DS_Store с ноутбука
-        # преподавателя не повод не выложить сборку.
+        # Hidden files are neither mirrored nor a reason to refuse: a .DS_Store
+        # from the teacher's laptop is no reason not to deploy the build.
         if part.startswith("."):
             return None
         if not PART.match(part):
@@ -168,7 +175,7 @@ def checked_name(name):
 
 
 def unpack(stream, into):
-    """Распаковка своей рукой: никаких ссылок, устройств и путей наружу."""
+    """Unpacking by our own hand: no links, no devices, no paths leading outside."""
     files = 0
     total = 0
     skipped = 0
@@ -180,8 +187,8 @@ def unpack(stream, into):
                     os.makedirs(os.path.join(into, inside), exist_ok=True)
                 continue
             if not member.isreg():
-                # Символьная ссылка в архиве — самый дешёвый способ заставить
-                # caddy отдать /etc/shadow под видом чанка.
+                # A symbolic link in the archive is the cheapest way to make
+                # caddy serve /etc/shadow disguised as a chunk.
                 raise Reject(400, "kind")
             relative = checked_name(member.name)
             if relative is None:
@@ -205,7 +212,7 @@ def unpack(stream, into):
 
 
 def carry_over(previous, staging, now):
-    """Куски прежней сборки моложе KEEP_DAYS — жёсткой ссылкой в новый набор."""
+    """Pieces of the previous build younger than KEEP_DAYS go into the new set as hard links."""
     kept = 0
     old = os.path.join(previous, "assets")
     if not os.path.isdir(old):
@@ -238,22 +245,23 @@ def current_set(host):
 
 
 def swap(host, staging, now):
-    """Новый набор на место прежнего — переименованием, а не копированием."""
+    """The new set in place of the previous one, by renaming, not copying."""
     home = os.path.join(SETS, host)
     os.makedirs(home, exist_ok=True)
     stamp = "%s-%s" % (time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)), os.urandom(3).hex())
     final = os.path.join(home, stamp)
     os.replace(staging, final)
     link = os.path.join(ROOT, host)
-    # Ретранслятор, поставленный до появления зеркала, мог оставить на этом
-    # месте обычный каталог: переименовать ссылку поверх него нельзя.
+    # A relay set up before the mirror existed could have left an ordinary
+    # directory in this place: a link cannot be renamed over it.
     if os.path.isdir(link) and not os.path.islink(link):
         shutil.rmtree(link, ignore_errors=True)
     temporary = os.path.join(ROOT, ".swap-%s-%s" % (host, os.urandom(4).hex()))
     os.symlink(os.path.join("sets", host, stamp), temporary)
     os.replace(temporary, link)
-    # Прежние наборы больше не нужны: то, что из них пережило выкладку, лежит в
-    # новом жёсткой ссылкой, а на открытые сейчас файлы удаление не влияет.
+    # The previous sets are no longer needed: whatever of them survived the
+    # deployment lies in the new one as a hard link, and deleting does not affect
+    # files that are open right now.
     for name in os.listdir(home):
         if name != stamp:
             shutil.rmtree(os.path.join(home, name), ignore_errors=True)
@@ -274,7 +282,7 @@ def measure(directory):
 
 
 def prune(now=None):
-    """Суточная уборка: брошенные имена, обрывки распаковки, старые наборы."""
+    """The daily cleanup: abandoned names, scraps of unpacking, old sets."""
     now = now or time.time()
     removed = []
     for host in sorted(os.listdir(SETS) if os.path.isdir(SETS) else []):
@@ -286,8 +294,8 @@ def prune(now=None):
                 continue
             shutil.rmtree(version, ignore_errors=True)
             removed.append(os.path.join("sets", host, name))
-        # Имя, которое перестали выставлять наружу совсем. Ссылка обновляется
-        # на каждую выкладку, поэтому её время — это время последней пары.
+        # A name that is no longer exposed at all. The link is updated on every
+        # deployment, so its time is the time of the last class.
         try:
             age = now - os.lstat(os.path.join(ROOT, host)).st_mtime
         except OSError:
@@ -314,8 +322,9 @@ def prune(now=None):
 class Handler(BaseHTTPRequestHandler):
     server_version = "colloq-assets/1"
     protocol_version = "HTTP/1.1"
-    # Недосказанное тело не должно держать поток вечно. Архив идёт по петле от
-    # caddy, а не из аудитории, но выкладка — это десяток мегабайт.
+    # A body that is never finished must not hold a thread forever. The archive
+    # comes over the loopback from caddy, not from the classroom, but a
+    # deployment is a dozen megabytes.
     timeout = 300
 
     def handle(self):
@@ -342,8 +351,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def refuse(self, code, body):
-        # Тело запроса не прочитано — остаток лёг бы в сокет и разобрался как
-        # следующий запрос.
+        # The request body has not been read: the rest would stay in the socket
+        # and be parsed as the next request.
         self.close_connection = True
         self.reply(code, body)
 
@@ -356,7 +365,7 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(given[len(prefix):].strip().encode(), want)
 
     def target(self):
-        """Имя из пути — и оно же должно быть тем, по которому пришёл запрос."""
+        """The name from the path, which must also be the one the request came by."""
         path = self.path.split("?", 1)[0]
         if not path.startswith(PREFIX):
             raise Reject(404, "not found")
@@ -365,8 +374,9 @@ class Handler(BaseHTTPRequestHandler):
             raise Reject(400, "host")
         came = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "")
         came = came.split(":")[0].strip().lower()
-        # Своё зеркало и только своё: секрет общий на весь ретранслятор, и без
-        # этой проверки любой семинар переписал бы статику соседнего.
+        # Its own mirror and only its own: the secret is shared across the whole
+        # relay, and without this check any seminar could rewrite the static
+        # files of its neighbour.
         if came != host:
             raise Reject(403, "host")
         return host
@@ -401,21 +411,22 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             length = -1
         if length < 0:
-            # Длина обязательна: без неё нечем остановить поток до распаковки.
+            # The length is required: without it nothing can stop the stream before unpacking.
             return self.refuse(411, {"error": "length"})
         if length > MAX_BYTES:
             return self.refuse(413, {"error": "bytes"})
         os.makedirs(STAGE, exist_ok=True)
         now = time.time()
         with lock_for(host):
-            # Не mkdtemp: он делает 0700, а chmod после него — ловушка. Каталог
-            # наследует от STAGE группу caddy и бит setgid, но chmod от
-            # пользователя, который в группу caddy не входит, этот бит молча
-            # снимает — и всё, что распакуется внутрь, получает группу процесса
-            # (assets). Зеркало тогда лежит на диске целиком, а caddy его не
-            # читает и без единого слова ходит в туннель; так и случилось при
-            # первой выкладке 12.09.2026. Поэтому mkdir с нужным режимом сразу
-            # и ни одного chmod: setgid и группа приходят от родителя сами.
+            # Not mkdtemp: it makes 0700, and a chmod after it is a trap. The
+            # directory inherits the caddy group and the setgid bit from STAGE,
+            # but a chmod by a user who is not in the caddy group silently clears
+            # that bit, and everything unpacked inside gets the process's group
+            # (assets). The mirror then lies on disk in full, yet caddy cannot
+            # read it and goes to the tunnel without a word; that is exactly what
+            # happened at the first deployment on 12 Sep 2026. Hence mkdir with
+            # the right mode at once and not a single chmod: setgid and the group
+            # come from the parent on their own.
             staging = make_staging(host)
             try:
                 files, bytes_, skipped = unpack(Body(self.rfile, length), staging)
@@ -436,7 +447,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Body:
-    """Ровно Content-Length байт из сокета и ни одним больше."""
+    """Exactly Content-Length bytes from the socket and not one more."""
 
     def __init__(self, stream, length):
         self.stream = stream
@@ -457,11 +468,11 @@ def main():
     os.makedirs(STAGE, exist_ok=True)
     if "--prune" in sys.argv[1:]:
         for name in prune():
-            sys.stderr.write("colloq-assets: убрано %s\n" % name)
+            sys.stderr.write("colloq-assets: removed %s\n" % name)
         return
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     server.daemon_threads = True
-    sys.stderr.write("colloq-assets: 127.0.0.1:%d, зеркало %s, зона %s\n" % (PORT, ROOT, DOMAIN))
+    sys.stderr.write("colloq-assets: 127.0.0.1:%d, mirror %s, zone %s\n" % (PORT, ROOT, DOMAIN))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

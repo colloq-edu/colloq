@@ -1,28 +1,30 @@
 #!/usr/bin/env python3
 """
-Активность семинара — в Google-таблицу, по строке на участника.
+Seminar activity into a Google Sheet, one row per participant.
 
-    python3 scripts/activity-sheet.py y84w9hpc              # дописать комнату
-    python3 scripts/activity-sheet.py y84w9hpc --replace    # пересчитать: строки комнаты заменить
-    python3 scripts/activity-sheet.py --all                 # все комнаты с активностью, которых в таблице ещё нет
-    python3 scripts/activity-sheet.py y84w9hpc --dry        # только показать, ничего не писать
-    python3 scripts/activity-sheet.py --create "Colloq · активность"   # завести таблицу
+    python3 scripts/activity-sheet.py y84w9hpc              # append the room
+    python3 scripts/activity-sheet.py y84w9hpc --replace    # recount: replace the room's rows
+    python3 scripts/activity-sheet.py --all                 # every room with activity not yet in the sheet
+    python3 scripts/activity-sheet.py y84w9hpc --dry        # only show, write nothing
+    python3 scripts/activity-sheet.py --create "Colloq · activity"   # create the spreadsheet
 
-Куда писать — ACTIVITY_SHEET_ID из .env (или окружения), либо --sheet <id>.
-Откуда читать — data/colloq.db рядом (та же база, что у `make run`), либо --db.
-В Google ходит `gws` (Google Workspace CLI, уже авторизованный: `gws auth status`).
+Where to write: ACTIVITY_SHEET_ID from .env (or the environment), or --sheet <id>.
+Where to read: data/colloq.db nearby (the same database as for `make run`), or --db.
+Google is reached through `gws` (the Google Workspace CLI, already authorized: `gws auth status`).
 
-Лист «Семинары» копится: одна строка на человека на семинар, ключ — колонки
-«Комната» и «Участник»; комната, которая уже есть, второй раз не дописывается.
-Лист «Сводка» — одна формула QUERY поверх «Семинаров», считается сама и по мере
-пополнения показывает итог по каждому участнику: из него потом и складывается
-оценка за активность.
+The "Семинары" (seminars) sheet accumulates: one row per person per seminar, keyed
+by the "Комната" (room) and "Участник" (participant) columns; a room that is
+already there is not appended a second time. The "Сводка" (summary) sheet is a
+single QUERY formula over "Семинары"; it computes itself and, as rows are added,
+shows the total for each participant: that is what the activity grade is later
+built from.
 
-Что считается по человеку (все его сокеты и устройства под одним именем):
-  минут в комнате — объединение отрезков присутствия (две вкладки — не двойное
-  время); правок в тетради — версии, которые он внёс; запуски ячеек — всего /
-  успешных / с ошибкой / отменённых, и секунды счёта успешных; вопросов оракулу;
-  ответов в консилиуме и сколько из них верных.
+What is counted per person (all their sockets and devices under one name):
+  minutes in the room: the union of presence intervals (two tabs are not double
+  time); notebook edits: the versions they contributed; cell runs: total /
+  successful / with an error / cancelled, and the compute seconds of the
+  successful ones; questions to the Oracle; answers in the Council and how many
+  of them are correct.
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ HEADER = [
     "Верных в консилиуме",
 ]
 LAST_COL = chr(ord("A") + len(HEADER) - 1)  # R
-# Разделитель аргументов — «;»: таблица заводится с русской локалью (см. create).
+# The argument separator is ";": the spreadsheet is created with the Russian locale (see create).
 SUMMARY_FORMULA = (
     f"=QUERY({SHEET_ROWS}!A:{LAST_COL}; "
     '"select D, count(C), sum(I), sum(J), sum(K), sum(L), sum(M), sum(P), sum(Q), sum(R) '
@@ -92,11 +94,11 @@ def dotenv(name: str) -> str | None:
     return None
 
 
-# ----------------------------------------------------------------- база
+# ----------------------------------------------------------------- database
 
 def opendb(path: Path) -> sqlite3.Connection:
     if not path.exists():
-        die(f"базы нет: {path}")
+        die(f"no database: {path}")
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     return con
@@ -135,7 +137,7 @@ def local(ms: int | None, fmt: str) -> str:
 def room_rows(con: sqlite3.Connection, room: str) -> list[list]:
     session = con.execute("SELECT * FROM sessions WHERE id = ?", (room,)).fetchone()
     if session is None:
-        die(f"комнаты {room} нет в базе")
+        die(f"room {room} is not in the database")
     people = con.execute(
         "SELECT id, name, role, last_seen FROM participants WHERE session_id = ?", (room,)
     ).fetchall()
@@ -150,8 +152,8 @@ def room_rows(con: sqlite3.Connection, room: str) -> list[list]:
         p = by_id.get(actor_id or "")
         return p["name"] if p else fallback
 
-    # Всё по имени: у одного человека бывает несколько id (телефон и ноутбук,
-    # вторая вкладка после чистки браузера).
+    # Everything by name: one person can have several ids (a phone and a
+    # laptop, a second tab after the browser was cleared).
     stat: dict[str, dict] = defaultdict(
         lambda: {
             "roles": set(),
@@ -203,8 +205,8 @@ def room_rows(con: sqlite3.Connection, room: str) -> list[list]:
                 s["run_ms"] += int(d.get("durationMs") or 0)
         elif kind == "oracle.asked":
             s["oracle"] += 1
-    # Вход без выхода: человек ещё в комнате или сокет ушёл без прощания —
-    # считаем до последнего раза, когда сервер его видел.
+    # A join without a leave: the person is still in the room, or the socket
+    # went away without a goodbye; count up to the last time the server saw them.
     for actor_id, joins in open_joins.items():
         p = by_id.get(actor_id)
         if not p:
@@ -253,7 +255,7 @@ def room_rows(con: sqlite3.Connection, room: str) -> list[list]:
                 s["council_ok"],
             ]
         )
-    # Студенты по алфавиту, преподаватель — в конце.
+    # Students alphabetically, the teacher at the end.
     out.sort(key=lambda r: (r[4] == "host", r[3].lower()))
     return out
 
@@ -268,14 +270,14 @@ def gws(*args: str, body: dict | None = None, params: dict | None = None) -> dic
         cmd += ["--json", json.dumps(body, ensure_ascii=False)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        die(f"gws {' '.join(args)} упал:\n{proc.stderr.strip()}\n{proc.stdout.strip()}")
+        die(f"gws {' '.join(args)} failed:\n{proc.stderr.strip()}\n{proc.stdout.strip()}")
     text = proc.stdout.strip()
     if not text:
         return {}
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Служебные строки перед JSON («Using keyring backend…») бывают и в stdout.
+        # Service lines before the JSON ("Using keyring backend…") turn up in stdout too.
         start = text.find("{")
         return json.loads(text[start:]) if start >= 0 else {}
 
@@ -368,12 +370,12 @@ def show(rows: list[list]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("rooms", nargs="*", help="id комнат (хвост ссылки /s/<id>)")
-    ap.add_argument("--all", action="store_true", help="все комнаты с активностью, которых ещё нет в таблице")
-    ap.add_argument("--replace", action="store_true", help="строки этих комнат в таблице заменить")
-    ap.add_argument("--dry", action="store_true", help="показать и ничего не писать")
-    ap.add_argument("--create", metavar="TITLE", help="завести новую таблицу с таким названием")
-    ap.add_argument("--sheet", help="id таблицы (по умолчанию ACTIVITY_SHEET_ID из .env)")
+    ap.add_argument("rooms", nargs="*", help="room ids (the tail of the /s/<id> link)")
+    ap.add_argument("--all", action="store_true", help="every room with activity that is not in the sheet yet")
+    ap.add_argument("--replace", action="store_true", help="replace these rooms' rows in the sheet")
+    ap.add_argument("--dry", action="store_true", help="show and write nothing")
+    ap.add_argument("--create", metavar="TITLE", help="create a new spreadsheet with this title")
+    ap.add_argument("--sheet", help="spreadsheet id (ACTIVITY_SHEET_ID from .env by default)")
     ap.add_argument("--db", default=str(ROOT / "data" / "colloq.db"))
     a = ap.parse_args()
 
@@ -382,22 +384,22 @@ def main() -> None:
     if a.all:
         rooms += [r for r in rooms_with_activity(con) if r not in rooms]
     if not rooms and not a.create:
-        ap.error("укажите комнату, --all или --create")
+        ap.error("name a room, --all or --create")
 
     computed = {room: room_rows(con, room) for room in rooms}
     if a.dry:
         for room, rows in computed.items():
-            print(f"— {room}: {len(rows)} строк")
+            print(f"— {room}: {len(rows)} rows")
             show(rows)
         return
 
     sid = a.sheet or dotenv("ACTIVITY_SHEET_ID")
     if a.create:
         sid = create_spreadsheet(a.create)
-        print(f"таблица заведена: https://docs.google.com/spreadsheets/d/{sid}")
-        print(f"в .env: ACTIVITY_SHEET_ID={sid}")
+        print(f"spreadsheet created: https://docs.google.com/spreadsheets/d/{sid}")
+        print(f"into .env: ACTIVITY_SHEET_ID={sid}")
     if not sid:
-        die("не задано, куда писать: ACTIVITY_SHEET_ID в .env, --sheet <id> или --create «название»")
+        die('nowhere to write to: ACTIVITY_SHEET_ID in .env, --sheet <id> or --create "title"')
 
     have = existing_rows(sid)
     present = {r[2] for r in have if len(r) > 2}
@@ -406,14 +408,14 @@ def main() -> None:
         fresh = [row for room in rooms for row in computed[room]]
         rewrite_rows(sid, kept + fresh)
         for room in rooms:
-            print(f"{room}: {len(computed[room])} строк записано заново")
+            print(f"{room}: {len(computed[room])} rows written anew")
     else:
         for room in rooms:
             if room in present:
-                print(f"{room}: уже в таблице, пропускаю (пересчитать — --replace)")
+                print(f"{room}: already in the sheet, skipping (to recount: --replace)")
                 continue
             append_rows(sid, computed[room])
-            print(f"{room}: {len(computed[room])} строк дописано")
+            print(f"{room}: {len(computed[room])} rows appended")
     print(f"https://docs.google.com/spreadsheets/d/{sid}")
 
 

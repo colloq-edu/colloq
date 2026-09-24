@@ -1,39 +1,42 @@
 #!/usr/bin/env bash
 #
-# Развернуть снятую копию — пара к `make backup`.
+# Restore a backup — the pair to `make backup`.
 #
-#   scripts/restore.sh                     самую свежую пару из backups/
+#   scripts/restore.sh                     the most recent pair from backups/
 #   scripts/restore.sh backups/colloq-20260905-120000.db
-#   NAME=demo scripts/restore.sh          самую свежую пару среды demo
+#   NAME=demo scripts/restore.sh          the most recent pair of deployment demo
 #
-# Про NAME. Сред бывает несколько — по арендованной машине на каждую, — и копии
-# у них разложены по подкаталогам: backups/demo/, backups/hse/. Без NAME
-# смотрим в корень backups/: это копии здешнего инстанса, у него имени нет.
-# Именно поэтому «самая свежая» ищется в одном каталоге, а не во всех сразу:
-# развернуть базу чужого семинара — это чужие тетради, чужие преподаватели и
-# ссылки, ведущие в чужие файлы, причём молча.
+# About NAME. There can be several deployments — one rented machine each — and
+# their backups are laid out in subdirectories: backups/demo/, backups/hse/.
+# Without NAME we look in the root of backups/: those are the backups of the
+# local instance, which has no name. That is exactly why "the most recent" is
+# looked for in one directory and not in all of them at once: restoring
+# another seminar's database means another seminar's notebooks, teachers, and
+# links that lead into someone else's files — and silently.
 #
-# Зачем это отдельной командой. `make backup` снимает базу и архив с файлами
-# семинаров, а обратная дорога до сих пор описывалась словами «положите два
-# файла на место». Мест на самом деле три, и одно из них умеет тихо испортить
-# базу: рядом с colloq.db в режиме WAL лежат colloq.db-wal и colloq.db-shm, и
-# если подложить базу из копии, оставив старый журнал, sqlite накатит на неё
-# чужие страницы. Поэтому журнал уезжает вместе с той базой, которую он
-# описывает, а не выбрасывается и не остаётся.
+# Why this is a separate command. `make backup` takes the database and an
+# archive of seminar files, while the way back was until now described with
+# the words "put the two files in place". There are actually three places, and
+# one of them can quietly corrupt the database: in WAL mode colloq.db-wal and
+# colloq.db-shm lie next to colloq.db, and if you slip in the database from a
+# backup and leave the old journal, sqlite will roll foreign pages onto it. So
+# the journal leaves together with the database it describes, rather than
+# being thrown away or left behind.
 #
-# Что переживает пересоздание машины и лежит в копии:
+# What survives re-creating the machine and is in the backup:
 #
-#   colloq.db          семинары, преподаватели, история версий, настройки оракула
-#   workspace/         файлы семинаров — то, что загрузили и создали ячейки
-#   data/session-secret  ключ подписи: без него все выданные ссылки и куки мертвы
-#   data/setup-token     токен установки — вход в панель, когда ссылка потеряна
-#   kernel/environments/*.txt  списки пакетов, в том числе заведённые из панели
-#                      прямо на машине: их больше негде взять, а образ по ним
-#                      пересобирается одной командой
+#   colloq.db          seminars, teachers, version history, Oracle settings
+#   workspace/         seminar files — what was uploaded and what cells created
+#   data/session-secret  the signing key: without it every issued link and cookie is dead
+#   data/setup-token     the setup token — the way into the panel when the link is lost
+#   kernel/environments/*.txt  package lists, including those created from the panel
+#                      right on the machine: there is nowhere else to get them, and
+#                      the image is rebuilt from them with one command
 #
-# Чего в копии нет и почему: собранные образы окружений (их дешевле пересобрать
-# одной командой, чем возить десятки гигабайт: make env-build NAME=…) и .env
-# (он едет на новую машину сам, вместе с репозиторием, — см. scripts/vast.sh).
+# What is not in the backup and why: built environment images (rebuilding them
+# with one command is cheaper than carrying tens of gigabytes: make env-build
+# NAME=…) and .env (it travels to the new machine on its own, together with
+# the repository — see scripts/vast.sh).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -42,14 +45,15 @@ RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; OFF=$'\033[0m'
 say() { printf '%s\n' "$*"; }
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
-# Каталог копий одной среды. Имя приезжает переменной окружения, как HOST у
-# `make host`: так его передаёт Makefile, и так оно не мешает старому вызову с
-# путями в аргументах. Проверяем те же знаки, что и vast.sh: имя уходит в путь,
-# и «../» увело бы восстановление за пределы backups/.
+# The backup directory of one deployment. The name arrives in an environment
+# variable, like HOST for `make host`: that is how the Makefile passes it, and
+# that way it does not get in the way of the old call with paths as arguments.
+# We check the same characters as vast.sh: the name goes into a path, and
+# "../" would take the restore outside backups/.
 ENV_NAME="${NAME:-}"
 case "$ENV_NAME" in
   '') : ;;
-  *[!A-Za-z0-9-]*|-*|*-) die "имя среды «${ENV_NAME}» не годится: буквы, цифры и дефис в середине." ;;
+  *[!A-Za-z0-9-]*|-*|*-) die "deployment name \"${ENV_NAME}\" is not valid: letters, digits and a hyphen inside." ;;
 esac
 BACKUP_DIR="backups${ENV_NAME:+/$ENV_NAME}"
 
@@ -59,194 +63,205 @@ for arg in "$@"; do
   case "$arg" in
     *.db) DB="$arg" ;;
     *.tar.gz) FILES="$arg" ;;
-    *) die "не понимаю «${arg}». Ожидаю backups/colloq-<дата>.db и/или backups/colloq-<дата>-files.tar.gz" ;;
+    *) die "I do not understand \"${arg}\". Expected backups/colloq-<date>.db and/or backups/colloq-<date>-files.tar.gz" ;;
   esac
 done
 
 if [ -z "$DB" ] && [ -z "$FILES" ]; then
   DB="$(ls -1t "$BACKUP_DIR"/colloq-*.db 2>/dev/null | head -1 || true)"
   if [ -z "$DB" ]; then
-    # Список сред печатается прямо в отказе: «копий нет» при полном backups/hse
-    # — это не отсутствие копии, а не то имя, и выяснять это на пустой машине
-    # посреди занятия незачем.
+    # The list of deployments is printed right in the refusal: "no backups"
+    # with a full backups/hse is not a missing backup but the wrong name, and
+    # there is no reason to find that out on an empty machine in the middle
+    # of a class.
     others="$(ls -1d backups/*/ 2>/dev/null | sed 's#backups/##;s#/##' | tr '\n' ' ' | sed 's/ *$//' || true)"
-    die "в $BACKUP_DIR/ нет ни одной копии.
-  Снять её на работающем инстансе: make backup${others:+
-  Копии сред лежат по подкаталогам: $others
-  Развернуть копию среды: make restore NAME=<имя>}"
+    die "there is not a single backup in $BACKUP_DIR/.
+  Take one on a running instance: make backup${others:+
+  Deployment backups live in subdirectories: $others
+  Restore a deployment backup: make restore NAME=<name>}"
   fi
 fi
-# Архив ищется по имени базы, а не по «самому свежему»: пара из базы одного дня
-# и файлов другого — это семинар, у которого в тетради есть ссылка на файл,
-# которого нет.
+# The archive is found by the database's name, not as "the most recent": a
+# pair of one day's database and another day's files is a seminar whose
+# notebook links to a file that does not exist.
 if [ -z "$FILES" ] && [ -n "$DB" ] && [ -f "${DB%.db}-files.tar.gz" ]; then
   FILES="${DB%.db}-files.tar.gz"
 fi
 
-[ -z "$DB" ] || [ -f "$DB" ] || die "нет файла $DB"
-[ -z "$FILES" ] || [ -f "$FILES" ] || die "нет файла $FILES"
+[ -z "$DB" ] || [ -f "$DB" ] || die "no file $DB"
+[ -z "$FILES" ] || [ -f "$FILES" ] || die "no file $FILES"
 
-say "${BOLD}1/3${OFF} проверяю, что восстанавливать есть куда"
+say "${BOLD}1/3${OFF} checking there is somewhere to restore into"
 
-# Под работающим сервером базу не подменяют. sqlite держит открытым тот файл,
-# который открыл: старый inode останется живым до последнего закрытия, семинар
-# продолжит писать в файл, которого уже нет на диске, а после перезапуска эта
-# работа просто исчезнет. Причём на экране до самого перезапуска всё выглядит
-# исправно — поэтому проверка здесь, а не в напутствии внизу.
-# Читает .env общий read_env (scripts/lib.sh) — тот же, что у host.sh и
-# service.sh: одна копия правила на все скрипты.
+# The database is not swapped under a running server. sqlite keeps open the
+# file it opened: the old inode stays alive until the last close, the seminar
+# goes on writing into a file that is no longer on disk, and after a restart
+# that work simply disappears. And until the restart everything on screen
+# looks fine — which is why the check is here and not in the parting words
+# below.
+# .env is read by the shared read_env (scripts/lib.sh) — the same one as in
+# host.sh and service.sh: one copy of the rule for all scripts.
 . ./scripts/lib.sh
 PORT="$(read_env PORT)"; PORT="${PORT:-3000}"
 if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; then
-  die "работает служба colloq — сначала остановите её: make service-stop.
-  Остановленная служба — это ещё не «машина пустая»: разворачивать копию поверх
-  сегодняшней работы всё равно надо нарочно, см. REPLACE=1 ниже по тексту."
+  die "the colloq service is running — stop it first: make service-stop.
+  A stopped service is not yet an empty machine: restoring a backup over today's
+  work still has to be deliberate, see REPLACE=1 further down."
 fi
 if docker compose ps --status running --services 2>/dev/null | grep -qx app; then
-  die "в docker работает app — сначала остановите его: make down"
+  die "app is running in docker — stop it first: make down"
 fi
 if [ -f .colloq.pid ] && kill -0 "$(cat .colloq.pid 2>/dev/null)" 2>/dev/null; then
-  die "на хосте работает сервер (make run) — сначала: make stop"
+  die "a server is running on the host (make run) — first: make stop"
 fi
 if curl -sf -o /dev/null --max-time 3 "http://localhost:$PORT/api/health" 2>/dev/null; then
-  die "на localhost:$PORT кто-то отвечает — это второй Colloq.
-  Остановите его (make down · make stop) и повторите."
+  die "something answers on localhost:$PORT — that is a second Colloq.
+  Stop it (make down · make stop) and try again."
 fi
 
-# Поверх непустой машины — только по просьбе.
+# Over a non-empty machine — only when asked.
 #
-# Разворачивание необратимо ровно наполовину, и это худший из вариантов: база
-# откладывается в colloq.db.replaced-<штамп> (о котором потом никто не
-# вспомнит), а архив ложится на workspace/ поверх, перезаписывая одноимённые
-# файлы без всякой копии. Поэтому «здесь уже что-то есть» — это вопрос, а не
-# повод действовать: скрипт зовут и руками («откатить на вчера»), и из
-# scripts/vast.sh, где повод бывает случайным.
+# Restoring is irreversible exactly by half, and that is the worst of the
+# options: the database is set aside as colloq.db.replaced-<stamp> (which
+# nobody will remember later), while the archive lands on top of workspace/,
+# overwriting same-named files without any backup. So "something is already
+# here" is a question, not a reason to act: the script is called both by hand
+# ("roll back to yesterday") and from scripts/vast.sh, where the reason can be
+# accidental.
 #
-# Спрашиваем, только когда есть у кого: на той стороне ssh терминала нет, на
-# stdin висит heredoc — и `read` съел бы остаток скрипта. Без терминала нужен
-# REPLACE=1, названный вслух.
+# We ask only when there is someone to ask: on the far side of ssh there is no
+# terminal, stdin holds a heredoc — and `read` would eat the rest of the
+# script. Without a terminal it takes REPLACE=1, said out loud.
 if [ -n "$DB" ] && [ -s data/colloq.db ]; then
   if [ "${REPLACE:-}" = 1 ]; then
-    say "${DIM}    здесь уже есть база — разворачиваю поверх (REPLACE=1)${OFF}"
+    say "${DIM}    a database is already here — restoring over it (REPLACE=1)${OFF}"
   elif [ -t 0 ]; then
-    say "${RED}Здесь уже есть data/colloq.db${OFF} — семинары, преподаватели, история версий."
-    say "${DIM}Она будет отложена в data/colloq.db.replaced-<штамп>, а файлы из архива${OFF}"
-    say "${DIM}лягут поверх workspace/ — одноимённые перезапишутся без копии.${OFF}"
-    printf '%sразвернуть копию поверх? [y/N] %s' "$BOLD" "$OFF"
+    say "${RED}There is already a data/colloq.db here${OFF} — seminars, teachers, version history."
+    say "${DIM}It will be set aside as data/colloq.db.replaced-<stamp>, and the archive files${OFF}"
+    say "${DIM}will land on top of workspace/ — same-named ones are overwritten with no backup.${OFF}"
+    printf '%srestore the backup over it? [y/N] %s' "$BOLD" "$OFF"
     read -r answer
-    case "$answer" in y|Y|д|да) : ;; *) die "не разворачиваю." ;; esac
+    case "$answer" in y|Y|д|да) : ;; *) die "not restoring." ;; esac
   else
-    die "здесь уже есть data/colloq.db, а терминала, чтобы спросить, нет.
-  Это не пустая машина: развернуть копию поверх — значит отложить нынешнюю базу
-  в data/colloq.db.replaced-<штамп> и распаковать архив поверх workspace/.
-  Если это и нужно: REPLACE=1 $0 $*"
+    die "there is already a data/colloq.db here, and no terminal to ask in.
+  This is not an empty machine: restoring a backup over it means setting the
+  current database aside as data/colloq.db.replaced-<stamp> and unpacking the
+  archive on top of workspace/.
+  If that is what you want: REPLACE=1 $0 $*"
   fi
 fi
 
 mkdir -p data workspace
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
-say "${BOLD}2/3${OFF} база"
+say "${BOLD}2/3${OFF} database"
 if [ -n "$DB" ]; then
-  # Дешёвая проверка вместо доверия расширению: первые шестнадцать байт файла
-  # sqlite — это «SQLite format 3». Восстановить пустой файл, скачавшийся до
-  # половины, значит потерять и то, что было.
+  # A cheap check instead of trusting the extension: the first sixteen bytes
+  # of an sqlite file are "SQLite format 3". Restoring an empty file that was
+  # downloaded halfway means losing what was there as well.
   head -c 16 "$DB" | LC_ALL=C grep -qa 'SQLite format 3' \
-    || die "$DB не похож на базу sqlite — копия битая или скачалась не целиком."
+    || die "$DB does not look like an sqlite database — the backup is broken or incomplete."
   if command -v sqlite3 >/dev/null 2>&1; then
     sqlite3 "$DB" 'pragma quick_check' >/dev/null \
-      || die "$DB не проходит проверку sqlite. Возьмите другую копию."
+      || die "$DB does not pass the sqlite check. Take another backup."
   fi
   if [ -f data/colloq.db ]; then
-    # Прежняя база уезжает целиком со своим журналом. Не удаляется — «я нажал
-    # restore не той копией» должно быть поправимо; и не остаётся на месте —
-    # старый -wal, накаченный на новую базу, портит её молча.
+    # The previous database leaves whole, with its journal. It is not deleted —
+    # "I pressed restore with the wrong backup" must be fixable; and it does
+    # not stay in place — an old -wal rolled onto the new database corrupts it
+    # silently.
     mv data/colloq.db "data/colloq.db.replaced-$STAMP"
     for j in wal shm; do
       if [ -f "data/colloq.db-$j" ]; then
         mv "data/colloq.db-$j" "data/colloq.db.replaced-$STAMP-$j"
       fi
     done
-    say "${DIM}    прежняя база отложена в data/colloq.db.replaced-$STAMP${OFF}"
+    say "${DIM}    the previous database is set aside as data/colloq.db.replaced-$STAMP${OFF}"
   fi
   cp "$DB" data/colloq.db
   chmod 600 data/colloq.db
   say "    $DB → data/colloq.db"
 else
-  say "${DIM}    базу не трогаю — её в аргументах не было${OFF}"
+  say "${DIM}    not touching the database — it was not in the arguments${OFF}"
 fi
 
-say "${BOLD}3/3${OFF} файлы семинаров и ключи"
+say "${BOLD}3/3${OFF} seminar files and keys"
 if [ -n "$FILES" ]; then
-  # Разворачивается поверх, а не вместо: комнаты, которых в копии нет, остаются
-  # на месте. Забрать лишнее всегда можно, а вернуть стёртое — нет.
+  # Unpacked over, not instead: rooms that are not in the backup stay in
+  # place. Removing the extra is always possible, bringing back the erased is
+  # not.
   #
-  # -p обязателен: у data/session-secret права 0600, и без сохранения режима
-  # ключ подписи стал бы читаемым для всех, кто есть на машине.
+  # -p is required: data/session-secret has mode 0600, and without preserving
+  # the mode the signing key would become readable by everyone on the machine.
   tar -xzpf "$FILES"
   say "    $FILES → workspace/, data/, kernel/environments/"
   if [ -f data/session-secret ]; then
     chmod 600 data/session-secret
-    say "${DIM}    ключ подписи на месте — выданные ссылки и куки переживут переезд${OFF}"
+    say "${DIM}    the signing key is in place — issued links and cookies survive the move${OFF}"
   fi
   if [ -f data/setup-token ]; then
     chmod 600 data/setup-token
   fi
 else
-  say "${DIM}    архива файлов нет — восстановлена только база.${OFF}"
-  say "${DIM}    Тетради и настройки на месте, загруженные файлы — нет.${OFF}"
+  say "${DIM}    no file archive — only the database was restored.${OFF}"
+  say "${DIM}    Notebooks and settings are in place, uploaded files are not.${OFF}"
 fi
 
-# Хозяин файлов — тот, от кого работает сервер, а не тот, кто восстанавливал.
+# Files belong to whoever the server runs as, not to whoever restored them.
 #
-# Под `make up` сервер в контейнере работает от `node` (uid 1000), а копию на
-# новой машине разворачивает root: база и папки оставались root:root, и
-# контейнер падал по кругу с «unable to open database file». Локально этого не
-# видно вовсе — при `make run` сервер и есть тот, кто распаковал.
+# Under `make up` the server in the container runs as `node` (uid 1000), while
+# on a new machine the backup is restored by root: the database and folders
+# stayed root:root, and the container crash-looped with "unable to open
+# database file". Locally this is not visible at all — under `make run` the
+# server is the one who unpacked.
 #
-# А на выделенной машине сервер стоит службой и работает от root — там uid 1000
-# у базы означал бы ровно обратную ошибку. Поэтому форму спрашиваем, а не
-# угадываем: есть юнит — сервер root, нет — сервер в контейнере. И спрашиваем с
-# оговоркой: на новой машине копию разворачивают ДО установки службы (иначе
-# сервер откроет базу, которую мы собираемся подменить), и юнита там ещё нет —
-# поэтому scripts/vast.sh говорит форму прямо, FORM=service.
+# On a dedicated machine, though, the server is a service and runs as root —
+# there uid 1000 on the database would mean exactly the opposite error. So the
+# form is asked, not guessed: there is a unit — the server is root, there is
+# none — the server is in a container. And asked with a caveat: on a new
+# machine the backup is restored BEFORE the service is installed (otherwise
+# the server would open the database we are about to swap), and there is no
+# unit there yet — so scripts/vast.sh states the form directly, FORM=service.
 #
-# Что не зависит от формы: workspace/. В него пишет ядро комнаты, а оно всегда
-# uid 1000 (kernel/Dockerfile, пользователь runner). Под службой сервер кладёт
-# туда же свои файлы от root, поэтому каталогам ставится группа 1000 и бит
-# setgid: всё новое внутри достаётся этой группе, а право писать ей даёт
-# UMask=0002 из юнита. Без пары «setgid + umask» первая ячейка с open(…,'w')
-# в свежей комнате падает PermissionError на зелёном экране.
+# What does not depend on the form: workspace/. The room's kernel writes into
+# it, and the kernel is always uid 1000 (kernel/Dockerfile, user runner).
+# Under the service the server puts its own files there as root, so the
+# directories get group 1000 and the setgid bit: everything new inside goes to
+# that group, and UMask=0002 from the unit gives it the right to write.
+# Without the "setgid + umask" pair the first cell with open(…,'w') in a fresh
+# room fails with PermissionError on a green screen.
 #
-# Тысяча здесь — умолчание, а не истина: группу ядру выдаёт useradd, и в
-# окружении поверх чужой базы она может оказаться другой. Точный номер ставит
-# scripts/service.sh, спросив его у самого образа; там же это и повторяется
-# после каждой установки.
+# A thousand here is a default, not the truth: the kernel's group comes from
+# useradd, and in an environment built on another base it may turn out
+# different. The exact number is set by scripts/service.sh, which asks the
+# image itself; that is also repeated there after every install.
 #
-# Только когда мы root и только на этих двух каталогах: чужие права здесь не
-# трогаются, а на macOS (там uid другой и всё и так своё) шаг пропускается.
+# Only when we are root and only on these two directories: other permissions
+# are not touched here, and on macOS (the uid is different there and
+# everything is yours anyway) the step is skipped.
 FORM="${FORM:-}"
 if [ -z "$FORM" ] && [ -f /etc/systemd/system/colloq.service ]; then FORM=service; fi
 if [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ]; then
   if [ "$FORM" = service ]; then
     chown -R root:root data
-    # Группа, а не владелец. Владельца у файлов внутри workspace/ менять нельзя:
-    # то, что распаковалось от uid 1000, ядро писало как хозяин, и став
-    # root:1000 с правами 0644 оно стало бы для ядра нечитаемым на запись.
-    # Группа же 1000 плюс setgid на каталогах дают обеим сторонам заводить и
-    # удалять файлы внутри, не трогая уже лежащие.
+    # The group, not the owner. The owner of files inside workspace/ must not
+    # change: what was unpacked as uid 1000 the kernel wrote as the owner, and
+    # as root:1000 with mode 0644 it would become unwritable for the kernel.
+    # Group 1000 plus setgid on the directories, on the other hand, lets both
+    # sides create and delete files inside without touching those already
+    # there.
     chgrp -R 1000 workspace
     find workspace -type d -exec chmod 2775 {} + 2>/dev/null || true
-    say "${DIM}    data/ — за root (сервер работает службой), workspace/ — группа 1000 (ядро)${OFF}"
+    say "${DIM}    data/ — root's (the server runs as a service), workspace/ — group 1000 (the kernel)${OFF}"
   else
     chown -R 1000:1000 data workspace
-    say "${DIM}    владелец data/ и workspace/ — uid 1000: от него сервер работает в контейнере${OFF}"
+    say "${DIM}    data/ and workspace/ are owned by uid 1000: the server runs as it in the container${OFF}"
   fi
 fi
 
 printf '\n'
-say "${BOLD}готово${OFF}"
-say "${DIM}Поднять: make up (или make run; на выделенной машине — make service-install).${OFF}"
-say "${DIM}Окружения ядра здесь не восстанавливаются —${OFF}"
-say "${DIM}их собирают заново: make env-build NAME=…${OFF}"
-say "${DIM}Ключ оракула, RELAY_* и PUBLIC_URL живут в .env, а не в копии.${OFF}"
+say "${BOLD}done${OFF}"
+say "${DIM}Start: make up (or make run; on a dedicated machine — make service-install).${OFF}"
+say "${DIM}Kernel environments are not restored here —${OFF}"
+say "${DIM}they are built again: make env-build NAME=…${OFF}"
+say "${DIM}The Oracle key, RELAY_* and PUBLIC_URL live in .env, not in the backup.${OFF}"

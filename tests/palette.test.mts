@@ -1,12 +1,12 @@
 /**
- * Палитра команд комнаты: отбор строк и порядок ответа.
+ * The room's command palette: filtering rows and ordering the answer.
  *
- * Всё, до чего в комнате раньше можно было дотянуться только мышью — панели,
- * вкладки, переход к ячейке, строка оракула, — теперь живёт одним списком под
- * ⌘K. Ломается он молча и ровно в двух местах: человек печатает обрывками
- * («03 imp»), и если слова ищутся одной подстрокой, список пуст; и если
- * «Run all» на запрос «run» оказывается восьмой строкой, палитрой перестают
- * пользоваться на второй паре.
+ * Everything in the room that used to be reachable only with the mouse —
+ * panels, tabs, jumping to a cell, the oracle line — now lives in one list
+ * under ⌘K. It breaks silently and in exactly two places: people type in
+ * fragments ("03 imp"), and if the words are searched as one substring, the
+ * list is empty; and if "Run all" comes up as the eighth row for the query
+ * "run", people stop using the palette by the second class.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -31,15 +31,15 @@ const ROOM: PaletteItem[] = [
   item('cell-4', 'Ячейки', 'model.fit(x, y)', '04', 'ячейка cell 4'),
 ]
 
-test('пустой запрос отдаёт весь список в исходном порядке', () => {
+test('an empty query returns the whole list in its original order', () => {
   assert.deepEqual(
     matchItems(ROOM, '   ').map((entry) => entry.id),
     ROOM.map((entry) => entry.id),
   )
 })
 
-test('слова ищутся по отдельности и в любом порядке', () => {
-  // Номер ячейки живёт в подсказке, слово из кода — в подписи.
+test('words are searched separately and in any order', () => {
+  // The cell number lives in the hint, the word from the code in the label.
   assert.deepEqual(
     matchItems(ROOM, '03 imp').map((entry) => entry.id),
     ['cell-3'],
@@ -50,35 +50,35 @@ test('слова ищутся по отдельности и в любом по�
   )
 })
 
-test('совпадение с начала подписи идёт первым', () => {
+test('a match at the start of the label comes first', () => {
   const found = matchItems(ROOM, 'запустить')
   assert.equal(found[0].id, 'run-all')
 })
 
-test('найденное по ключевым словам стоит ниже найденного по подписи', () => {
-  // «Остановить выполнение» содержит «выполн» в подписи, «Запустить всю
-  // тетрадь» — только в ключевых словах.
+test('matches on keywords rank below matches on the label', () => {
+  // "Остановить выполнение" has "выполн" in its label, "Запустить всю
+  // тетрадь" only in its keywords.
   const found = matchItems(ROOM, 'выполн').map((entry) => entry.id)
   assert.deepEqual(found, ['interrupt', 'run-all'])
 })
 
-test('регистр не имеет значения', () => {
+test('case does not matter', () => {
   assert.deepEqual(
     matchItems(ROOM, 'MODEL').map((entry) => entry.id),
     matchItems(ROOM, 'model').map((entry) => entry.id),
   )
 })
 
-test('раздел тоже ищется — «ячейки» показывает ячейки', () => {
+test('the group is searched too: the group name shows its cells', () => {
   const found = matchItems(ROOM, 'ячейки').map((entry) => entry.id)
   assert.deepEqual(found, ['cell-3', 'cell-4'])
 })
 
-test('ничего не нашлось — пустой список, а не весь', () => {
+test('nothing found gives an empty list, not the whole one', () => {
   assert.deepEqual(matchItems(ROOM, 'тензорное разложение'), [])
 })
 
-test('заголовок раздела печатается один раз на серию', () => {
+test('a group heading is printed once per run of items', () => {
   assert.deepEqual(groupHeads(ROOM), [
     'Комната',
     null,
@@ -90,7 +90,7 @@ test('заголовок раздела печатается один раз н�
   ])
 })
 
-test('после отбора заголовки считаются заново', () => {
+test('headings are recomputed after filtering', () => {
   const found = matchItems(ROOM, 'cell')
   assert.deepEqual(groupHeads(found), ['Ячейки', null])
 })

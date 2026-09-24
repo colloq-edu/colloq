@@ -1,6 +1,6 @@
 /**
- * Карточка комнаты для мессенджера: настоящий PNG нужного размера, кэш по
- * комнате и маршрут, который её отдаёт.
+ * The room card for messengers: a real PNG of the right size, a per-room
+ * cache and the route that serves it.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -30,27 +30,27 @@ after(() => {
   fs.rmSync(staticDir, { recursive: true, force: true })
 })
 
-/** Ширина и высота из IHDR — первого чанка любого PNG. */
+/** Width and height from IHDR — the first chunk of any PNG. */
 const pngSize = (png: Buffer): { width: number; height: number } => {
-  assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'не PNG')
+  assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'not a PNG')
   return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) }
 }
 
-test('карточка — PNG 1200×630, и по одной комнате рисуется один раз', async () => {
+test('the card is a 1200×630 PNG, and for one room it is drawn once', async () => {
   const { roomCardPng, roomCardRenders, CARD_WIDTH, CARD_HEIGHT } = await import('../server/src/og-card.js')
   const room = { name: 'MMDA | week01', createdAt: 1789214082146, host: 'hse.colloq.ru', language: 'ru' as const }
   const before = roomCardRenders()
   const png = await roomCardPng(room)
   assert.deepEqual(pngSize(png), { width: CARD_WIDTH, height: CARD_HEIGHT })
-  assert.ok(png.length > 10_000, 'картинка подозрительно мала')
+  assert.ok(png.length > 10_000, 'the image is suspiciously small')
   await roomCardPng({ ...room })
-  assert.equal(roomCardRenders() - before, 1, 'вторую картинку той же комнаты нарисовали заново')
-  // Другое имя — другая картинка.
+  assert.equal(roomCardRenders() - before, 1, 'the second image of the same room was drawn again')
+  // A different name — a different image.
   await roomCardPng({ ...room, name: 'Другое занятие' })
   assert.equal(roomCardRenders() - before, 2)
 })
 
-test('длинное имя не роняет рисовалку и режется с многоточием', async () => {
+test('a long name does not crash the renderer and is cut with an ellipsis', async () => {
   const { renderRoomCard, cardName } = await import('../server/src/og-card.js')
   const name = 'Очень длинное название занятия, '.repeat(6)
   assert.ok([...cardName(name)].length <= 90)
@@ -60,7 +60,7 @@ test('длинное имя не роняет рисовалку и режетс
   assert.equal(pngSize(png).width, 1200)
 })
 
-test('маршрут отдаёт картинку комнаты и 404 незнакомой', async () => {
+test('the route serves the room image and a 404 for an unknown room', async () => {
   const { createSession } = await import('../server/src/db.js')
   createSession('cardroom', 'Карточка', null)
   const ok = await fetch(`${base}/og/rooms/cardroom.png`)
@@ -72,11 +72,11 @@ test('маршрут отдаёт картинку комнаты и 404 нез�
   assert.equal(missing.status, 404)
 })
 
-test('шрифт карточки едет в образ и колесо вместе с текстом своей лицензии', () => {
-  // server/assets целиком копируют и Dockerfile, и scripts/pack.mts, то есть
-  // каталог — это распространение, а не только рисовалка. SIL OFL 1.1 при
-  // этом требует класть текст лицензии рядом с файлами шрифта; у копий в
-  // web/public/fonts и site/fonts он лежал, а здесь его не было.
+test('the card font ships in the image and the wheel together with its license text', () => {
+  // Both the Dockerfile and scripts/pack.mts copy server/assets whole, so the
+  // directory is distribution, not just the renderer. SIL OFL 1.1 requires
+  // the license text to sit next to the font files; the copies in
+  // web/public/fonts and site/fonts had it, but here it was missing.
   const fonts = path.resolve(import.meta.dirname, '../server/assets/fonts')
   assert.ok(fs.existsSync(path.join(fonts, 'JetBrainsMono-Medium.ttf')))
   const license = fs.readFileSync(path.join(fonts, 'JetBrainsMono-OFL.txt'), 'utf8')

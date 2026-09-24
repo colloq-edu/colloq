@@ -1,14 +1,15 @@
 /**
- * .env, который заводит make, годится для `make dev`.
+ * The .env that make creates is good for `make dev`.
  *
- * Поймано так: `make up` (или run, host, activity — любая цель с
- * пререквизитом `.env`) на свежем клоне делала `cp .env.example .env`, а
- * .env.example — шаблон прода с KERNEL_BACKEND=broker. Следующий `make dev`
- * (супервизор cli/src/launch.ts) отказывал: «This is a runtime broker
- * installation». Цель теперь пишет тот же файл, что и сам colloq
- * (scripts/local-env.sh ↔ launch-config.ts · localClassEnv), и тесты ниже
- * держат три вещи: копии текста не расходятся; порядок «make-цель, потом
- * make dev» и обратный оба работают; отказ на настоящем проде остался.
+ * Caught like this: `make up` (or run, host, activity — any target with the
+ * `.env` prerequisite) on a fresh clone did `cp .env.example .env`, and
+ * .env.example is the production template with KERNEL_BACKEND=broker. The
+ * next `make dev` (the cli/src/launch.ts supervisor) refused: "This is a
+ * runtime broker installation". The target now writes the same file as
+ * colloq itself (scripts/local-env.sh ↔ launch-config.ts · localClassEnv),
+ * and the tests below hold three things: the copies of the text do not drift
+ * apart; the order "make target, then make dev" and the reverse both work;
+ * the refusal on a real production install is still there.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -22,7 +23,7 @@ import { launchConfig, localClassEnv, parseLaunchArgs } from '../cli/src/launch-
 
 const repo = path.resolve(import.meta.dirname, '..')
 
-/** Клон в миниатюре: ровно то, что трогают цели `.env` и `up` (без docker). */
+/** A clone in miniature: exactly what the `.env` and `up` targets touch (without docker). */
 function checkout(): string {
   const dir = fs.mkdtempSync(path.join(tmpdir(), 'colloq-local-env-'))
   fs.mkdirSync(path.join(dir, 'scripts'))
@@ -37,11 +38,12 @@ function make(dir: string, ...args: string[]): { code: number | null; out: strin
 
 function makeIn(dir: string, env: NodeJS.ProcessEnv, args: string[]): { code: number | null; out: string } {
   const result = spawnSync('make', ['--no-print-directory', ...args], { cwd: dir, env, encoding: 'utf8' })
-  // Цвета Makefile (\033[…m) из вывода вон: проверяем текст, а не оформление.
+  // Makefile colours (\033[…m) are stripped from the output: we check the
+  // text, not the styling.
   return { code: result.status, out: `${result.stdout}${result.stderr}`.replace(/\x1b\[[0-9;]*m/g, '') }
 }
 
-/** docker-заглушка первой в PATH: цели, которые его зовут, проходят без демона. */
+/** A docker stub first on PATH: targets that call it pass without a daemon. */
 function stubDocker(dir: string): NodeJS.ProcessEnv {
   const bin = path.join(dir, 'bin')
   fs.mkdirSync(bin, { recursive: true })
@@ -49,26 +51,28 @@ function stubDocker(dir: string): NodeJS.ProcessEnv {
   return { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` }
 }
 
-/** Токен у каждой записи свой — сравниваем всё, кроме его значения. */
+/** Each write gets its own token — we compare everything except its value. */
 const tokenless = (text: string) => text.replace(/^JUPYTER_TOKEN=.*$/m, 'JUPYTER_TOKEN=<token>')
 
-test('make .env пишет .env локального занятия — тот же, что colloq, а не шаблон прода', () => {
+test('make .env writes the local class .env — the same one colloq writes, not the production template', () => {
   const dir = checkout()
   try {
     const result = make(dir, '.env')
     assert.equal(result.code, 0, result.out)
     const written = fs.readFileSync(path.join(dir, '.env'), 'utf8')
-    // Копии текста — шелл для make и TS для colloq — одна и та же строка в строку.
+    // The copies of the text — shell for make and TS for colloq — match line
+    // for line.
     assert.equal(tokenless(written), tokenless(localClassEnv(false)))
     assert.match(written, /^KERNEL_BACKEND=docker$/m)
     assert.doesNotMatch(written, /broker|colloq-runtime|\/etc\/colloq/)
-    // Свой токен ядра, той же длины, что randomBytes(24) у colloq, и не повторяется.
+    // Its own kernel token, the same length as colloq's randomBytes(24), and
+    // it does not repeat.
     const token = written.match(/^JUPYTER_TOKEN=(.*)$/m)?.[1] ?? ''
     assert.match(token, /^[0-9a-f]{48}$/)
     fs.rmSync(path.join(dir, '.env'))
     assert.equal(make(dir, '.env').code, 0)
     assert.notEqual(parse(fs.readFileSync(path.join(dir, '.env'))).JUPYTER_TOKEN, token)
-    // Внутри будут ключи входа — 0600, как у файла супервизора.
+    // It will hold sign-in keys — 0600, like the supervisor's file.
     if (process.platform !== 'win32')
       assert.equal(fs.statSync(path.join(dir, '.env')).mode & 0o777, 0o600)
   } finally {
@@ -76,7 +80,7 @@ test('make .env пишет .env локального занятия — тот �
   }
 })
 
-test('после make-цели супервизор принимает .env: и dev, и run', () => {
+test('after a make target the supervisor accepts the .env: both dev and run', () => {
   const dir = checkout()
   try {
     assert.equal(make(dir, '.env').code, 0)
@@ -91,10 +95,11 @@ test('после make-цели супервизор принимает .env: и 
   }
 })
 
-test('копия шаблона из старого клона: отказ называет строку и файл, а не «идите в cluster»', () => {
-  // Такой .env лежит у всех, кто звал make up с 09.09: цель копировала шаблон.
+test('a template copy from an old clone: the refusal names the line and the file, not "go to cluster"', () => {
+  // Everyone who has run make up since 9 Sep 2026 has such a .env: the target
+  // copied the template.
   const source = parse(fs.readFileSync(path.join(repo, '.env.example')))
-  assert.equal(source.KERNEL_BACKEND, 'broker', 'шаблон прода по-прежнему про broker')
+  assert.equal(source.KERNEL_BACKEND, 'broker', 'the production template is still about broker')
   assert.throws(
     () => launchConfig('/clone', parseLaunchArgs(['dev']), source, '/clone'),
     (error: Error) =>
@@ -104,13 +109,15 @@ test('копия шаблона из старого клона: отказ на�
   )
 })
 
-test('настоящая установка по-прежнему не запускается как занятие на ноутбуке', () => {
-  // COLLOQ_CLUSTER=1 пишет только развёртывание (scripts/vast.sh) — прежний отказ.
+test('a real installation still does not start as a class on a laptop', () => {
+  // COLLOQ_CLUSTER=1 is written only by a deployment (scripts/vast.sh) — the
+  // same refusal as before.
   assert.throws(
     () => launchConfig('/vm', parseLaunchArgs(['run']), { ...localEnv(), COLLOQ_CLUSTER: '1' }),
     /runtime broker installation: use the service or cluster commands/,
   )
-  // broker из оболочки (переменная сильнее файла) — тоже отказ, файл его не отменит.
+  // broker from the shell (the variable beats the file) is a refusal too, and
+  // the file will not cancel it.
   assert.throws(
     () => launchConfig('/vm', parseLaunchArgs(['dev']), { ...localEnv(), KERNEL_BACKEND: 'broker' }),
     /service or cluster commands/,
@@ -121,40 +128,42 @@ function localEnv(): Record<string, string> {
   return parse(localClassEnv(false))
 }
 
-test('обратный порядок: .env супервизора make up не трогает и отдаёт compose целиком', () => {
+test('the reverse order: make up leaves the supervisor .env alone and hands all of it to compose', () => {
   const dir = checkout()
   try {
-    // Так пишет его launch.ts при первом make dev.
+    // This is how launch.ts writes it on the first make dev.
     const own = localClassEnv(false)
     fs.writeFileSync(path.join(dir, '.env'), own, { mode: 0o600 })
     assert.equal(make(dir, '.env').code, 0)
-    assert.equal(fs.readFileSync(path.join(dir, '.env'), 'utf8'), own, 'существующий .env не переписан')
-    // make up без docker: -n печатает, что сделал бы. Писателя .env среди этого нет.
+    assert.equal(fs.readFileSync(path.join(dir, '.env'), 'utf8'), own, 'the existing .env is not rewritten')
+    // make up without docker: -n prints what it would do. The .env writer is
+    // not among it.
     const plan = make(dir, '-n', 'up')
     assert.equal(plan.code, 0, plan.out)
     assert.doesNotMatch(plan.out, /local-env\.sh/)
     assert.match(plan.out, /docker compose up -d --build app/)
-    // Каждую строку, которую человек правит в этом .env, compose и читает, —
-    // кроме KERNEL_BACKEND: compose ставит docker сам. Иначе правка PORT или
-    // ключа оракула под make up молча ничего бы не меняла.
+    // Every line a person edits in this .env is also read by compose — except
+    // KERNEL_BACKEND: compose sets docker itself. Otherwise editing PORT or
+    // the oracle key under make up would silently change nothing.
     const compose = fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf8')
     const read = new Set([...compose.matchAll(/\$\{([A-Z_][A-Z0-9_]*)/g)].map((m) => m[1]))
     assert.match(compose, /KERNEL_BACKEND: docker/)
     for (const key of Object.keys(parse(own)).filter((k) => k !== 'KERNEL_BACKEND'))
-      assert.ok(read.has(key), `${key} из .env занятия не доезжает до make up`)
+      assert.ok(read.has(key), `${key} from the class .env does not reach make up`)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 
 /**
- * Ровно путь человека: make-цель завела .env, затем настоящий супервизор.
+ * Exactly a person's path: a make target created the .env, then the real
+ * supervisor.
  *
- * Порт сервера заранее занят нашим же слушателем, поэтому супервизор, приняв
- * настройки, останавливается на проверке порта — ничего не собирая и не
- * запуская. До починки он падал раньше, на broker.
+ * The server port is taken in advance by our own listener, so the
+ * supervisor, having accepted the settings, stops at the port check —
+ * building and starting nothing. Before the fix it failed earlier, on broker.
  */
-test('make .env, затем launch.ts dev: доходит до проверки порта, а не до отказа про broker', async () => {
+test('make .env, then launch.ts dev: it gets as far as the port check, not a refusal about broker', async () => {
   const dir = checkout()
   const blocker = net.createServer()
   await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve))
@@ -176,7 +185,7 @@ test('make .env, затем launch.ts dev: доходит до проверки 
     assert.equal(code, 1, out)
     assert.match(out, new RegExp(`Port ${busy} .*already taken`), out)
     assert.doesNotMatch(out, /broker/, out)
-    // Отказ ничего не оставил: ни расписки, ни pid-файла.
+    // The refusal left nothing behind: no receipt, no pid file.
     assert.equal(fs.existsSync(path.join(dir, '.colloq/local-session.json')), false)
   } finally {
     await new Promise<void>((resolve) => blocker.close(() => resolve()))
@@ -185,10 +194,11 @@ test('make .env, затем launch.ts dev: доходит до проверки 
 })
 
 /**
- * Занятый порт по умолчанию — не отказ: берётся ближайший свободный, как у
- * Jupyter. Названный явно (--port) — отказ, как и был. Docker здесь нарочно не
- * найти (PATH только с node): запуск останавливается на «Docker is not
- * responding», ничего не собрав, — строка про порт к этому времени уже сказана.
+ * A busy default port is not a refusal: the nearest free one is taken, as
+ * Jupyter does. One named explicitly (--port) is a refusal, as before. Docker
+ * cannot be found here on purpose (PATH holds only node): the launch stops at
+ * "Docker is not responding" without building anything — by then the line
+ * about the port has already been printed.
  */
 test('run: a busy default port moves to the nearest free one, a busy --port is refused', async () => {
   const dir = checkout()
@@ -233,13 +243,14 @@ test('run: a busy default port moves to the nearest free one, a busy --port is r
 })
 
 /*
- * env-use на свежем клоне. Цель переливала .env через grep -v и дописывала
- * KERNEL_ENV — а когда файла ещё не было, получался .env из одной этой строки.
- * Дальше ни make up, ни make dev своего не писали (файл же есть), и занятие
- * шло с умолчаниями и общеизвестным токеном ядра. Та же ошибка была у
- * `colloq env use` (cli/src/commands/env.ts); у make её закрыл пререквизит .env.
+ * env-use on a fresh clone. The target rewrote .env through grep -v and
+ * appended KERNEL_ENV — and when there was no file yet, the result was a .env
+ * of that one line. After that neither make up nor make dev wrote their own
+ * (the file exists, after all), and the class ran with the defaults and a
+ * publicly known kernel token. `colloq env use` (cli/src/commands/env.ts) had
+ * the same bug; for make it was closed by the .env prerequisite.
  */
-test('make env-use на свежем клоне: полный .env занятия, а не одна строка KERNEL_ENV', () => {
+test('make env-use on a fresh clone: a full class .env, not a single KERNEL_ENV line', () => {
   const dir = checkout()
   try {
     fs.mkdirSync(path.join(dir, 'kernel/environments'), { recursive: true })
@@ -251,7 +262,8 @@ test('make env-use на свежем клоне: полный .env заняти�
     assert.equal(text.match(/^KERNEL_ENV=/gm)?.length, 1, text)
     assert.equal(env.KERNEL_ENV, 'cv')
     assert.match(env.JUPYTER_TOKEN ?? '', /^[0-9a-f]{48}$/)
-    // Кроме окружения и токена — ровно файл занятия: env-use меняет одну строку.
+    // Apart from the environment and the token it is exactly the class file:
+    // env-use changes one line.
     const own = parse(localClassEnv(false))
     assert.deepEqual({ ...env, KERNEL_ENV: own.KERNEL_ENV, JUPYTER_TOKEN: '' }, { ...own, JUPYTER_TOKEN: '' })
     if (process.platform !== 'win32')
@@ -263,12 +275,13 @@ test('make env-use на свежем клоне: полный .env заняти�
 })
 
 /*
- * PUBLIC_URL в файле занятия нет (его не было и у colloq), а make run и
- * make status печатали строку из .env как есть: готовый сервер объявлялся
- * пустым «colloq на». Сервер без строки берёт localhost:PORT (config.ts ·
- * readPublicUrl) — это и должно быть напечатано.
+ * The class file has no PUBLIC_URL (colloq never had one either), and make
+ * run and make status printed the line from .env as is: a server that was
+ * ready was announced as an empty "colloq at". Without the line the server
+ * takes localhost:PORT (config.ts · readPublicUrl) — and that is what must be
+ * printed.
  */
-test('make status и make run без PUBLIC_URL печатают localhost:PORT, а не пустую ссылку', () => {
+test('make status and make run without PUBLIC_URL print localhost:PORT, not an empty link', () => {
   const dir = checkout()
   try {
     assert.equal(make(dir, '.env').code, 0)
@@ -284,7 +297,8 @@ test('make status и make run без PUBLIC_URL печатают localhost:PORT,
     assert.equal(shown(), 'http://localhost:4000')
     fs.appendFileSync(file, 'PUBLIC_URL=https://demo.example.org\n')
     assert.equal(shown(), 'https://demo.example.org')
-    // run поднимает настоящий сервер, поэтому здесь только его план: та же подстановка.
+    // run starts a real server, so here only its plan is checked: the same
+    // substitution.
     const plan = make(dir, '-n', 'run')
     assert.equal(plan.code, 0, plan.out)
     assert.match(plan.out, /"\$\{url:-http:\/\/localhost:4000\}"/)

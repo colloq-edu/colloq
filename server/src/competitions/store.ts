@@ -1,27 +1,29 @@
 /**
- * Соревнования: таблицы и запросы к ним.
+ * Competitions: tables and queries over them.
  *
- * СХЕМА ЗДЕСЬ, и владелец у неё один. Это не общие таблицы продукта: ни один
- * другой модуль в них не пишет и столбцов им не добавляет, поэтому `CREATE
- * TABLE` стоит рядом с единственными запросами — в отличие от `sessions`,
- * которую правят трое, и поэтому её схема живёт в `db.ts` (см. шапку
- * publish/store.ts, где эта граница проведена вслух).
+ * THE SCHEMA IS HERE, and it has one owner. These are not shared product
+ * tables: no other module writes to them or adds columns to them, so the
+ * `CREATE TABLE` sits next to the only queries — unlike `sessions`, which
+ * three parties edit, and so its schema lives in `db.ts` (see the header of
+ * publish/store.ts, where this boundary is drawn out loud).
  *
- * ЧТО ЗДЕСЬ ЕСТЬ И ЧЕГО НЕТ. Здесь — строки: соревнования, их файлы, участники
- * инстанса, посылки, прогоны и очередь. Правила — в `@shared/competitions`, и
- * этот модуль их ЗОВЁТ, а не повторяет: сколько посылок осталось сегодня и
- * какая идёт в зачёт, веб и сервер обязаны считать одинаково. Диск — в
- * `storage.ts`; отсюда к нему одно обращение, удаление соревнования, и оно
- * нарочно не тихое.
+ * WHAT IS HERE AND WHAT IS NOT. Here are the rows: competitions, their files,
+ * the instance's participants, submissions, runs and the queue. The rules are
+ * in `@shared/competitions`, and this module CALLS them rather than repeating
+ * them: how many submissions are left today and which one counts, the web and
+ * the server must compute identically. The disk is in `storage.ts`; from here
+ * there is one call to it, deleting a competition, and it is deliberately not
+ * quiet.
  *
- * ОЧЕРЕДЬ — уровня инстанса и в базе, а не в памяти процесса. Пара идёт
- * полтора часа, посылки копятся всё это время, а `npm run build` на сервере
- * или падение процесса не должны означать «тридцать человек прислали в пустоту».
- * Поэтому в строке очереди лежит всё, чем можно поднять работу заново: чей это
- * прогон, какого он вида, сколько раз уже начинался, в каком контейнере идёт и
- * — главное — какая ЖИЗНЬ ПРОЦЕССА его начала (`boot`). Строка «исполняется»,
- * помеченная чужой жизнью, — это осиротевший прогон: контейнера больше нет, и
- * никто, кроме `orphanedRuns`, об этом не узнает.
+ * THE QUEUE is instance-level and in the database, not in process memory. A
+ * class period lasts an hour and a half, submissions pile up all that time,
+ * and `npm run build` on the server or a process crash must not mean "thirty
+ * people submitted into the void". So the queue row holds everything needed
+ * to pick the work up again: whose run it is, what kind, how many times it
+ * has already started, which container it runs in and — most importantly —
+ * which LIFE OF THE PROCESS started it (`boot`). A "running" row marked with
+ * another life is an orphaned run: the container is gone, and nobody but
+ * `orphanedRuns` will find out.
  */
 import { randomInt, randomUUID } from 'node:crypto'
 import { db } from '../db.js'
@@ -53,29 +55,33 @@ import {
   type SubmissionState,
 } from '@shared/competitions'
 
-/* ------------------------------------------------------------------ схема */
+/* ----------------------------------------------------------------- schema */
 
 /**
- * Ключ участника переехал из столбца в отпечаток — ДО того, как читается схема.
+ * The participant key moved from a column to a fingerprint — BEFORE the
+ * schema is read.
  *
- * У того, кто поднимал эту ветку раньше, `entrants` заведена со столбцом
- * `link_key`, в котором ключ лежит как есть. `CREATE TABLE IF NOT EXISTS` про
- * это не знает и молчит, а следом за ним идёт `CREATE UNIQUE INDEX … (key_hash)`
- * — по столбцу, которого в той таблице нет, то есть отказ на импорте модуля и
- * сервер, который не поднимается вовсе. Отсюда и место: раньше схемы.
+ * For anyone who ran this branch earlier, `entrants` was created with a
+ * `link_key` column that holds the key as is. `CREATE TABLE IF NOT EXISTS`
+ * knows nothing about this and stays silent, and right after it comes
+ * `CREATE UNIQUE INDEX … (key_hash)` — on a column that table does not have,
+ * that is, a failure on module import and a server that does not come up at
+ * all. Hence the placement: before the schema.
  *
- * Строки переживают переезд: ключи, которые люди уже записали, остаются
- * рабочими — считается их отпечаток и запечатывается копия. Старый столбец
- * опустошается в той же транзакции, потому что вся затея ровно об этом.
+ * The rows survive the move: keys people have already written down keep
+ * working — their fingerprint is computed and a sealed copy is made. The old
+ * column is emptied in the same transaction, because that is exactly what the
+ * whole exercise is about.
  */
 function liftEntrantKeys(): void {
   const columns = db.prepare('PRAGMA table_info(entrants)').all() as { name: string }[]
-  // Таблицы нет вовсе — её заведёт схема ниже, уже правильной.
+  // No table at all — the schema below will create it, already correct.
   if (columns.length === 0 || columns.some((column) => column.name === 'key_hash')) return
   db.exec("ALTER TABLE entrants ADD COLUMN key_hash TEXT NOT NULL DEFAULT ''")
   db.exec("ALTER TABLE entrants ADD COLUMN key_sealed TEXT NOT NULL DEFAULT ''")
-  // Прежний индекс носит то же имя и стоит на прежнем столбце: `IF NOT EXISTS`
-  // ниже увидел бы его и оставил уникальность там, где её больше нет.
+  // The old index carries the same name and sits on the old column; the
+  // `IF NOT EXISTS` below would see it and leave the uniqueness where it no
+  // longer is.
   db.exec('DROP INDEX IF EXISTS entrants_key')
   const rows = db.prepare('SELECT id, link_key FROM entrants').all() as {
     id: string
@@ -90,7 +96,8 @@ function liftEntrantKeys(): void {
   try {
     db.exec('ALTER TABLE entrants DROP COLUMN link_key')
   } catch {
-    // SQLite старше 3.35 сносить столбцы не умеет. Он уже пуст, и это главное.
+    // SQLite older than 3.35 cannot drop columns. The column is already
+    // empty, and that is what matters.
   }
 }
 liftEntrantKeys()
@@ -108,9 +115,9 @@ db.exec(`
     metric_code            TEXT NOT NULL DEFAULT '',
     public_percent         INTEGER NOT NULL DEFAULT 30,
     /*
-     * Зерно деления строк, записанное при создании и больше не меняемое.
-     * Перегенерировать его значит поменять, какие строки были публичными, —
-     * то есть сделать вчерашний лидерборд несравнимым с сегодняшним.
+     * The row-split seed, written at creation and never changed afterwards.
+     * Regenerating it means changing which rows were public — that is,
+     * making yesterday's leaderboard incomparable with today's.
      */
     split_seed             TEXT NOT NULL,
     wall_seconds           INTEGER NOT NULL DEFAULT 600,
@@ -128,15 +135,16 @@ db.exec(`
     created_at             INTEGER NOT NULL,
     updated_at             INTEGER NOT NULL
   );
-  /* Адрес /k/<slug> — единственность держит база, а не проверка перед вставкой. */
+  /* The /k/<slug> address: the database holds uniqueness, not a pre-insert check. */
   CREATE UNIQUE INDEX IF NOT EXISTS competitions_slug ON competitions(slug);
 
   /*
-   * Файлы соревнования — строка на файл, байты на диске (storage.ts).
+   * Competition files — a row per file, the bytes on disk (storage.ts).
    *
-   * Видимость столбцом, а не двумя таблицами: список у участника и список у
-   * преподавателя — один и тот же запрос с разным WHERE, и раздвоив таблицу,
-   * однажды получишь ответы, добавленные в открытый список.
+   * Visibility as a column rather than two tables: the participant's list and
+   * the teacher's list are the same query with a different WHERE, and if you
+   * split the table in two, one day you will get answers added to the open
+   * list.
    */
   CREATE TABLE IF NOT EXISTS competition_files (
     competition_id TEXT NOT NULL,
@@ -151,21 +159,22 @@ db.exec(`
     ON competition_files(competition_id, visibility);
 
   /*
-   * Участник соревнований — уровня ИНСТАНСА, а не комнаты.
+   * A competition participant — INSTANCE-level, not room-level.
    *
-   * Личность студента в занятии привязана к session_id и живёт в localStorage
-   * браузера: зашёл с телефона — другой человек. Посылки и место обязаны
-   * возвращаться с другого устройства, поэтому здесь заводится своя сущность с
-   * ключом входа — ровно та же механика, что у личных ссылок преподавателей.
+   * A student's identity in a class is bound to session_id and lives in the
+   * browser's localStorage: come in from a phone and you are a different
+   * person. Submissions and standing must come back from another device, so a
+   * separate entity with a sign-in key is created here — exactly the same
+   * mechanics as the teachers' personal links.
    */
   CREATE TABLE IF NOT EXISTS entrants (
     id           TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
     /*
-     * Самого ключа здесь нет ни в одном столбце — см. competitions/key.ts.
-     * key_hash ищет человека на входе и подписывает его печенье, key_sealed
-     * показывает ключ хозяину в карточке P1. Утёкшая база без секрета инстанса
-     * не отдаёт ни одного входа.
+     * The key itself is not in any column here — see competitions/key.ts.
+     * key_hash finds the person on sign-in and signs their cookie, key_sealed
+     * shows the key to its owner on card P1. A leaked database without the
+     * instance secret gives away not a single sign-in.
      */
     key_hash     TEXT NOT NULL,
     key_sealed   TEXT NOT NULL DEFAULT '',
@@ -176,19 +185,19 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS entrants_key ON entrants(key_hash);
 
   /*
-   * Кто в каком соревновании — отдельной строкой, а не «прислал посылку».
+   * Who is in which competition — a row of its own, not "sent a submission".
    *
-   * Макет P1 различает «Участвую» и «ещё не участвуете» ДО первой посылки:
-   * кнопка «УЧАСТВОВАТЬ» заводит человека в таблицу, и только после этого у
-   * него появляется зона загрузки. Второе, ради чего таблица нужна, —
-   * уникальность имени: тёзок в лидерборде быть не должно, а держать это
-   * правило может только уникальный индекс. Проверка выборкой пропустила бы
-   * двоих, нажавших «УЧАСТВОВАТЬ» в одну секунду.
+   * Mockup P1 tells "taking part" apart from "not taking part yet" BEFORE the
+   * first submission: the "JOIN" button puts the person into the table, and
+   * only after that do they get an upload area. The second reason the table is
+   * needed is name uniqueness: there must be no namesakes on the leaderboard,
+   * and only a unique index can hold that rule. A check by query would let
+   * through two people who pressed "JOIN" in the same second.
    */
   CREATE TABLE IF NOT EXISTS competition_entrants (
     competition_id TEXT NOT NULL,
     entrant_id     TEXT NOT NULL,
-    /** Имя, приведённое к виду, в котором сравнивают тёзок (@shared). */
+    /** The name reduced to the form in which namesakes are compared (@shared). */
     name_key       TEXT NOT NULL,
     joined_at      INTEGER NOT NULL,
     PRIMARY KEY (competition_id, entrant_id)
@@ -215,23 +224,23 @@ db.exec(`
     teacher_error     TEXT,
     chosen            INTEGER NOT NULL DEFAULT 0
   );
-  /* «#12» — номер в пределах соревнования, и двух одинаковых быть не может. */
+  /* "#12" — the number within a competition, and there cannot be two alike. */
   CREATE UNIQUE INDEX IF NOT EXISTS submissions_number
     ON submissions(competition_id, number);
-  /* «Мои посылки» и счёт дневной нормы — один и тот же порядок чтения. */
+  /* "My submissions" and the daily quota count — one and the same reading order. */
   CREATE INDEX IF NOT EXISTS submissions_mine
     ON submissions(competition_id, entrant_id, accepted_at);
-  /* Лидерборд читает только дошедшие до числа, и сразу в порядке результата. */
+  /* The leaderboard reads only those that reached a number, right in score order. */
   CREATE INDEX IF NOT EXISTS submissions_board
     ON submissions(competition_id, state, public_score);
 
   /*
-   * Прогон — один заход в контейнер, и их у посылки несколько.
+   * A run is one trip into a container, and a submission has several.
    *
-   * Ради единственной вещи, обещанной макетом: «после правки метрики всё
-   * пересчитывается без повторного исполнения тетрадей». Пересчёт заводит
-   * новый прогон вида metric рядом с прежним notebook, и тетрадь второй раз не
-   * запускается.
+   * For the one thing the mockup promises: "after a metric fix everything is
+   * rescored without executing the notebooks again". Rescoring creates a new
+   * run of kind metric next to the earlier notebook one, and the notebook is
+   * not started a second time.
    */
   CREATE TABLE IF NOT EXISTS submission_runs (
     id                TEXT PRIMARY KEY,
@@ -255,13 +264,13 @@ db.exec(`
     ON submission_runs(submission_id, seq);
 
   /*
-   * Очередь исполнения — одна на инстанс.
+   * The execution queue — one per instance.
    *
-   * В базе, а не в памяти: перезапуск сервера посреди пары не должен означать
-   * «тридцать посылок исчезли». Столбец boot называет жизнь процесса, которая
-   * начала прогон, — по нему и только по нему видно осиротевшую работу. Имя
-   * контейнера лежит рядом, чтобы было что убить: контейнер переживает
-   * процесс, который его запустил.
+   * In the database, not in memory: a server restart in the middle of a class
+   * period must not mean "thirty submissions vanished". The boot column names
+   * the life of the process that started the run — by it and only by it is
+   * orphaned work visible. The container name lies next to it, so that there
+   * is something to kill: the container outlives the process that started it.
    */
   CREATE TABLE IF NOT EXISTS competition_queue (
     submission_id  TEXT PRIMARY KEY,
@@ -275,11 +284,11 @@ db.exec(`
     resource_retries INTEGER NOT NULL DEFAULT 0,
     not_before     INTEGER NOT NULL DEFAULT 0,
     /*
-     * Который по счёту заход ЭТОГО человека — считается в момент постановки в
-     * очередь и больше не меняется. Ради него столбец и заведён: без него
-     * «честно по людям» держалось бы на том, что чужая посылка ещё видна в
-     * очереди, и разваливалось ровно в ту секунду, когда предыдущая работа
-     * того же человека из очереди ушла (см. порядок выборки ниже).
+     * Which attempt of THIS person it is — computed at enqueue time and never
+     * changed afterwards. The column exists for its sake: without it "fair per
+     * person" would rest on the other submission still being visible in the
+     * queue, and would fall apart the very second the same person's previous
+     * work left the queue (see the selection order below).
      */
     turn           INTEGER NOT NULL DEFAULT 0,
     boot           TEXT,
@@ -291,11 +300,12 @@ db.exec(`
     ON competition_queue(entrant_id, state);
 
   /*
-   * Пауза очереди — одна строка на инстанс.
+   * The queue pause — one row per instance.
    *
-   * Своей таблицей, а не ключом в instance_settings: ту заводит admin/settings,
-   * и второй владелец у чужой схемы — ровно то, чего этот код избегает
-   * (см. шапку). Строка ровно одна, и это сказано CHECK, а не соглашением.
+   * A table of its own, not a key in instance_settings: that one is created by
+   * admin/settings, and a second owner of someone else's schema is exactly
+   * what this code avoids (see the header). There is exactly one row, and
+   * CHECK says so, not a convention.
    */
   CREATE TABLE IF NOT EXISTS competition_queue_state (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
@@ -307,9 +317,10 @@ db.exec(`
 `)
 
 /**
- * Столбец, которого ещё нет. SQLite не умеет ADD COLUMN IF NOT EXISTS, а
- * таблицы выше уже могли завестись у того, кто обновился на день раньше.
- * Та же функция и по той же причине живёт в db.ts и в routes/admin-instance.ts.
+ * A column that does not exist yet. SQLite has no ADD COLUMN IF NOT EXISTS,
+ * and the tables above may already have been created by someone who updated
+ * a day earlier. The same function lives in db.ts and routes/admin-instance.ts
+ * for the same reason.
  */
 function ensureColumn(table: string, column: string, definition: string): void {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
@@ -317,13 +328,13 @@ function ensureColumn(table: string, column: string, definition: string): void {
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`)
 }
 /**
- * Который по счёту заход человека — появился позже самой очереди.
+ * Which attempt of the person it is — appeared later than the queue itself.
  *
- * У того, кто поднимал эту ветку раньше, таблица уже заведена без него, и
- * `CREATE TABLE IF NOT EXISTS` про новый столбец не знает. Ноль по умолчанию
- * означает «все прежние строки равны», то есть очередь на них работает так,
- * как работала до появления честности по людям, — и первая же новая посылка
- * получает настоящий номер захода.
+ * For anyone who ran this branch earlier, the table was already created
+ * without it, and `CREATE TABLE IF NOT EXISTS` does not know about the new
+ * column. Zero by default means "all earlier rows are equal", that is, the
+ * queue works on them the way it did before per-person fairness appeared —
+ * and the very first new submission gets a real attempt number.
  */
 ensureColumn('competition_queue', 'turn', 'turn INTEGER NOT NULL DEFAULT 0')
 ensureColumn('competition_queue', 'attempt_id', 'attempt_id TEXT')
@@ -391,12 +402,12 @@ export function invalidateCompetitionInputs(id: string, notebook = true): void {
 }
 
 
-/* ------------------------------------------------------------------ имена */
+/* ------------------------------------------------------------------ names */
 
 /**
- * Восемь символов из алфавита, который читают вслух, — как у семинаров и
- * публикаций. Идентификатор соревнования едет в путь на диске, так что
- * буквы в нём выбраны не только ради глаз.
+ * Eight characters from an alphabet meant to be read aloud — as for seminars
+ * and publications. The competition id goes into a path on disk, so its
+ * letters were chosen not only for the eyes.
  */
 const ID_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'
 
@@ -407,17 +418,17 @@ function newId(): string {
 }
 
 /**
- * Жизнь этого процесса — метка, по которой видно осиротевшие прогоны.
+ * The life of this process — the mark by which orphaned runs are visible.
  *
- * Случайная на каждый запуск и нарочно не pid: pid переиспользуется системой,
- * и в один несчастливый день строка мёртвого прогона выглядела бы своей.
+ * Random on every start and deliberately not the pid: the system reuses pids,
+ * and one unlucky day a dead run's row would look like our own.
  */
 export const BOOT = randomUUID()
 
 const clip = (value: unknown, max: number): string =>
   typeof value === 'string' ? value.slice(0, max) : ''
 
-/* ------------------------------------------------------------ соревнования */
+/* ------------------------------------------------------------ competitions */
 
 interface CompetitionRow {
   id: string
@@ -522,12 +533,13 @@ export interface NewCompetition {
 }
 
 /**
- * Завести соревнование. `null` — адрес занят.
+ * Create a competition. `null` means the address is taken.
  *
- * Занятость решает уникальный индекс, а не SELECT перед вставкой: два
- * преподавателя, сохранившие черновик в одну секунду, прошли бы проверку оба.
- * Родится соревнование всегда черновиком — открывает его отдельное действие,
- * которому есть что проверить (прошла ли сэмпл-тетрадь весь путь до числа).
+ * Whether it is taken is decided by the unique index, not by a SELECT before
+ * the insert: two teachers who saved a draft in the same second would both
+ * pass the check. A competition is always born a draft — it is opened by a
+ * separate action that has something to check (whether the sample notebook
+ * went all the way to a number).
  */
 export function createCompetition(input: NewCompetition): Competition | null {
   const at = Date.now()
@@ -543,7 +555,7 @@ export function createCompetition(input: NewCompetition): Competition | null {
       metric_direction: input.metric?.direction ?? 'lower',
       metric_code: clip(input.metric?.code ?? '', LIMITS.metricCode),
       public_percent: input.publicPercent ?? LIMITS.publicPercent.default,
-      // Зерно рождается вместе с соревнованием и не трогается больше никогда.
+      // The seed is born with the competition and is never touched again.
       split_seed: randomUUID(),
       wall_seconds: input.limits?.wallSeconds ?? LIMITS.wallSeconds.default,
       memory_mb: input.limits?.memoryMb ?? LIMITS.memoryMb.default,
@@ -573,7 +585,7 @@ export function getCompetition(id: string): Competition | null {
   return row ? toCompetition(row) : null
 }
 
-/** По адресу или по идентификатору — как открывают ссылку `/k/<slug>`. */
+/** By address or by identifier — the way the `/k/<slug>` link is opened. */
 export function findCompetition(slugOrId: string): Competition | null {
   const row = (selectBySlug.get(slugOrId) ?? selectCompetition.get(slugOrId)) as
     | CompetitionRow
@@ -585,7 +597,7 @@ export function listCompetitions(): Competition[] {
   return (selectCompetitions.all() as CompetitionRow[]).map(toCompetition)
 }
 
-/** Поля, которые правит редактор. Всё, чего нет в патче, остаётся как было. */
+/** The fields the editor edits. Everything not in the patch stays as it was. */
 export type CompetitionPatch = Partial<
   Pick<
     Competition,
@@ -635,11 +647,12 @@ const CLIP_OF: Record<string, number> = {
 }
 
 /**
- * Правка соревнования. `null` — такого нет; `'taken'` — новый адрес занят.
+ * Edit a competition. `null` means there is no such competition; `'taken'`
+ * means the new address is taken.
  *
- * Собирается одним UPDATE по тем полям, что пришли: «сохранить всё» переписало
- * бы поля, которых редактор в этот раз не показывал, — а панель A3 показывает
- * не ту же форму, что A2.
+ * Assembled as one UPDATE over the fields that arrived: "save everything"
+ * would overwrite fields the editor did not show this time — and panel A3
+ * does not show the same form as A2.
  */
 export function updateCompetition(id: string, patch: CompetitionPatch): Competition | null | 'taken' {
   const flat: Record<string, unknown> = {}
@@ -686,21 +699,22 @@ export function setCompetitionState(id: string, state: CompetitionState, at = Da
 }
 
 /**
- * Открыть приватный лидерборд рукой.
+ * Open the private leaderboard by hand.
  *
- * Время, а не флаг: «итоги открыли в 14:20» — это ответ на вопрос, который
- * задают после разбора, и хранить его отдельно было бы негде.
+ * A time, not a flag: "the results were opened at 14:20" is the answer to a
+ * question people ask after the review, and there would be nowhere else to
+ * keep it.
  */
 export function openPrivateBoard(id: string, at = Date.now()): boolean {
   return openPrivate.run(at, at, id).changes > 0
 }
 
 /**
- * Удалить соревнование — со строками и с диском.
+ * Delete a competition — with its rows and its disk.
  *
- * Файлы сносятся ПОСЛЕ транзакции и нарочно вслух: тихо оставленный каталог
- * означает ответы удалённого соревнования, лежащие на диске неограниченно
- * долго, и заметить это некому.
+ * The files are removed AFTER the transaction, and deliberately out loud: a
+ * directory left behind quietly means the answers of a deleted competition
+ * lying on disk for an unlimited time, with nobody to notice.
  */
 export function deleteCompetition(id: string): boolean {
   const rows = db.transaction((competitionId: string) => {
@@ -711,8 +725,8 @@ export function deleteCompetition(id: string): boolean {
     db.prepare('DELETE FROM competition_queue WHERE competition_id = ?').run(competitionId)
     db.prepare('DELETE FROM submissions WHERE competition_id = ?').run(competitionId)
     db.prepare('DELETE FROM competition_files WHERE competition_id = ?').run(competitionId)
-    // Сами участники остаются: человек живёт на инстансе, а не в соревновании,
-    // и его ключ обязан пускать в остальные.
+    // The participants themselves stay: a person lives on the instance, not
+    // in a competition, and their key must still let them into the others.
     db.prepare('DELETE FROM competition_entrants WHERE competition_id = ?').run(competitionId)
     return deleteCompetitionRow.run(competitionId).changes
   })(id)
@@ -721,12 +735,12 @@ export function deleteCompetition(id: string): boolean {
   return true
 }
 
-/** Имена живых соревнований — их спрашивает уборка осиротевших каталогов. */
+/** Names of live competitions — the cleanup of orphaned directories asks for them. */
 export function liveCompetitionIds(): Set<string> {
   return new Set((selectLiveIds.all() as { id: string }[]).map((row) => row.id))
 }
 
-/* ------------------------------------------------------------------ файлы */
+/* ------------------------------------------------------------------ files */
 
 interface FileRow {
   competition_id: string
@@ -805,12 +819,12 @@ export function dropFile(id: string, name: string): boolean {
   return deleteFileRow.run(id, name).changes > 0
 }
 
-/** Сколько весят открытые файлы — против потолка «до 200 МБ на соревнование». */
+/** What the open files weigh — against the "up to 200 MB per competition" ceiling. */
 export function openFileBytes(id: string): number {
   return (sumOpenBytes.get(id) as { bytes: number }).bytes
 }
 
-/* --------------------------------------------------------------- участники */
+/* ------------------------------------------------------------ participants */
 
 interface EntrantRow {
   id: string
@@ -823,11 +837,13 @@ interface EntrantRow {
 }
 
 /**
- * Строка → запись. Ключа в записи нет — ни открытого, ни отпечатка.
+ * Row → record. The record has no key — neither the plain one nor the
+ * fingerprint.
  *
- * `Entrant` уезжает в браузер списком участников и строкой лидерборда, и
- * поля, которого там нет, нельзя отдать по недосмотру. Кому ключ нужен, тот
- * зовёт `entrantKeyOf` — дверь, которую видно в выдаче grep.
+ * `Entrant` travels to the browser in the participant list and in a
+ * leaderboard row, and a field that is not there cannot be given away by
+ * oversight. Whoever needs the key calls `entrantKeyOf` — a door that shows up
+ * in grep output.
  */
 function toEntrant(row: EntrantRow): Entrant {
   return {
@@ -854,11 +870,12 @@ const updateEntrantName = db.prepare('UPDATE entrants SET name = ? WHERE id = ?'
 const updateEntrantDisabled = db.prepare('UPDATE entrants SET disabled = ? WHERE id = ?')
 
 /**
- * Завести участника с новым ключом. Ключ возвращается ОДИН раз — вот отсюда.
+ * Create a participant with a new key. The key is returned ONCE — from right
+ * here.
  *
- * Столкновение ключей невозможно практически, но проверяет его база, а не
- * арифметика: повтор на уникальном индексе стоит ещё одного оборота цикла, а
- * молча выданный чужой ключ стоит чужих результатов.
+ * A key collision is practically impossible, but the database checks it, not
+ * arithmetic: a retry on the unique index costs one more turn of the loop,
+ * while someone else's key handed out silently costs someone's results.
  */
 export function createEntrant(name: string): MintedEntrant {
   const at = Date.now()
@@ -881,11 +898,11 @@ export function getEntrant(id: string): Entrant | null {
 }
 
 /**
- * Кто это — по ключу входа.
+ * Who this is — by sign-in key.
  *
- * Отключённый ключ здесь НЕ отсеивается: отказ «ключ отключён» и отказ «такого
- * ключа нет» — разные слова на экране, и разделить их может только тот, кто
- * видит строку.
+ * A disabled key is NOT filtered out here: the refusal "key disabled" and the
+ * refusal "no such key" are different words on screen, and only whoever sees
+ * the row can tell them apart.
  */
 export function entrantByKey(key: string): Entrant | null {
   if (!key) return null
@@ -898,12 +915,13 @@ export function listEntrants(): Entrant[] {
 }
 
 /**
- * Ключ человека — распечатанный ради карточки «ВАШ КЛЮЧ ВХОДА» (P1).
+ * The person's key — unsealed for the "YOUR SIGN-IN KEY" card (P1).
  *
- * Единственная дверь, возвращающая секрет из базы, и названа она так, чтобы её
- * было видно: у преподавателей ровно так же устроен `linkKeyOf`. Зовут её два
- * места — ответ самому человеку и ссылка, которую он копирует. `null` значит
- * «секрет инстанса сменили»: ключ в этом случае и правда больше не работает.
+ * The only door that returns the secret from the database, and it is named so
+ * that it is visible: the teachers' `linkKeyOf` is built exactly the same way.
+ * Two places call it — the answer to the person themselves and the link they
+ * copy. `null` means "the instance secret was changed": in that case the key
+ * really does not work any more.
  */
 export function entrantKeyOf(id: string): string | null {
   const row = selectEntrantSecret.get(id) as { key_hash: string; key_sealed: string } | undefined
@@ -912,11 +930,12 @@ export function entrantKeyOf(id: string): string | null {
 }
 
 /**
- * Отпечаток ключа — то, чем подписано печенье участника.
+ * The key's fingerprint — what the participant's cookie is signed with.
  *
- * Тот же приём, что у печенья панели (`admin/auth.ts` · sign): отпечаток
- * входит в подписываемое сообщение, поэтому выдача нового ключа обрывает и все
- * прежние входы — без таблицы сессий, которую всё равно никто не чистит.
+ * The same trick as the panel cookie (`admin/auth.ts` · sign): the
+ * fingerprint is part of the signed message, so issuing a new key also cuts
+ * off all previous sign-ins — without a sessions table that nobody would clean
+ * anyway.
  */
 export function entrantKeyHash(id: string): string | null {
   const row = selectEntrantSecret.get(id) as { key_hash: string } | undefined
@@ -924,8 +943,9 @@ export function entrantKeyHash(id: string): string | null {
 }
 
 /**
- * Выдать новый ключ. Старый перестаёт действовать в ту же секунду — это и есть
- * ответ на «потерял ключ»: другого способа отобрать розданную строку нет.
+ * Issue a new key. The old one stops working that very second — this is the
+ * answer to "I lost my key": there is no other way to take back a string that
+ * has been handed out.
  */
 export function rotateEntrantKey(id: string): MintedEntrant | null {
   for (let attempt = 0; attempt < 8; attempt++) {
@@ -962,18 +982,19 @@ const selectCompetitionEntrants = db.prepare(`
 `)
 
 /**
- * Кто участвует в этом соревновании.
+ * Who takes part in this competition.
  *
- * Вступившие ИЛИ приславшие хоть одну посылку. Второе условие — не
- * перестраховка: соревнования старше этой таблицы (и прогонщик в тестах)
- * заводят посылки, не проходя через «УЧАСТВОВАТЬ», а человек с посылкой в
- * лидерборде — участник по любому счёту, каким его ни считай.
+ * Those who joined OR sent at least one submission. The second condition is
+ * not overcaution: competitions older than this table (and the runner in
+ * tests) create submissions without going through "JOIN", and a person with a
+ * submission on the leaderboard is a participant by any count, however you
+ * count.
  */
 export function listCompetitionEntrants(competitionId: string): Entrant[] {
   return (selectCompetitionEntrants.all(competitionId, competitionId) as EntrantRow[]).map(toEntrant)
 }
 
-/* --------------------------------------------------------------- вступление */
+/* ------------------------------------------------------------------ joining */
 
 const insertEnrollment = db.prepare(`
   INSERT INTO competition_entrants (competition_id, entrant_id, name_key, joined_at)
@@ -991,18 +1012,18 @@ const updateEnrollmentName = db.prepare(
 )
 
 /**
- * Вступить в соревнование под этим именем.
+ * Join a competition under this name.
  *
- * `'taken'` — тёзка: в этом соревновании уже есть человек с таким именем, и
- * различать их в лидерборде будет нечем. Решает это уникальный индекс, а не
- * выборка перед вставкой: двое, нажавшие «УЧАСТВОВАТЬ» в одну секунду, прошли
- * бы проверку оба.
+ * `'taken'` means a namesake: this competition already has a person with that
+ * name, and there would be nothing to tell them apart by on the leaderboard.
+ * The unique index decides this, not a query before the insert: two people
+ * who pressed "JOIN" in the same second would both pass the check.
  *
- * Имя у человека ОДНО на инстанс, поэтому вступление заодно переименовывает
- * его везде — и проверяется это тем же индексом во всех его соревнованиях
- * сразу. Иначе «Анна Ким», переименовавшись, стала бы тёзкой другой Анны в
- * соревновании, которое она открывала неделю назад, и лидерборд соврал бы
- * там, куда никто не смотрел.
+ * A person has ONE name per instance, so joining also renames them everywhere
+ * — and this is checked by the same index in all their competitions at once.
+ * Otherwise "Anna Kim", having renamed herself, would become a namesake of
+ * another Anna in a competition she opened a week ago, and the leaderboard
+ * would lie where nobody was looking.
  */
 const writeEnrollment = db.transaction(
   (competitionId: string, entrantId: string, clipped: string, key: string, at: number): void => {
@@ -1024,29 +1045,29 @@ export function joinCompetition(
     return 'ok'
   } catch (error) {
     /*
-     * Ловится СНАРУЖИ транзакции нарочно: better-sqlite3 откатывает её только
-     * если функция бросила. Пойманный внутри отказ дал бы «taken» и при этом
-     * коммит — то есть человека, переименованного отказом, что и случилось в
-     * первой версии этого кода.
+     * Caught OUTSIDE the transaction on purpose: better-sqlite3 rolls it back
+     * only if the function threw. A refusal caught inside would give "taken"
+     * and a commit at the same time — that is, a person renamed by a refusal,
+     * which is what happened in the first version of this code.
      */
     if (isUniqueViolation(error)) return 'taken'
     throw error
   }
 }
 
-/** Вступил ли человек — и когда. `null` значит «ещё нет». */
+/** Whether the person has joined — and when. `null` means "not yet". */
 export function joinedAt(competitionId: string, entrantId: string): number | null {
   const row = selectEnrollment.get(competitionId, entrantId) as { joined_at: number } | undefined
   return row ? row.joined_at : null
 }
 
-/** В каких соревнованиях человек состоит — для списка «Участвую» (P1). */
+/** Which competitions the person belongs to — for the "Taking part" list (P1). */
 export function myCompetitionIds(entrantId: string): Set<string> {
   const rows = selectMyEnrollments.all(entrantId) as { competition_id: string }[]
   return new Set(rows.map((row) => row.competition_id))
 }
 
-/* ---------------------------------------------------------------- посылки */
+/* ------------------------------------------------------------ submissions */
 
 interface SubmissionRow {
   id: string
@@ -1117,11 +1138,12 @@ const selectSince = db.prepare(
    WHERE competition_id = ? AND entrant_id = ? AND accepted_at >= ?`,
 )
 /**
- * Который по счёту заход этого человека — столько его работ уже в очереди.
+ * Which attempt of this person it is — as many of their works as are already
+ * in the queue.
  *
- * Считается один раз, при постановке, и в этом вся соль: очередь обязана
- * помнить, что человек уже занимал исполнителя, ПОСЛЕ того как та работа из
- * неё ушла.
+ * Computed once, at enqueue time, and that is the whole point: the queue must
+ * remember that the person already occupied the executor AFTER that work has
+ * left it.
  */
 const TURN = `(SELECT COUNT(*) FROM competition_queue q
                WHERE q.entrant_id = @entrant_id AND q.submission_id != @submission_id)`
@@ -1133,11 +1155,13 @@ const insertQueueRow = db.prepare(`
 `)
 
 /**
- * Принять посылку: строка, номер и место в очереди — одной транзакцией.
+ * Accept a submission: the row, the number and a place in the queue — in one
+ * transaction.
  *
- * Номер считается здесь же, под той же транзакцией: два человека, приславшие
- * тетрадь в одну секунду, иначе получили бы один «#12» на двоих, и уникальный
- * индекс отказал бы второму уже после того, как его файл лёг на диск.
+ * The number is computed right here, under the same transaction: otherwise
+ * two people who sent a notebook in the same second would get one "#12"
+ * between them, and the unique index would refuse the second one after their
+ * file had already landed on disk.
  */
 export const acceptSubmission = db.transaction(
   (input: {
@@ -1189,11 +1213,12 @@ const countInFlight = db.prepare(
 )
 
 /**
- * Сколько работ человека сейчас в полёте — ждут или исполняются.
+ * How many of the person's works are in flight right now — waiting or
+ * running.
  *
- * По строке посылки, а не по очереди: из очереди строка уходит, как только
- * прогон кончился, а посылка остаётся — и именно она источник правды о том,
- * чем занят исполнитель от имени этого человека.
+ * By the submission row, not by the queue: the row leaves the queue as soon as
+ * the run ends, while the submission stays — and it is the source of truth
+ * about what the executor is busy with on this person's behalf.
  */
 export function inFlightCount(competitionId: string, entrantId: string): number {
   return (countInFlight.get(competitionId, entrantId) as { n: number }).n
@@ -1203,18 +1228,23 @@ const selectCounts = db.prepare(
   'SELECT entrant_id, COUNT(*) AS n FROM submissions WHERE competition_id = ? GROUP BY entrant_id',
 )
 
-/** Сколько посылок у каждого — колонка «ПОСЫЛОК» в итоговом лидерборде (P3). */
+/**
+ * How many submissions each person has — the "SUBMISSIONS" column in the final
+ * leaderboard (P3).
+ */
 export function submissionCounts(competitionId: string): Map<string, number> {
   const rows = selectCounts.all(competitionId) as { entrant_id: string; n: number }[]
   return new Map(rows.map((row) => [row.entrant_id, row.n]))
 }
 
 /**
- * Сколько посылок человеку осталось сегодня; `null` — предела нет.
+ * How many submissions the person has left today; `null` means there is no
+ * limit.
  *
- * Считает правило из `@shared/competitions`, а не SQL: то же число рисует
- * участнику браузер («Сегодня можно отправить ещё 3 посылки из 5»), и второй
- * копии у этого счёта быть не должно. База отдаёт только строки за сутки.
+ * The rule from `@shared/competitions` computes it, not SQL: the browser draws
+ * the same number for the participant ("You can send 3 more submissions
+ * today, out of 5"), and this count must not have a second copy. The database
+ * only returns the rows for the day.
  */
 export function leftToday(
   competition: Pick<Competition, 'id' | 'limits'>,
@@ -1240,7 +1270,7 @@ export function leftToday(
   )
 }
 
-/** Сколько посылок человека ушло сегодня в счёт нормы. */
+/** How many of the person's submissions counted toward today's quota. */
 export function usedToday(
   competitionId: string,
   entrantId: string,
@@ -1264,7 +1294,7 @@ export function usedToday(
   ).length
 }
 
-/** Что прогонщик записывает в посылку по ходу дела. */
+/** What the runner writes into a submission as it goes. */
 export interface SubmissionPatch {
   notebookInputRevision?: number | null
   inputRevision?: number | null
@@ -1315,14 +1345,14 @@ export function updateSubmission(id: string, patch: SubmissionPatch): Submission
 }
 
 /**
- * Выбрать посылку в зачёт.
+ * Choose the submission that counts.
  *
- * Одной транзакцией со снятием прежнего выбора: две отметки «в зачёт» у одного
- * человека — это лидерборд, который не сходится сам с собой, и поймать такое
- * потом можно только вручную.
+ * In one transaction with removing the previous choice: two "counted" marks
+ * for one person make a leaderboard that disagrees with itself, and such a
+ * thing can then only be caught by hand.
  *
- * Выбрать можно только свою и только дошедшую до числа: у упавшей нет числа,
- * которое можно поставить в таблицу.
+ * Only one's own submission can be chosen, and only one that reached a
+ * number: a failed one has no number to put in the table.
  */
 export const chooseSubmission = db.transaction(
   (competitionId: string, entrantId: string, submissionId: string): boolean => {
@@ -1346,12 +1376,13 @@ const selectBoardRows = db.prepare(`
 `)
 
 /**
- * Лидерборд одной части теста.
+ * The leaderboard of one part of the test.
  *
- * Сортировку и выбор зачётной посылки считает `@shared/competitions`, а не
- * SQL: правило «при равенстве выше тот, кто прислал раньше» и оговорка «не
- * выбрал — лучшая по публичной» обязаны одинаково работать и на сервере, и в
- * браузере, который рисует ту же таблицу из того же ответа.
+ * Sorting and picking the counted submission are computed by
+ * `@shared/competitions`, not SQL: the rule "on a tie, whoever submitted
+ * earlier ranks higher" and the proviso "did not choose — the best on the
+ * public part" must work the same on the server and in the browser, which
+ * draws the same table from the same answer.
  */
 export function leaderboard(competitionId: string, part: 'public' | 'private'): RankedRow[] {
   const competition = getCompetition(competitionId)
@@ -1394,7 +1425,7 @@ const selectBest = db.prepare(`
 
 export interface CompetitionSummary {
   submissions: number
-  /** «ДОШЛИ ДО ЧИСЛА» в сводке A3. */
+  /** "REACHED A NUMBER" in the A3 summary. */
   scored: number
   notebookFailed: number
   rejected: number
@@ -1403,11 +1434,11 @@ export interface CompetitionSummary {
   metricFailed: number
   cancelled: number
   entrants: number
-  /** Лучший публичный результат — с учётом направления метрики. */
+  /** The best public result — taking the metric's direction into account. */
   bestPublic: number | null
 }
 
-/** Пять чисел сводки A3 и то, что показывает список соревнований A1. */
+/** The five numbers of the A3 summary and what the A1 competition list shows. */
 export function competitionSummary(id: string): CompetitionSummary {
   const counts = selectSummary.all(id) as { state: string; n: number }[]
   const of = (state: SubmissionState) => counts.find((row) => row.state === state)?.n ?? 0
@@ -1427,7 +1458,7 @@ export function competitionSummary(id: string): CompetitionSummary {
   }
 }
 
-/* ---------------------------------------------------------------- прогоны */
+/* ------------------------------------------------------------------- runs */
 
 interface RunRow {
   attempt_id: string | null
@@ -1575,13 +1606,13 @@ export function discardUnstartedRun(id:string,attemptId:string):boolean {
   return db.prepare('DELETE FROM submission_runs WHERE id=? AND attempt_id=? AND finished_at IS NULL').run(id,attemptId).changes>0
 }
 
-/** Последний прогон этого вида — то, что показывает строка посылки. */
+/** The last run of this kind — what the submission row shows. */
 export function lastRun(submissionId: string, kind?: RunKind): SubmissionRun | null {
   const runs = listRuns(submissionId).filter((run) => !kind || run.kind === kind)
   return runs.length ? runs[runs.length - 1] : null
 }
 
-/* ----------------------------------------------------------------- очередь */
+/* ------------------------------------------------------------------- queue */
 
 export interface QueueRow {
   submissionId: string
@@ -1594,9 +1625,9 @@ export interface QueueRow {
   attempts: number
   resourceRetries: number
   notBefore: number
-  /** Который по счёту заход этого человека — см. порядок выборки. */
+  /** Which attempt of this person it is — see the selection order. */
   turn: number
-  /** Жизнь процесса, которая начала прогон. Чужая — значит прогон осиротел. */
+  /** The process life that started the run. Another one means the run is orphaned. */
   boot: string | null
   container: string | null
   attemptId: string | null
@@ -1660,7 +1691,7 @@ const upsertQueue = db.prepare(`
     pending_kind = NULL
   WHERE competition_queue.state != 'running'
 `)
-/* Идущее сверху, ждущие следом в порядке прихода — так это читает панель. */
+/* Running on top, the waiting after it in arrival order — as the panel reads it. */
 const selectQueue = db.prepare(`
   SELECT * FROM competition_queue
   ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END, enqueued_at, submission_id
@@ -1687,11 +1718,11 @@ const noteContainer = db.prepare(
 )
 
 /**
- * Поставить работу в очередь — новую посылку или пересчёт метрики.
+ * Put work in the queue — a new submission or a metric rescore.
  *
- * Повторный заход по тому же идентификатору возвращает строку в ожидание:
- * «исполнить заново» из меню строки и «исправить метрику и пересчитать всех» —
- * это та же посылка, а не новая.
+ * Entering again with the same identifier puts the row back into waiting:
+ * "run again" from the row menu and "fix the metric and rescore everyone" are
+ * the same submission, not a new one.
  */
 export function enqueue(input: {
   submissionId: string
@@ -1731,26 +1762,28 @@ export function waitingCount(): number {
 }
 
 /**
- * Кто следующий — честно по людям.
+ * Who is next — fairly per person.
  *
- * Три ключа, и каждый закрывает свой способ занять исполнителя одному.
+ * Three keys, and each closes its own way for one person to occupy the
+ * executor.
  *
- * Первый — «у кого уже что-то исполняется, тот пропускает остальных вперёд»:
- * это прямо обещано подписью под очередью в A3.
+ * The first is "whoever already has something running lets the others go
+ * ahead": the caption under the queue in A3 promises exactly that.
  *
- * Второй — `turn`: своя k-я по счёту посылка встаёт позади всех чужих (k−1)-х.
- * Без него человек, приславший десять тетрадей подряд, занимал бы исполнителя
- * на полчаса — причём НЕЗАМЕТНО: пока его первая идёт, первый ключ ещё держит
- * очередь честной, а в ту секунду, когда она уходит из очереди, его вторая
- * обгоняет чужую по времени прихода. Поэтому счёт заходов записан в строке, а
- * не выводится из того, что ещё видно в очереди.
+ * The second is `turn`: one's own k-th submission gets in line behind
+ * everyone else's (k−1)-th. Without it a person who sent ten notebooks in a
+ * row would occupy the executor for half an hour — and INVISIBLY at that:
+ * while their first one runs, the first key still keeps the queue fair, and
+ * the second their first one leaves the queue, their second overtakes someone
+ * else's by arrival time. So the attempt count is written into the row rather
+ * than derived from what is still visible in the queue.
  *
- * Третий — время прихода, и он же последний: при равном счёте заходов раньше
- * тот, кто раньше прислал.
+ * The third is arrival time, and it is also the last: with equal attempt
+ * counts, whoever submitted earlier goes first.
  *
- * Считается в SQL, а не в памяти, потому что очередь — это состояние базы, и
- * два процесса (сервер и, однажды, отдельный прогонщик) должны видеть один и
- * тот же ответ.
+ * Computed in SQL, not in memory, because the queue is database state, and
+ * two processes (the server and, one day, a separate runner) must see one and
+ * the same answer.
  */
 const selectNext = db.prepare(`
   SELECT q.* FROM competition_queue q
@@ -1770,14 +1803,15 @@ export function nextQueueRow(at=Date.now()): QueueRow | null {
 }
 
 /**
- * Взять следующую работу и пометить её своей.
+ * Take the next work and mark it as ours.
  *
- * `null` — брать нечего: очередь пуста, приостановлена или все места заняты.
- * Одна посылка за раз по умолчанию: на машине преподавателя рядом идёт
- * занятие, и вторая посылка отнимает у него память, а не ускоряет очередь.
+ * `null` means there is nothing to take: the queue is empty, paused or all
+ * slots are taken. One submission at a time by default: a class is running
+ * next to it on the teacher's machine, and a second submission takes memory
+ * away from the class rather than speeding up the queue.
  *
- * Транзакцией, потому что «посмотреть и взять» двумя запросами — это две
- * копии одного прогона в тот день, когда прогонщиков станет два.
+ * In a transaction, because "look and take" as two queries means two copies
+ * of one run on the day there are two runners.
  */
 export const takeNext = db.transaction(
   (opts: { boot?: string; at?: number; slots?: number } = {}): QueueRow | null => {
@@ -1798,7 +1832,7 @@ export const takeNext = db.transaction(
   },
 )
 
-/** Запомнить контейнер идущего прогона — по нему его убивают. */
+/** Remember the container of a running run — it is what the run is killed by. */
 export function noteQueueContainer(submissionId: string, container: string | null, attemptId?: string): void {
   if (attemptId) db.prepare('UPDATE competition_queue SET container = ? WHERE submission_id = ? AND attempt_id = ?').run(container, submissionId, attemptId)
   else noteContainer.run(container, submissionId)
@@ -1836,24 +1870,25 @@ export const finishQueueAttempt = db.transaction((row: QueueRow): boolean => {
   return true
 })
 
-/** Работа кончилась (чем угодно) — строка уходит из очереди. */
+/** The work ended (in whatever way) — the row leaves the queue. */
 export function leaveQueue(submissionId: string): boolean {
   return deleteQueueRow.run(submissionId).changes > 0
 }
 
-/** Вернуть работу в ожидание: отменили паузой, убили руками, не доехала. */
+/** Return work to waiting: cancelled by a pause, killed by hand, did not get through. */
 export function requeue(submissionId: string): boolean {
   return markWaiting.run(submissionId).changes > 0
 }
 
 /**
- * Прогоны, начатые ПРОШЛОЙ жизнью процесса.
+ * Runs started by the PREVIOUS life of the process.
  *
- * Строка «исполняется», помеченная чужим `boot`, означает ровно одно: сервер
- * перезапустили, пока посылка шла. Контейнера, скорее всего, уже нет — а если
- * есть, его имя лежит рядом, и убить его должен тот, кто это прочитал.
- * Раньше такая работа оставалась бы «выполняется» навсегда, и участник до
- * конца соревнования смотрел бы на таймер, который не движется.
+ * A "running" row marked with someone else's `boot` means exactly one thing:
+ * the server was restarted while the submission was running. The container
+ * is most likely gone already — and if it is there, its name lies next to it,
+ * and whoever read this must kill it. Previously such work would have stayed
+ * "running" forever, and the participant would have watched a timer that does
+ * not move until the end of the competition.
  */
 export function orphanedRuns(boot = BOOT): QueueRow[] {
   return (
@@ -1864,22 +1899,23 @@ export function orphanedRuns(boot = BOOT): QueueRow[] {
 }
 
 /**
- * Сколько раз прогон поднимают заново, прежде чем признать его оборванным.
+ * How many times a run is picked up again before it is declared cut off.
  *
- * Два: один перезапуск сервера посреди пары — обычное дело, два подряд на
- * одной и той же посылке означают, что дело в ней, и крутить её третий раз
- * значит занимать исполнителя тем, что не считается.
+ * Two: one server restart in the middle of a class period is ordinary, two in
+ * a row on the same submission mean the problem is the submission, and
+ * spinning it a third time means occupying the executor with something that
+ * does not count.
  */
 const MAX_ATTEMPTS = 2
 
 /**
- * Поднять работу прошлой жизни заново или честно пометить её оборванной.
+ * Pick up the previous life's work again or honestly mark it as cut off.
  *
- * Зовётся один раз при старте процесса. Оборванная посылка помечается
- * `metricFailed`, а не «упала тетрадь»: участник тут ни при чём, и слово
- * должно называть виноватого правильно — он увидит фразу «проверяющий код
- * упал, посылка будет пересчитана», а преподаватель прочтёт в своей колонке,
- * что прогон оборвал перезапуск.
+ * Called once at process startup. A cut-off submission is marked
+ * `metricFailed`, not "the notebook crashed": the participant has nothing to
+ * do with it, and the word must name the culprit correctly — they will see
+ * the sentence "the checking code crashed, the submission will be rescored",
+ * and the teacher will read in their column that a restart cut the run off.
  */
 export const reclaimQueue = db.transaction(
   (boot = BOOT, at = Date.now()): { requeued: QueueRow[]; abandoned: QueueRow[] } => {
@@ -1924,26 +1960,28 @@ export function queuePause(): { paused: boolean; at: number | null; by: string |
 }
 
 /**
- * Приостановить очередь или пустить её снова.
+ * Pause the queue or let it go again.
  *
- * Пауза не трогает идущий прогон: убить его — отдельное действие с отдельной
- * кнопкой («Убить»), и склеивать их значило бы терять чужую минуту работы
- * нажатием, которое обещало только «не начинай новых».
+ * The pause does not touch a running run: killing it is a separate action
+ * with a separate button ("Kill"), and merging them would mean losing someone
+ * else's minute of work to a click that only promised "do not start new
+ * ones".
  */
 export function setQueuePaused(paused: boolean, by: string | null = null, at = Date.now()): void {
   updatePause.run(paused ? 1 : 0, paused ? at : null, paused ? by : null)
 }
 
-/* --------------------------------------------------------------- уборка */
+/* -------------------------------------------------------------- cleanup */
 
 /**
- * Что из посылок стоит держать на диске.
+ * Which parts of submissions are worth keeping on disk.
  *
- * Числа живут в базе вечно — лидерборд обязан сойтись и через год. Тяжёлое
- * (присланная тетрадь, исполненная тетрадь с выводом, ответ) нужно, пока
- * участник разбирается с неудачей, и может уйти у давно закрытого
- * соревнования. Решение принимается здесь, потому что это вопрос к базе;
- * снимает файлы `storage.ts`.
+ * The numbers live in the database forever — the leaderboard must add up even
+ * a year later. The heavy stuff (the submitted notebook, the executed notebook
+ * with output, the answer) is needed while the participant is dealing with a
+ * failure, and may go for a competition closed long ago. The decision is made
+ * here, because it is a question for the database; `storage.ts` removes the
+ * files.
  */
 export function pruneCompetitionFiles(competitionId: string, keepPerEntrant = 10): number {
   const rows = db

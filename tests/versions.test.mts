@@ -63,7 +63,7 @@ test('a burst of typing is one version, not one per keystroke', () => {
   assert.match(versions[0].summary, /правил ячейку/)
 })
 
-test('двое, печатающие одновременно, дают одну версию комнаты, а не по одной на нажатие', () => {
+test('two people typing at the same time make one room version, not one per keystroke', () => {
   const id = 'hist-authors'
   createSession(id, 'History test', null)
   const doc = new Y.Doc()
@@ -74,8 +74,8 @@ test('двое, печатающие одновременно, дают одну
   flushHistory(id)
   const seeded = listVersions(id, 20).filter((v) => v.kind === 'edit').length
 
-  // Раньше смена автора закрывала всплеск, и чередующиеся нажатия давали по
-  // версии на каждое: сорок строк за минуту работы вдвоём.
+  // Previously a change of author closed the burst, and alternating keystrokes
+  // gave a version each: forty rows for a minute of two people working.
   write(doc, 0, '\nb = 2')
   author = 'p_john'
   write(doc, 0, '\nc = 3')
@@ -85,11 +85,11 @@ test('двое, печатающие одновременно, дают одну
 
   const versions = listVersions(id, 20).filter((v) => v.kind === 'edit')
   assert.equal(versions.length, seeded + 1)
-  // Всплеск, в который писали двое, не принадлежит никому из них.
+  // A burst two people wrote into belongs to neither of them.
   assert.equal(versions[0].author_id, null)
 })
 
-test('всплеск одного человека по-прежнему подписан им', () => {
+test('a burst by one person is still signed by them', () => {
   const id = 'hist-one-author'
   createSession(id, 'History test', null)
   const doc = new Y.Doc()
@@ -247,9 +247,10 @@ test('a restore puts the old text back, and is itself a version', () => {
   assert.equal(rows[0].kind, 'restore', 'the restore left no trace of itself')
   assert.equal(rows[0].author_id, 'p_alexander')
   assert.match(rows[0].summary, /вернул версию/)
-  // Времени в подписи нет: его рисует тот, кто смотрит, по этому адресу.
-  assert.equal(rows[0].target_seq, good, 'откат не назвал версию, которую вернул')
-  assert.ok(!/\d\d:\d\d/.test(rows[0].summary), 'сервер снова вписал время в подпись')
+  // There is no time in the caption: the viewer draws it, going by this
+  // reference.
+  assert.equal(rows[0].target_seq, good, 'the restore did not name the version it brought back')
+  assert.ok(!/\d\d:\d\d/.test(rows[0].summary), 'the server wrote the time into the caption again')
 })
 
 test('a restore of an unchanged version writes nothing', () => {
@@ -388,11 +389,11 @@ test('the server writing an output before an edit does not corrupt the edit', ()
   assert.equal((getCells(doc).get(0).get('source') as Y.Text).toString(), 'x = 1')
 })
 
-test('откат всего ноутбука возвращает и порядок', () => {
+test('restoring the whole notebook brings back the order too', () => {
   /*
-   * «Restore the whole notebook» возвращал только тексты и оставлял ячейки
-   * там, куда их с тех пор перетащили, — это не тот ноутбук, ради которого
-   * нажимали кнопку.
+   * "Restore the whole notebook" brought back only the texts and left the
+   * cells where they had been dragged since — that is not the notebook the
+   * button was pressed for.
    */
   const id = 'hist-order'
   const doc = room(id, 'p_maria')
@@ -400,7 +401,7 @@ test('откат всего ноутбука возвращает и поряд�
   flushHistory(id)
   const good = listVersions(id, 20).filter((v) => v.kind === 'edit')[0].seq
 
-  // Переставляем так, как это делает редактор: клон с тем же id.
+  // Reorder the way the editor does it: a clone with the same id.
   doc.transact(() => {
     const cells = getCells(doc)
     const moved = cells.get(1)
@@ -418,7 +419,7 @@ test('откат всего ноутбука возвращает и поряд�
       .toArray()
       .map((c) => (c.get('source') as Y.Text).toString()),
     ['two', 'one'],
-    'перестановка не применилась',
+    'the reordering did not apply',
   )
 
   restoreInto(id, doc, good, 'p_alexander', null)
@@ -427,11 +428,11 @@ test('откат всего ноутбука возвращает и поряд�
       .toArray()
       .map((c) => (c.get('source') as Y.Text).toString()),
     ['one', 'two'],
-    'порядок не вернулся',
+    'the order did not come back',
   )
 })
 
-test('удалённая ячейка возвращается со своим id, и повтор не двоит', () => {
+test('a deleted cell comes back with its own id, and a repeat does not duplicate it', () => {
   const id = 'hist-reid'
   const doc = room(id, 'p_maria')
   doc.transact(() => getCells(doc).push([createCell('code', 'keep'), createCell('code', 'gone')]))
@@ -443,10 +444,10 @@ test('удалённая ячейка возвращается со своим i
 
   restoreInto(id, doc, good, 'p_alexander', null)
   restoreInto(id, doc, good, 'p_alexander', null)
-  assert.equal(getCells(doc).length, 2, 'второй откат сделал копию')
+  assert.equal(getCells(doc).length, 2, 'the second restore made a copy')
 })
 
-test('полный снимок пишется по накопленным байтам, а не каждые двадцать пять строк', () => {
+test('a full snapshot is written by accumulated bytes, not every twenty-five rows', () => {
   const id = 'hist-keyframes'
   createSession(id, 'History test', null)
   const doc = new Y.Doc()
@@ -455,27 +456,29 @@ test('полный снимок пишется по накопленным ба�
   doc.transact(() => getCells(doc).push([createCell('code', 'a = 1')]))
   flushHistory(id)
 
-  // Тридцать маленьких правок — больше старого порога в двадцать пять строк, но
-  // байтов в них на порядки меньше шестидесяти четырёх килобайт.
+  // Thirty small edits — more than the old threshold of twenty-five rows, but
+  // with orders of magnitude fewer bytes than sixty-four kilobytes.
   for (let i = 0; i < 30; i++) {
     write(doc, 0, `\n# ${i}`)
     flushHistory(id)
   }
 
   const frames = listVersions(id, 200).filter((v) => v.kind === 'keyframe')
-  // Потолок по строкам оставлен, так что один-два снимка здесь законны; смысл
-  // проверки в том, что их не по одному на каждые двадцать пять байт правок.
-  assert.ok(frames.length <= 2, `снимков ${frames.length}, ожидалось не больше двух`)
+  // The row cap was kept, so one or two snapshots are legitimate here; the
+  // point of the check is that there is not one per every twenty-five bytes
+  // of edits.
+  assert.ok(frames.length <= 2, `${frames.length} snapshots, expected no more than two`)
 })
 
-/* ------------------------------------------- авторство, лента и починка */
+/* -------------------------------------- authorship, the feed and repair */
 
-test('вывод ядра посреди набора не отбирает у правки автора', () => {
+test('kernel output in the middle of typing does not take the author away from the edit', () => {
   /*
-   * Серверные записи — outputs, номер запуска, состояние, поток оракула —
-   * приходят без автора и присоединялись ко всплеску наравне с людьми: двое,
-   * и версия становилась «the room · edited cell 01» без имени и цвета. Двоих
-   * не было: печатал один человек, а рядом работала ячейка.
+   * Server writes — outputs, the run number, the state, the Oracle stream —
+   * arrive without an author and joined the burst on a par with people: two
+   * authors, and the version became "the room · edited cell 01" with no name
+   * and no colour. There were not two: one person was typing, and a cell was
+   * running next to it.
    */
   const id = 'hist-kernel-author'
   createSession(id, 'History test', null)
@@ -486,7 +489,8 @@ test('вывод ядра посреди набора не отбирает у �
   doc.transact(() => getCells(doc).push([createCell('code', 'train()')]))
   flushHistory(id)
 
-  // Ядро печатает, человек правит соседний текст — всё в одном всплеске.
+  // The kernel prints, a person edits the neighbouring text — all in one
+  // burst.
   author = null
   doc.transact(() => {
     const cell = getCells(doc).get(0)
@@ -498,14 +502,15 @@ test('вывод ядра посреди набора не отбирает у �
   flushHistory(id)
 
   const versions = listVersions(id, 20).filter((v) => v.kind === 'edit')
-  assert.equal(versions[0].author_id, 'p_maria', 'правку приписали комнате')
+  assert.equal(versions[0].author_id, 'p_maria', 'the edit was attributed to the room')
 })
 
-test('лента не тонет в служебных строках', () => {
+test('the feed does not drown in bookkeeping rows', () => {
   /*
-   * Окно в четыреста строк резалось до фильтра, а тихих строк на паре с
-   * работающими ячейками больше, чем правок: правки первого часа и чекпоинт
-   * «до упражнения» исчезали из панели, оставаясь в базе.
+   * The four-hundred-row window was cut before the filter, and during a class
+   * with running cells there are more quiet rows than edits: the edits of the
+   * first hour and the "before the exercise" checkpoint disappeared from the
+   * panel while staying in the database.
    */
   const id = 'hist-window'
   createSession(id, 'History test', null)
@@ -516,7 +521,7 @@ test('лента не тонет в служебных строках', () => {
   doc.transact(() => getCells(doc).push([createCell('code', 'x = 1')]))
   flushHistory(id)
 
-  // Двадцать всплесков подряд, в которых печатало только ядро.
+  // Twenty bursts in a row in which only the kernel printed.
   author = null
   for (let i = 0; i < 20; i++) {
     doc.transact(() => getCells(doc).get(0).set('execCount', i))
@@ -525,24 +530,25 @@ test('лента не тонет в служебных строках', () => {
 
   const window = 5
   const story = listStoryVersions(id, window)
-  assert.ok(story.length > 0, 'правка выпала из окна ленты')
+  assert.ok(story.length > 0, 'the edit fell out of the feed window')
   assert.ok(
     story.every((v) => v.kind !== 'quiet' && v.kind !== 'keyframe'),
-    'служебная строка попала в ленту',
+    'a bookkeeping row got into the feed',
   )
-  // А в сырой таблице те же пять строк — почти сплошь бухгалтерия.
+  // While in the raw table the same five rows are almost all bookkeeping.
   assert.ok(
     listVersions(id, window).some((v) => v.kind === 'quiet'),
-    'тихих строк не появилось — проверка ничего не доказывает',
+    'no quiet rows appeared — the check proves nothing',
   )
 })
 
-test('чекпоинт не вытесняется из ленты правками', () => {
+test('a checkpoint is not pushed out of the feed by edits', () => {
   /*
-   * Отсева служебных строк мало: на активной паре правок сотни, и окно ленты
-   * заполняется ими одними. Чекпоинт ставят, чтобы вернуться к нему в конце
-   * занятия, — он обязан быть виден и после того, как поверх него напечатали
-   * больше, чем помещается в окно.
+   * Filtering out bookkeeping rows is not enough: during an active class
+   * there are hundreds of edits, and the feed window fills up with them alone.
+   * A checkpoint is set in order to return to it at the end of class — it must
+   * stay visible even after more has been typed on top of it than fits in the
+   * window.
    */
   const id = 'hist-checkpoint-window'
   const doc = room(id, 'p_maria')
@@ -550,7 +556,7 @@ test('чекпоинт не вытесняется из ленты правка�
   flushHistory(id)
   const seq = mark(id, doc, 'checkpoint', 'p_maria', 'before the exercise', '')
 
-  // Правки поверх чекпоинта — больше, чем окно ленты.
+  // Edits on top of the checkpoint — more than the feed window.
   for (let i = 0; i < 10; i++) {
     write(doc, 0, `\ny = ${i}`)
     flushHistory(id)
@@ -560,24 +566,25 @@ test('чекпоинт не вытесняется из ленты правка�
   const story = listStoryVersions(id, window)
   assert.ok(
     story.some((v) => v.seq === seq && v.kind === 'checkpoint'),
-    'чекпоинт вытеснен правками из ленты',
+    'the checkpoint was pushed out of the feed by edits',
   )
-  // Проверка что-то доказывает только пока правок и правда больше окна.
+  // The check proves something only while there really are more edits than
+  // the window holds.
   assert.equal(
     story.filter((v) => v.kind === 'edit').length,
     window,
-    'правок меньше окна — вытеснять было нечем',
+    'fewer edits than the window — there was nothing to push it out with',
   )
 })
 
-test('после жёсткого конца процесса история догоняет тетрадь', () => {
+test('after a hard process exit the history catches up with the notebook', () => {
   /*
-   * Снимок документа пишется через секунды, а строка истории — по закрытию
-   * всплеска. Убить процесс между ними (kill -9, OOM, обесточивание) — и на
-   * диске остаётся текст, которого в истории нет: все дальнейшие дельты
-   * ссылаются на такты, которых в цепочке не будет, Yjs кладёт их в pending,
-   * и лента замирает на предкрахном состоянии, а «Restore» пишет его поверх
-   * живой тетради.
+   * The document snapshot is written after seconds, while the history row is
+   * written when the burst closes. Kill the process between them (kill -9,
+   * OOM, a power cut) — and text remains on disk that is not in the history:
+   * all further deltas refer to clocks that will not be in the chain, Yjs puts
+   * them in pending, and the feed freezes at the pre-crash state, while
+   * "Restore" writes it over the live notebook.
    */
   const id = 'hist-crash'
   createSession(id, 'History test', null)
@@ -588,11 +595,12 @@ test('после жёсткого конца процесса история д�
   doc.transact(() => getCells(doc).push([createCell('code', 'a = 1')]))
   flushHistory(id)
 
-  // Набрано, но не записано: всплеск открыт, и процесса не стало.
+  // Typed but not written: the burst is open, and the process is gone.
   write(doc, 0, '\nb = 2\nc = 3')
   discardBurst(id)
 
-  // Сервер поднялся: документ приехал из снимка, история — из базы.
+  // The server came up: the document came from the snapshot, the history from
+  // the database.
   beginHistory(id, doc)
   doc.on('update', (update: Uint8Array) => record(id, doc, update, 'p_maria'))
   write(doc, 0, '\nd = 4')
@@ -600,14 +608,15 @@ test('после жёсткого конца процесса история д�
 
   const latest = listVersions(id, 50)[0]
   const live = (getCells(doc).get(0).get('source') as Y.Text).toString()
-  assert.equal(cellsAt(id, latest.seq)[0].source, live, 'версия после падения — не тетрадь')
+  assert.equal(cellsAt(id, latest.seq)[0].source, live, 'the version after the crash is not the notebook')
 })
 
-test('версия, которую не удалось записать, не обрывает историю навсегда', () => {
+test('a version that failed to be written does not cut off the history forever', () => {
   /*
-   * Байты всплеска выбрасываются вместе со строкой, и следующая дельта
-   * ссылается на такты, которых в цепочке нет. Раньше лента после этого
-   * пополнялась нечитаемыми строками до конца семинара.
+   * The burst's bytes are thrown away together with the row, and the next
+   * delta refers to clocks that are not in the chain. Previously the feed
+   * after that kept filling up with unreadable rows until the end of the
+   * seminar.
    */
   const id = 'hist-write-fail'
   createSession(id, 'History test', null)
@@ -618,7 +627,8 @@ test('версия, которую не удалось записать, не о
   doc.transact(() => getCells(doc).push([createCell('code', 'a = 1')]))
   flushHistory(id)
 
-  // База на секунду не принимает записи: полный диск, ошибка ввода-вывода.
+  // For a second the database does not accept writes: a full disk, an I/O
+  // error.
   write(doc, 0, '\nb = 2')
   db.pragma('query_only = ON')
   flushHistory(id)
@@ -629,28 +639,28 @@ test('версия, которую не удалось записать, не о
 
   const latest = listVersions(id, 50)[0]
   const live = (getCells(doc).get(0).get('source') as Y.Text).toString()
-  assert.equal(cellsAt(id, latest.seq)[0].source, live, 'история осталась в прошлом')
+  assert.equal(cellsAt(id, latest.seq)[0].source, live, 'the history stayed in the past')
 })
 
-/* ------------------------------------------------------- возврат версии */
+/* -------------------------------------------------- restoring a version */
 
-test('возврат версии возвращает и тип ячейки', () => {
+test('restoring a version brings back the cell type too', () => {
   const id = 'hist-type'
   const doc = room(id, 'p_maria')
   doc.transact(() => getCells(doc).push([createCell('code', 'model.fit()')]))
   flushHistory(id)
   const good = listVersions(id, 20).filter((v) => v.kind === 'edit')[0].seq
 
-  // Кто-то нажал «to markdown» — текст тот же, тип другой.
+  // Someone pressed "to markdown" — the same text, a different type.
   doc.transact(() => getCells(doc).get(0).set('type', 'markdown'))
   flushHistory(id)
 
   const changed = restoreInto(id, doc, good, 'p_alexander', null)
-  assert.equal(changed, 1, 'откат одного лишь типа не сделал ничего')
-  assert.equal(getCells(doc).get(0).get('type'), 'code', 'ячейка осталась markdown')
+  assert.equal(changed, 1, 'restoring just the type did nothing')
+  assert.equal(getCells(doc).get(0).get('type'), 'code', 'the cell stayed markdown')
 })
 
-test('«вернуть эту ячейку» кладёт её на прежнее место, а не в конец', () => {
+test('"restore this cell" puts it back in its old place, not at the end', () => {
   const id = 'hist-place'
   const doc = room(id, 'p_maria')
   doc.transact(() =>
@@ -673,16 +683,17 @@ test('«вернуть эту ячейку» кладёт её на прежне
       .toArray()
       .map((c) => (c.get('source') as Y.Text).toString()),
     ['one', 'two', 'three'],
-    'ячейка вернулась не на своё место',
+    'the cell came back to the wrong place',
   )
 })
 
-test('возврат версии переставляет только сдвинувшиеся ячейки, а не весь лист', () => {
+test('restoring a version moves only the cells that shifted, not the whole sheet', () => {
   /*
-   * Пересоздание ячейки уносит нажатия, ушедшие в её старый `Y.Text` за круг до
-   * сервера: гейт пропускает запись в надгробие, и символы пропадают молча.
-   * Возврат версии, пересобиравший клонами весь лист, обкрадывал на это всех,
-   * кто печатал в ту секунду, — ради одной уехавшей ячейки.
+   * Recreating a cell carries off keystrokes that went into its old `Y.Text`
+   * one round trip before reaching the server: the gate lets a write into a
+   * tombstone through, and the characters vanish silently. A version restore
+   * that rebuilt the whole sheet with clones robbed everyone who was typing at
+   * that second in this way — for the sake of one cell that had moved.
    */
   const id = 'hist-reorder'
   const doc = room(id, 'p_maria')
@@ -697,7 +708,8 @@ test('возврат версии переставляет только сдви
   flushHistory(id)
   const good = listVersions(id, 20).filter((v) => v.kind === 'edit')[0].seq
 
-  // Последнюю подняли наверх — клоном, как это делает перестановка.
+  // The last one was lifted to the top — as a clone, the way reordering does
+  // it.
   doc.transact(() => {
     const cells = getCells(doc)
     const moved = cloneCell(cells.get(3))
@@ -715,25 +727,25 @@ test('возврат версии переставляет только сдви
   assert.deepEqual(
     cells.toArray().map((c) => (c.get('source') as Y.Text).toString()),
     ['a', 'b', 'c', 'd'],
-    'порядок не вернулся',
+    'the order did not come back',
   )
-  // Через `ok`, а не `equal`: у неравенства двух `Y.Text` node печатает разбор
-  // обоих, а из них видна вся тетрадь целиком.
-  assert.ok(cells.get(0).get('source') === before[1], 'ячейку «a» пересоздали зря')
-  assert.ok(cells.get(1).get('source') === before[2], 'ячейку «b» пересоздали зря')
-  assert.ok(cells.get(2).get('source') === before[3], 'ячейку «c» пересоздали зря')
-  assert.ok(cells.get(3).get('source') !== before[0], 'ячейка «d» не переехала')
+  // Through `ok`, not `equal`: when two `Y.Text` are unequal, node prints a
+  // dump of both, and the whole notebook is visible from them.
+  assert.ok(cells.get(0).get('source') === before[1], 'cell "a" was recreated for nothing')
+  assert.ok(cells.get(1).get('source') === before[2], 'cell "b" was recreated for nothing')
+  assert.ok(cells.get(2).get('source') === before[3], 'cell "c" was recreated for nothing')
+  assert.ok(cells.get(3).get('source') !== before[0], 'cell "d" did not move')
 })
 
-test('из двух переставленных местами остаётся та, в которой стоит курсор', () => {
+test('of two swapped cells, the one with the caret in it stays', () => {
   const id = 'hist-reorder-caret'
   const doc = room(id, 'p_maria')
   doc.transact(() => getCells(doc).push([createCell('code', 'a'), createCell('code', 'b')]))
   flushHistory(id)
   const good = listVersions(id, 20).filter((v) => v.kind === 'edit')[0].seq
 
-  // Первую опустили вниз: теперь порядок обратный, и на месте может остаться
-  // только одна из двух.
+  // The first one was moved down: now the order is reversed, and only one of
+  // the two can stay in place.
   doc.transact(() => {
     const cells = getCells(doc)
     const moved = cloneCell(cells.get(0))
@@ -750,18 +762,18 @@ test('из двух переставленных местами остаётся
   assert.deepEqual(
     cells.toArray().map((c) => (c.get('source') as Y.Text).toString()),
     ['a', 'b'],
-    'порядок не вернулся',
+    'the order did not come back',
   )
-  assert.ok(cells.get(0).get('source') === text, 'пересоздали ячейку, в которой печатают')
+  assert.ok(cells.get(0).get('source') === text, 'the cell being typed in was recreated')
 })
 
-/* --------------------------------------------------------- большой диф */
+/* ---------------------------------------------------------- large diff */
 
-test('диф длинной ячейки не считает квадратичную таблицу целиком', () => {
+test('the diff of a long cell does not compute the whole quadratic table', () => {
   /*
-   * Ячейка на десять тысяч строк — лог или CSV — считалась синхронно в
-   * обработчике запроса: секунды блокировки всего инстанса и сотни мегабайт
-   * кучи на каждый клик по строке ленты.
+   * A cell of ten thousand lines — a log or a CSV — was diffed synchronously
+   * in the request handler: seconds of blocking the whole instance and
+   * hundreds of megabytes of heap on every click on a feed row.
    */
   const lines = Array.from({ length: 20_000 }, (_, i) => `row ${i}`)
   const before = lines.join('\n')
@@ -770,7 +782,7 @@ test('диф длинной ячейки не считает квадратич�
 
   const began = Date.now()
   const diff = diffLines(before, after)
-  assert.ok(Date.now() - began < 1_000, `диф считался ${Date.now() - began} мс`)
+  assert.ok(Date.now() - began < 1_000, `the diff took ${Date.now() - began} ms`)
   assert.deepEqual(
     diff.filter((l) => l.kind !== 'same').map((l) => l.text),
     ['row 10000', 'row 10000 — правка'],
@@ -778,12 +790,12 @@ test('диф длинной ячейки не считает квадратич�
   assert.equal(diff.filter((l) => l.kind === 'same').length, 19_999)
 })
 
-test('замена целиком выходит одним куском, а не таблицей на четыреста миллионов клеток', () => {
+test('a whole replacement comes out as one chunk, not as a table of four hundred million cells', () => {
   const before = Array.from({ length: 3_000 }, (_, i) => `old ${i}`).join('\n')
   const after = Array.from({ length: 3_000 }, (_, i) => `new ${i}`).join('\n')
   const began = Date.now()
   const diff = diffLines(before, after)
-  assert.ok(Date.now() - began < 1_000, `диф считался ${Date.now() - began} мс`)
+  assert.ok(Date.now() - began < 1_000, `the diff took ${Date.now() - began} ms`)
   assert.equal(diff.filter((l) => l.kind === 'removed').length, 3_000)
   assert.equal(diff.filter((l) => l.kind === 'added').length, 3_000)
 })

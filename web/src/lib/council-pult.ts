@@ -1,36 +1,42 @@
 /**
- * Мессенджер пульта консилиума — вся его арифметика, без Svelte и без сокета.
+ * The council console's messenger — all of its arithmetic, with no Svelte and no
+ * socket.
  *
- * Пульт живёт в отдельном окне (components/council/pult) и показывает список
- * людей слева, открытую работу справа. Здесь лежит то, что решает, ЧТО стоит в
- * списке и в каком порядке: сборка строк, фильтры, непрочитанное, придержанные
- * сдачи, ходы курсора и перечень ячеек, между которыми окно переключается.
+ * The console lives in a separate window (components/council/pult) and shows
+ * the list of people on the left and the open work on the right. Here lies
+ * what decides WHAT stands in the list and in which order: building the rows,
+ * filters, unread, held-back submissions, cursor moves and the list of cells
+ * the window switches between.
  *
- * ГРУППИРОВКИ ЗДЕСЬ БОЛЬШЕ НЕТ. Одинаковые ответы сворачивались в одну строку с
- * хвостом «ещё N с тем же ответом», у работы стояло «группа 2 из 6», а письмо
- * уходило «всем N». 20.09 владелец попросил убрать это целиком, и убрано оно
- * целиком: список пульта — лента сдач, и человека в ней ищут по имени, а не по
- * тому, на кого он похож. Какие бывают ответы — вопрос стопки и оракула.
+ * THERE IS NO GROUPING HERE ANY MORE. Identical answers used to collapse into
+ * one row with a tail "N more with the same answer", the work showed "group 2
+ * of 6", and a letter went "to all N". On 20 Sep 2026 the owner asked to
+ * remove this entirely, and it was removed entirely: the console list is a
+ * feed of submissions, and a person in it is found by name, not by whom they
+ * resemble. What answers there are is a question for the stack and the oracle.
  *
- * Отдельным модулем по тем же доводам, что и council-board.ts: стопку и полосу
- * групп там считает не компонент, и эти правила тоже проверяются без браузера
- * (tests/council-pult.test.mts). Сложенное в разметке складывается по-разному
- * на каждой ветке `{#if}`, а список, в котором курсор ходит не туда, куда
- * смотрят глаза, — это нажатие Enter не на том человеке перед всем залом.
+ * A separate module for the same reasons as council-board.ts: the stack and
+ * the group strip there are computed outside a component, and these rules are
+ * also checked without a browser (tests/council-pult.test.mts). Whatever is
+ * assembled in markup comes out differently on every `{#if}` branch, and a
+ * list in which the cursor goes somewhere other than where the eyes look means
+ * pressing Enter on the wrong person in front of the whole hall.
  *
- * ПОРЯДОК ЗДЕСЬ ДРУГОЙ, ЧЕМ В СТОПКЕ. `stackOrder` (council-board.ts) ставит
- * первыми представителей больших групп: карточка листается «по решениям».
- * Мессенджер — это лента сдач, и порядок в нём по времени сдачи, сверху
- * свежие: человек, нажавший «Сдать» минуту назад, обязан быть виден без
- * прокрутки. Два разных порядка — не небрежность: два разных вопроса («какие
- * бывают ответы» против «кто только что сдал»).
+ * THE ORDER HERE DIFFERS FROM THE STACK'S. `stackOrder` (council-board.ts) puts
+ * the representatives of large groups first: the card is paged "by solution".
+ * The messenger is a feed of submissions, ordered by submission time, newest
+ * on top: a person who pressed "Submit" a minute ago must be visible without
+ * scrolling. Two different orders are not carelessness: they are two
+ * different questions ("what answers are there" versus "who just submitted").
  *
- * С 20.09 список — ТРИ ВКЛАДКИ: «Сдали · Пишут · Все» (Paper 05d, артборды 11
- * и 12). У сдавших и пишущих разные вопросы, разные чипы отбора и разный
- * порядок: лента сдач у первых и список тревог у вторых («молчат, упало, просят
- * запуск, остальные» — `byAlarm`). Третий порядок в одном файле выглядит
- * расточительством ровно до той минуты, когда в классе тридцать человек и
- * половина из них ещё пишет: «кто застрял» — это не «кто правил последним».
+ * Since 20 Sep 2026 the list has THREE TABS: "Submitted · Writing · All"
+ * (Paper 05d, artboards 11 and 12). Those who submitted and those still
+ * writing have different questions, different filter chips and a different
+ * order: a feed of submissions for the first and an alarm list for the second
+ * ("silent, failed, run requested, the rest" — `byAlarm`). A third order in
+ * one file looks wasteful right up to the minute when there are thirty people
+ * in the class and half of them are still writing: "who is stuck" is not "who
+ * edited last".
  */
 import { formatNumber, tr } from '@shared/i18n'
 import {
@@ -59,15 +65,20 @@ export type PultTone = 'neutral' | 'positive' | 'warning' | 'danger' | 'accent'
 export interface PultBadge {
   label: string
   tone: PultTone
-  /** Знак перед словом, когда тон о состоянии не договаривает. См. attemptExecution. */
+  /**
+   * A sign before the word, when the tone does not tell the whole state. See
+   * attemptExecution.
+   */
   icon?: string
   /**
-   * Форма плашки — второй признак поверх цвета.
+   * The badge shape — a second sign on top of colour.
    *
-   * Заливка означает «от вас ждут действия»: сдано и не оценено. Контур —
-   * «состояние, которое само пройдёт»: человек ещё пишет. Тон между ними тоже
-   * разный, но одним цветом такие вещи не различают: на проекторе, на чужом
-   * мониторе и у того, кто цвета не различает, остаётся форма и слово.
+   * A fill means "an action is expected from you": submitted and not graded.
+   * An outline means "a state that will pass by itself": the person is still
+   * writing. The tone differs between them too, but such things are not told
+   * apart by colour alone: on a projector, on someone else's monitor and for
+   * someone who cannot tell colours apart, what remains is the shape and the
+   * word.
    */
   shape?: 'fill' | 'outline'
 }
@@ -76,10 +87,11 @@ export type PultView = 'work' | 'queue' | 'oracle'
 /**
  * Evaluation and execution are separate facts: running code successfully is not a grade.
  *
- * Сданная и НЕ оценённая — залитая плашка акцентом: 19.09 преподаватель вёл
- * пару и не видел в списке, кого он уже посмотрел, а кого нет («лучше помечать
- * сданные работы в пульте, а то нихуя не видно»). Бледная «Не проверено» в
- * общем сером ряду не отличалась ни от черновика, ни от оценённого.
+ * Submitted and NOT graded — a badge filled with the accent: on 19 Sep 2026
+ * the teacher was running a class and could not see in the list whom they had
+ * already looked at and whom not ("better mark submitted works in the
+ * console, otherwise you can't see a damn thing"). A pale "Not reviewed" in
+ * the common grey row looked no different from a draft or a graded one.
  */
 export function attemptReview(attempt: Pick<CouncilAttempt, 'submittedAt' | 'correct'>): PultBadge {
   if (attempt.submittedAt === null) return { label: tr('room.pult.v2.review.draft'), tone: 'neutral', shape: 'outline' }
@@ -93,13 +105,14 @@ export function attemptExecution(attempt: {
   runRequest?: Pick<NonNullable<CouncilAttempt['runRequest']>, 'status'> | null
 }): PultBadge {
   /*
-   * Остановленный пределом запуск — не «ошибка запуска».
+   * A run stopped by the limit is not an "execution error".
    *
-   * `state` у него тот же `error`, и общим словом он встал бы в один ряд с
-   * TypeError, то есть человек шёл бы читать вывод и искать в нём опечатку. А
-   * править тут нечего: код, возможно, верный, ему не хватило секунд, и
-   * решение принимает преподаватель — поднять предел или прервать соседа.
-   * Поэтому у остановленного своё слово и свой знак часов.
+   * Its `state` is the same `error`, and under the common word it would stand
+   * in one row with TypeError, so the person would go and read the output
+   * looking for a typo. But there is nothing to fix here: the code may well be
+   * right, it simply ran out of seconds, and the decision is the teacher's — to
+   * raise the limit or interrupt a neighbour. So a stopped run has a word of
+   * its own and its own clock sign.
    */
   const limit = timedOutLimit(attempt)
   if (limit !== null) {
@@ -115,18 +128,18 @@ export function attemptExecution(attempt: {
   return { label: tr('room.pult.v2.execution.none'), tone: 'neutral' }
 }
 
-/* ------------------------------------------------------- время запуска */
+/* ------------------------------------------------------------ run time */
 
 /**
- * Час и минута — и секунды там, где по ним сопоставляют.
+ * Hour and minute — and seconds where things are matched by them.
  *
- * Своя, а не `clock()` из lib/history: тот модуль ради двух строк тянет за
- * собой `./api` с сетью и токенами, а этот файл читается ещё и из тестов без
- * браузера. Правило форматирования то же самое, до знака.
+ * Our own, not `clock()` from lib/history: for two lines that module drags in
+ * `./api` with the network and tokens, and this file is also read by tests
+ * without a browser. The formatting rule is the same, to the character.
  *
- * Секунды нужны в открытой работе и в очереди: «запущен в 17:24:05» — это то,
- * чем преподаватель сличает свой запуск с чужим, когда за минуту их три, и
- * «17:24» у всех трёх не отвечает ни на один вопрос.
+ * Seconds are needed in the open work and in the queue: "started at 17:24:05"
+ * is how the teacher matches their own run against someone else's when there
+ * are three in a minute, and "17:24" for all three answers no question.
  */
 export function pultClock(at: number, seconds = false): string {
   const date = new Date(at)
@@ -136,12 +149,12 @@ export function pultClock(at: number, seconds = false): string {
 }
 
 /**
- * Сколько считал законченный запуск.
+ * How long a finished run computed.
  *
- * До десяти секунд — с десятой долей: почти все запуски консилиума короткие, и
- * `spell()` округляет их в «0 с» и «1 с», то есть в одно и то же число для
- * всего класса. Дальше десятой доли никто не сравнивает, и там идёт общий
- * `pultDuration` — тот же, каким названы пределы регламента.
+ * Under ten seconds — with tenths: almost all council runs are short, and
+ * `spell()` rounds them to "0 s" and "1 s", that is, to the same number for
+ * the whole class. Beyond that nobody compares tenths, and the shared
+ * `pultDuration` takes over — the same one the rules' limits are named with.
  */
 export function pultRanFor(ms: number): string {
   const safe = Math.max(0, ms)
@@ -154,17 +167,18 @@ export function pultRanFor(ms: number): string {
 }
 
 /**
- * Строка запуска целиком: что случилось, сколько считалось и КОГДА.
+ * The whole run line: what happened, how long it computed and WHEN.
  *
- * Час запуска — прямая просьба с пары 19.09: «в пульте консилиума показывать
- * время запуска». Без него «Запуск выполнен» не отличает попытку, запущенную
- * пять минут назад, от запущенной только что, а решают по ним разное: первую
- * пора показывать классу, вторая ещё не досчитала соседей.
+ * The run's hour is a direct request from the 19 Sep 2026 class: "show the run
+ * time in the council console". Without it "Execution completed" does not
+ * tell an attempt run five minutes ago from one run just now, and different
+ * things are decided by them: the first is ready to show the class, the
+ * second has not yet finished computing past its neighbours.
  *
- * Слово и тон берутся у `attemptExecution` — одно место, где состояние
- * становится словом, — и к ним прибавляются длительность и время. Не
- * запускали вовсе и просит запуск — там времени нет, и строка остаётся
- * прежней: выдуманного часа быть не должно.
+ * The word and the tone come from `attemptExecution` — the one place where a
+ * state becomes a word — and the duration and time are added to them. Never
+ * run at all, or asking for a run — there is no time there, and the line
+ * stays as before: there must be no invented hour.
  */
 export function attemptRunLine(
   attempt: {
@@ -183,8 +197,8 @@ export function attemptRunLine(
   }
   switch (run.state) {
     case 'running':
-      // Живой счётчик — целыми секундами: десятая доля у числа, которое
-      // меняется каждую секунду, читается как мерцание, а не как измерение.
+      // A live counter — in whole seconds: tenths on a number that changes
+      // every second read as flicker, not as a measurement.
       return { ...base, label: tr('room.pult.v3.runRunning', { duration: pultDuration(Math.max(now - run.startedAt, 0) / 1000) }) }
     case 'queued':
       return { ...base, label: tr('room.pult.v3.runQueued', { time }) }
@@ -208,10 +222,11 @@ export function attemptRunLine(
 
 export function pultShortcutAllowed(action: PultAction, view: PultView, navigation: boolean, overlay = false): boolean {
   if (overlay || action === null) return false
-  // Регламент — правило ЯЧЕЙКИ, а не открытой работы: из очереди и от оракула
-  // к нему тянутся так же часто, как из списка, и «сначала вернись в работы»
-  // было бы ответом ни на что. Соседняя ячейка — тем же доводом: пульт один на
-  // комнату, и переключают его в том числе стоя в очереди.
+  // The rules are a rule of the CELL, not of the open work: people reach for
+  // them from the queue and from the oracle as often as from the list, and
+  // "go back to the works first" would answer nothing. The neighbouring cell —
+  // by the same argument: there is one console per room, and it gets switched
+  // while standing in the queue too.
   if (
     action === 'help' ||
     action === 'escape' ||
@@ -226,41 +241,45 @@ export function pultShortcutAllowed(action: PultAction, view: PultView, navigati
 }
 
 /**
- * С какого числа одинаковых ответов счёт группы вообще о чём-то говорит.
+ * From how many identical answers a group count says anything at all.
  *
- * Список пульта им больше не пользуется: группировку из пульта убрали целиком
- * (20.09). Порог остаётся ОДНИМ местом, где это число названо, — его читает
- * стопка и оракул, которому «двое написали одно и то же» не повод собирать
- * группу. Переписать его в двух местах по-разному дешевле всего именно тогда,
- * когда одно из них выглядит как ничей остаток.
+ * The console list no longer uses it: grouping was removed from the console
+ * entirely (20 Sep 2026). The threshold remains the ONE place where this
+ * number is named — it is read by the stack and by the oracle, for which "two
+ * people wrote the same thing" is no reason to form a group. Rewriting it
+ * differently in two places is cheapest exactly when one of them looks like
+ * nobody's leftover.
  */
 export const GROUP_MIN = 3
 
-/* ------------------------------------------------------ вкладки списка */
+/* ----------------------------------------------------------- list tabs */
 
 /**
- * Две стопки — две вкладки, и третья для тех, кто привык.
+ * Two piles — two tabs, and a third for those used to the old way.
  *
- * До 20.09 это был один список с двумя секциями и пятью чипами отбора поверх
- * него. На тридцати студентах «Пишут» уезжала за край, и туда не доходил
- * никто; чипы на ширине колонки переносились на вторую строку, отнимая у
- * списка ещё одну работу. Главное же — у половин РАЗНЫЕ вопросы: у сданных
- * спрашивают «что я ещё не оценил», у пишущих «кто застрял», и одним рядом
- * чипов на два вопроса не ответишь.
+ * Before 20 Sep 2026 this was one list with two sections and five filter chips
+ * above it. With thirty students "Writing" slid off the edge, and nobody ever
+ * got down there; the chips wrapped onto a second line at the column's width,
+ * taking one more work away from the list. Above all, the halves have
+ * DIFFERENT questions: of the submitted ones you ask "what have I not graded
+ * yet", of the writing ones "who is stuck", and one row of chips cannot
+ * answer two questions.
  *
- * «Все» осталась третьей и без изменений: это прежний единый список с двумя
- * секциями — для поиска по имени и для тех, кто читает класс целиком.
+ * "All" stayed as the third, unchanged: it is the former single list with two
+ * sections — for searching by name and for those who read the class as a
+ * whole.
  */
 export type PultTab = 'submitted' | 'writing' | 'all'
 export const PULT_TABS: readonly PultTab[] = ['submitted', 'writing', 'all']
 
 /**
- * Чипы отбора. У каждой вкладки свой набор — см. `tabFilters`.
+ * Filter chips. Each tab has its own set — see `tabFilters`.
  *
- * `unrun` («не запущены») в наборах больше нет: пятый чип не влезал во вкладку
- * «Сдали» в одну строку на узкой колонке (280 px при ширине окна 860), а
- * переносить ряд на вторую строку — это минус работа в списке. Само значение
- * осталось: по нему отбирают тесты и, если понадобится, шестой чип.
+ * `unrun` ("not run") is no longer in the sets: a fifth chip did not fit into
+ * the "Submitted" tab on one line in a narrow column (280 px at a window width
+ * of 860), and wrapping the row onto a second line costs one work in the list.
+ * The value itself remains: tests filter by it, and so can a sixth chip if
+ * one is ever needed.
  */
 export type PultFilter =
   | 'all'
@@ -282,12 +301,12 @@ export function tabFilters(tab: PultTab): readonly PultFilter[] {
   return TAB_FILTERS[tab]
 }
 
-/** Отбор, переживший смену вкладки: чужой чип молча становится «Все». */
+/** A filter that survived a tab switch: a chip from another tab silently becomes "All". */
 export function filterInTab(tab: PultTab, filter: PultFilter): PultFilter {
   return TAB_FILTERS[tab].includes(filter) ? filter : 'all'
 }
 
-/** Слово в чипе. Одно место, где фильтр становится словом. */
+/** The word in the chip. The one place where a filter becomes a word. */
 export function filterLabel(filter: PultFilter): string {
   switch (filter) {
     case 'new':
@@ -309,7 +328,7 @@ export function filterLabel(filter: PultFilter): string {
   }
 }
 
-/** Слово на вкладке. */
+/** The word on the tab. */
 export function tabLabel(tab: PultTab): string {
   switch (tab) {
     case 'submitted':
@@ -321,7 +340,7 @@ export function tabLabel(tab: PultTab): string {
   }
 }
 
-/** Цвет чипа: красить стоит только то, что зовёт. */
+/** The chip colour: only what calls for you is worth colouring. */
 export function filterTone(filter: PultFilter): PultTone | null {
   switch (filter) {
     case 'error':
@@ -335,75 +354,82 @@ export function filterTone(filter: PultFilter): PultTone | null {
 }
 
 /**
- * Строка списка. Два вида, и только первый выбирается курсором: заголовок
- * секции — это не человек, а место в ленте, и Enter на нём означал бы
- * «показать классу» неизвестно чью работу.
+ * A list row. Two kinds, and only the first can be selected by the cursor: a
+ * section header is not a person but a place in the feed, and Enter on it
+ * would mean "show the class" someone-knows-whose work.
  *
- * Видов было четыре: сюда же входили шапка группы и свёрнутый хвост «ещё N с
- * тем же ответом». Группировки в пульте больше нет — вся она ушла 20.09 по
- * одному слову владельца, и ушла целиком, а не спряталась за настройку: список
- * пульта — ЛЕНТА СДАЧ, и человек, сдавший минуту назад, обязан стоять в ней
- * сам по себе, а не под чужим хвостом.
+ * There used to be four kinds: the group header and the collapsed tail "N
+ * more with the same answer" belonged here too. There is no grouping in the
+ * console any more — all of it left on 20 Sep 2026 on a single word from the
+ * owner, and left entirely rather than hiding behind a setting: the console
+ * list is a FEED OF SUBMISSIONS, and a person who submitted a minute ago must
+ * stand in it on their own, not under someone else's tail.
  */
 export type PultRow =
   | {
       kind: 'attempt'
-      /** Ключ для `{#each}` и для курсора — он же participantId. */
+      /** The key for `{#each}` and for the cursor — it is also the participantId. */
       id: string
       attempt: CouncilAttempt
       unread: boolean
-      /** Номер варианта при выключенных именах; с единицы. */
+      /** The variant number when names are off; starting from one. */
       variant: number
     }
   /**
-   * Заголовок половины ленты: «Сдали · N» и «Пишут · N».
+   * The header of a half of the feed: "Submitted · N" and "Writing · N".
    *
-   * Порядок в ленте и так ставит сданные первыми (bySubmissionDesc), но граница
-   * между «уже сдал» и «ещё пишет» ничем не была отмечена, и в окне, где видно
-   * две строки с половиной, её не существовало вовсе: список выглядел как один
-   * ряд людей без отличий. Курсору строка не даётся.
+   * The feed order already puts the submitted first (bySubmissionDesc), but
+   * the border between "already submitted" and "still writing" was not marked
+   * by anything, and in a window showing two and a half rows it did not exist
+   * at all: the list looked like one undifferentiated row of people. The
+   * cursor never lands on this row.
    */
   | { kind: 'section'; id: string; section: 'submitted' | 'writing'; count: number }
 
 export interface PultListInput {
   attempts: readonly CouncilAttempt[]
-  /** Какая из трёх стопок открыта. */
+  /** Which of the three piles is open. */
   tab: PultTab
   filter: PultFilter
-  /** Поиск по имени; при выключенных именах зовущий передаёт пустую строку. */
+  /** Search by name; with names off the caller passes an empty string. */
   search: string
-  /** Кто сдал после того, как в список смотрели в последний раз. */
+  /** Who submitted after the list was last looked at. */
   unread: ReadonlySet<string>
-  /** Придержанные сдачи: они есть в стопке, но в список ещё не впущены. */
+  /** Held-back submissions: they are in the stack but not yet let into the list. */
   held: ReadonlySet<string>
-  /** Часы окна: по ним считается молчание черновика. */
+  /** The window's clock: a draft's silence is counted by it. */
   now: number
 }
 
-/** Сдана — значит есть время сдачи; всё остальное — сохранённый черновик, независимо от присутствия. */
+/**
+ * Submitted means there is a submission time; everything else is a saved
+ * draft, regardless of presence.
+ */
 const isSubmitted = (attempt: CouncilAttempt): boolean => attempt.submittedAt !== null
 
-/** Кого пускает вкладка. Отбор — вторым ситом, поверх этого. */
+/** Whom the tab lets in. The filter is a second sieve on top of this. */
 export function inTab(attempt: CouncilAttempt, tab: PultTab): boolean {
   if (tab === 'all') return true
   return tab === 'submitted' ? isSubmitted(attempt) : !isSubmitted(attempt)
 }
 
-/* ------------------------------------------------------------- тревога */
+/* --------------------------------------------------------------- alarm */
 
 /**
- * Что происходит с ЧЕРНОВИКОМ — ровно одно слово на человека.
+ * What is happening with a DRAFT — exactly one word per person.
  *
- * Вкладка «Пишут» отвечает на один вопрос: кто застрял. Ответ у неё четырёх
- * видов, и каждая попытка получает ровно один — иначе чипы «Молчат 3 · Упало 2
- * · Просят запуск 2» считали бы одного человека дважды, и сумма не сходилась бы
- * с длиной списка.
+ * The "Writing" tab answers one question: who is stuck. Its answer comes in
+ * four kinds, and every attempt gets exactly one — otherwise the chips
+ * "Silent 3 · Failed 2 · Run requested 2" would count one person twice, and
+ * the sum would not match the length of the list.
  *
- * Порядок РАЗБОРА (здесь) и порядок ТРЕВОГИ (`ALARM_RANK`) — разные вещи, и
- * расходятся они намеренно. Разбирается первой просьба о запуске: человек,
- * нажавший «прошу запустить» минуту назад, не «молчит» — он ждёт нас, и
- * молчание его листа объясняется именно этим. А выше в списке стоит молчание:
- * просьбу видно из очереди и из полосы, а про застрявшего не скажет никто.
+ * The order of CHECKING (here) and the order of ALARM (`ALARM_RANK`) are
+ * different things, and they diverge on purpose. A run request is checked
+ * first: a person who pressed "please run" a minute ago is not "silent" — they
+ * are waiting for us, and that is exactly what explains the silence of their
+ * sheet. But silence stands higher in the list: a request is visible from the
+ * queue and from the strip, while nobody will speak up about the one who is
+ * stuck.
  */
 export type DraftAlarm = 'silent' | 'failed' | 'asking' | 'writing'
 
@@ -413,17 +439,18 @@ export function draftAlarm(attempt: CouncilAttempt, now: number): DraftAlarm {
   return now - attempt.updatedAt > COUNCIL_SILENCE_MS ? 'silent' : 'writing'
 }
 
-/** Порядок тревог в списке: молчат, упало, просят запуск, остальные. */
+/** The order of alarms in the list: silent, failed, run requested, the rest. */
 const ALARM_RANK: Record<DraftAlarm, number> = { silent: 0, failed: 1, asking: 2, writing: 3 }
 
 /**
- * Строка состояния пишущего: одна, вместо плашки оценки и строки запуска.
+ * The status line of someone writing: one line, instead of the grading badge
+ * and the run line.
  *
- * У черновика оценки нет, и плашка «Черновик» в каждой строке — это десять
- * одинаковых слов подряд. Здесь вместо неё то, что про этого человека правда
- * известно: сколько он молчит, чем кончился его запуск, сколько ждёт решения,
- * — и сколько строк он успел написать, потому что «пишет · 2 строки» и «пишет ·
- * 40 строк» просят разного.
+ * A draft has no grade, and a "Draft" badge on every row is ten identical
+ * words in a row. Here, in its place, is what is really known about this
+ * person: how long they have been silent, how their run ended, how long they
+ * have waited for a decision — and how many lines they have written, because
+ * "writing · 2 lines" and "writing · 40 lines" ask for different things.
  */
 export function draftLine(attempt: CouncilAttempt, now: number): PultBadge {
   const alarm = draftAlarm(attempt, now)
@@ -456,10 +483,10 @@ export function draftLine(attempt: CouncilAttempt, now: number): PultBadge {
     }
     case 'asking':
       /*
-       * Своя строка, а не заголовок карточки очереди («Просит запуск · ждёт
-       * 40 с»): в строке списка соседние состояния набраны со строчной («молчит
-       * 7 мин», «пишет · 14 строк»), и одна прописная посреди колонки читается
-       * как заголовок, которым эта строка не является.
+       * A line of its own, not the queue card's header ("Run requested ·
+       * waiting 40 s"): in a list row the neighbouring states are set in lower
+       * case ("silent 7 min", "writing · 14 lines"), and one capital in the
+       * middle of the column reads as a heading, which this line is not.
        */
       return {
         label: tr('room.pult.v3.draft.asking', {
@@ -473,12 +500,13 @@ export function draftLine(attempt: CouncilAttempt, now: number): PultBadge {
 }
 
 /**
- * Порядок во вкладке «Пишут» — ПО ТРЕВОГЕ, а не по времени.
+ * The order in the "Writing" tab — BY ALARM, not by time.
  *
- * Молчат, упало, просят запуск, остальные. Внутри трёх тревожных групп — кто
- * ждёт дольше, тот выше: «молчит 12 мин» важнее, чем «молчит 6 мин», и
- * просьба, поданная минуту назад, важнее поданной только что. Спокойные идут
- * по времени правки, свежие сверху: там вопрос другой — «кто сейчас работает».
+ * Silent, failed, run requested, the rest. Within the three alarm groups,
+ * whoever has waited longer is higher: "silent 12 min" matters more than
+ * "silent 6 min", and a request made a minute ago matters more than one made
+ * just now. The calm ones go by edit time, newest on top: the question there
+ * is different — "who is working right now".
  */
 export function byAlarm(now: number) {
   const since = (attempt: CouncilAttempt, alarm: DraftAlarm): number => {
@@ -491,20 +519,20 @@ export function byAlarm(now: number) {
     const right = draftAlarm(b, now)
     const rank = ALARM_RANK[left] - ALARM_RANK[right]
     if (rank !== 0) return rank
-    // Спокойные — свежими сверху; тревожные — теми, кто ждёт дольше всех.
+    // The calm ones newest first; the alarming ones by whoever has waited longest.
     const order = left === 'writing' ? since(b, right) - since(a, left) : since(a, left) - since(b, right)
     return order || a.participantId.localeCompare(b.participantId)
   }
 }
 
 /**
- * Номера вариантов — по времени сдачи, с единицы, на всю ячейку.
+ * Variant numbers — by submission time, starting from one, for the whole cell.
  *
- * Тем же правилом, что у сервера на показе (protocol.ts · CouncilShown.variant):
- * при выключенных именах номер — единственная подпись человека, и в пульте он
- * обязан совпасть с тем, что видит зал. Пишущие получают номера в хвосте, по
- * id: номера у них ещё нет, а дырка в нумерации читалась бы как потерянный
- * человек.
+ * By the same rule the server uses when showing (protocol.ts ·
+ * CouncilShown.variant): with names off the number is the person's only
+ * label, and in the console it must match what the hall sees. Those still
+ * writing get numbers at the tail, by id: they have no number yet, and a gap
+ * in the numbering would read as a lost person.
  */
 export function variantNumbers(attempts: readonly CouncilAttempt[]): Map<string, number> {
   const order = [...attempts].sort((a, b) => {
@@ -518,7 +546,7 @@ export function variantNumbers(attempts: readonly CouncilAttempt[]): Map<string,
   return new Map(order.map((attempt, index) => [attempt.participantId, index + 1]))
 }
 
-/** Сверху свежие: лента сдач, а не стопка решений. Пишущие — в конце, по id. */
+/** Newest on top: a feed of submissions, not a stack of solutions; drafts last, by id. */
 export function bySubmissionDesc(a: CouncilAttempt, b: CouncilAttempt): number {
   const left = a.submittedAt
   const right = b.submittedAt
@@ -528,7 +556,7 @@ export function bySubmissionDesc(a: CouncilAttempt, b: CouncilAttempt): number {
   return a.participantId.localeCompare(b.participantId)
 }
 
-/** Подходит ли попытка под чип отбора. Поиск — отдельно: он по имени. */
+/** Whether an attempt passes a filter chip. Search is separate: it goes by name. */
 export function matchesFilter(
   attempt: CouncilAttempt,
   filter: PultFilter,
@@ -539,12 +567,12 @@ export function matchesFilter(
     case 'new':
       return unread.has(attempt.participantId)
     case 'ungraded':
-      // «Без оценки» — про руку преподавателя, а не про запуск: сдано, а
-      // отметки нет. Черновики сюда не попадают — их и не оценивают.
+      // "Ungraded" is about the teacher's hand, not about the run: submitted,
+      // but no mark. Drafts do not get here — they are not graded at all.
       return isSubmitted(attempt) && attempt.correct === null
     case 'error':
-      // Остановленный пределом считается «с ошибкой» наравне с упавшим: чип
-      // отбирает работы, которым запуск не удался, а не имена исключений.
+      // A run stopped by the limit counts as "with an error" just like a crashed
+      // one: the chip picks works whose run did not succeed, not exception names.
       return attempt.run?.state === 'error' || timedOutLimit(attempt) !== null || attempt.correct === false
     case 'unrun':
       return attempt.run === null
@@ -559,7 +587,7 @@ export function matchesFilter(
   }
 }
 
-/** Числа в чипах вкладки — по тому же ситу, каким чип и отбирает. */
+/** The numbers in a tab's chips — by the same sieve the chip filters with. */
 export function filterCounts(
   attempts: readonly CouncilAttempt[],
   tab: PultTab,
@@ -585,22 +613,23 @@ export function filterCounts(
   return counts
 }
 
-/** Числа на самих вкладках: «Сдали 13 · Пишут 11 · Все 24». */
+/** The numbers on the tabs themselves: "Submitted 13 · Writing 11 · All 24". */
 export function tabCounts(attempts: readonly CouncilAttempt[]): Record<PultTab, number> {
   const submitted = attempts.filter(isSubmitted).length
   return { submitted, writing: attempts.length - submitted, all: attempts.length }
 }
 
 /**
- * Строки списка — то, что рисует левая колонка.
+ * The list rows — what the left column draws.
  *
- * Одна строка на человека, сверху свежие. Ни свёртывания, ни шапок групп:
- * список пульта — лента сдач, и единственный вопрос, на который она отвечает,
- * — «кто только что сдал». Группировка одинаковых ответов жила здесь до 20.09
- * и убрана по прямой просьбе владельца: она прятала людей под чужим хвостом
- * («ещё N с тем же ответом»), а найти в списке конкретного человека — ровно то,
- * ради чего в него смотрят. Какие бывают ответы — вопрос стопки и оракула, и
- * задают его в другом месте.
+ * One row per person, newest on top. No collapsing, no group headers: the
+ * console list is a feed of submissions, and the only question it answers is
+ * "who just submitted". Grouping of identical answers lived here until 20 Sep
+ * 2026 and was removed at the owner's direct request: it hid people under
+ * someone else's tail ("N more with the same answer"), while finding a
+ * specific person in the list is exactly why people look at it. What answers
+ * there are is a question for the stack and the oracle, and it is asked
+ * elsewhere.
  */
 export function listRows(input: PultListInput): PultRow[] {
   const { attempts, tab, filter, search, unread, held, now } = input
@@ -615,12 +644,12 @@ export function listRows(input: PultListInput): PultRow[] {
       (needle === '' || attempt.name.toLocaleLowerCase().includes(needle)),
   )
   /*
-   * Два порядка на три вкладки, и это не небрежность.
+   * Two orders for three tabs, and that is not carelessness.
    *
-   * «Сдали» и «Все» — лента сдач: свежие сверху, человек, нажавший «Сдать»
-   * минуту назад, виден без прокрутки. «Пишут» — не лента, а список тревог:
-   * там спрашивают «кто застрял», и время правки отвечает на этот вопрос
-   * последним из всего, что о человеке известно.
+   * "Submitted" and "All" are a feed of submissions: newest on top, a person
+   * who pressed "Submit" a minute ago is visible without scrolling. "Writing"
+   * is not a feed but an alarm list: the question there is "who is stuck", and
+   * edit time is the last thing known about a person that answers it.
    */
   const ordered = [...visible].sort(tab === 'writing' ? byAlarm(now) : bySubmissionDesc)
 
@@ -631,22 +660,24 @@ export function listRows(input: PultListInput): PultRow[] {
     unread: unread.has(attempt.participantId),
     variant: variants.get(attempt.participantId) ?? 0,
   }))
-  // Секции — только в «Все»: во вкладках половина ленты и так одна, и
-  // заголовок «Сдали · 13» над тринадцатью сдавшими был бы подписью к себе.
+  // Sections only in "All": in the other tabs there is only one half of the
+  // feed anyway, and a "Submitted · 13" header over thirteen submitters would
+  // be a caption to itself.
   return withSections(rows, ordered, tab === 'all' && filter === 'all' && needle === '')
 }
 
 /**
- * Две секции — только в полном списке и только без поиска.
+ * Two sections — only in the full list and only without a search.
  *
- * Под отбором «с ошибкой» заголовок «Сдали · 5» говорил бы о числе, которого в
- * списке нет: отбор уже разрезал ленту по другому признаку, и второй разрез
- * поверх первого читается как ошибка счёта. Поиск — то же самое: в нём стоят
- * найденные, а не «все сдавшие».
+ * Under the "With an error" filter a "Submitted · 5" header would speak of a
+ * number that is not in the list: the filter has already cut the feed by
+ * another feature, and a second cut on top of the first reads as a counting
+ * error. Search is the same: it holds the found ones, not "everyone who
+ * submitted".
  *
- * Счёт — по людям, а не по строкам: разойтись им теперь негде, но считать по
- * `ordered` дешевле и честнее, чем по собранным строкам, среди которых стоят
- * сами заголовки.
+ * The count is by people, not by rows: they have nowhere to diverge now, but
+ * counting over `ordered` is cheaper and more honest than over the assembled
+ * rows, among which the headers themselves stand.
  */
 function withSections(rows: PultRow[], ordered: readonly CouncilAttempt[], on: boolean): PultRow[] {
   if (!on) return rows
@@ -670,55 +701,57 @@ function withSections(rows: PultRow[], ordered: readonly CouncilAttempt[], on: b
   return out
 }
 
-/** Только по людям: заголовок секции курсору не даётся. */
+/** People only: the cursor never lands on a section header. */
 export function selectable(rows: readonly PultRow[]): string[] {
   return rows.filter((row) => row.kind === 'attempt').map((row) => row.id)
 }
 
-/* --------------------------------------------------- ячейки консилиума */
+/* ------------------------------------------------------- council cells */
 
 /**
- * Ячейка в списке выбора — всё, что о ней говорит строка меню.
+ * A cell in the picker list — everything its menu row says about it.
  *
- * Пульт — ОДНО окно на комнату, и ячейку в нём выбирают, а не открывают
- * вторым окном: «будет круто иметь один общий пульт, в котором можно
- * перемещаться между ячейками». Номер ячейки в шапке стал дверью в этот
- * список, и список обязан отвечать на единственный вопрос, ради которого его
- * открывают: куда переключиться прямо сейчас.
+ * The console is ONE window per room, and a cell is chosen inside it rather
+ * than opened in a second window: "it would be great to have one shared
+ * console where you can move between cells". The cell number in the header
+ * became the door into this list, and the list must answer the only question
+ * it is opened for: where to switch right now.
  */
 export interface PultCellRow {
   cellId: string
-  /** Номер ячейки в своей тетради, с единицы; `null` — ячейки в документе нет. */
+  /** The cell's number in its notebook, from one; `null` — not in the document. */
   index: number | null
   /**
-   * Название задания — первая строка ячейки или заголовок над ней.
+   * The task name — the cell's first line or the heading above it.
    *
-   * Пустое — названия нет, и строка обходится номером. Правило целиком лежит в
-   * `cellHeadline` / `markdownHeadline`: «ячейка 60» и «ячейка 65» в меню
-   * неразличимы, а выбирают между ними по заданию, а не по числу.
+   * Empty — there is no name, and the row makes do with the number. The whole
+   * rule lives in `cellHeadline` / `markdownHeadline`: "cell 60" and "cell 65"
+   * are indistinguishable in the menu, and people choose between them by the
+   * task, not by the number.
    */
   title: string
-  /** Имя тетради. Пустое, пока все ячейки из одной: подпись там ничего не решает. */
+  /** The notebook name; empty while all cells are from one — a caption decides nothing. */
   book: string
   submitted: number
   total: number
-  /** Сдано и не оценено — единственное, что просит руки преподавателя. */
+  /** Submitted and not graded — the only thing that asks for the teacher's hand. */
   waiting: number
-  /** Сколько человек просят разрешить запуск. */
+  /** How many people are asking for a run to be allowed. */
   asking: number
-  /** Сколько попыток этой ячейки стоит в очереди ядра. */
+  /** How many attempts of this cell stand in the kernel queue. */
   queued: number
-  /** В ядре прямо сейчас считается чья-то попытка этой ячейки. */
+  /** Someone's attempt of this cell is computing in the kernel right now. */
   running: boolean
-  /** Чья-то работа по этой ячейке стоит на проекторе. */
+  /** Someone's work for this cell is on the projector. */
   onScreen: boolean
   /**
-   * Консилиум закрыт, а попытки остались.
+   * The council is closed, but attempts remain.
    *
-   * Такие ячейки из списка НЕ УХОДЯТ: сданное смотрят до конца занятия, и
-   * ячейка, снятая с консилиума под открытым на ней пультом, обязана остаться
-   * на месте — выкинуть человека из того, на что он смотрит, хуже, чем
-   * признаться словом, что менять здесь больше нечего.
+   * Such cells DO NOT LEAVE the list: submitted work is looked at until the
+   * end of the class, and a cell taken off the council while a console is
+   * open on it must stay in place — throwing a person out of what they are
+   * looking at is worse than admitting in words that there is nothing left to
+   * change here.
    */
   review: boolean
 }
@@ -726,38 +759,42 @@ export interface PultCellRow {
 export interface PultCellFacts {
   cellId: string
   index: number | null
-  /** Название задания — см. `cellHeadline`; пустое, если его не из чего вывести. */
+  /** The task name — see `cellHeadline`; empty if there is nothing to derive it from. */
   title?: string
   book: string
   lock: CellLock
-  /** Числа стопки — запасной счёт, когда комнатный ещё не приехал. */
+  /** The stack's numbers — a fallback count while the room's has not arrived. */
   counts: CouncilBoard['counts']
-  /** «Сдали N из M» по всей комнате — те же числа, что под ячейкой в тетради. */
+  /**
+   * "N of M submitted" across the whole room — the same numbers as under the
+   * cell in the notebook.
+   */
   room: { submitted: number; total: number } | null
   attempts: readonly CouncilAttempt[]
   onScreen: boolean
 }
 
 /**
- * Список ячеек для меню: порядок, числа и пометки.
+ * The list of cells for the menu: order, numbers and marks.
  *
- * Порядок — по тетради и номеру, а не по приходу кадров: меню открывают,
- * чтобы найти известную ячейку, и «та, чья стопка приехала первой» — не тот
- * порядок, в котором её ищут.
+ * The order is by notebook and number, not by the arrival of frames: the menu
+ * is opened to find a known cell, and "the one whose stack arrived first" is
+ * not the order it is looked for in.
  *
- * Имя тетради приезжает ВСЕГДА, а прячет его уже меню: номер уникален только
- * внутри тетради, и «ячейка 09» в семинаре и в лекции — две разные ячейки с
- * одной подписью (просьба с пары 20.09.2026). Когда тетрадь одна, меню
- * называет её один раз в шапке; когда их несколько — в каждой строке, потому
- * что иначе шапка обещала бы за весь список имя первой попавшейся.
+ * The notebook name ALWAYS arrives, and it is the menu that hides it: a number
+ * is unique only within a notebook, and "cell 09" in the seminar and in the
+ * lecture are two different cells with one caption (a request from the
+ * 20 Sep 2026 class). When there is one notebook, the menu names it once in
+ * the header; when there are several — in every row, because otherwise the
+ * header would promise the name of whichever came first for the whole list.
  */
 export function pultCells(facts: readonly PultCellFacts[]): PultCellRow[] {
   return [...facts]
     .sort(
       (a, b) =>
         a.book.localeCompare(b.book) ||
-        // Ячейка, которой в документе нет, уходит в хвост: у неё нет места в
-        // тетради, и вставлять её по нулю значило бы ставить первой.
+        // A cell that is not in the document goes to the tail: it has no place in
+        // the notebook, and slotting it in at zero would mean putting it first.
         (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER) ||
         a.cellId.localeCompare(b.cellId),
     )
@@ -769,11 +806,12 @@ export function pultCells(facts: readonly PultCellFacts[]): PultCellRow[] {
       submitted: fact.room?.submitted ?? fact.counts.submitted,
       total: fact.room?.total ?? fact.counts.attempts,
       /*
-       * Счёт — по стопке, которая у преподавателя и так есть по КАЖДОЙ ячейке
-       * (control.ts · councilWelcome). Сервер ради этих чисел не трогаем: он
-       * везёт «сдали N из M» всей комнате, а «ждут оценки» и «просят запуск» —
-       * это приватное знание пульта, и считать его приватно правильнее, чем
-       * заводить ради него кадр.
+       * The count comes from the stack, which the teacher already has for
+       * EVERY cell (control.ts · councilWelcome). We do not touch the server
+       * for these numbers: it carries "N of M submitted" to the whole room,
+       * while "awaiting review" and "run requested" are the console's private
+       * knowledge, and counting it privately is better than setting up a frame
+       * for it.
        */
       waiting: fact.attempts.filter((one) => one.submittedAt !== null && one.correct === null).length,
       asking: fact.attempts.filter((one) => one.runRequest?.status === 'pending').length,
@@ -785,13 +823,12 @@ export function pultCells(facts: readonly PultCellFacts[]): PultCellRow[] {
 }
 
 /**
- * Соседняя ячейка в том же порядке, в каком они стоят в меню.
+ * The neighbouring cell in the same order as they stand in the menu.
  *
- * Клавиши `[` и `]` обязаны ходить ровно по нему: список открывают, чтобы
- * найти известную ячейку, и «следующая» — это следующая строка меню, а не
- * следующий пришедший кадр. На краях — `null`: заворачивать по кругу значит
- * увести пульт с первой ячейки на последнюю одним нажатием, не показав, что
- * произошло.
+ * The `[` and `]` keys must move by exactly that order: the list is opened to
+ * find a known cell, and "next" is the next menu row, not the next frame to
+ * arrive. At the edges — `null`: wrapping around would take the console from
+ * the first cell to the last with one press, without showing what happened.
  */
 export function neighbourCell(
   cells: readonly PultCellRow[],
@@ -805,30 +842,33 @@ export function neighbourCell(
 }
 
 /**
- * Сколько ДРУГИХ ячеек ждут оценки — подпись рядом с кнопкой выбора.
+ * How many OTHER cells are awaiting review — the caption next to the picker
+ * button.
  *
- * Закрытые не считаются, и это не упрощение: строка такой ячейки в меню
- * говорит «консилиум закрыт · только просмотр» и чисел не показывает вовсе.
- * Позвать в неё подписью, которой в самом меню не соответствует ни одна
- * строка, значит отправить человека искать то, чего он там не увидит.
+ * Closed ones are not counted, and that is not a simplification: such a
+ * cell's menu row says "council closed · review only" and shows no numbers
+ * at all. Calling someone there with a caption that no row in the menu itself
+ * matches means sending the person to look for something they will not see
+ * there.
  */
 export function othersWaiting(cells: readonly PultCellRow[], current: string): number {
   return cells.filter((cell) => cell.cellId !== current && !cell.review && cell.waiting > 0).length
 }
 
 /**
- * Строка внимания под названием ячейки: что в ней требует руки прямо сейчас.
+ * The attention line under a cell's name: what in it needs a hand right now.
  *
- * Не «сколько там всего», а «за чем туда идти». Закрытый консилиум говорит об
- * этом одним куском и вместо всего остального: там менять нечего, и «9 ждут
- * оценки» в закрытой ячейке звало бы туда, где ничего не изменить. Ячейка, в
- * которой всё разобрано, получает свою строку — пустое место читалось бы как
- * «строка не догрузилась».
+ * Not "how much is there in total" but "what to go there for". A closed
+ * council says so in one piece and instead of everything else: there is
+ * nothing to change there, and "9 awaiting review" in a closed cell would
+ * call people to where nothing can be changed. A cell where everything has
+ * been dealt with gets its own line — an empty space would read as "the line
+ * did not finish loading".
  */
 export interface CellNote {
   text: string
   tone: PultTone | 'faint'
-  /** Плашка, а не слово: «на экране» — состояние зала, а не счёт. */
+  /** A badge, not a word: "on screen" is the state of the hall, not a count. */
   chip?: boolean
 }
 
@@ -856,45 +896,47 @@ export function cellNotes(cell: PultCellRow): CellNote[] {
   return notes
 }
 
-/* ------------------------------------------------- название задания */
+/* -------------------------------------------------------- task name */
 
 /**
- * Декор, который в заголовке ничего не значит: рамки, подчёркивания, решётки.
+ * Decoration that means nothing in a heading: frames, underlines, hashes.
  *
- * Снимается с ОБОИХ концов и только целыми сериями: «# ══ Важность ══» — это
- * «Важность», а «x ** 2» и «a - b» остаются собой, потому что внутри строки
- * ничего не трогается.
+ * Stripped from BOTH ends and only as whole runs: "# ══ Importance ══" is
+ * "Importance", while "x ** 2" and "a - b" stay themselves, because nothing
+ * inside the line is touched.
  */
 const DECOR = /^[\s#=\-—–*_~·•≡═─━☰]+|[\s#=\-—–*_~·•≡═─━☰]+$/g
 
 /**
- * Служебный префикс вида «ЯЧЕЙКА СТУДЕНТА ·».
+ * A service prefix like "STUDENT CELL ·".
  *
- * Только ПРОПИСНЫМИ и только из двух слов и больше: «S5E12 · минимум» —
- * название, а не префикс, и одно слово капсом перед точкой снимать нельзя.
- * Остаток обязан быть непустым: «КОНТРОЛЬНАЯ РАБОТА ·» без продолжения — это
- * и есть название.
+ * Only in CAPITALS and only of two words or more: "S5E12 · minimum" is a
+ * name, not a prefix, and a single capitalised word before the dot must not
+ * be stripped. The remainder must be non-empty: "CONTROL TEST ·" with nothing
+ * after it is the name itself.
  */
 const PREFIX = /^[\p{Lu}\p{Nd}\s]*\p{Lu}[\p{Lu}\p{Nd}]*\s+[\p{Lu}\p{Nd}][\p{Lu}\p{Nd}\s]*[·:—-]\s+(?=\S)/u
 
 /**
- * Название задания из текста ячейки — первая строка, если она комментарий.
+ * The task name from a cell's text — the first line, if it is a comment.
  *
- * Комментарий над кодом — то, как задание подписывают в тетради, и он же
- * единственное, что о ячейке известно самому пульту. Строка чистится: решётки,
- * рамка из `═` и служебный префикс снимаются, а декоративная строка целиком
- * («# ═════») пропускается — за ней обычно и стоит название.
+ * A comment above the code is how a task is labelled in a notebook, and it is
+ * also the only thing the console itself knows about the cell. The line is
+ * cleaned: hashes, a frame of `═` and a service prefix are stripped, and an
+ * entirely decorative line ("# ═════") is skipped — the name usually stands
+ * right after it.
  *
- * Первая непустая строка КОДОМ означает, что названия в ячейке нет: подписью
- * тогда служит markdown-ячейка над ней, и её ищет зовущий (`markdownHeadline`).
- * Выдумывать заголовок из кода нельзя: «imp = clf.feature_importances_» в меню
- * хуже честной «ячейки 03».
+ * A first non-empty line of CODE means the cell has no name: the markdown cell
+ * above then serves as the caption, and the caller looks for it
+ * (`markdownHeadline`). A heading must not be invented from code:
+ * "imp = clf.feature_importances_" in the menu is worse than an honest
+ * "cell 03".
  */
 export function cellHeadline(text: string): string {
   for (const raw of text.split('\n')) {
     const line = raw.trim()
     if (line === '') continue
-    // Дошли до кода — заголовка в ячейке нет.
+    // Reached the code — there is no heading in the cell.
     if (!line.startsWith('#')) return ''
     const clean = line.replace(DECOR, '').replace(PREFIX, '').trim()
     if (clean !== '') return clean
@@ -903,20 +945,22 @@ export function cellHeadline(text: string): string {
 }
 
 /**
- * ЗАГОЛОВОК markdown-ячейки — и только он, а не первая её строка.
+ * The HEADING of a markdown cell — and only that, not its first line.
  *
- * Разница тут не академическая. Настоящая ячейка семинара выглядит так:
- * абзац на три строки про пропуски в признаках, а под ним «### Задача 1» — и
- * задание называется именно вторым. Взяв первую непустую строку, меню получало
- * в кнопку «Остались пропуски только в числовых признаках (`GarageYrBlt`,
- * `MasVnrArea`). Их можно заполнить, проведя анализ…» — абзац вместо названия.
+ * The difference is not academic. A real seminar cell looks like this: a
+ * three-line paragraph about missing values in the features, and under it
+ * "### Task 1" — and the task is named by the latter. Taking the first
+ * non-empty line, the menu put into its button "Missing values remain only in
+ * the numeric features (`GarageYrBlt`, `MasVnrArea`). They can be filled in
+ * by analysing…" — a paragraph instead of a name.
  *
- * Берётся ПОСЛЕДНИЙ заголовок ячейки: он ближе всего к коду, который под ней, и
- * именно он вводит задание. Заголовка нет вовсе — названия нет: абзац в роли
- * названия хуже честной «ячейки 60».
+ * The LAST heading of the cell is taken: it is closest to the code below and
+ * it is the one that introduces the task. No heading at all — no name: a
+ * paragraph playing a name is worse than an honest "cell 60".
  *
- * Число решёток не значит ничего: «## Важность» и «# Важность» — одно название,
- * а уровень — про оглавление документа, а не про текст.
+ * The number of hashes means nothing: "## Importance" and "# Importance" are
+ * one name, and the level is about the document's outline, not about the
+ * text.
  */
 export function markdownHeadline(text: string): string {
   let found = ''
@@ -930,12 +974,13 @@ export function markdownHeadline(text: string): string {
 }
 
 /**
- * Что написано в строке меню и на кнопке в шапке.
+ * What is written in the menu row and on the header button.
  *
- * Название, если оно есть; иначе прежняя «ячейка NN»; а если ячейки в
- * документе уже нет — общее слово. Обрезается название не здесь: резать по
- * числу символов значит резать по-разному в «Важность признаков» и в
- * «ЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖ», а меряет ширину браузер (`text-overflow: ellipsis`).
+ * The name, if there is one; otherwise the former "cell NN"; and if the cell
+ * is no longer in the document — a generic word. The name is not truncated
+ * here: cutting by character count means cutting differently in "Feature
+ * importance" and in "WWWWWWWWWWWWWWWW", and it is the browser that measures
+ * width (`text-overflow: ellipsis`).
  */
 export function cellTaskTitle(input: { title: string; index: number | null }): string {
   const title = input.title.trim()
@@ -946,11 +991,12 @@ export function cellTaskTitle(input: { title: string; index: number | null }): s
 }
 
 /**
- * Куда уходит курсор с клавиши j / k.
+ * Where the cursor goes on the j / k key.
  *
- * Курсора нет — вниз ведёт к первой строке, вверх к последней: первое нажатие
- * обязано что-то выбрать, иначе клавиша читается как сломанная. Курсор на
- * строке, которой в отборе больше нет (сменили фильтр), — тоже к первой.
+ * No cursor — down leads to the first row, up to the last: the first press
+ * must select something, otherwise the key reads as broken. A cursor on a row
+ * that is no longer in the filtered set (the filter changed) — also to the
+ * first.
  */
 export function moveCursor(rows: readonly PultRow[], cursor: string | null, delta: 1 | -1): string | null {
   const ids = selectable(rows)
@@ -962,15 +1008,15 @@ export function moveCursor(rows: readonly PultRow[], cursor: string | null, delt
   return ids[next]
 }
 
-/* ------------------------------------------------------- непрочитанное */
+/* -------------------------------------------------------------- unread */
 
 /**
- * Кто сдал после того, как в список смотрели, — голубая точка слева.
+ * Who submitted after the list was looked at — the blue dot on the left.
  *
- * `seen` — те, чью строку уже открывали: точка гаснет на открытии и не
- * возвращается. `since` — момент, когда пульт открыли: всё, что сдано раньше,
- * непрочитанным не считается, иначе первое открытие красило бы точками весь
- * класс.
+ * `seen` — those whose row has already been opened: the dot goes out on
+ * opening and does not come back. `since` — the moment the console was
+ * opened: everything submitted earlier does not count as unread, otherwise
+ * the first opening would paint the whole class with dots.
  */
 export function unreadIds(
   attempts: readonly CouncilAttempt[],
@@ -987,24 +1033,25 @@ export function unreadIds(
   return out
 }
 
-/* ------------------------------------------------- придержанные сдачи */
+/* ---------------------------------------------- held-back submissions */
 
 /**
- * Держать ли новые сдачи за полосой «↑ ещё N сдали — показать».
+ * Whether to hold new submissions behind the "↑ N more submitted — show" bar.
  *
- * Список прокручен или курсор не на первой строке — значит человек читает
- * что-то конкретное, и строка, вставшая сверху, увела бы под курсором всё
- * вниз. Стоим на первой строке у самого верха — впускаем сразу: там новая
- * сдача и есть то, ради чего смотрят.
+ * The list is scrolled or the cursor is not on the first row — so the person
+ * is reading something specific, and a row appearing at the top would pull
+ * everything under the cursor down. We are on the first row at the very top —
+ * let them in at once: there a new submission is exactly what people are
+ * watching for.
  */
 export function holdsArrivals(scrolled: boolean, cursorAtTop: boolean): boolean {
   return scrolled || !cursorAtTop
 }
 
 /**
- * Что придержать: сданное после `frozenAt`, кроме того, что уже стоит в списке
- * и кроме строки под курсором. Курсор не двигается никогда — даже если человек
- * под ним сдал заново.
+ * What to hold back: whatever was submitted after `frozenAt`, except what
+ * already stands in the list and the row under the cursor. The cursor never
+ * moves — even if the person under it submitted again.
  */
 export function heldArrivals(
   attempts: readonly CouncilAttempt[],
@@ -1022,9 +1069,9 @@ export function heldArrivals(
   return out
 }
 
-/* ------------------------------------------------------------ клавиши */
+/* --------------------------------------------------------------- keys */
 
-/** Где стоит фокус — от этого зависит, чья клавиша. */
+/** Where the focus is — that decides whose key it is. */
 export type PultFocus = 'list' | 'search' | 'reply' | 'actions'
 
 export type PultAction =
@@ -1054,15 +1101,17 @@ export interface PultKey {
 }
 
 /**
- * Что делает клавиша в пульте.
+ * What a key does in the console.
  *
- * Три правила, и все три про поля ввода. В поле ответа клавиши его: ⌘↵
- * отправляет, Esc закрывает, всё остальное — набор. В поиске стрелки ПРОДОЛЖАЮТ
- * ходить по отфильтрованному списку (иначе после ⌘F руки обязаны вернуться к
- * мыши), а буквы — набор. Везде остальное — буквы пульта.
+ * Three rules, and all three are about input fields. In the reply field the
+ * keys belong to it: ⌘↵ sends, Esc closes, everything else is typing. In the
+ * search, the arrows KEEP moving through the filtered list (otherwise after
+ * ⌘F the hands have to go back to the mouse), and letters are typing.
+ * Everywhere else — the console's letters.
  *
- * Enter показывает классу и только оттуда, где видно, кого показывают; на
- * кнопке (`actions`) он нажимает кнопку, а не делает второе дело первым.
+ * Enter shows to the class, and only from where you can see who is being
+ * shown; on a button (`actions`) it presses the button rather than doing a
+ * second thing first.
  */
 export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
   if (event.alt || event.composing) return null
@@ -1079,11 +1128,12 @@ export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
   if (event.key === 'ArrowUp') return 'prev'
   if (event.key === 'Escape') return 'escape'
   /*
-   * Скобки — соседняя ячейка, и работают они даже из поиска.
+   * Brackets are the neighbouring cell, and they work even from the search.
    *
-   * В поле поиска набирают имя человека, а не квадратные скобки; зато уйти из
-   * него в соседнюю ячейку, не снимая фокуса, — обычное дело. Раскладка тут
-   * общая: на русской те же клавиши дают «х» и «ъ».
+   * People type a person's name into the search field, not square brackets;
+   * but leaving it for the neighbouring cell without dropping focus is common.
+   * The layout is shared here: on the Russian layout the same keys produce
+   * "х" and "ъ".
    */
   if (event.key === '[' || event.key === 'х' || event.key === 'Х') return 'prevCell'
   if (event.key === ']' || event.key === 'ъ' || event.key === 'Ъ') return 'nextCell'
@@ -1109,14 +1159,15 @@ export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
       return 'wrong'
     case '3':
       return 'clearShown'
-    // «п» — правила; латинская g стоит на той же клавише, как о и j у курсора.
+    // "п" is rules; the Latin g sits on the same key, like "о" and j for the cursor.
     case 'g':
     case 'G':
     case 'п':
     case 'П':
       return 'rules'
-    // Косая — поиск, как в любом списке с лупой. ⌘F остаётся: он привычнее
-    // тем, кто пришёл из браузера, а «/» — тем, кто из почты и мессенджеров.
+    // Slash is search, as in any list with a magnifier. ⌘F stays: it is more
+    // familiar to those coming from the browser, and "/" to those coming from
+    // mail and messengers.
     case '/':
       return 'search'
     case '?':
@@ -1126,9 +1177,9 @@ export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
   }
 }
 
-/* --------------------------------------------------------------- слова */
+/* --------------------------------------------------------------- words */
 
-/** Цвет левой полосы строки: что от вас требуется, а не что случилось. */
+/** The colour of the row's left bar: what is required of you, not what happened. */
 export type RowMeaning = 'none' | 'cursor' | 'screen' | 'asking'
 
 export function rowMeaning(
@@ -1143,13 +1194,13 @@ export function rowMeaning(
 }
 
 /**
- * Повод рядом с просьбой о запуске — два слова, из-за которых разрешают.
+ * The reason next to a run request — the two words that get it approved.
  *
- * Выводится ТОЛЬКО из того, что правда известно: прошлый запуск этой же
- * попытки упал — значит «TypeError в прошлый раз». Истории просьб сервер не
- * везёт (`CouncilRunRequest` — одна текущая), поэтому «третья попытка за
- * минуту» здесь не сочиняется: выдуманный повод хуже пустого места, потому что
- * по нему принимают решение.
+ * Derived ONLY from what is really known: the previous run of this same
+ * attempt failed — so "TypeError last time". The server carries no history of
+ * requests (`CouncilRunRequest` is the single current one), so "third attempt
+ * in a minute" is not made up here: an invented reason is worse than an empty
+ * space, because a decision is made by it.
  */
 export function requestReason(attempt: CouncilAttempt): string | null {
   const run = attempt.run
@@ -1159,24 +1210,25 @@ export function requestReason(attempt: CouncilAttempt): string | null {
   return name ? tr('room.ui.1302', { p0: name }) : null
 }
 
-/** Кто сейчас в ядре по этой ячейке и кто ждёт — из той же стопки. */
+/** Who is in the kernel for this cell right now and who is waiting — from the same stack. */
 export interface KernelView {
-  /** Попытка ЭТОЙ ячейки, которую ядро считает сейчас. */
+  /** The attempt of THIS cell that the kernel is computing now. */
   running: CouncilAttempt | null
   queued: CouncilAttempt[]
   pending: CouncilAttempt[]
   /**
-   * Ядро ТЕТРАДИ: чем занято и сколько всего ждёт.
+   * The NOTEBOOK's kernel: what it is busy with and how much is waiting in
+   * total.
    *
-   * Из отдельного кадра (`council:kernel`), а не из стопки, и это не удвоение
-   * `running`. Очередь у тетради одна, и держать её может обычная ячейка или
-   * попытка СОСЕДНЕЙ ячейки консилиума — ни того ни другого в стопке этой
-   * ячейки нет. Пока этого поля не было, пульт писал «в этой ячейке сейчас
-   * ничего не выполняется» и «в очереди: 12» одновременно, а кнопку «Прервать»
-   * прятал: она жила внутри ветки `running`.
+   * From a separate frame (`council:kernel`), not from the stack, and it does
+   * not duplicate `running`. The notebook has one queue, and it can be held by
+   * an ordinary cell or by an attempt of a NEIGHBOURING council cell — neither
+   * is in this cell's stack. Before this field existed, the console said "No
+   * code is running in this cell" and "queued: 12" at the same time, and hid
+   * the "Interrupt" button: it lived inside the `running` branch.
    *
-   * `null` — кадра ещё не приходило (старый сервер, пульт только открылся).
-   * Тогда всё читается как раньше, по одной стопке.
+   * `null` — no frame has arrived yet (an old server, the console has just
+   * opened). Then everything reads as before, from the stack alone.
    */
   book: CouncilKernel | null
 }
@@ -1200,54 +1252,59 @@ export function kernelView(
 }
 
 /**
- * Сколько работ ждёт своей очереди — по всей тетради, а не по этой ячейке.
+ * How many jobs are waiting their turn — across the whole notebook, not this
+ * cell.
  *
- * Число из кадра ядра считает всё: обычные ячейки, попытки этой ячейки и
- * попытки соседних. Пока его не было, пульт называл «в очереди» длину своего
- * списка — и преподаватель, читавший там «3», ждал минуту вместо десяти.
- * Кадра ещё нет (старый сервер) — остаётся прежнее число: врать про тетрадь
- * хуже, чем честно сказать про ячейку.
+ * The number from the kernel frame counts everything: ordinary cells, this
+ * cell's attempts and the neighbours' attempts. Before it existed, the console
+ * called the length of its own list "queued" — and a teacher reading "3" there
+ * expected to wait a minute instead of ten. No frame yet (an old server) — the
+ * former number stays: lying about the notebook is worse than honestly
+ * speaking about the cell.
  */
 export function queuedInBook(kernel: KernelView): number {
   return kernel.book?.queued ?? kernel.queued.length
 }
 
 /**
- * Есть ли что прерывать: ядро тетради занято — своей попыткой или чужой работой.
+ * Whether there is anything to interrupt: the notebook's kernel is busy — with
+ * this cell's attempt or with someone else's job.
  *
- * Кнопка «Прервать» рисуется по этому ответу, а не по `running`. Раньше она
- * жила внутри карточки своей попытки, то есть исчезала ровно тогда, когда
- * очередь держала чужая работа, — в единственную минуту, когда она и нужна.
+ * The "Interrupt" button is drawn by this answer, not by `running`. It used to
+ * live inside its own attempt's card, that is, it vanished exactly when the
+ * queue was held by someone else's job — the one minute when it is needed.
  */
 export function kernelIsBusy(kernel: KernelView): boolean {
   return kernel.running !== null || kernel.book?.busy != null
 }
 
-/* ---------------------------------------------------------- регламент */
+/* -------------------------------------------------------------- rules */
 
 /**
- * Четыре правила ячейки — и один порядок на все места, где о них говорят.
+ * The cell's four rules — and one order for every place that talks about them.
  *
- * Порядок не по важности и не по алфавиту, а по ходу занятия: сперва кто
- * вообще запускает, потом сколько длится один запуск, потом когда разрешён
- * повтор, и в конце — что из этого увидит зал. Предложение в шапке, строки
- * листа и подсветка «того правила, ради которого лист открыли» читают его
- * отсюда: разойдясь, они начали бы показывать разное на одно нажатие.
+ * The order is neither by importance nor alphabetical but follows the course
+ * of a class: first who runs at all, then how long one run lasts, then when a
+ * rerun is allowed, and finally what of this the hall will see. The sentence
+ * in the header, the sheet's rows and the highlight of "the rule the sheet was
+ * opened for" read it from here: if they diverged, they would start showing
+ * different things for one press.
  */
 export type PultRule = 'studentRun' | 'runLimit' | 'rerunPause' | 'names'
 export const PULT_RULES: readonly PultRule[] = ['studentRun', 'runLimit', 'rerunPause', 'names']
 
 /**
- * Длительность регламента словами: «30 с», «1 мин», «1 мин 30 с».
+ * A rules duration in words: "30 s", "1 min", "1 min 30 s".
  *
- * Не `spell()` из utils: та говорит о СЛУЧИВШЕМСЯ («считался 4 с») и округляет
- * до секунды, а здесь число — выбранная настройка, и 90 выбирали как «1 мин
- * 30 с», а не как «2 мин». Одна функция на предложение, лист, полосу запуска и
- * строку «Остановлен: дольше 30 с» — иначе предел в одном месте читался бы
- * иначе, чем в другом, и спор был бы о том, какое из двух чисел настоящее.
+ * Not `spell()` from utils: that one speaks of what HAPPENED ("ran 4 s") and
+ * rounds to the second, while here the number is a chosen setting, and 90 was
+ * chosen as "1 min 30 s", not as "2 min". One function for the sentence, the
+ * sheet, the run bar and the line "Stopped: longer than 30 s" — otherwise the
+ * limit would read one way in one place and another way in another, and the
+ * argument would be about which of the two numbers is the real one.
  *
- * Множественного числа в ключах нет намеренно: сокращения «с» и «мин» (s/min)
- * не склоняются ни в одном из двух языков.
+ * There is deliberately no plural in the keys: the abbreviations "с" and
+ * "мин" (s/min) do not inflect in either of the two languages.
  */
 export function pultDuration(seconds: number): string {
   const whole = Math.max(0, Math.round(seconds))
@@ -1259,33 +1316,36 @@ export function pultDuration(seconds: number): string {
     : tr('room.pult.v2.rules.minSec', { count: minutes, sec: rest })
 }
 
-/** Кусок предложения регламента: связка, значение-кнопка и то же значение в узком окне. */
+/**
+ * A piece of the rules sentence: a connective, the value-button and the same
+ * value in a narrow window.
+ */
 export interface RulePart {
   rule: PultRule
-  /** Связка перед значением; в узком окне прячется. */
+  /** The connective before the value; hidden in a narrow window. */
   lead: string
-  /** Значение — по нему и нажимают: оно открывает лист на своём правиле. */
+  /** The value — that is what gets pressed: it opens the sheet on its own rule. */
   value: string
   /**
-   * Чем значение становится, когда связки спрятаны.
+   * What the value becomes when the connectives are hidden.
    *
-   * Совпадает со `value` везде, кроме паузы: «через 30 с» без связки читается
-   * как второй предел запуска, поэтому в узком окне «повтор» переезжает ВНУТРЬ
-   * значения — «повтор через 30 с».
+   * Matches `value` everywhere except the pause: "after 30 s" without its
+   * connective reads as a second run limit, so in a narrow window "rerun"
+   * moves INSIDE the value — "rerun after 30 s".
    */
   short: string
-  /** Единственное жёлтое значение в предложении — запуск без предела. */
+  /** The only yellow value in the sentence — an uncapped run. */
   warn: boolean
 }
 
 /**
- * Регламент одной строкой — предложением, а не списком ручек.
+ * The rules on one line — as a sentence, not a list of knobs.
  *
- * Запускать студенты не могут вовсе — кусок про повтор ИСЧЕЗАЕТ, а не гаснет:
- * пауза между запусками у того, кто не запускает, не означает ничего, и серая
- * «повтор сразу» в предложении — это лишнее слово, которое читают каждый раз.
- * Без предела — единственное жёлтое: очередь на нём встаёт насмерть, и знать
- * об этом надо не открывая лист.
+ * If students cannot run at all, the piece about reruns DISAPPEARS rather
+ * than greying out: a pause between runs means nothing for someone who does
+ * not run, and a grey "rerun right away" in the sentence is an extra word
+ * read every time. Uncapped is the only yellow one: the queue gets stuck dead
+ * on it, and that must be known without opening the sheet.
  */
 export function rulesSentence(settings: CouncilSettings): RulePart[] {
   const parts: RulePart[] = []
@@ -1338,18 +1398,18 @@ export function rulesSentence(settings: CouncilSettings): RulePart[] {
 }
 
 /**
- * Что показать в ряду кнопок: заготовки, а при чужом значении — и его.
+ * What to show in the row of buttons: the presets, and a foreign value too.
  *
- * Сервер принимает любое целое в границах (notebook.ts · COUNCIL_RUN_LIMIT_MAX),
- * и значение могло приехать из другой сборки, из истории или из будущего
- * списка заготовок. Ряд, в котором не нажата ни одна кнопка, читается как
- * «настройка сломана»; поэтому чужое число встаёт своей кнопкой — на своё
- * место по величине, а «без предела» остаётся последним.
+ * The server accepts any integer within bounds (notebook.ts ·
+ * COUNCIL_RUN_LIMIT_MAX), and the value may have come from another build, from
+ * history or from a future list of presets. A row in which no button is
+ * pressed reads as "the setting is broken"; so a foreign number gets a button
+ * of its own — in its place by size, while "uncapped" stays last.
  */
 export function limitOptions(current: number | null): (number | null)[] {
   if (COUNCIL_RUN_LIMITS.includes(current)) return [...COUNCIL_RUN_LIMITS]
   const numbers = COUNCIL_RUN_LIMITS.filter((one): one is number => one !== null)
-  // «Без предела» остаётся последним: это не самое большое число, а его отсутствие.
+  // "Uncapped" stays last: it is not the largest number but its absence.
   return [...[...numbers, current as number].sort((a, b) => a - b), null]
 }
 
@@ -1358,17 +1418,17 @@ export function pauseOptions(current: number): number[] {
   return [...COUNCIL_RERUN_PAUSES, current].sort((a, b) => a - b)
 }
 
-/** Сколько на самом деле считают запуски этой ячейки: медиана, самый долгий и по скольким. */
+/** How long this cell's runs really take: the median, the longest and over how many. */
 export interface RunStats { median: number; max: number; count: number }
 
 /**
- * Числа под выбором предела — чтобы его ставили по классу, а не по страху.
+ * The numbers under the limit picker — so it is set by the class, not by fear.
  *
- * Считается по ЗАКОНЧЕННЫМ запускам: у идущего длительности ещё нет, а у
- * остановленного пределом она не настоящая — там измерен сам предел, и медиана
- * поехала бы вверх ровно от того правила, которое по ней и выбирают (поставили
- * 5 с — «обычно 5 с» — поставили 15 с). Прерванные руки дают `ranMs: null` и
- * сюда тоже не попадают.
+ * Counted over FINISHED runs: a running one has no duration yet, and a run
+ * stopped by the limit has a fake one — what was measured there is the limit
+ * itself, and the median would creep up from exactly the rule that is chosen
+ * by it (set 5 s — "typically 5 s" — set 15 s). Runs interrupted by hand give
+ * `ranMs: null` and do not get here either.
  */
 export function runStats(attempts: readonly CouncilAttempt[]): RunStats | null {
   const spans = attempts
@@ -1387,16 +1447,17 @@ export function runStats(attempts: readonly CouncilAttempt[]): RunStats | null {
 }
 
 /**
- * «Давно ли» — и без «1646 мин 28 с».
+ * "How long ago" — and without "1646 min 28 s".
  *
- * `pultDuration` меряет НАСТРОЙКУ: пределы регламента живут в пределах часа, и
- * «1 мин 30 с» там — ровно то, что выбирали. Здесь мерят возраст: черновик,
- * оставленный вчера, честно старше суток, и минуты в нём не значат ничего.
- * Поэтому разряд один и всегда самый крупный: «7 мин», «3 ч», «2 дн».
+ * `pultDuration` measures a SETTING: the rules' limits live within an hour,
+ * and "1 min 30 s" there is exactly what was chosen. Here age is measured: a
+ * draft left yesterday is honestly older than a day, and the minutes in it
+ * mean nothing. So there is one unit, always the largest: "7 min", "3 h",
+ * "2 d".
  *
- * Меньше минуты не бывает: всё, что этой функцией измеряют, уже перешло свой
- * порог (пять минут молчания, минута с последней правки), и «0 мин» было бы
- * числом, которого не существует.
+ * Less than a minute never happens: everything measured by this function has
+ * already passed its threshold (five minutes of silence, a minute since the
+ * last edit), and "0 min" would be a number that does not exist.
  */
 export function pultIdle(seconds: number): string {
   const whole = Math.max(0, Math.round(seconds))
@@ -1405,7 +1466,7 @@ export function pultIdle(seconds: number): string {
   return tr('room.pult.v3.idle.days', { count: Math.floor(whole / 86_400) })
 }
 
-/** Предел, который остановил этот запуск, — или `null`, если его никто не останавливал. */
+/** The limit that stopped this run — or `null` if nothing stopped it. */
 export function timedOutLimit(attempt: {
   run: Pick<NonNullable<CouncilAttempt['run']>, 'timedOut'> | null
 }): number | null {
@@ -1414,10 +1475,11 @@ export function timedOutLimit(attempt: {
 }
 
 /**
- * «Остановлены сами» — свежие сверху, по началу запуска.
+ * "Stopped by themselves" — newest on top, by run start.
  *
- * По началу, а не по сдаче: секция про то, что случилось с ОЧЕРЕДЬЮ минуту
- * назад, и работа, сданная утром и запущенная сейчас, стоит первой.
+ * By start, not by submission: the section is about what happened to the
+ * QUEUE a minute ago, and a work submitted in the morning and run just now
+ * comes first.
  */
 export function timedOutAttempts(attempts: readonly CouncilAttempt[]): CouncilAttempt[] {
   return attempts
@@ -1428,7 +1490,7 @@ export function timedOutAttempts(attempts: readonly CouncilAttempt[]): CouncilAt
     )
 }
 
-/** Доли полосы «весь класс одной строкой» — по статусам, без округлений. */
+/** The shares of the "whole class on one line" bar — by status, without rounding. */
 export function classBar(
   attempts: readonly CouncilAttempt[],
 ): Record<CouncilStatus | 'writing', number> {

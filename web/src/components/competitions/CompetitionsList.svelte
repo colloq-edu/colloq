@@ -1,11 +1,11 @@
 <script lang="ts">
   /**
-   * P1 — выбор соревнования.
+   * P1 — choosing a competition.
    *
-   * Две секции под общей шапкой: идущие крупно, с кнопкой и своим местом, и
-   * завершённые одной строкой. Разница в размере — это и есть иерархия экрана:
-   * идущее соревнование требует действия сегодня, завершённое — только повод
-   * посмотреть, чем кончилось.
+   * Two sections under a shared header: live ones large, with a button and
+   * your own place, and finished ones as a single line each. The difference
+   * in size is the screen's hierarchy: a live competition needs action today,
+   * a finished one is only a reason to look at how it ended.
    */
   import { tr } from '@shared/i18n'
   import type { EntrantCompetitionRow } from '@shared/competitions-entrant'
@@ -22,7 +22,7 @@
   interface Props {
     rows: EntrantCompetitionRow[]
     now: number
-    /** Кого сейчас спрашивают об имени: slug соревнования или null. */
+    /** Who is being asked for a name right now: the competition's slug or null. */
     joining: string | null
     joinBusy: boolean
     joinRefusal: string | null
@@ -49,9 +49,10 @@
 
   let name = $state('')
   /*
-   * Имя подставляется тем, под которым человек уже вступал: второе
-   * соревнование не должно спрашивать его заново. Ровно один раз и только
-   * пока поле не трогали — иначе эффект затирал бы то, что в нём печатают.
+   * The name is filled in with the one the person already joined under: a
+   * second competition should not ask for it again. Exactly once, and only
+   * while the field is untouched — otherwise the effect would overwrite what
+   * is being typed in it.
    */
   let typed = false
   $effect(() => {
@@ -132,10 +133,11 @@
                   ? '—'
                   : remainingWords(row.competition.deadlineAt - now)}
               </span>
-              <!-- Подпись под числом объясняет ЧИСЛО: «6 дн 3 ч» — «до 27.09,
-                   02:39». Когда срок прошёл, обе строки говорят «приём закрыт», и
-                   подпись остаётся только повтором; вместо неё — дата, когда он
-                   закрылся, потому что на неё и смотрят. -->
+              <!-- The caption under the number explains the NUMBER: "6 d 3 h" —
+                   "until 27.09, 02:39". Once the deadline has passed, both lines
+                   say "submissions closed", and the caption would only repeat
+                   it; instead it shows the date it closed, because that is
+                   what people look at. -->
               <span class="text-micro text-muted">
                 {closed
                   ? tr('competitions.p.finishedAt', { date: dateOf(row.competition.deadlineAt!) })
@@ -187,9 +189,10 @@
         </article>
 
         {#if joining === row.competition.slug}
-          <!-- Имя спрашивается прямо под карточкой: в макете кнопка одна, но
-               без имени человека нечем назвать в лидерборде, а уводить за ним
-               на отдельный экран — терять тех, кто пришёл посмотреть. -->
+          <!-- The name is asked for right under the card: the mockup has one
+               button, but without a name there is nothing to call the person
+               on the leaderboard, and sending them to a separate screen for
+               it means losing those who came just to look. -->
           <form
             class="flex flex-col gap-2 border-b border-line bg-surface p-4"
             onsubmit={(event) => {

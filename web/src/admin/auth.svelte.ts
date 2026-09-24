@@ -29,9 +29,9 @@ class AdminAuth {
   set error(value: string | null) { this.#error = value === null ? null : () => value }
   setError(render: () => string): void { this.#error = render }
   /**
-   * Почему не пустили. 'unclaimed' — не ошибка, а состояние инстанса, и
-   * маршрутизатору важно отличать его от отозванного токена: одно приглашает
-   * заполнить форму, другое надо сказать словами.
+   * Why we were not let in. 'unclaimed' is not an error but a state of the
+   * instance, and the router must tell it apart from a revoked token: one
+   * invites you to fill in a form, the other has to be said in words.
    */
   errorReason = $state<AdminErrorReason | null>(null)
   /**
@@ -43,20 +43,22 @@ class AdminAuth {
 
   #inflight: Promise<void> | null = null
   /**
-   * Вход в этой вкладке уже удавался.
+   * Signing in has already succeeded in this tab.
    *
-   * Нужен, чтобы отличить обычного посетителя без печенья от того, у кого
-   * печенье не сохранилось: 401 у них один и тот же, а сказать им надо разное.
+   * Needed to tell an ordinary visitor without a cookie from someone whose
+   * cookie was not kept: both get the same 401, but they need to be told
+   * different things.
    */
   #signedIn = false
   /**
-   * Что случилось прямо перед этим перечитыванием, если экран это знает.
+   * What happened right before this re-read, if the screen knows.
    *
-   * Экран, получивший 401 на действие, знает больше, чем `#read`: печенье
-   * доехало и его отвергли — ссылку ротировали или человека сняли из штата. Без
-   * этой подсказки все три исхода говорили одно и то же — «браузер не прислал
-   * сессию, разрешите печенья», — и снятый из штата преподаватель шёл в
-   * настройки браузера вместо того, чтобы попросить у владельца новую ссылку.
+   * A screen that got a 401 on an action knows more than `#read` does: the
+   * cookie arrived and was rejected — the link was rotated or the person was
+   * removed from the staff. Without this hint all three outcomes said the same
+   * thing — "the browser did not send a session, allow cookies" — and a
+   * teacher removed from the staff went to the browser settings instead of
+   * asking the owner for a new link.
    */
   #reason: SignedOutReason | null = null
 
@@ -71,8 +73,8 @@ class AdminAuth {
   }
 
   refresh(reason?: SignedOutReason): Promise<void> {
-    // Причина сильнее отсутствия причины: перечитывание, начатое рядовым
-    // экраном, не должно проглотить «вас только что отвергли».
+    // A reason beats the absence of one: a re-read started by an ordinary
+    // screen must not swallow "you were just rejected".
     if (reason) this.#reason = reason
     this.#inflight ??= this.#read().finally(() => {
       this.#inflight = null
@@ -97,20 +99,22 @@ class AdminAuth {
       this.error = null
       this.errorReason = null
       /*
-       * Вход был — и его больше нет. Почему именно, зависит от того, кто
-       * спрашивал.
+       * There was a session — and now there is none. Why exactly depends on
+       * who was asking.
        *
-       * `#readMe` глотает 401 намеренно: посетитель без печенья — обычное дело,
-       * а не отказ. Но если вход в этой вкладке уже удавался или экран пришёл
-       * сюда с 401 на действие, тот же 401 значит, что человека надо
-       * предупредить. Молчать тут нельзя — ключ из адресной строки к этому
-       * моменту уже потрачен, и человек оставался перед формой входа без
-       * единого слова о том, что произошло.
+       * `#readMe` swallows a 401 on purpose: a visitor without a cookie is the
+       * normal case, not a refusal. But if signing in has already succeeded in
+       * this tab, or a screen came here with a 401 on an action, the same 401
+       * means the person has to be warned. Staying silent is not an option —
+       * the key from the address bar has already been spent by now, and the
+       * person was left in front of the sign-in form without a single word
+       * about what happened.
        *
-       * И три случая говорят разное: печенье не доехало (чинится настройками
-       * браузера), печенье отвергли (чинится новой ссылкой у владельца), сам
-       * удалил свой аккаунт (не чинится вовсе). Одно сообщение на всех отправляло
-       * снятого из штата разбираться с cookies.
+       * And the three cases say different things: the cookie did not arrive
+       * (fixed in the browser settings), the cookie was rejected (fixed with a
+       * new link from the owner), the person deleted their own account (not
+       * fixable at all). One message for everyone sent a teacher removed from
+       * the staff off to deal with cookies.
        */
       if (!me && (this.#signedIn || reason !== null)) {
         this.#signedIn = false
@@ -176,19 +180,19 @@ class AdminAuth {
     }
     this.me = null
     this.#signedIn = false
-    // Уход по своей воле — не отказ: причина, оставленная прошлым экраном, не
-    // должна дописаться к «вы вышли».
+    // Leaving of one's own accord is not a refusal: a reason left by the
+    // previous screen must not be appended to "you signed out".
     this.#reason = null
     clearStaffMark()
     this.error = null
     this.errorReason = null
     /*
-     * И забыть токен установки.
+     * And forget the setup token.
      *
-     * Он живёт здесь, чтобы форма первого запуска не просила переписывать
-     * тридцать два символа, — но это ключ владельца, а не черновик. Оставленный
-     * в памяти, он подставлялся в поле входа после «Sign out»: на проекторе, при
-     * полном зале. Свою работу он к этому моменту уже сделал.
+     * It lives here so the first-run form does not ask you to retype thirty-two
+     * characters — but it is the owner's key, not a draft. Left in memory, it
+     * was filled into the sign-in field after "Sign out": on the projector, in
+     * front of a full room. By then it has already done its job.
      */
     this.offeredSetupToken = null
     await this.refresh()
@@ -208,8 +212,8 @@ class AdminAuth {
       this.#signedIn = true
       // The seminar side reads this to know whether to ask the server who you are.
       markStaff()
-      // Токен свою работу сделал — дальше он только лежит в памяти вкладки и
-      // ждёт, когда его подставят в поле входа на общем экране.
+      // The token has done its job — from here on it only sits in the tab's
+      // memory waiting to be filled into the sign-in field on a shared screen.
       this.offeredSetupToken = null
       this.state = await adminApi.state()
       return true
@@ -219,18 +223,20 @@ class AdminAuth {
       this.#error = () => messageFor(cause)
       this.errorReason = cause instanceof AdminApiError ? cause.reason : null
       /*
-       * Состояние инстанса нужно и при отказе.
+       * The instance state is needed on a refusal too.
        *
-       * Ключ из ссылки тратится один раз: адресную строку уже переписали, а
-       * `state` в этой ветке никогда не читался — и экран входа, у которого
-       * весь правый столбец висит на `{#if instance}`, оказывался пустым. Так
-       * выглядел отозванный ключ: белая страница без единого слова.
+       * The key from the link is spent once: the address bar has already been
+       * rewritten, and `state` was never read in this branch — so the sign-in
+       * screen, whose whole right column hangs on `{#if instance}`, came out
+       * empty. That is what a revoked key looked like: a white page without a
+       * single word.
        */
       if (!this.state) {
         try {
           this.state = await adminApi.state()
         } catch {
-          // Сервер недоступен целиком — об этом расскажет ветка ниже на экране.
+          // The server is down entirely — a branch further down the screen
+          // will say so.
         }
       }
       return false

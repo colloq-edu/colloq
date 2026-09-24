@@ -1,17 +1,18 @@
 /**
- * Как заводится комната и что происходит на входе в неё.
+ * How a room is set up and what happens on entering it.
  *
- * Три вещи, которые двери комнаты делали по-разному:
+ * Three things the room's doors did differently:
  *
- *  - `POST /api/sessions` записывал окружение NULL, а NULL для ядра значит
- *    «следуй за инстансом»: следующее «Make default» уводило Python такой
- *    комнаты на другой образ. Панель это состояние отменила и записывает
- *    конкретное имя всегда — а скриптовая дверь жила по старому правилу.
- *  - `/join` грел ядро безусловно, то есть поднимал контейнер комнаты (два
- *    гигабайта, два часа простоя) КАЖДОМУ, кто открыл ссылку на законченный
- *    семинар перечитать разбор.
- *  - имя чистили тремя дословными копиями одной функции, а четвёртая дверь —
- *    импорт — обходилась `trim()`, и в список панели уезжали переводы строк.
+ *  - `POST /api/sessions` wrote the environment as NULL, and to the kernel
+ *    NULL means "follow the instance": the next "Make default" moved such a
+ *    room's Python to another image. The panel abolished this state and always
+ *    writes a concrete name — while the scripting door lived by the old rule.
+ *  - `/join` warmed the kernel unconditionally, that is, it started the room's
+ *    container (two gigabytes, two hours of idling) for EVERYONE who opened a
+ *    link to a finished seminar to reread the walkthrough.
+ *  - the name was cleaned by three verbatim copies of one function, and the
+ *    fourth door — import — made do with `trim()`, so line breaks ended up in
+ *    the panel's list.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -41,8 +42,9 @@ before(async () => {
   cookie = `${STAFF_COOKIE}=${value}`
 
   /*
-   * Приложение целиком (server/src/app.ts), а не свой express рядом: копия
-   * порядка middleware расхождений с продуктом не ловит, она их повторяет.
+   * The whole application (server/src/app.ts), not our own express next to
+   * it: a copy of the middleware order does not catch divergence from the
+   * product, it repeats it.
    */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -55,9 +57,9 @@ after(() => {
   shutdownCollab()
 })
 
-/* ------------------------------------------------------------- окружение */
+/* ----------------------------------------------------------- environment */
 
-test('семинар, заведённый через API, помнит имя окружения, а не «как инстанс»', async () => {
+test('a seminar created through the API remembers the environment name, not "same as the instance"', async () => {
   const res = await fetch(`${base}/api/sessions`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
@@ -66,14 +68,15 @@ test('семинар, заведённый через API, помнит имя �
   assert.equal(res.status, 201)
   const { session } = (await res.json()) as { session: { id: string } }
   /*
-   * NULL здесь означал бы «спрашивать инстанс на каждом старте ядра»: комната
-   * уезжала бы на другой образ при следующей смене умолчания, а панель не
-   * считала бы её среди тех, кто держит окружение от удаления.
+   * NULL here would mean "ask the instance at every kernel start": the room
+   * would move to another image at the next change of the default, and the
+   * panel would not count it among those that keep an environment from being
+   * deleted.
    */
   assert.equal(sessionEnvironment(session.id), activeName())
 })
 
-test('несуществующее окружение — отказ, а не имя образа, которого нет', async () => {
+test('a nonexistent environment is refused, not stored as the name of an image that does not exist', async () => {
   const res = await fetch(`${base}/api/sessions`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
@@ -82,27 +85,27 @@ test('несуществующее окружение — отказ, а не и
   assert.equal(res.status, 400)
 })
 
-/* ------------------------------------------------------------ прогрев ядра */
+/* ---------------------------------------------------------- kernel warm-up */
 
-test('ядро греется живой комнате, а законченной — только преподавателю', () => {
+test('the kernel warms up for a live room, and for a finished one only for the teacher', () => {
   const id = 'warm-finished'
   createSession(id, 'Прошлая пара', 'base')
-  assert.equal(warmsKernel(id, 'participant'), true, 'живая комната не греет ядро')
+  assert.equal(warmsKernel(id, 'participant'), true, 'a live room does not warm up the kernel')
 
   setFinished(id, Date.now())
   assert.equal(
     warmsKernel(id, 'participant'),
     false,
-    'вход в законченный семинар поднял контейнер студенту',
+    'entering a finished seminar started a container for a student',
   )
-  // Преподаватель приходит в законченную комнату, чтобы что-то пересчитать.
+  // A teacher comes into a finished room to recompute something.
   assert.equal(warmsKernel(id, 'host'), true)
 
   setFinished(id, null)
-  assert.equal(warmsKernel(id, 'participant'), true, 'открытая заново комната не греется')
+  assert.equal(warmsKernel(id, 'participant'), true, 'a reopened room does not warm up')
 })
 
-test('архивный семинар ядро тоже не поднимает', async () => {
+test('an archived seminar does not start the kernel either', async () => {
   const id = 'warm-archived'
   createSession(id, 'Прошлый семестр', 'base')
   const res = await fetch(`${base}/api/admin/seminars/${id}`, {
@@ -115,15 +118,15 @@ test('архивный семинар ядро тоже не поднимает'
   assert.equal(warmsKernel(id, 'host'), true)
 })
 
-/* ------------------------------------------------------------------- имена */
+/* ------------------------------------------------------------------- names */
 
-test('перевод строки в имени — пробел, а не разрыв вёрстки', () => {
+test('a line break in a name becomes a space, not a broken layout', () => {
   assert.equal(normalizeLabel('a\nb\tc'), 'a b c')
   assert.equal(normalizeLabel('  Нина   Петрова  '), 'Нина Петрова')
   assert.equal(normalizeLabel(42), '')
 })
 
-test('импорт меряет имя той же меркой, что и остальные три двери', async () => {
+test('import measures a name by the same yardstick as the other three doors', async () => {
   const res = await fetch(`${base}/api/admin/import/notebook`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
@@ -137,7 +140,7 @@ test('импорт меряет имя той же меркой, что и ос�
   assert.equal(getSession(id)?.name, 'Неделя 4 Деревья')
 })
 
-test('комната из API тоже чистит имя', async () => {
+test('a room from the API cleans its name too', async () => {
   const res = await fetch(`${base}/api/sessions`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },

@@ -1,79 +1,90 @@
 #!/usr/bin/env bash
 #
-# Копия занятия на этой машине: база одним файлом и архив со всем, чего в базе
-# нет. Пара к `colloq restore --legacy` (scripts/restore.sh).
+# A backup of the class on this machine: the database as one file and an
+# archive with everything the database does not hold. The counterpart of
+# `colloq restore --legacy` (scripts/restore.sh).
 #
-#   ./scripts/backup-local.sh    снять копию в <состояние>/backups/
-#   colloq backup                у преподавателя это он
-#   make backup-legacy           в репозитории это он же, обёрткой в одну строку
+#   ./scripts/backup-local.sh    take a backup into <state>/backups/
+#   colloq backup                for the teacher, this is it
+#   make backup-legacy           in the repository, the same, as a one-line wrapper
 #
-# Почему отдельным файлом, а не рецептом в Makefile, где он прожил до сих пор.
-# В колесо pip едут приложение и scripts/ — Makefile не едет и не поедет
-# (scripts/pack.mts · SCRIPTS), а `colloq backup` у поставленного colloq звал
-# make и умирал на «command not found» — на той единственной команде, которой
-# преподаватель уносит семестр с машины. То же самое и по той же причине уже
-# сделано с restore-legacy и с host: одно описание, один файл.
+# Why a separate file and not a recipe in the Makefile, where it has lived until
+# now. The pip wheel carries the application and scripts/; the Makefile is not
+# carried and will not be (scripts/pack.mts · SCRIPTS), and `colloq backup` in
+# an installed colloq called make and died on "command not found", on the one
+# command with which the teacher carries the semester off the machine. The same
+# has already been done, for the same reason, with restore-legacy and with host:
+# one description, one file.
 #
-# ----------------------------------------------------------------- два корня
+# ---------------------------------------------------------------- two roots
 #
-# Каталог ПРИЛОЖЕНИЯ — тот, что над scripts/: web/dist, kernel/, эти скрипты.
-# Он приезжает с пакетом и сносится целиком следующим `pip install -U`.
-# Каталог СОСТОЯНИЯ — .env, data/, workspace/, свои окружения, backups/ — живёт
-# отдельно (~/.colloq или COLLOQ_HOME) и обновления переживает.
+# The APPLICATION directory is the one above scripts/: web/dist, kernel/, these
+# scripts. It arrives with the package and is wiped entirely by the next
+# `pip install -U`. The STATE directory (.env, data/, workspace/, own
+# environments, backups/) lives separately (~/.colloq or COLLOQ_HOME) and
+# survives updates.
 #
-# Копия снимается ЦЕЛИКОМ с состояния, и адрес его здесь не вычисляется: его
-# знает scripts/lib.sh (COLLOQ_STATE_ROOT), второго ответа на один вопрос быть
-# не должно. В репозитории оба корня — один и тот же каталог, и там не сдвинулся
-# ни один путь.
+# The backup is taken ENTIRELY from the state, and its address is not computed
+# here: scripts/lib.sh knows it (COLLOQ_STATE_ROOT), and there must not be a
+# second answer to one question. In the repository both roots are the same
+# directory, and not a single path moved there.
 #
-# Имена в архиве — тоже от корня состояния: развернуть его надо будет там же.
+# Names in the archive are also relative to the state root: that is where it
+# will have to be unpacked.
 #
-# ------------------------------------------------------------ что и почему
+# ------------------------------------------------------------ what and why
 #
-# Копия ЗДЕШНЕГО инстанса, и кладётся она в корень backups/. У среды на
-# арендованной машине есть имя и свой подкаталог (backups/demo/ — туда пишет
-# make vast-sync), а у этой машины имени нет: корень и есть её место. Так корень
-# и подкаталоги не мешают друг другу — «последняя копия» одной среды никогда не
-# окажется копией другой.
+# A backup of THIS instance, and it goes into the root of backups/. An
+# environment on a rented machine has a name and its own subdirectory
+# (backups/demo/, which make vast-sync writes to), while this machine has no
+# name: the root is its place. That way the root and the subdirectories stay out
+# of each other's way: the "latest backup" of one environment will never turn
+# out to be a backup of another.
 #
-# VACUUM INTO читает согласованный снимок и пишет один готовый файл. Копия
-# самого colloq.db этого не даёт: в режиме WAL половина дня лежит в журнале
-# рядом, и файл, скопированный на ходу, отстаёт на часы. Проверено.
+# VACUUM INTO reads a consistent snapshot and writes one finished file. A copy
+# of colloq.db itself does not give that: in WAL mode half a day lies in the
+# journal next to it, and a file copied on the fly lags by hours. Verified.
 #
-# Вторым файлом рядом — архив со всем, чего в базе нет: workspace (то, что
-# загрузили в комнаты), файлы соревнований, wheel-наборы, ключ подписи и токен
-# установки. Раньше README звал копировать папку руками, и это был ровно тот шаг, который пропускают: база
-# без workspace — это тетради со ссылками на файлы, которых больше нет, а база
-# без ключа подписи — инстанс, где все выданные ссылки мертвы. На арендованной
-# машине, которую уничтожают после пары, цена такой забывчивости — весь семестр
-# разом.
+# The second file next to it is an archive with everything the database does
+# not hold: workspace (what was uploaded into the rooms), competition files,
+# wheel sets, the signing key and the installation token. The README used to
+# tell people to copy the folder by hand, and that was exactly the step that
+# gets skipped: a database without workspace is notebooks with links to files
+# that no longer exist, and a database without the signing key is an instance
+# where every link handed out is dead. On a rented machine that is destroyed
+# after the class, the price of such forgetfulness is the whole semester at
+# once.
 #
-# Оба файла 0600 и не «файлы занятия»: в них лежат ключи от инстанса.
+# Both files are 0600 and are not "class files": they hold the keys to the
+# instance.
 #
-# В базе — сами занятия, преподаватели, история версий и настройки оракула.
-# Слои Docker-образов не копируются. Закреплённый image ID в базе — ссылка,
-# а не содержимое образа: для воспроизводимости старых посылок сохраните сами
-# образы в registry либо отдельно через docker image save/load. Пересборка
-# списка пакетов не гарантирует прежний image ID или состав окружения.
+# The database holds the classes themselves, the teachers, the version history
+# and the Oracle settings. Docker image layers are not copied. A pinned image ID
+# in the database is a reference, not the image content: to reproduce old
+# submissions, keep the images themselves in a registry or separately via
+# docker image save/load. Rebuilding the package list does not guarantee the
+# previous image ID or environment contents.
 #
-# ------------------------------------------------------- списки окружений
+# ------------------------------------------------------- environment lists
 #
-# Каталогов со списками пакетов на машине ДВА, и в копию идёт только второй:
+# There are TWO directories with package lists on the machine, and only the
+# second goes into the backup:
 #
-#   <приложение>/kernel/environments   привезённые с продуктом (base, cv, gpu).
-#       Копировать нечего: они приедут снова с любой установкой пакета.
-#   <состояние>/environments           заведённые человеком. Вот их и нет
-#       больше нигде — разбор, почему каталог отдельный, у ownEnvDir в
-#       cli/src/env.ts.
+#   <application>/kernel/environments   shipped with the product (base, cv, gpu).
+#       Nothing to copy: they come again with any installation of the package.
+#   <state>/environments                created by a person. These exist
+#       nowhere else; why the directory is separate is worked through at
+#       ownEnvDir in cli/src/env.ts.
 #
-# В репозитории это ОДИН каталог, kernel/environments, и в архив он идёт
-# целиком — ровно как раньше.
+# In the repository it is ONE directory, kernel/environments, and it goes into
+# the archive whole, exactly as before.
 #
-# Почему списки вообще в копии: их правят и заводят из панели прямо на той
-# машине, где идут занятия (окно «Окружения» пишет <имя>.txt на хосте), и взять
-# их больше неоткуда — в репозитории лежат только те, что приехали с ноутбука.
-# Образы по ним пересобираются одной командой, а штампы `.<имя>.built` остаются
-# машине: они про её образ, а не про список.
+# Why the lists are in the backup at all: they are edited and created from the
+# panel right on the machine where the classes run (the "Environments" window
+# writes <name>.txt on the host), and there is nowhere else to take them from:
+# the repository holds only those that came from the laptop. Images are rebuilt
+# from them with one command, while the `.<name>.built` stamps stay with the
+# machine: they are about its image, not about the list.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -82,30 +93,31 @@ RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; OFF=$'\033[0m'
 say() { printf '%s\n' "$*"; }
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
-# Корень состояния — общий ответ на всех: scripts/lib.sh, тот же, что у host.sh
-# и restore.sh.
+# The state root is one shared answer for everyone: scripts/lib.sh, the same as
+# for host.sh and restore.sh.
 . ./scripts/lib.sh
 
 APP="$PWD"
 STATE="$(cd "$COLLOQ_STATE_ROOT" 2>/dev/null && pwd || true)"
-# Скобки у имени обязательны: следом идёт «»», а его первый байт bash считает
-# частью имени переменной и падает на «unbound variable» вместо отказа по делу.
-# Тем же приёмом и по той же причине пишет restore.sh.
+# The braces around the name are required: it is followed by a "»", and bash
+# takes its first byte for part of the variable name and fails on "unbound
+# variable" instead of refusing for the actual reason. restore.sh writes it with
+# the same trick for the same reason.
 [ -n "$STATE" ] || die "no state directory \"${COLLOQ_STATE_ROOT}\" — check COLLOQ_HOME."
 
-# Свои окружения: в репозитории прежний kernel/environments, у поставленного
-# пакета — <состояние>/environments (см. шапку).
+# Own environments: the former kernel/environments in the repository,
+# <state>/environments for an installed package (see the header).
 if [ "$STATE" = "$APP" ]; then ENV_LISTS=kernel/environments; else ENV_LISTS=environments; fi
 
-# Дальше всё считается от корня состояния — как раньше считалось от корня
-# репозитория. Один переход вместо префикса в каждой строке: и имена в архиве
-# получаются относительными сами собой.
+# From here on everything is counted from the state root, the way it used to be
+# counted from the repository root. One change of directory instead of a prefix
+# on every line: the names in the archive also come out relative on their own.
 cd "$STATE"
 
-# Без базы копировать нечего, и сказать об этом надо вслух. VACUUM INTO над
-# несуществующим файлом молча заводит пустую базу и так же молча пишет пустую
-# «копию» — у поставленного colloq с разъехавшимися корнями это выглядело бы
-# как удачная копия пустого места.
+# Without the database there is nothing to back up, and that has to be said out
+# loud. VACUUM INTO over a nonexistent file silently creates an empty database
+# and just as silently writes an empty "backup": for an installed colloq with
+# its roots out of step, this would look like a successful backup of nothing.
 [ -f data/colloq.db ] || die "no data/colloq.db in $STATE — there is nothing to back up.
   This is the directory that holds the .env of the class; for an installed colloq
   its address is COLLOQ_HOME."
@@ -115,22 +127,23 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 out="backups/colloq-$stamp.db"
 files="backups/colloq-$stamp-files.tar.gz"
 
-# Как назвать копию человеку. В репозитории — как и раньше, от корня: `backups/…`
-# и есть путь от того каталога, в котором стоит человек. У поставленного colloq
-# состояние лежит в ~/.colloq, а человек стоит где угодно, и относительное имя
-# указывало бы на несуществующий backups/ рядом с ним — в том числе в подсказке
-# «развернуть обратно», которую копируют целиком.
+# How to name the backup to a person. In the repository, as before, from the
+# root: `backups/…` is the path from the directory the person stands in. For an
+# installed colloq the state lies in ~/.colloq, while the person stands
+# anywhere, and a relative name would point to a nonexistent backups/ next to
+# them, including in the "restore it back" hint, which gets copied whole.
 if [ "$STATE" = "$APP" ]; then SHOW=""; else SHOW="$STATE/"; fi
 
-# Путь уходит внутрь строки SQL, а приходит он теперь снаружи (COLLOQ_HOME):
-# одиночная кавычка в имени домашнего каталога закрыла бы строку посреди пути.
-# В SQL её удваивают.
+# The path goes inside an SQL string, and it now comes from outside
+# (COLLOQ_HOME): a single quote in the name of the home directory would close
+# the string in the middle of the path. In SQL it is doubled.
 sql_out="$PWD/$out"
 sqlite3 data/colloq.db "VACUUM INTO '${sql_out//\'/\'\'}'" \
   || die "did not work. sqlite3 is needed — brew install sqlite"
-# Копия базы такая же секретная, как сама база: в ней ключи входа для
-# преподавателей и ключ оракула, если его задавали в панели. VACUUM INTO
-# создаёт файл с обычными правами, поэтому 0600 ставим сами.
+# A copy of the database is as secret as the database itself: it holds the
+# sign-in keys for teachers and the Oracle key, if it was set in the panel.
+# VACUUM INTO creates the file with ordinary permissions, so we set 0600
+# ourselves.
 chmod 600 "$out"
 printf '%sbackup:%s %s %s(%s)%s\n' "$BOLD" "$OFF" "$SHOW$out" "$DIM" "$(du -h "$out" | cut -f1)" "$OFF"
 
@@ -140,26 +153,27 @@ for p in workspace data/competitions data/dependencies data/session-secret data/
   if [ -e "$p" ]; then set -- "$@" "$p"; fi
 done
 if [ $# -gt 0 ]; then
-  # Код tar разбирается, а не глотается: `set -e` иначе уронил бы скрипт на
-  # единице, которая здесь — не отказ (см. ниже).
+  # The tar exit code is examined, not swallowed: otherwise `set -e` would drop
+  # the script on a 1, which here is not a failure (see below).
   code=0
   tar -czf "$files" "$@" || code=$?
   chmod 600 "$files" 2>/dev/null || true
   [ "$code" -le 1 ] || die "could not take the class files — the backup is incomplete"
-  # Код 1 у tar это «файл менялся, пока его читали»: на ходу занятие пишет в
-  # workspace, и это нормально. Архив при этом годен, но об одном-двух файлах в
-  # нём знать стоит.
+  # Exit code 1 from tar means "a file changed while it was being read": a
+  # running class writes into workspace, and that is normal. The archive is
+  # still usable, but one or two files in it are worth knowing about.
   if [ "$code" -eq 1 ]; then
     say "${DIM}some files changed while they were being copied — a class is running${OFF}"
   fi
   printf '%sfiles:%s  %s %s(%s)%s\n' "$BOLD" "$OFF" "$SHOW$files" "$DIM" "$(du -h "$files" | cut -f1)" "$OFF"
-  # Оба файла названы в одной строке нарочно: разворачивать их надо парой, а
-  # искать вторую по имени первой человеку незачем.
+  # Both files are named in one line on purpose: they have to be restored as a
+  # pair, and a person has no reason to hunt for the second by the name of the
+  # first.
   back="$back --files $SHOW$files"
 fi
 
-# Куда идти обратно. Прежняя подсказка звала `make restore`, а эта цель давно
-# про переносимую копию k3s и на паре файлов отвечает «ARCHIVE is required»;
-# make к тому же есть не у всех, кто эту копию снял. Пути — от корня состояния,
-# то есть от того каталога, в котором они и лежат.
+# Where to go back. The previous hint called `make restore`, and that target has
+# long been about the portable k3s backup and answers "ARCHIVE is required" to a
+# pair of files; besides, not everyone who took this backup has make. The paths
+# are from the state root, that is, from the directory where they actually lie.
 say "${DIM}restore it back: $back${OFF}"

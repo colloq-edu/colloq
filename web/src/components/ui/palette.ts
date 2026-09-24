@@ -1,39 +1,40 @@
 /**
- * Строка палитры команд и правило, по которому её находят.
+ * A command palette row and the rule by which rows are found.
  *
- * Отдельно от компонента, потому что ломается молча именно отбор: человек
- * печатает «03 imp», ждёт третью ячейку с импортами — и не получает ничего,
- * если слова ищутся одной подстрокой; или получает её восьмой, если «Run all»
- * не оказывается выше «Остановить выполнение» на запросе «run». Ни то ни другое
- * не видно ни в одном типе.
+ * Kept apart from the component because the part that breaks silently is
+ * precisely the filtering: a person types "03 imp", expects the third cell with
+ * the imports — and gets nothing if the words are searched as one substring; or
+ * gets it eighth if "Run all" does not end up above "Stop execution" for the
+ * query "run". Neither shows up in any type.
  */
 
 export interface PaletteItem {
-  /** Уникальный ключ строки. */
+  /** Unique key of the row. */
   id: string
-  /** Раздел: «Ячейки», «Файлы», «Комната». Рисуется заголовком группы. */
+  /** Section: "Cells", "Files", "Room". Drawn as the group heading. */
   group: string
-  /** Что человек читает. */
+  /** What the person reads. */
   label: string
-  /** Правая колонка: номер ячейки, сочетание клавиш, состояние. */
+  /** Right column: cell number, key shortcut, state. */
   hint?: string
-  /** Слова, по которым строка ищется помимо `label`. */
+  /** Words the row can be found by, besides `label`. */
   keywords?: string
   run: () => void
 }
 
 /**
- * Отбор — по словам, а не по одной подстроке.
+ * Filtering is by words, not by a single substring.
  *
- * Человек печатает то, что помнит, и помнит обрывками: «03 imp», «файл mod»,
- * «оракул». Каждое слово должно найтись где-нибудь в строке — в подписи,
- * подсказке, ключевых словах или названии раздела, — а порядок слов значения не
- * имеет.
+ * A person types what they remember, and they remember it in fragments: "03
+ * imp", "file mod", "oracle". Every word has to be found somewhere in the row —
+ * in the label, the hint, the keywords or the section name — and word order
+ * does not matter.
  *
- * Порядок ответа: сперва те, чья подпись НАЧИНАЕТСЯ с первого слова, потом те,
- * где оно внутри подписи, потом остальные (нашлись по подсказке или разделу).
- * Внутри разряда — исходный порядок: он смысловой (ячейки идут по тетради,
- * действия — по важности), и пересортировывать его нечем.
+ * Order of the result: first those whose label STARTS with the first word, then
+ * those where it is inside the label, then the rest (found by the hint or the
+ * section). Within a rank, the original order: it carries meaning (cells follow
+ * the notebook, actions follow importance), and there is nothing to re-sort it
+ * by.
  */
 export function matchItems(items: readonly PaletteItem[], query: string): PaletteItem[] {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
@@ -51,10 +52,10 @@ export function matchItems(items: readonly PaletteItem[], query: string): Palett
 }
 
 /**
- * Заголовок раздела — только там, где раздел сменился.
+ * A section heading — only where the section changes.
  *
- * После отбора группы перемешиваются, и печатать «Ячейки» над каждой строкой
- * значит нарисовать список, в котором вдвое больше заголовков, чем строк.
+ * After filtering, the groups get mixed up, and printing "Cells" above every
+ * row would mean drawing a list with twice as many headings as rows.
  */
 export function groupHeads(items: readonly PaletteItem[]): (string | null)[] {
   let last: string | null = null

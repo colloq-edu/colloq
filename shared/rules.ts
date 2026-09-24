@@ -23,10 +23,11 @@
  */
 
 /*
- * Единственный импорт этого файла — линейка потолков оракула, и она та же, что
- * у настроек инстанса: два числа, которые комната ужесточает, обязаны мериться
- * тем же, чем их мерит инстанс, иначе комната сможет попросить то, чего инстанс
- * не умеет. Обратной стрелки нет: shared/admin.ts берёт отсюда только тип.
+ * The only import of this file is the ruler of oracle ceilings, and it is the
+ * same one the instance settings use: two numbers the room tightens must be
+ * measured by the same yardstick the instance measures them by, otherwise a
+ * room could ask for something the instance cannot do. There is no reverse
+ * arrow: shared/admin.ts takes only a type from here.
  */
 import { LIMITS } from './admin.js'
 
@@ -34,129 +35,143 @@ import { LIMITS } from './admin.js'
 export type Who = 'room' | 'host'
 
 /**
- * Кто запускает — и сколько сразу.
+ * Who runs, and how much at once.
  *
- * `single` — это лаборатория, где считают все, но ядро одно: каждый держит в
- * очереди не больше одной своей ячейки, а Run All и Run Above остаются
- * преподавателю. Без этой середины выбор был между «двадцать человек забивают
- * очередь на сорок ячеек» и «никто, кроме меня».
+ * `single` is the lab where everyone computes but the kernel is one: each
+ * person keeps no more than one of their own cells in the queue, and Run All
+ * and Run Above stay with the teacher. Without this middle ground the choice
+ * was between "twenty people fill the queue with forty cells" and "nobody
+ * but me".
  *
- * Запускают не только ячейки: тем же правилом закрыты скрипт из дерева
- * (`file:run`) и команда в общей оболочке (`term:run`) — оба по мерке одной
- * ячейки, так что `host` их закрывает, а `single` пускает. Почему у терминала
- * нет своего правила — у поля RoomRules.run ниже.
+ * Not only cells are run: the same rule covers a script from the tree
+ * (`file:run`) and a command in the shared shell (`term:run`), both measured
+ * as one cell, so `host` closes them and `single` lets them through. Why the
+ * terminal has no rule of its own is explained at the RoomRules.run field
+ * below.
  */
 export type RunWho = 'room' | 'single' | 'host'
 
 /**
- * Кто меняет состав тетради.
+ * Who changes the notebook's structure.
  *
- * `add` — заготовленный листок: дописать своё можно, а убирать и переставлять
- * может только преподаватель. Именно так, а не «чужое нельзя»: правило автора
- * не знает, и участник не уберёт даже ту ячейку, которую сам только что завёл.
- * Слова те же, что в панели (web/src/lib/rule-rows.ts) и в отказе. Это самый
- * частый вид семинара, и до сих пор для него не было значения: приходилось
- * выбирать между «правят все» и «структура моя».
+ * `add` is a prepared worksheet: you may add your own, but only the teacher
+ * may remove and rearrange. Exactly that, and not "you can't touch other
+ * people's": the rule does not know the author, and a participant cannot
+ * remove even the cell they have just created themselves. The words are the
+ * same as in the panel (web/src/lib/rule-rows.ts) and in the refusal. This is
+ * the most common kind of seminar, and until now it had no value of its own:
+ * one had to choose between "everyone edits" and "the structure is mine".
  */
 export type StructureWho = 'room' | 'add' | 'host'
 
-/* --------------------------------------------------- доступ к ОДНОЙ тетради */
+/* --------------------------------------------------- access to ONE notebook */
 
 /**
- * Кто работает в ОТДЕЛЬНОЙ тетради комнаты.
+ * Who works in a SEPARATE notebook of the room.
  *
- * Тетрадей в комнате несколько (shared/notebook.ts · Book), и правила до сих
- * пор были одни на все. Это ломалось на самом частом жесте пары: студент
- * заводит себе копию разбора, чтобы попробовать своё, — а комната лекционная, и
- * в своей же тетради он печатать не может. Обратное так же неверно: открыть
- * `edit: 'room'` ради одного человека значит открыть заодно тетрадь, по которой
- * идёт лекция.
+ * A room has several notebooks (shared/notebook.ts · Book), and until now
+ * the rules were the same for all of them. That broke on the most common
+ * gesture of a class: a student makes themselves a copy of the walkthrough
+ * to try their own thing, but the room is a lecture, and they cannot type
+ * even in their own notebook. The reverse is just as wrong: opening
+ * `edit: 'room'` for one person also opens the notebook the lecture is
+ * running in.
  *
- *   room  — как в комнате. Умолчание для тетрадей, заведённых преподавателем,
- *           включая первую, и ровно сегодняшнее поведение: правила комнаты как
- *           были.
- *   owner — личная: печатают, меняют состав и запускают в ней автор и
- *           преподаватель, остальные смотрят. Своя тетрадь студента получает
- *           это сразу, как только её завели (`ownBooks` ниже).
- *   all   — открыта всем: печатает, меняет состав и запускает любой, что бы ни
- *           говорили правила комнаты.
- *   host  — только преподаватель, при любых правилах комнаты.
+ *   room  — as in the room. The default for notebooks created by the
+ *           teacher, including the first one, and exactly today's
+ *           behaviour: the room's rules as they were.
+ *   owner — personal: the author and the teacher type, change the structure
+ *           and run in it, the others watch. A student's own notebook gets
+ *           this as soon as it is created (`ownBooks` below).
+ *   all   — open to everyone: anyone types, changes the structure and runs,
+ *           whatever the room's rules say.
+ *   host  — the teacher only, under any room rules.
  *
- * Перекрываются РОВНО три правила — `run`, `edit`, `structure` — и всё, что от
- * них производно (форматирование, «принять» у оракула, очистка вывода своей
- * ячейки, перестановка, Run All и Run Above в этой тетради). Остальные правила
- * общие для комнаты и тетрадью не трогаются: ядро, терминал, доска, файлы,
- * история и оракул в комнате одни, и говорить про них «в этой тетради» нечего.
+ * EXACTLY three rules are overridden, `run`, `edit` and `structure`, plus
+ * everything derived from them (formatting, "accept" for the oracle,
+ * clearing the output of one's own cell, moving cells, Run All and Run Above
+ * in this notebook). The other rules are shared by the room and are not
+ * touched by a notebook: the kernel, terminal, board, files, history and
+ * oracle are one per room, and there is nothing to say about them "in this
+ * notebook".
  */
 export type BookAccess = 'room' | 'owner' | 'all' | 'host'
 
 /**
- * Что комната помнит про одну тетрадь.
+ * What the room remembers about one notebook.
  *
- * Ключ карты — КОРЕНЬ тетради в документе, а не путь: путь — это адрес, его
- * переименовывают и освобождают, а корень выдаётся один раз и живёт с тетрадью
- * (shared/notebook.ts · rootForNewBook). Поэтому «личная тетрадь Акима»
- * переживает переименование файла и не достаётся новому файлу с тем же именем.
+ * The map key is the notebook's ROOT in the document, not its path: a path
+ * is an address, it gets renamed and freed, while a root is issued once and
+ * lives with the notebook (shared/notebook.ts · rootForNewBook). That is why
+ * "Akim's personal notebook" survives a file rename and does not pass to a
+ * new file with the same name.
  *
- * `owner` — participantId того, кто завёл тетрадь, если это был не
- * преподаватель; `ownerName` — его имя НА ТОТ МОМЕНТ. Имя лежит рядом, а не
- * ищется в списке участников: тетрадь переживает семестр, а участника из базы
- * могли и убрать, и тогда «личная тетрадь: —» ничего не объясняет.
+ * `owner` is the participantId of whoever created the notebook, if it was
+ * not the teacher; `ownerName` is their name AT THAT MOMENT. The name is kept
+ * alongside instead of being looked up in the participant list: a notebook
+ * outlives a semester, the participant may have been removed from the
+ * database, and then "personal notebook: —" explains nothing.
  *
- * Запись живёт и при `access: 'room'` — и это не мусор, а то, ради чего она
- * пишется сразу: преподаватель, решивший сделать тетрадь личной, должен иметь в
- * меню имя автора, а не выяснять его задним числом.
+ * The record lives even with `access: 'room'`, and that is not garbage but
+ * the very reason it is written right away: a teacher who decides to make
+ * the notebook personal must have the author's name in the menu rather than
+ * find it out after the fact.
  */
 export interface BookRule {
   access: BookAccess
-  /** participantId автора; `null` — тетрадь завёл преподаватель или автор неизвестен. */
+  /** Author's participantId; `null` if the teacher created it or the author is unknown. */
   owner: string | null
-  /** Имя автора на момент заведения тетради. */
+  /** The author's name at the time the notebook was created. */
   ownerName: string | null
 }
 
 /**
- * Сколько тетрадей комната помнит и сколько знаков хранит в имени автора.
+ * How many notebooks a room remembers, and how many characters of the
+ * author's name it keeps.
  *
- * Потолок здесь — последняя сетка, а не рабочая граница: правила едут в каждый
- * сокет комнаты кадром `rules` и лежат строкой в базе, и карта, выросшая от
- * ошибки или от руки в базе, не должна стоить комнате мегабайта на каждом
- * входе. Настоящую границу держит `MAX_OWN_BOOKS` ниже — по человеку, с
- * внятным отказом, а не молча.
+ * The ceiling here is the last safety net, not the working limit: rules
+ * travel to every socket of the room in a `rules` frame and sit as a string
+ * in the database, and a map grown by a bug or by hand in the database must
+ * not cost the room a megabyte on every entry. The real limit is held by
+ * `MAX_OWN_BOOKS` below: per person, with a clear refusal, not silently.
  *
- * Пятьсот, а не двести: двести упиралось бы в потоке, где полторы сотни человек
- * завели себе по паре тетрадей, — а упирается это МОЛЧА и в дурную сторону,
- * потому что лишняя запись при чтении просто исчезает, и вместе с ней исчезает
- * чья-то личная тетрадь. Восемьдесят знаков — мерка имени участника.
+ * Five hundred, not two hundred: two hundred would be hit in a cohort where
+ * a hundred and fifty people each created a couple of notebooks, and it is
+ * hit SILENTLY and in the bad direction, because an extra record simply
+ * vanishes on read, and someone's personal notebook vanishes with it.
+ * Eighty characters is the measure of a participant's name.
  *
- * Лишнее не отказывается, а отбрасывается при чтении: правила читаются тотально
- * (см. `readRules`), и упасть на них нельзя.
+ * The excess is not refused but dropped on read: rules are read totally
+ * (see `readRules`), and nothing may fail on them.
  */
 export const MAX_BOOK_RULES = 500
 export const MAX_BOOK_OWNER_NAME = 80
 
 /**
- * Сколько СВОИХ тетрадей студент заводит в одной комнате.
+ * How many notebooks OF THEIR OWN a student creates in one room.
  *
- * Три — это «нынешняя, прошлая и черновик», то есть всё, ради чего своя тетрадь
- * нужна на паре. Потолок нужен потому, что тетрадь стоит дорого и навсегда:
- * корень остаётся в документе комнаты, даже когда файл убрали (см. шапку
- * раздела «тетради» в shared/notebook.ts), и двадцать человек по сорок тетрадей
- * — это снимок, который не уменьшается до конца семестра.
+ * Three is "the current one, the previous one and a draft", that is,
+ * everything one's own notebook is needed for in a class. A ceiling is
+ * needed because a notebook is expensive and permanent: the root stays in
+ * the room document even when the file is removed (see the header of the
+ * "notebooks" section in shared/notebook.ts), and twenty people with forty
+ * notebooks each make a snapshot that does not shrink until the end of the
+ * semester.
  *
- * Считаются только живые: удалил свою — завёл новую.
+ * Only live ones count: delete yours, create a new one.
  */
 export const MAX_OWN_BOOKS = 3
-/** Корень тетради — `cells` или `nb:<id>`; длиннее ста двадцати восьми он не бывает. */
+/** A notebook root is `cells` or `nb:<id>`; it is never longer than 128 characters. */
 const MAX_BOOK_ROOT = 128
 const MAX_BOOK_OWNER_ID = 128
 
 /**
- * Фразы, которыми отказывает САМА ТЕТРАДЬ, а не комната.
+ * Phrases with which the NOTEBOOK ITSELF refuses, not the room.
  *
- * Ключами, а не строками, по тому же доводу, что и `CLASS_IS_OVER`: этот файл
- * не знает про i18n и не должен — его зовёт и гейт на каждый кадр, и браузер.
- * Складывает их с именем автора тот, кто говорит с человеком.
+ * Keys rather than strings, for the same reason as `CLASS_IS_OVER`: this
+ * file does not know about i18n and must not; it is called both by the gate
+ * on every frame and by the browser. Whoever talks to the person combines
+ * them with the author's name.
  */
 export const BOOK_IS_PERSONAL = 'server.bookIsPersonal'
 export const BOOK_IS_THE_TEACHERS = 'server.bookIsTheTeachers'
@@ -169,17 +184,18 @@ export interface RoomRules {
    * runAbove. The kernel is one process shared by everyone, so this is also the
    * only protection a lecture has against twenty people queueing the same cell.
    *
-   * И не только ячейки: этим же правилом закрыты `file:run` — запустить скрипт
-   * из дерева — и `term:run` — команда в общей оболочке. Иначе «запускать может
-   * преподаватель» было бы не границей, а подсказкой: тот же контейнер, та же
-   * папка, только вход другой. Отдельного правила у терминала нет намеренно —
-   * ящик открывает не право на него, а право запускать.
+   * And not only cells: the same rule covers `file:run` (running a script
+   * from the tree) and `term:run` (a command in the shared shell). Otherwise
+   * "the teacher may run" would be not a boundary but a hint: the same
+   * container, the same folder, just a different door. The terminal has no
+   * rule of its own on purpose: the drawer is opened not by a right to it
+   * but by the right to run.
    *
-   * Одна связка, о которой стоит помнить и которая напечатана в панели:
-   * `run: 'host'` без `edit: 'host'` — не граница. Ядро читает исходник ячейки
-   * в тот момент, когда до неё доходит очередь, а не когда нажали Run, так что
-   * студент, которому запускать нельзя, всё равно пишет тот Python, который
-   * выполнит преподавательский Run — в том же контейнере.
+   * One combination worth remembering, and it is printed in the panel:
+   * `run: 'host'` without `edit: 'host'` is not a boundary. The kernel reads
+   * a cell's source at the moment the queue reaches it, not when Run was
+   * pressed, so a student who may not run still writes the Python that the
+   * teacher's Run will execute, in the same container.
    */
   run: RunWho
 
@@ -188,13 +204,14 @@ export interface RoomRules {
    * or a note.
    *
    * Enforced in server/src/collab/gate.ts, called from collab/index.ts before
-   * the update is applied. Обещание здесь такое же, как у `run`: «этого не
-   * произошло», а не «произошло и мы отменили». Отменять в CRDT нельзя:
-   * откат удаления не воскрешает ячейку, а создаёт новую, и все, у кого старая
-   * открыта, печатают в надгробие — без ошибки и без единого события.
+   * the update is applied. The promise here is the same as for `run`: "this
+   * did not happen", not "it happened and we undid it". Undoing is not
+   * possible in a CRDT: rolling back a deletion does not resurrect the cell
+   * but creates a new one, and everyone who has the old one open types into
+   * a tombstone, with no error and not a single event.
    *
-   * Сюда же входят две кнопки, которые переписывают ячейки, надев другое лицо:
-   * форматирование и «принять» у предложения оракула.
+   * This also covers two buttons that rewrite cells wearing another face:
+   * formatting and "accept" on an oracle suggestion.
    */
   edit: Who
 
@@ -202,76 +219,79 @@ export interface RoomRules {
    * Who may add, delete and reorder cells.
    *
    * Enforced in server/src/collab/gate.ts for add and delete, and in
-   * control.ts for the move — перестановка уехала на сервер, потому что она
-   * пересоздаёт ячейку вместе с выводом, а вывод клиент писать не вправе.
+   * control.ts for the move — moving went to the server because it recreates
+   * the cell together with its output, and the client is not allowed to
+   * write output.
    *
-   * Отдельно от `edit`, потому что в семинаре это разные вещи: класс, который
-   * заполняет заготовленный листок, но не перекраивает его, — самый частый
-   * случай, и у него теперь есть своё значение `add`.
+   * Separate from `edit`, because in a seminar these are different things: a
+   * class that fills in a prepared worksheet but does not reshape it is the
+   * most common case, and it now has its own value, `add`.
    */
   structure: StructureWho
 
   /**
-   * Кто может поставить документ на общий экран комнаты.
+   * Who may put a document on the room's shared screen.
    *
-   * Enforced in server/src/control.ts — `board:open` и `board:close`.
+   * Enforced in server/src/control.ts — `board:open` and `board:close`.
    *
-   * Смотреть и листать самому может любой всегда: файл комнаты и так
-   * скачивается кем угодно из неё. Правило про другое — про общий экран, и
-   * потому стоит рядом с `wipe` и `restart`, а не с `files`.
+   * Anyone may always view and page through it themselves: the room's file
+   * can be downloaded by anyone in it anyway. The rule is about something
+   * else, the shared screen, and that is why it stands next to `wipe` and
+   * `restart` rather than `files`.
    *
-   * Умолчание `host`, но не гвоздь: семинар, где студенты по очереди
-   * показывают свои материалы, — не выдумка, а гвоздь закрыл бы его навсегда.
+   * The default is `host`, but it is not nailed down: a seminar where
+   * students take turns showing their materials is not an invention, and a
+   * nail would close it off forever.
    */
   board: Who
 
   /**
    * Who may put files into the room's folder.
    *
-   * Enforced in server/src/routes/files.ts. Забрать файл — уже право
-   * преподавателя, и было им раньше.
+   * Enforced in server/src/routes/files.ts. Taking a file out is already the
+   * teacher's right, and it was before.
    *
-   * Сильно ровно настолько, насколько разрешает `run`: контейнер ядра
-   * монтирует ту же папку, так что `os.listdir()` — это список,
-   * `open(...)` — скачивание, а `os.remove(...)` — удаление. Это про порядок в
-   * папке, а не про тайну, и в панели так и написано.
+   * It is exactly as strong as `run` allows: the kernel container mounts the
+   * same folder, so `os.listdir()` is a listing, `open(...)` is a download,
+   * and `os.remove(...)` is a deletion. This is about order in the folder,
+   * not about secrecy, and the panel says exactly that.
    */
   files: Who
 
   /**
-   * Кто стирает общую работу: все выводы в тетради, ленту терминала, тред
-   * оракула.
+   * Who erases shared work: all outputs in the notebook, the terminal feed,
+   * the oracle thread.
    *
-   * Enforced in server/src/control.ts (clearOutputs, term:clear) и
+   * Enforced in server/src/control.ts (clearOutputs, term:clear) and
    * routes/ai.ts (DELETE /ai/thread).
    *
-   * Три стирания, у которых до сих пор было три разных ответа. Два из них уже
-   * были правом преподавателя, а у третьего — `clearOutputs` без имени ячейки —
-   * не было никакой проверки: любой участник сносил результаты, которые класс
-   * только что посчитал, и вернуть их нельзя ничем, кроме преподавательского
-   * восстановления версии: вывод пишет ядро, и клиентская отмена до него не
-   * достаёт. Значение по умолчанию `host` — это починка, а не новое
-   * ограничение.
+   * Three erasures that until now had three different answers. Two of them
+   * were already the teacher's right, and the third, `clearOutputs` without a
+   * cell name, had no check at all: any participant wiped the results the
+   * class had just computed, and nothing could bring them back except the
+   * teacher restoring a version: output is written by the kernel, and a
+   * client undo does not reach it. The default `host` is a fix, not a new
+   * restriction.
    */
   wipe: Who
 
   /**
-   * Кто перезапускает ядро — с потерей всех переменных комнаты.
+   * Who restarts the kernel, losing all of the room's variables.
    *
-   * Enforced in server/src/control.ts. Сегодня это зашито в код без права
-   * сказать иначе; записать зашитое так, чтобы его можно было ОСЛАБИТЬ, — то,
-   * чего просит открытая лаборатория, из которой преподаватель уже ушёл, а
-   * ядро зависло.
+   * Enforced in server/src/control.ts. Today this is hard-coded with no way
+   * to say otherwise; writing the hard-coded value down so that it can be
+   * LOOSENED is what an open lab asks for when the teacher has already left
+   * and the kernel has hung.
    */
   restart: Who
 
   /**
-   * Кто читает историю комнаты.
+   * Who reads the room's history.
    *
-   * Enforced in server/src/routes/history.ts. История — это по сути запись
-   * набора: решение, вставленное в ячейку и стёртое до пары, читается в ней
-   * потом всегда. Восстановление версии и отметка чекпоинта остаются
-   * преподавателю при любом значении.
+   * Enforced in server/src/routes/history.ts. History is essentially a
+   * keystroke recording: a solution pasted into a cell and erased before the
+   * class can always be read in it later. Restoring a version and marking a
+   * checkpoint stay with the teacher under any value.
    */
   history: Who
 
@@ -290,33 +310,37 @@ export interface RoomRules {
   oracle: 'inherit' | 'off' | 'hints' | 'full'
 
   /**
-   * Кто может дать оракулу писать в файлы семинара — «сделать», а не «спросить».
+   * Who may let the oracle write into the seminar's files: "do" rather than
+   * "ask".
    *
    * Enforced in server/src/routes/ai.ts.
    *
-   * Отдельно от `oracle`, потому что это другой вопрос. `oracle` — сколько
-   * подсказывать; `agent` — можно ли ему брать в руки папку комнаты. Режим
-   * «сделать» правит файлы сам, без нажатия «принять» на каждую правку: иначе
-   * он не может посмотреть на свою же ошибку и починить её, а без этого он не
-   * агент, а тот же ответ в другой обёртке. Плата — правки видны всем сразу; в
-   * обмен весь ход отменяется одной кнопкой.
+   * Separate from `oracle`, because this is a different question. `oracle`
+   * is how much to hint; `agent` is whether it may take the room's folder
+   * into its hands. The "do" mode edits files by itself, without pressing
+   * "accept" on every edit: otherwise it cannot look at its own mistake and
+   * fix it, and without that it is not an agent but the same answer in
+   * different wrapping. The price is that edits are visible to everyone at
+   * once; in exchange the whole turn is undone with one button.
    *
-   * Умолчание `host`, а не `room`, и это единственное новое ограничение: в
-   * лаборатории на двадцать человек двадцать одновременных «сделать» в одной
-   * папке — это не помощь, а перезапись друг друга. Комната, где это уместно,
-   * включается одним переключателем.
+   * The default is `host`, not `room`, and it is the only new restriction: in
+   * a lab of twenty people, twenty simultaneous "do"s in one folder are not
+   * help but overwriting each other. A room where this fits is switched on
+   * with one toggle.
    *
-   * Тетрадь это правило не открывает и не закрывает: она правится по правам
-   * ТОГО, КТО ПОПРОСИЛ ход, — теми же `edit` и `structure`, с тем же замком на
-   * ячейке (`mayEditCell`), как если бы он печатал сам. Оракул здесь руки
-   * человека, а не отдельное лицо: правка идёт в документ комнаты от его
-   * имени, и у версии в истории есть автор. Участник в лекции ячеек не
-   * трогает, даже когда `agent` пускает его в режим «сделать».
+   * This rule neither opens nor closes the notebook: it is edited with the
+   * rights of WHOEVER ASKED for the turn, with the same `edit` and
+   * `structure`, with the same lock on the cell (`mayEditCell`), as if they
+   * were typing themselves. The oracle here is the person's hands, not a
+   * separate party: the edit goes into the room document in their name, and
+   * the version in history has an author. A participant in a lecture does not
+   * touch cells, even when `agent` lets them into "do" mode.
    *
-   * Плата названа отдельно, потому что без неё этого давать нельзя: перед
-   * первой правкой ячейки ход отмечает историю версий («до правки оракула»),
-   * и одна кнопка возвращает тетрадь как была. Вывод ячейки при этом не
-   * стирается — он честно устаревает, ровно как от правки рукой.
+   * The price is named separately, because without it this must not be
+   * given: before the first cell edit the turn marks the version history
+   * ("before the oracle's edit"), and one button returns the notebook to how
+   * it was. The cell's output is not erased by this: it honestly goes stale,
+   * exactly as after an edit by hand.
    *
    * Enforced in server/src/ai/agent.ts.
    */
@@ -325,29 +349,31 @@ export interface RoomRules {
   agentSteps: number | null
 
   /**
-   * Сколько вопросов в час на человека — или null, «как на инстансе».
+   * How many questions per hour per person, or null, "as on the instance".
    *
-   * Инстанс задаёт умолчание, комната опускается ниже него и не поднимается
-   * выше: `oracleLimitsIn` берёт меньшее из двух. Ужесточить, наоборот, нужно
-   * часто и на одну пару — контрольная, где оракул один вопрос на человека, —
-   * и ходить ради неё в настройки всего инстанса значит менять их всем
-   * остальным комнатам заодно.
+   * The instance sets the default; a room goes below it and never above:
+   * `oracleLimitsIn` takes the smaller of the two. Tightening, on the other
+   * hand, is needed often and for a single class (a test where the oracle
+   * gives one question per person), and going into the whole instance's
+   * settings for it means changing them for all the other rooms as well.
    *
-   * Enforced in server/src/routes/ai.ts. От этого же числа считается потолок на
-   * всю комнату, так что комната, опустившая личный предел, опускает и его.
+   * Enforced in server/src/routes/ai.ts. The ceiling for the whole room is
+   * computed from the same number, so a room that lowered the personal limit
+   * lowers that one too.
    */
   questionsPerHour: number | null
 
   /**
-   * Промежуток между вопросами одного человека, в секундах — или null.
+   * The interval between one person's questions, in seconds, or null.
    *
-   * Строже здесь — это БОЛЬШЕ, поэтому `oracleLimitsIn` берёт большее из двух:
-   * потолок в час ловит расход, а промежуток — выкрики подряд, и семинар,
-   * которому нужен второй, обычно знает об этом за минуту до начала.
+   * Stricter here means LARGER, so `oracleLimitsIn` takes the larger of the
+   * two: the hourly ceiling catches spending, the interval catches rapid-fire
+   * questions, and a seminar that needs the second one usually knows it a
+   * minute before the start.
    *
-   * Enforced in server/src/routes/ai.ts, и там же, что и на инстансе,
-   * преподавателя не касается: его вопросы идут подряд потому, что подряд идёт
-   * разбор.
+   * Enforced in server/src/routes/ai.ts, and there, as on the instance, it
+   * does not apply to the teacher: their questions come in a row because the
+   * walkthrough goes in a row.
    */
   slowModeSeconds: number | null
 
@@ -361,192 +387,209 @@ export interface RoomRules {
    * five do not want the same model, and the teacher knows which is which
    * before the class starts.
    *
-   * Мерится тем же `LIMITS.model`, что и модель инстанса. Своя цифра здесь
-   * была: имя резалось до 80 знаков против 120 на инстансе, и комната, которой
-   * это однажды включат, получила бы молча обрезанное имя модели — то есть
-   * запрос в никуда с ошибкой провайдера вместо ответа.
+   * It is measured by the same `LIMITS.model` as the instance's model. There
+   * used to be a number of its own here: the name was cut to 80 characters
+   * against 120 on the instance, and a room where this gets switched on one
+   * day would have received a silently truncated model name, that is, a
+   * request into nowhere with a provider error instead of an answer.
    */
   model: string | null
   /**
-   * Что значит «открыть ячейку» в этой комнате.
+   * What "opening a cell" means in this room.
    *
-   * `shared` — как всегда: щелчок по замку открывает общий текст, и в него
-   * печатает вся комната. `council` — щелчок открывает консилиум: у каждого
-   * свой лист, преподаватель листает попытки и показывает классу. Это и есть
-   * вся разница между лекцией и консилиумом как режимами при создании; меню
-   * замка на самой ячейке по-прежнему даёт выбрать любое из трёх положений.
+   * `shared`, as always: a click on the lock opens the shared text, and the
+   * whole room types into it. `council`: the click opens a council, where
+   * everyone has their own sheet, and the teacher pages through the attempts
+   * and shows them to the class. This is the whole difference between a
+   * lecture and a council as modes at creation; the lock menu on the cell
+   * itself still lets you pick any of the three positions.
    *
-   * Читает сервер в control.ts (`cell:open`); правом не является — открывает
-   * ячейку в любом случае преподаватель.
+   * Read by the server in control.ts (`cell:open`); it is not a right: in
+   * either case it is the teacher who opens the cell.
    */
   opens: 'shared' | 'council'
 
   /**
-   * Перекрытия по отдельным тетрадям: корень → правило (см. `BookRule`).
+   * Overrides for individual notebooks: root → rule (see `BookRule`).
    *
-   * Поля может не быть вовсе, и у всякой комнаты, созданной до этой строки, его
-   * нет: пустая карта и отсутствующая — одно и то же, «все тетради как в
-   * комнате». `readRules` пустую карту не хранит, чтобы правила не пухли от
-   * записей, которые ничего не значат.
+   * The field may be missing altogether, and every room created before this
+   * line lacks it: an empty map and a missing one are the same thing, "all
+   * notebooks as in the room". `readRules` does not store an empty map, so
+   * that the rules do not swell with records that mean nothing.
    *
-   * Enforced in server/src/collab/gate.ts (набор и состав тетради) и
-   * server/src/control.ts (запуск, перестановка, форматирование, очистка
-   * вывода, «принять» у оракула), через одну общую `rulesForBook` ниже — ту же,
-   * которой считает серые кнопки браузер. Второй копии этого правила в продукте
-   * нет намеренно: разошедшиеся копии здесь уже стоили одного бага.
+   * Enforced in server/src/collab/gate.ts (typing and notebook structure) and
+   * server/src/control.ts (run, move, format, clearing output, "accept" for
+   * the oracle), through one shared `rulesForBook` below, the same one the
+   * browser uses to compute grey buttons. There is no second copy of this
+   * rule in the product on purpose: diverged copies here have already cost
+   * one bug.
    *
-   * Меняет её только преподаватель — тем же путём, что и все остальные правила
-   * (PATCH /api/sessions/:id/rules, routes/sessions.ts), где роль и проверяется.
+   * Only the teacher changes it, the same way as all the other rules
+   * (PATCH /api/sessions/:id/rules, routes/sessions.ts), where the role is
+   * checked.
    */
   books?: Record<string, BookRule>
 
   /**
-   * Может ли студент завести в этой комнате СВОЮ тетрадь.
+   * Whether a student may create THEIR OWN notebook in this room.
    *
-   * Не про доступ к уже существующей тетради (это `books` выше), а про право
-   * добавить в комнату ещё одну: завести пустую, внести положенный в папку
-   * .ipynb, попросить о том же оракула. Своя тетрадь студента всегда ЛИЧНАЯ —
-   * правят и запускают в ней автор и преподаватель, остальные смотрят, — так
-   * что это право и есть «можно работать отдельно от аудитории».
+   * Not about access to an existing notebook (that is `books` above) but
+   * about the right to add one more to the room: create an empty one, bring
+   * in an .ipynb placed in the folder, ask the oracle for the same. A
+   * student's own notebook is always PERSONAL (the author and the teacher
+   * edit and run in it, the others watch), so this right is exactly "may
+   * work separately from the audience".
    *
-   * Умолчание `off`, и это принципиально: права в комнате раздаёт
-   * преподаватель. Иначе на лекции, где печатает и запускает он, любой участник
-   * выписывал бы себе право печатать и запускать одной кнопкой «новая тетрадь»,
-   * а преподаватель узнавал бы об этом задним числом.
+   * The default is `off`, and this is a matter of principle: rights in the
+   * room are handed out by the teacher. Otherwise, in a lecture where the
+   * teacher types and runs, any participant would grant themselves the right
+   * to type and run with one "new notebook" button, and the teacher would
+   * find out after the fact.
    *
-   * ОТДЕЛЬНО от `files`, и это не дублирование: `files` — про общую папку
-   * занятия, куда кладут раздатку и решения, и он ничего не говорит про
-   * участника, которому нужна своя тетрадь. Поэтому `files: 'host'` и
-   * `ownBooks: 'on'` — рабочая пара (файл тетради пишет сервер, это её
-   * проекция), и обратная пара тоже: положить .ipynb в папку можно, а внести
-   * его в комнату тетрадью — нет.
+   * SEPARATE from `files`, and this is not duplication: `files` is about the
+   * class's shared folder, where handouts and solutions go, and it says
+   * nothing about a participant who needs a notebook of their own. So
+   * `files: 'host'` with `ownBooks: 'on'` is a working pair (the notebook
+   * file is written by the server, it is the notebook's projection), and so
+   * is the reverse pair: an .ipynb may be put into the folder, but not
+   * brought into the room as a notebook.
    *
-   * Enforced in server/src/collab/books.ts — одной дверью на все способы
-   * завести тетрадь, включая оракула.
+   * Enforced in server/src/collab/books.ts, one door for all the ways of
+   * creating a notebook, including the oracle.
    */
   ownBooks: 'off' | 'on'
   /**
-   * Сколько памяти и процессора получают ВСЕ личные тетради занятия вместе.
+   * How much memory and CPU ALL of the class's personal notebooks get
+   * together.
    *
-   * `null` — «как у занятия»: сегодняшнее поведение и умолчание. Числа
-   * относятся к контейнеру, в котором живут личные тетради (pool.ts ·
-   * KernelRole), а не к одной тетради: ядер в нём десятки, и делят они его
-   * память и процессор, как делят их ячейки одной тетради.
+   * `null` means "as for the class": today's behaviour and the default. The
+   * numbers apply to the container where personal notebooks live (pool.ts ·
+   * KernelRole), not to one notebook: it holds dozens of kernels, and they
+   * share its memory and CPU the way cells of one notebook share them.
    *
-   * Зачем отдельные числа, если по умолчанию они те же. Поле «Память» в
-   * настройках занятия преподаватель ставит под СВОЮ работу — под датасет,
-   * который он грузит на лекции. Отсыпать столько же тридцати черновикам он не
-   * подписывался, а на машине это ровно вдвое больше памяти. И наоборот: на
-   * потоке, где вся работа идёт в личных тетрадях, им нужно больше, чем
-   * лекции. Одно число на двоих обслуживает только тот случай, когда они
-   * случайно совпали.
+   * Why separate numbers, if by default they are the same. The teacher sets
+   * the "Memory" field in the class settings for THEIR OWN work, for the
+   * dataset they load at the lecture. They did not sign up to hand out as
+   * much to thirty drafts, and on the machine that is exactly twice the
+   * memory. And the other way round: in a cohort where all the work happens
+   * in personal notebooks, they need more than the lecture. One number for
+   * both serves only the case where the two happen to coincide.
    *
-   * Проверяются здесь по общей мерке (целое, в разумных границах), а по
-   * границам МАШИНЫ — там же, где проверяется память самого занятия
-   * (routes/sessions.ts, routes/admin-instance.ts): этот файл про права и не
-   * знает, сколько памяти у докера.
+   * They are checked here by a general measure (whole, within reasonable
+   * bounds), and against the bounds of the MACHINE in the same place where
+   * the class's own memory is checked (routes/sessions.ts,
+   * routes/admin-instance.ts): this file is about rights and does not know
+   * how much memory Docker has.
    *
-   * `rulesAfterClass` их не трогает: конец занятия — про то, кому что можно, а
-   * не про то, сколько железа отдано.
+   * `rulesAfterClass` leaves them alone: the end of a class is about who may
+   * do what, not about how much hardware has been given.
    */
   ownMemoryMb: number | null
   ownCpus: number | null
 
   /**
-   * Через сколько секунд ячейка тетради останавливается сама; `null` — никогда.
+   * After how many seconds a notebook cell stops by itself; `null` means
+   * never.
    *
-   * Умолчание `null`, и это принципиально: у каждой уже работающей комнаты
-   * предела нет, и выкатка не вправе оборвать разбор, который идёт четвёртую
-   * минуту. Включает его преподаватель, зная цену.
+   * The default is `null`, and this is a matter of principle: no room already
+   * running has a limit, and a rollout has no right to cut off a walkthrough
+   * that is in its fourth minute. The teacher turns it on, knowing the price.
    *
-   * Заведено против одной беды, и беда измеренная. Очередь у тетради ОДНА и
-   * общая: в ней стоят и ячейки, и попытки консилиума (server/src/kernel/index.ts
-   * · Runtime.queue). Предел консилиума (notebook.ts · CouncilSettings.runLimitSec)
-   * сторожит только попытки — и один `while True` в ОБЫЧНОЙ ячейке держал всю
-   * очередь попыток до конца пары, притом что преподаватель выставил «все по
-   * очереди» и предел запуска. Отсюда и место правила: не у консилиума, а у
-   * комнаты, потому что ячейку запускают и там, где консилиума нет вовсе.
+   * It was introduced against one problem, and a measured one. A notebook has
+   * ONE shared queue: it holds both cells and council attempts
+   * (server/src/kernel/index.ts · Runtime.queue). The council limit
+   * (notebook.ts · CouncilSettings.runLimitSec) guards only attempts, and one
+   * `while True` in an ORDINARY cell held the whole attempt queue until the
+   * end of the class, even though the teacher had set "everyone in turn" and
+   * a run limit. Hence the rule's place: not in the council but in the room,
+   * because cells are run even where there is no council at all.
    *
-   * Не право, а потолок — как `runQueueCap`: он ничего не запрещает нажать и
-   * никого не делит на роли. Преподавательская ячейка останавливается по нему
-   * так же, как студенческая: ядро одно, и жирный код не становится легче
-   * оттого, кто нажал (тот же довод, что у предела попытки).
+   * Not a right but a ceiling, like `runQueueCap`: it forbids pressing
+   * nothing and divides nobody into roles. A teacher's cell is stopped by it
+   * just like a student's: the kernel is one, and heavy code does not get
+   * lighter depending on who pressed (the same argument as for the attempt
+   * limit).
    *
-   * Enforced in server/src/kernel/index.ts — общий будильник `armLimit`, один
-   * на ячейку и на попытку. Остановка объясняется в выводе ячейки одной
-   * строкой, без трейсбека `KeyboardInterrupt`: его читают как «кто-то нажал
-   * стоп» или как свою ошибку.
+   * Enforced in server/src/kernel/index.ts: the shared alarm `armLimit`, one
+   * per cell and per attempt. The stop is explained in the cell's output in
+   * one line, without a `KeyboardInterrupt` traceback: that one is read as
+   * "someone pressed stop" or as one's own error.
    *
-   * `rulesAfterClass` его не трогает: конец занятия — про права, а не про то,
-   * сколько ядру дано считать.
+   * `rulesAfterClass` leaves it alone: the end of a class is about rights,
+   * not about how long the kernel is given to compute.
    */
   cellLimitSec: number | null
 
   /**
-   * Исполняются ли в ячейках команды, которые гасят ядро или стирают всё.
+   * Whether commands that kill the kernel or wipe everything are executed in
+   * cells.
    *
-   * Умолчание `block`, и оно действует и у новых занятий, и у всех уже
-   * заведённых: поле, которого в записи нет, читается запретом. Это
-   * единственное правило, чьё умолчание ужесточает уже работающие комнаты, и
-   * цена названа — 20.09.2026 занятие на тридцать человек потеряло ядро девять
-   * раз за одиннадцать минут на двух строках в попытке консилиума: `import os`
-   * и `os._exit(0)`. Такая смерть не отличима от исправной работы ничем:
-   * процесс исчезает без исключения, без сигнала в dmesg и без строки в
-   * журнале, а класс теряет переменные и очередь.
+   * The default is `block`, and it applies both to new classes and to all
+   * existing ones: a field missing from the record reads as a ban. This is
+   * the only rule whose default tightens rooms that are already running, and
+   * the price is named: on 20 Sep 2026 a class of thirty people lost its
+   * kernel nine times in eleven minutes to two lines in a council attempt:
+   * `import os` and `os._exit(0)`. Such a death cannot be told apart from
+   * normal operation by anything: the process vanishes with no exception, no
+   * signal in dmesg and no line in the log, and the class loses its
+   * variables and its queue.
    *
-   * Что закрыто: `exit()`, `quit()`, `os._exit`, `os.abort`, смертельный
-   * сигнал В САМО ЯДРО (`os.kill`, `os.killpg`, `signal.raise_signal`,
-   * `signal.pthread_kill`), `kernel.do_shutdown`, `%reset`, `%reset -f`,
-   * `%reset_selective`, `%xdel`, а из команд оболочки (`!cmd`, `%%bash`,
-   * `os.system`, `subprocess`) — `kill`/`pkill`/`killall` по ядру и по «всем»,
-   * `shutdown`, `reboot`, `halt`, `poweroff`, `init 0/6` и `rm -rf` корня
-   * занятия целиком. `sys.exit()` НЕ трогается: в ipykernel это `SystemExit`,
-   * и ядро его переживает.
+   * What is closed: `exit()`, `quit()`, `os._exit`, `os.abort`, a deadly
+   * signal TO THE KERNEL ITSELF (`os.kill`, `os.killpg`,
+   * `signal.raise_signal`, `signal.pthread_kill`), `kernel.do_shutdown`,
+   * `%reset`, `%reset -f`, `%reset_selective`, `%xdel`, and among shell
+   * commands (`!cmd`, `%%bash`, `os.system`, `subprocess`),
+   * `kill`/`pkill`/`killall` aimed at the kernel or at "everything",
+   * `shutdown`, `reboot`, `halt`, `poweroff`, `init 0/6` and `rm -rf` of the
+   * whole class root. `sys.exit()` is NOT touched: in ipykernel it is
+   * `SystemExit`, and the kernel survives it.
    *
-   * Не право, а свойство комнаты — как `cellLimitSec`: роль здесь не
-   * различается вовсе. Ядро одно на тетрадь, и `os._exit(0)` из ячейки
-   * преподавателя стоит классу ровно столько же, сколько из студенческой;
-   * перезапустить ядро у преподавателя есть чем, и эта кнопка идёт мимо ядра.
+   * Not a right but a property of the room, like `cellLimitSec`: roles are
+   * not distinguished here at all. The kernel is one per notebook, and
+   * `os._exit(0)` from the teacher's cell costs the class exactly as much as
+   * from a student's; the teacher has a way to restart the kernel, and that
+   * button goes around the kernel.
    *
-   * ЭТО ЛЕЖАЧИЙ ПОЛИЦЕЙСКИЙ, А НЕ ПЕСОЧНИЦА, и обещать здесь больше нельзя:
-   * `ctypes`, перезагрузка модуля `os` через importlib, fork-бомба, segfault
-   * нативной библиотеки и `globals().clear()` проходят мимо. Терминал комнаты
-   * — настоящая оболочка, и тот, кому правило `run` открывает `term:run`,
-   * уронит ядро оттуда одной командой.
+   * THIS IS A SPEED BUMP, NOT A SANDBOX, and nothing more may be promised
+   * here: `ctypes`, reloading the `os` module through importlib, a fork bomb,
+   * a segfault in a native library and `globals().clear()` get past it. The
+   * room's terminal is a real shell, and whoever the `run` rule gives
+   * `term:run` will bring the kernel down from there with one command.
    *
-   * Выключают его ради одного случая, и случай настоящий: курс по самому
-   * Python, где эти команды и есть предмет разговора.
+   * It is switched off for one case, and the case is real: a course on
+   * Python itself, where these commands are the very subject.
    *
-   * Enforced in server/src/kernel/danger.ts — подменами внутри процесса ядра,
-   * которые ставит server/src/kernel/index.ts при каждом подъёме и перезапуске
-   * ядра, до первой пользовательской строки. Внутри попытки консилиума запрет
-   * действует ВСЕГДА, что бы ни стояло здесь: попытка студента идёт на общем
-   * ядре и уронить им класс не может даже тогда, когда опасные команды
-   * разрешены ради показа (council-isolation.ts · hold/release).
+   * Enforced in server/src/kernel/danger.ts, by substitutions inside the
+   * kernel process that server/src/kernel/index.ts installs on every kernel
+   * start and restart, before the first user line. Inside a council attempt
+   * the ban ALWAYS applies, whatever is set here: a student's attempt runs on
+   * the shared kernel and cannot bring the class down with it even when
+   * dangerous commands are allowed for a demonstration (council-isolation.ts
+   * · hold/release).
    *
-   * `rulesAfterClass` его не трогает: конец занятия — про права, а защита
-   * остаётся той же, какой была.
+   * `rulesAfterClass` leaves it alone: the end of a class is about rights,
+   * and the protection stays what it was.
    */
   danger: 'block' | 'allow'
 }
 
 /**
- * Потолок предела ячейки — час, как у предела попытки консилиума
+ * The ceiling of the cell limit: an hour, like the council attempt limit
  * (notebook.ts · COUNCIL_RUN_LIMIT_MAX).
  *
- * Своим числом, а не импортом оттуда: этот файл про права и не знает про
- * тетрадь. Пол — секунда: ноль значил бы «останавливать сразу», а «никогда» уже
- * записано словом `null`.
+ * A number of its own rather than an import from there: this file is about
+ * rights and does not know about the notebook. The floor is a second: zero
+ * would mean "stop at once", and "never" is already written as `null`.
  */
 export const MAX_CELL_LIMIT_SEC = 3600
 
 /**
- * Границы, в которых правила принимают числа личных тетрадей.
+ * The bounds within which the rules accept the personal notebook numbers.
  *
- * Потолок здесь — последняя сетка, а не рабочая граница: настоящую ставит
- * машина, и ставит её маршрут (см. поле выше). Смысл этих двух чисел в том,
- * чтобы правила, пришедшие из базы или из чужого кадра, не принесли ни
- * `-1`, ни `1e9`, ни `0.5`.
+ * The ceiling here is the last safety net, not the working limit: the real
+ * one is set by the machine, and the route sets it (see the field above).
+ * The point of these two numbers is that rules arriving from the database
+ * or from someone else's frame bring neither `-1`, nor `1e9`, nor `0.5`.
  */
 export const MIN_OWN_MEMORY_MB = 256
 export const MAX_OWN_MEMORY_MB = 262144
@@ -563,11 +606,11 @@ export const OPEN_ROOM: RoomRules = {
   structure: 'room',
   files: 'room',
   /*
-   * Три новых поля — и два из них по умолчанию строгие, потому что записывают
-   * то, что и так было правдой: `term:clear` и очистка треда оракула уже были
-   * правом преподавателя, а перезапуск ядра зашит в код без права сказать
-   * иначе. Единственное настоящее изменение — `clearOutputs`, у которого не
-   * было проверки вовсе; см. комментарий у `wipe`.
+   * Three new fields, and two of them are strict by default, because they
+   * record what was already true: `term:clear` and clearing the oracle thread
+   * were already the teacher's right, and the kernel restart is hard-coded
+   * with no way to say otherwise. The only real change is `clearOutputs`,
+   * which had no check at all; see the comment at `wipe`.
    */
   wipe: 'host',
   restart: 'host',
@@ -578,29 +621,32 @@ export const OPEN_ROOM: RoomRules = {
   oracle: 'inherit',
   opens: 'shared',
   /*
-   * Свои тетради студентам — выключено: права раздаёт преподаватель, см. поле.
-   * `books` здесь нет вовсе, а не пустой картой: пустая карта — это объект, а
-   * `isOpenRoom` сравнивает значения, и два пустых объекта не равны никогда.
+   * Students' own notebooks are off: the teacher hands out rights, see the
+   * field. `books` is absent here rather than an empty map: an empty map is
+   * an object, `isOpenRoom` compares values, and two empty objects are never
+   * equal.
    */
   ownBooks: 'off',
-  // «Как у занятия» — и это тоже сегодняшнее поведение: один лимит на оба
-  // контейнера, пока преподаватель не решит иначе.
+  // "As for the class", and this is today's behaviour too: one limit for both
+  // containers until the teacher decides otherwise.
   ownMemoryMb: null,
   ownCpus: null,
-  // Ячейка считается, пока считается: сегодняшнее поведение каждой комнаты, и
-  // менять его выкаткой нельзя (см. поле).
+  // A cell computes for as long as it computes: today's behaviour of every
+  // room, and a rollout must not change it (see the field).
   cellLimitSec: null,
   /*
-   * А вот опасные команды выкаткой закрываются — и это единственное умолчание,
-   * которое ужесточает уже работающие комнаты. Довод в поле: одна строка из
-   * любопытства гасила ядро всему занятию, и цена ошибки в обратную сторону
-   * (преподаватель курса по Python идёт и переключает одну строку) несравнимо
-   * меньше.
+   * Dangerous commands, on the other hand, are closed by the rollout, and
+   * this is the only default that tightens rooms already running. The
+   * argument is in the field: one line written out of curiosity killed the
+   * kernel for the whole class, and the cost of a mistake in the other
+   * direction (the teacher of a Python course goes and switches one line) is
+   * incomparably smaller.
    */
   danger: 'block',
   /*
-   * Потолки оракула — «как на инстансе», и это ровно сегодняшнее поведение
-   * каждой комнаты: до сих пор их не было где взять, кроме настроек инстанса.
+   * Oracle ceilings are "as on the instance", and that is exactly today's
+   * behaviour of every room: until now there was nowhere to take them from
+   * except the instance settings.
    */
   questionsPerHour: null,
   slowModeSeconds: null,
@@ -608,24 +654,26 @@ export const OPEN_ROOM: RoomRules = {
 }
 
 /**
- * Лекция: тетрадь преподавательская целиком — кроме того, что он откроет сам.
+ * Lecture: the notebook belongs entirely to the teacher, except what they
+ * open themselves.
  *
- * Пресет, а не новое правило: всё, из чего он собран, уже есть в полях выше, и
- * комната остаётся настраиваемой после того, как его применили. Смысл в том,
- * что «лекция» — это девять согласованных значений, и выставлять их по одному,
- * ничего не забыв, преподаватель перед парой не станет.
+ * A preset, not a new rule: everything it is built from already exists in
+ * the fields above, and the room stays adjustable after it is applied. The
+ * point is that a "lecture" is nine coordinated values, and a teacher about
+ * to start a class will not set them one by one without forgetting any.
  *
- * `history`, `oracle`, потолки оракула и `model` берутся у открытой комнаты:
- * лекция — про то, кто печатает и запускает, а не про то, кому смотреть и
- * спрашивать.
+ * `history`, `oracle`, the oracle ceilings and `model` are taken from the
+ * open room: a lecture is about who types and runs, not about who gets to
+ * watch and ask.
  *
- * Одна лекция без замка на ячейках была бы просто тетрадью на экране. Работает
- * это в паре: преподаватель открывает отдельные ячейки, и в них комната
- * печатает и запускает при этих самых правилах — см. `mayEditCell` ниже.
+ * A lecture alone, without the cell lock, would be just a notebook on a
+ * screen. It works as a pair: the teacher opens individual cells, and in
+ * them the room types and runs under these very rules; see `mayEditCell`
+ * below.
  *
- * Поля перечислены все до одного и без `...OPEN_ROOM`, по тому же доводу, что и
- * в `rulesAfterClass`: правило, добавленное завтра, обязано сломать проверку
- * типов здесь и потребовать решения, а не проехать молча.
+ * All the fields are listed, every single one, without `...OPEN_ROOM`, for
+ * the same reason as in `rulesAfterClass`: a rule added tomorrow must break
+ * the type check here and demand a decision, not slip through silently.
  */
 export const LECTURE_ROOM: RoomRules = {
   run: 'host',
@@ -644,34 +692,36 @@ export const LECTURE_ROOM: RoomRules = {
   model: OPEN_ROOM.model,
   opens: 'shared',
   /*
-   * Перекрытий по тетрадям пресет не заводит и не снимает: они про конкретные
-   * тетради конкретной комнаты, а пресет — про то, кто печатает и запускает
-   * вообще. Свои тетради лекция не запрещает отдельно — они и так выключены у
-   * открытой комнаты, а включает их преподаватель, когда это нужно.
+   * The preset neither creates nor removes per-notebook overrides: they are
+   * about particular notebooks of a particular room, while the preset is
+   * about who types and runs in general. A lecture does not forbid own
+   * notebooks separately: they are already off in an open room, and the
+   * teacher turns them on when needed.
    */
   ownBooks: OPEN_ROOM.ownBooks,
-  // Сколько железа отдано — не про формат занятия: пресет его не трогает.
+  // How much hardware is given is not about the class format: the preset leaves it alone.
   ownMemoryMb: OPEN_ROOM.ownMemoryMb,
   ownCpus: OPEN_ROOM.ownCpus,
-  // И сколько ядру дано считать — тоже: лекция про то, кто запускает, а не про
-  // то, когда запуск обрывается.
+  // Nor how long the kernel is given to compute: a lecture is about who runs,
+  // not about when a run is cut off.
   cellLimitSec: OPEN_ROOM.cellLimitSec,
-  // Опасные команды пресет не трогает: они про то, что ядро одно на всех, а не
-  // про то, кто печатает. У лекции защита такая же, как у открытой комнаты.
+  // The preset leaves dangerous commands alone: they concern the kernel shared
+  // by all, not who types. A lecture is protected just like an open room.
   danger: OPEN_ROOM.danger,
 }
 
 /**
- * Консилиум — третья дверь в комнату, и при создании она стоит рядом с двумя
- * первыми своей карточкой.
+ * Council: the third door into the room, and at creation it stands next to
+ * the first two as a card of its own.
  *
- * По правам это та же лекция: печатает, запускает и открывает ячейки
- * преподаватель. Разница ровно в одном — что значит «открыть ячейку». В лекции
- * открытая ячейка — общий текст, в который печатает вся комната; в консилиуме
- * у каждого свой лист, а преподаватель листает попытки и показывает классу
- * (см. `opens`). Пресетом, а не отдельным состоянием комнаты: режим — это набор
- * правил разом, и второго источника правды о том, что можно, здесь не заведено
- * намеренно (routes/admin-instance.ts объясняет почему).
+ * In terms of rights it is the same lecture: the teacher types, runs and
+ * opens cells. The difference is exactly one: what "opening a cell" means.
+ * In a lecture an open cell is shared text that the whole room types into;
+ * in a council everyone has their own sheet, and the teacher pages through
+ * the attempts and shows them to the class (see `opens`). A preset rather
+ * than a separate room state: a mode is a set of rules at once, and a
+ * second source of truth about what is allowed is deliberately not created
+ * here (routes/admin-instance.ts explains why).
  */
 export const COUNCIL_ROOM: RoomRules = {
   ...LECTURE_ROOM,
@@ -688,20 +738,21 @@ const BOOK_ACCESS = new Set<BookAccess>(['room', 'owner', 'all', 'host'])
 const OWN_BOOKS = new Set<RoomRules['ownBooks']>(['off', 'on'])
 
 /**
- * Карта перекрытий по тетрадям из чего угодно.
+ * The per-notebook override map, from anything.
  *
- * Тотально, как и всё остальное в `readRules`, и по той же причине: сюда
- * приезжает и строка из базы, записанная прошлой сборкой, и тело PATCH из
- * браузера. Запись, которую не удалось прочитать, ОТБРАСЫВАЕТСЯ, а не роняет
- * чтение: иначе одна кривая строка закрывала бы комнату целиком.
+ * Total, like everything else in `readRules`, and for the same reason: what
+ * arrives here is both a database row written by a previous build and a
+ * PATCH body from the browser. A record that could not be read is DROPPED
+ * rather than failing the read: otherwise one crooked row would lock the
+ * whole room.
  *
- * Потолки здесь, а не на входе, потому что вход не один: правила пишет и
- * преподаватель из пульта, и сервер, записывающий автора новой тетради. Обрезка
- * в одном месте — единственный способ обещать, что в базе лежит то, что мы
- * умеем прочитать обратно.
+ * The ceilings are here and not at the entrance, because there is more than
+ * one entrance: rules are written both by the teacher from the console and by
+ * the server recording the author of a new notebook. Trimming in one place
+ * is the only way to promise that the database holds what we can read back.
  *
- * `undefined` вместо пустой карты — чтобы правила без единого перекрытия
- * читались ровно так же, как правила комнаты, созданной до этой строки.
+ * `undefined` instead of an empty map, so that rules without a single
+ * override read exactly like the rules of a room created before this line.
  */
 function readBookRules(raw: unknown): Record<string, BookRule> | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
@@ -720,11 +771,12 @@ function readBookRules(raw: unknown): Record<string, BookRule> | undefined {
         ? from.ownerName.trim().slice(0, MAX_BOOK_OWNER_NAME)
         : null
     /*
-     * «Как в комнате» без автора не значит ничего — такую запись не храним.
+     * "As in the room" without an author means nothing, so such a record is
+     * not kept.
      *
-     * Так карта сама чистится от того, что преподаватель вернул к умолчанию:
-     * снятое перекрытие тетради, которую заводил он сам, исчезает, а не
-     * остаётся строкой, которую потом некому убрать.
+     * This way the map cleans itself of whatever the teacher reset to the
+     * default: a removed override of a notebook they created themselves
+     * disappears instead of staying as a row nobody will later remove.
      */
     if (from.access === 'room' && owner === null) continue
     out[root] = { access: from.access as BookAccess, owner, ownerName }
@@ -749,11 +801,12 @@ export function readRules(raw: unknown): RoomRules {
   const one = <T>(set: Set<T>, value: unknown, fallback: T): T =>
     set.has(value as T) ? (value as T) : fallback
   /*
-   * Потолок оракула читается так же тотально, как `model` ниже: не число — это
-   * null, «как на инстансе», то есть сегодняшнее поведение любой комнаты. Число
-   * зажимается той же линейкой, что и настройка инстанса (shared/admin.ts ·
-   * LIMITS): комната, которой разрешили бы больше, чем умеет сам инстанс,
-   * обещала бы то, чего нет, — а `oracleLimitsIn` всё равно вернёт инстансовое.
+   * The oracle ceiling is read as totally as `model` below: not a number
+   * means null, "as on the instance", that is, today's behaviour of any room.
+   * The number is clamped by the same ruler as the instance setting
+   * (shared/admin.ts · LIMITS): a room allowed more than the instance itself
+   * can do would promise what does not exist, and `oracleLimitsIn` would
+   * return the instance's value anyway.
    */
   const cap = (value: unknown, min: number, max: number): number | null =>
     typeof value === 'number' && Number.isFinite(value)
@@ -762,11 +815,12 @@ export function readRules(raw: unknown): RoomRules {
   const books = readBookRules(source.books)
   return {
     /*
-     * Каждое поле падает на своё умолчание отдельно от других — это и есть
-     * миграция. Строка, записанная старой сборкой, держит 'room' или 'host' в
-     * трёх полях, у которых теперь по три значения: оба переживают чтение
-     * нетронутыми, а третьего значения там просто нет. Новые три поля в старых
-     * строках отсутствуют вовсе и читаются своими умолчаниями.
+     * Each field falls back to its own default separately from the others,
+     * and that is the migration. A row written by an old build holds 'room'
+     * or 'host' in three fields that now have three values each: both survive
+     * the read untouched, and the third value simply is not there. The three
+     * new fields are missing from old rows altogether and read as their
+     * defaults.
      */
     run: one(RUN, source.run, OPEN_ROOM.run),
     edit: who(source.edit, OPEN_ROOM.edit),
@@ -783,10 +837,10 @@ export function readRules(raw: unknown): RoomRules {
       ? (source.oracle as RoomRules['oracle'])
       : OPEN_ROOM.oracle,
     /*
-     * Пол — один вопрос, а не ноль, хотя на инстансе ноль есть. Ноль значит
-     * «оракул выключен», и у комнаты для этого уже есть `oracle: 'off'`, у
-     * которого отказ говорит об этом словами; ноль здесь развернул бы класс
-     * фразой «использовано все 0 вопросов».
+     * The floor is one question, not zero, although the instance has zero.
+     * Zero means "the oracle is off", and the room already has
+     * `oracle: 'off'` for that, whose refusal says so in words; zero here
+     * would turn the class away with the phrase "all 0 questions used".
      */
     questionsPerHour: cap(source.questionsPerHour, 1, LIMITS.questionsPerHour.max),
     slowModeSeconds: cap(
@@ -794,52 +848,52 @@ export function readRules(raw: unknown): RoomRules {
       LIMITS.slowModeSeconds.min,
       LIMITS.slowModeSeconds.max,
     ),
-    // Тем же потолком, что и модель инстанса: своё число здесь означало бы
-    // комнату, которая не может попросить модель, инстансу доступную.
+    // The same ceiling as the instance's model: a number of its own here
+    // would mean a room unable to ask for a model the instance has.
     model:
       typeof source.model === 'string' && source.model.trim()
         ? source.model.trim().slice(0, LIMITS.model)
         : null,
     opens: one(OPENS, source.opens, OPEN_ROOM.opens),
     /*
-     * Перекрытия по тетрадям. Ключ в объекте появляется только там, где есть
-     * что хранить: старая строка из базы приходит без него и без него же
-     * уезжает обратно, а комната с одними умолчаниями не носит по сокетам
-     * пустую карту.
+     * Per-notebook overrides. The key appears in the object only where there
+     * is something to store: an old row from the database comes without it
+     * and goes back without it, and a room with only defaults does not carry
+     * an empty map through the sockets.
      */
     ...(books ? { books } : {}),
     ownBooks: readOwnBooks(source.ownBooks),
     ownMemoryMb: readOwnAmount(source.ownMemoryMb, MIN_OWN_MEMORY_MB, MAX_OWN_MEMORY_MB),
     ownCpus: readOwnAmount(source.ownCpus, 1, MAX_OWN_CPUS),
     /*
-     * Предел ячейки читается той же тотальной меркой, что и числа личных
-     * тетрадей: мусор, дробь и число за границами — это `null`, «без предела»,
-     * то есть сегодняшнее поведение. Безопасная сторона здесь одна и она же
-     * прежняя: ошибиться в сторону «считает дальше» можно, в сторону «оборвали
-     * чужой разбор» — нет.
+     * The cell limit is read by the same total measure as the personal
+     * notebook numbers: garbage, a fraction and a number out of bounds mean
+     * `null`, "no limit", that is, today's behaviour. There is one safe side
+     * here, and it is the old one: erring towards "keeps computing" is fine,
+     * erring towards "cut off someone's walkthrough" is not.
      */
     cellLimitSec: readOwnAmount(source.cellLimitSec, 1, MAX_CELL_LIMIT_SEC),
     /*
-     * Опасные команды — единственное поле, где неизвестное значение читается
-     * СТРОГИМ умолчанием, а не мягким.
+     * Dangerous commands are the only field where an unknown value reads as
+     * the STRICT default, not the lenient one.
      *
-     * Все комнаты, заведённые до этой строки, приходят без него вовсе, и
-     * читаются они защищёнными. Так и задумано: ошибиться здесь можно только в
-     * сторону «отказали лишнего» — это одна строка в правилах и минута
-     * разговора, — а в обратную сторону цена уже измерена, и она равна
-     * потерянному занятию (см. поле).
+     * All rooms created before this line come without it altogether, and
+     * they read as protected. That is intended: a mistake here can only go
+     * towards "refused too much" (one line in the rules and a minute of
+     * conversation), while in the other direction the price is already
+     * measured, and it equals a lost class (see the field).
      */
     danger: source.danger === 'allow' ? 'allow' : OPEN_ROOM.danger,
   }
 }
 
 /**
- * Число личных тетрадей — или `null`, то есть «как у занятия».
+ * A personal notebook number, or `null`, that is, "as for the class".
  *
- * Тотально, как и всё в `readRules`: мусор, дробь и число за границами
- * становятся `null`, а не отказом. Упасть на правилах нельзя — их читает
- * каждый кадр синхронизации, и строка из базы, испорченная чьей-то рукой,
- * не должна запирать комнату.
+ * Total, like everything in `readRules`: garbage, a fraction and a number
+ * out of bounds become `null`, not a refusal. Nothing may fail on the rules:
+ * every sync frame reads them, and a database row spoiled by someone's hand
+ * must not lock the room.
  */
 function readOwnAmount(raw: unknown, min: number, max: number): number | null {
   if (typeof raw !== 'number' || !Number.isInteger(raw)) return null
@@ -847,13 +901,15 @@ function readOwnAmount(raw: unknown, min: number, max: number): number | null {
 }
 
 /**
- * «Можно ли свои тетради» — из чего угодно, включая вчерашнюю запись.
+ * "May own notebooks be created", from anything, including yesterday's
+ * record.
  *
- * У поля недолго была другая пара значений: `'room' | 'owner'` — «какой доступ
- * достаётся тетради студента». Значение переехало вместе со смыслом:
- * `'owner'` — это и было «пусть заводит себе личные», то есть нынешнее `'on'`.
- * Всё остальное, включая прежнее `'room'`, читается запретом: умолчание здесь
- * строгое, и ошибиться в его сторону можно, в обратную — нет.
+ * For a short while the field had a different pair of values,
+ * `'room' | 'owner'`: "what access a student's notebook gets". The value
+ * moved together with the meaning: `'owner'` was exactly "let them create
+ * personal ones", that is, today's `'on'`. Everything else, including the
+ * former `'room'`, reads as a ban: the default here is strict, and erring
+ * towards it is fine, the other way is not.
  */
 function readOwnBooks(raw: unknown): RoomRules['ownBooks'] {
   if (OWN_BOOKS.has(raw as RoomRules['ownBooks'])) return raw as RoomRules['ownBooks']
@@ -871,10 +927,10 @@ function safeParse(text: string): unknown {
 /** True when this room is the product's own default — nothing to show, nothing to explain. */
 export function isOpenRoom(rules: RoomRules): boolean {
   /*
-   * Карту тетрадей приходится спрашивать отдельно, и вот почему. `books` в
-   * `OPEN_ROOM` нет вовсе (см. там), так что перебор ключей образца до неё не
-   * доходит, — а комната, где одну тетрадь сделали личной, продуктовым
-   * умолчанием быть перестала.
+   * The notebook map has to be asked about separately, and here is why.
+   * `OPEN_ROOM` has no `books` at all (see there), so iterating over the
+   * template's keys never reaches it, while a room where one notebook was
+   * made personal has stopped being the product default.
    */
   if (rules.books && Object.keys(rules.books).length > 0) return false
   return (Object.keys(OPEN_ROOM) as (keyof RoomRules)[]).every(
@@ -883,12 +939,12 @@ export function isOpenRoom(rules: RoomRules): boolean {
 }
 
 /**
- * Какое правило говорит «кто здесь печатает и запускает», а какое — про всё
- * остальное.
+ * Which rule says "who types and runs here", and which is about everything
+ * else.
  *
- * Запись по всем ключам сразу, а не список: правило, добавленное завтра,
- * обязано сломать проверку типов здесь и потребовать решения — тот же довод,
- * что у `LECTURE_ROOM` и `rulesAfterClass`, и единственная копия этой границы.
+ * A record over all keys at once, not a list: a rule added tomorrow must
+ * break the type check here and demand a decision; the same argument as for
+ * `LECTURE_ROOM` and `rulesAfterClass`, and the only copy of this boundary.
  */
 const IS_A_RIGHT: Record<keyof RoomRules, boolean> = {
   run: true,
@@ -900,49 +956,52 @@ const IS_A_RIGHT: Record<keyof RoomRules, boolean> = {
   restart: true,
   agent: true,
   agentSteps: false,
-  /* Смотреть и спрашивать — не «кто печатает»: лекция их не трогает. */
+  /* Watching and asking are not "who types": a lecture leaves them alone. */
   history: false,
   oracle: false,
   questionsPerHour: false,
   slowModeSeconds: false,
   model: false,
-  /* Что делает замок — не право: открывает ячейку в любом случае преподаватель. */
+  /* What the lock does is not a right: the teacher opens the cell in any case. */
   opens: false,
   /*
-   * Перекрытия по тетрадям — НЕ право комнаты, и это решение, а не недосмотр.
+   * Per-notebook overrides are NOT a room right, and this is a decision, not
+   * an oversight.
    *
-   * Единственный читатель этого списка — полоса «Лекция» над тетрадью
-   * (`isLectureRoom`), и она говорит пятистам людям одно: в КОМНАТЕ печатает и
-   * запускает преподаватель. Это остаётся правдой и тогда, когда одному
-   * студенту открыли его собственную тетрадь: про неё говорит метка на её
-   * вкладке, а снятая полоса оставила бы серую лекционную тетрадь вообще без
-   * объяснения — ровно та беда, от которой полоса и заведена.
+   * The only reader of this list is the "Lecture" banner above the notebook
+   * (`isLectureRoom`), and it tells five hundred people one thing: in the
+   * ROOM the teacher types and runs. That stays true even when one student
+   * has been given their own notebook: the label on its tab speaks about it,
+   * while a removed banner would leave the grey lecture notebook with no
+   * explanation at all, exactly the trouble the banner exists to prevent.
    *
-   * `ownBooks` — правом является, но полосы касаться не должен по тому же
-   * доводу: «свои тетради разрешены» ничего не говорит о ТЕТРАДИ КОМНАТЫ, про
-   * которую полоса и написана. Конец занятия его всё равно закрывает — см.
-   * `rulesAfterClass`, там это сделано значением, а не признаком.
+   * `ownBooks` is a right, but it must not touch the banner, for the same
+   * reason: "own notebooks are allowed" says nothing about the ROOM'S
+   * NOTEBOOK, which is what the banner is about. The end of a class closes it
+   * anyway; see `rulesAfterClass`, where this is done by value rather than by
+   * flag.
    */
   books: false,
   ownBooks: false,
   /*
-   * Не права, а железо: полоса «Лекция» говорит о том, кому что можно, и
-   * числа памяти к этому вопросу не относятся — как не относятся потолки
-   * оракула выше.
+   * Not rights but hardware: the "Lecture" banner is about who may do what,
+   * and memory numbers have nothing to do with that question, just as the
+   * oracle ceilings above do not.
    */
   ownMemoryMb: false,
   ownCpus: false,
   /*
-   * Предел ячейки — тоже не право, а потолок, и полосы «Лекция» он не касается:
-   * «печатает и запускает преподаватель» остаётся правдой и с пределом, и без
-   * него. Комната, где просто включили автостоп, из лекций не выписывается.
+   * The cell limit is not a right either but a ceiling, and it does not
+   * touch the "Lecture" banner: "the teacher types and runs" stays true with
+   * or without a limit. A room where auto-stop was simply switched on is not
+   * struck off the lectures.
    */
   cellLimitSec: false,
   /*
-   * Опасные команды — тоже не право, и по тому же доводу: роль здесь не
-   * различается вовсе, а полоса «Лекция» говорит именно про роли. Комната, где
-   * преподаватель курса по Python разрешил показать `os._exit`, лекцией быть
-   * не перестаёт.
+   * Dangerous commands are not a right either, and for the same reason: roles
+   * are not distinguished here at all, while the "Lecture" banner is precisely
+   * about roles. A room where the teacher of a Python course allowed showing
+   * `os._exit` does not stop being a lecture.
    */
   danger: false,
 }
@@ -950,28 +1009,31 @@ const IS_A_RIGHT: Record<keyof RoomRules, boolean> = {
 const RIGHTS = (Object.keys(IS_A_RIGHT) as (keyof RoomRules)[]).filter((key) => IS_A_RIGHT[key])
 
 /**
- * Комната идёт по лекционному пресету — по образцу `isOpenRoom`.
+ * The room follows the lecture preset, on the model of `isOpenRoom`.
  *
- * Совпадение по значениям, а не флажок в базе: пресет — это набор правил, и
- * комната, собранная теми же значениями руками, ничем от лекции не отличается.
+ * A match by values, not a flag in the database: a preset is a set of rules,
+ * and a room assembled by hand from the same values is no different from a
+ * lecture.
  *
- * Сравниваются ТОЛЬКО права (`IS_A_RIGHT`), потому что полоса «Лекция» над
- * тетрадью (Notebook.svelte) говорит пятистам людям ровно одно: печатает и
- * запускает преподаватель. Сравнивать все ключи — значит гасить её от
- * переключателя, который прав не менял: `opens` (консилиум по правам — та же
- * лекция), выключенный на контрольной оракул, закрытая история, свой потолок
- * вопросов, своя модель. Лекция от этого лекцией быть не перестаёт, а серая
- * тетрадь без полосы остаётся без единого объяснения.
+ * ONLY the rights (`IS_A_RIGHT`) are compared, because the "Lecture" banner
+ * above the notebook (Notebook.svelte) tells five hundred people exactly one
+ * thing: the teacher types and runs. Comparing all keys would mean turning
+ * it off because of a toggle that did not change rights: `opens` (a council
+ * is the same lecture in terms of rights), the oracle switched off for a
+ * test, closed history, a question ceiling of its own, a model of its own.
+ * The lecture does not stop being a lecture because of that, while the grey
+ * notebook without the banner is left without a single explanation.
  *
- * Образец, с которым сверяются права, — `rulesAfterClass(rules)`, а не
- * `LECTURE_ROOM`: это та же самая «печатает один преподаватель», написанная
- * один раз. Заодно она правильно читает `agent: 'off'` — выключенный агент
- * строже лекционного, а не мягче, и комнату из лекций не выписывает.
+ * The template the rights are checked against is `rulesAfterClass(rules)`,
+ * not `LECTURE_ROOM`: it is the same "only the teacher types", written once.
+ * It also reads `agent: 'off'` correctly: a disabled agent is stricter than
+ * the lecture's, not softer, and does not strike the room off the lectures.
  *
- * Одно следствие стоит знать в лицо: права `rulesAfterClass` — неподвижная
- * точка, так что ЗАКОНЧЕННОЕ занятие читается отсюда как лекция. По сути это
- * правда — печатает и запускает один преподаватель, — но спрашивать этим
- * «занятие идёт по-лекционному» нельзя: для конца пары есть свой признак.
+ * One consequence worth knowing by sight: the rights of `rulesAfterClass`
+ * are a fixed point, so a FINISHED class reads as a lecture from here. In
+ * essence that is true (only the teacher types and runs), but this must not
+ * be used to ask "is the class running lecture-style": the end of a class
+ * has its own flag.
  */
 export function isLectureRoom(rules: RoomRules): boolean {
   const lecture = rulesAfterClass(rules)
@@ -979,11 +1041,13 @@ export function isLectureRoom(rules: RoomRules): boolean {
 }
 
 /**
- * Комната консилиума: лекция, где замок открывает каждому свой лист.
+ * A council room: a lecture where the lock opens a sheet of their own for
+ * everyone.
  *
- * Не третий пресет рядом с двумя, а уточнение лекции — так же, как сам
- * COUNCIL_ROOM собран из LECTURE_ROOM одной строкой. Спрашивать «лекция ли это»
- * про консилиум можно и нужно; спрашивать «консилиум ли» про лекцию — нет.
+ * Not a third preset next to the two but a refinement of the lecture, just
+ * as COUNCIL_ROOM itself is built from LECTURE_ROOM in one line. Asking "is
+ * this a lecture" about a council is allowed and needed; asking "is this a
+ * council" about a lecture is not.
  */
 export function isCouncilRoom(rules: RoomRules): boolean {
   return isLectureRoom(rules) && rules.opens === 'council'
@@ -1003,11 +1067,11 @@ export function allows(rule: Who, role: 'host' | 'participant'): boolean {
 }
 
 /**
- * Можно ли запускать — и одну ячейку или весь лист.
+ * Whether running is allowed, and one cell or the whole sheet.
  *
- * `single` разрешает нажатие на ячейке и запрещает Run All и Run Above: ядро
- * одно, и разница между «двадцать человек считают» и «двадцать человек забили
- * очередь на восемьсот ячеек» — ровно в этом.
+ * `single` allows pressing on a cell and forbids Run All and Run Above: the
+ * kernel is one, and the difference between "twenty people compute" and
+ * "twenty people jammed the queue with eight hundred cells" is exactly this.
  */
 export function allowsRun(
   rule: RunWho,
@@ -1020,20 +1084,21 @@ export function allowsRun(
 }
 
 /**
- * Сколько своих ячеек человек держит в очереди одновременно.
+ * How many of their own cells a person keeps in the queue at the same time.
  *
- * Не право, а потолок: при `single` очередь у каждого своя длиной в одну
- * ячейку, и нажатие на второй ждёт, а не отвергается молча.
+ * Not a right but a ceiling: under `single` everyone has their own queue one
+ * cell long, and pressing a second one waits rather than being silently
+ * rejected.
  */
 export function runQueueCap(rule: RunWho, role: 'host' | 'participant'): number {
   return rule === 'single' && role !== 'host' ? 1 : Number.POSITIVE_INFINITY
 }
 
 /**
- * Можно ли менять состав тетради — и что именно менять.
+ * Whether the notebook's structure may be changed, and what exactly.
  *
- * Три глагола, потому что `add` разрешает ровно первый: дописать своё в
- * заготовленный листок можно, убрать и переставить чужое нельзя.
+ * Three verbs, because `add` allows exactly the first: adding your own to a
+ * prepared worksheet is allowed, removing and moving someone else's is not.
  */
 export function allowsStructure(
   rule: StructureWho,
@@ -1046,34 +1111,34 @@ export function allowsStructure(
 }
 
 /**
- * Может ли этот человек запустить оракула в режиме «сделать».
+ * Whether this person may run the oracle in "do" mode.
  *
- * Отдельная функция, а не `allows`, потому что у правила три значения: `off`
- * закрывает режим у всех, включая преподавателя, — «в этой комнате оракул
- * файлов не трогает» есть свойство комнаты, а не чьё-то право. Тот же довод,
- * что и у оболочки, когда она была.
+ * A separate function rather than `allows`, because the rule has three
+ * values: `off` closes the mode for everyone, including the teacher: "in
+ * this room the oracle does not touch files" is a property of the room, not
+ * someone's right. The same argument as for the shell, back when it existed.
  */
 export function allowsAgent(rule: RoomRules['agent'], role: 'host' | 'participant'): boolean {
   if (rule === 'off') return false
   return rule === 'room' || role === 'host'
 }
 
-/* ----------------------------------------------- правила ОДНОЙ тетради */
+/* ----------------------------------------------- rules of ONE notebook */
 
 /**
- * Кто спрашивает: роль в комнате и своё имя в ней.
+ * Who is asking: the role in the room and their own name in it.
  *
- * Имя нужно ровно затем, чтобы узнать автора личной тетради, и потому может
- * быть `null`: место, которое себя не назвало, автором заведомо не является —
- * и отказ получит, а не доступ.
+ * The name is needed exactly to recognize the author of a personal notebook,
+ * and so it may be `null`: a seat that did not name itself is certainly not
+ * the author, and it will get a refusal, not access.
  */
 export interface Asker {
   role: 'host' | 'participant'
-  /** participantId; `null` — спрашивающий себя не назвал, и автором он быть не может. */
+  /** participantId; `null`: the asker did not name themselves and cannot be the author. */
   participantId: string | null
 }
 
-/** Что комната помнит про эту тетрадь. `null` — ничего, то есть «как в комнате». */
+/** What the room remembers about this notebook. `null`: nothing, i.e. "as in the room". */
 function bookRuleFor(rules: RoomRules, root: string | null): BookRule | null {
   if (!root || !rules.books) return null
   const rule = rules.books[root]
@@ -1081,41 +1146,42 @@ function bookRuleFor(rules: RoomRules, root: string | null): BookRule | null {
 }
 
 /**
- * Правила комнаты, ПЕРЕСЧИТАННЫЕ для одной тетради и одного человека.
+ * The room's rules RECOMPUTED for one notebook and one person.
  *
- * Единственное место, где живёт «доступ к тетради», и обе стороны продукта
- * зовут именно его: сервер — прежде чем принять кадр, переставить ячейку или
- * поставить её в очередь; браузер — прежде чем нарисовать кнопку серой. Дальше
- * и тот и другой работают привычными `mayEditCell`, `allowsStructure` и
- * `mayRunCell`, как будто тетрадь в комнате одна. Второй копии этой развилки в
- * продукте нет намеренно: разошедшиеся копии одного правила здесь уже стоили
- * серой кнопки там, где право было.
+ * The only place where "notebook access" lives, and both sides of the
+ * product call exactly this: the server before accepting a frame, moving a
+ * cell or queueing it; the browser before drawing a button grey. After that
+ * both work with the usual `mayEditCell`, `allowsStructure` and
+ * `mayRunCell`, as if the room had one notebook. There is no second copy of
+ * this fork in the product on purpose: diverged copies of one rule here have
+ * already cost a grey button where the right existed.
  *
- * Меняются `run`, `edit` и `structure` — и, только у СВОЕЙ личной тетради,
- * `restart` с `wipe`. Всё остальное — терминал, доска, файлы, история, оракул,
- * потолки — общее для комнаты, и у него нет измерения «в какой тетради».
+ * `run`, `edit` and `structure` change, and, only for ONE'S OWN personal
+ * notebook, `restart` with `wipe`. Everything else (terminal, board, files,
+ * history, oracle, ceilings) is shared by the room and has no "which
+ * notebook" dimension.
  *
- * Про `restart`/`wipe` стоит сказать отдельно, потому что раньше их здесь не
- * было вовсе. У личной тетради своё ядро и свой контейнер
- * (`bookHasOwnKernel`), так что «перезапустить» в ней уносит переменные одного
- * человека — его собственные, — а «стереть выводы» стирает его собственный
- * вывод. Требовать на это преподавателя значило бы поднимать руку посреди
- * лекции, чтобы в своём черновике заново объявить `x`. Тетрадь, открытая ВСЕМ
- * (`all`), сюда не попадает намеренно: у неё ядро комнаты, и перезапуск в ней
- * — это перезапуск занятия.
+ * `restart`/`wipe` deserve a separate word, because they used to be absent
+ * here altogether. A personal notebook has its own kernel and its own
+ * container (`bookHasOwnKernel`), so "restart" in it takes away one person's
+ * variables, their own, and "clear outputs" clears their own output.
+ * Requiring the teacher for this would mean raising a hand in the middle of
+ * a lecture to declare `x` again in one's own draft. A notebook open to ALL
+ * (`all`) is left out of this on purpose: it has the room's kernel, and a
+ * restart in it is a restart of the class.
  *
- * Возвращает ТОТ ЖЕ объект, когда менять нечего: это не экономия, а обещание
- * вызывающим, которые сравнивают правила по ссылке (браузерные `$derived` и
- * кэш правил на сервере), что обычная комната не порождает нового объекта на
- * каждый кадр синхронизации.
+ * Returns THE SAME object when there is nothing to change: this is not
+ * economy but a promise to callers that compare rules by reference (the
+ * browser's `$derived` and the server's rules cache) that an ordinary room
+ * does not produce a new object on every sync frame.
  *
- * Преподаватель проходит насквозь: `allows`, `allowsRun` и `allowsStructure` и
- * так пропускают роль `host`, а тетрадь, закрытая «только преподавателю»,
- * закрыта не от него.
+ * The teacher passes straight through: `allows`, `allowsRun` and
+ * `allowsStructure` let the `host` role through anyway, and a notebook
+ * closed "to the teacher only" is not closed to them.
  *
- * Конец занятия сюда не доезжает и доехать не может: `rulesAfterClass` карту
- * перекрытий не переносит (см. там), так что действующие правила закончившейся
- * пары приходят сюда без `books` и уходят как пришли.
+ * The end of a class does not reach here and cannot: `rulesAfterClass` does
+ * not carry the override map over (see there), so the effective rules of a
+ * finished class arrive here without `books` and leave as they came.
  */
 export function rulesForBook(rules: RoomRules, root: string | null, who: Asker): RoomRules {
   if (who.role === 'host') return rules
@@ -1124,12 +1190,13 @@ export function rulesForBook(rules: RoomRules, root: string | null, who: Asker):
   const own = rule.access === 'owner' && ownsBook(rule, who)
   const mine = rule.access === 'all' || own
   /*
-   * «Моя» тетрадь открывается целиком, а не «как в комнате»: в этом и смысл —
-   * студент работает у себя, пока лекция идёт рядом. `run: 'room'`, а не
-   * `single`: «по одной» — это потолок очереди, а не право, и считает его
-   * отдельная `runQueueCap` по правилам комнаты.
+   * "My" notebook opens fully, not "as in the room", and that is the point:
+   * the student works on their own while the lecture goes on next to them.
+   * `run: 'room'`, not `single`: "one at a time" is a queue ceiling, not a
+   * right, and a separate `runQueueCap` computes it from the room's rules.
    *
-   * Ядро и вывод своей тетради тоже свои — см. заметку выше.
+   * The kernel and output of one's own notebook are one's own too; see the
+   * note above.
    */
   if (own) {
     return { ...rules, run: 'room', edit: 'room', structure: 'room', restart: 'room', wipe: 'room' }
@@ -1143,31 +1210,34 @@ function ownsBook(rule: BookRule, who: Asker): boolean {
 }
 
 /**
- * Считается ли эта тетрадь в ОТДЕЛЬНОМ контейнере — том, где живут личные
- * тетради занятия.
+ * Whether this notebook computes in the SEPARATE container, the one where
+ * the class's personal notebooks live.
  *
- * Своё ядро есть у каждой тетради комнаты: лекция и семинар — разные ноутбуки,
- * и переменные одного в другом не появляются (server/src/kernel/index.ts).
- * Этот вопрос про другое — про то, в КАКОМ контейнере ядро поднимать, и ответ
- * у него ровно два: контейнер комнаты или контейнер личных тетрадей.
+ * Every notebook of the room has its own kernel: the lecture and the seminar
+ * are different notebooks, and variables of one do not appear in the other
+ * (server/src/kernel/index.ts). This question is about something else: in
+ * WHICH container to start the kernel, and it has exactly two answers: the
+ * room's container or the personal notebooks' container.
  *
- * Отдельный контейнер личным тетрадям нужен по двум причинам, и обе про
- * границу, которую внутри одного контейнера провести нечем. GPU выдаётся
- * контейнеру целиком: отнять карту у одного процесса внутри нельзя, а
- * `CUDA_VISIBLE_DEVICES` снимается одной строкой из ячейки. И лимит памяти у
- * контейнера общий: OOM-killer выбирает самый тяжёлый процесс — то есть ядро
- * лекции с загруженным датасетом, а не жадного студента.
+ * Personal notebooks need a separate container for two reasons, and both are
+ * about a boundary that cannot be drawn inside one container. A GPU is given
+ * to a container whole: the card cannot be taken away from one process
+ * inside, and `CUDA_VISIBLE_DEVICES` is removed by one line in a cell. And
+ * the memory limit is shared by the container: the OOM killer picks the
+ * heaviest process, that is, the lecture's kernel with the dataset loaded,
+ * not the greedy student.
  *
- * Одно место на весь продукт намеренно: второй копией сравнения
- * `access === 'owner'` и отличается разошедшееся правило от правила.
+ * One place for the whole product on purpose: a second copy of the
+ * `access === 'owner'` comparison is exactly what makes a diverged rule
+ * differ from the rule.
  *
- * `all` и `host` сюда не попадают: «открыта всем» — это по-прежнему общая
- * тетрадь занятия (своё ядро у неё есть, контейнер — комнатный), а «только
- * преподаватель» — тем более.
+ * `all` and `host` do not get here: "open to everyone" is still the class's
+ * shared notebook (it has its own kernel, the container is the room's), and
+ * "teacher only" all the more so.
  *
- * Спрашивать это надо по ХРАНИМЫМ правилам (db.ts · storedRules), а не по
- * действующим: `rulesAfterClass` карту `books` не переносит, и звонок не
- * должен переселять ядра из контейнера в контейнер.
+ * This must be asked by the STORED rules (db.ts · storedRules), not the
+ * effective ones: `rulesAfterClass` does not carry the `books` map over, and
+ * the bell must not move kernels from container to container.
  */
 export function bookHasOwnKernel(rules: RoomRules, root: string | null): boolean {
   if (!root || !rules.books) return false
@@ -1175,15 +1245,18 @@ export function bookHasOwnKernel(rules: RoomRules, root: string | null): boolean
 }
 
 /**
- * Чем отказывает ТЕТРАДЬ, а не комната, — и `null`, когда тетрадь ни при чём.
+ * How the NOTEBOOK refuses, not the room, and `null` when the notebook has
+ * nothing to do with it.
  *
- * Отдельно от `rulesForBook`, потому что это разные вопросы: одна отвечает
- * «можно ли», другая — «что сказать человеку». Сказать надо про тетрадь:
- * услышать «в этом семинаре печатает преподаватель», стоя в чужой личной
- * тетради, — значит пойти искать преподавателя, который ничего не запрещал.
+ * Separate from `rulesForBook`, because these are different questions: one
+ * answers "is it allowed", the other "what to tell the person". What to say
+ * is about the notebook: hearing "in this seminar the teacher types" while
+ * standing in someone else's personal notebook means going to look for a
+ * teacher who forbade nothing.
  *
- * Ключ фразы, а не сама фраза, по доводу `CLASS_IS_OVER`: этот файл про права,
- * а не про слова, и зовут его на каждый кадр синхронизации.
+ * The phrase's key rather than the phrase itself, by the `CLASS_IS_OVER`
+ * argument: this file is about rights, not words, and it is called on every
+ * sync frame.
  */
 export function bookRefusal(
   rules: RoomRules,
@@ -1202,31 +1275,35 @@ export function bookRefusal(
 }
 
 /**
- * Замок на ячейке: можно ли ЭТОМУ человеку писать в ЭТУ ячейку.
+ * The lock on a cell: may THIS person write into THIS cell.
  *
- * Лекция закрывает тетрадь целиком, и тогда единственный способ дать классу
- * что-то напечатать — открыть ему отдельную ячейку. Открытая ячейка — право
- * поверх правил: `edit: 'host'` остаётся в силе для всей остальной тетради, и
- * ослабляет его не настройка комнаты, а преподаватель, вручную и на время.
+ * A lecture closes the whole notebook, and then the only way to let the
+ * class type something is to open a single cell for them. An open cell is a
+ * right on top of the rules: `edit: 'host'` stays in force for the rest of
+ * the notebook, and what loosens it is not a room setting but the teacher,
+ * by hand and for a while.
  *
- * Функция, а не проверка на месте, ровно по доводу `allows`: отвечать на этот
- * вопрос обязаны одинаково сервер (collab/gate.ts) и браузер (web/src/lib/may.ts).
- * Разойдясь, они дают либо кнопку, которая нажимается и приносит отказ, либо —
- * что хуже — серую кнопку там, где право есть.
+ * A function rather than an inline check, exactly by the `allows` argument:
+ * the server (collab/gate.ts) and the browser (web/src/lib/may.ts) must
+ * answer this question identically. Once they diverge, they give either a
+ * button that can be pressed and brings a refusal or, worse, a grey button
+ * where the right exists.
  *
- * Открытая ячейка даёт РОВНО текст. Ни убрать её, ни переставить, ни сменить ей
- * вид она не позволяет: состав тетради в лекции преподавательский, и ячейка,
- * открытая для работы, не должна открывать способ её же удалить.
+ * An open cell gives EXACTLY the text. It does not allow removing it,
+ * moving it or changing its type: in a lecture the notebook's structure
+ * belongs to the teacher, and a cell opened for work must not open a way to
+ * delete that very cell.
  *
- * `cellOpen` здесь — строго `isCellOpen(cell)`, то есть положение «открыта
- * всем». Консилиум сюда приходит `false` намеренно: в консилиуме у каждого свой
- * лист, а общий текст ячейки закрыт как в закрытой. Права консилиума — ниже,
+ * `cellOpen` here is strictly `isCellOpen(cell)`, that is, the "open to
+ * everyone" position. A council comes here as `false` on purpose: in a
+ * council everyone has their own sheet, and the cell's shared text is closed
+ * as in a closed cell. Council rights are below:
  * `mayWriteCouncil`/`mayRunCouncil`/`mayLeadCouncil`.
  *
- * Конец занятия сильнее замка, поэтому `actsAfterClass` стоит первым
- * множителем: иначе «Закончить занятие» оставляло бы комнате столько дверей,
- * сколько преподаватель успел открыть за пару, — и закрывать их пришлось бы по
- * одной, вспоминая, какие открывал.
+ * The end of a class is stronger than the lock, so `actsAfterClass` is the
+ * first factor: otherwise "End class" would leave the room as many doors as
+ * the teacher managed to open during the class, and they would have to be
+ * closed one by one, remembering which ones were opened.
  */
 export function mayEditCell(
   rules: RoomRules,
@@ -1238,11 +1315,12 @@ export function mayEditCell(
 }
 
 /**
- * То же для запуска — и по мерке ОДНОЙ ячейки.
+ * The same for running, and by the measure of ONE cell.
  *
- * `allowsRun(..., 'one')`, а не `'bulk'`: открытая ячейка — это разрешение
- * посчитать её, а не Run All по чужой тетради. Очередь у тетради одна, и лекция —
- * последнее место, где двадцать человек ставят в очередь весь лист.
+ * `allowsRun(..., 'one')`, not `'bulk'`: an open cell is permission to
+ * compute it, not to Run All over someone else's notebook. A notebook has
+ * one queue, and a lecture is the last place where twenty people queue the
+ * whole sheet.
  */
 export function mayRunCell(
   rules: RoomRules,
@@ -1253,18 +1331,21 @@ export function mayRunCell(
   return actsAfterClass(finished, role) && (allowsRun(rules.run, role, 'one') || cellOpen)
 }
 
-/* --------------------------------------------------------------- консилиум */
+/* ----------------------------------------------------------------- council */
 
 /**
- * Пишет ли этот человек свою попытку в консилиуме.
+ * Whether this person writes their own attempt in a council.
  *
- * Правила комнаты здесь ни при чём — и это не оговорка, а суть положения:
- * консилиум и открывают там, где `edit` преподавательский, чтобы каждый писал
- * СВОЙ лист, не касаясь общего. Останавливает только конец занятия: после
- * звонка попытки не принимаются, а сданные остаются на просмотр.
+ * The room's rules have nothing to do with it, and this is not a caveat but
+ * the essence of the position: a council is opened precisely where `edit` is
+ * the teacher's, so that everyone writes THEIR OWN sheet without touching
+ * the shared one. Only the end of the class stops it: after the bell
+ * attempts are not accepted, and the submitted ones stay available for
+ * review.
  *
- * `closed` — консилиум на этой ячейке уже закрыт (замок переведён в другое
- * положение): текст остаётся у студента черновиком, но на сервер не уезжает.
+ * `closed`: the council on this cell is already closed (the lock moved to
+ * another position): the text stays with the student as a draft but does
+ * not go to the server.
  */
 export function mayWriteCouncil(
   role: 'host' | 'participant',
@@ -1275,11 +1356,11 @@ export function mayWriteCouncil(
 }
 
 /**
- * Запускает ли этот человек попытку в консилиуме.
+ * Whether this person runs an attempt in a council.
  *
- * Преподаватель запускает любую попытку, в том числе после занятия.
- * Студент — только свою при studentRun === true. Режим request разрешает
- * запрос одобрения, но сам по себе не даёт права на выполнение.
+ * The teacher runs any attempt, including after the class. A student runs
+ * only their own, when studentRun === true. The request mode allows asking
+ * for approval but by itself gives no right to execute.
  */
 export function mayRunCouncil(
   role: 'host' | 'participant',
@@ -1291,28 +1372,29 @@ export function mayRunCouncil(
 }
 
 /**
- * Ведёт ли консилиум: показать классу, ответить, отметить, убрать, переключить
- * замок и ручки, спросить оракула о решениях.
+ * Whether one leads the council: show to the class, reply, mark, remove,
+ * switch the lock and the knobs, ask the oracle about the solutions.
  *
- * Только преподаватель, и после звонка тоже он: сданные попытки остаются на
- * просмотр до конца занятия, и разобрать их после пары — его право.
+ * Only the teacher, and after the bell it is still them: submitted attempts
+ * stay available for review until the end of the class, and going through
+ * them after the class is their right.
  */
 export function mayLeadCouncil(role: 'host' | 'participant'): boolean {
   return role === 'host'
 }
 
 /**
- * За кем комната может пойти по документу.
+ * Whom the room may follow through the document.
  *
- * Только преподаватель: `leaderFor` (web/src/lib/follow.ts) берёт в ведущие
- * ровно роль `host`, и позиция всех остальных не читается никем.
+ * Only the teacher: `leaderFor` (web/src/lib/follow.ts) takes exactly the
+ * `host` role as leader, and nobody reads anyone else's position.
  *
- * Правило здесь, а не двумя копиями, потому что у него две стороны, и они
- * обязаны совпадать: одна выбирает ведущего из присутствия, другая решает,
- * публиковать ли своё место вообще. Пока публиковали все, один шаг
- * преподавателя на лекции разворачивался в N кадров присутствия от N
- * слушателей и N×N доставок — на пятистах это миллионы сообщений за одну
- * прокрученную страницу.
+ * The rule is here rather than in two copies, because it has two sides and
+ * they must match: one picks the leader from presence, the other decides
+ * whether to publish one's own position at all. While everyone published, a
+ * single teacher step at a lecture turned into N presence frames from N
+ * listeners and N×N deliveries: at five hundred that is millions of
+ * messages per scrolled page.
  */
 export function mayBeFollowed(role: 'host' | 'participant'): boolean {
   return role === 'host'
@@ -1342,7 +1424,7 @@ export function oracleModeIn(
   return wanted
 }
 
-/** Два потолка оракула: сколько вопросов в час на человека и промежуток между ними. */
+/** Two oracle ceilings: questions per hour per person and the interval between them. */
 export interface OracleLimits {
   questionsPerHour: number
   slowModeSeconds: number
@@ -1357,19 +1439,21 @@ export function agentStepsIn(room: number | null, instance: number): number {
 }
 
 /**
- * Потолки, под которыми комната работает на самом деле.
+ * The ceilings a room actually works under.
  *
- * То же правило, что у `oracleModeIn` выше, и по той же причине: комната
- * ужесточает и никогда не ослабляет. Ослаблять нельзя потому, что за модель
- * платит тот, кто держит инстанс, — его число это его счёт, и семинар, который
- * умел бы поднять себе предел, превращал бы настройку инстанса из потолка в
- * совет. Опуститься, наоборот, полезно: контрольная на одну пару не должна
- * стоить похода в настройки, общие для всех остальных комнат.
+ * The same rule as `oracleModeIn` above, and for the same reason: a room
+ * tightens and never loosens. Loosening is not allowed because the model is
+ * paid for by whoever runs the instance: their number is their bill, and a
+ * seminar able to raise its own limit would turn the instance setting from
+ * a ceiling into advice. Going lower, on the other hand, is useful: a test
+ * for one class should not cost a trip to settings shared by all the other
+ * rooms.
  *
- * Строже — в разные стороны, поэтому не один `Math.min` на оба поля: вопросов
- * должно быть МЕНЬШЕ, а промежуток между ними — БОЛЬШЕ.
+ * Stricter goes in different directions, hence not one `Math.min` for both
+ * fields: there must be FEWER questions and a LONGER interval between them.
  *
- * `null` — «как на инстансе»: комната ничего не сказала, и отвечает инстанс.
+ * `null` means "as on the instance": the room said nothing, and the instance
+ * answers.
  */
 export function oracleLimitsIn(rules: RoomRules, instance: OracleLimits): OracleLimits {
   return {
@@ -1385,20 +1469,21 @@ export function oracleLimitsIn(rules: RoomRules, instance: OracleLimits): Oracle
 }
 
 /**
- * Занятие закончено.
+ * The class is over.
  *
- * Не значение правила, а состояние комнаты поверх правил: преподаватель нажал
- * «Закончить занятие», и с этой минуты участник читает и смотрит, а действует
- * один преподаватель. Комната при этом остаётся живой — тетрадь, файлы, лента
- * терминала и ответы оракула на месте, — потому что после пары в них и ходят.
+ * Not a rule value but a room state on top of the rules: the teacher
+ * pressed "End class", and from that minute a participant reads and
+ * watches, and only the teacher acts. The room stays alive (the notebook,
+ * files, the terminal feed and the oracle's answers are in place), because
+ * that is exactly where people go after the class.
  *
- * Хранимые правила не трогаются: закончить занятие и открыть его снова можно
- * сколько угодно раз, и комната каждый раз возвращается ровно в ту настройку,
- * из которой её закончили. Поэтому здесь функция, а не запись в базу.
+ * The stored rules are not touched: a class can be ended and reopened any
+ * number of times, and each time the room returns to exactly the setup it
+ * was ended from. Hence a function here, not a database write.
  *
- * Поля перечислены все до одного и без `...rules` намеренно: правило,
- * добавленное завтра, обязано сломать проверку типов здесь и потребовать
- * решения, а не проехать молча открытым.
+ * All the fields are listed, every single one, without `...rules`, on
+ * purpose: a rule added tomorrow must break the type check here and demand
+ * a decision, not slip through silently as open.
  */
 export function rulesAfterClass(rules: RoomRules): RoomRules {
   return {
@@ -1410,91 +1495,100 @@ export function rulesAfterClass(rules: RoomRules): RoomRules {
     wipe: 'host',
     restart: 'host',
     /*
-     * `off` — свойство комнаты, а не чьё-то право (см. поле `agent`), и
-     * закончившееся занятие его не смягчает.
+     * `off` is a property of the room, not someone's right (see the `agent`
+     * field), and a finished class does not soften it.
      */
     agent: rules.agent === 'off' ? 'off' : 'host',
     agentSteps: rules.agentSteps,
     /*
-     * Остаются как были. `history` — это чтение, а его-то и надо оставить.
-     * `oracle` и `model` описывают не право действовать, а модель и её
-     * подробность; у `oracle` вообще нет измерения «кто», поэтому «спросить
-     * оракула» закончившееся занятие запрещает отдельной проверкой роли
-     * (server/src/routes/ai.ts), а не этим полем.
+     * These stay as they were. `history` is reading, and reading is exactly
+     * what must remain. `oracle` and `model` describe not a right to act but
+     * the model and its level of detail; `oracle` has no "who" dimension at
+     * all, so a finished class forbids "asking the oracle" by a separate role
+     * check (server/src/routes/ai.ts), not by this field.
      */
     history: rules.history,
     oracle: rules.oracle,
-    // Что значит «открыть ячейку» — свойство комнаты, а после звонка ячеек не
-    // открывают вовсе; поле едет как было, чтобы утро после пары помнило режим.
+    // What "opening a cell" means is a room property, and after the bell cells
+    // are not opened at all; the field goes through as it was, so that the
+    // morning after the class remembers the mode.
     opens: rules.opens,
     /*
-     * Потолки оракула — оттуда же: они про расход, а не про право. После звонка
-     * спрашивает один преподаватель, которого промежуток и так не касается.
+     * Oracle ceilings come along too: they are about spending, not rights.
+     * After the bell only the teacher asks, and the interval does not apply
+     * to them anyway.
      */
     questionsPerHour: rules.questionsPerHour,
     slowModeSeconds: rules.slowModeSeconds,
     model: rules.model,
     /*
-     * Перекрытий по тетрадям здесь НЕТ, и это самая важная строка в функции.
+     * There are NO per-notebook overrides here, and this is the most
+     * important line in the function.
      *
-     * Конец занятия сильнее всего остального, включая доступ к отдельной
-     * тетради: «открыта всем» и «личная» — это разрешения, а после звонка
-     * действует один преподаватель. Карта не переносится сюда вовсе, и потому
-     * `rulesForBook` поверх этих правил не находит ничего и ничего не
-     * открывает. Порядок при этом безразличен — а был бы важен, если бы карта
-     * сюда доехала: тогда одна личная тетрадь пережила бы звонок молча.
+     * The end of a class is stronger than everything else, including access
+     * to an individual notebook: "open to everyone" and "personal" are
+     * permissions, and after the bell only the teacher acts. The map is not
+     * carried over here at all, and so `rulesForBook` on top of these rules
+     * finds nothing and opens nothing. The order does not matter then, but
+     * it would if the map got here: then one personal notebook would survive
+     * the bell silently.
      *
-     * ХРАНИМЫЕ правила при этом целы (`db.ts · storedRules`): занятие
-     * открывают обратно, и личная тетрадь возвращается тем же, чем была.
+     * The STORED rules are intact meanwhile (`db.ts · storedRules`): the
+     * class is reopened, and the personal notebook comes back as what it
+     * was.
      *
-     * Свои тетради после звонка не заводят: это такое же действие, как правка и
-     * запуск, и закрывается оно здесь, а не отдельной проверкой в `books.ts` —
-     * по тому же доводу, что и всё остальное в этой функции. ХРАНИМЫЙ выбор
-     * при этом цел (`db.ts · storedRules`), и занятие, открытое обратно,
-     * возвращает его.
+     * Own notebooks are not created after the bell: it is the same kind of
+     * action as editing and running, and it is closed here, not by a
+     * separate check in `books.ts`, by the same argument as everything else
+     * in this function. The STORED choice stays intact (`db.ts ·
+     * storedRules`), and a reopened class brings it back.
      */
     ownBooks: 'off',
     /*
-     * Числа личных тетрадей звонок не трогает.
+     * The bell does not touch the personal notebook numbers.
      *
-     * Конец занятия — про права: он закрывает двери, а не отбирает железо. К
-     * тому же дверь к личным тетрадям он и так закрыл строкой выше, а число
-     * пригодится в ту же секунду, когда занятие откроют обратно.
+     * The end of a class is about rights: it closes doors, it does not take
+     * hardware away. Besides, it has already closed the door to personal
+     * notebooks one line above, and the number will be needed the very
+     * second the class is reopened.
      */
     ownMemoryMb: rules.ownMemoryMb,
     ownCpus: rules.ownCpus,
     /*
-     * Предел ячейки звонок не трогает по тому же доводу: он про права, а не про
-     * то, сколько ядру дано считать. Да и запускает после звонка один
-     * преподаватель — а предел его ячейки останавливает ровно так же, как
-     * студенческую, и снимать его молча было бы сюрпризом.
+     * The bell does not touch the cell limit, by the same argument: it is
+     * about rights, not about how long the kernel is given to compute. And
+     * after the bell only the teacher runs, and the limit stops their cell
+     * exactly as it stops a student's; removing it silently would be a
+     * surprise.
      */
     cellLimitSec: rules.cellLimitSec,
     /*
-     * Защита от опасных команд переживает звонок такой, какой была, — в обе
-     * стороны. Ужесточать её здесь незачем (она и так строгая по умолчанию), а
-     * снимать нельзя: после пары в комнате остаётся преподаватель, и
-     * `os._exit(0)` в его ячейке стоит ему тех же переменных, что и классу.
+     * The protection against dangerous commands survives the bell as it was,
+     * in both directions. There is no need to tighten it here (it is strict
+     * by default already), and it must not be removed: after the class the
+     * teacher stays in the room, and `os._exit(0)` in their cell costs them
+     * the same variables it costs the class.
      */
     danger: rules.danger,
   }
 }
 
 /**
- * Одна фраза на все отказы закончившегося занятия — и на сервере, и в подсказках.
+ * One phrase for all refusals of a finished class, both on the server and in
+ * tooltips.
  *
- * Отдельно от правил: человеку важно не то, какое правило его остановило, а то,
- * что занятие кончилось. Услышать вместо этого «в этом семинаре запускает
- * преподаватель» — значит пойти искать преподавателя, который ничего не менял.
+ * Separate from the rules: what matters to a person is not which rule
+ * stopped them but that the class is over. Hearing instead "in this seminar
+ * the teacher runs" means going to look for a teacher who changed nothing.
  */
 export const CLASS_IS_OVER = 'server.classOver'
 
 /**
- * Действует ли этот человек в комнате, где занятие закончено.
+ * Whether this person acts in a room whose class is over.
  *
- * Для того, что правилами не выражается: спросить оракула, открыть ящик
- * терминала, ответить на `input()`. Действия, у которых правило есть, закрывает
- * `rulesAfterClass`; это — та же граница для всего остального.
+ * For what rules do not express: asking the oracle, opening the terminal
+ * drawer, answering `input()`. Actions that have a rule are closed by
+ * `rulesAfterClass`; this is the same boundary for everything else.
  */
 export function actsAfterClass(finished: boolean, role: 'host' | 'participant'): boolean {
   return !finished || role === 'host'

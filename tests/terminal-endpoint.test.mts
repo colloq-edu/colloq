@@ -1,18 +1,20 @@
 /**
- * Куда ходит общий терминал.
+ * Where the shared terminal goes.
  *
- * Адрес Jupyter — свойство комнаты, а не процесса: ради этого два семинара и
- * могут одновременно сидеть на разном Python. Ядро это соблюдало с самого
- * появления окружений, а терминал читал глобальную настройку — и в семинаре с
- * выбранным окружением `pip install` уходил в контейнер, которого Python этой
- * комнаты не видит. Команда отрабатывала, писала «successfully installed» и не
- * меняла ничего, что можно было бы импортировать из ячейки.
+ * The Jupyter address is a property of the room, not of the process: that is
+ * why two seminars can sit on different Pythons at the same time. The kernel
+ * honoured this from the very appearance of environments, while the terminal
+ * read the global setting — and in a seminar with a chosen environment
+ * `pip install` went into a container this room's Python does not see. The
+ * command ran, wrote "successfully installed" and changed nothing that could
+ * be imported from a cell.
  *
- * Проверка идёт по исходнику, а не по поведению, и это осознанно: чтобы поймать
- * возврат этой ошибки в работе, нужны два живых контейнера Jupyter и
- * терминадо-сокет к каждому — то есть проверка, которой не будет в CI и которая
- * не запустится на ноутбуке без докера. А ошибка вся целиком в одной строке:
- * взяли адрес не оттуда. Такую строку видно чтением.
+ * The check goes by the source, not by behaviour, and this is deliberate: to
+ * catch this bug coming back at run time, you need two live Jupyter containers
+ * and a terminado socket to each — that is, a check that will not be in CI and
+ * will not run on a laptop without Docker. And the whole bug is in one line:
+ * the address was taken from the wrong place. Such a line is visible by
+ * reading.
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -23,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8')
 
-test('терминал не читает адрес Jupyter из настроек инстанса', () => {
+test('the terminal does not read the Jupyter address from the instance settings', () => {
   const source = read('server/src/kernel/terminal.ts')
   const offenders = source
     .split('\n')
@@ -33,76 +35,80 @@ test('терминал не читает адрес Jupyter из настрое�
   assert.deepEqual(
     offenders,
     [],
-    `терминал снова берёт адрес из config.jupyter — в комнате со своим окружением ` +
-      `он уйдёт в чужой контейнер:\n` +
+    `the terminal takes the address from config.jupyter again — in a room with its own environment ` +
+      `it will go into someone else's container:\n` +
       offenders.map(({ no, line }) => `  terminal.ts:${no}  ${line}`).join('\n'),
   )
 })
 
-test('терминал спрашивает адрес у самой комнаты', () => {
+test('the terminal asks the room itself for the address', () => {
   const source = read('server/src/kernel/terminal.ts')
   assert.ok(
     source.includes('endpointForSession(sessionId,'),
-    'терминал должен разрешать адрес через контейнер комнаты, как это делает ядро',
+    'the terminal must resolve the address through the room container, as the kernel does',
   )
 })
 
-test('ядро и терминал разрешают адрес одинаково', () => {
+test('the kernel and the terminal resolve the address the same way', () => {
   /*
-   * Две подсистемы, одно правило. Если одна из них когда-нибудь начнёт
-   * вычислять адрес по-своему, разойдутся они молча: обе будут работать, просто
-   * в разных контейнерах, и заметит это студент, у которого импорт не находит
-   * только что поставленный пакет.
+   * Two subsystems, one rule. If one of them ever starts computing the address
+   * its own way, they will drift apart silently: both will keep working, just
+   * in different containers, and the one to notice is a student whose import
+   * cannot find a package that was just installed.
    */
   const kernel = read('server/src/kernel/index.ts')
   const terminal = read('server/src/kernel/terminal.ts')
 
   /*
-   * Проверяется правило, а не буква.
+   * The rule is checked, not the letter.
    *
-   * Раньше здесь стояло точное выражение `endpointForEnvironment(session
-   * Environment(sessionId))`, и тест сломался от правки, которая ничего не
-   * меняла по смыслу: имя окружения понадобилось второй раз — чтобы забыть
-   * протухший адрес при отказе, — и переехало в переменную. Само правило
-   * осталось тем же, а проверка его не пережила.
+   * Previously the exact expression
+   * `endpointForEnvironment(sessionEnvironment(sessionId))` stood here, and the
+   * test broke on an edit that changed nothing in meaning: the environment
+   * name was needed a second time — to forget a stale address on a refusal —
+   * and moved into a variable. The rule itself stayed the same, but the check
+   * did not survive it.
    */
   for (const [name, source] of [
-    ['ядро', kernel],
-    ['терминал', terminal],
+    ['the kernel', kernel],
+    ['the terminal', terminal],
   ] as const) {
     /*
-     * Одна комната — один контейнер, и оболочка обязана попасть в тот же, где
-     * считаются ячейки: `!pip install` в терминале и `import` в ячейке должны
-     * говорить об одном Python. Раньше правилом было «через окружение»; теперь
-     * оно строже — через саму комнату.
+     * One room — one container, and the shell must get into the same one
+     * where the cells are computed: `!pip install` in the terminal and
+     * `import` in a cell must talk about the same Python. Previously the rule
+     * was "through the environment"; now it is stricter — through the room
+     * itself.
      */
     assert.ok(
       source.includes('endpointForSession(sessionId,'),
-      `${name} больше не разрешает адрес через контейнер комнаты`,
+      `${name} no longer resolves the address through the room container`,
     )
     assert.ok(
       source.includes('sessionEnvironment(sessionId)'),
-      `${name} больше не спрашивает окружение у семинара`,
+      `${name} no longer asks the seminar for its environment`,
     )
     /*
-     * Про defaultEndpoint() здесь проверки нет, и это осознанно: в terminal.ts
-     * он стоит заглушкой в свежесозданной записи, до того как терминал вообще
-     * открывали. Настоящий адрес спрашивается в openTerminal. Запрет на само
-     * упоминание поймал бы эту строку и ничего бы этим не улучшил.
+     * There is no check on defaultEndpoint() here, and this is deliberate: in
+     * terminal.ts it stands as a placeholder in a freshly created record,
+     * before the terminal was ever opened. The real address is asked for in
+     * openTerminal. A ban on the mere mention would catch this line and
+     * improve nothing.
      */
   }
 })
 
-test('смена адреса обесценивает запомненное имя pty', () => {
+test('a change of address invalidates the remembered pty name', () => {
   /*
-   * pty с именем «1» есть в каждом контейнере. Запомнив имя из одного и
-   * подключившись с ним к другому, терминал привёл бы комнату в чужую
-   * оболочку — не в свою, но и не в пустоту, что хуже ошибки.
+   * A pty named "1" exists in every container. Having remembered the name
+   * from one and connected with it to another, the terminal would lead the
+   * room into someone else's shell — not its own, but not into nothing
+   * either, which is worse than an error.
    */
   const source = read('server/src/kernel/terminal.ts')
   assert.ok(
     /if \(endpointIdentity\(endpoint\) !== endpointIdentity\(term\.endpoint\)\) term\.name = null/.test(source),
-    'при смене адреса или Pod UID имя pty должно сбрасываться',
+    'the pty name must be reset when the address or the Pod UID changes',
   )
 })
 

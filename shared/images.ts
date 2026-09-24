@@ -1,52 +1,56 @@
 /**
- * Картинки внутри текстовой ячейки — тем же приёмом, что и картинки вывода.
+ * Pictures inside a text cell — by the same trick as pictures in outputs.
  *
- * У вывода эта задача решена давно: график matplotlib уезжает на полку рядом с
- * комнатой, а в документе остаётся ссылка на полторы сотни байт
- * (server/src/blobs.ts · `shared/notebook.ts · OutputBlob`). У ЗАМЕТКИ она
- * решена не была, и это стоило дороже: тетрадь лекции, где условия задач
- * нарисованы картинками, приезжает в комнату файлом .ipynb, а в файле картинка
- * лежит прямо в тексте ячейки — `![](data:image/png;base64,…)` или вложением
- * nbformat (`attachments`). Замер на живой комнате: документ на 10.5 МБ, из
- * которых 9.4 МБ — base64 в исходниках markdown-ячеек. Этот документ едет
- * ЦЕЛИКОМ каждому вошедшему, и студент на медленном канале не догонял комнату
- * никогда.
+ * For outputs this was solved long ago: a matplotlib chart goes to the shelf
+ * next to the room, and the document keeps a link of about a hundred and
+ * fifty bytes (server/src/blobs.ts · `shared/notebook.ts · OutputBlob`). For a
+ * NOTE it was not solved, and that cost more: a lecture notebook whose
+ * problems are drawn as pictures arrives in the room as a .ipynb file, and in
+ * the file the picture sits right in the cell's text —
+ * `![](data:image/png;base64,…)` or as an nbformat attachment
+ * (`attachments`). Measured on a live room: a 10.5 MB document, 9.4 MB of
+ * which was base64 in the sources of markdown cells. That document travels
+ * WHOLE to everyone who comes in, and a student on a slow link never caught
+ * up with the room.
  *
- * Здесь — только разбор текста, без диска и без сети: и браузер, и сервер
- * должны одинаково понимать, где в заметке картинка и как она названа.
+ * Here is only the parsing of text, with no disk and no network: the browser
+ * and the server must agree on where a note has a picture and what it is
+ * called.
  *
- * ФОРМА ССЫЛКИ — `attachment:<sha256>.<ext>`, и это намеренно форма самого
- * nbformat, а не наш адрес. Во-первых, файл на диске остаётся тетрадью, которую
- * откроет Jupyter: выгрузка кладёт рядом `attachments` с теми же именами (см.
- * server/src/notebook-images.ts). Во-вторых, адрес комнаты (`/api/sessions/<id>/
- * blobs/<sha>`) в тексте ячейки жить не может: тетрадь переезжает между
- * комнатами, а полка у каждой своя — ссылка пережила бы переезд битой.
+ * THE LINK FORM is `attachment:<sha256>.<ext>`, and it is deliberately
+ * nbformat's own form, not our address. First, the file on disk stays a
+ * notebook Jupyter will open: the export puts `attachments` with the same
+ * names next to it (see server/src/notebook-images.ts). Second, the room's
+ * address (`/api/sessions/<id>/blobs/<sha>`) cannot live in a cell's text: a
+ * notebook moves between rooms, and every room has its own shelf — the link
+ * would survive the move broken.
  *
- * ТОЛЬКО MARKDOWN. В коде `data:image/png;base64,…` — это строка, которую
- * написал человек, и подменять её ссылкой значило бы молча переписать чужую
- * программу. Поэтому всё, что здесь есть, зовут только для текстовых ячеек.
+ * MARKDOWN ONLY. In code, `data:image/png;base64,…` is a string a person
+ * wrote, and replacing it with a link would mean silently rewriting someone
+ * else's program. So everything here is called only for text cells.
  */
 
 import { normalizePath } from './paths.js'
 
 /**
- * Картинки меньше этого в документе и остаются.
+ * Pictures smaller than this stay in the document.
  *
- * Тот же порог, что у вывода (`BLOB_FROM_CHARS` в server/src/kernel/outputs.ts):
- * иконка на пару килобайт дешевле в документе, чем второй запрос за ней.
+ * The same threshold as for outputs (`BLOB_FROM_CHARS` in
+ * server/src/kernel/outputs.ts): an icon of a couple of kilobytes is cheaper
+ * in the document than a second request for it.
  */
 export const INLINE_IMAGE_FROM_CHARS = 16 * 1024
 
-/** Кусок текста, который надо заменить. */
+/** A piece of text to replace. */
 export interface TextEdit {
   start: number
   end: number
   text: string
 }
 
-/** Картинка, лежащая в тексте своим содержимым. */
+/** A picture that sits in the text as its own content. */
 export interface InlineImage {
-  /** Границы всего `data:…;base64,…` в исходнике. */
+  /** The bounds of the whole `data:…;base64,…` in the source. */
   start: number
   end: number
   mime: string
@@ -54,25 +58,27 @@ export interface InlineImage {
 }
 
 /*
- * Пробелы внутри base64 не ловим НАРОЧНО.
+ * Whitespace inside base64 is NOT matched, ON PURPOSE.
  *
- * В тексте ячейки картинка стоит одной строкой — так её пишут и Jupyter, и
- * редакторы; а перенос строки посреди адреса означал бы, что дальше идёт уже
- * не адрес, и жадный разбор съел бы соседний абзац.
+ * In a cell's text a picture stands on one line — that is how both Jupyter
+ * and editors write it; a line break in the middle of the address would mean
+ * that what follows is no longer the address, and a greedy parse would eat
+ * the neighboring paragraph.
  */
 const DATA_URI = /data:([A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/]+={0,2})/g
 
 /**
- * Ссылки `attachment:<имя>` — в том виде, в каком их пишет nbformat.
+ * `attachment:<name>` links — in the form nbformat writes them.
  *
- * Имя вложения — это имя файла, который человек перетащил в ячейку, и оно
- * бывает каким угодно: «схема.png», «Рис 1.png». Поэтому не список разрешённых
- * букв (на нём ломались все кириллические имена), а список тех, на которых имя
- * заведомо кончилось: скобка markdown, кавычка атрибута, пробел.
+ * An attachment's name is the name of the file a person dragged into the
+ * cell, and it can be anything: "схема.png", "Рис 1.png". So there is no list
+ * of allowed characters (every Cyrillic name broke on it) but a list of those
+ * at which a name has certainly ended: a markdown bracket, an attribute
+ * quote, a space.
  */
 const ATTACHMENT_REF = /attachment:([^\s)\]"'<>]+)/g
 
-/** Расширение файла по типу содержимого — для имени вложения. */
+/** The file extension for a content type — for the attachment's name. */
 export function extForMime(mime: string): string {
   const known: Record<string, string> = {
     'image/png': 'png',
@@ -84,23 +90,23 @@ export function extForMime(mime: string): string {
   return known[mime] ?? 'bin'
 }
 
-/** Имя вложения по хэшу его содержимого. Оно же — имя записи на полке. */
+/** An attachment's name from the hash of its content. It is also the name of the shelf entry. */
 export function attachmentName(sha: string, mime: string): string {
   return `${sha}.${extForMime(mime)}`
 }
 
-/** Хэш из имени вложения — или `null`, если имя не наше. */
+/** The hash from an attachment's name — or `null` if the name is not ours. */
 export function shaOfAttachment(name: string): string | null {
   const sha = /^([0-9a-f]{64})\.[A-Za-z0-9]+$/.exec(name)
   return sha ? sha[1] : null
 }
 
 /**
- * Картинки, лежащие в тексте содержимым.
+ * Pictures that sit in the text as content.
  *
- * `minChars` — про длину base64, а не про вес картинки: решение принимается до
- * раскодирования, потому что раскодировать мегабайт ради решения «а стоит ли» —
- * это и есть та работа, от которой уходим.
+ * `minChars` is about the length of the base64, not the weight of the
+ * picture: the decision is made before decoding, because decoding a megabyte
+ * to decide "is it worth it" is exactly the work we are getting away from.
  */
 export function findInlineImages(source: string, minChars = 0): InlineImage[] {
   const found: InlineImage[] = []
@@ -113,7 +119,7 @@ export function findInlineImages(source: string, minChars = 0): InlineImage[] {
   return found
 }
 
-/** Имена вложений, на которые ссылается текст. */
+/** Names of the attachments the text refers to. */
 export function findAttachmentRefs(source: string): { start: number; end: number; name: string }[] {
   const found: { start: number; end: number; name: string }[] = []
   for (const match of source.matchAll(ATTACHMENT_REF)) {
@@ -124,10 +130,10 @@ export function findAttachmentRefs(source: string): { start: number; end: number
 }
 
 /**
- * Применить замены разом.
+ * Apply the replacements all at once.
  *
- * С конца: замена меняет длину строки, и правка, посчитанная по исходнику,
- * поехала бы после первой же предыдущей.
+ * From the end: a replacement changes the length of the string, and an edit
+ * computed against the source would shift after the very first one before it.
  */
 export function applyEdits(source: string, edits: readonly TextEdit[]): string {
   const ordered = [...edits].sort((a, b) => b.start - a.start)
@@ -137,62 +143,64 @@ export function applyEdits(source: string, edits: readonly TextEdit[]): string {
 }
 
 /**
- * Картинка, лежащая ФАЙЛОМ в папке семинара: `![схема](assets/fig01.png)`.
+ * A picture lying as a FILE in the seminar folder: `![diagram](assets/fig01.png)`.
  *
- * Третий способ положить картинку в заметку, и до сих пор единственный
- * неработавший. Два первых сюда приезжают из .ipynb и уходят на полку —
- * `data:` в тексте и вложение nbformat (см. шапку файла). А этот из .ipynb не
- * приезжает вовсе: в файле тетради его и нет, есть путь к соседнему файлу,
- * который Jupyter читает с диска рядом с ноутбуком.
+ * The third way to put a picture into a note, and until now the only one that
+ * did not work. The first two arrive here from a .ipynb and go to the shelf —
+ * `data:` in the text and an nbformat attachment (see the file header). This
+ * one never arrives from a .ipynb at all: the notebook file does not contain
+ * it, only a path to a neighboring file that Jupyter reads from disk next to
+ * the notebook.
  *
- * В комнате такой путь оставался как написан, и браузер разрешал его
- * относительно адреса страницы: `/s/<комната>/assets/fig01.png`. Там стоит
- * приложение, и на любой путь оно отвечает своим `index.html` — то есть 200 и
- * `text/html`. Картинка не рисовалась, а в сети не было даже 404: успех,
- * который нечем показать.
+ * In the room such a path stayed as written, and the browser resolved it
+ * against the page address: `/s/<room>/assets/fig01.png`. The app sits there,
+ * and it answers any path with its `index.html` — that is, 200 and
+ * `text/html`. The picture was not drawn, and the network did not even show a
+ * 404: a success with nothing to show for it.
  *
- * Путь НЕ переписывается в тексте ячейки — в отличие от полки. Полка получает
- * ссылку `attachment:<sha>` потому, что содержимое переехало и старой ссылки
- * больше нет; здесь же файл как лежал рядом с тетрадью, так и лежит, и `.ipynb`
- * с `assets/fig01.png` внутри обязан открыться в Jupyter ровно так же. Адрес
- * подставляется только на время показа.
+ * The path is NOT rewritten in the cell's text — unlike the shelf. The shelf
+ * gets an `attachment:<sha>` link because the content moved and the old link
+ * no longer exists; here the file lies next to the notebook just as it did,
+ * and a `.ipynb` with `assets/fig01.png` inside must open in Jupyter exactly
+ * the same. The address is substituted only while the note is displayed.
  */
 export interface WorkspaceImage {
-  /** Границы ПУТИ в исходнике — без скобок, кавычек и самого `![…]`. */
+  /** The bounds of the PATH in the source — without brackets, quotes or the `![…]` itself. */
   start: number
   end: number
-  /** Он же, приведённый к канону `shared/paths`. */
+  /** The same path, brought to the `shared/paths` canon. */
   path: string
 }
 
 /*
- * Две записи картинки, и обе нужны: `![…](путь)` из markdown и `<img src="…">`
- * из разметки, которую заметка теперь рисует. В обеих скобка захватывает то,
- * что стоит ПЕРЕД путём, — так его начало считается сложением длин, а не
- * поиском подстроки: `![assets/x.png](assets/x.png)` иначе нашёл бы первое
- * вхождение, то есть подпись вместо адреса.
+ * Two ways to write a picture, and both are needed: `![…](path)` from markdown
+ * and `<img src="…">` from the markup notes now render. In both, the group
+ * captures what stands BEFORE the path — so its start is computed by adding
+ * lengths rather than by searching for a substring:
+ * `![assets/x.png](assets/x.png)` would otherwise find the first occurrence,
+ * that is, the caption instead of the address.
  */
 const MD_IMAGE = /(!\[[^\]]*\]\(\s*)([^)\s]+)/g
 const IMG_SRC = /(<img\b[^<>]*?\bsrc\s*=\s*)("[^"]*"|'[^']*'|[^\s"'<>]+)/gi
 
-/** Адрес, за которым идут не к нам: другая схема, корень сайта, якорь. */
+/** An address that does not lead to us: another scheme, the site root, an anchor. */
 const NOT_A_FILE = /^(?:[A-Za-z][A-Za-z0-9+.-]*:|\/\/|\/|#)/
 
 /**
- * Путь к файлу семинара — или `null`, если это вообще не он.
+ * A path to a seminar file — or `null` if it is not one at all.
  *
- * `./` в начале снимается, а `..` не прощается: первое — та же самая папка
- * записанная иначе (так пишет половина ноутбуков), второе — выход из неё, и
- * канон `shared/paths` отвергает его целиком.
+ * A leading `./` is stripped, but `..` is not forgiven: the first is the same
+ * folder written differently (half of all notebooks write it that way), the
+ * second is a way out of it, and the `shared/paths` canon rejects it outright.
  */
 export function workspacePathOf(raw: string): string | null {
   if (!raw || NOT_A_FILE.test(raw)) return null
   let value = raw.replace(/^(?:\.\/)+/, '')
-  // Пробел в имени файла в markdown пишут как `%20`; в атрибуте — пробелом.
+  // Markdown writes a space in a file name as `%20`; an attribute, as a space.
   try {
     value = decodeURIComponent(value)
   } catch {
-    /* Не разбирается — значит это не экранирование, а сам текст. */
+    /* It does not decode — so it is not escaping but the text itself. */
   }
   return normalizePath(value) || null
 }

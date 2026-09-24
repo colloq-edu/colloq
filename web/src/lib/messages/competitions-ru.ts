@@ -1,9 +1,11 @@
 /*
- * Словарь страниц соревнований — один язык; про два вида файла см. room-ru.ts.
+ * The competition pages' dictionary — one language; about the two kinds of
+ * file see room-ru.ts.
  *
- * Свой набор, а не комнатный: `/k/**` — это ни комната, ни панель, ни читалка.
- * Общие слова («Обновить страницу», отказы сервера) и каталог соревнований —
- * всё, что здесь говорят; тетради, ячеек и ядра на этих страницах нет.
+ * A set of its own, not the room's: `/k/**` is neither the room nor the panel
+ * nor the reader. The common words ("Reload the page", server refusals) and
+ * the competitions catalog are all that is said here; there are no notebooks,
+ * cells or kernel on these pages.
  */
 import { registerMessages } from '@shared/i18n-runtime'
 import { commonMessages } from '@shared/locales/common'

@@ -1,12 +1,14 @@
 /**
- * Состояние лекции комнаты. Словарь — в shared/lecture.ts, здесь только память.
+ * A room's lecture state. The vocabulary is in shared/lecture.ts; this is
+ * only the memory.
  *
- * В памяти процесса, рядом с общим экраном и очередью запуска, а не в документе
- * комнаты: лекция — это час жизни комнаты, а не её содержимое. Штрих
- * карандашом, попавший в общий документ, стал бы версией в истории, поехал бы в
- * снимок и вернулся бы по Ctrl+Z — три способа испортить то, ради чего лекцию
- * ведут. Цена названа вслух: перезапуск сервера гасит проекцию и стирает
- * чернила, ровно как гасит общий экран и очередь.
+ * In process memory, next to the shared screen and the run queue, not in the
+ * room's document: a lecture is an hour of the room's life, not its content.
+ * A pencil stroke that landed in the shared document would become a version
+ * in the history, travel into the snapshot and come back on Ctrl+Z: three
+ * ways to spoil what the lecture is given for. The price is stated out loud:
+ * a server restart turns off the projection and erases the ink, just as it
+ * turns off the shared screen and the queue.
  */
 import {
   MAX_INKED_PAGES,
@@ -20,19 +22,21 @@ import {
 
 interface Room {
   state: LectureState
-  /** Штрихи по страницам. Страница без чернил в карте не заводится. */
+  /** Strokes by page. A page without ink gets no entry in the map. */
   ink: Map<number, InkStroke[]>
   /**
-   * Номер последней перемены в чернилах — на весь процесс, а не на комнату.
+   * The number of the last change to the ink, process-wide rather than per
+   * room.
    *
-   * Приветственная пачка везёт опоздавшему показываемую страницу, и собирается
-   * она `inkPageOf` + `JSON.stringify`. Пока зал подключается по одному, цена
-   * незаметна; после сбоя сети пятьсот вкладок возвращаются в одну секунду —
-   * и смотрят все одну и ту же страницу, ту, что показывает ведущий, так что
-   * пятьсот одинаковых сборок ложатся в цикл событий там, где хватило бы
-   * одной. Кадр кэширует control.ts по паре «этот номер + страница»; сквозной
-   * счётчик (а не «версия комнаты») нужен затем, чтобы начатая заново лекция
-   * не совпала номером с прошлой.
+   * The welcome batch carries the page being shown to a latecomer, and it is
+   * assembled by `inkPageOf` + `JSON.stringify`. While the audience connects
+   * one by one the cost goes unnoticed; after a network failure five hundred
+   * tabs come back within one second, and all of them look at the same page,
+   * the one the presenter shows, so five hundred identical assemblies land in
+   * the event loop where one would do. control.ts caches the frame by the pair
+   * "this number + page"; a global counter (rather than a "room version") is
+   * needed so that a restarted lecture does not match the previous one's
+   * number.
    */
   rev: number
 }
@@ -42,19 +46,21 @@ const rooms = new Map<string, Room>()
 let revisions = 0
 
 /*
- * Потолки чернил лежат в shared/lecture.ts — все четыре, теми же числами.
+ * The ink caps live in shared/lecture.ts, all four of them, with the same
+ * numbers.
  *
- * Это не переезд ради порядка: знать их обязан и тот, кто рисует. Пока они
- * стояли здесь единственной копией, пульт не мог отличить отказ от потерянного
- * кадра — восемь раз досылал штрих целиком и через четыре секунды убирал его с
- * листа молча, а у зала линии не было вовсе.
+ * That is not a move for tidiness: whoever draws has to know them too. While
+ * their only copy stood here, the console could not tell a refusal from a
+ * lost frame: it resent the whole stroke eight times and four seconds later
+ * silently removed it from the sheet, while the audience never had the line
+ * at all.
  */
 
 export function lectureOf(sessionId: string): LectureState | null {
   return rooms.get(sessionId)?.state ?? null
 }
 
-/** Все чернила комнаты — целиком, всеми страницами сразу. */
+/** All of the room's ink, whole, every page at once. */
 export function inkOf(sessionId: string): InkStroke[] {
   const room = rooms.get(sessionId)
   if (!room) return []
@@ -62,15 +68,17 @@ export function inkOf(sessionId: string): InkStroke[] {
 }
 
 /**
- * Чернила ОДНОЙ страницы — тому, кто на неё смотрит.
+ * The ink of ONE page, for whoever is looking at it.
  *
- * Мера приветственной пачки и ответа на вопрос вкладки (`ink:page`): страниц у
- * лекции до двухсот, а смотрят в каждый момент одну, и возить все — это около
- * мегабайта на сокет там, где нужны килобайты. Кто вошёл не на ту страницу или
- * открыл ленту эскизов, спрашивает недостающие сам.
+ * The measure of the welcome batch and of the answer to a tab's question
+ * (`ink:page`): a lecture has up to two hundred pages, while one is looked at
+ * at any moment, and shipping all of them is about a megabyte per socket
+ * where kilobytes are needed. Whoever came in on a different page or opened
+ * the thumbnail strip asks for the missing ones themselves.
  *
- * Копия списка, а не сама память комнаты: он уезжает в кадр, и перо, дописавшее
- * точку в тот же миг, не должно менять уже отданное.
+ * A copy of the list, not the room's memory itself: it goes out in a frame,
+ * and a pen that adds a point at the same instant must not change what has
+ * already been handed out.
  */
 export function inkPageOf(sessionId: string, page: number): InkStroke[] {
   const strokes = rooms.get(sessionId)?.ink.get(Math.trunc(page))
@@ -78,23 +86,24 @@ export function inkPageOf(sessionId: string, page: number): InkStroke[] {
 }
 
 /**
- * ОПИСЬ исписанных страниц: их номера, без единого штриха.
+ * An INVENTORY of the inked pages: their numbers, without a single stroke.
  *
- * Едет рядом с каждым полным кадром чернил и стоит десятки байт там, где сами
- * чернила стоят мегабайт. Без неё вкладка, получившая одну страницу, не
- * отличает «на остальных пусто» от «остальные не приехали»: пульт считает по
- * чернилам, сколько чистых листов заведено, и лента эскизов по ним же знает,
- * что просить.
+ * It travels next to every full ink frame and costs tens of bytes where the
+ * ink itself costs a megabyte. Without it a tab that received one page cannot
+ * tell "the others are empty" from "the others have not arrived": the console
+ * counts from the ink how many blank sheets have been created, and the
+ * thumbnail strip uses the same to know what to ask for.
  *
- * Правило одно на оба конца — «есть хоть один штрих» (shared/lecture.ts ·
- * `inkPagesOf`, оно же считает опись на вкладке). Ключи карты сами по себе
- * мерой не годятся: страница заводится под первый штрих, а ластик, снявший
- * последний, ключ оставляет — и такая страница, оставшись в описи, заставила
- * бы пульт держать лишний лист и раз за разом спрашивать чернила, которых нет.
- * Отсюда `strokes.length > 0`, а не `[...room.ink.keys()]`.
+ * The rule is the same on both ends, "has at least one stroke"
+ * (shared/lecture.ts · `inkPagesOf`, which also computes the inventory in the
+ * tab). The map keys alone are no measure: a page is created for its first
+ * stroke, and the eraser that removes the last one leaves the key, and such a
+ * page, left in the inventory, would make the console keep an extra sheet and
+ * ask again and again for ink that does not exist. Hence
+ * `strokes.length > 0`, not `[...room.ink.keys()]`.
  *
- * По возрастанию: опись читается человеком в журнале, а порядок ключей карты —
- * порядок первых штрихов, а не страниц.
+ * In ascending order: the inventory is read by a person in the log, and the
+ * order of the map keys is the order of first strokes, not of pages.
  */
 export function inkedPagesOf(sessionId: string): number[] {
   const room = rooms.get(sessionId)
@@ -105,9 +114,10 @@ export function inkedPagesOf(sessionId: string): number[] {
 }
 
 /**
- * Номер последней перемены в чернилах. Меняется — прошлый кадр устарел.
+ * The number of the last change to the ink. When it changes, the previous
+ * frame is stale.
  *
- * Ноль — чернил нет вовсе (лекции нет): кэшировать нечего.
+ * Zero means there is no ink at all (no lecture): nothing to cache.
  */
 export function inkRevision(sessionId: string): number {
   return rooms.get(sessionId)?.rev ?? 0
@@ -126,39 +136,41 @@ export function startLecture(
   return room.state
 }
 
-/** Лекция кончилась: гаснет проекция, стираются чернила. */
+/** The lecture is over: the projection goes off and the ink is erased. */
 export function stopLecture(sessionId: string): void {
   rooms.delete(sessionId)
 }
 
 /**
- * Ведёт ли этот человек лекцию.
+ * Whether this person is presenting the lecture.
  *
- * Не право, а факт: право проверяется отдельно (правило `board`), а это про то,
- * что страницу двигает ТОТ, кто её ведёт, — иначе двое преподавателей в одной
- * комнате будут перелистывать друг друга.
+ * A fact, not a right: the right is checked separately (the `board` rule);
+ * this is about the page being moved by THE ONE who presents it, otherwise
+ * two teachers in one room would keep turning each other's pages.
  */
 export function isPresenter(sessionId: string, participantId: string): boolean {
   return rooms.get(sessionId)?.state.by === participantId
 }
 
 /**
- * Передать пульт другому преподавателю, НЕ начиная лекцию заново.
+ * Hand the console over to another teacher WITHOUT restarting the lecture.
  *
- * Второй ведущий берёт управление тем же `lecture:start` по тому же файлу —
- * другого сообщения у него нет. Без этой развилки такое нажатие уходило бы в
- * `startLecture`, а он заводит комнату с нуля: страница возвращается на первую,
- * чернила стираются все до одного, часы лекции начинают отсчёт сначала. То
- * есть нажатие «взять пульт» на сороковой минуте стирало бы сорок минут
- * разметки — и делало бы это на проекторе, при всех.
+ * The second presenter takes control with the same `lecture:start` on the
+ * same file; they have no other message. Without this branch such a press
+ * would go to `startLecture`, which sets the room up from scratch: the page
+ * goes back to the first, every last bit of ink is erased, the lecture clock
+ * starts over. That is, pressing "take the console" in the fortieth minute
+ * would erase forty minutes of markup, and do it on the projector, in front
+ * of everyone.
  *
- * Меняется поэтому ровно то, что значит «кто ведёт»: имя, подпись и цвет
- * указки. Страница, чернила, пауза и отметка начала — не наши: они про лекцию,
- * а не про руки, которые её ведут.
+ * So exactly what "who presents" means is changed: the name, the caption and
+ * the pointer color. The page, the ink, the pause and the start mark are not
+ * ours to change: they are about the lecture, not about the hands that
+ * present it.
  *
- * По ТОМУ ЖЕ файлу: другой документ — это уже другая лекция, и начинать её
- * надо начисто. Возвращает новое состояние или `null`, если передавать нечего,
- * — как и остальные правки состояния в этом файле.
+ * On THE SAME file: another document is another lecture, and it has to start
+ * clean. Returns the new state, or `null` if there is nothing to hand over,
+ * like the other state changes in this file.
  */
 export function handOver(
   sessionId: string,
@@ -174,19 +186,19 @@ export function handOver(
 }
 
 /**
- * Сколько чистых листов разрешено завести.
+ * How many blank sheets may be created.
  *
- * Их номера отрицательные и заводятся нажатием — то есть их количество это то,
- * сколько раз преподаватель нажал кнопку. Потолок здесь не про злой умысел, а
- * про заевшую кнопку: страницы с чернилами держатся в памяти, и уходить она
- * должна конечно.
+ * Their numbers are negative and they are created by a press, so their count
+ * is how many times the teacher pressed the button. The cap is not about
+ * malice but about a stuck button: pages with ink are kept in memory, and the
+ * memory they take has to be finite.
  */
 const MAX_BOARDS = 50
 
 export function turnTo(sessionId: string, page: number): LectureState | null {
   const room = rooms.get(sessionId)
   if (!room) return null
-  // Ноль — не страница: это мусор из вкладки. Минус — чистый лист (см. словарь).
+  // Zero is not a page: it is garbage from a tab. A negative number is a blank sheet (see the vocabulary).
   const asked = Math.trunc(page)
   if (asked === 0 || !Number.isFinite(asked)) return null
   const wanted = asked < 0 ? Math.max(-MAX_BOARDS, asked) : asked
@@ -203,21 +215,22 @@ export function setBlank(sessionId: string, blank: boolean): LectureState | null
 }
 
 /**
- * Дописать штрих.
+ * Append to a stroke.
  *
- * Точки приезжают пачками по мере рисования, а не целым штрихом в конце: зал
- * должен видеть линию, пока её ведут, — иначе указка на слайде появляется
- * через секунду после того, как о ней сказали вслух.
+ * Points arrive in batches as the drawing goes, not as a whole stroke at the
+ * end: the audience has to see the line while it is being drawn, otherwise
+ * the pointer on the slide appears a second after it was mentioned out loud.
  *
- * Возвращает то, что надо разослать: только НОВЫЕ точки, а не весь штрих.
- * Штрих в тысячу точек, рассылаемый на каждую двадцатую, — это гигабайты
- * трафика на лекцию.
+ * Returns what has to be broadcast: only the NEW points, not the whole stroke.
+ * A stroke of a thousand points broadcast on every twentieth is gigabytes of
+ * traffic per lecture.
  *
- * И различает два «нет». `null` — добавлять нечего: лекции нет, страницы нет,
- * точек меньше двух. `full` — упёрлись в потолок, и об этом надо СКАЗАТЬ:
- * раньше оба случая возвращали `null`, сервер молчал, а пульт восемь раз
- * досылал штрих целиком и через четыре секунды убирал его с листа без единого
- * слова. Кто именно скажет — дело зовущего (control.ts · `case 'ink'`).
+ * And it tells two kinds of "no" apart. `null`: nothing to add, no lecture,
+ * no page, fewer than two points. `full`: a cap was hit, and that has to be
+ * SAID: both cases used to return `null`, the server stayed silent, and the
+ * console resent the whole stroke eight times and four seconds later removed
+ * it from the sheet without a single word. Who exactly says it is up to the
+ * caller (control.ts · `case 'ink'`).
  */
 export type InkAdded =
   | { stroke: InkStroke; full?: undefined }
@@ -229,7 +242,7 @@ export function addInk(
 ): InkAdded | null {
   const room = rooms.get(sessionId)
   if (!room) return null
-  // Чистый лист — такая же страница, только с отрицательным номером.
+  // A blank sheet is a page like any other, only with a negative number.
   const page = Math.trunc(patch.page)
   if (page === 0 || !Number.isFinite(page)) return null
   const points = patch.points.slice(0, MAX_POINTS_PER_MESSAGE).filter(Number.isFinite)
@@ -261,7 +274,7 @@ export function addInk(
   return { stroke: made }
 }
 
-/** Убрать последний штрих на этой странице. Возвращает его имя, если было что убирать. */
+/** Remove the last stroke on this page. Returns its name if there was something to remove. */
 export function undoInk(sessionId: string, page: number): string | null {
   const room = rooms.get(sessionId)
   const strokes = room?.ink.get(page)
@@ -271,12 +284,12 @@ export function undoInk(sessionId: string, page: number): string | null {
 }
 
 /**
- * Стереть один штрих — тот, по которому провели ластиком.
+ * Erase one stroke: the one the eraser went over.
  *
- * Отдельно от `undoInk`: отмена снимает ПОСЛЕДНИЙ, а ластик — тот, до которого
- * дотронулись, и это разные жесты. Возвращает, был ли он там: рассылать
- * «сотрите штрих, которого нет» значит заставлять двадцать браузеров
- * перерисовывать страницу на пустом месте.
+ * Separate from `undoInk`: undo removes the LAST one, the eraser removes the
+ * one it touched, and those are different gestures. Returns whether it was
+ * there: broadcasting "erase a stroke that does not exist" means making
+ * twenty browsers redraw the page for nothing.
  */
 export function eraseInk(sessionId: string, page: number, id: string): boolean {
   const room = rooms.get(sessionId)
@@ -289,7 +302,7 @@ export function eraseInk(sessionId: string, page: number, id: string): boolean {
   return true
 }
 
-/** Стереть страницу целиком, или всю лекцию, если страница не названа. */
+/** Erase a whole page, or the whole lecture if no page is named. */
 export function clearInk(sessionId: string, page?: number): void {
   const room = rooms.get(sessionId)
   if (!room) return
@@ -299,12 +312,12 @@ export function clearInk(sessionId: string, page?: number): void {
 }
 
 /**
- * Файл лекции переехал.
+ * The lecture's file has moved.
  *
- * Переименование — обычный ход дела: преподаватель правит имя в дереве, а
- * лекция идёт. Без этой строки проекция осталась бы показывать путь, которого
- * на диске уже нет, — то есть погасла бы у всех, кроме того, у кого документ
- * уже открыт.
+ * A rename is business as usual: the teacher edits the name in the tree while
+ * the lecture goes on. Without this line the projection would keep showing a
+ * path that no longer exists on disk, that is, it would go dark for everyone
+ * except those who already have the document open.
  */
 export function moveLecture(sessionId: string, from: string, to: string): LectureState | null {
   const room = rooms.get(sessionId)
@@ -313,7 +326,7 @@ export function moveLecture(sessionId: string, from: string, to: string): Lectur
   return room.state
 }
 
-/** Комнату удалили или процесс останавливается. */
+/** The room was deleted or the process is stopping. */
 export function forgetLecture(sessionId: string): void {
   rooms.delete(sessionId)
 }

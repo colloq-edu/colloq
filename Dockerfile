@@ -8,12 +8,13 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Замок вместе с манифестами, и `npm ci`, а не `npm install`.
+# The lockfile together with the manifests, and `npm ci`, not `npm install`.
 #
-# Без замка каждая пересборка заново разрешала `^`-диапазоны по состоянию
-# реестра на день сборки: тесты и typecheck шли против зафиксированных версий,
-# а в контейнер приезжали другие — и расхождение проявлялось только там.
-# Манифестов три, потому что это workspaces: ci сверяет замок со всеми.
+# Without the lockfile every rebuild resolved the `^` ranges anew against the
+# state of the registry on the day of the build: tests and typecheck ran
+# against the pinned versions, while the container got different ones, and
+# the divergence showed up only there. There are three manifests because
+# these are workspaces: ci checks the lockfile against all of them.
 COPY package.json package-lock.json ./
 COPY server/package.json server/
 COPY web/package.json web/
@@ -37,22 +38,25 @@ ENV NODE_ENV=production
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server/dist ./dist
-# Шрифты карточки ссылки (server/src/og-card.ts): читаются с диска рядом с dist.
+# Fonts of the link card (server/src/og-card.ts): read from disk next to dist.
 COPY server/assets ./assets
 COPY --from=build /app/web/dist ./public
 COPY server/package.json ./package.json
 
-# Списки пакетов едут в образ, и это не про сборку ядра.
+# The package lists go into the image, and this is not about building the
+# kernel.
 #
-# Сервер ищет корень репозитория, поднимаясь до каталога kernel/environments.
-# В контейнере его не было вовсе, поиск упирался в `/`, и раздел Environments
-# оказывался пустым, а «New environment» отвечал 500 (EACCES на /kernel). При
-# этом и панель, и текст отказа обещают обратное: «окружения здесь всё равно
-# видно и правится». Compose поверх монтирует эту же папку с хоста, так что
-# правки из панели переживают пересборку образа.
+# The server finds the repository root by walking up to the
+# kernel/environments directory. In the container that directory did not
+# exist at all, the search hit `/`, and the Environments section came up
+# empty, while "New environment" answered 500 (EACCES on /kernel). Meanwhile
+# both the panel and the refusal text promise the opposite: "environments are
+# still visible and editable here". Compose mounts this same folder from the
+# host on top, so edits from the panel survive an image rebuild.
 COPY kernel/environments ./kernel/environments
-# Образ — копия программы: MIT велит везти текст лицензии с ней, а бандлы
-# несут чужой код под своими лицензиями (THIRD_PARTY_NOTICES.md).
+# The image is a copy of the program: MIT requires the license text to travel
+# with it, and the bundles carry other people's code under their own licenses
+# (THIRD_PARTY_NOTICES.md).
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
 
 RUN mkdir -p /data /workspace && chown -R node:node /data /workspace /app

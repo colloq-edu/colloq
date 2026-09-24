@@ -1,10 +1,10 @@
 <!--
-  Публикация семинара.
+  Publishing a seminar.
 
-  Экран, а не окно поверх списка: у панели на это своё правило — «всё, что
-  требует решения, получает собственный экран». Здесь решают, что класс будет
-  читать неделю спустя, и обратно это не отзывается — ссылку у студентов не
-  забрать.
+  A screen, not a window over the list: the panel has its own rule for this —
+  "anything that needs a decision gets a screen of its own". Here you decide
+  what the class will be reading a week later, and it cannot be taken back —
+  the link cannot be taken away from the students.
 -->
 <script lang="ts">
   import { tr, getLocale } from '@shared/i18n'
@@ -27,7 +27,7 @@
     navigate: (path: string) => void
   }
 
-  /** Ответ `publishInfo` целиком — чтобы форму страницы не переписывать здесь второй раз. */
+  /** The whole `publishInfo` response — so the page's shape is not redeclared here. */
   type PublishInfo = Awaited<ReturnType<typeof adminApi.publishInfo>>
 
   let { sessionId, navigate }: Props = $props()
@@ -35,16 +35,19 @@
   let title = $state('')
   let candidates = $state<PublishCandidate[]>([])
   /**
-   * Уже опубликованная страница — ровно та форма, что приезжает в ответе.
+   * The already published page — exactly the shape that arrives in the
+   * response.
    *
-   * Своего объявления у экрана больше нет. Оно завелось ради `former` (прежних
-   * имён в адресе): сервер их вёз, а тип вызова о них не знал, и экран описал
-   * страницу второй раз, чтобы отпустить прежнее имя было чем. Теперь поле
-   * стоит в `lib/adminApi.ts` (publishInfo · former), и копия здесь — только
-   * лишний шанс разойтись с сервером на следующем поле.
+   * The screen no longer has a declaration of its own. It appeared for the
+   * sake of `former` (former names in the address): the server sent them,
+   * but the call's type did not know about them, and the screen described
+   * the page a second time so there was something to release a former name
+   * with. Now the field sits in `lib/adminApi.ts` (publishInfo · former),
+   * and a copy here would only be one more chance to diverge from the server
+   * on the next field.
    */
   let already = $state<PublishInfo['publication']>(null)
-  /** Отмеченные шаги и их имена — по номеру версии. */
+  /** The marked steps and their names — by version number. */
   let labels = $state<Record<number, string>>({})
   let picked = $state<Record<number, boolean>>({})
   let errorText = $state<(() => string | null) | null>(null)
@@ -52,12 +55,13 @@
   let busy = $state(false)
   let done = $state<string | null>(null)
   /**
-   * Отмеченные моменты, которые шагами не стали, — с сервера, поимённо.
+   * Marked moments that did not become steps — from the server, by name.
    *
-   * Ответ несёт их отдельным полем (shared/publish.ts · SkippedStep) как раз
-   * потому, что раньше их не было нигде: пустая или нечитаемая версия молча
-   * выпадала из публикации, и семь отмеченных превращались в шесть шагов без
-   * единого слова о том, какой пропал.
+   * The response carries them in a separate field (shared/publish.ts ·
+   * SkippedStep) precisely because they used to be nowhere: an empty or
+   * unreadable version silently dropped out of the publication, and seven
+   * marked moments turned into six steps without a single word about which
+   * one went missing.
    */
   let skipped = $state<SkippedStep[]>([])
 
@@ -69,27 +73,28 @@
         candidates = body.candidates
         already = body.publication
         /*
-         * Прежние имена — с сервера, а не только те, что переименовали в этой
-         * вкладке. Страницу переименовывают в понедельник, а адрес освобождают
-         * в сентябре следующего года: до сих пор список был пуст у всех, кто
-         * просто открыл экран, и отпускать в нём было нечего.
+         * Former names come from the server, not only the ones renamed in
+         * this tab. A page is renamed on a Monday, and the address is freed
+         * in September of the following year: until now the list was empty
+         * for anyone who simply opened the screen, and there was nothing in
+         * it to release.
          */
         former = already?.former ?? []
         /*
-         * Действующий адрес — с сервера, а не придуманный заново.
+         * The current address comes from the server, not invented anew.
          *
-         * Экран его не знал вовсе: после повторной публикации он подставлял
-         * предложение из названия и держал кнопку «Дать имя адресу» активной,
-         * так что одно нажатие меняло адрес, продиктованный классу неделю
-         * назад, — а старое имя после этого не находил никто.
+         * The screen did not know it at all: after republishing it filled in
+         * a suggestion from the title and kept the "Name the address" button
+         * active, so one press changed the address dictated to the class a
+         * week earlier — and after that nobody could find the old name.
          */
         slug = body.publication?.slug ?? ''
         slugDraft = slug
         /*
-         * Названные моменты отмечены сразу — их для того и называли. Безымянные
-         * не отмечены и отмечены быть не могут, пока в поле не напишут слова:
-         * «Снимок №14» в рельсе у студента не название момента, а признание,
-         * что назвать его забыли.
+         * Named moments are marked right away — that is what they were named
+         * for. Unnamed ones are not marked and cannot be until words are
+         * typed into the field: "Snapshot #14" in a student's rail is not the
+         * name of a moment but an admission that someone forgot to name it.
          */
         const previous = new Map(body.publication?.steps.map((s) => [s.seq, s.label]) ?? [])
         for (const candidate of body.candidates) {
@@ -106,7 +111,7 @@
   const chosen = $derived(
     candidates.filter((c) => picked[c.seq] && (labels[c.seq] ?? '').trim().length > 0),
   )
-  /** Один момент — значит будет одна страница. В первом семестре это обычное. */
+  /** One moment means one page. In the first semester that is the usual case. */
   const lone = $derived(candidates.length === 0)
 
   async function publish(): Promise<void> {
@@ -119,7 +124,7 @@
       )
       done = body.publication.id
       skipped = body.skipped ?? []
-      // Повторная публикация адрес сохраняет — показываем тот, что есть.
+      // Republishing keeps the address — show the one there is.
       slug = body.publication.slug ?? slug
     } catch (cause) {
       errorText = () => (cause instanceof AdminApiError ? cause.message : tr("admin.could.not.publish.the.seminar.try.again"))
@@ -128,7 +133,7 @@
     }
   }
 
-  /** Имя в адресе, выбранное человеком. Предлагается из названия семинара. */
+  /** The address name a person chose; suggested from the seminar's title. */
   let slug = $state('')
   let slugDraft = $state('')
   $effect(() => {
@@ -136,42 +141,43 @@
   })
 
   /**
-   * Имена, под которыми эта страница уже жила.
+   * Names this page has already lived under.
    *
-   * Сервер прежнее имя помнит: `setPublicationSlug` кладёт его в
-   * `publish_addresses`, и `findPublication` находит страницу по нему
-   * (server/src/publish/store.ts · moveAddress, findPublication). Раньше здесь
-   * стоял confirm, обещавший обратное — «адрес /p/week-01 перестанет
-   * открываться», — и преподаватель либо отказывался от переименования из-за
-   * несуществующей угрозы, либо шёл передиктовывать классу адрес, который и
-   * так работает.
+   * The server remembers a former name: `setPublicationSlug` puts it into
+   * `publish_addresses`, and `findPublication` finds the page by it
+   * (server/src/publish/store.ts · moveAddress, findPublication). There used
+   * to be a confirm here promising the opposite — "the address /p/week-01
+   * will stop opening" — and the teacher either gave up the rename because
+   * of a threat that did not exist, or went to re-dictate to the class an
+   * address that works anyway.
    *
-   * Список приходит с ответом о публикации и пополняется здешними
-   * переименованиями: экран, открытый год спустя, знает ровно то же, что и
-   * сервер, — иначе отпускать в нём было бы нечего.
+   * The list comes with the publication response and is extended by renames
+   * made here: a screen opened a year later knows exactly what the server
+   * knows — otherwise there would be nothing in it to release.
    */
   let former = $state<string[]>([])
 
   /**
-   * Страница, о которой идёт речь: только что опубликованная или уже жившая.
+   * The page in question: just published or one that already existed.
    *
-   * Прежние имена принадлежат ЕЙ, а не сегодняшнему нажатию «Опубликовать»:
-   * отпускает их владелец, и идентификатор владельца — вот он.
+   * Former names belong to IT, not to today's press of "Publish": their
+   * owner releases them, and here is the owner's id.
    */
   const pageId = $derived(done ?? already?.id ?? null)
 
   /**
-   * Имя, которого не дали, и кто его держит.
+   * The name that was refused, and who holds it.
    *
-   * Отказ «уже занят» бывает двух совсем разных сортов. Живой адрес чужой
-   * страницы — тупик: освободить его может только её владелец. А прежнее имя,
-   * оставленное ради розданной ссылки, отпускается — и отпустить его вправе тот,
-   * чьё оно (server/src/publish/store.ts · releaseFormerSlug). Пока сервер
-   * держателя не называет, здесь остаётся null и экран ведёт себя как раньше:
-   * повторяет фразу отказа и ничего не предлагает.
+   * An "already taken" refusal comes in two quite different kinds. Another
+   * page's live address is a dead end: only its owner can free it. But a
+   * former name, kept for the sake of a link that was handed out, can be
+   * released — and whoever it belongs to has the right to release it
+   * (server/src/publish/store.ts · releaseFormerSlug). While the server does
+   * not name the holder, this stays null and the screen behaves as before:
+   * it repeats the refusal phrase and offers nothing.
    */
   let held = $state<{ slug: string; holder: AddressHolder } | null>(null)
-  /** Второй шаг: отпустить прежний адрес — необратимо, и спрашивается вслух. */
+  /** Step two: releasing a former address is irreversible, so it is asked aloud. */
   let asking = $state(false)
 
   async function saveSlug(): Promise<void> {
@@ -186,15 +192,16 @@
     held = null
     try {
       await adminApi.setSlug('publication', done, next || null)
-      // Прежнее имя остаётся адресом, новое перестаёт быть чьим-то прежним —
-      // тем же движением, что и на сервере.
+      // The former name stays an address, and the new one stops being
+      // anyone's former name — in the same move as on the server.
       const was = slug
       slug = next
       former = [...new Set([...former, was].filter((name) => name && name !== next))]
     } catch (cause) {
       errorText = () => (cause instanceof AdminApiError ? cause.message : tr("admin.could.not.save.the.address.try.again"))
       const holder = addressHolderOf(cause)
-      // Только прежнее: живой адрес отсюда не отпускают, его снимают именем.
+      // Only a former one: a live address is not released from here; a
+      // rename takes it down.
       if (holder?.former && next) held = { slug: next, holder }
     } finally {
       busy = false
@@ -202,11 +209,11 @@
   }
 
   /**
-   * Освободить прежний адрес и занять его — одним решением.
+   * Release a former address and take it — as one decision.
    *
-   * Одним, потому что отпускают его ровно затем, чтобы дать это имя своей
-   * странице: два нажатия подряд оставили бы посередине состояние «имя ничьё»,
-   * в котором его может занять кто угодно другой.
+   * One, because it is released precisely to give that name to your own
+   * page: two presses in a row would leave a "the name belongs to nobody"
+   * state in between, in which anyone else could take it.
    */
   async function release(): Promise<void> {
     if (!held || busy) return
@@ -228,12 +235,14 @@
   }
 
   /**
-   * Освободить своё прежнее имя.
+   * Release your own former name.
    *
-   * Другое действие, чем выше, хотя маршрут тот же: там имя забирают себе,
-   * здесь — просто отпускают. Единственное, что случится наверняка, — ссылка с
-   * этим адресом перестанет открываться, и вернуть её нечем; поэтому второй
-   * шаг, и цена названа и у кнопки, и в вопросе.
+   * A different action from the one above, although the route is the same:
+   * there the name is taken for yourself, here it is simply released. The
+   * only thing that will happen for sure is that the link with this address
+   * stops opening, and there is nothing to bring it back with; hence a
+   * second step, and the cost is named both at the button and in the
+   * question.
    */
   let dropping = $state<string | null>(null)
 
@@ -263,13 +272,13 @@
       month: 'long',
     })
 
-  /** Чем назвать момент, которого нет на странице: временем из ленты версий. */
+  /** What to call a moment missing from the page: its time from the version feed. */
   const momentOf = (seq: number): string | undefined => {
     const candidate = candidates.find((c) => c.seq === seq)
     return candidate ? stamp(candidate.at) : undefined
   }
 
-  /** Escape закрывает вопрос — но не посреди ответа сервера. */
+  /** Escape closes the question — but not in the middle of a server response. */
   function onKey(event: KeyboardEvent): void {
     if (event.key !== 'Escape' || busy) return
     if (asking) asking = false
@@ -284,17 +293,19 @@
 <svelte:window onkeydown={onKey} />
 
 <!--
-  Прежние адреса страницы — списком, и с ними можно что-то сделать.
+  The page's former addresses — as a list, and something can be done with
+  them.
 
-  Переименование не отменяет розданную ссылку: старое имя остаётся адресом этой
-  страницы навсегда — и держит его для всех остальных тоже, так что странице
-  следующего года это имя уже не дать. Отпускает его владелец, по одному, и
-  цена названа прямо над кнопкой, а не только в вопросе после неё: ссылка,
-  записанная в чате прошлогодней группы, перестаёт открываться.
+  Renaming does not cancel a link that has been handed out: the old name stays
+  this page's address forever — and holds it against everyone else too, so
+  next year's page can no longer be given that name. The owner releases them,
+  one at a time, and the cost is named right above the button, not only in
+  the question after it: the link written in last year's group chat stops
+  opening.
 
-  Один сниппет на оба места (страница только что опубликована — и страница,
-  которая была опубликована раньше): список прежних имён один и тот же, а два
-  куска разметки разошлись бы на первой же правке слов.
+  One snippet for both places (a page just published — and a page published
+  earlier): the list of former names is one and the same, and two pieces of
+  markup would diverge on the very first edit of the wording.
 -->
 {#snippet formerNames()}
   {#if former.length > 0}
@@ -358,9 +369,10 @@
           {location.host}/p/{slug || done}
         </a>
         <!--
-          Адрес диктуют вслух и пишут на доске: восемь случайных символов
-          запоминаются хуже, чем «week-05», и переспрашивают их чаще. Старый
-          адрес продолжает работать — ссылку, которую уже дали, ломать нельзя.
+          The address is dictated out loud and written on the board: eight
+          random characters are harder to remember than "week-05", and people
+          ask for them to be repeated more often. The old address keeps
+          working — a link that has already been given out must not break.
         -->
         <div class="flex flex-wrap items-center gap-2 border-t border-line pt-3">
           <span class="font-mono text-2xs text-muted">{location.host}/p/</span>
@@ -382,10 +394,11 @@
           >
             {slug ? tr("admin.change.address") : tr("admin.set.address")}
           </button>
-          <!-- Имя держит не живая страница, а память о розданной ссылке — и
-               это единственный вид «занято», который владелец может разрешить
-               сам. Кнопка стоит здесь же, у поля: искать её в другом месте
-               экрана значит не найти вовсе. -->
+          <!-- The name is held not by a live page but by the memory of a link
+               that was handed out — and that is the only kind of "taken" the
+               owner can resolve themselves. The button sits right here, by
+               the field: looking for it elsewhere on the screen means not
+               finding it at all. -->
           {#if held}
             <button
               type="button"
@@ -396,10 +409,10 @@
               {tr("admin.release.previous.address")}
             </button>
           {/if}
-          <!-- Идентификатор ведёт сюда всегда: кто продиктовал классу /p/xxxx
-               до того, как у страницы появилось имя, переспрашивать не должен.
-               Прежние ИМЕНА — ниже, отдельным списком: с ними можно ещё и
-               что-то сделать. -->
+          <!-- The id always leads here: whoever dictated /p/xxxx to the class
+               before the page got a name should not have to ask again.
+               Former NAMES are below, in a separate list: something can also
+               be done with them. -->
           {#if slug}
             <span class="text-2xs text-muted">{tr("admin.the.old.address.p")}{done} {tr("admin.also.works")}</span>
           {/if}
@@ -416,12 +429,12 @@
       </div>
 
       <!--
-        Что отмечали, но чего на странице не будет.
+        What was marked but will not be on the page.
 
-        Ниже ссылки и отдельным блоком: ссылка — это результат, а это оговорка
-        к нему, и молчать о ней нельзя. Раньше её не было вовсе — семь
-        отмеченных моментов превращались в шесть шагов, и преподаватель
-        пересчитывал рельсу глазами.
+        Below the link and as a separate block: the link is the result, and
+        this is a caveat to it, which must not go unsaid. It used to be
+        missing entirely — seven marked moments turned into six steps, and the
+        teacher counted the rail by eye.
       -->
       {#if skipped.length > 0}
         <div class="mt-4 max-w-[640px] border-l-[3px] border-warning bg-surface px-4 py-3">
@@ -441,7 +454,7 @@
         </div>
       {/if}
     {:else}
-      <!-- Шаги -->
+      <!-- Steps -->
       <div class="flex flex-wrap items-start gap-x-7 gap-y-3 border-b border-line pb-6">
         <div class="w-[220px] shrink-0">
           <p class="text-ui font-semibold text-ink">{tr("admin.steps.825")}</p>
@@ -452,9 +465,9 @@
 
         {#if lone}
           <!--
-            Единственное место в продукте, где вообще объясняется, зачем нажимать
-            «Чекпоинт». В первом семестре это будет обычный случай: чекпоинтов
-            никто не ставил, потому что никто не говорил, для чего они.
+            The only place in the product that explains at all why to press
+            "Checkpoint". In the first semester this will be the usual case:
+            nobody set checkpoints, because nobody said what they are for.
           -->
           <div class="min-w-0 flex-1 border border-line bg-surface px-5 py-4">
             <p class="text-ui-lg font-semibold text-ink">
@@ -522,8 +535,8 @@
               </div>
             {/each}
 
-            <!-- Последняя страница есть всегда: публикация без неё была бы
-                 рассказом о занятии, обрывающимся на середине. -->
+            <!-- The last page is always there: without it the publication
+                 would be a story of the class that breaks off in the middle. -->
             <div class="flex items-center gap-3.5 border-t border-line bg-surface px-4 py-2.5">
               <span class="flex h-[15px] w-[15px] shrink-0 items-center justify-center bg-faint text-white">
                 <svg width="9" height="7" viewBox="0 0 13 10" fill="none">
@@ -541,7 +554,7 @@
         {/if}
       </div>
 
-      <!-- Что станет публичным -->
+      <!-- What becomes public -->
       <div class="flex flex-wrap items-start gap-x-7 gap-y-3 border-b border-line py-6">
         <div class="w-[220px] shrink-0">
           <p class="text-ui font-semibold text-ink">{tr("admin.what.becomes.public")}</p>
@@ -571,7 +584,7 @@
         </div>
       </div>
 
-      <!-- Ссылка -->
+      <!-- The link -->
       <div class="flex flex-wrap items-start gap-x-7 gap-y-3 py-6">
         <div class="w-[220px] shrink-0">
           <p class="text-ui font-semibold text-ink">{tr("admin.the.link")}</p>
@@ -579,15 +592,15 @@
         </div>
         <div class="flex min-w-0 max-w-[700px] flex-1 flex-col gap-3">
           {#if already}
-            <!-- Тот же адрес, что и в подзаголовке: заданное имя И ЕСТЬ ссылка,
-                 которую дали классу, а идентификатор рядом с ним читается как
-                 второй адрес той же страницы. -->
+            <!-- The same address as in the subtitle: the name that was set IS
+                 the link the class was given, and the id next to it would
+                 read as a second address of the same page. -->
             <p class="font-mono text-ui-lg text-ink">
               {location.host}/p/{already.slug ?? already.id}
             </p>
-            <!-- И здесь тоже: страницу, опубликованную в прошлом семестре,
-                 сюда открывают как раз затем, чтобы разобраться с её адресами,
-                 а не затем, чтобы опубликовать её заново. -->
+            <!-- Here too: a page published last semester is opened here
+                 precisely to sort out its addresses, not to publish it
+                 again. -->
             {@render formerNames()}
           {/if}
           <p class="text-ui leading-relaxed text-muted">
@@ -606,12 +619,12 @@
 </AdminPage>
 
 <!--
-  Освободить прежний адрес — вопросом, а не нажатием.
+  Releasing a former address — with a question, not a single press.
 
-  Единственное необратимое действие на этом экране: ссылка, которую уже
-  продиктовали классу, после этого отвечает 404, и вернуть её нечем. Поэтому
-  второй шаг — и цена в нём названа тем же адресом, который стоит в чате
-  группы, а не словами «связанные данные».
+  The only irreversible action on this screen: a link already dictated to the
+  class answers 404 after this, and there is nothing to bring it back with.
+  Hence a second step — and the cost in it is named by the same address that
+  sits in the group chat, not by the words "related data".
 -->
 {#if asking && held}
   {@const going = held}
@@ -650,11 +663,12 @@
 {/if}
 
 <!--
-  Освободить своё прежнее имя — тот же вопрос, но имя никто не ждёт.
+  Releasing your own former name — the same question, but nobody is waiting
+  for the name.
 
-  Здесь его отпускают не затем, чтобы занять: оно освобождается для всех, и
-  единственное, что случится наверняка, — ссылка с ним перестанет открываться.
-  Поэтому и слова другие, и глагол на кнопке другой.
+  Here it is released not in order to take it: it is freed for everyone, and
+  the only thing that will happen for sure is that the link with it stops
+  opening. Hence different words, and a different verb on the button.
 -->
 {#if dropping}
   {@const going = dropping}

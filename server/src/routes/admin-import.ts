@@ -54,11 +54,12 @@ function fail(
 const MAX_NOTEBOOK = 25 * 1024 * 1024
 
 /**
- * Отклонённое обещание — в обработчик ошибок, а не в пустоту.
+ * A rejected promise goes to the error handler, not into the void.
  *
- * Express 4 не знает про async: брошенное после первого `await` не доходит до
- * error-middleware вовсе, `unhandledRejection` пишет строку в журнал, а запрос
- * не отвечает никогда — превью крутится, пока браузер не сдастся.
+ * Express 4 knows nothing about async: what is thrown after the first `await`
+ * never reaches the error middleware, `unhandledRejection` writes a line to
+ * the log, and the request never answers: the preview spins until the browser
+ * gives up.
  */
 const wrap =
   (handler: (req: Request, res: Response) => Promise<void>) =>
@@ -97,8 +98,8 @@ export function adminImportRoutes(): Router {
           notebooks: plan.notebooks.map((book) => ({ name: book.name, cells: book.cells.length })),
           cells: plan.notebooks.reduce((total, book) => total + book.cells.length, 0),
           files: plan.files.map((f) => ({ name: f.name, size: f.size })),
-          // То, что не поместится в комнату, названо здесь — до того, как её
-          // заведут: узнать об этом после импорта поздно.
+          // What will not fit in the room is named here, before it is created:
+          // finding out after the import is too late.
           skipped: plan.skipped,
           source: `${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}`,
         })
@@ -137,10 +138,10 @@ export function adminImportRoutes(): Router {
         return fail(res, 400, 'invalid', tr("server.thereIsNoNotebookWithAnyCells.5fa7bc"))
       }
 
-      // Та же мерка, что у панели и у комнаты: имя приезжает из чужого
-      // репозитория и из тела запроса, а рисуется в тех же строках списка
-      // (shared/text.ts). Голого trim() здесь хватало, чтобы в заголовок уехал
-      // перевод строки.
+      // The same measure as the panel and the room use: the name comes from
+      // someone else's repository and from the request body, and it is drawn
+      // in the same list rows (shared/text.ts). A bare trim() here was enough
+      // for a newline to end up in the title.
       const asked = normalizeLabel(req.body?.name)
       const name = normalizeLabel(asked || seminarNameFor(plan.notebookTarget ?? target)).slice(
         0,
@@ -149,16 +150,17 @@ export function adminImportRoutes(): Router {
 
       const staff = currentStaff(req)
       /*
-       * Одна общая функция на все двери — см. seedSeminar.
+       * One shared function for all doors; see seedSeminar.
        *
-       * Здесь когда-то стоял свой список: создать сессию, записать правила,
-       * подписать автора, положить ячейки. Правила из него однажды выпали, и
-       * «из GitHub» с «только преподаватель» и выключенным оракулом делало
-       * комнату, где запускать мог каждый. Правила пишутся при создании, так что
-       * чинить это было уже негде.
+       * There once was a list of its own here: create the session, write the
+       * rules, sign the author, put in the cells. The rules dropped out of it
+       * once, and "from GitHub" with "teacher only" and the Oracle turned off
+       * made a room where anyone could run. The rules are written at
+       * creation, so there was no place left to fix it.
        *
-       * Документ раньше файлов: комната с пустой тетрадью выглядит сломанной, а
-       * комната, куда ещё не доехали данные, — просто медленной.
+       * The document before the files: a room with an empty notebook looks
+       * broken, while a room where the data has not arrived yet just looks
+       * slow.
        */
       const id = seedSeminar({
         name,
@@ -171,19 +173,21 @@ export function adminImportRoutes(): Router {
       })
 
       const written: string[] = []
-      // То, чему не хватило потолка комнаты, уже названо планом.
+      // What did not fit under the room's cap has already been named by the plan.
       const skipped: string[] = [...plan.skipped]
       for (const file of plan.files) {
         /*
-         * Имя меряется той же меркой, что и всё остальное в дереве комнаты.
+         * The name is measured by the same measure as everything else in the
+         * room's tree.
          *
-         * Здесь спрашивали `safeName` — двести символов, пробел с краю можно, — а
-         * панель, загрузка и переименование спрашивают `safeSegment`: сто двадцать
-         * и нельзя. Имя из середины этой щели ложилось на диск и было видно в
-         * дереве, но открыть, скачать или переименовать его было уже нечем:
-         * `normalizePath` такой путь не пропускает. Файл, до которого не
-         * дотянуться, хуже непривезённого — такие уезжают в `skipped`, где
-         * преподаватель их видит списком.
+         * This used to ask `safeName` (two hundred characters, a space at the
+         * edge allowed), while the panel, upload and rename ask `safeSegment`
+         * (a hundred and twenty, not allowed). A name from the middle of this
+         * gap landed on disk and was visible in the tree, but there was no way
+         * to open, download or rename it: `normalizePath` does not let such a
+         * path through. A file that cannot be reached is worse than one not
+         * brought at all, so such files go into `skipped`, where the teacher
+         * sees them as a list.
          */
         const target = safeSegment(file.name) ? resolveInSession(id, file.name) : null
         if (!target || !file.downloadUrl) {
@@ -214,25 +218,27 @@ export function adminImportRoutes(): Router {
   )
 
   /*
-   * Третья дверь: тетрадь с диска.
+   * The third door: a notebook from disk.
    *
-   * Ровно тот же путь, что и импорт с GitHub, минус сеть: файл уже у нас, и
-   * разбирает его тот же `readIpynb`. Отдельный маршрут, а не поле у
-   * общего создания, потому что здесь есть чему не получиться по-своему —
-   * файл может оказаться не тетрадью, а тетрадь может оказаться пустой, и об
-   * этом надо сказать разными словами.
+   * Exactly the same path as the GitHub import, minus the network: the file
+   * is already here, and the same `readIpynb` parses it. A separate route
+   * rather than a field on the common creation, because there are things
+   * here that can fail in their own way: the file may turn out not to be a
+   * notebook, and the notebook may turn out to be empty, and each has to be
+   * said in different words.
    *
-   * Тело JSON, а не multipart: .ipynb — это и есть JSON, читать его в браузере
-   * и слать текстом дешевле, чем поднимать busboy ради одного поля.
+   * A JSON body, not multipart: .ipynb is JSON already, and reading it in the
+   * browser and sending it as text is cheaper than bringing up busboy for one
+   * field.
    *
-   * Приезжают только ячейки — `cell_type` и `source`, — а не файл целиком.
-   * Предел на тело общий, 1 МБ (см. express.json в app.ts), и сохранённая
-   * тетрадь с парой графиков его пробивает: выводы в ней — это мегабайты
-   * base64, которые здесь всё равно выбрасываются. Разбирает их тот же
-   * `readIpynb` (shared/ipynb.ts), что и импорт с GitHub, и что комната: второй
-   * разбор, расходящийся во мнениях о том, что такое ячейка, однажды потерял бы
-   * половину чужой тетради. Поле `notebook` с текстом файла принимается по-прежнему — для
-   * тетради, которая в предел укладывается.
+   * Only the cells arrive (`cell_type` and `source`), not the whole file. The
+   * body limit is the common 1 MB (see express.json in app.ts), and a saved
+   * notebook with a couple of charts breaks through it: its outputs are
+   * megabytes of base64 that are thrown away here anyway. The same
+   * `readIpynb` (shared/ipynb.ts) parses them as the GitHub import and the
+   * room do: a second parser disagreeing about what a cell is would one day
+   * lose half of someone else's notebook. The `notebook` field with the file
+   * text is still accepted, for a notebook that fits within the limit.
    */
   router.post('/api/admin/import/notebook', requireStaff, (req: Request, res: Response) => {
     const sent: unknown = req.body?.cells
@@ -297,11 +303,12 @@ export function adminImportRoutes(): Router {
 }
 
 /**
- * Завести комнату и положить в неё тетрадь.
+ * Create a room and put a notebook into it.
  *
- * Общая часть двух дверей — с GitHub и с диска. Была написана дважды подряд в
- * одном маршруте, и второй раз в ней уже потерялись правила комнаты; вынесена,
- * чтобы третья дверь не потеряла что-нибудь своё.
+ * The shared part of two doors, from GitHub and from disk. It was written
+ * twice in a row in one route, and the second time the room's rules got lost
+ * from it; it was moved out so that a third door would not lose something of
+ * its own.
  */
 function seedSeminar(input: {
   name: string
@@ -315,19 +322,20 @@ function seedSeminar(input: {
   const id = newSessionId()
   createSession(id, input.name, input.environment)
   /*
-   * Режим — это пресет правил, и он обязан работать у всех трёх дверей.
+   * The mode is a rules preset, and it must work at all three doors.
    *
-   * Иначе выходило бы ровно то, о чём предупреждает абзац выше: семинар,
-   * заведённый импортом с выбранной лекцией, открывался бы комнатой, где
-   * печатают все. Присланные правила ложатся поверх пресета: человек выбрал
-   * режим, а потом подкрутил одну строку.
+   * Otherwise it would come out exactly as the paragraph above warns: a
+   * seminar created by an import with lecture selected would open as a room
+   * where everyone types. The rules sent in lie on top of the preset: a
+   * person chose a mode and then tweaked one row.
    *
-   * Режимов три, и здесь их обязано быть столько же, сколько в
-   * routes/admin-instance.ts: консилиум, которого эта строка не знала,
-   * проваливался в «нет пресета», и импорт с mode:'council' без правил заводил
-   * открытую комнату — ровно противоположное карточке «всё — преподаватель».
-   * Панель этого не показывала, потому что всегда шлёт полный `rules` рядом с
-   * `mode`; ломался скрипт или старый клиент, шлющий один режим.
+   * There are three modes, and there must be as many here as in
+   * routes/admin-instance.ts: the council, which this line did not know,
+   * fell through to "no preset", and an import with mode:'council' and no
+   * rules created an open room, the exact opposite of the "the teacher does
+   * everything" card. The panel did not show this, because it always sends
+   * the full `rules` next to `mode`; what broke was a script or an old client
+   * sending only the mode.
    */
   const preset =
     input.mode === 'council' ? COUNCIL_ROOM : input.mode === 'lecture' ? LECTURE_ROOM : null
@@ -336,26 +344,28 @@ function seedSeminar(input: {
   if (input.author) setSeminarCreator(id, input.author)
 
   /*
-   * Документ заводится на время засева и уезжает на диск.
+   * The document is created for the duration of the seeding and goes to
+   * disk.
    *
-   * Импорт двенадцати недель подряд оставлял в памяти двенадцать чужих
-   * тетрадей: `getSessionDoc` поднимает документ, а сам он оттуда не уходит —
-   * уборка простаивающих комнат отпустит его только через десять минут, и всё
-   * это время двенадцать тетрадей лежат разом (routes/doc-visit.ts). Снимок
-   * пишется тем же визитом, так что первый вошедший поднимет комнату ровно
-   * такой, какой её собрали здесь.
+   * Importing twelve weeks in a row left twelve other people's notebooks in
+   * memory: `getSessionDoc` brings the document up, and it does not leave by
+   * itself; the idle sweep lets it go only after ten minutes, and all that
+   * time twelve notebooks sit in memory at once (routes/doc-visit.ts). The
+   * snapshot is written by the same visit, so the first person to join brings
+   * the room up exactly as it was assembled here.
    */
   visitSessionDoc(id, (doc) => {
     doc.transact(() => {
       const cells = getCells(doc)
-      // Стартовая тетрадь, которую сервер сеет свежей комнате, здесь только мешает.
+      // The starter notebook the server seeds into a fresh room only gets in the way here.
       if (cells.length > 0) cells.delete(0, cells.length)
       /*
-       * Картинки условий — на полку комнаты, а не в её документ.
+       * Problem statement images go on the room's shelf, not into its
+       * document.
        *
-       * Курсовая тетрадь с картинками весит мегабайты, и весь этот base64
-       * иначе переезжает в документ: каждому вошедшему целиком и в каждый
-       * снимок (server/src/notebook-images.ts).
+       * A course notebook with images weighs megabytes, and all that base64
+       * would otherwise move into the document: whole to everyone who joins
+       * and into every snapshot (server/src/notebook-images.ts).
        */
       const shelve = (c: FlatCell): FlatCell => shelveCellImages(id, c)
       cells.push(input.cells.map((c) => createCell(c.type, shelve(c).source)))
@@ -372,12 +382,12 @@ function seedSeminar(input: {
       getMeta(doc).set('title', input.name)
     }, 'import')
     /*
-     * Файл тетради — сейчас, а не через полторы секунды.
+     * The notebook file now, not in a second and a half.
      *
-     * `watchBooks` откладывает запись, а наблюдатель уедет вместе с документом:
-     * без этой строки `Тетрадь.ipynb` появилась бы в папке только когда комнату
-     * впервые откроют, и панель показала бы у свежего семинара нулевое число
-     * файлов.
+     * `watchBooks` defers the write, and the observer will leave together
+     * with the document: without this line `Тетрадь.ipynb` would appear in the
+     * folder only when the room is first opened, and the panel would show zero
+     * files for a fresh seminar.
      */
     projectBooks(id)
   })
@@ -385,9 +395,9 @@ function seedSeminar(input: {
 }
 
 /**
- * Имя семинара из имени файла: `01_HSE_Intro_to_Python.ipynb` → «HSE Intro to
- * Python». Та же чистка, что и у ссылки с GitHub, и по той же причине —
- * порядковый номер и подчёркивания в заголовке комнаты не нужны никому.
+ * A seminar name from a file name: `01_HSE_Intro_to_Python.ipynb` → "HSE
+ * Intro to Python". The same cleanup as for a GitHub link, and for the same
+ * reason: nobody needs a sequence number and underscores in a room title.
  */
 function tidyNotebookName(filename: string): string {
   const bare = filename.replace(/\.ipynb$/i, '').replace(/^[0-9]+[-_. ]*/, '')
@@ -405,25 +415,26 @@ interface Plan {
   cells: FlatCell[]
   notebooks: ImportedNotebook[]
   files: RepoEntry[]
-  /** Имена файлов, которые в комнату не поедут: им не хватило её потолка. */
+  /** Names of files that will not go into the room: they did not fit under its cap. */
   skipped: string[]
   notebookName: string
   notebookTarget: GithubTarget | null
 }
 
 /**
- * Потолок комнаты — и для импорта тоже.
+ * The room's cap applies to the import too.
  *
- * `filesToTake` отсекает по одному файлу за раз (`maxUploadBytes`), а суммы не
- * знает никто: папка недели с тридцатью CSV по сорок мегабайт уезжала в комнату
- * целиком, хотя та же гора через панель отказала бы на `maxSessionBytes`. Диск
- * тут общий с базой и образами (см. комментарий к sessionBytes), так что
- * потолок обязан быть один на все двери.
+ * `filesToTake` cuts off one file at a time (`maxUploadBytes`), and nobody
+ * knows the sum: a week folder with thirty CSVs of forty megabytes each went
+ * into the room whole, although the same pile through the panel would have
+ * been refused at `maxSessionBytes`. The disk here is shared with the
+ * database and the images (see the comment on sessionBytes), so the cap has
+ * to be the same for all doors.
  *
- * Остаток не молчит: он уезжает в `skipped`, где преподаватель видит его
- * списком — и в превью, до того как комната появится.
+ * The remainder is not silent: it goes into `skipped`, where the teacher
+ * sees it as a list, and into the preview, before the room exists.
  *
- * Экспортируется ради теста: настоящий путь сюда идёт через сеть к GitHub.
+ * Exported for the test: the real path here goes over the network to GitHub.
  */
 export function withinRoomBudget(files: RepoEntry[]): { files: RepoEntry[]; skipped: string[] } {
   const fits: RepoEntry[] = []
@@ -453,17 +464,18 @@ async function planFor(target: GithubTarget): Promise<Plan> {
       throw new Error(tr("server.thatLinkIsNotANotebookPoint.1d59ce"))
     }
     /*
-     * `fetchNotebook`, а не голый `fetchRaw`: ветка со слэшем в имени
-     * (`students/2026-fall`) разбирается из ссылки неверно — где кончается имя
-     * ветки и начинается путь, знает только GitHub, — и raw отвечает на такую
-     * догадку 404. Ссылка на ПАПКУ чинилась сама (`listDirectory` переспрашивает
-     * внутри), а ссылка на файл шла мимо и получала «Could not download … (404)»
-     * про живой файл.
+     * `fetchNotebook`, not a bare `fetchRaw`: a branch with a slash in its
+     * name (`students/2026-fall`) is parsed from the link wrongly (only GitHub
+     * knows where the branch name ends and the path begins), and raw answers
+     * such a guess with a 404. A link to a FOLDER fixed itself
+     * (`listDirectory` asks again inside), while a link to a file went past
+     * that and got "Could not download … (404)" about a live file.
      *
-     * Переспрашивает он только после 404, и это важнее, чем кажется: запрос
-     * веток — это ещё один поход в API GitHub, а ходим мы туда без токена, то
-     * есть шестьдесят раз в час на весь инстанс. Платить им за каждый импорт
-     * ради редкой ветки нельзя.
+     * It asks again only after a 404, and that matters more than it seems: a
+     * branches request is one more trip to the GitHub API, and we go there
+     * without a token, that is, sixty times an hour for the whole instance.
+     * Spending those on every import for the sake of a rare branch is not an
+     * option.
      */
     const raw = await fetchNotebook(target, MAX_NOTEBOOK)
     const cells = readIpynb(JSON.parse(raw.toString('utf8')))

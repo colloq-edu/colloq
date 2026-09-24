@@ -8,10 +8,11 @@
 
   const session = getSessionState()
   /**
-   * Шаг работы оракула: в подробностях у него имя инструмента, а не человека.
+   * A step of the oracle's work: its details carry the name of a tool, not of a
+   * person.
    *
-   * `subjectId` общее поле — у разбора там владелец черновика, — поэтому имя
-   * показывается только этому виду события, и только здесь.
+   * `subjectId` is a shared field — for a council review it holds the draft's
+   * owner — so the name is shown only for this kind of event, and only here.
    */
   const WORK_STEP = 'oracle.work_step'
   let level = $state<ActivityLevel>('normal')

@@ -1,75 +1,80 @@
 /**
- * Сторож на замолчавший поток — один на все дороги к модели.
+ * A watchdog on a stream that went quiet — one for every road to the model.
  *
- * Таймаут в SDK снимается по первым заголовкам ответа, а не по последнему
- * кадру: провайдер, который открыл поток и замолчал на середине предложения,
- * не считается ни упавшим, ни медленным — соединение просто стоит. В комнате
- * это выглядит как «думает» без конца, и отменить может только тот, кто
- * спрашивал, если догадается.
+ * The SDK timeout is lifted by the first response headers, not by the last
+ * frame: a provider that opened the stream and went silent mid-sentence counts
+ * as neither failed nor slow — the connection just stands there. In the room
+ * this looks like endless "thinking", and only the person who asked can cancel
+ * it, if it occurs to them.
  *
- * Жил этот сторож в ai/index.ts и сторожил ровно одну дорогу — тетрадь. У
- * консилиума его не было вовсе, и 20.09 на живом занятии это стоило пары:
- * «Обновить сводку» на тридцати работах повисло навсегда, без ответа, без
- * ошибки и без единой строки в журнале, а запись в карте `reading` держала
- * ячейку запертой до перезапуска сервера. Логика здесь та же самая, слово в
- * слово; новое — только то, что её зовут из трёх мест.
+ * This watchdog lived in ai/index.ts and guarded exactly one road — the
+ * notebook. The council did not have one at all, and on 20 Sep 2026, in a live
+ * class, that cost the whole class: "Refresh summary" on thirty submissions
+ * hung forever, with no answer, no error and not a single line in the log, and
+ * the entry in the `reading` map kept the cell locked until the server was
+ * restarted. The logic here is the same, word for word; the only new thing is
+ * that it is called from three places.
  *
- * Два срока, и они разные нарочно.
+ * Two deadlines, and they differ on purpose.
  *
- * Срок МЕЖДУ кадрами считается с ПЕРВОГО кадра, а не с отправки запроса. Один
- * срок на оба случая опережал таймаут SDK на всякую долгую первую букву —
- * Ollama на ноутбуке преподавателя, промпт на двадцать тысяч знаков, разбор
- * которого на процессоре идёт дольше двух минут, — и писал комнате «эндпоинт
- * открыл ответ и замолчал», советуя спросить ещё раз. Эндпоинт при этом ничего
- * не открывал, спрашивать ещё раз бесполезно, а лечение — уменьшить
- * contextChars, и говорит об этом как раз фраза SDK про «слишком долго»
- * (provider.ts · friendly), до которой дело не доходило.
+ * The deadline BETWEEN frames counts from the FIRST frame, not from sending the
+ * request. A single deadline for both cases fired ahead of the SDK timeout on
+ * any slow first letter — Ollama on the teacher's laptop, a prompt of twenty
+ * thousand characters whose processing on the CPU takes longer than two
+ * minutes — and told the room "the endpoint opened the response and went
+ * silent", advising to ask again. The endpoint had opened nothing, asking again
+ * was useless, and the cure is to reduce contextChars — which is exactly what
+ * the SDK's "took too long" phrase says (provider.ts · friendly), a phrase that
+ * was never reached.
  *
- * Срок ДО первого кадра поэтому свой и заведомо больше срока SDK. Совсем без
- * сторожа до открытия нельзя: поток, у которого приехали заголовки и не
- * приехало ни байта тела, для SDK уже состоялся, и висел бы он до конца пары.
- * Но и равнять сроки нельзя — тогда сторож опережает SDK и подменяет его
- * диагноз своим, неверным.
+ * So the deadline BEFORE the first frame is separate and deliberately longer
+ * than the SDK's. Having no watchdog at all before the opening is not an
+ * option: a stream whose headers arrived but not a single byte of body has
+ * already happened as far as the SDK is concerned, and it would hang until the
+ * end of the class. But the deadlines must not be equal either — then the
+ * watchdog gets ahead of the SDK and replaces its diagnosis with its own,
+ * wrong one.
  *
- * И потолок на весь запрос — третий срок, необязательный. Он не про молчание:
- * поток, который сыплет по букве в секунду бесконечно, все сроки молчания
- * сбрасывает исправно, а пара тем временем кончается. Там, где ответа ждут
- * стоя у доски, потолок обязателен; в тетради, где ответ читают по мере того,
- * как он пишется, его нет намеренно.
+ * And a ceiling on the whole request is a third deadline, an optional one. It
+ * is not about silence: a stream that trickles one letter a second forever
+ * duly resets every silence deadline, and meanwhile the class is running out.
+ * Where the answer is awaited standing at the whiteboard, the ceiling is
+ * mandatory; in the notebook, where the answer is read as it is being written,
+ * it is absent on purpose.
  */
 
-/** Почему оборвали МЫ. `null` в `why` — значит оборвал человек или никто. */
+/** Why WE cut it off. `null` in `why` means a person cut it off, or nobody did. */
 export type QuietReason =
-  /** Поток не открылся: до первого кадра не дожили. */
+  /** The stream did not open: we never got as far as the first frame. */
   | 'opening'
-  /** Открылся и замолчал посреди ответа. */
+  /** It opened and went silent in the middle of the answer. */
   | 'silence'
-  /** Упёрлись в потолок на весь запрос. */
+  /** Hit the ceiling for the whole request. */
   | 'cap'
 
 export interface WatchTimes {
-  /** Сколько ждём ПЕРВОГО кадра. */
+  /** How long we wait for the FIRST frame. */
   openingMs: number
-  /** Сколько ждём следующего кадра после первого. */
+  /** How long we wait for the next frame after the first one. */
   silenceMs: number
-  /** Потолок на весь запрос; без него — только сроки молчания. */
+  /** Ceiling for the whole request; without it, only the silence deadlines. */
   capMs?: number
 }
 
 export interface Watch {
-  /** Приехал кадр: срок молчания взводится заново. */
+  /** A frame arrived: the silence deadline is armed again. */
   heard(): void
-  /** Снять все таймеры. Зовётся в `finally`, всегда и без условий. */
+  /** Clear all timers. Called in `finally`, always and unconditionally. */
   stop(): void
-  /** Почему оборвали мы; `null` — оборвали не мы (человек нажал «Стоп»). */
+  /** Why we cut it off; `null` means it was not us (a person pressed "Stop"). */
   readonly why: QuietReason | null
-  /** Был ли хоть один кадр: до него «замолчал» значит совсем другое. */
+  /** Was there any frame at all: before the first, "went silent" means something else. */
   readonly spoke: boolean
 }
 
 /**
- * Завести сторожа над `controller`. Возвращает ручку: `heard()` на каждый
- * кадр, `stop()` в `finally`, `why`/`spoke` — чтобы развести исходы словами.
+ * Set a watchdog over `controller`. Returns a handle: `heard()` on every frame,
+ * `stop()` in `finally`, `why`/`spoke` to tell the outcomes apart in words.
  */
 export function watchSilence(controller: AbortController, times: WatchTimes): Watch {
   let quiet: NodeJS.Timeout | null = null
@@ -78,8 +83,8 @@ export function watchSilence(controller: AbortController, times: WatchTimes): Wa
   let spoke = false
 
   const giveUp = (reason: QuietReason) => {
-    // Первая причина и остаётся причиной: потолок, сработавший через
-    // миллисекунду после молчания, не должен переписывать диагноз.
+    // The first reason stays the reason: a ceiling that fires a millisecond
+    // after the silence must not rewrite the diagnosis.
     if (why === null) why = reason
     controller.abort()
   }
@@ -123,28 +128,30 @@ export function watchSilence(controller: AbortController, times: WatchTimes): Wa
 }
 
 /**
- * Тетрадь: ответ читают по мере того, как он пишется, и потолка на него нет.
+ * Notebook: the answer is read as it is being written, and it has no ceiling.
  *
- * Пять минут до открытия — SDK со своими двумя успевает первым всегда, это
- * последняя сетка. Две минуты между кадрами — заведомо больше любой настоящей
- * паузы: даже рассуждающая модель отдаёт след порциями, а не одним куском в
- * конце.
+ * Five minutes until the opening — the SDK with its own two always gets there
+ * first; this is the last safety net. Two minutes between frames is certainly
+ * longer than any real pause: even a reasoning model gives out its trace in
+ * portions, not in one piece at the end.
  */
 export const NOTEBOOK_WATCH: WatchTimes = { openingMs: 300_000, silenceMs: 120_000 }
 
 /**
- * Консилиум: преподаватель стоит у доски и смотрит на «читает».
+ * Council: the teacher stands at the whiteboard and watches "Reading".
  *
- * Сроки короче тетрадных, и это не вкусовщина. Ответа здесь ждут, ничего при
- * этом не делая, а сам ответ приезжает ОДНИМ куском в конце — по дороге его
- * никто не читает, так что медленный поток не даёт ничего.
+ * The deadlines are shorter than the notebook's, and that is not a matter of
+ * taste. Here the answer is awaited while doing nothing else, and the answer
+ * itself arrives in ONE piece at the end — nobody reads it along the way, so a
+ * slow stream gives nothing.
  *
- * Полторы минуты до первого кадра: тридцать работ на двадцать тысяч знаков
- * большая модель разбирает секунд десять-двадцать, локальная на процессоре —
- * до минуты; полторы — с запасом, и всё равно короче, чем пара терпит.
- * Сорок пять секунд между кадрами: открывшийся поток, который молчит дольше,
- * уже не пишет. Три минуты потолком на всё — дольше преподаватель не ждёт;
- * дождавшись отказа, он спросит короче или проще.
+ * A minute and a half until the first frame: a big model gets through thirty
+ * submissions of twenty thousand characters in ten to twenty seconds, a local
+ * one on a CPU in up to a minute; a minute and a half leaves a margin and is
+ * still shorter than a class will put up with. Forty-five seconds between
+ * frames: an opened stream that stays silent longer is no longer writing.
+ * Three minutes as the ceiling for everything — the teacher will not wait
+ * longer; having got a refusal, they will ask something shorter or simpler.
  */
 export const COUNCIL_WATCH: WatchTimes = {
   openingMs: 90_000,

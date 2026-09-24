@@ -1,51 +1,58 @@
 /**
- * Что вкладка знает о чернилах лекции, которых у неё на руках нет.
+ * What a tab knows about the lecture's ink that it does not have on hand.
  *
- * Чернила приезжали одной мерой — ВСЕ страницы одним кадром в приветственной
- * пачке. На лекции с двадцатью минутами письма это около мегабайта на сокет, а
- * смотрят в этот момент одну страницу; после сбоя Wi-Fi зал возвращается весь
- * сразу, и мегабайт умножается на пятьсот. Поэтому пачка везёт текущую
- * страницу и ОПИСЬ остальных (`ink:pages`) — их номера без единого штриха, —
- * а страницу, на которую ушли не спросясь, вкладка спрашивает сама
+ * Ink used to arrive in a single helping: ALL pages in one frame of the
+ * welcome batch. At a lecture with twenty minutes of writing that is about a
+ * megabyte per socket, while at that moment people look at one page; after a
+ * Wi-Fi drop the whole audience comes back at once, and the megabyte is
+ * multiplied by five hundred. So the batch carries the current page and an
+ * INVENTORY of the rest (`ink:pages`), their numbers without a single stroke,
+ * and a page the tab moved to without asking is requested by the tab itself
  * (`ink:page`).
  *
- * Отсюда две вещи, которых до сих пор не было, и обе здесь:
+ * That brings two things that did not exist before, and both live here:
  *
- *  • ОПИСЬ. Пульт считает по чернилам, сколько чистых листов заведено (лист
- *    номер N доказывает, что заведены и все до него), и лента эскизов рисует
- *    их разметкой. Считать это по тому, что на руках, вкладка больше не может:
- *    держа одну страницу, она насчитала бы ноль листов и убрала бы из ленты
- *    исписанные — ровно та потеря, ради которой счёт и переехал из памяти
- *    вкладки в чернила (см. `boardsInked` в pult.ts).
- *  • ВОПРОС. Спрашивается страница, чернил которой нет, и ровно один раз на
- *    приветственную пачку: перо на соседней странице будит перерисовку
- *    двадцать раз в секунду, и вопрос без памяти о заданных стал бы очередью
- *    из сотен одинаковых кадров.
+ *  • THE INVENTORY. The console counts from the ink how many blank sheets
+ *    were started (sheet number N proves that every sheet before it was
+ *    started too), and the thumbnail strip lays them out. A tab can no longer
+ *    count this from what it has on hand: holding one page, it would count
+ *    zero sheets and drop the inked ones from the strip, exactly the loss for
+ *    which the count moved out of the tab's memory and into the ink (see
+ *    `boardsInked` in pult.ts).
+ *  • THE QUESTION. A page with no ink on hand is requested exactly once per
+ *    welcome batch: a pen on a neighbouring page wakes a redraw twenty times a
+ *    second, and a question with no memory of the ones already asked would
+ *    become a queue of hundreds of identical frames.
  *
- * Сервер (control.ts, приветственная пачка) шлёт чернила только показываемой
- * страницы и следом опись `ink:pages` — какие страницы вообще исписаны. Пока
- * описи нет (старый сервер или пачка ещё в пути), «сколько исписано» = «сколько
- * на руках», спрашивать нечего, и ни одного лишнего кадра в провод не уходит:
- * вкладка молчит ровно до тех пор, пока не узнает, чего ей не хватает.
+ * The server (control.ts, welcome batch) sends ink only for the page being
+ * shown, followed by the inventory `ink:pages`: which pages have any ink at
+ * all. Until the inventory is here (an old server, or the batch still on its
+ * way), "how much is inked" = "how much is on hand", there is nothing to ask,
+ * and not a single extra frame goes down the wire: the tab stays silent
+ * exactly until it learns what it is missing.
  *
- * Ни одной руны: состояние здесь — не то, что рисуют, а то, что вкладка успела
- * узнать. Перерисовку по-прежнему заказывает `session.inkRevision`, и опись
- * приезжает вместе с ним (см. `ink:pages` в session.svelte.ts).
+ * Not a single rune: the state here is not what gets drawn but what the tab
+ * has managed to learn. Redraws are still ordered by `session.inkRevision`,
+ * and the inventory arrives together with it (see `ink:pages` in
+ * session.svelte.ts).
  */
 import type { SessionState } from '@/lib/session.svelte'
 import { inkPagesOf, type InkStroke } from '@shared/lecture'
 
 /**
- * Опись и заданные вопросы — на одну комнату.
+ * The inventory and the questions asked belong to one room.
  *
- * Хозяин записан явно: смена комнаты меняет состояние сессии, и опись прошлой
- * лекции в новой означала бы листы, которых там нет, и вопросы, на которые
- * никто не собирается отвечать.
+ * The owner is recorded explicitly: switching rooms changes the session
+ * state, and the previous lecture's inventory in the new one would mean
+ * sheets that are not there and questions nobody is going to answer.
  */
 let owner: SessionState | null = null
-/** Последняя опись сервера, или `null` — её не присылали. Это РАЗНЫЕ вещи. */
+/**
+ * The server's latest inventory, or `null`: none has been sent. These are
+ * DIFFERENT things.
+ */
 let listed: readonly number[] | null = null
-/** Страницы, про которые уже спросили после последней описи. */
+/** Pages already asked about since the latest inventory. */
 const asked = new Set<number>()
 
 function own(session: SessionState): void {
@@ -56,12 +63,13 @@ function own(session: SessionState): void {
 }
 
 /**
- * Опись приехала — её и держим.
+ * An inventory arrived: keep it.
  *
- * Зовёт разбор кадра `ink:pages` (session.svelte.ts). Опись едет рядом с каждым
- * полным кадром `ink`, то есть с приветственной пачкой и с «стереть всё», —
- * поэтому здесь же забываются заданные вопросы: после переподключения их
- * задают заново, и ответы на прошлые уже не придут.
+ * Called by the parsing of the `ink:pages` frame (session.svelte.ts). The
+ * inventory travels next to every full `ink` frame, that is, with the welcome
+ * batch and with "erase everything", so this is also where the questions
+ * asked are forgotten: after a reconnect they are asked again, and answers to
+ * the earlier ones will not come.
  */
 export function noteInkedPages(session: SessionState, pages: readonly number[]): void {
   own(session)
@@ -70,14 +78,14 @@ export function noteInkedPages(session: SessionState, pages: readonly number[]):
 }
 
 /**
- * Какие страницы исписаны — по описи и по тому, что на руках.
+ * Which pages have ink: by the inventory and by what is on hand.
  *
- * Именно объединение. Опись говорит, что было в момент приветственной пачки, а
- * штрих, проведённый на новой странице минуту спустя, приезжает эхом
- * (`ink:add`) и в описи не значится; наоборот, страница, которую вкладка
- * спросила и получила, в описи есть, а после `ink:clear` осталась бы только
- * там. Ни один из двух источников по отдельности не полон, и «не знаю» здесь
- * стоит дороже лишнего листа в ленте.
+ * The union, precisely. The inventory says what there was at the moment of
+ * the welcome batch, while a stroke drawn on a new page a minute later
+ * arrives as an echo (`ink:add`) and is not in the inventory; conversely, a
+ * page the tab asked for and received is in the inventory, and after
+ * `ink:clear` would remain only there. Neither source is complete on its
+ * own, and "I don't know" costs more here than an extra sheet in the strip.
  */
 export function inkedPages(session: SessionState): ReadonlySet<number> {
   own(session)
@@ -87,39 +95,41 @@ export function inkedPages(session: SessionState): ReadonlySet<number> {
 }
 
 /**
- * Спросить чернила страницы, если их нет и они где-то есть.
+ * Ask for a page's ink if we do not have it and it exists somewhere.
  *
- * Порядок проверок — от дешёвой к дорогой, и это не вкус: зовут это на каждую
- * перемену в чернилах, то есть двадцать раз в секунду, пока ведущий пишет.
- * «Уже держим» стоит прежде описи: пока пишут на этой же странице, проверка
- * обрывается на первом штрихе, а опись — проход по всем чернилам вкладки.
+ * The checks go from cheap to expensive, and that is not a matter of taste:
+ * this is called on every change in the ink, that is, twenty times a second
+ * while the presenter writes. "Already holding it" comes before the
+ * inventory: while someone writes on this same page, the check stops at the
+ * first stroke, whereas the inventory is a pass over all of the tab's ink.
  *
- * Молчание в офлайне — намеренно. Очередь управления держит шестнадцать
- * сообщений и выбрасывает старые: вопрос про чернила, вытеснивший чужой штрих,
- * — плохая мена. Спросят заново, когда связь вернётся: приветственная пачка
- * принесёт свежую опись, и заданные вопросы забудутся вместе с ней.
+ * Silence while offline is deliberate. The control queue holds sixteen
+ * messages and throws out the old ones: a question about ink that pushed out
+ * someone's stroke is a bad trade. It will be asked again when the
+ * connection returns: the welcome batch will bring a fresh inventory, and the
+ * questions asked will be forgotten along with it.
  */
 export function askInkPage(session: SessionState, page: number): void {
   if (!session.connected) return
   if (session.ink.some((stroke) => stroke.page === page)) return
   own(session)
   if (asked.has(page)) return
-  // Чернил на этой странице нет ни у кого — тогда и спрашивать не о чем. Без
-  // описи это правило само собой запирает вопросы: «исписано» тогда равно
-  // «на руках», и мы уже вышли строкой выше.
+  // Nobody has ink on this page, so there is nothing to ask about. Without an
+  // inventory this rule shuts off questions by itself: "inked" then equals
+  // "on hand", and we have already returned a line above.
   if (!inkedPages(session).has(page)) return
   asked.add(page)
   session.send({ t: 'ink:page', page })
 }
 
 /**
- * Заменить чернила ОДНОЙ страницы, не тронув остальные.
+ * Replace the ink of ONE page without touching the others.
  *
- * Зовёт разбор кадра `ink:page` (session.svelte.ts). Именно замена, а не
- * слияние по именам штрихов: страница — единица выдачи, и сервер отвечает про
- * неё целиком, вместе с тем, что на ней успели стереть. Пустой список поэтому
- * и стирает страницу начисто — это законный ответ «страница чистая», а не
- * потерянный кадр.
+ * Called by the parsing of the `ink:page` frame (session.svelte.ts). A
+ * replacement, precisely, not a merge by stroke ids: a page is the unit of
+ * delivery, and the server answers about it whole, including whatever was
+ * erased on it. That is why an empty list wipes the page clean: it is a
+ * legitimate answer "the page is blank", not a lost frame.
  */
 export function replaceInkPage(
   ink: readonly InkStroke[],
@@ -130,7 +140,7 @@ export function replaceInkPage(
   return strokes.length === 0 ? rest : [...rest, ...strokes]
 }
 
-/** Для тестов: забыть всё, что вкладка успела узнать о чернилах. */
+/** For tests: forget everything the tab has learned about ink. */
 export function forgetInkPages(): void {
   owner = null
   listed = null

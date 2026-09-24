@@ -38,10 +38,11 @@ let server: http.Server
 before(async () => {
   createSession(ROOM, 'Identity', null)
   /*
-   * Приложение целиком (server/src/app.ts), а не два роутера рядом: вход и
-   * история стоят в продукте за разбором json, проверкой происхождения и
-   * продлением печенья штата, и проверять их надо за тем же. Своя сборка
-   * express повторяла бы порядок index.ts, а не сверялась с ним.
+   * The whole app (server/src/app.ts), not two routers side by side: in the
+   * product, join and history sit behind json parsing, the origin check and
+   * the staff cookie renewal, and they have to be checked behind the same. An
+   * express assembled here would repeat the order of index.ts rather than be
+   * checked against it.
    */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -194,31 +195,31 @@ test('no credential at all is nobody, cookie or not', () => {
   assert.equal(sessionAuth(request('', mintCookie(teacher))), null)
 })
 
-/* ------------------------------------------------ роль нельзя запечь навсегда */
+/* ------------------------------------------------ a role cannot be baked in forever */
 
-test('токен с role:host не даёт host без cookie', async () => {
+test('a token with role:host does not give host without a cookie', async () => {
   /*
-   * Роль решается на каждом запросе и никогда не читается из токена. Иначе
-   * host был бы вечным: преподаватель, удалённый из списка, сохранял бы
-   * Restart и Restore во всех комнатах, куда когда-либо заходил, — токен всё
-   * ещё говорил бы, что он хозяин.
+   * The role is decided on every request and is never read from the token.
+   * Otherwise host would be forever: a teacher removed from the list would
+   * keep Restart and Restore in every room they ever entered — the token would
+   * still say they are the owner.
    */
   const student = await join({ name: 'Ada' })
   const forged = signToken({ sessionId: ROOM, participantId: student.participant.id, role: 'host' })
-  assert.equal(sessionAuth(request(forged))?.role, 'participant', 'запечённый host пережил проверку')
+  assert.equal(sessionAuth(request(forged))?.role, 'participant', 'a baked-in host survived the check')
 })
 
-test('токен старше предельного возраста не принимается', () => {
+test('a token older than the maximum age is not accepted', () => {
   const stale = signToken({
     sessionId: ROOM,
     participantId: 'p_old',
     role: 'participant',
     iat: Date.now() - TOKEN_MAX_AGE_MS - 1000,
   })
-  assert.equal(verifyToken(stale), null, 'вечный токен — это выданная навсегда возможность')
+  assert.equal(verifyToken(stale), null, 'an eternal token is a capability handed out forever')
 })
 
-test('токен без отметки времени читается: комната посреди пары не должна разлогиниться', () => {
+test('a token without a timestamp is read: a room in the middle of class must not get logged out', () => {
   const body = Buffer.from(
     JSON.stringify({ sessionId: ROOM, participantId: 'p_ageless', role: 'participant' }),
   ).toString('base64url')
@@ -226,13 +227,14 @@ test('токен без отметки времени читается: комн
   assert.equal(verifyToken(`${body}.${sig}`)?.participantId, 'p_ageless')
 })
 
-/* --------------------------------------------------- что комната принимает */
+/* --------------------------------------------------- what the room accepts */
 
-test('аватар — знак, а не чужой адрес', async () => {
+test('an avatar is a symbol, not a foreign address', async () => {
   /*
-   * Строка, начинающаяся с http или data:, рисуется в комнате как <img src>:
-   * один запрос — и браузер КАЖДОГО участника, включая опоздавших, идёт на
-   * чужой сервер, потому что аватар стоит и в ростере, и в подписи ячеек.
+   * A string starting with http or data: is drawn in the room as <img src>:
+   * one request — and the browser of EVERY participant, latecomers included,
+   * goes to someone else's server, because the avatar appears both in the
+   * roster and in the cell captions.
    */
   for (const bad of [
     'https://attacker.example/pixel.gif',
@@ -243,17 +245,17 @@ test('аватар — знак, а не чужой адрес', async () => {
     const joined = await join({ name: 'Pixel', avatar: bad })
     assert.equal(joined.participant.avatar, null, bad)
   }
-  // Эмодзи — то, ради чего поле есть, и оно доезжает целиком.
+  // An emoji is what the field exists for, and it arrives whole.
   const flag = await join({ name: 'Ada', avatar: '\u{1F469}\u200D\u{1F4BB}' })
   assert.equal(flag.participant.avatar, '\u{1F469}\u200D\u{1F4BB}')
 })
 
-test('поток новых участников ограничен: цикл не раздувает комнату', async () => {
+test('the stream of new participants is limited: a loop does not bloat the room', async () => {
   /*
-   * Вход не требует ничего, кроме ссылки, и без доказанной пары
-   * participantId+token заводит строку. Скрипт в цикле писал десятки тысяч
-   * «людей», которых никто не видел, — и список приезжал каждому настоящему
-   * участнику целиком.
+   * Joining requires nothing but the link, and without a proven
+   * participantId+token pair it creates a row. A script in a loop wrote tens
+   * of thousands of "people" nobody ever saw — and the list reached every real
+   * participant in full.
    */
   const room = 'identity-flood'
   createSession(room, 'Поток', null)
@@ -269,52 +271,55 @@ test('поток новых участников ограничен: цикл н
 
   let refusedAt = 0
   let mine: JoinResponse | null = null
-  // Потолок цикла обязан быть выше `MAX_NEW_PARTICIPANTS` (routes/sessions.ts):
-  // предел подняли до шестисот, и цикл на двухстах перестал доходить до отказа
-  // — то есть проверял, что поток НЕ ограничен, и был при этом зелёным.
+  // The loop's ceiling must be above `MAX_NEW_PARTICIPANTS`
+  // (routes/sessions.ts): the limit was raised to six hundred, and a loop of
+  // two hundred stopped reaching the refusal — that is, it checked that the
+  // stream is NOT limited, and was green while doing so.
   for (let i = 1; i <= 800 && refusedAt === 0; i += 1) {
     const res = await knock({ name: `Гость ${i}` })
     if (res.status === 429) refusedAt = i
     else if (i === 1) mine = (await res.json()) as JoinResponse
   }
-  assert.ok(refusedAt > 0, 'цикл не встретил ни одного отказа')
+  assert.ok(refusedAt > 0, 'the loop did not meet a single refusal')
 
-  // Уже вошедший возвращается по своему токену — его отказ не касается.
+  // Someone already inside comes back with their token — the refusal does not
+  // concern them.
   assert.ok(mine)
   const back = await knock({
     name: 'Гость 1',
     participantId: mine.participant.id,
     token: mine.token,
   })
-  assert.equal(back.status, 200, 'вернувшегося не пустили в собственную комнату')
+  assert.equal(back.status, 200, 'the returning person was not let into their own room')
 
-  // И преподавателя тоже: комнату под потоком ведёт кто-то живой.
+  // Nor the teacher: a room under a flood is run by someone real.
   const teacher = createTeacher({ name: 'Vera', email: 'vera.flood@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
   const staff = await knock({ name: 'Vera' }, mintCookie(teacher))
-  assert.equal(staff.status, 200, 'штат не смог войти в собственную комнату')
+  assert.equal(staff.status, 200, 'staff could not enter their own room')
 })
 
-test('на переполненный вход вкладка стучится ещё раз — и ровно один раз', () => {
+test('on a crowded join the tab knocks once more — and exactly once', () => {
   /*
-   * Отказ выше — не про этого человека: он пришёл вовремя, просто вместе со
-   * всей группой. Нажать за него второй раз должна вкладка (lib/crowd.ts), но
-   * ровно один: повтор без конца превращает переполненную комнату в ту, куда
-   * «не пускает совсем», и делает это молча.
+   * The refusal above is not about this person: they came on time, just
+   * together with the whole group. The tab should press a second time for
+   * them (lib/crowd.ts), but exactly once: endless retries turn a crowded room
+   * into one that "does not let you in at all", and do it silently.
    */
   const crowded = new ApiError('too many people are joining this seminar at once', 429)
-  assert.equal(retryJoinIn(crowded, 1), CROWD_WAIT_MS, 'первый отказ не дождался повтора')
-  assert.equal(retryJoinIn(crowded, 2), null, 'повтор пошёл по кругу')
+  assert.equal(retryJoinIn(crowded, 1), CROWD_WAIT_MS, 'the first refusal did not wait for a retry')
+  assert.equal(retryJoinIn(crowded, 2), null, 'the retry went around in circles')
 
-  // Всё остальное — отказ человеку, и ждать тут нечего: занятое имя, комнаты
-  // нет, связи нет. Повтор молча съел бы объяснение.
+  // Everything else is a refusal to the person, and there is nothing to wait
+  // for: a taken name, no room, no connection. A retry would silently swallow
+  // the explanation.
   assert.equal(retryJoinIn(new ApiError('session not found', 404), 1), null)
   assert.equal(retryJoinIn(new ApiError('Could not reach the server', 0), 1), null)
   assert.equal(retryJoinIn(new TypeError('Failed to fetch'), 1), null)
 })
 
-test('временный 404 от прокси повторяет вход один раз, не выдавая его за удалённую комнату', () => {
+test('a temporary 404 from a proxy retries the join once without passing it off as a deleted room', () => {
   const proxyError = new ApiError('Не найдено (404)', 404)
   const wait = retryJoinIn(proxyError, 1)
   assert.ok(wait !== null && wait > 0 && wait <= 1000)
@@ -325,14 +330,14 @@ test('временный 404 от прокси повторяет вход од�
   }
 })
 
-/* ------------------------------------------------ удалённый семинар уносит своё */
+/* ------------------------------------------------ a deleted seminar takes its own along */
 
-test('история удалённого семинара не читается и не воскрешает комнату', async () => {
+test('the history of a deleted seminar is not readable and does not revive the room', async () => {
   /*
-   * Маршруты истории были единственной дверью, через которую удалённый
-   * семинар оставался открыт: getSessionDoc строит документ для любого id,
-   * который ему дали, — старый токен доставал ноутбук комнаты, о которой
-   * панель уже отчиталась, что её нет, и заодно клал её обратно в память.
+   * The history routes were the only door through which a deleted seminar
+   * stayed open: getSessionDoc builds a document for any id it is given — an
+   * old token fetched the notebook of a room the panel had already reported
+   * as gone, and put it back into memory along the way.
    */
   const gone = 'identity-gone'
   createSession(gone, 'Удалённый', null)
@@ -345,59 +350,61 @@ test('история удалённого семинара не читается
   assert.equal(res.status, 404)
 })
 
-test('ключ ведущего стареет и не переписывается', () => {
+test('the host key ages and cannot be rewritten', () => {
   const room = 'host-token-age'
 
   const fresh = signHostToken(room)
   assert.equal(verifyHostToken(room, fresh), true)
 
-  // Чужой комнате он не подходит, даже свежий.
+  // It does not fit another room, even when fresh.
   assert.equal(verifyHostToken('other-room', fresh), false)
 
-  // Срок стоит в самом ключе и покрыт подписью: продлить его нельзя, не зная
-  // секрета. Именно это и пробуют — переписать отметку на завтрашнюю.
+  // The expiry sits in the key itself and is covered by the signature: it
+  // cannot be extended without knowing the secret. That is exactly what is
+  // tried here — rewriting the timestamp to tomorrow's.
   const [id, , sig] = fresh.split('.')
   const forged = `${id}.${(Date.now() + 86_400_000).toString(36)}.${sig}`
-  assert.equal(verifyHostToken(room, forged), false, 'подделанный срок приняли')
+  assert.equal(verifyHostToken(room, forged), false, 'a forged expiry was accepted')
 
-  // Ключ, выписанный больше тридцати дней назад, больше не ключ.
+  // A key issued more than thirty days ago is no longer a key.
   const old = `${id}.${(Date.now() - 31 * 24 * 60 * 60 * 1000).toString(36)}.${sig}`
   assert.equal(verifyHostToken(room, old), false)
 
-  // И старая двухчастная форма — та, что не старела никогда.
-  assert.equal(verifyHostToken(room, `${id}.${sig}`), false, 'бессрочный ключ всё ещё принимается')
+  // And the old two-part form — the one that never aged.
+  assert.equal(verifyHostToken(room, `${id}.${sig}`), false, 'a key without expiry is still accepted')
 })
 
-test('ведущий по токену переживает перезапуск сервера', async () => {
+test('a host by token survives a server restart', async () => {
   /*
-   * Список «кто провёл хост-токен» жил в памяти процесса. После `make stop`
-   * автор семинара, заведённого скриптом, приходил в свою комнату гостем:
-   * кнопки Restart и Interrupt мертвы, объяснения нет, а другого ключа от этой
-   * комнаты не существует — куки у него нет по построению.
+   * The list of "who presented a host token" lived in process memory. After
+   * `make stop` the author of a seminar created by a script came into their
+   * room as a guest: the Restart and Interrupt buttons were dead, there was no
+   * explanation, and no other key to this room exists — they have no cookie
+   * by construction.
    *
-   * Перезапуск здесь изображается честно: спрашиваем не то, что помнит модуль,
-   * а то, что лежит в базе.
+   * The restart is simulated honestly here: we ask not what the module
+   * remembers but what lies in the database.
    */
   const hostToken = signHostToken(ROOM)
   const author = await join({ name: 'Scripted', hostToken })
-  assert.equal(author.participant.role, 'host', 'токен не дал ведущего')
+  assert.equal(author.participant.role, 'host', 'the token did not give host')
 
   assert.equal(
     isTokenHost(ROOM, author.participant.id),
     true,
-    'после перезапуска процесса вспомнить это будет неоткуда',
+    'after a process restart there will be nowhere to recall this from',
   )
-  // И у обычного студента такой записи нет — иначе она ничего не значит.
+  // And an ordinary student has no such record — otherwise it means nothing.
   const student = await join({ name: 'Nina' })
   assert.equal(isTokenHost(ROOM, student.participant.id), false)
 })
 
-test('вход по HTTP и вход по сокету отвечают одинаково', async () => {
+test('joining over HTTP and over the socket give the same answer', async () => {
   /*
-   * Функций было две, и они расходились: HTTP смотрел в множество выданных
-   * токенов, сокет про него не знал вовсе. Автор скриптового семинара получал
-   * `host` на кнопках и `participant` на соединении, которым эти кнопки
-   * работают, — то есть кнопки, которые ничего не делают.
+   * There were two functions, and they disagreed: HTTP looked into the set of
+   * issued tokens, the socket knew nothing about it. The author of a scripted
+   * seminar got `host` on the buttons and `participant` on the connection
+   * those buttons work through — that is, buttons that do nothing.
    */
   const author = await join({ name: 'Scripted Two', hostToken: signHostToken(ROOM) })
   const student = await join({ name: 'Olga' })
@@ -407,33 +414,34 @@ test('вход по HTTP и вход по сокету отвечают один
   const cookie = mintCookie(teacher)
 
   const cases = [
-    { who: 'автор по токену', id: author.participant.id, cookie: undefined, expect: 'host' },
-    { who: 'студент', id: student.participant.id, cookie: undefined, expect: 'participant' },
-    { who: 'студент с кукой', id: student.participant.id, cookie, expect: 'host' },
+    { who: 'author by token', id: author.participant.id, cookie: undefined, expect: 'host' },
+    { who: 'student', id: student.participant.id, cookie: undefined, expect: 'participant' },
+    { who: 'student with a cookie', id: student.participant.id, cookie, expect: 'host' },
   ] as const
 
   for (const { who, id, cookie, expect } of cases) {
     const token = signToken({ sessionId: ROOM, participantId: id, role: 'participant' })
     const overHttp = sessionAuth(request(token, cookie))?.role
     const overSocket = roleFor(cookie, { sessionId: ROOM, participantId: id })
-    assert.equal(overHttp, overSocket, `входы разошлись: ${who}`)
-    // И это не «оба всегда participant» — иначе сходство ничего не стоит.
-    assert.equal(overSocket, expect, `${who}: не та роль`)
+    assert.equal(overHttp, overSocket, `the joins disagree: ${who}`)
+    // And it is not "both always participant" — otherwise the agreement is
+    // worth nothing.
+    assert.equal(overSocket, expect, `${who}: wrong role`)
   }
 })
 
-test('кука даёт ведущего только пока она есть', async () => {
-  // Куку можно отобрать — в этом её смысл, и поэтому «ведущий по куке» никогда
-  // не записывается в строку участника.
+test('a cookie gives host only while it exists', async () => {
+  // A cookie can be taken away — that is its point, and that is why "host by
+  // cookie" is never written into the participant row.
   const teacher = createTeacher({ name: 'Sofia', email: 'sofia.identity@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
   const joined = await join({ name: 'Sofia' }, mintCookie(teacher))
-  assert.equal(joined.participant.role, 'host', 'кука не дала ведущего при входе')
+  assert.equal(joined.participant.role, 'host', 'the cookie did not give host on join')
   assert.equal(
     isTokenHost(ROOM, joined.participant.id),
     false,
-    'вход по куке записался навсегда — отобрать права уже нечем',
+    'the cookie join was recorded forever — there is nothing left to revoke the rights with',
   )
   assert.equal(roleFor(undefined, { sessionId: ROOM, participantId: joined.participant.id }), 'participant')
 })

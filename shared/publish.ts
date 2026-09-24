@@ -1,31 +1,31 @@
 import { tr } from './i18n.js'
 /**
- * Курс, опубликованный семинар и шаги, по которым идёт студент.
+ * A course, a published seminar and the steps a student follows.
  *
- * Три новых существительных, и ни одно из них не комната. Комната — это место,
- * где идёт занятие: в неё заходят по ссылке, в ней общий документ, ядро и
- * права. Публикация — второй, замороженный предмет, ВЫВЕДЕННЫЙ из того, что
- * комната записала: за ней нет ни сокета, ни ядра, ни токена, и «только для
- * чтения» здесь свойство устройства, а не переключатель, который серверу
- * пришлось бы соблюдать.
+ * Three new nouns, and none of them is a room. A room is the place where a
+ * class happens: people enter it by a link, and it holds the shared document,
+ * the kernel and the rights. A publication is a second, frozen object DERIVED
+ * from what the room recorded: behind it there is no socket, no kernel, no
+ * token, and "read-only" here is a property of the design, not a switch the
+ * server would have to honour.
  *
- * Курс — единственный адрес в Colloq, который человек стал бы сохранять в
- * закладки: его дают классу в первую неделю и больше не дают ничего.
+ * A course is the only address in Colloq a person would bookmark: it is
+ * given to the class in the first week, and nothing else is given after it.
  */
 import type { CellOutput, CellType } from './notebook.js'
 import { PLOTLY_MIME } from './plotly.js'
 
-/** Восемь символов, как у семинара, но своего пространства имён. */
+/** Eight characters, like a seminar's, but in a namespace of its own. */
 export type CourseId = string
 export type PublicationId = string
 
-/* --------------------------------------------------------------- курс */
+/* ------------------------------------------------------------- course */
 
 export interface CourseItemSeminar {
   kind: 'seminar'
   sessionId: string
   name: string
-  /** Есть ли у него публичная страница и что на ней. */
+  /** Whether it has a public page, and what is on it. */
   publication: {
     id: PublicationId
     slug: string | null
@@ -35,23 +35,23 @@ export interface CourseItemSeminar {
 }
 
 /**
- * Семинар, которого больше нет.
+ * A seminar that no longer exists.
  *
- * Строка остаётся, и это не педантизм: курс, из которого молча пропала
- * четвёртая неделя, сломан для того, кто на ней сидел, — а нумерация остальных
- * недель уезжает на единицу и перестаёт совпадать с расписанием.
+ * The row stays, and this is not pedantry: a course from which the fourth
+ * week silently vanished is broken for whoever sat in it, and the numbering
+ * of the other weeks shifts by one and stops matching the timetable.
  */
 export interface CourseItemGone {
   kind: 'gone'
   name: string
   at: number
   /**
-   * Чтение, оставшееся от комнаты.
+   * The reading left over from the room.
    *
-   * Удаление семинара по умолчанию сохраняет опубликованную страницу — ссылку у
-   * студентов не отозвать. Без этой ссылки строка курса становится тупиком:
-   * страница жива и открывается по прямому адресу, а с курса — единственного
-   * адреса, который классу вообще дают, — до неё не дойти.
+   * Deleting a seminar keeps the published page by default: a link cannot be
+   * taken back from students. Without this link the course row becomes a dead
+   * end: the page is alive and opens at its direct address, but from the
+   * course, the only address the class is given at all, it cannot be reached.
    */
   publication?: {
     id: PublicationId
@@ -60,16 +60,16 @@ export interface CourseItemGone {
 }
 
 /**
- * Тема, которую ещё не вели.
+ * A topic that has not been taught yet.
  *
- * Курс заводят в начале семестра, а комнаты появляются по одной, раз в неделю.
- * Без этой строки страница курса в сентябре была бы пустой — или пришлось бы
- * завести тридцать комнат вперёд, каждую со своей ссылкой, ведущей в пустую
- * тетрадь за три месяца до занятия.
+ * A course is set up at the start of the semester, and rooms appear one at a
+ * time, once a week. Without this row the course page would be empty in
+ * September, or thirty rooms would have to be created in advance, each with
+ * its own link leading to an empty notebook three months before the class.
  *
- * `when` — неделя словами расписания («31 авг — 6 сен»), а не дата: расписание
- * так и составляют, и переводить его в числа значит выдумать день, которого в
- * нём нет.
+ * `when` is the week in the timetable's words ("31 Aug – 6 Sep"), not a date:
+ * that is how timetables are written, and turning it into numbers would mean
+ * inventing a day that is not in it.
  */
 export interface CourseItemPlanned {
   kind: 'planned'
@@ -80,12 +80,12 @@ export interface CourseItemPlanned {
 export type CourseItem = CourseItemSeminar | CourseItemGone | CourseItemPlanned
 
 /**
- * Имя, выбранное человеком, для адреса.
+ * A name chosen by a person, for the address.
  *
- * Только строчные, цифры и дефис: адрес диктуют вслух и пишут на доске, а
- * заглавные в нём — источник вопроса «а с большой или с маленькой?». Точек и
- * слэшей нет намеренно — путь собирается подстановкой, и вылезти из него
- * нельзя.
+ * Only lowercase letters, digits and hyphens: the address is dictated aloud
+ * and written on the board, and capitals in it raise the question "upper or
+ * lower case?". No dots or slashes on purpose: the path is built by
+ * substitution, and there is no way to climb out of it.
  */
 export const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/
 
@@ -94,44 +94,48 @@ export function slugOk(value: string): boolean {
 }
 
 /**
- * Адрес страницы или курса: имя, если оно есть, иначе идентификатор.
+ * The address of a page or course: the name if there is one, otherwise the id.
  *
- * Одна строка — и переписана она была уже четыре раза (панель курсов, список
- * курса, экран публикации, страница читателя), каждый раз одинаково, пока не
- * понадобилось то же самое на экране входа. Правило простое, но копий у него
- * быть не должно: снятое имя, забытое в одной из них, уводит класс на `/p/`
- * с идентификатором, которого никто не диктовал.
+ * One line, and it had already been rewritten four times (courses panel,
+ * course list, publish screen, reader page), each time the same way, until
+ * the same thing was needed on the entry screen. The rule is simple, but it
+ * must not have copies: a removed name forgotten in one of them sends the
+ * class to `/p/` with an id nobody dictated.
  */
 export function publicationAddress(page: { id: string; slug?: string | null }): string {
   return page.slug ?? page.id
 }
 
-/** Что вообще носит имя в адресе: курс `/c/…` или страница занятия `/p/…`. */
+/** What can carry a name in the address at all: a course `/c/…` or a class page `/p/…`. */
 export type AddressKind = 'course' | 'publication'
 
 /**
- * Кто держит имя, которого просят, — чтобы отказ назвал держателя.
+ * Who holds the requested name, so that the refusal can name the holder.
  *
- * «Адрес «ml-2025» уже занят» — тупик: курса с таким адресом в списке нет (его
- * переименовали в «ml-2025-fall»), и преподаватель ищет то, чего не видно.
- * `former` отличает две совсем разные причины отказа: живой адрес чужой
- * страницы освободит только её владелец, а память о розданной ссылке владелец
- * может отпустить сам — ценой того, что старая ссылка станет 404.
+ * "Address "ml-2025" is already taken" is a dead end: there is no course with
+ * that address in the list (it was renamed to "ml-2025-fall"), and the
+ * teacher looks for something that cannot be seen. `former` tells apart two
+ * quite different reasons for a refusal: the live address of another page
+ * can be freed only by that page's owner, whereas the memory of a link
+ * already handed out the owner can release on their own, at the cost of the
+ * old link becoming a 404.
  *
- * Тип общий на обе стороны намеренно: сервер судит по этой записи
- * (`server/src/publish/store.ts` · addressHolder, releaseFormerSlug), панель по
- * ней же решает, показывать ли кнопку «отпустить», — и разойтись им негде.
+ * The type is shared by both sides on purpose: the server judges by this
+ * record (`server/src/publish/store.ts` · addressHolder, releaseFormerSlug),
+ * the panel uses the same record to decide whether to show the "release"
+ * button, and there is nowhere for them to diverge.
  */
 export interface AddressHolder {
   kind: AddressKind
   id: string
   name: string
-  /** Живой адрес или прежний, оставленный ради уже розданной ссылки. */
+  /** A live address, or a former one kept for a link already handed out. */
   former: boolean
 }
 
 /**
- * Слово из названия — предложение, а не приговор: человек стирает и пишет своё.
+ * A word from the title is a suggestion, not a verdict: the person erases it
+ * and writes their own.
  */
 export function suggestSlug(name: string): string {
   const TRANSLIT: Record<string, string> = {
@@ -181,7 +185,7 @@ export function suggestSlug(name: string): string {
 
 export interface Course {
   id: CourseId
-  /** Имя в адресе. `null` — адрес остаётся идентификатором. */
+  /** The name in the address. `null`: the address stays the id. */
   slug: string | null
   name: string
   blurb: string | null
@@ -189,36 +193,37 @@ export interface Course {
   createdBy: string | null
   items: CourseItem[]
   /**
-   * Версия списка, для сравнения-и-обмена.
+   * Version of the list, for compare-and-swap.
    *
-   * Права преподавателя на инстансе общие, а список семинаров курса пишется
-   * целиком одним значением: без этого двое, переставляющие один курс в одну
-   * минуту, молча теряют порядок друг друга.
+   * Teacher rights on an instance are shared, and a course's seminar list is
+   * written whole as one value: without this, two people rearranging the
+   * same course in the same minute silently lose each other's order.
    */
   rev: number
   /**
-   * Прежние имена в адресе, которые всё ещё ведут на этот курс.
+   * Former names in the address that still lead to this course.
    *
-   * Переименование не отменяет розданную ссылку: старое имя остаётся адресом
-   * навсегда — и держит его для всех остальных тоже. Курс следующего года,
-   * которому это имя нужно, получал «Адрес «ml-2025» уже занят» про строку,
-   * которой в списке не видно вовсе. Отпускает их владелец, по одному
-   * (`DELETE /api/admin/slug/course/:id/former/:slug`), и цена у этого своя:
-   * отпущенный адрес перестаёт вести куда-либо.
+   * A rename does not cancel a link already handed out: the old name stays an
+   * address forever, and holds it for everyone else too. Next year's course
+   * that needed this name got "Address "ml-2025" is already taken" about a
+   * row not visible in the list at all. The owner releases them, one at a
+   * time (`DELETE /api/admin/slug/course/:id/former/:slug`), and this has its
+   * own price: a released address stops leading anywhere.
    *
-   * Необязательное и только в панели: публичному виду курса знать о прежних
-   * именах незачем.
+   * Optional and only in the panel: the public view of a course has no need
+   * to know about former names.
    */
   former?: string[]
 }
 
 /**
- * Курс глазами студента.
+ * A course as a student sees it.
  *
- * Отдельный тип, а не `Course` целиком, и разница ровно в том, чего в нём нет:
- * `sessionId` наружу не уходит. Восемь символов комнаты — это всё право писать
- * в неё, так что ссылка, данная классу «на почитать», не должна открывать им
- * живую тетрадь. `rev`, автор и дата создания студенту тоже ни о чём.
+ * A separate type rather than the whole `Course`, and the difference is
+ * exactly what it lacks: `sessionId` does not go out. The eight characters of
+ * a room are the whole right to write into it, so a link given to the class
+ * "for reading" must not open the live notebook for them. `rev`, the author
+ * and the creation date mean nothing to a student either.
  */
 export interface PublicCourseView {
   id: CourseId
@@ -228,36 +233,36 @@ export interface PublicCourseView {
   items: CourseItem[]
 }
 
-/* -------------------------------------------------- опубликованный семинар */
+/* ------------------------------------------------------- published seminar */
 
 /**
- * Ячейка на публичной странице.
+ * A cell on the public page.
  *
- * `runBy`, `runById`, `stdin` и `state` сюда не попадают, и это перечисление
- * по белому списку, а не вычитание: поле, добавленное в тетрадь завтра, не
- * должно оказаться на публичной странице само собой.
+ * `runBy`, `runById`, `stdin` and `state` do not get here, and this is an
+ * allowlist enumeration, not a subtraction: a field added to the notebook
+ * tomorrow must not end up on the public page by itself.
  */
 export interface PublicCell {
   id: string
   type: CellType
   source: string
   outputs: CellOutput[]
-  /** Номер выполнения. `null` — вывод есть, а выполнения за ним уже нет. */
+  /** Execution count. `null`: there is output, but no execution behind it any more. */
   execCount: number | null
-  /** Сколько шёл последний завершившийся запуск. */
+  /** How long the last finished run took. */
   ranMs: number | null
 }
 
-/** Один шаг: момент, который назвал преподаватель, и тетрадь на этот момент. */
+/** One step: a moment the teacher named, and the notebook at that moment. */
 export interface PublicStep {
-  /** Строка истории, из которой шаг собран. Она же его постоянный адрес. */
+  /** The history row the step is built from. It is also its permanent address. */
   seq: number
   label: string
   at: number
   cells: PublicCell[]
 }
 
-/** Шаг без содержимого — для рельсы и для списка. */
+/** A step without content, for the rail and for the list. */
 export interface StepHeading {
   seq: number
   label: string
@@ -273,19 +278,20 @@ export interface PublicSeminar {
   title: string
   state: PublicationState
   publishedAt: number
-  /** Курс, если семинар в нём состоит, — чтобы со страницы был путь наверх. */
+  /** The course, if the seminar belongs to one, so the page has a way up. */
   course: { id: CourseId; name: string } | null
   steps: StepHeading[]
-  /** Пропал ли семинар, из которого это сделано. Читать это не мешает. */
+  /** Whether the seminar this was made from is gone. It does not stop reading. */
   orphaned: boolean
 }
 
 /**
- * Момент, который может стать шагом.
+ * A moment that can become a step.
  *
- * `label` пуст, когда момент никто не называл: это служебный снимок, и «Снимок
- * №14» в рельсе у студента — не название, а признание, что назвать забыли.
- * Такой момент нельзя отметить, пока в поле не напишут слова.
+ * `label` is empty when nobody named the moment: it is a service snapshot,
+ * and "Snapshot #14" in a student's rail is not a title but an admission that
+ * someone forgot to name it. Such a moment cannot be marked until words are
+ * written in the field.
  */
 export interface PublishCandidate {
   seq: number
@@ -295,30 +301,32 @@ export interface PublishCandidate {
   kind: string
 }
 
-/* ------------------------------------------------- два «нет» на один код */
+/* ------------------------------------------------ two "no"s for one code */
 
 /**
- * Шага нет — или страницы нет: код у обоих 404, различает их только тело.
+ * No step, or no page: both have code 404, and only the body tells them apart.
  *
- * `/api/p/:id/step/:seq` отказывает по двум разным поводам, и для читателя это
- * два разных мира. `step not found` — публикация жива и открыта, а такого шага
- * в ней нет: ссылка устарела (семинар публикуют заново тем же адресом —
- * `writePublication` оставляет id и меняет отметки) или в номере промах.
- * `publication not found` — страницы больше нет вовсе: сняли или удалили.
+ * `/api/p/:id/step/:seq` refuses for two different reasons, and for the
+ * reader these are two different worlds. `step not found`: the publication
+ * is alive and open, but it has no such step: the link is out of date (the
+ * seminar is republished at the same address; `writePublication` keeps the
+ * id and changes the marks) or the number is wrong. `publication not found`:
+ * the page is gone altogether: withdrawn or deleted.
  *
- * Слова живут здесь, а не в маршруте и не в экране: различить эти случаи можно
- * ТОЛЬКО по телу, и стоит одной из двух копий уехать — читалка снова начнёт
- * хоронить живую публикацию, а чинить это будет уже нечем.
+ * The words live here, not in the route and not in the screen: these cases
+ * can be told apart ONLY by the body, and should one of the two copies drift,
+ * the reader will again start burying a live publication, and there will be
+ * nothing left to fix it with.
  */
 export const STEP_NOT_FOUND = 'step not found'
 export const PUBLICATION_NOT_FOUND = 'publication not found'
 
 /**
- * Чего именно не нашлось — по коду и телу отказа.
+ * What exactly was not found, by the refusal's code and body.
  *
- * `null` — это «не знаю», а не «нет»: 404 без знакомых слов (страница-заглушка
- * прокси, чужой ответ) не доказывает ни того, ни другого, и вести себя по нему
- * как по приговору нельзя.
+ * `null` means "I don't know", not "no": a 404 without familiar words (a
+ * proxy's stub page, someone else's response) proves neither, and it must
+ * not be acted on as a verdict.
  */
 export function refusedStep(status: number, message: string): 'step' | 'publication' | null {
   if (status !== 404) return null
@@ -327,44 +335,45 @@ export function refusedStep(status: number, message: string): 'step' | 'publicat
   return null
 }
 
-/* -------------------------------------------------------------- ограничения */
+/* ------------------------------------------------------------------- limits */
 
 export const MAX_COURSE_NAME = 120
 export const MAX_COURSE_BLURB = 140
 /**
- * Неделя строки плана — «31 авг — 6 сен», а не абзац.
+ * The week of a plan row: "31 Aug – 6 Sep", not a paragraph.
  *
- * Сорок стояли числом внутри маршрута, и поле в панели о них не знало:
- * набранное длиннее молча обрезалось сервером, и сохранённая строка
- * расходилась с тем, что человек видел в поле. Одна константа на обе стороны.
+ * Forty used to be a number inside the route, and the panel field did not
+ * know about it: anything typed longer was silently truncated by the server,
+ * and the saved row differed from what the person saw in the field. One
+ * constant for both sides.
  */
 export const MAX_PLANNED_WHEN = 40
 export const MAX_STEP_LABEL = 80
-/** Сколько шагов можно опубликовать за раз. Сорок — это уже семестр. */
+/** How many steps can be published at once. Forty is already a semester. */
 export const MAX_STEPS = 40
 
 /**
- * Порог, за которым содержимое вывода уезжает в отдельную запись.
+ * The threshold beyond which output content moves to a separate record.
  *
- * График matplotlib — это base64 на сотни килобайт, и он одинаков во всех
- * шагах, где эта ячейка не менялась. Хранить его в каждом — это шесть копий
- * одной картинки на семинар; хранить по хэшу — одна.
+ * A matplotlib plot is hundreds of kilobytes of base64, and it is the same in
+ * every step where this cell did not change. Storing it in each means six
+ * copies of one picture per seminar; storing it by hash means one.
  */
 export const BLOB_MIN_BYTES = 2048
 
 /**
- * Что вообще уезжает в отдельную запись: только растровые картинки.
+ * What moves to a separate record at all: only raster images.
  *
- * Список перечислен буквами, потому что вынос предполагает base64: запись
- * хранит РАСКОДИРОВАННЫЕ байты. `image/svg+xml` приходит от ядра XML-текстом, и
- * `Buffer.from(xml, 'base64')` превращал его в мусор — на странице оставалась
- * пустая рамка, а оригинал в публикации было уже не восстановить. SVG остаётся
- * в странице как есть: он и весит меньше картинки, ради которой всё это
- * заводилось.
+ * The list is spelled out because moving out assumes base64: the record
+ * stores DECODED bytes. `image/svg+xml` comes from the kernel as XML text,
+ * and `Buffer.from(xml, 'base64')` turned it into garbage: the page was left
+ * with an empty frame, and the original in the publication could no longer be
+ * recovered. SVG stays in the page as is: it also weighs less than the
+ * picture all this was set up for.
  *
- * Второе, что держит этот список: тип отсюда уходит в `content-type` ответа
- * (`/api/p/:id/blob/:hash`). SVG в блобе — это документ на origin инстанса, а
- * значит и скрипт внутри него.
+ * The second thing this list guards: the type goes from here into the
+ * response's `content-type` (`/api/p/:id/blob/:hash`). An SVG in a blob is a
+ * document on the instance's origin, and so is the script inside it.
  */
 export const BLOB_MIMES: ReadonlySet<string> = new Set([
   'image/png',
@@ -374,34 +383,37 @@ export const BLOB_MIMES: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Что вообще может уехать из документа в отдельную запись.
+ * What can move out of the document into a separate record at all.
  *
- * Шире, чем `BLOB_MIMES`, ровно на одну строку — фигуру plotly, — и отдельным
- * набором, а не строкой в том списке, по двум причинам сразу. Первая:
- * `BLOB_MIMES` — это ещё и список того, что рисуется элементом `<img>`
- * (web/src/components/notebook/output-mimes.ts · IMG_MIMES), и график, попавший
- * туда, приехал бы битой картинкой. Вторая: записи хранят РАСКОДИРОВАННЫЕ
- * байты, а кодировка у них разная — картинка приходит base64, фигура приходит
- * текстом JSON (см. `spillEncoding`).
+ * Wider than `BLOB_MIMES` by exactly one entry, the plotly figure, and a
+ * separate set rather than an entry in that list, for two reasons at once.
+ * First: `BLOB_MIMES` is also the list of what is drawn by an `<img>` element
+ * (web/src/components/notebook/output-mimes.ts · IMG_MIMES), and a chart that
+ * got there would arrive as a broken image. Second: the records store DECODED
+ * bytes, and their encodings differ: an image comes as base64, a figure comes
+ * as JSON text (see `spillEncoding`).
  *
- * Фигура выносится по той же причине, что и график matplotlib: `px.scatter` на
- * десятки тысяч точек — это мегабайты, и в документе комнаты они стоили бы
- * столько же каждому зрителю, каждому снимку и каждому кадру истории.
+ * A figure is moved out for the same reason as a matplotlib plot: a
+ * `px.scatter` of tens of thousands of points is megabytes, and in the room
+ * document they would cost as much to every viewer, every snapshot and every
+ * history frame.
  */
 export const SPILL_MIMES: ReadonlySet<string> = new Set([...BLOB_MIMES, PLOTLY_MIME])
 
-/** Чем такой кусок лежит в наборе ядра: base64 или обычный текст. */
+/** How such a piece sits in the kernel's bundle: base64 or plain text. */
 export function spillEncoding(mime: string): 'base64' | 'utf8' {
   return BLOB_MIMES.has(mime) ? 'base64' : 'utf8'
 }
 
 /**
- * Чем вынесенный кусок отдавать браузеру — и это НЕ то, что сказало ядро.
+ * What to serve a moved-out piece to the browser as, and it is NOT what the
+ * kernel said.
  *
- * `content-type` решает, чем ответ станет при переходе по прямой ссылке, а
- * набор `display_data` формирует библиотека в коде студента. Картинке
- * возвращается её собственный тип, фигуре — `application/json`: он точен и
- * документом не становится. `null` — незнакомое, такое уходит вложением.
+ * `content-type` decides what the response becomes when a direct link is
+ * followed, and the `display_data` bundle is formed by a library in the
+ * student's code. An image gets its own type back, a figure gets
+ * `application/json`: it is exact and does not become a document. `null`:
+ * unknown; such content goes out as an attachment.
  */
 export function spillContentType(mime: string): string | null {
   if (BLOB_MIMES.has(mime)) return mime
@@ -409,23 +421,23 @@ export function spillContentType(mime: string): string | null {
   return null
 }
 
-/** Ссылка на такое содержимое внутри mime-набора вывода. */
+/** A reference to such content inside an output's mime bundle. */
 export const BLOB_PREFIX = 'blob:'
 
-/* ------------------------------------------------------ шаг, который выпал */
+/* ---------------------------------------------------- a step that fell out */
 
 /**
- * Почему момент, отмеченный преподавателем, не стал шагом.
+ * Why a moment the teacher marked did not become a step.
  *
- * Молчание здесь дороже, чем кажется: преподаватель отметил семь моментов,
- * нажал «Опубликовать» и получил страницу с шестью — а какой пропал и почему,
- * не сказал никто. Причины разные по природе, и путать их нельзя: «пусто» — это
- * факт о занятии, «не читается» — поломка сервера, а остальные две — про сам
- * запрос.
+ * Silence here costs more than it seems: the teacher marked seven moments,
+ * pressed "Publish" and got a page with six, and nobody said which one was
+ * lost and why. The reasons differ in nature and must not be confused:
+ * "empty" is a fact about the class, "unreadable" is a server breakage, and
+ * the other two are about the request itself.
  */
 export type SkipReason = 'empty' | 'broken' | 'unnamed' | 'duplicate'
 
-/** Названный момент, который в публикацию не попал, и почему. */
+/** A named moment that did not make it into the publication, and why. */
 export interface SkippedStep {
   seq: number
   label: string
@@ -433,11 +445,11 @@ export interface SkippedStep {
 }
 
 /**
- * Как это сказать человеку — одной копией на сервер и на панель.
+ * How to say this to a person: one copy for the server and the panel.
  *
- * Текст живёт здесь, а не в маршруте и не в компоненте: две копии одной фразы
- * расходятся на первой же правке, и тогда журнал сервера и экран преподавателя
- * называют один и тот же отказ по-разному.
+ * The text lives here, not in the route and not in the component: two copies
+ * of one phrase drift apart at the very first edit, and then the server log
+ * and the teacher's screen call the same refusal by different names.
  */
 export const SKIP_REASON_TEXT: Record<SkipReason, string> = {
   get empty() { return tr('server.skip_reason_text.empty') },
@@ -446,26 +458,27 @@ export const SKIP_REASON_TEXT: Record<SkipReason, string> = {
   get duplicate() { return tr('server.skip_reason_text.duplicate') },
 }
 
-/* --------------------------------------------------------------- индексация */
+/* ----------------------------------------------------------------- indexing */
 
 /**
- * Пускать ли поисковик на опубликованные страницы — одним решением на оба
- * носителя.
+ * Whether to let search engines onto published pages: one decision for both
+ * carriers.
  *
- * Их два: выгрузка на Pages (`server/src/publish/render.ts`) и живой инстанс
- * (`/p/`, `/c/` в `server/src/index.ts`). Пока правило лежало в комментариях по
- * обе стороны, комментарии успели разойтись: статика ставила `noindex`
- * («страницу дают классу, а не поисковику»), а `robots.txt` инстанса закрывал
- * только комнаты и панель, объясняя, что публикации «индексируются: их для того
- * и публикуют». Одна и та же страница вела себя по-разному в зависимости от
- * того, каким адресом её открыли.
+ * There are two: the Pages export (`server/src/publish/render.ts`) and the
+ * live instance (`/p/`, `/c/` in `server/src/index.ts`). While the rule lived
+ * in comments on both sides, the comments managed to diverge: the static
+ * export set `noindex` ("the page is given to the class, not to a search
+ * engine"), while the instance's `robots.txt` closed only the rooms and the
+ * panel, explaining that publications "are indexed: that is what they are
+ * published for". The same page behaved differently depending on which
+ * address it was opened at.
  *
- * Решение — «не индексируются», и оно про то, чем эта страница является:
- * запись занятия, отданная своему классу по ссылке, а не публикация для
- * читателей вообще. Найти её должен тот, кому дали адрес; лендинг colloq.ru
- * поисковику открыт и остаётся открыт.
+ * The decision is "not indexed", and it is about what this page is: a record
+ * of a class given to its own class by link, not a publication for readers
+ * at large. It should be found by whoever was given the address; the
+ * colloq.ru landing is open to search engines and stays open.
  */
 export const PUBLIC_PAGES_INDEXED = false
 
-/** `<meta name="robots">` и заголовок `X-Robots-Tag` — из одного решения. */
+/** `<meta name="robots">` and the `X-Robots-Tag` header, from one decision. */
 export const ROBOTS_TAG = PUBLIC_PAGES_INDEXED ? 'all' : 'noindex'

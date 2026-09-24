@@ -1,23 +1,25 @@
 /**
- * Порядок middleware в тестах не переписывают — его монтируют.
+ * Middleware order is not rewritten in tests: it is mounted.
  *
- * Двери панели и комнаты проверялись за своей сборкой express: `admin.test`
- * собирал приложение сам и КОПИРОВАЛ в него порядок — «тот же порядок, что в
- * index.ts», говорил комментарий над копией. Копия расхождений с продуктом не
- * ловит, она их повторяет: перенеси проверку происхождения относительно
- * роутеров — и юнит-тесты останутся зелёными над сервером, где запись с чужой
- * страницы проходит. Приложение живёт в `server/src/app.ts` и экспортируется
- * целиком, так что копия больше не нужна никому.
+ * The panel and room doors were checked behind an express assembly of their
+ * own: `admin.test` built the app itself and COPIED the order into it ("the
+ * same order as in index.ts", said the comment above the copy). A copy does
+ * not catch divergences from the product, it repeats them: move the origin
+ * check relative to the routers, and the unit tests stay green over a
+ * server where a write from someone else's page gets through. The app lives
+ * in `server/src/app.ts` and is exported whole, so nobody needs the copy
+ * any more.
  *
- * Здесь две вещи, которые иначе видно только при следующем аудите: что копия
- * не вернулась (проверку происхождения тест не импортирует — её ставит
- * продукт) и что двери, за которыми есть право, монтируются приложением.
- * Отдельные роутеры в тестах остаются законными: часть из них поднимают с
- * подделками и своими потолками (`councilRoutes(deps)`, оракул на 4 МБ) — там
- * проверяют роутер, а не дверь.
+ * Two things are here that would otherwise be seen only at the next audit:
+ * that the copy has not come back (the test does not import the origin
+ * check; the product installs it) and that the doors behind which there is a
+ * right are mounted by the app. Separate routers in tests remain legitimate:
+ * some of them are started with fakes and ceilings of their own
+ * (`councilRoutes(deps)`, the oracle at 4 MB); there the router is tested,
+ * not the door.
  *
- * Тот же приём, что в `panels-ban-promise` и `*-craft`: правило читается из
- * файлов, а не пересказывается рядом.
+ * The same device as in `panels-ban-promise` and `*-craft`: the rule is read
+ * from the files, not retold next to them.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -30,23 +32,25 @@ const files = fs.readdirSync(TESTS).filter((name) => name.endsWith('.test.mts'))
 const SRC = path.join(TESTS, '..', 'server', 'src')
 const server = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8')
 
-test('ни один тест не собирает у себя проверку происхождения', () => {
-  assert.ok(files.length > 50, 'тестов вдруг стало мало — проверять нечего')
+test('no test assembles the origin check on its own', () => {
+  assert.ok(files.length > 50, 'there are suddenly too few tests, nothing to check')
   /*
-   * Именно импорт, а не слово: про `sameOrigin` можно и нужно писать в
-   * комментариях (`app-wiring`, `upload-budget` объясняют, где она стоит), но
-   * ввести её в свой `app.use` значит завести вторую копию правила.
+   * Exactly an import, not a word: one may and should write about
+   * `sameOrigin` in comments (`app-wiring`, `upload-budget` explain where it
+   * stands), but putting it into one's own `app.use` means creating a second
+   * copy of the rule.
    */
   const imports = /import\s*(?:type\s*)?\{[^}]*\bsameOrigin\b[^}]*\}\s*from/
   for (const name of files) {
-    assert.equal(imports.test(read(name)), false, `${name}: порядок middleware скопирован в тест`)
+    assert.equal(imports.test(read(name)), false, `${name}: the middleware order is copied into the test`)
   }
 })
 
-test('двери с правом проверяются на приложении, а не на подобии', () => {
+test('doors with a right are checked on the app, not on a lookalike', () => {
   /*
-   * Панель, вход в комнату, файлы и бан — четыре места, где отказ решает не
-   * роутер, а то, что стоит перед ним. Каждое из них берёт `app` целиком.
+   * The panel, room entry, files and the ban: four places where a refusal is
+   * decided not by the router but by what stands in front of it. Each of them
+   * takes the whole `app`.
    */
   for (const name of [
     'admin.test.mts',
@@ -55,59 +59,61 @@ test('двери с правом проверяются на приложени�
     'ban-http.test.mts',
   ]) {
     const source = read(name)
-    assert.match(source, /from '\.\.\/server\/src\/app\.js'/, `${name}: приложение не смонтировано`)
+    assert.match(source, /from '\.\.\/server\/src\/app\.js'/, `${name}: the app is not mounted`)
     assert.doesNotMatch(
       source,
       /^\s*(?:const|let)\s+app\s*=\s*express\(\)/m,
-      `${name}: рядом с приложением собрано ещё одно`,
+      `${name}: another app is assembled next to the real one`,
     )
   }
 })
 
-test('index.ts держит процесс, а не сборку', () => {
+test('index.ts holds the process, not the assembly', () => {
   /*
-   * Обратная сторона переезда: пока `app.use` можно дописать в index.ts,
-   * порядок снова окажется в двух местах, и второе никто не смонтирует.
+   * The other side of the move: as long as `app.use` can be added to
+   * index.ts, the order will again end up in two places, and nobody will
+   * mount the second one.
    */
   const index = server('index.ts')
-  assert.match(index, /from '\.\/app\.js'/, 'index.ts собирает приложение сам, а не берёт готовое')
+  assert.match(index, /from '\.\/app\.js'/, 'index.ts assembles the app itself instead of taking the ready one')
   for (const [pattern, what] of [
     [/\bexpress\(\)/, 'express()'],
     [/^\s*app\.use\(/m, 'app.use'],
     [/express\.json\(/, 'express.json'],
   ] as const) {
-    assert.doesNotMatch(index, pattern, `index.ts снова собирает приложение: ${what}`)
+    assert.doesNotMatch(index, pattern, `index.ts assembles the app again: ${what}`)
   }
   const app = server('app.ts')
-  assert.match(app, /app\.use\('\/api', \(req, res, next\) => \{/, 'app.ts потерял вход /api')
-  assert.match(app, /express\.json\(\{ limit: '1mb' \}\)/, 'app.ts потерял предел на тело')
+  assert.match(app, /app\.use\('\/api', \(req, res, next\) => \{/, 'app.ts lost the /api entry')
+  assert.match(app, /express\.json\(\{ limit: '1mb' \}\)/, 'app.ts lost the body limit')
 })
 
-test('комментарии не отправляют за сборкой в index.ts', () => {
+test('comments do not send the reader to index.ts for the assembly', () => {
   /*
-   * Три файла, где о сборке говорят словами: `admin/auth.ts` пишет правило,
-   * `app.ts` его монтирует, index.ts его больше не держит. Отправить читателя
-   * за порядком в index.ts — это и есть расхождение слова и дела: он пойдёт и
-   * не найдёт. Про соседний `collab/index.ts` писать по-прежнему можно —
-   * запрещено только голое имя рядом со словами о сборке.
+   * Three files where the assembly is talked about in words: `admin/auth.ts`
+   * writes the rule, `app.ts` mounts it, index.ts no longer holds it. Sending
+   * a reader to index.ts for the order is exactly a divergence between word
+   * and deed: they will go and not find it. Writing about the neighbouring
+   * `collab/index.ts` is still allowed: only a bare name next to words about
+   * the assembly is forbidden.
    *
-   * И вся папка `routes/`: обе строки, которые врали про index.ts, жили
-   * именно там — `admin-import.ts` про `express.json`, `sessions.ts` про
-   * порядок монтирования, — потому что роутер как раз и объясняет, что стоит
-   * перед ним. Обход папки, а не список имён: следующий роутер попадает под
-   * сторож сам, без правки этого теста.
+   * And the whole `routes/` folder: both lines that lied about index.ts lived
+   * right there (`admin-import.ts` about `express.json`, `sessions.ts` about
+   * the mounting order), because a router is exactly what explains what
+   * stands in front of it. A folder walk, not a list of names: the next
+   * router falls under the guard by itself, without editing this test.
    */
   const bare = /(?<![\w./])index\.ts/
-  const wiring = /(`\/api`|express\.json|sameOrigin|slideStaffCookie|монтир|middleware)/
+  const wiring = /(`\/api`|express\.json|sameOrigin|slideStaffCookie|mount|middleware)/
   const routes = fs
     .readdirSync(path.join(SRC, 'routes'))
     .filter((name) => name.endsWith('.ts'))
     .map((name) => `routes/${name}`)
-  assert.ok(routes.length > 10, 'папка routes/ вдруг опустела — сторожить нечего')
+  assert.ok(routes.length > 10, 'the routes/ folder is suddenly empty, nothing to guard')
   for (const rel of ['admin/auth.ts', 'app.ts', 'index.ts', ...routes]) {
     for (const [at, line] of server(rel).split('\n').entries()) {
       if (!bare.test(line) || !wiring.test(line)) continue
-      assert.fail(`${rel}:${at + 1}: сборка живёт в app.ts, а комментарий шлёт в index.ts`)
+      assert.fail(`${rel}:${at + 1}: the assembly lives in app.ts, but the comment sends the reader to index.ts`)
     }
   }
 })

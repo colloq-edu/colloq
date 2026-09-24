@@ -1,20 +1,21 @@
 /**
- * Что текстовая ячейка не имеет права принести в чужие браузеры.
+ * What a text cell has no right to bring into other people's browsers.
  *
- * Список тегов проверяется в security-headers.test.mts вместе с заголовками —
- * здесь вторая половина той же политики, атрибуты.
+ * The tag list is checked in security-headers.test.mts together with the
+ * headers — here is the second half of the same policy, the attributes.
  *
- * Атрибут `style` из этого файла ушёл, и ушёл не по недосмотру: запрет целиком
- * закрывал дыру (`<div style="position:fixed;inset:0">` — чёрный экран у всех
- * тридцати человек и у ноутбука в проекторе, поверх интерфейса, то есть ячейку
- * уже не удалить мышью) — но вместе с ней уносил всю привычную разметку
- * учебного ноутбука. Теперь считаются СВОЙСТВА, и считает их чистая функция,
- * которую проверяет note-css.test.mts по поведению, а не по исходнику.
+ * The `style` attribute left this file, and not by oversight: banning it
+ * outright closed the hole (`<div style="position:fixed;inset:0">` — a black
+ * screen for all thirty people and for the laptop on the projector, on top of
+ * the interface, so the cell can no longer be deleted with the mouse) — but it
+ * took all the usual markup of a teaching notebook along with it. Now the
+ * PROPERTIES are judged, by a pure function that note-css.test.mts checks by
+ * behaviour rather than by source.
  *
- * Здесь остаётся то, что иначе не проверить: markdown() зовёт
- * document.createElement и грузит dompurify динамическим импортом, то есть нужен
- * браузер, которого в этой сюите нет. А потеря строки — это одна строка в одном
- * месте, и такую строку видно чтением.
+ * What stays here is what cannot be checked otherwise: markdown() calls
+ * document.createElement and loads dompurify through a dynamic import, so it
+ * needs a browser, which this suite does not have. And losing the line is one
+ * line in one place, and a line like that can be seen by reading.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -28,28 +29,28 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel: string): string => fs.readFileSync(path.join(root, rel), 'utf8')
 
 test('a link in a note may not POST to a stranger', () => {
-  // DOMPurify оставляет `ping` по умолчанию, и `<a href="…" ping="http://…">`
-  // — это запрос из браузера того, кто нажал на ссылку в чужой заметке.
+  // DOMPurify keeps `ping` by default, and `<a href="…" ping="http://…">` is a
+  // request from the browser of whoever clicked a link in somebody else's note.
   assert.ok(MARKDOWN_FORBIDDEN_ATTRS.includes('ping'))
 })
 
-test('оформление заметки считается по свойствам, а не по запрету атрибута', () => {
-  // Запрет `style` снят намеренно — но ровно в обмен на белый список свойств.
-  // Пропадёт список, и вернётся тот самый оверлей на всю комнату.
+test('note styling is judged property by property, not by banning the attribute', () => {
+  // The `style` ban was lifted on purpose — but strictly in exchange for an
+  // allowlist of properties. Lose the list, and that very overlay over the whole room comes back.
   assert.ok(!MARKDOWN_FORBIDDEN_ATTRS.includes('style'))
   assert.equal(safeStyle('position:fixed;inset:0;background:#000'), 'background: #000')
 })
 
 test('a text cell may not play sound at the room', () => {
-  // <audio autoplay loop> и его атрибуты — в списках DOMPurify по умолчанию, а
-  // выключить это тому, у кого играет, нечем.
+  // <audio autoplay loop> and its attributes are in DOMPurify's default lists,
+  // and whoever it plays for has nothing to turn it off with.
   assert.ok(MARKDOWN_FORBIDDEN_TAGS.includes('audio'))
   assert.ok(MARKDOWN_FORBIDDEN_TAGS.includes('video'))
 })
 
 test('a list of tasks is still a list of tasks', () => {
-  // `- [ ] сделать` в GFM — это <input type=checkbox disabled>. Запретить input
-  // значило бы починить оверлей ценой обычной заметки.
+  // `- [ ] do this` in GFM is <input type=checkbox disabled>. Banning input
+  // would mean fixing the overlay at the cost of an ordinary note.
   for (const tag of ['input', 'canvas']) {
     assert.ok(!MARKDOWN_FORBIDDEN_TAGS.includes(tag), `${tag} is not a threat`)
   }
@@ -60,21 +61,22 @@ test('the one place that renders a note still hands the sanitizer both lists', (
   const markdown = source.slice(source.indexOf('markdown(source)'), source.indexOf('ansi(text)'))
   assert.ok(
     markdown.includes('FORBID_ATTR: MARKDOWN_FORBIDDEN_ATTRS'),
-    'markdown() рисует заметку без общего списка запрещённых атрибутов',
+    'markdown() renders the note without the shared list of forbidden attributes',
   )
   assert.ok(
     markdown.includes('safeStyle('),
-    'markdown() пускает `style` из заметки в страницу, не считая свойств',
+    'markdown() lets `style` from a note into the page without checking its properties',
   )
 })
 
-test('оформление чистится ДО того, как формулы станут разметкой', () => {
+test('styling is cleaned BEFORE formulas become markup', () => {
   /*
-   * Порядок двух проходов в markdown(), и он не косметический в обе стороны.
-   * KaTeX раскладывает формулу `position: absolute` и `top` — тем, чего заметке
-   * нельзя, — так что его вывод под фильтр попасть не должен, иначе дроби и
-   * радикалы складываются в кашу. А чужой `style` обязан попасть. Разводит их
-   * только порядок: сначала чужое, потом своё.
+   * The order of the two passes in markdown(), and it is not cosmetic in either
+   * direction. KaTeX lays a formula out with `position: absolute` and `top` —
+   * exactly what a note may not use — so its output must not go through the
+   * filter, or fractions and radicals collapse into a mess. But a foreign
+   * `style` has to go through it. Only the order separates them: the foreign
+   * first, then our own.
    */
   const source = read('web/src/lib/render.svelte.ts')
   const markdown = source.slice(source.indexOf('markdown(source)'), source.indexOf('ansi(text)'))

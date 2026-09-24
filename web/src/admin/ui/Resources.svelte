@@ -1,25 +1,27 @@
 <script lang="ts">
   /**
-   * Сколько машины достаётся этой комнате.
+   * How much of the machine this room gets.
    *
-   * 13.09 ядро семинара убили по памяти шестнадцать раз подряд. Лимит был один
-   * на все комнаты, лежал в переменной окружения и нигде в продукте не
-   * показывался: преподаватель видел «ядро перезапустилось» на одной и той же
-   * ячейке и не имел ни числа, ни ручки. Здесь и число, и ручка.
+   * On 13 Sep 2026 a seminar's kernel was killed for memory sixteen times in
+   * a row. There was one limit for all rooms, it lived in an environment
+   * variable and was shown nowhere in the product: the teacher saw "the
+   * kernel restarted" on the same cell and had neither a number nor a knob.
+   * Here there are both the number and the knob.
    *
-   * Правило честности этого экрана (см. шапку NewSeminar.svelte) держится и
-   * тут, поэтому память и ядра — поля, а карта — строка. Видеопамять cgroup не
-   * режет вовсе: карту комнаты делят целиком, и рисовать рядом с ней поле
-   * значило бы обещать ограничение, которого нет.
+   * This screen's honesty rule (see the header of NewSeminar.svelte) holds
+   * here too, so memory and cores are fields, and the GPU is a line. cgroup
+   * does not limit video memory at all: rooms share the whole card, and
+   * drawing a field next to it would promise a limit that does not exist.
    *
-   * У ядер своя оговорка, и она сказана вслух под полем: `docker update`
-   * меняет долю процессора живому контейнеру сразу, но число потоков numpy и
-   * torch считается ОДИН раз, при старте интерпретатора, — так что уже
-   * работающее ядро продолжит считать прежним их числом до перезапуска.
+   * Cores have their own caveat, and it is said out loud under the field:
+   * `docker update` changes a live container's CPU share right away, but the
+   * number of numpy and torch threads is computed ONCE, when the interpreter
+   * starts — so an already running kernel keeps computing with the old
+   * number until a restart.
    *
-   * Один компонент на обе двери — форму нового занятия и настройки
-   * существующего. Настройка, которую в двух местах называют по-разному и
-   * считают по-разному, — это две настройки.
+   * One component for both doors — the new class form and an existing
+   * class's settings. A setting that is named differently and computed
+   * differently in two places is two settings.
    */
   import { tr } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'
@@ -28,33 +30,34 @@
   import type { InstanceResources } from '@shared/admin'
 
   interface Props {
-    /** Что рассказала машина; null — ещё не доехало или не спросили. */
+    /** What the machine reported; null — not arrived yet or not asked. */
     resources: InstanceResources | null
     /**
-     * Ответ машины ещё в пути.
+     * The machine's answer is still on its way.
      *
-     * Отличает «ещё не знаем» от «спросили и не узнали», и различие это не
-     * академическое: `null` тут было одно на оба случая, поэтому на первых
-     * кадрах раздел показывал ПУСТОЕ поле памяти — включённое, в него можно
-     * печатать, — а через полсекунды число приезжало и стирало набранное.
-     * Пока ответ в пути, на месте полей стоят заглушки ровно их размера.
+     * Tells "don't know yet" from "asked and did not find out", and the
+     * difference is not academic: `null` here used to serve both cases, so on
+     * the first frames the section showed an EMPTY memory field — enabled,
+     * ready to type into — and half a second later the number arrived and
+     * wiped what had been typed. While the answer is on its way, placeholders
+     * of exactly the fields' size stand in their place.
      */
     loading?: boolean
-    /** Выбранное окружение: от него зависит и умолчание, и нужна ли карта. */
+    /** The chosen environment: the default and the need for a GPU depend on it. */
     environment: string
-    /** Что задано комнате, в мегабайтах; null — «как у окружения». */
+    /** What is set for the room, in megabytes; null — "same as the environment". */
     memoryMb: number | null
-    /** Число уехало. `null` возвращает комнату к умолчанию окружения. */
+    /** The number went out. `null` returns the room to the environment's default. */
     onmemory: (mb: number | null) => void
-    /** Сколько ядер задано комнате; null — «как у инстанса». */
+    /** How many cores are set for the room; null — "same as the instance". */
     cpus: number | null
-    /** Ядра уехали. `null` возвращает комнату к умолчанию инстанса. */
+    /** The cores went out. `null` returns the room to the instance's default. */
     oncpus: (cores: number | null) => void
-    /** Запрос идёт — поле не трогаем, чтобы не обогнать ответ. */
+    /** Request in flight — the field is not touched, so as not to outrun the answer. */
     busy?: boolean
-    /** Отказ сервера, если он был: печатается под полем, а не в стороне. */
+    /** The server's refusal, if any: printed under the field, not off to the side. */
     refusal?: string | null
-    /** Чья это форма; нет — новое занятие, у которого ядра ещё нет. */
+    /** Whose form this is; absent — a new class that has no kernel yet. */
     roomId?: string | null
   }
 
@@ -73,31 +76,31 @@
 
   const MB_IN_GB = 1024
 
-  /** Умолчание ЭТОГО окружения. Общее — если про окружение ничего не известно. */
+  /** THIS environment's default; the general one if the environment is unknown. */
   const defaultMb = $derived(
     resources?.kernel.perEnvironment[environment]?.memoryMb ??
       (resources ? resources.kernel.defaultMemoryMb : null),
   )
 
-  /** Просит ли выбранное окружение карту — по его же файлу, не по имени. */
+  /** Does the chosen environment ask for a GPU — by its own file, not by name. */
   const usesGpu = $derived(resources?.kernel.perEnvironment[environment]?.gpu ?? false)
 
-  /** Что реально получит комната: своё число либо умолчание окружения. */
+  /** What the room will really get: its own number or the environment's default. */
   const effectiveMb = $derived(memoryMb ?? defaultMb ?? 0)
 
-  /** Умолчание инстанса по ядрам; от окружения оно не зависит. */
+  /** The instance's default for cores; it does not depend on the environment. */
   const defaultCores = $derived(resources?.kernel.defaultCpus ?? null)
-  /** Что реально получит комната по ядрам. */
+  /** How many cores the room will really get. */
   const effectiveCores = $derived(cpus ?? defaultCores ?? 0)
 
   /*
-   * Поле держит СВОЮ строку, а не производную от числа.
+   * The field holds ITS OWN string, not one derived from the number.
    *
-   * Пока человек стирает «6» чтобы напечатать «12», значение проходит через
-   * пустую строку и через «1». Считать из них мегабайты и слать наверх значит
-   * на каждом нажатии клавиши отправлять запрос с числом, которого никто не
-   * хотел, — а на «1» ещё и получать отказ «меньше 512 МБ». Поэтому поле живёт
-   * своей жизнью, а наверх уходит только осмысленное.
+   * While a person erases "6" to type "12", the value passes through an
+   * empty string and through "1". Computing megabytes from those and sending
+   * them up would mean sending, on every keystroke, a request with a number
+   * nobody wanted — and on "1" also getting a "less than 512 MB" refusal. So
+   * the field lives its own life, and only what makes sense goes up.
    */
   let typed = $state('')
   let editing = $state(false)
@@ -107,11 +110,11 @@
   function gb(mb: number): string {
     if (!mb) return ''
     const value = mb / MB_IN_GB
-    // «6», а не «6.0»: половинки — шаг этого поля, десятые доли — нет.
+    // "6", not "6.0": halves are this field's step, tenths are not.
     return Number.isInteger(value) ? String(value) : value.toFixed(1)
   }
 
-  /** Гигабайты с экрана — в мегабайты строки семинара, кратно половине гига. */
+  /** Screen gigabytes to the seminar row's megabytes, in multiples of half a GB. */
   function toMb(text: string): number | null {
     const value = Number(text.replace(',', '.').trim())
     if (!Number.isFinite(value) || value <= 0) return null
@@ -121,8 +124,8 @@
   function commit(): void {
     editing = false
     const mb = toMb(typed)
-    // Пусто — «как у окружения»: так комнату возвращают к умолчанию, не
-    // выдумывая для этого второго переключателя рядом с полем.
+    // Empty means "same as the environment": that is how a room is returned
+    // to the default, without inventing a second switch next to the field.
     if (typed.trim() === '') {
       if (memoryMb !== null) onmemory(null)
       return
@@ -131,9 +134,10 @@
     onmemory(mb)
   }
 
-  /* Ядра — тем же устройством, что и память: своя строка у поля, наверх едет
-     только осмысленное. Целое и вниз: дробные `--cpus` docker понимает, а
-     потоки numpy — нет, и число в поле обязано быть тем же, что уедет в обе. */
+  /* Cores work the same way as memory: the field has its own string, and only
+     what makes sense goes up. An integer, rounded down: docker understands a
+     fractional `--cpus`, but numpy threads do not, and the number in the
+     field must be the same one that goes to both. */
   let typedCores = $state('')
   let editingCores = $state(false)
   const shownCores = $derived(editingCores ? typedCores : effectiveCores ? String(effectiveCores) : '')
@@ -149,50 +153,54 @@
     oncpus(value)
   }
 
-  /* ------------------------------------------------------------- полоска */
+  /* ----------------------------------------------------------------- bar */
 
   const totalMb = $derived(resources?.memory.totalMb ?? 0)
-  /** Доля машины, которую просит комната. Сотые не нужны — это полоска, а не число. */
+  /** The machine share the room asks for. No hundredths: it is a bar, not a number. */
   const share = $derived(totalMb > 0 ? Math.min(1, effectiveMb / totalMb) : 0)
   /*
-   * Красным — когда комната просит больше, чем на машине СВОБОДНО.
+   * Red — when the room asks for more than is FREE on the machine.
    *
-   * Не запрет: свободная память меняется между открытием формы и парой, чужую
-   * комнату закроют, её контейнер уберут. Но взять восемь гигабайт там, где
-   * свободно два, — это ядро, которое не поднимется, и узнать об этом лучше
-   * сейчас, чем первым Run на занятии.
+   * Not a ban: free memory changes between opening the form and the class,
+   * someone else's room gets closed, its container removed. But taking eight
+   * gigabytes where two are free is a kernel that will not start, and it is
+   * better to learn that now than from the first Run in class.
    *
-   * `null` — «свободное неизвестно» (macOS без docker: MemAvailable там нет), и
-   * тогда предупреждения нет вовсе. Раньше на его месте стоял `os.freemem()`,
-   * который на Маке всегда около нуля, и раздел краснел на любом лимите —
-   * пугая ровно там, где бояться было нечего.
+   * `null` means "free is unknown" (macOS without docker: there is no
+   * MemAvailable there), and then there is no warning at all. There used to
+   * be `os.freemem()` in its place, which on a Mac is always near zero, and
+   * the section went red at any limit — scaring people exactly where there
+   * was nothing to fear.
    */
   /*
-   * Живая комната свою память уже держит — просит она только прибавку.
+   * A live room already holds its memory — it asks only for the increase.
    *
-   * На k3s и под колимой «свободно» — это ещё НЕ обещанное, и обещанное этой
-   * же комнате из него уже вычтено. Без поправки настройки идущего занятия
-   * краснели сами по себе: Pod с 8 ГБ на узле в 16 «просил больше, чем
-   * свободно» (16 − 1 − 8 = 7) — ровно тогда, когда преподаватель пришёл
-   * поднять память посреди пары.
+   * On k3s and under colima "free" means NOT yet promised, and what was
+   * promised to this very room has already been subtracted from it. Without
+   * the correction a running class's settings went red on their own: an
+   * 8 GB Pod on a 16 GB node "asked for more than is free" (16 − 1 − 8 = 7)
+   * — exactly when the teacher came to raise the memory in the middle of a
+   * class.
    */
-  /** Строка этого занятия в переписи комнат — из неё берутся оба контейнера. */
+  /** This class's row in the census of rooms — both containers are taken from it. */
   const row = $derived(
     (roomId && resources?.rooms.find((one) => one.id === roomId)) || null,
   )
   /**
-   * Второй контейнер занятия — тот, где считаются личные тетради студентов.
+   * The class's second container — the one where students' personal
+   * notebooks run.
    *
-   * `null` — его сейчас нет: личных тетрадей не открывали, они не разрешены
-   * или это не docker-бэкенд. Тогда раздел выглядит ровно как раньше.
+   * `null` — there is none right now: no personal notebooks were opened,
+   * they are not allowed, or this is not the docker backend. Then the
+   * section looks exactly as before.
    */
   const ownRoom = $derived(row?.own ?? null)
   /*
-   * Держит машина ОБА контейнера, а не один.
+   * The machine holds BOTH containers, not one.
    *
-   * Иначе «свободно» врало бы ровно в занятии с личными тетрадями: их
-   * контейнер с той же памятью уже стоит на машине, и прибавка комнате
-   * считалась бы от числа, в котором его нет.
+   * Otherwise "free" would lie precisely in a class with personal notebooks:
+   * their container with the same memory already stands on the machine, and
+   * the room's increase would be counted from a number that leaves it out.
    */
   const heldMb = $derived(
     !row?.alive ? 0 : row.memoryMb + (ownRoom?.memoryMb ?? 0),
@@ -204,7 +212,7 @@
       effectiveMb > 0,
   )
 
-  /** Доля процессора машины, которую просит комната. */
+  /** The share of the machine's CPU the room asks for. */
   const cpuShare = $derived(
     resources && resources.cpus > 0 ? Math.min(1, effectiveCores / resources.cpus) : 0,
   )
@@ -215,35 +223,37 @@
   }
 
   /**
-   * Спросили — и не узнали.
+   * Asked — and did not find out.
    *
-   * Тогда ни подсказок, ни полоски, ни умолчания окружения не будет уже
-   * никогда, и ждать нечего: поля показывают то, что задано КОМНАТЕ, а строкой
-   * ниже сказано, почему рядом с ними нет чисел машины. Пустое поле здесь
-   * значит «возьмём умолчание», и говорит об этом подсказка внутри поля:
-   * молчаливая пустая рамка на его месте читалась как «ноль гигабайт».
+   * Then there will never be hints, a bar or the environment's default, and
+   * there is nothing to wait for: the fields show what is set for the ROOM,
+   * and a line below says why the machine's numbers are missing next to
+   * them. An empty field here means "take the default", and the placeholder
+   * inside the field says so: a silent empty frame in its place read as
+   * "zero gigabytes".
    */
   const unreadable = $derived(!resources && !loading)
 
   /*
-   * Размеры заглушек — не на глаз.
+   * The placeholder sizes are not eyeballed.
    *
-   * Заглушка ставится ровно там, где через полсекунды встанет настоящий
-   * элемент, и смысл её в том, чтобы раздел не прыгнул, когда числа приедут.
-   * Поэтому высоты здесь не выдуманы, а сняты с настоящего раздела в браузере:
-   * поле `.field` — 38 пикселей, строка подсказки (text-2xs · leading-snug) —
-   * 18. Считать их из токенов на бумаге не вышло: у 11-го кегля межстрочие
-   * округляется не так, как перемножается, и раздел разъезжался на пиксель.
-   * Меняется кегль или паддинг — числа тут перемеряют.
+   * A placeholder goes exactly where the real element will stand half a
+   * second later, and its point is that the section does not jump when the
+   * numbers arrive. So the heights here are not invented but taken from the
+   * real section in a browser: the `.field` is 38 pixels, a hint line
+   * (text-2xs · leading-snug) is 18. Computing them from the tokens on paper
+   * did not work: at 11px the line height rounds differently from how it
+   * multiplies, and the section drifted by a pixel. If the font size or the
+   * padding changes, these numbers get re-measured.
    */
   const FIELD_H = '38px'
   const HINT_LINE = 18
 </script>
 
 {#snippet hintLines(widths: string[])}
-  <!-- Абзац из N строк занимает N межстрочий, а сами полоски тоньше: буквы не
-       заполняют строку целиком. Высоту держит контейнер, полоски внутри просто
-       разведены по краям. -->
+  <!-- A paragraph of N lines takes N line heights, and the bars themselves are
+       thinner: letters do not fill a line entirely. The container holds the
+       height, and the bars inside are simply spread to the edges. -->
   <div
     class="flex flex-col justify-between"
     style:height="{(widths.length * HINT_LINE).toFixed(2)}px"
@@ -258,12 +268,12 @@
 <div class="flex flex-col gap-3">
   {#if loading}
     <!--
-      Числа ещё в пути.
+      The numbers are still on their way.
 
-      Раздел рисуется целиком — поле, полоска, подсказка, второе поле, — потому
-      что через мгновение здесь встанет ровно это. Показать вместо него пустое
-      поле значит пригласить в него печатать за миг до того, как ответ сервера
-      сотрёт набранное.
+      The section is drawn whole — field, bar, hint, second field — because in
+      a moment exactly that will stand here. Showing an empty field instead
+      would invite typing into it a moment before the server's answer wipes
+      what was typed.
     -->
     <div role="status" aria-label={tr('admin.resources.reading')} aria-busy="true" class="contents">
       <span class="sr-only">{tr('admin.resources.reading')}</span>
@@ -284,14 +294,14 @@
       </div>
 
       <!--
-        Карта — две строки, как у неё и есть: модель с видеопамятью и оговорка
-        про то, что видеопамять делят все.
+        The GPU is two lines, as it really has: the model with its video
+        memory, and the caveat that everyone shares the video memory.
 
-        Единственное место раздела, где заглушка ГАДАЕТ: сколько на машине
-        карт — ноль или четыре, — до ответа не знает никто. Ставка сделана на
-        машину с картой, потому что ради неё этот продукт и держат; на машине
-        без карты обе строки не появятся, и это единственный кусок раздела,
-        который на ней сядет.
+        The only spot in the section where the placeholder GUESSES: how many
+        GPUs the machine has — zero or four — nobody knows before the answer.
+        The bet is on a machine with a GPU, because that is what this product
+        is run for; on a machine without one both lines will not appear, and
+        this is the only piece of the section that will collapse there.
       -->
       <div class="flex flex-col gap-1.5 border-t border-line-soft pt-3">
         {@render hintLines(['78%'])}
@@ -321,8 +331,9 @@
       />
       <span class="text-ui text-muted">{tr('admin.resources.gb')}</span>
       {#if memoryMb !== null && defaultMb !== null}
-        <!-- Вернуть окружению — одним нажатием: иначе «как было» приходится
-             набирать числом, подглядывая его в подсказке ниже. -->
+        <!-- Back to the environment's value with one press: otherwise "as it
+             was" has to be typed as a number, peeking at it in the hint
+             below. -->
         <button
           type="button"
           class="text-2xs text-muted underline decoration-line underline-offset-2 hover:text-ink"
@@ -338,8 +349,8 @@
     </div>
 
     {#if resources}
-      <!-- Полоска: какую долю машины просит эта комната. Число рядом с ней
-           лишнее — оно стоит в поле выше. -->
+      <!-- The bar: what share of the machine this room asks for. A number
+           next to it would be redundant — it is in the field above. -->
       <div class="flex h-1 w-full max-w-[320px] bg-line-soft" aria-hidden="true">
         <div
           class={cn('h-full transition-[width] duration-[var(--speed-quick)] ease-out', tight ? 'bg-warning' : 'bg-accent')}
@@ -348,13 +359,15 @@
       </div>
 
       <!--
-        Три подписи под полем — потому что машин под комнатой бывает две.
+        Three captions under the field — because there can be two machines
+        under a room.
 
-        Под колимой и Docker Desktop контейнеры живут в виртуалке со своей
-        памятью, и «на машине 36 ГБ» на Маке было прямой неправдой: раздать
-        можно её двенадцать. Когда числа пришли от демона, так и сказано.
-        Когда свободное неизвестно (macOS без docker), про него молчим — а не
-        печатаем `freemem`, который там всегда около нуля.
+        Under colima and Docker Desktop the containers live in a VM with its
+        own memory, and "the machine has 36 GB" on a Mac was plainly untrue:
+        only twelve of it can be handed out. When the numbers came from the
+        daemon, that is what it says. When free memory is unknown (macOS
+        without docker), we say nothing about it — rather than print
+        `freemem`, which is always near zero there.
       -->
       <p class="text-2xs leading-snug text-muted">
         {#if resources.memory.availableMb === null}
@@ -381,24 +394,26 @@
       </p>
 
       <!--
-        Про второй контейнер — сразу под полем, а не только строкой ниже.
+        About the second container — right under the field, not only in the
+        line below.
 
-        Строка ниже показывает числа ЖИВОГО занятия; она появляется, когда
-        контейнер уже стоит. А знать, что поле выше стоит на машине вдвое,
-        нужно ДО того, как его поднимут: число выбирают один раз, и выбирают
-        его здесь.
+        The line below shows the numbers of a LIVE class; it appears when the
+        container is already standing. But knowing that the field above costs
+        the machine twice as much is needed BEFORE it is raised: the number is
+        chosen once, and it is chosen here.
       -->
       <p class="text-2xs leading-snug text-muted">{tr('admin.resources.ownHint')}</p>
 
       <!--
-        Второй контейнер занятия — строкой, а не прибавкой к числу выше.
+        The class's second container — as a line, not as an addition to the
+        number above.
 
-        Личные тетради студентов считаются отдельно, со своим лимитом памяти и
-        своим процессором (server/src/kernel/pool.ts · KernelRole). Сложить их
-        с комнатой в одно число значило бы обещать преподавателю память,
-        которой ни один его Python не получит; промолчать — не сказать, что
-        машина держит вдвое больше. Поэтому оба числа названы по имени, и
-        строка появляется только когда второй контейнер правда есть.
+        Students' personal notebooks run separately, with their own memory
+        limit and their own CPU (server/src/kernel/pool.ts · KernelRole).
+        Adding them to the room in one number would promise the teacher
+        memory that none of their Pythons will get; staying silent would not
+        say that the machine holds twice as much. So both numbers are named,
+        and the line appears only when the second container really exists.
       -->
       {#if ownRoom}
         <p class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-2xs leading-snug text-muted">
@@ -421,12 +436,13 @@
       {/if}
 
       <!--
-        Процессор — вторым полем, и устроен он как первое.
+        The CPU is the second field, and it works like the first.
 
-        Целые ядра, потому что число из этого поля уезжает в две разные вещи
-        сразу: в `--cpus` docker (тот понимает и дробные) и в OMP/MKL/OPENBLAS/
-        NUMEXPR внутри контейнера (те — только целые). Показать «1,5» и молча
-        округлить одно из двух значило бы снова развести слово и дело.
+        Whole cores, because the number from this field goes to two different
+        things at once: docker's `--cpus` (which understands fractions too)
+        and OMP/MKL/OPENBLAS/NUMEXPR inside the container (which take only
+        integers). Showing "1.5" and silently rounding one of the two would
+        once again split word from deed.
       -->
       <div class="flex flex-col gap-3 border-t border-line-soft pt-4">
         <div class="flex flex-wrap items-center gap-2.5">
@@ -440,8 +456,9 @@
           ></div>
         </div>
 
-        <!-- Ядра — тем же правилом, что и память: у виртуалки докера их своя
-             доля («--cpu 10» из двенадцати), и названы они её именем. -->
+        <!-- Cores follow the same rule as memory: docker's VM has its own
+             share of them ("--cpu 10" out of twelve), and they are named
+             after it. -->
         <p class="text-2xs leading-snug text-muted">
           {#if resources.memory.source === 'docker'}
             {tr('admin.resources.cpuHintDocker', {
@@ -457,8 +474,9 @@
         </p>
       </div>
 
-      <!-- Карта — строкой, потому что она и есть строка: задать её этой комнате
-           нечем, а знать, на чём она поедет, надо. -->
+      <!-- The GPU as a line, because that is what it is: there is nothing to
+           set it with for this room, but you need to know what it will run
+           on. -->
       <div class="flex flex-col gap-1.5 border-t border-line-soft pt-3">
         {#if resources.gpus.length > 0}
           {@const card = resources.gpus[0]}
@@ -475,9 +493,10 @@
       </div>
     {:else}
       <!--
-        Машина не ответила. Поля остаются рабочими — память комнате задают и
-        вслепую, и ровно за этим сюда приходят посреди пары, — но чисел рядом с
-        ними нет и не будет, и сказано об этом одной строкой, а не пустотой.
+        The machine did not answer. The fields keep working — a room's memory
+        is set blind too, and that is exactly what people come here for in the
+        middle of a class — but there are no numbers next to them and there
+        will be none, and that is said in one line rather than with emptiness.
       -->
       <div class="flex flex-col gap-3 border-t border-line-soft pt-4">
         <div class="flex flex-wrap items-center gap-2.5">

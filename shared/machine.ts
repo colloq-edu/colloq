@@ -1,27 +1,29 @@
 import { tr } from './i18n.js'
 /**
- * Состояния машины — словами комнаты.
+ * Machine states, in the room's words.
  *
- * `KernelStatus` и `TerminalStatus` — слова протокола: 'starting', 'idle',
- * 'dead'. В коде так и надо, а в интерфейсе они попадали прямо в русскую
- * строку: «ядро python · starting — оболочка · idle» в журнале ядра и голое
- * `idle` в строке команды — под русским приглашением «оболочка запускается…».
- * Панель на двух языках, причём второй — машинный.
+ * `KernelStatus` and `TerminalStatus` are protocol words: 'starting', 'idle',
+ * 'dead'. That is right for code, but in the interface they went straight into
+ * a Russian line: "ядро python · starting — оболочка · idle" in the kernel log
+ * and a bare `idle` in the command line — under the Russian prompt
+ * "оболочка запускается…" (shell is starting…). A panel in two languages, the
+ * second of them a machine's.
  *
- * Здесь по слову на состояние, и `Record` от типа, а не свободный объект:
- * новое состояние протокола не соберётся, пока ему не подберут русское имя.
- * Родов два, потому что подлежащих два: ядро — оно, оболочка — она; слова
- * ставятся после «ядро»/«оболочка» и больше нигде.
+ * Here there is one word per state, and a `Record` over the type rather than a
+ * free object: a new protocol state will not compile until it is given a
+ * Russian name. There are two genders because there are two subjects: ядро
+ * (kernel) is neuter, оболочка (shell) is feminine; the words go after
+ * "ядро"/"оболочка" and nowhere else.
  *
- * Что НЕ отсюда: полоса состояния в шапке комнаты (SessionScreen · `KERNEL`)
- * набрана латиницей заглавными намеренно — это шильдик машины, а не фраза, и
- * читается он как индикатор рядом с точкой цвета. Смешивается языки не там, а
- * внутри предложения.
+ * What does NOT come from here: the status strip in the room header
+ * (SessionScreen · `KERNEL`) is set in Latin capitals on purpose — it is the
+ * machine's nameplate, not a phrase, and it reads as an indicator next to the
+ * colored dot. Languages get mixed not there but inside a sentence.
  */
 import type { KernelStatus } from './notebook.js'
 import type { TerminalStatus } from './protocol.js'
 
-/** Ядро — оно: «ядро python · считает». */
+/** Ядро (kernel) is neuter: "ядро python · считает" (python kernel · running). */
 export const KERNEL_WORD: Record<KernelStatus, string> = {
   get off() { return tr('server.kernel_word.off') },
   get starting() { return tr('server.kernel_word.starting') },
@@ -32,11 +34,11 @@ export const KERNEL_WORD: Record<KernelStatus, string> = {
 }
 
 /**
- * Оболочка — она: «оболочка · свободна».
+ * Оболочка (shell) is feminine: "оболочка · свободна" (shell · idle).
  *
- * Слова те же, что в приглашении строки команды («оболочка запускается…»,
- * «оболочка остановилась», «оболочка не запущена»): одно состояние, названное
- * в ящике дважды по-разному, читается как два разных.
+ * The words are the same as in the command-line prompt ("shell is starting…",
+ * "shell stopped", "shell not started"): one state named two different ways
+ * in the same drawer reads as two different states.
  */
 export const SHELL_WORD: Record<TerminalStatus, string> = {
   get closed() { return tr('server.shell_word.closed') },

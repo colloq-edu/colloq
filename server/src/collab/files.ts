@@ -1,34 +1,35 @@
 import { authorizeSocket, type SocketCredentials } from '../socket-authorization.js'
 import { tr } from '@shared/i18n'
 /**
- * Один открытый файл — один документ Yjs, привязанный к байтам на диске.
+ * One open file — one Yjs document bound to the bytes on disk.
  *
- * Тетрадь живёт в документе комнаты и в снимке в базе. Файлы — нет: у файла уже
- * есть каноническое место хранения, и это сам файл. Ядро читает его тем же
- * `open()`, скрипт запускается из него же, загрузка кладёт его туда же. Поэтому
- * документ здесь не хранилище, а способ печатать вдвоём: он заводится из диска
- * при первом открытии, пишется на диск с задержкой и исчезает, когда последняя
- * вкладка закрылась.
+ * A notebook lives in the room's document and in a snapshot in the database.
+ * Files do not: a file already has a canonical place of storage, and that is
+ * the file itself. The kernel reads it with the same `open()`, a script runs
+ * from it, an upload puts it there. So the document here is not storage but a
+ * way to type together: it is created from disk on first open, written to disk
+ * with a delay and disappears when the last tab closes.
  *
- * Три решения, каждое из которых стоило бы дорого, будь оно принято иначе.
+ * Three decisions, each of which would have been costly had it been made
+ * differently.
  *
- * **Отдельный документ на файл, а не раздел в документе комнаты.** Комнатный
- * документ целиком лежит в снимке, целиком разворачивается в истории версий и
- * целиком кешируется в браузере через y-indexeddb. Папка семинара на сотню
- * файлов сделала бы каждую из этих трёх вещей в сто раз тяжелее — ради текста,
- * который и так есть на диске.
+ * **A separate document per file, not a section in the room's document.** The
+ * room document lies whole in the snapshot, unfolds whole in the version
+ * history and is cached whole in the browser via y-indexeddb. A seminar folder
+ * of a hundred files would make each of these three things a hundred times
+ * heavier — for text that is on disk anyway.
  *
- * **Диск — источник правды между сессиями, документ — во время сессии.** Пока
- * файл открыт, правда в документе: он видит всех печатающих сразу. Когда открыт
- * не у кого — правда на диске. Стык между двумя состояниями и есть то, что
- * здесь написано.
+ * **Disk is the source of truth between sessions, the document during a
+ * session.** While a file is open, the truth is in the document: it sees
+ * everyone typing at once. When nobody has it open, the truth is on disk. The
+ * seam between the two states is what is written here.
  *
- * **Изменение с той стороны применяется склейкой, а не переписыванием.** Ячейка
- * пишет `results.csv`, оракул правит скрипт, `git checkout` в терминале меняет
- * половину папки — и всё это происходит с файлом, в котором стоит чей-то
- * курсор. Заменить текст целиком значит убить курсор и отменяемость; поэтому
- * меняется только то, что отличается, — общая голова и общий хвост остаются
- * теми же самыми символами Yjs.
+ * **A change from the other side is applied by splicing, not by rewriting.** A
+ * cell writes `results.csv`, the oracle edits a script, `git checkout` in the
+ * terminal changes half the folder — and all of this happens to a file with
+ * someone's cursor in it. Replacing the text whole means killing the cursor and
+ * undo; so only what differs is changed — the common head and the common tail
+ * stay the very same Yjs characters.
  */
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
@@ -50,47 +51,48 @@ const MESSAGE_AWARENESS = 1
 const SYNC_STEP2 = 1
 const SYNC_UPDATE = 2
 
-/** Ключ текста внутри документа файла. Он там один. */
+/** The key of the text inside a file document. There is only one. */
 export const TEXT_KEY = 'text'
 
-/** Происхождение записи, пришедшей с диска: по нему сохранение узнаёт себя. */
+/** The origin of a write that came from disk: by it the save recognizes itself. */
 const DISK = 'disk'
-/** Происхождение записи, сделанной сервером от чьего-то имени (оракул). */
+/** The origin of a write the server made on someone's behalf (the oracle). */
 const SERVER = 'server'
 
 /**
- * Сколько ждать после последнего нажатия, прежде чем писать на диск.
+ * How long to wait after the last keystroke before writing to disk.
  *
- * Семьсот миллисекунд — это пауза между словами, а не между сессиями: файл,
- * который правят, оказывается на диске раньше, чем человек успеет переключиться
- * в терминал и запустить его. Меньше — и каждый десятый символ становится
- * записью на диск в контейнере, который в этот момент считает.
+ * Seven hundred milliseconds is a pause between words, not between sessions: a
+ * file being edited reaches the disk before the person has time to switch to
+ * the terminal and run it. Less — and every tenth character becomes a disk
+ * write in a container that is computing at that moment.
  */
 const SAVE_AFTER_MS = 700
 
 /**
- * Как часто смотреть, не поменял ли файл кто-то мимо нас.
+ * How often to check whether someone changed the file past us.
  *
- * Опрос, а не `fs.watch`: рекурсивное слежение ведёт себя по-разному на трёх
- * платформах, а смотреть надо за десятком открытых файлов, а не за деревом.
- * Две секунды — это задержка, с которой в редакторе появится строка, дописанная
- * ячейкой; для файла, который правят руками, этого не видно вовсе.
+ * Polling, not `fs.watch`: recursive watching behaves differently on three
+ * platforms, and what needs watching is a dozen open files, not a tree. Two
+ * seconds is the delay with which a line appended by a cell appears in the
+ * editor; for a file edited by hand it is not noticeable at all.
  */
 const WATCH_EVERY_MS = 2_000
 
-/** Сколько документ живёт после ухода последнего. Перезагрузка страницы — не закрытие. */
+/** How long a document lives after the last one leaves. A page reload is not a close. */
 const LINGER_MS = 5_000
 
 const PING_INTERVAL_MS = 25_000
 const MAX_MISSED_PONGS = 2
 
 /**
- * «Файл больше потолка» — отдельный код закрытия.
+ * "The file exceeds the ceiling" is a separate close code.
  *
- * 4404 клиент читает как «файла нет» и закрывает вкладку молча: нажатие по
- * трёхмегабайтному CSV выглядело вкладкой, которая мигнула и исчезла, ничего не
- * сказав. По этому коду вкладка остаётся и говорит правду — файл есть, править
- * его в редакторе нельзя, скачать и прочитать из ячейки можно.
+ * The client reads 4404 as "no such file" and closes the tab silently: a click
+ * on a three-megabyte CSV looked like a tab that blinked and vanished without
+ * saying anything. With this code the tab stays and tells the truth — the file
+ * exists, it cannot be edited in the editor, it can be downloaded and read from
+ * a cell.
  */
 const TOO_BIG = 4413
 
@@ -109,17 +111,17 @@ interface FileDoc {
   doc: Y.Doc
   awareness: Awareness
   conns: Map<WebSocket, ConnState>
-  /** Текст, который, по нашему мнению, сейчас на диске. */
+  /** The text we believe is on disk right now. */
   onDisk: string
-  /** Отпечаток диска, по которому узнаётся чужая запись. */
+  /** The disk fingerprint by which someone else's write is recognized. */
   stamp: string
   saveTimer: NodeJS.Timeout | null
   watchTimer: NodeJS.Timeout | null
   lingerTimer: NodeJS.Timeout | null
   /**
-   * Запись похоронена: файла не стало, он уехал мимо дерева или перестал быть
-   * правимым текстом. Писать больше некуда, и оживлять её нельзя — следующее
-   * открытие заводит документ с диска заново.
+   * The entry is buried: the file is gone, it moved past the tree or stopped
+   * being editable text. There is nowhere left to write, and it must not be
+   * revived — the next open creates the document from disk anew.
    */
   gone: boolean
 }
@@ -139,14 +141,14 @@ const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xd
 const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff
 
 /**
- * Заменить текст документа так, чтобы уцелело всё, что не менялось.
+ * Replace the document's text so that everything that did not change survives.
  *
- * Общая голова и общий хвост считаются посимвольно и остаются на месте; между
- * ними — одно удаление и одна вставка. Полноценный diff по строкам здесь не
- * годится: он квадратичный, а файл может быть на тридцать тысяч строк, и
- * пересчитывать его каждые две секунды на каждый открытый файл — это работа
- * ровно там, где её никто не просил. Курсор внутри изменившегося куска съедет к
- * его краю: так же ведёт себя любой редактор, которому файл поменяли снаружи.
+ * The common head and common tail are counted character by character and stay
+ * in place; between them, one deletion and one insertion. A full line diff does
+ * not fit here: it is quadratic, and a file can be thirty thousand lines long,
+ * and recomputing it every two seconds for every open file is work exactly
+ * where nobody asked for it. A cursor inside the changed piece slides to its
+ * edge: any editor whose file was changed from outside behaves the same way.
  */
 export function spliceText(text: Y.Text, next: string): boolean {
   const now = text.toString()
@@ -157,12 +159,13 @@ export function spliceText(text: Y.Text, next: string): boolean {
   let tail = 0
   while (tail < max - head && now[now.length - 1 - tail] === next[next.length - 1 - tail]) tail++
   /*
-   * Граница не имеет права встать посреди суррогатной пары. У соседних эмодзи
-   * старшая половина общая, и голова останавливается ровно между половинками:
-   * Yjs подменяет разорванную на U+FFFD, lib0 при передаче кодирует одиночный
-   * суррогат ещё одним — и документ сервера расходится с документами браузеров
-   * до конца сессии, а порча уходит на диск. Границы отодвигаются наружу,
-   * и счёт становится посимвольным, каким он выше и объявлен.
+   * A boundary has no right to fall in the middle of a surrogate pair. Adjacent
+   * emoji share their high half, and the head stops right between the halves:
+   * Yjs replaces the torn one with U+FFFD, lib0 encodes a lone surrogate as
+   * another one in transit — and the server's document diverges from the
+   * browsers' documents until the end of the session, and the damage goes to
+   * disk. The boundaries are moved outwards, and the count becomes per
+   * character, as it is declared above.
    */
   if (head > 0 && isHighSurrogate(now.charCodeAt(head - 1))) head -= 1
   if (tail > 0 && isLowSurrogate(now.charCodeAt(now.length - tail))) tail -= 1
@@ -174,11 +177,12 @@ export function spliceText(text: Y.Text, next: string): boolean {
 }
 
 /**
- * Открыть документ файла, заведя его из диска, если он ещё не открыт.
+ * Open a file's document, creating it from disk if it is not open yet.
  *
- * `null` — файла нет, он не текст или он слишком большой. Для документа все три
- * случая означают одно: править нечего, и сокет открывать незачем. Для человека
- * — нет, поэтому `handleFileSocket` различает последний отдельным кодом.
+ * `null` means the file does not exist, is not text or is too big. For the
+ * document all three cases mean one thing: there is nothing to edit and no
+ * reason to open a socket. For a person they do not, so `handleFileSocket`
+ * tells the last one apart with a separate code.
  */
 export function getFileDoc(sessionId: string, path: string): FileDoc | null {
   const existing = open.get(keyOf(sessionId, path))
@@ -216,9 +220,10 @@ export function getFileDoc(sessionId: string, path: string): FileDoc | null {
 
   doc.on('update', (update: Uint8Array, origin: unknown) => {
     broadcastUpdate(entry, update, origin)
-    // Запись с диска не возвращается на диск: это её же байты, и второй заход
-    // отличался бы от первого только временем изменения — которого хватило бы,
-    // чтобы наблюдатель счёл его чужой правкой и пошёл на третий круг.
+    // A write from disk does not go back to disk: these are its own bytes, and
+    // a second pass would differ from the first only in the modification time
+    // — which would be enough for the watcher to take it for someone else's
+    // edit and go for a third round.
     if (origin === DISK || origin === SERVER) return
     scheduleSave(entry)
   })
@@ -240,43 +245,46 @@ export function getFileDoc(sessionId: string, path: string): FileDoc | null {
   return entry
 }
 
-/** Открыт ли этот файл прямо сейчас — и его документ, если да. */
+/** Whether this file is open right now — and its document, if so. */
 export function openFileDoc(sessionId: string, path: string): FileDoc | null {
   const entry = open.get(keyOf(sessionId, path))
   return entry && !entry.gone ? entry : null
 }
 
 /**
- * Записать файл от имени сервера — так, чтобы открытые редакторы увидели это
- * как правку, а не как подмену.
+ * Write a file on behalf of the server — so that open editors see it as an
+ * edit, not as a swap.
  *
- * Единственный путь записи для всего, что не браузер: оракул в режиме
- * «сделать», восстановление после отмены хода. Если файл открыт — правка идёт в
- * документ и сразу на диск; если нет — прямо на диск. Завершённая запись
- * сообщается панели файлов сразу, до ответа оракула об успехе.
- * Двух путей быть не должно: они разошлись бы ровно в тот момент, когда
- * кто-нибудь смотрит на файл.
+ * The only write path for everything that is not a browser: the oracle in
+ * "Act" mode, restoring after undoing a turn. If the file is open, the edit
+ * goes into the document and straight to disk; if not, straight to disk. A
+ * completed write is reported to the file panel at once, before the oracle's
+ * answer about success. There must not be two paths: they would drift apart
+ * exactly at the moment someone is looking at the file.
  *
- * «Сохранить сейчас, не меняя текста» — не сюда, для этого есть `flushFile`. До
- * него запуск файла и переименование ходили этой дверью: брали текст документа
- * и клали его в тот же документ, только чтобы дойти до записи на диск.
+ * "Save now without changing the text" does not belong here; `flushFile`
+ * exists for that. Before it, running a file and renaming went through this
+ * door: they took the document's text and put it into the same document, only
+ * to get to the disk write.
  */
 export function putText(sessionId: string, path: string, text: string): boolean {
   /*
-   * Потолок — до всего остального и одинаково для обоих путей. Открытому файлу
-   * по нему откажет сохранение, и в документе остался бы текст, которого
-   * никогда не будет на диске, а в ответе «готово»; закрытому не откажет никто,
-   * и на диске завёлся бы файл, который потом не открыть ни редактором, ни
-   * следующим шагом того же оракула.
+   * The ceiling comes before everything else and is the same for both paths.
+   * For an open file, saving would refuse by it, and the document would keep
+   * text that would never be on disk, while the answer said "done"; for a
+   * closed one nobody would refuse, and a file would appear on disk that could
+   * then be opened neither by the editor nor by the next step of the same
+   * oracle.
    */
   if (tooBig(text)) return false
   const entry = openFileDoc(sessionId, path)
   if (!entry) {
     /*
-     * Файл крупнее потолка целиком не читал никто: и оракул, и отмена хода
-     * собирают текст из его начала. Положить такой текст на место файла значит
-     * молча срезать хвост — три мегабайта метрик становятся полутора, а
-     * следующая ячейка честно считает по половине набора.
+     * Nobody has read a file larger than the ceiling in full: both the oracle
+     * and turn undo assemble the text from its beginning. Putting such text in
+     * the file's place means silently cutting off the tail — three megabytes of
+     * metrics become one and a half, and the next cell honestly computes on
+     * half of the set.
      */
     const at = statPath(sessionId, path)
     if (at && !at.dir && at.size > MAX_TEXT_BYTES) return false
@@ -299,10 +307,11 @@ export function putText(sessionId: string, path: string, text: string): boolean 
 }
 
 /**
- * Текст файла — из документа, если он открыт, иначе с диска.
+ * The file's text — from the document if it is open, otherwise from disk.
  *
- * `null` и для файла крупнее потолка: с диска он читается началом, и отдать
- * это начало как «текст файла» значит дать записать его обратно вместо целого.
+ * `null` also for a file larger than the ceiling: from disk it is read as its
+ * beginning, and handing out that beginning as "the file's text" means letting
+ * it be written back in place of the whole.
  */
 export function currentText(sessionId: string, path: string): string | null {
   const entry = openFileDoc(sessionId, path)
@@ -313,19 +322,20 @@ export function currentText(sessionId: string, path: string): string | null {
 }
 
 /**
- * Больше ли этот текст потолка — в БАЙТАХ, той же мерой, что и обрезка чтения.
+ * Whether this text is over the ceiling — in BYTES, the same measure as the
+ * read truncation.
  *
- * `MAX_TEXT_BYTES` — байты (`workspace.ts` сравнивает с ним `stat.size`), а
- * здесь сравнивали `text.length`, то есть единицы UTF-16. На кириллице это
- * вдвое, на эмодзи вчетверо: файл на 1.4 млн русских символов проходил проверку
- * записи и ложился на диск целиком на 2.8 МБ, а при следующем открытии читался
- * обрезанным и закрывался кодом «файл больше потолка». Один и тот же файл,
- * который только что правили, вдруг переставал открываться — и объяснить это
- * человеку было нечем.
+ * `MAX_TEXT_BYTES` is bytes (`workspace.ts` compares `stat.size` with it),
+ * while here `text.length` was compared, that is, UTF-16 units. For Cyrillic
+ * that is a factor of two, for emoji four: a file of 1.4 million Russian
+ * characters passed the write check and landed on disk whole at 2.8 MB, and on
+ * the next open it was read truncated and closed with the "file exceeds the
+ * ceiling" code. The very file that was just being edited suddenly stopped
+ * opening — and there was no way to explain that to a person.
  */
 function tooBig(text: string): boolean {
-  // Отсечки по краям: в UTF-8 на единицу UTF-16 уходит от одного байта до трёх,
-  // так что по-настоящему считать приходится только между ними.
+  // Cut-offs at the edges: in UTF-8 one UTF-16 unit takes one to three bytes,
+  // so a real count is needed only in between.
   if (text.length > MAX_TEXT_BYTES) return true
   if (text.length * 3 <= MAX_TEXT_BYTES) return false
   return Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES
@@ -340,7 +350,7 @@ function scheduleSave(entry: FileDoc): void {
   entry.saveTimer.unref?.()
 }
 
-/** Записать документ на диск. `false` — не записали, и файл остался прежним. */
+/** Write the document to disk. `false`: not written, and the file stayed as it was. */
 function saveNow(entry: FileDoc, origin: FileSaveOrigin = 'editor'): boolean {
   if (entry.saveTimer) {
     clearTimeout(entry.saveTimer)
@@ -350,13 +360,13 @@ function saveNow(entry: FileDoc, origin: FileSaveOrigin = 'editor'): boolean {
   const text = entry.doc.getText(TEXT_KEY).toString()
   if (text === entry.onDisk) return true
   /*
-   * Потолок проверяется здесь, а не только при открытии: файл открылся
-   * маленьким, а стал большим — вставили мегабайт из буфера. Раньше отказ был
-   * молчаливым, и это было худшее место в модуле: правка не сохранялась
-   * никогда, а редактор показывал её как ни в чём не бывало и отдавал `true`
-   * оракулу. Теперь вкладки узнают тем же 4403, что и о непринятой правке, —
-   * «дальше только чтение» здесь буквальная правда, и набранное остаётся на
-   * экране, откуда его можно забрать.
+   * The ceiling is checked here, not only on open: the file opened small and
+   * became big — someone pasted a megabyte from the clipboard. The refusal used
+   * to be silent, and that was the worst place in the module: the edit was
+   * never saved, while the editor showed it as if nothing had happened and
+   * returned `true` to the oracle. Now the tabs learn about it by the same 4403
+   * as for a rejected edit — "read-only from here on" is the literal truth
+   * here, and what was typed stays on screen, where it can be taken from.
    */
   if (tooBig(text)) {
     entry.gone = true
@@ -365,10 +375,11 @@ function saveNow(entry: FileDoc, origin: FileSaveOrigin = 'editor'): boolean {
     return false
   }
   /*
-   * Файл мог уехать мимо дерева: `mv` в терминале, `os.rename` в ячейке.
-   * Наблюдатель заметит это не раньше двух секунд, а отложенное сохранение
-   * успевает первым — и `writeText` заводит файл заново по старому пути, то
-   * есть молча отменяет чужое переименование и разводит в комнате две копии.
+   * The file may have moved past the tree: `mv` in the terminal, `os.rename` in
+   * a cell. The watcher will notice it no sooner than two seconds later, and
+   * the delayed save gets there first — and `writeText` creates the file again
+   * at the old path, that is, silently undoes someone else's rename and breeds
+   * two copies in the room.
    */
   const at = statPath(entry.sessionId, entry.path)
   if (!at || at.dir) {
@@ -388,8 +399,9 @@ type FileSaveOrigin = 'editor' | 'server'
 let fileSaved: ((sessionId: string, path: string, origin: FileSaveOrigin) => void) | null = null
 
 /**
- * Кому сообщать, что файл лёг на диск. Регистрирует control.ts: комната узнаёт
- * новый размер и время, а импортировать его отсюда значило бы замкнуть цикл.
+ * Whom to tell that a file has landed on disk. Registered by control.ts: the
+ * room learns the new size and time, and importing it from here would close a
+ * loop.
  */
 export function onFileSaved(listener: (sessionId: string, path: string, origin: FileSaveOrigin) => void): void {
   fileSaved = listener
@@ -397,14 +409,16 @@ export function onFileSaved(listener: (sessionId: string, path: string, origin: 
 
 function watchDisk(entry: FileDoc): void {
   if (entry.gone) return
-  // Пока сохранение в очереди, диск заведомо отстаёт от документа: смотреть на
-  // него сейчас значит принять свой же вчерашний текст за чужую правку.
+  // While a save is queued, the disk certainly lags behind the document:
+  // looking at it now means taking our own yesterday's text for someone else's
+  // edit.
   if (entry.saveTimer) return
   const stamp = stampOf(entry.sessionId, entry.path)
   if (stamp === entry.stamp) return
   if (stamp === '') {
-    // Файл убрали. Комната узнает об этом из списка файлов; здесь важно
-    // перестать писать — иначе следующее сохранение воскресит его.
+    // The file was removed. The room will learn about it from the file list;
+    // what matters here is to stop writing — otherwise the next save would
+    // resurrect it.
     entry.gone = true
     closeAll(entry, 4404, tr("server.theFileNoLongerExists.353e66"))
     dispose(entry)
@@ -413,15 +427,16 @@ function watchDisk(entry: FileDoc): void {
   const read = readText(entry.sessionId, entry.path)
   if (!read || read.binary || read.truncated) {
     /*
-     * Файл перестал быть тем, что можно править: перерос потолок (ядро пишет
-     * в него лог), стал двоичным (сверху лёг pickle) или не читается вовсе.
-     * Раньше здесь был тихий выход, и документ навсегда оставался с текстом на
-     * момент открытия — первое же нажатие клало этот короткий старый текст
-     * поверх выросшего файла. У файлов нет ни снимка, ни истории версий, так
-     * что дописанное ядром возвращать было бы нечем.
+     * The file stopped being something that can be edited: it outgrew the
+     * ceiling (the kernel writes a log into it), became binary (a pickle
+     * landed on top) or cannot be read at all. There used to be a silent
+     * return here, and the document stayed forever with the text as of opening
+     * — the very first keystroke put that short old text over the grown file.
+     * Files have neither a snapshot nor version history, so there would be
+     * nothing to bring back what the kernel appended with.
      *
-     * Переросшему потолок — свой код: файл на месте, и вкладке есть что сказать
-     * человеку, кроме молчаливого исчезновения.
+     * One that outgrew the ceiling gets its own code: the file is in place, and
+     * the tab has something to tell the person other than silently vanishing.
      */
     entry.gone = true
     if (read?.truncated) closeAll(entry, TOO_BIG, tr("server.theFileExceedsTheSizeLimit.59e6dd"))
@@ -437,11 +452,11 @@ function watchDisk(entry: FileDoc): void {
 
 function dispose(entry: FileDoc): void {
   /*
-   * Только своя запись. Под этим ключом может лежать уже ДРУГАЯ — файл
-   * вернулся и его открыли, пока эта доживала свои пять секунд, — или эту уже
-   * хоронили. Удалить чужую значит оставить комнату с двумя документами на
-   * один файл: две вкладки печатают в разные копии и по очереди пишут друг
-   * поверх друга.
+   * Only our own entry. Under this key there may already be ANOTHER one — the
+   * file came back and was opened while this one lived out its five seconds —
+   * or this one was already buried. Removing someone else's means leaving the
+   * room with two documents for one file: two tabs type into different copies
+   * and take turns writing over each other.
    */
   if (open.get(entry.key) !== entry) return
   open.delete(entry.key)
@@ -455,14 +470,15 @@ function dispose(entry: FileDoc): void {
 }
 
 /**
- * Закрыть все сокеты записи — и забыть их здесь же, не дожидаясь события
- * `close`.
+ * Close all of an entry's sockets — and forget them right here, without
+ * waiting for the `close` event.
  *
- * Событие приходит следующим тиком, и до него запись жила бы с полным списком
- * соединений: закрытие последнего из них заводило бы отложенную смерть уже
- * похороненной записи, а та через пять секунд выкидывала из карты НОВЫЙ
- * документ того же файла. Каждый, кто зовёт это, следом зовёт `dispose`, так
- * что присутствие уходит вместе с документом.
+ * The event comes on the next tick, and until then the entry would live with
+ * the full list of connections: closing the last of them would schedule a
+ * delayed death of an entry already buried, and five seconds later that one
+ * would throw the NEW document of the same file out of the map. Everyone who
+ * calls this calls `dispose` right after, so presence goes along with the
+ * document.
  */
 function closeAll(entry: FileDoc, code: number, reason: string): void {
   for (const [conn, state] of [...entry.conns]) {
@@ -471,12 +487,12 @@ function closeAll(entry: FileDoc, code: number, reason: string): void {
     try {
       conn.close(code, reason)
     } catch {
-      /* уже закрыт */
+      /* already closed */
     }
   }
 }
 
-/* --------------------------------------------------------------- сокет */
+/* --------------------------------------------------------------- socket */
 
 function toUint8Array(data: RawData): Uint8Array {
   if (data instanceof ArrayBuffer) return new Uint8Array(data)
@@ -534,19 +550,20 @@ function closeConn(entry: FileDoc, conn: WebSocket): void {
   try {
     conn.close()
   } catch {
-    /* уже закрыт */
+    /* already closed */
   }
   if (entry.conns.size > 0) return
   /*
-   * Последний ушёл. Сохранить немедленно — перезагрузка страницы не должна
-   * стоить последних набранных секунд, — а документ подержать ещё немного: та
-   * же перезагрузка вернётся через долю секунды, и пересобирать документ с
-   * нуля значило бы терять отменяемость на ровном месте.
+   * The last one left. Save immediately — a page reload must not cost the last
+   * seconds typed — and keep the document a little longer: the same reload
+   * will come back in a fraction of a second, and rebuilding the document from
+   * scratch would mean losing undo for nothing.
    */
   saveNow(entry)
-  // Записи могло уже не стать: сохранение обнаружило, что файла на диске нет.
-  // Ставить ей отложенную смерть значит через пять секунд убрать из карты
-  // документ, заведённый взамен, — и получить два документа на один файл.
+  // The entry may already be gone: the save found that the file is no longer
+  // on disk. Scheduling a delayed death for it would mean removing from the
+  // map, five seconds later, the document created in its place — and getting
+  // two documents for one file.
   if (entry.gone) return
   entry.lingerTimer = setTimeout(() => {
     if (entry.conns.size === 0) dispose(entry)
@@ -555,36 +572,37 @@ function closeConn(entry: FileDoc, conn: WebSocket): void {
 }
 
 /**
- * Отказать соединению в кадре.
+ * Refuse a connection's frame.
  *
- * Закрытием, как и в документе комнаты, и по той же причине: ничто в протоколе
- * синхронизации не умеет убрать у клиента структуру, которая у него уже есть.
- * Клиент, получивший 4403, пересобирает документ и показывает, что правка не
- * прошла.
+ * By closing, as in the room's document, and for the same reason: nothing in
+ * the sync protocol can take away from a client a structure it already has. A
+ * client that got 4403 rebuilds the document and shows that the edit did not
+ * go through.
  *
- * Причина — словами. У файлового сокета нет управляющего канала, по которому
- * комнатный гейт досылает фразу отказа (`collab/index.ts · onRefusal`), и
- * единственное место, где сюда помещается объяснение, — поле `reason` кадра
- * закрытия. Оно ограничено 123 байтами: фраза, которая в них не влезет,
- * `ws` не отправит, а бросит.
+ * The reason is in words. The file socket has no control channel through which
+ * the room gate sends the refusal phrase (`collab/index.ts · onRefusal`), and
+ * the only place an explanation fits here is the `reason` field of the close
+ * frame. It is limited to 123 bytes: a phrase that does not fit in them `ws`
+ * will not send but throw.
  */
 function refuse(entry: FileDoc, conn: WebSocket, why: string): void {
   try {
     conn.close(4403, why)
   } catch {
-    /* уже закрыт */
+    /* already closed */
   }
   closeConn(entry, conn)
 }
 
 /**
- * Несёт ли кадр правку.
+ * Whether a frame carries an edit.
  *
- * y-websocket отвечает на серверный шаг 1 всегда — в том числе пустым кадром,
- * в котором нет ни одной структуры. Отказывать по подтипу значит рвать
- * рукопожатие каждому, кому файлы править нельзя: он ещё ничего не написал, а
- * ему уже «правку не приняли» и навсегда замерший файл. Комнатный сокет
- * разбирает содержимое ровно по этой причине.
+ * y-websocket always answers the server's step 1 — including with an empty
+ * frame that has not a single structure in it. Refusing by subtype means
+ * breaking the handshake for everyone who may not edit files: they have not
+ * written anything yet, and they already get "the edit was not accepted" and a
+ * file frozen forever. The room socket parses the contents for exactly this
+ * reason.
  */
 function carriesEdit(payload: Uint8Array): boolean {
   try {
@@ -593,8 +611,8 @@ function carriesEdit(payload: Uint8Array): boolean {
     for (const ranges of update.ds.clients.values()) if (ranges.length > 0) return true
     return false
   } catch {
-    // Кадр не разбирается — считаем его правкой: пропустить непрочитанное
-    // значит применить его после того, как проверка перестала смотреть.
+    // The frame cannot be parsed — we count it as an edit: letting unread data
+    // through means applying it after the check stopped looking.
     return true
   }
 }
@@ -611,19 +629,20 @@ function handleMessage(entry: FileDoc, conn: WebSocket, data: Uint8Array): void 
           const state = entry.conns.get(conn)
           const role = state?.role ?? 'participant'
           /*
-           * Право читается сейчас, а не при открытии сокета: правила комнаты
-           * меняются посреди пары, и сокет, открытый до ужесточения, жил бы по
-           * старым правилам до самого переподключения.
+           * The right is read now, not when the socket opened: the room's
+           * rules change in the middle of a class, and a socket opened before
+           * the tightening would live by the old rules until it reconnected.
            */
           if (
             !allows(getRules(entry.sessionId).files, role) &&
             carriesEdit(decoding.readVarUint8Array(peek))
           ) {
             /*
-             * Слова — те же, которыми гаснет кнопка в панели файлов
-             * (`web/src/lib/may.ts · filesWhy`): правило одно, значит и
-             * объяснение одно. После конца занятия правило неотличимо от
-             * «файлы преподавательские», а причина другая, и сказать надо её.
+             * The words are the same ones the button in the file panel goes
+             * dark with (`web/src/lib/may.ts · filesWhy`): one rule, so one
+             * explanation. After the end of the class the rule is
+             * indistinguishable from "files are the teacher's", but the reason
+             * is different, and that is what has to be said.
              */
             return refuse(
               entry,
@@ -664,10 +683,11 @@ export function handleFileSocket(
   const entry = getFileDoc(sessionId, path)
   if (!entry) {
     /*
-     * Почему не открылся — разные ответы. Файла нет (или он не текст) — вкладку
-     * надо закрыть; файл больше потолка — сказать, что он есть, и не закрывать
-     * ничего. Мерка та же, что у `readText`, и стоит она одного `lstat`: читать
-     * полтора мегабайта второй раз ради кода закрытия незачем.
+     * Why it did not open — different answers. No file (or not text): the tab
+     * must be closed; a file larger than the ceiling: say that it exists and
+     * close nothing. The measure is the same as `readText`'s, and it costs one
+     * `lstat`: reading a megabyte and a half a second time for a close code is
+     * pointless.
      */
     const at = statPath(sessionId, path)
     const tooBig = at !== null && !at.dir && at.size > MAX_TEXT_BYTES
@@ -675,7 +695,7 @@ export function handleFileSocket(
       if (tooBig) ws.close(TOO_BIG, tr("server.theFileExceedsTheSizeLimit.59e6dd"))
       else ws.close(4404, tr("server.theFileCannotBeOpened.a0670d"))
     } catch {
-      /* уже закрыт */
+      /* already closed */
     }
     return
   }
@@ -711,7 +731,7 @@ export function handleFileSocket(
   ws.on('close', () => closeConn(entry, ws))
   ws.on('error', () => closeConn(entry, ws))
 
-  // Шаг 1 синхронизации — от сервера, как и в документе комнаты.
+  // Sync step 1 comes from the server, as in the room's document.
   const sync = encoding.createEncoder()
   encoding.writeVarUint(sync, MESSAGE_SYNC)
   syncProtocol.writeSyncStep1(sync, entry.doc)
@@ -730,32 +750,34 @@ export function handleFileSocket(
 }
 
 /**
- * Третья дверь бана: открытый в редакторе файл.
+ * The ban's third door: a file open in the editor.
  *
- * Первые две — тетрадь и пульт — закрывает `evictBanned` (control.ts): их
- * сокеты он держит сам. Файловые лежат здесь, в своей карте, и каждый несёт
- * `participantId` с рукопожатия — по нему и находятся.
+ * The first two — the notebook and the control socket — are closed by
+ * `evictBanned` (control.ts): it holds their sockets itself. The file sockets
+ * live here, in their own map, and each carries the `participantId` from the
+ * handshake — that is how they are found.
  *
- * Без этого бан выгонял человека наполовину: вкладка с открытым `utils.py`
- * продолжала принимать и рассылать его правки всей комнате до тех пор, пока он
- * сам не перезагрузит страницу. Ровно тот спам, за который банят, — по общему
- * файлу, а не по тетради.
+ * Without this a ban threw the person out halfway: a tab with `utils.py` open
+ * kept accepting their edits and broadcasting them to the whole room until they
+ * reloaded the page themselves. Exactly the spam people get banned for — in a
+ * shared file, not in the notebook.
  *
- * Тем же путём, что и обычный уход (`closeConn`): он снимает пинг и присутствие,
- * так что курсор выселенного исчезает у соседей сразу, а не висит до тайм-аута.
- * Кодом 1008, как у пульта, — вкладка по нему отличает «вас выселили» от обрыва
- * связи и обратно не стучится: рукопожатие спрашивает бан до апгрейда.
+ * By the same path as an ordinary leave (`closeConn`): it removes the ping and
+ * the presence, so the evicted person's cursor disappears for the neighbours at
+ * once instead of hanging until a timeout. With code 1008, as for the control
+ * socket — by it the tab tells "you were evicted" from a dropped connection and
+ * does not knock again: the handshake checks the ban before the upgrade.
  */
 export function dropFileParticipant(sessionId: string, participantId: string): void {
   for (const entry of [...open.values()]) {
     if (entry.sessionId !== sessionId) continue
-    // Копия: closeConn правит ту же карту, по которой идёт обход.
+    // A copy: closeConn edits the same map the loop walks over.
     for (const [conn, state] of [...entry.conns]) {
       if (state.participantId !== participantId) continue
       try {
         conn.close(1008, tr("server.bannedFromThisSeminar.234bce"))
       } catch {
-        /* уже закрыт */
+        /* already closed */
       }
       closeConn(entry, conn)
     }
@@ -763,50 +785,51 @@ export function dropFileParticipant(sessionId: string, participantId: string): v
 }
 
 /*
- * Подписка, а не вызов из `evictBanned`. Позвать этот модуль оттуда было бы
- * можно — `control.ts` его и так импортирует, а обратно files.ts на control.ts
- * не смотрит вовсе, цикла нет. Но тогда список проводов жил бы в модуле
- * нажатий, и каждый следующий провод пришлось бы вспоминать именно там.
- * Объявление события живёт в модуле бана (bans.ts · onEviction) — там, где
- * живёт само понятие «этому человеку сюда больше нельзя», — а тот, кто держит
- * провод, подписывается на него у себя.
+ * A subscription, not a call from `evictBanned`. Calling this module from there
+ * would be possible — `control.ts` imports it anyway, and files.ts does not
+ * look back at control.ts at all, there is no cycle. But then the list of wires
+ * would live in the module that handles presses, and every next wire would have
+ * to be remembered exactly there. The event is declared in the ban module
+ * (bans.ts · onEviction) — where the very notion "this person may no longer
+ * come here" lives — and whoever holds a wire subscribes to it on their side.
  */
 onEviction(dropFileParticipant)
 
 /**
- * Пройти опрос диска сейчас — для теста, которому нечего ждать.
+ * Run the disk poll now — for a test that has nothing to wait for.
  *
- * За диском смотрит `setInterval` в две секунды (WATCH_EVERY_MS), и попросить
- * его сработать было нечем: проверка «чужая запись доехала до открытого
- * документа» спала дольше интервала — пять секунд чистого сна на файл, и
- * красный тест при малейшем сдвиге таймера под нагрузкой. Здесь тот же обход,
- * что делает таймер, но по требованию: сон исчезает, а проверяется ровно то,
- * что и раньше, — сам `watchDisk`.
+ * The disk is watched by a two-second `setInterval` (WATCH_EVERY_MS), and there
+ * was no way to ask it to fire: the check "someone else's write reached the
+ * open document" slept longer than the interval — five seconds of pure sleep
+ * per file, and a red test at the slightest timer drift under load. Here is the
+ * same pass the timer makes, but on demand: the sleep disappears, and exactly
+ * the same thing as before is checked — `watchDisk` itself.
  *
- * Одной комнатой или всеми: карта общая на инстанс, и без границы проверка
- * одной комнаты трогала бы открытые файлы всех остальных.
+ * One room or all of them: the map is shared by the instance, and without a
+ * boundary checking one room would touch the open files of all the others.
  */
 export function pollFilesNow(sessionId?: string): void {
-  // Копия: `watchDisk` хоронит запись, у которой файл пропал или перерос
-  // потолок, — то есть правит ту же карту, по которой идёт обход.
+  // A copy: `watchDisk` buries an entry whose file vanished or outgrew the
+  // ceiling — that is, it edits the same map the loop walks over.
   for (const entry of [...open.values()]) {
     if (sessionId !== undefined && entry.sessionId !== sessionId) continue
     watchDisk(entry)
   }
 }
 
-/** Дописать всё несохранённое — при остановке процесса и в тестах. */
+/** Write out everything unsaved — when the process stops and in tests. */
 export function flushAllFiles(): void {
   for (const entry of [...open.values()]) saveNow(entry)
 }
 
 /**
- * То же самое, но одной комнатой: перед запуском, который читает диск.
+ * The same, but for one room: before a run that reads the disk.
  *
- * Ячейка и `run_file` оракула читают файл через ядро, то есть с диска, а запись
- * отложена на паузу в наборе. Ждать её они не вправе — но и дописывать за всех
- * тоже: карта здесь общая на инстанс, и без этой границы каждый запуск в одной
- * комнате трогал бы открытые файлы всех остальных.
+ * A cell and the oracle's `run_file` read the file through the kernel, that is,
+ * from disk, while the write is deferred until a pause in typing. They have no
+ * right to wait for it — but no right to flush for everyone either: the map
+ * here is shared by the instance, and without this boundary every run in one
+ * room would touch the open files of all the others.
  */
 export function flushSessionFiles(sessionId: string): void {
   for (const entry of [...open.values()]) {
@@ -815,15 +838,16 @@ export function flushSessionFiles(sessionId: string): void {
 }
 
 /**
- * Дописать один открытый файл на диск прямо сейчас.
+ * Write one open file to disk right now.
  *
- * Запись отложена на паузу в наборе (`SAVE_AFTER_MS`), а два места ждать её не
- * вправе. Запуск: `python` читает диск, и без этого он читает текст без
- * последних набранных строк — ошибка приходит про строку, которая на экране
- * выглядит верной. Переименование: `forgetFile` уносит документ вместе с
- * отложенной записью, а после переезда писать уже некуда.
+ * The write is deferred until a pause in typing (`SAVE_AFTER_MS`), and two
+ * places have no right to wait for it. Running: `python` reads the disk, and
+ * without this it reads the text without the last typed lines — the error
+ * arrives about a line that looks correct on screen. Renaming: `forgetFile`
+ * takes away the document together with the deferred write, and after the move
+ * there is nowhere left to write.
  *
- * Файл, который никто не открывал, и так на диске — тогда делать нечего.
+ * A file nobody opened is on disk anyway — then there is nothing to do.
  */
 export function flushFile(sessionId: string, path: string): void {
   const entry = openFileDoc(sessionId, path)
@@ -831,19 +855,20 @@ export function flushFile(sessionId: string, path: string): void {
 }
 
 /**
- * Забыть файл — или папку со всем, что в ней: их переименовали или убрали.
+ * Forget a file — or a folder with everything in it: they were renamed or
+ * removed.
  *
- * Без этого документ пережил бы собственный файл и записал бы его обратно на
- * прежнее место следующим сохранением — переименование отменилось бы само
- * секунду спустя, и объяснить это было бы нечем. Наблюдатель за диском заметил
- * бы то же самое, но только через две секунды, а окно между ними — ровно то,
- * в которое успевает сработать отложенное сохранение.
+ * Without this the document would outlive its own file and write it back to
+ * the old place on the next save — the rename would undo itself a second
+ * later, and there would be no way to explain it. The disk watcher would notice
+ * the same thing, but only two seconds later, and the window between them is
+ * exactly the one in which the deferred save manages to fire.
  *
- * Путь целиком, а не точное совпадение: переименовать и убрать можно ПАПКУ, а
- * документы лежат под путями файлов внутри неё. Забыв один точный путь, мы
- * оставляли их живыми — и ближайшее сохранение заводило старую папку заново с
- * одним файлом в ней, тогда как правки последних секунд оставались в этом
- * призрачном пути, а не в новом.
+ * The whole path, not an exact match: a FOLDER can be renamed and removed, and
+ * the documents live under the paths of the files inside it. Forgetting one
+ * exact path, we left them alive — and the next save created the old folder
+ * again with one file in it, while the edits of the last seconds stayed in
+ * that ghost path, not in the new one.
  */
 export function forgetFile(sessionId: string, path: string): void {
   if (!path) return
@@ -856,7 +881,7 @@ export function forgetFile(sessionId: string, path: string): void {
   }
 }
 
-/** Закрыть всё: комнату удалили, процесс останавливается. */
+/** Close everything: the room was deleted, the process is stopping. */
 export function forgetFiles(sessionId: string): void {
   for (const entry of [...open.values()]) {
     if (entry.sessionId !== sessionId) continue

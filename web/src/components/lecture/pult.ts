@@ -1,52 +1,56 @@
 import { tr } from '@shared/i18n'
 /**
- * Правила, о которых три экрана лекции обязаны договориться заранее.
+ * Rules the three lecture screens must agree on in advance.
  *
- * Проекция, пульт и колонка ведущего собраны из одних и тех же компонентов
- * ровно по одной причине: разойдясь, они покажут ведущему одно, а залу другое,
- * и заметить это можно будет только в аудитории. Всё, что здесь лежит, уже
- * успело разойтись хотя бы раз, — и лежит здесь, чтобы больше не могло:
+ * The projection, the console and the presenter's column are built from the
+ * same components for exactly one reason: once they drift apart, they show
+ * the presenter one thing and the audience another, and nobody can notice it
+ * anywhere but in the lecture hall. Everything here has already drifted apart
+ * at least once, and it lives here so that it cannot again:
  *
- *  • ПАЛИТРА была написана дважды, и копии не совпали: пульт объяснял
- *    измеренными числами, почему синего пера в наборе нет, и держал синее
- *    умолчанием, а полоса на ноутбуке — вторым кружком из четырёх;
- *  • СЕКУНДОМЕР был скопирован слово в слово в пульт и в шапку заметок, с
- *    оговоркой «как в приборе» — то есть с обещанием, которое ничем не
- *    держалось;
- *  • ПОТОЛКИ ЧЕРНИЛ знал только сервер, и отказ на 601-м штрихе выглядел на
- *    планшете как потерянный кадр;
- *  • СЧЁТ ЧИСТЫХ ЛИСТОВ жил в памяти вкладки, и перезагрузка пульта посреди
- *    пары теряла исписанные листы из ленты страниц.
+ *  • the PALETTE was written twice, and the copies disagreed: the console
+ *    explained with measured numbers why there is no blue pen in the set and
+ *    still kept blue as the default, while the bar on the laptop had it as
+ *    the second of four circles;
+ *  • the STOPWATCH was copied word for word into the console and into the
+ *    notes header, with the remark "same as in the instrument", that is, with
+ *    a promise nothing kept;
+ *  • only the server knew the INK CEILINGS, and a refusal at the 601st stroke
+ *    looked on the tablet like a lost frame;
+ *  • the COUNT OF BLANK SHEETS lived in the tab's memory, and reloading the
+ *    console mid-class lost the inked sheets from the page strip.
  *
- * Здесь нет ни одной руны и ни одного обращения к сети: это арифметика и
- * договорённости, которые проверяются без браузера.
+ * There is not a single rune and not a single network call here: this is
+ * arithmetic and agreements that can be checked without a browser.
  */
 import { MAX_INKED_PAGES, MAX_STROKES_PER_PAGE, type InkFull } from '@shared/lecture'
 
-/* ------------------------------------------------------------- палитра */
+/* ------------------------------------------------------------- palette */
 
 /**
- * ЧЕТЫРЕ ЦВЕТА ПЕРА, И СИНЕГО СРЕДИ НИХ НЕТ.
+ * FOUR PEN COLOURS, AND BLUE IS NOT ONE OF THEM.
  *
- * Обе причины измеримы. На проекторе с внутризальным контрастом ~300:1 синий
- * #0f2d69 и чёрный #101a33 оба падают в нижние 8 % шкалы и с восьмого ряда
- * неразличимы — то есть выбор между ними ничего не меняет для тех, ради кого
- * он делается. А на ночном корпусе пульта диск #0f2d69 даёт 1.5:1: клавиша
- * показывает мазок, которого не видно вовсе.
+ * Both reasons are measurable. On a projector with ~300:1 in-room contrast,
+ * blue #0f2d69 and black #101a33 both fall into the bottom 8 % of the scale
+ * and cannot be told apart from the eighth row, so choosing between them
+ * changes nothing for the people the choice is made for. And on the console's
+ * night-mode body the #0f2d69 disc gives 1.5:1: the key shows a dab that
+ * cannot be seen at all.
  *
- * Оранжевый стоит там, где стоял синий: он и на белом слайде читается, и на
- * тёмной картинке во весь лист, и от красного отличим — красным подчёркивают,
- * оранжевым помечают.
+ * Orange stands where blue stood: it reads on a white slide and on a dark
+ * full-sheet picture, and it is distinct from red — red is for underlining,
+ * orange for marking.
  *
- * ИМЕНА — ДОГОВОР С ПРОВЕРКОЙ ИНТЕРФЕЙСА, менять нельзя. Их два вида, и это
- * не небрежность: `name` — готовое имя органа («Перо, чёрное»), `short` —
- * прилагательное, которое ноутбучная полоса подставляет в свой заголовок.
+ * THE NAMES ARE A CONTRACT WITH THE INTERFACE CHECK, do not change them. There
+ * are two kinds, and that is not carelessness: `name` is the control's full
+ * name ("Pen, black"), `short` is the adjective the laptop bar puts into its
+ * own title.
  */
 export interface Ink {
   color: string
-  /** Имя органа целиком: так его зовёт рейл пульта и проверка интерфейса. */
+  /** The control's full name, as the console rail and the UI check call it. */
   name: string
-  /** Прилагательное для полосы ноутбука: она строит «Перо, красный» сама. */
+  /** The adjective for the laptop bar: it builds "Pen, red" by itself. */
   short: string
 }
 
@@ -57,12 +61,12 @@ export const INKS: readonly Ink[] = [
   { color: '#9b5a08', get name() { return tr('room.ui.326') }, get short() { return tr('room.ui.327') } },
 ]
 
-/* -------------------------------------------------------------- часы */
+/* -------------------------------------------------------------- clock */
 
 /**
- * Секундомер лекции, И ПОСЛЕ ЧАСА ОН ТЕРЯЕТ СЕКУНДЫ: «1:02», а не «1:02:15».
- * Через час секунды не значат ничего — вопрос в этот момент звучит «сколько
- * осталось», а не «сколько прошло».
+ * The lecture stopwatch, AND AFTER AN HOUR IT DROPS THE SECONDS: "1:02", not
+ * "1:02:15". After an hour the seconds mean nothing: the question at that
+ * point is "how much is left", not "how much has passed".
  */
 export function stopwatch(ms: number): string {
   const total = Math.floor(ms / 1000)
@@ -72,31 +76,32 @@ export function stopwatch(ms: number): string {
   return `${mm}:${String(total % 60).padStart(2, '0')}`
 }
 
-/* ------------------------------------------------------------- листы */
+/* ------------------------------------------------------------ sheets */
 
-/** Чем меряются чернила снаружи: страница и имя, остальное здесь не нужно. */
+/** What ink is measured by from outside: page and id; nothing else is needed. */
 export interface InkMark {
   id: string
   page: number
 }
 
 /**
- * Сколько чистых листов заведено, по номерам исписанных страниц.
+ * How many blank sheets have been started, from the numbers of inked pages.
  *
- * Счёт листов вёл только пульт, в памяти вкладки, — а вкладку на iPad Safari
- * выгружает из фона регулярно. После перезагрузки посреди пары `boards`
- * обнулялся: исписанные листы пропадали из ленты страниц, стрелками до них
- * было не добраться, а «Лист» открывал СТАРЫЙ лист с чернилами под подписью
- * «новый». Чернила при этом никуда не девались — они лежат в памяти сервера, —
- * так что заведённый лист узнаётся по ним.
+ * Only the console kept the sheet count, in the tab's memory, and iPad Safari
+ * unloads background tabs regularly. After a reload mid-class `boards` reset
+ * to zero: inked sheets vanished from the page strip, the arrows could not
+ * reach them, and "Sheet" opened an OLD sheet with ink on it under the label
+ * "new". The ink itself never went anywhere (it sits in the server's memory),
+ * so a sheet that was started is recognised by its ink.
  *
- * Возвращается номер САМОГО ПОЗДНЕГО листа с чернилами: листы нумеруются
- * подряд от −1, и лист номер N доказывает, что заведены и все до него.
+ * Returns the number of the LATEST sheet with ink: sheets are numbered
+ * consecutively from −1, and sheet number N proves that every sheet before it
+ * was started too.
  *
- * Считает по НОМЕРАМ страниц, а не по штрихам, и это не мелочь подписи:
- * приветственная пачка больше не обязана везти всё письмо лекции, и вкладка,
- * держащая чернила одной страницы, знает про листы ровно столько же, сколько
- * держащая все, — из описи (ink.ts · `inkedPages`).
+ * Counts by page NUMBERS, not by strokes, and this is not a detail of the
+ * signature: the welcome batch no longer has to carry all of the lecture's
+ * writing, and a tab holding the ink of one page knows exactly as much about
+ * sheets as one holding all of it, from the inventory (ink.ts · `inkedPages`).
  */
 export function boardsInked(pages: Iterable<number>): number {
   let deepest = 0
@@ -106,30 +111,33 @@ export function boardsInked(pages: Iterable<number>): number {
   return deepest
 }
 
-/* ---------------------------------------------------------- потолки */
+/* ---------------------------------------------------------- ceilings */
 
 /**
- * Почему следующий штрих не начнётся. `null` — начнётся.
+ * Why the next stroke will not start. `null` means it will.
  *
- * Это СУЖЕНИЕ `InkFull` из shared, а не своя пара строк рядом. Третий потолок
- * оттуда («точки в штрихе кончились») пульт не считает: он про уже начатый
- * штрих, и называет его сервер. Именно `Extract`, а не набранные заново
- * литералы: переименованный в shared отказ обязан ронять сборку здесь, а не
- * расходиться молча.
+ * This is a NARROWING of `InkFull` from shared, not a pair of strings of our
+ * own next to it. The third ceiling there ("the stroke ran out of points") is
+ * not counted by the console: it is about a stroke already under way, and the
+ * server names it. `Extract` on purpose, not retyped literals: a refusal
+ * renamed in shared must break the build here rather than drift apart
+ * silently.
  */
 export type InkRefusal = Extract<InkFull, 'page-full' | 'too-many-pages'>
 
 /**
- * Есть ли ещё место для штриха на этой странице.
+ * Whether there is still room for a stroke on this page.
  *
- * Сервер на 601-м штрихе (и на 201-й исписанной странице) просто возвращает
- * `null` и не шлёт ничего. Слой чернил отличить это от потерянного кадра не
- * мог: он восемь раз досылал штрих ЦЕЛИКОМ, а через четыре секунды убирал его
- * с листа — ни строки объяснения, а у зала линии не было вовсе. Считать то же
- * самое здесь дешевле, чем гадать: чернила комнаты у нас и так все.
+ * At the 601st stroke (and at the 201st inked page) the server simply returns
+ * `null` and sends nothing. The ink layer could not tell that from a lost
+ * frame: it resent the stroke WHOLE eight times and removed it from the sheet
+ * four seconds later, without a line of explanation, while the audience never
+ * had the line at all. Counting the same thing here is cheaper than guessing:
+ * we hold all of the room's ink anyway.
  *
- * `mine` — свои штрихи, которых сервер ещё не подтвердил: без них последние
- * несколько штрихов на полной странице считались бы дважды не в ту сторону.
+ * `mine` is our own strokes the server has not confirmed yet: without them
+ * the last few strokes on a full page would be miscounted twice over, in the
+ * wrong direction.
  */
 export function inkRefusal(
   known: readonly InkMark[],
@@ -139,8 +147,9 @@ export function inkRefusal(
   const seen = new Set<string>()
   const pages = new Set<number>()
   let onPage = 0
-  // Двумя проходами, а не по склеенному массиву: чернил лекции бывает под сто
-  // тысяч штрихов, и лишняя копия делается на КАЖДОЕ касание пера.
+  // Two passes rather than one over a concatenated array: a lecture's ink can
+  // run to nearly a hundred thousand strokes, and the extra copy would be made
+  // on EVERY touch of the pen.
   for (const list of [known, mine]) {
     for (const stroke of list) {
       if (seen.has(stroke.id)) continue
@@ -155,12 +164,13 @@ export function inkRefusal(
 }
 
 /*
- * СЛОВ ОТКАЗА ЗДЕСЬ НЕТ — они в `@shared/lecture` · `inkFullSays`, и слой
- * чернил зовёт оттуда.
+ * THE REFUSAL WORDS ARE NOT HERE — they are in `@shared/lecture` ·
+ * `inkFullSays`, and the ink layer calls them from there.
  *
- * Своя пара строк тут стояла и слово в слово совпадала с серверной — до первой
- * правки формулировки. А правят их как раз потому, что фраза неудачная, и
- * правит человек ту копию, которую нашёл: после этого один и тот же отказ
- * звучит на пульте двумя голосами, смотря кто первым его заметил — сам пульт
- * перед штрихом или сервер после переподключения.
+ * A pair of strings of our own used to stand here and matched the server's
+ * word for word, until the first edit of the wording. And wording gets edited
+ * precisely because a phrase is poor, and a person edits whichever copy they
+ * found: after that the same refusal speaks in two voices on the console,
+ * depending on who noticed it first — the console itself before the stroke,
+ * or the server after a reconnect.
  */

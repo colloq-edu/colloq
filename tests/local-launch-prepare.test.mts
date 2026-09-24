@@ -130,14 +130,15 @@ test('source changes during a kernel build fail without marking the new sources 
 })
 
 /**
- * То же самое, но у установленного colloq: приложение отдельно, состояние
- * отдельно, и своё окружение преподавателя лежит во втором каталоге.
+ * The same, but for an installed colloq: the app is in one place, the state
+ * in another, and the teacher's custom environment lives in the second
+ * directory.
  *
- * Make здесь нет вовсе (его нет и на машине преподавателя), поэтому сборку
- * изображает сам docker, и он читает список пакетов ИЗ КОНТЕКСТА — ровно так,
- * как это делает `COPY environments/${KERNEL_ENV}.txt` в kernel/Dockerfile.
- * Значит, проверка отвечает на настоящий вопрос: попало ли своё окружение в то
- * место, откуда docker его заберёт.
+ * There is no Make here at all (the teacher's machine has none either), so the
+ * build is played by docker itself, and it reads the package list FROM THE
+ * CONTEXT — exactly as `COPY environments/${KERNEL_ENV}.txt` in
+ * kernel/Dockerfile does. So the check answers the real question: did the
+ * custom environment land where docker will pick it up.
  */
 function distFixture(kernelEnv = 'mine') {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-dist-'))
@@ -195,19 +196,19 @@ function distFixture(kernelEnv = 'mine') {
   }
 }
 
-test('своё окружение из каталога состояния собирается у установленного colloq', async () => {
+test('a custom environment from the state directory is built for an installed colloq', async () => {
   const f = distFixture()
   try {
     fs.mkdirSync(path.join(f.home, 'environments'), { recursive: true })
     fs.writeFileSync(path.join(f.home, 'environments/mine.txt'), '# colloq: from base\nstatsmodels')
     await f.run()
-    // Родитель привезён с приложением, ребёнок заведён преподавателем; docker
-    // прочитал оба из одного контекста.
+    // The parent came with the app, the child was created by the teacher;
+    // docker read both from one context.
     assert.deepEqual(f.builds(), ['base numpy==1', 'mine # colloq: from base|statsmodels'])
-    // Повторный запуск ничего не пересобирает: склейка сохраняет время правки.
+    // A second run rebuilds nothing: the merge keeps the modification time.
     await f.run()
     assert.equal(f.builds().length, 2)
-    // Правка своего списка доезжает до сборки, привезённый родитель остаётся.
+    // An edit to the custom list reaches the build, the bundled parent stays.
     fs.appendFileSync(path.join(f.home, 'environments/mine.txt'), '\nseaborn')
     await f.run()
     assert.deepEqual(f.builds().slice(2), ['mine # colloq: from base|statsmodels|seaborn'])
@@ -216,7 +217,7 @@ test('своё окружение из каталога состояния со�
   }
 })
 
-test('своё имя перебивает привезённое, а без своих окружений ничего не копируется', async () => {
+test('a custom name overrides the bundled one, and without custom environments nothing is copied', async () => {
   const f = distFixture('base')
   try {
     await f.run()
@@ -238,18 +239,19 @@ test('своё имя перебивает привезённое, а без с�
 })
 
 /**
- * Рабочее дерево, у которого своё COLLOQ_HOME: Makefile рядом есть, а окружение
- * преподавателя лежит во втором каталоге.
+ * A working tree with its own COLLOQ_HOME: there is a Makefile next to it,
+ * and the teacher's environment lives in the second directory.
  *
- * Это тот самый зазор между двумя развилками. Склейка каталогов стоит по
- * «home === root», а сборщик выбирался по dist — и здесь они расходились: make
- * читает $(ENV_DIR) рядом с собой и про <home>/environments не знает вовсе.
- * Занятие падало на «Нет kernel/environments/mine.txt», а если имя совпало с
- * привезённым, молча собирался ПРИВЕЗЁННЫЙ список под правильным именем.
+ * This is exactly the gap between two forks. Merging the directories keyed on
+ * "home === root", while the builder was chosen by dist — and here they
+ * disagreed: make reads $(ENV_DIR) next to itself and knows nothing about
+ * <home>/environments. The class failed on "No kernel/environments/mine.txt",
+ * and if the name matched a bundled one, the BUNDLED list was silently built
+ * under the right name.
  *
- * Поэтому make здесь настоящий (на машине с исходниками он есть) и записывает
- * каждый свой вызов: пустой список вызовов — половина проверки, вторая
- * половина — что docker собрал из склеенного контекста то, что человек написал.
+ * So make is real here (a machine with the sources has it) and records every
+ * call it gets: an empty call list is half of the check, the other half is
+ * that docker built from the merged context what the person wrote.
  */
 function splitFixture(kernelEnv = 'mine') {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-split-'))
@@ -257,7 +259,8 @@ function splitFixture(kernelEnv = 'mine') {
     home = path.join(base, 'home')
   for (const dir of [path.join(base, 'bin'), path.join(root, 'kernel/environments'), home])
     fs.mkdirSync(dir, { recursive: true })
-  // Makefile на месте — именно поэтому «дистрибутив ли это» здесь не ответ.
+  // The Makefile is in place — which is exactly why "is this a distribution"
+  // is not the answer here.
   fs.writeFileSync(path.join(root, 'Makefile'), 'env-build:\n\t@true\n')
   fs.writeFileSync(path.join(root, 'kernel/Dockerfile'), 'FROM fake')
   fs.writeFileSync(path.join(root, 'kernel/requirements.txt'), 'jupyter')
@@ -283,8 +286,9 @@ function splitFixture(kernelEnv = 'mine') {
     if(!image)process.exit(1);process.stdout.write(JSON.stringify([image]));`,
     { mode: 0o755 },
   )
-  // Цель env-build читает лист рядом с Makefile и ни про какой контекст сборки
-  // не знает — здесь это сказано абсолютным путём в дерево приложения.
+  // The env-build target reads the list next to the Makefile and knows nothing
+  // about any build context — here that is spelled out as an absolute path
+  // into the app tree.
   fs.writeFileSync(
     path.join(base, 'bin/make'),
     `#!${process.execPath}
@@ -324,40 +328,40 @@ function splitFixture(kernelEnv = 'mine') {
   }
 }
 
-test('в рабочем дереве с COLLOQ_HOME своё окружение собирается, а make не зовётся', async () => {
+test('in a working tree with COLLOQ_HOME a custom environment is built and make is not called', async () => {
   const f = splitFixture()
   try {
     fs.mkdirSync(path.join(f.home, 'environments'), { recursive: true })
     fs.writeFileSync(path.join(f.home, 'environments/mine.txt'), '# colloq: from base\nstatsmodels')
     await f.run()
-    assert.deepEqual(f.makeCalls(), [], 'make не видит <home>/environments — звать его нельзя')
+    assert.deepEqual(f.makeCalls(), [], 'make does not see <home>/environments — it must not be called')
     assert.deepEqual(f.builds(), ['base numpy==1', 'mine # colloq: from base|statsmodels'])
   } finally {
     f.close()
   }
 })
 
-test('своё имя перебивает привезённое и в рабочем дереве, а не собирается чужой лист', async () => {
+test('a custom name overrides the bundled one in a working tree too, instead of building the other list', async () => {
   const f = splitFixture('base')
   try {
     fs.mkdirSync(path.join(f.home, 'environments'), { recursive: true })
     fs.writeFileSync(path.join(f.home, 'environments/base.txt'), 'numpy==9')
     await f.run()
     assert.deepEqual(f.makeCalls(), [])
-    assert.deepEqual(f.builds(), ['base numpy==9'], 'собран свой список, а не привезённый')
+    assert.deepEqual(f.builds(), ['base numpy==9'], 'the custom list is built, not the bundled one')
   } finally {
     f.close()
   }
 })
 
-test('без своих окружений рабочее дерево по-прежнему собирает целью env-build', async () => {
+test('without custom environments a working tree still builds with the env-build target', async () => {
   const f = splitFixture('base')
   try {
     await f.run()
-    // Склеивать нечего, корень сборки и есть корень приложения — значит make
-    // читает ровно тот лист, из которого собирали бы руками.
+    // There is nothing to merge, the build root is the app root — so make
+    // reads exactly the list one would build from by hand.
     assert.deepEqual(f.makeCalls(), ['base'])
-    assert.deepEqual(f.builds(), [], 'docker звали только за inspect')
+    assert.deepEqual(f.builds(), [], 'docker was called only for inspect')
   } finally {
     f.close()
   }

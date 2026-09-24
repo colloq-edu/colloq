@@ -1,6 +1,6 @@
 /*
- * То же, что room-ru.ts, другим языком; почему файлов два и откуда плагин
- * сборки узнаёт состав области — объяснено там.
+ * The same as room-ru.ts, in the other language; why there are two files and
+ * where the build plugin learns the area's contents from is explained there.
  */
 import { registerMessages } from '@shared/i18n-runtime'
 import { commonMessages } from '@shared/locales/common'

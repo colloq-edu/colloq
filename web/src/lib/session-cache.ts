@@ -33,21 +33,22 @@ export function recallSessionInfo(sessionId: string): SessionInfo | null {
   const room = readRooms()[sessionId]
   if (!room || room.id !== sessionId) return null
   /*
-   * Конец занятия хранится вместе с остальной карточкой — она пишется целиком,
-   * — но карточка могла лечь сюда ещё до того, как занятие стало кончаться, и
-   * тогда поля в ней просто нет. `undefined` — это не `null`, то есть комната
-   * прочитала бы старую карточку как законченное занятие и на секунду показала
-   * бы погашенной каждую комнату, куда человек возвращается.
+   * The end of class is stored together with the rest of the card — the card
+   * is written whole — but the card may have been stored here before classes
+   * could end at all, and then the field is simply missing. `undefined` is not
+   * `null`, that is, the room would read the old card as a finished class and
+   * for a second show every room a person returns to as dimmed.
    *
-   * Незнание — это «занятие идёт». Угадать строже значит соврать: запуск
-   * ячейки, который на самом деле разрешён, всё равно уйдёт на сервер и там
-   * решится, а погашенная кнопка не спрашивает никого.
+   * Not knowing means "the class is on". Guessing more strictly would be a
+   * lie: a cell run that is actually allowed still goes to the server and is
+   * decided there, while a dimmed button asks nobody.
    */
   /*
-   * Название организации нормализуется тем же приёмом и по той же причине:
-   * карточка могла лечь сюда до того, как строка вообще появилась. Разница
-   * только в том, что здесь незнание безобидно — `undefined` вместо строки
-   * убрал бы линейку на один кадр, а не зажёг бы чужое имя.
+   * The organisation name is normalised the same way and for the same reason:
+   * the card may have been stored here before the field existed at all. The
+   * only difference is that not knowing is harmless here — `undefined` instead
+   * of a string would remove the rule line for one frame, not light up someone
+   * else's name.
    */
   return { ...room, finishedAt: room.finishedAt ?? null, institution: room.institution ?? '' }
 }
@@ -56,12 +57,12 @@ export function rememberSessionInfo(session: SessionInfo): void {
   const rooms = readRooms()
   const known = rooms[session.id]
   /*
-   * Карточка сравнивается целиком, а не по имени с датой.
+   * The card is compared whole, not by name and date.
    *
-   * В ней лежат ещё правила комнаты и указатель на публикацию, а меняются они
-   * чаще имени: преподаватель закрыл тетрадь на запись — и следующий заход
-   * по-прежнему рисовал первый кадр по правилам полугодовой давности, пока не
-   * ответит сервер. Лишняя запись в хранилище стоит микросекунды.
+   * It also holds the room's rules and a pointer to the publication, and those
+   * change more often than the name: the teacher made the notebook read-only —
+   * and the next visit still drew the first frame by half-year-old rules until
+   * the server answered. An extra write to storage costs microseconds.
    */
   if (known && JSON.stringify(known) === JSON.stringify(session)) return
   rooms[session.id] = session

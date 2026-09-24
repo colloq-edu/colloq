@@ -1,15 +1,17 @@
 <!--
-  Пульт идущего соревнования (A3).
+  The console of a live competition (A3).
 
-  Четыре вкладки, и первая из них — лента посылок: это экран, открытый на
-  проекторе или на втором мониторе, пока класс присылает решения. Три вещи
-  здесь видит ТОЛЬКО преподаватель, и все три — про его собственную работу:
-  приватная колонка, плашка «УПАЛА МЕТРИКА» с трейсом и блок очереди с
-  «Убить». Участнику из этого не уезжает ничего.
+  Four tabs, and the first of them is the submission feed: this is the screen
+  open on the projector or on a second monitor while the class sends in
+  solutions. Three things here are seen ONLY by the teacher, and all three are
+  about the teacher's own work: the private column, the "METRIC FAILED" badge
+  with its traceback, and the queue block with "Kill". None of it reaches an
+  entrant.
 
-  Живое состояние приезжает потоком (SSE), как журнал сборки окружений: одна
-  сторона, браузер переподключается сам, и никакого второго протокола ради
-  пяти чисел. Лента перечитывается по серверной ревизии, включая пересчёты и выбор.
+  The live state arrives as a stream (SSE), like the environments' build log:
+  one direction, the browser reconnects by itself, and no second protocol for
+  the sake of five numbers. The feed is re-read by server revision, including
+  rescoring and choices.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -90,7 +92,7 @@
   let finishing = $state(false)
   let now = $state(Date.now())
 
-  /** Сколько строк ленты берётся за раз и сколько их берётся всего. */
+  /** How many feed rows are fetched at a time and how many in total. */
   const PAGE = 200
 
   const explain = (cause: unknown): string =>
@@ -117,16 +119,17 @@
     }
   }
 
-  /* ---------------------------------------------------------- живое состояние */
+  /* ------------------------------------------------------------- live state */
 
   /*
-   * Поток, а если он не поднялся — опрос.
+   * A stream, and if it did not come up — polling.
    *
-   * `EventSource` переподключается сам, но ровно до тех пор, пока сервер
-   * отвечает; за прокси, который режет `text/event-stream`, он будет
-   * переподключаться вечно и молча. Секундомер идущей посылки замрёт, и это
-   * единственное, по чему человек мог бы догадаться. Поэтому на первой же
-   * ошибке поток закрывается и включается опрос — реже, но честно.
+   * `EventSource` reconnects by itself, but only as long as the server
+   * answers; behind a proxy that cuts `text/event-stream` it will reconnect
+   * forever and silently. The stopwatch of the running submission will
+   * freeze, and that is the only thing a person could guess from. So on the
+   * very first error the stream is closed and polling switches on — less
+   * often, but honestly.
    */
   let streaming = $state(true)
 
@@ -213,10 +216,10 @@
       void adminApi
         .competitionEntrants(id)
         /*
-         * Служебного участника, на которого записана сэмпл-тетрадь, в списке
-         * людей нет: у него есть имя, место и даже ключ входа, но человека за
-         * ним нет — а ключ, показанный рядом с живыми, кто-нибудь однажды
-         * продиктует.
+         * The service entrant the sample notebook is recorded under is not in
+         * the list of people: it has a name, a place and even a sign-in key,
+         * but there is no person behind it — and a key shown next to living
+         * people will get dictated out loud by someone one day.
          */
         .then((list) => { if (active === generation && id === c.id) entrants = list.entrants.filter((row) => !row.baseline) })
         .catch((cause: unknown) => {
@@ -228,7 +231,8 @@
   })
 
   onMount(() => {
-    // Секунда: под идущей посылкой стоит секундомер, и он обязан идти.
+    // A second: a stopwatch stands under the running submission, and it has
+    // to tick.
     const tick = window.setInterval(() => (now = Date.now()), 1000)
     const close = () => (openMenu = null)
     const onKey = (event: KeyboardEvent) => {
@@ -246,7 +250,7 @@
     }
   })
 
-  /* --------------------------------------------------------------- действия */
+  /* ---------------------------------------------------------------- actions */
 
   async function togglePause(): Promise<void> {
     const queue = await act(() => adminApi.pauseCompetitionQueue(!(live?.queue.paused ?? false)))
@@ -317,12 +321,12 @@
     setTimeout(() => (copied = copied === key ? null : copied), 1600)
   }
 
-  /* ----------------------------------------------------------------- вывод */
+  /* ----------------------------------------------------------------- output */
 
   const counts = $derived(live?.counts ?? view.counts)
   const queue = $derived(live?.queue ?? null)
   const waiting = $derived(live?.waiting ?? [])
-  /** Идущие прогоны: очередь общая, поэтому чужие названы своим адресом. */
+  /** Runs in progress: the queue is shared, so others' are named by their address. */
   const running = $derived(queue?.running ?? [])
   const rows = $derived(feed?.rows ?? [])
   const deadline = $derived(deadlineLine(c, now))
@@ -351,8 +355,8 @@
 </script>
 
 <!--
-  Подпись колонки, переезжающая в строку, когда колонок больше нет: без неё
-  «— — 0:00» на узком экране — три числа без имён.
+  A column caption that moves into the row once there are no columns left:
+  without it "— — 0:00" on a narrow screen is three numbers with no names.
 -->
 {#snippet caption(label: string)}
   <span class="feed-label mr-1.5 font-sans text-micro font-bold uppercase tracking-caps text-faint">
@@ -411,16 +415,17 @@
       </button>
     {/if}
     {#if c.state === 'finished' && !privateOpen}
-      <!-- «Открою вручную — на разборе»: место называет преподаватель, и до
-           этой секунды приватная таблица не видна никому, кроме него. -->
+      <!-- "I will open it by hand — at the review": the teacher picks the
+           moment, and until that second the private table is visible to
+           nobody but them. -->
       <button type="button" class="btn-primary max-[640px]:h-11" disabled={busy} onclick={() => void openPrivate()}>
         {tr('admin.competitions.openPrivate')}
       </button>
     {/if}
   {/snippet}
 
-  <!-- Вкладки — адреса: на «Лидерборд · оба» ссылаются коллеге, а «Настройки»
-       открывают посреди пары и возвращаются в них. -->
+  <!-- Tabs are addresses: "Leaderboard · both" gets linked to a colleague, and
+       "Settings" is opened in the middle of a class and returned to. -->
   <div class="-mx-7 flex gap-7 overflow-x-auto border-b border-line px-7">
     {#each TABS as one (one.id)}
       <button
@@ -487,9 +492,9 @@
               {@render caption(tr('admin.competitions.col.submissions'))}{count(row.submissions)}
             </span>
             <!--
-              Ключ виден здесь и нигде больше в продукте: его диктуют вслух и
-              вставляют в чат курса, это единственный способ вернуть человека с
-              другого устройства.
+              The key is visible here and nowhere else in the product: it is
+              dictated out loud and pasted into the course chat; it is the
+              only way to bring a person back from another device.
             -->
             <button
               type="button"
@@ -567,9 +572,9 @@
           </div>
         {/each}
         {#if boardBaseline?.state === 'scored'}
-          <!-- Базовое решение — строкой без места: оно не участник, и
-               ранжировать его вместе с классом значило бы отнять у кого-то
-               место в пользу преподавателя. -->
+          <!-- The baseline solution is a row without a place: it is not an
+               entrant, and ranking it together with the class would take a
+               place away from someone in favour of the teacher. -->
           <div class="feed-row flex flex-wrap items-center gap-4 border-b border-line-soft py-2.5">
             <span class="w-[64px] shrink-0 font-mono text-2xs text-faint">—</span>
             <span class="min-w-0 flex-1 truncate text-ui text-muted">
@@ -591,9 +596,9 @@
       {/if}
     </div>
   {:else}
-    <!-- ------------------------------------------------------ посылки (A3) -->
+    <!-- -------------------------------------------------- submissions (A3) -->
     <div class="flex flex-col gap-5 py-5">
-      <!-- 1 · Очередь -->
+      <!-- 1 · Queue -->
       <div class="flex flex-wrap items-stretch border border-line">
         <div class="flex min-w-0 flex-[2_1_420px] flex-col gap-2.5 px-4 py-3.5">
           <div class="flex items-center gap-2.5">
@@ -619,9 +624,10 @@
                     : ''}
                 </span>
                 {#if run.competitionId !== c.id}
-                  <!-- Исполнитель один на инстанс: чужая посылка занимает ту же
-                       очередь, и молчать о ней значит объяснять «почему стоим»
-                       через docker ps. -->
+                  <!-- There is one runner per instance: another competition's
+                       submission takes the same queue, and staying silent
+                       about it means explaining "why are we stuck" through
+                       docker ps. -->
                   <span class="font-mono text-micro text-faint">/k/{run.competitionSlug}</span>
                 {/if}
                 <span class="ml-auto shrink-0 font-mono text-2xs text-ink">
@@ -696,7 +702,7 @@
         </div>
       </div>
 
-      <!-- 2 · Сводка -->
+      <!-- 2 · Summary -->
       <div class="flex flex-wrap items-end gap-x-10 gap-y-4">
         {@render stat(tr('admin.competitions.sum.submissions'), counts.submissions, 'text-muted')}
         {@render stat(tr('admin.competitions.sum.scored'), counts.scored, 'text-positive')}
@@ -717,7 +723,7 @@
         </p>
       </div>
 
-      <!-- 3 · Лента посылок -->
+      <!-- 3 · Submission feed -->
       <div class="comp-feed">
         {#if feed === null}
           <RowsSkeleton label={tr('competitions.loading')} />
@@ -759,8 +765,9 @@
                 {#if badge}
                   <Badge word={badge.word} tone={badge.tone} form={badge.form} />
                 {:else}
-                  <!-- Идущая и стоящая в очереди живут в блоке наверху: вторая
-                       плашка про то же самое — это одно и то же дважды. -->
+                  <!-- The running one and the queued ones live in the block at
+                       the top: a second badge about the same thing is the
+                       same thing twice. -->
                   <span class="text-micro text-muted">
                     {s.state === 'running'
                       ? tr('admin.competitions.stateRunning')
@@ -773,8 +780,9 @@
                   {outcomeLine(row, row.best)}
                 </p>
                 {#if broken}
-                  <!-- Трейс метрики — здесь и только здесь: виноват в нём тот,
-                       кто на него смотрит, и починить его может только он. -->
+                  <!-- The metric traceback — here and only here: the person
+                       looking at it is the one at fault, and only they can
+                       fix it. -->
                   <div class="mt-2 flex flex-wrap items-start gap-4">
                     {#if s.teacherError}
                       <pre class="min-w-0 flex-1 basis-[280px] overflow-x-auto whitespace-pre-wrap
@@ -1031,9 +1039,10 @@
 
 <style>
   /*
-   * Лента на узком экране: восемь колонок в 320 пикселях не помещаются ни в
-   * каком виде, и колоночные ширины там означают восемь столбиков по сорок
-   * пикселей. Порог — по ширине самой ленты, как в списке соревнований.
+   * The feed on a narrow screen: eight columns do not fit into 320 pixels in
+   * any form, and column widths there mean eight stacks forty pixels each.
+   * The threshold goes by the width of the feed itself, as in the
+   * competitions list.
    */
   .comp-feed {
     container-type: inline-size;
@@ -1060,9 +1069,9 @@
     }
 
     /*
-     * «СДВИГ» уходит первым: это единственная колонка лидерборда, которую
-     * читают не ради числа, а ради стрелки, — и она же единственная, чьё
-     * отсутствие не мешает понять таблицу.
+     * "SHIFT" goes first: it is the only leaderboard column read not for the
+     * number but for the arrow — and it is also the only one whose absence
+     * does not get in the way of understanding the table.
      */
     .feed-shift {
       display: none;

@@ -1,11 +1,13 @@
 <script lang="ts">
   /**
-   * Мини-лидерборд в правой колонке P2: тройка лидеров, своя строка, бейзлайн.
+   * The mini leaderboard in the right column of P2: the top three, your own
+   * row, the baseline.
    *
-   * Не первые шесть строк таблицы, а ВЫБОРКА: человеку, стоящему седьмым,
-   * нужны трое сверху (докуда тянуться), он сам и базовое решение (ниже
-   * которого падать стыдно). Всё, что между ними, свёрнуто в «· · ·» — это
-   * единственная строка таблицы, которая ничего не значит.
+   * Not the first six rows of the table but a SELECTION: a person in seventh
+   * place needs the three at the top (what to reach for), themselves, and
+   * the baseline solution (which it is embarrassing to fall below).
+   * Everything in between is folded into "· · ·" — the only row of the table
+   * that means nothing.
    */
   import { tr } from '@shared/i18n'
   import type { EntrantBoardLine } from '@shared/competitions-entrant'

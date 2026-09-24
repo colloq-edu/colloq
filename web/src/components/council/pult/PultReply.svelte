@@ -2,21 +2,23 @@
   import { tr } from '@shared/i18n'
 
   /**
-   * Поле письма автору — строка мессенджера, а не форма.
+   * The field for a letter to the author — a messenger line, not a form.
    *
-   * Раньше это была коробка в две строки с подписью «Личное письмо» и кнопкой
-   * «Отправить» под ней: четыре строки высоты под действие, которое совершают
-   * одним движением, — и вместе с письмами они уезжали под сгиб окна 900×650.
-   * Теперь поле в одну строку, растёт под текстом до пяти строк и стоит в доке,
-   * прибитом к низу работы.
+   * It used to be a two-line box captioned "Private reply" with a "Send"
+   * button under it: four lines of height for an action done in one motion —
+   * and together with the letters they slid below the fold of a 900×650
+   * window. Now the field is one line, grows with the text up to five lines
+   * and stands in the dock pinned to the bottom of the work.
    *
-   * Адресат один — автор работы. Рядом стояла кнопка «Всем N», отправлявшая то
-   * же письмо всей группе одинаковых ответов; она ушла вместе с группировкой
-   * (20.09), и замены ей нет: письмо в пульте пишут человеку, которого читают.
+   * There is one recipient — the work's author. Next to it there used to be
+   * an "Everyone N" button sending the same letter to the whole group of
+   * identical answers; it went away with grouping (20 Sep 2026), and there is
+   * no replacement: in the console a letter is written to the person whose
+   * work is being read.
    */
   interface Props {
     text: string
-    /** В поле стоит черновик оракула, а не свой текст. */
+    /** The field holds an oracle draft, not your own text. */
     fromOracle: boolean
     disabled: boolean
     onchange: (text: string) => void
@@ -38,21 +40,22 @@
   const sendDisabled = $derived(disabled || !text.trim() || text.trim().length > 3000)
 
   /**
-   * Высота поля — по тексту, до пяти строк.
+   * The field's height follows the text, up to five lines.
    *
-   * Одна строка в покое: письмо чаще всего в одну строку и есть («попробуй
-   * dropna»), а поле в две строки держало под это лишние 22 px в каждом кадре.
-   * Дальше пяти не растёт — за ними начинается прокрутка внутри поля, и код
-   * работы остаётся виден.
+   * One line at rest: a letter most often is one line ("try dropna"), and a
+   * two-line field kept an extra 22 px for it in every frame. It does not
+   * grow past five — beyond that the field scrolls inside, and the work's
+   * code stays visible.
    */
-  /** 40 — строка текста вместе с полями: ровно высота кнопок рядом. */
+  /** 40 is a text line plus padding: exactly the height of the buttons beside it. */
   const ONE_LINE = 40
   const MAX_HEIGHT = 128
   let field = $state<HTMLTextAreaElement | null>(null)
   $effect(() => {
     const box = field
-    // Текст читается ради самой зависимости: высота пересчитывается на каждый
-    // знак, в том числе когда текст подменил черновик оракула, а не палец.
+    // The text is read for the dependency itself: the height is recomputed
+    // on every character, including when an oracle draft replaced the text
+    // rather than a finger.
     const value = text
     if (!box) return
     box.style.height = 'auto'

@@ -54,14 +54,15 @@ export const RESTORE_ORIGIN = 'history-restore'
 interface Burst {
   sessionId: string
   /**
-   * Кто печатал. Множество, а не один: см. `record`. Только люди — сервер
-   * (ядро, оракул) во всплеск пишет, но автором не становится.
+   * Who typed. A set, not one: see `record`. Only people — the server (the
+   * kernel, the oracle) writes into a burst but does not become an author.
    *
-   * Пока это был один человек, смена автора закрывала всплеск — и два студента,
-   * печатающие в одной комнате одновременно, давали по версии на каждое
-   * нажатие. Сорок нажатий — сорок строк истории и шесть мегабайт байтов, а
-   * чекпоинт «до упражнения» вылетал из окна на четыреста строк за десятки
-   * секунд. Всплеск, в который писали двое, так и записывается — «the room».
+   * While it was one person, a change of author closed the burst — and two
+   * students typing in one room at the same time produced a version per
+   * keystroke. Forty keystrokes gave forty history rows and six megabytes of
+   * bytes, and a "before the exercise" checkpoint fell out of a four-hundred-row
+   * window within tens of seconds. A burst two people wrote into is recorded as
+   * such — "the room".
    */
   authors: Set<string>
   /** Only authenticated direct edits; on-behalf Oracle operations are not independent participation. */
@@ -70,9 +71,9 @@ interface Burst {
   /**
    * State of the document when the burst opened, for the summary and the counts.
    *
-   * `null` — «есть теневой документ, спрашивать нечего»: он и есть это
-   * состояние, и байты его никому не нужны, пока всплеск не придётся собирать
-   * запасным ходом (см. `close`).
+   * `null` means "there is a shadow document, nothing to ask": it is this very
+   * state, and its bytes are needed by nobody unless the burst has to be
+   * rebuilt the fallback way (see `close`).
    */
   before: Uint8Array | null
   openedAt: number
@@ -102,37 +103,38 @@ const bursts = new Map<string, Burst>()
 const baselines = new Map<string, Uint8Array>()
 
 /**
- * Та же базовая точка, но живым документом — по одному на комнату.
+ * The same baseline, but as a live document — one per room.
  *
- * Закрытие всплеска обязано знать, как тетрадь выглядит ПОСЛЕ него, и знало
- * единственным способом: собрать документ заново из базовой точки и склеенного
- * обновления. Это полный разбор двух мегабайт на каждый всплеск — замер на
- * тетради 2.2 МБ дал 37 миллисекунд заблокированного цикла событий ради того,
- * чтобы записать полтора килобайта разницы. А всплеск закрывается не только по
- * тишине: любое добавление, удаление и перетаскивание ячейки закрывает его
- * немедленно, то есть в комнате, где двигают ячейки, эти 37 миллисекунд стоят
- * между нажатиями клавиш у всех остальных.
+ * Closing a burst has to know what the notebook looks like AFTER it, and it
+ * knew in the only way it had: rebuilding the document from the baseline and
+ * the merged update. That is a full parse of two megabytes per burst — a
+ * measurement on a 2.2 MB notebook gave 37 milliseconds of blocked event loop
+ * to write a kilobyte and a half of difference. And a burst closes not only on
+ * silence: any addition, deletion or drag of a cell closes it immediately, so
+ * in a room where cells are being moved, those 37 milliseconds stand between
+ * everyone else's keystrokes.
  *
- * Документ держится живым и двигается ТЕМ ЖЕ склеенным обновлением: это
- * миллисекунда вместо тридцати семи. Полная сборка осталась запасным ходом —
- * на комнату, которую только что подняли, и на случай, когда применение
- * почему-то не прошло.
+ * The document is kept alive and advanced by THE SAME merged update: a
+ * millisecond instead of thirty-seven. The full rebuild remains the fallback —
+ * for a room that was just brought up, and for the case when applying failed
+ * for some reason.
  *
- * Цена — копия тетради в памяти на активную комнату. Она же и снимается первой:
- * `forgetHistory` роняет её вместе с выселением комнаты, а выселяют через
- * десять минут пустоты.
+ * The price is a copy of the notebook in memory per active room. It is also the
+ * first thing released: `forgetHistory` drops it together with the room's
+ * eviction, and rooms are evicted after ten minutes of emptiness.
  */
 const shadows = new Map<string, Y.Doc>()
 
-/** Сколько весила последняя посчитанная полная копия — оценка для кейфреймов. */
+/** How much the last computed full copy weighed — an estimate for keyframes. */
 const sizes = new Map<string, number>()
 
 /**
- * Байты базовой точки — тогда и только тогда, когда их правда спросили.
+ * The baseline's bytes — if and only if someone really asked for them.
  *
- * Спрашивают их двое: комната без теневого документа (её всплеск придётся
- * собирать заново) и починка истории. Остальным хватает самого теневого
- * документа, а разворот тетради в байты — это миллисекунды на мегабайт.
+ * Two parties ask: a room without a shadow document (its burst will have to be
+ * rebuilt) and the history repair. Everyone else is fine with the shadow
+ * document itself, and unfolding a notebook into bytes costs milliseconds per
+ * megabyte.
  */
 function baselineBytes(sessionId: string): Uint8Array {
   const cached = baselines.get(sessionId)
@@ -146,7 +148,7 @@ function baselineBytes(sessionId: string): Uint8Array {
   return bytes
 }
 
-/** Поставить теневой документ комнаты, уронив прежний. */
+/** Set the room's shadow document, dropping the previous one. */
 function setShadow(sessionId: string, doc: Y.Doc | null): void {
   const had = shadows.get(sessionId)
   if (had && had !== doc) {
@@ -167,23 +169,23 @@ function setShadow(sessionId: string, doc: Y.Doc | null): void {
 const shapes = new Map<string, string>()
 
 /**
- * Тексты ячеек на момент последнего закрытия — то, с чем сравнивают следующий
- * всплеск.
+ * The cell texts as of the last close — what the next burst is compared with.
  *
- * Раньше каждое закрытие разворачивало документ дважды: один раз «до», один
- * «после». На трёхмегабайтной тетради это семь миллисекунд блокировки цикла
- * событий на нажатие клавиши — при том, что «до» мы уже разворачивали в прошлый
- * раз и могли запомнить. Здесь и запоминаем; если записи нет (сервер только
- * поднялся), разворачиваем, как раньше.
+ * Before, every close unfolded the document twice: once "before", once
+ * "after". On a three-megabyte notebook that is seven milliseconds of blocked
+ * event loop per keystroke — while "before" had already been unfolded last
+ * time and could have been remembered. Here we remember it; if there is no
+ * entry (the server has just started), we unfold as before.
  */
 const digests = new Map<string, Map<string, string>>()
 
 /**
- * Комнаты, у которых в цепочке истории не хватает строки.
+ * Rooms whose history chain is missing a row.
  *
- * В памяти, потому что и лечение в памяти: следующее удачное закрытие всплеска
- * пишет полный снимок. Перезапуск сервера снимает пометку сам — `beginHistory`
- * сверяет живой документ с историей и пишет тот же снимок.
+ * In memory, because the cure is in memory too: the next successful burst close
+ * writes a full snapshot. A server restart clears the mark by itself —
+ * `beginHistory` checks the live document against the history and writes the
+ * same snapshot.
  */
 const gaps = new Set<string>()
 
@@ -198,12 +200,13 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
   const snapshot = Y.encodeStateAsUpdate(doc)
   baselines.set(sessionId, snapshot)
   sizes.set(sessionId, snapshot.byteLength)
-  // Теневой документ — из тех же байтов: один разбор на открытие комнаты
-  // вместо одного на каждый закрытый всплеск. См. `shadows`.
+  // The shadow document comes from the same bytes: one parse per room open
+  // instead of one per closed burst. See `shadows`.
   setShadow(sessionId, docFrom([snapshot]))
   shapes.set(sessionId, shapeOf(doc))
-  // Запомненные тексты идут в ногу с базовой точкой: сравнивать следующий
-  // всплеск с чужим слепком — это приписать ему всё, что было до него.
+  // The remembered texts keep step with the baseline: comparing the next burst
+  // with someone else's cast means attributing to it everything that came
+  // before it.
   digests.set(sessionId, new Map(cellsOf(doc).map((c) => [c.id, c.source])))
 
   /*
@@ -237,38 +240,39 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
   })
 }
 
-/** «Всё, что записано»: адрес у `updatesUpTo` — потолок, а не точная строка. */
+/** "Everything recorded": the `updatesUpTo` address is a ceiling, not an exact row. */
 const LATEST = Number.MAX_SAFE_INTEGER
 
 /**
- * Починить историю, которая разошлась с тетрадью комнаты.
+ * Repair a history that has drifted apart from the room's notebook.
  *
- * Разойтись она может двумя способами, и оба кончаются одинаково молча.
+ * It can drift apart in two ways, and both end equally silently.
  *
- * Первый: комнаты, записанные до того, как порядок «сначала засев, потом
- * история» был исправлен, имеют базовую строку, снятую с ПУСТОГО документа.
- * Строка есть, `hasHistoryBase` довольна, а разворачивается всё в ноль ячеек.
+ * The first: rooms recorded before the order "seed first, then history" was
+ * fixed have a base row taken from an EMPTY document. The row exists,
+ * `hasHistoryBase` is satisfied, and everything unfolds into zero cells.
  *
- * Второй: жёсткий конец процесса — kill -9, OOM, обесточивание. Снимок
- * документа пишется через 4–15 секунд, а строка истории — по закрытию всплеска
- * (до девяноста секунд); штатный выход дописывает открытый всплеск сам
- * (flushAllHistory), внезапный не успевает. На диске остаётся текст, которого
- * в истории нет, и все последующие дельты ссылаются на такты, которых в
- * цепочке не будет: Yjs кладёт их в pending и молча не применяет. Лента
- * замирает на предкрахном состоянии, а «Restore» пишет его поверх живой
- * тетради — всей комнате и без возврата.
+ * The second: a hard end of the process — kill -9, OOM, a power cut. The
+ * document snapshot is written after 4–15 seconds, and a history row when a
+ * burst closes (up to ninety seconds); a regular exit writes out the open burst
+ * itself (flushAllHistory), a sudden one does not manage to. On disk there
+ * remains text that is not in the history, and all later deltas refer to
+ * clocks that will not be in the chain: Yjs puts them into pending and
+ * silently does not apply them. The timeline freezes at the pre-crash state,
+ * and "Restore" writes it over the live notebook — for the whole room and with
+ * no way back.
  *
- * Прошлое этим не восстановить: тех байтов не существует нигде. Но будущее
- * спасается одной строкой — снимком того, что в комнате есть сейчас. С неё
- * начнутся все последующие проигрывания.
+ * The past cannot be restored this way: those bytes do not exist anywhere. But
+ * the future is saved by one row — a snapshot of what is in the room now. All
+ * later replays will start from it.
  *
- * Цена: одна сборка последней версии на открытие комнаты — та же работа, что
- * и один клик по ленте, потому что повтор идёт от свежайшего снимка, а не от
- * начала семинара.
+ * The price: one rebuild of the latest version per room open — the same work
+ * as one click on the timeline, because the replay goes from the freshest
+ * snapshot, not from the start of the seminar.
  */
 function repairHistory(sessionId: string, doc: Y.Doc): void {
-  // Живой документ пуст — сравнивать не с чем, и починка была бы записью
-  // пустоты поверх пустоты.
+  // The live document is empty — there is nothing to compare with, and the
+  // repair would be writing emptiness over emptiness.
   if (cellsOf(doc).length === 0) return
 
   const replay = new Y.Doc()
@@ -300,22 +304,22 @@ function repairHistory(sessionId: string, doc: Y.Doc): void {
   forgetCache(sessionId)
   console.warn(
     damage === 'unreadable'
-      ? `[history] ${sessionId}: база истории была снята с пустого документа — ` +
-          `ни одна версия не разворачивалась. Записан снимок текущей тетради; ` +
-          `версии до него остаются нечитаемыми.`
-      : `[history] ${sessionId}: история отстала от тетради на диске — процесс ` +
-          `оборвался с незакрытым всплеском. Записан снимок текущей тетради; ` +
-          `правки, не попавшие в историю, восстановить неоткуда.`,
+      ? `[history] ${sessionId}: the history base was taken from an empty document — ` +
+          `no version could be rebuilt. Wrote a snapshot of the current notebook; ` +
+          `versions before it remain unreadable.`
+      : `[history] ${sessionId}: the history fell behind the notebook on disk — the process ` +
+          `died with an unclosed burst. Wrote a snapshot of the current notebook; ` +
+          `edits that never reached the history cannot be recovered.`,
   )
 }
 
 /**
- * Есть ли в живом документе то, чего в истории нет.
+ * Whether the live document has something the history does not.
  *
- * Два вопроса, потому что Yjs отвечает «что изменилось» в двух местах.
- * Написанное поднимает счётчик своего клиента, так что счётчик выше — это
- * байты, до которых история не дошла. Удаление тактов не двигает — оно живёт в
- * множестве удалений, — поэтому состав тетради сверяется отдельно.
+ * Two questions, because Yjs answers "what changed" in two places. What is
+ * written raises its client's counter, so a higher counter means bytes the
+ * history has not reached. Deletion does not move clocks — it lives in the
+ * delete set — so the notebook's cell list is compared separately.
  */
 function behind(replay: Y.Doc, doc: Y.Doc): boolean {
   const known = Y.decodeStateVector(Y.encodeStateVector(replay))
@@ -380,14 +384,14 @@ function describe(
   const number = (id: string) => String(order.indexOf(id) + 1).padStart(2, '0')
 
   /*
-   * Слова версии — по-русски, потому что их никто не разбирает: сервер сочиняет
-   * строку, лента (web/src/components/panels/HistoryTab.svelte · saying) её
-   * печатает как есть. Панель говорит с классом по-русски, и английская
-   * подпись стояла в ней рядом с русским именем автора.
+   * The version's words — in Russian, because nobody parses them: the server
+   * composes the line, and the feed (web/src/components/panels/HistoryTab.svelte
+   * · saying) prints it as is. The panel speaks to the class in Russian, and an
+   * English caption stood in it next to the author's Russian name.
    *
-   * Число — через общее правило числительного, а не «N ячеек» подстановкой:
-   * «21 ячеек» и «2 ячеек» — ровно та ошибка, ради которой `plural` и лежит в
-   * shared.
+   * The number goes through the shared numeral rule, not "N cells" by
+   * substitution: "21 ячеек" and "2 ячеек" are exactly the mistake that
+   * `plural` lives in shared for.
    */
   const cells = (n: number): string => tr('server.historyCells', { count: n })
 
@@ -411,10 +415,10 @@ function describe(
 }
 
 /**
- * Свободное имя для возвращаемой тетради комнаты.
+ * A free name for the room's notebook being brought back.
  *
- * Её прежний путь история не хранит — она хранит ячейки, — а имя по умолчанию
- * могло за это время достаться кому-то ещё.
+ * The history does not store its former path — it stores cells — and the
+ * default name may have gone to someone else in the meantime.
  */
 function freeBookName(doc: Y.Doc): string {
   const taken = new Set(bookList(doc).map((book) => book.path))
@@ -447,14 +451,14 @@ export function cellsOf(doc: Y.Doc): HistoricCell[] {
 /**
  * Which cells exist and in what order — the notebook's shape, not its text.
  *
- * По ВСЕМ тетрадям комнаты, а не по одной. Смотрело только в `CELLS_KEY`, и
- * перестановка ячейки во второй тетради всплеск не закрывала: строка «двигали
- * ячейку» приезжала в ленту через двенадцать секунд молчания или не приезжала
- * вовсе, слитая с чужим набором.
+ * Over ALL of the room's notebooks, not one. It looked only at `CELLS_KEY`, and
+ * moving a cell in the second notebook did not close the burst: the "moved a
+ * cell" row reached the feed after twelve seconds of silence or never at all,
+ * merged into someone else's typing.
  *
- * Разделитель между тетрадями обязателен: без него перенос ячейки из одной
- * тетради в соседнюю давал ту же самую строку и выглядел как «ничего не
- * менялось».
+ * A separator between notebooks is mandatory: without it moving a cell from one
+ * notebook to the next gave the very same string and looked like "nothing
+ * changed".
  */
 function shapeOf(doc: Y.Doc): string {
   const parts: string[] = []
@@ -466,12 +470,12 @@ function shapeOf(doc: Y.Doc): string {
 }
 
 /**
- * Массивы, из-за которых форму тетради надо пересчитывать.
+ * The arrays because of which the notebook's shape has to be recomputed.
  *
- * Сами листы ячеек и список тетрадей. Терминал и лента оракула — тоже `Y.Array`
- * в том же документе, и по ним форма измениться не может: ячейки в них не
- * лежат. Без этого различия поток вывода ядра пересобирал бы форму на каждый
- * сброс буфера.
+ * The cell lists themselves and the list of notebooks. The terminal and the
+ * oracle feed are also `Y.Array`s in the same document, and the shape cannot
+ * change through them: cells do not live in them. Without this distinction the
+ * kernel's output stream would rebuild the shape on every buffer flush.
  */
 function shapingArrays(doc: Y.Doc): Y.AbstractType<any>[] {
   const arrays: Y.AbstractType<any>[] = [...allCellArrays(doc)]
@@ -491,14 +495,15 @@ function docFrom(updates: Uint8Array[]): Y.Doc {
 }
 
 /**
- * Тетрадь после всплеска, собранная заново, — запасной ход.
+ * The notebook after a burst, rebuilt from scratch — the fallback.
  *
- * Три источника, по убыванию точности: байты базовой точки, снятые при
- * открытии всплеска; те же байты из памяти модуля; сама история. Последний —
- * для комнаты, у которой теневая тетрадь отказала посреди работы: байты
- * базовой точки к этому моменту уже никто не хранит, а собирать «после» из
- * одного склеенного обновления значило бы записать кейфреймом тетрадь из одной
- * этой правки. Повтор идёт от ближайшего снимка, а не от начала семинара.
+ * Three sources, in decreasing accuracy: the baseline bytes taken when the
+ * burst opened; the same bytes from the module's memory; the history itself.
+ * The last one is for a room whose shadow notebook failed in the middle of
+ * work: by that moment nobody holds the baseline bytes anymore, and assembling
+ * "after" from one merged update would mean writing a keyframe of a notebook
+ * made of that one edit. The replay goes from the nearest snapshot, not from
+ * the start of the seminar.
  */
 function rebuiltAfter(sessionId: string, before: Uint8Array | null, merged: Uint8Array): Y.Doc {
   const bytes = before ?? baselines.get(sessionId) ?? null
@@ -516,16 +521,16 @@ function close(key: string): void {
 
   const merged = Y.mergeUpdates(burst.updates)
   /*
-   * «До» берётся из памяти, а не разворачивается заново.
+   * "Before" is taken from memory, not unfolded again.
    *
-   * Это тот же документ, который в прошлый раз был «после»: его тексты уже
-   * посчитали и положили сюда. Разворачивать его второй раз — семь
-   * миллисекунд блокировки цикла событий на нажатие клавиши в трёхмегабайтной
-   * тетради. Запись пропадает только при перезапуске сервера, и тогда
-   * разворачиваем, как раньше.
+   * It is the same document that was "after" last time: its texts were already
+   * computed and put here. Unfolding it a second time is seven milliseconds of
+   * blocked event loop per keystroke on a three-megabyte notebook. The entry
+   * disappears only on a server restart, and then we unfold as before.
    *
-   * И считается это ДО того, как теневой документ сдвинут: он и есть «до», и
-   * сдвинутый отвечал бы на вопрос «что изменилось» словом «ничего».
+   * And this is computed BEFORE the shadow document is advanced: it is the
+   * "before", and advanced it would answer the question "what changed" with
+   * "nothing".
    */
   const shadow = shadows.get(burst.sessionId) ?? null
   let was = digests.get(burst.sessionId)
@@ -535,17 +540,17 @@ function close(key: string): void {
     if (before !== shadow) before.destroy()
   }
   /*
-   * «После» — это базовая точка, сдвинутая на этот всплеск, и сдвигается она
-   * на месте: теневой документ комнаты живёт между закрытиями (см. `shadows`).
-   * Собрать его заново — запасной ход: комната, поднятая этим процессом
-   * впервые, и применение, которое почему-то не прошло.
+   * "After" is the baseline advanced by this burst, and it is advanced in
+   * place: the room's shadow document lives between closes (see `shadows`).
+   * Rebuilding it is the fallback: a room brought up by this process for the
+   * first time, and an apply that failed for some reason.
    */
   let after = shadow
   if (after) {
     try {
       Y.applyUpdate(after, merged, 'history')
     } catch (err) {
-      console.error(`[history] теневая тетрадь ${burst.sessionId} не приняла всплеск`, err)
+      console.error(`[history] the shadow notebook of ${burst.sessionId} rejected a burst`, err)
       setShadow(burst.sessionId, null)
       after = null
     }
@@ -599,8 +604,8 @@ function close(key: string): void {
       sessionId: burst.sessionId,
       update: merged,
       kind: quiet ? 'quiet' : 'edit',
-      // Один автор — его имя; двое и больше — «the room», что и есть правда.
-      // Пустое множество — писал только сервер, и это тоже комната.
+      // One author — their name; two or more — "the room", which is the truth.
+      // An empty set means only the server wrote, and that is the room too.
       authorId: burst.authors.size === 1 ? [...burst.authors][0] : null,
       createdAt: burst.lastAt,
       label: null,
@@ -620,35 +625,36 @@ function close(key: string): void {
     gaps.add(burst.sessionId)
   }
   // The next version is measured from here, not from wherever the document
-  // happens to be when somebody next presses a key. Двигается и после
-  // неудачи: байтов всплеска всё равно больше нет, а следующая версия обязана
-  // описывать разницу с тем, что в комнате на самом деле.
+  // happens to be when somebody next presses a key. It moves even after a
+  // failure: the burst's bytes are gone anyway, and the next version must
+  // describe the difference from what is really in the room.
   /*
-   * Ни одного разворота документа в байты на закрытие.
+   * Not a single unfolding of the document into bytes per close.
    *
-   * Байты нужны были трижды — базовой точке, оценке «пора ли снимок» и самому
-   * снимку, — и один раз считались. Теперь базовая точка это сам теневой
-   * документ, оценка идёт по запомненному размеру, а снимок считается там, где
-   * его правда пишут, то есть редко. На тетради 2.2 МБ это семь миллисекунд
-   * цикла событий, снятых с каждого закрытия.
+   * Bytes were needed three times — for the baseline, for the "is it time for a
+   * snapshot" estimate and for the snapshot itself — and were computed once.
+   * Now the baseline is the shadow document itself, the estimate goes by the
+   * remembered size, and the snapshot is computed where it is really written,
+   * that is, rarely. On a 2.2 MB notebook that is seven milliseconds of event
+   * loop taken off every close.
    *
-   * Байты базовой точки при этом должны быть не старее теневого документа:
-   * забыв их здесь, мы заставим следующего спрашивающего посчитать их заново с
-   * него же.
+   * The baseline bytes must not be older than the shadow document, though: by
+   * forgetting them here we make the next one to ask compute them anew from it.
    */
   baselines.delete(burst.sessionId)
   shapes.set(burst.sessionId, shapeOf(after))
   digests.set(burst.sessionId, now)
   if (gaps.has(burst.sessionId)) {
     /*
-     * Незаписанная строка — дыра в цепочке.
+     * An unwritten row is a hole in the chain.
      *
-     * Её байты уже не существуют, а следующая дельта сошлётся на такты,
-     * которых в истории нет: повтор молча положит её в pending, лента замрёт
-     * на состоянии до сбоя, и «Restore» любой строки после дыры запишет это
-     * состояние поверх живой тетради. Закрывает дыру только целый документ,
-     * поэтому комната помечена до первого удачного снимка — обычный keyframe
-     * сюда не годится, он приходит по счёту байтов и может не прийти вовсе.
+     * Its bytes no longer exist, and the next delta will refer to clocks that
+     * are not in the history: the replay will silently put it into pending, the
+     * feed will freeze at the pre-failure state, and "Restore" of any row after
+     * the hole will write that state over the live notebook. Only a whole
+     * document closes the hole, so the room is marked until the first
+     * successful snapshot — an ordinary keyframe does not fit here, it comes by
+     * byte count and may never come at all.
      */
     if (writeKeyframe(burst.sessionId, after)) gaps.delete(burst.sessionId)
   } else if (wrote) {
@@ -656,42 +662,45 @@ function close(key: string): void {
     // like any other, so they are exactly what the interval is bounding.
     maybeKeyframe(burst.sessionId, after, merged.byteLength)
   }
-  // `after` не уничтожается: это и есть теневой документ комнаты, с которого
-  // начнётся следующее закрытие. Роняет его выселение (`forgetHistory`).
+  // `after` is not destroyed: it is the room's shadow document, which the next
+  // close will start from. Eviction drops it (`forgetHistory`).
 }
 
 /**
- * Байты, накопленные с прошлого полного снимка, по комнатам.
+ * Bytes accumulated since the last full snapshot, per room.
  *
- * Живёт в памяти и переживает не всё: после перезапуска сервера счётчик
- * начинается заново, и первый снимок в комнате придёт по счёту строк. Это
- * дешевле, чем хранить его в базе ради оценки, которая всё равно приблизительна.
+ * Lives in memory and does not survive everything: after a server restart the
+ * counter starts anew, and the first snapshot in a room will come by row count.
+ * That is cheaper than storing it in the database for the sake of an estimate
+ * that is approximate anyway.
  */
 const sinceKeyframe = new Map<string, number>()
 
 /**
- * Полный снимок документа — когда дельты уже стоят как он сам.
+ * A full document snapshot — once the deltas already weigh as much as it does.
  *
- * Правило было «каждые двадцать пять строк», и на трёхмегабайтной тетради оно
- * означало три мегабайта каждые двадцать пять нажатий: за пару такой семинар
- * писал сотни мегабайт снимков, между которыми лежало по сотне килобайт
- * настоящих правок. Считать надо не строки, а байты: полная копия имеет смысл
- * ровно тогда, когда дельт с прошлой копии накопилось столько же — тогда
- * история занимает вдвое больше документа, а не во сколько попало раз.
+ * The rule used to be "every twenty-five rows", and on a three-megabyte
+ * notebook it meant three megabytes every twenty-five keystrokes: over a class
+ * such a seminar wrote hundreds of megabytes of snapshots, with a hundred
+ * kilobytes of real edits between them. What must be counted is not rows but
+ * bytes: a full copy makes sense exactly when as many deltas have accumulated
+ * since the last copy — then the history takes twice the document, not an
+ * arbitrary multiple of it.
  *
- * Порог по строкам остаётся сверху: он ограничивает не место, а длину
- * повтора, и без него крошечная тетрадь с тысячей мелких правок собиралась бы
- * из тысячи кусков.
+ * The row threshold stays on top: it bounds not space but the length of a
+ * replay, and without it a tiny notebook with a thousand small edits would be
+ * assembled from a thousand pieces.
  */
 function maybeKeyframe(sessionId: string, doc: Y.Doc, wrote: number): void {
   /*
-   * Размер — по памяти, а не свежим разворотом документа в байты.
+   * The size comes from memory, not from a fresh unfolding of the document into
+   * bytes.
    *
-   * Раньше байты считал каждый закрытый всплеск и заодно отвечал на этот
-   * вопрос бесплатно. Теперь их не считает никто (см. `close`), а решение
-   * «пора ли снимок» не стоит семи миллисекунд цикла событий: оно и так
-   * приблизительное. Запомненный размер обновляется на каждой записанной
-   * копии, то есть ровно тогда, когда он меняется заметно.
+   * Before, every closed burst computed the bytes and answered this question for
+   * free along the way. Now nobody computes them (see `close`), and the decision
+   * "is it time for a snapshot" is not worth seven milliseconds of event loop:
+   * it is approximate anyway. The remembered size is updated on every written
+   * copy, that is, exactly when it changes noticeably.
    */
   const size = sizes.get(sessionId) ?? KEYFRAME_MIN_BYTES
   const grown = (sinceKeyframe.get(sessionId) ?? 0) + wrote
@@ -699,15 +708,15 @@ function maybeKeyframe(sessionId: string, doc: Y.Doc, wrote: number): void {
 
   const byBytes = grown >= Math.max(size, KEYFRAME_MIN_BYTES)
   /*
-   * Потолок по строкам — со своим порогом по байтам, а не сам по себе.
+   * The row ceiling — with a byte threshold of its own, not by itself.
    *
-   * Правило «каждые двести строк» ограничивает длину повтора, и это правильно.
-   * Но двести строк на живом семинаре — это чаще всего двести ТИХИХ строк:
-   * вывод ячейки, состояние запуска, поток оракула. Дельты в них крошечные, а
-   * полная копия — мегабайты, и на тетради с картинками это был мегабайт
-   * снимка на каждые несколько килобайт разницы. Повтор двухсот мелких
-   * обновлений — доли миллисекунды, так что ограничение ничего не теряет:
-   * снимок приходит, когда накопилось хоть сколько-то различия.
+   * The rule "every two hundred rows" bounds the length of a replay, and that is
+   * right. But two hundred rows in a live seminar are most often two hundred
+   * QUIET rows: cell output, run state, the oracle's stream. Their deltas are
+   * tiny, while a full copy is megabytes, and on a notebook with images that was
+   * a megabyte of snapshot for every few kilobytes of difference. Replaying two
+   * hundred small updates takes fractions of a millisecond, so the bound loses
+   * nothing: a snapshot comes when at least some difference has accumulated.
    */
   const byRows = versionCount(sessionId) % KEYFRAME_EVERY === 0 && grown >= KEYFRAME_MIN_BYTES
   if (!byBytes && !byRows) return
@@ -716,11 +725,13 @@ function maybeKeyframe(sessionId: string, doc: Y.Doc, wrote: number): void {
 }
 
 /**
- * Полный снимок документа отдельной строкой. Говорит, удалось ли записать.
+ * A full snapshot of the document as a separate row. Says whether it was
+ * written.
  *
- * Документом, а не байтами: разворот в байты — самая дорогая работа на этом
- * пути, и делается она ровно здесь, то есть только когда снимок правда пишут.
- * Заодно здесь обновляется запомненный размер комнаты (см. `maybeKeyframe`).
+ * As a document, not bytes: unfolding into bytes is the most expensive work on
+ * this path, and it is done exactly here, that is, only when a snapshot is
+ * really written. The room's remembered size is updated here too (see
+ * `maybeKeyframe`).
  */
 function writeKeyframe(sessionId: string, doc: Y.Doc): boolean {
   const snapshot = Y.encodeStateAsUpdate(doc)
@@ -744,30 +755,31 @@ function writeKeyframe(sessionId: string, doc: Y.Doc): boolean {
   }
   sinceKeyframe.set(sessionId, 0)
   /*
-   * Потолок истории — здесь и только здесь.
+   * The history ceiling — here and only here.
    *
-   * Единственный момент, когда обрезать безопасно: снимок только что лёг, и
-   * повтор всего, что после него, ни на одну выброшенную строку не смотрит.
-   * `trimHistory` режет целыми отрезками между снимками — почему именно так,
-   * подробно сказано у неё; сама база ничего не убирает, потому что «когда
-   * можно» знает эта сторона, а не она.
+   * The only moment when trimming is safe: a snapshot has just landed, and the
+   * replay of everything after it does not look at any row thrown away.
+   * `trimHistory` cuts whole segments between snapshots — why exactly so is
+   * explained in detail at it; the database removes nothing by itself, because
+   * "when it is allowed" is known by this side, not by it.
    */
   try {
     const dropped = trimHistory(sessionId)
     if (dropped > 0) {
-      console.log(`[history ${sessionId}] история упёрлась в потолок: убрано ${dropped} строк`)
+      console.log(`[history ${sessionId}] history hit its ceiling: removed ${dropped} rows`)
     }
   } catch (err) {
-    // Не убралось — не беда семинара: место кончится позже, а версия записана.
+    // Trimming failed: no harm to the class — space runs out later; the version is in.
     console.error(`[history] could not trim history for ${sessionId}`, err)
   }
   return true
 }
 
 /**
- * Могло ли это обновление изменить состав или порядок ячеек.
+ * Whether this update could have changed the set or order of cells.
  *
- * Без транзакции ответ «могло»: не знать — не то же самое, что «нет».
+ * Without a transaction the answer is "could have": not knowing is not the same
+ * as "no".
  */
 function mayHaveReshaped(doc: Y.Doc, transaction: Y.Transaction | undefined): boolean {
   if (!transaction) return true
@@ -791,17 +803,18 @@ export function record(
   update: Uint8Array,
   authorId: string | null,
   /*
-   * Транзакция, породившая обновление, — если её знает тот, кто зовёт.
+   * The transaction that produced the update — if the caller knows it.
    *
-   * Нужна ровно для одного: понять, могла ли форма тетради измениться, не
-   * пересобирая её. Форма — это строка из имён всех ячеек, и раньше её
-   * склеивали на КАЖДОЕ обновление: на каждое нажатие любого из участников и
-   * на каждый сброс буфера вывода. На тетради в пятьсот ячеек это шесть
-   * килобайт мусора на кадр там, где кадров больше всего.
+   * Needed for exactly one thing: to understand whether the notebook's shape
+   * could have changed, without rebuilding it. The shape is a string of the
+   * names of all cells, and it used to be glued together on EVERY update: on
+   * every keystroke of any participant and on every output buffer flush. On a
+   * notebook of five hundred cells that is six kilobytes of garbage per frame
+   * where frames are most numerous.
    *
-   * Форму меняет только запись в лист ячеек или в список тетрадей; набор текста
-   * идёт в `Y.Text` внутри ячейки и трогать её не может. Не сказали, что
-   * менялось (так зовут тесты), — считаем, как раньше.
+   * Only a write into a cell list or the list of notebooks changes the shape;
+   * typing goes into the `Y.Text` inside a cell and cannot touch it. If what
+   * changed is not said (that is how tests call it), we count as before.
    */
   transaction?: Y.Transaction,
   directContributor?: { participantId: string; role: ParticipantRole },
@@ -811,22 +824,24 @@ export function record(
   const now = Date.now()
 
   /*
-   * Второй человек присоединяется ко всплеску, а не закрывает его.
+   * A second person joins the burst rather than closing it.
    *
-   * «Другой человек — другое дело» звучит правильно и стоит дорого: двое,
-   * печатающих одновременно, чередуют нажатия, каждое закрывает предыдущий
-   * всплеск, и получается версия на нажатие — сорок строк истории за минуту
-   * работы, из которых чекпоинт «до упражнения» вылетает за окно.
+   * "A different person is a different thing done" sounds right and costs a
+   * lot: two people typing at the same time alternate keystrokes, each closes
+   * the previous burst, and the result is a version per keystroke — forty
+   * history rows per minute of work, out of which the "before the exercise"
+   * checkpoint falls out of the window.
    *
-   * Всплеск, в который писали двое, записывается без автора и читается как
-   * «the room» — это честнее, чем приписать его тому, кто нажал последним, и
-   * ровно так же честно, как строка, которую пишет сам сервер.
+   * A burst two people wrote into is recorded without an author and reads as
+   * "the room" — that is more honest than attributing it to whoever pressed
+   * last, and just as honest as a row the server writes itself.
    *
-   * Сервер в этот счёт не входит. Ядро пишет outputs, состояние и номер
-   * запуска, оракул стримит ответ — всё это приходит сюда без автора, и всплеск
-   * с ними становился двухавторным: студентка правит ячейку, рядом крутится
-   * чужой цикл, и в ленте «the room · edited cell 03» без имени и цвета. Двоих
-   * не было. Комната — это когда людей двое, а не когда рядом работала ячейка.
+   * The server is not counted. The kernel writes outputs, the state and the run
+   * number, the oracle streams its answer — all of this arrives here without an
+   * author, and a burst with them used to become two-author: a student edits a
+   * cell, someone else's loop is spinning nearby, and the feed says "the room ·
+   * edited cell 03" with no name and no colour. There were no two people. The
+   * room is when there are two people, not when a cell was working nearby.
    */
   if (existing && authorId !== null) existing.authors.add(authorId)
 
@@ -852,9 +867,9 @@ export function record(
     burst.contributors.set(directContributor.participantId, directContributor.role)
   }
   burst.lastAt = now
-  // Байты сервера всплеск не растят: поток вывода резал чужой набор на строки
-  // по четыре килобайта, а «человек написал много» — это про то, что написал
-  // человек. Сверху всё равно стоит BURST_MAX_MS.
+  // The server's bytes do not grow a burst: the output stream chopped someone
+  // else's typing into four-kilobyte rows, while "a person wrote a lot" is about
+  // what a person wrote. BURST_MAX_MS still stands on top.
   if (authorId !== null) burst.chars += update.byteLength
 
   /*
@@ -872,19 +887,20 @@ export function record(
   }
 
   /*
-   * Потолок всплеска — на КАЖДОГО, кто в него пишет.
+   * The burst ceiling — per EACH person writing into it.
    *
-   * Всплеск один на комнату, и порог в четыре килобайта человеческих байтов —
-   * это примерно сто тридцать нажатий. Один печатающий закрывает всплеск раз в
-   * полминуты; пятьсот печатающих одновременно набирают эти сто тридцать
-   * нажатий за долю секунды — и комната платила бы `mergeUpdates` + полный
-   * разворот документа + запись в SQLite по десятку раз в секунду, а лента
-   * версий заполнялась бы строками «the room» быстрее, чем её можно читать.
+   * There is one burst per room, and a threshold of four kilobytes of human
+   * bytes is about a hundred and thirty keystrokes. One typist closes a burst
+   * every half minute; five hundred people typing at once reach those hundred
+   * and thirty keystrokes in a fraction of a second — and the room would pay
+   * `mergeUpdates` + a full document unfold + an SQLite write a dozen times a
+   * second, while the version feed would fill with "the room" rows faster than
+   * they can be read.
    *
-   * Строка истории — это «одно дело одного человека»; когда людей в ней N,
-   * столько же и дел, поэтому порог растёт вместе с ними. Сверху по-прежнему
-   * стоит `BURST_MAX_MS`, так что дольше своей минуты всплеск не живёт при
-   * любом числе авторов.
+   * A history row is "one thing one person did"; when there are N people in it,
+   * there are as many things, so the threshold grows with them. `BURST_MAX_MS`
+   * still stands on top, so a burst does not live longer than its minute with
+   * any number of authors.
    */
   const room = Math.max(1, burst.authors.size)
   if (burst.chars >= BURST_MAX_CHARS * room || now - burst.openedAt >= BURST_MAX_MS) {
@@ -894,18 +910,18 @@ export function record(
 
   if (burst.timer) clearTimeout(burst.timer)
   /*
-   * Хвост всплеска — под своим перехватом.
+   * The burst's tail — under its own try/catch.
    *
-   * Это единственный путь, по которому `close` вызывается из таймера: он
-   * склеивает обновления, разворачивает документ и пишет в SQLite, и всё это
-   * без вызывающего, который поймал бы бросок. Из колбэка `setTimeout` он
-   * уходит в `uncaughtException` (server/src/index.ts), а тот уводит процесс
-   * со ВСЕМИ комнатами инстанса — из-за одной ленты одной комнаты.
+   * This is the only path by which `close` is called from a timer: it merges
+   * updates, unfolds the document and writes to SQLite, and all of this without
+   * a caller who would catch a throw. From a `setTimeout` callback it goes to
+   * `uncaughtException` (server/src/index.ts), which takes down the process with
+   * ALL of the instance's rooms — because of one feed of one room.
    *
-   * Закрытым всплеск считается в любом случае: `close` снимает его с карты
-   * первой же строкой, до всякой работы, — иначе неудачная запись заперла бы
-   * ленту комнаты навсегда, и следующие правки копились бы в мёртвом всплеске
-   * до перезапуска.
+   * The burst counts as closed in any case: `close` removes it from the map on
+   * its very first line, before any work — otherwise a failed write would lock
+   * the room's feed forever, and the following edits would pile up in a dead
+   * burst until a restart.
    */
   burst.timer = setTimeout(() => {
     try {
@@ -944,16 +960,16 @@ export function flushAllHistory(): void {
 }
 
 /**
- * Отпустить память об истории комнаты, ничего не потеряв.
+ * Release the memory about a room's history without losing anything.
  *
- * Не то же, что `discardBurst`: тот выбрасывает начатую строку вместе с
- * семинаром, а здесь семинар остаётся — уходит только комната из памяти
- * процесса (collab/index.ts · выселение простаивающих). Поэтому открытый
- * всплеск сперва дописывается строкой: это чья-то работа.
+ * Not the same as `discardBurst`: that one throws away the started row together
+ * with the seminar, while here the seminar stays — only the room leaves the
+ * process's memory (collab/index.ts · eviction of idle rooms). So the open
+ * burst is first written out as a row: it is somebody's work.
  *
- * Всё, что снимается, комната отстроит сама при следующем входе: `beginHistory`
- * заново снимает базовую точку, форму и тексты с поднятого из снимка документа
- * — ровно так же, как после перезапуска сервера.
+ * Everything released here the room will rebuild by itself on the next entry:
+ * `beginHistory` takes the baseline, the shape and the texts anew from the
+ * document brought up from the snapshot — exactly as after a server restart.
  */
 export function forgetHistory(sessionId: string): void {
   close(sessionId)
@@ -1043,15 +1059,17 @@ export function mark(
 ): number {
   flushHistory(sessionId)
   /*
-   * У возврата версии есть что показать, и он это показывал как «ничего».
+   * Restoring a version has something to show, and it showed it as "nothing".
    *
-   * `added: 0, removed: 0, cells: []` — правда для чекпоинта: его ставят
-   * поверх текста, ничего не меняя. Для возврата это неправда: он переписывает
-   * ячейки, и панель, у которой список изменений пуст, честно печатала «This
-   * moment was marked, not edited» — над строкой, которая только что заменила
-   * половину тетради. Ровно ту правку, ради которой в историю и лезут.
+   * `added: 0, removed: 0, cells: []` is true for a checkpoint: it is set on top
+   * of the text without changing anything. For a restore it is untrue: it
+   * rewrites cells, and the panel, whose list of changes was empty, honestly
+   * printed "This moment was marked, not edited" — above a row that had just
+   * replaced half the notebook. Exactly the edit people go into the history
+   * for.
    *
-   * Считается так же, как для всплеска: что было до, что стало после.
+   * It is computed the same way as for a burst: what was before, what came
+   * after.
    */
   const now = new Map(cellsOf(doc).map((c) => [c.id, c.source]))
   const facts =
@@ -1067,26 +1085,27 @@ export function mark(
     authorId,
     createdAt: Date.now(),
     label,
-    // Слова возврата — свои («restored the version»), а не те, что
-    // сочинил describe: важно, что это возврат, а не что «отредактировали 3».
+    // A restore has words of its own ("restored the version"), not the ones
+    // describe composed: what matters is that it is a restore, not "edited 3".
     summary,
     added: facts.added,
     removed: facts.removed,
     cells: facts.cells,
     targetSeq,
   })
-  // Строка с целым документом закрывает дыру не хуже снимка: с неё повтор
-  // начинается заново.
+  // A row with the whole document closes a hole no worse than a snapshot: the
+  // replay starts anew from it.
   gaps.delete(sessionId)
   baselines.set(sessionId, snapshot)
   sizes.set(sessionId, snapshot.byteLength)
   /*
-   * И теневая тетрадь встаёт на ту же точку.
+   * And the shadow notebook stands at the same point.
    *
-   * Не «сдвигается»: чекпоинт и возврат версии приходят из живого документа, и
-   * сколько всего в нём изменилось с прошлого закрытия, отсюда не видно. Одна
-   * полная сборка на чекпоинт — это ровно то, чем закрытие всплеска было до
-   * сих пор, а чекпоинты ставят единицами за пару, а не десятками в минуту.
+   * Not "advanced": a checkpoint and a version restore come from the live
+   * document, and how much has changed in it since the last close is not
+   * visible from here. One full rebuild per checkpoint is exactly what a burst
+   * close used to be, and checkpoints are set a few per class, not dozens per
+   * minute.
    */
   setShadow(sessionId, docFrom([snapshot]))
   shapes.set(sessionId, shapeOf(doc))
@@ -1131,23 +1150,24 @@ function reorder(cells: Y.Array<YCell>, order: string[], busy: ReadonlySet<strin
   if (same) return 0
 
   /*
-   * Клон уносит с собой чужие нажатия.
+   * A clone takes other people's keystrokes away with it.
    *
-   * У `Y.Array` нет перемещения, поэтому переставить ячейку можно только
-   * пересоздав её клоном, — а нажатия, ушедшие в старый `Y.Text` за круг до
-   * сервера, адресованы удалённой структуре: гейт их пропускает (запись в
-   * надгробие никому не видна), и символы пропадают у печатающего молча,
-   * Ctrl+Z их не вернёт. Пересобирать клонами ВЕСЬ лист значило обокрасть на
-   * это всех, кто печатал в ту секунду, — хотя возврат версии обычно двигает
-   * одну-две ячейки.
+   * `Y.Array` has no move, so a cell can be rearranged only by recreating it as
+   * a clone — and keystrokes that went into the old `Y.Text` one round trip
+   * before the server are addressed to a deleted structure: the gate lets them
+   * through (a write into a tombstone is visible to nobody), and the characters
+   * vanish for the typist silently, and Ctrl+Z will not bring them back.
+   * Rebuilding the WHOLE sheet with clones meant robbing everyone who was typing
+   * at that second of this — although a version restore usually moves one or
+   * two cells.
    *
-   * Поэтому на месте остаётся самая длинная цепочка ячеек, уже стоящих в
-   * нужном порядке друг относительно друга (наибольшая возрастающая
-   * подпоследовательность по целевому месту), а клонами пересоздаются только
-   * остальные. Ячейка с чьим-то курсором весит больше всего листа: где выбор
-   * есть — как при перестановке двух соседок местами, — остаётся та, в которой
-   * сейчас печатают. Лист короткий (десятки ячеек), так что квадратичный
-   * перебор здесь дешевле одного лишнего клона.
+   * So the longest chain of cells already standing in the right order relative
+   * to each other stays in place (the longest increasing subsequence by target
+   * position), and only the rest are recreated as clones. A cell with someone's
+   * cursor weighs more than the whole sheet: where there is a choice — as when
+   * two neighbours swap places — the one being typed in right now stays. The
+   * sheet is short (dozens of cells), so a quadratic search here is cheaper
+   * than one extra clone.
    */
   const place = new Map(target.map((cell, i) => [cell, i]))
   const weigh = (cell: YCell) => (busy.has(cell.get('id') as string) ? current.length + 1 : 1)
@@ -1166,21 +1186,22 @@ function reorder(cells: Y.Array<YCell>, order: string[], busy: ReadonlySet<strin
   const keep = new Set<YCell>()
   for (let i = tail; i >= 0; i = prev[i]) keep.add(current[i])
 
-  // Клоны — до удаления: у вычеркнутой ячейки читать уже нечего.
+  // Clones come before deletion: a crossed-out cell has nothing left to read.
   const moving = target.filter((cell) => !keep.has(cell))
   const clones = new Map(moving.map((cell) => [cell, cloneCell(cell)]))
   for (let i = current.length - 1; i >= 0; i--) if (!keep.has(current[i])) cells.delete(i, 1)
-  // Сверху вниз: к своему целевому месту ячейка приезжает, когда все, кому
-  // стоять левее, уже стоят, — значит место и есть индекс вставки.
+  // Top to bottom: a cell arrives at its target place when everyone who should
+  // stand to its left is already standing, so the place is the insertion index.
   for (const cell of moving) cells.insert(place.get(cell)!, [clones.get(cell)!])
   return moving.length
 }
 
 /**
- * Куда вернуть ячейку, которой в тетради больше нет.
+ * Where to put back a cell that is no longer in the notebook.
  *
- * По соседям из версии: сразу за ближайшей предшествующей, которая ещё жива, а
- * если таких нет — перед ближайшей следующей. Не нашлось ни одной — в конец.
+ * By its neighbours in the version: right after the nearest preceding one that
+ * is still alive, and if there are none — before the nearest following one. If
+ * none is found — at the end.
  */
 function placeFor(wanted: HistoricCell[], id: string, live: Map<string, number>): number {
   const at = wanted.findIndex((cell) => cell.id === id)
@@ -1202,10 +1223,11 @@ export function restoreInto(
   authorId: string | null,
   onlyCell: string | null,
   /*
-   * В каких ячейках сейчас стоят курсоры — чтобы перестановка (`reorder`)
-   * оставила на месте те, в которых печатают. Параметром, а не импортом из
-   * `collab/index.ts`: присутствие живёт в сокетах, а этот модуль зовут и тесты,
-   * и маршрут; не сказали — считаем, что курсоров нет, и выбор решает длина.
+   * Which cells have cursors in them right now — so that the rearrangement
+   * (`reorder`) leaves in place the ones being typed in. A parameter, not an
+   * import from `collab/index.ts`: presence lives in the sockets, and this
+   * module is called both by tests and by the route; if nothing is said, we
+   * assume there are no cursors, and length decides.
    */
   busy: ReadonlySet<string> = new Set(),
 ): number {
@@ -1214,15 +1236,17 @@ export function restoreInto(
 
   doc.transact(() => {
     /*
-     * История — про ТЕТРАДЬ КОМНАТЫ, и это её корень, а не «первая по списку».
+     * History is about the ROOM'S NOTEBOOK, and that is its root, not "the
+     * first one on the list".
      *
-     * Разница видна ровно в одном случае и стоит дорого: тетрадь комнаты убрали,
-     * первой стала другая — и возврат версии вписал бы в неё ячейки чужого
-     * листа. Корень тут прибит намеренно; всё, что этот модуль читает и пишет,
-     * читает и пишет его.
+     * The difference shows in exactly one case and costs a lot: the room's
+     * notebook was removed, another became first — and a version restore would
+     * write the cells of someone else's sheet into it. The root is hard-wired
+     * here on purpose; everything this module reads and writes, it reads and
+     * writes there.
      *
-     * Если тетради комнаты в списке больше нет, возврат версии её и
-     * возвращает: это и есть то, о чём просят, нажимая «вернуть».
+     * If the room's notebook is no longer on the list, a version restore brings
+     * it back too: that is exactly what people ask for by pressing "restore".
      */
     if (!bookList(doc).some((book) => book.root === CELLS_KEY)) {
       addBook(doc, freeBookName(doc), CELLS_KEY)
@@ -1240,10 +1264,11 @@ export function restoreInto(
          * unrepeatable: press it twice and the notebook had two copies,
          * because the second pass could not find what the first had put back.
          *
-         * Место при полном откате решает reorder ниже, когда все ячейки уже
-         * есть. Одну ячейку reorder намеренно не трогает, поэтому её место
-         * считается здесь: «Restore this cell» на третьей из двадцати клала её
-         * двадцатой, под все остальные, и поднимать её приходилось руками.
+         * On a full rollback the place is decided by reorder below, once all
+         * cells are there. reorder deliberately does not touch a single cell,
+         * so its place is computed here: "Restore this cell" on the third of
+         * twenty put it twentieth, under all the others, and it had to be
+         * moved up by hand.
          */
         const revived = createCell(want.type, want.source, want.id)
         if (onlyCell) cells.insert(placeFor(wanted, want.id, live), [revived])
@@ -1255,33 +1280,35 @@ export function restoreInto(
       const source = cell.get('source') as Y.Text | undefined
       let touched = false
       /*
-       * Тип ячейки — тоже часть версии.
+       * The cell type is part of the version too.
        *
-       * Ячейку с рабочим кодом переключили в markdown, откат возвращал текст —
-       * и оставлял markdown: Run по ней не работает, «Run All» её пропускает.
-       * А если менялся ровно тип, откат выходил отсюда, не сделав ничего и не
-       * оставив строки, — кнопка «вернуть» молчала.
+       * A cell with working code was switched to markdown, the rollback brought
+       * back the text — and left markdown: Run does not work on it, "Run All"
+       * skips it. And if only the type changed, the rollback left from here
+       * having done nothing and left no row — the "restore" button stayed
+       * silent.
        */
       if (cell.get('type') !== want.type) {
         cell.set('type', want.type)
         touched = true
       }
       if (source && source.toString() !== want.source) {
-        // Не «весь текст исчез, появился другой»: у всех, кто стоит в этой
-        // ячейке, курсор уехал бы в начало. Меняется только то, что отличается.
+        // Not "all text vanished, other text appeared": everyone standing in
+        // this cell would have their cursor jump to the start. Only what
+        // differs is changed.
         replaceText(source, want.source)
         /*
-         * Возврат версии снимает с результата его номер.
+         * Restoring a version takes the run number off the result.
          *
-         * Это самое несогласованное место, какое было: запуск, который вполне
-         * может дать тот же самый результат, стирал вывод целиком, а возврат
-         * версии — событие, которое результат недвусмысленно обесценивает, —
-         * не трогал ничего. Теперь оба говорят одно: вывод остаётся как
-         * свидетельство того, что ячейка показывала, и перестаёт числиться за
-         * кодом, которого в ней больше нет.
+         * This was the most inconsistent place there was: a run, which may
+         * well give the very same result, erased the output entirely, while a
+         * version restore — an event that unambiguously devalues the result —
+         * touched nothing. Now both say one thing: the output stays as
+         * evidence of what the cell showed, and stops being credited to code
+         * that is no longer in it.
          *
-         * `state` тоже: «ok», записанное про исчезнувший код, — не исход этой
-         * ячейки.
+         * `state` too: an "ok" recorded about vanished code is not this cell's
+         * outcome.
          */
         cell.set('execCount', null)
         cell.set('ranMs', null)
@@ -1310,11 +1337,11 @@ export function restoreInto(
 
   if (changed > 0) {
     /*
-     * Без времени в словах: его собирал сервер по своему часовому поясу (в
-     * контейнере это UTC), а строки ленты рисует браузер по своему — подпись
-     * «restored the version from 15:04» указывала на строку, которой в списке
-     * нет. Что именно вернули, говорит `targetSeq`; часы рисует тот, кто
-     * смотрит.
+     * No time in the words: the server built it in its own time zone (UTC in a
+     * container), while the feed rows are drawn by the browser in its own — the
+     * caption "restored the version from 15:04" pointed at a row that is not in
+     * the list. What exactly was restored is said by `targetSeq`; the clock is
+     * drawn by whoever looks.
      */
     mark(
       sessionId,

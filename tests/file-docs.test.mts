@@ -1,10 +1,11 @@
 /**
- * Стык между документом Yjs и байтами на диске.
+ * The seam between a Yjs document and bytes on disk.
  *
- * Пока файл открыт, правда в документе; когда закрыт — на диске. Всё, что здесь
- * проверяется, ломается тихо: текст сохраняется не туда, чужая правка стирает
- * набранное, курсор уезжает на другой конец файла, а переименованный файл
- * воскресает под старым именем через полсекунды после переименования.
+ * While a file is open, the truth is in the document; when closed — on disk.
+ * Everything checked here breaks quietly: text is saved to the wrong place,
+ * someone else's edit wipes what was typed, the cursor jumps to the other
+ * end of the file, and a renamed file comes back to life under its old name
+ * half a second after the rename.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -40,41 +41,41 @@ function seed(name: string, text: string): void {
   fs.writeFileSync(full, text)
 }
 
-test('комната заводится', () => {
+test('the room is created', () => {
   createSession(ROOM, 'File docs', null)
 })
 
-/* ------------------------------------------------------------- склейка */
+/* ------------------------------------------------------------ splicing */
 
-test('склейка меняет только то, что отличается', () => {
+test('splicing changes only what differs', () => {
   const doc = new Y.Doc()
   const text = doc.getText(TEXT_KEY)
   text.insert(0, 'один\nдва\nтри\n')
 
   /*
-   * Метка стоит в слове «два». Если склейка перепишет текст целиком, метка
-   * уедет в начало документа — а в живом редакторе это чужой курсор, который
-   * прыгнул с середины файла на первую строку от того, что ячейка дописала
-   * строку в конец.
+   * The mark stands in the word "два". If splicing rewrote the text
+   * wholesale, the mark would move to the start of the document — and in a
+   * live editor that is someone else's cursor jumping from the middle of the
+   * file to the first line because a cell appended a line at the end.
    */
   const mark = Y.createRelativePositionFromTypeIndex(text, 6)
   spliceText(text, 'один\nдва\nтри\nчетыре\n')
   assert.equal(text.toString(), 'один\nдва\nтри\nчетыре\n')
   const after = Y.createAbsolutePositionFromRelativePosition(mark, doc)
-  assert.equal(after?.index, 6, 'метка съехала, хотя её кусок текста не менялся')
+  assert.equal(after?.index, 6, 'the mark moved even though its piece of text did not change')
 })
 
-test('склейка ничего не делает, когда текст тот же', () => {
+test('splicing does nothing when the text is the same', () => {
   const doc = new Y.Doc()
   const text = doc.getText(TEXT_KEY)
   text.insert(0, 'x = 1\n')
   let updates = 0
   doc.on('update', () => (updates += 1))
   assert.equal(spliceText(text, 'x = 1\n'), false)
-  assert.equal(updates, 0, 'пустая правка всё-таки уехала бы в комнату и в историю')
+  assert.equal(updates, 0, 'an empty edit would still have gone to the room and into the history')
 })
 
-test('склейка переживает полную замену', () => {
+test('splicing survives a full replacement', () => {
   const doc = new Y.Doc()
   const text = doc.getText(TEXT_KEY)
   text.insert(0, 'старое целиком')
@@ -86,35 +87,37 @@ test('склейка переживает полную замену', () => {
   assert.equal(text.toString(), 'снова текст')
 })
 
-/* ------------------------------------------------------ документ файла */
+/* ------------------------------------------------------- file document */
 
-test('документ заводится из диска', () => {
+test('the document is created from disk', () => {
   seed('train.py', 'print(1)\n')
   const entry = getFileDoc(ROOM, 'train.py')
   assert.ok(entry)
   assert.equal(entry.doc.getText(TEXT_KEY).toString(), 'print(1)\n')
 })
 
-test('второй раз открывается тот же документ, а не второй его экземпляр', () => {
+test('the second opening gets the same document, not a second instance of it', () => {
   const first = getFileDoc(ROOM, 'train.py')
   const second = getFileDoc(ROOM, 'train.py')
-  assert.equal(first, second, 'две вкладки печатали бы в разные копии одного файла')
+  assert.equal(first, second, 'two tabs would type into different copies of one file')
 })
 
-test('правка документа доезжает до диска', () => {
+test('a document edit reaches the disk', () => {
   const entry = getFileDoc(ROOM, 'train.py')
   assert.ok(entry)
   entry.doc.getText(TEXT_KEY).insert(0, '# заголовок\n')
-  // Сохранение отложено на семьсот миллисекунд; тест не ждёт их, а просит
-  // дописать всё немедленно — тем же путём, каким это делает остановка процесса.
+  // Saving is deferred by seven hundred milliseconds; the test does not wait
+  // for them but asks to write everything at once — the same way a process
+  // shutdown does it.
   flushAllFiles()
   assert.equal(readText(ROOM, 'train.py')?.text, '# заголовок\nprint(1)\n')
 })
 
-test('«сохрани сейчас» доносит один открытый файл до диска', () => {
+test('"save now" brings one open file to disk', () => {
   /*
-   * Запуск и переименование не вправе ждать паузы в наборе: `python` читает
-   * диск, а `forgetFile` уносит документ вместе с отложенной записью.
+   * Running and renaming are not entitled to wait for a pause in typing:
+   * `python` reads the disk, and `forgetFile` takes the document away
+   * together with the deferred write.
    */
   seed('run-me.py', 'x = 1\n')
   const entry = getFileDoc(ROOM, 'run-me.py')
@@ -123,16 +126,17 @@ test('«сохрани сейчас» доносит один открытый �
   flushFile(ROOM, 'run-me.py')
   assert.equal(readText(ROOM, 'run-me.py')?.text, '# последняя строка\nx = 1\n')
 
-  // Файла, который никто не открывал, это не касается — и не заводит его.
+  // A file nobody opened is not affected — and it is not created either.
   flushFile(ROOM, 'never-open.py')
   assert.equal(fs.existsSync(path.join(sessionDir(ROOM), 'never-open.py')), false)
 })
 
-test('«сохрани сейчас» комнаты не трогает файлы соседней', () => {
+test('a room\'s "save now" does not touch the files of the room next door', () => {
   /*
-   * Карта открытых файлов одна на весь процесс, а ячейку запускают в одной
-   * комнате. Без этой границы каждый запуск в одной паре дописывал бы
-   * недонабранное во всех остальных — и делал это в самый неподходящий момент.
+   * The map of open files is one per process, while a cell is run in one
+   * room. Without this boundary every run in one class would write out what
+   * was half-typed in all the others — and do it at the worst possible
+   * moment.
    */
   const other = 'docs-room-next-door'
   createSession(other, 'Соседняя комната', null)
@@ -146,46 +150,47 @@ test('«сохрани сейчас» комнаты не трогает фай�
   theirs.doc.getText(TEXT_KEY).insert(0, '# чужое\n')
   flushSessionFiles(ROOM)
   assert.equal(readText(ROOM, 'mine.py')?.text, '# моё\nx = 1\n')
-  assert.equal(readText(other, 'notes.md')?.text, 'заметка\n', 'дописали чужую комнату')
+  assert.equal(readText(other, 'notes.md')?.text, 'заметка\n', 'someone else\'s room was written')
   flushAllFiles()
 })
 
-test('двоичный файл не открывается вовсе', () => {
+test('a binary file is not opened at all', () => {
   fs.writeFileSync(path.join(sessionDir(ROOM), 'model.pkl'), Buffer.from([0x80, 0x00, 0x04]))
   assert.equal(getFileDoc(ROOM, 'model.pkl'), null)
 })
 
-test('несуществующий файл не заводится пустым', () => {
-  // Иначе открытая вкладка создавала бы файл самим фактом открытия — и папка
-  // семинара наполнялась бы пустыми файлами от одних промахов по дереву.
+test('a non-existent file is not created empty', () => {
+  // Otherwise an open tab would create a file by the very fact of opening —
+  // and the seminar folder would fill up with empty files from mere misses
+  // in the tree.
   assert.equal(getFileDoc(ROOM, 'no-such-file.py'), null)
   assert.equal(fs.existsSync(path.join(sessionDir(ROOM), 'no-such-file.py')), false)
 })
 
-test('запись от имени сервера идёт в открытый документ, а не мимо него', () => {
+test('a write in the server\'s name goes into the open document, not past it', () => {
   const entry = getFileDoc(ROOM, 'train.py')
   assert.ok(entry)
   putText(ROOM, 'train.py', 'print(2)\n')
   assert.equal(
     entry.doc.getText(TEXT_KEY).toString(),
     'print(2)\n',
-    'оракул написал на диск мимо редактора — тот показывал бы старое',
+    'the oracle wrote to disk past the editor — it would show the old text',
   )
   assert.equal(readText(ROOM, 'train.py')?.text, 'print(2)\n')
 })
 
-test('запись в закрытый файл идёт прямо на диск', () => {
+test('a write into a closed file goes straight to disk', () => {
   seed('closed.py', 'a = 1\n')
   assert.equal(putText(ROOM, 'closed.py', 'a = 2\n'), true)
   assert.equal(readText(ROOM, 'closed.py')?.text, 'a = 2\n')
   assert.equal(currentText(ROOM, 'closed.py'), 'a = 2\n')
 })
 
-test('забытый файл больше не пишется на диск', () => {
+test('a forgotten file is no longer written to disk', () => {
   /*
-   * Переименование и удаление зовут `forgetFile`. Без этого документ пережил бы
-   * собственный файл: отложенное сохранение через полсекунды воскресило бы его
-   * под прежним именем, и переименование отменилось бы само.
+   * Rename and delete call `forgetFile`. Without it the document would
+   * outlive its own file: the deferred save half a second later would bring
+   * it back to life under the old name, and the rename would undo itself.
    */
   seed('doomed.py', 'x = 1\n')
   const entry = getFileDoc(ROOM, 'doomed.py')
@@ -197,38 +202,41 @@ test('забытый файл больше не пишется на диск', (
   assert.equal(fs.existsSync(path.join(sessionDir(ROOM), 'doomed.py')), false)
 })
 
-test('чужая запись на диск доезжает до открытого документа', () => {
+test('someone else\'s write to disk reaches the open document', () => {
   seed('watched.py', 'первая строка\n')
   const entry = getFileDoc(ROOM, 'watched.py')
   assert.ok(entry)
-  // Ячейка дописала строку: `open('watched.py','a')` в том же контейнере.
-  // Время изменения на некоторых файловых системах округляется до секунды, так
-  // что отпечаток должен ловить и размер тоже — здесь меняются оба.
+  // A cell appended a line: `open('watched.py','a')` in the same container.
+  // The modification time is rounded to a second on some file systems, so
+  // the fingerprint must catch the size too — here both change.
   writeText(ROOM, 'watched.py', 'первая строка\nвторая строка\n')
   /*
-   * Опрос диска — по требованию, а не сном чуть дольше опроса.
+   * Polling the disk on demand, not by sleeping a bit longer than the poll.
    *
-   * За диском смотрит `setInterval` в две секунды (collab/files.ts ·
-   * WATCH_EVERY_MS), и здесь стоял `setTimeout(2400)`: четыреста миллисекунд
-   * запаса и пять секунд чистого сна на два таких случая. Под нагрузкой (сюита
-   * гонится вся, рядом считает kernel.test) таймер сдвигается, и тест краснеет,
-   * не сказав ни слова о продукте. `pollFilesNow` делает тот же обход, что и
-   * таймер, но сейчас: ждать нечего, а проверяется ровно тот же `watchDisk`.
+   * The disk is watched by a two-second `setInterval` (collab/files.ts ·
+   * WATCH_EVERY_MS), and there used to be a `setTimeout(2400)` here: four
+   * hundred milliseconds of margin and five seconds of pure sleep for two
+   * such cases. Under load (the whole suite runs, kernel.test computes next
+   * door) the timer shifts, and the test goes red without saying a word
+   * about the product. `pollFilesNow` does the same walk as the timer, but
+   * now: there is nothing to wait for, and exactly the same `watchDisk` is
+   * checked.
    */
   pollFilesNow(ROOM)
   assert.equal(
     entry.doc.getText(TEXT_KEY).toString(),
     'первая строка\nвторая строка\n',
-    'дописанная строка не доехала до открытого документа',
+    'the appended line did not reach the open document',
   )
 })
 
-test('склейка не режет суррогатную пару пополам', () => {
+test('splicing does not cut a surrogate pair in half', () => {
   /*
-   * У соседних эмодзи старшая половина общая, и граница общей головы встаёт
-   * ровно посередине пары. Yjs подменяет разорванную половину на U+FFFD, а по
-   * дороге к браузерам одиночный суррогат становится ещё одним — сервер и
-   * клиенты расходятся навсегда, и порча уходит на диск.
+   * Neighbouring emoji share the high half, and the boundary of the common
+   * head falls exactly in the middle of the pair. Yjs replaces a torn half
+   * with U+FFFD, and on the way to the browsers a lone surrogate becomes yet
+   * another one — the server and the clients diverge for good, and the
+   * corruption goes to disk.
    */
   const doc = new Y.Doc()
   const text = doc.getText(TEXT_KEY)
@@ -240,10 +248,10 @@ test('склейка не режет суррогатную пару попол�
   assert.equal(
     other.getText(TEXT_KEY).toString(),
     'x = "\u{1F601}"\n',
-    'у соседа в редакторе оказался другой текст',
+    'the neighbour\'s editor ended up with a different text',
   )
 
-  // И то же самое с хвоста: у этих двух общая младшая половина.
+  // And the same from the tail: these two share the low half.
   const tailDoc = new Y.Doc()
   const tail = tailDoc.getText(TEXT_KEY)
   tail.insert(0, 'a\u{1F600}')
@@ -251,21 +259,23 @@ test('склейка не режет суррогатную пару попол�
   assert.equal(tail.toString(), 'b\u{1FA00}')
 })
 
-/* --------------------------------------------------------------- потолок */
+/* --------------------------------------------------------------- ceiling */
 
-test('файл больше потолка не отдаётся началом и не переписывается обрезком', () => {
-  // Три мегабайта метрик: редактор такой не открывает, а оракул в режиме
-  // «сделать» брал его начало за файл целиком и клал это начало на его место.
+test('a file over the ceiling is not served by its beginning and not overwritten with a fragment', () => {
+  // Three megabytes of metrics: the editor does not open such a file, while
+  // the oracle in "do" mode took its beginning for the whole file and put
+  // that beginning in its place.
   const whole = 'a,b\n' + 'x'.repeat(MAX_TEXT_BYTES) + 'ХВОСТ\n'
   seed('metrics.csv', whole)
-  assert.equal(currentText(ROOM, 'metrics.csv'), null, 'начало файла выдали за файл')
+  assert.equal(currentText(ROOM, 'metrics.csv'), null, 'the beginning of the file was passed off as the file')
   assert.equal(putText(ROOM, 'metrics.csv', 'a,b\n1,2\n'), false)
-  assert.equal(readText(ROOM, 'metrics.csv')?.size, Buffer.byteLength(whole), 'хвост срезали')
+  assert.equal(readText(ROOM, 'metrics.csv')?.size, Buffer.byteLength(whole), 'the tail was cut off')
 })
 
-test('putText отвечает «нет», когда текст в потолок не помещается', () => {
-  // Раньше здесь было «да»: документ принимал текст, сохранение молча
-  // отказывало по потолку, а оракул рапортовал «Готово» при нетронутом файле.
+test('putText answers "no" when the text does not fit the ceiling', () => {
+  // It used to be "yes" here: the document accepted the text, saving
+  // silently refused because of the ceiling, and the oracle reported "Done"
+  // with the file untouched.
   seed('grows.py', 'x = 1\n')
   const entry = getFileDoc(ROOM, 'grows.py')
   assert.ok(entry)
@@ -273,86 +283,89 @@ test('putText отвечает «нет», когда текст в потоло
   assert.equal(
     entry.doc.getText(TEXT_KEY).toString(),
     'x = 1\n',
-    'в документе остался текст, которого никогда не будет на диске',
+    'the document kept text that will never be on disk',
   )
   assert.equal(readText(ROOM, 'grows.py')?.text, 'x = 1\n')
 
-  // И в файл, которого никто не открывал: потолком мерили старый файл на диске,
-  // а не новый текст, — на диске заводился файл, который потом не открыть ни
-  // редактором, ни следующим шагом того же оракула.
+  // And into a file nobody opened: the ceiling was measured against the old
+  // file on disk, not the new text — a file got created on disk that then
+  // could not be opened either by the editor or by the same oracle's next
+  // step.
   assert.equal(putText(ROOM, 'huge-new.py', 'y'.repeat(MAX_TEXT_BYTES + 1)), false)
   assert.equal(fs.existsSync(path.join(sessionDir(ROOM), 'huge-new.py')), false)
 })
 
-test('файл, выросший за потолок под открытым редактором, не переписывается старым текстом', () => {
+test('a file that grew past the ceiling under an open editor is not overwritten with the old text', () => {
   seed('train.log', 'первая строка\n')
   const entry = getFileDoc(ROOM, 'train.log')
   assert.ok(entry)
   const socket = fakeSocket()
   handleFileSocket(socket.ws, ROOM, 'train.log', 'host', 'p_host')
-  // Обучающий скрипт дописывает лог, и файл перешагивает потолок.
+  // A training script appends to the log, and the file crosses the ceiling.
   fs.writeFileSync(
     path.join(sessionDir(ROOM), 'train.log'),
     'первая строка\n' + 'x'.repeat(MAX_TEXT_BYTES),
   )
   pollFilesNow(ROOM)
-  assert.ok(socket.closed !== null, 'вкладку не закрыли, файл рос молча')
+  assert.ok(socket.closed !== null, 'the tab was not closed, the file grew silently')
   assert.equal(
     openFileDoc(ROOM, 'train.log'),
     null,
-    'документ остался жить на тексте, каким файл был при открытии',
+    'the document stayed alive on the text the file had when it was opened',
   )
   assert.equal(
     socket.closed?.code,
     4413,
-    'вкладку закрыли как на пропавший файл — человеку сказали бы, что лога больше нет',
+    'the tab was closed as for a missing file — the person would be told the log is gone',
   )
   flushAllFiles()
   const size = readText(ROOM, 'train.log')?.size ?? 0
-  assert.ok(size > MAX_TEXT_BYTES, `лог обрезали до ${size} байт`)
+  assert.ok(size > MAX_TEXT_BYTES, `the log was cut to ${size} bytes`)
 })
 
-/* ------------------------------------------------------ файл уехал мимо */
+/* --------------------------------------- the file moved around the tree */
 
-test('переименованная ПАПКА не возвращается вместе с открытым в ней файлом', () => {
+test('a renamed FOLDER does not come back together with a file open in it', () => {
   seed('src/model.py', 'x = 1\n')
   const entry = getFileDoc(ROOM, 'src/model.py')
   assert.ok(entry)
   entry.doc.getText(TEXT_KEY).insert(0, '# правка студента\n')
-  // Преподаватель переименовал в дереве папку: `forgetFile` зовут для неё, а
-  // документы лежат под путями файлов внутри.
+  // The teacher renamed a folder in the tree: `forgetFile` is called for it,
+  // while the documents sit under the paths of the files inside.
   fs.renameSync(path.join(sessionDir(ROOM), 'src'), path.join(sessionDir(ROOM), 'lib'))
   forgetFile(ROOM, 'src')
   flushAllFiles()
   assert.equal(
     fs.existsSync(path.join(sessionDir(ROOM), 'src')),
     false,
-    'папка вернулась через полсекунды, и переименование отменилось само',
+    'the folder came back half a second later, and the rename undid itself',
   )
 })
 
-test('файл, уехавший мимо дерева, не воскресает следующим сохранением', () => {
+test('a file moved around the tree does not come back to life with the next save', () => {
   seed('draft.py', 'x = 1\n')
   const entry = getFileDoc(ROOM, 'draft.py')
   assert.ok(entry)
-  // `mv draft.py final.py` в общем терминале: сервер про это не знает вовсе.
+  // `mv draft.py final.py` in the shared terminal: the server knows nothing
+  // about it.
   fs.renameSync(path.join(sessionDir(ROOM), 'draft.py'), path.join(sessionDir(ROOM), 'final.py'))
   entry.doc.getText(TEXT_KEY).insert(0, '# ещё строка\n')
   flushAllFiles()
   assert.equal(
     fs.existsSync(path.join(sessionDir(ROOM), 'draft.py')),
     false,
-    'в комнате две расходящиеся копии, и переименование выглядит отменившимся',
+    'two diverging copies in the room, and the rename looks undone',
   )
 })
 
-/* ----------------------------------------------------------- гейт файла */
+/* ------------------------------------------------------------ file gate */
 
 /**
- * Сокет с записанными кадрами вместо настоящего.
+ * A socket recording frames instead of a real one.
  *
- * Гейт файла проверяется здесь, а не через сеть, потому что проверять надо
- * ровно одно: что пустой ответ клиента на серверный шаг 1 не считается правкой.
+ * The file gate is checked here and not over the network, because exactly
+ * one thing needs checking: that the client's empty answer to the server's
+ * step 1 does not count as an edit.
  */
 function fakeSocket() {
   const handlers = new Map<string, (arg?: unknown) => void>()
@@ -395,12 +408,13 @@ function syncFrame(subtype: number, update: Uint8Array): Uint8Array {
   return encoding.toUint8Array(encoder)
 }
 
-test('в комнате с files: host студент читает файл, а не получает отказ на рукопожатии', () => {
+test('in a room with files: host a student reads the file instead of getting a refusal at the handshake', () => {
   /*
-   * Сервер шлёт шаг 1 сам, и y-websocket отвечает на него шагом 2 ВСЕГДА —
-   * даже пустым. Отказ по подтипу кадра рвал это рукопожатие: студент видел
-   * «Правку не приняли — дальше только чтение», ничего не написав, и файл у
-   * него замирал на снимке момента открытия.
+   * The server sends step 1 itself, and y-websocket ALWAYS answers it with
+   * step 2 — even an empty one. Refusing by frame subtype broke this
+   * handshake: a student saw "The edit was not accepted — read-only from now
+   * on" without having written anything, and their file froze at the
+   * snapshot of the opening moment.
    */
   const id = 'files-host'
   createSession(id, 'Файлы преподавательские', null)
@@ -409,34 +423,35 @@ test('в комнате с files: host студент читает файл, а 
 
   const socket = fakeSocket()
   handleFileSocket(socket.ws, id, 'train.py', 'participant', 'p_student')
-  assert.ok(socket.sent.length > 0, 'сервер не прислал шаг 1')
+  assert.ok(socket.sent.length > 0, 'the server did not send step 1')
   socket.message(syncFrame(1 /* SYNC_STEP2 */, Y.encodeStateAsUpdate(new Y.Doc())))
   const afterHandshake = socket.closed
-  assert.equal(afterHandshake, null, 'студенту отказали в его же пустом ответе')
+  assert.equal(afterHandshake, null, 'the student was refused their own empty answer')
 
-  // А настоящая правка в такой комнате по-прежнему не проходит.
+  // While a real edit in such a room still does not get through.
   const client = new Y.Doc()
   client.getText(TEXT_KEY).insert(0, '# правка студента\n')
   socket.message(syncFrame(2 /* SYNC_UPDATE */, Y.encodeStateAsUpdate(client)))
-  assert.equal(socket.closed?.code, 4403, 'правку приняли у того, кому файлы править нельзя')
+  assert.equal(socket.closed?.code, 4403, 'the edit was accepted from someone not allowed to edit files')
   assert.equal(readText(id, 'train.py')?.text, 'x = 1\n')
 })
 
-/* --------------------------------------------------- чем закрывается сокет */
+/* --------------------------------------------- what the socket closes with */
 
-test('файлу больше потолка сокет отвечает своим кодом, а не «файла нет»', () => {
+test('for a file over the ceiling the socket answers with its own code, not "no such file"', () => {
   /*
-   * 4404 клиент читает как пропажу и закрывает вкладку молча: нажатие по
-   * трёхмегабайтному CSV выглядело вкладкой, которая мигнула и исчезла, ничего
-   * не сказав. Отдельный код — единственное, чем ей можно объяснить, что файл
-   * на месте, просто велик для редактора.
+   * The client reads 4404 as a loss and closes the tab silently: a click on
+   * a three-megabyte CSV looked like a tab that blinked and vanished without
+   * a word. A separate code is the only way to explain to it that the file
+   * is in place, just too big for the editor.
    */
   seed('dataset.csv', 'a,b\n' + 'x'.repeat(MAX_TEXT_BYTES))
   const big = fakeSocket()
   handleFileSocket(big.ws, ROOM, 'dataset.csv', 'host', 'p_host')
-  assert.equal(big.closed?.code, 4413, 'большой файл выдали за пропавший')
+  assert.equal(big.closed?.code, 4413, 'a big file was passed off as a missing one')
 
-  // А пропажа остаётся пропажей: закрывать вкладку на файл, которого нет, — верно.
+  // While a loss stays a loss: closing the tab on a file that does not exist
+  // is right.
   const ghost = fakeSocket()
   handleFileSocket(ghost.ws, ROOM, 'ghost.py', 'host', 'p_host')
   assert.equal(ghost.closed?.code, 4404)

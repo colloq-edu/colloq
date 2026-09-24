@@ -1,21 +1,22 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   /**
-   * Одно меню бана на всю комнату — и окно, которым его подтверждают.
+   * One ban menu for the whole room — and the window that confirms it.
    *
-   * Нажимают в двух местах: правой кнопкой по строке в списке людей и по автору
-   * записи в треде оракула. Меню при этом одно, и живёт оно здесь, у самого
-   * верха экрана, а не внутри той панели, из которой его позвали. Так пришлось
-   * бы сделать и без разговоров про единообразие: обе панели прокручиваются и
-   * обрезают всё, что вылезает за их край, — всплывающее меню внутри рельса
-   * шириной 240 пикселей обрезалось бы ровно тогда, когда его открыли у нижней
-   * строки.
+   * It is opened from two places: a right click on a row in the people list and
+   * on the author of an entry in the oracle's thread. The menu, though, is one,
+   * and it lives here, at the very top of the screen, not inside the panel it
+   * was called from. That would have had to be done even without any talk of
+   * consistency: both panels scroll and clip everything that pokes out past
+   * their edge — a popup menu inside a 240-pixel-wide rail would be clipped
+   * exactly when it was opened at the bottom row.
    *
-   * Подтверждение обязательно, и оно перечисляет ВСЁ, что случится. Бан —
-   * единственное в продукте наказание, и у него есть последствие, о котором
-   * никто не догадается сам: вопросы человека уходят из общей ленты. Поэтому
-   * там же сказано, чем их вернуть, и там же — что метка держится на браузере.
-   * Обещать герметичность, которой нет, дороже, чем признать её отсутствие.
+   * Confirmation is mandatory, and it lists EVERYTHING that will happen. A ban
+   * is the only punishment in the product, and it has a consequence nobody
+   * would guess on their own: the person's questions leave the shared feed. So
+   * the same place says how to bring them back, and also that the mark is held
+   * by the browser. Promising a seal that does not exist costs more than
+   * admitting that it is not there.
    */
   import { quintOut } from 'svelte/easing'
   import { tick } from 'svelte'
@@ -30,7 +31,7 @@
   const session = getSessionState()
 
   let target = $state<BanTarget | null>(null)
-  /** Меню нажато — на экране окно подтверждения. */
+  /** The menu item was pressed — the confirmation window is on screen. */
   let asked = $state(false)
   let busy = $state(false)
   let errorRender = $state<() => string | null>(() => null)
@@ -52,8 +53,8 @@
     return () => window.removeEventListener(BAN_MENU_EVENT, open)
   })
 
-  // Открытый слой сразу получает клавиатуру. В подтверждении первым остаётся
-  // безопасное действие: по первому Enter ничего необратимого не произойдёт.
+  // The opened layer gets the keyboard at once. In the confirmation the safe
+  // action comes first: nothing irreversible will happen on the first Enter.
   $effect(() => {
     if (asked) (busy ? dialog : cancelButton)?.focus()
     else if (target) menuButton?.focus()
@@ -62,10 +63,10 @@
   const MENU_W = 208
   const MENU_H = 44
   /**
-   * Меню не вылезает за окно.
+   * The menu does not go past the window.
    *
-   * По правой кнопке по нижней строке списка — обычное дело, а меню, ушедшее
-   * под нижнюю кромку, выглядит как не сработавшее нажатие.
+   * A right click on the bottom row of the list is routine, and a menu that has
+   * gone under the bottom edge looks like a click that did not work.
    */
   const at = $derived.by(() => {
     if (!target) return { x: 0, y: 0 }
@@ -76,14 +77,14 @@
   })
 
   /**
-   * Закрыть — и только когда закрывать ещё есть что.
+   * Close — and only while there is still something to close.
    *
-   * Пока запрос в пути, «Отмена» погашена: отменить уже нечего, сервер бан
-   * поставит. Escape и щелчок по подложке при этом окно уносили — человек
-   * видел, что «передумал», а через мгновение участник оказывался удалён; а
-   * отказ сервера ложился текстом в окно, которого на экране больше нет.
-   * Тот же `busy` теперь держит и их: единственный выход из ожидания — его
-   * конец.
+   * While the request is in flight, "Cancel" is dimmed: there is nothing left
+   * to cancel, the server will set the ban. Escape and a click on the backdrop
+   * still took the window away, though — the person saw that they had "changed
+   * their mind", and a moment later the participant was removed; and a server
+   * refusal landed as text in a window that was no longer on screen. The same
+   * `busy` now holds those too: the only way out of the wait is its end.
    */
   function dismiss(): void {
     const back = opener
@@ -95,7 +96,7 @@
     })
   }
 
-  /** То же, но по жесту человека: пока запрос в пути, жест не действует. */
+  /** Same, for gestures: they do nothing while the request is in flight. */
   function close(): void {
     if (busy) return
     dismiss()
@@ -108,11 +109,11 @@
     errorRender = () => (null)
     try {
       await api.ban(session.session.id, session.token, who.id)
-      // Список у преподавателя перечитывается сам: он рисуется в другой панели,
-      // и без этого свежий бан появился бы в нём только через минуту.
+      // The teacher's list re-reads itself: it is drawn in another panel, and
+      // without this a fresh ban would show up in it only a minute later.
       bansChanged()
-      // Не `close`: `busy` снимается только в finally, и жестовый выход из
-      // него как раз и не сработал бы.
+      // Not `close`: `busy` is cleared only in finally, and the gesture exit is
+      // exactly what would not work from inside it.
       dismiss()
     } catch (cause) {
       errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.543'))
@@ -121,7 +122,7 @@
     }
   }
 
-  /** Две кнопки подтверждения образуют один модальный круг Tab. */
+  /** The two confirmation buttons form one modal Tab cycle. */
   function trapDialogFocus(event: KeyboardEvent): void {
     if (event.key !== 'Tab' || !dialog) return
     const controls = [...dialog.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
@@ -149,25 +150,28 @@
 />
 
 {#if target && !asked}
-  <!-- Подложка ловит нажатие мимо меню — тем же способом, что и пульт правил. -->
+  <!-- The backdrop catches clicks outside the menu, as the rules console
+       does. -->
   <!--
-    Ярус — над пультом консилиума. Меню зовут из двух мест: из панели людей и
-    из пульта, а пульт — непрозрачная обёртка на z-[95] (SessionScreen). Пока
-    меню жило на z-40/z-50, из пульта оно открывалось ПОД ним: нарисованное,
-    кликабельное и невидимое — «Удалить с занятия» молча не делало ничего. 96
-    — выше пульта и ниже окна отказа (97) и плашек «удалён» (100).
+    The layer is above the council console. The menu is called from two places:
+    from the people panel and from the console, and the console is an opaque
+    wrapper at z-[95] (SessionScreen). While the menu lived at z-40/z-50, from
+    the console it opened UNDER it: drawn, clickable and invisible — "Remove
+    from class" silently did nothing. 96 is above the console and below the
+    refusal window (97) and the "removed" overlays (100).
   -->
   <div class="fixed inset-0 z-[96]" role="presentation" onclick={close}></div>
   <!--
-    Только вход, и кривая — домашняя. Здесь и у окна ниже.
+    Entry only, and the curve is the house one. Here and for the window below.
 
-    `transition:` двусторонняя, и уход по ней анимируется тоже: Escape (см.
-    `svelte:window` выше) уводил меню за 120 мс, хотя клавишу жмут ровно затем,
-    чтобы его УБРАТЬ. Анимировать действие с клавиатуры нельзя — то же решение
-    принято для ящиков и пульта правил в SessionScreen и записано словами в
-    admin/motion.css. `quintOut` = 1−(1−t)⁵ — ближайшая из svelte/easing к
-    `--ease-out` (index.css), которой в этом продукте движется всё; `cubicOut`
-    заметно мягче и читается как чужая.
+    `transition:` is two-way, and the exit animates along it too: Escape (see
+    `svelte:window` above) took the menu away over 120 ms, even though the key
+    is pressed precisely to GET RID of it. An action from the keyboard must not
+    be animated — the same decision was taken for the drawers and the rules
+    console in SessionScreen and is written down in words in admin/motion.css.
+    `quintOut` = 1−(1−t)⁵ is the closest one in svelte/easing to `--ease-out`
+    (index.css), which everything in this product moves with; `cubicOut` is
+    noticeably softer and reads as foreign.
   -->
   <div
     class="fixed z-[96] border border-line bg-raised py-1 shadow-pop"
@@ -214,8 +218,9 @@
     >
       <h2 id="ban-title" class="text-title font-semibold text-ink">{tr('room.ui.78')}</h2>
 
-      <!-- Имя — отдельной строкой с меткой, а не внутри заголовка: в списке
-           людей одни имена, лиц там нет, и промахнуться строкой легко. -->
+      <!-- The name on its own line with the person's mark, not inside the
+           heading: the people list has only names, no faces, and it is easy to
+           hit the wrong row. -->
       <div class="mt-3 flex items-center gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Avatar name={who.name} color={who.color} avatar={who.avatar} size="sm" />
         <span class="min-w-0 flex-1 truncate text-ui-lg font-semibold text-ink">{who.name}</span>

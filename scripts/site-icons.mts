@@ -1,15 +1,17 @@
 /**
- * Значки сайта настоящими файлами — из одного site/favicon.svg.
+ * Site icons as real files — all from one site/favicon.svg.
  *
- * Значок лендинга был вшит в страницу `data:`-ссылкой. Браузеру этого хватает,
- * поисковику — нет: Google показывает значок в выдаче, только если это обычный
- * адрес, который его робот может скачать, и картинка квадратная со стороной,
- * кратной 48 px (или SVG). `data:` он не берёт вовсе, а /favicon.ico отвечал
- * 404 — поэтому в выдаче у colloq.ru стоял серый глобус.
+ * The landing page's icon was embedded in the page as a `data:` link. That is
+ * enough for a browser, not for a search engine: Google shows an icon in its
+ * results only if it is an ordinary URL its crawler can download, and the
+ * image is square with a side that is a multiple of 48 px (or SVG). It does
+ * not take `data:` at all, and /favicon.ico answered 404 — so colloq.ru had a
+ * grey globe in the results.
  *
- * Растр делает resvg — тот же, что рисует карточки ссылок на сервере, так что
- * новых зависимостей нет. ICO собирается руками: это контейнер, и PNG внутри
- * него понимают все, кому ICO вообще нужен.
+ * The raster comes from resvg — the same one that draws link cards on the
+ * server, so there are no new dependencies. The ICO is assembled by hand: it
+ * is a container, and PNG inside it is understood by everything that needs
+ * ICO at all.
  *
  *   node --import tsx scripts/site-icons.mts     (make site-icons)
  */
@@ -25,19 +27,19 @@ function png(size: number): Buffer {
   return Buffer.from(new Resvg(svg, { fitTo: { mode: 'width', value: size } }).render().asPng())
 }
 
-/** ICO из PNG-кадров: заголовок, каталог по 16 байт на кадр, затем сами PNG. */
+/** ICO from PNG frames: a header, a directory of 16 bytes per frame, then the PNGs themselves. */
 function ico(sizes: number[]): Buffer {
   const frames = sizes.map((size) => ({ size, data: png(size) }))
   const header = Buffer.alloc(6)
-  header.writeUInt16LE(1, 2) // тип: значок
+  header.writeUInt16LE(1, 2) // type: icon
   header.writeUInt16LE(frames.length, 4)
   let offset = 6 + 16 * frames.length
   const entries = frames.map(({ size, data }) => {
     const entry = Buffer.alloc(16)
     entry.writeUInt8(size === 256 ? 0 : size, 0)
     entry.writeUInt8(size === 256 ? 0 : size, 1)
-    entry.writeUInt16LE(1, 4) // плоскости
-    entry.writeUInt16LE(32, 6) // бит на точку
+    entry.writeUInt16LE(1, 4) // planes
+    entry.writeUInt16LE(32, 6) // bits per pixel
     entry.writeUInt32LE(data.length, 8)
     entry.writeUInt32LE(offset, 12)
     offset += data.length
@@ -47,9 +49,9 @@ function ico(sizes: number[]): Buffer {
 }
 
 /*
- * 48 и 96 — то, что просит Google (кратно 48); 192 — ярлык на Android;
- * 180 — закладка на iOS; 512 — «логотип организации» в JSON-LD лендинга:
- * ему нужен растр не меньше 112 px.
+ * 48 and 96 are what Google asks for (multiples of 48); 192 is the Android
+ * home-screen shortcut; 180 is the iOS bookmark; 512 is the "organization
+ * logo" in the landing page's JSON-LD: it needs a raster of at least 112 px.
  */
 const files: Record<string, Buffer> = {
   'favicon.ico': ico([16, 32, 48]),

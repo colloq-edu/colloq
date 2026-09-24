@@ -1,23 +1,25 @@
 /**
- * README и его русский перевод: правила комнаты, переключатель языка, сцены,
- * команды и ссылки. Ни один из двух файлов не собирает и не типизирует никто.
+ * README and its Russian translation: room rules, the language switch,
+ * scenes, commands and links. Nobody builds or type-checks either of the two
+ * files.
  *
- * Про правила комнаты — сразу ниже. Про пару README.md ↔ README.ru.md — в шапке
- * второй половины файла, у слова «Перевод».
+ * About the room rules — right below. About the README.md ↔ README.ru.md
+ * pair — in the header of the second half of the file, at the word
+ * "Translation".
  *
- * Перечень правил комнаты. README называл двенадцать правил и перечислял
- * одиннадцать настоящих плюс одно чужое: «whether the oracle answers here at
- * all» из настроек комнаты не выключается вовсе — режим оракула выбирают
- * карточками при создании семинара (NewSeminar.svelte), а «Открытая ячейка» —
- * та единственная строка, которой лекция отличается от консилиума, — в
- * перечне не была названа вовсе. Цена — преподаватель, который посреди пары
- * идёт в настройки комнаты искать переключатель оракула и не находит его.
- * Поэтому здесь: каждое правило из RULE_ROWS названо в абзаце README своими
- * словами, и ни одного лишнего; список правил один (web/src/lib/rule-rows.ts),
- * и README обязан ходить за ним.
+ * The list of room rules. The README named twelve rules and listed eleven
+ * real ones plus one foreign one: "whether the oracle answers here at all" is
+ * not switched off in the room settings at all — the oracle mode is chosen
+ * with cards when creating a seminar (NewSeminar.svelte), while "Open cell"
+ * — the only row that distinguishes a lecture from a council — was not named
+ * in the list at all. The price is a teacher who, in the middle of a class,
+ * goes into the room settings to look for the oracle switch and does not
+ * find it. So here: every rule from RULE_ROWS is named in the README
+ * paragraph in its own words, and not a single extra one; there is one list
+ * of rules (web/src/lib/rule-rows.ts), and the README must follow it.
  *
- * Слова проверяются вместо дела намеренно: дело — в соседних сюитах, а README
- * не собирает и не типизирует никто.
+ * Words are checked instead of the deed on purpose: the deed is in the
+ * neighbouring suites, and nobody builds or type-checks the README.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -31,25 +33,28 @@ const readme = readFileSync(path.join(root, 'README.md'), 'utf8')
 const readmeRu = readFileSync(path.join(root, 'README.ru.md'), 'utf8')
 
 /**
- * Абзац README, начинающийся с этих слов: до первой пустой строки, одной строкой.
+ * The README paragraph starting with these words: up to the first blank
+ * line, as one line.
  *
- * Переносы схлопываются нарочно: абзац переносится по восьмидесяти знакам, и
- * фраза «a document on the room's screen» ломается посередине там, где сегодня
- * пришлась граница. Проверка, чувствительная к ней, падала бы от переформата.
+ * Line breaks are collapsed on purpose: the paragraph wraps at eighty
+ * characters, and the phrase "a document on the room's screen" breaks in the
+ * middle wherever the boundary falls today. A check sensitive to it would
+ * fail after a reformat.
  */
 function paragraph(from: string, text: string = readme): string {
   const at = text.indexOf(from)
-  assert.notEqual(at, -1, `в README нет абзаца «${from}…»`)
+  assert.notEqual(at, -1, `the README has no paragraph "${from}…"`)
   return text.slice(at, text.indexOf('\n\n', at)).replace(/\s+/g, ' ')
 }
 
 /**
- * Чем README называет каждое правило. Ключи — те же, что в RULE_ROWS.
+ * What the README calls each rule. The keys are the same as in RULE_ROWS.
  *
- * Не пересказ подписи из панели: README английский, а подписи комнатные и
- * по-русски (об этом — шапка rule-rows.ts). Сверяется полнота, а не перевод:
- * правило, добавленное в панель и забытое в README, роняет этот тест с именем
- * ключа — то есть ровно тем словом, которое надо дописать.
+ * Not a retelling of the panel caption: the README is in English, while the
+ * captions are the room's and in Russian (see the header of rule-rows.ts).
+ * Completeness is checked, not the translation: a rule added to the panel
+ * and forgotten in the README fails this test with the key's name — that
+ * is, with exactly the word that has to be added.
  */
 const NAMED_IN_README: Record<string, RegExp> = {
   opens: /opening a cell/i,
@@ -70,13 +75,13 @@ const NAMED_IN_README: Record<string, RegExp> = {
   wipe: /wipe shared work/i,
 }
 
-test('README называет все правила комнаты и ни одного лишнего', () => {
+test('the README names all room rules and not a single extra one', () => {
   const inCode = RULE_ROWS.map((row) => row.key).sort()
   const inDocs = Object.keys(NAMED_IN_README).sort()
   assert.deepEqual(
     inDocs,
     inCode,
-    'перечень правил в README разошёлся с RULE_ROWS: список правил один, и он в web/src/lib/rule-rows.ts',
+    'the rules list in the README diverged from RULE_ROWS: there is one list of rules, and it is in web/src/lib/rule-rows.ts',
   )
 
   const listing = paragraph('Whatever the card sets')
@@ -84,62 +89,68 @@ test('README называет все правила комнаты и ни од�
     assert.match(
       listing,
       NAMED_IN_README[row.key],
-      `README не называет правило «${row.title}» (${row.key}) среди тех, что комната правит у себя`,
+      `the README does not name the rule "${row.title}" (${row.key}) among those the room edits itself`,
     )
   }
 })
 
-test('README не называет число правил — оно уже дважды разошлось', () => {
-  // Ровно та причина, по которой числа нет и в шапке rule-rows.ts: правило
-  // добавляют в массив, а слово «двенадцать» остаётся в двух других файлах.
+test('the README does not state the number of rules — it has diverged twice already', () => {
+  // Exactly the reason there is no number in the header of rule-rows.ts
+  // either: a rule gets added to the array, while the word "twelve" stays in
+  // two other files.
   const listing = paragraph('Whatever the card sets')
   assert.ok(
     !/\b(ten|eleven|twelve|thirteen|fourteen|\d+)\s+rules\b/i.test(listing),
-    'в README снова записано число правил — оно разойдётся с массивом на первой же правке',
+    'the README states the number of rules again — it will diverge from the array at the first edit',
   )
 })
 
-test('режим оракула README относит к созданию семинара, а не к настройкам комнаты', () => {
+test('the README attributes the oracle mode to seminar creation, not to the room settings', () => {
   assert.ok(
     !RULE_ROWS.some((row) => row.key === ('oracle' as string)),
-    'оракул появился в настройках комнаты — тогда README обязан перестать отсылать за ним к созданию',
+    'the oracle appeared in the room settings — then the README must stop sending people to creation for it',
   )
   const said = paragraph('Whether the oracle answers in this room')
-  assert.match(said, /creation form/i, 'не сказано, где режим оракула выбирают')
-  assert.match(said, /not one of those rows/i, 'не сказано, что среди правил комнаты его нет')
+  assert.match(said, /creation form/i, 'it is not said where the oracle mode is chosen')
+  assert.match(said, /not one of those rows/i, 'it is not said that it is not among the room rules')
 })
 
 /**
- * Перевод. README.ru.md — не второй документ про то же, а тот же документ: за
- * первым занятием преподаватель приходит из русской документации, и расходятся
- * такие пары молча. Английский README правят, русский остаётся прошлогодним —
- * и в нём ещё живёт «pip install colloq пока не работает» или команда с флагом,
- * которого больше нет.
+ * Translation. README.ru.md is not a second document about the same thing
+ * but the same document: for their first class a teacher comes from the
+ * Russian documentation, and such pairs drift apart silently. The English
+ * README gets edited, the Russian one stays last year's — and still has
+ * "pip install colloq does not work yet" or a command with a flag that no
+ * longer exists.
  *
- * Поэтому сверяется ровно то, что обязано совпадать, и ничего сверх:
+ * So exactly what must match is checked, and nothing beyond that:
  *
- *   — переключатель языка есть в обоих и стоит ВЫШЕ прочих значков: это
- *     единственная дорога из одного файла в другой, GitHub не покажет её сам;
- *   — сцены те же и в том же порядке, а русский README берёт русские файлы по
- *     имени `<slug>-ru-<тема>.svg` (их пишет `make readme-art`);
- *   — команды в блоках кода совпадают ЗНАК В ЗНАК; переводятся только
- *     комментарии после `#` — команда, переведённая «для красоты», не
- *     выполнится;
- *   — каждая относительная ссылка ведёт к существующему файлу, а каждая ссылка
- *     на якорь — к заголовку того же файла. Якоря русских заголовков
- *     кириллические, и `#quick-start` в переводе — ссылка в никуда, которую
- *     глазами не поймать.
+ *   — the language switch is in both and stands ABOVE the other badges: it
+ *     is the only road from one file to the other, GitHub will not show it
+ *     by itself;
+ *   — the scenes are the same and in the same order, and the Russian README
+ *     takes Russian files by the name `<slug>-ru-<theme>.svg` (they are
+ *     written by `make readme-art`);
+ *   — commands in code blocks match CHARACTER FOR CHARACTER; only comments
+ *     after `#` are translated — a command translated "for beauty" will not
+ *     run;
+ *   — every relative link leads to an existing file, and every anchor link
+ *     to a heading of the same file. Anchors of Russian headings are
+ *     Cyrillic, and `#quick-start` in the translation is a link to nowhere
+ *     that the eye will not catch.
  *
- * Чего здесь нет: сверки текста. Перевод — это перевод, а не калька, и тест,
- * считающий абзацы, запретил бы русскому README быть написанным по-русски.
+ * What is not here: text comparison. A translation is a translation, not a
+ * calque, and a test counting paragraphs would forbid the Russian README to
+ * be written in Russian.
  */
 
 /**
- * Заголовок → якорь GitHub: строчные буквы, пунктуация вон, пробелы в дефисы.
+ * Heading → GitHub anchor: lowercase letters, punctuation out, spaces into
+ * hyphens.
  *
- * Тот же набор, что выбрасывает github-slugger (пробела в нём нет — его черёд
- * после). Буквы не трогаются вовсе, поэтому у русского заголовка якорь
- * кириллический, а не пустой: «Быстрый старт» → `#быстрый-старт`.
+ * The same set github-slugger throws out (space is not in it — its turn
+ * comes after). Letters are not touched at all, so a Russian heading's
+ * anchor is Cyrillic, not empty: "Быстрый старт" → `#быстрый-старт`.
  */
 const ANCHOR_DROP =
   /[\u0021-\u002C\u002E-\u002F\u003A-\u0040\u005B-\u005E\u0060\u007B-\u007E\u00A0-\u00BF\u00D7\u00F7\u2000-\u206F\u2E00-\u2E7F]/g
@@ -147,7 +158,7 @@ function anchor(heading: string): string {
   return heading.trim().toLowerCase().replace(ANCHOR_DROP, '').replace(/ /g, '-')
 }
 
-/** Блоки кода файла: язык из ограды и строки тела без хвостовых комментариев. */
+/** The file's code blocks: the language from the fence and the body lines without trailing comments. */
 function codeBlocks(text: string): { lang: string; commands: string[] }[] {
   return [...text.matchAll(/```(\w*)\n([\s\S]*?)```/g)].map((m) => ({
     lang: m[1]!,
@@ -158,7 +169,7 @@ function codeBlocks(text: string): { lang: string; commands: string[] }[] {
   }))
 }
 
-/** Сцены README по порядку: `<slug>-<тема>.svg` из `<picture>`. */
+/** The README scenes in order: `<slug>-<theme>.svg` from `<picture>`. */
 function scenes(text: string): string[] {
   const seen: string[] = []
   for (const m of text.matchAll(/\.github\/assets\/readme\/([a-z-]+)-(?:light|dark)\.svg/g)) {
@@ -167,7 +178,7 @@ function scenes(text: string): string[] {
   return seen
 }
 
-/** Всё, на что файл ссылается: markdown-ссылки и href/src в разметке. */
+/** Everything the file links to: markdown links and href/src in markup. */
 function links(text: string): string[] {
   const out = new Set<string>()
   for (const m of text.matchAll(/\]\(([^)\s]+)\)/g)) out.add(m[1]!)
@@ -177,67 +188,67 @@ function links(text: string): string[] {
 
 const SWITCH_ACTIVE = '0F2D69'
 const SWITCH_QUIET = '6B7280'
-/** «Русский», как его пишут в адресе значка: latin-1 адрес, кириллица в процентах. */
+/** The Russian-language label as written in the badge URL: a latin-1 address, Cyrillic percent-encoded. */
 const RU_LABEL = encodeURIComponent('Русский')
 
-test('оба README открываются переключателем языка, и текущий язык в нём горит', () => {
+test('both READMEs open with the language switch, and the current language is lit in it', () => {
   for (const [file, text, active] of [
     ['README.md', readme, 'English'],
     ['README.ru.md', readmeRu, RU_LABEL],
   ] as const) {
-    assert.match(text, /href="README\.md"/, `${file}: нет ссылки на английский README`)
-    assert.match(text, /href="README\.ru\.md"/, `${file}: нет ссылки на русский README`)
+    assert.match(text, /href="README\.md"/, `${file}: no link to the English README`)
+    assert.match(text, /href="README\.ru\.md"/, `${file}: no link to the Russian README`)
 
     const quiet = active === 'English' ? RU_LABEL : 'English'
     assert.ok(
       text.includes(`${active}-${SWITCH_ACTIVE}?style=for-the-badge`),
-      `${file}: язык самого файла не выделен фирменным ${SWITCH_ACTIVE}`,
+      `${file}: the file's own language is not highlighted with the brand ${SWITCH_ACTIVE}`,
     )
     assert.ok(
       text.includes(`${quiet}-${SWITCH_QUIET}?style=for-the-badge`),
-      `${file}: второй язык не приглушён до ${SWITCH_QUIET}`,
+      `${file}: the second language is not muted to ${SWITCH_QUIET}`,
     )
 
-    // Выше прочих значков: переключатель ищут глазами в первом экране, а не
-    // среди CI, лицензии и версии.
+    // Above the other badges: the switch is looked for on the first screen,
+    // not among CI, licence and version.
     assert.ok(
       text.indexOf('href="README.ru.md"') < text.indexOf('workflows/ci.yml'),
-      `${file}: переключатель языка уехал ниже остальных значков`,
+      `${file}: the language switch moved below the other badges`,
     )
   }
 })
 
-test('сцены в русском README — те же и в том же порядке, но русские', () => {
+test('the scenes in the Russian README are the same and in the same order, but Russian', () => {
   const en = scenes(readme)
-  assert.deepEqual(en, ['room', 'run', 'council', 'lecture', 'oracle'], 'сцены README поменялись')
+  assert.deepEqual(en, ['room', 'run', 'council', 'lecture', 'oracle'], 'the README scenes changed')
   assert.deepEqual(
     scenes(readmeRu),
     en.map((slug) => `${slug}-ru`),
-    'русский README показывает не те сцены: имена русских — `<slug>-ru-<тема>.svg`',
+    'the Russian README shows the wrong scenes: the Russian ones are named `<slug>-ru-<theme>.svg`',
   )
   for (const slug of [...en, ...en.map((s) => `${s}-ru`)]) {
     for (const theme of ['light', 'dark']) {
       const file = `.github/assets/readme/${slug}-${theme}.svg`
-      assert.ok(existsSync(path.join(root, file)), `нет ${file} — его пишет \`make readme-art\``)
+      assert.ok(existsSync(path.join(root, file)), `${file} is missing — it is written by \`make readme-art\``)
     }
   }
 })
 
-test('команды в двух README совпадают знак в знак; переводятся только комментарии', () => {
+test('commands in the two READMEs match character for character; only comments are translated', () => {
   const en = codeBlocks(readme)
   const ru = codeBlocks(readmeRu)
-  assert.equal(ru.length, en.length, 'в переводе другое число блоков кода')
+  assert.equal(ru.length, en.length, 'the translation has a different number of code blocks')
   for (const [i, block] of en.entries()) {
-    assert.equal(ru[i]!.lang, block.lang, `блок ${i + 1}: другой язык ограды`)
+    assert.equal(ru[i]!.lang, block.lang, `block ${i + 1}: a different fence language`)
     assert.deepEqual(
       ru[i]!.commands,
       block.commands,
-      `блок ${i + 1}: команды разошлись — переводить в них можно только комментарий после #`,
+      `block ${i + 1}: the commands diverged — only the comment after # may be translated in them`,
     )
   }
 })
 
-test('каждая ссылка обоих README ведёт к существующему файлу или заголовку', () => {
+test('every link in both READMEs leads to an existing file or heading', () => {
   for (const [file, text] of [
     ['README.md', readme],
     ['README.ru.md', readmeRu],
@@ -248,23 +259,25 @@ test('каждая ссылка обоих README ведёт к существу
       if (link.startsWith('#')) {
         assert.ok(
           anchors.has(decodeURIComponent(link.slice(1))),
-          `${file}: ссылка ${link} не ведёт ни к одному заголовку этого файла`,
+          `${file}: link ${link} leads to no heading of this file`,
         )
         continue
       }
       const target = link.split('#')[0]!
-      assert.ok(existsSync(path.join(root, target)), `${file}: ссылка на несуществующий ${target}`)
+      assert.ok(existsSync(path.join(root, target)), `${file}: link to a non-existent ${target}`)
     }
   }
 })
 
 /**
- * Чем русский README называет каждое правило. Ключи — те же, что в RULE_ROWS.
+ * What the Russian README calls each rule. The keys are the same as in
+ * RULE_ROWS.
  *
- * Здесь, в отличие от английского перечня, слова взяты из подписей самой
- * комнаты (rule-rows.ts): комната по-русски, и преподаватель, прочитавший
- * «кто печатает в ячейках», найдёт в пульте ту же строку — «Печатать в
- * ячейках». Английскому README так совпасть не с чем, и он пересказывает.
+ * Here, unlike the English list, the words are taken from the room's own
+ * captions (rule-rows.ts): the room is in Russian, and a teacher who read
+ * "кто печатает в ячейках" will find the same line in the console —
+ * "Печатать в ячейках". The English README has nothing to match like that,
+ * so it retells.
  */
 const NAMED_IN_README_RU: Record<string, RegExp> = {
   opens: /открытие ячейки/i,
@@ -285,26 +298,26 @@ const NAMED_IN_README_RU: Record<string, RegExp> = {
   wipe: /очищает общие результаты/i,
 }
 
-test('русский README называет те же правила комнаты, что и английский', () => {
+test('the Russian README names the same room rules as the English one', () => {
   assert.deepEqual(
     Object.keys(NAMED_IN_README_RU).sort(),
     RULE_ROWS.map((row) => row.key).sort(),
-    'перечень правил в README.ru.md разошёлся с RULE_ROWS: список правил один, и он в web/src/lib/rule-rows.ts',
+    'the rules list in README.ru.md diverged from RULE_ROWS: there is one list of rules, and it is in web/src/lib/rule-rows.ts',
   )
   const listing = paragraph('Что бы ни задал формат', readmeRu)
   for (const row of RULE_ROWS) {
     assert.match(
       listing,
       NAMED_IN_README_RU[row.key]!,
-      `README.ru.md не называет правило «${row.title}» (${row.key})`,
+      `README.ru.md does not name the rule "${row.title}" (${row.key})`,
     )
   }
   assert.ok(
     !/\b(десять|одиннадцать|двенадцать|тринадцать|\d+)\s+правил/i.test(listing),
-    'в переводе записано число правил — оно разойдётся с массивом на первой же правке',
+    'the translation states the number of rules — it will diverge from the array at the first edit',
   )
 
   const said = paragraph('Отвечает ли оракул в этой комнате', readmeRu)
-  assert.match(said, /форме создания/i, 'не сказано, где выбирают режим оракула')
-  assert.match(said, /среди тех строк/i, 'не сказано, что среди правил комнаты его нет')
+  assert.match(said, /форме создания/i, 'it is not said where the oracle mode is chosen')
+  assert.match(said, /среди тех строк/i, 'it is not said that it is not among the room rules')
 })

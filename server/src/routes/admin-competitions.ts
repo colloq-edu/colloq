@@ -1,25 +1,26 @@
 /**
- * Двери панели к соревнованиям: список (A1), редактор (A2), идущее (A3).
+ * The panel's doors to competitions: the list (A1), the editor (A2), the
+ * running one (A3).
  *
- * Право здесь читается двумя словами. Всё, что показывает и заводит, —
- * `requireStaff`: соревнование ведёт тот же преподаватель, что и пару.
- * `ownerOnly` стоит на разрушительном, и список его короткий и намеренный:
- * удалить соревнование, удалить ФАЙЛ ОТВЕТОВ, завершить приём посылок, выдать
- * участнику новый ключ (старый в ту же секунду перестаёт работать) и снять
- * чужую посылку с зачёта. Общее у этих пяти одно: последствие достаётся
- * людям, которых в запросе нет.
+ * The rights here read in two words. Everything that shows and creates is
+ * `requireStaff`: a competition is run by the same teacher as the lesson.
+ * `ownerOnly` sits on the destructive ones, and its list is short and
+ * deliberate: delete a competition, delete the ANSWERS FILE, end submissions,
+ * issue an entrant a new key (the old one stops working that same second) and
+ * remove someone else's submission from scoring. These five have one thing in
+ * common: the consequence falls on people who are not in the request.
  *
- * ЧЕГО ЗДЕСЬ НЕТ И БЫТЬ НЕ МОЖЕТ — двери, отдающей содержимое `solution.csv`.
- * Ответы лежат в DATA_DIR соревнования, вне рабочих папок занятий (см.
- * SECURITY.md), и единственный путь наружу у них один: контейнер метрики,
- * который поднимает исполнитель. Имена и колонки ответов преподаватель видит
- * (так нарисован A2), байты — никто.
+ * WHAT IS NOT HERE AND CANNOT BE: a door serving the contents of
+ * `solution.csv`. The answers lie in the competition's DATA_DIR, outside the
+ * class working folders (see SECURITY.md), and they have exactly one way out:
+ * the metric container the runner brings up. The teacher sees the names and
+ * columns of the answers (that is how A2 is drawn); nobody sees the bytes.
  *
- * Исполнение посылок живёт не здесь. Эти маршруты кладут работу в очередь
- * (`store.ts`) и будят насос (`runner.ts`) — а «исполнить заново», «убить» и
- * «пересчитать всех» зовут его же: где именно лежит присланная тетрадь и
- * сохранился ли ответ, знает он, и второй копии этого знания в панели быть не
- * должно.
+ * Running submissions does not live here. These routes put work into the
+ * queue (`store.ts`) and wake the pump (`runner.ts`), and "run again", "kill"
+ * and "rescore everyone" call the same pump: it knows where exactly the sent
+ * notebook lies and whether the answer was kept, and the panel must not have
+ * a second copy of that knowledge.
  */
 import path from 'node:path'
 import busboy from 'busboy'
@@ -144,22 +145,23 @@ function fail(res: Response, status: number, reason: AdminErrorReason, message: 
   res.status(status).json(body)
 }
 
-/** Файлов данных за одну загрузку. Больше — это уже перетащили папку целиком. */
+/** Data files per upload. More than that means a whole folder was dragged in. */
 const FILES_PER_UPLOAD = 20
 
-/** Лента посылок одной страницей. */
+/** The submissions feed as one page. */
 const FEED_PAGE = 200
 
-/* ------------------------------------------------------------- помощники */
+/* --------------------------------------------------------------- helpers */
 
 /**
- * Пояс — местный пояс МАШИНЫ, на которой идёт занятие.
+ * The zone is the local zone of the MACHINE the class runs on.
  *
- * «Сегодня исполнено 37» и дневная норма посылок обязаны кончаться в полночь
- * преподавателя, а не в полночь UTC: в Москве это три часа ночи, то есть норма
- * обнуляется посреди ночной работы, а «сегодня» на утренней паре показывает
- * вчерашние числа. Настройки пояса у инстанса нет — и не нужно: сервер стоит
- * там же, где идёт пара.
+ * "Run today: 37" and the daily submission quota have to end at the
+ * teacher's midnight, not at UTC midnight: in Moscow that is three in the
+ * morning, that is, the quota resets in the middle of night work, and "today"
+ * at a morning lesson shows yesterday's numbers. The instance has no time
+ * zone setting, and needs none: the server stands where the lesson takes
+ * place.
  */
 function offsetMinutes(at: number): number {
   return -new Date(at).getTimezoneOffset()
@@ -176,9 +178,9 @@ function competitionOf(req: Request, res: Response): Competition | null {
 
 function submissionOf(competition: Competition, req: Request, res: Response): Submission | null {
   const found = getSubmission(String(req.params.sid ?? ''))
-  // Чужая посылка по прямой ссылке — это `not_found`, а не «нельзя»: панель
-  // всё равно покажет обе фразы одинаково, а вторая называет соревнование,
-  // о котором спросивший и так не знал.
+  // Someone else's submission by a direct link is `not_found`, not
+  // "forbidden": the panel shows both phrases the same anyway, and the second
+  // names a competition the asker did not know about.
   if (!found || found.competitionId !== competition.id) {
     fail(res, 404, 'not_found', tr('competitions.refusal.noSubmission'))
     return null
@@ -186,12 +188,12 @@ function submissionOf(competition: Competition, req: Request, res: Response): Su
   return found
 }
 
-/** Служебный участник, на которого записана сэмпл-тетрадь; null — её не проверяли. */
+/** The service entrant the sample notebook is recorded under; null means it was not checked. */
 function baselineEntrantOf(competition: Competition): string | null {
   return competition.baselineEntrantId ?? null
 }
 
-/** Файл сэмпл-тетради на диске: байты и когда положен. */
+/** The sample notebook file on disk: its bytes and when it was put there. */
 function baselineFile(id: string): { bytes: number; uploadedAt: number } | null {
   try {
     const info = competitionsFs.statSync(path.join(baselineDir(id), NOTEBOOK_FILE))
@@ -201,7 +203,7 @@ function baselineFile(id: string): { bytes: number; uploadedAt: number } | null 
   }
 }
 
-/** Лучший публичный результат КЛАССА — базовое решение показано отдельной строкой. */
+/** The CLASS's best public score: the baseline solution is shown as a separate row. */
 function bestPublicOf(competition: Competition, baselineEntrant: string | null): number | null {
   const rows = leaderboard(competition.id, 'public').filter(
     (row) => row.entrantId !== baselineEntrant,
@@ -260,11 +262,12 @@ function rowOf(competition: Competition): CompetitionRow {
 }
 
 /**
- * Колонки CSV — «397 строк · id, orders».
+ * CSV columns: "397 rows · id, orders".
  *
- * Файл читается целиком ради одной шапки, поэтому у чтения есть потолок: за
- * ним колонки не показываются вовсе. Открывать редактор соревнования ценой
- * двухсот мегабайт в памяти нельзя — этот экран открывают посреди пары.
+ * The file is read whole for the sake of one header, so the read has a cap:
+ * beyond it the columns are not shown at all. Opening the competition editor
+ * at the cost of two hundred megabytes in memory is not acceptable: this
+ * screen is opened in the middle of a lesson.
  */
 const HEADER_READ_LIMIT = 8 * 1024 * 1024
 
@@ -314,11 +317,13 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
   const solution =
     hiddenViews.find((file) => file.name === SOLUTION_FILE) ?? hiddenViews[0] ?? null
   /*
-   * Делят строки — зерно или колонка Usage в самом файле ответов.
+   * The rows are split by the seed or by the Usage column in the answers
+   * file itself.
    *
-   * Здесь считается только СКОЛЬКО их выйдет: какие именно строки публичные,
-   * решает `splitRows` в момент подсчёта метрики, и знать это панели не нужно
-   * — а показать некуда и нельзя.
+   * Only HOW MANY there will be is counted here: which rows exactly are
+   * public is decided by `splitRows` at the moment the metric is computed,
+   * and the panel does not need to know that, and has nowhere to show it and
+   * must not.
    */
   const total = solution?.rows ?? null
   const solutionBytes = solution
@@ -347,7 +352,7 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
   }
 }
 
-/* --------------------------------------------------------------- очередь */
+/* ----------------------------------------------------------------- queue */
 
 function runningNow(row: QueueRow): RunningNow | null {
   const submission = getSubmission(row.submissionId)
@@ -374,11 +379,11 @@ function runningNow(row: QueueRow): RunningNow | null {
 }
 
 /**
- * «сегодня исполнено 37, в среднем 2 мин 40 с» — по всему инстансу.
+ * "run today: 37, on average 2 min 40 s", across the whole instance.
  *
- * Считается не чаще раза в пару секунд и кладётся в память: на эту строку
- * смотрят из каждой открытой вкладки панели и из живого потока A3, а под ней
- * обход всех посылок инстанса.
+ * Computed no more than once every couple of seconds and kept in memory:
+ * this line is looked at from every open panel tab and from the live A3
+ * stream, and under it lies a walk over all of the instance's submissions.
  */
 const TODAY_TTL_MS = 2000
 let todayCache: { at: number; value: { done: number; averageMs: number | null } } | null = null
@@ -417,11 +422,12 @@ function queueSnapshot(now = Date.now()): QueueSnapshot {
 }
 
 /**
- * Ждущие — в том порядке, в каком их возьмут, с оценкой ожидания.
+ * The waiting ones, in the order they will be taken, with an estimated wait.
  *
- * Очередь общая на инстанс, а экран один на соревнование: место считается по
- * всей очереди (иначе «вы первая» означало бы «первая среди своих», то есть
- * ничего), а отдаются строки только этого соревнования.
+ * The queue is shared by the instance, while a screen is per competition:
+ * the place is counted over the whole queue (otherwise "you are first" would
+ * mean "first among your own", that is, nothing), and only this
+ * competition's rows are returned.
  */
 function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now: number): WaitingRow[] {
   const waiting = queueRows().filter((row) => row.state === 'waiting')
@@ -450,7 +456,7 @@ function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now:
       entrantId: queued.entrantId,
       entrantName: getEntrant(queued.entrantId)?.name ?? '',
       number: submission.number,
-      // Место — по ВСЕЙ очереди: «вы первая среди своих» не значит ничего.
+      // The place is over the WHOLE queue: "you are first among your own" means nothing.
       place: index<eligible.length?index+1:null,
       etaMs: index<eligible.length?etas[index]??null:null,
       resourcePending: queued.notBefore>now,
@@ -474,7 +480,7 @@ function liveOf(competition: Competition, now = Date.now()): CompetitionLive {
   }
 }
 
-/* ----------------------------------------------------------- многочастное */
+/* -------------------------------------------------------------- multipart */
 
 interface Upload {
   name: string
@@ -483,21 +489,21 @@ interface Upload {
 
 interface Received {
   files: Upload[]
-  /** Имя файла, который не влез в потолок; null — все влезли. */
+  /** The name of the file that did not fit under the cap; null means all fit. */
   oversize: string | null
-  /** Файлов прислали больше, чем дверь принимает: лишние busboy молча отбросил. */
+  /** More files were sent than the door accepts: busboy silently dropped the extra ones. */
   tooMany: boolean
 }
 
 /**
- * Принять multipart в память.
+ * Receive multipart into memory.
  *
- * В память, а не на диск через временный файл, как это делает загрузка в
- * комнату: там файл кладут студенты и размер задаёт настройка инстанса, здесь
- * — преподаватель, и потолок у соревнования свой (`LIMITS.dataBytes` на все
- * данные, `LIMITS.notebookBytes` на тетрадь). Именно потолок и делает этот
- * путь честным: без него один `curl` с гигабайтным файлом кладёт процесс,
- * который ведёт занятие.
+ * Into memory, not to disk through a temp file the way a room upload does:
+ * there students put the file and an instance setting sets the size; here it
+ * is the teacher, and the competition has a cap of its own
+ * (`LIMITS.dataBytes` for all the data, `LIMITS.notebookBytes` for the
+ * notebook). The cap is exactly what makes this path honest: without it one
+ * `curl` with a gigabyte file brings down the process that runs the class.
  */
 function receive(
   req: Request,
@@ -510,8 +516,8 @@ function receive(
     try {
       bb = busboy({
         headers: req.headers,
-        // Иначе имя файла читается как latin-1, и `данные.csv` превращается в
-        // мусор — который участник потом не найдёт из своей тетради.
+        // Otherwise the file name is read as latin-1, and `данные.csv` turns
+        // into garbage, which an entrant will then not find from their notebook.
         defParamCharset: 'utf8',
         limits: {
           fileSize: limits.maxBytes,
@@ -546,15 +552,16 @@ function receive(
         if (!over) chunks.push(chunk)
       })
       stream.on('end', () => {
-        // Обрезанный файл не кладётся вовсе: половина CSV читается pandas без
-        // единой жалобы, и о потере узнают по числам в лидерборде.
+        // A truncated file is not stored at all: pandas reads half a CSV
+        // without a single complaint, and the loss is noticed by the numbers
+        // on the leaderboard.
         if (!over) out.files.push({ name: baseName(info.filename), body: Buffer.concat(chunks) })
       })
     })
     bb.on('error', () => done('cut-off'))
     bb.on('close', () => done(out))
-    // Оборванный запрос: busboy 'end' не получит, и обещание не разрешится
-    // никогда — а вместе с ним повиснет и обработчик.
+    // A cut-off request: busboy will not get 'end', and the promise will
+    // never resolve, and the handler will hang along with it.
     req.on('aborted', () => {
       bb.destroy()
       done('cut-off')
@@ -597,31 +604,32 @@ function refuseInput(res: Response, refusal: InputRefusal): void {
   fail(res, 400, 'invalid', tr('competitions.refusal.value', { field: refusal.field }))
 }
 
-/* ------------------------------------------------------------------ двери */
+/* ------------------------------------------------------------------ doors */
 
 export function adminCompetitionRoutes(): Router {
   const router = Router()
 
   /*
-   * Очередь и участники объявлены ДО `/:id`.
+   * The queue and the entrants are declared BEFORE `/:id`.
    *
-   * express разбирает маршруты по порядку, и `/competitions/queue` совпало бы с
-   * `/competitions/:id`. Идентификаторы соревнований выдаёт база, так что
-   * столкнуться они не могут, но порядок здесь — не случайность, и переставлять
-   * его нельзя.
+   * express matches routes in order, and `/competitions/queue` would match
+   * `/competitions/:id`. Competition ids are issued by the database, so they
+   * cannot collide, but the order here is not an accident, and it must not be
+   * rearranged.
    */
 
-  /* ----------------------------------------------------------- очередь */
+  /* ------------------------------------------------------------- queue */
 
   router.get('/api/admin/competitions/queue', requireStaff, (_req, res) => {
     res.json(queueSnapshot())
   })
 
   /**
-   * Приостановить очередь или пустить её снова.
+   * Pause the queue or let it run again.
    *
-   * Пауза не трогает идущий прогон: «не начинай новых» и «убей то, что идёт» —
-   * разные обещания, и второе стоит чужой минуты работы.
+   * A pause does not touch the run in progress: "start no new ones" and "kill
+   * what is running" are different promises, and the second costs someone a
+   * minute of work.
    */
   router.post('/api/admin/competitions/queue/pause', requireStaff, (req, res) => {
     const paused = (req.body as { paused?: unknown } | undefined)?.paused !== false
@@ -629,27 +637,29 @@ export function adminCompetitionRoutes(): Router {
     res.json(queueSnapshot())
   })
 
-  /** Убить идущий прогон. Кнопка «Убить» в блоке «ИСПОЛНЯЕТСЯ СЕЙЧАС». */
+  /** Kill the run in progress. The "Kill" button in the "RUNNING NOW" block. */
   router.post('/api/admin/competitions/queue/kill', requireStaff, async (req, res) => {
     const id = String((req.body as { submissionId?: unknown } | undefined)?.submissionId ?? '')
     if (!queueRow(id)) {
       return fail(res, 409, 'invalid', tr('competitions.refusal.notRunning'))
     }
-    // Снимает её насос: ждущую он убирает из очереди сам, идущей — убивает
-    // контейнер и дописывает исход, когда тот умрёт. Отсюда видно только «да».
+    // The pump takes it down: a waiting one it removes from the queue itself,
+    // for a running one it kills the container and writes the outcome when it
+    // dies. From here only "yes" is visible.
     const killed = await cancelSubmission(id, 'teacher')
     if (!killed) return fail(res, 409, 'failed', tr('competitions.refusal.killRefused'))
     res.json({ killed: true })
   })
 
-  /* --------------------------------------------------------- участники */
+  /* ---------------------------------------------------------- entrants */
 
   /**
-   * Список участников инстанса — вместе с ключами входа.
+   * The instance's entrant list, together with the sign-in keys.
    *
-   * Ключ здесь есть намеренно: преподаватель раздаёт его классу, и другого
-   * места, где ключ читается, в продукте нет (`entrantKeyOf` — единственная
-   * дверь к секрету). Дверь панельная, и это весь её замок.
+   * The key is here on purpose: the teacher hands it out to the class, and
+   * there is no other place in the product where the key can be read
+   * (`entrantKeyOf` is the only door to the secret). It is a panel door, and
+   * that is its whole lock.
    */
   router.get('/api/admin/competitions/entrants', requireStaff, (_req, res) => {
     const body: EntrantsList = {
@@ -679,11 +689,11 @@ export function adminCompetitionRoutes(): Router {
   })
 
   /**
-   * Выдать новый ключ.
+   * Issue a new key.
    *
-   * Владельцем: старый ключ перестаёт действовать в ту же секунду, и если
-   * человек сейчас на паре — он выпадает из своего соревнования до тех пор,
-   * пока новый ключ до него не доедет.
+   * By an owner: the old key stops working that same second, and if the
+   * person is in a lesson right now, they drop out of their competition until
+   * the new key reaches them.
    */
   router.post(
     '/api/admin/competitions/entrants/:eid/rotate',
@@ -695,7 +705,7 @@ export function adminCompetitionRoutes(): Router {
     },
   )
 
-  /* ------------------------------------------------------ соревнования */
+  /* ------------------------------------------------------ competitions */
 
   router.get('/api/admin/competitions', requireStaff, (_req, res) => {
     const body: CompetitionsList = {
@@ -705,7 +715,7 @@ export function adminCompetitionRoutes(): Router {
     res.json(body)
   })
 
-  /** Новое соревнование — всегда черновиком: открывает его отдельная дверь. */
+  /** A new competition is always a draft: a separate door opens it. */
   router.post('/api/admin/competitions', requireStaff, async (req, res) => {
     const parsed = parseCompetitionInput(req.body, { creating: true })
     if ('refusal' in parsed) return refuseInput(res, parsed.refusal)
@@ -738,10 +748,11 @@ export function adminCompetitionRoutes(): Router {
   })
 
   /**
-   * Удалить соревнование целиком — вместе с каталогом, в котором лежат ответы.
+   * Delete a competition entirely, together with the directory holding the
+   * answers.
    *
-   * Владельцем: посылки, числа и места ста человек исчезают безвозвратно, и
-   * восстанавливать их не из чего.
+   * By an owner: the submissions, scores and places of a hundred people
+   * disappear for good, and there is nothing to restore them from.
    */
   router.delete(
     '/api/admin/competitions/:id',
@@ -755,10 +766,11 @@ export function adminCompetitionRoutes(): Router {
   )
 
   /**
-   * Код метрики — своей дверью, а не полем в общем патче.
+   * The metric code has its own door, not a field in the common patch.
    *
-   * Редактор кода в A2 сохраняется своей кнопкой и не показывает ни сроков, ни
-   * пределов: PATCH со всей формой из него затёр бы поля, которых он не видел.
+   * The code editor in A2 saves with its own button and shows neither dates
+   * nor limits: a PATCH with the whole form from it would overwrite fields it
+   * never saw.
    */
   router.put('/api/admin/competitions/:id/metric', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
@@ -772,7 +784,7 @@ export function adminCompetitionRoutes(): Router {
     res.json(await viewOf(saved))
   })
 
-  /* ---------------------------------------------------------- данные */
+  /* ------------------------------------------------------------ data */
 
   router.post('/api/admin/competitions/:id/files', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
@@ -801,11 +813,13 @@ export function adminCompetitionRoutes(): Router {
       return fail(res, 409, 'too_long', tr('competitions.refusal.tooManyFiles', { max: LIMITS.files }))
     }
     /*
-     * Потолок busboy — на КАЖДЫЙ файл, а место считается на соревнование.
+     * The busboy cap is per EACH file, while space is counted per
+     * competition.
      *
-     * Десять файлов по сто мегабайт проходят поштучно и вместе дают гигабайт,
-     * так что сумма проверяется здесь, до первой записи на диск: иначе часть
-     * набора уже лежала бы в `data/`, и участник увидел бы половину данных.
+     * Ten files of a hundred megabytes pass one by one and together make a
+     * gigabyte, so the sum is checked here, before the first write to disk:
+     * otherwise part of the set would already be in `data/`, and an entrant
+     * would see half the data.
      */
     const arriving = received.files.reduce((sum, file) => sum + file.body.length, 0)
     if (arriving > room) {
@@ -819,8 +833,8 @@ export function adminCompetitionRoutes(): Router {
     for (const file of received.files) {
       const shape = file.name.toLowerCase().endsWith('.csv') ? csvShape(file.body) : null
       try {
-        // Сначала диск, потом строка: файл, не легший на место, не должен
-        // числиться в списке, по которому считается занятое место.
+        // First the disk, then the row: a file that did not make it into place
+        // must not be listed where the used space is counted.
         putOpenFile(competition.id, file.name, file.body)
       } catch {
         return fail(res, 400, 'invalid', tr('competitions.refusal.badName', { name: file.name }))
@@ -836,18 +850,18 @@ export function adminCompetitionRoutes(): Router {
     res.json(await viewOf(getCompetition(competition.id)!))
   })
 
-  /** Скачать открытый файл — то же, что увидит участник. Ответы сюда не ходят. */
+  /** Download an open file, the same one an entrant sees. The answers do not come here. */
   router.get('/api/admin/competitions/:id/files/:name', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
     const name = String(req.params.name)
     /*
-     * Видимость проверяется ПО СТРОКЕ В БАЗЕ, а не по каталогу.
+     * Visibility is checked BY THE DATABASE ROW, not by the directory.
      *
-     * Имя приходит из адреса, и `../secret/solution.csv` отбила бы и якорная
-     * файловая система — но отбила бы ошибкой чтения, то есть правильный ответ
-     * зависел бы от того, что сегодня лежит на диске. Здесь сказано прямо:
-     * наружу уезжает только то, что помечено открытым.
+     * The name comes from the address, and the anchored file system would
+     * reject `../secret/solution.csv` too, but with a read error, that is,
+     * the right answer would depend on what lies on disk today. Here it is
+     * said plainly: only what is marked open goes out.
      */
     const listed = listFiles(competition.id, 'open').find((file) => file.name === name)
     if (!listed) return fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
@@ -870,12 +884,12 @@ export function adminCompetitionRoutes(): Router {
   })
 
   /**
-   * Ответы — отдельной дверью от открытых данных.
+   * The answers have a door separate from the open data.
    *
-   * Не параметром `visibility` у той же двери: перепутать каталог значит выдать
-   * ответы классу, и такая ошибка обязана выглядеть как другой адрес, а не как
-   * другое значение поля (та же причина, по которой в storage.ts две функции
-   * записи).
+   * Not a `visibility` parameter on the same door: mixing up the directory
+   * means handing the answers to the class, and such a mistake has to look
+   * like a different address, not like a different field value (the same
+   * reason storage.ts has two write functions).
    */
   router.post('/api/admin/competitions/:id/solution', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
@@ -888,12 +902,12 @@ export function adminCompetitionRoutes(): Router {
     const file = received.files[0]
     if (!file) return fail(res, 400, 'invalid', tr('competitions.refusal.noFile'))
     /*
-     * Имя на диске — всегда `solution.csv`.
+     * The name on disk is always `solution.csv`.
      *
-     * Контейнер метрики монтирует закрытый каталог и читает из него файл с
-     * этим именем; если бы имя приходило от преподавателя, переименованный
-     * файл ломал бы подсчёт молча — уже после того, как класс начал присылать
-     * посылки.
+     * The metric container mounts the closed directory and reads the file
+     * with this name from it; if the name came from the teacher, a renamed
+     * file would break the scoring silently, after the class had already
+     * started sending submissions.
      */
     const shape = csvShape(file.body)
     putSecretFile(competition.id, SOLUTION_FILE, file.body)
@@ -907,7 +921,7 @@ export function adminCompetitionRoutes(): Router {
     res.json(await viewOf(getCompetition(competition.id)!))
   })
 
-  /** Снять ответы. Владельцем: без них соревнование перестаёт считаться вовсе. */
+  /** Remove the answers. By an owner: without them the competition stops being scored at all. */
   router.delete(
     '/api/admin/competitions/:id/solution/:name',
     ownerOnly('competitions.owner.dropSolution'),
@@ -933,7 +947,7 @@ export function adminCompetitionRoutes(): Router {
     }
   }
 
-  /* -------------------------------------------------------- сэмпл-тетрадь */
+  /* ------------------------------------------------------ sample notebook */
 
   router.post('/api/admin/competitions/:id/baseline', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
@@ -956,21 +970,22 @@ export function adminCompetitionRoutes(): Router {
     putBaseline(competition.id, file.body)
     invalidateCompetitionInputs(competition.id)
     /*
-     * Прежняя проверка забывается вместе с файлом.
+     * The previous check is forgotten together with the file.
      *
-     * Иначе «ПРОХОДИТ» осталось бы на экране от старой тетради, и открыть
-     * соревнование можно было бы по числу, которое получила не та.
+     * Otherwise "PASSES" would stay on the screen from the old notebook, and
+     * the competition could be opened on a number that a different notebook
+     * got.
      */
     updateCompetition(competition.id, { baselineSubmissionId: null })
     res.json(await viewOf(getCompetition(competition.id)!))
   })
 
   /**
-   * Проверить сэмпл-тетрадь тем же путём, которым пойдут посылки.
+   * Check the sample notebook by the same path submissions will take.
    *
-   * Тем же — буквально: заводится настоящая посылка настоящего (служебного)
-   * участника и кладётся в ту же очередь. Отдельный «режим проверки» доказывал
-   * бы только то, что работает режим проверки.
+   * The same, literally: a real submission of a real (service) entrant is
+   * created and put into the same queue. A separate "check mode" would prove
+   * only that the check mode works.
    */
   router.post('/api/admin/competitions/:id/baseline/check', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
@@ -1008,12 +1023,12 @@ export function adminCompetitionRoutes(): Router {
   })
 
   /**
-   * Проверить метрику на базовом решении — «до 60 с», без повторного запуска
-   * тетради.
+   * Check the metric on the baseline solution, "up to 60 s", without running
+   * the notebook again.
    *
-   * Отдельно от полной проверки, потому что чинят обычно метрику: гонять ради
-   * одной правки `score()` десятиминутную тетрадь заново — это десять минут,
-   * за которые преподаватель уйдёт делать что-то другое.
+   * Separate from the full check, because it is usually the metric that gets
+   * fixed: rerunning a ten-minute notebook for one edit of `score()` means
+   * ten minutes during which the teacher goes off to do something else.
    */
   router.post('/api/admin/competitions/:id/metric/check', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
@@ -1035,7 +1050,7 @@ export function adminCompetitionRoutes(): Router {
     res.status(202).json({ submissionId: baseline.id })
   })
 
-  /* ------------------------------------------------- открыть и завершить */
+  /* ----------------------------------------------------- open and finish */
 
   router.post('/api/admin/competitions/:id/open', requireStaff, async (req, res) => {
     let competition = competitionOf(req, res)
@@ -1055,11 +1070,11 @@ export function adminCompetitionRoutes(): Router {
   })
 
   /**
-   * «Завершить сейчас» — досрочно закрыть приём.
+   * "Finish now": close submissions early.
    *
-   * Владельцем: посылки перестают приниматься у всего класса. Приватный
-   * лидерборд при этом открывается сам, если так и было задумано (`auto`): для
-   * соревнования, которое кончилось, дедлайн — это сейчас.
+   * By an owner: submissions stop being accepted for the whole class. The
+   * private leaderboard then opens by itself if that was the plan (`auto`):
+   * for a competition that is over, the deadline is now.
    */
   router.post(
     '/api/admin/competitions/:id/finish',
@@ -1076,7 +1091,7 @@ export function adminCompetitionRoutes(): Router {
     },
   )
 
-  /** Открыть приватный лидерборд рукой — «открою вручную, на разборе». */
+  /** Open the private leaderboard by hand: "I will open it manually, at the review". */
   router.post('/api/admin/competitions/:id/private-board', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
@@ -1084,7 +1099,7 @@ export function adminCompetitionRoutes(): Router {
     res.json(await viewOf(getCompetition(competition.id)!))
   })
 
-  /* ---------------------------------------------------------- живое (A3) */
+  /* ----------------------------------------------------------- live (A3) */
 
   router.get('/api/admin/competitions/:id/live', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
@@ -1093,12 +1108,12 @@ export function adminCompetitionRoutes(): Router {
   })
 
   /*
-   * То же самое, но само.
+   * The same, but pushed by itself.
    *
-   * Server-sent events, как у живого журнала сборки окружений: поток в одну
-   * сторону, браузер переподключается сам, и никакого второго протокола ради
-   * трёх чисел. Отдаётся не по таймеру, а по изменению — экран, на котором
-   * ничего не происходит, не должен перерисовываться раз в секунду.
+   * Server-sent events, like the live environment build log: a one-way
+   * stream, the browser reconnects by itself, and no second protocol for the
+   * sake of three numbers. It is sent on change, not on a timer: a screen
+   * where nothing happens must not redraw every second.
    */
   router.get('/api/admin/competitions/:id/stream', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
@@ -1107,8 +1122,8 @@ export function adminCompetitionRoutes(): Router {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-store',
       Connection: 'keep-alive',
-      // Ретранслятор по умолчанию копит ответ — то есть превращает живой
-      // экран в один пакет в конце пары.
+      // By default the relay buffers the response, that is, turns a live
+      // screen into one packet at the end of the lesson.
       'X-Accel-Buffering': 'no',
     })
     let last = ''
@@ -1129,7 +1144,7 @@ export function adminCompetitionRoutes(): Router {
     })
   })
 
-  /* --------------------------------------------------------- лента посылок */
+  /* ------------------------------------------------------ submissions feed */
 
   // The board is computed from complete server state; the feed is only a page.
   router.get('/api/admin/competitions/:id/leaderboard', requireStaff, (req, res) => {
@@ -1180,7 +1195,7 @@ export function adminCompetitionRoutes(): Router {
     res.json(body)
   })
 
-  /** «Весь вывод»: прогоны, трейс метрики и что осталось на диске. */
+  /** "All output": the runs, the metric trace and what is left on disk. */
   router.get('/api/admin/competitions/:id/submissions/:sid', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
@@ -1196,7 +1211,7 @@ export function adminCompetitionRoutes(): Router {
     res.json(body)
   })
 
-  /** «Открыть исполненную тетрадь» — файл из каталога результата посылки. */
+  /** "Open the executed notebook": the file from the submission's result directory. */
   router.get(
     '/api/admin/competitions/:id/submissions/:sid/file/:name',
     requireStaff,
@@ -1223,7 +1238,7 @@ export function adminCompetitionRoutes(): Router {
     },
   )
 
-  /** «Исполнить заново»: та же тетрадь, новый контейнер, с нуля. */
+  /** "Run again": the same notebook, a new container, from scratch. */
   router.post(
     '/api/admin/competitions/:id/submissions/:sid/rerun',
     requireStaff,
@@ -1234,12 +1249,12 @@ export function adminCompetitionRoutes(): Router {
       const submission = submissionOf(competition, req, res)
       if (!submission) return
       /*
-       * Решает насос, а не панель.
+       * The pump decides, not the panel.
        *
-       * Он же знает два обстоятельства, которых отсюда не видно: идёт ли
-       * посылка прямо сейчас (перезапускать идущее нельзя) и лежит ли ещё на
-       * диске присланная тетрадь — уборка давних посылок сносит её, оставляя
-       * числа в базе.
+       * It also knows two circumstances not visible from here: whether the
+       * submission is running right now (a running one must not be
+       * restarted) and whether the sent notebook is still on disk: the sweep
+       * of old submissions removes it, leaving the numbers in the database.
        */
       if (!rerunSubmission(submission.id)) {
         return fail(res, 409, 'invalid', tr('competitions.refusal.cannotRerun'))
@@ -1248,7 +1263,7 @@ export function adminCompetitionRoutes(): Router {
     },
   )
 
-  /** Пересчитать метрику одной посылки — тетрадь не запускается. */
+  /** Rescore one submission's metric; the notebook is not run. */
   router.post(
     '/api/admin/competitions/:id/submissions/:sid/rescore',
     requireStaff,
@@ -1279,11 +1294,12 @@ export function adminCompetitionRoutes(): Router {
   )
 
   /**
-   * «Не засчитывать» — снять посылку с зачёта.
+   * "Do not count": remove a submission from scoring.
    *
-   * Владельцем: это чужой результат и чужое место в лидерборде. Отметка «в
-   * зачёт» не снимается отдельно — зачётной считается только дошедшая до числа
-   * (`countedSubmission`), а эта больше не дойдёт.
+   * By an owner: it is someone else's result and someone else's place on the
+   * leaderboard. The "scored" mark is not removed separately: only one that
+   * reached a number counts as scored (`countedSubmission`), and this one
+   * will not reach it any more.
    */
   router.post(
     '/api/admin/competitions/:id/submissions/:sid/drop',
@@ -1293,8 +1309,9 @@ export function adminCompetitionRoutes(): Router {
       if (!competition) return
       const submission = submissionOf(competition, req, res)
       if (!submission) return
-      // Если она ещё идёт — сперва снять её с исполнения: держать контейнер
-      // ради посылки, которая уже не считается, значит занимать очередь.
+      // If it is still running, first take it off execution: keeping a
+      // container for a submission that no longer counts means holding up the
+      // queue.
       if (queueRow(submission.id)) await cancelSubmission(submission.id, 'teacher')
       leaveQueue(submission.id)
       const saved = updateSubmission(submission.id, {
@@ -1306,21 +1323,22 @@ export function adminCompetitionRoutes(): Router {
   )
 
   /**
-   * Пересчитать всех — после правки метрики.
+   * Rescore everyone, after a metric edit.
    *
-   * Тетради не запускаются: ответы участников лежат на диске, и в этом весь
-   * смысл двух шагов. В очередь идёт только то, у чего этот ответ есть.
+   * The notebooks are not run: the entrants' answers lie on disk, and that
+   * is the whole point of two steps. Only what has that answer goes into the
+   * queue.
    */
   router.post('/api/admin/competitions/:id/rescore', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
     if (!await executionAvailable(competition, res)) return
-    // Считает насос: годится та посылка, чей ответ ЛЕЖИТ НА ДИСКЕ, а это
-    // вопрос к файлам, а не к состоянию строки.
+    // The pump counts: a submission qualifies if its answer IS ON DISK, and
+    // that is a question for the files, not for the row's state.
     res.status(202).json({ queued: rescoreCompetition(competition.id) })
   })
 
-  /** Вкладка «Участники» одного соревнования: место, посылки, ключ входа. */
+  /** The "Entrants" tab of one competition: place, submissions, sign-in key. */
   router.get('/api/admin/competitions/:id/entrants', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
@@ -1342,14 +1360,14 @@ export function adminCompetitionRoutes(): Router {
   return router
 }
 
-/* ------------------------------------------------------------ помощники */
+/* -------------------------------------------------------------- helpers */
 
 /**
- * Служебный участник, на которого записана сэмпл-тетрадь.
+ * The service entrant the sample notebook is recorded under.
  *
- * Отключённый сразу: ключ у него есть (его выдаёт `createEntrant`), и
- * работающий ключ, о котором никто не знает, — это вход в соревнование,
- * лежащий в базе без хозяина.
+ * Disabled right away: it does have a key (`createEntrant` issues one), and
+ * a working key nobody knows about is an entrance to the competition lying
+ * in the database without an owner.
  */
 function newBaselineEntrant(): string {
   const minted = createEntrant(tr('competitions.baselineEntrant'))
@@ -1373,12 +1391,13 @@ function entrantRow(
 }
 
 /**
- * Что осталось от прогона на диске — список, а не содержимое.
+ * What is left of a run on disk: a list, not the contents.
  *
- * Читается `stat`, а не сам файл: исполненная тетрадь с графиками — это
- * мегабайты base64, и открывать их в памяти сервера ради строчки «есть»
- * незачем. Уборка давних посылок (`pruneCompetitionFiles`) оставляет строку в
- * базе и сносит каталог, поэтому пустой список здесь — обычное дело.
+ * `stat` is read, not the file itself: an executed notebook with charts is
+ * megabytes of base64, and there is no point opening them in server memory
+ * for the sake of a "present" line. The sweep of old submissions
+ * (`pruneCompetitionFiles`) keeps the row in the database and removes the
+ * directory, so an empty list is normal here.
  */
 function resultFiles(competitionId: string, submissionId: string): { name: string; bytes: number }[] {
   const out: { name: string; bytes: number }[] = []
@@ -1387,7 +1406,7 @@ function resultFiles(competitionId: string, submissionId: string): { name: strin
       const info = competitionsFs.statSync(path.join(resultDir(competitionId, submissionId), name))
       out.push({ name, bytes: info.size })
     } catch {
-      /* файла нет — прогон до него не дошёл или каталог убран */
+      /* no file: the run did not get that far, or the directory was removed */
     }
   }
   return out

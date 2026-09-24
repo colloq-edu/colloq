@@ -1,27 +1,29 @@
 import { tr } from '@shared/i18n'
 /**
- * Разбор входящего Yjs-кадра на глаголы — до того, как он применён.
+ * Parsing an incoming Yjs frame into verbs — before it is applied.
  *
- * Документ семинара общий, и это и есть CRDT: любой, кто подключён, может
- * записать в него что угодно — чужой вывод, чужой `stdin`, «ядро умерло»,
- * строку в терминал от чужого имени. Правила комнаты («студенты не удаляют
- * ячейки») бессмысленны, пока байты применяются раньше, чем кто-то посмотрел,
- * что в них.
+ * The seminar's document is shared, and that is what a CRDT is: anyone who is
+ * connected can write anything into it — someone else's output, someone else's
+ * `stdin`, "the kernel died", a line into the terminal under someone else's
+ * name. The room's rules ("students do not delete cells") are meaningless as
+ * long as the bytes are applied before anyone has looked at what is in them.
  *
- * Смотреть надо ДО применения. Применить и откатить нельзя: Yjs не умеет
- * разудалять — undo копирует, — и откат удаления оставляет всех, у кого эта
- * ячейка открыта, печатать в надгробие: нажатия пропадают без исключения, без
- * ошибки и без единого сработавшего наблюдателя. Правило, которое должно было
- * защитить преподавателя от студента, выдало бы студенту оружие против
- * преподавателя. Плюс `broadcastDocUpdate`, `record()` и запись на диск висят
- * синхронно внутри `applyUpdate` — откат успел бы разъехаться по двадцати
- * вкладкам и записаться в историю.
+ * The looking has to happen BEFORE applying. Applying and rolling back is not
+ * possible: Yjs cannot undelete — undo copies — and rolling back a deletion
+ * leaves everyone who has that cell open typing into a tombstone: keystrokes
+ * vanish without an exception, without an error and without a single observer
+ * firing. A rule meant to protect the teacher from a student would hand the
+ * student a weapon against the teacher. Plus `broadcastDocUpdate`, `record()`
+ * and the write to disk hang synchronously inside `applyUpdate` — the rollback
+ * would have time to spread across twenty tabs and get written into the
+ * history.
  *
- * Модуль чистый: сюда ходит тест, и здесь нет ни сокетов, ни базы.
+ * The module is pure: the test comes here, and there are no sockets and no
+ * database here.
  *
- * Мера цены (500 ячеек, 114 КБ): разбор нажатия — 0.36 мкс, полная
- * классификация с разрешением родителей — 1.77 мкс, применение тех же байт —
- * 67 мкс. Двадцать печатающих дают ~160 кадров в секунду.
+ * The cost measure (500 cells, 114 KB): parsing a keystroke — 0.36 µs, the full
+ * classification with parent resolution — 1.77 µs, applying the same bytes —
+ * 67 µs. Twenty people typing give ~160 frames per second.
  */
 import * as Y from 'yjs'
 import {
@@ -47,43 +49,45 @@ import {
 } from '@shared/rules'
 
 /*
- * Что кадр делает — в терминах правил комнаты, а не байтов.
+ * What a frame does — in terms of the room's rules, not of bytes.
  *
- * Перечисление одно на обе стороны и живёт в протоколе: им судит гейт, его же
- * называет кадр `refused`, который уезжает в браузер. Копий было две, и они
- * успели разойтись — в протоколе висело значение `'files'`, которого здесь
- * никогда не было и которое сервер не слал.
+ * The enumeration is one for both sides and lives in the protocol: the gate
+ * judges by it, and the `refused` frame that goes to the browser names it.
+ * There were two copies, and they managed to drift apart — the protocol had a
+ * `'files'` value that never existed here and that the server never sent.
  */
 export type { GateRule }
 
 export interface Verdict {
   rule: GateRule
-  /** Только для `structure`: что именно с составом тетради. */
+  /** Only for `structure`: what exactly happens to the notebook's cell list. */
   verb?: 'add' | 'remove'
-  /** Ячейка, если её удалось назвать, — для сообщения человеку. */
+  /** The cell, if it could be named — for the message to a person. */
   cellId: string | null
-  /** Разрешённый путь, для сообщения и для теста. */
+  /** The resolved path, for the message and for the test. */
   path: string
   /**
-   * Корень тетради, в которую метит кадр, — имя её Y.Array в документе.
+   * The root of the notebook the frame targets — the name of its Y.Array in
+   * the document.
    *
-   * По нему и только по нему находится доступ к отдельной тетради
-   * (shared/rules.ts · RoomRules.books): корень выдаётся тетради один раз и
-   * переживает переименование файла, а путь освобождается.
+   * By it, and only by it, the access of an individual notebook is found
+   * (shared/rules.ts · RoomRules.books): a root is issued to a notebook once
+   * and survives a rename of the file, while a path gets freed.
    *
-   * `null` у приговоров, которые не про ячейки тетради, — сейчас это один
-   * `title`. Ключ карты «null» не совпадает ни с чем, так что такой приговор
-   * судится правилами комнаты, как и судился.
+   * `null` for verdicts that are not about a notebook's cells — currently that
+   * is only `title`. A map key "null" matches nothing, so such a verdict is
+   * judged by the room's rules, as it always was.
    */
   root: string | null
   /**
-   * Ячейку открыл преподаватель — и только у правки её ТЕКСТА.
+   * The teacher opened the cell — and only for an edit of its TEXT.
    *
-   * У приговоров о составе тетради и о смене вида этого признака нет
-   * намеренно: открытая ячейка даёт комнате набор, а не право убрать ячейку
-   * или сделать её заметкой (shared/rules.ts · mayEditCell). Признак читается
-   * из документа, а не из кадра: `open` пишет сервер, и то, что браузер думает
-   * про эту ячейку, права не даёт.
+   * Verdicts about the notebook's cell list and about a change of type do not
+   * carry this flag on purpose: an open cell gives the room typing, not the
+   * right to remove the cell or turn it into a note (shared/rules.ts ·
+   * mayEditCell). The flag is read from the document, not from the frame:
+   * `open` is written by the server, and what the browser thinks about this
+   * cell gives no rights.
    */
   open?: boolean
 }
@@ -93,91 +97,97 @@ export type Judgement =
       ok: true
       verdicts: Verdict[]
       /**
-       * Ячейки, у которых кадр меняет `type`.
+       * Cells whose `type` the frame changes.
        *
-       * Клиент теперь пишет только сам тип; сброс состояния выполнения
-       * (`state`, `execCount`, `startedAt`, `ranMs`, `outputs`) делает сервер
-       * сразу после применения — единственное место, где клиент писал
-       * серверные поля, перестало существовать.
+       * The client now writes only the type itself; resetting the execution
+       * state (`state`, `execCount`, `startedAt`, `ranMs`, `outputs`) is done
+       * by the server right after applying — the only place where the client
+       * wrote server fields has ceased to exist.
        */
       retyped: string[]
       /**
-       * Ячейки, которые кадр создаёт.
+       * Cells the frame creates.
        *
-       * Сервер приводит их в согласие с собой сразу после применения: чужой
-       * вывод стирает, свой — если это отмена удаления — возвращает по
-       * собственной записи. Ячейка, чьё имя уже занято живой, сюда не попадает:
-       * приведение ищет по имени и досталось бы не ей, а той, что уже в
-       * тетради. Пришедшую копию снимает наблюдатель за двойниками.
+       * The server brings them into agreement with itself right after
+       * applying: it erases someone else's output, and brings back its own —
+       * if this is an undone deletion — from its own record. A cell whose
+       * name is already taken by a live one does not get in here: the
+       * settling searches by name and would reach not it but the one already
+       * in the notebook. The arrived copy is removed by the duplicate watcher.
        */
       created: string[]
       /**
-       * Ячейки, которые кадр удаляет.
+       * Cells the frame deletes.
        *
-       * Сервер запоминает их ДО применения: после применения читать уже нечего,
-       * а без этого Ctrl+Z вернул бы ячейку без вывода. И говорит о них ядру
-       * ПОСЛЕ применения (`collab/index.ts · onCellsRemoved`): убрать можно и
-       * ту ячейку, которую оно сейчас считает.
+       * The server remembers them BEFORE applying: after applying there is
+       * nothing left to read, and without this Ctrl+Z would bring a cell back
+       * without output. And it tells the kernel about them AFTER applying
+       * (`collab/index.ts · onCellsRemoved`): the cell being removed may be
+       * the one it is computing right now.
        */
       removed: string[]
     }
   | { ok: false; why: string; path: string }
 
 /**
- * Потолок на кадр, до всякой классификации и одинаковый для всех.
+ * A ceiling per frame, before any classification and the same for everyone.
  *
- * Не право: преподаватель вставляет из буфера ровно так же. `MAX_WS_PAYLOAD`
- * равен 16 МБ, и такой кадр ретранслируется в каждый сокет, целиком уезжает в
- * SQLite-блоб и ещё раз копируется в ключевой кадр истории. Классификатор без
- * этого потолка просто аккуратно разбирает бомбу.
+ * Not a right: the teacher pastes from the clipboard just the same.
+ * `MAX_WS_PAYLOAD` is 16 MB, and such a frame is relayed into every socket,
+ * goes whole into an SQLite blob and is copied once more into a history
+ * keyframe. Without this ceiling the classifier would just carefully take a
+ * bomb apart.
  */
 export const MAX_SYNC_FRAME_BYTES = 256 * 1024
 
 /**
- * Потолок для кадра ПЕРВОЙ синхронизации — отдельный и выше.
+ * A ceiling for a FIRST-sync frame — separate and higher.
  *
- * Step2 — не правка, а разница между вкладкой и сервером, и в неё входит ВЕСЬ
- * набор удалений документа: каждое стёртое слово за жизнь комнаты, навсегда.
- * У комнаты, прожившей семестр, он один занимает сотни килобайт при нуле новых
- * структур — и потолок правки отказывал бы ей в каждом переподключении, то
- * есть навсегда. Восемь мегабайт — половина `MAX_WS_PAYLOAD`; цена разбора
- * ограничена не байтами, а бюджетом обхода ниже (`MAX_WALK`).
+ * Step2 is not an edit but the difference between a tab and the server, and it
+ * includes the document's WHOLE delete set: every word erased over the room's
+ * life, forever. For a room that has lived a semester it alone takes hundreds
+ * of kilobytes with zero new structures — and the edit ceiling would refuse it
+ * on every reconnection, that is, forever. Eight megabytes is half of
+ * `MAX_WS_PAYLOAD`; the parsing cost is bounded not by bytes but by the walk
+ * budget below (`MAX_WALK`).
  */
 export const MAX_SYNC_STEP2_BYTES = 8 * 1024 * 1024
 
 /**
- * Сколько шагов классификатор согласен сделать в одном кадре — сверх того, что
- * он заведомо обязан сделать для документа такого размера.
+ * How many steps the classifier agrees to take in one frame — on top of what
+ * it is bound to take for a document of this size anyway.
  *
- * Задел от вырожденного набора удалений: диапазон длиной в миллиард стоит
- * несколько байт на проводе. Настоящее удаление, даже «выделить всё в большой
- * ячейке», не даёт и тысячи. Упереться в потолок — отказ, а не пропуск.
+ * A reserve against a degenerate delete set: a range a billion long costs a few
+ * bytes on the wire. A real deletion, even "select all in a big cell", does not
+ * give even a thousand. Hitting the ceiling is a refusal, not a pass.
  *
- * Постоянным потолок быть не может, и это измерено 23.09 на живой комнате
- * zxrrsac6 (35 тыс. структур, снимок 750 КБ): step2 полностью синхронной
- * вкладки стоил 55 тыс. шагов — набор удалений проходится по структуре, а он
- * растёт с каждым занятием, — а вкладка, заново предложившая весь документ,
- * упиралась в сто тысяч и получала «кадр слишком велик» при каждом входе.
- * Обход и так ограничен числом структур: шаг набора удалений перепрыгивает
- * структуру целиком, у сервера или в кадре. Поэтому к заделу добавляется
- * `WALK_PER_STRUCT` на каждую структуру документа и кадра.
+ * The ceiling cannot be constant, and that was measured on 23 Sep 2026 on the
+ * live room zxrrsac6 (35 thousand structures, a 750 KB snapshot): the step2 of
+ * a fully synced tab cost 55 thousand steps — the delete set is walked by
+ * structure, and it grows with every class — and a tab that offered the whole
+ * document anew hit a hundred thousand and got "frame too large" on every
+ * entry. The walk is bounded by the number of structures anyway: a delete-set
+ * step jumps over a whole structure, on the server or in the frame. So
+ * `WALK_PER_STRUCT` per structure of the document and the frame is added to
+ * the reserve.
  */
 const MAX_WALK = 100_000
 
 /**
- * Шагов на одну структуру: конструктор, сплошность, приговор, поиск в кадре,
- * путь до корня. На той комнате выходило меньше двух — запас вчетверо.
+ * Steps per structure: constructor, contiguity, verdict, lookup in the frame,
+ * path to the root. On that room it came out at less than two — a fourfold
+ * margin.
  */
 const WALK_PER_STRUCT = 8
 
-/** Число структур в хранилище документа — без обхода самих структур. */
+/** The number of structures in the document store — without walking the structures. */
 function storeSize(doc: Y.Doc): number {
   let n = 0
   for (const structs of doc.store.clients.values()) n += structs.length
   return n
 }
 
-/** Ключи ячейки, которые пишет только сервер. Клиенту они закрыты всегда. */
+/** Cell keys that only the server writes. They are always closed to the client. */
 const SERVER_OWNED = new Set([
   'outputs',
   'state',
@@ -188,38 +198,41 @@ const SERVER_OWNED = new Set([
   'ranMs',
   'stdin',
   /*
-   * Замок лекции — и он серверный тем более, что это не показания, а право:
-   * ячейка, открывшая себя сама, есть участник, разрешивший себе печатать в
-   * закрытой тетради. Открывает её преподаватель управляющим сообщением
-   * (control.ts), то есть по каналу, где спрашивают роль, а не по кадру, где
-   * роль ни при чём.
+   * The lecture lock — and it is server-owned all the more because it is not a
+   * reading but a right: a cell that opened itself is a participant who let
+   * themselves type in a closed notebook. The teacher opens it with a control
+   * message (control.ts), that is, through the channel where the role is
+   * asked, not through a frame, where the role plays no part.
    *
-   * Третье положение того же замка — консилиум — лежит в том же ключе, и
-   * гейту оно не видно нарочно: `isCellOpen` отвечает строго на `true`, так
-   * что для набора консилиум — закрытая ячейка. Свой лист студент шлёт не
-   * кадром, а снимком по управляющему сокету (control.ts · council:draft).
+   * The third position of the same lock — the council — lives in the same key,
+   * and the gate does not see it on purpose: `isCellOpen` answers strictly to
+   * `true`, so for typing a council cell is a closed cell. A student sends
+   * their own sheet not as a frame but as a snapshot over the control socket
+   * (control.ts · council:draft).
    */
   'open',
   /*
-   * Ручки консилиума — «запуск студентам» и «имена на проекторе». Первая —
-   * право, а не показания: ячейка, включившая себе запуск, есть класс,
-   * разрешивший себе очередь к ядру. Пишет их тот же управляющий канал
-   * (control.ts · cell:lock).
+   * The council's knobs — "runs for students" and "names on the projector".
+   * The first is a right, not a reading: a cell that switched runs on for
+   * itself is a class that let itself into the kernel queue. They are written
+   * by the same control channel (control.ts · cell:lock).
    */
   'council',
 ])
 
 /**
- * Что несёт свежесозданная ячейка. Ничего сверх — иначе отказ.
+ * What a freshly created cell carries. Nothing beyond — otherwise a refusal.
  *
- * `stdin` и `open` отсутствуют здесь намеренно, и оба по одной причине: это не
- * содержимое, а заявление о правах — поддельное приглашение ввести пароль и
- * снятый замок. Ячейка, принёсшая такое с собой, отвергается вместе с кадром.
+ * `stdin` and `open` are absent here on purpose, and both for one reason: they
+ * are not contents but a claim of rights — a forged invitation to enter a
+ * password and a removed lock. A cell that brought such a thing with it is
+ * rejected together with the frame.
  *
- * Цена у `open` та же, что у `stdin`, и она заплачена сознательно: отмена
- * удаления ОТКРЫТОЙ ячейки приходит копией с этим полем и отказывается, а отказ
- * стоит вкладке перезагрузки. Открытых ячеек в тетради единицы, удаляет их один
- * преподаватель — а замок, который можно принести в кадре, не замок вовсе.
+ * The price for `open` is the same as for `stdin`, and it is paid knowingly:
+ * undoing the deletion of an OPEN cell arrives as a copy with this field and is
+ * refused, and a refusal costs the tab a reload. There are only a handful of
+ * open cells in a notebook, only the teacher deletes them — and a lock that can
+ * be brought in a frame is no lock at all.
  */
 const FRESH_KEYS = new Set([
   'id',
@@ -233,17 +246,17 @@ const FRESH_KEYS = new Set([
   'startedAt',
   'ranMs',
   /*
-   * И замок — но не потому, что браузеру можно его ставить.
+   * And the lock — but not because the browser is allowed to set it.
    *
-   * Отказ здесь стоил бы дороже дыры: Ctrl+Z после удаления ОТКРЫТОЙ ячейки
-   * приходит её копией вместе с полем, то есть преподаватель, отменивший своё
-   * же удаление, получал бы отказ и перезагрузку вкладки. Поэтому кадр
-   * принимается, а замок снимает сервер — `settleFresh` приводит новую ячейку
-   * к закрытой, как приводит к чистой её вывод и состояние. Вернувшаяся
-   * ячейка закрыта, и открыть её снова — одно нажатие.
+   * A refusal here would cost more than the hole: Ctrl+Z after deleting an
+   * OPEN cell arrives as its copy together with the field, that is, a teacher
+   * who undid their own deletion would get a refusal and a tab reload. So the
+   * frame is accepted, and the server removes the lock — `settleFresh` brings a
+   * new cell to closed, just as it brings its output and state to clean. The
+   * returned cell is closed, and opening it again is one click.
    */
   'open',
-  // Ручки едут вместе с замком и снимаются вместе с ним — там же, в settleFresh.
+  // The knobs travel with the lock and are removed along with it, in settleFresh.
   'council',
 ])
 
@@ -257,31 +270,31 @@ class Refusal extends Error {
 }
 
 /**
- * Набор удалений так, как его отдаёт `decodeUpdate`.
+ * A delete set as `decodeUpdate` returns it.
  *
- * Тип не экспортирован из yjs; описан здесь ровно в той части, которую читает
- * классификатор, — по клиенту список диапазонов.
+ * The type is not exported from yjs; it is described here exactly in the part
+ * the classifier reads — a list of ranges per client.
  */
 interface DeleteSet {
   clients: Map<number, { clock: number; len: number }[]>
 }
 
-/** Любая структура из кадра: Item, GC или Skip — Yjs не сужает этот тип. */
+/** Any structure from a frame: Item, GC or Skip — Yjs does not narrow this type. */
 type Struct = Y.Item | { id: Y.ID; length: number }
 
-/** Куда разрешилась ссылка: в надгробие, в свежую структуру или в живой элемент. */
+/** What a reference resolved to: a tombstone, a fresh structure or a live item. */
 type Target =
   | { kind: 'gc'; struct: Y.GC }
   | { kind: 'fresh'; struct: Y.Item }
   | { kind: 'item'; item: Y.Item }
 
-/** Место: контейнер, в котором вещь лежит, и ключ, если контейнер — Y.Map. */
+/** A place: the container the thing lies in, and the key if the container is a Y.Map. */
 interface Place {
   container: string[]
   sub: string | null
-  /** Структура, занимающая место `cells/[]` на этом пути, если он туда ведёт. */
+  /** The structure occupying the `cells/[]` spot on this path, if it leads there. */
   cell: Target | null
-  /** Создаётся ли эта ячейка прямо в этом кадре. */
+  /** Whether this cell is being created in this very frame. */
   cellIsFresh: boolean
 }
 
@@ -294,11 +307,11 @@ function segment(sub: string | null): string {
 }
 
 /**
- * Один разбор одного кадра.
+ * One parse of one frame.
  *
- * Класс, а не набор функций, ради памятки разрешённых путей: удаление ячейки,
- * которая считалась, задевает шестнадцать элементов, и разрешать их родителей
- * по одному значило бы шестнадцать раз пройти дерево до корня.
+ * A class, not a set of functions, for the memo of resolved paths: deleting a
+ * cell that has been run touches sixteen items, and resolving their parents one
+ * by one would mean walking the tree to the root sixteen times.
  */
 class Frame {
   private readonly byClient = new Map<number, Y.Item[]>()
@@ -349,26 +362,27 @@ class Frame {
   }
 
   /**
-   * Разрешение ссылки — и вся безопасность гейта держится на нём.
+   * Resolving a reference — and the whole security of the gate rests on it.
    *
-   * Такт выше того, что сервер видел, значит: этого содержимого у сервера нет.
-   * Если оно есть в этом же кадре — разрешаем через кадр. Если нет — отказ, и
-   * никогда не «пропустим, разберёмся потом».
+   * A clock above what the server has seen means: the server does not have
+   * this content. If it is in this same frame, we resolve through the frame. If
+   * not — a refusal, and never "let it through, sort it out later".
    *
-   * Пропустить нельзя, и это измерено, а не выведено: кадр из нуля структур с
-   * одним диапазоном удаления, начинающимся на текущем такте ведущего, Yjs
-   * кладёт в `store.pendingDs` и переприменяет внутри каждого следующего
-   * `applyUpdate`. Ведущий печатает « world» — у него на экране «hello world»,
-   * на сервере «hello», и каждое следующее нажатие удаляется по прибытии.
-   * Молча. Навсегда.
+   * Letting it through is impossible, and that was measured, not deduced: a
+   * frame of zero structures with one delete range starting at the host's
+   * current clock is put by Yjs into `store.pendingDs` and re-applied inside
+   * every following `applyUpdate`. The host types " world" — their screen says
+   * "hello world", the server "hello", and every following keystroke is
+   * deleted on arrival. Silently. Forever.
    *
-   * Надгробие — не этот случай, и такт их механически разводит. Когда одна
-   * удалила ячейку, в которой печатает другой, его структура разрешается через
-   * origin на такте 8 при состоянии 16: такт ниже, `getItem` возвращает GC, и
-   * кадр проходит. Запись в надгробие не меняет ничего, что кто-нибудь увидит.
+   * A tombstone is not that case, and the clock tells them apart mechanically.
+   * When one tab deleted a cell another is typing in, the other's structure
+   * resolves through its origin at clock 8 with state 16: the clock is lower,
+   * `getItem` returns GC, and the frame passes. A write into a tombstone
+   * changes nothing anyone will see.
    *
-   * `getItem` бросает на клиенте, о котором хранилище не слышало, — поэтому
-   * проверка состояния идёт первой, а не в `catch` после.
+   * `getItem` throws on a client the store has never heard of — so the state
+   * check comes first, not in a `catch` afterwards.
    */
   private resolve(id: Y.ID, path: string): Target {
     this.step(path)
@@ -377,17 +391,17 @@ class Frame {
       if (!fresh) throw new Refusal(tr("server.referenceToContentThatIsNotIn.692803"), path)
       return { kind: 'fresh', struct: fresh }
     }
-    // Тип у `getItem` врёт: на месте собранного мусора он отдаёт GC.
+    // `getItem`'s type lies: in place of collected garbage it returns GC.
     const found = Y.getItem(this.doc.store, id) as Y.Item | Y.GC
     if (!(found instanceof Y.Item)) return { kind: 'gc', struct: found }
     return { kind: 'item', item: found }
   }
 
   /**
-   * Путь корневого типа — и заодно ячейка, внутри которой мы оказались.
+   * The path of the root type — and along the way the cell we ended up in.
    *
-   * Ячейка нужна ради сообщения человеку: «правку в ячейке N не приняли»
-   * читается, а «правку по пути cells/[]/::source/[]» — нет.
+   * The cell is needed for the message to a person: "the edit in cell N was not
+   * accepted" reads, while "the edit at path cells/[]/::source/[]" does not.
    */
   private pathOfType(type: Y.AbstractType<unknown>): {
     segs: string[]
@@ -400,7 +414,7 @@ class Frame {
       this.step(segs.join('/'))
       const item = current._item
       if (item === null) {
-        // `findRootTypeKey` бросает на оторванном типе — до неё надо дойти живым.
+        // `findRootTypeKey` throws on a detached type — it must be reached alive.
         if (!current.doc) throw new Refusal(tr("server.writeToATypeOutsideTheDocument.85d447"), segs.join('/'))
         segs.unshift(Y.findRootTypeKey(current))
         return { segs, cell }
@@ -410,7 +424,7 @@ class Frame {
       if (!(parent instanceof Y.AbstractType)) {
         throw new Refusal(tr("server.theParentCannotBeResolved.65a644"), segs.join('/'))
       }
-      // Элемент, лежащий прямо в корне cells, и есть ячейка.
+      // An item lying right in the cells root is the cell.
       if (item.parentSub === null && parent._item === null && parent.doc) {
         if (isBookRoot(Y.findRootTypeKey(parent))) cell = item
       }
@@ -419,18 +433,19 @@ class Frame {
   }
 
   /**
-   * Место вещи: где лежит и под каким ключом.
+   * The place of a thing: where it lies and under which key.
    *
-   * Родитель приходит в трёх видах, и все три встречаются на проводе: строкой
-   * (имя корня записано в байты буквально), идентификатором (элемент, в
-   * котором лежит тип) и `null`.
+   * The parent comes in three forms, and all three occur on the wire: as a
+   * string (the root's name is written into the bytes literally), as an id (the
+   * item the type lives in) and as `null`.
    *
-   * `null` — не редкость и не поломка: Yjs пишет родителя только тогда, когда
-   * у элемента нет ни левого, ни правого соседа. `meta.set('title')` поверх
-   * существующего заголовка соседа имеет — и `parentSub` на проводе НЕТ.
-   * Ключ в этом случае берётся у соседа; версия, доверяющая `struct.parentSub`,
-   * ошибётся молча и на тестах не покажется: `set('title')` и
-   * `set('kernelStatus')` дают побайтово одинаковые структуры.
+   * `null` is neither rare nor a breakage: Yjs writes the parent only when the
+   * item has neither a left nor a right neighbour. `meta.set('title')` over an
+   * existing title has a neighbour — and there is NO `parentSub` on the wire.
+   * In that case the key is taken from the neighbour; a version that trusts
+   * `struct.parentSub` will be wrong silently and will not show it in tests:
+   * `set('title')` and `set('kernelStatus')` give byte-for-byte identical
+   * structures.
    */
   private place(target: Target, path: string): Place {
     if (target.kind === 'gc')
@@ -481,7 +496,7 @@ class Frame {
         cellIsFresh: this.place(owner, path).cellIsFresh,
       }
     } else {
-      // Родителя на проводе нет — берём его у соседа, вместе с ключом.
+      // No parent on the wire — take it from the neighbour, together with the key.
       const neighbourId = struct.origin ?? struct.rightOrigin
       if (!neighbourId) throw new Refusal(tr("server.structureHasNeitherAParentNorA.62175e"), path)
       const neighbour = this.resolve(neighbourId, path)
@@ -502,7 +517,7 @@ class Frame {
     return here
   }
 
-  /** Полный путь самой вещи: место контейнера плюс её собственный сегмент. */
+  /** The full path of the thing itself: the container's place plus its own segment. */
   private slot(target: Target, path: string): string[] {
     if (target.kind === 'gc') return ['<gc>']
     const here = this.place(target, path)
@@ -510,10 +525,10 @@ class Frame {
   }
 
   /**
-   * Ячейка, внутри которой мы оказались, — если она уже живёт в документе.
+   * The cell we ended up in — if it already lives in the document.
    *
-   * `null` у свежей: её значения ещё не применены, и читаются они из кадра
-   * (`checkFresh`), а не отсюда.
+   * `null` for a fresh one: its values are not applied yet, and they are read
+   * from the frame (`checkFresh`), not from here.
    */
   private cellMapOf(place: Place): YCell | null {
     const cell = place.cell
@@ -524,36 +539,37 @@ class Frame {
     return map instanceof Y.Map ? (map as YCell) : null
   }
 
-  /** Имя ячейки, если его можно прочитать: только ради сообщения человеку. */
+  /** The cell's name, if it can be read: only for the message to a person. */
   private cellIdOf(place: Place): string | null {
     const id: unknown = this.cellMapOf(place)?.get('id')
     return typeof id === 'string' ? id : null
   }
 
   /**
-   * Открыл ли преподаватель эту ячейку.
+   * Whether the teacher opened this cell.
    *
-   * Из ДОКУМЕНТА, и только: `open` пишет сервер, так что читать его из кадра
-   * значило бы спрашивать разрешения у того, кого проверяем. Свежая ячейка
-   * открытой не бывает — поле в неё не проходит вовсе, см. FRESH_KEYS.
+   * From the DOCUMENT, and only from there: `open` is written by the server, so
+   * reading it from the frame would mean asking permission of the one being
+   * checked. A fresh cell is never open — the field does not get into it at
+   * all, see FRESH_KEYS.
    */
   private openOf(place: Place): boolean {
     const map = this.cellMapOf(place)
     return map ? isCellOpen(map) : false
   }
 
-  /** Правило для разрешённого пути. `null` — глагол, который никого не касается. */
+  /** The rule for a resolved path. `null` means a verb that concerns nobody. */
   private verdictFor(slot: string[], place: Place, op: 'insert' | 'delete'): Verdict | null {
     const path = slot.join('/')
     if (slot[0] === '<gc>') return null
 
     if (isBookRoot(slot[0])) {
       const cellId = this.cellIdOf(place)
-      // Корень — он же имя тетради в документе: по нему судят её собственный
-      // доступ (shared/rules.ts · rulesForBook). Берётся из того же места, что
-      // и путь, потому что путь с него и начинается.
+      // The root is also the notebook's name in the document: its own access
+      // is judged by it (shared/rules.ts · rulesForBook). It is taken from the
+      // same place as the path, because the path starts with it.
       const root = slot[0]
-      // Сам состав тетради.
+      // The notebook's cell list itself.
       if (slot.length === 2 && slot[1] === '[]') {
         return {
           rule: 'structure',
@@ -568,15 +584,15 @@ class Frame {
       const key = slot[2].startsWith('::') ? slot[2].slice(2) : null
       if (key === null) throw new Refusal(tr("server.writeToAnUnknownNotebookLocation.6e676f"), path)
 
-      // Ячейка, созданная этим же кадром, — часть создания целиком; её значения
-      // проверяются отдельно, в checkFresh.
+      // A cell created by this same frame is part of the creation as a whole;
+      // its values are checked separately, in checkFresh.
       if (place.cellIsFresh) return { rule: 'structure', verb: 'add', cellId, path, root }
 
       if (SERVER_OWNED.has(key)) {
         /*
-         * У замка своя фраза: «это поле пишет сервер» ничего не объясняет
-         * тому, кто пытается открыть ячейку себе сам, — а такой кадр именно
-         * так и выглядит.
+         * The lock has its own phrase: "this field is written by the server"
+         * explains nothing to someone trying to open a cell for themselves —
+         * and that is exactly what such a frame looks like.
          */
         throw new Refusal(
           key === 'open' || key === 'council'
@@ -587,17 +603,20 @@ class Frame {
       }
       if (key === 'id') throw new Refusal(tr("server.theCellIdentifierCannotBeChanged.ed6a4a"), path)
       if (key === 'source') {
-        // Внутрь текста — правка; замена самого ключа — нет: она сносит Y.Text,
-        // в котором в этот момент стоят чужие курсоры.
+        // Inside the text is an edit; replacing the key itself is not: it
+        // tears down the Y.Text in which other people's cursors sit at that
+        // moment.
         if (slot.length === 3) throw new Refusal(tr("server.theEntireCellTextIsBeingReplaced.ef575f"), path)
-        // Единственное место, где замок что-то разрешает: набор в открытой
-        // ячейке идёт при закрытой тетради — см. shared/rules.ts · mayEditCell.
+        // The only place where the lock allows anything: typing in an open
+        // cell goes on while the notebook is closed — see shared/rules.ts ·
+        // mayEditCell.
         return { rule: 'edit', cellId, path, root, open: this.openOf(place) }
       }
       if (key === 'type') {
         if (slot.length !== 3) throw new Refusal(tr("server.writeToAnUnknownNotebookLocation.6e676f"), path)
-        // Без `open`: сменить вид — это переписать ячейку целиком вместе с её
-        // выводом, то есть состав тетради, а он в лекции преподавательский.
+        // No `open`: changing the type means rewriting the cell whole together
+        // with its output, that is, the notebook's cell list, and in a lecture
+        // that belongs to the teacher.
         return { rule: 'edit', cellId, path, root }
       }
       throw new Refusal(tr("server.unknownCellField.5417fd"), path)
@@ -618,14 +637,14 @@ class Frame {
   }
 
   /**
-   * Значения новой ячейки, а не только путь.
+   * The values of a new cell, not only the path.
    *
-   * Иначе разрешение «создавать ячейки» открывало бы дыру: свежая ячейка с
-   * поддельным `stdin` рисует преподавателю приглашение ввести пароль и
-   * складывает нажатия в чужую переменную. Поле, которого нет в `FRESH_KEYS`,
-   * — отказ; всё, что ячейка вправе принести, но не вправе объявлять о себе
-   * сама (вывод, «In [7]»), сервер гасит после применения, а не отказом: см.
-   * ниже, где это разобрано целиком.
+   * Otherwise the permission "create cells" would open a hole: a fresh cell
+   * with a forged `stdin` draws the teacher an invitation to enter a password
+   * and puts the keystrokes into someone else's variable. A field not in
+   * `FRESH_KEYS` is a refusal; everything a cell may bring but may not declare
+   * about itself (output, "In [7]") the server clears after applying, not by a
+   * refusal: see below, where this is taken apart in full.
    */
   private checkFresh(fresh: Map<Y.Item, Map<string, Y.Item>>): string[] {
     const namesHere = new Set<string>()
@@ -640,18 +659,19 @@ class Frame {
         throw new Refusal(tr("server.theNewCellHasNoIdentifier.6dfd8e"), path)
       }
       /*
-       * Имя обязано быть новым. Совпадающее имя — не опечатка, а захват:
-       * «Запустить» преподавателя ищет ячейку по имени и выполнит чужой
-       * исходник.
+       * The name must be new. A matching name is not a typo but a takeover:
+       * the teacher's "Run" finds a cell by name and would execute someone
+       * else's source.
        */
       if (namesHere.has(id)) throw new Refusal(tr("server.twoNewCellsShareTheSameIdentifier.844381"), path)
       namesHere.add(id)
       /*
-       * Во ВСЕХ тетрадях комнаты, а не в одной: ячейку ищут по имени, не зная,
-       * в какой она тетради (см. `findCell`), и совпадение имён в двух разных
-       * тетрадях означало бы, что «Запустить» иногда запускает не ту.
+       * In ALL of the room's notebooks, not in one: a cell is found by name
+       * without knowing which notebook it is in (see `findCell`), and matching
+       * names in two different notebooks would mean that "Run" sometimes runs
+       * the wrong one.
        *
-       * Но совпадение — не отказ, см. ниже.
+       * But a match is not a refusal, see below.
        */
       const taken = allCellArrays(this.doc).some((cells) =>
         cells.toArray().some((c) => c instanceof Y.Map && c.get('id') === id),
@@ -666,34 +686,37 @@ class Frame {
         throw new Refusal(tr("server.theNewCellSOutputIsNot.2d985e"), path)
 
       /*
-       * Ни готовый вывод, ни «In [7]», ни занятое имя отказом не судятся, и
-       * это одно решение с двумя половинами.
+       * Neither ready output, nor "In [7]", nor a taken name is judged by a
+       * refusal, and this is one decision with two halves.
        *
-       * Обе — Ctrl+Z. Yjs отменяет удаление КОПИЕЙ, так что отмена удаления
-       * посчитавшей ячейки приходит новой ячейкой с готовым выводом; а если
-       * кто-то успел вернуть ту же ячейку из истории (возврат воссоздаёт её с
-       * ПРЕЖНИМ именем), то ещё и с занятым именем. Судилось это памятью
-       * сервера об удалениях — десять минут и тридцать штук, — и за этими
-       * границами обычный жест стоил человеку закрытого сокета, стёртого кэша
-       * и перезагрузки страницы посреди пары: ровно того, чего память и должна
-       * была не допустить.
+       * Both are Ctrl+Z. Yjs undoes a deletion with a COPY, so undoing the
+       * deletion of a cell that has been run arrives as a new cell with ready
+       * output; and if someone managed to bring the same cell back from the
+       * history (a restore recreates it with the PREVIOUS name), also with a
+       * taken name. This used to be judged by the server's memory of
+       * deletions — ten minutes and thirty items — and beyond those limits an
+       * ordinary gesture cost a person a closed socket, an erased cache and a
+       * page reload in the middle of a class: exactly what the memory was
+       * meant to prevent.
        *
-       * Отличать незачем: `ops.ts · settleFresh` и так приводит КАЖДУЮ новую
-       * ячейку к чистой и возвращает вывод из записи СЕРВЕРА, а не из кадра, —
-       * пол цел и без отказа. А занятое имя разводит наблюдатель за двойниками
-       * (collab/index.ts): он снимает именно пришедшую копию, так что подменить
-       * чужую ячейку своей по имени по-прежнему нельзя.
+       * There is no need to tell them apart: `ops.ts · settleFresh` brings
+       * EVERY new cell to clean anyway and brings output back from the
+       * SERVER's record, not from the frame — the floor holds without a
+       * refusal. And a taken name is sorted out by the duplicate watcher
+       * (collab/index.ts): it removes exactly the arrived copy, so swapping
+       * someone else's cell for your own by name is still impossible.
        *
-       * В `created` занятое имя не попадает: `settleFresh` ищет по имени и
-       * привёл бы к чистой ту ячейку, что уже живёт в тетради, — то есть стёр
-       * бы комнате чужой вывод по одному совпадению.
+       * A taken name does not go into `created`: `settleFresh` searches by
+       * name and would bring to clean the cell that already lives in the
+       * notebook — that is, erase someone else's output for the room over one
+       * coincidence.
        */
       if (!taken) created.push(id)
     }
     return created
   }
 
-  /** Разбор всего кадра. Бросает `Refusal` — кадр не применяется целиком. */
+  /** Parse the whole frame. Throws `Refusal` — the frame is not applied at all. */
   judge(): {
     verdicts: Verdict[]
     retyped: string[]
@@ -703,7 +726,7 @@ class Frame {
     const verdicts: Verdict[] = []
     const seen = new Set<string>()
     const retyped: string[] = []
-    /** Свежие ячейки: карта ключей, которые кадр в них кладёт. */
+    /** Fresh cells: the map of keys the frame puts into them. */
     const fresh = new Map<Y.Item, Map<string, Y.Item>>()
 
     const keep = (verdict: Verdict | null): void => {
@@ -719,13 +742,13 @@ class Frame {
     for (const struct of this.dec.structs) {
       if (!isItem(struct)) continue
       /*
-       * Новизна — не оптимизация, а то, что даёт гейту пережить обычную
-       * перезагрузку страницы. `y-indexeddb` переигрывает локальный кэш при
-       * каждом открытии, а `y-websocket` пересылает всё, что не он сам, — то
-       * есть каждый браузер заново предлагает серверу весь свой документ,
-       * вместе с `terminal`, `chat` и выводами. Без этой проверки такой кадр
-       * отказывался бы в любой комнате, при любых правилах, а предписанная
-       * перестройка стирала бы студенту кэш.
+       * Novelty is not an optimization but what lets the gate survive an
+       * ordinary page reload. `y-indexeddb` replays the local cache on every
+       * open, and `y-websocket` forwards everything that is not itself — that
+       * is, every browser offers the server its whole document anew, along
+       * with `terminal`, `chat` and outputs. Without this check such a frame
+       * would be refused in any room, under any rules, and the prescribed
+       * rebuild would erase the student's cache.
        */
       if (struct.id.clock + struct.length <= Y.getState(this.doc.store, struct.id.client)) continue
 
@@ -739,12 +762,12 @@ class Frame {
         const cell = place.cell.struct
         const keys = fresh.get(cell) ?? new Map<string, Y.Item>()
         fresh.set(cell, keys)
-        // Ключи ячейки лежат на глубине 3; глубже — уже содержимое.
+        // A cell's keys lie at depth 3; deeper is already content.
         if (slot.length === 3 && slot[2].startsWith('::')) keys.set(slot[2].slice(2), struct)
         else if (slot.length > 3 && slot[2] !== '::source') {
-          // Готовый вывод у новой ячейки в документе не остаётся: сервер
-          // приводит всякую новую ячейку к чистой сразу после применения
-          // (ops.ts · settleFresh). Всё прочее содержимое — отказ.
+          // Ready output does not stay on a new cell in the document: the
+          // server brings every new cell to clean right after applying
+          // (ops.ts · settleFresh). All other content is a refusal.
           if (slot[2] !== '::outputs') {
             throw new Refusal(tr("server.theNewCellContainsPresetContent.c75536"), slot.join('/'))
           }
@@ -771,15 +794,16 @@ class Frame {
           const step = Math.max(1, struct.id.clock + struct.length - clock)
           clock += step
           /*
-           * Надгробие — целиком, а не по такту. Стояло `clock += 1`, и это
-           * измерено на живой комнате: девять вычищенных лент оракула дали
-           * 122 тысячи тактов собранного мусора, обход упирался в MAX_WALK, и
-           * каждое переподключение каждой вкладки отказывалось «кадр слишком
-           * велик» — навсегда, потому что набор удалений не убывает. Сейчас
-           * тот же набор стоит около шести тысяч шагов.
+           * A tombstone as a whole, not clock by clock. It used to be
+           * `clock += 1`, and this was measured on a live room: nine
+           * cleaned-out oracle feeds gave 122 thousand clocks of collected
+           * garbage, the walk hit MAX_WALK, and every reconnection of every
+           * tab was refused with "frame too large" — forever, because the
+           * delete set does not shrink. Now the same set costs about six
+           * thousand steps.
            */
           if (target.kind === 'gc') continue
-          // Уже удалённое ничего не меняет — и это тот же кэш из IndexedDB.
+          // Already deleted changes nothing — the same IndexedDB cache again.
           if (target.kind === 'item' && target.item.deleted) continue
           keep(this.verdictFor(...this.outermost(target)))
         }
@@ -793,21 +817,22 @@ class Frame {
   }
 
   /**
-   * Нажатия одного клиента идут подряд, и кадр обязан продолжать ровно с того
-   * такта, на котором сервер этого клиента видел.
+   * One client's keystrokes come in a row, and a frame must continue exactly
+   * from the clock at which the server saw that client.
    *
-   * Иначе Yjs принимает структуру с дырой перед ней и кладёт в `pendingStructs`
-   * — навсегда, потому что недостающий такт уже не придёт: тот кадр гейт
-   * отказал. Отказанное не исчезает: подвисшее едет в снимок, в каждый step2
-   * серверу и обратно каждой вкладке, и гейт судит его заново на каждом
-   * переподключении. В закрытой комнате это отказ каждому студенту при каждом
-   * входе. Измерено на живой комнате: 140 КБ подвисших нажатий в снимке после
-   * одного утра.
+   * Otherwise Yjs accepts a structure with a gap before it and puts it into
+   * `pendingStructs` — forever, because the missing clock will not come: the
+   * gate refused that frame. What was refused does not disappear: the stuck
+   * part goes into the snapshot, into every step2 to the server and back to
+   * every tab, and the gate judges it anew on every reconnection. In a closed
+   * room that is a refusal to every student on every entry. Measured on a live
+   * room: 140 KB of stuck keystrokes in the snapshot after one morning.
    *
-   * И вторая половина той же дыры — обход правил: структуру с дырой гейт судил
-   * бы, а применить её нельзя, так что она ждала бы в pending и встала бы в
-   * документ вместе с недостающим тактом — уже без суда. Поэтому дыра — отказ,
-   * а не пропуск. `Skip` — та же дыра, записанная явно.
+   * And the second half of the same hole is bypassing the rules: the gate would
+   * judge a structure with a gap, but it cannot be applied, so it would wait in
+   * pending and get into the document together with the missing clock —
+   * already without judgement. So a gap is a refusal, not a pass. `Skip` is the
+   * same gap, written explicitly.
    */
   private checkContiguity(): void {
     const byClient = new Map<number, Struct[]>()
@@ -825,7 +850,7 @@ class Frame {
       for (const struct of structs) {
         this.step(`${CELLS_KEY}#${client}`)
         const end = struct.id.clock + struct.length
-        // Уже известное — тот же кэш из IndexedDB, что и в разборе структур.
+        // Already known — the same IndexedDB cache as in the structure parse.
         if (end <= expected) continue
         if (struct.id.clock > expected) {
           throw new Refusal(
@@ -839,19 +864,20 @@ class Frame {
   }
 
   /**
-   * Самый внешний предок, удаляемый этим же кадром, — и приговор выносится ему.
+   * The outermost ancestor deleted by this same frame — and the verdict is
+   * passed on it.
    *
-   * Правило «взять внешний элемент диапазона» здесь неверно, и это измерено:
-   * удаление одной ячейки, которая хоть раз считалась, даёт диапазоны под
-   * ДВУМЯ клиентами — кроме браузера, свой такт есть у сервера, писавшего
-   * `outputs` и `state`. Внутри серверного диапазона внешний элемент — это
-   * запись вывода, которую пол объявляет серверной, так что по тому правилу
-   * любое законное удаление посчитавшей ячейки отказывалось бы в любой
-   * комнате при разрешающих умолчаниях.
+   * The rule "take the outer item of the range" is wrong here, and that was
+   * measured: deleting one cell that has ever been run gives ranges under TWO
+   * clients — besides the browser, the server that wrote `outputs` and `state`
+   * has its own clock. Inside the server's range the outer item is an output
+   * record, which the floor declares server-owned, so under that rule any
+   * legitimate deletion of a cell that has been run would be refused in any
+   * room under permissive defaults.
    *
-   * По вложенности удаление ячейки с выводом сворачивается из шестнадцати
-   * путей в ровно один приговор — «удаление, родитель которого корень cells» —
-   * и пятнадцать поглощённых.
+   * By nesting, deleting a cell with output folds from sixteen paths into
+   * exactly one verdict — "a deletion whose parent is the cells root" — and
+   * fifteen absorbed ones.
    */
   private outermost(target: Target): [string[], Place, 'delete'] {
     let best = target
@@ -869,7 +895,7 @@ class Frame {
     return [this.slot(best, ''), this.place(best, ''), 'delete']
   }
 
-  /** Элемент, в котором лежит контейнер этой вещи, — на один уровень выше. */
+  /** The item holding this thing's container — one level up. */
   private ownerOf(target: Target): Target | null {
     if (target.kind === 'gc') return null
     if (target.kind === 'item') {
@@ -886,7 +912,7 @@ class Frame {
   }
 }
 
-/** Значение простого ключа Y.Map из структуры кадра. */
+/** The value of a simple Y.Map key from a frame structure. */
 function valueOf(struct: Y.Item | undefined): unknown {
   if (!struct) return undefined
   const content = struct.content
@@ -903,7 +929,7 @@ function isType(struct: Y.Item | undefined, kind: unknown): boolean {
 }
 
 /**
- * Разобрать кадр. Не применяет ничего и не трогает документ.
+ * Parse a frame. Applies nothing and does not touch the document.
  */
 export function classify(
   doc: Y.Doc,
@@ -922,38 +948,40 @@ export function classify(
     return { ok: true, verdicts, retyped, created, removed }
   } catch (err) {
     if (err instanceof Refusal) return { ok: false, why: err.why, path: err.path }
-    // Развалившийся разбор — отказ, а не пропуск: пропустить то, что не смогли
-    // прочитать, значит выполнить это после того, как проверка перестала смотреть.
+    // A parse that fell apart is a refusal, not a pass: letting through what
+    // could not be read means executing it after the check stopped looking.
     return { ok: false, why: tr("server.theFrameCannotBeRead.c96480"), path: '' }
   }
 }
 
 /**
- * Разрешают ли правила комнаты то, что кадр делает.
+ * Whether the room's rules allow what the frame does.
  *
- * Отдельно от разбора нарочно: разбор говорит, ЧТО в кадре, и не знает ни про
- * комнату, ни про роль; правила говорят, кому это можно. Тест на разбор от
- * правил не зависит, и наоборот.
+ * Separate from parsing on purpose: parsing says WHAT is in the frame and knows
+ * neither the room nor the role; the rules say who may do it. The test of
+ * parsing does not depend on the rules, and vice versa.
  *
- * @param finished — закончено ли занятие. Влияет на две вещи.
+ * @param finished — whether the class is over. It affects two things.
  *
- * На слова — и это было единственным его делом: правила приезжают сюда
- * действующими (`db.ts · getRules`), то есть после конца пары
- * преподавательскими, и участнику откажут без всякой добавочной проверки. Но
- * по одним правилам «преподаватель закрыл тетрадь» и «занятие кончилось»
- * неотличимы, а человеку надо сказать второе — иначе он пойдёт искать
- * преподавателя, который ничего не менял.
+ * The words — and that used to be its only job: the rules arrive here as
+ * effective ones (`db.ts · getRules`), that is, after the end of the class as
+ * the teacher's, and a participant will be refused without any extra check.
+ * But by the rules alone "the teacher closed the notebook" and "the class is
+ * over" are indistinguishable, and the person needs to be told the second —
+ * otherwise they will go looking for a teacher who changed nothing.
  *
- * И на замок: открытая ячейка — право ПОВЕРХ правил, в правилах его нет вовсе,
- * и закрывает его только этот признак (`mayEditCell`). Умолчание осталось ради
- * вызовов, где занятие заведомо идёт; тот, кто судит настоящие кадры, обязан
- * его передавать — иначе открытая ячейка переживёт конец пары.
+ * And the lock: an open cell is a right ON TOP of the rules, it is not in the
+ * rules at all, and only this flag closes it (`mayEditCell`). The default is
+ * left for calls where the class is known to be going on; whoever judges real
+ * frames must pass it — otherwise an open cell will outlive the end of the
+ * class.
  */
 /**
- * @param participantId — кто прислал кадр. Нужен ровно одному вопросу: его ли
- * это личная тетрадь (shared/rules.ts · BookRule.owner). `null` — «кадр без
- * имени», и такой заведомо не автор: ошибка здесь падает в сторону отказа, а не
- * в сторону чужой личной тетради.
+ * @param participantId — who sent the frame. Needed for exactly one question:
+ * whether this is their personal notebook (shared/rules.ts · BookRule.owner).
+ * `null` means "a frame without a name", and such a sender is certainly not the
+ * author: an error here falls on the side of refusal, not on the side of
+ * someone else's personal notebook.
  */
 export function permits(
   verdicts: Verdict[],
@@ -966,16 +994,17 @@ export function permits(
   const who: Asker = { role, participantId }
   const why = (own: string): string => (acts ? own : tr(CLASS_IS_OVER))
   /*
-   * Слова отказа выбирает ТЕТРАДЬ, когда отказала она, и комната во всех
-   * остальных случаях.
+   * The words of a refusal are chosen by the NOTEBOOK when it refused, and by
+   * the room in all other cases.
    *
-   * Иначе студент, ткнувшийся в чужую личную тетрадь, читал бы «в этом семинаре
-   * печатает преподаватель» — и шёл бы к преподавателю, который ничего не
-   * запрещал: закрыл тетрадь не он, а её автор одним нажатием.
+   * Otherwise a student who poked into someone else's personal notebook would
+   * read "the teacher types in this seminar" — and would go to a teacher who
+   * forbade nothing: it was not the teacher who closed the notebook but its
+   * author, with one click.
    *
-   * После звонка всё это молчит: `why` заменяет любую свою фразу на
-   * CLASS_IS_OVER, потому что человеку важно не какое правило его остановило, а
-   * что пара кончилась.
+   * After the bell all of this is silent: `why` replaces any phrase of its own
+   * with CLASS_IS_OVER, because what matters to the person is not which rule
+   * stopped them but that the class is over.
    */
   const refusal = (verdict: Verdict, own: string): string => {
     const book = bookRefusal(rules, verdict.root, who)
@@ -991,12 +1020,12 @@ export function permits(
       }
     }
     /*
-     * Каждый приговор судится правилами СВОЕЙ тетради, а не комнаты.
+     * Each verdict is judged by the rules of ITS OWN notebook, not the room's.
      *
-     * Пересчёт на каждый приговор, а не один раз на кадр: кадр запросто несёт
-     * правки в две тетради сразу — так приходит step2 переподключившейся
-     * вкладки, у которой открыто и то и другое. `rulesForBook` в обычной
-     * комнате возвращает ТОТ ЖЕ объект, так что цена этого — сравнение ссылки.
+     * Recomputed per verdict, not once per frame: a frame easily carries edits
+     * to two notebooks at once — that is how the step2 of a reconnected tab
+     * that has both open arrives. `rulesForBook` in an ordinary room returns
+     * THE SAME object, so the cost of this is a reference comparison.
      */
     const here = rulesForBook(rules, verdict.root, who)
     if (verdict.rule === 'edit') {

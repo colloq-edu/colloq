@@ -1,29 +1,30 @@
 import { tr } from '../shared/i18n.js'
 /**
- * Занятие закончено.
+ * The class is over.
  *
- * Преподаватель нажал одну кнопку, и комната осталась жива: тетрадь, файлы,
- * лента терминала и ответы оракула на месте — но участник в ней с этой минуты
- * только читает. Обещание держит сервер, и держит его в одном месте: `getRules`
- * отдаёт действующие правила, а не хранимые, так что каждая проверка прав
- * ужесточается сама. Здесь проверяется, что она ужесточается — и что открыть
- * занятие обратно значит вернуться ровно в ту настройку, из которой его
- * закончили.
+ * The teacher pressed one button, and the room stayed alive: the notebook,
+ * the files, the terminal feed and the Oracle's answers are in place — but
+ * from that minute a participant only reads in it. The server keeps the
+ * promise, and keeps it in one place: `getRules` returns the effective rules,
+ * not the stored ones, so every rights check tightens by itself. What is
+ * checked here is that it does tighten — and that reopening the class means
+ * returning to exactly the settings it was finished from.
  *
- * Главная ловушка проверяется отдельно и через настоящий маршрут: PATCH правил
- * накладывает присланное на ТЕКУЩЕЕ, и один переключатель, нажатый после
- * звонка, записал бы ужесточение в базу навсегда — открывать занятие было бы
- * уже не во что.
+ * The main trap is checked separately and through the real route: a rules
+ * PATCH lays what was sent over the CURRENT rules, and a single toggle
+ * pressed after the bell would write the tightening into the database
+ * forever — there would be nothing left to reopen the class into.
  *
- * Ни сети, ни ядра: сокет поддельный, комната настоящая.
+ * No network, no kernel: the socket is fake, the room is real.
  *
- * Здесь стояло обещание, что промах проверки «упал бы попыткой сходить в
- * несуществующий Jupyter». Это неправда: `JUPYTER_URL` смотрит в мёртвый порт,
- * отказ соединения глотается, и до утверждения дело не доходит вовсе — а у
- * преподавателя те же нажатия туда и уходят штатно. Промах ловит другое:
- * `assert.ok(said)` — то, что отказ ПРОЗВУЧАЛ, — и отдельная проверка ниже, что
- * от нажатия не осталось следа: ячейки не переставлены, вывод не стёрт, файла
- * не завелось, документ на экран не встал.
+ * There used to be a promise here that a missed check "would fail with an
+ * attempt to reach a nonexistent Jupyter". That is untrue: `JUPYTER_URL`
+ * points at a dead port, the connection refusal is swallowed, and it never
+ * gets to an assertion at all — while for the teacher the same presses go
+ * there as a matter of course. A miss is caught by something else:
+ * `assert.ok(said)` — that the refusal WAS SAID — and a separate check below
+ * that the press left no trace: cells not moved, output not wiped, no file
+ * created, no document put on screen.
  */
 import './_env.mts'
 import { after, before, test } from 'node:test'
@@ -67,7 +68,7 @@ import {
 } from '../shared/rules.js'
 import type { ControlClientMessage, ControlServerMessage } from '../shared/protocol.js'
 
-/** Комната, где решили всё в пользу студентов: строже её сделать нечем. */
+/** Everything decided in the students' favour: no rule restricts anything. */
 const WIDE_OPEN: RoomRules = {
   ...OPEN_ROOM,
   run: 'room',
@@ -81,71 +82,73 @@ const WIDE_OPEN: RoomRules = {
   history: 'room',
 }
 
-/* ------------------------------------------------------------- сами правила */
+/* ----------------------------------------------------- the rules themselves */
 
-test('конец занятия закрывает семь прав и не трогает три поля', () => {
+test('the end of class closes seven rights and leaves three fields alone', () => {
   const after = rulesAfterClass({ ...WIDE_OPEN, oracle: 'hints', model: 'gpt-4o-mini' })
   for (const field of ['run', 'edit', 'structure', 'board', 'files', 'wipe', 'restart'] as const) {
-    assert.equal(after[field], 'host', `${field} остался открытым после звонка`)
+    assert.equal(after[field], 'host', `${field} stayed open after the bell`)
   }
-  assert.equal(after.agent, 'host', 'оракул продолжает править файлы по просьбе студента')
+  assert.equal(after.agent, 'host', "the Oracle keeps editing files at a student's request")
   /*
-   * И три поля, которых конец занятия не касается. `history` — это чтение, а
-   * ради чтения комната и остаётся открытой; `oracle` и `model` описывают не
-   * право действовать, а модель и её подробность.
+   * And the three fields the end of class does not touch. `history` is
+   * reading, and reading is exactly what the room stays open for; `oracle`
+   * and `model` describe not a right to act but the model and its level of
+   * detail.
    */
-  assert.equal(after.history, 'room', 'историю версий закрыли вместе с занятием')
+  assert.equal(after.history, 'room', 'the version history was closed together with the class')
   assert.equal(after.oracle, 'hints')
   assert.equal(after.model, 'gpt-4o-mini')
 })
 
-test('выключенный агент концом занятия не включается', () => {
-  // `off` — свойство комнаты, а не чьё-то право: смягчать его нечему.
+test('a switched-off agent is not switched on by the end of class', () => {
+  // `off` is a property of the room, not anyone's right: nothing may soften it.
   assert.equal(rulesAfterClass({ ...WIDE_OPEN, agent: 'off' }).agent, 'off')
 })
 
-test('наложить конец занятия дважды — то же, что один раз', () => {
-  // Клиент накладывает его сам, поверх хранимых правил; кадр, приехавший уже
-  // ужесточённым, не должен давать другого ответа.
+test('applying the end of class twice is the same as once', () => {
+  // The client applies it itself, on top of the stored rules; a frame that
+  // arrives already tightened must not give a different answer.
   const once = rulesAfterClass(WIDE_OPEN)
   assert.deepEqual(rulesAfterClass(once), once)
 })
 
-test('после звонка действует преподаватель, а участник смотрит', () => {
-  // Для того, что правилами не выражается: спросить оракула, ответить на input().
+test('after the bell the teacher acts and a participant watches', () => {
+  // For what the rules do not express: asking the Oracle, answering input().
   assert.equal(actsAfterClass(false, 'participant'), true)
   assert.equal(actsAfterClass(false, 'host'), true)
   assert.equal(actsAfterClass(true, 'host'), true)
   assert.equal(actsAfterClass(true, 'participant'), false)
 })
 
-/* ------------------------------------------------------------------- база */
+/* --------------------------------------------------------------- database */
 
-test('конец занятия записывается, читается и снимается', () => {
+test('the end of class is written, read and cleared', () => {
   const id = 'class-db-flag'
   createSession(id, 'Занятие', null)
   assert.equal(isFinished(id), false)
   assert.equal(finishedAt(id), null)
-  assert.equal(getSession(id)?.finishedAt, null, 'новая комната пришла законченной')
+  assert.equal(getSession(id)?.finishedAt, null, 'a new room arrived finished')
 
   const at = Date.now()
   setFinished(id, at)
   assert.equal(isFinished(id), true)
   assert.equal(finishedAt(id), at)
-  // То же время едет в GET /api/sessions/:id и в ответ на вход.
-  assert.equal(getSession(id)?.finishedAt, at, 'время не доехало до карточки комнаты')
+  // The same time goes into GET /api/sessions/:id and into the sign-in
+  // response.
+  assert.equal(getSession(id)?.finishedAt, at, "the time did not reach the room's card")
 
   setFinished(id, null)
   assert.equal(isFinished(id), false)
   assert.equal(getSession(id)?.finishedAt, null)
 })
 
-test('кэш правил узнаёт про звонок сразу, а не после перезапуска сервера', () => {
+test('the rules cache learns about the bell at once, not after a server restart', () => {
   /*
-   * Правила спрашиваются на каждый кадр, поэтому они в кэше. Кэш, прогретый до
-   * звонка, — это и есть тот случай, когда конец занятия вступал бы в силу
-   * только после перезапуска: комната на паре уже закончена, а права в ней
-   * прежние.
+   * Rules are asked for on every frame, so they are cached. A cache warmed
+   * before the bell is exactly the case where the end of class would take
+   * effect only after a restart: the room is already finished in class, yet
+   * the rights in it are the old ones.
    */
   const id = 'class-db-cache'
   createSession(id, 'Кэш', null)
@@ -153,32 +156,36 @@ test('кэш правил узнаёт про звонок сразу, а не �
   assert.equal(getRules(id).run, 'room')
 
   setFinished(id, Date.now())
-  assert.equal(getRules(id).run, 'host', 'кэш отдал вчерашние права')
+  assert.equal(getRules(id).run, 'host', "the cache gave out yesterday's rights")
   assert.equal(getRules(id).edit, 'host')
-  // А выбранное преподавателем лежит рядом и цело: его показывают в настройках.
-  assert.equal(storedRules(id).run, 'room', 'настройка потерялась')
+  // While what the teacher chose lies next to it, intact: it is what the
+  // settings show.
+  assert.equal(storedRules(id).run, 'room', 'the setting got lost')
 
-  // Правка правила посреди законченного занятия не должна стирать сам звонок.
+  // Editing a rule in the middle of a finished class must not erase the bell
+  // itself.
   setRules(id, { ...storedRules(id), history: 'host' })
-  assert.equal(isFinished(id), true, 'setRules забыл, что занятие закончено')
+  assert.equal(isFinished(id), true, 'setRules forgot that the class is over')
   assert.equal(getRules(id).run, 'host')
 
   setFinished(id, null)
-  assert.equal(getRules(id).run, 'room', 'комната вернулась не в ту настройку')
-  assert.equal(getRules(id).history, 'host', 'правка, сделанная после звонка, пропала')
+  assert.equal(getRules(id).run, 'room', 'the room came back to the wrong settings')
+  assert.equal(getRules(id).history, 'host', 'the edit made after the bell was lost')
 })
 
-/* ------------------------------------------------- маршруты: правила и вход */
+/* ------------------------------------------------ routes: rules and sign-in */
 
 /*
- * Двери комнаты и оракула — приложением (server/src/app.ts): звонок должен
- * закрывать их там, где они стоят на паре, а не в собранной рядом копии.
+ * The room's and the Oracle's doors come from the app (server/src/app.ts):
+ * the bell must close them where they stand during class, not in a copy
+ * assembled next to it.
  */
 let base = ''
 let server: http.Server
 
 before(async () => {
-  // Оракул должен быть настроен, иначе его дверь отвечает 503 до всяких прав.
+  // The Oracle must be configured, otherwise its door answers 503 before any
+  // rights.
   updateOracleSettings({
     apiKey: 'test-key',
     model: 'test-model',
@@ -194,12 +201,12 @@ before(async () => {
 after(() => server?.close())
 
 /**
- * Токен того, кем сервер его и признает.
+ * A token for whom the server will actually recognize.
  *
- * Роль решается на каждом запросе по строке участника, а не по тому, что
- * написано в токене (routes/sessions.ts · roleFor), — поэтому преподавателя
- * приходится завести по-настоящему. Идентификатор — ключ во всей таблице, а не
- * в комнате, так что он несёт имя комнаты.
+ * The role is decided on every request from the participant row, not from
+ * what the token says (routes/sessions.ts · roleFor) — so the teacher has to
+ * be created for real. The id is a key across the whole table, not within
+ * the room, so it carries the room's name.
  */
 function tokenFor(sessionId: string, role: 'host' | 'participant'): string {
   const participantId = `p_${sessionId}_${role}`
@@ -211,15 +218,16 @@ function tokenFor(sessionId: string, role: 'host' | 'participant'): string {
     role,
     tokenHost: role === 'host',
   })
-  // Старше двух минут: новичкам оракул не отвечает (routes/ai.ts · NEWCOMER_MS).
+  // Older than two minutes: the Oracle does not answer newcomers
+  // (routes/ai.ts · NEWCOMER_MS).
   return signToken({ sessionId, participantId, role, iat: Date.now() - 3 * 60_000 })
 }
 
-test('патч правил после звонка правит выбранное, а не ужесточённое', async () => {
+test('a rules patch after the bell edits the chosen rules, not the tightened ones', async () => {
   /*
-   * Та самая ловушка. Маршрут накладывает присланное на текущее — и если
-   * «текущее» будет означать действующие правила, то один переключатель,
-   * нажатый после занятия, запишет `host` во все семь полей навсегда.
+   * The very trap. The route lays what was sent over the current rules — and
+   * if "current" meant the effective rules, a single toggle pressed after
+   * class would write `host` into all seven fields forever.
    */
   const id = 'class-patch'
   createSession(id, 'Правила после звонка', null)
@@ -236,21 +244,21 @@ test('патч правил после звонка правит выбранн�
   })
   assert.equal(res.status, 200)
   const body = (await res.json()) as { rules: RoomRules }
-  assert.equal(body.rules.history, 'host', 'переключатель не сохранился')
-  assert.equal(body.rules.run, 'room', 'ответ вернул ужесточение вместо настройки')
+  assert.equal(body.rules.history, 'host', 'the toggle was not saved')
+  assert.equal(body.rules.run, 'room', 'the response returned the tightening instead of the settings')
 
-  // В базе — выбранное; действующее по-прежнему строгое.
-  assert.equal(storedRules(id).run, 'room', 'ужесточение записалось в настройку')
+  // The database holds what was chosen; the effective rules are still strict.
+  assert.equal(storedRules(id).run, 'room', 'the tightening was written into the settings')
   assert.equal(getRules(id).run, 'host')
 
-  // И занятие можно открыть обратно — комната возвращается туда, откуда ушла.
+  // And the class can be reopened — the room returns to where it left off.
   setFinished(id, null)
   assert.equal(getRules(id).run, 'room')
   assert.equal(getRules(id).edit, 'room')
   assert.equal(getRules(id).history, 'host')
 })
 
-test('карточка комнаты называет время конца занятия', async () => {
+test("the room's card names the time the class ended", async () => {
   const id = 'class-card'
   createSession(id, 'Карточка', null)
   const at = Date.now()
@@ -259,26 +267,28 @@ test('карточка комнаты называет время конца з�
   const res = await fetch(`${base}/api/sessions/${id}`)
   assert.equal(res.status, 200)
   const body = (await res.json()) as { finishedAt: number | null }
-  assert.equal(body.finishedAt, at, 'экран входа не узнает, что занятие кончилось')
+  assert.equal(body.finishedAt, at, 'the sign-in screen will not know that the class is over')
 })
 
-test('оракула в законченной комнате спрашивает преподаватель', async () => {
+test('in a finished room the teacher is the one who asks the Oracle', async () => {
   /*
-   * У `oracle` нет измерения «кто» — оно про подробность ответа для всей
-   * комнаты, — поэтому право спрашивать закрывает не правило, а роль
-   * (shared/rules.ts · actsAfterClass). Отказ приходит статусом, который панель
-   * умеет объяснить, а не ошибкой в треде, которую смотрит вся комната.
+   * `oracle` has no "who" dimension — it is about the level of detail of an
+   * answer for the whole room — so the right to ask is closed not by a rule
+   * but by the role (shared/rules.ts · actsAfterClass). The refusal comes as a
+   * status the panel knows how to explain, not as an error in the thread that
+   * the whole room watches.
    */
   const id = 'class-ai'
   createSession(id, 'Оракул после звонка', null)
   setFinished(id, Date.now())
 
   const denied = await askOracle(id, 'participant')
-  assert.equal(denied.status, 403, 'участник спросил оракула после звонка')
+  assert.equal(denied.status, 403, 'a participant asked the Oracle after the bell')
   const body = (await denied.json()) as { error: string }
-  assert.ok(body.error.includes(tr(CLASS_IS_OVER)), `отказ говорит не про конец занятия: ${body.error}`)
+  assert.ok(body.error.includes(tr(CLASS_IS_OVER)), `the refusal is not about the end of class: ${body.error}`)
 
-  // Преподавателю — та же дверь, что и до звонка: разбор он дописывает сам.
+  // For the teacher it is the same door as before the bell: they finish the
+  // review themselves.
   assert.equal((await askOracle(id, 'host')).status, 202)
 })
 
@@ -293,9 +303,9 @@ function askOracle(sessionId: string, role: 'host' | 'participant'): Promise<Res
   })
 }
 
-/* ----------------------------------------------------- управляющий сокет */
+/* -------------------------------------------------------- control socket */
 
-/** Ровно то, что читает `send`: состояние, приём кадра и подписка на закрытие. */
+/** Exactly what `send` reads: state, frame intake and the close subscription. */
 function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
   const heard: ControlServerMessage[] = []
   const handlers = new Map<string, ((...args: unknown[]) => void)[]>()
@@ -321,7 +331,7 @@ const who = (sessionId: string, role: 'host' | 'participant'): TokenPayload => (
   role,
 })
 
-/** Что сказал сервер в ответ на это сообщение. `null` — не сказал ничего. */
+/** What the server said in reply to this message; `null` if it said nothing. */
 function say(sessionId: string, role: 'host' | 'participant', message: ControlClientMessage) {
   const seat = socket()
   dispatch(seat.ws, sessionId, who(sessionId, role), message)
@@ -336,7 +346,7 @@ const classFrame = (heard: ControlServerMessage[]) =>
 
 let rooms = 0
 
-/** Комната, где разрешено всё, что можно разрешить, — и с файлами для нажатий. */
+/** A room where all that can be allowed is allowed, with files to press on. */
 function room(): string {
   const id = `class-ctl-${++rooms}`
   createSession(id, 'Занятие', null)
@@ -347,9 +357,9 @@ function room(): string {
 }
 
 /**
- * Всё, что меняет комнату или будит ядро. Ни одно из них не должно дойти до
- * действия: ячейка не встанет в очередь, оболочка не откроется, файл не
- * заведётся.
+ * Everything that changes the room or wakes the kernel. None of these may
+ * reach the action: a cell does not get queued, a shell does not open, a
+ * file does not get created.
  */
 const CLOSED: ControlClientMessage[] = [
   { t: 'run', cellId: 'c_nope' },
@@ -365,36 +375,36 @@ const CLOSED: ControlClientMessage[] = [
   { t: 'restart' },
 ]
 
-test('после звонка участник упирается во всё, чем комната меняется', () => {
+test('after the bell a participant hits a wall on everything that changes the room', () => {
   const id = room()
   setFinished(id, Date.now())
   for (const message of CLOSED) {
     const said = say(id, 'participant', message)
-    assert.ok(said, `${message.t} прошло у участника`)
+    assert.ok(said, `${message.t} went through for a participant`)
     /*
-     * И фраза одна на все отказы. Человеку сейчас неинтересно, какое правило
-     * его остановило: услышать «в этом семинаре запускает преподаватель» —
-     * значит пойти искать преподавателя, который ничего не менял.
+     * And one sentence for all refusals. Right now a person does not care
+     * which rule stopped them: hearing "in this class the teacher runs code"
+     * means going off to look for a teacher who changed nothing.
      */
     assert.ok(
       said.includes(tr(CLASS_IS_OVER)),
-      `${message.t} отказал правилом, а не концом занятия: ${said}`,
+      `${message.t} was refused by a rule, not by the end of class: ${said}`,
     )
   }
 })
 
-test('отказ после звонка — это ещё и отсутствие следа, а не только слово', () => {
+test('a refusal after the bell also means no trace, not just a word', () => {
   /*
-   * Слово легко: `assert.ok(said)` ловит промах проверки, но не ловит проверку,
-   * которая ОТКАЗАЛА ПОСЛЕ действия. Здесь нажимают по настоящей ячейке и по
-   * настоящему файлу, а потом смотрят на комнату: она обязана быть той же,
-   * какой была до нажатий.
+   * The word is easy: `assert.ok(said)` catches a missed check but not a
+   * check that REFUSED AFTER the action. Here presses go to a real cell and a
+   * real file, and then the room is examined: it must be the same as it was
+   * before the presses.
    */
   const id = room()
   const { doc } = getSessionDoc(id)
   const cells = getCells(doc)
   const before = cells.toArray().map((cell) => cell.get('id') as string)
-  assert.ok(before.length >= 2, 'в стартовой тетради нечего переставлять')
+  assert.ok(before.length >= 2, 'the starting notebook has nothing to move')
   doc.transact(() => {
     const out = new Y.Map<unknown>()
     out.set('kind', 'stream')
@@ -410,70 +420,71 @@ test('отказ после звонка — это ещё и отсутстви
     { t: 'clearOutputs' },
     { t: 'board:open', name: 'lecture.pdf' },
   ] as ControlClientMessage[]) {
-    assert.ok(say(id, 'participant', message), `${message.t} прошло у участника`)
+    assert.ok(say(id, 'participant', message), `${message.t} went through for a participant`)
   }
 
   assert.deepEqual(
     cells.toArray().map((cell) => cell.get('id') as string),
     before,
-    'ячейки переставились, а отказ прозвучал',
+    'the cells moved, yet the refusal was sent',
   )
-  assert.equal(cells.get(0).get('state'), 'idle', 'ячейка встала в очередь после отказа')
+  assert.equal(cells.get(0).get('state'), 'idle', 'the cell was queued after the refusal')
   assert.equal(
     (cells.get(0).get('outputs') as Y.Array<unknown>).length,
     1,
-    'вывод пары стёрт после отказа',
+    "the class's output was wiped after the refusal",
   )
   assert.equal(
     listFiles(id).some((entry) => entry.path === 'заметка.txt'),
     false,
-    'файл завёлся после отказа',
+    'the file was created after the refusal',
   )
-  assert.equal(boardOf(id), null, 'документ встал на общий экран после отказа')
+  assert.equal(boardOf(id), null, 'the document went onto the shared screen after the refusal')
 })
 
-test('а преподаватель в законченной комнате может всё то же, что и до звонка', () => {
-  // Разбор дописывают после пары, и дописывает его тот, кто её вёл.
+test('while the teacher in a finished room can do everything they could before the bell', () => {
+  // The review is finished after class, and it is finished by whoever taught
+  // it.
   const id = room()
   setFinished(id, Date.now())
   for (const message of CLOSED) {
-    assert.equal(say(id, 'host', message), null, `${message.t} отказано преподавателю`)
+    assert.equal(say(id, 'host', message), null, `${message.t} was refused to the teacher`)
   }
 })
 
-test('пока занятие идёт, ни один из этих отказов не звучит', () => {
-  // Правило, которое отказывает всем, — не правило: те же десять нажатий в той
-  // же комнате обязаны проходить, пока звонка не было.
+test('while the class is running, none of these refusals is heard', () => {
+  // A rule that refuses everyone is not a rule: the same ten presses in the
+  // same room must go through while there has been no bell.
   const id = room()
   for (const message of CLOSED) {
-    assert.equal(say(id, 'participant', message), null, `${message.t} отказано до звонка`)
+    assert.equal(say(id, 'participant', message), null, `${message.t} was refused before the bell`)
   }
 })
 
-test('закончить занятие может преподаватель, а участник — нет', () => {
+test('the teacher can end the class, a participant cannot', () => {
   const id = room()
 
-  assert.ok(say(id, 'participant', { t: 'class:finish' }), 'участник закончил занятие молча')
-  assert.equal(isFinished(id), false, 'занятие закончил участник')
+  assert.ok(say(id, 'participant', { t: 'class:finish' }), 'a participant ended the class silently')
+  assert.equal(isFinished(id), false, 'a participant ended the class')
 
   assert.equal(say(id, 'host', { t: 'class:finish' }), null)
-  assert.equal(isFinished(id), true, 'преподаватель нажал, а занятие идёт')
-  assert.ok(say(id, 'participant', { t: 'run', cellId: 'c_nope' }), 'запуск остался открытым')
+  assert.equal(isFinished(id), true, 'the teacher pressed, yet the class is still running')
+  assert.ok(say(id, 'participant', { t: 'run', cellId: 'c_nope' }), 'running stayed open')
 
-  // Обратное движение — одним нажатием, и тоже преподавательское: пара
-  // заканчивается раньше, чем понадобилось дописать одну ячейку.
-  assert.ok(say(id, 'participant', { t: 'class:resume' }), 'участник открыл занятие сам')
+  // The reverse move takes one press, and it is the teacher's too: a class
+  // sometimes ends before one more cell needed finishing.
+  assert.ok(say(id, 'participant', { t: 'class:resume' }), 'a participant reopened the class themselves')
   assert.equal(say(id, 'host', { t: 'class:resume' }), null)
   assert.equal(isFinished(id), false)
-  assert.equal(say(id, 'participant', { t: 'run', cellId: 'c_nope' }), null, 'права не вернулись')
-  assert.equal(storedRules(id).run, 'room', 'настройка не пережила конца занятия')
+  assert.equal(say(id, 'participant', { t: 'run', cellId: 'c_nope' }), null, 'the rights did not come back')
+  assert.equal(storedRules(id).run, 'room', 'the settings did not survive the end of class')
 })
 
-test('о звонке комната узнаёт кадром, а опоздавший — из приветствия', () => {
+test('the room learns about the bell from a frame, and a latecomer from the welcome', () => {
   /*
-   * Отдельным кадром, а не полем в `rules`: хранимые правила при этом не
-   * меняются. И в приветственной пачке — иначе вкладка, чей сокет моргнул
-   * поперёк звонка, живёт с открытыми кнопками до конца дня.
+   * As a separate frame, not a field in `rules`: the stored rules do not
+   * change. And in the welcome batch — otherwise a tab whose socket blinked
+   * across the bell lives with open buttons until the end of the day.
    */
   const id = room()
   const seat = socket()
@@ -482,18 +493,18 @@ test('о звонке комната узнаёт кадром, а опозда�
   handleControlSocket(desk.ws, id, who(id, 'host'))
 
   const greeting = classFrame(seat.heard)
-  assert.ok(greeting, 'в приветственной пачке нет кадра о занятии')
-  assert.equal(greeting.finishedAt, null, 'идущее занятие приехало законченным')
+  assert.ok(greeting, 'the welcome batch has no class frame')
+  assert.equal(greeting.finishedAt, null, 'a running class arrived finished')
 
   seat.heard.length = 0
   dispatch(desk.ws, id, who(id, 'host'), { t: 'class:finish' })
 
   const told = classFrame(seat.heard)
-  assert.ok(told, 'комнате не сказали, что занятие кончилось')
+  assert.ok(told, 'the room was not told that the class had ended')
   assert.equal(typeof told.finishedAt, 'number')
   assert.equal(told.finishedAt, finishedAt(id))
 
-  // И тот, кто зашёл после звонка, узнаёт то же самое из приветствия.
+  // And whoever joins after the bell learns the same from the welcome.
   const late = socket()
   handleControlSocket(late.ws, id, who(id, 'participant'))
   assert.equal(classFrame(late.heard)?.finishedAt, finishedAt(id))
@@ -501,9 +512,12 @@ test('о звонке комната узнаёт кадром, а опозда�
   closeControlRoom(id)
 })
 
-/* --------------------------------------------------------- пульт лекции */
+/* ------------------------------------------------------ lecture console */
 
-/** Все восемь сообщений пульта — то, чем ведущий двигает лекцию всему залу. */
+/**
+ * All eight console messages: what the presenter drives the lecture with for
+ * the whole audience.
+ */
 const REMOTE: ControlClientMessage[] = [
   { t: 'lecture:page', page: 8 },
   { t: 'lecture:blank', on: true },
@@ -515,7 +529,7 @@ const REMOTE: ControlClientMessage[] = [
   { t: 'laser:off' },
 ]
 
-/** Лекция, которую ведёт студент: ровно то, ради чего есть `board: 'room'`. */
+/** A lecture presented by a student: exactly what `board: 'room'` exists for. */
 function lecture(id: string): void {
   startLecture(id, { file: 'lecture.pdf', by: 'p_participant', byName: 'Нина', color: '#d4162f' })
   turnTo(id, 7)
@@ -528,63 +542,67 @@ function lecture(id: string): void {
   })
 }
 
-test('после звонка пульт у студента-ведущего отбирают, а лекцию не гасят', () => {
+test('after the bell the console is taken from a student presenter, but the lecture is not shut down', () => {
   /*
-   * Комната, где студенты по очереди показывают своё, — не выдумка, и ведущим
-   * в ней бывает студент. Роль на пульте поэтому не спрашивается вовсе, и без
-   * звонка это правильно: страницу двигает тот, кто ведёт.
+   * A room where students take turns showing their work is not made up, and
+   * a student can be the presenter in it. So the console does not ask about
+   * the role at all, and without the bell that is right: the page is turned
+   * by whoever presents.
    */
   const id = room()
   lecture(id)
   assert.equal(say(id, 'participant', { t: 'lecture:page', page: 8 }), null)
-  assert.equal(lectureOf(id)?.page, 8, 'ведущий студент не листает и до звонка')
+  assert.equal(lectureOf(id)?.page, 8, 'the student presenter cannot turn pages even before the bell')
   turnTo(id, 7)
 
   setFinished(id, Date.now())
   for (const message of REMOTE) {
-    // Отказ здесь молчаливый, как и все отказы этого блока: кадр прилетает от
-    // вкладки, которая ещё не знает, что пара кончилась.
-    assert.equal(say(id, 'participant', message), null, `${message.t} ответил словами`)
+    // The refusal is silent here, like all refusals in this block: the frame
+    // comes from a tab that does not yet know the class is over.
+    assert.equal(say(id, 'participant', message), null, `${message.t} answered in words`)
   }
-  // Лекцию звонок не гасит: сорок минут разметки живут только в памяти.
-  assert.equal(lectureOf(id)?.file, 'lecture.pdf', 'лекция погасла вместе с занятием')
-  assert.equal(lectureOf(id)?.page, 7, 'студент листал зал после звонка')
-  assert.equal(lectureOf(id)?.blank, false, 'студент погасил экран после звонка')
-  assert.equal(inkOf(id).length, 1, 'разметку тронули после звонка')
-  assert.equal(inkOf(id)[0]?.id, 's_first', 'штрих подменили после звонка')
+  // The bell does not shut down the lecture: forty minutes of markup live only
+  // in memory.
+  assert.equal(lectureOf(id)?.file, 'lecture.pdf', 'the lecture went dark together with the class')
+  assert.equal(lectureOf(id)?.page, 7, 'a student turned pages for the audience after the bell')
+  assert.equal(lectureOf(id)?.blank, false, 'a student blanked the screen after the bell')
+  assert.equal(inkOf(id).length, 1, 'the markup was touched after the bell')
+  assert.equal(inkOf(id)[0]?.id, 's_first', 'a stroke was replaced after the bell')
 
-  // Занятие открыли обратно — пульт вернулся тому же студенту.
+  // The class was reopened, and the console went back to the same student.
   setFinished(id, null)
   assert.equal(say(id, 'participant', { t: 'lecture:page', page: 9 }), null)
-  assert.equal(lectureOf(id)?.page, 9, 'пульт не вернулся вместе с занятием')
+  assert.equal(lectureOf(id)?.page, 9, 'the console did not come back with the class')
   stopLecture(id)
 })
 
-test('после звонка лекцию ведёт преподаватель — перехватив пульт, как и раньше', () => {
+test('after the bell the teacher presents the lecture by taking over the console, as before', () => {
   const id = room()
   lecture(id)
   setFinished(id, Date.now())
 
-  // Пульт не переезжает к преподавателю сам собой: ведущий по-прежнему один.
+  // The console does not move to the teacher by itself: there is still one
+  // presenter.
   assert.equal(say(id, 'host', { t: 'lecture:page', page: 4 }), null)
-  assert.equal(lectureOf(id)?.page, 7, 'пульт достался тому, кто его не брал')
+  assert.equal(lectureOf(id)?.page, 7, 'the console went to someone who did not take it')
 
-  // Перехват — тем же `lecture:start` по тому же файлу, и разметка цела.
+  // The takeover is the same `lecture:start` on the same file, and the markup
+  // is intact.
   assert.equal(say(id, 'host', { t: 'lecture:start', file: 'lecture.pdf' }), null)
-  assert.equal(lectureOf(id)?.by, 'p_host', 'пульт не перешёл преподавателю')
-  assert.equal(lectureOf(id)?.page, 7, 'перехват начал лекцию заново')
-  assert.equal(inkOf(id).length, 1, 'перехват стёр разметку')
+  assert.equal(lectureOf(id)?.by, 'p_host', 'the console did not pass to the teacher')
+  assert.equal(lectureOf(id)?.page, 7, 'the takeover restarted the lecture')
+  assert.equal(inkOf(id).length, 1, 'the takeover erased the markup')
 
   assert.equal(say(id, 'host', { t: 'lecture:page', page: 8 }), null)
-  assert.equal(lectureOf(id)?.page, 8, 'преподаватель не листает свою же лекцию')
+  assert.equal(lectureOf(id)?.page, 8, 'the teacher cannot turn the pages of their own lecture')
   assert.equal(say(id, 'host', { t: 'ink:clear' }), null)
-  assert.equal(inkOf(id).length, 0, 'преподаватель не стирает разметку после звонка')
+  assert.equal(inkOf(id).length, 0, 'the teacher cannot erase the markup after the bell')
   stopLecture(id)
 })
 
-test('после звонка указка студента до зала не доходит', () => {
-  // У указки нет состояния — она только рассылается, и проверить её можно
-  // единственным способом: тем, что зал её не увидел.
+test("after the bell a student's laser pointer does not reach the audience", () => {
+  // The pointer has no state — it is only broadcast, and there is only one way
+  // to check it: that the audience did not see it.
   const id = room()
   const hall = socket()
   handleControlSocket(hall.ws, id, who(id, 'host'))
@@ -594,7 +612,7 @@ test('после звонка указка студента до зала не �
   say(id, 'participant', { t: 'laser', page: 7, x: 0.5, y: 0.5 })
   assert.ok(
     hall.heard.some((frame) => frame.t === 'laser'),
-    'пятно ведущего не доехало до зала и до звонка',
+    "the presenter's dot did not reach the audience even before the bell",
   )
 
   setFinished(id, Date.now())
@@ -602,16 +620,16 @@ test('после звонка указка студента до зала не �
   say(id, 'participant', { t: 'laser', page: 7, x: 0.6, y: 0.6 })
   assert.ok(
     !hall.heard.some((frame) => frame.t === 'laser'),
-    'указка студента светит залу после звонка',
+    "a student's pointer shines to the audience after the bell",
   )
 
   stopLecture(id)
   closeControlRoom(id)
 })
 
-/* -------------------------------------------------- предложение оракула */
+/* ------------------------------------------------------ Oracle proposal */
 
-/** Предложение в треде комнаты — то, у которого есть «принять» и «отклонить». */
+/** A proposal in the room thread, the kind with "accept" and "reject". */
 function propose(sessionId: string, participantId: string): string {
   const doc = getSessionDoc(sessionId).doc
   const entry = createChatEntry({
@@ -626,79 +644,83 @@ function propose(sessionId: string, participantId: string): string {
   return entry.get('id') as string
 }
 
-/** Что стало с плашкой: `open`, пока её никто не тронул. */
+/** What happened to the banner: `open` while nobody has touched it. */
 function patchStateOf(sessionId: string, entryId: string): unknown {
   return findChatEntry(getSessionDoc(sessionId).doc, entryId)?.get('patchState')
 }
 
-test('пока занятие идёт, отклонить предложение может кто угодно', () => {
-  // Снятая плашка ничего не разрушает: оракула спрашивают заново.
+test('while the class is running, anyone can reject a proposal', () => {
+  // A dismissed banner destroys nothing: the Oracle is simply asked again.
   const id = room()
   const entryId = propose(id, 'p_host')
   assert.equal(say(id, 'participant', { t: 'ai:decide', entryId, accept: false }), null)
-  assert.equal(patchStateOf(id, entryId), 'rejected', 'отклонить не вышло и до звонка')
+  assert.equal(patchStateOf(id, entryId), 'rejected', 'rejecting did not work even before the bell')
 })
 
-test('после звонка участник не отклоняет предложение — вернуть его нечем', () => {
+test('after the bell a participant cannot reject a proposal: there would be no way to get it back', () => {
   /*
-   * `rejected` ставится навсегда, а спросить оракула заново участник уже не
-   * может: снятая им плашка — это стёртая чужая работа, а не убранная подсказка.
+   * `rejected` is set forever, and a participant can no longer ask the Oracle
+   * again: a banner they dismiss is someone else's erased work, not a hint put
+   * away.
    */
   const id = room()
   const entryId = propose(id, 'p_host')
   setFinished(id, Date.now())
 
   const denied = say(id, 'participant', { t: 'ai:decide', entryId, accept: false })
-  assert.ok(denied?.includes(tr(CLASS_IS_OVER)), `отказ говорит не про конец занятия: ${denied}`)
-  assert.equal(patchStateOf(id, entryId), 'open', 'плашку сняли после звонка')
+  assert.ok(denied?.includes(tr(CLASS_IS_OVER)), `the refusal is not about the end of class: ${denied}`)
+  assert.equal(patchStateOf(id, entryId), 'open', 'the banner was dismissed after the bell')
 
-  // «Принять» закрыто правилом `edit`, и фраза у него та же.
+  // "Accept" is closed by the `edit` rule, and it has the same sentence.
   const accept = say(id, 'participant', { t: 'ai:decide', entryId, accept: true })
-  assert.ok(accept?.includes(tr(CLASS_IS_OVER)), `принять отказало правилом: ${accept}`)
+  assert.ok(accept?.includes(tr(CLASS_IS_OVER)), `accept was refused by a rule: ${accept}`)
   assert.equal(patchStateOf(id, entryId), 'open')
 
-  // Преподаватель решает и после звонка: разбор дописывает он.
+  // The teacher decides after the bell too: they are the one finishing the
+  // review.
   assert.equal(say(id, 'host', { t: 'ai:decide', entryId, accept: false }), null)
-  assert.equal(patchStateOf(id, entryId), 'rejected', 'преподавателю отказали')
+  assert.equal(patchStateOf(id, entryId), 'rejected', 'the teacher was refused')
 
-  // И занятие можно открыть обратно — право вернётся вместе с ним.
+  // And the class can be reopened — the right comes back with it.
   const second = propose(id, 'p_host')
   setFinished(id, null)
   assert.equal(say(id, 'participant', { t: 'ai:decide', entryId: second, accept: false }), null)
-  assert.equal(patchStateOf(id, second), 'rejected', 'право не вернулось с занятием')
+  assert.equal(patchStateOf(id, second), 'rejected', 'the right did not come back with the class')
 })
 
-/* ----------------------------------------------------- ящик терминала */
+/* ---------------------------------------------------- terminal drawer */
 
-test('после звонка ящик терминала открывается, но оболочку не будит', () => {
+test('after the bell the terminal drawer opens but does not wake the shell', () => {
   /*
-   * Лента общая, и после пары за ней и приходят — поэтому отказа тут нет. А
-   * поднимать контейнер и заводить новую оболочку ради чтения уже не за что.
+   * The feed is shared, and after class people come for exactly that — so
+   * there is no refusal here. But there is no longer any reason to start the
+   * container and a new shell just for reading.
    */
   const id = room()
   setFinished(id, Date.now())
 
   const seat = socket()
   dispatch(seat.ws, id, who(id, 'participant'), { t: 'term:open' })
-  assert.ok(!seat.heard.some((frame) => frame.t === 'error'), 'ящик отказался открываться словами')
-  assert.equal(terminalPhase(id), 'closed', 'чтение ленты подняло контейнер комнаты')
-  // Статус всё равно уходит: без него вкладка ждёт запуска, которого никто не
-  // начинал.
+  assert.ok(!seat.heard.some((frame) => frame.t === 'error'), 'the drawer refused to open with words')
+  assert.equal(terminalPhase(id), 'closed', "reading the feed started the room's container")
+  // The status goes out anyway: without it the tab waits for a start nobody
+  // began.
   const status = seat.heard.find(
     (frame): frame is Extract<ControlServerMessage, { t: 'terminal' }> => frame.t === 'terminal',
   )
-  assert.equal(status?.status, 'closed', 'вкладке не сказали, что оболочка спит')
+  assert.equal(status?.status, 'closed', 'the tab was not told that the shell is asleep')
 })
 
-test('а преподавателю ящик по-прежнему заводит оболочку', () => {
-  // Разбор после пары дописывает он же, и оболочка ему нужна настоящая.
+test('while for the teacher the drawer still starts the shell', () => {
+  // The teacher finishes the review after class, and needs a real shell for
+  // it.
   const id = room()
   setFinished(id, Date.now())
   dispatch(socket().ws, id, who(id, 'host'), { t: 'term:open' })
-  assert.equal(terminalPhase(id), 'starting', 'преподавателю не завели оболочку')
+  assert.equal(terminalPhase(id), 'starting', 'no shell was started for the teacher')
 })
 
-/* ------------------------------------------------ обрыв работы оракула */
+/* ------------------------------------------------ stopping Oracle work */
 
 function cancelEntry(sessionId: string, role: 'host' | 'participant', entryId: string) {
   return fetch(`${base}/api/sessions/${sessionId}/ai/cancel`, {
@@ -712,17 +734,18 @@ function cancelEntry(sessionId: string, role: 'host' | 'participant', entryId: s
 }
 
 /**
- * Кто останавливает — и это уже не про звонок.
+ * Who stops it — and this is no longer about the bell.
  *
- * Тест живёт здесь, потому что здесь стоит единственная в сюите связка
- * «маршруты оракула + настоящий преподаватель», а правило одно на обе стороны
- * звонка, и проверять его врозь значило бы делать вид, что их две.
+ * The test lives here because this is the only place in the suite with the
+ * "Oracle routes + a real teacher" combination, and the rule is the same on
+ * both sides of the bell; checking it separately would mean pretending there
+ * are two.
  */
-test('свою запись останавливает автор, чужую — только преподаватель', async () => {
+test("the author stops their own entry, only the teacher stops someone else's", async () => {
   /*
-   * «Остановить может кто угодно, это ничего не разрушает» верно ровно для
-   * своей записи. Оборвать чужой ответ — стереть работу, которую человек ждёт;
-   * оборвать чужой ход агента — бросить правку файлов на середине.
+   * "Anyone can stop it, it destroys nothing" is true exactly for one's own
+   * entry. Cutting off someone else's answer erases work a person is waiting
+   * for; cutting off someone else's agent turn leaves a file edit half done.
    */
   const id = 'class-cancel-own'
   createSession(id, 'Чей вопрос', null)
@@ -730,24 +753,25 @@ test('свою запись останавливает автор, чужую �
   const theirs = propose(id, `p_${id}_host`)
 
   const denied = await cancelEntry(id, 'participant', theirs)
-  assert.equal(denied.status, 403, 'участник оборвал чужую работу посреди пары')
+  assert.equal(denied.status, 403, "a participant cut off someone else's work in the middle of class")
   const body = (await denied.json()) as { error: string }
-  assert.match(body.error, /свой вопрос/, `отказ не назвал правило: ${body.error}`)
-  assert.ok(!body.error.includes(tr(CLASS_IS_OVER)), 'отказ сослался на звонок, которого не было')
+  assert.match(body.error, /свой вопрос/, `the refusal did not name the rule: ${body.error}`)
+  assert.ok(!body.error.includes(tr(CLASS_IS_OVER)), 'the refusal referred to a bell that never rang')
 
   assert.equal(
     (await cancelEntry(id, 'participant', mine)).status,
     200,
-    'свою запись не остановить',
+    "one's own entry cannot be stopped",
   )
-  // Преподавателю чужая нужна по-настоящему: разогнавшийся ответ висит на
-  // проекторе у всей комнаты, а спросил его кто-то из зала.
-  assert.equal((await cancelEntry(id, 'host', theirs)).status, 200, 'преподавателю отказали')
+  // The teacher really needs to stop someone else's: a runaway answer hangs on
+  // the projector in front of the whole room, and someone in the audience
+  // asked for it.
+  assert.equal((await cancelEntry(id, 'host', theirs)).status, 200, 'the teacher was refused')
 })
 
-test('после звонка правило то же самое', async () => {
-  // Звонок здесь ничего не добавляет и ничего не отнимает — и это проверяется,
-  // потому что отдельная проверка на него из маршрута ушла как лишняя.
+test('after the bell the rule is the same', async () => {
+  // The bell adds nothing here and takes nothing away — and that is checked,
+  // because a separate check for it was removed from the route as redundant.
   const id = 'class-cancel'
   createSession(id, 'Обрыв', null)
   const mine = propose(id, `p_${id}_participant`)
@@ -757,19 +781,19 @@ test('после звонка правило то же самое', async () => 
   assert.equal(
     (await cancelEntry(id, 'participant', theirs)).status,
     403,
-    'участник оборвал чужую работу после звонка',
+    "a participant cut off someone else's work after the bell",
   )
   assert.equal(
     (await cancelEntry(id, 'participant', mine)).status,
     200,
-    'свою запись, спрошенную до звонка, не остановить',
+    "one's own entry, asked before the bell, cannot be stopped",
   )
-  assert.equal((await cancelEntry(id, 'host', theirs)).status, 200, 'преподавателю отказали')
+  assert.equal((await cancelEntry(id, 'host', theirs)).status, 200, 'the teacher was refused')
 
   setFinished(id, null)
   assert.equal(
     (await cancelEntry(id, 'participant', theirs)).status,
     403,
-    'открытое обратно занятие вернуло право на чужую запись',
+    "the reopened class brought back the right to someone else's entry",
   )
 })

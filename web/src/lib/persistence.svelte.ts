@@ -105,15 +105,16 @@ export function bindLocalStore(sessionId: string, doc: Y.Doc): LocalStore {
 }
 
 /**
- * Стереть кэш комнаты так, чтобы следующая загрузка ничего не переиграла.
+ * Erase the room cache so that the next load replays nothing.
  *
- * Не `clearData()` библиотеки. Та удаляет базу целиком, а удаление базы ждёт,
- * пока её закроет КАЖДАЯ вкладка: соседняя вкладка того же семинара держит её
- * открытой, и обещание не исполняется никогда — кэш переигрывается, сервер
- * отказывает снова, и на второй перезагрузке вкладка сдаётся. Вдобавок
- * библиотека не ждёт и своего удаления: страница перезагружалась, пока запрос
- * ещё стоял в очереди. Очистка хранилищ ВНУТРИ базы не ждёт никого и
- * заканчивается до того, как отсюда вернутся.
+ * Not the library's `clearData()`. That one deletes the whole database, and
+ * deleting a database waits until EVERY tab has closed it: a neighbouring tab
+ * of the same seminar keeps it open, and the promise never settles — the
+ * cache is replayed, the server refuses again, and on the second reload the
+ * tab gives up. On top of that the library does not even wait for its own
+ * deletion: the page reloaded while the request was still queued. Clearing
+ * the stores INSIDE the database waits for nobody and finishes before this
+ * function returns.
  */
 async function wipe(store: IndexeddbPersistence, name: string): Promise<void> {
   await store.destroy().catch(() => {})
@@ -126,8 +127,9 @@ async function wipe(store: IndexeddbPersistence, name: string): Promise<void> {
       return
     }
     request.onupgradeneeded = () => {
-      // Базы не было — заводить пустую нельзя: библиотека открывает без версии
-      // и хранилищ в такой не создаст, а без них не сможет ни читать, ни писать.
+      // There was no database — an empty one must not be created: the library
+      // opens without a version and would create no stores in it, and without
+      // them it can neither read nor write.
       request.transaction?.abort()
       resolve(null)
     }

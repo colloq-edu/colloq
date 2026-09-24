@@ -1,13 +1,14 @@
 /**
- * Укреплённый профиль комнаты на docker-бэкенде (kernel/perimeter.ts).
+ * The hardened room profile on the docker backend (kernel/perimeter.ts).
  *
- * Здесь доказывается то, что иначе видно только на живой паре: какую ровно
- * строку `docker run` получает комната, какие ровно правила ставит помощник, и
- * что сервер ОТКАЗЫВАЕТ поднять комнату, когда правила не встали, — а не
- * поднимает её молча с открытой сетью. Настоящего docker в сюите нет (см.
- * `_env.mts`), поэтому docker подменяется функцией, а строки сверяются целиком.
- * Живую проверку на colima — пакеты, отказы, fork-бомбу — описывает отчёт о
- * внедрении; здесь её не повторить.
+ * This proves what could otherwise be seen only during a live class: exactly
+ * which `docker run` line a room gets, exactly which rules the helper installs,
+ * and that the server REFUSES to start a room when the rules did not go in —
+ * rather than silently starting it with an open network. There is no real
+ * docker in the suite (see `_env.mts`), so docker is replaced with a function,
+ * and the lines are compared whole. The live check on colima — packages,
+ * refusals, a fork bomb — is described in the rollout report; it cannot be
+ * repeated here.
  */
 import './_env.mts'
 import { test, afterEach } from 'node:test'
@@ -64,9 +65,9 @@ afterEach(() => {
   setLocaleResolver(() => 'ru')
 })
 
-/* ------------------------------------------------------ строка docker run */
+/* ------------------------------------------------------ the docker run line */
 
-test('комната на хосте: своя сеть, порт на петле и весь укреплённый профиль — строка целиком', () => {
+test('a room on the host: its own network, a loopback port and the whole hardened profile — the full line', () => {
   const args = withEnv({ KERNEL_MEM: undefined, KERNEL_CPUS: undefined, KERNEL_PIDS: undefined }, () =>
     runArgs({
       sessionId: 'r1',
@@ -95,11 +96,12 @@ test('комната на хосте: своя сеть, порт на петл�
     '-e', 'MKL_NUM_THREADS=2',
     '-e', 'OPENBLAS_NUM_THREADS=2',
     '-e', 'NUMEXPR_NUM_THREADS=2',
-    // Чем plotly отдаёт фигуру: без этой переменной он решает сам и решает
-    // по-разному в разных версиях — 5.x добавляет к фигуре `text/html`, а
-    // первым кадром высылает весь бандл plotly.js, пять мегабайт скрипта,
-    // который в общем документе не нужен никому (kernel/pool.ts · runArgs).
-    // Умолчание, а не запрет: `pio.renderers.default` в ячейке его перебивает.
+    // How plotly hands over a figure: without this variable it decides itself,
+    // and differently in different versions — 5.x adds `text/html` to the
+    // figure and sends the whole plotly.js bundle as the first frame, five
+    // megabytes of script nobody needs in the shared document
+    // (kernel/pool.ts · runArgs). A default, not a ban:
+    // `pio.renderers.default` in a cell overrides it.
     '-e', 'PLOTLY_RENDERER=plotly_mimetype',
     '-v', '/srv/workspace/r1:/workspace/r1',
     '--memory=4g',
@@ -112,11 +114,11 @@ test('комната на хосте: своя сеть, порт на петл�
     '--label', 'colloq.role=room',
     'colloq-kernel:base',
   ])
-  // Ни одной поблажки: ни --privileged, ни --cap-add, ни хостовой сети.
+  // Not a single concession: no --privileged, no --cap-add, no host network.
   assert.ok(!args.some((arg) => /^--(privileged|cap-add|pid=)|^--network=host$|^host$/.test(arg)), JSON.stringify(args))
 })
 
-test('контейнерная форма: общая сеть по имени, порт не публикуется, профиль тот же', () => {
+test('the container form: a shared network by name, the port is not published, the same profile', () => {
   const args = runArgs({
     sessionId: 'r2',
     env: 'base',
@@ -130,20 +132,20 @@ test('контейнерная форма: общая сеть по имени, 
   for (const flag of roomHardeningArgs()) assert.ok(args.includes(flag), flag)
 })
 
-test('потолок процессов — KERNEL_PIDS, и глупое число его не снимает', () => {
+test('the process ceiling is KERNEL_PIDS, and a silly number does not lift it', () => {
   withEnv({ KERNEL_PIDS: undefined }, () => assert.equal(pidsLimit(), 512))
   withEnv({ KERNEL_PIDS: '2048' }, () => {
     assert.equal(pidsLimit(), 2048)
     assert.ok(runArgs({ sessionId: 'p', env: 'base', mount: '/m', network: 'colloq-rooms', publish: true, gpu: null }).includes('--pids-limit=2048'))
   })
-  // Ноль, отрицательное, слово, дробь и слишком мало для Jupyter — умолчание,
-  // а не «без потолка» и не комната, которая не поднимет даже ядро.
+  // Zero, a negative, a word, a fraction and too few for Jupyter — the
+  // default, not "no ceiling" and not a room that cannot even start a kernel.
   for (const bad of ['0', '-1', 'много', '1.5', '10', '']) {
     withEnv({ KERNEL_PIDS: bad }, () => assert.equal(pidsLimit(), 512, bad))
   }
 })
 
-test('контейнер личных тетрадей: тот же профиль, но без GPU, со своей меткой и своим потолком', () => {
+test('the personal notebooks container: the same profile, but without a GPU, with its own label and its own ceiling', () => {
   const room = runArgs({
     sessionId: 'r3', env: 'base-gpu', mount: '/srv/workspace/r3',
     network: 'colloq-rooms', publish: true, gpu: '0',
@@ -155,28 +157,31 @@ test('контейнер личных тетрадей: тот же профил
     }),
   )
 
-  // Имя и метка — чтобы уборка, `colloq status` и раздача срезов отличали их.
+  // The name and the label — so that cleanup, `colloq status` and slice
+  // allocation can tell them apart.
   assert.equal(own[own.indexOf('--name') + 1], 'colloq-room-r3-own')
   assert.ok(own.includes('colloq.role=own'), JSON.stringify(own))
   assert.ok(room.includes('colloq.role=room'), JSON.stringify(room))
 
   /*
-   * Ни карты, ни метки среза, ни разделяемой памяти под неё — и это не
-   * настройка, а устройство: GPU выдаётся контейнеру целиком, а
-   * `CUDA_VISIBLE_DEVICES` студент снимает одной строкой. Срез передан
-   * намеренно: ошибка вызывающего не должна уметь отдать карту черновикам.
+   * No card, no slice label, no shared memory for it — and this is not a
+   * setting but the design: a GPU is given to a container whole, and a
+   * student removes `CUDA_VISIBLE_DEVICES` with one line. The slice is passed
+   * on purpose: a caller's mistake must not be able to hand the card to the
+   * drafts.
    */
-  assert.ok(room.includes('--gpus'), 'комната осталась без карты')
+  assert.ok(room.includes('--gpus'), 'the room was left without a card')
   assert.ok(!own.includes('--gpus'), JSON.stringify(own))
   assert.ok(!own.some((arg) => /^--label$/.test(arg) && false))
   assert.ok(!own.some((arg) => arg.startsWith('colloq.gpu=')), JSON.stringify(own))
   assert.ok(!own.some((arg) => arg.startsWith('--shm-size')), JSON.stringify(own))
 
-  // Свой потолок процессов: ядер в нём десятки, комнатных 512 не хватит.
+  // Its own process ceiling: it holds dozens of kernels, and the room's 512
+  // would not be enough.
   assert.ok(own.includes('--pids-limit=2048'), JSON.stringify(own))
   assert.ok(room.includes('--pids-limit=512'), JSON.stringify(room))
 
-  // Всё остальное — то же самое: образ, сеть, папка занятия, профиль, числа.
+  // Everything else is the same: image, network, class folder, profile, numbers.
   assert.equal(own.at(-1), room.at(-1))
   assert.equal(own[own.indexOf('--network') + 1], 'colloq-rooms')
   assert.equal(own[own.indexOf('-v') + 1], '/srv/workspace/r3:/workspace/r3')
@@ -188,13 +193,14 @@ test('контейнер личных тетрадей: тот же профил
     room.find((arg) => arg.startsWith('--memory=')),
   )
 
-  // Токен у него СВОЙ: иначе строка из черновика открывала бы Jupyter лекции.
+  // It has ITS OWN token: otherwise a line from a draft would open the
+  // lecture's Jupyter.
   const tokenOf = (args: string[]) => args.find((arg) => arg.startsWith('JUPYTER_TOKEN='))
   assert.match(tokenOf(own) ?? '', /^JUPYTER_TOKEN=[0-9a-f]{40}$/)
   assert.notEqual(tokenOf(own), tokenOf(room))
 })
 
-test('потолок процессов контейнера личных тетрадей — KERNEL_OWN_PIDS, и мусор его не снимает', () => {
+test('the process ceiling of the personal notebooks container is KERNEL_OWN_PIDS, and junk does not lift it', () => {
   withEnv({ KERNEL_OWN_PIDS: undefined }, () => assert.equal(ownPidsLimit(), 2048))
   withEnv({ KERNEL_OWN_PIDS: '4096' }, () => {
     assert.equal(ownPidsLimit(), 4096)
@@ -204,7 +210,8 @@ test('потолок процессов контейнера личных тет
   for (const bad of ['0', '-1', 'много', '1.5', '10', '']) {
     withEnv({ KERNEL_OWN_PIDS: bad }, () => assert.equal(ownPidsLimit(), 2048, bad))
   }
-  // И потолок ЖИВЫХ ядер в нём — отдельное число, тем же правилом чтения.
+  // And the ceiling on LIVE kernels in it is a separate number, read by the
+  // same rule.
   withEnv({ KERNEL_OWN_MAX: undefined }, () => assert.equal(ownKernelMax(), 40))
   withEnv({ KERNEL_OWN_MAX: '4' }, () => assert.equal(ownKernelMax(), 4))
   for (const bad of ['0', '-1', 'сорок', '1.5', '']) {
@@ -212,11 +219,12 @@ test('потолок процессов контейнера личных тет
   }
 
   /*
-   * Простой личного ядра — третье число, и у него `0` ЗНАЧАЩИЙ.
+   * The idle time of a personal kernel is a third number, and for it `0` IS
+   * MEANINGFUL.
    *
-   * У потолков ноль бессмыслен и читается как мусор; здесь это выключатель для
-   * того, у кого пара устроена иначе, и спутать их значило бы тихо включить
-   * уборку там, где её выключили.
+   * For the ceilings zero is meaningless and reads as junk; here it is a switch
+   * for someone whose class is organised differently, and mixing them up
+   * would quietly turn the sweep on where it was turned off.
    */
   withEnv({ KERNEL_OWN_IDLE_MIN: undefined }, () => assert.equal(ownIdleMinutes(), 30))
   withEnv({ KERNEL_OWN_IDLE_MIN: '5' }, () => assert.equal(ownIdleMinutes(), 5))
@@ -226,7 +234,7 @@ test('потолок процессов контейнера личных тет
   }
 })
 
-test('COLLOQ_ROOM_NETWORK: открыть можно только словом open, опечатка сеть не открывает', () => {
+test('COLLOQ_ROOM_NETWORK: only the word open opens it, a typo does not open the network', () => {
   assert.equal(roomNetworkMode({}), 'blocked')
   assert.equal(roomNetworkMode({ COLLOQ_ROOM_NETWORK: 'blocked' }), 'blocked')
   assert.equal(roomNetworkMode({ COLLOQ_ROOM_NETWORK: ' Open ' }), 'open')
@@ -234,20 +242,20 @@ test('COLLOQ_ROOM_NETWORK: открыть можно только словом o
   assert.equal(roomNetworkMode({ COLLOQ_ROOM_NETWORK: '1' }), 'blocked')
 })
 
-test('сеть комнат: своя подсеть, без ICC и без IPv6', () => {
+test('the rooms network: its own subnet, no ICC and no IPv6', () => {
   assert.deepEqual(networkCreateArgs(DEFAULT_ROOM_SUBNET), [
     'network', 'create', '--driver=bridge', '--subnet=10.213.0.0/22', '--ipv6=false',
     '-o', 'com.docker.network.bridge.enable_icc=false',
     '--label', 'colloq.kind=room-network',
     'colloq-rooms',
   ])
-  // Подсеть занята — docker выбирает сам, всё остальное то же.
+  // The subnet is taken — docker picks one itself, everything else is the same.
   assert.ok(!networkCreateArgs(null).some((arg) => arg.startsWith('--subnet')))
 })
 
-/* ---------------------------------------------------------------- адреса */
+/* ---------------------------------------------------------------- addresses */
 
-test('адреса и подсети считаются честно', () => {
+test('addresses and subnets are computed honestly', () => {
   assert.equal(ipv4InCidr('10.213.3.255', '10.213.0.0/22'), true)
   assert.equal(ipv4InCidr('10.213.4.0', '10.213.0.0/22'), false)
   assert.equal(ipv4InCidr('192.168.1.64', '192.168.0.0/16'), true)
@@ -255,12 +263,12 @@ test('адреса и подсети считаются честно', () => {
   assert.equal(ipv4InCidr('1.2.3.4', '0.0.0.0/0'), true)
   assert.equal(ipv4InCidr('300.1.1.1', '0.0.0.0/0'), false)
   assert.equal(ipv4InCidr('fe80::1', '0.0.0.0/0'), false)
-  // docker печатает подсети через пробел, v6 рядом — его отбрасываем.
+  // docker prints subnets separated by spaces, with v6 alongside — we drop it.
   assert.deepEqual(ipv4Subnets('172.19.0.0/16 fd00:dead::/64 '), ['172.19.0.0/16'])
   assert.deepEqual(ipv4Subnets(''), [])
 })
 
-test('исключение — только свои адреса сервера внутри подсети комнат', () => {
+test("the only exemption is the server's own addresses inside the rooms subnet", () => {
   const nic = (address: string, family: 'IPv4' | 'IPv6' = 'IPv4', internal = false) => ({
     address, family, internal, netmask: '', mac: '', cidr: null,
   }) as never
@@ -272,9 +280,9 @@ test('исключение — только свои адреса сервера
   assert.deepEqual(found, ['172.19.0.2'])
 })
 
-/* ------------------------------------------------------------- правила */
+/* ------------------------------------------------------------- rules */
 
-test('правила: ответы, исключения и DNS проходят, частное и сам хост — отказ; строки целиком', () => {
+test('rules: replies, exemptions and DNS pass, private ranges and the host itself are refused; full lines', () => {
   const rules = perimeterRules({ subnets: ['172.19.0.0/16'], exempt: ['172.19.0.2'] })
   const deny = BLOCKED_V4.map((range) => `-A COLLOQ-ROOMS-FWD -s 172.19.0.0/16 -d ${range} -j COLLOQ-ROOMS-DENY`)
   assert.equal(
@@ -300,14 +308,15 @@ test('правила: ответы, исключения и DNS проходят
       '',
     ].join('\n'),
   )
-  // Список закрытого — ровно то, что обещано владельцу и документации.
+  // The list of what is closed is exactly what was promised to the owner and
+  // in the documentation.
   assert.deepEqual([...BLOCKED_V4], [
     '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
     '172.16.0.0/12', '192.168.0.0/16', '224.0.0.0/4', '240.0.0.0/4',
   ])
 })
 
-test('запасной набор без REJECT отличается только действием отказа', () => {
+test('the fallback set without REJECT differs only in the refusal action', () => {
   const plan = { subnets: ['10.213.0.0/22'], exempt: [] }
   const reject = perimeterRules(plan, 'reject').split('\n')
   const drop = perimeterRules(plan, 'drop').split('\n')
@@ -318,15 +327,15 @@ test('запасной набор без REJECT отличается тольк�
   )
 })
 
-test('скрипт помощника трогает только своё и называет причину отказа', () => {
+test('the helper script touches only its own and names the reason for a refusal', () => {
   const script = perimeterScript({ subnets: ['10.213.0.0/22'], exempt: [] })
-  // iptables — того же dockerd, в его пространстве имён файлов.
+  // iptables of the same dockerd, in its mount namespace.
   assert.match(script, /nsenter -t "\$pid" -m -- "\$@"/)
   assert.match(script, /readlink "\$p\/ns\/net"/)
-  // Атомарно и без сброса чужого.
+  // Atomically and without flushing anyone else's rules.
   assert.match(script, /iptables-restore -w --noflush/)
-  assert.ok(!/iptables(-restore)? [^\n]*(-F|--flush)( |$)/m.test(script), 'скрипт установки что-то сбрасывает')
-  // Переходы — один раз, по проверке, с нашим комментарием.
+  assert.ok(!/iptables(-restore)? [^\n]*(-F|--flush)( |$)/m.test(script), 'the install script flushes something')
+  // Jumps — once, after a check, with our comment.
   assert.match(script, /-C DOCKER-USER -m comment --comment colloq-rooms -j COLLOQ-ROOMS-FWD/)
   assert.match(script, /-I DOCKER-USER 1 -m comment --comment colloq-rooms -j COLLOQ-ROOMS-FWD/)
   assert.match(script, /-I INPUT 1 -m comment --comment colloq-rooms -j COLLOQ-ROOMS-IN/)
@@ -334,7 +343,7 @@ test('скрипт помощника трогает только своё и н
   assert.match(script, /say ok\n$/)
 
   const removal = perimeterRemovalScript()
-  // Снимается ровно вставленное — по той же строке, — и только наши цепочки.
+  // Exactly what was inserted is removed — by the same line — and only our chains.
   assert.match(removal, /-D DOCKER-USER -m comment --comment colloq-rooms -j COLLOQ-ROOMS-FWD/)
   assert.match(removal, /-D INPUT -m comment --comment colloq-rooms -j COLLOQ-ROOMS-IN/)
   for (const line of removal.split('\n').filter((l) => / -[FX] /.test(l))) {
@@ -342,7 +351,7 @@ test('скрипт помощника трогает только своё и н
   }
 })
 
-test('помощник привилегирован, но живёт секунду и не тянет образ', () => {
+test('the helper is privileged, but lives for a second and does not pull an image', () => {
   assert.deepEqual(helperArgs('colloq-kernel:base', 'echo hi'), [
     'run', '--rm', '--privileged', '--pid=host', '--network=host', '--user=0:0',
     '--pull=never', '--no-healthcheck', '--label', 'colloq.kind=room-perimeter',
@@ -350,11 +359,11 @@ test('помощник привилегирован, но живёт секун�
   ])
 })
 
-/* ------------------------------------------------------------ установка */
+/* ------------------------------------------------------------ installation */
 
 interface Call { args: string[] }
 
-/** docker, который помнит вызовы и отвечает по правилам теста. */
+/** A docker that remembers calls and answers by the test's rules. */
 function fakeDocker(answer: (args: string[]) => { code: number; out: string }): { docker: DockerRun; calls: Call[] } {
   const calls: Call[] = []
   const docker: DockerRun = async (args) => {
@@ -376,20 +385,20 @@ function standardAnswers(helper: (script: string) => { code: number; out: string
   }
 }
 
-test('правила встали — комната идёт, и минуту помощник не зовётся заново', async () => {
+test('the rules went in — the room proceeds, and for a minute the helper is not called again', async () => {
   await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, async () => {
     const { docker, calls } = fakeDocker(standardAnswers(() => ({ code: 0, out: 'colloq-perimeter: ok' })))
     const target = { network: 'colloq-rooms', create: true }
     await ensureRoomPerimeter(docker, target, 'colloq-kernel:base')
     await ensureRoomPerimeter(docker, target, 'colloq-kernel:base')
     const helpers = calls.filter((call) => isHelper(call.args))
-    assert.equal(helpers.length, 1, 'помощник позван на каждый подъём')
+    assert.equal(helpers.length, 1, 'the helper is called on every start')
     assert.match(helperScript(helpers[0].args), /-A COLLOQ-ROOMS-IN -s 10\.213\.0\.0\/22 -j COLLOQ-ROOMS-DENY/)
     assert.equal(perimeterProblem(), null)
   })
 })
 
-test('правила не встали — отказ с переведённым текстом и выходом, а не открытая сеть', async () => {
+test('the rules did not go in — a refusal with translated text and a way out, not an open network', async () => {
   await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, async () => {
     const said = 'colloq-perimeter: no DOCKER-USER chain: Docker does not manage iptables on this host'
     const { docker } = fakeDocker(standardAnswers(() => ({ code: 21, out: said })))
@@ -397,7 +406,7 @@ test('правила не встали — отказ с переведённы�
 
     setLocaleResolver(() => 'ru')
     const ru = await ensureRoomPerimeter(docker, target, 'colloq-kernel:base').then(
-      () => assert.fail('комната поднялась без запрета'),
+      () => assert.fail('the room started without the block'),
       (err: unknown) => err,
     )
     assert.ok(ru instanceof RoomPerimeterError)
@@ -406,11 +415,11 @@ test('правила не встали — отказ с переведённы�
     assert.match(ru.message, /COLLOQ_ROOM_NETWORK=open/)
     assert.equal(perimeterProblem(), ru.message)
 
-    // Отказ не запоминается как успех: следующий подъём пробует снова — и на
-    // английском говорит то же самое.
+    // A refusal is not remembered as a success: the next start tries again —
+    // and says the same thing in English.
     setLocaleResolver(() => 'en')
     const en = await ensureRoomPerimeter(docker, target, 'colloq-kernel:base').then(
-      () => assert.fail('второй подъём прошёл без запрета'),
+      () => assert.fail('the second start went through without the block'),
       (err: unknown) => err,
     )
     assert.ok(en instanceof RoomPerimeterError)
@@ -419,7 +428,7 @@ test('правила не встали — отказ с переведённы�
   })
 })
 
-test('помощника не запустить (нет прав на --privileged) — тоже отказ', async () => {
+test('the helper cannot be started (no rights for --privileged) — a refusal too', async () => {
   await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, async () => {
     const { docker } = fakeDocker(
       standardAnswers(() => ({ code: 125, out: 'docker: Error response from daemon: privileged mode is not allowed.' })),
@@ -432,27 +441,27 @@ test('помощника не запустить (нет прав на --privile
   })
 })
 
-test('ответ без «ok» — не успех, даже с нулевым кодом', async () => {
+test('an answer without "ok" is not a success, even with a zero code', async () => {
   await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, async () => {
     const { docker } = fakeDocker(standardAnswers(() => ({ code: 0, out: '' })))
     await assert.rejects(ensureRoomPerimeter(docker, { network: 'colloq-rooms', create: true }, 'colloq-kernel:base'), RoomPerimeterError)
   })
 })
 
-test('COLLOQ_ROOM_NETWORK=open: правила не ставятся, прежние снимаются, отказа нет', async () => {
+test('COLLOQ_ROOM_NETWORK=open: rules are not installed, old ones are removed, no refusal', async () => {
   await withEnv({ COLLOQ_ROOM_NETWORK: 'open' }, async () => {
     const { docker, calls } = fakeDocker(standardAnswers(() => ({ code: 0, out: 'colloq-perimeter: removed' })))
     await ensureRoomPerimeter(docker, { network: 'colloq-rooms', create: true }, 'colloq-kernel:base')
     await ensureRoomPerimeter(docker, { network: 'colloq-rooms', create: true }, 'colloq-kernel:base')
     const helpers = calls.filter((call) => isHelper(call.args)).map((call) => helperScript(call.args))
-    assert.equal(helpers.length, 1, 'снимать прежнее надо один раз за запуск')
-    assert.ok(!/iptables-restore/.test(helpers[0]), 'в открытом режиме поставили запрет')
+    assert.equal(helpers.length, 1, 'the old rules must be removed once per launch')
+    assert.ok(!/iptables-restore/.test(helpers[0]), 'the block was installed in open mode')
     assert.match(helpers[0], /-D DOCKER-USER/)
     assert.equal(perimeterProblem(), null)
   })
 })
 
-test('сети комнат нет — заводится своя; подсеть занята — docker выбирает сам', async () => {
+test('no rooms network — one is created; the subnet is taken — docker picks one itself', async () => {
   await withEnv({ COLLOQ_ROOM_NETWORK: undefined, KERNEL_ROOM_SUBNET: undefined }, async () => {
     let created = false
     const { docker, calls } = fakeDocker((args) => {
@@ -472,13 +481,13 @@ test('сети комнат нет — заводится своя; подсет
     const creates = calls.filter((call) => call.args[1] === 'create')
     assert.equal(creates.length, 2)
     assert.ok(!creates[1].args.some((arg) => arg.startsWith('--subnet')))
-    // Правила — по подсети, которую сеть получила на деле.
+    // The rules follow the subnet the network actually got.
     const script = helperScript(calls.find((call) => isHelper(call.args))!.args)
     assert.match(script, /-s 172\.30\.0\.0\/16 -d 192\.168\.0\.0\/16/)
   })
 })
 
-test('названную явно подсеть молча не подменяем', async () => {
+test('an explicitly named subnet is not silently replaced', async () => {
   await withEnv({ COLLOQ_ROOM_NETWORK: undefined, KERNEL_ROOM_SUBNET: '10.99.0.0/24' }, async () => {
     const { docker, calls } = fakeDocker((args) => {
       if (args[1] === 'inspect' && args[0] === 'network') return { code: 1, out: 'No such network' }
@@ -491,7 +500,7 @@ test('названную явно подсеть молча не подменя�
   })
 })
 
-test('общую сеть compose сервер не заводит: её нет — отказ', async () => {
+test('the server does not create the shared compose network: if it is missing — a refusal', async () => {
   await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, async () => {
     const { docker, calls } = fakeDocker(() => ({ code: 1, out: 'Error: No such network: colloq' }))
     await assert.rejects(ensureRoomPerimeter(docker, { network: 'colloq', create: false }, 'colloq-kernel:base'), RoomPerimeterError)
@@ -499,7 +508,7 @@ test('общую сеть compose сервер не заводит: её нет 
   })
 })
 
-test('образа ядра нет ни одного — отказ, помощник не зовётся', async () => {
+test('there is no kernel image at all — a refusal, the helper is not called', async () => {
   await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, async () => {
     const { docker, calls } = fakeDocker((args) => {
       if (args[0] === 'network') return { code: 0, out: '10.213.0.0/22' }
@@ -512,11 +521,12 @@ test('образа ядра нет ни одного — отказ, помощ�
   })
 })
 
-test('контейнер личных тетрадей берёт СВОИ числа, если занятие их назвало', () => {
+test('the personal notebooks container takes ITS OWN numbers if the class named them', () => {
   /*
-   * Поле «Память» занятия преподаватель ставит под свою работу — под датасет,
-   * который грузит на лекции. Отсыпать столько же тридцати черновикам он не
-   * подписывался, а на машине это ровно вдвое больше памяти.
+   * The teacher sets the class "Memory" field for their own work — for the
+   * dataset they load during the lecture. They did not sign up to hand the
+   * same amount to thirty drafts, and on the machine that is exactly twice
+   * the memory.
    */
   const args = (memoryMb: number | null, cpus: number | null) =>
     runArgs({
@@ -527,11 +537,11 @@ test('контейнер личных тетрадей берёт СВОИ чи�
   assert.ok(mine.includes('--memory=2048m'), JSON.stringify(mine))
   assert.ok(mine.includes('--memory-swap=2048m'), JSON.stringify(mine))
   assert.ok(mine.includes('--cpus=1'), JSON.stringify(mine))
-  // Потоки numpy и torch считаются по ВЫДАННЫМ ядрам, а не по ядрам машины:
-  // иначе одно ядро поднимало бы тридцать потоков на нём.
+  // numpy and torch threads are counted by the ALLOCATED cores, not by the
+  // machine's cores: otherwise one core would get thirty threads on it.
   assert.ok(mine.includes('OMP_NUM_THREADS=1'), JSON.stringify(mine))
 
-  // Не назвали — прежнее поведение: столько же, сколько у комнаты.
+  // Not named — the old behaviour: the same as the room.
   const same = withEnv({ KERNEL_MEM: undefined, KERNEL_CPUS: undefined }, () => args(null, null))
   assert.ok(same.includes('--memory=4g'), JSON.stringify(same))
   assert.ok(same.includes('--cpus=2'), JSON.stringify(same))

@@ -1,20 +1,21 @@
 /**
- * Бан — глазами интерфейса.
+ * A ban through the eyes of the interface.
  *
- * Не пускает сервер, и проверять здесь нечего: у него таблица и рукопожатие.
- * Проверяется то, что видит человек, — а видит он в этой истории две вещи,
- * каждую ровно один раз, и обе необратимы по-своему.
+ * The server does the refusing, and there is nothing to check here: it has
+ * the table and the handshake. What is checked is what a person sees, and
+ * in this story they see two things, each exactly once, and both
+ * irreversible in their own way.
  *
- * Первая — окно подтверждения. Преподаватель читает его секунду и жмёт;
- * умолчав в нём про стёртые вопросы, продукт стёр бы их молча, а пообещав
- * «больше не войдёт», соврал бы про инкогнито в тот единственный момент, когда
- * ему верят.
+ * The first is the confirmation dialog. The teacher reads it for a second
+ * and presses; had it kept quiet about the erased questions, the product
+ * would erase them silently, and had it promised "will not get in again", it
+ * would lie about incognito at the one moment it is believed.
  *
- * Вторая — пометки в списке людей. Они никого не блокируют и ошибаются: метка
- * устройства не переживает инкогнито, а один адрес — это вся аудитория за одним
- * вайфаем. Поэтому проверяется не только когда подсказка появляется, но и когда
- * она молчит: догадка «возможно, вернулся» про человека, которого никто не
- * банил, — это обвинение из ничего.
+ * The second is the marks in the people list. They block nobody and they
+ * make mistakes: a device mark does not survive incognito, and one address
+ * is the whole audience behind one Wi-Fi. So it is checked not only when
+ * the hint appears but also when it stays quiet: a guess "possibly came
+ * back" about a person nobody banned is an accusation out of nothing.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -39,31 +40,31 @@ const ban = (over: Partial<Ban> = {}): Ban => ({
   ...over,
 })
 
-/* ------------------------------------------------------------------ сроки */
+/* ------------------------------------------------------------------ terms */
 
-test('срок называется часами, а не локалью браузера', () => {
+test('the term is named by the clock, not by the browser locale', () => {
   const now = new Date(2026, 8, 6, 18, 40).getTime()
-  // Тот же день: бан сняли и поставили заново под вечер.
+  // The same day: the ban was lifted and set again towards the evening.
   assert.equal(untilWords(new Date(2026, 8, 6, 23, 5).getTime(), now), 'сегодня в 23:05')
-  // Обычный случай: сутки с любого часа пары — это завтра.
+  // The usual case: a day from any hour of the class is tomorrow.
   assert.equal(untilWords(new Date(2026, 8, 7, 18, 40).getTime(), now), 'завтра в 18:40')
 })
 
-test('дальше завтра — числом, потому что «послезавтра» уже не считают', () => {
+test('beyond tomorrow it is a date, because nobody counts "the day after tomorrow"', () => {
   const now = new Date(2026, 8, 6, 18, 40).getTime()
   assert.equal(untilWords(new Date(2026, 8, 9, 9, 5).getTime(), now), '09.09 в 09:05')
 })
 
-test('полночь между сегодня и завтра — это завтра', () => {
-  // Пара кончается в 23:50, бан живёт сутки: «сегодня в 00:30» указало бы на
-  // час, который уже прошёл.
+test('midnight between today and tomorrow is tomorrow', () => {
+  // The class ends at 23:50 and the ban lives a day: "today at 00:30" would
+  // point to an hour that has already passed.
   const now = new Date(2026, 8, 6, 23, 50).getTime()
   assert.equal(untilWords(new Date(2026, 8, 7, 0, 30).getTime(), now), 'завтра в 00:30')
 })
 
-/* -------------------------------------------------------------- список */
+/* ---------------------------------------------------------------- list */
 
-test('кончившийся бан уходит из списка сам', () => {
+test('an expired ban leaves the list by itself', () => {
   const now = 1_000_000
   const live = activeBans(
     [ban({ id: 'b_1', until: now - 1 }), ban({ id: 'b_2', until: now + 1 })],
@@ -72,11 +73,11 @@ test('кончившийся бан уходит из списка сам', () =
   assert.deepEqual(
     live.map((one) => one.id),
     ['b_2'],
-    'строка «до 18:40» в семь вечера предлагает снять снятое',
+    'a "until 18:40" row at seven in the evening offers to lift what is already lifted',
   )
 })
 
-test('сверху — тот, кого удалили только что: его и снимают, если промахнулись', () => {
+test('on top is the one removed just now: that is who gets lifted after a slip', () => {
   const now = 1_000_000
   const live = activeBans(
     [
@@ -91,18 +92,18 @@ test('сверху — тот, кого удалили только что: ег
   )
 })
 
-/* ---------------------------------------------------------------- право */
+/* ---------------------------------------------------------------- right */
 
-test('штат не банится, и кнопки ему не рисуют', () => {
+test('staff cannot be banned, and no button is drawn for them', () => {
   assert.equal(mayBan('host', 'participant'), true)
-  assert.equal(mayBan('host', 'host'), false, 'преподаватель над коллегой не властен')
+  assert.equal(mayBan('host', 'host'), false, 'a teacher has no power over a colleague')
   assert.equal(mayBan('participant', 'participant'), false)
   assert.equal(mayBan('participant', 'host'), false)
 })
 
-/* -------------------------------------------------------- подтверждение */
+/* --------------------------------------------------------- confirmation */
 
-test('пульт передаёт в бан настоящего автора, даже когда на экране имя скрыто', () => {
+test('the console passes the real author into the ban, even when the name is hidden on screen', () => {
   const target = banTargetOf(
     {
       participantId: 'participant-real-id',
@@ -123,30 +124,31 @@ test('пульт передаёт в бан настоящего автора, �
   })
 })
 
-test('окно подтверждения называет всё, что случится, и ничего сверх', () => {
+test('the confirmation dialog names everything that will happen, and nothing more', () => {
   const said = banConsequences('Иван').join(' ')
-  assert.match(said, /Иван/, 'кого удаляют — имя, а не «этого участника»')
-  assert.match(said, /24 часа/, 'на сколько')
-  assert.match(said, /[Пп]опытки консилиума/, 'попытки и очередь тоже очищаются')
-  assert.match(said, /будет прервана/, 'выполняющаяся попытка останавливается')
-  assert.match(said, /других участников останутся/, 'чужая очередь сохраняется')
-  assert.match(said, /[Вв]опрос/, 'вопросы к оракулу пропадут — сам об этом никто не догадается')
-  // Обратное прежнему: окно обещало возврат вопросов восстановлением версии,
-  // а возврат кладёт обратно одни ячейки (tests/panels-ban-promise.test.mts).
-  assert.match(said, /без возможности восстановления/i, 'и что вернуть их нечем')
-  assert.doesNotMatch(said, /вопросы вернутся/i, 'обещания возврата больше нет')
-  // Единственное обещание, которое продукт сдержать не может.
-  assert.match(said, /инкогнито/i, 'бан держится на браузере, и об этом сказано')
+  assert.match(said, /Иван/, 'who is removed: the name, not "this participant"')
+  assert.match(said, /24 часа/, 'for how long')
+  assert.match(said, /[Пп]опытки консилиума/, 'attempts and the queue are cleared too')
+  assert.match(said, /будет прервана/, 'a running attempt is stopped')
+  assert.match(said, /других участников останутся/, 'the queue of others is kept')
+  assert.match(said, /[Вв]опрос/, 'questions to the oracle will vanish; nobody would guess that on their own')
+  // The reverse of before: the dialog promised the questions would come back
+  // with a version restore, while a restore puts back only the cells
+  // (tests/panels-ban-promise.test.mts).
+  assert.match(said, /без возможности восстановления/i, 'and that there is no way to bring them back')
+  assert.doesNotMatch(said, /вопросы вернутся/i, 'the promise of a return is gone')
+  // The only promise the product cannot keep.
+  assert.match(said, /инкогнито/i, 'the ban relies on the browser, and that is said')
 })
 
-/* ------------------------------------------------------------- пометки */
+/* --------------------------------------------------------------- marks */
 
-test('без пометок от сервера список людей остаётся прежним', () => {
+test('without marks from the server the people list stays as it was', () => {
   assert.deepEqual(personNotes(undefined, { bansActive: true }), [])
   assert.deepEqual(personNotes({}, { bansActive: true }), [])
 })
 
-test('«впервые, только что» живёт пять минут и уходит само', () => {
+test('"first time, just now" lives five minutes and goes away by itself', () => {
   const now = 10_000_000
   const fresh = personNotes({ firstSeenAt: now - 60_000 }, { bansActive: false, now })
   assert.deepEqual(
@@ -154,10 +156,10 @@ test('«впервые, только что» живёт пять минут и 
     ['недавно вошёл'],
   )
   const settled = personNotes({ firstSeenAt: now - FRESH_MS - 1 }, { bansActive: false, now })
-  assert.deepEqual(settled, [], 'через полпары «только что» — уже неправда')
+  assert.deepEqual(settled, [], 'half a class later "just now" is no longer true')
 })
 
-test('браузер без метки помечен и без всяких банов', () => {
+test('a browser without a mark is marked even with no bans at all', () => {
   const notes = personNotes({ device: false }, { bansActive: false })
   assert.deepEqual(
     notes.map((note) => note.text),
@@ -165,25 +167,25 @@ test('браузер без метки помечен и без всяких б�
   )
 })
 
-test('«возможно, вернулся» — только пока чей-то бан действует', () => {
+test('"possibly came back" appears only while some ban is in effect', () => {
   const mark = { device: false, sameIp: true }
   assert.deepEqual(
     personNotes(mark, { bansActive: true }).map((note) => note.text),
     ['совпадает IP-адрес'],
-    'без метки он и так — говорить это второй раз незачем',
+    'he is unmarked anyway; there is no need to say it a second time',
   )
   assert.deepEqual(
     personNotes(mark, { bansActive: false }).map((note) => note.text),
     ['браузер без метки'],
-    'один адрес — это вся аудитория за одним вайфаем, и сам по себе он не значит ничего',
+    'one address is the whole audience behind one Wi-Fi, and by itself it means nothing',
   )
 })
 
-test('у браузера с меткой совпавший адрес не значит ничего', () => {
+test('for a marked browser a matching address means nothing', () => {
   assert.deepEqual(personNotes({ device: true, sameIp: true }, { bansActive: true }), [])
 })
 
-test('догадка и новичок стоят рядом: вместе они и складываются в того, кого ищут', () => {
+test('the guess and the newcomer stand side by side: together they add up to the one being looked for', () => {
   const now = 10_000_000
   const notes = personNotes(
     { device: false, sameIp: true, firstSeenAt: now - 1000 },
@@ -195,11 +197,11 @@ test('догадка и новичок стоят рядом: вместе он�
   )
 })
 
-test('подсказка сама говорит, что может ошибаться', () => {
+test('the hint itself says it may be wrong', () => {
   const [hint] = personNotes({ device: false, sameIp: true }, { bansActive: true })
   assert.match(
     hint.why,
     /не подтверждает/i,
-    'она никого не блокирует, и человек, который по ней банит, должен это знать',
+    'it blocks nobody, and a person who bans by it must know that',
   )
 })

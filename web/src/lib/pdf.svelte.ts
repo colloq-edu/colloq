@@ -1,24 +1,26 @@
 /**
- * pdf.js приезжает только тогда, когда в комнате открыли PDF.
+ * pdf.js arrives only when a PDF is opened in the room.
  *
- * Полтора мегабайта: 448 КБ самой библиотеки и 1.2 МБ воркера. Это больше, чем
- * весь остальной интерфейс комнаты, и платить за него должен только тот, кто
- * действительно открыл документ, — а не тридцать человек на экране входа. Тот
- * же приём, что у `render.svelte.ts` и `syntax.svelte.ts`, и по той же причине.
+ * One and a half megabytes: 448 KB of the library itself and 1.2 MB of the
+ * worker. That is more than the rest of the room's interface, and only whoever
+ * actually opened a document should pay for it — not thirty people on the
+ * sign-in screen. The same trick as `render.svelte.ts` and `syntax.svelte.ts`,
+ * and for the same reason.
  *
- * Отрисовка идёт в воркере, а не в главном потоке: страница A4 с векторной
- * графикой считается десятки миллисекунд, и делать это там же, где живут
- * тетрадь и сокеты, значит подвешивать чужие нажатия.
+ * Rendering happens in a worker, not on the main thread: an A4 page with
+ * vector graphics takes tens of milliseconds, and doing that where the
+ * notebook and the sockets live means stalling other people's presses.
  */
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 
 export interface Pdf {
   /**
-   * Открыть документ по адресу.
+   * Open a document by address.
    *
-   * Именно по адресу, а не байтами: pdf.js умеет частичные запросы, и лекция на
-   * сорок мегабайт показывает первую страницу, не дожидаясь последней. Токен
-   * уходит заголовком — в строке запроса он остался бы в журналах прокси.
+   * By address precisely, not by bytes: pdf.js can do range requests, and a
+   * forty-megabyte lecture shows its first page without waiting for the last.
+   * The token goes in a header — in the query string it would stay in proxy
+   * logs.
    */
   open(url: string, token: string): Promise<PDFDocumentProxy>
 }
@@ -28,8 +30,9 @@ let inFlight: Promise<Pdf> | null = null
 
 async function importPdf(): Promise<Pdf> {
   /*
-   * Сужение — в параметре `.then`, как в render.svelte.ts: отдать Rollup весь
-   * модуль целиком значит заставить его считать живым каждый экспорт пакета.
+   * The narrowing happens in the `.then` parameter, as in render.svelte.ts:
+   * handing Rollup the whole module means making it treat every export of the
+   * package as live.
    */
   const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist').then(
     ({ getDocument, GlobalWorkerOptions }) => ({
@@ -38,16 +41,17 @@ async function importPdf(): Promise<Pdf> {
     }),
   )
   /*
-   * Воркер лежит отдельным файлом в public/, а не проходит через сборщик.
+   * The worker lies as a separate file in public/ and does not go through the
+   * bundler.
    *
-   * Он весит 365 КБ в gzip, а гейт производительности (`scripts/perf.mts`)
-   * держит потолок 250 КБ на самый большой кусок в `dist/assets` — по ВСЕМ
-   * кускам, ленивость от этого не спасает. Пропущенный через сборщик воркер
-   * покрасил бы гейт навсегда.
+   * It weighs 365 KB gzipped, and the performance gate (`scripts/perf.mts`)
+   * holds a 250 KB ceiling on the largest chunk in `dist/assets` — over ALL
+   * chunks, laziness does not save it. A worker put through the bundler would
+   * turn the gate red forever.
    *
-   * Копия обновляется шагом сборки (`npm run pdf:worker`), а не разовым
-   * копированием: разъехавшись с библиотекой по версии, pdf.js падает в
-   * консоль, а на экране остаётся пустая область.
+   * The copy is refreshed by a build step (`npm run pdf:worker`), not by a
+   * one-off copy: once it drifts from the library by version, pdf.js fails in
+   * the console, and an empty area is left on screen.
    */
   GlobalWorkerOptions.workerSrc = '/pdf/pdf.worker.min.mjs'
 
@@ -55,13 +59,13 @@ async function importPdf(): Promise<Pdf> {
     open(url, token) {
       return getDocument({
         url,
-        // Заголовком, а не строкой запроса: в строке он осел бы в журналах
-        // прокси. Маршрут файлов принимает и то и другое.
+        // In a header, not the query string: in the query string it would
+        // settle in proxy logs. The files route accepts both.
         httpHeaders: { Authorization: `Bearer ${token}` },
         /*
-         * Не тянуть документ целиком заранее: лекция на сорок мегабайт должна
-         * показать первую страницу сразу, а остальное подкачать по мере того,
-         * как до него дойдут.
+         * Do not pull the whole document in advance: a forty-megabyte lecture
+         * must show its first page at once and fetch the rest as the reader
+         * gets to it.
          */
         disableAutoFetch: true,
       }).promise
@@ -70,11 +74,11 @@ async function importPdf(): Promise<Pdf> {
 }
 
 /**
- * Идемпотентно: открытие второго документа не тянет библиотеку заново.
+ * Idempotent: opening a second document does not pull the library again.
  *
- * А вот отказ не кешируется: полтора мегабайта на семинарском вайфае обрываются
- * — и закешированное отклонение означало бы, что читалка в этой вкладке больше
- * не откроется НИКОГДА, даже по другому файлу. Следующее открытие пробует снова.
+ * But a failure is not cached: one and a half megabytes over seminar Wi-Fi do
+ * get cut off — and a cached rejection would mean the reader in this tab would
+ * NEVER open again, not even for another file. The next opening tries again.
  */
 export function loadPdf(): Promise<Pdf> {
   return (inFlight ??= importPdf()
@@ -88,7 +92,7 @@ export function loadPdf(): Promise<Pdf> {
     }))
 }
 
-/** Библиотека, если она уже здесь. Чтение внутри `$derived` перерисует по приезде. */
+/** The library, if it is already here. A read inside `$derived` redraws on arrival. */
 export function pdf(): Pdf | null {
   return loaded
 }

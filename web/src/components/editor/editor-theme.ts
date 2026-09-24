@@ -3,35 +3,38 @@ import { EditorView } from '@codemirror/view'
 import { colloqTheme } from '@/components/notebook/cm-theme'
 
 /**
- * Одежда редактора файла: та же, что у ячейки, плюс то, чего у ячейки нет.
+ * The file editor's styling: the same as the cell's, plus what the cell does
+ * not have.
  *
- * Цвета токенов, всплывающие подсказки, поиск и скобки — всё общее, и это не
- * экономия, а требование: `def` в файле обязан быть тем же `def`, что в ячейке
- * под ним, иначе экран распадается на два продукта.
+ * Token colours, tooltips, search and brackets — all shared, and that is not
+ * a saving but a requirement: a `def` in a file must be the same `def` as in
+ * the cell below it, otherwise the screen falls apart into two products.
  *
- * Своего здесь ровно три вещи, и все три — про то, что файл занимает колонку
- * целиком: поле с номерами строк, полоса поиска, которая в ячейке не бывает, и
- * запас по краям, без которого последняя строка прилипает к нижнему краю, а
- * плашка с именем соседа срезается о верхний.
+ * Exactly three things here are its own, and all three are about the file
+ * taking up the whole column: the line-number gutter, the search bar, which
+ * a cell never has, and room at the edges, without which the last line
+ * sticks to the bottom edge and a neighbour's name badge gets clipped at the
+ * top one.
  */
 const surface = EditorView.theme({
   '&': {
     height: '100%',
   },
   '.cm-scroller': {
-    // Тот же шрифт, что и в ячейках: он задан в index.css для .cm-editor и
-    // сюда доезжает сам. Здесь — только то, что относится к колонке.
+    // The same font as in the cells: it is set in index.css for .cm-editor
+    // and reaches here by itself. Only what concerns the column goes here.
     paddingBottom: '40vh',
     // Space above the first line keeps the 18px collaborator label inside
     // the scrolling file editor; notebook cells allow it to overflow instead.
     paddingTop: '20px',
   },
   /*
-   * Поле номеров отделено линией, а не воздухом.
+   * The line-number gutter is set off by a line, not by air.
    *
-   * В ячейке номеров нет вовсе: там код длиной в экран, и номер строки нечему
-   * помогать. В файле на триста строк номер — это то, чем показывают друг другу
-   * место вслух посреди семинара, и он должен читаться, не притворяясь кодом.
+   * A cell has no numbers at all: its code is a screen long, and a line
+   * number has nothing to help with. In a three-hundred-line file the number
+   * is how people point each other to a spot out loud in the middle of a
+   * seminar, and it must be readable without pretending to be code.
    */
   '.cm-gutters': {
     backgroundColor: 'transparent',
@@ -51,9 +54,10 @@ const surface = EditorView.theme({
     padding: '0 4px',
     color: 'rgb(var(--faint))',
   },
-  // Строка под курсором подсвечивается только в том редакторе, где курсор и
-  // есть. Тот же довод, что и в ячейках, — но здесь редактор один, и правило
-  // работает против одного случая: файл, открытый рядом с набором в терминале.
+  // The line under the cursor is highlighted only in the editor where the
+  // cursor actually is. The same argument as in the cells — but here there is
+  // one editor, and the rule guards against a single case: a file open next
+  // to typing in the terminal.
   '&:not(.cm-focused) .cm-activeLine': {
     backgroundColor: 'transparent !important',
   },

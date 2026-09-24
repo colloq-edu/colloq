@@ -1,111 +1,118 @@
 /**
- * Что открыто в центре экрана.
+ * What is open in the middle of the screen.
  *
- * Всё — файлы, включая тетради: тетрадь перестала быть особой вкладкой,
- * приколоченной первой, и стала тем, чем она и является, — файлом, который
- * открывается ячейками. Первая тетрадь комнаты открывается сама при первом
- * заходе; дальше она закрывается и открывается, как любой другой файл.
+ * Everything is a file, notebooks included: the notebook stopped being a
+ * special tab nailed down in first place and became what it really is — a
+ * file that opens as cells. The room's first notebook opens by itself on the
+ * first visit; after that it is closed and opened like any other file.
  *
- * Три правила, из которых состоит вся эта модель.
+ * Three rules make up this whole model.
  *
- * **Ничего открытого — это состояние, а не поломка.** Закрыв последнюю вкладку,
- * человек видит пустой центр и подсказку слева. Раньше такого состояния не
- * было, потому что тетрадь закрыть было нельзя.
+ * **Nothing open is a state, not a breakage.** Having closed the last tab,
+ * the person sees an empty center and a hint on the left. This state did not
+ * exist before, because the notebook could not be closed.
  *
- * **Общий документ — вкладка у всех.** Он приходит с сервера и появляется у
- * каждого, включая тех, кто зашёл в середине занятия. Закрыть его у комнаты
- * может тот, кому это разрешает правило; остальные могут только уйти от него,
- * и вкладка остаётся стоять.
+ * **The shared document is a tab for everyone.** It comes from the server and
+ * appears for everyone, including those who joined in the middle of a class.
+ * Whoever the rule allows can close it for the room; the rest can only move
+ * away from it, and the tab stays where it is.
  *
- * **Свои вкладки переживают перезагрузку — вместе с той, что была открыта.**
- * Список путей И показанная вкладка лежат в localStorage рядом с состоянием
- * панелей. Помнить один список было ровно половиной дела: строка вкладок после
- * F5 рисовалась целиком, а центр экрана — пустым, и человек посреди пары шёл
- * искать свою тетрадь в панели файлов заново. Файла может уже не быть — тогда
- * вкладка тихо исчезает при первом же списке файлов; это ровно то, что должно
- * случиться, и поэтому проверяется не при чтении из хранилища, а от списка
- * (`settle`).
+ * **Your own tabs survive a reload — together with the one that was open.**
+ * The list of paths AND the shown tab live in localStorage next to the panel
+ * state. Remembering just the list was exactly half the job: after F5 the tab
+ * row was drawn in full, but the center of the screen was empty, and a person
+ * in the middle of a class went looking for their notebook in the file panel
+ * all over again. The file may no longer exist — then the tab quietly
+ * disappears at the very first file list; that is exactly what should happen,
+ * which is why it is checked not when reading from storage but against the
+ * list (`settle`).
  */
 
-/** Ключ вкладки: путь файла, или `null` — не открыто ничего. */
+/** Tab key: a file path, or `null` — nothing is open. */
 export type TabKey = string | null
 
-/** Что человек оставил в комнате в прошлый раз. */
+/** What the person left in the room last time. */
 export interface Remembered {
-  /** Свои вкладки, в порядке открытия. */
+  /** Their own tabs, in the order they were opened. */
   open: string[]
-  /** Которая из них была показана. */
+  /** Which of them was shown. */
   active: TabKey
 }
 
-/** Комната глазами вкладок: что в ней есть и на что она смотрит. */
+/** The room as the tabs see it: what it has and what it is looking at. */
 export interface Room {
-  /** Пути, которые в комнате правда есть: файлы плюс тетради. */
+  /** Paths that really exist in the room: files plus notebooks. */
   alive: ReadonlySet<string>
-  /** Тетрадь комнаты: её открывают тому, кто здесь впервые. */
+  /** The room's notebook: it is opened for someone who is here for the first time. */
   firstBook: string | null
   /**
-   * Документ на общем экране — `null`, если комната ни на что не смотрит.
+   * The document on the shared screen — `null` if the room is not looking at
+   * anything.
    *
-   * Лекция — это он же: `lecture:start` на сервере ставит документ доской
-   * ПЕРЕД тем, как начаться (правило «доска ушла — лекция кончилась» держится
-   * ровно на том, что файл один и тот же).
+   * The lecture is the same thing: `lecture:start` on the server puts the
+   * document on the board BEFORE starting (the rule "the board is gone — the
+   * lecture is over" rests precisely on the file being one and the same).
    */
   board: string | null
   /**
-   * Список `alive` показан не целиком: обход папок упёрся в потолок.
+   * The `alive` list is not complete: the folder walk hit the cap.
    *
-   * Разница дорогая: «этого файла в комнате нет» и «этот файл не влез в список»
-   * выглядят здесь одинаково — отсутствием строки, — а значат
-   * противоположное. Прополка идёт только по ПОЛНОМУ списку: студент,
-   * распаковавший датасет на три тысячи файлов, иначе закрывал бы вкладки всей
-   * комнате (server/src/workspace.ts · MAX_ENTRIES).
+   * The difference is costly: "this file is not in the room" and "this file
+   * did not fit in the list" look the same here — a missing entry — but mean
+   * opposite things. Weeding happens only against the FULL list: otherwise a
+   * student who unpacked a three-thousand-file dataset would close tabs for
+   * the whole room (server/src/workspace.ts · MAX_ENTRIES).
    *
-   * Необязательно: вызывающий, который про потолок не знает, ведёт себя как
-   * раньше — считает список полным.
+   * Optional: a caller that does not know about the cap behaves as before —
+   * it treats the list as complete.
    */
   truncated?: boolean
 }
 
 const STORE_PREFIX = 'colloq.tabs.'
 /**
- * Потолок на записанный список вкладок — предохранитель, а не правило.
+ * A cap on the saved tab list — a safety fuse, not a rule.
  *
- * Здесь стояло двенадцать, и это резало молча: в живой комнате открытыми были
- * все тринадцать файлов, а после F5 тринадцатого не было — и выглядело это не
- * как правило, а как потеря. Открывать `open()` при этом ничего не ограничивал,
- * то есть предел действовал ровно в одном месте — там, где о нём нельзя
- * сказать.
+ * It used to be twelve, and that cut silently: in a live room all thirteen
+ * files were open, and after F5 the thirteenth was gone — and it looked not
+ * like a rule but like a loss. Meanwhile nothing limited opening via
+ * `open()`, so the limit acted in exactly one place — the one where it cannot
+ * be told to anyone.
  *
- * Двести — это не «столько вкладок бывает», а «столько путей не жалко хранить»:
- * записи всё равно бывают испорченными и раздутыми, и читать из хранилища
- * список без конца нельзя. До этого числа человек не доберётся ни при каких
- * обстоятельствах, а строка вкладок станет нечитаемой за десяток до него.
+ * Two hundred is not "this many tabs happen" but "this many paths are cheap
+ * to keep": records do get corrupted and bloated, and reading an endless
+ * list from storage is not an option. No one will reach this number under
+ * any circumstances, and the tab row becomes unreadable long before it.
  */
 const MAX_REMEMBERED = 200
 
 /**
- * Где человек оказывается, вернувшись в комнату.
+ * Where a person lands on returning to the room.
  *
- * Вынесено из класса и не трогает ни хранилище, ни руны: здесь три правила,
- * которые ломаются молча и по-разному, и проверить их надо все — без браузера.
+ * Pulled out of the class and touches neither storage nor runes: there are
+ * three rules here that break silently and in different ways, and all of
+ * them must be checked — without a browser.
  *
- *   • Помним — возвращаем туда же. Это и есть смысл всей записи.
- *   • Комната смотрит документ — это сильнее памяти. Опоздавший на лекцию
- *     попадает на лекцию, а не в свою тетрадь: зал уже смотрит слайд, и
- *     показать ему ячейки значило бы оставить его без того, о чём говорят.
- *   • Файла больше нет — вкладки нет. Тетрадь могли убрать, пока человека не
- *     было, и воскрешать её пустой областью без объяснения незачем; уходим на
- *     самую левую из выживших, а не в пустой центр.
+ *   • We remember — we return them to the same place. That is the whole
+ *     point of the record.
+ *   • The room is watching a document — that beats memory. Someone late for
+ *     a lecture lands in the lecture, not in their notebook: the hall is
+ *     already looking at a slide, and showing them cells would leave them
+ *     without the thing being talked about.
+ *   • The file is gone — the tab is gone. The notebook may have been removed
+ *     while the person was away, and there is no point resurrecting it as an
+ *     empty area without explanation; we move to the leftmost survivor, not
+ *     to an empty center.
  *
- * `saved === null` — человек здесь впервые: ему открывают тетрадь комнаты. От
- * «закрыл всё» это отличается пустым списком в хранилище, и открывать тетрадь
- * ему заново значило бы отменять его же решение каждым заходом.
+ * `saved === null` — the person is here for the first time: the room's
+ * notebook is opened for them. "Closed everything" differs from this by an
+ * empty list in storage, and reopening the notebook for them would cancel
+ * their own decision on every visit.
  */
 export function restore(saved: Remembered | null, room: Room): Remembered {
-  // Прополка — только по полному списку: обрезанный не свидетельствует о
-  // пропаже (см. `Room.truncated`), а решение о том, где человек оказался,
-  // принимается один раз и навсегда.
+  // Weeding only against the full list: a truncated one is no evidence of a
+  // loss (see `Room.truncated`), and the decision about where the person
+  // landed is made once and for all.
   const gone = (path: string) => !room.truncated && !room.alive.has(path)
   const open = saved
     ? [...new Set(saved.open)].filter((path) => !gone(path)).slice(0, MAX_REMEMBERED)
@@ -113,14 +120,15 @@ export function restore(saved: Remembered | null, room: Room): Remembered {
       ? [room.firstBook]
       : []
   /*
-   * Доска приходит с сервера и стоит в ряду приколоченной: СВОЕЙ вкладкой она
-   * не становится — в `open` её нет, и закрыть её у себя нельзя.
+   * The board comes from the server and stands in the row pinned: it does not
+   * become one of the person's OWN tabs — it is not in `open`, and it cannot
+   * be closed locally.
    *
-   * Показанной она при этом записывается, как и любая другая (`#remember`
-   * пишет `active` целиком): вернувшийся в комнату, которая всё ещё смотрит
-   * тот же документ, попадает на него — а если комната уже не смотрит ничего,
-   * запомненный путь просто не найдётся среди своих вкладок, и человек уйдёт
-   * на самую левую.
+   * It is still recorded as the shown tab, like any other (`#remember` writes
+   * `active` as is): someone returning to a room that is still watching the
+   * same document lands on it — and if the room is no longer watching
+   * anything, the remembered path simply will not be found among their own
+   * tabs, and the person goes to the leftmost one.
    */
   if (room.board) return { open, active: room.board }
   const wanted = saved ? saved.active : room.firstBook
@@ -128,21 +136,22 @@ export function restore(saved: Remembered | null, room: Room): Remembered {
 }
 
 /**
- * Ряд своих вкладок после перетаскивания.
+ * The row of one's own tabs after a drag.
  *
- * Чистая функция, потому что решает она одно: КУДА встала вкладка, — и это
- * единственное, что стоит проверять. Тот же приём, что у перетаскивания файлов
- * в дереве (lib/tree-move.ts): решение отдельно, мышь отдельно.
+ * A pure function, because it decides one thing: WHERE the tab landed — and
+ * that is the only thing worth checking. The same technique as dragging files
+ * in the tree (lib/tree-move.ts): the decision separately, the mouse
+ * separately.
  *
- * Правило вставки — «сторона, с которой пришли». Тянут влево — вкладка встаёт
- * ПЕРЕД целью, вправо — ПОСЛЕ неё. Иначе жест наполовину не работает: вкладку
- * тянут на соседа справа, а она встаёт перед ним, то есть возвращается на своё
- * же место, и человек тянет снова.
+ * The insertion rule is "the side it came from". Dragged left — the tab goes
+ * BEFORE the target, right — AFTER it. Otherwise the gesture half fails: the
+ * tab is dragged onto its right neighbor, but lands before it, i.e. back in
+ * its own place, and the person drags again.
  *
- * `onto === null` — бросили в пустоту справа от ряда: это «в конец». Цель,
- * которой в своих вкладках нет, — приколотая комнатой (общий экран, лекция):
- * их порядок не наш, и вставать «на её место» значит вставать первым среди
- * своих, сразу за приколотыми.
+ * `onto === null` — dropped into the empty space right of the row: that is
+ * "to the end". A target that is not among one's own tabs is pinned by the
+ * room (shared screen, lecture): their order is not ours, and taking "its
+ * place" means going first among one's own, right after the pinned ones.
  */
 export function reordered(
   mine: readonly string[],
@@ -162,74 +171,76 @@ export function reordered(
 }
 
 export class Tabs {
-  /** Пути, которые открыл этот человек, в порядке открытия. */
+  /** Paths this person opened, in the order they were opened. */
   mine = $state<string[]>([])
-  /** Что показано сейчас. `null` — не открыто ничего. */
+  /** What is shown now. `null` — nothing is open. */
   active = $state<TabKey>(null)
 
   readonly #key: string
-  /** Что лежало в хранилище на входе. `null` — человек в этой комнате впервые. */
+  /** What was in storage on entry. `null` — the person is in this room for the first time. */
   readonly #saved: Remembered | null
-  /** Решение о том, где человек оказался, уже принято. */
+  /** The decision about where the person landed has already been made. */
   #settled = false
 
   constructor(sessionId: string) {
     this.#key = STORE_PREFIX + sessionId
     this.#saved = read(this.#key)
     /*
-     * Вкладки встают первым же кадром, не дожидаясь ответа сервера: список
-     * файлов идёт круг сети, а строка вкладок и центр экрана нужны сразу — ради
-     * этого запись и заведена. Всё, чего в комнате уже нет, уберёт `settle`.
+     * Tabs appear on the very first frame, without waiting for the server: the
+     * file list takes a network round trip, while the tab row and the center
+     * of the screen are needed right away — that is what the record exists
+     * for. Anything no longer in the room will be removed by `settle`.
      */
     this.mine = this.#saved?.open ?? []
     this.active = this.#saved?.active ?? null
   }
 
   /**
-   * Полный ряд вкладок: приколотые комнатой, потом свои.
+   * The full tab row: the ones pinned by the room, then one's own.
    *
-   * Тетрадь здесь ничем не выделена — она перестала быть особой вкладкой (см.
-   * шапку модуля) и приходит в `mine`, как любой другой файл. Приколотые — это
-   * общий экран и лекция, их называет вызывающий.
+   * The notebook is not singled out here — it stopped being a special tab (see
+   * the module header) and comes in `mine` like any other file. The pinned
+   * ones are the shared screen and the lecture; the caller names them.
    */
   row(...pinned: (string | null)[]): string[] {
     /*
-     * Приколотые — те, что комната открыла всем: общий экран и лекция. Они идут
-     * первыми и не дублируются теми, кто открыл их же себе: одна вкладка на
-     * файл, кто бы её ни завёл.
+     * Pinned are the ones the room opened for everyone: the shared screen and
+     * the lecture. They come first and are not duplicated by someone who
+     * opened the same file for themselves: one tab per file, whoever created
+     * it.
      */
     const first = pinned.filter((path): path is string => typeof path === 'string' && path !== '')
     const seen = new Set(first)
     return [...new Set(first), ...this.mine.filter((path) => !seen.has(path))]
   }
 
-  /** Открыть файл и перейти на него. Уже открытый просто становится текущим. */
+  /** Open a file and switch to it. One that is already open just becomes current. */
   open(path: string): void {
     if (!this.mine.includes(path)) this.mine = [...this.mine, path]
     this.#goto(path)
   }
 
-  /** Показать вкладку, не открывая ничего нового. */
+  /** Show a tab without opening anything new. */
   show(key: TabKey): void {
     this.#goto(key)
   }
 
   /**
-   * Убрать вкладку у себя.
+   * Remove a tab for oneself.
    *
-   * Возвращает, осталась ли она в ряду: общий документ у себя не закрывается —
-   * закрыть его можно только у всей комнаты, и это отдельное действие с
-   * отдельным правом. Уйти от него в тетрадь всё равно можно, и это здесь и
-   * происходит.
+   * Returns whether it stayed in the row: the shared document cannot be closed
+   * just for oneself — it can only be closed for the whole room, and that is
+   * a separate action with a separate permission. Moving away from it to the
+   * notebook is still possible, and that is what happens here.
    */
   close(path: string, board: string | null, lecture: string | null = null): boolean {
     const wasActive = this.active === path
     /*
-     * Место в ряду считается ДО удаления.
+     * The place in the row is computed BEFORE the removal.
      *
-     * После него закрываемой вкладки в ряду уже нет, `indexOf` даёт -1, и
-     * «сосед слева» превращался в «самая левая вкладка»: закрыв третий из
-     * четырёх файлов, человек оказывался в первом.
+     * After it the tab being closed is no longer in the row, `indexOf` gives
+     * -1, and "the neighbor on the left" turned into "the leftmost tab":
+     * closing the third of four files, the person ended up in the first.
      */
     const at = this.row(board, lecture).indexOf(path)
     if (this.mine.includes(path)) this.mine = this.mine.filter((open) => open !== path)
@@ -240,17 +251,18 @@ export class Tabs {
   }
 
   /**
-   * Комната ответила: подогнать вкладки под то, что в ней правда есть.
+   * The room answered: fit the tabs to what really exists in it.
    *
-   * Первый вызов — возвращение после перезагрузки (или первый заход сюда
-   * вообще), дальше — прополка: файл мог убрать преподаватель, а мог переписать
-   * `os.remove` в ячейке, и вкладка на исчезнувший файл — это пустая область без
-   * объяснения.
+   * The first call is the return after a reload (or the first visit here at
+   * all), after that it is weeding: the file may have been removed by the
+   * teacher, or by an `os.remove` in a cell, and a tab for a vanished file is
+   * an empty area without explanation.
    *
-   * Первый заход ждёт тетрадь комнаты и до неё не решает ничего: тетради
-   * приезжают из документа, а список файлов — с управляющего сокета, и записать
-   * в этом промежутке «человек всё закрыл» значило бы отменить решение, которого
-   * он не принимал, — навсегда, потому что «впервые» бывает один раз.
+   * The first visit waits for the room's notebook and decides nothing until
+   * then: notebooks arrive from the document, while the file list comes from
+   * the control socket, and recording "the person closed everything" in that
+   * gap would cancel a decision they never made — forever, because "the first
+   * time" happens only once.
    */
   settle(room: Room): void {
     if (this.#settled) {
@@ -266,12 +278,13 @@ export class Tabs {
   }
 
   /**
-   * Переставить свою вкладку.
+   * Move one of one's own tabs.
    *
-   * Приколотые комнатой не двигаются и двигать ими нельзя: их порядок задаёт
-   * комната, а не тот, кто на них смотрит. Всё решение — в `reordered`; здесь
-   * только запись, и `active` не трогается намеренно: человек переставляет
-   * вкладки, а не переключается между ними.
+   * The ones pinned by the room do not move and cannot be dragged: their
+   * order is set by the room, not by whoever is looking at them. The whole
+   * decision is in `reordered`; here there is only the record, and `active`
+   * is deliberately left alone: the person is rearranging tabs, not switching
+   * between them.
    */
   reorder(dragged: string, onto: string | null): void {
     if (!this.mine.includes(dragged)) return
@@ -281,7 +294,7 @@ export class Tabs {
     this.#remember()
   }
 
-  /** Переименованный файл остаётся открытым — под новым именем. */
+  /** A renamed file stays open — under its new name. */
   rename(from: string, to: string): void {
     if (!this.mine.includes(from)) return
     this.mine = this.mine.map((path) => (path === from ? to : path))
@@ -290,16 +303,16 @@ export class Tabs {
   }
 
   /**
-   * Файлы, которых больше нет, уходят вместе со своими вкладками.
+   * Files that no longer exist go away together with their tabs.
    *
-   * Кроме общего экрана: его ставит сервер, и он вправе опередить список
-   * файлов на круг — доска, только что показанная залу, в чуть устаревшем
-   * списке выглядит как удалённый файл. Гасить из-за этого лекцию нельзя;
-   * пропадёт документ по-настоящему — комната узнает об этом сообщением
-   * `board`, а не отсутствием строки в списке.
+   * Except the shared screen: the server sets it, and it may be a round ahead
+   * of the file list — a board just shown to the hall looks like a deleted
+   * file in a slightly stale list. Killing the lecture over that is not
+   * allowed; if the document really disappears, the room will learn it from a
+   * `board` message, not from a missing entry in the list.
    */
   #keepOnly(room: Room): void {
-    // Обрезанный список не свидетельствует о пропаже — см. `Room.truncated`.
+    // A truncated list is no evidence of a loss — see `Room.truncated`.
     if (room.truncated) return
     const kept = this.mine.filter((path) => room.alive.has(path))
     if (kept.length === this.mine.length) return
@@ -311,15 +324,16 @@ export class Tabs {
   }
 
   /**
-   * Куда уйти, закрыв вкладку.
+   * Where to go after closing a tab.
    *
-   * К соседу слева, а не в тетрадь: закрывая третий из четырёх открытых файлов,
-   * человек занимается файлами, и выкидывать его из них — это лишний путь
-   * обратно.
+   * To the neighbor on the left, not to the notebook: closing the third of
+   * four open files, the person is busy with files, and throwing them out of
+   * those means an extra trip back.
    *
-   * `at` — место закрытой вкладки в том ряду, который был нарисован; ряда с
-   * ней здесь уже нет, и сосед слева стоит на том же месте, что и стоял.
-   * Ряд строится с теми же приколотыми, иначе счёт разойдётся с экраном.
+   * `at` is the closed tab's place in the row that was drawn; the row with it
+   * no longer exists here, and the neighbor on the left stands where it
+   * stood. The row is built with the same pinned tabs, otherwise the count
+   * would diverge from the screen.
    */
   #neighbour(at: number, board: string | null, lecture: string | null): TabKey {
     const row = this.row(board, lecture)
@@ -327,7 +341,7 @@ export class Tabs {
     return row[Math.max(0, at - 1)] ?? null
   }
 
-  /** Перейти на вкладку и запомнить это: возвращаются туда же, откуда ушли. */
+  /** Switch to a tab and remember it: people come back to where they left. */
   #goto(key: TabKey): void {
     this.active = key
     this.#remember()
@@ -338,34 +352,34 @@ export class Tabs {
     try {
       localStorage.setItem(this.#key, JSON.stringify(box))
     } catch {
-      /* приватный режим или полный диск — вкладки просто не переживут заход */
+      /* private mode or a full disk — the tabs simply will not survive the visit */
     }
   }
 }
 
 /**
- * Что записано про эту комнату. `null` — не записано ничего.
+ * What is recorded for this room. `null` — nothing is recorded.
  *
- * Мусор в хранилище читается как «ничего не помним», а не как «человек всё
- * закрыл»: разница видна сразу — первому открывают тетрадь комнаты, второму
- * оставляют пустой центр, и испорченная запись не должна высаживать человека в
- * пустую комнату.
+ * Garbage in storage reads as "we remember nothing", not as "the person
+ * closed everything": the difference shows at once — the first gets the
+ * room's notebook opened, the second is left with an empty center, and a
+ * corrupted record must not drop a person into an empty room.
  */
 function read(key: string): Remembered | null {
   let raw: string | null = null
   try {
     raw = localStorage.getItem(key)
   } catch {
-    /* хранилища нет вовсе — помнить нечем */
+    /* no storage at all — nothing to remember with */
   }
   if (!raw) return null
   try {
     const parsed: unknown = JSON.parse(raw)
     /*
-     * Голый массив — запись прошлой версии, когда помнили один список вкладок.
-     * Она уже лежит в браузерах идущих курсов: читается как «вкладки те же,
-     * показана самая левая» — то же, что получит вернувшийся, у которого
-     * открытую вкладку успели удалить.
+     * A bare array is a record from the previous version, when only the tab
+     * list was remembered. It already sits in the browsers of running courses:
+     * it reads as "the same tabs, the leftmost one shown" — the same thing a
+     * returning person gets when their open tab was deleted in the meantime.
      */
     const box: unknown = Array.isArray(parsed) ? { open: parsed, active: null } : parsed
     if (typeof box !== 'object' || box === null) return null

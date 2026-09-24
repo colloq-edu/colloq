@@ -1,27 +1,28 @@
 /**
- * Опасные команды в ячейке — снизу, со стороны Python.
+ * Dangerous commands in a cell — from below, from the Python side.
  *
- * Беда, ради которой всё это заведено, случилась на живом занятии 20.09.2026:
- * студент написал в попытке консилиума `import os` и `os._exit(0)`, а
- * преподаватель, перебирая работы и нажимая «запустить», девять раз за
- * одиннадцать минут уронил ядро комнаты на тридцать человек. Такую смерть не
- * отличить от исправной работы ничем — ни трассировки, ни сигнала в dmesg, ни
- * счётчика в cgroup, ни строки в журнале.
+ * The trouble all this exists for happened at a live class on 20 Sep 2026: a
+ * student wrote `import os` and `os._exit(0)` in a council attempt, and the
+ * teacher, going through the work and pressing "run", brought down the
+ * room's kernel for thirty people nine times in eleven minutes. Such a death
+ * cannot be told from normal work by anything — no trace, no signal in
+ * dmesg, no counter in the cgroup, no line in the log.
  *
- * Поэтому здесь проверяется не форма исходника, а ПОВЕДЕНИЕ: тот же кусок
- * Python, что уезжает в ядро комнаты, исполняется настоящим `python3` рядом с
- * поддельной оболочкой IPython (ровно те крючки, что подменяет защита), и на
- * нём вызывается то, что студент наберёт из любопытства.
+ * So what is checked here is not the shape of the source but the BEHAVIOUR:
+ * the same piece of Python that goes into the room's kernel is executed by a
+ * real `python3` next to a fake IPython shell (exactly the hooks the guard
+ * replaces), and on it we call what a student would type out of curiosity.
  *
- * У каждого запрета — пара: «это блокируется» и «а это нет». Вторая половина
- * важнее первой. Граница должна быть узкой, иначе занятие сломается тише, чем
- * падало ядро: `git`, `pip`, `ls`, `subprocess`, `kill` собственного фонового
- * процесса и `os.kill` по чужому ребёнку обязаны работать, иначе joblib,
- * multiprocessing и половина семинара перестают считать без единого слова.
+ * Every ban has a pair: "this is blocked" and "but this is not". The second
+ * half matters more than the first. The boundary must be narrow, otherwise
+ * the class breaks more quietly than the kernel used to fall: `git`, `pip`,
+ * `ls`, `subprocess`, `kill` of one's own background process and `os.kill`
+ * of someone else's child must work, otherwise joblib, multiprocessing and
+ * half the seminar stop computing without a single word.
  *
- * `python3` может не оказаться (CI без Python, чужая машина) — тогда нижняя
- * половина пропускается, а верхняя, про сборку исходника и разбор отчёта,
- * остаётся: она чистая.
+ * `python3` may be missing (CI without Python, someone else's machine) —
+ * then the lower half is skipped, while the upper one, about building the
+ * source and parsing the report, stays: it is pure.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -40,60 +41,63 @@ import {
 } from '../server/src/kernel/danger.js'
 import { COUNCIL_REFUSED } from '../server/src/kernel/council-isolation.js'
 
-/* ------------------------------------------------------------- исходники */
+/* --------------------------------------------------------------- sources */
 
-test('установка — одна строка со сверкой версии, и она не связывает имён', () => {
+test('installation is one line with a version check, and it binds no names', () => {
   const source = guardPolicySource(true)
   const lines = source.split('\n')
-  assert.equal(lines.length, 2, 'ячейка правила перестала быть двумя выражениями')
+  assert.equal(lines.length, 2, 'the rule cell is no longer two statements')
   /*
-   * Ни одного присваивания на верхнем уровне: весь модуль живёт в `__dict__`
-   * скрытого модуля, и в пространстве студента после установки не остаётся ни
-   * `os`, ни `sys`, ни единой нашей переменной.
+   * Not a single assignment at the top level: the whole module lives in the
+   * hidden module's `__dict__`, and after installation the student's
+   * namespace has neither `os` nor `sys` nor a single variable of ours.
    */
   for (const line of lines) {
-    assert.doesNotMatch(line, /^[A-Za-z_][A-Za-z0-9_]*\s*=[^=]/, `защита связала имя: ${line.slice(0, 40)}`)
-    assert.doesNotMatch(line, /^(import|from|def|class)\s/, `защита связала имя: ${line.slice(0, 40)}`)
+    assert.doesNotMatch(line, /^[A-Za-z_][A-Za-z0-9_]*\s*=[^=]/, `the guard bound a name: ${line.slice(0, 40)}`)
+    assert.doesNotMatch(line, /^(import|from|def|class)\s/, `the guard bound a name: ${line.slice(0, 40)}`)
   }
   assert.match(lines[0], /^if getattr\(__import__\('sys'\)\.modules\.get\(/)
   assert.match(lines[0], /'version', None\) != "[0-9a-f]{12}": exec\(compile\(/)
   assert.ok(lines[0].includes(JSON.stringify(GUARD_MODULE)))
-  // Версия внутри исходника и версия в сверке — одна и та же строка, иначе
-  // модуль переустанавливался бы на каждой ячейке и молча.
+  // The version inside the source and the version in the check are one and
+  // the same string, otherwise the module would be reinstalled on every
+  // cell, and silently.
   const stamp = /!= "([0-9a-f]{12})"/.exec(lines[0])![1]
-  assert.ok(lines[0].includes(`version = '${stamp}'`), 'версия в исходнике другая')
-  // Булево — словом Python: `false` в ядре не значение, а NameError.
+  assert.ok(lines[0].includes(`version = '${stamp}'`), 'the version in the source is different')
+  // The boolean is a Python word: `false` in the kernel is not a value but a
+  // NameError.
   assert.match(lines[1], /\.apply\(True, \{/)
   assert.match(guardPolicySource(false), /\.apply\(False, \{/)
   assert.doesNotMatch(source, /\b(false|true|null)\b/)
 })
 
-test('строка правила и есть отпечаток: правило и язык меняют её, прочее — нет', () => {
+test('the rule line is the fingerprint: the rule and the language change it, nothing else does', () => {
   /*
-   * По ней сервер решает, ходить ли в ядро (kernel/index.ts · Runtime.guard).
-   * Совпади она при разном правиле — ядро жило бы по вчерашнему; разойдись на
-   * пустом месте — лишний поход на каждую ячейку.
+   * By it the server decides whether to go to the kernel (kernel/index.ts ·
+   * Runtime.guard). Were it to match under a different rule, the kernel
+   * would live by yesterday's; were it to differ for no reason, there would
+   * be an extra trip for every cell.
    */
   setLocaleResolver(() => 'ru')
   const blocked = guardPolicySource(true)
-  assert.equal(guardPolicySource(true), blocked, 'один и тот же вопрос дал разные строки')
-  assert.notEqual(guardPolicySource(false), blocked, 'правило не видно в строке')
+  assert.equal(guardPolicySource(true), blocked, 'the same question gave different lines')
+  assert.notEqual(guardPolicySource(false), blocked, 'the rule is not visible in the line')
   setLocaleResolver(() => 'en')
-  assert.notEqual(guardPolicySource(true), blocked, 'язык отказа не виден в строке')
+  assert.notEqual(guardPolicySource(true), blocked, 'the refusal language is not visible in the line')
   setLocaleResolver(() => 'ru')
 })
 
-test('отказ говорит, что не выполнено, почему и кто это может разрешить', () => {
+test('the refusal says what was not run, why, and who can allow it', () => {
   setLocaleResolver(() => 'ru')
   const room = guardRoomSettings()
-  assert.ok(room.includes('{p0}'), 'в отказе нет места под саму команду')
+  assert.ok(room.includes('{p0}'), 'the refusal has no slot for the command itself')
   assert.match(room, /опасная команда/)
   assert.match(room, /гасит ядро/)
   assert.match(room, /стирает переменные/)
   assert.match(room, /правило «Опасные команды»/)
   /*
-   * А внутри попытки консилиума разрешить это не может никто: попытка идёт на
-   * общем ядре, и совет «попросите преподавателя» был бы неправдой.
+   * But inside a council attempt nobody can allow this: the attempt runs on
+   * the shared kernel, and the advice "ask the teacher" would be untrue.
    */
   const council = guardCouncilSettings()
   assert.match(council, /ядро одно на всю комнату/)
@@ -106,7 +110,7 @@ test('отказ говорит, что не выполнено, почему и
   setLocaleResolver(() => 'ru')
 })
 
-test('имя исключения одно на защиту и на консилиум — второй копии отказа нет', () => {
+test('the exception name is one for the guard and the council — there is no second copy of the refusal', () => {
   assert.equal(COLLOQ_REFUSED, 'ColloqRefused')
   assert.equal(COUNCIL_REFUSED, COLLOQ_REFUSED)
   assert.ok(GUARD_REPORT_EXPR.includes(GUARD_MODULE))
@@ -114,31 +118,32 @@ test('имя исключения одно на защиту и на конси�
   assert.ok(GUARD_RELEASE_EXPR.includes('.release()'))
 })
 
-/* ----------------------------------------------------------------- отчёт */
+/* ---------------------------------------------------------------- report */
 
-test('отчёт читается из mimebundle, а всё непонятное — это «не подтверждено»', () => {
+test('the report is read from the mimebundle, and anything unclear means "not confirmed"', () => {
   const body = { ok: true, on: true, policy: true, holds: 0, patched: ['_exit'] }
   const bundle = { status: 'ok', data: { 'text/plain': JSON.stringify(body) }, metadata: {} }
   const parsed = parseGuardReport(bundle)
   assert.equal(parsed?.ok, true)
   assert.equal(parsed?.policy, true)
   assert.deepEqual(parsed?.patched, ['_exit'])
-  // Та же строка без обёртки — так её читает тест, гоняющий python3 напрямую.
+  // The same string without the wrapper — that is how the test driving
+  // python3 directly reads it.
   assert.equal(parseGuardReport(JSON.stringify(body))?.on, true)
   /*
-   * Всё остальное — `null`, и это главное свойство разбора: сервер по нему
-   * решает НЕ исполнять ячейку. Пустой объект — ровно то, что приезжает от
-   * ядра, когда установка упала: user_expressions на упавшем запуске не
-   * считаются.
+   * Everything else is `null`, and this is the main property of the parser:
+   * by it the server decides NOT to execute the cell. An empty object is
+   * exactly what comes from the kernel when the installation failed:
+   * user_expressions are not evaluated on a failed run.
    */
-  assert.equal(parseGuardReport({}), null, 'пустой ответ сошёл за подтверждение')
+  assert.equal(parseGuardReport({}), null, 'an empty answer passed for a confirmation')
   assert.equal(parseGuardReport({ status: 'error' }), null)
   assert.equal(parseGuardReport('None'), null)
   assert.equal(parseGuardReport('не json'), null)
-  assert.equal(parseGuardReport(JSON.stringify({ on: true })), null, 'отчёт без ok сошёл за ответ')
+  assert.equal(parseGuardReport(JSON.stringify({ on: true })), null, 'a report without ok passed for an answer')
 })
 
-/* ------------------------------------------------- настоящий python3 */
+/* ---------------------------------------------------- a real python3 */
 
 const python = (() => {
   const probe = spawnSync('python3', ['-c', 'import sys; print(sys.version_info[0])'], {
@@ -146,16 +151,16 @@ const python = (() => {
   })
   return probe.status === 0 ? 'python3' : null
 })()
-const noPython = python ? false : 'нет python3'
+const noPython = python ? false : 'no python3'
 
 /**
- * Поддельная оболочка IPython — ровно те крючки, которые подменяет защита.
+ * A fake IPython shell — exactly the hooks the guard replaces.
  *
- * Своя, а не настоящая: ipykernel в тестовом окружении нет, а проверять надо
- * не его, а нашу подмену. Крючки названы теми же именами, что в
- * `InteractiveShell`, и потому подмена встаёт на них так же, как в живом ядре
- * (что она встаёт и там — проверено вживую, в одноразовом контейнере из
- * образа `colloq-kernel:base`).
+ * Our own, not the real one: there is no ipykernel in the test environment,
+ * and what needs testing is not it but our replacement. The hooks have the
+ * same names as in `InteractiveShell`, and so the replacement lands on them
+ * the same way as in a live kernel (that it lands there too was checked
+ * live, in a throwaway container from the `colloq-kernel:base` image).
  */
 const SHELL = [
   'class _Shell(object):',
@@ -180,27 +185,27 @@ const SHELL = [
 ].join('\n')
 
 interface Ask {
-  /** Что спросить у ядра — выражение Python. */
+  /** What to ask the kernel — a Python expression. */
   [name: string]: string
 }
 
 /**
- * Один прогон настоящим python3: поставить правило, спросить про каждый случай.
+ * One run on a real python3: set the rule, ask about each case.
  *
- * Ответ на случай — либо `ok:<repr>`, либо имя исключения. Разбираются они
- * потом помощниками `refused` и `ran`, чтобы в самих тестах читалось не
- * «равно строке», а «отказано» и «выполнилось».
+ * The answer to a case is either `ok:<repr>` or an exception name. They are
+ * parsed afterwards by the `refused` and `ran` helpers, so that the tests
+ * themselves read not "equals a string" but "refused" and "ran".
  */
 function ask(
   asks: Ask,
-  /** `pre` считается ДО объявления правила: им снимают снимок настоящих функций. */
+  /** `pre` is evaluated BEFORE the rule is declared: it takes a snapshot of the real functions. */
   opts: { block?: boolean; steps?: string[]; setup?: string; pre?: string } = {},
 ): Record<string, string> {
   const script = [
     'import json, os, signal, subprocess, sys, types',
     SHELL,
-    // Модули кладутся в `ns` руками: это замена `user_ns` ядра, где `import os`
-    // студента их туда и приносит.
+    // Modules are put into `ns` by hand: this stands in for the kernel's
+    // `user_ns`, where the student's `import os` brings them.
     'ns = {"__builtins__": __builtins__, "__name__": "__main__", "shell": shell,',
     '      "os": os, "sys": sys, "signal": signal, "subprocess": subprocess, "types": types}',
     ...(opts.pre ? [opts.pre] : []),
@@ -223,32 +228,32 @@ function ask(
   ].join('\n')
   const run = spawnSync(python!, ['-'], { input: script, encoding: 'utf8' })
   /*
-   * Ноль здесь — половина проверки. Незакрытый `os._exit(0)` кончает процесс
-   * БЕЗ единого слова и с кодом 0: тест, который смотрел бы только на
-   * отсутствие исключения, прошёл бы именно в тот день, когда защита отвалилась.
-   * Поэтому ответ обязан ДОЕХАТЬ строкой.
+   * Zero here is half the check. An unclosed `os._exit(0)` ends the process
+   * WITHOUT a single word and with code 0: a test that looked only at the
+   * absence of an exception would pass exactly on the day the guard fell
+   * off. So the answer must ARRIVE as a line.
    */
-  assert.equal(run.status, 0, `python3 упал: ${run.stderr}`)
+  assert.equal(run.status, 0, `python3 crashed: ${run.stderr}`)
   const line = run.stdout.split('\n').find((l) => l.startsWith('@@'))
-  assert.ok(line, `ответа нет — процесс кончился молча: ${run.stdout} ${run.stderr}`)
+  assert.ok(line, `no answer — the process ended silently: ${run.stdout} ${run.stderr}`)
   return JSON.parse(line.slice(2))
 }
 
-/** Отказано нашим исключением — и в тексте есть имя самой команды. */
+/** Refused with our exception — and the text names the command itself. */
 function refused(out: Record<string, string>, name: string, named: string): void {
-  assert.match(out[name] ?? '', new RegExp(`^${COLLOQ_REFUSED}: `), `«${name}» не отказано: ${out[name]}`)
+  assert.match(out[name] ?? '', new RegExp(`^${COLLOQ_REFUSED}: `), `"${name}" was not refused: ${out[name]}`)
   assert.ok(
     (out[name] ?? '').includes(named),
-    `отказ по «${name}» не назвал саму команду (${named}): ${out[name]}`,
+    `the refusal for "${name}" did not name the command itself (${named}): ${out[name]}`,
   )
 }
 
-/** Выполнилось как ни в чём не бывало. */
+/** Ran as if nothing had happened. */
 function ran(out: Record<string, string>, name: string): void {
-  assert.match(out[name] ?? '', /^ok:/, `«${name}» не выполнилось: ${out[name]}`)
+  assert.match(out[name] ?? '', /^ok:/, `"${name}" did not run: ${out[name]}`)
 }
 
-test('конец процесса и конец ядра закрыты — всеми известными способами',
+test('the end of the process and the end of the kernel are closed — by every known way',
   { skip: noPython }, () => {
     const out = ask({
       'exit()': 'shell.ask_exit()',
@@ -273,35 +278,38 @@ test('конец процесса и конец ядра закрыты — вс
     refused(out, 'os.killpg', 'os.killpg()')
     refused(out, 'raise_signal', 'signal.raise_signal()')
     refused(out, 'pthread_kill', 'signal.pthread_kill()')
-    // И само подтверждение: сервер читает именно его и молчание считает отказом.
+    // And the confirmation itself: the server reads exactly it and counts
+    // silence as a refusal.
     const report = JSON.parse(out['@report'])
     assert.equal(report.ok, true)
     assert.equal(report.policy, true)
-    assert.ok(report.patched.includes('_exit'), 'os._exit не подменён, а отчёт говорит «ok»')
+    assert.ok(report.patched.includes('_exit'), 'os._exit is not replaced, while the report says "ok"')
   })
 
-test('sys.exit, чужой процесс и безобидный сигнал проходят — иначе сломан joblib',
+test('sys.exit, someone else\'s process and a harmless signal get through — otherwise joblib is broken',
   { skip: noPython }, () => {
     const out = ask({
-      // В ipykernel это SystemExit, и ядро его переживает: трогать нечего.
+      // In ipykernel this is SystemExit, and the kernel survives it: nothing
+      // to touch.
       'sys.exit': 'sys.exit(3)',
-      // Сигнал 0 — это «жив ли», а не убийство.
+      // Signal 0 means "are you alive", not a kill.
       'probe alive': 'os.kill(os.getpid(), 0)',
-      // Чужой ребёнок: так управляют процессами subprocess, joblib и пулы.
+      // Someone else's child: this is how subprocess, joblib and pools manage
+      // processes.
       'kill child': 'os.kill(sub.pid, signal.SIGTERM) or sub.wait()',
-      // Не смертельный сигнал самому себе — обычная работа с окнами и таймерами.
+      // A non-fatal signal to oneself — ordinary work with windows and timers.
       'own SIGWINCH': 'os.kill(os.getpid(), signal.SIGWINCH)',
     }, {
       setup: 'ns["sub"] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"],'
         + ' stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)',
     })
-    assert.match(out['sys.exit'] ?? '', /^SystemExit/, `sys.exit тронули: ${out['sys.exit']}`)
+    assert.match(out['sys.exit'] ?? '', /^SystemExit/, `sys.exit was touched: ${out['sys.exit']}`)
     ran(out, 'probe alive')
     ran(out, 'kill child')
     ran(out, 'own SIGWINCH')
   })
 
-test('команды оболочки: закрыто только то, что гасит ядро или сносит занятие',
+test('shell commands: only what kills the kernel or wipes out the class is closed',
   { skip: noPython }, () => {
     const out = ask({
       'bang kill all': 'shell.system("kill -9 -1")',
@@ -323,7 +331,7 @@ test('команды оболочки: закрыто только то, что 
       'subprocess argv': 'subprocess.run(["shutdown", "now"])',
       'subprocess shell': 'subprocess.run("rm -rf /", shell=True)',
 
-      // …и ровно столько же случаев «а это работает».
+      // …and exactly as many "but this works" cases.
       'ls': 'shell.system("ls -la")',
       'git': 'shell.system("git status")',
       'pip': 'shell.system("pip install pandas")',
@@ -364,10 +372,10 @@ test('команды оболочки: закрыто только то, что 
     ]) {
       ran(out, name)
     }
-    assert.equal(out['popen subclass'], 'ok:True', 'подмена Popen сломала isinstance')
+    assert.equal(out['popen subclass'], 'ok:True', 'replacing Popen broke isinstance')
   })
 
-test('%reset и %xdel стирают переменные у всех — и потому закрыты, а прочие магии нет',
+test('%reset and %xdel wipe everyone\'s variables — and so they are closed, while other magics are not',
   { skip: noPython }, () => {
     const out = ask({
       'reset': 'shell.run_line_magic("reset", "-f")',
@@ -381,11 +389,12 @@ test('%reset и %xdel стирают переменные у всех — и п�
     refused(out, 'reset_selective', '%reset_selective')
     refused(out, 'xdel', '%xdel')
     for (const name of ['time', 'matplotlib', 'pip magic']) ran(out, name)
-    // Причина у этих трёх своя: не «гасит ядро», а «стирает переменные».
+    // These three have a reason of their own: not "kills the kernel" but
+    // "wipes variables".
     assert.match(out['reset'] ?? '', /стирает переменные/)
   })
 
-test('правило «исполняются» возвращает НАСТОЯЩИЕ функции, а не тихо не мешает',
+test('the "Allowed" rule brings back the REAL functions instead of quietly not interfering',
   { skip: noPython }, () => {
     const out = ask({
       'os._exit real': 'os._exit is real[0]',
@@ -400,9 +409,10 @@ test('правило «исполняются» возвращает НАСТО�
     }, {
       block: false,
       /*
-       * Снимок берётся ДО установки — то есть настоящие функции, — и правило
-       * «исполняются» обязано вернуть ровно их. Оставленная подмена сломала бы
-       * `multiprocessing` всей комнате и уже не на одну ячейку, а навсегда.
+       * The snapshot is taken BEFORE installation — that is, of the real
+       * functions — and the "Allowed" rule must bring back exactly them. A
+       * replacement left behind would break `multiprocessing` for the whole
+       * room, and not for one cell but for good.
        */
       setup: 'ns["real"] = (os._exit, os.abort, os.kill, signal.raise_signal, os.system, subprocess.Popen)',
       steps: [],
@@ -417,13 +427,14 @@ test('правило «исполняются» возвращает НАСТО�
     ran(out, 'reset')
   })
 
-test('в попытке консилиума запрет действует и при разрешающем правиле',
+test('inside a council attempt the ban holds even under a permissive rule',
   { skip: noPython }, () => {
     /*
-     * Главное свойство вложенности. Попытка студента идёт на ОБЩЕМ ядре, и
-     * уронить им класс нельзя даже тогда, когда преподаватель курса по Python
-     * разрешил опасные команды ради показа. Удержание считается, а не
-     * переключает: правило могут поменять посреди попытки.
+     * The main property of nesting. A student's attempt runs on the SHARED
+     * kernel, and it must not be able to bring the class down even when the
+     * teacher of a Python course allowed dangerous commands for a demo. The
+     * hold is counted rather than toggled: the rule may be changed in the
+     * middle of an attempt.
      */
     const held = ask({
       'os._exit': 'os._exit(0)',
@@ -448,11 +459,11 @@ test('в попытке консилиума запрет действует и 
         `__import__('sys').modules[${JSON.stringify(GUARD_MODULE)}].release()`,
       ],
     })
-    assert.equal(after['os._exit real'], 'ok:True', 'после попытки подмена осталась при «исполняются»')
+    assert.equal(after['os._exit real'], 'ok:True', 'after the attempt the replacement stayed under "Allowed"')
     ran(after, 'shell rm')
 
-    // А при строгом правиле выход из попытки защиту НЕ снимает: она правило
-    // комнаты, а не свойство попытки.
+    // But under the strict rule the exit from the attempt does NOT remove the
+    // guard: it is the room's rule, not a property of the attempt.
     const strict = ask({
       'os._exit': 'os._exit(0)',
     }, {
@@ -464,7 +475,7 @@ test('в попытке консилиума запрет действует и 
     })
     refused(strict, 'os._exit', 'os._exit()')
 
-    // Два удержания подряд — и одно освобождение защиту не снимает.
+    // Two holds in a row — and one release does not remove the guard.
     const nested = ask({
       'os._exit': 'os._exit(0)',
     }, {
@@ -478,17 +489,18 @@ test('в попытке консилиума запрет действует и 
     refused(nested, 'os._exit', 'os._exit()')
   })
 
-test('правило, поменянное посреди пары, доезжает до живого ядра в обе стороны',
+test('a rule changed in the middle of a class reaches the live kernel both ways',
   { skip: noPython }, () => {
     const loosened = ask({
       'os._exit real': 'os._exit is real[0]',
     }, {
       block: true,
-      // Снимок — ДО установки: иначе «настоящим» оказался бы наш же отказ.
+      // The snapshot is BEFORE installation: otherwise our own refusal would
+      // pass for "real".
       pre: 'ns["real"] = (os._exit,)',
       steps: [guardPolicySource(false)],
     })
-    assert.equal(loosened['os._exit real'], 'ok:True', 'снятое правило не доехало до ядра')
+    assert.equal(loosened['os._exit real'], 'ok:True', 'the removed rule did not reach the kernel')
 
     const tightened = ask({
       'os._exit': 'os._exit(0)',
@@ -499,17 +511,17 @@ test('правило, поменянное посреди пары, доезжа
     refused(tightened, 'os._exit', 'os._exit()')
   })
 
-test('ребёнок после fork() кончает себя настоящим os._exit — иначе не живёт multiprocessing',
+test('a child after fork() ends itself with the real os._exit — otherwise multiprocessing does not live',
   { skip: noPython }, () => {
     /*
-     * Не украшение, а обязательство: `multiprocessing` и joblib заканчивают
-     * дочерний процесс именно `os._exit`, и отказ в ребёнке пустил бы копию
-     * ячейки бежать дальше вторым ядром — беда крупнее той, от которой
-     * защищаемся. Проверяется на настоящем `fork`, а не на подделке: код
-     * ребёнка отличает только pid.
+     * Not a decoration but an obligation: `multiprocessing` and joblib end a
+     * child process exactly with `os._exit`, and a refusal in the child would
+     * send a copy of the cell running on as a second kernel — a bigger
+     * trouble than the one we guard against. It is checked on a real `fork`,
+     * not a fake: the child's code is told apart only by the pid.
      */
     const out = ask({
-      // Настоящий multiprocessing целиком, с пулом и джойном.
+      // The real multiprocessing in full, with a pool and a join.
       'pool works': 'pool_result',
     }, {
       setup: [
@@ -522,10 +534,10 @@ test('ребёнок после fork() кончает себя настоящи�
         '        ns["pool_result"] = p.map(_square, [1, 2, 3])',
       ].join('\n'),
     })
-    assert.equal(out['pool works'], 'ok:[1, 4, 9]', `пул не досчитал: ${out['pool works']}`)
+    assert.equal(out['pool works'], 'ok:[1, 4, 9]', `the pool did not finish: ${out['pool works']}`)
   })
 
-test('ребёнок после fork() вправе кончить себя — проверено настоящим fork',
+test('a child after fork() may end itself — checked with a real fork',
   { skip: noPython }, () => {
     const script = [
       'import json, os, sys, types',
@@ -537,30 +549,31 @@ test('ребёнок после fork() вправе кончить себя — 
       '    try:',
       '        os._exit(7)',
       '    except BaseException:',
-      // Отказ в ребёнке — это и есть беда: он пустил бы копию бежать дальше.
+      // A refusal in the child is exactly the trouble: it would send a copy
+      // running on.
       '        os.write(2, b"refused in child")',
       '        os._exit(9)',
       'code = os.waitpid(pid, 0)[1] >> 8',
       'print("@@" + json.dumps({"child": code}))',
     ].join('\n')
     const run = spawnSync(python!, ['-'], { input: script, encoding: 'utf8' })
-    assert.equal(run.status, 0, `python3 упал: ${run.stderr}`)
+    assert.equal(run.status, 0, `python3 crashed: ${run.stderr}`)
     const line = run.stdout.split('\n').find((l) => l.startsWith('@@'))
-    assert.ok(line, `нет ответа: ${run.stdout} ${run.stderr}`)
+    assert.ok(line, `no answer: ${run.stdout} ${run.stderr}`)
     assert.equal(
       JSON.parse(line.slice(2)).child,
       7,
-      `ребёнку после fork отказали в os._exit: ${run.stderr}`,
+      `the child after fork was refused os._exit: ${run.stderr}`,
     )
   })
 
-test('повторная установка ничего не ломает и не удваивает подмены',
+test('a repeated installation breaks nothing and does not double the replacements',
   { skip: noPython }, () => {
     /*
-     * Ячейка правила уезжает в ядро на каждую смену правила и на каждый
-     * подъём; сверка версии делает второй `exec` пропуском, но `apply`
-     * вызывается всё равно. Двойная подмена означала бы двойную обёртку и
-     * кривой возврат при снятии.
+     * The rule cell goes to the kernel on every rule change and every
+     * start-up; the version check turns the second `exec` into a skip, but
+     * `apply` is called anyway. A double replacement would mean a double
+     * wrapper and a crooked restore on removal.
      */
     const out = ask({
       'os._exit': 'os._exit(0)',
@@ -572,5 +585,5 @@ test('повторная установка ничего не ломает и н
       steps: [guardPolicySource(true), guardPolicySource(true)],
     })
     refused(out, 'os._exit', 'os._exit()')
-    assert.equal(out['patched once'], 'ok:True', `подмены удвоились: ${out['patched once']}`)
+    assert.equal(out['patched once'], 'ok:True', `the replacements doubled: ${out['patched once']}`)
   })

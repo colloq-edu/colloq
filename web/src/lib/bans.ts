@@ -1,41 +1,43 @@
 import { tr } from '@shared/i18n'
 /**
- * Бан на занятии — то, что от него видно из браузера.
+ * A ban in a class — what of it can be seen from the browser.
  *
- * Не пускает сервер: у него таблица, кука устройства и рукопожатие сокетов.
- * Здесь только то, в чём разметка ошибается молча, — до какого часа человека
- * не пустят, кого преподаватель вправе удалить, чем он это подтверждает и что
- * означают пометки в списке людей.
+ * The server does the keeping out: it has the table, the device cookie and the
+ * socket handshake. Here is only what markup gets wrong silently — until what
+ * hour the person is kept out, whom the teacher may remove, how they confirm it
+ * and what the marks in the people list mean.
  *
- * Пометки — догадки, а не приговор. Метка устройства не переживает инкогнито,
- * а совпавший адрес — это вся аудитория за одним вайфаем. Поэтому у каждой
- * подсказки есть вторая строка, которая так и говорит, и поэтому ни одна из
- * них ничего не запрещает: запрещает только бан, и его ставит человек.
+ * Marks are guesses, not a verdict. A device mark does not survive incognito,
+ * and a matching address is the whole lecture hall behind one Wi-Fi. So every
+ * hint has a second line that says exactly that, and so none of them forbids
+ * anything: only a ban forbids, and a person sets it.
  *
- * Без Svelte и без браузера — как `lib/room.ts` и по той же причине: слова,
- * которые преподаватель прочитает один раз и по которым кого-то удалит,
- * должны проверяться тестом, а не глазами на живой паре.
+ * No Svelte and no browser — like `lib/room.ts` and for the same reason: words
+ * that a teacher will read once and remove someone by must be checked by a
+ * test, not by eye during a live class.
  */
 import type { Ban, CouncilAttempt, ParticipantRole } from '@shared/protocol'
 
-/* ----------------------------------------------------------------- сроки */
+/* ----------------------------------------------------------------- terms */
 
 function pad(value: number): string {
   return String(value).padStart(2, '0')
 }
 
-/** Полночь того дня, в который попала отметка. */
+/** Midnight of the day the timestamp falls on. */
 function midnight(at: Date): number {
   return new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()
 }
 
 /**
- * До какого часа не пустят — словами, которые сверяют с часами на стене.
+ * Until what hour the person is kept out — in words checked against the clock
+ * on the wall.
  *
- * Без `toLocaleTimeString`: локаль браузера в аудитории какая угодно, а
- * «6:40 PM» посреди русской строки читается как чужая вставка — ровно то, чего
- * избегает `stampOf` на экране входа. «Завтра» вместо даты потому, что бан
- * живёт сутки: почти всегда это именно завтра, и число тут ничего не добавляет.
+ * No `toLocaleTimeString`: the browser locale in a lecture hall can be
+ * anything, and "6:40 PM" in the middle of a Russian line reads as a foreign
+ * insert — exactly what `stampOf` on the sign-in screen avoids. "Tomorrow"
+ * instead of a date because a ban lasts a day: it is almost always tomorrow,
+ * and the date adds nothing here.
  */
 export function untilWords(until: number, now: number = Date.now()): string {
   const at = new Date(until)
@@ -47,47 +49,50 @@ export function untilWords(until: number, now: number = Date.now()): string {
 }
 
 /**
- * Действующие сейчас, свежие сверху.
+ * The ones in force now, newest first.
  *
- * Сервер отдаёт активные, но вкладку преподавателя не закрывают до вечера, а
- * бан кончается сам: строка «до 18:40», висящая в семь, — это предложение
- * снять то, что уже снялось. Порядок по времени решения: снимают обычно тот
- * бан, который только что поставили не тому.
+ * The server returns the active ones, but the teacher's tab stays open until
+ * evening, and a ban ends by itself: a line "until 18:40" still hanging at
+ * seven is an offer to lift what has already lifted. Ordered by decision time:
+ * the ban usually lifted is the one just put on the wrong person.
  */
 export function activeBans(bans: readonly Ban[], now: number = Date.now()): Ban[] {
   return bans.filter((ban) => ban.until > now).sort((a, b) => b.createdAt - a.createdAt)
 }
 
-/* ------------------------------------------------------------------ право */
+/* ------------------------------------------------------------- permission */
 
 /**
- * Кого преподаватель вправе удалить с занятия.
+ * Whom the teacher may remove from the class.
  *
- * Штат не банится никогда — так отвечает и сервер. Кнопка, которая получит
- * отказ, обещает преподавателю власть над коллегой, которой у него нет; а
- * заодно это исключает и его самого: спрашивает всегда ведущий.
+ * Staff are never banned — the server answers the same. A button that would
+ * get a refusal promises the teacher power over a colleague that they do not
+ * have; and this also excludes the teacher themselves: the one asking is
+ * always the host.
  */
 export function mayBan(viewer: ParticipantRole, target: ParticipantRole): boolean {
   return viewer === 'host' && target !== 'host'
 }
 
-/* --------------------------------------------------------- подтверждение */
+/* ---------------------------------------------------------- confirmation */
 
 /**
- * Что случится, если нажать, — по одной мысли в строке.
+ * What happens if you press it — one thought per line.
  *
- * Здесь, а не в разметке, потому что это единственное место во всём продукте,
- * где интерфейс объясняет наказание, и соврать в нём можно тремя способами
- * сразу: умолчать про стёртые вопросы, пообещать, что они возвращаются, и
- * пообещать герметичность, которой нет. Имя не склоняется ни в одной из
- * строк: «Ивана» и «Ксении» одинаково правильно получаются только у человека.
+ * Here and not in the markup, because this is the only place in the whole
+ * product where the interface explains a punishment, and it can lie in three
+ * ways at once: keep quiet about the erased questions, promise that they come
+ * back, and promise an airtightness that does not exist. The name is not
+ * declined in any of the lines: only a human puts both "Ivan" and "Kseniya"
+ * into the genitive correctly.
  *
- * Про возврат здесь стояло «восстановлением версии вопросы вернутся» — и это
- * было неправдой: возврат версии берёт `cellsAt(seq) → cellsOf(doc)`
- * (server/src/collab/history.ts) и кладёт обратно ОДНИ ЯЧЕЙКИ; слова `chat` во
- * всём пути возврата нет. Обещание в окне, которого код не держит, дороже
- * молчания: преподаватель нажимает «удалить» смелее, чем нажал бы, зная
- * правду. Невыполнимость закреплена tests/panels-ban-promise.test.mts.
+ * About restoring, this used to say "restoring a version brings the questions
+ * back" — and that was untrue: a version restore takes `cellsAt(seq) →
+ * cellsOf(doc)` (server/src/collab/history.ts) and puts back ONLY THE CELLS;
+ * the word `chat` appears nowhere on the restore path. A promise in a dialog
+ * that the code does not keep is worse than silence: the teacher presses
+ * "remove" more boldly than they would knowing the truth. The impossibility
+ * is pinned by tests/panels-ban-promise.test.mts.
  */
 export function banConsequences(name: string): string[] {
   return [
@@ -98,52 +103,55 @@ export function banConsequences(name: string): string[] {
   ]
 }
 
-/* ---------------------------------------------------- пометки в списке людей */
+/* -------------------------------------------------- marks in the people list */
 
 /**
- * Что комната знает про браузер человека — и только преподавателю.
+ * What the room knows about a person's browser — and only for the teacher.
  *
- * Ни одного из трёх полей вкладка узнать сама не может: кука устройства
- * httpOnly, адрес виден только серверу, а «первый раз здесь» знает таблица
- * участников. Приезжают они рядом с банами, тем же запросом и тому же
- * человеку, — отдельного права на это заводить не за чем.
+ * A tab cannot learn any of the three fields by itself: the device cookie is
+ * httpOnly, the address is visible only to the server, and "first time here"
+ * is known to the participants table. They arrive next to the bans, in the
+ * same request and to the same person — there is no reason to set up a
+ * separate right for this.
  *
- * Все три необязательны: сервер, который про них ещё не знает, оставляет
- * список людей ровно таким, каким он был, а не рисует пометку по догадке.
+ * All three are optional: a server that does not know about them yet leaves
+ * the people list exactly as it was, rather than drawing a mark on a guess.
  */
 export interface PersonMark {
-  /** Когда человек впервые вошёл в эту комнату, мс. */
+  /** When the person first entered this room, ms. */
   firstSeenAt?: number
-  /** Приняла ли его вкладка метку устройства. */
+  /** Whether their tab accepted the device mark. */
   device?: boolean
-  /** Адрес совпал с адресом кого-то из действующих банов. */
+  /** The address matched that of someone under an active ban. */
   sameIp?: boolean
 }
 
-/** Пометка: короткое слово в строке и объяснение под курсором. */
+/** A mark: a short word in the row and an explanation under the pointer. */
 export interface PersonNote {
   text: string
   why: string
 }
 
 /**
- * Сколько «только что» длится.
+ * How long "just now" lasts.
  *
- * Пять минут: столько человек ещё «вошёл сейчас», а не «сидит здесь». Дальше
- * пометка становится неправдой — и уходит сама, без чьего-либо нажатия.
+ * Five minutes: for that long a person has "just come in" rather than "been
+ * sitting here". After that the mark becomes untrue — and goes away by itself,
+ * without anyone pressing anything.
  */
 export const FRESH_MS = 5 * 60_000
 
 /**
- * Пометки к строке человека, в порядке важности.
+ * Marks for a person's row, in order of importance.
  *
- * «Возможно, вернулся» вытесняет «браузер без метки»: без метки он и так, и
- * повторять это второй раз значит занимать строку тем, что уже сказано. А
- * «недавно вошёл» стоит рядом с любой из них — вместе они и складываются
- * в того, кого преподаватель ищет глазами.
+ * "Possibly returned" displaces "browser without a mark": the person is
+ * without a mark in that case anyway, and saying it a second time fills the
+ * row with what was already said. But "recently joined" stands next to either
+ * of them — together they add up to the person the teacher is looking for.
  *
- * Догадка не показывается, пока в комнате никого не удаляли: совпавший адрес
- * сам по себе не значит ничего — за одним вайфаем всей аудитории в одной сети.
+ * The guess is not shown while nobody in the room has been removed: a
+ * matching address means nothing by itself — behind one Wi-Fi the whole
+ * lecture hall is on one network.
  */
 export function personNotes(
   mark: PersonMark | undefined,
@@ -178,26 +186,26 @@ export function personNotes(
   return notes
 }
 
-/* ------------------------------------------------------------ одно меню */
+/* ------------------------------------------------------------- one menu */
 
 /**
- * Меню бана живёт в одном месте на всю комнату.
+ * The ban menu lives in one place for the whole room.
  *
- * Открывают его из двух — из списка людей правой кнопкой и из треда оракула
- * нажатием на автора, — а нарисовано оно одно, у самого верха экрана. Так
- * пришлось бы сделать и без разговоров про единообразие: обе панели прокручиваются
- * и обрезают всё, что вылезает за их край, и всплывающее меню внутри рельса
- * шириной 240 пикселей было бы обрезано ровно в тот момент, когда его открыли
- * у нижней строки.
+ * It is opened from two — from the people list with a right click and from the
+ * oracle thread by clicking an author — but it is drawn once, at the very top
+ * of the screen. It would have to be done this way even without talk of
+ * consistency: both panels scroll and clip everything that sticks out past
+ * their edge, and a popup menu inside a 240-pixel rail would be clipped exactly
+ * when it was opened at the bottom row.
  *
- * Событие, а не проп через четыре слоя, — как `lib/reveal.ts`.
+ * An event, not a prop through four layers — like `lib/reveal.ts`.
  */
 export const BAN_MENU_EVENT = 'colloq:ban-menu'
 
-/** Список банов изменился: тот, кто его показывает, перечитает. */
+/** The ban list changed: whoever shows it will re-read it. */
 export const BANS_CHANGED_EVENT = 'colloq:bans-changed'
 
-/** Кого спрашивают удалить и где нажали — в координатах окна. */
+/** Whom to remove and where the click was — in window coordinates. */
 export interface BanTarget {
   id: string
   name: string
@@ -208,11 +216,11 @@ export interface BanTarget {
 }
 
 /**
- * Настоящий адресат кнопки в пульте.
+ * The real target of the button in the console.
  *
- * Имя на экране может быть заменено «вариантом» или «работой без имени», но
- * бан ставится человеку. Поэтому и id, и имя берутся из самой попытки, а не
- * из того, что сейчас нарисовано преподавателю.
+ * The name on screen may be replaced by an "Answer N" or an "Anonymous work",
+ * but the ban is placed on a person. So both the id and the name are taken
+ * from the attempt itself, not from what is currently drawn for the teacher.
  */
 export function banTargetOf(
   attempt: Pick<CouncilAttempt, 'participantId' | 'name' | 'color' | 'avatar'>,

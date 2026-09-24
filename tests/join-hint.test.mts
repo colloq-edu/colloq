@@ -1,15 +1,18 @@
 /**
- * Подсказка на экране входа: она ведёт по тому адресу, который диктовали классу.
+ * The hint on the join screen: it leads to the address that was dictated to
+ * the class.
  *
- * Ссылка, которая у студента правда есть, — это `/s/<комната>`, и через неделю
- * он вводит по ней имя в закончившееся занятие. Экран входа поэтому показывает
- * опубликованную версию и курс — и адрес страницы у неё `/p/<slug>`, а не
- * `/p/<id>`: имя ей дали ровно затем, чтобы называть его вслух. Пока сервер
- * присылал только идентификатор, подсказка уводила класс на запасной вход.
+ * The link a student really has is `/s/<room>`, and a week later they type
+ * their name through it into a finished class. So the join screen shows the
+ * published version and the course — and its page address is `/p/<slug>`, not
+ * `/p/<id>`: it was given a name precisely so that the name could be said out
+ * loud. While the server sent only the id, the hint led the class to the
+ * fallback entrance.
  *
- * Рядом — цена этого ответа. Курс искался перебором ВСЕХ курсов семестра с
- * разбором JSON состава у каждого, и делалось это на каждый вход и каждое
- * обновление страницы: до пятисот раз в первую минуту пары.
+ * Next to it is the cost of this answer. The course was found by going through
+ * ALL courses of the semester, parsing each one's item list from JSON, and
+ * this was done on every join and every page reload: up to five hundred times
+ * in the first minute of class.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -69,17 +72,17 @@ after(() => {
 const info = async (id: string): Promise<SessionInfo> =>
   (await (await fetch(`${base}/api/sessions/${id}`)).json()) as SessionInfo
 
-test('подсказка называет адрес страницы, а не запасной вход по идентификатору', async () => {
+test('the hint names the page address, not the fallback entrance by id', async () => {
   const body = await info(ROOM)
   assert.equal(body.published?.id, pubId)
-  assert.equal(body.published?.slug, 'week-4', 'подсказка снова уводит класс на /p/<id>')
-  // Собирает адрес одна функция на весь продукт — и с этим полем ей есть из
-  // чего его собрать.
+  assert.equal(body.published?.slug, 'week-4', 'the hint leads the class to /p/<id> again')
+  // One function builds the address for the whole product — and with this
+  // field it has something to build it from.
   assert.equal(publicationAddress({ id: pubId, slug: body.published?.slug ?? null }), 'week-4')
-  assert.equal(body.course?.name, 'Машинное обучение', 'путь наверх с экрана входа пропал')
+  assert.equal(body.course?.name, 'Машинное обучение', 'the way up from the join screen is gone')
 })
 
-test('комната без публикации ничего не обещает', async () => {
+test('a room without a publication promises nothing', async () => {
   const body = await info(LONELY)
   assert.equal(body.published, null)
   assert.equal(body.course, null)

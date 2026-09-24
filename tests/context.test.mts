@@ -27,7 +27,7 @@ import { buildContext } from '../server/src/ai/context.js'
 import { updateOracleSettings } from '../server/src/admin/settings.js'
 import { sessionDir } from '../server/src/workspace.js'
 
-/** Сказать присутствием комнаты, какой файл у человека открыт. */
+/** Announce through the room's presence which file a person has open. */
 function editing(sessionId: string, participantId: string, path: string): void {
   getSessionDoc(sessionId).awareness.setLocalState({ user: { id: participantId, editing: path } })
 }
@@ -93,8 +93,8 @@ test('the context names the seminar, the kernel and every cell', () => {
 test('the selected cell is pointed at, so the model knows what "this" means', () => {
   const { id, ids } = seminar(3)
   const text = buildContext(id, [ids[2]])
-  // Номер — тот же, что человек видит в поле у ячейки: 1-based, с нулём.
-  // Индекс с нуля расходился со всем остальным молча.
+  // The number is the one a person sees in the cell's gutter: 1-based, with a
+  // leading zero. A zero-based index silently disagreed with everything else.
   assert.match(text, /ASKING ABOUT: cell 03/)
   assert.match(text, /ASKED ABOUT/)
 })
@@ -230,11 +230,12 @@ test('one seminar never sees another one', () => {
   assert.match(text, new RegExp(`Context seminar ${a.id}`))
 })
 
-test('на большом ноутбуке выбранная ячейка доезжает целиком', () => {
+test('in a large notebook the selected cell arrives whole', () => {
   /*
-   * Заглушки по строке на ячейку сами по себе съедали бюджет, и финальный
-   * обрез резал текст посередине — ровно там, где стоит якорь. Вопрос про
-   * ячейку уходил без неё, а чип «Sees cell NN» в панели горел.
+   * One-line placeholders per cell ate the budget by themselves, and the final
+   * trim cut the text in the middle — exactly where the anchor is. A question
+   * about a cell went out without it, while the "Sees cell NN" chip in the
+   * panel stayed lit.
    */
   const { id, doc, ids } = seminar(40)
   const source = cellSource(getCells(doc).get(35))
@@ -243,19 +244,20 @@ test('на большом ноутбуке выбранная ячейка до�
   updateOracleSettings({ contextChars: 900 })
   try {
     const text = buildContext(id, [ids[35]])
-    assert.ok(text.includes('THE_ONE_THEY_ASKED_ABOUT'), 'выбранная ячейка не доехала')
-    assert.match(text, /cells \d+–\d+/, 'пропуски не свёрнуты в диапазоны')
+    assert.ok(text.includes('THE_ONE_THEY_ASKED_ABOUT'), 'the selected cell did not arrive')
+    assert.match(text, /cells \d+–\d+/, 'the gaps were not folded into ranges')
   } finally {
     updateOracleSettings({ contextChars: 20_000 })
   }
 })
 
-test('когда не помещается даже свёрнутое, выбранная ячейка всё равно доезжает', () => {
+test('when even the folded version does not fit, the selected cell still arrives', () => {
   /*
-   * Свёртка пропусков в диапазоны спасает почти всегда — но не когда бюджет
-   * меньше самих закреплённых блоков: ячейка с большим выводом, две
-   * закреплённые подряд. Тогда старый обрез резал середину, а середина — это и
-   * есть та ячейка, о которой спросили. Лучше выбросить обзор и оставить её.
+   * Folding the gaps into ranges saves the day almost always — but not when
+   * the budget is smaller than the pinned blocks themselves: a cell with a
+   * large output, two pinned ones in a row. Then the old trim cut the middle,
+   * and the middle is exactly the cell being asked about. Better to drop the
+   * overview and keep it.
    */
   const { id, doc, ids } = seminar(40)
   const source = cellSource(getCells(doc).get(20))
@@ -265,40 +267,41 @@ test('когда не помещается даже свёрнутое, выбр
   updateOracleSettings({ contextChars: 400 })
   try {
     const text = buildContext(id, [ids[20]])
-    assert.ok(text.includes('NEEDLE'), 'выбранная ячейка не доехала при тесном бюджете')
+    assert.ok(text.includes('NEEDLE'), 'the selected cell did not arrive under a tight budget')
   } finally {
     updateOracleSettings({ contextChars: 20_000 })
   }
 })
 
-/* ------------------------------------------- несколько тетрадей и ячеек */
+/* ------------------------------------------ several notebooks and cells */
 
-test('в кадр попадают ВСЕ тетради комнаты, а не первая', () => {
+test("ALL of the room's notebooks get into the frame, not just the first", () => {
   const { id, doc } = seminar(2)
   const second = createBook(id, 'вторая.ipynb')
   assert.ok(second.ok)
   doc.transact(() => bookCells(doc, second.book.root).push([createCell('code', 'ИЗ_ВТОРОЙ = 1')]))
 
   const text = buildContext(id, [])
-  assert.match(text, /marker_0/, 'первая тетрадь пропала')
-  assert.match(text, /ИЗ_ВТОРОЙ/, 'вторая тетрадь не доехала — вопрос про неё уходил в пустоту')
-  assert.match(text, /### notebook вторая\.ipynb/, 'не сказано, где чьи ячейки')
+  assert.match(text, /marker_0/, 'the first notebook went missing')
+  assert.match(text, /ИЗ_ВТОРОЙ/, 'the second notebook did not arrive, so a question about it went into the void')
+  assert.match(text, /### notebook вторая\.ipynb/, 'it does not say which cells belong where')
 })
 
-test('спросить можно про несколько ячеек сразу', () => {
+test('you can ask about several cells at once', () => {
   const { id, ids } = seminar(5)
   const text = buildContext(id, [ids[1], ids[3]])
   assert.match(text, /ASKING ABOUT: cell 02[^\n]*cell 04/)
-  // Обе закреплены: бюджет их не выбросит, даже когда выбрасывать придётся.
+  // Both are pinned: the budget will not drop them, even when it has to drop
+  // something.
   assert.match(text, /marker_1/)
   assert.match(text, /marker_3/)
 })
 
-test('чужая тетрадь уходит из кадра раньше своей', () => {
+test("another notebook leaves the frame before the asker's own", () => {
   /*
-   * Когда бюджет тесен, первым выбрасывается то, что дальше всего от вопроса:
-   * содержимое ТОЙ ЖЕ тетради ещё может пригодиться, содержимое соседней —
-   * почти наверняка нет.
+   * When the budget is tight, whatever is furthest from the question goes
+   * first: the contents of the SAME notebook may still come in handy, the
+   * contents of a neighbouring one almost certainly will not.
    */
   const { id, doc, ids } = seminar(6, true)
   const second = createBook(id, 'соседняя.ipynb')
@@ -314,37 +317,38 @@ test('чужая тетрадь уходит из кадра раньше сво
   updateOracleSettings({ contextChars: 4_000 })
   try {
     const text = buildContext(id, [ids[0]])
-    assert.match(text, /x0 = /, 'ячейка, о которой спросили, не доехала')
-    assert.ok(!text.includes('СОСЕД_3 = "qqq'), 'соседняя тетрадь съела бюджет своей')
+    assert.match(text, /x0 = /, 'the cell being asked about did not arrive')
+    assert.ok(!text.includes('СОСЕД_3 = "qqq'), "the neighbouring notebook ate the budget of the asker's own")
   } finally {
     updateOracleSettings({ contextChars: 20_000 })
   }
 })
 
-test('открытая тетрадь не едет вторым голосом как файл', () => {
+test('an open notebook does not travel a second time as a file', () => {
   /*
-   * Тетрадь — «открытый файл» ровно так же, как .py, и до сих пор её JSON
-   * уезжал в кадр целиком: до восьми тысяч знаков того же самого, но без
-   * выводов и на полторы секунды устаревшего — и вытеснял собой настоящие
-   * ячейки, потому что заголовок бюджет не режет.
+   * A notebook is an "open file" exactly like a .py, and until now its JSON
+   * went into the frame whole: up to eight thousand characters of the same
+   * thing, but without outputs and a second and a half stale — and it pushed
+   * out the real cells, because the budget does not trim the header.
    */
   const { id } = seminar(2)
   /*
-   * Тетрадь кладётся на диск и объявляется открытой — оба шага ради того,
-   * чтобы тест вообще мог упасть.
+   * The notebook is put on disk and announced as open — both steps are there
+   * so that the test can fail at all.
    *
-   * `setLocalStateField` на серверном awareness — пустая операция: состояние
-   * там `null` (collab/index.ts), а y-protocols обновляет поле только у
-   * непустого. Участник не находился, и OPEN FILE не появился бы ни при какой
-   * логике; без файла на диске — тоже, просто потому что читать нечего.
+   * `setLocalStateField` on the server awareness is a no-op: the state there
+   * is `null` (collab/index.ts), and y-protocols updates a field only on a
+   * non-empty one. The participant would not be found, and OPEN FILE would not
+   * appear under any logic; without a file on disk, neither, simply because
+   * there is nothing to read.
    */
   fs.writeFileSync(path.join(sessionDir(id), 'Тетрадь.ipynb'), '{"cells": [], "metadata": {}}')
   editing(id, 'p_ada', 'Тетрадь.ipynb')
   const text = buildContext(id, [], 'p_ada')
-  assert.ok(!text.includes('OPEN FILE'), 'тетрадь уехала ещё и файлом')
+  assert.ok(!text.includes('OPEN FILE'), 'the notebook went out as a file as well')
 })
 
-test('открытый .py, наоборот, едет — иначе предыдущий тест ничего не проверяет', () => {
+test('an open .py, by contrast, does travel; otherwise the previous test checks nothing', () => {
   const { id } = seminar(2)
   fs.writeFileSync(path.join(sessionDir(id), 'train.py'), 'РОВНО_ЭТОТ_ФАЙЛ = 1\n')
   editing(id, 'p_ada', 'train.py')
@@ -353,29 +357,30 @@ test('открытый .py, наоборот, едет — иначе преды
   assert.match(text, /РОВНО_ЭТОТ_ФАЙЛ/)
 })
 
-test('открытый файл не вытесняет из кадра ячейку, о которой спросили', () => {
+test('an open file does not push the cell being asked about out of the frame', () => {
   /*
-   * Блок открытого файла лежит в заголовке, а все три ступени экономии режут
-   * только ячейки. При маленьком бюджете — местная модель на машине
-   * преподавателя — файл выедал и выбранную ячейку, и строку «ASKING ABOUT»,
-   * то есть сам вопрос; панель при этом честно писала «Особенно: ячейка 06».
+   * The open-file block lives in the header, while all three savings stages
+   * trim only cells. With a small budget — a local model on the teacher's
+   * machine — the file ate both the selected cell and the "ASKING ABOUT" line,
+   * that is, the question itself; the panel meanwhile honestly said
+   * "Especially: cell 06".
    */
   const { id, doc, ids } = seminar(30, true)
   const source = cellSource(getCells(doc).get(5))
   source.delete(0, source.length)
   source.insert(0, `ВЫБРАННАЯ_ЯЧЕЙКА = "${'q'.repeat(400)}"\n`.repeat(6))
   failAt(doc, 25, 'ValueError')
-  // Триста строк — столько человек и держит открытым, когда спрашивает.
+  // Three hundred lines: that is how much a person keeps open when asking.
   fs.writeFileSync(path.join(sessionDir(id), 'train.py'), 'import torch\n'.repeat(300))
   editing(id, 'p_ada', 'train.py')
 
   updateOracleSettings({ contextChars: 4_000 })
   try {
     const text = buildContext(id, [ids[5]], 'p_ada')
-    assert.ok(text.length <= 4_000, `в кадре ${text.length} знаков`)
-    assert.match(text, /ASKING ABOUT: cell 06/, 'строка «о чём спрашивают» не доехала')
-    assert.ok(text.includes('ВЫБРАННАЯ_ЯЧЕЙКА'), 'выбранная ячейка не доехала')
-    assert.match(text, /OPEN FILE \(train\.py\)/, 'открытый файл выбросили целиком')
+    assert.ok(text.length <= 4_000, `${text.length} characters in the frame`)
+    assert.match(text, /ASKING ABOUT: cell 06/, 'the "what is being asked about" line did not arrive')
+    assert.ok(text.includes('ВЫБРАННАЯ_ЯЧЕЙКА'), 'the selected cell did not arrive')
+    assert.match(text, /OPEN FILE \(train\.py\)/, 'the open file was dropped entirely')
   } finally {
     updateOracleSettings({ contextChars: 20_000 })
   }

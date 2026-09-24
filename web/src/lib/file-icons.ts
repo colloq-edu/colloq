@@ -1,14 +1,17 @@
 /**
- * Какой значок у файла в дереве и на вкладке.
+ * Which icon a file has in the tree and on the tab.
  *
- * До сих пор значок был один на всё: колонка из пятнадцати одинаковых листков,
- * в которой вид файла читался только по расширению в конце имени — то есть по
- * той части, которую первой съедает многоточие в узкой панели.
+ * Until now there was one icon for everything: a column of fifteen identical
+ * sheets, in which the file type could be read only by the extension at the
+ * end of the name — that is, by the part an ellipsis eats first in a narrow
+ * panel.
  *
- * Различаются не языки, а РОДЫ ЗАНЯТИЙ. Значок отвечает на вопрос «что я с этим
- * буду делать»: тетрадь открою и запущу, таблицу прочитаю пандасом, картинку
- * посмотрю, документ полистаю, а вот это скачаю и открою чем-то другим. Заводить
- * отдельный силуэт под .ts и .js незачем: с ними делают одно и то же.
+ * What differs is not languages but KINDS OF WORK. The icon answers the
+ * question "what will I do with this": a notebook I will open and run, a table
+ * I will read with pandas, an image I will look at, a document I will page
+ * through, and this one I will download and open with something else. There
+ * is no point in a separate silhouette for .ts and .js: people do the same
+ * thing with both.
  */
 import type { IconName } from '@/components/ui/Icon.svelte'
 import { extOf, kindOf } from '@shared/paths'
@@ -52,8 +55,9 @@ export function iconFor(path: string): IconName {
   if (CODE.has(ext)) return 'code'
   if (PROSE.has(ext)) return 'text'
   if (kindOf(path) === 'image') return 'image'
-  // Всё, что нельзя открыть здесь ничем: архив, модель, картинка неизвестного
-  // формата. Коробка — это «лежит в комнате и уезжает отсюда целиком».
+  // Everything that cannot be opened here by anything: an archive, a model, an
+  // image of an unknown format. The box means "lies in the room and leaves it
+  // whole".
   if (kindOf(path) === 'binary') return 'box'
   return 'file'
 }

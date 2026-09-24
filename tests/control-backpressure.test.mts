@@ -1,25 +1,29 @@
 /**
- * Чего стоит один жест на управляющем сокете — и что происходит, когда провод
- * не успевает.
+ * What a single gesture on the control socket costs — and what happens when
+ * the wire cannot keep up.
  *
- * Управляющий сокет — единственное место, где одно движение руки превращается
- * в цикл `ws.send` по всем сокетам комнаты, и по нему едет всё самое крупное:
- * дерево файлов, стопка консилиума (до четырёх мегабайт) и чернила лекции
- * тридцать раз в секунду. Три вещи проверяются здесь утверждениями:
+ * The control socket is the only place where one movement of a hand turns
+ * into a `ws.send` loop over all of the room's sockets, and it carries all the
+ * biggest things: the file tree, the council stack (up to four megabytes) and
+ * the lecture ink thirty times a second. Three things are checked here with
+ * assertions:
  *
- *   — ОБРАТНОЕ ДАВЛЕНИЕ. Пока `send` смотрел только на `readyState`, всё, что
- *     не влезло в провод, складывалось в память процесса — по копии на каждый
- *     отставший сокет. Теперь у очереди две черты, ровно как у общего документа
- *     (collab/index.ts): за первой перестают ехать кадры, которые имеют смысл
- *     только сейчас, за второй сокет рвётся и вкладка возвращается сама.
- *   — СКЛЕЙКА ЧЕРНИЛ. Кусок штриха уезжал своим кадром: 89.6 КБ на комнату в
- *     пятьсот человек, тридцать раз в секунду. Куски одного штриха склеиваются
- *     на такт — и всё, что говорит о чернилах что-то ещё, обязано ехать ПОСЛЕ
- *     придержанного, иначе зал стирает штрих, к которому в очереди лежат точки.
- *   — ОДИН ТАКТ ПИНГА НА КОМНАТУ, а не таймер на каждый из пятисот сокетов.
+ *   — BACKPRESSURE. While `send` looked only at `readyState`, everything that
+ *     did not fit into the wire piled up in process memory — a copy for every
+ *     lagging socket. Now the queue has two marks, just like the shared
+ *     document (collab/index.ts): past the first, frames that matter only
+ *     right now stop being sent; past the second, the socket is dropped and
+ *     the tab comes back by itself.
+ *   — INK COALESCING. Every piece of a stroke went out in its own frame:
+ *     89.6 KB for a room of five hundred people, thirty times a second. The
+ *     pieces of one stroke are glued together per tick — and everything else
+ *     that says something about the ink must travel AFTER the held-back part,
+ *     otherwise the audience erases a stroke that still has points waiting in
+ *     the queue.
+ *   — ONE PING TICK PER ROOM, not a timer for each of five hundred sockets.
  *
- * Ни сети, ни ядра: сокеты поддельные, комната настоящая, диспетчер тот же, что
- * слушает провод.
+ * No network, no kernel: the sockets are fake, the room is real, and the
+ * dispatcher is the same one that listens to the wire.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -34,9 +38,9 @@ import type { TokenPayload } from '../server/src/auth.js'
 
 interface Fake {
   ws: WebSocket
-  /** Кадры как их разобрал бы браузер. */
+  /** Frames as a browser would parse them. */
   heard: ControlServerMessage[]
-  /** Кадры как они ушли в провод: строкой или уже байтами. */
+  /** Frames as they went into the wire: as a string or already as bytes. */
   raw: (string | Buffer)[]
   pings: number
   killed: boolean
@@ -63,8 +67,8 @@ function socket(): Fake {
     ping() {
       out.pings++
     },
-    // Настоящий `terminate` рвёт соединение и поднимает `close`; комната узнаёт,
-    // что опустела, только оттуда.
+    // A real `terminate` drops the connection and raises `close`; that is the
+    // only place the room learns it has emptied.
     terminate() {
       out.killed = true
       fake.readyState = WebSocket.CLOSED
@@ -103,22 +107,23 @@ function say(id: string, who: TokenPayload, ws: WebSocket, message: ControlClien
   dispatch(ws, id, who, message)
 }
 
-/** Кусок штриха — так, как его шлёт перо: точками по мере рисования. */
+/** A piece of a stroke, as the pen sends it: points as they are drawn. */
 function stroke(id: string, points: number[]): ControlClientMessage {
   return { t: 'ink', id, page: 1, color: '#101a33', width: 0.004, points }
 }
 
 const inkAdds = (heard: ControlServerMessage[]) => heard.filter((frame) => frame.t === 'ink:add')
 
-/* ------------------------------------------------------- обратное давление */
+/* ------------------------------------------------------------ backpressure */
 
-test('отставшему не шлют указку и чернила — а правила и конец занятия шлют', () => {
+test('a lagging socket is not sent the pointer and ink, but is sent the rules and the end of class', () => {
   const { id, host, seat } = room()
   startLecture(id, { file: 'л.pdf', by: 'p_host', byName: 'Ада', color: '#d4162f' })
   const slow = socket()
   handleControlSocket(slow.ws, id, { sessionId: id, participantId: 'p_slow', role: 'participant' })
 
-  // Два мегабайта в очереди: за первой чертой (1 МБ), далеко до второй (8 МБ).
+  // Two megabytes queued: past the first mark (1 MB), far from the second
+  // (8 MB).
   slow.stall(2 * 1024 * 1024)
   seat.heard.length = 0
   slow.heard.length = 0
@@ -128,40 +133,42 @@ test('отставшему не шлют указку и чернила — а �
   assert.equal(
     slow.heard.filter((frame) => frame.t === 'laser' || frame.t === 'ink:add').length,
     0,
-    'отставшему уехало то, что имеет смысл только сейчас',
+    'the lagging socket was sent something that matters only right now',
   )
   assert.ok(
     seat.heard.some((frame) => frame.t === 'laser'),
-    'вместе с отставшим замолчали перед всеми',
+    'along with the lagging socket, everyone else went silent too',
   )
 
-  // А кадр, который не повторится, — уезжает: потерять его значит оставить
-  // человека с комнатой, которой нет.
+  // But a frame that will not be repeated goes out: losing it means leaving a
+  // person with a room that does not exist.
   slow.heard.length = 0
   say(id, host, seat.ws, { t: 'class:finish' })
   assert.ok(
     slow.heard.some((frame) => frame.t === 'class'),
-    'отставшему не сказали, что занятие кончилось',
+    'the lagging socket was not told that the class had ended',
   )
-  assert.equal(slow.killed, false, 'сокет разорвали, не дождавшись второй черты')
+  assert.equal(slow.killed, false, 'the socket was dropped before reaching the second mark')
 
   stopLecture(id)
   closeControlRoom(id)
 })
 
-test('безнадёжно отставший сокет рвётся, и комната его забывает', () => {
+test('a hopelessly lagging socket is dropped, and the room forgets it', () => {
   const { id, host, seat } = room()
   const slow = socket()
   handleControlSocket(slow.ws, id, { sessionId: id, participantId: 'p_slow', role: 'participant' })
 
-  // Восемь мегабайт очереди — это не медленная сеть, а закрытая крышка: всё,
-  // что комната скажет дальше, ляжет в память процесса и никуда не уедет.
+  // Eight megabytes queued is not a slow network but a closed laptop lid:
+  // everything the room says from now on lands in process memory and goes
+  // nowhere.
   slow.stall(9 * 1024 * 1024)
   say(id, host, seat.ws, { t: 'class:finish' })
 
-  assert.equal(slow.killed, true, 'сокет с девятью мегабайтами очереди оставили жить')
-  // И комната узнала об уходе: `terminate` поднимает `close`, а на нём стоит
-  // вся уборка. Иначе рассылка до конца пары ходила бы по мёртвому сокету.
+  assert.equal(slow.killed, true, 'a socket with nine megabytes queued was left alive')
+  // And the room learned about the departure: `terminate` raises `close`, and
+  // all the cleanup hangs on it. Otherwise broadcasts would keep going to a
+  // dead socket until the end of the class.
   slow.heard.length = 0
   say(id, host, seat.ws, { t: 'class:resume' })
   assert.deepEqual(slow.heard, [])
@@ -169,12 +176,12 @@ test('безнадёжно отставший сокет рвётся, и ком
   closeControlRoom(id)
 })
 
-test('кадр рассылки кодируется раз на комнату, а не на каждый сокет', () => {
+test('a broadcast frame is encoded once per room, not once per socket', () => {
   /*
-   * `ws.send(строка)` кодирует её в UTF-8 заново на КАЖДЫЙ сокет — около
-   * миллисекунды на мегабайт. Кадр пера на комнату в пятьсот человек — 89.6 КБ
-   * тридцать раз в секунду: 4.9 МБ/с одного только кодирования, которое можно
-   * сделать один раз. Доказательство — тождество: все получили ОДИН объект.
+   * `ws.send(string)` encodes it to UTF-8 anew for EVERY socket — about a
+   * millisecond per megabyte. A pen frame for a room of five hundred people is
+   * 89.6 KB thirty times a second: 4.9 MB/s of encoding alone, which could be
+   * done once. The proof is identity: everyone received the SAME object.
    */
   const { id, host, seat } = room()
   const second = socket()
@@ -189,29 +196,30 @@ test('кадр рассылки кодируется раз на комнату,
   say(id, host, seat.ws, { t: 'class:finish' })
   const mine = seat.raw.at(-1)
   const theirs = second.raw.at(-1)
-  assert.ok(Buffer.isBuffer(mine), 'кадр уехал строкой — ws закодирует его каждому заново')
-  assert.equal(mine, theirs, 'каждому сокету собрали свою копию кадра')
+  assert.ok(Buffer.isBuffer(mine), 'the frame went out as a string, so ws will encode it anew for everyone')
+  assert.equal(mine, theirs, 'each socket got its own copy of the frame')
 
   closeControlRoom(id)
 })
 
-/* ------------------------------------------------------------ склейка чернил */
+/* ------------------------------------------------------------ ink coalescing */
 
-test('куски одного штриха склеиваются на такт, и точки не теряются', async () => {
+test('pieces of one stroke are glued per tick, and no points are lost', async () => {
   const { id, host, seat } = room()
   startLecture(id, { file: 'л.pdf', by: 'p_host', byName: 'Ада', color: '#d4162f' })
   seat.heard.length = 0
 
-  // Тридцать кусков подряд — столько перо шлёт за секунду рисования.
+  // Thirty pieces in a row: that is what the pen sends in a second of drawing.
   for (let i = 0; i < 30; i++) say(id, host, seat.ws, stroke('s1', [i / 100, i / 100]))
-  assert.equal(inkAdds(seat.heard).length, 1, 'первый кусок не уехал сразу или уехали все тридцать')
+  assert.equal(inkAdds(seat.heard).length, 1, 'the first piece did not go out at once, or all thirty went out')
 
   await sleep(90)
   const frames = inkAdds(seat.heard)
-  assert.ok(frames.length >= 2, 'придержанные куски так и не уехали')
-  assert.ok(frames.length <= 4, `тридцать кусков уехали ${frames.length} кадрами`)
+  assert.ok(frames.length >= 2, 'the held-back pieces never went out')
+  assert.ok(frames.length <= 4, `thirty pieces went out in ${frames.length} frames`)
 
-  // И ни одна точка не потерялась и не переставилась: зал видит ту же линию.
+  // And not a single point was lost or reordered: the audience sees the same
+  // line.
   const drawn: number[] = []
   for (const frame of frames) {
     assert.equal(frame.t === 'ink:add' && frame.stroke.id, 's1')
@@ -219,39 +227,40 @@ test('куски одного штриха склеиваются на такт,
   }
   const expected: number[] = []
   for (let i = 0; i < 30; i++) expected.push(i / 100, i / 100)
-  assert.deepEqual(drawn, expected, 'склейка нарисовала залу не то, что рисовали')
+  assert.deepEqual(drawn, expected, 'coalescing drew something other than what was drawn')
 
   stopLecture(id)
   closeControlRoom(id)
 })
 
-test('«сотрите штрих» едет ПОСЛЕ придержанных точек, а не перед ними', async () => {
+test('"erase the stroke" travels AFTER the held-back points, not before them', async () => {
   /*
-   * Иначе зал стирает штрих, к которому в очереди лежат точки, — и они
-   * дописываются к пустому месту заново. То же и с «вот вся страница целиком».
+   * Otherwise the audience erases a stroke that still has points waiting in
+   * the queue — and they get drawn onto the empty spot anew. The same goes for
+   * "here is the whole page".
    */
   const { id, host, seat } = room()
   startLecture(id, { file: 'л.pdf', by: 'p_host', byName: 'Ада', color: '#d4162f' })
   say(id, host, seat.ws, stroke('s1', [0, 0, 0.1, 0.1]))
   seat.heard.length = 0
-  // Пока окно открыто — второй кусок придержан.
+  // While the window is open, the second piece is held back.
   say(id, host, seat.ws, stroke('s1', [0.2, 0.2]))
-  assert.equal(inkAdds(seat.heard).length, 0, 'кусок уехал, не дождавшись такта')
+  assert.equal(inkAdds(seat.heard).length, 0, 'the piece went out without waiting for the tick')
 
   say(id, host, seat.ws, { t: 'ink:undo', page: 1 })
   const order = seat.heard.map((frame) => frame.t)
-  assert.deepEqual(order, ['ink:add', 'ink:drop'], 'отмена обогнала придержанные точки')
+  assert.deepEqual(order, ['ink:add', 'ink:drop'], 'the undo overtook the held-back points')
 
-  // И хвост такта не дошлёт их следом: они уже уехали.
+  // And the end of the tick will not send them again: they are already gone.
   seat.heard.length = 0
   await sleep(90)
-  assert.deepEqual(inkAdds(seat.heard), [], 'придержанное уехало дважды')
+  assert.deepEqual(inkAdds(seat.heard), [], 'the held-back part went out twice')
 
   stopLecture(id)
   closeControlRoom(id)
 })
 
-test('штрихи разных рук не меняются местами в одном такте', async () => {
+test('strokes from different hands do not swap places within one tick', async () => {
   const { id, host, seat } = room()
   startLecture(id, { file: 'л.pdf', by: 'p_host', byName: 'Ада', color: '#d4162f' })
   say(id, host, seat.ws, stroke('a', [0, 0, 0.1, 0.1]))
@@ -263,20 +272,21 @@ test('штрихи разных рук не меняются местами в �
   await sleep(90)
 
   const ids = inkAdds(seat.heard).map((frame) => (frame.t === 'ink:add' ? frame.stroke.id : ''))
-  assert.deepEqual(ids, ['b', 'a', 'b'], 'склейка переставила штрихи двух рук')
+  assert.deepEqual(ids, ['b', 'a', 'b'], 'coalescing reordered the strokes of two hands')
 
   stopLecture(id)
   closeControlRoom(id)
 })
 
-/* ------------------------------------------------------------------ пинг */
+/* ------------------------------------------------------------------ ping */
 
-test('такт пинга — один на комнату, а не на каждый сокет', () => {
+test('one ping tick per room, not one per socket', () => {
   /*
-   * Пинг — это два счётчика и `ws.ping()`; таймер вокруг него на одном сокете
-   * не виден. На пятистах это пятьсот таймеров в куче node, просыпающихся
-   * вразнобой по всей минуте, — то есть пятьсот пробуждений цикла событий там,
-   * где хватает одного обхода набора, который и так лежит рядом.
+   * A ping is two counters and `ws.ping()`; the timer around it is invisible
+   * on one socket. On five hundred it is five hundred timers in node's heap,
+   * waking up at random throughout the minute — that is, five hundred
+   * event-loop wakeups where one pass over a set that is already at hand would
+   * do.
    */
   const id = `ping-${++rooms}`
   createSession(id, 'Пинг', null)
@@ -287,8 +297,8 @@ test('такт пинга — один на комнату, а не на каж�
     fn: () => void,
     ms?: number,
   ) => {
-    // Только такт пинга: всё прочее в комнате заводит свои таймеры на своих
-    // сроках, и считать их здесь не о чем.
+    // Only the ping tick: everything else in the room sets its own timers on
+    // its own schedule, and there is nothing to count about them here.
     if (ms === 25_000) {
       started++
       ticks.push(fn)
@@ -311,19 +321,20 @@ test('такт пинга — один на комнату, а не на каж�
     ;(globalThis as { setInterval: typeof setInterval }).setInterval = real
   }
 
-  assert.equal(started, 1, `на пять сокетов завели ${started} тактов пинга`)
+  assert.equal(started, 1, `five sockets started ${started} ping ticks`)
 
-  // Сроки те же, что были: два молчания подряд — и сокет рвётся.
+  // The timing is the same as before: two silences in a row, and the socket
+  // is dropped.
   ticks[0]()
   assert.deepEqual(seats.map((seat) => seat.pings), [1, 1, 1, 1, 1])
   ticks[0]()
   assert.deepEqual(seats.map((seat) => seat.pings), [2, 2, 2, 2, 2])
-  assert.equal(seats.some((seat) => seat.killed), false, 'сокет разорвали на втором пинге')
+  assert.equal(seats.some((seat) => seat.killed), false, 'the socket was dropped on the second ping')
   ticks[0]()
   assert.equal(
     seats.every((seat) => seat.killed),
     true,
-    'сокет, промолчавший два пинга подряд, оставили жить',
+    'a socket that stayed silent for two pings in a row was left alive',
   )
 
   closeControlRoom(id)

@@ -1,15 +1,19 @@
 /**
- * Разбор argv, диспетчер и help.
+ * argv parsing, the dispatcher and help.
  *
- * Весь каркас живёт здесь: группы команд его не правят. Что он берёт на себя:
+ * The whole framework lives here: the command groups do not edit it. What it
+ * takes on:
  *
- *   · глобальные флаги --help --dry-run --yes --json --no-color --version —
- *     из любого места argv;
- *   · имя команды разрешается жадно: сначала два токена («env use»), потом один;
- *   · вопрос перед опасным действием задаётся один раз и здесь, а не в командах;
- *   · дефисное имя двухсловной команды («env-use») ведёт в саму команду;
- *   · неизвестное слово — подсказка: группа или соседнее имя по расстоянию
- *     Левенштейна.
+ *   · the global flags --help --dry-run --yes --json --no-color --version,
+ *     from anywhere in argv;
+ *   · the command name is resolved greedily: two tokens first ("env use"),
+ *     then one;
+ *   · the question before a dangerous action is asked once and here, not in
+ *     the commands;
+ *   · the hyphenated name of a two-word command ("env-use") leads to the
+ *     command itself;
+ *   · an unknown word gets a hint: a group or a neighbouring name by
+ *     Levenshtein distance.
  */
 import { parseArgs } from 'node:util'
 import { GROUPS, registry, type Command, type Ctx } from './registry.js'
@@ -28,19 +32,19 @@ export type Deps = {
   io?: Io
   out?: (text: string) => void
   err?: (text: string) => void
-  /** Подставной исполнитель: пока он стоит, ни один процесс не запускается. */
+  /** A stand-in executor: while it is in place, not a single process is started. */
   runner?: Runner | null
   tty?: boolean
-  /** Подставные ответы на вопросы. */
+  /** Stand-in answers to the questions. */
   ask?: (question: string) => Promise<string>
   processEnv?: NodeJS.ProcessEnv
-  /** Реестр целиком — для тестов. */
+  /** The whole registry, for tests. */
   commands?: Command[]
   root?: string
-  /** Каталог состояния. Не назван — совпадает с root, как в репозитории. */
+  /** The state directory. Not named, it coincides with root, as in the repository. */
   home?: string
   cwd?: string
-  /** Считать приложение установленным: иначе признак ищется у корня. */
+  /** Treat the application as installed: otherwise the marker is looked up at the root. */
   dist?: boolean
 }
 
@@ -62,7 +66,7 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
   const io = deps.io ?? createIo()
   const tty = deps.tty ?? Boolean(process.stdout.isTTY && process.stdin.isTTY)
 
-  // Глобальные флаги — из любого места. Всё после `--` неприкосновенно.
+  // The global flags, from anywhere. Everything after `--` is untouchable.
   const globals = {
     help: false,
     dryRun: false,
@@ -136,12 +140,12 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
   }
 
   /**
-   * Сколько ЗАНЯТИЙ сейчас держат Python — а не сколько контейнеров.
+   * How many CLASSES are holding Python now, not how many containers.
    *
-   * У одного занятия их два: его собственный и тот, где считаются личные
-   * тетради студентов. Считать строки значило бы предупредить «остановится 2
-   * комнаты» там, где идёт одна пара, — и число это человек читает ровно перед
-   * тем, как согласиться остановить сервер.
+   * One class has two of them: its own and the one where the students'
+   * personal notebooks are computed. Counting lines would mean warning "2
+   * rooms will stop" where a single class is going on, and a person reads this
+   * number right before agreeing to stop the server.
    */
   async function countRooms(): Promise<number> {
     const result = await sh.capture(
@@ -154,7 +158,7 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
     return rooms.size
   }
 
-  /** Вопрос с уточнением о комнатах: число не запрещает действие, только уточняет. */
+  /** The question with a note about rooms: the number does not forbid the action, it only refines it. */
   async function withRooms(question: string): Promise<string> {
     const count = await ctx.rooms()
     return count > 0 ? question + ' ' + roomsPhrase(count) : question
@@ -166,10 +170,10 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
       return 0
     }
 
-    // Голый вызов ничего не запускает: пакет ставят задолго до пары, и первое
-    // знакомство должно быть строкой «что я умею», а не внезапно занятым
-    // портом и открытым браузером. Занятие начинается словом — `colloq
-    // start`, как `jupyter lab`.
+    // A bare call starts nothing: the package is installed long before class,
+    // and the first acquaintance should be a line of "what I can do", not a
+    // suddenly taken port and an opened browser. A class starts with a word,
+    // `colloq start`, like `jupyter lab`.
     if (tokens.length === 0) {
       if (globals.help) renderHelp(ui, commands, env.kernelEnv())
       else renderIntro(ui)
@@ -188,7 +192,7 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
     return report(1, message, 'colloq help')
   }
 
-  /** Отказ в трёх строках, а в режиме --json — тем же кодом и ни строки вне JSON. */
+  /** A refusal in three lines, and in --json mode with the same code and not a line outside JSON. */
   function report(code: number, what: string, fix: string, why = ''): number {
     if (globals.json) {
       ui.json({ ok: false, code, error: what + (why ? '. ' + why : ''), hint: fix })
@@ -214,15 +218,15 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
       return 0
     }
 
-    // Жадно: сначала два токена, потом один.
+    // Greedily: two tokens first, then one.
     const two = head.length > 1 ? first + ' ' + head[1] : ''
     const found = (two ? find(commands, two) : undefined) ?? find(commands, first)
     if (!found) {
-      // Дефисный двойник двухсловного имени — та же команда: `env-use` это
-      // `env use`.
+      // The hyphenated twin of a two-word name is the same command: `env-use`
+      // is `env use`.
       const twin = first.includes('-') ? find(commands, first.replaceAll('-', ' ')) : undefined
       if (twin) return await dispatch(respell(input, first, twin.name))
-      // --help не должен выполнить ни одного неизвестного слова.
+      // --help must not execute a single unknown word.
       if (globals.help) {
         renderHelp(ui, commands, env.kernelEnv())
         return 2
@@ -230,13 +234,13 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
       return unknown(first)
     }
 
-    // Сколько токенов съело имя: два — только если позвали именно двухсловным
-    // именем или двухсловным алиасом. У односложного алиаса двухсловной команды
-    // (`colloq env` = `env list`) съедается один, иначе следом за ним пропадало
-    // бы значение флага: `colloq env --json`.
+    // How many tokens the name ate: two only if it was called by exactly the
+    // two-word name or a two-word alias. A one-word alias of a two-word command
+    // (`colloq env` = `env list`) eats one, otherwise the flag value after it
+    // would go missing: `colloq env --json`.
     const matchedTwo = Boolean(two) && (found.name === two || (found.aliases ?? []).includes(two))
     const used = matchedTwo ? 2 : 1
-    // Хвост: всё, кроме съеденных имени команды токенов.
+    // The tail: everything except the tokens eaten by the command name.
     const tail = dropCommandTokens(input, used)
 
     if (globals.help) {
@@ -288,8 +292,9 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
       if ((parsed.positionals[i] ?? '').trim() !== '') continue
       throw new UsageError('missing required argument <' + arg.name + '>', 'Usage: ' + found.usage)
     }
-    // Лишний позиционный — это чаще всего опечатка в имени команды
-    // (`colloq env cv`): молча свести её к другой команде хуже, чем отказать.
+    // An extra positional is most often a typo in the command name
+    // (`colloq env cv`): silently turning it into another command is worse
+    // than refusing.
     if (parsed.positionals.length > declared.length) {
       throw new UsageError(
         'extra argument: ' + (parsed.positionals[declared.length] ?? ''),
@@ -297,12 +302,14 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
       )
     }
 
-    // Проверка аргументов идёт ДО вопроса: у плохого аргумента вопроса не
-    // бывает, и отказ не должен зависеть от того, есть ли терминал.
+    // The argument check comes BEFORE the question: a bad argument never gets
+    // a question, and the refusal must not depend on whether there is a
+    // terminal.
     if (found.check) await found.check(ctx)
 
-    // Вопрос задаётся здесь и один раз. confirm:'script' — молчим, спросит
-    // скрипт; confirm:'self' — спросит сама команда там, где ей нужно.
+    // The question is asked here and once. confirm:'script' means we stay
+    // silent, the script will ask; confirm:'self' means the command itself
+    // asks where it needs to.
     if (found.destructive && found.confirm === 'cli' && !globals.yes && !globals.dryRun) {
       const needed = found.confirmWhen ? await found.confirmWhen(ctx) : true
       if (needed) {
@@ -319,8 +326,8 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
   }
 
   function unknown(name: string): number {
-    // Голое имя группы — самое естественное, что печатают после help: показать
-    // её команды честнее, чем гадать по буквам.
+    // A bare group name is the most natural thing people type after help:
+    // showing its commands is more honest than guessing by the letters.
     const inGroup = commands
       .filter((command) => command.name.startsWith(name + ' '))
       .map((command) => command.name)
@@ -341,7 +348,7 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
   }
 }
 
-/** Токены имени команды выбрасываются из хвоста: остальное идёт в parseArgs. */
+/** The command name tokens are dropped from the tail: the rest goes to parseArgs. */
 function dropCommandTokens(input: string[], count: number): string[] {
   const out: string[] = []
   let dropped = 0
@@ -355,7 +362,7 @@ function dropCommandTokens(input: string[], count: number): string[] {
   return out
 }
 
-/** Дефисное имя переписывается двухсловным: хвост и флаги остаются как были. */
+/** The hyphenated name is rewritten as the two-word one: the tail and the flags stay as they were. */
 export function respell(input: string[], from: string, to: string): string[] {
   const out: string[] = []
   let done = false
@@ -371,9 +378,9 @@ export function respell(input: string[], from: string, to: string): string[] {
 }
 
 /**
- * Отказ parseArgs по-русски. Английский текст Node остаётся только там, где
- * своего слова нет: его совет «поставьте после --» для опечатки во флаге ещё и
- * неверен.
+ * The parseArgs refusal in plain words. Node's English text stays only where
+ * we have no word of our own: its advice "put it after --" for a typo in a
+ * flag is wrong, too.
  */
 export function parseTrouble(error: unknown, command: Command): UsageError {
   const message = error instanceof Error ? error.message : String(error)
@@ -392,13 +399,13 @@ export function parseTrouble(error: unknown, command: Command): UsageError {
   return new UsageError(message, fix)
 }
 
-/** Команда по имени или алиасу. */
+/** A command by name or alias. */
 export function find(commands: Command[], name: string): Command | undefined {
   if (!name) return undefined
   return commands.find((command) => command.name === name || (command.aliases ?? []).includes(name))
 }
 
-/** Ближайшее имя: расстояние Левенштейна ≤ 3, одна подсказка. */
+/** The nearest name: Levenshtein distance ≤ 3, one hint. */
 export function nearest(commands: Command[], name: string): string | undefined {
   let best: string | undefined
   let bestDistance = 4
@@ -414,7 +421,7 @@ export function nearest(commands: Command[], name: string): string | undefined {
   return best
 }
 
-/** То же расстояние по списку слов: для флагов команды. */
+/** The same distance over a list of words: for the command's flags. */
 export function nearestWord(words: string[], name: string): string | undefined {
   let best: string | undefined
   let bestDistance = 4
@@ -447,7 +454,7 @@ export function levenshtein(a: string, b: string): number {
   return previous[cols - 1] ?? Math.max(a.length, b.length)
 }
 
-/** «3 rooms are running» — только уточнение к вопросу. Слово считает ui. */
+/** "3 rooms are running" is only a note to the question. ui counts the word. */
 export function roomsPhrase(count: number): string {
   return roomsWord(count) + (count === 1 ? ' is running' : ' are running')
 }
@@ -459,11 +466,11 @@ function version(io: Io, packagePath: string): string {
 }
 
 /**
- * Короткая справка голого вызова.
+ * The short help of a bare call.
  *
- * Четыре строки и ни одной лишней: что это такое и три слова, которыми
- * занятие начинают, показывают классу и заканчивают. Полный список так и
- * остаётся за `colloq help`, как у git и jupyter.
+ * Four lines and not one extra: what this is, and the three words a class is
+ * started with, shown to the class with and ended with. The full list stays
+ * behind `colloq help`, as with git and jupyter.
  */
 export function renderIntro(ui: ReturnType<typeof createUi>): void {
   ui.line(ui.bold('colloq') + ' — a class on this computer: notebooks, a Python kernel and a board')
@@ -477,7 +484,7 @@ export function renderIntro(ui: ReturnType<typeof createUi>): void {
   ui.line(ui.dim('More: colloq help · one command: colloq <command> --help'))
 }
 
-/** Список команд по группам. */
+/** The list of commands by group. */
 export function renderHelp(
   ui: ReturnType<typeof createUi>,
   commands: Command[],
@@ -498,7 +505,7 @@ export function renderHelp(
   ui.line(ui.dim('In detail: colloq <command> --help'))
 }
 
-/** Помощь по одной команде: назначение, употребление, аргументы, флаги, два примера. */
+/** Help for one command: purpose, usage, arguments, flags, two examples. */
 export function renderCommandHelp(
   ui: ReturnType<typeof createUi>,
   command: Command,
@@ -514,7 +521,7 @@ export function renderCommandHelp(
   if (command.args?.length) {
     ui.line()
     ui.header('Arguments')
-    // Обязательный в угловых скобках, необязательный в квадратных — как в usage.
+    // Required ones in angle brackets, optional ones in square brackets, as in usage.
     ui.table(
       command.args.map((arg) => [
         arg.required ? '<' + arg.name + '>' : '[' + arg.name + ']',
@@ -532,8 +539,9 @@ export function renderCommandHelp(
         (flag.arg ? ' <' + flag.arg + '>' : ''),
       flag.summary,
     ]),
-    // Общие флаги дописываются здесь, а не в usage каждой команды: иначе одни
-    // группы их перечисляют, другие нет, и help читается как пять разных.
+    // The common flags are appended here, not in the usage of every command:
+    // otherwise some groups list them and others do not, and help reads like
+    // five different ones.
     ...globalFlagRows(command),
   ])
   const examples = (command.examples?.length ? command.examples : [command.usage]).map(fill)
@@ -552,7 +560,7 @@ export function renderCommandHelp(
   ui.line(ui.dim('delegates: ' + command.delegates))
 }
 
-/** Общие флаги, которые к этой команде и правда применимы. */
+/** The common flags that really apply to this command. */
 function globalFlagRows(command: Command): string[][] {
   const rows: string[][] = [['--dry-run', 'Show what would run and do nothing']]
   if (command.destructive) rows.push(['-y, --yes', 'Agree in advance, no question will be asked'])
@@ -561,12 +569,13 @@ function globalFlagRows(command: Command): string[][] {
   return rows
 }
 
-// Запуск из исходников: `node --import tsx cli/src/main.ts`. У колеса своя
-// точка входа — cli/src/bin.ts.
+// Starting from the sources: `node --import tsx cli/src/main.ts`. The wheel has
+// its own entry point, cli/src/bin.ts.
 const entry = process.argv[1] ?? ''
 if (entry.endsWith('/cli/src/main.ts') || entry.endsWith('/cli/src/main.js')) {
-  // Без ребёнка действует обычный SIGINT Node. При запуске sh сам пересылает
-  // сигнал и ждёт ребёнка: ранний process.exit здесь оставлял его работать.
+  // Without a child, Node's ordinary SIGINT applies. While a child runs, sh
+  // forwards the signal itself and waits for the child: an early process.exit
+  // here left it running.
   const code = await cli(process.argv.slice(2))
   process.exitCode = code
 }

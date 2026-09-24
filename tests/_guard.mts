@@ -1,25 +1,28 @@
 /**
- * Чем поддельное ядро отвечает на установку защиты от опасных команд.
+ * How the fake kernel answers the installation of the guard against dangerous
+ * commands.
  *
- * Сервер ставит её при каждом подъёме и перезапуске ядра и НЕ выпускает
- * очередь, пока ядро не подтвердит (kernel/index.ts · ensureGuard): молчание
- * он обязан считать отказом. Значит всякая подделка ядра, через которую
- * проходит хоть одна ячейка, обязана уметь это подтверждать — иначе сюита
- * проверяет не то, что написано в её названии, а отказ защиты.
+ * The server installs it on every kernel start and restart and does NOT
+ * release the queue until the kernel confirms (kernel/index.ts ·
+ * ensureGuard): it has to treat silence as refusal. So every kernel fake
+ * that even one cell passes through must be able to confirm it, otherwise
+ * the suite tests not what its name says but a guard failure.
  *
- * Общий кусок, а не копия в каждом файле: подделок ядра в тестах несколько, и
- * разойтись им здесь легче всего — первая же правка отчёта чинилась бы в одном
- * месте и молча ломала два других.
+ * A shared piece rather than a copy in every file: the tests have several
+ * kernel fakes, and this is where they would drift apart most easily: the
+ * very first change to the report would be fixed in one place and silently
+ * break the other two.
  */
 import { GUARD_MODULE } from '../server/src/kernel/danger.js'
 
 /**
- * Это ячейка правила? Тогда — готовый ответ, как у настоящего ядра.
+ * Is this a rule cell? Then a ready answer, as from a real kernel.
  *
- * `null` — код не про защиту, и отвечать на него надо тем, чем подделка
- * отвечала раньше. Правило читается из самого кода (`apply(True` / `apply(False`)
- * — тем же способом, каким на него ответило бы ядро: сервер сверяет
- * пришедшее `policy` с тем, что просил, и расхождение считает отказом.
+ * `null`: the code is not about the guard, and it should get whatever answer
+ * the fake gave before. The rule is read from the code itself (`apply(True` /
+ * `apply(False`), the same way the kernel would respond to it: the server
+ * compares the returned `policy` with what it asked for and treats a
+ * mismatch as refusal.
  */
 export function guardAnswer(code: string): Record<string, unknown> | null {
   if (!code.includes(GUARD_MODULE) || !code.includes('.apply(')) return null

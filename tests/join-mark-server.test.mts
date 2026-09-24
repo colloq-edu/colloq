@@ -1,25 +1,28 @@
 /**
- * Метку раздаёт комната, а не тридцать браузеров независимо.
+ * The room hands out marks, not thirty browsers independently.
  *
- * Экран входа выбирает зверя по ростеру и обещает: «того, кого в этой комнате
- * никто не занял». Обещание он сдержать не может — класс открывает ссылку в
- * одну минуту, у всех тридцати комната пуста, — и клиент это честно сузил до
- * круга сети (web/src/components/join/pick.ts): ростер перечитывается прямо
- * перед стуком. Две вкладки, постучавшие в одну секунду, друг друга всё равно
- * не видят, и сорок меток на класс из тридцати дают около одиннадцати пар с
- * одним зверем — то есть с одинаковым курсором в тетради, потому что цвет их не
- * различает (он минтуется из id). Замечают это на двадцатой минуте.
+ * The join screen picks an animal by the roster and promises "one nobody in
+ * this room has taken". It cannot keep that promise — a class opens the link
+ * within one minute, for all thirty the room is empty — and the client
+ * honestly narrowed this down to one network round trip
+ * (web/src/components/join/pick.ts): the roster is re-read right before the
+ * knock. Two tabs that knocked in the same second still do not see each
+ * other, and forty marks for a class of thirty give about eleven pairs with
+ * the same animal — that is, with the same cursor in the notebook, because
+ * the colour does not tell them apart (it is minted from the id). People
+ * notice in the twentieth minute.
  *
- * Судья тут один, и он здесь: `/join` подменяет занятую метку свободной и
- * возвращает ту, что выдал на самом деле. Занятыми считаются двое — те, кто в
- * комнате СЕЙЧАС (присутствие), и те, кому метку выдали только что: между
- * входом и первым кадром присутствия проходит секунда, и весь класс, открывший
- * ссылку разом, укладывается в неё.
+ * There is one judge here, and it is right here: `/join` replaces a taken
+ * mark with a free one and returns the one it actually handed out. Two groups
+ * count as taken — those in the room NOW (presence), and those who were given
+ * a mark just now: a second passes between the join and the first presence
+ * frame, and a whole class that opened the link at once fits into it.
  *
- * Подменяется при этом только ВЫДАННАЯ метка. Ткнутую пальцем (`picked` в теле
- * запроса) сервер оставляет как есть: подборщик занятых нажать не даёт, так
- * что совпасть она может лишь в круге сети, — а два ежа в комнате дешевле
- * экрана, который молча выдал выдру вместо ежа.
+ * Only a HANDED-OUT mark gets replaced. One tapped with a finger (`picked` in
+ * the request body) the server leaves as is: the picker does not let you
+ * press taken ones, so it can collide only within a network round trip — and
+ * two hedgehogs in a room are cheaper than a screen that silently handed out
+ * an otter instead of a hedgehog.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -66,7 +69,7 @@ after(() => {
   shutdownCollab()
 })
 
-/** `picked` — как его шлёт браузер: чем угодно, а не только булевым. */
+/** `picked` as the browser sends it: as anything at all, not only a boolean. */
 type Extra = { participantId?: string; token?: string; picked?: unknown }
 
 async function knock(name: string, avatar: string, extra?: Extra): Promise<JoinResponse> {
@@ -75,16 +78,16 @@ async function knock(name: string, avatar: string, extra?: Extra): Promise<JoinR
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name, avatar, ...(extra ?? {}) }),
   })
-  assert.equal(res.status, 200, `${name} не вошёл`)
+  assert.equal(res.status, 200, `${name} did not get in`)
   return (await res.json()) as JoinResponse
 }
 
-/** Вход с меткой, ткнутой пальцем: то же тело, плюс признак выбора. */
+/** A join with a mark tapped by finger: the same body, plus the picked flag. */
 function pick(name: string, avatar: string, picked: unknown = true): Promise<JoinResponse> {
   return knock(name, avatar, { picked })
 }
 
-/** Человек в комнате — так, как его видит сервер: кадром присутствия. */
+/** A person in the room — the way the server sees them: as a presence frame. */
 function sitsInRoom(participantId: string): void {
   const entry = getSessionDoc(ROOM)
   const guest = new Awareness(new Y.Doc())
@@ -92,58 +95,59 @@ function sitsInRoom(participantId: string): void {
   applyAwarenessUpdate(entry.awareness, encodeAwarenessUpdate(guest, [guest.clientID]), 'тест')
 }
 
-test('две вкладки в одну секунду расходятся с разными зверями', async () => {
+test('two tabs in the same second leave with different animals', async () => {
   const first = await knock('Аня', FOX)
-  assert.equal(first.participant.avatar, FOX, 'свободную метку подменили ни за чем')
+  assert.equal(first.participant.avatar, FOX, 'a free mark was replaced for no reason')
 
-  // Присутствия у Ани ещё нет — она даже не успела открыть сокет. Ровно этот
-  // промежуток и делал из класса, открывшего ссылку разом, комнату с парами
-  // одинаковых курсоров.
+  // Anya has no presence yet — she has not even had time to open a socket.
+  // Exactly this gap turned a class that opened the link at once into a room
+  // with pairs of identical cursors.
   const second = await knock('Боря', FOX)
-  assert.notEqual(second.participant.avatar, FOX, 'два одинаковых зверя в одной комнате')
+  assert.notEqual(second.participant.avatar, FOX, 'two identical animals in one room')
   assert.ok(
     isMark(second.participant.avatar),
-    `сервер выдал ${second.participant.avatar} — это не метка из списка`,
+    `the server handed out ${second.participant.avatar} — that is not a mark from the list`,
   )
 })
 
-test('метка того, кто в комнате сейчас, занята и для опоздавшего', async () => {
+test('the mark of someone in the room now is taken for a latecomer too', async () => {
   const sitting = await knock('Вера', TURTLE)
   sitsInRoom(sitting.participant.id)
 
   const late = await knock('Гриша', TURTLE)
-  assert.notEqual(late.participant.avatar, TURTLE, 'опоздавший сел на чужой курсор')
+  assert.notEqual(late.participant.avatar, TURTLE, "the latecomer took over someone else's cursor")
 })
 
-test('вернувшийся остаётся собой: своя метка занятой не считается', async () => {
+test('someone coming back stays themselves: their own mark does not count as taken', async () => {
   const first = await knock('Дина', '🦉')
   const mine = { participantId: first.participant.id, token: first.token }
   sitsInRoom(first.participant.id)
 
-  // Обновлённая вкладка — тот же человек с тем же ключом. Подменить ему метку
-  // значило бы объявить его чужим самому себе.
+  // A reloaded tab is the same person with the same key. Replacing their mark
+  // would mean declaring them a stranger to themselves.
   const again = await knock('Дина', '🦉', mine)
   assert.equal(again.participant.id, first.participant.id)
-  assert.equal(again.participant.avatar, '🦉', 'человек вернулся и стал другим зверем')
+  assert.equal(again.participant.avatar, '🦉', 'the person came back and became a different animal')
 })
 
-test('свободную метку сервер не трогает', async () => {
+test('the server does not touch a free mark', async () => {
   const free = await knock('Женя', '🦩')
   assert.equal(free.participant.avatar, '🦩')
 })
 
-/* --------------------------------------------------- выбранное руками */
+/* --------------------------------------------------- picked by hand */
 
 /**
- * Подмена — против молчаливого совпадения, а не против человека.
+ * The replacement is against a silent collision, not against the person.
  *
- * Подборщик занятые метки рисует занятыми и нажать на них не даёт, а ростер
- * перечитывает при открытии, так что ткнуть в чужого зверя можно только в
- * круге сети. Два ежа в комнате дешевле экрана, который молча сделал вид, что
- * не услышал: карточка входа к этому моменту уже уехала, и объяснить подмену
- * потом нечем.
+ * The picker draws taken marks as taken and does not let you press them, and
+ * it re-reads the roster on opening, so tapping someone else's animal is
+ * possible only within a network round trip. Two hedgehogs in a room are
+ * cheaper than a screen that silently pretended not to hear: by then the join
+ * card has already gone, and there is nothing to explain the replacement with
+ * afterwards.
  */
-test('ткнули в занятого ежа — вошли ежом', async () => {
+test('tapped a taken hedgehog — joined as the hedgehog', async () => {
   const first = await knock('Зина', HEDGEHOG)
   assert.equal(first.participant.avatar, HEDGEHOG)
   sitsInRoom(first.participant.id)
@@ -152,28 +156,30 @@ test('ткнули в занятого ежа — вошли ежом', async ()
   assert.equal(
     byHand.participant.avatar,
     HEDGEHOG,
-    'выбранного руками зверя подменили — человек нажал на ежа и стал кем-то ещё',
+    'the animal picked by hand was replaced — the person tapped the hedgehog and became someone else',
   )
 })
 
-test('выбранная руками занимает окно: следующему её уже не выдадут', async () => {
+test('a mark picked by hand takes the window: the next person will not be handed it', async () => {
   const byHand = await pick('Ксюша', WHALE)
   assert.equal(byHand.participant.avatar, WHALE)
 
-  // Присутствия у неё ещё нет — держит короткая память выдачи. Без неё
-  // автоподбор через секунду выдал бы того же кита, и подмена «выбранного»
-  // обернулась бы парой одинаковых курсоров с другой стороны.
+  // She has no presence yet — the short memory of handed-out marks holds it.
+  // Without it the auto-pick would hand out the same whale a second later,
+  // and the rule for the "picked" mark would backfire as a pair of identical
+  // cursors from the other side.
   const next = await knock('Лёва', WHALE)
-  assert.notEqual(next.participant.avatar, WHALE, 'кита выдали второй раз подряд')
-  assert.ok(isMark(next.participant.avatar), 'сервер выдал строку, которой нет в списке меток')
+  assert.notEqual(next.participant.avatar, WHALE, 'the whale was handed out twice in a row')
+  assert.ok(isMark(next.participant.avatar), 'the server handed out a string that is not in the list of marks')
 })
 
-test('признак читается строго: «true» строкой ничего не открывает', async () => {
+test('the flag is read strictly: "true" as a string opens nothing', async () => {
   const first = await knock('Марк', PARROT)
   sitsInRoom(first.participant.id)
 
-  // Тело запроса приходит из браузера, и «истинное» вроде строки или единицы
-  // здесь не в счёт: иначе подмену выключает любой, кто её не хочет.
+  // The request body comes from the browser, and something "truthy" like a
+  // string or a one does not count here: otherwise anyone who does not want
+  // the replacement could switch it off.
   const sneaky = await pick('Нина', PARROT, 'true')
-  assert.notEqual(sneaky.participant.avatar, PARROT, 'подмену выключила строка вместо true')
+  assert.notEqual(sneaky.participant.avatar, PARROT, 'a string instead of true switched the replacement off')
 })

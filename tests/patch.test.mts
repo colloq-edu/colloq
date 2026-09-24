@@ -59,16 +59,16 @@ test('every action the protocol names is one the route accepts', async () => {
   const accepted = [...line[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort()
 
   /*
-   * Объединение читается до точки с запятой, а не до конца строки.
+   * The union is read up to the semicolon, not to the end of the line.
    *
-   * Раньше здесь стояло `(.*)`, и тест падал от одного прогона prettier,
-   * который разложил объединение по строкам, ничего не изменив по смыслу.
-   * Проверка, ломающаяся от переноса строки, ловит форматирование, а не
-   * расхождение — а расхождение здесь и есть то, ради чего она написана.
+   * This used to be `(.*)`, and the test broke from a single prettier run
+   * that laid the union out over several lines without changing its meaning.
+   * A check that breaks on a line break catches formatting, not drift — and
+   * drift is exactly what it was written to catch.
    */
   const protocol = await readFile(new URL('../shared/protocol.ts', import.meta.url), 'utf8')
-  // До пустой строки: объединение может быть и в одну строку, и в столбик, а
-  // за ним идёт комментарий, в котором те же слова в кавычках упомянуты ещё раз.
+  // Up to the blank line: the union may sit on one line or in a column, and it
+  // is followed by a comment that mentions the same quoted words once more.
   const union = protocol.match(/export type AiAction =([\s\S]*?)\n[ \t]*\n/)
   assert.ok(union, 'AiAction is no longer declared as a union type')
   const declared = [...union[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort()

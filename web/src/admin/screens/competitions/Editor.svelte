@@ -1,14 +1,16 @@
 <!--
-  Редактор соревнования (A2) — и он же вкладка «Настройки» у идущего.
+  The competition editor (A2) — and also the "Settings" tab of a live one.
 
-  Шесть секций, и порядок у них не оформительский: это порядок, в котором
-  сервер проверяет готовность (server/src/competitions/panel.ts · openRefusal).
-  Человек, которому отказали открыть, идёт по форме сверху вниз и чинит первое
-  названное, а не прыгает по экрану за каждым следующим отказом.
+  Six sections, and their order is not decorative: it is the order in which
+  the server checks readiness (server/src/competitions/panel.ts ·
+  openRefusal). A person refused an opening goes down the form from top to
+  bottom and fixes the first thing named, instead of jumping around the
+  screen after each next refusal.
 
-  Главное правило экрана — ответы. `solution.csv` уезжает своей дверью, лежит
-  вне рабочих папок занятий и не отдаётся обратно НИКОМУ: панель показывает
-  имя, число строк и колонки, байты не показывает никогда (см. SECURITY.md).
+  The screen's main rule is the answers. `solution.csv` goes through a door of
+  its own, lives outside the classes' working directories and is handed back
+  to NOBODY: the panel shows the name, the row count and the columns, and
+  never shows the bytes (see SECURITY.md).
 -->
 <script lang="ts">
   import { tr, formatNumber } from '@shared/i18n'
@@ -53,9 +55,9 @@
   interface Props {
     view: CompetitionView
     navigate: (path: string) => void
-    /** Свежий снимок с сервера: каждая загрузка файла возвращает его целиком. */
+    /** A fresh snapshot from the server: every file upload returns it whole. */
     onview: (view: CompetitionView) => void
-    /** Внутри пульта идущего соревнования: своей шапки у формы тогда нет. */
+    /** Inside a live competition's console: the form then has no header of its own. */
     embedded?: boolean
   }
 
@@ -70,15 +72,15 @@
   let saved = $state(false)
   let now = $state(Date.now())
 
-  /* ------------------------------------------------------------ черновики */
+  /* --------------------------------------------------------------- drafts */
 
   /*
-   * Поля живут своей жизнью до «Сохранить».
+   * The fields live a life of their own until "Save".
    *
-   * Ключ сброса — идентификатор соревнования, а не сам объект: `view`
-   * переприсваивается ответом сервера после КАЖДОЙ загрузки файла, и черновик,
-   * зависящий от объекта, стирал бы набранное описание ровно в тот момент,
-   * когда преподаватель дотащил до формы первый csv.
+   * The reset key is the competition id, not the object itself: `view` is
+   * reassigned by the server's response after EVERY file upload, and a draft
+   * that depended on the object would wipe a typed description at exactly
+   * the moment the teacher dragged the first csv onto the form.
    */
   let drafted: string | null = null
   let title = $state('')
@@ -122,11 +124,12 @@
   })
 
   /**
-   * Момент — в то, что понимает `datetime-local`, и обратно.
+   * A moment into what `datetime-local` understands, and back.
    *
-   * Через местное время машины ЧЕЛОВЕКА, а не через ISO: дедлайн «27.09 23:59»
-   * назначают глядя на расписание пары, и сдвиг на три часа здесь — это класс,
-   * у которого приём закрылся в девять вечера.
+   * Through the local time of the PERSON's machine, not through ISO: a
+   * "27.09 23:59" deadline is set while looking at the class timetable, and a
+   * three-hour shift here is a class whose submissions closed at nine in the
+   * evening.
    */
   function localInput(at: number | null): string {
     if (at === null) return ''
@@ -141,7 +144,7 @@
     return Number.isFinite(at) ? at : null
   }
 
-  /* -------------------------------------------------------------- запросы */
+  /* ------------------------------------------------------------- requests */
 
   const explain = (cause: unknown): string =>
     cause instanceof AdminApiError ? cause.message : tr('admin.competitions.requestFailed')
@@ -152,7 +155,7 @@
     }
   }
 
-  /** Тело правки: только то, что форма показывала, — и ничего сверх. */
+  /** The edit body: only what the form showed — and nothing beyond it. */
   function formBody(): CompetitionInput | null {
     const address = parseSlug(slug)
     if (!address) {
@@ -205,13 +208,13 @@
   }
 
   /*
-   * Идентификатор снимается ДО первого await.
+   * The id is taken BEFORE the first await.
    *
-   * `c` — производная от пропса, и открытие соревнования сносит сам редактор:
-   * форма черновика уступает место пульту. Читать производную после того, как
-   * её владелец уничтожен, — это `derived_inert` в консоли и устаревшее
-   * значение вместо ошибки. Запрос обязан знать, кого он правит, с первой
-   * строки и до последней.
+   * `c` is derived from a prop, and opening the competition tears down the
+   * editor itself: the draft form gives way to the console. Reading a
+   * derived value after its owner has been destroyed means `derived_inert`
+   * in the console and a stale value instead of an error. The request has to
+   * know what it is editing from the first line to the last.
    */
   async function save(): Promise<boolean> {
     const id = c.id
@@ -254,7 +257,7 @@
     if (fresh) onview(fresh)
   }
 
-  /** Проверка сэмпл-тетради: она идёт в общую очередь настоящей посылкой. */
+  /** Checking the sample notebook: it goes into the shared queue as a real submission. */
   async function checkBaseline(): Promise<void> {
     if (view.capabilities?.execution.available === false) return
     const id = c.id
@@ -262,7 +265,7 @@
     if (started) await refresh(id)
   }
 
-  /** «Проверить на бейзлайне» — только метрика, тетрадь второй раз не запускается. */
+  /** "Check against the baseline" — only the metric; the notebook is not run again. */
   async function checkMetric(): Promise<void> {
     if (view.capabilities?.execution.available === false) return
     const id = c.id
@@ -280,12 +283,14 @@
   }
 
   /*
-   * Пока заход сэмпл-тетради идёт, экран спрашивает о нём сам.
+   * While the sample notebook's run is going, the screen asks about it
+   * itself.
    *
-   * Живого потока у редактора нет (он у пульта), а бейзлайн — единственное на
-   * этой форме, что меняется без участия человека, и меняется оно минутами.
-   * Без опроса «В ОЧЕРЕДИ» висит до перезагрузки страницы, и преподаватель
-   * уходит с экрана, решив, что проверка не запустилась.
+   * The editor has no live stream (the console does), and the baseline is
+   * the only thing on this form that changes without the person's help, and
+   * it changes over minutes. Without polling, "IN QUEUE" hangs until the page
+   * is reloaded, and the teacher leaves the screen thinking the check did
+   * not start.
    */
   const baselineInFlight = $derived(
     view.baseline?.state === 'queued' || view.baseline?.state === 'running',
@@ -303,14 +308,15 @@
     return () => window.clearInterval(tick)
   })
 
-  /* ------------------------------------------------------------ окружения */
+  /* --------------------------------------------------------- environments */
 
   let environments = $state<AdminEnvironment[]>([])
   let resources = $state<InstanceResources | null>(null)
 
   onMount(() => {
-    // Оба ответа — приписка к форме, а не сама форма: без них секция
-    // «Исполнение посылки» показывает свои числа и молчит про машину.
+    // Both answers are an addendum to the form, not the form itself: without
+    // them the "Running a submission" section shows its own numbers and says
+    // nothing about the machine.
     void adminApi
       .listEnvironments()
       .then((state) => (environments = state.environments))
@@ -323,11 +329,11 @@
 
   const chosenEnvironment = $derived(environments.find((one) => one.name === environment) ?? null)
 
-  /** Гигабайты с десятой долей — и с той запятой, которую ставит язык инстанса. */
+  /** Gigabytes to a tenth — with the decimal mark the instance's language uses. */
   const gb = (mb: number): string =>
     formatNumber(mb / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 
-  /* -------------------------------------------------------------- метрика */
+  /* --------------------------------------------------------------- metric */
 
   const solution = $derived(view.hiddenFiles[0] ?? null)
   const columns = $derived(answerColumns(solution?.columns))
@@ -347,7 +353,7 @@
     metricCode = next.code
   }
 
-  /* ------------------------------------------------------------- описание */
+  /* ---------------------------------------------------------- description */
 
   let previewing = $state(false)
   const rendered = $derived(previewing ? (renderers()?.markdown(description) ?? null) : null)
@@ -356,9 +362,9 @@
     if (previewing) void loadRenderers().catch(() => undefined)
   })
 
-  /* ---------------------------------------------------------------- гейт */
+  /* ----------------------------------------------------------------- gate */
 
-  /** Первое, что мешает открыть; null — можно. Считает сервер, экран называет. */
+  /** The first thing blocking the opening; null — go. The server counts, the screen names. */
   const refusal = $derived(view.ready)
   const blocked = $derived<string | null>(refusal === null ? null : refusalSection(refusal))
 
@@ -367,8 +373,8 @@
 </script>
 
 {#snippet marker(section: string)}
-  <!-- Секция, в которой лежит причина отказа, названа прямо в ней: иначе
-       «Нет файла ответов» — это шесть мест, где его можно искать. -->
+  <!-- The section holding the refusal's reason is named right inside it:
+       otherwise "There is no answer file" is six places to look for it. -->
   {#if blocked === section && refusal}
     <p class="flex items-start gap-2 pt-2 text-micro leading-snug text-warning">
       <Icon name="alert" size={13} class="mt-px shrink-0" />
@@ -382,7 +388,7 @@
     <p class="pt-4 text-ui text-danger" role="alert">{error}</p>
   {/if}
 
-  <!-- 1 · Основное -->
+  <!-- 1 · Basics -->
   <Section title={tr('admin.competitions.section.basics')} description={tr('admin.competitions.basicsHint')}>
     <div class="flex flex-col gap-2.5">
       <div class="flex flex-wrap items-center gap-2.5">
@@ -456,7 +462,7 @@
     {@render marker('basics')}
   </Section>
 
-  <!-- 2 · Данные -->
+  <!-- 2 · Data -->
   <Section title={tr('admin.competitions.section.data')} description={tr('admin.competitions.dataHint')}>
     <div class="flex flex-wrap items-start gap-3">
       <div class="min-w-0 flex-[2_1_320px] border border-line">
@@ -509,9 +515,10 @@
       </div>
 
       <!--
-        Ответы — своей рамкой и своим цветом, и это не украшение: единственная
-        ошибка этой формы, которую нельзя отменить, — положить ответы в
-        открытые файлы. Разный цвет дороже любой подписи.
+        The answers get their own frame and their own colour, and that is not
+        decoration: the only mistake on this form that cannot be undone is
+        putting the answers into the open files. A different colour is worth
+        more than any caption.
       -->
       <div class="min-w-0 flex-[1_1_300px] border border-brand">
         <div class="flex items-center gap-2 border-b border-primary bg-brand px-3 py-2">
@@ -595,7 +602,7 @@
     {@render marker('data')}
   </Section>
 
-  <!-- 3 · Сэмпл-тетрадь -->
+  <!-- 3 · Sample notebook -->
   <Section
     title={tr('admin.competitions.section.baseline')}
     description={tr('admin.competitions.baselineHint')}
@@ -632,9 +639,9 @@
         </div>
 
         <!--
-          Проверка бейзлайна — не галочка, а настоящая посылка: тот же
-          одноразовый контейнер, та же очередь, тот же путь до числа. Пока она
-          его не прошла, соревнование не открыть.
+          The baseline check is not a checkbox but a real submission: the same
+          throwaway container, the same queue, the same path to a number.
+          Until it has made it through, the competition cannot be opened.
         -->
         <div
           class={cn(
@@ -686,8 +693,9 @@
             </div>
             <p class="min-w-0 flex-1 basis-[240px] text-micro leading-snug text-muted">
               {#if b.teacherError}
-                <!-- Трейс — только здесь и только преподавателю: участнику он
-                     ничего не объясняет, а виноват в нём чужой код. -->
+                <!-- The traceback only here and only for the teacher: it
+                     explains nothing to an entrant, and it is someone else's
+                     code at fault. -->
                 <span class="whitespace-pre-wrap font-mono text-danger">{b.teacherError}</span>
               {:else if b.participantError}
                 <span class="text-warning">{b.participantError}</span>
@@ -741,7 +749,7 @@
     {@render marker('baseline')}
   </Section>
 
-  <!-- 4 · Метрика -->
+  <!-- 4 · Metric -->
   <Section title={tr('admin.competitions.section.metric')} description={tr('admin.competitions.metricHint')}>
     <div class="flex flex-col gap-2.5">
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -753,8 +761,8 @@
             onchange={pickPreset}
           />
         </div>
-        <!-- shrink-0: иначе пара «меньше — лучше | больше — лучше» ужимается по
-             месту, оставшемуся от чипов, и переносится посреди слова. -->
+        <!-- shrink-0: otherwise the "lower is better | higher is better" pair
+             shrinks to the room left by the chips and wraps mid-word. -->
         <div class="ml-auto shrink-0 whitespace-nowrap">
           <Choice
             size="lg"
@@ -780,9 +788,10 @@
       </div>
 
       <!--
-        Жёлоб номеров строк — не украшение: трейс метрики, который придёт с
-        чужой посылки, называет строку («score(), строка 9»), и искать её в
-        поле без номеров приходится пальцем по экрану.
+        The line-number gutter is not decoration: a metric traceback that
+        arrives from someone's submission names a line ("score(), line 9"),
+        and in a field without numbers you have to hunt for it with a finger
+        on the screen.
       -->
       <div class="flex border border-line bg-surface">
         <div
@@ -827,7 +836,7 @@
     {@render marker('metric')}
   </Section>
 
-  <!-- 5 · Исполнение посылки -->
+  <!-- 5 · Running a submission -->
   <Section title={tr('admin.competitions.section.run')} description={tr('admin.competitions.runHint')}>
     <div class="flex flex-col gap-3.5">
       <div class="flex flex-wrap items-center gap-2.5 border border-line px-3.5 py-2.5">
@@ -943,7 +952,7 @@
 
   {#key c.id}<DependencySettings competitionId={c.id} />{/key}
 
-  <!-- 6 · Сроки и зачёт -->
+  <!-- 6 · Dates and standings -->
   <Section title={tr('admin.competitions.section.terms')} description={tr('admin.competitions.termsHint')}>
     <div class="flex flex-col gap-3.5">
       <div class="flex flex-wrap gap-2.5">
@@ -1002,14 +1011,15 @@
   </Section>
 
   <!--
-    Кнопки внизу формы — не дубль верхних, а единственные для вкладки
-    «Настройки»: там своей шапки у формы нет. На черновике они остаются
-    вторым, ближним экземпляром: форма длиной в полтора экрана, и возвращаться
-    к шапке за «Сохранить» — это прокрутка ради нажатия.
+    The buttons at the bottom of the form are not a duplicate of the top ones
+    but the only ones for the "Settings" tab: there the form has no header of
+    its own. On a draft they remain as a second, nearer copy: the form is a
+    screen and a half long, and going back to the header for "Save" is
+    scrolling for the sake of a press.
   -->
   <div class="flex flex-wrap items-center gap-3 border-t border-line py-5">
-    <!-- «Сохранить черновик» — только у черновика: у идущего соревнования
-         сохраняется не черновик, а настройки, которые класс видит сейчас. -->
+    <!-- "Save draft" only on a draft: on a live competition what gets saved is
+         not a draft but the settings the class sees right now. -->
     <button type="button" class="btn-primary" disabled={busy} onclick={() => void save()}>
       {saved
         ? tr('admin.competitions.savedWord')
@@ -1068,8 +1078,9 @@
       >
         {saved ? tr('admin.competitions.savedWord') : tr('admin.competitions.saveDraft')}
       </button>
-      <!-- Гейт: открыть соревнование, задача которого не решается даже у
-           автора, — это сто человек, безуспешно ищущих ошибку у себя. -->
+      <!-- A gate: opening a competition whose task cannot be solved even by its
+           author means a hundred people vainly looking for the bug in their
+           own code. -->
       {#if draftState}
         <button
           type="button"

@@ -1,23 +1,26 @@
 /**
- * Лента говорит, что она — не вся.
+ * The feed says that it is not all there is.
  *
- * История комнаты ограничена по объёму: `trimHistory` (db.ts) убирает начало
- * целым отрезком, до ближайшего снимка. После этого панель показывает остаток
- * ровно так же, как показала бы полную ленту короткой пары, — и по списку
- * нельзя отличить «тут ничего не писали» от «до этого места не сохранилось».
- * Смотрят же историю обычно как раз тогда, когда что-то потеряли.
+ * A room's history is limited in size: `trimHistory` (db.ts) removes the
+ * beginning as a whole segment, up to the nearest snapshot. After that the
+ * panel shows the remainder exactly as it would show the full feed of a short
+ * class — and from the list one cannot tell "nothing was written here" from
+ * "nothing before this point survived". And people usually look at the
+ * history precisely when they have lost something.
  *
- * Признак считает сервер, по состоянию, а не по памяти о событии: самой первой
- * строкой комнаты всегда пишется `opened`, и второй раз она не появится
- * (collab/history.ts · beginHistory). Значит «самая старая строка не `opened`»
- * и есть «начало срезано» — ответ переживает перезапуск сервера.
+ * The server computes the flag, from state rather than from memory of an
+ * event: the very first row of a room is always `opened`, and it will not
+ * appear a second time (collab/history.ts · beginHistory). So "the oldest row
+ * is not `opened`" is exactly "the beginning was cut off" — and the answer
+ * survives a server restart.
  *
- * Здесь проверяется, что признак доезжает до панели: считать его правильно и
- * оставить в базе — это ровно та же молчаливая неполнота.
+ * What is checked here is that the flag reaches the panel: computing it
+ * correctly and leaving it in the database is exactly the same silent
+ * incompleteness.
  *
- * Про окно ленты он не говорит ничего: `MAX_VERSIONS` (routes/history.ts) тоже
- * отдаёт не все строки, но те в базе есть и открываются по ссылке — смешивать
- * два вида неполноты в одном слове нельзя.
+ * It says nothing about the feed window: `MAX_VERSIONS` (routes/history.ts)
+ * does not return all rows either, but those are in the database and open by
+ * link — the two kinds of incompleteness must not be mixed in one word.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -50,7 +53,7 @@ after(() => {
   shutdownCollab()
 })
 
-/** Комната с одним участником, которому лента положена по умолчанию. */
+/** A room with one participant who gets the feed by default. */
 function room(id: string, title: string): void {
   createSession(id, title, null)
   upsertParticipant({
@@ -60,11 +63,12 @@ function room(id: string, title: string): void {
     avatar: null,
     role: 'participant',
   })
-  // Комнаты в тестах живут в одной базе: чужие строки с этим id сбили бы счёт.
+  // Rooms in tests live in one database: other rows with this id would throw
+  // off the count.
   db.prepare('DELETE FROM doc_history WHERE session_id = ?').run(id)
 }
 
-/** Строка истории заданного веса; возвращает её seq. */
+/** A history row of the given weight; returns its seq. */
 function line(sessionId: string, kind: string, bytes: number): number {
   return appendVersion({
     sessionId,
@@ -89,18 +93,19 @@ async function history(id: string): Promise<VersionList> {
   return (await res.json()) as VersionList
 }
 
-test('целая лента приходит без признака обрезки', async () => {
+test('a whole feed arrives without the trim flag', async () => {
   const id = 'hist-whole'
   room(id, 'Полная история')
 
   const body = await history(id)
-  // Первое чтение поднимает тетрадь, а с ней и строку «открылась»: комната,
-  // где ещё ничего не записано, — не обрезанная, и говорить ей об этом нечего.
-  assert.equal(body.trimmed, false, 'панели сказали, что начало срезано, а его никто не резал')
-  assert.ok(body.versions.length >= 1, 'в ленте нет даже строки открытия')
+  // The first read brings up the notebook, and with it the "opened" row: a
+  // room where nothing has been written yet is not trimmed, and there is
+  // nothing to tell it about that.
+  assert.equal(body.trimmed, false, 'the panel was told the beginning was cut, but nobody cut it')
+  assert.ok(body.versions.length >= 1, 'the feed does not even have the opening row')
 })
 
-test('после обрезки по объёму лента признаётся неполной', async () => {
+test('after trimming by size the feed admits it is incomplete', async () => {
   const id = 'hist-cut'
   room(id, 'Длинная пара')
 
@@ -109,17 +114,17 @@ test('после обрезки по объёму лента признаётс�
   const keyframe = line(id, 'keyframe', 64)
   line(id, 'edit', 64)
 
-  // Потолок ниже накопленного: граница встаёт ровно на снимок, и «открылась»
-  // уходит вместе со всем, что было до него.
-  assert.ok(trimHistory(id, 1_000) > 0, 'потолок ничего не убрал — резать было нечего')
+  // The ceiling is below what has piled up: the boundary lands exactly on the
+  // snapshot, and "opened" goes away with everything that came before it.
+  assert.ok(trimHistory(id, 1_000) > 0, 'the ceiling removed nothing — there was nothing to cut')
   const oldest = db
     .prepare('SELECT MIN(seq) AS seq FROM doc_history WHERE session_id = ?')
     .get(id) as { seq: number }
-  assert.equal(oldest.seq, keyframe, 'обрезка встала не на снимок')
+  assert.equal(oldest.seq, keyframe, 'the trim did not land on a snapshot')
 
   const body = await history(id)
-  assert.equal(body.trimmed, true, 'начала истории нет, а панель об этом не знает')
-  // И строки, что остались, приходят как обычно: признак — приписка к ленте, а
-  // не замена ей.
-  assert.ok(body.versions.length > 0, 'вместе с признаком пропала и сама лента')
+  assert.equal(body.trimmed, true, 'the start of the history is gone, and the panel does not know it')
+  // And the rows that remain arrive as usual: the flag is a note on the feed,
+  // not a replacement for it.
+  assert.ok(body.versions.length > 0, 'the feed itself disappeared along with the flag')
 })

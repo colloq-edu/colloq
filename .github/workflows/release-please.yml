@@ -1,30 +1,37 @@
-# Выпуски: release-please держит PR выпуска, а слияние этого PR — и есть выпуск.
+# Releases: release-please keeps a release PR, and merging that PR is the
+# release.
 #
-#   release-please  на каждый пуш в main читает Conventional Commits с прошлого
-#                   тега и открывает или обновляет PR «chore(main): release X.Y.Z»:
-#                   число во всех копиях (release-please-config.json, extra-files)
-#                   и раздел CHANGELOG.md. Когда этот PR слит, тот же шаг
-#                   ставит тег vX.Y.Z и создаёт GitHub Release с заметками из PR;
-#   publish         только если выпуск создан в этом прогоне: запускает
-#                   publish.yml с этого тега — колесо к выпуску, PyPI и GHCR
-#                   за переменными.
+#   release-please  on every push to main reads the Conventional Commits since
+#                   the last tag and opens or updates the PR
+#                   "chore(main): release X.Y.Z": the number in all copies
+#                   (release-please-config.json, extra-files) and a
+#                   CHANGELOG.md section. When that PR is merged, the same step
+#                   puts the vX.Y.Z tag and creates a GitHub Release with the
+#                   notes from the PR;
+#   publish         only if the release was created in this run: starts
+#                   publish.yml from that tag, which attaches the wheel to the
+#                   release, with PyPI and GHCR behind variables.
 #
-# Токен — личный токен владельца (секрет RELEASE_PLEASE_TOKEN), и без него
-# задача падает, а не берёт GITHUB_TOKEN. Причин две, обе про то, чего с
-# GITHUB_TOKEN не видно, пока не станет поздно:
-#   · PR, открытый и обновлённый GITHUB_TOKEN, не запускает workflow (так GitHub
-#     гасит рекурсию): у PR выпуска не было бы CI, и его сливали бы вслепую;
-#   · коммит в PR выпуска и сам выпуск были бы от github-actions[bot], а
-#     владелец хочет быть единственным автором в истории. С его токеном автор и
-#     коммитер — он сам, без трейлеров Co-Authored-By.
+# The token is the owner's personal token (the RELEASE_PLEASE_TOKEN secret),
+# and without it the job fails instead of taking GITHUB_TOKEN. There are two
+# reasons, both about things that cannot be seen with GITHUB_TOKEN until it is
+# too late:
+#   · a PR opened and updated by GITHUB_TOKEN does not start workflows (that is
+#     how GitHub stops recursion): the release PR would have no CI, and it
+#     would be merged blind;
+#   · the commit in the release PR and the release itself would come from
+#     github-actions[bot], while the owner wants to be the only author in the
+#     history. With the owner's token the author and the committer is the
+#     owner, without Co-Authored-By trailers.
 #
-# Почему publish запускается отсюда, а не по тегу. Тег, созданный личным токеном,
-# запустил бы и `push: tags`, и вышло бы два пути к одной публикации — с двумя
-# запросами одобрения PyPI. Путь оставлен один: у publish.yml нет триггера по
-# тегу, есть только этот запуск и ручной перезапуск.
+# Why publish is started from here and not by the tag. A tag created with a
+# personal token would also start `push: tags`, and there would be two paths to
+# one publication, with two PyPI approval requests. Only one path is left:
+# publish.yml has no tag trigger, only this start and a manual rerun.
 #
-# Токен release-please ходит только в API: checkout здесь нет, npm и чужой код
-# рядом с токеном не исполняются. Подробно — RELEASING.md.
+# The release-please token goes only to the API: there is no checkout here,
+# and neither npm nor anyone else's code runs next to the token. Details:
+# RELEASING.md.
 name: Release Please
 
 on:
@@ -32,11 +39,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Права выдаются задачам поштучно, по умолчанию — никаких.
+# Permissions are granted to jobs one by one; by default, none.
 permissions: {}
 
-# Прогоны по очереди и без отмены: оборванный посреди создания выпуска прогон
-# оставил бы тег без выпуска или PR без метки «autorelease: tagged».
+# Runs go in turn and are never cancelled: a run cut off in the middle of
+# creating a release would leave a tag without a release or a PR without the
+# "autorelease: tagged" label.
 concurrency:
   group: release-please
   cancel-in-progress: false
@@ -44,11 +52,13 @@ concurrency:
 jobs:
   release-please:
     name: Release PR and release
-    # В форке секрета нет и выпускать там нечего: там задача не нужна вовсе.
+    # A fork has no secret and nothing to release: the job is not needed
+    # there at all.
     if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # GITHUB_TOKEN не нужен ни для чего: release-please ходит с личным токеном.
+    # GITHUB_TOKEN is not needed for anything: release-please works with the
+    # personal token.
     permissions: {}
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -58,16 +68,16 @@ jobs:
         env:
           TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         run: |
-          # Умолчание входа token у action — GITHUB_TOKEN. Пустой секрет дал бы
-          # в лучшем случае невнятное «Input required», в худшем — ботовый PR
-          # выпуска без CI. Проверяем сами и говорим, что делать.
+          # The action's token input defaults to GITHUB_TOKEN. An empty secret
+          # would give at best a vague "Input required", at worst a release PR
+          # from the bot without CI. We check it ourselves and say what to do.
           if [ -z "$TOKEN" ]; then
             echo "::error::Repository secret RELEASE_PLEASE_TOKEN is not set. Create a fine-grained personal access token for this repository only (Contents, Pull requests, Issues: read and write) and store it under that name. See RELEASING.md."
             exit 1
           fi
-      # Закреплён по коммиту, в отличие от остальных action в репозитории: это
-      # единственный сторонний action, которому достаётся личный токен с правом
-      # записи в main. Переставленный тег v4 унёс бы этот токен.
+      # Pinned by commit, unlike the other actions in the repository: this is
+      # the only third-party action that gets a personal token with write
+      # access to main. A moved v4 tag would carry this token away.
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         id: release
         with:
@@ -91,8 +101,8 @@ jobs:
               echo
               echo "Merging the release pull request, when one is open, cuts the next release."
             fi
-            # pr — JSON открытого или обновлённого PR выпуска; ссылки в нём нет,
-            # только номер.
+            # pr is the JSON of the opened or updated release PR; it has no
+            # link, only the number.
             number="$(printf '%s' "$PR" | jq -r '.number // empty' 2>/dev/null || true)"
             if [ -n "$number" ]; then
               echo
@@ -106,12 +116,13 @@ jobs:
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # Запуск, а не вызов `uses:`. PyPI Trusted Publishing не признаёт
-    # переиспользуемые workflow: у вызванного publish.yml workflow_ref остаётся
-    # release-please.yml, и первый же выпуск (v0.2.0) PyPI отказал с
-    # `invalid-publisher`. Запущенный с тега publish.yml — самостоятельный
-    # прогон, и его claims совпадают с издателем на PyPI. workflow_dispatch —
-    # одно из немногих событий, которые GITHUB_TOKEN запускать может.
+    # Started, not called with `uses:`. PyPI Trusted Publishing does not
+    # accept reusable workflows: for a called publish.yml the workflow_ref
+    # stays release-please.yml, and PyPI refused the very first release
+    # (v0.2.0) with `invalid-publisher`. publish.yml started from the tag is a
+    # standalone run, and its claims match the publisher on PyPI.
+    # workflow_dispatch is one of the few events GITHUB_TOKEN is allowed to
+    # start.
     permissions:
       actions: write
     steps:

@@ -1,24 +1,24 @@
 import { tr } from '@shared/i18n'
 /**
- * Картинки вывода — отдельным запросом, а не внутри документа комнаты.
+ * Output images by a separate request, not inside the room's document.
  *
- * Почему они лежат снаружи, сказано в `server/src/blobs.ts`. Здесь про то, как
- * их забирают.
+ * Why they live outside is said in `server/src/blobs.ts`. This is about how
+ * they are fetched.
  *
- * КЛЮЧ. Адрес попадает в `src` элемента `<img>`, а туда нельзя положить
- * заголовок — значит, удостоверение едет строкой запроса, и это ровно тот
- * случай, для которого заведён `signDownloadToken` (см. routes/files.ts):
- * короткоживущий ключ на одно дело вместо токена участника, которым
- * открывается управляющий сокет. Ключ здесь один на комнату, а не на картинку:
- * вывод одной ячейки — это десяток записей, и просить ключ на каждую значило
- * бы десяток лишних запросов на каждый график. Ничего сверх того, что человек
- * и так видит в тетради, этот ключ не открывает: он годится ровно для
- * `/api/sessions/:id/blobs/*` той комнаты, в которую человек вошёл.
+ * THE KEY. The address goes into the `src` of an `<img>` element, and a
+ * header cannot be put there, so the credential travels in the query string,
+ * and that is exactly the case `signDownloadToken` exists for (see
+ * routes/files.ts): a short-lived key for one job instead of the participant
+ * token that opens the control socket. The key here is one per room, not per
+ * image: the output of one cell is a dozen records, and asking for a key for
+ * each would mean a dozen extra requests per chart. The key opens nothing
+ * beyond what the person already sees in the notebook: it is good exactly for
+ * `/api/sessions/:id/blobs/*` of the room the person joined.
  *
- * КЭШ. Имя записи — хэш её содержимого, поэтому ответ раздаётся `immutable` на
- * год: по этому адресу не может появиться другая картинка. `private` — потому
- * что доступ к ней всё-таки по ключу, и общему кэшу перед сервером хранить её
- * не полагается.
+ * THE CACHE. A record's name is the hash of its content, so the response is
+ * served `immutable` for a year: no other image can ever appear at this
+ * address. `private` because access to it is by key after all, and a shared
+ * cache in front of the server is not supposed to keep it.
  */
 import { Router } from 'express'
 import { SESSION_MISSING } from '@shared/protocol'
@@ -28,28 +28,29 @@ import { getSession } from '../db.js'
 import { banDoor, sessionAuth } from './sessions.js'
 
 /**
- * Чем подписан ключ на картинки комнаты.
+ * What the key to a room's images is signed with.
  *
- * `signDownloadToken` подписывает пару «семинар + имя», и имя здесь — не файл,
- * а вся полка выводов. Столкнуться с настоящим файлом оно не может: путь файла
- * нормализован (`normalizePath`), а двоеточия в начале там не бывает; и даже
- * если бы совпало, обе двери открывает одно и то же — участие в комнате.
+ * `signDownloadToken` signs the pair "seminar + name", and the name here is
+ * not a file but the whole shelf of outputs. It cannot collide with a real
+ * file: a file path is normalized (`normalizePath`), and it never starts with
+ * a colon; and even if it matched, both doors are opened by the same thing,
+ * participation in the room.
  */
 const BLOB_SUBJECT = ':blobs'
 
 export function blobRoutes(): Router {
   const router = Router()
 
-  // Закрытый доступ закрыт и здесь: выведенный из комнаты не забирает из неё
-  // картинки по старому ключу (routes/sessions.ts · banDoor).
+  // Blocked access is blocked here too: someone removed from the room does not
+  // fetch its images with an old key (routes/sessions.ts · banDoor).
   router.use('/api/sessions/:id/blobs', banDoor)
 
   /**
-   * Ключ на картинки этой комнаты — за обычным удостоверением участника.
+   * The key to this room's images, behind the ordinary participant credential.
    *
-   * Пять минут (`DOWNLOAD_TTL_MS`), и этого хватает: ключ берут перед тем, как
-   * нарисовать первую картинку, а нарисованная картинка живёт в кэше браузера
-   * по своему адресу и второй раз не запрашивается.
+   * Five minutes (`DOWNLOAD_TTL_MS`), and that is enough: the key is taken
+   * before drawing the first image, and a drawn image lives in the browser
+   * cache at its address and is not requested a second time.
    */
   router.get('/api/sessions/:id/blobs/ticket', (req, res) => {
     const sessionId = req.params.id
@@ -70,10 +71,11 @@ export function blobRoutes(): Router {
 
     const sha = req.params.sha
     /*
-     * ETag — до чтения файла: имя записи и есть её содержимое, так что на
-     * повторный заход отвечать можно, не трогая диск вовсе. Это не
-     * оптимизация ради оптимизации: картинка на семинаре одна на всех, и
-     * пятьсот вкладок, вернувшихся после сна, приходят за ней в одну секунду.
+     * The ETag comes before reading the file: a record's name is its content,
+     * so a repeat visit can be answered without touching the disk at all. This
+     * is not optimization for its own sake: in a seminar an image is one for
+     * everyone, and five hundred tabs waking from sleep come for it in the
+     * same second.
      */
     const etag = `"${sha}"`
     const bytes = blobBytes(sessionId, sha)
@@ -85,13 +87,14 @@ export function blobRoutes(): Router {
     const body = readBlob(sessionId, sha)
     if (!body) return res.status(404).json({ error: tr('server.fileNotFound.3e2256') })
     /*
-     * Тип — по самим байтам (`sniffMime`), а не по тому, что попросили: набор
-     * `display_data` собирает библиотека в коде студента, и «а покажите эти
-     * байты как text/html» было бы чужим документом на origin инстанса.
+     * The type comes from the bytes themselves (`sniffMime`), not from what
+     * was asked for: the `display_data` bundle is assembled by a library in
+     * the student's code, and "now show these bytes as text/html" would be
+     * someone else's document on the instance's origin.
      */
     res.setHeader('Content-Type', sniffMime(body))
     res.setHeader('Content-Length', String(body.length))
-    // Картинка показывается, а не открывается отдельной страницей.
+    // An image is displayed, not opened as a separate page.
     res.setHeader('X-Content-Type-Options', 'nosniff')
     res.end(body)
   })

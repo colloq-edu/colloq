@@ -1,16 +1,18 @@
 /**
- * Выселение забаненного — по всем проводам сразу.
+ * Evicting a banned person: over all wires at once.
  *
- * Бан закрывает три двери: тетрадь, пульт и файл. Первые две закрывает
- * `evictBanned` своими руками; третью — файловый сокет редактора — держит
- * другой модуль, и узнаёт он о выселении событием (bans.ts · onEviction).
- * Пока события не было, забаненный студент продолжал печатать в общий
- * `utils.py` до тех пор, пока сам не перезагрузит страницу: закрытие приходило
- * тетради и пульту, а вкладке редактора — нет.
+ * A ban closes three doors: the notebook, the control socket and the file.
+ * `evictBanned` closes the first two with its own hands; the third, the
+ * editor's file socket, is held by another module, and it learns about the
+ * eviction from an event (bans.ts · onEviction). Before the event existed,
+ * a banned student kept typing into the shared `utils.py` until they
+ * reloaded the page themselves: the close reached the notebook and the
+ * control socket, but not the editor tab.
  *
- * Проверяется здесь именно объявление: что оно уходит, что несёт комнату и
- * человека и что упавший слушатель не уносит с собой остальных, — бан уже
- * стоит в базе, и провод, который не закрылся, не повод отменять его.
+ * What is checked here is the announcement itself: that it goes out, that
+ * it carries the room and the person, and that a failing listener does not
+ * take the others down with it: the ban is already in the database, and a
+ * wire that did not close is no reason to cancel it.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -24,10 +26,10 @@ import type { ControlServerMessage } from '../shared/protocol.js'
 const heardEvictions: { sessionId: string; participantId: string }[] = []
 let brokenCalled = 0
 
-// Оба слушателя — на весь файл: подписка живёт столько же, сколько процесс.
+// Both listeners are for the whole file: a subscription lives as long as the process.
 onEviction(() => {
   brokenCalled += 1
-  throw new Error('этот провод сегодня падает')
+  throw new Error('this wire fails today')
 })
 onEviction((sessionId, participantId) => heardEvictions.push({ sessionId, participantId }))
 
@@ -37,9 +39,9 @@ function socket(): { ws: WebSocket; heard: ControlServerMessage[]; closed: numbe
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
-      // (рассылка, дерево, чернила), уходят уже закодированными — см.
-      // control.ts · sendFrame. Настоящий сокет тут разницы не делает.
+      // As a string or as bytes: frames the server builds once per room
+      // (broadcast, tree, ink) go out already encoded; see
+      // control.ts · sendFrame. A real socket makes no difference here.
       if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
         heard.push(JSON.parse(String(frame)) as ControlServerMessage)
       }
@@ -57,7 +59,7 @@ function socket(): { ws: WebSocket; heard: ControlServerMessage[]; closed: numbe
   return { ws: fake as unknown as WebSocket, heard, closed }
 }
 
-test('бан объявляется всем проводам, а упавший слушатель не уносит остальных', () => {
+test('a ban is announced to every wire, and a failing listener does not take the others down', () => {
   const id = 'evict-1'
   createSession(id, 'Бан', null)
   upsertParticipant({ id: 'p_petya', sessionId: id, name: 'Петя', avatar: null, role: 'participant' })
@@ -70,18 +72,18 @@ test('бан объявляется всем проводам, а упавший
   const until = Date.now() + 60_000
   evictBanned(id, 'p_petya', until)
 
-  // Кадр — ДО закрытия: иначе вкладка видит обрыв и молча идёт переподключаться.
+  // The frame comes BEFORE the close: otherwise the tab sees a drop and silently goes to reconnect.
   const banned = petya.heard.find((m) => m.t === 'banned')
-  assert.ok(banned && banned.t === 'banned', 'забаненному не сказали, что произошло')
+  assert.ok(banned && banned.t === 'banned', 'the banned person was not told what happened')
   assert.equal(banned.until, until)
-  assert.deepEqual(petya.closed, [1008], 'пульт забаненного остался открытым')
-  assert.deepEqual(ada.closed, [], 'закрыли не того')
+  assert.deepEqual(petya.closed, [1008], 'the control socket of the banned person stayed open')
+  assert.deepEqual(ada.closed, [], 'the wrong socket was closed')
 
-  assert.equal(brokenCalled, 1, 'падающего слушателя не позвали')
+  assert.equal(brokenCalled, 1, 'the failing listener was not called')
   assert.deepEqual(
     heardEvictions,
     [{ sessionId: id, participantId: 'p_petya' }],
-    'второй провод о выселении не узнал',
+    'the second wire did not learn about the eviction',
   )
   closeControlRoom(id)
 })

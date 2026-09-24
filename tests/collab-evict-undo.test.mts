@@ -1,12 +1,12 @@
 /**
- * Что комната уносит с собой, когда её выселяют из памяти.
+ * What a room takes with it when it is evicted from memory.
  *
- * Снимок «как было до хода» оракула лежит в памяти процесса, а кнопка «Отменить»
- * — в треде, то есть в документе, который переживает и выселение, и перезапуск.
- * Пока выселение не забывало этот снимок, карта росла вместе с брошенными
- * комнатами; забыть её надо ровно там же, где комната забывает свои удалённые
- * ячейки, — иначе отмена дотягивалась бы до памяти комнаты, пустой уже десять
- * минут.
+ * The Oracle's "as it was before the turn" snapshot lives in process memory,
+ * while the "Undo" button lives in the thread, that is, in the document, which
+ * survives both eviction and a restart. While eviction did not forget this
+ * snapshot, the map grew along with abandoned rooms; it has to be forgotten in
+ * exactly the place where the room forgets its deleted cells — otherwise undo
+ * would reach into the memory of a room that has been empty for ten minutes.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -30,10 +30,10 @@ after(() => shutdownCollab())
 const ROOM = 'evict-undo'
 const BY = { name: 'Оракул', color: '#0FA0D7', participantId: 'p_oracle' }
 
-/** Пустая комната отпускается через десять минут; берём с запасом. */
+/** An empty room is released after ten minutes; we take a margin. */
 const LATER = 11 * 60 * 1000
 
-/** Ход в треде, к которому привязана отмена, — уже законченный. */
+/** A turn in the thread that the undo is tied to, already finished. */
 function finishedTurn(): string {
   const doc = getSessionDoc(ROOM).doc
   const entry = createChatEntry({
@@ -45,14 +45,14 @@ function finishedTurn(): string {
   })
   doc.transact(() => {
     getChat(doc).push([entry])
-    // Идущий ответ держит комнату от выселения — а этот уже дописан.
+    // An answer in progress keeps the room from eviction, but this one is done.
     entry.set('state', 'done')
     entry.set('undo', 'available')
   })
   return entry.get('id') as string
 }
 
-test('выселение уносит с собой память отмены оракула', async () => {
+test("eviction takes the Oracle's undo memory with it", async () => {
   createSession(ROOM, 'Отмена после выселения', null)
   const turn = finishedTurn()
   const hands: Hands = { sessionId: ROOM, entryId: turn, by: BY, role: 'host' }
@@ -71,21 +71,23 @@ test('выселение уносит с собой память отмены о
   assert.equal(
     sweepIdleRooms(Date.now() + LATER).includes(ROOM),
     true,
-    'пустая комната осталась в памяти',
+    'the empty room stayed in memory',
   )
-  assert.equal(peekSessionDoc(ROOM), null, 'комната осталась в памяти')
+  assert.equal(peekSessionDoc(ROOM), null, 'the room stayed in memory')
 
-  // Кнопка в треде возвращается из снимка — тред живёт в документе.
+  // The button in the thread comes back from the snapshot: the thread lives in
+  // the document.
   const again = getSessionDoc(ROOM).doc
-  assert.equal(findChatEntry(again, turn)?.get('undo'), 'available', 'ход не вернулся из снимка')
+  assert.equal(findChatEntry(again, turn)?.get('undo'), 'available', 'the turn did not come back from the snapshot')
 
-  // А возвращать уже нечего, и отказ у кнопки на этот случай написан словами
-  // («сервер помнит прежние файлы только до перезапуска»).
-  assert.equal(undoTurn(ROOM, turn, 'Ада'), null, 'отмена дотянулась до памяти выселенной комнаты')
+  // But there is nothing left to restore, and the button's refusal for this
+  // case is spelled out in words ("previous file versions are retained only
+  // until the server restarts").
+  assert.equal(undoTurn(ROOM, turn, 'Ада'), null, 'undo reached into the memory of an evicted room')
   flushAllFiles()
   assert.equal(
     readText(ROOM, 'plan.py')?.text,
     'оракул\n',
-    'файл откатили через десять минут после того, как из комнаты ушли',
+    'the file was rolled back ten minutes after everyone had left the room',
   )
 })

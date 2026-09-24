@@ -8,16 +8,17 @@
  * keeps working exactly as it did, and the panel is an override a teacher can
  * add and remove rather than a migration they are forced through.
  *
- * Обратно в окружение возвращаются ТРИ поля, и только они: baseUrl, model и
- * apiKey. Пустая строка стирает их строку (`set` ниже), и дальше отвечает
- * .env. Остальные так не умеют, и это не забывчивость, а разная природа
- * полей: houseRules пусты по умолчанию (возвращаться некуда), provider и
- * defaultMode — выбор из списка, где «ничего» не значение, а числовые настройки
- * (вопросы в час, пауза, размер контекста, действия на запрос) в окружении не живут вовсе и
- * падают на встроенные пределы из shared/admin. Написанное здесь однажды
- * говорило «clearing a field hands the question back to the environment» про
- * все девять, и человек, стерший «вопросы в час», ждал бы .env, а получал
- * прежнее число.
+ * THREE fields fall back to the environment, and only they: baseUrl, model and
+ * apiKey. An empty string erases their row (`set` below), and from then on .env
+ * answers. The others cannot do that, and it is not forgetfulness but the
+ * different nature of the fields: houseRules are empty by default (there is
+ * nothing to fall back to), provider and defaultMode are a choice from a list
+ * where "nothing" is not a value, and the numeric settings (questions per hour,
+ * pause, context size, actions per request) do not live in the environment at
+ * all and fall back to the built-in limits from shared/admin. What was written
+ * here once said "clearing a field hands the question back to the environment"
+ * about all nine, and a person who erased "questions per hour" would expect
+ * .env and get the previous number.
  *
  * The API key is stored in this SQLite file in plain text. That is deliberate:
  * Colloq is single-tenant and self-hosted, the database sits in the same
@@ -110,10 +111,11 @@ const MODES: readonly OracleMode[] = ['off', 'hints', 'full']
  * Providers whose runtime ignores the key entirely; asking for one is asking
  * for a secret that does not exist.
  *
- * Реэкспорт, а не список: копия этого правила жила и здесь, и в панели
- * (web/src/admin/panel.ts), и следующая строка в одной из них разошлась бы со
- * второй молча — на настроенной Ollama сервер отвечает, а экран гасит выбор
- * оракула. Список один, в shared/admin.ts · KEYLESS_PROVIDERS.
+ * A re-export, not a list: a copy of this rule lived both here and in the panel
+ * (web/src/admin/panel.ts), and the next line added to one of them would have
+ * silently drifted from the other — with Ollama configured the server answers,
+ * while the screen disables the oracle choice. There is one list, in
+ * shared/admin.ts · KEYLESS_PROVIDERS.
  */
 export { isKeylessProvider } from '@shared/admin'
 
@@ -126,10 +128,10 @@ function asMode(value: string | undefined): OracleMode {
 }
 
 /**
- * Булево из строки. Умолчание — ВКЛЮЧЕНО: имена уезжают модели, пока их не
- * выключили руками, и это выбор владельца, а не недосмотр. Строки здесь нет у
- * всех, кто обновился с прежней версии, и читать её отсутствие как «выключено»
- * значило бы включить ручку молча наоборот.
+ * A boolean from a string. The default is ON: names go to the model until they
+ * are turned off by hand, and that is the owner's choice, not an oversight.
+ * Everyone who upgraded from the previous version has no such row, and reading
+ * its absence as "off" would mean silently flipping the switch the other way.
  */
 function asFlag(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback

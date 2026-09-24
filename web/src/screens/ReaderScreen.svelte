@@ -1,11 +1,11 @@
 <!--
-  Публичное чтение: страница курса и опубликованный семинар.
+  Public reading: the course page and a published seminar.
 
-  Ни токена, ни личности, ни сокетов. Это не «режим только для чтения», который
-  серверу пришлось бы соблюдать, а другой предмет: за этими страницами нет ни
-  комнаты, ни документа, ни ядра — только то, что было собрано в момент
-  публикации. Поэтому здесь нет ни одной кнопки, которая могла бы что-нибудь
-  изменить, и нечему давать сбой.
+  No token, no identity, no sockets. This is not a "read-only mode" the
+  server would have to enforce but a different thing: behind these pages
+  there is no room, no document, no kernel — only what was collected at the
+  moment of publishing. So there is not a single button here that could
+  change anything, and nothing to fail.
 -->
 <script lang="ts">
   import Splash from '@/components/ui/Splash.svelte'
@@ -35,61 +35,66 @@
   let seminar = $state<PublicSeminar | null>(null)
   let step = $state<PublicStep | null>(null)
   let missing = $state(false)
-  /** Страницы больше нет вовсе: её сняли или удалили, пока её читали. */
+  /** The page is gone altogether: it was withdrawn or deleted while being read. */
   let gone = $state(false)
   /**
-   * Шага нет, а страница есть: устаревшая ссылка на отметку или промах в номере.
+   * No such step, but the page exists: an outdated link to a mark or a wrong
+   * number.
    *
-   * Отдельно от `gone`, потому что это другая новость и другая дорога: семинар
-   * жив, открыт, и у него есть первая страница, на которую можно уйти. Оба
-   * случая приходят с кодом 404, и различает их только тело ответа
-   * (`refusedStep` в shared/publish.ts). Пока читалка смотрела на голый статус,
-   * `/p/<id>/999` печатал «этой страницы семинара больше нет — его
-   * опубликовали заново»: известие о непоправимом при живой, ничем не тронутой
-   * публикации.
+   * Separate from `gone`, because it is different news and a different road:
+   * the seminar is alive, open, and has a first page to go to. Both cases
+   * come with a 404, and only the response body tells them apart
+   * (`refusedStep` in shared/publish.ts). While the reader looked at the bare
+   * status, `/p/<id>/999` printed "this page of the seminar no longer exists
+   * — it was republished": news of something irreparable about a live,
+   * untouched publication.
    */
   let noSuchStep = $state(false)
   /**
-   * Не «страницы нет», а «не дошли»: 500, обрыв, таймаут.
+   * Not "the page does not exist" but "did not get through": a 500, a dropped
+   * connection, a timeout.
    *
-   * Пока их не отличали от 404, всё это давало `missing === false` и пустой
-   * белый экран — ни слова, ни кнопки, ни намёка на то, что помогает
-   * перезагрузка; человек в метро читал это как «курс удалили». Фразу для
-   * человека api.ts готовит сам, здесь её достаточно показать.
+   * While these were not told apart from a 404, all of them gave
+   * `missing === false` and a blank white screen — not a word, not a button,
+   * not a hint that a reload helps; a person on the metro read it as "the
+   * course was deleted". api.ts prepares the phrase for the person itself; it
+   * is enough to show it here.
    */
   let failureRender = $state<() => string | null>(() => null)
   const failure = $derived(failureRender())
-  /** «Ещё раз»: счётчик в зависимостях эффектов, а не второй способ загрузки. */
+  /** "Try again": a counter in the effects' dependencies, not a second way of loading. */
   let attempt = $state(0)
   let loading = $state(true)
 
   /*
-   * Шаг живёт в адресе: `/p/x9tb4kwm/3184`. «Назад» в браузере обязана
-   * возвращать на предыдущий шаг, а не выкидывать со страницы, — человек ходит
-   * по ним туда-сюда, сравнивая «до» и «после».
+   * The step lives in the address: `/p/x9tb4kwm/3184`. The browser's "Back"
+   * must return to the previous step, not throw the person off the page —
+   * people walk back and forth through steps comparing "before" and "after".
    */
   const wanted = $derived(publication?.step ?? null)
 
   /**
-   * Идентификатор публикации — строкой, а не через сам проп.
+   * The publication id — as a string, not through the prop itself.
    *
-   * `readPublicRoute` в роутере собирает НОВЫЙ объект на каждое изменение
-   * адреса, включая `/p/x/3` → `/p/x/4`. Эффекты ниже читали `publication?.id`,
-   * то есть зависели от объекта, и каждый шаг стоил лишнего GET /api/p/:id —
-   * ровно того, что обещал не делать ключ `{#key}` в App.svelte («не загружать
-   * семинар заново на каждый шаг»). Строковый `$derived` не будит зависимых,
-   * пока значение то же, — и обещание начинает выполняться.
+   * `readPublicRoute` in the router builds a NEW object on every address
+   * change, including `/p/x/3` → `/p/x/4`. The effects below read
+   * `publication?.id`, that is, depended on the object, and every step cost
+   * an extra GET /api/p/:id — exactly what the `{#key}` key in App.svelte
+   * promised not to do ("do not reload the seminar on every step"). A string
+   * `$derived` does not wake its dependents while the value stays the same —
+   * and the promise starts being kept.
    */
   const pubId = $derived(publication?.id ?? null)
 
   /*
-   * Чего на экране НЕТ — гасится, а не остаётся с прошлого адреса.
+   * What is NOT on screen is cleared, not left over from the previous address.
    *
-   * Роутер пересобирает этот экран по ключу вида (App.svelte), и после
-   * починки этого ключа сюда уже не должен приезжать курс под адресом
-   * публикации. Но ветка `{:else if courseView}` в разметке стоит раньше
-   * `{:else if seminar}`, и цена ошибки здесь — страница, показывающая не то,
-   * что в адресе. Экран отвечает за это сам: пропало из пропсов — погасили.
+   * The router rebuilds this screen by the view key (App.svelte), and since
+   * that key was fixed a course should no longer arrive here under a
+   * publication address. But the `{:else if courseView}` branch in the markup
+   * comes before `{:else if seminar}`, and the price of a mistake here is a
+   * page showing something other than what is in the address. The screen
+   * takes care of it itself: gone from the props — cleared.
    */
   $effect(() => {
     if (!course) courseView = null
@@ -102,10 +107,11 @@
   })
 
   /**
-   * Отказ: 404 — это «такой страницы нет», всё остальное — «не дошли».
+   * A refusal: 404 means "no such page", everything else means "did not get
+   * through".
    *
-   * Разные ответы, потому что разные действия: первое окончательно, второе
-   * лечится кнопкой.
+   * Different answers, because different actions: the first is final, the
+   * second is cured by a button.
    */
   function refused(err: unknown): void {
     if (err instanceof ApiError && err.status === 404) missing = true
@@ -164,11 +170,12 @@
     let cancelled = false
     loading = true
     /*
-     * Прежний шаг гасится ДО загрузки нового.
+     * The previous step is cleared BEFORE the new one loads.
      *
-     * Оставался — и при переходе на шаг, которого больше нет (семинар
-     * переопубликовали без этой отметки), читатель молча видел предыдущую
-     * тетрадь под новым адресом. Врущая страница хуже пустой.
+     * It used to stay — and on moving to a step that no longer exists (the
+     * seminar was republished without this mark) the reader silently saw the
+     * previous notebook under the new address. A lying page is worse than an
+     * empty one.
      */
     step = null
     gone = false
@@ -182,12 +189,13 @@
         if (cancelled) return
         if (!(err instanceof ApiError)) return refused(err)
         /*
-         * Какой из двух 404 — решает тело, а не код.
+         * Which of the two 404s it is — the body decides, not the code.
          *
-         * `gone` на любой 404 означал «его опубликовали заново» и промаху мимо
-         * номера тоже; страница при этом жива, и вести с неё надо не туда.
-         * Неизвестное тело (заглушка прокси, чужой ответ) — это «не знаю», а не
-         * «нет»: показываем отказ с кнопкой «Ещё раз», как при обрыве.
+         * `gone` on any 404 meant "it was republished", for a wrong number too;
+         * yet the page is alive, and the way out of it leads elsewhere. An
+         * unknown body (a proxy stub, someone else's answer) means "I do not
+         * know", not "no": we show the refusal with a "Try again" button, as
+         * for a dropped connection.
          */
         const what = refusedStep(err.status, err.message)
         if (what === 'publication') gone = true
@@ -204,32 +212,35 @@
   })
 
   /*
-   * Читалке есть что показать, когда приехал курс или публикация — или когда
-   * уже известно, что их нет (`missing`, отказ). До этого на экране стоит
-   * заставка из index.html; снимать её раньше значит показать пустой грунт
-   * страницы, за которой человек сюда и пришёл (lib/boot.ts).
+   * The reader has something to show when the course or the publication has
+   * arrived — or when it is already known that they do not exist (`missing`,
+   * a refusal). Until then the splash from index.html is on screen; removing
+   * it earlier means showing the empty ground of the page the person came
+   * here for (lib/boot.ts).
    */
   $effect(() => {
     if (missing || courseView !== null || seminar !== null || failure !== null) firstScreenReady()
   })
 
   /*
-   * Отмечен только тот шаг, который действительно открыт. Падало на первый —
-   * и рельса жирным показывала шаг 01, хотя на экране было пусто или другое.
+   * Only the step that is really open is marked. It used to fall back to the
+   * first — and the rail showed step 01 in bold, although the screen was
+   * empty or showed something else.
    */
   const current = $derived(step?.seq ?? null)
-  /** Куда уводить с исчезнувшего шага: первый — он есть у любой публикации. */
+  /** Where to send people from a vanished step: the first — every publication has it. */
   const first = $derived(seminar?.steps[0]?.seq ?? null)
   /**
-   * Стоит ли читатель на последнем шаге — от этого зависит подпись у скачивания.
+   * Whether the reader is on the last step — the download label depends on
+   * it.
    *
-   * Пока шага нет (грузится, промах в номере, публикацию сняли), считаем, что
-   * на последнем: ссылка в этот момент идёт без `?step=`, а без него сервер
-   * отдаёт именно последний шаг. Подпись и файл говорят одно и то же в любую
-   * секунду жизни страницы.
+   * While there is no step (loading, a wrong number, the publication was
+   * withdrawn), we assume the last one: at that moment the link goes without
+   * `?step=`, and without it the server serves exactly the last step. The
+   * label and the file say the same thing at every second of the page's life.
    */
   const onLast = $derived(current === null || current === seminar?.steps.at(-1)?.seq)
-  /* Рельса из одного шага — мебель. В первом семестре это обычный случай. */
+  /* A rail of one step is furniture. In the first semester that is the usual case. */
   const railed = $derived((seminar?.steps.length ?? 0) > 1)
 
   function go(seq: number): void {
@@ -238,14 +249,14 @@
   }
 
   /**
-   * Имя страницы в заголовке вкладки.
+   * The page name in the tab title.
    *
-   * Страницу курса кладут в закладки — это прямо написано под списком, и это
-   * единственный адрес Colloq, который человек сохраняет. В закладках, в
-   * истории и в переключателе вкладок все двенадцать курсов и все их семинары
-   * назывались одинаково: «Colloq». Выгруженная статикой страница `<title>`
-   * ставит (publish/render.ts), SPA не ставила — один и тот же адрес открывался
-   * по-разному.
+   * The course page gets bookmarked — it says so right under the list, and it
+   * is the only Colloq address a person saves. In bookmarks, in the history
+   * and in the tab switcher all twelve courses and all their seminars were
+   * called the same: "Colloq". The statically exported page sets `<title>`
+   * (publish/render.ts), the SPA did not — the same address opened
+   * differently.
    */
   const named = $derived(courseView?.name ?? seminar?.title ?? null)
   $effect(() => {
@@ -256,12 +267,12 @@
   })
 
   /**
-   * Полоса шагов на телефоне: отмеченный шаг подводится к глазам сам.
+   * The step strip on a phone: the marked step brings itself into view.
    *
-   * Полоса прокручивается вбок, а шагов бывает одиннадцать: открыв ссылку на
-   * седьмой, человек видел бы первые три и ни одного признака, что он на
-   * седьмом. Мгновенно, без плавности: это не жест, а состояние страницы при
-   * её открытии.
+   * The strip scrolls sideways, and there can be eleven steps: opening a link
+   * to the seventh, a person would see the first three and no sign that they
+   * are on the seventh. Instantly, without smoothing: this is not a gesture
+   * but the page's state when it opens.
    */
   let strip = $state<HTMLElement | null>(null)
   $effect(() => {
@@ -289,8 +300,8 @@
 {:else if courseView}
   <CourseList course={courseView} {onnavigate} />
 {:else if seminar && seminar.state === 'withdrawn'}
-  <!-- Никогда 404 на ссылку, которую студенту дали: страница отвечает, что её
-       сняли, и ведёт наверх, к курсу. -->
+  <!-- Never a 404 for a link a student was given: the page answers that it
+       was withdrawn and leads up, to the course. -->
   <div class="flex min-h-screen items-center justify-center bg-canvas px-6">
     <div class="max-w-md text-center">
       <p class="text-title font-semibold text-ink">{tr('room.ui.867')}</p>
@@ -319,9 +330,9 @@
             {seminar.course.name}
           </button>
         {/if}
-        <!-- «Страница» в единственном числе — не описка: один отмеченный
-             момент и есть одна страница (так же говорит и окно публикации).
-             Описка была во множественном: «5 шага», «11 шага». -->
+        <!-- "Page" in the singular is not a typo: one marked moment is one
+             page (the publish window says the same). The typo was in the
+             plural: "5 шага", "11 шага". -->
         <span> {tr('room.ui.868')} {dateLong(seminar.publishedAt)} ·
           {seminar.steps.length}
           {plural(seminar.steps.length, tr('room.ui.713'), tr('room.ui.714'), tr('room.ui.715'))}
@@ -330,19 +341,21 @@
     </header>
 
     <!--
-      Рельса шагов на телефоне — полосой, а не колонкой.
+      The step rail on a phone — as a strip, not a column.
 
-      Боковая рельса ниже объявлена `hidden … sm:flex`: на телефоне её нет
-      вовсе, а других переходов по шагам на странице не было — ни кнопок, ни
-      списка. Шапка при этом честно писала «6 шагов», и публикация из шести
-      сводилась к первому: остальные достижимы только правкой адреса. Между тем
-      публичные страницы — единственные адреса Colloq, которые открывают с
-      телефона, и статическая выгрузка той же публикации рельсу на узком экране
-      оставляет (render.ts, `@media(max-width:860px)`): SPA была хуже статики.
+      The side rail below is declared `hidden … sm:flex`: on a phone it does
+      not exist at all, and the page had no other way to move between steps —
+      no buttons, no list. Meanwhile the header honestly said "6 steps", and a
+      publication of six came down to the first: the rest were reachable only
+      by editing the address. And yet public pages are the only Colloq
+      addresses people open from a phone, and the static export of the same
+      publication keeps the rail on a narrow screen (render.ts,
+      `@media(max-width:860px)`): the SPA was worse than the static page.
 
-      Полосой, а не стопкой: одиннадцать шагов колонкой — это экран, который
-      надо пролистать, чтобы дойти до тетради, и так на каждом шаге. Липкая:
-      уйдя вниз по тетради, к следующему шагу переходят оттуда, где дочитали.
+      A strip, not a stack: eleven steps in a column are a screen to scroll
+      through to reach the notebook, on every step. Sticky: having gone down
+      the notebook, people move to the next step from where they finished
+      reading.
     -->
     {#if railed}
       <nav
@@ -417,20 +430,22 @@
             <PublicNotebook cells={step.cells} publication={seminar.id} />
           </div>
         {:else if loading}
-          <!-- Страница уже нарисована — шапка, рельса шагов, — и едет только
-               тетрадь шага: заставка панельная, по центру этого места. -->
+          <!-- The page is already drawn — header, step rail — and only the
+               step's notebook is on its way: a pane splash, centered in that
+               place. -->
           <Splash size="pane" label={tr('room.ui.874')} />
         {:else if noSuchStep}
           <!--
-            Семинар жив, а этой отметки в нём нет. Причин две, и сервер их не
-            различает: семинар опубликовали заново (адрес тот же, отметки
-            сменились) или в номере промах. Значит, и говорить надо о том, что
-            известно: страницы нет, ссылка старая или с опечаткой. Прежний текст
-            выбирал за читателя вторую половину правды — «его опубликовали
-            заново» — и говорил её даже тому, кто просто ошибся цифрой.
+            The seminar is alive, but this mark is not in it. There are two
+            reasons, and the server does not tell them apart: the seminar was
+            republished (same address, the marks changed) or the number is
+            wrong. So we should speak of what is known: there is no such page,
+            the link is old or has a typo. The previous text chose one half of
+            the truth for the reader — "it was republished" — and said it even
+            to someone who simply got a digit wrong.
 
-            Дорога отсюда обязана быть на странице: у публикации из одного шага
-            рельсы нет вовсе, и выбраться было нечем.
+            The way out has to be on the page: a publication of one step has no
+            rail at all, and there was nothing to get out with.
           -->
           <p class="mt-8 text-ui text-muted">
             {#if wanted === null} {tr('room.ui.875')} {:else} {tr('room.ui.876')} {/if}
@@ -440,10 +455,11 @@
           </p>
         {:else if gone}
           <!--
-            Публикации не стало, пока её читали: сняли с публикации или удалили
-            (`publication not found`). Слова — те же, что на снятой странице
-            выше, потому что событие для читателя то же самое; отсюда ведёт не
-            первый шаг — его тоже нет, — а курс.
+            The publication disappeared while being read: withdrawn or deleted
+            (`publication not found`). The words are the same as on the
+            withdrawn page above, because for the reader it is the same event;
+            the way out from here is not the first step — it is gone too — but
+            the course.
           -->
           <p class="mt-8 text-ui text-muted"> {tr('room.ui.878')} {#if seminar.course}
               <button
@@ -462,18 +478,21 @@
         {/if}
 
         <!--
-          Ссылка отдаёт тот шаг, на котором стоят, и говорит, что именно в файле.
+          The link serves the step being viewed, and says what exactly is in the
+          file.
 
-          Ссылка была одна на все шаги, а сервер собирал по ней тетрадь
-          ПОСЛЕДНЕГО шага: читатель, сравнивающий «до» и «после» на шаге 2 из
-          5 — ровно тот, ради кого шаг живёт в адресе, — уносил состояние шага 5
-          и узнавал об этом, только открыв файл. Теперь шаг едет в `?step=`
-          (routes/courses.ts → notebookOfStep): незнакомый номер там отвечает
-          последним шагом, а не 404, так что ссылка не может сломаться.
+          There used to be one link for all steps, and the server built from it
+          the notebook of the LAST step: a reader comparing "before" and "after"
+          on step 2 of 5 — exactly the person the step lives in the address
+          for — carried away the state of step 5 and found out only on opening
+          the file. Now the step travels in `?step=` (routes/courses.ts →
+          notebookOfStep): an unknown number there answers with the last step,
+          not a 404, so the link cannot break.
 
-          Выводы сервер вычищает всегда: файл задуман как «код, чтобы запустить
-          у себя», и без выводов он открывается везде и весит килобайты. Это
-          обещание тоже написано рядом, а не выясняется после скачивания.
+          The server always strips outputs: the file is meant as "code to run
+          on your own machine", and without outputs it opens anywhere and
+          weighs kilobytes. This promise is also written right next to it, not
+          discovered after the download.
         -->
         <div class="mt-10 border-t border-line pt-5">
           <p class="flex items-center gap-2 text-ui text-muted">
@@ -495,10 +514,10 @@
   </div>
 {:else}
   <!--
-    Пусто здесь бывает по двум причинам, и они разные: страница ещё едет — или
-    не доехала. Пустой белый экран стоял на обе, и на второй читался как «этого
-    курса больше нет»: ни слова, ни кнопки, а единственный выход — перезагрузка,
-    о которой на странице не сказано ничего.
+    Empty here happens for two reasons, and they differ: the page is still on
+    its way — or did not get through. A blank white screen stood for both, and
+    for the second it read as "this course no longer exists": not a word, not
+    a button, and the only way out is a reload the page says nothing about.
   -->
   <div class="min-h-screen bg-canvas {failure ? 'flex items-center justify-center px-6' : ''}">
     {#if failure}
@@ -511,8 +530,9 @@
         > {tr('room.ui.552')} </button>
       </div>
     {:else}
-      <!-- Страницы ещё нет вовсе: заставка вместо экрана — та же и там же, где
-           её рисовала оболочка из index.html, так что перехода не видно. -->
+      <!-- There is no page at all yet: a splash instead of the screen — the
+           same one, in the same place where the shell from index.html drew it,
+           so no transition is visible. -->
       <Splash label={tr('room.ui.874')} />
     {/if}
   </div>

@@ -74,13 +74,13 @@ test('a failed turn does not come back as something the model said', () => {
     'the error sentence was replayed as an oracle turn',
   )
   /*
-   * И вопрос уходит вместе со своим ответом.
+   * And the question goes away together with its answer.
    *
-   * Раньше он оставался («он всё равно случился»), и после каждой осечки
-   * история выходила «user, user» — два хода подряд от одной роли. Строгие
-   * шаблоны чата (vLLM с Mistral или Llama-2) отвечают на такое 400, а
-   * повторная попытка шлёт ту же историю и получает то же 400. Вопрос без
-   * ответа модели ничего и не сообщает: тетрадь она видит и так.
+   * It used to stay ("it happened anyway"), and after every misfire the
+   * history came out "user, user" — two turns in a row from one role. Strict
+   * chat templates (vLLM with Mistral or Llama-2) answer that with a 400, and
+   * a retry sends the same history and gets the same 400. A question without
+   * an answer tells the model nothing either: it sees the notebook anyway.
    */
   assert.deepEqual(turns, [])
 })
@@ -99,8 +99,8 @@ test('one failure does not cost the exchanges around it', () => {
   say(doc, { name: 'Ana', question: 'what is a stride?', answer: 'How far the kernel steps.' })
   say(doc, { name: 'John', question: 'and padding?', answer: 'The endpoint timed out.', state: 'error' })
   say(doc, { name: 'Ana', question: 'so which is it?', answer: 'Padding adds a border.' })
-  // Осечка Джона уходит целиком — и парой, а не половиной: см. выше про
-  // чередование ролей. Обмены вокруг неё остаются как были.
+  // John's misfire goes away entirely — as a pair, not a half: see above on
+  // role alternation. The exchanges around it stay as they were.
   assert.deepEqual(recentTurns(doc), [
     { role: 'user', content: 'Ana asked: what is a stride?' },
     { role: 'assistant', content: 'How far the kernel steps.' },
@@ -119,7 +119,8 @@ test('an answer still streaming is carried, because it is real', () => {
 test('a question nobody typed carries no turn at all', () => {
   const doc = room()
   say(doc, { question: '', answer: 'What are you stuck on?' })
-  // Ход без вопроса — это ответ без обращения: в чередовании ролей ему негде
-  // встать, а модели он не сообщает ничего, чего она не видит в тетради.
+  // A turn without a question is an answer addressed to no one: it has no
+  // place in the role alternation, and it tells the model nothing it does not
+  // see in the notebook.
   assert.deepEqual(recentTurns(doc), [])
 })

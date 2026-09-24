@@ -1,10 +1,11 @@
-"""Colloq — совместная среда для семинаров.
+"""Colloq — a collaborative environment for seminars.
 
-Пакет не содержит логики занятия: она вся в CLI, который лежит рядом собранным
-(_app/cli/colloq.mjs) и исполняется Node. Здесь только упаковка — то, что
-позволяет поставить всё это одной строкой `pip install colloq`.
+The package holds no class logic: all of it is in the CLI, which lies next to
+it prebuilt (_app/cli/colloq.mjs) and runs under Node. Here there is only the
+packaging, the part that lets you install all of this with one line,
+`pip install colloq`.
 
-Точка входа: colloq.__main__:main.
+Entry point: colloq.__main__:main.
 """
 
 from ._version import __version__

@@ -1,74 +1,80 @@
 import { tr } from '@shared/i18n'
 /**
- * Слова и обрезка — общие для всего, что оракул пишет и читает.
+ * Words and clipping — shared by everything the oracle writes and reads.
  *
- * Здесь ничего не решается: это четыре мелочи, которые лежали по два-три раза в
- * `index.ts`, `agent.ts`, `council.ts`, `context.ts` и `routes/ai.ts` и уже
- * разошлись деталями. Русский плюрал был написан четырьмя разными способами
- * (в одном из них 11–14 разбирались отдельно), `clip` в одном месте считал
- * маркер в бюджет, а в другом — сверх него, и обрезанный кусок выходил длиннее
- * заявленного потолка. Правило одно, значит и копия должна быть одна: следующая
- * правка попадёт во все места разом, а не в одно из трёх.
+ * Nothing is decided here: these are four small things that lay around two or
+ * three times over in `index.ts`, `agent.ts`, `council.ts`, `context.ts` and
+ * `routes/ai.ts` and had already drifted apart in the details. The Russian
+ * plural was written in four different ways (one of them handled 11–14
+ * separately), `clip` in one place counted the marker within the budget and in
+ * another on top of it, and the clipped piece came out longer than the
+ * declared ceiling. There is one rule, so there should be one copy too: the
+ * next edit lands in every place at once, not in one of three.
  *
- * Живёт в server/src/ai/, а не в shared: обрезка промпта нужна ровно здесь, и
- * тащить её в браузер было бы хуже, чем оставить рядом с тем, что её зовёт.
- * Само правило склонения — из shared: его читают и вкладка, и статические
- * страницы, и второй копии у него быть не должно.
+ * Lives in server/src/ai/, not in shared: prompt clipping is needed exactly
+ * here, and dragging it into the browser would be worse than leaving it next
+ * to what calls it. The declension rule itself comes from shared: both the tab
+ * and the static pages read it, and it must not have a second copy.
  */
 import { plural } from '@shared/plural'
 import type { ReasoningEffort } from '@shared/admin'
 
 /**
- * «одну секунду, две секунды, пять секунд» — одно правило на все счётные слова.
+ * "одну секунду, две секунды, пять секунд" (one second, two seconds, five
+ * seconds): one rule for every counting word.
  *
- * Реэкспортом, чтобы счётные слова оракула стояли рядом с остальными его
- * словами и звались из одного места.
+ * Re-exported so that the oracle's counting words sit next to the rest of its
+ * words and are called from one place.
  */
 export { plural }
 
 /**
- * Строка в системный кадр под выбранный уровень размышлений.
+ * A line for the system frame matching the chosen reasoning level.
  *
- * «Сразу» — это не только параметр провайдера: половина моделей ручки
- * рассуждений не имеет вовсе, а у части (DeepSeek R1 и родня) она есть, но
- * отключить её нельзя — думать они будут в любом случае. Просьба словами
- * работает на всех и даёт то, ради чего эту ручку просили: короткий ответ без
- * «давайте разберёмся» на три абзаца.
+ * "Instant" is not only a provider parameter: half of the models have no
+ * reasoning knob at all, and some (DeepSeek R1 and its kin) have one that
+ * cannot be switched off — they will think in any case. Asking in words works
+ * on all of them and gives what this knob was asked for: a short answer without
+ * three paragraphs of "let's work through this".
  *
- * «Обычно» не добавляет НИЧЕГО — ни поля, ни строки: кадр остаётся ровно тем,
- * чем был. «Подробно» тоже молчит: просить модель думать словами бессмысленно,
- * это делает параметр, а строка «думай подольше» только съела бы место.
+ * "Normal" adds NOTHING — neither a field nor a line: the frame stays exactly
+ * what it was. "Thorough" stays silent too: asking a model in words to think is
+ * pointless, the parameter does that, and a "think longer" line would only eat
+ * space.
  */
 export function effortNote(effort: ReasoningEffort | undefined): string {
   return effort === 'instant' ? tr('server.ai.instantNote') : ''
 }
 
-/** «22 секунды» — число и слово к нему. */
+/** "22 seconds": the number and the word that goes with it. */
 export function seconds(n: number): string {
   return tr('server.seconds', { count: n })
 }
 
-/** «3 человека»: у «человек» родительный совпадает с именительным, и это не опечатка. */
+/**
+ * "3 человека" (3 people): for "человек" the genitive plural equals the
+ * nominative, and that is not a typo.
+ */
 export function people(n: number): string {
   return tr('server.people', { count: n })
 }
 
-/** «1 группа», «3 группы», «5 групп» — без числа: его ставят рядом. */
+/** "1 группа", "3 группы", "5 групп" (group forms) — without the number: it is put alongside. */
 export function groupsWord(n: number): string {
   return tr('server.groupsWord', { count: n })
 }
 
-/** «1 ячейка», «3 ячейки», «5 ячеек»: счёт, который не режет глаз. */
+/** "1 ячейка", "3 ячейки", "5 ячеек" (cell forms): a count that does not jar the eye. */
 export function cellsWord(n: number): string {
   return tr('server.cellsWord', { count: n })
 }
 
-/** 01, 02, 03 — тот же номер, который нарисован у ячейки в поле слева. */
+/** 01, 02, 03 — the same number that is drawn next to the cell in the left margin. */
 export function pad(no: number): string {
   return String(no).padStart(2, '0')
 }
 
-/** Маркер по умолчанию — по-английски: его же называет заголовок кадра для модели. */
+/** The default marker is in English: the header of the model's frame names the same one. */
 const TRUNCATED = (dropped: number) => `\n… truncated ${dropped} chars …\n`
 
 /**
@@ -83,10 +89,10 @@ const TRUNCATED = (dropped: number) => `\n… truncated ${dropped} chars …\n`
  * The figure stays what was actually dropped: it is derived from the lengths
  * actually kept rather than from the limit.
  *
- * `mark` — потому что кадр вопроса написан по-английски, а кадр сводки
- * консилиума по-русски, и модель читает то, что вокруг. Правило обрезки при
- * этом одно: раньше сводка резала 70/30 и клала маркер СВЕРХ бюджета, то есть
- * отдавала больше, чем ей отвели.
+ * `mark` — because the question frame is written in English and the council
+ * summary frame in Russian, and the model reads what surrounds it. The clipping
+ * rule is still one: the summary used to cut 70/30 and put the marker ON TOP of
+ * the budget, that is, it handed over more than it was allotted.
  */
 export function clip(
   text: string,
@@ -109,20 +115,20 @@ export function clip(
   return out.length <= limit ? out : out.slice(0, limit)
 }
 
-/** Одна строка целиком или её начало с многоточием. Переносов не трогает. */
+/** One line in full, or its beginning with an ellipsis. Leaves line breaks alone. */
 export function clipLine(text: string, limit: number): string {
   return text.length <= limit ? text : text.slice(0, limit - 1) + '…'
 }
 
-/** Многострочное — в одну строку: трейсбек в чипе группы читается только так. */
+/** Multi-line into one line: a traceback in a group chip only reads this way. */
 export function flatten(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
 /**
- * Ошибка словами. `fallback` — для того, что не Error вовсе: в ленте оракула
- * такое показывается как есть, а в ходе агента вместо него стоит русская фраза,
- * потому что читает её комната.
+ * An error in words. `fallback` is for what is not an Error at all: in the
+ * oracle feed such a thing is shown as is, while in an agent turn a Russian
+ * phrase stands in its place, because the room reads it.
  */
 export function describe(err: unknown, fallback?: string): string {
   if (err instanceof Error) return err.message.trim()

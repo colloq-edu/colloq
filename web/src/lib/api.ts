@@ -23,22 +23,23 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     /**
-     * Сколько секунд ждать, если сервер назвал срок.
+     * How many seconds to wait, if the server named a deadline.
      *
-     * Только там, где отказ — это ожидание, а не поломка: слоу-мод оракула
-     * присылает его в теле, и по нему экран решает показать спокойную строку с
-     * обратным отсчётом вместо красной ошибки. Отличить ожидание от аварии по
-     * тексту 429 нельзя, а гадать по нему — заводить второй свод правил рядом
-     * с серверным.
+     * Only where the refusal is a wait, not a breakage: the oracle's slow mode
+     * sends it in the body, and by it the screen decides to show a calm line
+     * with a countdown instead of a red error. A wait cannot be told from a
+     * failure by the text of a 429, and guessing from it would mean keeping a
+     * second rulebook next to the server's.
      */
     readonly retryAfter: number | null = null,
     /**
-     * До какого момента человека не пустят, если отказ — это бан.
+     * Until what moment the person will be kept out, if the refusal is a ban.
      *
-     * Рядом с `retryAfter` и по тому же поводу: 403 бывает и «правило комнаты»,
-     * и «вас удалили с занятия», а различить их по тексту — завести второй свод
-     * правил рядом с серверным. Момент, а не остаток: часы рисует тот, кто
-     * смотрит (см. `untilWords` в lib/bans.ts).
+     * Next to `retryAfter` and for the same reason: a 403 can be "a room rule"
+     * or "you were removed from the class", and telling them apart by the text
+     * would mean keeping a second rulebook next to the server's. A moment, not
+     * a remainder: whoever is looking draws the clock (see `untilWords` in
+     * lib/bans.ts).
      */
     readonly until: number | null = null,
   ) {
@@ -47,13 +48,13 @@ export class ApiError extends Error {
 }
 
 /**
- * Что сказать, когда сервер не сказал ничего.
+ * What to say when the server said nothing.
  *
- * HTTP/2 отменил строку состояния — `res.statusText` там пустая всегда, а не
- * иногда. Ошибка, у которой нет тела с полем error, доезжала до экрана пустой
- * строкой, а `{#if error}` пустую строку не показывает: отказ выглядел как
- * будто ничего не произошло. Код есть всегда, и назвать его — уже лучше, чем
- * промолчать.
+ * HTTP/2 dropped the status line — `res.statusText` is always empty there, not
+ * just sometimes. An error without a body carrying an error field reached the
+ * screen as an empty string, and `{#if error}` does not show an empty string:
+ * the refusal looked as if nothing had happened. The code is always there, and
+ * naming it is already better than silence.
  */
 export function statusMessage(res: Response): string {
   if (res.status === 401) return tr('common.http401')
@@ -66,13 +67,14 @@ export function statusMessage(res: Response): string {
 }
 
 /**
- * Один запрос к нашему API: те же заголовки, тот же разбор отказа, те же слова.
+ * One request to our API: the same headers, the same refusal parsing, the same
+ * words.
  *
- * Экспортируется ради ленты версий (lib/history.ts): у неё был свой почти
- * такой же `get`, отличавшийся ровно заголовком Authorization — который сюда и
- * так передаётся через `init.headers`. Две копии разбора ошибок расходятся на
- * первой же правке: `retryAfter` и `until` в теле отказа появились здесь и в
- * копию не доехали.
+ * Exported for the version feed (lib/history.ts): it had its own almost
+ * identical `get`, differing only by the Authorization header — which can be
+ * passed here through `init.headers` anyway. Two copies of error parsing drift
+ * apart on the very first edit: `retryAfter` and `until` in the refusal body
+ * appeared here and never made it into the copy.
  */
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
@@ -88,10 +90,10 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     })
   } catch (cause: unknown) {
     /*
-     * fetch отвергает обещание TypeError'ом со словами «Failed to fetch» —
-     * фразой из отладчика, а не для человека, и одинаковой для упавшего
-     * сервера, оборванного вайфая и закрытого туннеля. Ни одного из этих
-     * случаев она не называет; сказать, что связь пропала, честнее.
+     * fetch rejects the promise with a TypeError saying "Failed to fetch" — a
+     * phrase for the debugger, not for a person, and the same for a crashed
+     * server, a dropped Wi-Fi and a closed tunnel. It names none of these
+     * cases; saying that the connection was lost is more honest.
      */
     if (cause instanceof TypeError) {
       throw new ApiError(tr('common.networkError'), 0)
@@ -127,13 +129,14 @@ export const api = {
   getSession: (id: string) => request<SessionInfo>(`/api/sessions/${id}`),
 
   /**
-   * «А меня-то пускают» — вопрос от вкладки, которой отказали в рукопожатии.
+   * "Am I even let in?" — the question from a tab whose handshake was refused.
    *
-   * Единственный запрос в продукте, который спрашивают ключом и ждут ответа про
-   * сам ключ. Сокет отказывает ДО апгрейда и без слов, и без этой двери клиент
-   * различал два случая из трёх наугад: забаненный после перезагрузки читал
-   * «место истекло» и терял свою личность в комнате. Что именно отвечает
-   * сервер — у `SessionMe` в shared/protocol.ts.
+   * The only request in the product that is asked with a key and expects an
+   * answer about the key itself. The socket refuses BEFORE the upgrade and
+   * without words, and without this door the client told two cases out of
+   * three apart by guesswork: someone banned read "the seat has expired" after
+   * a reload and lost their identity in the room. What exactly the server
+   * answers is at `SessionMe` in shared/protocol.ts.
    */
   me: (id: string, token: string) =>
     request<SessionMe>(`/api/sessions/${id}/me`, {
@@ -147,10 +150,10 @@ export const api = {
     }),
 
   /**
-   * Ключ, которым преподаватель отдаёт свой пульт планшету.
+   * The key with which the teacher hands their console over to a tablet.
    *
-   * Ключ, а не токен: см. `signHandoffToken` на сервере. Живёт десять минут и
-   * годится ровно на один обмен ниже.
+   * A key, not a token: see `signHandoffToken` on the server. It lives for ten
+   * minutes and is good for exactly one exchange below.
    */
   handoff: (id: string, token: string) =>
     request<HandoffResponse>(`/api/sessions/${id}/handoff`, {
@@ -159,7 +162,7 @@ export const api = {
       body: JSON.stringify({}),
     }),
 
-  /** Планшет меняет ключ из ссылки на обычный вход — тем же человеком. */
+  /** The tablet trades the link's key for a normal sign-in — as the same person. */
   claimHandoff: (id: string, key: string) =>
     request<JoinResponse>(`/api/sessions/${id}/handoff/claim`, {
       method: 'POST',
@@ -170,14 +173,14 @@ export const api = {
   listParticipants: (id: string) =>
     request<{ participants: Participant[]; online: string[] }>(`/api/sessions/${id}/participants`),
 
-  /* --------------------------------------------------------------- баны */
+  /* --------------------------------------------------------------- bans */
 
   /**
-   * Удалить человека с занятия на сутки.
+   * Remove a person from the class for a day.
    *
-   * Сутки называет сервер, а не эта строка: срок один на продукт, и второе
-   * место, где он написан, разошлось бы с первым на первой же правке. Отсюда
-   * уезжает только «кого».
+   * The server names the day, not this line: the term is one for the whole
+   * product, and a second place where it is written would drift from the first
+   * on the very first edit. Only the "who" leaves from here.
    */
   ban: (id: string, token: string, participantId: string) =>
     request<{ ban: Ban }>(`/api/sessions/${id}/bans`, {
@@ -187,20 +190,20 @@ export const api = {
     }),
 
   /**
-   * Действующие баны — и пометки про тех, кто в комнате сейчас.
+   * The active bans — and marks about those who are in the room right now.
    *
-   * Одним запросом, потому что это один и тот же разговор и одно и то же
-   * право: метка устройства, адрес и «первый раз здесь» — то, чего вкладка про
-   * соседа не знает и знать не должна, а преподавателю без них не отличить
-   * вернувшегося от однофамильца. `marks` не обязателен: сервер, который про
-   * пометки ещё не знает, оставляет список людей таким, каким он был.
+   * One request, because it is the same conversation and the same right: the
+   * device mark, the address and "first time here" are what a tab does not and
+   * must not know about its neighbour, and without them the teacher cannot tell
+   * a returning person from a namesake. `marks` is optional: a server that does
+   * not know about marks yet leaves the list of people as it was.
    */
   bans: (id: string, token: string) =>
     request<{ bans: Ban[]; marks?: Record<string, PersonMark> }>(`/api/sessions/${id}/bans`, {
       headers: { authorization: `Bearer ${token}` },
     }),
 
-  /** Снять бан. Вопросы к оракулу этим не возвращаются — их возвращает история. */
+  /** Lift a ban. Oracle questions do not come back with it — history brings them back. */
   liftBan: (id: string, token: string, banId: string) =>
     request<{ ok: true }>(`/api/sessions/${id}/bans/${banId}`, {
       method: 'DELETE',
@@ -208,10 +211,10 @@ export const api = {
     }),
 
   /**
-   * Правила комнаты — из самой комнаты.
+   * The room's rules — from inside the room.
    *
-   * Накладывается на текущее на сервере: экран, трогающий одну строку, не
-   * должен уметь молча вернуть остальные к умолчаниям.
+   * Merged over the current ones on the server: a screen that touches one row
+   * must not be able to silently reset the others to their defaults.
    */
   setRoomRules: (id: string, token: string, rules: Partial<RoomRules>) =>
     request<{ rules: RoomRules }>(`/api/sessions/${id}/rules`, {
@@ -220,14 +223,13 @@ export const api = {
       headers: { authorization: `Bearer ${token}` },
     }),
 
-  /* --------------------------------------------------- публичное чтение */
+  /* -------------------------------------------------------- public read */
 
   /**
-   * Курс и опубликованный семинар — без токена и без входа.
+   * A course and a published seminar — without a token and without signing in.
    *
-   * Отдельные адреса, а не `/api/sessions/...`: у публикации свой
-   * идентификатор именно затем, чтобы ссылка «на почитать» не открывала живую
-   * комнату.
+   * Separate addresses, not `/api/sessions/...`: a publication has its own id
+   * precisely so that a "for reading" link does not open the live room.
    */
   course: (id: string) => request<{ course: PublicCourseView }>(`/api/c/${id}`),
 
@@ -236,8 +238,8 @@ export const api = {
   step: (id: string, seq: number | null) =>
     request<{ step: PublicStep }>(`/api/p/${id}/step/${seq === null ? 'first' : seq}`),
 
-  // `truncated` — дерево показано не целиком: обход упёрся в потолок. Тот же
-  // признак едет в сообщении `files` по сокету, и комната хранит один флаг.
+  // `truncated` — the tree is not shown in full: the walk hit the ceiling. The
+  // same flag rides in the `files` socket message, and the room keeps one flag.
   listFiles: (id: string, token: string) =>
     request<{ files: FileEntry[]; truncated?: boolean }>(`/api/sessions/${id}/files`, {
       headers: { authorization: `Bearer ${token}` },
@@ -279,38 +281,38 @@ export const api = {
     }),
 
   /*
-   * Путь — в строке запроса, а не в адресе, и так везде в продукте: косая черта
-   * внутри имени живёт в адресе только как `%2F`, а его по дороге разворачивает
-   * то один прокси, то другой.
+   * The path goes in the query string, not in the URL path, and so it is
+   * everywhere in the product: a slash inside a name can live in the path only
+   * as `%2F`, and one proxy or another decodes that along the way.
    */
   fileUrl: (id: string, path: string, ticket: string) =>
     `/api/sessions/${id}/file?path=${encodeURIComponent(path)}&token=${encodeURIComponent(ticket)}`,
 
   /**
-   * Ключ на картинки вывода этой комнаты — один на все.
+   * A key for this room's output images — one for all of them.
    *
-   * То же, что у файла, и по той же причине: адрес уезжает в `src` элемента
-   * `<img>`, а туда не положить заголовок. Отличие одно — ключ не на запись, а
-   * на комнату: вывод одной ячейки это десяток картинок, и спрашивать ключ на
-   * каждую значило бы десяток запросов на каждый график. Открывает он ровно
-   * то, что человек и так видит в тетради.
+   * The same as for a file, and for the same reason: the address goes into the
+   * `src` of an `<img>`, and a header cannot be put there. One difference — the
+   * key is not per item but per room: one cell's output is a dozen images, and
+   * asking for a key for each would mean a dozen requests for every plot. It
+   * opens exactly what the person already sees in the notebook.
    */
   blobTicket: (id: string, token: string) =>
     request<{ token: string }>(`/api/sessions/${id}/blobs/ticket`, {
       headers: { authorization: `Bearer ${token}` },
     }),
 
-  /** Адрес картинки вывода. Имя — хэш содержимого, поэтому кэш вечный. */
+  /** The address of an output image. The name is a content hash, so it caches forever. */
   blobUrl: (id: string, sha: string, ticket: string) =>
     `/api/sessions/${id}/blobs/${encodeURIComponent(sha)}?token=${encodeURIComponent(ticket)}`,
 
   /**
-   * Тот же файл, но без билета в строке запроса — для читалки.
+   * The same file, but without a ticket in the query string — for the reader.
    *
-   * Билет нужен якорю: `<a download>` не умеет отправить заголовок. Читалка
-   * ходит сама и отправляет токен заголовком, поэтому адрес чистый — а pdf.js
-   * по нему запрашивает документ кусками и показывает первую страницу, не
-   * дожидаясь последней.
+   * The ticket is for the anchor: `<a download>` cannot send a header. The
+   * reader fetches on its own and sends the token in a header, so the address
+   * is clean — and pdf.js requests the document by it in ranges and shows the
+   * first page without waiting for the last.
    */
   fileRaw: (id: string, path: string) =>
     `/api/sessions/${id}/file?path=${encodeURIComponent(path)}`,
@@ -318,8 +320,9 @@ export const api = {
   /**
    * `mode` is what the server actually enforces; `enabled` is `mode !== 'off'`.
    *
-   * Два потолка — инстансовые, до правил комнаты: пульт правил показывает их
-   * рядом со своими полями, иначе «как на инстансе» не называет числа.
+   * The two ceilings are the instance's, before the room's rules: the rules
+   * console shows them next to its own fields, otherwise "as on the instance"
+   * names no number.
    */
   aiStatus: () =>
     request<{
@@ -329,7 +332,7 @@ export const api = {
       questionsPerHour: number
       slowModeSeconds: number
       agentSteps?: number
-      /** Умолчание уровня размышлений; необязательное — сервер мог быть старее панели. */
+      /** Default reasoning effort; optional — the server may be older than the panel. */
       reasoningEffort?: ReasoningEffort
     }>('/api/ai/status'),
 
@@ -346,11 +349,11 @@ export const api = {
     }),
 
   /**
-   * Свою запись останавливает автор, чужую — преподаватель.
+   * The author stops their own entry, the teacher stops anyone's.
    *
-   * Не «кто угодно»: оборвать чужой ход агента значит бросить правку файлов на
-   * середине. Сервер отказывает словами (routes/ai.ts), кнопка гаснет заранее
-   * (ChatTurn.svelte) — правило одно, мест два.
+   * Not "anyone": cutting off someone else's agent turn means abandoning a file
+   * edit halfway. The server refuses in words (routes/ai.ts), the button dims
+   * in advance (ChatTurn.svelte) — one rule, two places.
    */
   aiCancel: (id: string, token: string, entryId: string) =>
     request<{ ok: true }>(`/api/sessions/${id}/ai/cancel`, {
@@ -366,16 +369,17 @@ export const api = {
       headers: { authorization: `Bearer ${token}` },
     }),
 
-  /* ----------------------------------------------------------- консилиум */
+  /* ------------------------------------------------------------- council */
 
   /**
-   * Спросить оракула о решениях в ячейке консилиума — один вопрос из лимита
-   * комнаты, только преподаватель.
+   * Ask the oracle about the solutions in a council cell — one question from the
+   * room's limit, teacher only.
    *
-   * Ответ здесь — состояние «читает»; готовая сводка приедет по управляющему
-   * сокету (`council:oracle`), как и всё остальное про стопку. По HTTP, а не
-   * сообщением сокета, потому что у отказа есть цена и срок: 429 со словами и
-   * `retryAfter`, которые сокет не умеет сказать так же (см. `ApiError`).
+   * The answer here is the "reading" state; the finished summary arrives over
+   * the control socket (`council:oracle`), like everything else about the
+   * stack. Over HTTP rather than as a socket message, because a refusal has a
+   * cost and a deadline: a 429 with words and `retryAfter`, which the socket
+   * cannot say the same way (see `ApiError`).
    */
   councilAsk: (
     id: string,
@@ -387,18 +391,19 @@ export const api = {
     request<CouncilOracle>(`/api/sessions/${id}/council/${encodeURIComponent(cellId)}/oracle`, {
       method: 'POST',
       /*
-       * Вопрос о классе своими словами; без него сервер подставляет свою
-       * заготовку (routes/council.ts). Пустой строки здесь не бывает: пульт не
-       * шлёт вопроса, которого нет.
+       * A question about the class in one's own words; without it the server
+       * substitutes its own template (routes/council.ts). There is never an
+       * empty string here: the console does not send a question that is not
+       * there.
        *
-       * `effort` не шлётся вовсе, когда выбрано «как на инстансе»: провайдеру
-       * тогда не уедет ни одного нового поля.
+       * `effort` is not sent at all when "as on the instance" is chosen: then
+       * not a single new field goes to the provider.
        */
       body: JSON.stringify({ ...(question ? { question } : {}), ...(effort ? { effort } : {}) }),
       headers: { authorization: `Bearer ${token}` },
     }),
 
-  /** Стоп: оборвать чтение оракула о решениях. Вопрос из лимита не возвращается. */
+  /** Stop: cut off the oracle's reading of the solutions. The question is not refunded. */
   councilStopOracle: (id: string, token: string, cellId: string) =>
     request<CouncilOracle>(`/api/sessions/${id}/council/${encodeURIComponent(cellId)}/oracle`, {
       method: 'DELETE',

@@ -1,16 +1,18 @@
 /**
- * Публикация идёт по истории одним документом — и собирает то же самое.
+ * A publication walks the history with one document — and builds the same
+ * thing.
  *
- * Сорок шагов публикации разворачивались сорока новыми `Y.Doc`, каждый от
- * ближайшего кейфрейма: тетрадь с картинками — мегабайты на шаг, и всё это
- * синхронно, в процессе, где у коллеги в эту минуту идёт пара. Проход вперёд
- * одним документом (`publish/replay.ts`) убирает повторы, но платит за это
- * состоянием, которое живёт между шагами, — а значит, обязан доказать, что
- * страница на каждом шаге ровно та же, что при сборке с нуля.
+ * Forty publication steps used to unfold into forty new `Y.Doc`s, each from the
+ * nearest keyframe: a notebook with images means megabytes per step, and all of
+ * it synchronous, in the process where a colleague is teaching a class at that
+ * very minute. A forward pass with one document (`publish/replay.ts`) removes
+ * the repetition, but pays for it with state that lives between steps — and so
+ * it has to prove that the page at every step is exactly the one a build from
+ * scratch gives.
  *
- * Здесь три свойства этого прохода: одинаковость с полной сборкой, стойкость к
- * порядку и повторам в запросе и то, что назад он не отдаёт будущее за
- * прошлое.
+ * Here are three properties of that pass: sameness with a full build,
+ * resilience to order and repeats in the request, and that going back it does
+ * not pass the future off as the past.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -26,7 +28,7 @@ import { readNotebook } from '../shared/notebook.js'
 
 after(() => shutdownCollab())
 
-/** Комната с тремя названными моментами: чистая тетрадь, код, код с выводом. */
+/** A room with three named moments: a clean notebook, code, code with output. */
 function taught(id: string): Y.Doc {
   createSession(id, 'Градиентный спуск', null)
   const { doc } = getSessionDoc(id, 'Градиентный спуск')
@@ -47,68 +49,68 @@ function taught(id: string): Y.Doc {
   return doc
 }
 
-/** Все моменты комнаты, по возрастанию: их и просит панель публикации. */
+/** All the room's moments in ascending order: what the publish panel asks for. */
 const moments = (id: string): number[] =>
   candidatesFor(id)
     .map((c) => c.seq)
     .sort((a, b) => a - b)
 
-/** Страница шага, собранная с нуля: проход длиной в один шаг — это она и есть. */
+/** A step's page built from scratch: a pass one step long is exactly that. */
 const alone = (id: string, seq: number): BuiltPage =>
   pagesAt(id, [seq], newBlobBag()).get(seq) ?? { ok: false, reason: 'broken' }
 
-test('шаги, собранные одним проходом, — те же, что собранные по одному', () => {
+test('steps built in one pass are the same as steps built one at a time', () => {
   const id = 'replay-same'
   const doc = taught(id)
   const seqs = moments(id)
-  assert.ok(seqs.length >= 3, 'моменты не записались')
+  assert.ok(seqs.length >= 3, 'the moments were not recorded')
 
   const together = pagesAt(id, seqs, newBlobBag())
-  assert.deepEqual([...together.keys()], seqs, 'проход отдал не те шаги, что просили')
+  assert.deepEqual([...together.keys()], seqs, 'the pass returned other steps than those asked for')
   for (const seq of seqs) {
     assert.deepEqual(
       together.get(seq),
       alone(id, seq),
-      `шаг ${seq} в общем проходе разошёлся со сборкой с нуля`,
+      `step ${seq} in the shared pass diverged from the build from scratch`,
     )
   }
 
-  // И это не тавтология «пусто равно пусто»: моменты правда разные.
+  // And this is not the tautology "empty equals empty": the moments really differ.
   const pages = seqs.map((seq) => together.get(seq)!)
   assert.notDeepEqual(
     pages[0],
     pages[pages.length - 1],
-    'все шаги вышли одинаковыми — тетрадь для теста собралась не так',
+    'all steps came out the same: the test notebook was built wrong',
   )
   const outputs = pages.map((p) => (p.ok ? p.cells.flatMap((c) => c.outputs).length : -1))
-  assert.ok(outputs.includes(0) && outputs.some((n) => n > 0), 'вывод виден на всех шагах сразу')
+  assert.ok(outputs.includes(0) && outputs.some((n) => n > 0), 'the output is visible at every step at once')
   doc.destroy()
 })
 
-test('порядок и повторы в запросе ничего не меняют', async () => {
+test('order and repeats in the request change nothing', async () => {
   const id = 'replay-order'
   const doc = taught(id)
   const seqs = moments(id)
 
   const straight = pagesAt(id, seqs, newBlobBag())
-  // Панель отдаёт моменты в том порядке, в каком их назвал преподаватель, и
-  // один момент может прийти дважды: порядок рельсы — его дело, а не арифметики.
+  // The panel sends the moments in the order the teacher named them, and one
+  // moment may come twice: the order of the rail is the teacher's business, not arithmetic's.
   const shuffled = pagesAt(id, [...seqs].reverse().concat(seqs[0]), newBlobBag())
-  assert.deepEqual([...shuffled.keys()], seqs, 'проход не разложил шаги по возрастанию')
+  assert.deepEqual([...shuffled.keys()], seqs, 'the pass did not sort the steps in ascending order')
   assert.deepEqual(shuffled, straight)
 
-  // Уступка цикла событий между шагами на результат не влияет — она и заведена
-  // затем, чтобы не влиять ни на что, кроме занятия рядом.
+  // Yielding to the event loop between steps does not affect the result — it
+  // exists precisely so as to affect nothing but the class next door.
   assert.deepEqual(await pagesAtAsync(id, seqs, newBlobBag()), straight)
   doc.destroy()
 })
 
-test('проход не отдаёт будущее за прошлое', () => {
+test('the pass does not pass the future off as the past', () => {
   /*
-   * Документ идёт вперёд и назад не отматывается — CRDT так не умеет. Просьба
-   * о строке ниже уже пройденной обязана собрать новый документ, иначе шаг «до
-   * упражнения» показал бы решение: страница была бы не пустой, а неверной, и
-   * заметить это студенту нечем.
+   * The document moves forward and does not rewind — a CRDT cannot do that. A
+   * request for a row below one already passed has to build a new document,
+   * otherwise the "before the exercise" step would show the solution: the page
+   * would be not empty but wrong, and a student would have no way to notice.
    */
   const id = 'replay-back'
   const doc = taught(id)
@@ -124,9 +126,9 @@ test('проход не отдаёт будущее за прошлое', () => 
     assert.deepEqual(
       back,
       readNotebook(solo.at(first)),
-      'шаг назад собрал не то, что сборка с нуля',
+      'a step back built something other than the build from scratch',
     )
-    assert.notDeepEqual(back, ahead, 'ранний момент показал тетрадь позднего')
+    assert.notDeepEqual(back, ahead, 'an early moment showed the notebook of a later one')
   } finally {
     replay.close()
     solo.close()

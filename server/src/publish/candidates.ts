@@ -1,31 +1,32 @@
 /**
- * Моменты, которые могут стать шагами.
+ * Moments that can become steps.
  *
- * Шаг — это версия, названная человеком: «перед упражнением», «версия, которая
- * ломалась». Технически это строка истории, но не всякая: годится только та,
- * что разворачивается хотя бы в одну ячейку, и это проверяется тут, на горстке
- * строк, а не потом, когда студент откроет пустую страницу.
+ * A step is a version named by a person: "before the exercise", "the version
+ * that kept breaking". Technically it is a history row, but not just any: only
+ * one that unfolds into at least one cell will do, and that is checked here,
+ * on a handful of rows, not later when a student opens an empty page.
  *
- * Всплески правок (`edit`, `quiet`) кандидатами не бывают. Их десятки за пару,
- * их никто не называл, и «шаг» из них получился бы механический — момент, в
- * который просто перестали печатать.
+ * Bursts of edits (`edit`, `quiet`) are never candidates. There are dozens of
+ * them per lesson, nobody named them, and a "step" made from them would be
+ * mechanical: a moment when people simply stopped typing.
  */
 import { db } from '../db.js'
 import { getCells } from '@shared/notebook'
 import { openReplay } from './replay.js'
 
 /**
- * Строки, за которыми стоит целый документ.
+ * Rows backed by a whole document.
  *
- * Строками, а не `VersionKind`: `keyframe` в базе есть, а в объединении типов
- * его нет — он служебный и в ленте не показывается. Приводить его к типу,
- * который его не знает, значило бы соврать компилятору ради красоты импорта.
+ * As strings, not `VersionKind`: `keyframe` exists in the database but not in
+ * the union type, since it is internal and not shown in the feed. Casting it
+ * to a type that does not know it would mean lying to the compiler for the
+ * sake of a pretty import.
  */
 const NAMED: ReadonlySet<string> = new Set(['opened', 'checkpoint', 'restore', 'keyframe'])
 
 export interface Candidate {
   seq: number
-  /** Что предлагается как имя. Пусто — момент безымянный, его надо назвать. */
+  /** What is offered as the name. Empty means the moment is unnamed and needs a name. */
   label: string
   at: number
   cellCount: number
@@ -33,22 +34,23 @@ export interface Candidate {
 }
 
 /**
- * Сколько НАЗВАННЫХ строк брать. Семестр в одной комнате — это выброс.
+ * How many NAMED rows to take. A semester in one room is an outlier.
  *
- * Раньше здесь стояло окно на четыреста строк ЛЮБОГО вида, а по `kind`
- * отсеивалось уже отданное. Всплеск правок закрывается каждые четыре килобайта
- * обновлений, на любую смену состава тетради и по двенадцати секундам тишины —
- * комната на тридцать человек выдаёт их сотнями за пару, и чекпоинт,
- * поставленный на пятнадцатой минуте, из окна вылетал. Строка при этом жива в
- * базе: терялась ровно та функция, ради которой её ставили.
+ * There used to be a window of four hundred rows of ANY kind here, with what
+ * had already been fetched filtered by `kind`. An edit burst is closed every
+ * four kilobytes of updates, on any change to the notebook's structure and
+ * after twelve seconds of silence; a room of thirty people produces hundreds
+ * of them per lesson, and a checkpoint set in the fifteenth minute fell out of
+ * the window. The row itself was alive in the database: what got lost was
+ * exactly the function it had been set for.
  */
 const MAX_NAMED = 400
 
 /**
- * Названные строки истории — запросом, а не фильтром по отданному.
+ * Named history rows, by query rather than by filtering what was fetched.
  *
- * Виды перечисляет `NAMED`, чтобы список был один: индекс `doc_history_session`
- * закрывает этот запрос целиком.
+ * The kinds are listed by `NAMED` so that there is one list: the
+ * `doc_history_session` index covers this query entirely.
  */
 const selectNamed = db.prepare(`
   SELECT seq, kind, created_at, label
@@ -65,17 +67,18 @@ interface NamedRow {
 }
 
 /**
- * Что уже посчитано — по комнате и строке.
+ * What has already been counted, by room and row.
  *
- * История неизменяема: строка, развёрнутая один раз, столько же ячеек даст и
- * через час. Панель публикации перечитывается на каждое нажатие в поле имени
- * шага, и без этого каждый раз платился бы весь разворот заново.
+ * History is immutable: a row unfolded once gives the same number of cells an
+ * hour later. The publication panel is re-read on every keystroke in the step
+ * name field, and without this the whole unfolding would be paid for again
+ * each time.
  *
- * В памяти, а не в базе: своя таблица пережила бы удаление семинара
- * (`discardHistory`) и осталась бы лежать мусором, за которым некому прийти.
- * Забывать посчитанное не нужно и после удаления: `seq` — это AUTOINCREMENT на
- * всю базу, номер удалённой строки не достаётся никому другому, а сама память
- * выселяется по комнатам.
+ * In memory, not in the database: a table of its own would survive the
+ * seminar's deletion (`discardHistory`) and stay behind as garbage nobody
+ * comes for. There is no need to forget the counts even after a deletion:
+ * `seq` is an AUTOINCREMENT across the whole database, a deleted row's number
+ * never goes to anyone else, and the memory itself is evicted by room.
  */
 const MEMO_ROOMS = 16
 const memos = new Map<string, Map<number, number>>()
@@ -83,8 +86,8 @@ const memos = new Map<string, Map<number, number>>()
 function memoFor(sessionId: string): Map<number, number> {
   const found = memos.get(sessionId)
   if (found) {
-    // Перекладываем в конец: выселяется та комната, которую дольше всех не
-    // открывали, а не та, которую первой открыли.
+    // Move it to the end: the room evicted is the one not opened for the
+    // longest, not the one opened first.
     memos.delete(sessionId)
     memos.set(sessionId, found)
     return found
@@ -99,13 +102,14 @@ function memoFor(sessionId: string): Map<number, number> {
 }
 
 /**
- * Счётчик ячеек, идущий по строкам ВПЕРЁД одним документом.
+ * A cell counter that walks the rows FORWARD with one document.
  *
- * Сам проход — в `replay.ts`, общий с публикацией: разворачивать новый `Y.Doc`
- * на каждую строку означало платить снимок целиком (с выводами — мегабайты)
- * плюс все дельты после него, и так до четырёхсот раз подряд, синхронно, в
- * процессе, который в эту минуту держит сокеты комнаты. Здесь остаётся только
- * то, что своё: счёт ячеек и память о посчитанном.
+ * The pass itself is in `replay.ts`, shared with the publication: unfolding a
+ * new `Y.Doc` for every row meant paying for the whole snapshot (with outputs,
+ * megabytes) plus every delta after it, up to four hundred times in a row,
+ * synchronously, in the process that holds the room's sockets at that minute.
+ * What stays here is only what is our own: counting cells and remembering the
+ * counts.
  */
 interface Walk {
   count(seq: number): number
@@ -124,9 +128,9 @@ function walk(sessionId: string): Walk {
       try {
         n = getCells(replay.at(seq)).length
       } catch (err) {
-        // Строка не разворачивается — шагом такая быть не может, а проход
-        // после неё начинает с чистого документа сам (replay.ts).
-        console.error(`publish: строка истории ${sessionId}#${seq} не разворачивается`, err)
+        // The row does not unfold, so it cannot be a step, and the pass
+        // restarts from a clean document after it by itself (replay.ts).
+        console.error(`publish: history row ${sessionId}#${seq} does not unfold`, err)
       }
       memo.set(seq, n)
       return n
@@ -138,8 +142,9 @@ function walk(sessionId: string): Walk {
 function namedRows(sessionId: string): NamedRow[] {
   return (
     (selectNamed.all(sessionId, ...NAMED, MAX_NAMED) as NamedRow[])
-      // Запрос отдаёт свежие первыми — студент идёт по времени вперёд. И проход
-      // по возрастанию — то, на чём держится счёт одним документом.
+      // The query returns the newest first, while a student goes forward in
+      // time. And an ascending pass is what counting with one document relies
+      // on.
       .sort((a, b) => a.seq - b.seq)
   )
 }
@@ -148,10 +153,10 @@ function candidateOf(row: NamedRow, cellCount: number): Candidate {
   return {
     seq: row.seq,
     /*
-     * Имя предлагается только там, где его написал человек. У `keyframe` и
-     * `opened` его нет и быть не может: это служебные снимки, и «Снимок №14»
-     * в рельсе у студента — не название момента, а признание, что назвать
-     * его забыли.
+     * A name is offered only where a person wrote it. `keyframe` and `opened`
+     * have none and cannot have one: they are internal snapshots, and
+     * "Snapshot #14" on a student's rail is not the name of a moment but an
+     * admission that somebody forgot to name it.
      */
     label: row.kind === 'checkpoint' ? (row.label ?? '') : '',
     at: row.created_at,
@@ -167,7 +172,7 @@ export function candidatesFor(sessionId: string): Candidate[] {
   try {
     for (const row of rows) {
       const cellCount = walker.count(row.seq)
-      // Версия, которая не разворачивается в тетрадь, шагом быть не может.
+      // A version that does not unfold into a notebook cannot be a step.
       if (cellCount === 0) continue
       out.push(candidateOf(row, cellCount))
     }
@@ -177,16 +182,17 @@ export function candidatesFor(sessionId: string): Candidate[] {
   return out
 }
 
-/** Сколько строк проходить между вдохами. */
+/** How many rows to go through between breaths. */
 const CHUNK = 8
 
 /**
- * То же, но с паузами: между кусками работы процесс успевает разослать кадры.
+ * The same, but with pauses: between chunks of work the process gets to send
+ * out frames.
  *
- * Первый разворот истории комнаты за семестр — это всё равно секунды, и
- * пролежать их целиком на цикле событий значит на эти секунды остановить
- * синхронизацию и курсоры у всех, кто в комнате. Панель публикации ждать может,
- * занятие — нет.
+ * The first unfolding of a room's semester-long history still takes seconds,
+ * and spending them all on the event loop means stopping sync and cursors for
+ * everyone in the room for those seconds. The publication panel can wait; the
+ * class cannot.
  */
 export async function candidatesForAsync(sessionId: string): Promise<Candidate[]> {
   const rows = namedRows(sessionId)

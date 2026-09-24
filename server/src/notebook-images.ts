@@ -1,22 +1,24 @@
 /**
- * Картинки заметок — с полки комнаты, а не из документа.
+ * Note images come from the room's shelf, not from the document.
  *
- * Разбор текста живёт в `shared/images.ts` (его читают обе стороны), а здесь —
- * диск: положить байты на полку (`blobs.ts`) при внесении тетради в комнату,
- * достать их обратно при выгрузке файла и один раз разгрузить документ комнаты,
- * который успел набрать картинок до появления этой машины.
+ * Parsing the text lives in `shared/images.ts` (both sides read it); this is
+ * the disk side: put the bytes on the shelf (`blobs.ts`) when a notebook is
+ * brought into the room, take them back when a file is exported, and once
+ * unload a room document that had gathered images before this machinery
+ * existed.
  *
- * ЗАЧЕМ. Документ комнаты едет целиком каждому вошедшему и целиком ложится в
- * каждый снимок. Тетрадь лекции, где условия задач нарисованы картинками, —
- * это 9.4 МБ base64 в исходниках markdown-ячеек (замер по снимку живой комнаты
- * `pvhu2h7f`: 10.5 МБ документа, из них 9.09 МБ — картинки в тексте одной
- * тетради). На этом весе сервер закрывал отставшие сокеты, и студент на
- * медленном канале не догонял комнату вовсе.
+ * WHY. The room document travels whole to everyone who joins and lands whole
+ * in every snapshot. A lecture notebook whose problem statements are drawn as
+ * images is 9.4 MB of base64 in the sources of markdown cells (measured on a
+ * snapshot of the live room `pvhu2h7f`: a 10.5 MB document, of which 9.09 MB
+ * are images in the text of one notebook). At that weight the server closed
+ * lagging sockets, and a student on a slow connection never caught up with
+ * the room at all.
  *
- * ЦЕНА. Ссылка вместо картинки — это второй запрос за байтами и ключ на полку
- * (routes/blobs.ts), то есть комната обязана уметь их показать. Поэтому же
- * выгрузка обязана класть их обратно вложениями: файл, унесённый к себе,
- * открывается без нашего сервера.
+ * THE PRICE. A link instead of an image means a second request for the bytes
+ * and a key to the shelf (routes/blobs.ts), that is, the room has to be able
+ * to show them. For the same reason the export has to put them back as
+ * attachments: a file taken home opens without our server.
  */
 import { Buffer } from 'node:buffer'
 import * as Y from 'yjs'
@@ -34,7 +36,7 @@ import { allCellArrays } from '@shared/notebook'
 import { putBlob, readBlob } from './blobs.js'
 import { seldom } from './log.js'
 
-/** Тип содержимого по хвосту имени вложения — обратное `extForMime`. */
+/** The content type by the tail of an attachment name: the inverse of `extForMime`. */
 const MIME_BY_EXT: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -50,15 +52,16 @@ function mimeOfName(name: string): string {
 }
 
 /**
- * Положить картинки этой ячейки на полку, оставив в тексте ссылки.
+ * Put this cell's images on the shelf, leaving links in the text.
  *
- * Обе формы разом, потому что в одном файле встречаются обе: вложение nbformat
- * (`attachments` + `![](attachment:имя.png)`) и картинка прямо в тексте
- * (`![](data:image/png;base64,…)`). На полке они становятся одним и тем же:
- * байты по своему хэшу.
+ * Both forms at once, because both occur in the same file: an nbformat
+ * attachment (`attachments` + `![](attachment:name.png)`) and an image right
+ * in the text (`![](data:image/png;base64,…)`). On the shelf they become the
+ * same thing: bytes by their hash.
  *
- * Возвращает ячейку без `attachments`: байты уже на полке, и второй их копии в
- * документе быть не должно — ради этого всё и затевалось.
+ * Returns the cell without `attachments`: the bytes are already on the shelf,
+ * and there must be no second copy of them in the document; that is what all
+ * this was started for.
  */
 export function shelveCellImages(sessionId: string, cell: FlatCell): FlatCell {
   if (cell.type !== 'markdown') return cell
@@ -70,7 +73,7 @@ export function shelveCellImages(sessionId: string, cell: FlatCell): FlatCell {
   return out
 }
 
-/** Вложения nbformat: байты — на полку, ссылка — на её имя. */
+/** nbformat attachments: the bytes go on the shelf, the link to their name there. */
 function shelveAttachments(
   sessionId: string,
   source: string,
@@ -79,7 +82,7 @@ function shelveAttachments(
   if (!attachments) return source
   const edits: TextEdit[] = []
   for (const ref of findAttachmentRefs(source)) {
-    // Уже наше имя: файл пришёл из нашей же выгрузки, и байты на полке лежат.
+    // Already our name: the file came from our own export, and the bytes are on the shelf.
     if (shaOfAttachment(ref.name)) continue
     const bundle = attachments[ref.name]
     if (!bundle) continue
@@ -89,8 +92,9 @@ function shelveAttachments(
     const body = Buffer.from(base64, 'base64')
     if (body.length === 0) continue
     const stored = putBlob(sessionId, body)
-    // Не легло на диск — пусть ссылка останется как была: битая картинка лучше
-    // потерянного текста вокруг неё, а вложение мы всё равно донесём файлом.
+    // It did not make it to disk, so let the link stay as it was: a broken
+    // image is better than losing the text around it, and we deliver the
+    // attachment with the file anyway.
     if (!stored) continue
     edits.push({
       start: ref.start,
@@ -101,7 +105,7 @@ function shelveAttachments(
   return applyEdits(source, edits)
 }
 
-/** Картинка, лежащая в тексте содержимым, — на полку. */
+/** An image lying in the text as content goes on the shelf. */
 function shelveInline(sessionId: string, source: string): string {
   const edits: TextEdit[] = []
   for (const image of findInlineImages(source, INLINE_IMAGE_FROM_CHARS)) {
@@ -119,13 +123,15 @@ function shelveInline(sessionId: string, source: string): string {
 }
 
 /**
- * Вернуть картинки в ячейку — вложениями, как их держит nbformat.
+ * Put the images back into the cell, as attachments, the way nbformat keeps
+ * them.
  *
- * Это ровно то, что делает файл переносимым: ссылку `attachment:<sha>.png`
- * Jupyter понимает сам, если рядом лежит вложение с тем же именем. Ссылка, для
- * которой на полке ничего нет (картинку положила другая комната, из которой
- * тетрадь принесли файлом), остаётся в тексте как есть: её видно, и это
- * честнее, чем стереть её молча.
+ * This is exactly what makes the file portable: Jupyter understands an
+ * `attachment:<sha>.png` link by itself if an attachment with the same name
+ * lies next to it. A link with nothing on the shelf for it (the image was put
+ * there by another room, from which the notebook was brought as a file) stays
+ * in the text as is: it is visible, and that is more honest than erasing it
+ * silently.
  */
 export function inlineCellImages(sessionId: string, cell: FlatCell): FlatCell {
   if (cell.type !== 'markdown') return cell
@@ -144,22 +150,24 @@ export function inlineCellImages(sessionId: string, cell: FlatCell): FlatCell {
   return { ...cell, attachments }
 }
 
-/* ------------------------------------------------------- разгрузка комнаты */
+/* -------------------------------------------------------- unloading a room */
 
 /**
- * Разгрузить документ комнаты один раз при открытии.
+ * Unload the room's document once, on open.
  *
- * Импорт кладёт картинки на полку с этого дня, но комнаты, заведённые раньше,
- * носят их в себе и будут носить до конца семестра: документ живёт в базе, а не
- * в файле. Поэтому — при подъёме комнаты, до начала истории (collab/index.ts),
- * чтобы правка легла в базовую точку, а не показалась комнате чужой версией.
+ * The import puts images on the shelf from now on, but rooms created earlier
+ * carry them inside and will carry them until the end of the semester: the
+ * document lives in the database, not in a file. Hence at room start, before
+ * the history begins (collab/index.ts), so that the edit lands in the base
+ * point instead of showing up to the room as someone else's version.
  *
- * Идемпотентно по построению: после первого прохода в тексте стоят ссылки, и
- * `findInlineImages` не находит ничего — второй проход не пишет в документ
- * вовсе, а значит не будит ни снимок, ни проекцию тетради на диск.
+ * Idempotent by construction: after the first pass the text holds links, and
+ * `findInlineImages` finds nothing; a second pass does not write to the
+ * document at all, and so wakes neither the snapshot nor the notebook's
+ * projection to disk.
  *
- * Молча, если менять нечего, и один раз в журнал, если было что: строка на
- * каждое открытие комнаты — это шум, по которому перестают читать журнал.
+ * Silent if there is nothing to change, and once to the log if there was: a
+ * line on every room open is noise that makes people stop reading the log.
  */
 export function shelveRoomImages(sessionId: string, doc: Y.Doc): number {
   let moved = 0
@@ -174,8 +182,8 @@ export function shelveRoomImages(sessionId: string, doc: Y.Doc): number {
         const images = findInlineImages(source, INLINE_IMAGE_FROM_CHARS)
         if (images.length === 0) return
         /*
-         * С конца: правка меняет длину текста, и границы, посчитанные по
-         * исходнику, поехали бы после первой же замены.
+         * From the end: an edit changes the text's length, and the bounds
+         * computed on the source would shift after the very first replacement.
          */
         for (const image of [...images].reverse()) {
           const body = Buffer.from(image.base64, 'base64')
@@ -192,14 +200,14 @@ export function shelveRoomImages(sessionId: string, doc: Y.Doc): number {
   }, 'server')
   if (moved > 0 && seldom(`shelve-images-${sessionId}`, 60 * 60_000)) {
     console.log(
-      `[blobs ${sessionId}] картинок из текста ячеек вынесено на полку: ${moved}, ` +
-        `документ легче на ${Math.round(bytes / 1024)} КБ`,
+      `[blobs ${sessionId}] images moved from cell text to the shelf: ${moved}, ` +
+        `document lighter by ${Math.round(bytes / 1024)} KB`,
     )
   }
   return moved
 }
 
-/** Ячейки тетради со ссылками, развёрнутыми во вложения, — для выгрузки файлом. */
+/** Notebook cells with links unfolded into attachments, for export as a file. */
 export function withInlinedImages(sessionId: string, cells: readonly FlatCell[]): FlatCell[] {
   return cells.map((cell) => inlineCellImages(sessionId, cell))
 }

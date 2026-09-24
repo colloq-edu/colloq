@@ -1,14 +1,17 @@
 /**
- * Консилиум на сервере: замок в третьем положении, попытки, стопка, лист.
+ * The council on the server: the lock's third position, attempts, the stack,
+ * the sheet.
  *
- * Три правила дизайна, каждое — утверждением: у каждого свой лист (чужую
- * попытку студент не видит никогда, стопку — только преподаватель); запускает
- * тот, кто ведёт (студенту — только по ручке, с номером в очереди); класс видит
- * то, что показал преподаватель (текст ложится в общую ячейку его рукой).
+ * Three design rules, each one as an assertion: everyone has their own sheet
+ * (a student never sees someone else's attempt, only the teacher sees the
+ * stack); whoever leads runs (a student only via the control, with a queue
+ * number); the class sees what the teacher showed (the text lands in the
+ * shared cell by the teacher's hand).
  *
- * Ни сети, ни ядра: сокеты поддельные, комната настоящая, диспетчер тот же, что
- * слушает провод. Попытки идут через настоящую SQLite во временной папке — на
- * этом держится проверка «переживают перезапуск».
+ * No network, no kernel: the sockets are fake, the room is real, the
+ * dispatcher is the same one that listens to the wire. Attempts go through a
+ * real SQLite in a temporary folder — the "survive a restart" check rests on
+ * that.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -52,15 +55,15 @@ interface Fake {
   heard: ControlServerMessage[]
 }
 
-/** Ровно то, что читают `send` и `handleControlSocket`: состояние, приём, подписки. */
+/** Exactly what `send` and `handleControlSocket` read: the state, receiving, subscriptions. */
 function socket(): Fake {
   const heard: ControlServerMessage[] = []
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
-      // (рассылка, дерево, чернила), уходят уже закодированными — см.
-      // control.ts · sendFrame. Настоящий сокет тут разницы не делает.
+      // As a string or as bytes: frames the server builds once per room
+      // (broadcast, tree, ink) go out already encoded — see control.ts ·
+      // sendFrame. A real socket makes no difference here.
       if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
         heard.push(JSON.parse(String(frame)) as ControlServerMessage)
       }
@@ -105,7 +108,7 @@ function join(
   return { payload, sock }
 }
 
-/** Лекционная комната с одной ячейкой и тремя людьми, все на проводе. */
+/** A lecture room with one cell and three people, all on the wire. */
 function room(): Room {
   const id = `council-${++rooms}`
   createSession(id, 'Консилиум', null)
@@ -116,16 +119,17 @@ function room(): Room {
   return {
     id,
     cell: cellId(made),
-    // Идентификаторы — с именем комнаты: строка участника одна на инстанс
-    // (participants.id — ключ), и «Петя» из соседнего теста иначе остался бы
-    // прописан в прошлой комнате, а здесь читался бы «Someone».
+    // The ids include the room name: a participant row is one per instance
+    // (participants.id is the key), and "Petya" from a neighbouring test
+    // would otherwise stay registered in the previous room and read here as
+    // "Someone".
     teacher: join(id, `${id}_teacher`, 'Ада', 'host'),
     petya: join(id, `${id}_petya`, 'Петя', 'participant'),
     masha: join(id, `${id}_masha`, 'Маша', 'participant'),
   }
 }
 
-/** Что сервер ответил ошибкой на это сообщение; `null` — не ответил ничего. */
+/** What the server answered to this message with an error; `null` means it answered nothing. */
 function say(at: Room, who: Person, message: ControlClientMessage): string | null {
   const before = who.sock.heard.length
   dispatch(who.sock.ws, at.id, who.payload, message)
@@ -161,8 +165,9 @@ function lastCount(who: Person, cell: string): { submitted: number; total: numbe
 }
 
 /**
- * Последний кадр «что на экране» этому человеку. `undefined` — кадра не было
- * вовсе (это не то же самое, что `null`: `null` — «убрали с экрана»).
+ * The last "what is on screen" frame to this person. `undefined` means there
+ * was no frame at all (which is not the same as `null`: `null` means
+ * "cleared from the screen").
  */
 function lastShown(who: Person, cell: string): CouncilShown | null | undefined {
   for (let i = who.sock.heard.length - 1; i >= 0; i--) {
@@ -174,13 +179,14 @@ function lastShown(who: Person, cell: string): CouncilShown | null | undefined {
 
 function lockOf(at: Room): string {
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
-  return found ? cellLock(found.cell) : 'нет такой'
+  return found ? cellLock(found.cell) : 'no such cell'
 }
 
 /**
- * Стопка после всех отложенных кадров, как её видит пульт: последняя полная и
- * дельты поверх неё (тем же слиянием, что у клиента — council.svelte.ts ·
- * withPatch, здесь руками: компилятора Svelte в тесте нет). Тест не ждёт окна склейки.
+ * The stack after all deferred frames, as the console sees it: the last full
+ * one and the deltas on top of it (with the same merge as the client's —
+ * council.svelte.ts · withPatch, done by hand here: there is no Svelte
+ * compiler in the test). The test does not wait for the batching window.
  */
 function board(at: Room): CouncilBoard {
   flushCouncilBoards(at.id)
@@ -193,7 +199,7 @@ function board(at: Room): CouncilBoard {
       break
     }
   }
-  assert.ok(start >= 0, 'хосту не приехала стопка')
+  assert.ok(start >= 0, 'the host did not get the stack')
   const full = heard[start] as Extract<ControlServerMessage, { t: 'council:board' }>
   let got = full.board
   for (const m of heard.slice(start + 1)) {
@@ -204,7 +210,8 @@ function board(at: Room): CouncilBoard {
       .map((a) => fresh.get(a.participantId) ?? a)
     for (const a of m.attempts)
       if (!attempts.some((x) => x.participantId === a.participantId)) attempts.push(a)
-    // Группы дельта не везёт — их пульт считает сам по полному списку.
+    // A delta carries no groups — the console computes them itself from the
+    // full list.
     got = {
       ...got,
       attempts,
@@ -217,7 +224,7 @@ function board(at: Room): CouncilBoard {
   return got
 }
 
-/** Сколько кадров стопки каждого вида уехало хосту по ячейке. */
+/** How many stack frames of each kind went to the host for the cell. */
 function frames(at: Room): { full: number; patch: number } {
   flushCouncilBoards(at.id)
   let full = 0
@@ -239,38 +246,40 @@ function council(
   )
 }
 
-/* ---------------------------------------------------------------- замок */
+/* ----------------------------------------------------------------- lock */
 
-test('в консилиум ячейку ставит преподаватель — и комната узнаёт об этом проводом', () => {
+test('the teacher puts a cell into council — and the room learns about it over the wire', () => {
   const at = room()
   assert.match(
     say(at, at.petya, { t: 'cell:lock', cellId: at.cell, state: 'council' }) ?? '',
     /преподавател/i,
   )
-  assert.equal(lockOf(at), 'closed', 'участник открыл консилиум сам себе')
+  assert.equal(lockOf(at), 'closed', 'a participant opened the council for themselves')
 
   council(at)
   assert.equal(lockOf(at), 'council')
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
-  // Умолчания целиком, а не перечислением: ручка, добавленная завтра, должна
-  // приезжать на новую ячейку со своим умолчанием, а не ронять эту строку.
+  // The defaults as a whole, not by listing: a control added tomorrow must
+  // arrive on a new cell with its own default instead of breaking this line.
   assert.deepEqual(councilSettingsOf(found!.cell), DEFAULT_COUNCIL)
 
-  // Хосту — стопка, каждому — свой пустой лист, комнате — счётчик.
+  // The host gets the stack, everyone their own empty sheet, the room a
+  // counter.
   assert.equal(board(at).lock, 'council')
   assert.deepEqual(lastMine(at.petya, at.cell)?.closed, false)
   assert.deepEqual(lastMine(at.masha, at.cell)?.closed, false)
   assert.deepEqual(lastCount(at.masha, at.cell), { submitted: 0, total: 0 })
 
-  // `cell:open` остался частным случаем на два положения — и читается тем же кодом.
+  // `cell:open` remained a special case for two positions — and is read by
+  // the same code.
   assert.equal(say(at, at.teacher, { t: 'cell:open', cellId: at.cell, open: true }), null)
   assert.equal(lockOf(at), 'open')
   closeControlRoom(at.id)
 })
 
-/* ------------------------------------------------------------ свой лист */
+/* ------------------------------------------------------ one's own sheet */
 
-test('снимок уезжает хосту стопкой и автору листом — и никому больше', () => {
+test('a snapshot goes to the host as the stack and to the author as the sheet — and to nobody else', () => {
   const at = room()
   council(at)
   assert.equal(
@@ -283,33 +292,34 @@ test('снимок уезжает хосту стопкой и автору ли
   assert.equal(stack.counts.writing, 1)
   assert.equal(stack.attempts[0].text, 'x = 1  # ответ')
   assert.equal(stack.attempts[0].name, 'Петя')
-  assert.equal(stack.attempts[0].groupKey, 'x=1', 'ключ группы ставит сервер нормализацией')
-  assert.equal(stack.groups.length, 0, 'пишущий попал в группы — там только сданные')
+  assert.equal(stack.attempts[0].groupKey, 'x=1', 'the server sets the group key by normalization')
+  assert.equal(stack.groups.length, 0, 'someone still writing got into the groups — only submitted ones go there')
 
   assert.equal(lastMine(at.petya, at.cell)?.text, 'x = 1  # ответ')
   assert.deepEqual(lastCount(at.masha, at.cell), { submitted: 0, total: 1 })
 
-  // Маша — участник: ни стопки, ни чужого листа. Никогда.
+  // Masha is a participant: neither the stack nor someone else's sheet.
+  // Never.
   assert.equal(
     at.masha.sock.heard.some((m) => m.t === 'council:board'),
     false,
-    'стопка уехала участнику',
+    'the stack went to a participant',
   )
   assert.equal(
     at.masha.sock.heard.some((m) => m.t === 'council:mine' && m.state.text.length > 0),
     false,
-    'чужая попытка уехала участнику',
+    'someone else\'s attempt went to a participant',
   )
   closeControlRoom(at.id)
 })
 
-test('сдать и изменить: группы считаются только по сданным', () => {
+test('submit and change: groups are counted only by submitted ones', () => {
   const at = room()
   council(at)
   assert.match(
     say(at, at.petya, { t: 'council:submit', cellId: at.cell }) ?? '',
     /Попытка пуста/i,
-    'сдали пустое место',
+    'an empty space was submitted',
   )
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
   say(at, at.masha, { t: 'council:draft', cellId: at.cell, text: 'x=1 # тоже' })
@@ -319,13 +329,14 @@ test('сдать и изменить: группы считаются тольк
   assert.equal(typeof lastMine(at.petya, at.cell)?.submittedAt, 'number')
   const stack = board(at)
   assert.equal(stack.counts.submitted, 2)
-  assert.equal(stack.groups.length, 1, 'одинаковые после нормализации — одна группа')
+  assert.equal(stack.groups.length, 1, 'identical after normalization — one group')
   assert.equal(stack.groups[0].count, 2)
-  // Сдали в одну миллисекунду — «самый ранний» решает разрыв по времени
-  // набора и id; важно, что он один из двух и один и тот же от кадра к кадру.
+  // Submitted in the same millisecond — "the earliest" is decided by the
+  // typing time and id; what matters is that it is one of the two and the
+  // same one from frame to frame.
   assert.ok(
     stack.groups[0].members.includes(stack.groups[0].representative),
-    'представитель — из группы',
+    'the representative is from the group',
   )
   assert.equal(stack.groups[0].representative, board(at).groups[0].representative)
   assert.deepEqual(lastCount(at.masha, at.cell), { submitted: 2, total: 2 })
@@ -336,9 +347,9 @@ test('сдать и изменить: группы считаются тольк
   closeControlRoom(at.id)
 })
 
-/* -------------------------------------------------------- действия ведущего */
+/* ------------------------------------------------------- the lead's actions */
 
-test('«показать классу» не трогает текст ячейки, а едет подписанной плашкой всем', () => {
+test('"show to the class" does not touch the cell text but goes to everyone as a signed badge', () => {
   const at = room()
   const task = '# задание: посчитайте x'
   council(at)
@@ -362,32 +373,34 @@ test('«показать классу» не трогает текст ячей�
     null,
   )
 
-  // Главное: заготовка на месте. Прежде здесь лежало 'x = 42' — правка от
-  // имени преподавателя, которой он не делал.
+  // The main thing: the stub is in place. 'x = 42' used to lie here — an edit
+  // in the teacher's name that they never made.
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
-  assert.equal(cellSource(found!.cell).toString(), task, 'показ переписал общую ячейку')
+  assert.equal(cellSource(found!.cell).toString(), task, 'showing rewrote the shared cell')
 
-  // Плашка уехала ВСЕЙ комнате, а не одному пульту: подписанной и с кодом.
+  // The badge went to the WHOLE room, not to a single console: signed and
+  // with the code.
   const seen = lastShown(at.masha, at.cell)
   assert.equal(seen?.participantId, at.petya.payload.participantId)
   assert.equal(seen?.name, 'Петя')
   assert.equal(seen?.text, 'x = 42')
   assert.equal(seen?.shownBy, 'Ада')
-  assert.ok((seen?.shownAt ?? 0) > 0, 'у показа нет времени')
+  assert.ok((seen?.shownAt ?? 0) > 0, 'the show has no time')
   assert.equal(seen?.variant, 1)
   assert.equal(seen?.alsoWrote, 0)
-  assert.equal(seen?.run, null, 'преподаватель ничего не запускал')
-  // И автору — тем же кадром, и своим листом: у себя он видит «ваш вариант».
+  assert.equal(seen?.run, null, 'the teacher did not run anything')
+  // And to the author — with the same frame, and with their sheet: they see
+  // "your variant".
   assert.equal(lastShown(at.petya, at.cell)?.participantId, at.petya.payload.participantId)
   assert.equal(lastMine(at.petya, at.cell)?.shown, true)
   assert.equal(board(at).attempts[0].shown, true)
 
-  // Общий текст в консилиуме по-прежнему закрыт: ячейка осталась ячейкой.
+  // The shared text in the council is still locked: the cell stayed a cell.
   assert.equal(lockOf(at), 'council')
   closeControlRoom(at.id)
 })
 
-test('«убрать с экрана» обнуляет плашку у всех, и текст ячейки снова ни при чём', () => {
+test('"clear the screen" resets the badge for everyone, and the cell text again has nothing to do with it', () => {
   const at = room()
   const task = '# задание: посчитайте x'
   council(at)
@@ -399,14 +412,14 @@ test('«убрать с экрана» обнуляет плашку у всех
     participantId: at.petya.payload.participantId,
   })
 
-  // Убрать вправе только ведущий — тем же правилом, что и показать.
+  // Only the lead may clear — by the same rule as showing.
   assert.match(
     say(at, at.masha, { t: 'council:show:clear', cellId: at.cell }) ?? '',
     /преподавател/i,
   )
   assert.equal(say(at, at.teacher, { t: 'council:show:clear', cellId: at.cell }), null)
 
-  assert.equal(lastShown(at.masha, at.cell), null, 'плашка у соседа осталась')
+  assert.equal(lastShown(at.masha, at.cell), null, 'the neighbour still has the badge')
   assert.equal(lastShown(at.petya, at.cell), null)
   assert.equal(lastMine(at.petya, at.cell)?.shown, false)
   assert.equal(board(at).attempts[0].shown, false)
@@ -415,7 +428,7 @@ test('«убрать с экрана» обнуляет плашку у всех
   closeControlRoom(at.id)
 })
 
-test('показ другого сменяет плашку, а не кладёт вторую', () => {
+test('showing someone else replaces the badge instead of adding a second one', () => {
   const at = room()
   council(at)
   const petya = at.petya.payload.participantId
@@ -429,17 +442,17 @@ test('показ другого сменяет плашку, а не кладё�
   say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: masha })
 
   assert.equal(lastShown(at.petya, at.cell)?.participantId, masha)
-  assert.equal(lastMine(at.petya, at.cell)?.shown, false, 'с прежнего отметка не снялась')
+  assert.equal(lastMine(at.petya, at.cell)?.shown, false, 'the mark was not removed from the previous one')
   assert.equal(lastMine(at.masha, at.cell)?.shown, true)
   assert.equal(
     attemptsOf(at.id, at.cell).filter((one) => one.shown).length,
     1,
-    'на экране двое сразу',
+    'two on the screen at once',
   )
   closeControlRoom(at.id)
 })
 
-test('автор переписал показанный текст — плашка уходит у всей комнаты', () => {
+test('the author rewrote the shown text — the badge goes away for the whole room', () => {
   const at = room()
   council(at)
   const petya = at.petya.payload.participantId
@@ -449,20 +462,21 @@ test('автор переписал показанный текст — плаш
   assert.equal(lastShown(at.masha, at.cell)?.text, 'x = 42')
 
   /*
-   * «На экране» приклеено к тексту, а не к человеку (saveDraft), — но знал об
-   * этом только сам автор: у соседа под ячейкой продолжал висеть код, которого
-   * больше нет ни у кого.
+   * "On screen" is glued to the text, not to the person (saveDraft) — but
+   * only the author knew about it: under the neighbour's cell hung code that
+   * no longer exists for anyone.
    */
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 43' })
   assert.equal(lastShown(at.masha, at.cell), null)
   closeControlRoom(at.id)
 })
 
-test('имена на проекторе выключены: «Вариант N» и ни одного имени в кадре', () => {
+test('names on the projector off: "Variant N" and not a single name in the frame', () => {
   const at = room()
   council(at, { namesOnProjector: false })
   const petya = at.petya.payload.participantId
-  // Маша сдала первой — значит, вариант Пети второй: номер по времени сдачи.
+  // Masha submitted first — so Petya's variant is the second: the number
+  // follows submission time.
   say(at, at.masha, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
   say(at, at.masha, { t: 'council:submit', cellId: at.cell })
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
@@ -470,19 +484,20 @@ test('имена на проекторе выключены: «Вариант N�
   say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
 
   const seen = lastShown(at.masha, at.cell)
-  assert.equal(seen?.name, null, 'имя доехало до чужого браузера')
+  assert.equal(seen?.name, null, 'the name reached someone else\'s browser')
   assert.equal(seen?.color, null)
   assert.equal(seen?.avatar, null)
   assert.equal(seen?.variant, 2)
   assert.equal(seen?.participantId, petya)
-  // И ни в одном кадре этому человеку имени автора нет вовсе — ни в плашке,
-  // ни где-либо ещё: стопку он не получает.
+  // And not a single frame to this person has the author's name at all —
+  // neither in the badge nor anywhere else: they do not get the stack.
   assert.ok(
     !JSON.stringify(at.masha.sock.heard.filter((m) => m.t === 'council:shown')).includes('Петя'),
-    'имя автора уехало студенту',
+    'the author\'s name went to a student',
   )
 
-  // Ручку щёлкнули обратно — подпись приезжает именем, тем же кадром.
+  // The control was clicked back — the label arrives as a name, with the same
+  // frame.
   say(at, at.teacher, {
     t: 'cell:lock',
     cellId: at.cell,
@@ -490,11 +505,11 @@ test('имена на проекторе выключены: «Вариант N�
     settings: { namesOnProjector: true },
   })
   assert.equal(lastShown(at.masha, at.cell)?.name, 'Петя')
-  assert.equal(lastShown(at.masha, at.cell)?.variant, 2, 'номер переехал от чужого нажатия')
+  assert.equal(lastShown(at.masha, at.cell)?.variant, 2, 'the number moved because of someone else\'s press')
   closeControlRoom(at.id)
 })
 
-test('«так же написали ещё K» считается по сданным и без автора', () => {
+test('"K more wrote the same" is counted among submitted ones and without the author', () => {
   const at = room()
   council(at)
   const petya = at.petya.payload.participantId
@@ -502,7 +517,7 @@ test('«так же написали ещё K» считается по сдан
   say(at, at.petya, { t: 'council:submit', cellId: at.cell })
   say(at, at.masha, { t: 'council:draft', cellId: at.cell, text: 'x = 1  # то же самое' })
   say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
-  assert.equal(lastShown(at.masha, at.cell)?.alsoWrote, 0, 'несданное посчитали')
+  assert.equal(lastShown(at.masha, at.cell)?.alsoWrote, 0, 'an unsubmitted one was counted')
 
   say(at, at.masha, { t: 'council:submit', cellId: at.cell })
   say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
@@ -510,7 +525,7 @@ test('«так же написали ещё K» считается по сдан
   closeControlRoom(at.id)
 })
 
-test('номер показанного решения считает сданные раньше любых черновиков', () => {
+test('the number of the shown solution counts submitted ones before any drafts', () => {
   const at = room()
   council(at)
   const petya = at.petya.payload.participantId
@@ -522,7 +537,7 @@ test('номер показанного решения считает сданн
   closeControlRoom(at.id)
 })
 
-test('показ и снятие ложатся в события занятия — с автором в subjectId', () => {
+test('showing and clearing land in the class events — with the author in subjectId', () => {
   const at = room()
   council(at)
   const petya = at.petya.payload.participantId
@@ -541,7 +556,7 @@ test('показ и снятие ложатся в события занятия
   closeControlRoom(at.id)
 })
 
-test('«на экране» и «верно» приклеены к тексту: сменился текст — сняты, ответ остался', () => {
+test('"on screen" and "correct" are glued to the text: the text changed — they are removed, the reply stayed', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
@@ -558,33 +573,34 @@ test('«на экране» и «верно» приклеены к тексту
   assert.equal(lastMine(at.petya, at.cell)?.shown, true)
   assert.equal(lastMine(at.petya, at.cell)?.correct, true)
 
-  // «Изменить» и эхо того же текста ничего не снимают: текст тот же.
+  // "Change" and an echo of the same text remove nothing: the text is the
+  // same.
   say(at, at.petya, { t: 'council:withdraw', cellId: at.cell })
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
   assert.equal(lastMine(at.petya, at.cell)?.shown, true)
   assert.equal(lastMine(at.petya, at.cell)?.correct, true)
 
-  // Другой текст — в общей ячейке его нет и никто его не проверял.
+  // A different text — it is not in the shared cell and nobody checked it.
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 43' })
   const mine = lastMine(at.petya, at.cell)
-  assert.equal(mine?.shown, false, '«На экране» над текстом, которого на экране нет')
-  assert.equal(mine?.correct, null, '«верно» над непроверенным кодом')
-  assert.equal(mine?.reply?.text, 'Хорошо', 'ответ — письмо человеку, он остаётся')
+  assert.equal(mine?.shown, false, '"On screen" over a text that is not on the screen')
+  assert.equal(mine?.correct, null, '"correct" over unchecked code')
+  assert.equal(mine?.reply?.text, 'Хорошо', 'the reply is a letter to a person, it stays')
   const card = board(at).attempts.find((a) => a.participantId === petya)
   assert.equal(card?.shown, false)
   assert.equal(card?.status, 'unrun')
   closeControlRoom(at.id)
 })
 
-test('состояние группы — по всем членам: отметка на карточке не представителя красит группу', () => {
+test('the group state goes by all members: a mark on a non-representative\'s card colours the group', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
   say(at, at.masha, { t: 'council:draft', cellId: at.cell, text: 'x = 1  # тоже' })
   say(at, at.petya, { t: 'council:submit', cellId: at.cell })
   say(at, at.masha, { t: 'council:submit', cellId: at.cell })
-  // Сдали в одну миллисекунду — кто представитель, решает разрыв по id; отметка
-  // ставится тому, кто им НЕ стал.
+  // Submitted in the same millisecond — who the representative is gets
+  // decided by id; the mark is given to the one who did NOT become it.
   const [before] = board(at).groups
   const other = before.members.find((id) => id !== before.representative)!
   say(at, at.teacher, { t: 'council:mark', cellId: at.cell, participantId: other, correct: true })
@@ -596,7 +612,7 @@ test('состояние группы — по всем членам: отмет
   closeControlRoom(at.id)
 })
 
-test('ответ доходит автору; рассылки группе больше нет', () => {
+test('the reply reaches the author; there is no broadcast to a group any more', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
@@ -615,16 +631,17 @@ test('ответ доходит автору; рассылки группе бо
   )
   assert.equal(lastMine(at.petya, at.cell)?.reply?.text, 'Проверьте знак')
   assert.equal(lastMine(at.petya, at.cell)?.reply?.by, 'Ада')
-  assert.equal(lastMine(at.masha, at.cell)?.reply, null, 'ответ одному уехал соседу')
+  assert.equal(lastMine(at.masha, at.cell)?.reply, null, 'a reply to one person went to the neighbour')
 
   /*
-   * Письмо «всей группе» снято вместе с самой группировкой.
+   * The letter "to the whole group" was removed together with grouping
+   * itself.
    *
-   * Адресовалось оно ключу группы — тексту после нормализации, — и «посмотрите
-   * на накопитель» приходило пятерым, из которых четверо накопителя не писали:
-   * совпал только код без пробелов и комментариев. Старый клиент, приславший
-   * `{groupKey}`, теперь получает молчание: лучше не отправить, чем отправить
-   * не тем.
+   * It was addressed to the group key — the text after normalization — and
+   * "look at the accumulator" came to five people, four of whom had not
+   * written an accumulator: only the code without spaces and comments
+   * matched. An old client that sends `{groupKey}` now gets silence: better
+   * not to send than to send to the wrong people.
    */
   assert.equal(
     say(at, at.teacher, {
@@ -635,13 +652,14 @@ test('ответ доходит автору; рассылки группе бо
     }),
     null,
   )
-  assert.equal(lastMine(at.masha, at.cell)?.reply, null, 'рассылка группе всё ещё доходит')
+  assert.equal(lastMine(at.masha, at.cell)?.reply, null, 'the group broadcast still gets through')
   assert.deepEqual(
     lastMine(at.petya, at.cell)?.replies?.map((one) => [one.to, one.text]),
     [['person', 'Проверьте знак']],
   )
 
-  // Личное письмо переписывает личное — второго личного у попытки не бывает.
+  // A personal letter overwrites the personal one — an attempt never has a
+  // second personal one.
   assert.equal(
     say(at, at.teacher, {
       t: 'council:reply',
@@ -673,9 +691,9 @@ test('ответ доходит автору; рассылки группе бо
   closeControlRoom(at.id)
 })
 
-/* ---------------------------------------------------------------- запуск */
+/* ------------------------------------------------------------------- run */
 
-test('запуск: студенту закрыт по умолчанию, ручка открывает, очередь считает', () => {
+test('running: closed to students by default, the control opens it, the queue counts', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'print(1)' })
@@ -684,7 +702,7 @@ test('запуск: студенту закрыт по умолчанию, ру�
   assert.match(
     say(at, at.petya, { t: 'council:run', cellId: at.cell }) ?? '',
     /преподавател/i,
-    'студент запустил при выключенной ручке',
+    'a student ran with the control off',
   )
   assert.match(
     say(at, at.petya, {
@@ -693,7 +711,7 @@ test('запуск: студенту закрыт по умолчанию, ру�
       participantId: at.masha.payload.participantId,
     }) ?? '',
     /преподавател/i,
-    'студент запустил чужую попытку',
+    'a student ran someone else\'s attempt',
   )
 
   council(at, { studentRun: true })
@@ -702,21 +720,22 @@ test('запуск: студенту закрыт по умолчанию, ру�
   assert.equal(say(at, at.masha, { t: 'council:run', cellId: at.cell }), null)
   assert.equal(lastMine(at.petya, at.cell)?.run?.state, 'queued')
   assert.equal(lastMine(at.petya, at.cell)?.run?.by, 'author')
-  assert.equal(lastMine(at.masha, at.cell)?.queue, 2, 'второй в очереди не узнал своего номера')
+  assert.equal(lastMine(at.masha, at.cell)?.queue, 2, 'the second in the queue did not learn their number')
   assert.match(
     say(at, at.masha, { t: 'council:run', cellId: at.cell }) ?? '',
     /уже в очереди/i,
-    'одна попытка встала в очередь дважды',
+    'one attempt got into the queue twice',
   )
-  // Вывод — к попытке, не в общую ячейку: та в покое.
+  // The output goes to the attempt, not into the shared cell: that one is at
+  // rest.
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
   assert.equal(found!.cell.get('state') ?? 'idle', 'idle')
   closeControlRoom(at.id)
 })
 
-/* ------------------------------------------------------------ бан и база */
+/* ------------------------------------------------------ ban and database */
 
-test('бан вычищает попытки, и стопка без него уезжает хосту', () => {
+test('a ban wipes the attempts, and the stack without them goes to the host', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'спам' })
@@ -736,17 +755,17 @@ test('бан вычищает попытки, и стопка без него у
   closeControlRoom(at.id)
 })
 
-test('перемены едут дельтой, а не всей стопкой; бан — в removed', () => {
+test('changes travel as a delta, not as the whole stack; a ban goes into removed', () => {
   const at = room()
   council(at)
   const before = frames(at)
-  assert.equal(before.full, 1, 'замок — одна полная стопка')
+  assert.equal(before.full, 1, 'the lock is one full stack')
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
   say(at, at.masha, { t: 'council:draft', cellId: at.cell, text: 'x = 2' })
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 11' })
   const after = frames(at)
-  assert.equal(after.full, before.full, 'снимок увёз хосту всю стопку')
-  assert.ok(after.patch > 0, 'снимок не уехал дельтой')
+  assert.equal(after.full, before.full, 'the snapshot took the whole stack to the host')
+  assert.ok(after.patch > 0, 'the snapshot did not go as a delta')
   const last = [...at.teacher.sock.heard]
     .reverse()
     .find((m) => m.t === 'council:patch' && m.cellId === at.cell)
@@ -754,7 +773,7 @@ test('перемены едут дельтой, а не всей стопкой;
   assert.deepEqual(
     last.attempts.map((a) => a.participantId).sort(),
     [at.masha.payload.participantId, at.petya.payload.participantId].sort(),
-    'в дельте — только те, кого трогали за окно',
+    'the delta has only those touched within the window',
   )
   assert.equal(last.counts.attempts, 2)
   assert.deepEqual(
@@ -776,19 +795,19 @@ test('перемены едут дельтой, а не всей стопкой;
     ['x = 2'],
   )
 
-  // Смена ручки — общее: снова вся стопка.
+  // Changing a control is shared: the whole stack again.
   council(at, { studentRun: true })
   assert.equal(frames(at).full, before.full + 1)
   closeControlRoom(at.id)
 })
 
-test('оракул, «читавший» в момент перезапуска, после него не читает вечно', () => {
+test('an oracle that was "reading" at the moment of a restart does not read forever after it', () => {
   const at = room()
   /*
-   * Строка записана БЕЗ `answers` и `pending` — ровно так, как её пишет версия
-   * до ленты вопросов о классе. Семинар, начатый вчера, читается сегодняшним
-   * сервером, и падать на отсутствующем поле ему нельзя
-   * (ai/council.ts · normalizeOracle).
+   * The row is written WITHOUT `answers` and `pending` — exactly the way the
+   * version before the class questions feed writes it. A seminar started
+   * yesterday is read by today's server, and it must not crash on the
+   * missing field (ai/council.ts · normalizeOracle).
    */
   const reading = {
     state: 'reading',
@@ -802,13 +821,14 @@ test('оракул, «читавший» в момент перезапуска,
   setOracle(at.id, at.cell, reading)
   resetCouncilCache(at.id)
   const fresh = oracleOf(at.id, at.cell)
-  assert.equal(fresh?.state, 'idle', 'спиннер до конца пары, «Стоп» ничего не останавливает')
+  assert.equal(fresh?.state, 'idle', 'a spinner until the end of the class, "Stop" stops nothing')
   assert.match(fresh?.error ?? '', /перезапустился/)
   assert.deepEqual(fresh?.answers, [])
   assert.equal(fresh?.pending, null)
 
-  // Был разговор — он возвращается готовым, с причиной рядом: лента переживает
-  // перезапуск, потому что она про разговор, а не про идущий запрос.
+  // There was a conversation — it comes back ready, with the reason next to
+  // it: the feed survives a restart because it is about the conversation,
+  // not about a request in progress.
   setOracle(at.id, at.cell, {
     ...reading,
     answers: [
@@ -830,7 +850,7 @@ test('оракул, «читавший» в момент перезапуска,
   closeControlRoom(at.id)
 })
 
-test('попытки переживают перезапуск: кэш пересобирается из базы', () => {
+test('attempts survive a restart: the cache is rebuilt from the database', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 7' })
@@ -843,13 +863,14 @@ test('попытки переживают перезапуск: кэш пере�
   assert.equal(after[0].text, 'x = 7')
   assert.equal(after[0].submittedAt, before.submittedAt)
 
-  // И новому подключению хоста стопка приезжает пачкой — из базы.
+  // And to a new host connection the stack arrives in a batch — from the
+  // database.
   const late = join(at.id, at.teacher.payload.participantId, 'Ада', 'host')
   assert.equal(lastBoard(late, at.cell)?.attempts[0]?.text, 'x = 7')
   closeControlRoom(at.id)
 })
 
-test('письмо переживает перезапуск и едет в стопке', () => {
+test('a letter survives a restart and travels in the stack', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
@@ -861,16 +882,18 @@ test('письмо переживает перезапуск и едет в ст
     text: 'Проверьте знак',
   })
 
-  // Перезапуск без процесса: кэш забыт, правда — в базе. Письма там одно поле,
-  // и список должен уехать в него целиком, а не последним письмом: рассылки
-  // группе больше не бывает, но подсказка оракула ложится рядом с личным.
+  // A restart without a process: the cache is forgotten, the truth is in the
+  // database. The letters are one field there, and the list must go into it
+  // whole, not as the last letter: there is no group broadcast any more, but
+  // the oracle hint lands next to the personal one.
   resetCouncilCache(at.id)
   assert.deepEqual(
     attemptsOf(at.id, at.cell)[0]?.replies.map((one) => [one.to, one.text]),
     [['person', 'Проверьте знак']],
   )
 
-  // И на пульте у карточки — то же письмо (и склейка старому клиенту).
+  // And on the console, the card has the same letter (and the glued text for
+  // an old client).
   const late = join(at.id, at.teacher.payload.participantId, 'Ада', 'host')
   const card = lastBoard(late, at.cell)?.attempts[0]
   assert.deepEqual(card?.replies?.map((one) => one.text), ['Проверьте знак'])
@@ -878,9 +901,9 @@ test('письмо переживает перезапуск и едет в ст
   closeControlRoom(at.id)
 })
 
-/* --------------------------------------------------------- закрытие и звонок */
+/* ------------------------------------------------------ closing and the bell */
 
-test('закрытие консилиума: лист с closed, попытки остаются, снимок — отказ', () => {
+test('closing the council: a sheet with closed, the attempts stay, a snapshot is a refusal', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
@@ -888,8 +911,8 @@ test('закрытие консилиума: лист с closed, попытки 
   assert.equal(lockOf(at), 'closed')
 
   assert.equal(lastMine(at.petya, at.cell)?.closed, true)
-  assert.equal(lastMine(at.petya, at.cell)?.text, 'x = 1', 'текст пропал у автора')
-  assert.equal(attemptsOf(at.id, at.cell).length, 1, 'закрытие стёрло попытки')
+  assert.equal(lastMine(at.petya, at.cell)?.text, 'x = 1', 'the text disappeared for the author')
+  assert.equal(attemptsOf(at.id, at.cell).length, 1, 'closing wiped the attempts')
   assert.equal(board(at).lock, 'closed')
 
   assert.match(
@@ -899,7 +922,7 @@ test('закрытие консилиума: лист с closed, попытки 
   closeControlRoom(at.id)
 })
 
-test('после звонка попытки не принимаются, а замок не ставится', () => {
+test('after the bell attempts are not accepted and the lock is not set', () => {
   const at = room()
   council(at)
   setFinished(at.id, Date.now())
@@ -911,16 +934,17 @@ test('после звонка попытки не принимаются, а з�
     say(at, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'closed' }) ?? '',
     /Занятие закончено/,
   )
-  // А просмотр стопки у преподавателя остаётся — сданное разбирают после пары.
+  // But the teacher keeps viewing the stack — submissions are reviewed after
+  // class.
   assert.equal(board(at).lock, 'council')
   closeControlRoom(at.id)
 })
 
-/* -------------------------------------------------------------- задание */
+/* ----------------------------------------------------------------- task */
 
-test('опоздавший сеется заданием, а не переписанной заготовкой', () => {
+test('a latecomer is seeded with the task, not with a rewritten stub', () => {
   const at = room()
-  // Тот самый текст, что лежит в ячейке к моменту открытия консилиума.
+  // The very text that lies in the cell by the moment the council opens.
   const task = '# задание: посчитайте x'
   council(at)
 
@@ -932,35 +956,36 @@ test('опоздавший сеется заданием, а не перепис
     participantId: at.petya.payload.participantId,
   })
   /*
-   * Показ общий текст больше не трогает — а преподаватель его правит: дописал
-   * условие посреди консилиума, и с этой секунды «то, что лежит в ячейке
-   * сейчас» уже не то задание, с которым сидит класс.
+   * Showing no longer touches the shared text — but the teacher edits it:
+   * they added to the problem statement in the middle of the council, and
+   * from that second "what lies in the cell now" is no longer the task the
+   * class is sitting with.
    */
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
   assert.ok(found)
-  assert.equal(cellSource(found.cell).toString(), task, 'показ переписал общий текст')
+  assert.equal(cellSource(found.cell).toString(), task, 'showing rewrote the shared text')
   getSessionDoc(at.id).doc.transact(() => {
     const source = cellSource(found.cell)
     source.insert(source.length, '\n# и y тоже')
   })
 
   /*
-   * Клава заходит по ссылке уже после этого. Раньше её лист сеялся общим
-   * текстом — то есть тем, что в ячейке сейчас. Теперь в приветственной пачке
-   * едет задание, снятое на переходе замка.
+   * Klava comes in by the link after that. Her sheet used to be seeded with
+   * the shared text — that is, with what is in the cell now. Now the welcome
+   * batch carries the task captured on the lock switch.
    */
   const late = join(at.id, `${at.id}_late`, 'Клава', 'participant')
   const mine = lastMine(late, at.cell)
-  assert.equal(mine?.text, '', 'попытки у неё ещё нет')
+  assert.equal(mine?.text, '', 'she has no attempt yet')
   assert.equal(mine?.seed, task)
 
-  // И тому, у кого попытка уже есть: лист мог не завестись, а страницу
-  // перезагружают посреди пары.
+  // And to someone who already has an attempt: the sheet may have failed to
+  // set up, and pages get reloaded in the middle of a class.
   assert.equal(lastMine(at.petya, at.cell)?.seed, task)
   closeControlRoom(at.id)
 })
 
-test('вошедший посреди показа получает плашку в приветственной пачке', () => {
+test('someone who comes in in the middle of a show gets the badge in the welcome batch', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
@@ -971,16 +996,18 @@ test('вошедший посреди показа получает плашку
     participantId: at.petya.payload.participantId,
   })
 
-  // Кадр «что на экране» — не перемена, а состояние: тот, кто подключился
-  // после показа, иначе сидел бы без плашки до следующего нажатия.
+  // The "what is on screen" frame is not a change but a state: someone who
+  // connected after the show would otherwise sit without the badge until the
+  // next press.
   const late = join(at.id, `${at.id}_late2`, 'Клава', 'participant')
   assert.equal(lastShown(late, at.cell)?.text, 'x = 42')
 
   /*
-   * А там, где не показывают, приезжает `null` — и это не лишний кадр.
-   * Состояние комнаты живёт у клиента дольше сокета: вкладка, потерявшая связь
-   * до «убрать с экрана», вернулась бы с плашкой, которой у всех остальных уже
-   * нет, и стояла бы с ней до следующего нажатия преподавателя.
+   * And where nothing is shown, `null` arrives — and it is not a superfluous
+   * frame. The room state lives in the client longer than the socket: a tab
+   * that lost the connection before "clear the screen" would come back with
+   * a badge that everyone else no longer has, and would keep it until the
+   * teacher's next press.
    */
   say(at, at.teacher, { t: 'council:show:clear', cellId: at.cell })
   const later = join(at.id, `${at.id}_late3`, 'Нина', 'participant')
@@ -1087,16 +1114,17 @@ test('class finish and request revocation commit together when storage fails',()
 })
 
 /**
- * Лента оракула о классе — самая частная вещь в комнате.
+ * The oracle-on-the-class feed is the most private thing in the room.
  *
- * В ответе модели люди названы метками `S1…SN`, а рядом едет словарь «метка →
- * participantId»: это разметка чужих работ, собранная по всему классу, и место
- * ей ровно в одном кадре — том, что уходит пульту преподавателя. Кадр стопки
- * (`council:board`) и кадр оракула (`council:oracle`) оба идут `toTeachers`, но
- * одно неверное `broadcast` здесь превратило бы «кто застрял» в объявление на
- * весь зал, и ни один тип этого не заметил бы.
+ * In the model's answer people are named by labels `S1…SN`, and next to it
+ * travels a "label → participantId" dictionary: this is a tagging of other
+ * people's work collected across the whole class, and its place is in
+ * exactly one frame — the one that goes to the teacher's console. The stack
+ * frame (`council:board`) and the oracle frame (`council:oracle`) both go
+ * via `toTeachers`, but one wrong `broadcast` here would turn "who is stuck"
+ * into an announcement to the whole audience, and no type would notice.
  */
-test('лента оракула с метками людей едет только пультам — в классе её нет', async () => {
+test('the oracle feed with people\'s labels goes only to consoles — the class does not have it', async () => {
   const { askCouncilOracle } = await import('../server/src/ai/council.js')
   const at = room()
   council(at)
@@ -1124,9 +1152,10 @@ test('лента оракула с метками людей едет тольк
   })
 
   /*
-   * Настоящий путь: «читаю» объявляется сразу и несёт прежнюю ленту с собой.
-   * Шлюза в тестах нет, поэтому следом приезжает отказ — и он же показывает,
-   * что лента переживает ошибку (ai/council.ts · giveBack).
+   * The real path: "reading" is announced at once and carries the previous
+   * feed with it. There is no gateway in tests, so a refusal arrives next —
+   * and it also shows that the feed survives an error (ai/council.ts ·
+   * giveBack).
    */
   askCouncilOracle({
     sessionId: at.id,
@@ -1146,29 +1175,30 @@ test('лента оракула с метками людей едет тольк
   await new Promise((done) => setTimeout(done, 200))
 
   const toHost = at.teacher.sock.heard.filter((m) => m.t === 'council:oracle')
-  assert.ok(toHost.length >= 1, 'пульт не узнал, что оракул читает')
-  assert.ok(JSON.stringify(toHost).includes(secret), 'лента до пульта не доехала')
+  assert.ok(toHost.length >= 1, 'the console did not learn that the oracle is reading')
+  assert.ok(JSON.stringify(toHost).includes(secret), 'the feed did not reach the console')
   /*
-   * Отказ не стирает разговор и не съедает вопрос: прежний ход остаётся, а
-   * неудачный встаёт рядом с ним — со своим вопросом и причиной вместо
-   * ответа. Пока его не было, «Обновить», кончившееся ничем, уносило и
-   * вопрос: повторить было нечего.
+   * A refusal does not wipe the conversation and does not eat the question:
+   * the previous turn stays, and the failed one stands next to it — with its
+   * question and the reason instead of an answer. Before this, a "Refresh"
+   * that ended in nothing took the question away too: there was nothing to
+   * repeat.
    */
   const feed = oracleOf(at.id, at.cell)?.answers ?? []
-  assert.equal(feed.length, 2, 'отказ стёр разговор')
+  assert.equal(feed.length, 2, 'the refusal wiped the conversation')
   assert.equal(feed[0].text, secret)
   assert.equal(feed[1].question, 'Кто застрял?')
-  assert.ok((feed[1].failed ?? '').length > 0, 'у неудачного хода нет причины')
+  assert.ok((feed[1].failed ?? '').length > 0, 'the failed turn has no reason')
 
-  // Опоздавший пульт получает ленту приветственной пачкой, класс — никогда.
+  // A late console gets the feed in the welcome batch, the class — never.
   const late = join(at.id, at.teacher.payload.participantId, 'Ада', 'host')
   assert.equal(lastBoard(late, at.cell)?.oracle?.answers[0]?.text, secret)
   const student = join(at.id, `${at.id}_late`, 'Гриша', 'participant')
   for (const who of [at.petya, at.masha, student]) {
     const heard = JSON.stringify(who.sock.heard)
-    assert.ok(!heard.includes(secret), 'ответ оракула уехал в класс')
-    assert.ok(!heard.includes('"S1"'), 'словарь меток уехал в класс')
-    assert.ok(!heard.includes('Кто застрял?'), 'вопрос преподавателя уехал в класс')
+    assert.ok(!heard.includes(secret), 'the oracle\'s answer went to the class')
+    assert.ok(!heard.includes('"S1"'), 'the label dictionary went to the class')
+    assert.ok(!heard.includes('Кто застрял?'), 'the teacher\'s question went to the class')
   }
   closeControlRoom(at.id)
 })

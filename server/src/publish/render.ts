@@ -1,23 +1,23 @@
 import { tr, getLocale, formatNumber } from '@shared/i18n'
 /**
- * Опубликованный семинар как набор обычных файлов.
+ * A published seminar as a set of plain files.
  *
- * Страница, ради которой всё это делалось, должна работать в среду вечером,
- * когда ноутбук преподавателя закрыт. Пока её отдаёт тот же процесс, который
- * ведёт занятия, «всегда доступно» означает «пока он включён» — то есть не
- * означает ничего.
+ * The page all of this was done for has to work on Wednesday evening, when
+ * the teacher's laptop is closed. While it is served by the same process that
+ * runs the classes, "always available" means "while it is on", that is, it
+ * means nothing.
  *
- * Поэтому публикация выгружается в статику: каталог на курс, каталог на шаг,
- * в каждом обычный `index.html` со всем содержимым внутри. Ни запросов к API,
- * ни маршрутизации на стороне клиента, ни JavaScript вообще — такой файл
- * откроется и через десять лет, и из архива, и с флешки.
+ * So the publication is exported as static files: a directory per course, a
+ * directory per step, each with a plain `index.html` holding all the content.
+ * No API requests, no client-side routing, no JavaScript at all: such a file
+ * will open ten years from now, from an archive, from a USB stick.
  *
- * Цена честная и её надо назвать: это ВТОРОЙ отрисовщик тетради, рядом со
- * Svelte-компонентами комнаты. Разойтись они могут, и однажды разойдутся.
- * Держать один было бы можно только серверным рендерингом Svelte, а это
- * сборочная машинерия ради страницы, которая после выгрузки не меняется
- * никогда. Для замороженного предмета отдельный простой отрисовщик — верный
- * размен; за ним следит `tests/render.test.mts`.
+ * The price is fair and has to be named: this is a SECOND notebook renderer,
+ * next to the room's Svelte components. They can diverge, and one day they
+ * will. Keeping one would only be possible with Svelte server-side rendering,
+ * and that is build machinery for a page that never changes after export. For
+ * a frozen object a separate simple renderer is the right trade-off;
+ * `tests/render.test.mts` keeps an eye on it.
  */
 import { BLOB_PREFIX, ROBOTS_TAG, type PublicCell, type PublicCourseView } from '@shared/publish'
 import { PLOTLY_MIME } from '@shared/plotly'
@@ -26,19 +26,20 @@ import { safeStyle } from '@shared/note-css'
 import type { CellOutput } from '@shared/notebook'
 
 /**
- * Текст без управляющих последовательностей.
+ * Text without control sequences.
  *
- * Ядро печатает цвет как есть, и в комнате его красит ansi_up. Здесь скриптов
- * нет вовсе, так что выбор простой: либо снять escape-последовательности, либо
- * оставить студенту `[0;31m` посреди трейсбека — а трейсбеки IPython красит
- * всегда. Тот же набор, что в комнате (web/src/lib/ansi.ts).
+ * The kernel prints color as is, and in the room ansi_up paints it. There are
+ * no scripts here at all, so the choice is simple: either strip the escape
+ * sequences or leave the student `[0;31m` in the middle of a traceback, and
+ * IPython always colors tracebacks. The same set as in the room
+ * (web/src/lib/ansi.ts).
  */
-// eslint-disable-next-line no-control-regex -- escape-коды здесь и есть предмет
+// eslint-disable-next-line no-control-regex -- escape codes are the very subject here
 const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g
 
 const plain = (value: string): string => value.replace(ANSI, '')
 
-/** Экранирование текста, попадающего в HTML. */
+/** Escaping for text that goes into HTML. */
 function esc(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -48,39 +49,43 @@ function esc(value: string): string {
 }
 
 /**
- * Разметка ячейки-заметки.
+ * The markup of a note cell.
  *
- * Нарочно крошечное подмножество markdown: заголовки, огороженный код, списки
- * обоих видов, курсив, жирный, код в строке, ссылки, абзацы. Тащить сюда
- * полноценный markdown с санитайзером — это тот же вес, что и в приложении,
- * ради страницы без единого скрипта. Всё, что подмножество не знает, остаётся
- * текстом: непонятый синтаксис виден, но безвреден.
+ * A deliberately tiny subset of markdown: headings, fenced code, both kinds of
+ * lists, italics, bold, inline code, links, paragraphs. Pulling in full
+ * markdown with a sanitizer means the same weight as in the app, for a page
+ * without a single script. Whatever the subset does not know stays text:
+ * syntax that was not understood is visible but harmless.
  *
- * А вот HTML — не «то, чего подмножество не знает», и текстом оставаться не
- * должен. Вся заметка уходила в `esc()`, поэтому врезка `<div style="…">` из
- * учебного ноутбука доезжала до студента тегами напечатанными, тогда как в
- * комнате та же ячейка рисовалась. Теперь разметка идёт через тот же белый
- * список тегов, что и вывод ядра (`htmlSubset`), только шире — и через тот же
- * белый список свойств, что и в комнате (shared/note-css.ts).
+ * HTML, however, is not "what the subset does not know" and must not stay
+ * text. The whole note used to go into `esc()`, so a `<div style="…">` inset
+ * from a course notebook reached the student as printed tags, while in the
+ * room the same cell was rendered. Now the markup goes through the same tag
+ * whitelist as kernel output (`htmlSubset`), only wider, and through the same
+ * property whitelist as in the room (shared/note-css.ts).
  *
- * Огороженный код разбирается первым и не по желанию оформления: внутри
- * учебного примера строка `# считаем среднее` — комментарий, а не заголовок, а
- * `- x` — вычитание, а не пункт списка. Пока фенса здесь не было, самая частая
- * конструкция учебной тетради читалась на странице как каша: крупный заголовок
- * посреди примера и код, разорванный на абзацы по пустым строкам.
+ * Fenced code is parsed first, and not for looks: inside a course example the
+ * line `# compute the mean` is a comment, not a heading, and `- x` is a
+ * subtraction, not a list item. While there was no fence handling here, the
+ * most common construct of a course notebook read on the page as mush: a big
+ * heading in the middle of an example and code torn into paragraphs at blank
+ * lines.
  */
 function markdown(source: string, depth = 1): string {
-  /** Путь до корня публикации: картинка заметки лежит рядом со страницей шага. */
+  /** The path to the publication root: a note image lives next to the step page. */
   const up = '../'.repeat(Math.max(0, depth - 1))
   const inline = (text: string): string =>
     esc(text)
       /*
-       * Картинка ЗАМЕТКИ — из записи публикации, а не строкой base64.
+       * A NOTE image comes from the publication's records, not as a base64
+       * string.
        *
-       * В комнате она лежит на полке (shared/images.ts), при сборке страницы
-       * копируется в записи публикации (publish/build.ts · projectNote) и
-       * получает адрес `blob:<хэш>.<ext>`. Правило стоит ДО остальных: без
-       * него `![схема](blob:…)` уходил в `esc` и печатался на странице текстом.
+       * In the room it lives on the shelf (shared/images.ts); when the page is
+       * built it is copied into the publication's records
+       * (publish/build.ts · projectNote) and gets the address
+       * `blob:<hash>.<ext>`. The rule comes BEFORE the others: without it
+       * `![diagram](blob:…)` went into `esc` and was printed on the page as
+       * text.
        */
       .replace(
         /!\[([^\]]*)\]\(blob:([0-9a-f]{8,64})\.([a-z0-9]+)\)/gi,
@@ -91,10 +96,10 @@ function markdown(source: string, depth = 1): string {
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
       /*
-       * Картинка — ссылкой, а не `<img src="https://…">`: страница обязана
-       * открываться из архива и с флешки, а внешний адрес однажды не доедет и
-       * оставит на её месте битую рамку. Без этого правила `![схема](url)`
-       * доезжал до студента как «!» со ссылкой.
+       * An image as a link, not `<img src="https://…">`: the page has to open
+       * from an archive and from a USB stick, and an external address will one
+       * day fail to load and leave a broken frame in its place. Without this
+       * rule `![diagram](url)` reached the student as a "!" with a link.
        */
       .replace(
         /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g,
@@ -105,30 +110,30 @@ function markdown(source: string, depth = 1): string {
 
   const policy = noteHtml(up)
   /*
-   * Стопка незакрытых тегов — одна на всю заметку, а не на кусок разметки.
+   * The stack of unclosed tags is one per note, not one per chunk of markup.
    *
-   * `<div align="center">`, пустая строка, `# Заголовок`, пустая строка,
-   * `</div>` — самый частый способ отцентрировать заголовок в ноутбуке, и
-   * пустые строки режут его на ТРИ куска. Закрывай каждый кусок по себе — див
-   * схлопнулся бы пустым, а заголовок встал бы рядом с ним, а не внутри.
+   * `<div align="center">`, a blank line, `# Heading`, a blank line, `</div>`
+   * is the most common way to center a heading in a notebook, and the blank
+   * lines cut it into THREE chunks. Close each chunk on its own and the div
+   * would collapse empty, with the heading next to it rather than inside.
    */
   const open: string[] = []
-  /** Разметка блока: теги копятся в общей стопке и переживают пустую строку. */
+  /** Block markup: tags pile up in the shared stack and survive a blank line. */
   const blockHtml = (markup: string): string => htmlSubset(markup, policy, esc, open)
   /*
-   * Разметка ВНУТРИ строки — со своей стопкой, и это не мелочь: у абзаца есть
-   * `</p>`, и незакрытый `<b>` обязан закрыться раньше него, а не дожить до
-   * конца заметки. Иначе `<p><b>текст</p>…</b>` — и жирным становится всё
-   * остальное.
+   * Markup INSIDE a line has its own stack, and that is no small matter: a
+   * paragraph has a `</p>`, and an unclosed `<b>` has to close before it
+   * rather than live on to the end of the note. Otherwise it is
+   * `<p><b>text</p>…</b>`, and everything else turns bold.
    */
   const lineHtml = (markup: string): string => htmlSubset(markup, policy, inline)
 
   const out: string[] = []
   let bullets: string[] = []
   let numbers: string[] = []
-  /** Строки внутри ```-ограды. `null` — ограды сейчас нет. */
+  /** Lines inside a ``` fence. `null` means there is no fence right now. */
   let fenced: string[] | null = null
-  /** Строки блока разметки. `null` — блока сейчас нет; конец блока — пустая строка. */
+  /** Lines of a markup block. `null` means no block right now; a blank line ends the block. */
   let block: string[] | null = null
 
   const flush = (): void => {
@@ -147,9 +152,10 @@ function markdown(source: string, depth = 1): string {
     fenced = null
   }
   /*
-   * Внутри блока разметки инлайнового markdown нет — так же, как в комнате у
-   * marked и как в CommonMark. `**жирный**` внутри `<div>` остаётся звёздочками,
-   * и это не упущение: автор, написавший тег, верстает сам.
+   * There is no inline markdown inside a markup block, just as with marked in
+   * the room and in CommonMark. `**bold**` inside a `<div>` stays asterisks,
+   * and that is not an oversight: an author who wrote a tag does the layout
+   * themselves.
    */
   const closeBlock = (): void => {
     if (block === null) return
@@ -161,8 +167,8 @@ function markdown(source: string, depth = 1): string {
     if (/^\s*(```|~~~)/.test(line)) {
       if (fenced === null) {
         flush()
-        // Язык после ограды («```python») — подсказка подсветке, которой здесь
-        // нет; текстом на странице ей делать нечего.
+        // The language after the fence ("```python") is a hint for highlighting,
+        // which does not exist here; it has no business on the page as text.
         fenced = []
       } else {
         closeFence()
@@ -206,17 +212,17 @@ function markdown(source: string, depth = 1): string {
     }
   }
   flush()
-  // Ограда, которую забыли закрыть: остаток заметки — всё равно код, и
-  // потерять его молча хуже, чем показать лишний блок.
+  // A fence someone forgot to close: the rest of the note is code anyway, and
+  // losing it silently is worse than showing an extra block.
   closeFence()
   closeBlock()
-  // Незакрытый `<div>` из заметки закрывается здесь и дальше `.note` не идёт:
-  // иначе он утащил бы за собой вёрстку всей страницы.
+  // An unclosed `<div>` from the note is closed here and goes no further than
+  // `.note`: otherwise it would drag the whole page's layout along with it.
   while (open.length > 0) out.push(`</${open.pop()!}>`)
   return out.join('\n')
 }
 
-/** Адрес крупного куска вывода внутри выгруженного каталога. */
+/** The address of a large piece of output inside the exported directory. */
 function blobHref(value: string, mime: string): string {
   const hash = value.slice(BLOB_PREFIX.length)
   const ext = mime.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin'
@@ -224,13 +230,13 @@ function blobHref(value: string, mime: string): string {
 }
 
 /**
- * Трейсбек без того, что уже написано над ним.
+ * A traceback without what is already written above it.
  *
- * IPython открывает его строкой «Ename Traceback (most recent call last)» и
- * закрывает «Ename: evalue» — обе стоят заголовком выше. Комната снимает это
- * же (web/src/lib/traceback.ts); без этого страница читает одну ошибку трижды.
- * Снимается только точный повтор: угадывать, что здесь лишнее, — способ убрать
- * единственную полезную строку.
+ * IPython opens it with the line "Ename Traceback (most recent call last)"
+ * and closes it with "Ename: evalue", and both already stand as the heading
+ * above. The room strips the same (web/src/lib/traceback.ts); without this the
+ * page reads one error three times. Only an exact repeat is stripped: guessing
+ * what is superfluous here is a way to remove the only useful line.
  */
 const BANNER = /Traceback \(most recent call last\)/
 function tracebackBody(lines: string[], ename: string, evalue: string): string {
@@ -243,7 +249,7 @@ function tracebackBody(lines: string[], ename: string, evalue: string): string {
     while (kept.length > 0 && bare(kept[kept.length - 1]) === '') kept.pop()
   }
   dropBlanks()
-  // `KeyboardInterrupt: ` — ошибка без значения всё равно закрывается двоеточием.
+  // `KeyboardInterrupt: `: an error without a value still ends with a colon.
   const echoes = evalue ? [`${ename}: ${evalue}`] : [ename, `${ename}:`]
   if (kept.length > 0 && echoes.includes(bare(kept[kept.length - 1]))) kept.pop()
   dropBlanks()
@@ -251,20 +257,21 @@ function tracebackBody(lines: string[], ename: string, evalue: string): string {
 }
 
 /**
- * Вывод, у которого есть только text/html: таблица pandas, `display(HTML(...))`.
+ * Output that has only text/html: a pandas table, `display(HTML(...))`.
  *
- * Такой вывод раньше исчезал со страницы без следа — под кодом пусто, а в
- * подвале «Out [7]», и студент читал это как «код ничего не напечатал».
- * `df.style`, `IPython.display.HTML`, plotly, ipywidgets — всё это отдаёт
- * text/html, и в комнате оно показывается.
+ * Such output used to vanish from the page without a trace: nothing under the
+ * code and "Out [7]" in the footer, and the student read it as "the code
+ * printed nothing". `df.style`, `IPython.display.HTML`, plotly, ipywidgets all
+ * emit text/html, and the room shows it.
  *
- * Показывается ПОДМНОЖЕСТВО, собранное белым списком, а не чужая разметка как
- * есть. Здесь она из вывода ячейки, то есть от кого угодно, кто в комнате
- * запускал код, и лежит она в файле, который откроют без всякого сервера:
- * `<script>` и `<style>` выбрасываются вместе с содержимым (стиль из вывода
- * перекрасил бы страницу целиком), остальные незнакомые теги снимаются, а текст
- * внутри них остаётся. Незакрытые теги закрываются здесь же — иначе один
- * `<div>` из вывода утащил бы за собой вёрстку всей страницы.
+ * What is shown is a SUBSET assembled by whitelist, not someone else's markup
+ * as is. Here it comes from cell output, that is, from anyone who ran code in
+ * the room, and it lives in a file that will be opened without any server:
+ * `<script>` and `<style>` are thrown out along with their content (a style
+ * from output would repaint the whole page), other unknown tags are stripped
+ * while the text inside them stays. Unclosed tags are closed right here,
+ * otherwise one `<div>` from the output would drag the whole page's layout
+ * along with it.
  */
 const HTML_TAGS: ReadonlySet<string> = new Set(
   `table thead tbody tfoot tr td th caption colgroup col
@@ -275,10 +282,10 @@ const HTML_TAGS: ReadonlySet<string> = new Set(
     .split(/\s+/),
 )
 
-/** Теги без содержимого: закрывать их нечем и не надо. */
+/** Tags without content: there is nothing to close them with, and no need. */
 const HTML_VOID: ReadonlySet<string> = new Set(['br', 'hr', 'col', 'img'])
 
-/** Что разрешено при теге в ВЫВОДЕ ядра. Всё остальное — включая style и class. */
+/** What is allowed on a tag in kernel OUTPUT. Everything else goes, style and class included. */
 const HTML_ATTRS: Record<string, ReadonlySet<string>> = {
   td: new Set(['colspan', 'rowspan']),
   th: new Set(['colspan', 'rowspan', 'scope']),
@@ -288,16 +295,16 @@ const HTML_ATTRS: Record<string, ReadonlySet<string>> = {
 }
 
 /**
- * Набор тегов и правило для атрибутов — одним предметом.
+ * A tag set and an attribute rule, as one object.
  *
- * Разборщик ниже один, а наборов два, и различаются они не капризом: вывод
- * ячейки — это репр `df.style` и таблица pandas, где оформление приходит
- * отдельным `<style>` и потому снимается целиком; заметка — это текст, который
- * человек написал руками, и `style` в нём и есть предмет разговора.
+ * There is one parser below but two sets, and they differ for a reason: cell
+ * output is the repr of `df.style` and a pandas table, where the styling
+ * arrives as a separate `<style>` and is therefore stripped entirely; a note
+ * is text a person wrote by hand, and `style` in it is the very point.
  */
 interface HtmlPolicy {
   tags: ReadonlySet<string>
-  /** Значение атрибута, каким его писать, или `null` — «не писать». */
+  /** The attribute value as it should be written, or `null` for "do not write". */
   attr: (tag: string, name: string, value: string) => string | null
 }
 
@@ -305,24 +312,25 @@ const OUTPUT_HTML: HtmlPolicy = {
   tags: HTML_TAGS,
   attr(tag, name, value) {
     if (!HTML_ATTRS[tag]?.has(name)) return null
-    // Адрес — только http(s): `javascript:` в ссылке из вывода ячейки
-    // исполнился бы у того, кто открыл страницу.
+    // Only http(s) addresses: a `javascript:` link from cell output would
+    // execute for whoever opened the page.
     if (name === 'href') return /^https?:\/\//i.test(value) ? value : null
     return /^\d{1,3}$|^(row|col|rowgroup|colgroup)$/.test(value) ? value : null
   },
 }
 
 /**
- * Теги, которые может принести ЗАМЕТКА.
+ * The tags a NOTE may bring.
  *
- * Шире, чем у вывода, и ровно настолько, насколько шире сам предмет: заметку
- * пишут разметкой, а не получают репром. `img`, `details`, `figure`, `font`,
- * `center` — то, из чего состоит обычная текстовая ячейка учебного ноутбука, и
- * без чего «HTML не работает» было бы правдой наполовину.
+ * Wider than for output, and exactly as much wider as the subject itself: a
+ * note is written as markup, not received as a repr. `img`, `details`,
+ * `figure`, `font`, `center` are what an ordinary text cell of a course
+ * notebook is made of, and without them "HTML does not work" would be half
+ * true.
  *
- * `style`, `script`, `iframe`, `form`, `audio`, `video` сюда не входят и не
- * войдут: тот же список, что и в комнате (web/src/lib/sanitize.ts), — обещание
- * «те же ячейки» держится одинаковыми запретами, а не похожими.
+ * `style`, `script`, `iframe`, `form`, `audio`, `video` are not included and
+ * will not be: the same list as in the room (web/src/lib/sanitize.ts); the
+ * "same cells" promise is kept by identical prohibitions, not similar ones.
  */
 const NOTE_TAGS: ReadonlySet<string> = new Set([
   ...HTML_TAGS,
@@ -334,13 +342,14 @@ const NOTE_TAGS: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Блочные теги заметки: со строки, начатой таким, идёт разметка, а не абзац.
+ * A note's block tags: a line starting with one begins markup, not a
+ * paragraph.
  *
- * Без этого списка многострочный `<div>` разрезался бы на строки и каждая
- * оборачивалась в `<p>`: `<p><div …></p>` браузер чинит по-своему, и врезка
- * разъезжается. Правило конца блока — пустая строка, как в CommonMark и как у
- * marked в комнате; оно же и делает работающим `<div align="center">`, пустая
- * строка, `# Заголовок`, пустая строка, `</div>`.
+ * Without this list a multi-line `<div>` would be cut into lines and each
+ * wrapped in `<p>`: the browser fixes `<p><div …></p>` its own way, and the
+ * inset falls apart. The end-of-block rule is a blank line, as in CommonMark
+ * and with marked in the room; it is also what makes `<div align="center">`,
+ * a blank line, `# Heading`, a blank line, `</div>` work.
  */
 const NOTE_BLOCKS: ReadonlySet<string> = new Set(
   `div p table thead tbody tfoot tr td th caption colgroup col
@@ -353,14 +362,14 @@ const NOTE_BLOCKS: ReadonlySet<string> = new Set(
 )
 
 /**
- * Адрес картинки заметки на выгруженной странице.
+ * The address of a note image on the exported page.
  *
- * `blob:<хэш>.<ext>` — запись публикации рядом со страницей шага (build.ts ·
- * projectNote), тот же путь, что у `![схема](blob:…)` в `inline`. Внешний
- * `https://` остаётся как написан: в markdown-картинке отрисовщик волен выбрать
- * представление и делает из неё ссылку, а сырой `<img>` человек поставил сам и
- * рассчитывал на него в вёрстке — подменять его ссылкой значит ломать чужой
- * макет молча.
+ * `blob:<hash>.<ext>` is a publication record next to the step page
+ * (build.ts · projectNote), the same path as for `![diagram](blob:…)` in
+ * `inline`. An external `https://` stays as written: for a markdown image the
+ * renderer is free to choose the representation and makes a link of it, but a
+ * raw `<img>` was put there by a person who counted on it in the layout;
+ * replacing it with a link means silently breaking someone else's layout.
  */
 function noteImageSrc(value: string, up: string): string | null {
   const blob = /^blob:([0-9a-f]{8,64})\.([a-z0-9]+)$/i.exec(value)
@@ -374,7 +383,7 @@ function noteHtml(up: string): HtmlPolicy {
   return {
     tags: NOTE_TAGS,
     attr(tag, name, value) {
-      // Оформление — тем же белым списком свойств, что и в комнате.
+      // Styling goes through the same property whitelist as in the room.
       if (name === 'style') return safeStyle(value) || null
       if (name === 'title' || name === 'alt') return value
       if (name === 'align') return /^(left|right|center|justify)$/i.test(value) ? value : null
@@ -389,16 +398,17 @@ function noteHtml(up: string): HtmlPolicy {
       if (tag === 'font' && name === 'color') return /^[#\w(),.%\s-]{1,40}$/.test(value) ? value : null
       if (tag === 'font' && name === 'size') return /^[+-]?\d{1,2}$/.test(value) ? value : null
       if (tag === 'font' && name === 'face') return /^[\w ,'"-]{1,80}$/.test(value) ? value : null
-      // Ссылка: http(s), почта и якорь. `javascript:` исполнился бы у того, кто
-      // открыл страницу, — тот же довод, что и у вывода выше.
+      // A link: http(s), mail and anchors. `javascript:` would execute for
+      // whoever opened the page, the same argument as for output above.
       if (tag === 'a' && name === 'href')
         return /^(https?:\/\/|mailto:|#)/i.test(value) ? value : null
       if (tag === 'img' && name === 'src') return noteImageSrc(value, up)
       /*
-       * `class` не проходит намеренно. На статической странице свои правила —
-       * `.code`, `.out`, `.err`, `.quiet`, — и заметка с `class="err"` читалась
-       * бы как ошибка выполнения. В комнате класс безвреден, потому что там
-       * оформление заметки задаёт `.prose-note`, а не имена из ячейки.
+       * `class` is deliberately not let through. The static page has its own
+       * rules (`.code`, `.out`, `.err`, `.quiet`), and a note with
+       * `class="err"` would read as an execution error. In the room a class is
+       * harmless, because there the note's styling is set by `.prose-note`,
+       * not by names from the cell.
        */
       return null
     },
@@ -420,21 +430,23 @@ function keepAttrs(policy: HtmlPolicy, tag: string, raw: string): string {
   return out
 }
 
-/** Тег с его атрибутами: кавычки могут прятать внутри себя и «<», и «>». */
+/** A tag with its attributes: quotes can hide both "<" and ">" inside. */
 const TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y
 
 /**
- * Разметка, приведённая к подмножеству политики.
+ * Markup reduced to the policy's subset.
  *
- * `text` — что делать с текстом ВНЕ тегов. У вывода он идёт как есть (репр уже
- * экранирован ядром, второй проход дал бы `&amp;amp;`), у заметки через него
- * проходит инлайновый markdown — и только через него: подставлять `**жирный**`
- * во всю строку значило бы дописывать теги внутрь чужого атрибута.
+ * `text` says what to do with text OUTSIDE tags. For output it goes as is (the
+ * repr is already escaped by the kernel, a second pass would give
+ * `&amp;amp;`); for a note, inline markdown goes through it, and only through
+ * it: substituting `**bold**` across the whole line would mean writing tags
+ * into someone else's attribute.
  *
- * `open` — стопка незакрытых тегов. Своя на вызов, если её не дали: одинокий
- * `<div>` из вывода утащил бы за собой вёрстку всей страницы. Заметка передаёт
- * сюда общую на все свои куски — тогда `<div align="center">` перед пустой
- * строкой и `</div>` после заголовка остаются одним блоком, как в комнате.
+ * `open` is the stack of unclosed tags. Its own per call if none is given: a
+ * lone `<div>` from output would drag the whole page's layout along with it.
+ * A note passes here one stack shared by all its chunks, so that a
+ * `<div align="center">` before a blank line and a `</div>` after the heading
+ * stay one block, as in the room.
  */
 function htmlSubset(
   source: string,
@@ -455,12 +467,12 @@ function htmlSubset(
       break
     }
     out.push(text(stripped.slice(i, lt)))
-    // Липкий разбор с позиции, а не по куску строки: `slice` на каждый тег
-    // превращал бы таблицу на мегабайт в квадрат от её длины.
+    // A sticky parse from a position, not on a slice of the string: a `slice`
+    // per tag would turn a megabyte table into the square of its length.
     TAG.lastIndex = lt
     const tag = TAG.exec(stripped)
     if (!tag) {
-      // Одинокая «<» — это текст, а не начало тега.
+      // A lone "<" is text, not the start of a tag.
       out.push('&lt;')
       i = lt + 1
       continue
@@ -482,19 +494,21 @@ function htmlSubset(
 }
 
 /**
- * Есть ли в разметке что показывать.
+ * Whether the markup has anything to show.
  *
- * Длина строки об этом не говорит, и это не мелочь: plotly, bokeh и ipywidgets
- * кладут в text/html пустой `<div id=…>` рядом со `<script>`, который рисует
- * его уже в браузере. Скрипт из чужого вывода в страницу не уезжает (см.
- * `htmlSubset`), и остаётся `<div></div>` — разметка непустая, а под ячейкой
- * пусто. Поверить непустой строке значит вернуть ровно то, ради чего всё это
- * писалось: пустое место с подписью «Out [1]» вместо честной пометки о
- * формате, которого страница не знает.
+ * The string's length does not tell, and that is no small matter: plotly,
+ * bokeh and ipywidgets put an empty `<div id=…>` into text/html next to a
+ * `<script>` that draws it in the browser. A script from someone else's output
+ * does not get into the page (see `htmlSubset`), and what is left is
+ * `<div></div>`: non-empty markup, and nothing under the cell. Trusting a
+ * non-empty string means bringing back exactly what all this was written to
+ * fix: an empty space captioned "Out [1]" instead of an honest note about a
+ * format the page does not know.
  *
- * Видимое — это текст вне тегов (`&nbsp;` за него не считается) и линейка,
- * которую видно саму по себе. Пустая таблица за содержимое не идёт: сетка
- * рамок без единой цифры читается как сломанная страница, а пометка — нет.
+ * Visible means text outside tags (`&nbsp;` does not count) and a rule, which
+ * is visible by itself. An empty table does not count as content: a grid of
+ * borders without a single number reads as a broken page, and a note does
+ * not.
  */
 function hasVisible(html: string): boolean {
   const text = html.replace(/<[^>]*>/g, '').replace(/&nbsp;|&#0*160;|&#x0*a0;/gi, ' ')
@@ -503,11 +517,11 @@ function hasVisible(html: string): boolean {
 
 function outputHtml(output: CellOutput, depth: number): string {
   /*
-   * Картинки лежат в корне публикации, рядом с первым шагом. Первый шаг — сам
-   * этот корень (глубина 1), остальные на уровень глубже, так что подниматься
-   * надо на `depth - 1`, а не на `depth`: лишний `../` уводил бы к соседней
-   * публикации, и картинка не находилась бы именно на той странице, которую
-   * открывают первой.
+   * Images live at the publication root, next to the first step. The first
+   * step is that root itself (depth 1), the others one level deeper, so we
+   * have to go up `depth - 1`, not `depth`: an extra `../` would lead to a
+   * neighboring publication, and the image would be missing on exactly the
+   * page that is opened first.
    */
   const up = '../'.repeat(depth - 1)
   if (output.kind === 'stream') {
@@ -519,17 +533,18 @@ function outputHtml(output: CellOutput, depth: number): string {
     return `<pre class="out err">${esc([plain(head), body].filter(Boolean).join('\n\n'))}</pre>`
   }
   /*
-   * Интерактивный график — и честная строка вместо него.
+   * An interactive chart, and an honest line in its place.
    *
-   * Выгруженный каталог живёт на статическом хостинге: сервера за ним нет, а
-   * рамка, в которой рисуется plotly, — это ответ с особым заголовком
-   * (`server/src/plotly-frame.ts`), и отдать его там некому. Рисовать фигуру
-   * прямо в странице нельзя тем более: это чужие данные и пять мегабайт чужого
-   * кода на origin, где лежат и другие занятия.
+   * The exported directory lives on static hosting: there is no server behind
+   * it, and the frame plotly draws in is a response with a special header
+   * (`server/src/plotly-frame.ts`), which nobody there can serve. Drawing the
+   * figure right in the page is even less acceptable: it is someone else's
+   * data and five megabytes of someone else's code on an origin that holds
+   * other classes too.
    *
-   * Поэтому строка, а не пустое место: «Out [7]» без ничего под ним читается
-   * как «код ничего не напечатал», и это враньё. Живая читалка инстанса тот же
-   * график показывает целиком — про неё в строке и сказано.
+   * So a line rather than an empty space: "Out [7]" with nothing under it
+   * reads as "the code printed nothing", and that is a lie. The instance's
+   * live reader shows the same chart in full, and the line says so.
    */
   if (output.data[PLOTLY_MIME] !== undefined) {
     return `<p class="quiet">${esc(tr('server.ssr.plotlyFigure'))}</p>`
@@ -538,10 +553,10 @@ function outputHtml(output: CellOutput, depth: number): string {
   if (image) {
     const [mime, value] = image
     /*
-     * SVG приходит от ядра XML-текстом, а не base64, и в отдельную запись не
-     * уезжает (см. BLOB_MIMES): `data:image/svg+xml;base64,<xml>` давал пустую
-     * рамку. Картинкой, а не разметкой прямо в странице: внутри `<img>` скрипт
-     * из чужого вывода не исполняется.
+     * SVG comes from the kernel as XML text, not base64, and does not move
+     * into a separate record (see BLOB_MIMES): `data:image/svg+xml;base64,<xml>`
+     * gave an empty frame. As an image, not as markup right in the page: inside
+     * `<img>` a script from someone else's output does not execute.
      */
     const src = value.startsWith(BLOB_PREFIX)
       ? up + blobHref(value, mime)
@@ -551,9 +566,10 @@ function outputHtml(output: CellOutput, depth: number): string {
     return `<p class="img"><img src="${esc(src)}" alt="${esc(tr('server.ssr.cellOutput'))}"></p>`
   }
   /*
-   * text/html — раньше, чем text/plain, и это не вкус: у `df.style` в
-   * text/plain лежит «<pandas.io.formats.style.Styler object at 0x…>», то есть
-   * ровно то, вместо чего студент должен видеть таблицу.
+   * text/html comes before text/plain, and not as a matter of taste: for
+   * `df.style` text/plain holds
+   * "<pandas.io.formats.style.Styler object at 0x…>", exactly what the
+   * student should see a table instead of.
    */
   const rich = output.data['text/html']
   if (rich) {
@@ -561,17 +577,18 @@ function outputHtml(output: CellOutput, depth: number): string {
     if (hasVisible(safe)) return `<div class="rich">${safe}</div>`
   }
   /*
-   * `display(Markdown(...))` — подпись к выводу словами, и на странице она
-   * обязана быть словами.
+   * `display(Markdown(...))` is a caption to the output in words, and on the
+   * page it has to be words.
    *
-   * Ядро присылает два представления: саму разметку и `text/plain` с репром
-   * `<IPython.core.display.Markdown object>`. Пока этой ветки не было,
-   * страница печатала имя класса — ровно то же, что делала комната до
-   * `text/markdown` в `MIME_ORDER` (web/src/components/notebook/output-mimes.ts).
+   * The kernel sends two representations: the markup itself and `text/plain`
+   * with the repr `<IPython.core.display.Markdown object>`. Before this branch
+   * existed the page printed the class name, exactly what the room did before
+   * `text/markdown` was added to `MIME_ORDER`
+   * (web/src/components/notebook/output-mimes.ts).
    *
-   * Разбирается тем же подмножеством, что и заметка: `markdown` выше уже умеет
-   * и белый список тегов, и белый список свойств, — то есть вывод ядра и текст
-   * человека проходят здесь одну и ту же проверку.
+   * It is parsed with the same subset as a note: `markdown` above already
+   * handles both the tag whitelist and the property whitelist, so kernel
+   * output and a person's text pass the same check here.
    */
   const note = output.data['text/markdown']
   if (note) {
@@ -581,9 +598,9 @@ function outputHtml(output: CellOutput, depth: number): string {
   const text = output.data['text/plain']
   if (text) return `<pre class="out">${esc(plain(text))}</pre>`
   /*
-   * Показать нечем — но сказать об этом надо. Пустое место под ячейкой с
-   * подписью «Out [7]» читается как «код ничего не напечатал», и это враньё:
-   * вывод был, просто он в формате, которого статическая страница не знает.
+   * Nothing to show it with, but it has to be said. An empty space under a
+   * cell captioned "Out [7]" reads as "the code printed nothing", and that is
+   * a lie: there was output, just in a format the static page does not know.
    */
   const kinds = Object.keys(output.data)
   return kinds.length > 0
@@ -595,8 +612,9 @@ function cellHtml(cell: PublicCell, depth: number): string {
   if (cell.type === 'markdown') return `<div class="note">${markdown(cell.source, depth)}</div>`
   const outputs = cell.outputs.map((o) => outputHtml(o, depth)).join('\n')
   /*
-   * `Out [—]` — вывод есть, а выполнения за ним уже нет: перезапускали ядро
-   * или возвращали версию. Промолчать честнее, чем подставить номер.
+   * `Out [—]`: there is output, but no execution behind it any more: the
+   * kernel was restarted or a version restored. Staying silent is more honest
+   * than putting in a number.
    */
   const stamp =
     cell.execCount === null
@@ -616,11 +634,11 @@ function cellHtml(cell: PublicCell, depth: number): string {
 }
 
 /**
- * Оформление.
+ * Styling.
  *
- * Одним куском внутри файла: страница обязана открываться сама по себе, а
- * отдельный .css — это второй запрос, который однажды не доедет, и текст
- * поедет. Цвета и шрифты — те же, что в комнате.
+ * In one piece inside the file: the page has to open on its own, and a
+ * separate .css is a second request that will one day fail to arrive, and the
+ * text will fall apart. The colors and fonts are the same as in the room.
  */
 const STYLE = `
 :root{--ink:#101A33;--muted:#5D6B8A;--faint:#9BA6BE;--line:#DCE3EF;--surface:#F3F6FB;--accent:#0B7FAB;--warn:#8E6B00;--err:#8E2334;--bg:#fff}
@@ -691,11 +709,12 @@ header.top h1{font-size:32px;margin:0 0 8px}
 `
 
 /**
- * Голова документа.
+ * The document head.
  *
- * `robots` — из общего решения (shared/publish.ts), а не из своего мнения:
- * инстанс отдаёт те же страницы по своим адресам, и пока правило стояло
- * комментарием по обе стороны, стороны успели разойтись.
+ * `robots` comes from the shared decision (shared/publish.ts), not from an
+ * opinion of our own: the instance serves the same pages at its own
+ * addresses, and while the rule stood as a comment on both sides, the sides
+ * managed to diverge.
  */
 function head(title: string): string {
   return [
@@ -719,19 +738,20 @@ export interface RenderedStep {
 }
 
 /*
- * Часовой пояс страницы задаётся явно, а не берётся у процесса.
+ * The page's time zone is set explicitly, not taken from the process.
  *
- * Выгрузку запускают на сервере, а не в аудитории: в контейнере и на обычном
- * VPS пояс не задан вовсе, то есть UTC, — и занятие, которое шло в Москве в
- * 15:04, страница подписывала «12:04». По такой подписи не найти, о какой паре
- * речь, а проверить её на статике нечем: в комнате время рисует браузер, здесь
- * рисовать некому.
+ * The export runs on the server, not in the lecture hall: in a container and
+ * on an ordinary VPS no zone is set at all, that is, UTC, and a class held in
+ * Moscow at 15:04 was captioned "12:04" by the page. With such a caption you
+ * cannot find which lesson it was, and there is nothing to check it against
+ * on a static page: in the room the browser draws the time, here there is
+ * nobody to draw it.
  *
- * Пояс инстанса — `TZ`, и спрашивается она при каждом форматировании, а не
- * один раз при загрузке модуля: приезжает она из `.env` через dotenv в
- * config.ts, а этот модуль грузится раньше него. По той же причине пояс
- * передаётся опцией — переменная, прочитанная после старта, поясом процесса
- * может уже не стать.
+ * The instance's zone is `TZ`, and it is read on every formatting call rather
+ * than once at module load: it arrives from `.env` through dotenv in
+ * config.ts, and this module loads before that. For the same reason the zone
+ * is passed as an option: a variable read after startup may no longer become
+ * the process's zone.
  */
 const HOME_ZONE = 'Europe/Moscow'
 const DATE_FORM: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long', year: 'numeric' }
@@ -741,8 +761,8 @@ function formatter(form: Intl.DateTimeFormatOptions, zone: string): Intl.DateTim
   try {
     return new Intl.DateTimeFormat(getLocale(), { ...form, timeZone: zone })
   } catch {
-    // `TZ=МСК` и прочие имена, которых нет в базе поясов: опечатка в .env не
-    // должна ронять выгрузку целиком.
+    // `TZ=MSK` and other names missing from the time zone database: a typo in
+    // .env must not bring down the whole export.
     return new Intl.DateTimeFormat(getLocale(), { ...form, timeZone: HOME_ZONE })
   }
 }
@@ -760,16 +780,17 @@ function forms(): { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat } {
 const when = (at: number): string => forms().date.format(at)
 const clock = (at: number): string => forms().time.format(at)
 
-/** Страница курса. */
+/** The course page. */
 export function renderCourse(course: PublicCourseView, base: string): string {
   const rows = course.items
     .map((item, index) => {
       const n = String(index + 1).padStart(2, '0')
       if (item.kind === 'gone') {
         /*
-         * Комнаты нет, а чтение осталось — это умолчание при удалении семинара,
-         * и без ссылки строка была бы тупиком: страница жива, а с курса —
-         * единственного адреса, который дают классу, — до неё не дойти.
+         * The room is gone but the reading remains: that is the default when a
+         * seminar is deleted, and without a link the row would be a dead end:
+         * the page is alive, but it cannot be reached from the course, the only
+         * address the class is given.
          */
         if (!item.publication) {
           return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">${esc(tr('server.ssr.seminarDeleted'))}</span></li>`
@@ -785,9 +806,9 @@ export function renderCourse(course: PublicCourseView, base: string): string {
         ].join('')
       }
       if (item.kind === 'planned') {
-        // Неделю набирают руками в панели, до сорока знаков: с `nowrap` на
-        // телефоне она забирала всю строку и ложилась поверх темы. Отсюда
-        // `.row.off .s` в STYLE — перенос и не больше 45% ширины.
+        // The week is typed by hand in the panel, up to forty characters: with
+        // `nowrap` on a phone it took the whole row and lay over the topic.
+        // Hence `.row.off .s` in STYLE: wrapping and no more than 45% width.
         return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">${esc(item.when)}</span></li>`
       }
       if (!item.publication) {
@@ -823,13 +844,13 @@ export function renderCourse(course: PublicCourseView, base: string): string {
 }
 
 /**
- * Страница-указатель со старого адреса на нынешний.
+ * A pointer page from an old address to the current one.
  *
- * Курсу или публикации дали имя, и каталог теперь лежит под ним — а ссылка,
- * розданная классу с восьмисимвольным идентификатором, обязана работать и
- * после. На живом сервере это делает `WHERE id = ? OR slug = ?`; на Pages
- * маршрутизации нет вовсе, поэтому старый адрес остаётся файлом, который
- * перекладывает на новый. Ссылка внизу — на случай, если `refresh` выключен.
+ * A course or publication was given a name, and the directory now lives
+ * under it, while a link handed to the class with the eight-character id must
+ * keep working. On the live server `WHERE id = ? OR slug = ?` does it; Pages
+ * has no routing at all, so the old address stays as a file that forwards to
+ * the new one. The link at the bottom is for when `refresh` is disabled.
  */
 export function renderRedirect(to: string, title: string): string {
   return [
@@ -850,17 +871,18 @@ export function renderRedirect(to: string, title: string): string {
 }
 
 /**
- * Надгробие снятой страницы.
+ * The tombstone of a withdrawn page.
  *
- * Обещание записано в store.ts буквами: «снятие страницы адрес не отменяет:
- * ссылка обязана сказать „её сняли“, а не „такой страницы здесь нет“». На живом
- * сервере так и было, а на Pages — том самом носителе «на среду вечером» —
- * каталог просто стирался, и ссылка из чата группы отвечала стандартным 404
- * GitHub. Студент по нему не отличает снятую страницу от опечатки в адресе и
- * идёт спрашивать, «а точно та ссылка?».
+ * The promise is written in store.ts in so many words: "Withdrawing a page
+ * does not cancel its address: the link must say 'it was withdrawn', not
+ * 'there is no such page here'". On the live server it was so, while on
+ * Pages, the very "for Wednesday evening" medium, the directory was simply
+ * wiped, and a link from the group chat answered with GitHub's standard 404.
+ * From it a student cannot tell a withdrawn page from a typo in the address
+ * and goes to ask "is that really the right link?".
  *
- * Ни шагов, ни картинок здесь нет: снятая страница не должна читаться в обход
- * решения преподавателя — она должна о себе сказать.
+ * There are no steps and no images here: a withdrawn page must not be
+ * readable around the teacher's decision; it has to speak for itself.
  */
 export function renderWithdrawn(
   title: string,
@@ -888,32 +910,34 @@ export interface SeminarPage {
   course: { name: string; handle: string } | null
   steps: { seq: number; label: string; at: number; cellCount: number }[]
   step: RenderedStep
-  /** Глубина относительно корня публикации: 1 у первого шага, 2 у остальных. */
+  /** Depth relative to the publication root: 1 for the first step, 2 for the others. */
   depth: number
   base: string
 }
 
-/** Страница одного шага. */
+/** The page of one step. */
 export function renderStep(page: SeminarPage): string {
   const many = page.steps.length > 1
   const up = page.depth === 1 ? '' : '../'
   /*
-   * Тетрадь — своя у каждого шага, и лежит она в каталоге шага (export.ts).
-   * Ссылка была одна на все шаги и отдавала последний: читатель, сравнивающий
-   * «до» и «после» на шаге 2 из 5 — ровно тот, ради кого шаг живёт в адресе, —
-   * уносил состояние шага 5 и узнавал об этом, только открыв файл. В комнате
-   * это уже исправлено (`?step=`), а статика оставалась на прежнем обещании.
+   * Each step has its own notebook, and it lives in the step's directory
+   * (export.ts). There used to be one link for all steps, serving the last: a
+   * reader comparing "before" and "after" on step 2 of 5 (exactly the one for
+   * whom the step lives in the address) took away the state of step 5 and
+   * found out only on opening the file. In the room this is already fixed
+   * (`?step=`), while the static export kept the old promise.
    *
-   * `p/<handle>/notebook.ipynb` при этом остаётся тетрадью последнего шага: на
-   * неё скопированы ссылки, розданные раньше, и менять то, что по ним
-   * скачивается, нельзя. Поэтому и первый шаг, чья страница поднята в корень
-   * публикации, ссылается вниз — в свой каталог.
+   * `p/<handle>/notebook.ipynb` meanwhile stays the last step's notebook:
+   * links handed out earlier point to it, and what they download must not
+   * change. That is why even the first step, whose page is lifted to the
+   * publication root, links down into its own directory.
    */
   const notebook = page.depth === 1 ? `${page.step.seq}/notebook.ipynb` : 'notebook.ipynb'
   /*
-   * Подпись — слово в слово та же, что в читалке (ReaderScreen.svelte): файл
-   * задуман как «код, чтобы запустить у себя», и то, чего в нём нет, сказано
-   * рядом со ссылкой, а не выясняется после скачивания.
+   * The caption is word for word the same as in the reader
+   * (ReaderScreen.svelte): the file is meant as "code to run on your own
+   * machine", and what it lacks is said next to the link rather than
+   * discovered after the download.
    */
   const about = !many
     ? tr("server.codeWithoutOutputs.e86524")
@@ -925,8 +949,9 @@ export function renderStep(page: SeminarPage): string {
         `<nav class="rail"><h2>${esc(tr('server.ssr.stepsHeading'))}</h2>`,
         ...page.steps.map((s, i) => {
           const on = s.seq === page.step.seq
-          // `./`, а не пустая строка: пустой href — это «текущий URL целиком»,
-          // включая querystring, и в архиве такая ссылка ведёт себя странно.
+          // `./`, not an empty string: an empty href means "the whole current
+          // URL", query string included, and in an archive such a link behaves
+          // oddly.
           const href = i === 0 ? `${up || './'}` : `${up}${s.seq}/`
           return `<a class="${on ? 'on' : ''}" href="${esc(href)}">${esc(s.label)}<span class="w">${clock(s.at)} · ${s.cellCount}</span></a>`
         }),

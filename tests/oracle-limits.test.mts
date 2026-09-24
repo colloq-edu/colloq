@@ -1,9 +1,10 @@
 /**
- * Предел вопросов к оракулу — единственное, что стоит между чужим ключом и
- * чьим-то счётом. Личный предел обходится перезаходом: имя в комнате ничем не
- * подтверждено, и новая вкладка инкогнито — это новый участник со свежими N
- * вопросами. Поэтому есть второй потолок, на всю комнату; проверяется он, а
- * не личный, потому что дыра была именно здесь.
+ * The oracle question limit is the only thing standing between someone else's
+ * key and somebody's bill. The personal limit is bypassed by rejoining: a name
+ * in the room is not verified by anything, and a new incognito tab is a new
+ * participant with a fresh N questions. So there is a second ceiling, for the
+ * whole room; that one is checked, not the personal one, because the hole was
+ * exactly here.
  */
 import './_env.mts'
 import { after, before, test } from 'node:test'
@@ -23,25 +24,25 @@ import { aiRoutes } from '../server/src/routes/ai.js'
 
 const HOUR = 60 * 60 * 1000
 
-test('перезаход обнуляет личный счёт и не обнуляет комнатный', () => {
+test('rejoining resets the personal count but not the room count', () => {
   const room = 'limits-room'
 
-  // Один человек задал три вопроса.
+  // One person asked three questions.
   for (let i = 0; i < 3; i++) {
     recordQuestion({ sessionId: room, participantId: 'p_one', action: 'ask' })
   }
   assert.equal(countRecentQuestions(room, 'p_one', HOUR), 3)
   assert.equal(countRoomQuestions(room, HOUR), 3)
 
-  // Он же перезашёл: новая вкладка — новый participantId, личный счёт пуст.
+  // The same person rejoined: a new tab is a new participantId, the personal count is empty.
   assert.equal(countRecentQuestions(room, 'p_one_again', HOUR), 0)
   recordQuestion({ sessionId: room, participantId: 'p_one_again', action: 'ask' })
 
-  // А комната помнит всё, что в ней спросили, кем бы он ни назвался.
+  // But the room remembers everything asked in it, whatever name the asker took.
   assert.equal(countRoomQuestions(room, HOUR), 4)
 })
 
-test('счёт одной комнаты не течёт в другую', () => {
+test('the count of one room does not leak into another', () => {
   const a = 'limits-a'
   const b = 'limits-b'
   recordQuestion({ sessionId: a, participantId: 'p_x', action: 'ask' })
@@ -50,24 +51,24 @@ test('счёт одной комнаты не течёт в другую', () =>
   assert.equal(countRoomQuestions(b, HOUR), 0)
 })
 
-test('комнатный счёт считает всех, включая тех, кто больше не вернётся', () => {
+test('the room count counts everyone, including those who will never come back', () => {
   const room = 'limits-crowd'
   for (const who of ['p_a', 'p_b', 'p_c', 'p_d']) {
     recordQuestion({ sessionId: room, participantId: who, action: 'ask' })
   }
-  // Ровно то, чем этот потолок отличается от личного: он не про человека.
+  // Exactly how this ceiling differs from the personal one: it is not about a person.
   assert.equal(countRoomQuestions(room, HOUR), 4)
   for (const who of ['p_a', 'p_b', 'p_c', 'p_d']) {
     assert.equal(countRecentQuestions(room, who, HOUR), 1)
   }
 })
 
-/* ------------------------------------------------- сам отказ, а не счётчики */
+/* ------------------------------------- the refusal itself, not the counters */
 
 /**
- * Три теста выше проверяют счёт, а дыру закрыл маршрут — и его можно было
- * удалить целиком, не уронив ни одного из них. Ниже спрашивают так, как
- * спрашивает панель: через HTTP, с токеном комнаты.
+ * The three tests above check the counting, but it was the route that closed
+ * the hole — and the route could be deleted entirely without failing any of
+ * them. Below, questions are asked the way the panel asks: over HTTP, with a room token.
  */
 const app = express()
 app.use(express.json())
@@ -76,7 +77,7 @@ let base = ''
 let server: http.Server
 
 before(async () => {
-  // Оракул должен быть настроен, иначе маршрут отвечает 503 до потолков.
+  // The oracle has to be configured, otherwise the route answers 503 before the ceilings.
   updateOracleSettings({
     apiKey: 'test-key',
     model: 'test-model',
@@ -98,7 +99,7 @@ function askAs(
   participantId: string,
   options: { mode?: 'agent' } = {},
 ): Promise<Response> {
-  // Старше двух минут: новичкам оракул не отвечает (routes/ai.ts · NEWCOMER_MS).
+  // Older than two minutes: the oracle does not answer newcomers (routes/ai.ts · NEWCOMER_MS).
   const token = signToken({ sessionId: room, participantId, role: 'participant', iat: Date.now() - 3 * 60_000 })
   return fetch(`${base}/api/sessions/${room}/ai/ask`, {
     method: 'POST',
@@ -107,17 +108,17 @@ function askAs(
   })
 }
 
-test('комната упирается в свой потолок, даже когда каждый спрашивает под своим именем', async () => {
+test('a room hits its ceiling even when everyone asks under their own name', async () => {
   const room = 'limits-route-room'
   createSession(room, 'Room ceiling', null)
   updateOracleSettings({ questionsPerHour: 1 })
 
-  // Тридцать личных пределов — по одному вопросу от тридцати «новых» вкладок.
+  // Thirty personal limits: one question each from thirty "new" tabs.
   for (let i = 0; i < 30; i++) {
     recordQuestion({ sessionId: room, participantId: `p_tab_${i}`, action: 'ask' })
   }
 
-  // Спрашивает тот, у кого личный счёт пуст: отказать может только комнатный.
+  // The asker has an empty personal count: only the room one can refuse.
   const res = await askAs(room, 'p_fresh')
   assert.equal(res.status, 429)
   assert.equal(res.headers.get('retry-after'), '600')
@@ -125,7 +126,7 @@ test('комната упирается в свой потолок, даже к�
   assert.match(body.error, /Занятие использовало все 30/)
 })
 
-test('личный потолок говорит, через сколько можно снова', async () => {
+test('the personal ceiling says how long until the next question', async () => {
   const room = 'limits-route-person'
   createSession(room, 'Personal ceiling', null)
   updateOracleSettings({ questionsPerHour: 2 })
@@ -136,21 +137,22 @@ test('личный потолок говорит, через сколько мо
   assert.equal(res.status, 429)
   const body = (await res.json()) as { error: string }
   assert.match(body.error, /Вы использовали все 2 вопроса оракулу/)
-  // Окно скользит: срок берётся из windowResetAt, а не из «начала следующего часа».
+  // The window slides: the time comes from windowResetAt, not from "the start of the next hour".
   assert.match(body.error, /через 60 минут/)
   assert.ok(Number(res.headers.get('retry-after')) > 0)
 })
 
-/* ------------------------------------------------------------- слоу-мод */
+/* ------------------------------------------------------------ slow mode */
 
 /**
- * Промежуток между вопросами — про частоту, а не про расход.
+ * The interval between questions is about frequency, not about spending.
  *
- * Потолок в час двадцать вопросов подряд пропускает: их можно выкрикнуть за
- * двадцать секунд, и наказан будет не выкрик, а следующий настоящий вопрос —
- * через час без оракула. Слоу-мод стоит ровно там, где спам, и стоит секунды.
+ * An hourly ceiling lets twenty questions in a row through: they can be shouted
+ * out in twenty seconds, and it is not the shouting that gets punished but the
+ * next real question — with an hour without the oracle. Slow mode stands
+ * exactly where the spam is, and costs seconds.
  */
-test('слоу-мод пускает первый вопрос и разворачивает второй — со сроком', async () => {
+test('slow mode lets the first question in and turns the second away, with a time', async () => {
   const room = 'slow-first'
   createSession(room, 'Слоу-мод', null)
   updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 30 })
@@ -158,26 +160,26 @@ test('слоу-мод пускает первый вопрос и развора
   assert.equal((await askAs(room, 'p_kid')).status, 202)
 
   const denied = await askAs(room, 'p_kid')
-  // Тот же код, каким отвечает потолок в час: второго способа сказать
-  // «не сейчас» у этого маршрута нет.
-  assert.equal(denied.status, 429, 'второй вопрос прошёл сразу за первым')
+  // The same code the hourly ceiling answers with: this route has no second way
+  // of saying "not now".
+  assert.equal(denied.status, 429, 'the second question went through right after the first')
   const body = (await denied.json()) as { error: string; retryAfter: number }
   assert.match(
     body.error,
     /Между вопросами нужно подождать 30 секунд/,
-    `отказ не называет промежуток: ${body.error}`,
+    `the refusal does not name the interval: ${body.error}`,
   )
-  assert.match(body.error, /Повторите через \d+ секунд/, `отказ не говорит, сколько ждать: ${body.error}`)
+  assert.match(body.error, /Повторите через \d+ секунд/, `the refusal does not say how long to wait: ${body.error}`)
   /*
-   * Срок приходит и числом. По нему панель гасит кнопку и показывает ожидание
-   * спокойной строкой, а не красной ошибкой; отличить ожидание от аварии по
-   * тексту 429 она не может.
+   * The time also arrives as a number. By it the panel dims the button and shows
+   * the wait as a calm line rather than a red error; it cannot tell a wait from a
+   * failure by the text of a 429.
    */
-  assert.ok(body.retryAfter > 0 && body.retryAfter <= 30, `странный срок: ${body.retryAfter}`)
+  assert.ok(body.retryAfter > 0 && body.retryAfter <= 30, `a strange time: ${body.retryAfter}`)
   assert.equal(denied.headers.get('retry-after'), String(body.retryAfter))
 })
 
-test('промежуток прошёл — и оракул снова отвечает', async () => {
+test('the interval has passed, and the oracle answers again', async () => {
   const room = 'slow-expiry'
   createSession(room, 'Промежуток', null)
   updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 30 })
@@ -185,23 +187,22 @@ test('промежуток прошёл — и оракул снова отве�
   assert.equal((await askAs(room, 'p_kid')).status, 202)
   assert.equal((await askAs(room, 'p_kid')).status, 429)
 
-  // Часы вперёд не перевести, поэтому назад переводится вопрос: слоу-мод
-  // считает по той же строке расхода, что и потолок в час.
+  // The clock cannot be moved forward, so the question is moved back instead:
+  // slow mode counts by the same usage row as the hourly ceiling.
   db.prepare('UPDATE ai_usage SET created_at = ? WHERE session_id = ?').run(
     Date.now() - 31_000,
     room,
   )
-  assert.equal((await askAs(room, 'p_kid')).status, 202, 'промежуток прошёл, а оракула нет')
+  assert.equal((await askAs(room, 'p_kid')).status, 202, 'the interval has passed, but there is no oracle')
 })
 
-test('преподавателя слоу-мод не касается', async () => {
+test('slow mode does not apply to the teacher', async () => {
   const room = 'slow-host'
   createSession(room, 'Ведущий', null)
   updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 300 })
   /*
-   * Роль решается по строке участника, а не по тому, что написано в токене
-   * (routes/sessions.ts · roleFor), — поэтому ведущего приходится завести
-   * по-настоящему.
+   * The role is decided by the participant row, not by what the token says
+   * (routes/sessions.ts · roleFor) — so the host has to be created for real.
    */
   upsertParticipant({
     id: 'p_ada_host',
@@ -212,21 +213,23 @@ test('преподавателя слоу-мод не касается', async (
     tokenHost: true,
   })
 
-  // Он ведёт занятие: его вопросы идут подряд потому, что подряд идёт разбор.
+  // The host is running the class: their questions come in a row because the
+  // walkthrough goes in a row.
   assert.equal((await askAs(room, 'p_ada_host')).status, 202)
-  assert.equal((await askAs(room, 'p_ada_host')).status, 202, 'ведущего развернули на его же паре')
+  assert.equal((await askAs(room, 'p_ada_host')).status, 202, 'the host was turned away in their own class')
 
-  // А в той же комнате участнику — тот же промежуток, что и всем.
+  // But in the same room a participant gets the same interval as everyone.
   assert.equal((await askAs(room, 'p_kid')).status, 202)
   assert.equal((await askAs(room, 'p_kid')).status, 429)
 })
 
-test('преподавателя не держат ни личный потолок, ни комнатный', async () => {
+test('neither the personal nor the room ceiling holds the teacher back', async () => {
   /*
-   * Оба счёта держат инстанс от комнаты, а ведущий — не комната. Личный
-   * потолок остановил бы его посреди разбора, а комнатный остановил бы за
-   * чужой расход: класс выбрал час, и замолчал бы как раз тот, кто эту пару
-   * ведёт. Оба случая здесь и стоят рядом.
+   * Both counts protect the instance from the room, and the host is not the
+   * room. The personal ceiling would stop them in the middle of a walkthrough,
+   * and the room one would stop them for someone else's spending: the class used
+   * up the hour, and the very person running this class would go silent. Both
+   * cases stand side by side here.
    */
   const room = 'caps-host'
   createSession(room, 'Потолки и ведущий', null)
@@ -240,50 +243,50 @@ test('преподавателя не держат ни личный потол�
     tokenHost: true,
   })
 
-  // Комната выбрала свой час: тридцать личных пределов, по вопросу со вкладки.
+  // The room has used up its hour: thirty personal limits, one question per tab.
   for (let i = 0; i < 30; i++) {
     recordQuestion({ sessionId: room, participantId: `p_tab_${i}`, action: 'ask' })
   }
-  // И у самого ведущего личный счёт тоже выбран — предел здесь единица.
+  // And the host's own personal count is used up too — the limit here is one.
   recordQuestion({ sessionId: room, participantId: 'p_ada_caps', action: 'ask' })
 
   const before = countRoomQuestions(room, HOUR)
-  assert.equal((await askAs(room, 'p_ada_caps')).status, 202, 'ведущего развернул потолок')
-  assert.equal((await askAs(room, 'p_ada_caps')).status, 202, 'и развернул на втором вопросе')
+  assert.equal((await askAs(room, 'p_ada_caps')).status, 202, 'a ceiling turned the host away')
+  assert.equal((await askAs(room, 'p_ada_caps')).status, 202, 'and turned them away on the second question')
 
-  // Вопросы ведущего из счёта не вычитаются: расход инстанса — это расход.
+  // The host's questions are not subtracted from the count: instance spending is spending.
   assert.equal(countRoomQuestions(room, HOUR), before + 2)
 
-  // А в той же комнате участник упирается в комнатный потолок, как и должен.
+  // But in the same room a participant hits the room ceiling, as they should.
   const denied = await askAs(room, 'p_kid')
   assert.equal(denied.status, 429)
   assert.match(((await denied.json()) as { error: string }).error, /Занятие использовало все 30/)
 })
 
-test('ноль — слоу-мода нет вовсе, и это умолчание', async () => {
+test('zero means no slow mode at all, and that is the default', async () => {
   const room = 'slow-off'
   createSession(room, 'Выключено', null)
-  // Больше пяти минут не поставить: это уже не «не частите», а «сегодня без
-  // оракула», и настройка не даёт зайти туда по ошибке.
+  // More than five minutes cannot be set: that is no longer "do not rush" but "no
+  // oracle today", and the setting does not let anyone get there by mistake.
   assert.equal(updateOracleSettings({ slowModeSeconds: 9_999 }).slowModeSeconds, 300)
 
   updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 0 })
   for (let i = 0; i < 3; i++) {
-    assert.equal((await askAs(room, 'p_kid')).status, 202, 'выключенный слоу-мод развернул вопрос')
+    assert.equal((await askAs(room, 'p_kid')).status, 202, 'a disabled slow mode turned a question away')
   }
 })
 
-/* --------------------------------------------- потолки, поставленные комнатой */
+/* --------------------------------------------------- ceilings set by the room */
 
 /**
- * Инстанс задаёт умолчание, комната ужесточает его для себя.
+ * The instance sets the default, and a room tightens it for itself.
  *
- * Ослабить нельзя ни тем, ни другим концом: за модель платит тот, кто держит
- * инстанс, и семинар, умеющий поднять себе предел, превращал бы настройку
- * инстанса из потолка в совет. Правило одно на сервер и на пульт —
- * shared/rules.ts · oracleLimitsIn.
+ * It cannot be loosened at either end: the model is paid for by whoever runs
+ * the instance, and a seminar able to raise its own limit would turn the
+ * instance setting from a ceiling into advice. There is one rule for the server
+ * and the console — shared/rules.ts · oracleLimitsIn.
  */
-test('комната опускает потолок в час под инстансовый, и отказ идёт по её числу', async () => {
+test('a room lowers the hourly ceiling below the instance one, and the refusal follows its number', async () => {
   const room = 'limits-room-rule'
   createSession(room, 'Контрольная', null)
   updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 0 })
@@ -291,39 +294,39 @@ test('комната опускает потолок в час под инста
 
   assert.equal((await askAs(room, 'p_kid')).status, 202)
   const denied = await askAs(room, 'p_kid')
-  assert.equal(denied.status, 429, 'комнатный потолок в час не сработал')
+  assert.equal(denied.status, 429, 'the room hourly ceiling did not work')
   const body = (await denied.json()) as { error: string }
-  // Текст отказа тот же, что и у инстансового потолка: студенту важно число,
-  // а не то, в каком из двух мест его поставили.
+  // The refusal text is the same as for the instance ceiling: what matters to a
+  // student is the number, not which of the two places it was set in.
   assert.match(body.error, /использовали свой единственный вопрос оракулу/)
 })
 
-test('комната не поднимает потолок инстанса', async () => {
+test('a room does not raise the instance ceiling', async () => {
   const room = 'limits-room-loose'
   createSession(room, 'Мягче нельзя', null)
   updateOracleSettings({ questionsPerHour: 1, slowModeSeconds: 0 })
   setRules(room, { ...getRules(room), questionsPerHour: 500 })
 
   assert.equal((await askAs(room, 'p_kid')).status, 202)
-  assert.equal((await askAs(room, 'p_kid')).status, 429, 'комната переписала потолок инстанса')
+  assert.equal((await askAs(room, 'p_kid')).status, 429, 'the room overrode the instance ceiling')
 })
 
-test('комнатный слоу-мод длиннее инстансового — и преподавателя всё так же не касается', async () => {
+test('a room slow mode longer than the instance one still does not apply to the teacher', async () => {
   const room = 'slow-room-rule'
   createSession(room, 'Комнатный промежуток', null)
-  // На инстансе промежутка нет вовсе: весь он приходит из правил комнаты.
+  // The instance has no interval at all: all of it comes from the room rules.
   updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 0 })
   setRules(room, { ...getRules(room), slowModeSeconds: 30 })
 
   assert.equal((await askAs(room, 'p_kid')).status, 202)
   const denied = await askAs(room, 'p_kid')
-  assert.equal(denied.status, 429, 'комнатный слоу-мод пропустил второй вопрос подряд')
+  assert.equal(denied.status, 429, 'the room slow mode let a second question in a row through')
   const body = (await denied.json()) as { error: string; retryAfter: number }
   assert.match(body.error, /Между вопросами нужно подождать 30 секунд/)
   assert.ok(body.retryAfter > 0 && body.retryAfter <= 30)
 
-  // Ведущего промежуток не касается — ни инстансовый, ни комнатный: его
-  // вопросы идут подряд потому, что подряд идёт разбор.
+  // The interval does not apply to the host, neither the instance one nor the
+  // room one: their questions come in a row because the walkthrough goes in a row.
   upsertParticipant({
     id: 'p_slow_host',
     sessionId: room,
@@ -333,38 +336,38 @@ test('комнатный слоу-мод длиннее инстансового
     tokenHost: true,
   })
   assert.equal((await askAs(room, 'p_slow_host')).status, 202)
-  assert.equal((await askAs(room, 'p_slow_host')).status, 202, 'ведущего развернули на его же паре')
+  assert.equal((await askAs(room, 'p_slow_host')).status, 202, 'the host was turned away in their own class')
 })
 
-test('комната не укорачивает промежуток, поставленный инстансом', async () => {
+test('a room does not shorten the interval set by the instance', async () => {
   const room = 'slow-room-loose'
   createSession(room, 'Короче нельзя', null)
   updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 30 })
   setRules(room, { ...getRules(room), slowModeSeconds: 0 })
 
   assert.equal((await askAs(room, 'p_kid')).status, 202)
-  assert.equal((await askAs(room, 'p_kid')).status, 429, 'комната отменила слоу-мод инстанса')
+  assert.equal((await askAs(room, 'p_kid')).status, 429, 'the room cancelled the instance slow mode')
 
-  // Настройки инстанса одни на весь файл: оставленный включённым слоу-мод
-  // разворачивал бы второй вопрос в тестах ниже, которые про другое.
+  // The instance settings are shared by the whole file: a slow mode left on would
+  // turn away the second question in the tests below, which are about something else.
   updateOracleSettings({ slowModeSeconds: 0 })
 })
 
 /**
- * Вопрос и поручение — разные строки в разбивке панели.
+ * A question and a task are different rows in the panel's breakdown.
  *
- * Пока ход «сделать» писался под тем же 'ask', самый дорогой режим был в
- * таблице неотличим от «объясни»: один ход ходит к модели до двенадцати раз и
- * тащит с собой файлы. Владелец ключа видел ровный столбик вопросов там, где
- * полсеместра стоила пара поручений.
+ * While an "Act" turn was recorded under the same 'ask', the most expensive
+ * mode was indistinguishable in the table from "explain": one turn calls the
+ * model up to twelve times and drags files along. The key owner saw an even
+ * column of questions where a couple of tasks cost half a semester.
  */
-test('ход «сделать» пишется в учёт своим действием, а вопрос — своим', async () => {
+test('an "Act" turn is recorded in the usage under its own action, and a question under its own', async () => {
   const room = 'limits-work-action'
   createSession(room, 'Agent action', null)
   updateOracleSettings({ questionsPerHour: 20 })
 
-  // Комната с `agent: 'room'` — та, где просить о правках может любой. Право
-  // преподавателя даёт кука штата, а её через HTTP здесь ни у кого нет.
+  // A room with `agent: 'room'` is one where anyone may ask for edits. The
+  // teacher's right comes from the staff cookie, and nobody here has one over HTTP.
   setRules(room, { ...getRules(room), agent: 'room' })
 
   assert.equal((await askAs(room, 'p_ada')).status, 202)
@@ -380,11 +383,11 @@ test('ход «сделать» пишется в учёт своим дейст
 })
 
 /**
- * Расход хода складывается, а не перезаписывается: строка одна на вопрос, а
- * режим «сделать» ходит к модели до двенадцати раз. Пока считался последний
- * шаг, самый дорогой режим выглядел в панели самым дешёвым.
+ * A turn's spending adds up rather than being overwritten: there is one row per
+ * question, and the "Act" mode calls the model up to twelve times. While only
+ * the last step was counted, the most expensive mode looked the cheapest in the panel.
  */
-test('токены за один вопрос складываются по шагам', () => {
+test('the tokens of one question add up over its steps', () => {
   const room = 'limits-tokens'
   const id = recordQuestion({ sessionId: room, participantId: 'p_ada', action: 'ask' })
   noteTokens(id, 900)

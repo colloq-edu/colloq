@@ -1,107 +1,114 @@
 /**
- * Периметр контейнера комнаты на docker-бэкенде: что у ядра отнято сверх
- * памяти и процессора — привилегии, число процессов и дорога в локальную сеть.
+ * The room container's perimeter on the docker backend: what is taken from the
+ * kernel beyond memory and CPU: privileges, the process count and the road
+ * into the local network.
  *
- * Решение владельца (18.09.2026): укреплённый профиль ВСЕГДА, а не только когда
- * занятие открыто наружу. До него у локального пути (`colloq start`, `make dev`,
- * `make run`/`make up`, образ vast) было две дыры сверх самой изоляции ядер:
+ * The owner's decision (18 Sep 2026): the hardened profile ALWAYS, not only
+ * when a class is open to the outside. Before it the local path (`colloq
+ * start`, `make dev`, `make run`/`make up`, the vast image) had two holes
+ * beyond kernel isolation itself:
  *
- *   1. привилегии по умолчанию docker. Ядро и так идёт от runner (uid 1000), но
- *      ограничивающий набор capabilities оставался полным: любой setuid-файл в
- *      образе (или пакет, поставленный студентом) возвращал бы их себе;
- *   2. открытая сеть. Код студента доставал до роутера преподавателя, до всех
- *      машин его домашней или университетской сети, до самого компьютера (на
- *      colima `host.docker.internal:3000` — это живой сервер Colloq, проверено
- *      18.09) и до метаданных облака 169.254.169.254 на арендованной машине.
+ *   1. docker's default privileges. The kernel already runs as runner (uid
+ *      1000), but the bounding set of capabilities stayed full: any setuid file
+ *      in the image (or a package a student installed) would take them back;
+ *   2. an open network. Student code reached the teacher's router, every
+ *      machine on their home or university network, the computer itself (on
+ *      colima `host.docker.internal:3000` is the live Colloq server, checked on
+ *      18 Sep 2026) and the cloud metadata at 169.254.169.254 on a rented
+ *      machine.
  *
- * Что стало.
+ * What it is now.
  *
- * Привилегии — флагами `docker run` (`roomHardeningArgs`): cap-drop ALL,
- * no-new-privileges, явный uid 1000, pids-limit. Добавлять обратно нечего:
- * образ не делает ничего от root на старте — kernel/Dockerfile кончается
- * `USER runner`, и Jupyter стартует сразу от него (проверено: CapEff и CapBnd
- * внутри — нули, ядро, pip и терминал работают).
+ * Privileges are handled by `docker run` flags (`roomHardeningArgs`): cap-drop
+ * ALL, no-new-privileges, an explicit uid 1000, pids-limit. There is nothing to
+ * add back: the image does nothing as root at startup, since kernel/Dockerfile
+ * ends with `USER runner` and Jupyter starts straight as that user (checked:
+ * CapEff and CapBnd inside are zeros; the kernel, pip and the terminal work).
  *
- * Сеть — правилами iptables на машине docker-демона, в цепочках, которыми
- * владеем только мы (COLLOQ-ROOMS-*), с переходами из DOCKER-USER (всё, что
- * контейнер шлёт дальше хоста) и из INPUT (всё, что он шлёт самому хосту: его
- * адресам в LAN, шлюзу моста, соседним опубликованным портам). DOCKER-USER —
- * единственное место в FORWARD, которое docker обещает не трогать и ставит
- * ПЕРВЫМ: правило, вставленное в сам FORWARD, демон после перезапуска обогнал
- * бы своими ACCEPT. Интернет остаётся: запрещены только частные и служебные
- * диапазоны (BLOCKED_V4), остальное идёт как шло — pip, датасеты, API.
+ * The network is handled by iptables rules on the docker daemon's machine, in
+ * chains only we own (COLLOQ-ROOMS-*), with jumps from DOCKER-USER (everything
+ * the container sends beyond the host) and from INPUT (everything it sends to
+ * the host itself: its LAN addresses, the bridge gateway, neighbouring
+ * published ports). DOCKER-USER is the only place in FORWARD that docker
+ * promises not to touch and puts FIRST: a rule inserted into FORWARD itself
+ * would be overtaken by the daemon's own ACCEPTs after a restart. The internet
+ * stays: only private and special-purpose ranges are banned (BLOCKED_V4), and
+ * everything else goes as before: pip, datasets, APIs.
  *
- * Ставит правила короткоживущий контейнер-помощник через тот же сокет docker,
- * который у сервера уже есть (`--privileged --pid=host --net=host`). Внутри он
- * находит процесс dockerd и зовёт iptables В ЕГО пространстве имён файлов
- * (nsenter -m). Так вопрос «iptables-nft или iptables-legacy» решается сам:
- * это ровно тот бинарь, которым пользуется демон, — ошибиться бэкендом, как
- * ошибся бы свой iptables в своём образе, тут нельзя. И так же это работает на
- * всех трёх формах: colima и Docker Desktop (демон в своей Linux-VM — туда и
- * попадаем), обычный Linux (демон на хосте). Образ помощника — образ ядра:
- * он заведомо есть на машине, где собираются поднимать комнату, и в нём есть
- * nsenter (util-linux в Debian обязателен).
+ * The rules are installed by a short-lived helper container through the same
+ * docker socket the server already has (`--privileged --pid=host --net=host`).
+ * Inside, it finds the dockerd process and calls iptables IN ITS mount
+ * namespace (nsenter -m). That settles the "iptables-nft or iptables-legacy"
+ * question by itself: it is exactly the binary the daemon uses, and picking
+ * the wrong backend, as a separate iptables in our own image could, is
+ * impossible here. The same works on all three forms: colima and Docker
+ * Desktop (the daemon in its own Linux VM, which is where we land), and plain
+ * Linux (the daemon on the host). The helper's image is the kernel image: it
+ * is certainly present on a machine that is about to bring up a room, and it
+ * has nsenter (util-linux is required in Debian).
  *
- * Не вышло поставить — комната НЕ поднимается (RoomPerimeterError с
- * переведённым текстом: что случилось и как чинить). Молча открыть сеть было
- * бы хуже отказа: преподаватель думает, что защищён. Для доверенной машины,
- * где помощник запуститься не может (rootless docker, Docker Desktop с
- * Enhanced Container Isolation, podman), есть явный выход:
- * COLLOQ_ROOM_NETWORK=open — комнаты идут без запрета, сервер и `colloq doctor`
- * говорят об этом вслух.
+ * If installing fails, the room does NOT come up (RoomPerimeterError with a
+ * translated text: what happened and how to fix it). Silently opening the
+ * network would be worse than refusing: the teacher believes they are
+ * protected. For a trusted machine where the helper cannot start (rootless
+ * docker, Docker Desktop with Enhanced Container Isolation, podman) there is an
+ * explicit way out: COLLOQ_ROOM_NETWORK=open; rooms run without the ban, and
+ * the server and `colloq doctor` say so out loud.
  *
- * Три тонкости, из-за которых правила именно такие.
+ * Three subtleties that make the rules the way they are.
  *
- * DNS. Встроенный резолвер docker (127.0.0.11) пересылает запросы иногда из
- * пространства имён хоста (`ExtServers: [host(…)]` — так на colima и на Linux
- * с systemd-resolved), а иногда ИЗ СЕТИ КОНТЕЙНЕРА — и тогда адрес назначения
- * частный: 192.168.65.7 у Docker Desktop, роутер 192.168.1.1 на обычном
- * Linux, 169.254.169.254 на GCP. Поэтому порт 53 разрешён до любого адреса:
- * без этого на половине машин не работал бы ни один `pip install`. Цена —
- * студент может спросить DNS у роутера; соединиться с тем, что узнал, он всё
- * равно не может.
+ * DNS. Docker's built-in resolver (127.0.0.11) sometimes forwards queries from
+ * the host's namespace (`ExtServers: [host(…)]`, as on colima and on Linux with
+ * systemd-resolved), and sometimes FROM THE CONTAINER'S NETWORK, and then the
+ * destination address is private: 192.168.65.7 on Docker Desktop, the router
+ * 192.168.1.1 on plain Linux, 169.254.169.254 on GCP. So port 53 is allowed to
+ * any address: without that not a single `pip install` would work on half the
+ * machines. The price: a student can query the router's DNS, but still cannot
+ * connect to what they learn.
  *
- * Ответы. Сервер ходит к Jupyter комнаты сам (опубликованный порт на петле или
- * имя в общей сети), и ответ контейнера — это пакет ИЗ подсети комнат В
- * частный адрес. Первое правило каждой цепочки — ESTABLISHED,RELATED: всё, что
- * начал не контейнер, проходит.
+ * Replies. The server goes to the room's Jupyter itself (a published port on
+ * loopback, or a name on the shared network), and the container's reply is a
+ * packet FROM the rooms subnet TO a private address. The first rule of every
+ * chain is ESTABLISHED,RELATED: everything the container did not start passes.
  *
- * IPv6. Правил для него нет, потому что нет его самого: контейнер комнаты
- * поднимается с `disable_ipv6=1`. Сеть комнат заводится без IPv6, но и в сети
- * compose, и при `ipv6: true` в daemon.json ядро не получит ни одного
- * v6-адреса — ни глобального, ни fe80:: на мосту, — значит, и обойти запрет по
- * v6 нечем.
+ * IPv6. There are no rules for it because it is not there at all: the room
+ * container comes up with `disable_ipv6=1`. The rooms network is created
+ * without IPv6, but even on the compose network, and with `ipv6: true` in
+ * daemon.json, the kernel will not get a single v6 address, neither global nor
+ * fe80:: on the bridge, so there is nothing to get around the ban with via v6.
  */
 import os from 'node:os'
 import { tr } from '@shared/i18n'
 
-/** Сеть комнат, которую сервер заводит сам, когда живёт на хосте. */
+/** The rooms network the server creates itself when it lives on the host. */
 export const ROOM_NETWORK = 'colloq-rooms'
 
 /**
- * Подсеть этой сети — нарочно вне пулов docker (172.17–31/16 и 192.168/16 по
- * /20): так её не займёт первая попавшаяся сеть compose, и `network create` не
- * упадёт на «Pool overlaps». /22 — тысяча адресов, контейнеров столько не
- * бывает даже на большой машине; адрес держит только ЖИВОЙ контейнер.
- * Перебивается KERNEL_ROOM_SUBNET — если эта подсеть у кого-то уже занята
- * LAN или VPN.
+ * This network's subnet, deliberately outside docker's pools (172.17–31/16 and
+ * 192.168/16 by /20): so the first compose network to come along does not take
+ * it, and `network create` does not fail with "Pool overlaps". A /22 is a
+ * thousand addresses; there are never that many containers even on a big
+ * machine, and only a LIVE container holds an address. Overridden by
+ * KERNEL_ROOM_SUBNET, in case this subnet is already taken by someone's LAN or
+ * VPN.
  */
 export const DEFAULT_ROOM_SUBNET = '10.213.0.0/22'
 
 /**
- * Версия профиля — метка `colloq.profile` на контейнере комнаты.
+ * The profile version: the `colloq.profile` label on a room container.
  *
- * Контейнер без неё поднят до укрепления: живой доживает до остановки (сносить
- * его посреди пары — это потерять все переменные), остановленный пересоздаётся
- * при следующем подъёме. Поменяется профиль — поднимем число, и то же правило
- * переведёт комнаты на новый сам.
+ * A container without it was brought up before hardening: a live one lives on
+ * until it stops (removing it in the middle of class means losing every
+ * variable), a stopped one is recreated at the next start. When the profile
+ * changes, we bump the number, and the same rule moves the rooms to the new
+ * one by itself.
  */
 export const ROOM_PROFILE = '1'
 
-/** Метка docker, по которой помощник отличают от комнат. */
+/** The docker label that tells the helper apart from rooms. */
 export const PERIMETER_KIND = 'room-perimeter'
 
-/** Комментарий на наших переходах: по нему (и только по нему) мы их находим. */
+/** The comment on our jumps: it is how (and the only way) we find them. */
 export const PERIMETER_TAG = 'colloq-rooms'
 
 const CHAIN_FWD = 'COLLOQ-ROOMS-FWD'
@@ -109,11 +116,12 @@ const CHAIN_IN = 'COLLOQ-ROOMS-IN'
 const CHAIN_DENY = 'COLLOQ-ROOMS-DENY'
 
 /**
- * Куда комнате нельзя. Список владельца плюс то, что туда не ходят по
- * определению: «эта сеть» 0/8 и зарезервированное 240/4 с широковещанием.
+ * Where a room must not go. The owner's list plus what nobody goes to by
+ * definition: "this network" 0/8 and the reserved 240/4 with broadcast.
  *
- * 198.18.0.0/15 здесь нет намеренно: на него отвечают fake-ip DNS у Clash и
- * sing-box, и на такой машине запрет увёл бы у комнаты весь интернет.
+ * 198.18.0.0/15 is deliberately absent: the fake-ip DNS of Clash and sing-box
+ * answers with it, and on such a machine the ban would take the whole internet
+ * away from the room.
  */
 export const BLOCKED_V4 = [
   '0.0.0.0/8',
@@ -127,16 +135,17 @@ export const BLOCKED_V4 = [
   '240.0.0.0/4',
 ] as const
 
-/* ------------------------------------------------------------- настройки */
+/* -------------------------------------------------------------- settings */
 
 export type RoomNetworkMode = 'blocked' | 'open'
 
 let unknownModeWarned = false
 
 /**
- * COLLOQ_ROOM_NETWORK: `open` — выход для доверенной машины, всё остальное —
- * запрет. Опечатка («opne») открытой сетью не становится: ошибиться в сторону
- * дыры нельзя, поэтому незнакомое слово — это запрет и строка в журнале.
+ * COLLOQ_ROOM_NETWORK: `open` is the way out for a trusted machine, anything
+ * else means the ban. A typo ("opne") does not become an open network: there
+ * must be no erring toward the hole, so an unknown word means the ban and a
+ * line in the journal.
  */
 export function roomNetworkMode(env: NodeJS.ProcessEnv = process.env): RoomNetworkMode {
   const raw = (env.COLLOQ_ROOM_NETWORK ?? '').trim().toLowerCase()
@@ -149,11 +158,12 @@ export function roomNetworkMode(env: NodeJS.ProcessEnv = process.env): RoomNetwo
 }
 
 /**
- * Потолок процессов комнаты: KERNEL_PIDS, по умолчанию 512.
+ * The room's process ceiling: KERNEL_PIDS, 512 by default.
  *
- * Fork-бомба в ячейке без потолка кладёт не комнату, а машину — и все соседние
- * занятия вместе с ней. 512 с запасом хватает Jupyter, ядру, терминалу и
- * `DataLoader(num_workers=8)`; прод держит 256 на Pod (deploy/k3s).
+ * A fork bomb in a cell without a ceiling takes down not the room but the
+ * machine, and every neighbouring class with it. 512 is plenty for Jupyter,
+ * the kernel, the terminal and `DataLoader(num_workers=8)`; production keeps
+ * 256 per Pod (deploy/k3s).
  */
 export function pidsLimit(env: NodeJS.ProcessEnv = process.env): number {
   const value = Number((env.KERNEL_PIDS ?? '').trim())
@@ -161,23 +171,25 @@ export function pidsLimit(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 /**
- * Потолок процессов КОНТЕЙНЕРА ЛИЧНЫХ ТЕТРАДЕЙ: KERNEL_OWN_PIDS, по умолчанию 2048.
+ * The process ceiling of the PERSONAL NOTEBOOKS CONTAINER: KERNEL_OWN_PIDS,
+ * 2048 by default.
  *
- * Отдельное число, потому что считает он другое. В контейнере комнаты живёт
- * одно ядро на тетрадь занятия плюс терминал; в контейнере личных тетрадей —
- * десятки ядер сразу, по одному на открытый черновик, и каждое ipykernel
- * держит полтора десятка потоков само по себе. Комнатных 512 не хватает уже на
- * тридцати ядрах, и кончается это не отказом, а `BlockingIOError` посреди
- * чужого запуска. 2048 — те же 512 «на комнату», умноженные на потолок живых
- * ядер (pool.ts · ownKernelMax): fork-бомба по-прежнему упирается в стенку, а
- * стенка эта — не у соседа.
+ * A separate number, because it counts something else. A room container holds
+ * one kernel per class notebook plus the terminal; the personal notebooks
+ * container holds dozens of kernels at once, one per open draft, and each
+ * ipykernel keeps a dozen and a half threads on its own. The room's 512 runs
+ * out already at thirty kernels, and that ends not in a refusal but in a
+ * `BlockingIOError` in the middle of someone else's run. 2048 is the same 512
+ * "per room" multiplied by the ceiling of live kernels (pool.ts ·
+ * ownKernelMax): a fork bomb still hits a wall, and that wall is not the
+ * neighbour's.
  */
 export function ownPidsLimit(env: NodeJS.ProcessEnv = process.env): number {
   const value = Number((env.KERNEL_OWN_PIDS ?? '').trim())
   return Number.isInteger(value) && value >= 64 ? value : 2048
 }
 
-/** KERNEL_ROOM_SUBNET, если он — настоящий IPv4 CIDR; иначе умолчание. */
+/** KERNEL_ROOM_SUBNET if it is a real IPv4 CIDR; otherwise the default. */
 export function roomSubnetSetting(env: NodeJS.ProcessEnv = process.env): { subnet: string; explicit: boolean } {
   const raw = (env.KERNEL_ROOM_SUBNET ?? '').trim()
   if (raw === '') return { subnet: DEFAULT_ROOM_SUBNET, explicit: false }
@@ -188,34 +200,35 @@ export function roomSubnetSetting(env: NodeJS.ProcessEnv = process.env): { subne
   return { subnet: raw, explicit: true }
 }
 
-/* ------------------------------------------------------- флаги docker run */
+/* ------------------------------------------------------- docker run flags */
 
 /**
- * Укрепление контейнера комнаты — то, что прод задаёт securityContext'ом Pod
- * (runtime/src/controller.ts), в словах docker.
+ * Room container hardening: what production sets through the Pod's
+ * securityContext (runtime/src/controller.ts), in docker's words.
  *
- * Чего здесь нет и почему. `--read-only`: студенты ставят пакеты `%pip
- * install` в слой контейнера, и прод ради этого монтирует /home/runner и /tmp
- * отдельно — здесь это сломало бы привычный путь без выигрыша. `--tmpfs /tmp`:
- * tmpfs считается в память комнаты, и датасет, скачанный в /tmp, убивал бы
- * ядро по OOM. seccomp не трогаем — остаётся профиль docker по умолчанию, тот
- * же RuntimeDefault, что в проде.
+ * What is not here and why. `--read-only`: students install packages with
+ * `%pip install` into the container layer, and production mounts /home/runner
+ * and /tmp separately for that; here it would break the usual path with no
+ * gain. `--tmpfs /tmp`: tmpfs counts against the room's memory, and a dataset
+ * downloaded to /tmp would kill the kernel by OOM. seccomp is left alone:
+ * docker's default profile stays, the same RuntimeDefault as in production.
  */
 export function roomHardeningArgs(
   env: NodeJS.ProcessEnv = process.env,
-  /** Контейнер личных тетрадей считает процессы по своему потолку — `ownPidsLimit`. */
+  /** The personal notebooks container uses its own ceiling, `ownPidsLimit`. */
   role: 'room' | 'own' = 'room',
 ): string[] {
   return [
-    // Тот же uid, что в образе и в проде (runAsUser/runAsGroup 1000): образ,
-    // собранный кем-то с `USER root` в конце, не станет root-комнатой.
+    // The same uid as in the image and in production (runAsUser/runAsGroup
+    // 1000): an image someone built with `USER root` at the end will not
+    // become a root room.
     '--user=1000:1000',
     '--cap-drop=ALL',
-    // setuid-файлы и file capabilities больше ничего не дают — ни su, ни
-    // бинарю, который студент поставил себе сам.
+    // setuid files and file capabilities no longer give anything: not to su,
+    // not to a binary the student installed themselves.
     '--security-opt=no-new-privileges',
     `--pids-limit=${role === 'own' ? ownPidsLimit(env) : pidsLimit(env)}`,
-    // Без IPv6 вообще: правил для v6 нет, значит, не должно быть и адресов.
+    // No IPv6 at all: there are no v6 rules, so there must be no addresses.
     '--sysctl=net.ipv6.conf.all.disable_ipv6=1',
     '--sysctl=net.ipv6.conf.default.disable_ipv6=1',
     '--label',
@@ -224,13 +237,14 @@ export function roomHardeningArgs(
 }
 
 /**
- * Аргументы `docker network create` для сети комнат.
+ * `docker network create` arguments for the rooms network.
  *
- * ICC выключен: комнаты не видят друг друга даже тогда, когда наших правил нет
- * (COLLOQ_ROOM_NETWORK=open), — Jupyter соседа закрыт токеном, но стучаться в
- * него незачем. Сервер ходит к комнате не по этой сети, а через опубликованный
- * порт, поэтому ICC ему не нужен. IPv6 выключен явно — на случай
- * `default-network-opts` с ipv6 в daemon.json.
+ * ICC is off: rooms do not see each other even when our rules are absent
+ * (COLLOQ_ROOM_NETWORK=open); a neighbour's Jupyter is closed by a token, but
+ * there is no reason to knock on it. The server reaches a room not over this
+ * network but through a published port, so it does not need ICC. IPv6 is
+ * turned off explicitly, in case daemon.json has `default-network-opts` with
+ * ipv6.
  */
 export function networkCreateArgs(subnet: string | null): string[] {
   return [
@@ -247,7 +261,7 @@ export function networkCreateArgs(subnet: string | null): string[] {
   ]
 }
 
-/* ---------------------------------------------------------------- адреса */
+/* ------------------------------------------------------------- addresses */
 
 export function parseIpv4(ip: string): number | null {
   const parts = ip.trim().split('.')
@@ -282,13 +296,15 @@ export function ipv4InCidr(ip: string, cidr: string): boolean {
 }
 
 /**
- * Свои адреса сервера внутри подсети комнат — только когда сервер сам в
- * контейнере и делит сеть с комнатами (`make up`, образ vast).
+ * The server's own addresses inside the rooms subnet, only when the server
+ * itself is in a container and shares the network with the rooms (`make up`,
+ * the vast image).
  *
- * Правила пишутся по подсети-источнику, а сервер в этой подсети тоже живёт:
- * без исключения он потерял бы и туннель (frpc, cloudflared ходят из того же
- * контейнера), и частный адрес модели Оракула, и дорогу к ядрам. Подделать
- * этот адрес из комнаты нечем: у ядра нет ни NET_RAW, ни NET_ADMIN.
+ * The rules are written by source subnet, and the server lives in that subnet
+ * too: without the exemption it would lose the tunnel (frpc and cloudflared go
+ * out from the same container), the Oracle model's private address, and the
+ * road to the kernels. A room has no way to forge this address: the kernel has
+ * neither NET_RAW nor NET_ADMIN.
  */
 export function ownAddresses(
   subnets: readonly string[],
@@ -304,7 +320,7 @@ export function ownAddresses(
   return [...found].sort()
 }
 
-/** IPv4-подсети из вывода `docker network inspect` (IPv6 отбрасываем: его у комнат нет). */
+/** IPv4 subnets from `docker network inspect` (IPv6 dropped: rooms have none). */
 export function ipv4Subnets(text: string): string[] {
   return text
     .split(/\s+/)
@@ -312,29 +328,30 @@ export function ipv4Subnets(text: string): string[] {
     .filter((item) => parseCidr(item) !== null)
 }
 
-/* -------------------------------------------------------------- правила */
+/* ---------------------------------------------------------------- rules */
 
 export interface PerimeterPlan {
-  /** Подсети, из которых шлют контейнеры комнат. */
+  /** The subnets room containers send from. */
   subnets: string[]
-  /** Адреса внутри них, которым можно всё (сервер в общей сети compose). */
+  /** Addresses inside them that may go anywhere (the server on the compose network). */
   exempt: string[]
 }
 
 /**
- * Тело для `iptables-restore --noflush` — три наши цепочки целиком.
+ * The body for `iptables-restore --noflush`: all three of our chains, whole.
  *
- * Атомарно: либо ядро получает весь набор, либо ничего; объявление своей
- * цепочки строкой `:ИМЯ` при --noflush очищает именно её, и повторный вызов не
- * плодит копий (проверено на iptables-nft 1.8.10 colima). Чужих цепочек тело
- * не касается вовсе — переходы в DOCKER-USER и INPUT ставит скрипт отдельно,
- * с проверкой `-C`.
+ * Atomic: either the kernel gets the whole set or nothing; declaring our own
+ * chain with a `:NAME` line under --noflush flushes exactly that chain, and a
+ * repeated call does not breed copies (checked on iptables-nft 1.8.10 on
+ * colima). The body does not touch other chains at all: the jumps in
+ * DOCKER-USER and INPUT are installed by the script separately, with a `-C`
+ * check.
  *
- * `reject` — отказ сразу: TCP получает RST («Connection refused» за
- * миллисекунду), остальное — ICMP «administratively prohibited». Не DROP:
- * запрос, повисший на минуту, студент примет за «интернет тормозит». ICMP
- * ядро ограничивает по частоте, RST — нет; поэтому TCP отдельно. `drop` —
- * запасной путь для ядра без модуля REJECT.
+ * `reject` refuses at once: TCP gets an RST ("Connection refused" within a
+ * millisecond), everything else ICMP "administratively prohibited". Not DROP:
+ * a request hanging for a minute would look to a student like "the internet is
+ * slow". The kernel rate-limits ICMP but not RST, hence TCP separately. `drop`
+ * is the fallback for a kernel without the REJECT module.
  */
 export function perimeterRules(plan: PerimeterPlan, deny: 'reject' | 'drop' = 'reject'): string {
   const lines = [
@@ -350,9 +367,9 @@ export function perimeterRules(plan: PerimeterPlan, deny: 'reject' | 'drop' = 'r
     lines.push(`-A ${CHAIN_DENY} -j DROP`)
   }
   /*
-   * Обе цепочки начинаются одинаково: ответы проходят, исключённые адреса
-   * проходят, DNS проходит. Всё это — RETURN, а не ACCEPT: решение остаётся
-   * за докером и за файрволом хоста, мы только вычёркиваем своё.
+   * Both chains begin the same way: replies pass, exempt addresses pass, DNS
+   * passes. All of that is RETURN, not ACCEPT: the decision stays with docker
+   * and the host firewall; we only strike out our part.
    */
   for (const chain of [CHAIN_FWD, CHAIN_IN]) {
     lines.push(`-A ${chain} -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN`)
@@ -361,10 +378,10 @@ export function perimeterRules(plan: PerimeterPlan, deny: 'reject' | 'drop' = 'r
     lines.push(`-A ${chain} -p tcp -m tcp --dport 53 -j RETURN`)
   }
   for (const subnet of plan.subnets) {
-    // Дальше хоста: частные и служебные адреса — нет, интернет — да.
+    // Beyond the host: private and special addresses no, the internet yes.
     for (const range of BLOCKED_V4) lines.push(`-A ${CHAIN_FWD} -s ${subnet} -d ${range} -j ${CHAIN_DENY}`)
-    // Самому хосту — ничего: ни его адресам в LAN, ни шлюзу моста, ни
-    // опубликованным портам соседей, ни сервису на 0.0.0.0.
+    // To the host itself nothing: not its LAN addresses, not the bridge
+    // gateway, not the neighbours' published ports, not a service on 0.0.0.0.
     lines.push(`-A ${CHAIN_IN} -s ${subnet} -j ${CHAIN_DENY}`)
   }
   lines.push('COMMIT')
@@ -372,11 +389,12 @@ export function perimeterRules(plan: PerimeterPlan, deny: 'reject' | 'drop' = 'r
 }
 
 /**
- * Найти dockerd и позвать его iptables — общая голова скриптов помощника.
+ * Find dockerd and call its iptables: the common head of the helper scripts.
  *
- * dockerd ищется не первым попавшимся по имени, а тот, чьё сетевое
- * пространство совпадает с нашим: `--net=host` по определению даёт сеть
- * самого демона, а вложенный dockerd (docker-in-docker соседа) живёт в своей.
+ * dockerd is looked for not as the first one found by name but as the one
+ * whose network namespace matches ours: `--net=host` by definition gives the
+ * daemon's own network, while a nested dockerd (a neighbour's docker-in-docker)
+ * lives in its own.
  */
 const FIND_DOCKERD = `set -u
 say() { printf 'colloq-perimeter: %s\\n' "$*"; }
@@ -392,12 +410,13 @@ fw() { nsenter -t "$pid" -m -- "$@"; }
 `
 
 /**
- * Скрипт помощника: поставить (или обновить) правила и переходы к ним.
+ * The helper script: install (or update) the rules and the jumps to them.
  *
- * Коды выхода — чтобы отказ назвал причину: 20 — демона не видно (podman,
- * удалённый демон, rootless без pid хоста), 21 — нет DOCKER-USER (у демона
- * `iptables: false` или nftables-бэкенд docker 29), 22 — iptables не принял
- * правила, 23 — не встали переходы.
+ * Exit codes let a refusal name its cause: 20, the daemon is not visible
+ * (podman, a remote daemon, rootless without the host pid); 21, there is no
+ * DOCKER-USER (the daemon has `iptables: false`, or docker 29's nftables
+ * backend); 22, iptables did not accept the rules; 23, the jumps did not go
+ * in.
  */
 export function perimeterScript(plan: PerimeterPlan): string {
   return `${FIND_DOCKERD}[ -n "$pid" ] || { say 'no dockerd process in the host namespaces'; exit 20; }
@@ -420,8 +439,8 @@ say ok
 }
 
 /**
- * Снять всё своё: переходы по комментарию, потом свои цепочки. Чужие правила
- * не трогаются — удаление идёт ровно по той строке, которую мы вставляли.
+ * Remove everything of ours: the jumps by comment, then our own chains. Other
+ * rules are not touched: deletion goes by exactly the line we inserted.
  */
 export function perimeterRemovalScript(): string {
   return `${FIND_DOCKERD}[ -n "$pid" ] || exit 0
@@ -434,10 +453,10 @@ say removed
 }
 
 /**
- * `docker run` помощника. Привилегии — его, а не комнаты: он живёт секунду,
- * исполняет только наш скрипт и удаляется сам (`--rm`). `--pull=never`: образ
- * ядра не лежит ни в одном реестре, и попытка скачать его только отняла бы
- * время перед тем же отказом.
+ * The helper's `docker run`. The privileges are its own, not the room's: it
+ * lives for a second, runs only our script and removes itself (`--rm`).
+ * `--pull=never`: the kernel image is not in any registry, and an attempt to
+ * pull it would only waste time before the same refusal.
  */
 export function helperArgs(image: string, script: string): string[] {
   return [
@@ -458,7 +477,7 @@ export function helperArgs(image: string, script: string): string[] {
   ]
 }
 
-/* ------------------------------------------------------------ установка */
+/* --------------------------------------------------------- installation */
 
 interface RunResult {
   code: number
@@ -466,7 +485,7 @@ interface RunResult {
 }
 export type DockerRun = (args: string[], timeoutMs?: number) => Promise<RunResult>
 
-/** Отказ поднять комнату без запрета — текст уже переведён и говорит, что делать. */
+/** Refusing a room without the ban: the text is translated and says what to do. */
 export class RoomPerimeterError extends Error {
   constructor(readonly reason: string) {
     super(tr('server.roomPerimeter.refused', { p0: reason }))
@@ -475,12 +494,13 @@ export class RoomPerimeterError extends Error {
 }
 
 /**
- * Где комнаты и как их узнать: имя сети и заводить ли её самим.
+ * Where the rooms are and how to recognise them: the network name, and whether
+ * to create it ourselves.
  *
- * На хосте (`make dev`, `colloq start`, `make run`) сеть наша — `colloq-rooms`.
- * В контейнере (`make up`, vast) комнаты живут в сети, которую сервер делит с
- * ними (KERNEL_NETWORK), — её заводит тот, кто нас запустил, а подсеть мы
- * читаем у docker.
+ * On the host (`make dev`, `colloq start`, `make run`) the network is ours,
+ * `colloq-rooms`. In a container (`make up`, vast) rooms live on the network
+ * the server shares with them (KERNEL_NETWORK); whoever launched us creates
+ * it, and we read the subnet from docker.
  */
 export interface RoomNetworkTarget {
   network: string
@@ -488,20 +508,20 @@ export interface RoomNetworkTarget {
 }
 
 /**
- * Успех помним минуту — не дольше.
+ * Success is remembered for a minute, no longer.
  *
- * Правило может исчезнуть: перезагрузка VM colima или Docker Desktop, `iptables
- * -F` руками. Проверять на каждый подъём комнаты — лишний привилегированный
- * контейнер на каждого из тридцати студентов в первую минуту пары; не
- * проверять никогда — поверить в правило, которого уже нет. Минута — это один
- * помощник на волну подъёмов и свежий взгляд после любой перезагрузки демона
- * (она сама длится дольше).
+ * A rule can disappear: a reboot of the colima or Docker Desktop VM, an
+ * `iptables -F` by hand. Checking on every room start would mean an extra
+ * privileged container for each of thirty students in the first minute of
+ * class; never checking would mean trusting a rule that is no longer there. A
+ * minute is one helper per wave of starts, and a fresh look after any daemon
+ * restart (which itself takes longer).
  */
 const FRESH_MS = 60_000
 
 let applied: { key: string; at: number } | null = null
 let inflight: Promise<void> | null = null
-/** Последний отказ — чтобы сказать его и тем, кто спросит о состоянии. */
+/** The last refusal, so it can be told to those who ask about the state too. */
 let lastProblem: string | null = null
 let openAnnounced = false
 
@@ -509,12 +529,12 @@ export function perimeterProblem(): string | null {
   return lastProblem
 }
 
-/** Не верить запомненному успеху: следующий подъём комнаты спросит docker заново. */
+/** Do not trust the remembered success: the next room start asks docker again. */
 export function perimeterStale(): void {
   applied = null
 }
 
-/** Забыть всё — тестам, чтобы один случай не наследовал память другого. */
+/** Forget everything, for tests, so one case does not inherit another's memory. */
 export function forgetPerimeter(): void {
   applied = null
   inflight = null
@@ -522,7 +542,7 @@ export function forgetPerimeter(): void {
   openAnnounced = false
 }
 
-/** Подсети сети комнат; заводит её, если это наша сеть и её нет. */
+/** The rooms network's subnets; creates it if it is our network and missing. */
 async function roomSubnets(docker: DockerRun, target: RoomNetworkTarget): Promise<string[]> {
   const inspect = () =>
     docker(['network', 'inspect', target.network, '--format', '{{range .IPAM.Config}}{{.Subnet}} {{end}}'], 10_000)
@@ -531,15 +551,17 @@ async function roomSubnets(docker: DockerRun, target: RoomNetworkTarget): Promis
     const { subnet, explicit } = roomSubnetSetting()
     let made = await docker(networkCreateArgs(subnet), 30_000)
     /*
-     * Подсеть уже чья-то (другая сеть docker на этой машине) — и её не
-     * называли явно: пусть docker выберет сам. Правила всё равно пишутся по
-     * той подсети, которую сеть получила на деле, а не по умолчанию.
+     * The subnet already belongs to someone (another docker network on this
+     * machine), and it was not named explicitly: let docker choose. The rules
+     * are written for the subnet the network actually got anyway, not for the
+     * default.
      */
     if (made.code !== 0 && !explicit && /overlap/i.test(made.out)) {
       console.warn(`[kernel] ${subnet} is taken on this Docker; ${ROOM_NETWORK} gets a subnet from Docker's pool`)
       made = await docker(networkCreateArgs(null), 30_000)
     }
-    // Два процесса завели сеть разом — второму достаточно того, что она есть.
+    // Two processes created the network at once: for the second it is enough
+    // that the network exists.
     if (made.code !== 0 && !/already exists/i.test(made.out)) {
       throw new RoomPerimeterError(`docker network create ${ROOM_NETWORK}: ${made.out.slice(-200)}`)
     }
@@ -553,9 +575,10 @@ async function roomSubnets(docker: DockerRun, target: RoomNetworkTarget): Promis
 }
 
 /**
- * Образ для помощника: тот, что просили (образ поднимаемой комнаты), иначе
- * любой colloq-kernel на машине. Нет ни одного — значит, и комнату поднимать
- * не из чего; такой отказ скажет «окружение не собрано» раньше нас.
+ * The image for the helper: the one asked for (the image of the room being
+ * started), otherwise any colloq-kernel on the machine. None at all means
+ * there is nothing to bring the room up from either; that refusal will say
+ * "environment not built" before we do.
  */
 async function helperImage(docker: DockerRun, preferred: string | null): Promise<string | null> {
   if (preferred) {
@@ -568,11 +591,12 @@ async function helperImage(docker: DockerRun, preferred: string | null): Promise
 }
 
 /**
- * Сеть комнат есть, и запрет на локальные адреса стоит — или отказ.
+ * The rooms network exists and the ban on local addresses is in place, or a
+ * refusal.
  *
- * Зовётся перед каждым `docker run` и `docker start` комнаты (успех помнится
- * минуту, одновременные вызовы делят один помощник) и один раз на старте
- * сервера. Бросает RoomPerimeterError — и тогда комната не поднимается.
+ * Called before every `docker run` and `docker start` of a room (success is
+ * remembered for a minute, simultaneous calls share one helper) and once at
+ * server start. Throws RoomPerimeterError, and then the room does not come up.
  */
 export async function ensureRoomPerimeter(
   docker: DockerRun,
@@ -584,11 +608,13 @@ export async function ensureRoomPerimeter(
 }
 
 /**
- * То же на старте сервера — заранее, чтобы первая комната не ждала помощника,
- * а оператор увидел отказ в журнале до пары, а не на первом Run.
+ * The same at server start, in advance, so that the first room does not wait
+ * for the helper and the operator sees a refusal in the journal before class,
+ * not at the first Run.
  *
- * Образа ядра ещё нет (vast собирает его в фоне после старта) — не отказ:
- * комнату всё равно не из чего поднимать, а запрет поставит её первый подъём.
+ * No kernel image yet (vast builds it in the background after start) is not a
+ * refusal: there is nothing to bring a room up from anyway, and the room's
+ * first start will install the ban.
  */
 export async function warmPerimeter(docker: DockerRun, target: RoomNetworkTarget, image: string): Promise<void> {
   if (roomNetworkMode() === 'blocked' && (await helperImage(docker, image)) === null) {
@@ -615,8 +641,9 @@ async function applyPerimeter(
       console.warn(
         '[kernel] COLLOQ_ROOM_NETWORK=open: room kernels can reach this machine, its LAN and cloud metadata. Remove the line to block local addresses.',
       )
-      // Открыто — значит открыто: запрет, поставленный прошлым запуском,
-      // снимается. Не вышло (помощника тут и не пускают) — снимать нечего.
+      // Open means open: a ban installed by a previous run is removed. If that
+      // fails (the helper is not allowed here anyway), there is nothing to
+      // remove.
       const img = await helperImage(docker, image)
       if (img) {
         const res = await docker(helperArgs(img, perimeterRemovalScript()), 30_000)

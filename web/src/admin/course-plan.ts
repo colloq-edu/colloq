@@ -1,16 +1,18 @@
 /**
- * Строки «по плану» в курсе — что с ними делает панель.
+ * "Planned" rows in a course — what the panel does with them.
  *
- * Завести план можно было только скриптом из таблицы (scripts/course-from-sheet.mts)
- * или запросом к API: экран курса строки плана показывал, умел убрать и
- * переставить, но не умел ни завести новую, ни поправить опечатку в теме, ни
- * поставить на её место состоявшееся занятие. Последнее — и есть жизнь такой
- * строки («строка плана заменяется семинаром»), а без него занятие уезжало в
- * конец курса, и его тянули стрелками через весь семестр.
+ * A plan could only be set up with a script from the spreadsheet
+ * (scripts/course-from-sheet.mts) or with an API request: the course screen
+ * showed the plan rows and could remove and reorder them, but could neither
+ * add a new one, nor fix a typo in a topic, nor put a class that has taken
+ * place in its spot. That last one is the whole life of such a row ("a plan
+ * row is replaced by a seminar"), and without it the class landed at the end
+ * of the course and was dragged with the arrows across the whole semester.
  *
- * Отдельно от экрана, как panel.ts, и по той же причине: это решения о том,
- * какая строка на какой позиции окажется, и ошибку в них видно только на
- * странице курса, которую уже открыл весь поток.
+ * Kept apart from the screen, like panel.ts, and for the same reason: these
+ * are decisions about which row ends up at which position, and a mistake in
+ * them only shows on the course page that the whole cohort has already
+ * opened.
  */
 import {
   MAX_COURSE_NAME,
@@ -20,10 +22,11 @@ import {
 } from '@shared/publish'
 
 /**
- * Строка плана из набранного — или ничего, если темы нет.
+ * A plan row from what was typed — or nothing if there is no topic.
  *
- * Обрезка та же, что у сервера (routes/courses.ts · str): обрезать по-своему
- * значило бы показать после сохранения не то, что набрали.
+ * The trimming is the same as the server's (routes/courses.ts · str):
+ * trimming our own way would mean showing something other than what was
+ * typed after saving.
  */
 export function plannedRow(name: string, when: string): CourseItemPlanned | null {
   const topic = name.trim().slice(0, MAX_COURSE_NAME)
@@ -31,19 +34,20 @@ export function plannedRow(name: string, when: string): CourseItemPlanned | null
   return { kind: 'planned', name: topic, when: when.trim().slice(0, MAX_PLANNED_WHEN) }
 }
 
-/** Правится строка, которая была вот такой и стояла вот здесь. */
+/** The row being edited: it looked like this and stood right here. */
 export interface PlannedTarget {
   at: number
   was: CourseItemPlanned
 }
 
 /**
- * Та ли это ещё строка.
+ * Whether this is still the same row.
  *
- * Правка держит номер строки, а номер — не имя: пока поле открыто, курс могли
- * переставить (стрелки, 409 с чужой перестановкой), и на том же месте теперь
- * другая неделя. Записать правку по номеру значило бы переименовать ЧУЖУЮ
- * тему — молча и на странице, которую читает весь поток.
+ * The edit holds the row's index, and an index is not a name: while the field
+ * is open the course may have been reordered (the arrows, a 409 carrying
+ * someone else's reordering), and the same spot now holds a different week.
+ * Writing the edit by index would rename SOMEONE ELSE'S topic — silently, and
+ * on a page the whole cohort reads.
  */
 function stillThere(items: CourseItem[], target: PlannedTarget): boolean {
   const now = items[target.at]
@@ -51,10 +55,11 @@ function stillThere(items: CourseItem[], target: PlannedTarget): boolean {
 }
 
 /**
- * Состав после добавления или правки строки плана.
+ * The contents after a plan row is added or edited.
  *
- * Новая встаёт в конец: план заводят по порядку недель, и конец списка — это
- * следующая неделя. `null` — правимой строки на этом месте больше нет.
+ * A new one goes to the end: a plan is entered in week order, and the end of
+ * the list is the next week. `null` — the edited row is no longer in that
+ * spot.
  */
 export function putPlanned(
   items: CourseItem[],
@@ -67,11 +72,12 @@ export function putPlanned(
 }
 
 /**
- * Занятие на место строки плана — позиция в расписании остаётся.
+ * A class in place of a plan row — the position in the schedule stays.
  *
- * Тема строки уходит вместе с ней: у занятия своё имя, и страница курса
- * показывает его. Занятие, которое уже стоит в курсе, второй раз не ставится —
- * две строки одной комнаты на странице курса читаются как две разные недели.
+ * The row's topic goes with it: the class has its own name, and the course
+ * page shows that. A class that is already in the course is not placed a
+ * second time — two rows for the same room on the course page read as two
+ * different weeks.
  */
 export function seatSeminar(
   items: CourseItem[],
@@ -89,10 +95,11 @@ export function seatSeminar(
 }
 
 /**
- * Сколько строк в каком состоянии.
+ * How many rows are in which state.
  *
- * Список курсов считал только занятия — «2 опубликовано · 1 ещё нет», — и курс
- * с планом на весь семестр выглядел там курсом из трёх строк.
+ * The course list counted only classes — "2 published · 1 not yet" — and a
+ * course with a plan for the whole semester looked there like a course of
+ * three rows.
  */
 export function courseTally(items: CourseItem[]): {
   published: number

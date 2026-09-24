@@ -1,19 +1,20 @@
 /**
- * Зеркало статики на ретрансляторе: что оно принимает и во что это кладёт.
+ * The static mirror on the relay: what it accepts and where it puts it.
  *
- * Сервис (scripts/relay-assets.py) стоит между общим секретом ретранслятора и
- * каталогом, из которого caddy отдаёт файлы ВСЕМ студентам любого семинара.
- * Значит проверять надо не «работает ли», а ровно четыре обещания, каждое из
- * которых нарушается молча:
+ * The service (scripts/relay-assets.py) stands between the relay's shared
+ * secret and the directory from which caddy serves files to ALL students of any
+ * seminar. So what has to be checked is not "does it work" but exactly four
+ * promises, each of which breaks silently:
  *
- *   без секрета не пишет; чужое имя не переписывает; путь из архива не
- *   выводит наружу каталога; подмена набора — целиком, а куски прежней сборки
- *   живут ещё месяц, иначе вкладка, открытая до выкладки, теряет свои чанки
- *   посреди пары.
+ *   no writes without the secret; no overwriting somebody else's name; no path
+ *   from an archive leads outside the directory; a set is swapped as a whole,
+ *   and chunks of the previous build live for another month, otherwise a tab
+ *   opened before the deploy loses its chunks in the middle of a class.
  *
- * Проверяется настоящий сервис на своём порту с временным каталогом: правила
- * живут в нём, а не в копии на TypeScript. Архивы собираются python'ом —
- * злонамеренный tar (символьная ссылка, путь наружу) иначе и не сделать.
+ * The real service is checked, on its own port with a temporary directory: the
+ * rules live in it, not in a TypeScript copy. The archives are built with
+ * python — there is no other way to make a malicious tar (a symbolic link, a
+ * path outside).
  */
 import './_env.mts'
 import test from 'node:test'
@@ -45,7 +46,7 @@ let base = ''
 let root = ''
 let env: NodeJS.ProcessEnv = {}
 
-/** tar.gz с произвольными членами — в том числе теми, которых не бывает у сборки. */
+/** A tar.gz with arbitrary members, including ones a build never has. */
 function tarball(entries: Array<{ name: string; data?: string; link?: string; dir?: boolean }>): Buffer {
   const made = spawnSync('python3', ['-c', `
 import io, json, sys, tarfile
@@ -71,7 +72,7 @@ sys.stdout.buffer.write(buffer.getvalue())
   return made.stdout
 }
 
-/** Так же, как это делает caddy: имя в пути и имя, по которому пришли, — одно. */
+/** The way caddy does it: the name in the path and the name the request came by are the same. */
 async function put(
   body: Buffer,
   { host = HOST, target = host, token = TOKEN }: { host?: string; target?: string; token?: string } = {},
@@ -92,7 +93,7 @@ const mirror = (...parts: string[]) => path.join(root, HOST, ...parts)
 const read = (...parts: string[]) => fs.readFileSync(mirror(...parts), 'utf8')
 const there = (...parts: string[]) => fs.existsSync(mirror(...parts))
 
-/** Сборка: хэшированный чанк со сжатыми соседями, шрифт и воркер pdf. */
+/** A build: a hashed chunk with its compressed neighbours, a font and the pdf worker. */
 const build = (chunk: string, extra: Array<{ name: string; data?: string }> = []) =>
   tarball([
     { name: 'assets', dir: true },
@@ -127,11 +128,11 @@ async function up(): Promise<void> {
       })
       if (probe.status === 404) return
     } catch {
-      /* ещё не поднялся */
+      /* not up yet */
     }
     await new Promise((r) => setTimeout(r, 100))
   }
-  throw new Error('зеркало не поднялось')
+  throw new Error('the mirror did not come up')
 }
 
 function down(): void {
@@ -141,47 +142,48 @@ function down(): void {
 
 const suite = test.suite ?? test.describe
 
-suite('зеркало статики ретранслятора', { skip: HAVE_PYTHON ? false : 'нет python3' }, () => {
+suite('relay static mirror', { skip: HAVE_PYTHON ? false : 'no python3' }, () => {
   test.before(up)
   test.after(down)
 
-  test('без секрета и с чужим секретом не пишется ничего', async () => {
+  test('nothing is written without the secret or with a wrong one', async () => {
     for (const token of ['', 'not-the-secret', `${TOKEN} `.repeat(2)]) {
       const { status, body } = await put(build('app-aaaa1111.js'), { token })
-      assert.equal(status, 401, `секрет ${JSON.stringify(token)} приняли`)
+      assert.equal(status, 401, `the secret ${JSON.stringify(token)} was accepted`)
       assert.equal(body.error, 'token')
     }
     assert.equal(fs.existsSync(path.join(root, HOST)), false)
   })
 
-  test('своё зеркало и только своё: имя в пути — то, по которому пришли', async () => {
+  test('its own mirror and only its own: the name in the path is the one the request came by', async () => {
     const other = await put(build('app-aaaa1111.js'), { host: HOST, target: 'other.colloq.ru' })
-    assert.equal(other.status, 403, 'один семинар переписал зеркало другого')
+    assert.equal(other.status, 403, 'one seminar overwrote the mirror of another')
     const alien = await put(build('app-aaaa1111.js'), { host: 'hse.example.com', target: 'hse.example.com' })
     assert.equal(alien.status, 400)
     assert.equal(alien.body.error, 'host')
   })
 
-  test('выкладка кладёт три каталога и переключает набор целиком', async () => {
+  test('a deploy lays down three directories and switches the set as a whole', async () => {
     const { status, body } = await put(build('app-aaaa1111.js'))
     assert.equal(status, 200, JSON.stringify(body))
     assert.equal(body.files, 5)
     assert.equal(body.kept, 0)
-    // Имя — символьная ссылка на набор: подмена это переименование, а не
-    // копирование поверх живого каталога.
+    // The name is a symbolic link to the set: a swap is a rename, not a copy over
+    // the live directory.
     assert.ok(fs.lstatSync(path.join(root, HOST)).isSymbolicLink())
     /*
-     * Читает набор не этот сервис, а caddy — от другого пользователя и по
-     * группе. mkdtemp делает каталог 0700, и без явного chmod зеркало вставало
-     * бы молча и целиком: файлы на месте, у всех 403, и в журнале ни строки.
+     * The set is read not by this service but by caddy — as another user, via the
+     * group. mkdtemp makes the directory 0700, and without an explicit chmod the
+     * mirror would stop silently and completely: the files in place, 403 for
+     * everyone, and not a line in the log.
      */
     for (const where of [mirror(), mirror('assets'), mirror('assets', 'app-aaaa1111.js')]) {
       const info = fs.statSync(where)
-      // В каталог надо ещё и зайти, файл — только прочитать.
+      // A directory also has to be entered; a file only read.
       const need = info.isDirectory() ? 0o050 : 0o040
       assert.equal(
         info.mode & need, need,
-        `${where} не прочитать группе: ${(info.mode & 0o777).toString(8)}`,
+        `${where} is not readable by the group: ${(info.mode & 0o777).toString(8)}`,
       )
     }
     assert.match(read('assets', 'app-aaaa1111.js'), /app-aaaa1111/)
@@ -190,7 +192,7 @@ suite('зеркало статики ретранслятора', { skip: HAVE_P
     assert.equal(read('pdf', 'pdf.worker.min.mjs'), 'воркер')
   })
 
-  test('состояние зеркала можно спросить', async () => {
+  test('the mirror state can be queried', async () => {
     const response = await fetch(`${base}/.relay/assets/${HOST}`, {
       headers: { 'X-Forwarded-Host': HOST, authorization: `Bearer ${TOKEN}` },
     })
@@ -202,7 +204,7 @@ suite('зеркало статики ретранслятора', { skip: HAVE_P
     assert.equal(closed.status, 401)
   })
 
-  test('путь наружу каталога не выводит ни в каком виде', async () => {
+  test('no form of path leads outside the directory', async () => {
     const было = read('assets', 'app-aaaa1111.js')
     for (const name of [
       '../evil.js',
@@ -214,15 +216,15 @@ suite('зеркало статики ретранслятора', { skip: HAVE_P
       'assets/./../evil.js',
     ]) {
       const { status } = await put(tarball([{ name, data: 'зло' }]))
-      assert.equal(status, 400, `приняли ${name}`)
+      assert.equal(status, 400, `accepted ${name}`)
     }
     assert.equal(fs.existsSync(path.join(root, '..', 'evil.js')), false)
     assert.equal(fs.existsSync(path.join(root, 'evil.js')), false)
-    // И живое зеркало от таких попыток не пострадало.
+    // And the live mirror did not suffer from such attempts.
     assert.equal(read('assets', 'app-aaaa1111.js'), было)
   })
 
-  test('символьная ссылка в архиве — отказ, а не чужой файл под видом чанка', async () => {
+  test('a symbolic link in an archive gets a refusal, not a foreign file posing as a chunk', async () => {
     const { status, body } = await put(tarball([
       { name: 'assets/app-bbbb2222.js', data: 'настоящий' },
       { name: 'assets/secret.js', link: '/etc/passwd' },
@@ -230,10 +232,10 @@ suite('зеркало статики ретранслятора', { skip: HAVE_P
     assert.equal(status, 400)
     assert.equal(body.error, 'kind')
     assert.equal(there('assets', 'secret.js'), false)
-    assert.equal(there('assets', 'app-bbbb2222.js'), false, 'полуразобранный архив доехал до зеркала')
+    assert.equal(there('assets', 'app-bbbb2222.js'), false, 'a half-unpacked archive reached the mirror')
   })
 
-  test('архив больше потолка не распаковывается', async () => {
+  test('an archive over the ceiling is not unpacked', async () => {
     const { status, body } = await put(tarball([
       { name: 'assets/huge-cccc3333.js', data: 'x'.repeat(70_000) },
     ]))
@@ -242,49 +244,49 @@ suite('зеркало статики ретранслятора', { skip: HAVE_P
     assert.equal(there('assets', 'huge-cccc3333.js'), false)
   })
 
-  test('куски прежней сборки живут ещё месяц, а шрифты заменяются', async () => {
-    // Вкладка, открытая до выкладки, догружает свой чанк по старому хэшу.
+  test('chunks of the previous build live for another month, while fonts are replaced', async () => {
+    // A tab opened before the deploy lazy-loads its chunk by the old hash.
     const { status, body } = await put(build('app-dddd4444.js'))
     assert.equal(status, 200)
-    assert.equal(body.kept, 3, 'прежние чанки не перенесены')
-    assert.ok(there('assets', 'app-aaaa1111.js'), 'старый чанк пропал в день выкладки')
+    assert.equal(body.kept, 3, 'the previous chunks were not carried over')
+    assert.ok(there('assets', 'app-aaaa1111.js'), 'the old chunk disappeared on the day of the deploy')
     assert.ok(there('assets', 'app-dddd4444.js'))
-    // Не-версионное переезжает как есть: имя то же, содержимое новое.
+    // Unversioned files move as they are: the same name, new content.
     assert.equal(read('fonts', 'hse-sans-400.woff2'), 'шрифт')
-    assert.equal(fs.readdirSync(path.join(root, 'sets', HOST)).length, 1, 'прежние наборы не убраны')
+    assert.equal(fs.readdirSync(path.join(root, 'sets', HOST)).length, 1, 'the previous sets were not removed')
   })
 
-  test('кусок старше срока в новую сборку не переезжает', async () => {
+  test('a chunk older than the term does not move into the new build', async () => {
     const месяц = Date.now() / 1000 - 31 * 86400
     for (const name of ['app-aaaa1111.js', 'app-aaaa1111.js.br', 'app-aaaa1111.js.gz']) {
       fs.utimesSync(mirror('assets', name), месяц, месяц)
     }
     const { body } = await put(build('app-eeee5555.js'))
-    assert.equal(there('assets', 'app-aaaa1111.js'), false, 'месячный кусок остался навсегда')
-    assert.ok(there('assets', 'app-dddd4444.js'), 'свежий кусок унесли вместе со старым')
+    assert.equal(there('assets', 'app-aaaa1111.js'), false, 'the month-old chunk stayed forever')
+    assert.ok(there('assets', 'app-dddd4444.js'), 'the fresh chunk was taken away together with the old one')
     assert.equal(body.kept, 3)
   })
 
-  test('скрытое с ноутбука пропускается, а сборка выкладывается', async () => {
+  test('hidden files from a laptop are skipped, and the build is deployed', async () => {
     const { status, body } = await put(build('app-ffff6666.js', [
       { name: 'assets/.DS_Store', data: 'мусор macOS' },
     ]))
-    assert.equal(status, 200, 'из-за .DS_Store не выложилась вся сборка')
+    assert.equal(status, 200, 'the whole build failed to deploy because of .DS_Store')
     assert.equal(body.skipped, 1)
     assert.equal(there('assets', '.DS_Store'), false)
   })
 
-  test('архив, который собирает make host, зеркало принимает как есть', async () => {
+  test('the mirror accepts the archive that make host builds as it is', async () => {
     /*
-     * Обе половины одного дела стоят в разных файлах и на разных языках:
-     * архив собирает bash (scripts/host.sh · assets_tar), разбирает python.
-     * Разойтись им проще всего молча — «выложилось 0 файлов» никто не читает.
-     * Поэтому берётся ТА САМАЯ функция из скрипта, а не её пересказ.
+     * The two halves of one job sit in different files and in different
+     * languages: bash builds the archive (scripts/host.sh · assets_tar), python
+     * unpacks it. The easiest way for them to diverge is silently — nobody reads
+     * "0 files deployed". So THE VERY function from the script is used, not a retelling of it.
      */
     const script = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'scripts/host.sh'), 'utf8')
     const dirs = /^DIST_DIRS=.*$/m.exec(script)
     const made = /^assets_tar\(\) \{$[\s\S]*?^\}$/m.exec(script)
-    assert.ok(dirs && made, 'assets_tar больше не найти в scripts/host.sh')
+    assert.ok(dirs && made, 'assets_tar can no longer be found in scripts/host.sh')
     const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-dist-'))
     for (const dir of ['assets', 'fonts', 'pdf']) {
       fs.mkdirSync(path.join(fake, 'web/dist', dir), { recursive: true })
@@ -293,7 +295,7 @@ suite('зеркало статики ретранслятора', { skip: HAVE_P
     fs.writeFileSync(path.join(fake, 'web/dist/assets/app-9999zzzz.js.br'), 'сжато')
     fs.writeFileSync(path.join(fake, 'web/dist/fonts/hse-sans-400.woff2'), 'шрифт')
     fs.writeFileSync(path.join(fake, 'web/dist/pdf/pdf.worker.min.mjs'), 'воркер')
-    // То, что кладёт рядом macOS и не должно уехать на ретранслятор.
+    // What macOS puts alongside and must not go to the relay.
     fs.writeFileSync(path.join(fake, 'web/dist/assets/.DS_Store'), 'мусор')
     fs.writeFileSync(path.join(fake, 'web/dist/index.html'), '<!doctype html>')
     const archive = path.join(fake, 'dist.tgz')
@@ -303,16 +305,16 @@ suite('зеркало статики ретранслятора', { skip: HAVE_P
     assert.equal(built.status, 0, built.stderr)
     const { status, body } = await put(fs.readFileSync(archive))
     assert.equal(status, 200, JSON.stringify(body))
-    assert.equal(body.files, 4, 'в архив уехало не то, что зеркалится')
-    assert.equal(body.skipped, 0, 'скрытое всё-таки попало в архив')
+    assert.equal(body.files, 4, 'the archive got something other than what is mirrored')
+    assert.equal(body.skipped, 0, 'hidden files got into the archive after all')
     assert.ok(there('assets', 'app-9999zzzz.js.br'))
     assert.equal(read('fonts', 'hse-sans-400.woff2'), 'шрифт')
-    // Страница — живая, её отдаёт инстанс, и в зеркале ей делать нечего.
+    // The page is live, the instance serves it, and it has no business in the mirror.
     assert.equal(there('index.html'), false)
     fs.rmSync(fake, { recursive: true, force: true })
   })
 
-  test('уборка убирает брошенное имя и обрывки распаковки', async () => {
+  test('the cleanup removes an abandoned name and unpacking leftovers', async () => {
     const leftover = path.join(root, '.tmp', 'hse.colloq.ru-оборванная')
     fs.mkdirSync(leftover, { recursive: true })
     const давно = Date.now() / 1000 - 3 * 86400
@@ -320,9 +322,9 @@ suite('зеркало статики ретранслятора', { skip: HAVE_P
     let pruned = spawnSync('python3', [SCRIPT, '--prune'], { env, encoding: 'utf8' })
     assert.equal(pruned.status, 0, pruned.stderr)
     assert.equal(fs.existsSync(leftover), false)
-    assert.ok(there('assets', 'app-ffff6666.js'), 'уборка снесла живое зеркало')
+    assert.ok(there('assets', 'app-ffff6666.js'), 'the cleanup tore down the live mirror')
 
-    // Имя, которое перестали выставлять наружу: ссылка не обновлялась два срока.
+    // A name that is no longer exposed: its link has not been updated for two terms.
     const stale = Date.now() / 1000 - 61 * 86400
     fs.lutimesSync(path.join(root, HOST), stale, stale)
     pruned = spawnSync('python3', [SCRIPT, '--prune'], { env, encoding: 'utf8' })

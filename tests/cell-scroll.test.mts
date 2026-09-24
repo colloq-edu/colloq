@@ -1,17 +1,20 @@
 /**
- * Две арифметики прокрутки тетради.
+ * Two pieces of notebook scrolling arithmetic.
  *
- * Обе ломаются молча и обе мерены на стенде, а не выведены из общих
- * соображений: «переход попадает куда попало», «лист дёргается вверх» и
- * «запускаю ячейку, а меня перекидывает вниз» — это жалобы с занятия, а не
- * гипотезы. Числа в проверках взяты из того же замера: ячейка 809 px на экране
- * 705, заглушка 240 px, тулбар 28 px.
+ * Both break silently, and both were measured on a test bench rather than
+ * derived from general considerations: "a jump lands anywhere", "the sheet
+ * twitches upward" and "I run a cell and get thrown down" are complaints from
+ * a class, not hypotheses. The numbers in the checks come from the same
+ * measurement: an 809 px cell on a 705 px screen, a 240 px placeholder, a
+ * 28 px toolbar.
  *
- * Запуск сюда тоже приходит — с недавних пор и по третьей жалобе: «в Колабе
- * после запуска спускается к низу вывода, а у нас тетрадь стоит». Она прямо
- * противоположна второй, и мирит их одно условие: двигаем, только если низа
- * вывода не видно. И только у ОДИНОЧНОГО запуска: за «Запустить всё» лист не
- * ходит вовсе (разбор — Notebook · follow). Проверки на это — в конце файла.
+ * Running comes here too — recently, and through a third complaint: "in Colab
+ * after a run it scrolls down to the bottom of the output, while our notebook
+ * stays put". It is the exact opposite of the second one, and a single
+ * condition reconciles them: move only if the bottom of the output is not
+ * visible. And only for a SINGLE run: during "Run all" the sheet does not move
+ * at all (the analysis is in Notebook · follow). The checks for this are at
+ * the end of the file.
  */
 import "./_env.mts";
 import { test } from "node:test";
@@ -29,11 +32,11 @@ import {
 const BAR = 28;
 const ROOM = BAR + BREATH;
 
-test("ячейка ниже экрана приезжает нижним краем к нижнему, и ни пикселем больше", () => {
+test("a cell below the screen arrives with its bottom edge at the bottom, and not a pixel more", () => {
   /*
-   * Самый частый переход: короткая ячейка, начавшаяся сразу за нижним краем.
-   * Раньше её подводили верхом к верху экрана — это 780 - ROOM пикселей хода
-   * ради ячейки в восемьдесят.
+   * The most common jump: a short cell that starts right past the bottom
+   * edge. It used to be brought top to the top of the screen — that is
+   * 780 - ROOM pixels of travel for a cell of eighty.
    */
   const target = nearestTarget(
     { top: 0, bottom: 705, scrollTop: 1000 },
@@ -42,9 +45,10 @@ test("ячейка ниже экрана приезжает нижним кра�
   assert.equal(target, 1000 + (860 - 705));
 });
 
-test("длинная ячейка снизу приезжает верхом, а не последней строкой", () => {
-  // Нижним краем к нижнему её верх ушёл бы за экран: видно последнюю строку из
-  // сорока. Значит ход ограничен «верхом под верх», с местом под тулбар.
+test("a long cell from below arrives top first, not with its last line", () => {
+  // Bottom to bottom, its top would go off screen: you would see the last line
+  // of forty. So the travel is capped at "top under the top", with room for
+  // the toolbar.
   const target = nearestTarget(
     { top: 0, bottom: 705, scrollTop: 1000 },
     { top: 760, bottom: 1569, toolbar: BAR },
@@ -52,7 +56,7 @@ test("длинная ячейка снизу приезжает верхом, а
   assert.equal(target, 1000 + 760 - ROOM);
 });
 
-test("ячейка выше экрана встаёт верхом под верх, с местом под тулбар", () => {
+test("a cell above the screen lands with its top under the top, with room for the toolbar", () => {
   const target = nearestTarget(
     { top: 0, bottom: 705, scrollTop: 3000 },
     { top: -420, bottom: -60, toolbar: BAR },
@@ -60,12 +64,12 @@ test("ячейка выше экрана встаёт верхом под вер
   assert.equal(target, 3000 - 420 - ROOM);
 });
 
-test("видно хоть краем — экран не двигаем вовсе", () => {
+test("if even an edge is visible, the screen does not move at all", () => {
   /*
-   * Главное правило перехода и ровно то, чего не хватало: ячейка, до которой
-   * дошли стрелкой и которая уже на виду, не должна двигать под человеком ни
-   * строки. Три случая: целиком внутри, нижним краем за экран, верхним краем
-   * над экраном.
+   * The main rule of a jump, and exactly what was missing: a cell reached with
+   * the arrow key that is already in view must not move a single line under
+   * the person. Three cases: entirely inside, the bottom edge off screen, the
+   * top edge above the screen.
    */
   const frame = { top: 0, bottom: 705, scrollTop: 1000 };
   assert.equal(nearestTarget(frame, { top: 200, bottom: 400, toolbar: BAR }), null);
@@ -73,12 +77,13 @@ test("видно хоть краем — экран не двигаем вовс
   assert.equal(nearestTarget(frame, { top: -300, bottom: 60, toolbar: BAR }), null);
 });
 
-test("тулбар за верхним краем — это ещё не повод ехать", () => {
+test("a toolbar past the top edge is not yet a reason to move", () => {
   /*
-   * Тулбар висит НАД ячейкой и в её прямоугольник не входит, и раньше ячейка,
-   * стоящая в двух пикселях от края, ехала ради него. Для перехода это лишнее
-   * движение: ячейку видно, к тулбару тянутся мышью и по наведению, а место
-   * под него считается только там, где ячейку и правда подводят верхом.
+   * The toolbar hangs ABOVE the cell and is not part of its rectangle, and a
+   * cell sitting two pixels from the edge used to move for its sake. For a
+   * jump that is needless motion: the cell is visible, people reach for the
+   * toolbar with the mouse and on hover, and room for it counts only where the
+   * cell really is brought in top first.
    */
   assert.equal(
     nearestTarget(
@@ -89,7 +94,7 @@ test("тулбар за верхним краем — это ещё не пов�
   );
 });
 
-test("выше начала листа не увозим", () => {
+test("we do not scroll above the start of the sheet", () => {
   assert.equal(
     nearestTarget(
       { top: 0, bottom: 705, scrollTop: 5 },
@@ -99,8 +104,9 @@ test("выше начала листа не увозим", () => {
   );
 });
 
-test("пиксель разницы — не повод для кадра анимации", () => {
-  // Ячейка ровно за нижним краем и ровно на пиксель ниже: ход был бы дрожью.
+test("a pixel of difference is no reason for an animation frame", () => {
+  // A cell right at the bottom edge and just a pixel lower: the move would be
+  // a jitter.
   assert.equal(
     nearestTarget(
       { top: 0, bottom: 705, scrollTop: 1000 },
@@ -110,8 +116,9 @@ test("пиксель разницы — не повод для кадра ани
   );
 });
 
-test("высота тулбара у непостроенной ячейки — запасное число, а не ноль", () => {
-  // Место под тулбар нужно и тогда, когда самого тулбара в DOM ещё нет.
+test("the toolbar height of a cell not yet built is a fallback number, not zero", () => {
+  // Room for the toolbar is needed even when the toolbar itself is not in the
+  // DOM yet.
   assert.ok(TOOLBAR_FALLBACK > 0);
   const target = nearestTarget(
     { top: 0, bottom: 705, scrollTop: 1000 },
@@ -120,12 +127,12 @@ test("высота тулбара у непостроенной ячейки —
   assert.equal(target, 1000 + 900 - TOOLBAR_FALLBACK - BREATH);
 });
 
-test("выросшая выше экрана ячейка двигает прокрутку ровно на свой прирост", () => {
-  // Заглушка в 240 px стала ячейкой в 809: экран обязан остаться на месте.
+test("a cell that grew above the screen shifts the scroll by exactly its growth", () => {
+  // A 240 px placeholder became an 809 px cell: the screen must stay in place.
   assert.equal(anchorShift([{ top: 8842, delta: 569 }], 10192), 569);
 });
 
-test("несколько соседей за один кадр складываются", () => {
+test("several neighbours within one frame add up", () => {
   assert.equal(
     anchorShift(
       [
@@ -139,48 +146,50 @@ test("несколько соседей за один кадр складыва�
   );
 });
 
-test("то, что растёт на глазах, не трогаем", () => {
+test("what grows in plain sight is left alone", () => {
   /*
-   * Ячейка, чей верх на экране или ниже, растёт у человека на виду: поправка
-   * тут сама стала бы рывком — экран поехал бы навстречу тому, что человек
-   * как раз читает.
+   * A cell whose top is on screen or below grows in plain view: a correction
+   * here would itself become a jerk — the screen would move against what the
+   * person is reading right now.
    */
   assert.equal(anchorShift([{ top: 5000, delta: 569 }], 4000), 0);
-  // И ровно по краю тоже: такая ячейка растёт целиком внутрь экрана.
+  // Exactly at the edge too: such a cell grows entirely into the screen.
   assert.equal(anchorShift([{ top: 4000, delta: 569 }], 4000), 0);
-  // А на пиксель выше края — уже двигает всё, что под ней.
+  // But one pixel above the edge, it already moves everything below it.
   assert.equal(anchorShift([{ top: 3999, delta: 569 }], 4000), 569);
 });
 
-test("ничего не менялось — ничего не двигаем", () => {
+test("nothing changed, nothing moves", () => {
   assert.equal(anchorShift([], 4000), 0);
 });
 
-/* ------------------------------------------------ спрятанная вкладка */
+/* -------------------------------------------------------- hidden tab */
 
 /**
- * Жалоба: «перехожу к скрипту по cmd+клику из четвёртой ячейки, закрываю,
- * возвращаюсь — тетрадь спустилась к десятой».
+ * The complaint: "I jump to a script with cmd+click from the fourth cell,
+ * close it, come back — and the notebook has scrolled down to the tenth".
  *
- * Числа замерены в Chrome отдельной страницей: у `display: none` контейнера
- * `getBoundingClientRect()` даёт нули, `scrollTop` читается нулём, а после
- * показа браузер сам возвращает прежние 1500. То есть прокрутку теряет не
- * браузер — её увозит наш собственный якорь, если дать ему померить нули.
+ * The numbers were measured in Chrome on a separate page: for a
+ * `display: none` container `getBoundingClientRect()` gives zeros, `scrollTop`
+ * reads as zero, and once it is shown again the browser itself restores the
+ * previous 1500. So it is not the browser that loses the scroll — our own
+ * anchor carries it away if we let it measure zeros.
  */
 test("a frame that is not on screen cannot be measured", () => {
   assert.equal(measurable({ top: 0, bottom: 705 }), true);
-  // Ровно то, что читается со спрятанной вкладки.
+  // Exactly what reads from a hidden tab.
   assert.equal(measurable({ top: 0, bottom: 0 }), false);
-  // Вырожденная раскладка: полоса выше контейнера. Мерить тоже нечего.
+  // A degenerate layout: the strip is above the container. Nothing to measure
+  // either.
   assert.equal(measurable({ top: 40, bottom: 12 }), false);
 });
 
 test("zero heights from a hidden tab would have moved the screen by the whole notebook", () => {
   /*
-   * Что случалось без проверки. Якорь записал всем ячейкам ноль, а при
-   * возврате увидел настоящие высоты — и для него это прирост выше экрана.
-   * Шесть ячеек по 809 над целью — это 4854 px, четвёртая ячейка против
-   * десятой ровно на столько и отличается.
+   * What happened without the check. The anchor recorded zero for every cell,
+   * and on return saw the real heights — which to it is growth above the
+   * screen. Six cells of 809 above the target make 4854 px, exactly the
+   * difference between the fourth cell and the tenth.
    */
   const asIfGrown = Array.from({ length: 6 }, (_, index) => ({
     top: index * 809,
@@ -189,9 +198,9 @@ test("zero heights from a hidden tab would have moved the screen by the whole no
   assert.equal(anchorShift(asIfGrown, 4854), 4854);
 });
 
-/* ------------------------------------------------ ход после запуска */
+/* ----------------------------------------------- moving after a run */
 
-/** Экран 705 px, тулбар 28 px, как и в остальном файле. */
+/** A 705 px screen and a 28 px toolbar, as in the rest of the file. */
 const ran = { top: 0, bottom: 705, scrollTop: 1000 };
 
 test("a cell whose output already fits is not moved at all", () => {
@@ -199,21 +208,22 @@ test("a cell whose output already fits is not moved at all", () => {
 });
 
 test("an output hanging below the fold is brought up, plus room for what follows", () => {
-  // Низ на 200 px ниже экрана: подводим его и просвет.
+  // The bottom is 200 px below the screen: bring it up, plus a gap.
   assert.equal(afterRun(ran, { top: 300, bottom: 905, toolbar: BAR }), 1000 + 200 + TAIL);
 });
 
 test("a cell taller than the screen arrives top first, not last line first", () => {
   /*
-   * Тот же потолок, что у перехода стрелкой: «низ вывода» у ячейки на три
-   * экрана — это её последняя строка, и подвозить её значит увезти код и
-   * начало вывода за верхний край.
+   * The same cap as for an arrow-key jump: the "bottom of the output" of a cell
+   * three screens tall is its last line, and bringing that up means carrying
+   * the code and the start of the output off the top edge.
    */
   assert.equal(afterRun(ran, { top: 400, bottom: 2800, toolbar: BAR }), 1000 + 400 - ROOM);
 });
 
 test("running never pulls the sheet upwards", () => {
-  // Ячейка выше экрана: «подвести низ» означало бы ход ВВЕРХ — не делаем.
+  // A cell above the screen: "bring up the bottom" would mean moving UP, so
+  // we do not.
   assert.equal(afterRun(ran, { top: -900, bottom: -100, toolbar: BAR }), null);
 });
 
@@ -223,12 +233,13 @@ test("nothing is decided from a hidden tab, running or not", () => {
 });
 
 /*
- * За текстовой ячейкой лист идёт так же, как за ячейкой с кодом.
+ * The sheet follows a text cell the same way it follows a code cell.
  *
- * За кодом его ведёт смена `runningCellId` у ядра; у заметки ядра нет, и пока
- * она молчала, Shift+Enter вниз по тетради спотыкался на каждой текстовой
- * ячейке: курсор шёл дальше, экран стоял (19.09.2026). Проверка — чтением
- * исходников: заметка говорит сама, Notebook отвечает тем же `follow`.
+ * For code it is driven by the kernel's `runningCellId` changing; a note has
+ * no kernel, and while it stayed silent, Shift+Enter down the notebook
+ * stumbled on every text cell: the cursor moved on, the screen stood still
+ * (19 Sep 2026). The check reads the sources: the note speaks for itself, and
+ * Notebook answers with the same `follow`.
  */
 test("a text cell reports that it settled, and the notebook follows it like a code cell", async () => {
   const { readFileSync } = await import("node:fs");
@@ -237,16 +248,16 @@ test("a text cell reports that it settled, and the notebook follows it like a co
   assert.match(
     cell,
     /commitMarkdown\(\)[\s\S]{0,900}?dispatchEvent\(new CustomEvent\('colloq:cell-settled', \{ detail: \{ cellId: id \} \}\)\)[\s\S]{0,40}?return true/,
-    "заметка отрисовалась молча — лист за ней не пойдёт",
+    "the note rendered silently, so the sheet will not follow it",
   );
   assert.match(
     book,
     /addEventListener\('colloq:cell-settled', onSettled\)/,
-    "Notebook не слушает отрисовку заметки",
+    "Notebook does not listen for a note being rendered",
   );
   assert.match(
     book,
     /onSettled = [\s\S]{0,400}?ids\.current\.includes\(cellId\)[\s\S]{0,120}?tick\(\)\.then\(\(\) => follow\(cellId\)\)/,
-    "ход за заметкой обязан идти тем же follow и только в своей тетради",
+    "following a note must go through the same follow, and only in its own notebook",
   );
 });

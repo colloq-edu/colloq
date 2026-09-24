@@ -25,7 +25,8 @@ test('shared labels and refusal constants resolve after an in-process language c
   assert.equal(SHELL_WORD.closed, 'not started')
   assert.equal(SKIP_REASON_TEXT.broken, 'this version cannot be read')
   assert.match(tr(CLASS_IS_OVER), /class is over/)
-  // Ядро у КАЖДОЙ тетради своё, и попытки делят ядро своей — не «общее ядро».
+  // EACH notebook has its own kernel, and attempts share their notebook's
+  // kernel — not "the shared kernel".
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /this notebook's kernel/)
   assert.match(whySegmentRefused(' данные '), /данные/)
   assert.match(whySegmentRefused(' данные '), /space/)
@@ -101,8 +102,9 @@ test('Council picks the default answer language at request time', () => {
   const en = oraclePrompt({source:'Задание пользователя', before:'', reference:''}, [], 'How is it going?', {budget: 10_000}).turns
   assert.match(en[0].content, /Answer in English by default/)
   assert.match(en[0].content, /explicitly requests another language/)
-  // JSON-договора у оракула больше нет: сводка по группам снята целиком, и
-  // ответ теперь одна проза в ленту (server/src/ai/council.ts).
+  // The oracle no longer has a JSON contract: the per-group summary was
+  // removed entirely, and the answer is now plain prose into the feed
+  // (server/src/ai/council.ts).
   assert.doesNotMatch(en[0].content, /"summary"|"groupLabels"|"drafts"/)
   assert.match(en[1].content, /Задание пользователя/)
   use('ru')

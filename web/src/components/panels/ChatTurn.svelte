@@ -42,50 +42,57 @@
     /** The emoji this person chose, when they are still in the room. */
     avatar: string | null
     /** 1-based position of the cell asked about, or null when it is gone. */
-    /** Номер ячейки, к которой ход привязан: туда ляжет предложение. */
+    /** Number of the cell the turn is tied to: the proposal goes there. */
     cellNumber: number | null
     /**
-     * Номера ячеек, о которых спрашивали.
+     * Numbers of the cells that were asked about.
      *
-     * Отдельно от `cellNumber`: спросить можно про несколько, а предложить
-     * правку — в одну. Пусто у ходов, записанных до выделения нескольких.
+     * Separate from `cellNumber`: one can ask about several but propose an edit
+     * to only one. Empty for turns recorded before several cells could be
+     * selected.
      */
     askedAbout: number[]
     /**
-     * Можно ли завести ход «сделать» в этой комнате: правило `agent` плюс
-     * режим оракула. Считает панель — режим инстанса знает только она.
+     * Whether a "do" turn can be started in this room: the `agent` rule plus
+     * the oracle mode. Computed by the panel — only the panel knows the
+     * instance mode.
      */
     canDo: boolean
     /**
-     * Роль автора записи — из присутствия комнаты, посчитанная панелью.
+     * The role of the entry's author — from the room's presence, computed by
+     * the panel.
      *
-     * Не поиском по `session.peers` здесь: массив присутствия пересобирается
-     * на каждый чужой курсор, и поиск в каждом ходе превращал переход соседа
-     * между ячейками в проход по всей ленте. Ушедшего из комнаты в присутствии
-     * нет — он считается участником, и это то же, что было раньше.
+     * Not by searching `session.peers` here: the presence array is rebuilt on
+     * every remote cursor, and a search in every turn turned a neighbour's move
+     * between cells into a pass over the whole feed. Someone who has left the
+     * room is not in presence — they count as a participant, and that is the
+     * same as before.
      */
     authorRole: ParticipantRole
     /**
-     * Играть ли появление.
+     * Whether to play the entrance.
      *
-     * Ложь ровно у одной записи — той, что заняла место строки-обещания из
-     * ask-outbox: ключи у них разные, Svelte сносит один узел и монтирует
-     * другой, и без этого тот же вопрос на том же месте проявлялся второй раз.
-     * Появление — для нового, а не для того, что уже стояло на экране.
+     * False for exactly one entry — the one that took the place of the promise
+     * row from ask-outbox: their keys differ, Svelte removes one node and
+     * mounts another, and without this the same question in the same place
+     * appeared a second time. The entrance is for what is new, not for what was
+     * already on screen.
      */
     enter?: boolean
     /**
-     * Вопрос отправляется на сервер: записи в документе пока нет.
+     * The question is being sent to the server: there is no entry in the
+     * document yet.
      *
-     * Строка нарисована этой вкладкой, чтобы вопрос появился в ленте сразу
-     * после Enter (см. `outbox` в AiPanel). Выглядит она как настоящая — на то
-     * и расчёт, — но остановить нечего: у сервера этого хода ещё нет, и «Стоп»
-     * стучался бы по имени, которого никто не знает.
+     * The row is drawn by this tab so that the question appears in the feed
+     * right after Enter (see `outbox` in AiPanel). It looks like the real
+     * thing — that is the whole idea — but there is nothing to stop: the server
+     * does not have this turn yet, and "Stop" would knock on a name nobody
+     * knows.
      */
     pending?: boolean
     onretry: () => void
     onstop: () => void
-    /** Отменить ход целиком: файлы вернутся к тому, что было до него. */
+    /** Undo the whole turn: the files return to what they were before it. */
     onundo: () => void
   }
 
@@ -103,7 +110,7 @@
     onundo,
   }: Props = $props()
 
-  /** Что говорит строка шага: глагол, цель и итог. */
+  /** What a step's row says: the verb, the target and the result. */
   const VERB: Record<string, string> = {
     get read() { return tr('room.ui.568') },
     get write() { return tr('room.ui.569') },
@@ -123,13 +130,14 @@
   const mine = $derived(entry.participantId === session.me.id)
 
   /**
-   * Можно ли отсюда удалить автора записи с занятия.
+   * Whether the entry's author can be removed from class from here.
    *
-   * Роль автора в записи не хранится — её приносит панель, посчитав один раз
-   * на всю ленту (см. `authorRole` в пропсах). Ушедшего из комнаты в
-   * присутствии нет, и он считается участником: банить того, кто уже вышел, —
-   * обычное дело (лента переживает уход), а штат сервер не забанит в любом
-   * случае, и его отказ приедет словами в то же окно.
+   * The author's role is not stored in the entry — the panel brings it, having
+   * computed it once for the whole feed (see `authorRole` in the props).
+   * Someone who has left the room is not in presence and counts as a
+   * participant: banning someone who has already left is routine (the feed
+   * survives the departure), and the server will not ban staff in any case, and
+   * its refusal will arrive in words in the same window.
    */
   const banHere = $derived(!mine && mayBan(session.me.role, authorRole))
 
@@ -142,15 +150,15 @@
    * string and a live diff would show that nothing had happened.
    */
   /*
-   * Через реестр ячеек, а не поиском в `$derived`.
+   * Through the cell registry, not by searching in `$derived`.
    *
-   * `findCell` в производном зависел только от `entry`, и документ его не
-   * будил. Перестановка ячейки на сервере пересоздаёт её клоном (Y.Array не
-   * умеет move), старая Y.Map удаляется — и `watchText` продолжал смотреть на
-   * труп, отдавая пустую строку: открытое предложение начинало диффиться
-   * против пустоты, перекрашивалось в предупреждение и врало «somebody edited
-   * it», хотя никто ничего не правил. `watchCell` следит ровно за
-   * пересозданием и отдаёт живую карту.
+   * `findCell` in a derived value depended only on `entry`, and the document
+   * did not wake it. Moving a cell on the server recreates it as a clone
+   * (Y.Array cannot move), the old Y.Map is deleted — and `watchText` kept
+   * looking at the corpse, returning an empty string: an open proposal started
+   * being diffed against emptiness, turned into a warning and lied "somebody
+   * edited it", although nobody had edited anything. `watchCell` watches
+   * precisely for the recreation and returns the live map.
    */
   const watched = watchCell(session.doc, () => entry.cellId ?? '')
   const cell = $derived(entry.cellId ? watched.current : null)
@@ -165,8 +173,8 @@
    * green line calls a function where the red one indexed a list — which is
    * exactly the distinction colour makes and a wall of one-colour mono does not.
    *
-   * Только для кодовых ячеек: у текстовой в предложении проза, и питоновская
-   * раскраска подсветила бы в ней слово for посреди предложения.
+   * Only for code cells: a text cell's proposal holds prose, and Python
+   * colouring would highlight the word for in the middle of a sentence.
    */
   const patchIsCode = $derived(cell === null || cell.get('type') !== 'markdown')
   $effect(() => {
@@ -191,32 +199,36 @@
 
   const streaming = $derived(entry.state === 'streaming')
 
-  /* ------------------------------------------------------- секундомер хода */
+  /* -------------------------------------------------------- turn stopwatch */
 
   /**
-   * Идёт поручение: у него одного есть лента шагов и живая строка под ней.
+   * A task is under way: only a task has a feed of steps and a live line under
+   * it.
    *
-   * Строка-обещание из ask-outbox сюда не попадает: у сервера этого хода ещё
-   * нет, шагов не будет, и секундомер считал бы не работу, а дорогу запроса.
+   * The promise row from ask-outbox does not get here: the server does not have
+   * this turn yet, there will be no steps, and the stopwatch would be counting
+   * the request's trip, not the work.
    */
   const working = $derived(streaming && !pending && entry.mode === 'agent')
 
   /**
-   * Столько ждут молча, прежде чем сказать это вслух.
+   * How long to wait in silence before saying it out loud.
    *
-   * Поручение шло тринадцать минут, а панель показывала неподвижную вертушку и
-   * «готовит следующий шаг»: отличить работу от зависания было нечем. Две
-   * минуты без нового шага — уже не «сейчас допишет»: столько держится запрос
-   * к модели, который не вернётся.
+   * A task ran for thirteen minutes, and the panel showed a motionless spinner
+   * and "preparing the next step": there was nothing to tell work from a hang
+   * by. Two minutes without a new step is no longer "about to finish": that is
+   * how long a request to the model that will not come back is held open.
    */
   const STALLED_MS = 120_000
 
   /**
-   * Часы живой строки: тикают раз в секунду и только пока ход идёт.
+   * The live line's clock: ticks once a second, and only while the turn is
+   * running.
    *
-   * Раз в секунду, а не пять раз, как секундомер ячейки: здесь цифра читается
-   * не как «шевелится ли», а как «сколько уже» — десятые в ней только мельтешат.
-   * Производное `working` само снимает таймер, когда ход закончился.
+   * Once a second, not five times as with the cell stopwatch: here the number
+   * is read not as "is it moving" but as "how long already" — tenths in it only
+   * flicker. The derived `working` removes the timer by itself when the turn is
+   * over.
    */
   let now = $state(Date.now())
   $effect(() => {
@@ -227,32 +239,35 @@
   })
 
   /**
-   * Когда шаг записан.
+   * When the step was recorded.
    *
-   * Поле появилось позже самой ленты: у ходов, записанных до него, времени нет
-   * вовсе — и тогда строка не показывает ничего, а не «+0 с» на каждом шаге.
+   * The field appeared later than the feed itself: turns recorded before it
+   * have no time at all — and then the line shows nothing, rather than "+0 s"
+   * on every step.
    */
   function stepAt(step: AgentStep): number | null {
     return typeof step.at === 'number' && Number.isFinite(step.at) ? step.at : null
   }
 
   /**
-   * «+2 мин 10 с» — от начала хода, а не от прошлого шага.
+   * "+2 min 10 s" — from the start of the turn, not from the previous step.
    *
-   * От начала, потому что читают ленту целиком: по столбцу сразу видно, что
-   * первые шесть шагов уложились в минуту, а седьмой стоит одиннадцать. Разница
-   * между соседними строками из тех же чисел вычитается глазом, обратно — нет.
+   * From the start, because the feed is read as a whole: the column shows at
+   * once that the first six steps fit into a minute, while the seventh has been
+   * standing for eleven. The difference between neighbouring rows can be
+   * subtracted from these same numbers by eye; the other way round it cannot.
    */
   function since(step: AgentStep): string {
     const at = stepAt(step)
     if (at === null) return ''
     const delta = at - entry.createdAt
-    // Под секунду — шум: первые шаги идут подряд, и «+0 с» стоял бы у каждого.
+    // Under a second is noise: the first steps come in a row, and "+0 s" would
+    // stand next to each of them.
     if (delta < 1000) return ''
     return tr('room.oracle.stepAt', { p0: spell(delta) })
   }
 
-  /** С чего считает живая цифра: последний записанный шаг или начало хода. */
+  /** Live number's origin: the last recorded step, or the turn's start. */
   const lastAt = $derived.by(() => {
     for (let index = entry.steps.length - 1; index >= 0; index -= 1) {
       const at = stepAt(entry.steps[index])
@@ -307,19 +322,20 @@
   }
 
   /*
-   * Решает сервер, а не эта вкладка.
+   * The server decides, not this tab.
    *
-   * Проверка «предложение ещё открыто» внутри транзакции спасала от двух
-   * нажатий здесь и не спасала от двух браузеров: каждый читал в своей копии
-   * `'open'`, каждый писал, и Yjs добросовестно сливал обе правки — ячейка
-   * получала патч дважды. У сервера копия одна, и он разбирает сообщения по
-   * очереди.
+   * The "proposal still open" check inside a transaction saved us from two
+   * presses here and did not save us from two browsers: each read `'open'` in
+   * its own copy, each wrote, and Yjs conscientiously merged both edits — the
+   * cell got the patch twice. The server has one copy, and it processes
+   * messages in turn.
    */
   /*
-   * И по правилам ТЕТРАДИ, в которой лежит ячейка хода: «Применить» — это
-   * правка, а правка спрашивает у тетради (shared/rules.ts · rulesForBook).
-   * Своя личная тетрадь принимает предложение и в лекции; чужая не принимает и
-   * в открытой комнате — ровно то же отвечает сервер (control.ts · ai:decide).
+   * And by the rules of the NOTEBOOK the turn's cell lives in: "Apply" is an
+   * edit, and an edit asks the notebook (shared/rules.ts · rulesForBook). One's
+   * own personal notebook accepts a proposal even in a lecture; someone else's
+   * does not accept it even in an open room — exactly what the server answers
+   * too (control.ts · ai:decide).
    */
   const may = $derived(
     permitsIn(session.session.rules, session.me.role, session.finished, {
@@ -328,17 +344,18 @@
     }),
   )
   /**
-   * «Применить» спрашивает у ЯЧЕЙКИ, а не только у правила комнаты.
+   * "Apply" asks the CELL, not only the room rule.
    *
-   * Правило `edit` — про комнату целиком, и в открытой комнате оно разрешает
-   * участнику всё. Замок и консилиум это сужают: запертую ячейку правит
-   * преподаватель, а общая ячейка консилиума — задание, и переписать её под
-   * себя значило бы переписать его всему классу. Предложение при этом могло
-   * приехать ДО того, как замок щёлкнул: лента переживает смену режима, и
-   * кнопка на старой записи обязана считаться с новым положением дел.
+   * The `edit` rule is about the room as a whole, and in an open room it allows
+   * a participant everything. The lock and the council narrow that: a locked
+   * cell is edited by the teacher, and a shared council cell is the assignment,
+   * and rewriting it for oneself would mean rewriting it for the whole class. A
+   * proposal could also have arrived BEFORE the lock clicked shut: the feed
+   * survives a mode change, and a button on an old entry has to reckon with the
+   * new state of affairs.
    *
-   * Сервер отказывает ровно этим же (control.ts · ai:decide), и кнопка, которая
-   * врёт до нажатия, хуже её отсутствия.
+   * The server refuses with exactly this (control.ts · ai:decide), and a button
+   * that lies before it is pressed is worse than no button.
    */
   const cellLockHere = $derived(cell ? cellLock(cell) : 'closed')
   const mayApply = $derived(
@@ -353,7 +370,7 @@
         : may.editWhy,
   )
 
-  /** Предложение копируется и тем, кто его применить не может. */
+  /** The proposal can be copied even by those who cannot apply it. */
   let copied = $state(false)
   let copyTimer: number | undefined
   async function copyPatch(): Promise<void> {
@@ -364,33 +381,37 @@
       window.clearTimeout(copyTimer)
       copyTimer = window.setTimeout(() => (copied = false), NOTICED_MS)
     } catch {
-      // Браузер, отказавший в буфере, оставляет текст выделяемым — как в
-      // AnswerBody: молчать тут честнее, чем ругаться на его настройку.
+      // A browser that refused the clipboard leaves the text selectable — as in
+      // AnswerBody: staying silent here is more honest than scolding its
+      // settings.
     }
   }
   $effect(() => () => window.clearTimeout(copyTimer))
   /*
-   * Отменить ход — там же, где его можно завести, плюс преподаватель всегда:
-   * ровно так это читает сервер (control.ts, case 'ai:undo').
+   * Undo a turn — wherever one can start it, plus the teacher always: that is
+   * exactly how the server reads it (control.ts, case 'ai:undo').
    */
   const mayUndo = $derived(session.me.role === 'host' || may.agent)
   /*
-   * Действует ли этот человек после звонка.
+   * Whether this person acts after the bell.
    *
-   * Для того, у чего правила нет вовсе: спросить снова, отклонить
-   * предложение. Та же `actsAfterClass`, которой отвечает сервер, — второго
-   * механизма прав здесь заводить нельзя. «Стоп» отсюда ушёл: у него правило
-   * своё, и звонок в нём ничего не меняет — см. ниже.
+   * For what has no rule at all: asking again, rejecting a proposal. The same
+   * `actsAfterClass` that the server answers with — a second permission
+   * mechanism must not be introduced here. "Stop" has left this list: it has
+   * its own rule, and the bell changes nothing in it — see below.
    */
   const acts = $derived(actsAfterClass(may.finished, session.me.role))
   /*
-   * «Стоп» — своей записи, всегда; чужой — только преподавателю.
+   * "Stop" — on one's own entry, always; on someone else's — only for the
+   * teacher.
    *
-   * Не после звонка, а вообще: оборвать чужой ответ — это стереть работу,
-   * которую человек ждёт, а оборвать чужой ход агента — бросить правку файлов
-   * на середине. Преподавателю чужая нужна по-настоящему: разогнавшийся ответ
-   * висит на проекторе у всей комнаты. Ровно так это читает сервер
-   * (routes/ai.ts, /ai/cancel) — второго свода правил здесь заводить нельзя.
+   * Not after the bell but in general: cutting off someone else's answer means
+   * erasing work the person is waiting for, and cutting off someone else's
+   * agent turn means abandoning an edit of files halfway. The teacher really
+   * needs it for others' entries: a runaway answer hangs on the projector in
+   * front of the whole room. That is exactly how the server reads it
+   * (routes/ai.ts, /ai/cancel) — a second set of rules must not be introduced
+   * here.
    */
   const mayStop = $derived(!pending && (mine || session.me.role === 'host'))
 
@@ -407,10 +428,11 @@
 </script>
 
 <!--
-  «Стоп» — один на ход, в двух местах разметки: у поручения он стоит в живой
-  строке (остановить хотят ровно тогда, когда смотрят на счётчик), у вопроса —
-  под ответом. Сниппет, а не две копии: у кнопки своё правило прав и своя
-  подсказка отказа, и разъехались бы они на первой же правке.
+  "Stop" — one per turn, in two places of the markup: for a task it stands in
+  the live line (people want to stop it exactly when they are looking at the
+  counter), for a question — under the answer. A snippet, not two copies: the
+  button has its own permission rule and its own refusal hint, and they would
+  drift apart at the very first edit.
 -->
 {#snippet stopButton(extra: string)}
   <button
@@ -430,12 +452,14 @@
   <div class="flex min-w-0 flex-1 flex-col items-stretch gap-3 py-3.5 pl-3.5 pr-4">
     <header class="flex items-center gap-1.5">
       <!--
-        Значок и имя — вход в то же меню, что и правая кнопка в списке людей.
-        Здесь его ищут раньше: спам виден в ленте, а не в рельсе, и человека,
-        которого удаляют, преподаватель в этот момент читает.
+        The mark and the name are a way into the same menu as the right click in
+        the people list. Here it is looked for sooner: spam is seen in the feed,
+        not in the rail, and the person being removed is the one the teacher is
+        reading at that moment.
 
-        svelte:element, а не две ветки разметки: значок и имя стоят вплотную и
-        разошлись бы на первой же правке отступа.
+        svelte:element, not two branches of markup: the mark and the name stand
+        right next to each other and would drift apart at the very first
+        indentation edit.
       -->
       <svelte:element
         this={banHere ? 'button' : 'span'}
@@ -473,9 +497,10 @@
       {/if}
       {#if askedAbout.length > 0}
         <!--
-          Ссылка, а не подпись: тетрадь к этому времени обычно уже уехала. Ведёт
-          к ПЕРВОЙ из названных — той, с которой разговор начался; остальные
-          названы рядом, чтобы было видно, о чём вообще шла речь.
+          A link, not a caption: by this time the notebook has usually moved on.
+          It leads to the FIRST of the named cells — the one the conversation
+          started with; the others are named next to it, so that it is visible
+          what the talk was about at all.
         -->
         <button
           type="button"
@@ -523,9 +548,10 @@
       answer open prose on the panel itself.
     -->
     {#if entry.question.trim()}
-      <!-- `anywhere`, а не `break-words`: вопрос бывает одной строкой пути или
-           адреса без единого пробела, и только он входит в расчёт минимальной
-           ширины — то есть не распирает ход, а переносится. -->
+      <!-- `anywhere`, not `break-words`: a question is sometimes a single line
+           of a path or an address without a single space, and only `anywhere`
+           counts toward the minimum width — that is, the line does not push the
+           turn apart but wraps. -->
       <p
         class="whitespace-pre-wrap bg-raised px-2.5 py-2 text-ui font-semibold text-ink
                [overflow-wrap:anywhere]"
@@ -589,17 +615,18 @@
     {/if}
 
     <!--
-      Что оракул делал сам. Лента живёт в документе рядом с ответом, а не в
-      логах сервера: комната должна видеть, что именно случилось с её файлами,
-      а не читать про это в пересказе.
+      What the oracle did by itself. The feed lives in the document next to the
+      answer, not in the server logs: the room must see what exactly happened to
+      its files, not read about it in a retelling.
     -->
     {#if entry.steps.length > 0 || working}
       <div class="flex flex-col border border-line bg-canvas">
         {#each entry.steps as step, at (at)}
           <!--
-            Незнакомый вид шага рисуется, а не пропускается: сервер и вкладка
-            обновляются порознь, и лента, молчащая про то, чего вкладка ещё не
-            знает, врёт сильнее, чем лента с голым словом из документа.
+            An unfamiliar kind of step is drawn, not skipped: the server and the
+            tab update separately, and a feed that keeps silent about what the
+            tab does not know yet lies more than a feed with a bare word from
+            the document.
           -->
           <div class="flex flex-col {at > 0 ? 'border-t border-line-soft' : ''}">
             <div class="flex items-center gap-2 px-2.5 py-1.5">
@@ -632,8 +659,8 @@
                 </span>
               {/if}
               <!--
-                Сколько прошло от начала хода. Пусто у записей, сделанных до
-                того, как шаг стал запоминать своё время.
+                How much time has passed since the start of the turn. Empty for
+                entries made before a step started remembering its time.
               -->
               {#if since(step)}
                 <span class="shrink-0 font-mono text-2xs tabular-nums text-faint">
@@ -642,10 +669,10 @@
               {/if}
             </div>
             <!--
-              У запуска строка занята кодом выхода, и выжимка — «не уложился в
-              90 с», хвост вывода — не помещалась в неё ни разу: ветка ниже по
-              разметке была для `run` недостижима. Она и есть то единственное,
-              что объясняет код 124.
+              For a run the row is taken by the exit code, and the summary —
+              "did not fit into 90 s", the tail of the output — never once fit
+              into it: the branch further down the markup was unreachable for
+              `run`. It is the one thing that explains code 124.
             -->
             {#if step.kind === 'run' && step.note}
               <p
@@ -657,9 +684,9 @@
         {/each}
         {#if streaming}
           <!--
-            Живая строка, а не неподвижная вертушка: номер шага и растущая
-            цифра. Тринадцать минут под надписью «готовит следующий шаг»
-            выглядят ровно так же, как тринадцать минут зависания.
+            A live line, not a motionless spinner: the step number and a growing
+            figure. Thirteen minutes under the caption "preparing the next step"
+            look exactly the same as thirteen minutes of a hang.
           -->
           <div
             class="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-line-soft px-2.5 py-1.5"
@@ -688,10 +715,11 @@
         <p class="text-code text-danger [overflow-wrap:anywhere]">
           {entry.answer || tr('room.ui.551')}
         </p>
-        <!-- Повтор хода «сделать» — это тот же ход: там, где его нельзя
-             завести, нечего и повторять. После звонка нечего повторять вовсе:
-             оракул отвечает одному преподавателю (routes/ai.ts), и кнопка
-             вернула бы красную строку отказа под красной строкой ошибки. -->
+        <!-- A retry of a "do" turn is the same turn: where it cannot be
+             started, there is nothing to retry either. After the bell there is
+             nothing to retry at all: the oracle answers only the teacher
+             (routes/ai.ts), and the button would bring back a red refusal line
+             under the red error line. -->
         {#if acts && (entry.mode !== 'agent' || canDo)}
           <button
             type="button"
@@ -707,34 +735,35 @@
     {:else if entry.answer}
       <AnswerBody source={entry.answer} {streaming} cellId={entry.cellId} omit={entry.patch} />
     {:else if streaming && !thinking && !working}
-      <!-- У поручения «думает» без цифры не стоит: там же, под лентой шагов,
-           живая строка говорит то же самое и называет, сколько уже. -->
+      <!-- A task does not get "thinking" without a number: right there, under
+           the feed of steps, the live line says the same thing and tells how
+           long it has been. -->
       <div class="flex items-center gap-1.5 text-2xs text-muted">
         <Icon name="spinner" size={13} class="animate-spin" /> {tr('room.ui.545')} </div>
     {/if}
 
     {#if streaming && !working}
-      <!-- Кнопка остаётся стоять и на чужой записи: она идёт, и молча
-           исчезнувший «Стоп» читался бы как «оракула уже не остановить». Она
-           гаснет и говорит, почему. -->
+      <!-- The button stays even on someone else's entry: the entry is running,
+           and a "Stop" that silently disappeared would read as "the oracle can
+           no longer be stopped". It dims and says why. -->
       {@render stopButton('self-start')}
     {/if}
 
     <!--
-      Отмена всего хода. Одна кнопка, потому что ход — это одно решение:
-      разбирать его по правкам значило бы просить человека выяснять, какая из
-      четырёх правок лишняя, посреди пары.
+      Undo of the whole turn. One button, because a turn is one decision: taking
+      it apart edit by edit would mean asking a person to figure out which of
+      four edits is superfluous, in the middle of a class.
     -->
     {#if entry.undo === 'available'}
       <div class="flex flex-col gap-1.5 border-t border-line pt-2">
-        <!-- Обещано ровно то, что делается: сервер возвращает только файлы, до
-             которых после хода никто не дотянулся, а переименованные и
-             переписанные пропускает и называет их в ответе. -->
+        <!-- Exactly what is done is promised: the server restores only the
+             files nobody touched after the turn, and skips the renamed and
+             rewritten ones, naming them in the answer. -->
         <p class="text-2xs leading-snug text-muted"> {tr('room.ui.553')} </p>
-        <!-- Отменяет ход тот, кому разрешено его завести: сервер отказывает
-             всем остальным (control.ts), а кнопка, которая врёт до нажатия,
-             хуже её отсутствия. Строка выше остаётся — она про то, что
-             случилось, а не про то, что можно. -->
+        <!-- The turn is undone by whoever is allowed to start it: the server
+             refuses everyone else (control.ts), and a button that lies before
+             it is pressed is worse than no button. The line above stays — it is
+             about what happened, not about what is allowed. -->
         <button
           type="button"
           class={cn(GHOST, 'self-start disabled:cursor-not-allowed disabled:opacity-40')}
@@ -842,13 +871,14 @@
             {/if}
             <div class="flex flex-wrap items-center gap-2">
               <!--
-                «Скопировать» стоит рядом с решениями и живёт всегда.
-                
-                Код предложения не показан больше нигде: в ответе он опущен
-                (`omit={entry.patch}` у AnswerBody), чтобы не читаться дважды,
-                — и там, где применить нельзя, из панели нельзя было унести
-                вообще ничего. Прочитать и перенести руками к себе в лист —
-                ровно то, что участнику в лекции и в консилиуме и остаётся.
+                "Copy" stands next to the decisions and is always there.
+
+                The proposal's code is not shown anywhere else: it is omitted
+                from the answer (`omit={entry.patch}` on AnswerBody) so as not
+                to be read twice — and where it could not be applied, nothing at
+                all could be taken away from the panel. Reading it and carrying
+                it over by hand into one's own sheet is exactly what a
+                participant in a lecture and in a council is left with.
               -->
               <button
                 type="button"
@@ -871,11 +901,12 @@
                   title={acts ? '' : tr(CLASS_IS_OVER)}
                   onclick={() => decide(false)}
                 > {tr('room.ui.68')} </button>
-                <!-- Применить — правка тетради, и правило комнаты про неё же.
-                     Отклонить остаётся всем, пока идёт занятие: снятая плашка
-                     ничего не рушит. После звонка рушит: предложение исчезнет
-                     насовсем, а попросить его заново уже нечем — оракул
-                     отвечает одному преподавателю. -->
+                <!-- Apply is an edit of the notebook, and the room rule is
+                     about that too. Reject stays open to everyone while the
+                     class is on: a dismissed pill breaks nothing. After the
+                     bell it does: the proposal will disappear for good, and
+                     there is no way to ask for it again — the oracle answers
+                     only the teacher. -->
                 <button
                   type="button"
                   class="btn-outline h-7"

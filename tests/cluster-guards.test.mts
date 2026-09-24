@@ -133,12 +133,13 @@ test('cluster commands use the bundled client with the managed kubeconfig and no
 })
 
 /**
- * `public-url --if-current` — снять адрес может только тот, кто его ставил.
+ * `public-url --if-current`: only whoever set the address may take it down.
  *
- * scripts/host.sh на выходе возвращает кластеру localhost. Без сверки его
- * уборка затирала адрес, поставленный за это время кем-то другим, и живая
- * ссылка молча становилась localhost. Сверка стоит в cluster.sh, под замком
- * состояния рядом с записью, и проверяется здесь на настоящем скрипте.
+ * On exit scripts/host.sh gives the cluster back localhost. Without a check,
+ * its cleanup overwrote an address someone else had set in the meantime, and
+ * a live link silently turned into localhost. The check sits in cluster.sh,
+ * under the state lock next to the write, and is tested here against the real
+ * script.
  */
 test('public-url --if-current changes the address only while it is still the expected one', () => {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-public-url-cas-'))
@@ -156,14 +157,15 @@ test('public-url --if-current changes the address only while it is still the exp
     const env = { ...process.env, COLLOQ_STATE_DIR: state, PATH: `${bin}:${process.env.PATH}` }
     const run = (...args: string[]) => spawnSync('bash', [script, 'public-url', ...args], { encoding: 'utf8', env })
 
-    // Чужой адрес: отказ отдельным кодом, файл и кластер нетронуты.
+    // Someone else's address: refused with a distinct exit code, the file and
+    // the cluster untouched.
     let r = run('http://127.0.0.1:30080', '--if-current', 'https://tunnel.example')
     assert.equal(r.status, 4, r.stderr)
     assert.match(r.stderr, /no longer https:\/\/tunnel\.example/)
     assert.match(fs.readFileSync(config, 'utf8'), /^PUBLIC_URL=https:\/\/someone-else\.example$/m)
     assert.equal(fs.existsSync(calls), false, 'mismatch must not touch the cluster')
 
-    // Свой адрес: запись, конфиг в кластер, перезапуск приложения.
+    // Our own address: the write, the config into the cluster, an app restart.
     fs.writeFileSync(config, 'INSTITUTION=Test\nPUBLIC_URL=https://tunnel.example\n')
     r = run('http://127.0.0.1:30080', '--if-current', 'https://tunnel.example')
     assert.equal(r.status, 0, r.stderr)
@@ -171,7 +173,8 @@ test('public-url --if-current changes the address only while it is still the exp
     assert.match(fs.readFileSync(config, 'utf8'), /^INSTITUTION=Test$/m)
     assert.match(fs.readFileSync(calls, 'utf8'), /rollout restart deployment\/colloq-app/)
 
-    // Повтор той же уборки — не отказ и не второй перезапуск: адрес уже тот.
+    // Repeating the same cleanup is neither a refusal nor a second restart: the
+    // address is already the right one.
     const before = fs.readFileSync(calls, 'utf8')
     r = run('http://127.0.0.1:30080', '--if-current', 'https://tunnel.example')
     assert.equal(r.status, 0, r.stderr)
@@ -180,12 +183,14 @@ test('public-url --if-current changes the address only while it is still the exp
 })
 
 /*
- * Память комнат для брокера — из файла оператора, а не правкой Deployment.
+ * Room memory for the broker comes from the operator's file, not from editing
+ * the Deployment.
  *
- * `render` показывает ровно то, что поставит prepare: новый --env-file, иначе
- * сохранённый config.env. `update` проверяет эти числа ДО бэкапа: бэкап уже
- * останавливает комнаты, и плохое число, всплывшее после него, стоило бы
- * занятию переменных за ничто — или уронило бы брокер в CrashLoop.
+ * `render` shows exactly what prepare will install: the new --env-file,
+ * otherwise the kept config.env. `update` checks these numbers BEFORE the
+ * backup: the backup already stops the rooms, and a bad number surfacing after
+ * it would cost the class its variables for nothing — or drop the broker into
+ * CrashLoop.
  */
 test('cluster render carries the broker memory from --env-file or the kept config.env', () => {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-runtime-env-'))

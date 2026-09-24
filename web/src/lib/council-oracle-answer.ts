@@ -1,43 +1,44 @@
 /**
- * Ответ оракула — текст, в котором названы люди.
+ * An oracle answer — text in which people are named.
  *
- * Как именно названы, решает инстанс. По умолчанию модели уезжают НАСТОЯЩИЕ
- * ИМЕНА, и она пишет «у Анны Беловой падает запуск»; с выключенной настройкой
- * «Имена учащихся в запросах к модели» она видит метки S1…SN и пишет «S7».
- * Здесь между этими случаями нет никакой разницы: сервер прислал словарь
- * `people` — подпись, которая стояла В КАДРЕ, → participantId, — и подсвечивать
- * надо ровно его ключи, чем бы они ни были. Пульт рисует на их месте чип, по
- * которому открывается работа.
+ * How exactly they are named is up to the instance. By default the model gets
+ * REAL NAMES, and it writes "Anna Belova's run is failing"; with the "Student
+ * names in model requests" setting turned off it sees the labels S1…SN and
+ * writes "S7". Here there is no difference between these cases at all: the
+ * server sent a `people` dictionary — the label that stood IN THE FRAME →
+ * participantId — and exactly its keys must be highlighted, whatever they are.
+ * The console draws a chip in their place that opens the work.
  *
- * Отдельным файлом и без единого импорта, потому что ломается это молча.
- * Наивная замена `text.replaceAll('S7', …)` съела бы `S7` внутри `CSS7`, а
- * `S7` внутри `S70` превратила бы в чужого человека: класс из семидесяти —
- * обычное дело, и преподаватель открыл бы не ту работу, ничего не заметив. С
- * именами то же самое и хуже: «Анна» внутри «Анна Белова» подсветила бы
- * половину чужого имени и увела бы к тёзке.
+ * A separate file with not a single import, because this breaks silently. A
+ * naive `text.replaceAll('S7', …)` would eat the `S7` inside `CSS7`, and turn
+ * the `S7` inside `S70` into a different person: a class of seventy is common,
+ * and the teacher would open the wrong work without noticing. With names it is
+ * the same and worse: "Anna" inside "Anna Belova" would highlight half of
+ * someone else's name and lead to a namesake.
  *
- * Отсюда два правила, и оба обязательны.
+ * Hence two rules, and both are mandatory.
  *
- * ДЛИННЫЕ РАНЬШЕ КОРОТКИХ. «Анна Белова» проверяется до «Анна», иначе в классе
- * с двумя Аннами чип встанет на первом слове чужого имени. Метка «S10» — до
- * «S1» по той же причине.
+ * LONG BEFORE SHORT. "Anna Belova" is checked before "Anna", otherwise in a
+ * class with two Annas the chip lands on the first word of someone else's
+ * name. The label "S10" goes before "S1" for the same reason.
  *
- * ГРАНИЦЫ СЛОВА СЧИТАЮТСЯ ПО БУКВАМ ЛЮБОГО АЛФАВИТА. `\b` в JS знает только
- * латиницу: для «Аня» он видит границу там, где её нет, и наоборот. Поэтому
- * границы проверяются вручную — символ слева и справа не должен быть буквой,
- * цифрой или подчёркиванием.
+ * WORD BOUNDARIES ARE COUNTED BY LETTERS OF ANY ALPHABET. `\b` in JS knows only
+ * Latin: for "Аня" it sees a boundary where there is none, and vice versa. So
+ * boundaries are checked by hand — the character on the left and on the right
+ * must not be a letter, a digit or an underscore.
  *
- * И третье, про то, чего здесь нет: подпись, которой в словаре этого ответа
- * нет, остаётся обычным текстом. Нумерация и состав живут ровно один вопрос, и
- * метка из позапрошлого ответа не должна притвориться сегодняшней.
+ * And a third one, about what is not here: a label that is not in this
+ * answer's dictionary stays plain text. The numbering and the roster live for
+ * exactly one question, and a label from the answer before last must not
+ * pretend to be today's.
  */
 
-/** Кусок ответа: либо текст как есть, либо человек, которого можно открыть. */
+/** A piece of the answer: either text as it is, or a person who can be opened. */
 export type AnswerPiece =
   | { kind: 'text'; text: string }
   | { kind: 'person'; label: string; participantId: string }
 
-/** Буква, цифра или подчёркивание — любой алфавит, а не только латиница. */
+/** A letter, a digit or an underscore — any alphabet, not only Latin. */
 const WORD = /[\p{L}\p{N}_]/u
 
 function wordAt(text: string, at: number): boolean {
@@ -45,14 +46,14 @@ function wordAt(text: string, at: number): boolean {
 }
 
 /**
- * Разложить ответ на текст и людей. Пустой текст — пустой список; текст без
- * известных подписей — один кусок целиком (замена не должна резать абзац на
- * части там, где рисовать всё равно нечего).
+ * Split an answer into text and people. Empty text — an empty list; text
+ * without known labels — one whole piece (the replacement must not cut a
+ * paragraph into parts where there is nothing to draw anyway).
  */
 export function splitAnswer(text: string, people: Record<string, string>): AnswerPiece[] {
   if (!text) return []
-  // Длинные раньше коротких — единственный порядок, при котором «Анна Белова»
-  // не превращается в «Анна» плюс хвост.
+  // Long before short — the only order in which "Anna Belova" does not turn
+  // into "Anna" plus a tail.
   const labels = Object.keys(people)
     .filter((label) => label.length > 0)
     .sort((a, b) => b.length - a.length || a.localeCompare(b))
@@ -62,8 +63,8 @@ export function splitAnswer(text: string, people: Record<string, string>): Answe
   let at = 0
   let scan = 0
   while (scan < text.length) {
-    // Подпись начинается только там, где кончилось предыдущее слово: внутри
-    // `CSS7` и `Марианна` искать нечего.
+    // A label starts only where the previous word has ended: there is nothing
+    // to look for inside `CSS7` or `Марианна`.
     if (wordAt(text, scan - 1)) {
       scan += 1
       continue

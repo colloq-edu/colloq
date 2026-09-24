@@ -56,28 +56,29 @@
   const session = getSessionState()
 
   /**
-   * Пока ответ пишется — не чаще, чем раз в кадр глазом.
+   * While the answer is being written — no more often than the eye can follow.
    *
-   * Каждый кусочек ответа приходит отдельным кадром документа, и на каждом
-   * весь накопленный текст заново резался на части, прогонялся через marked и
-   * DOMPurify и заменялся в DOM через {@html}: работа по длине ВСЕГО ответа на
-   * каждый токен, то есть квадратично по нему, у каждого, у кого открыт тред.
-   * Для stdout такой «хвост» давно инкрементальный (render.svelte.ts), для
-   * markdown разметки хвоста нет — но и не нужно: восемь обновлений в секунду
-   * человек читает как непрерывный набор, а не как рывки.
+   * Every piece of the answer arrives as a separate document frame, and on each
+   * one the whole accumulated text was split into parts again, run through
+   * marked and DOMPurify and replaced in the DOM via {@html}: work proportional
+   * to the length of the WHOLE answer on every token, that is, quadratic in it,
+   * for everyone who has the thread open. For stdout such a "tail" has long
+   * been incremental (render.svelte.ts); markdown markup has no tail — but none
+   * is needed: eight updates a second read to a person as continuous typing,
+   * not as jerks.
    *
-   * Готовый ответ показывается тем же кадром, что и пришёл: как только
-   * `streaming` снимается, таймер снимается вместе с ним и текст ставится
-   * целиком. Ждать 120 мс на последнем слове было бы видно.
+   * A finished answer is shown in the same frame it arrived in: as soon as
+   * `streaming` is cleared, the timer is cleared with it and the text is put in
+   * whole. Waiting 120 ms on the last word would be visible.
    */
   const STREAM_TICK = 120
   /**
-   * Показанный срез стриминга — или null, когда ждать нечего.
+   * The shown slice of the stream — or null when there is nothing to wait for.
    *
-   * Через null, а не копией `source`: пока `streamed` пуст, `shown` читает сам
-   * `source` и остаётся точным (первый кадр, готовый ответ, отмена). Как только
-   * срез есть, `source` из зависимостей уходит — и приход кусочка сам по себе
-   * ничего не пересчитывает.
+   * Via null, not a copy of `source`: while `streamed` is empty, `shown` reads
+   * `source` itself and stays exact (first frame, finished answer,
+   * cancellation). As soon as there is a slice, `source` drops out of the
+   * dependencies — and the arrival of a piece by itself recomputes nothing.
    */
   let streamed = $state<string | null>(null)
   let tick: number | undefined
@@ -92,8 +93,8 @@
       streamed = null
       return
     }
-    // Первый кусочек — сразу: пузырь, ждущий свой первый кадр, читается как
-    // незаданный вопрос.
+    // The first piece — at once: a bubble waiting for its first frame reads as
+    // a question that was never asked.
     if (tick !== undefined) return
     streamed = text
     tick = window.setTimeout(() => {
@@ -155,19 +156,21 @@
    * as something new.
    */
   function toCell(code: string) {
-    // Ответ оракула становится ячейкой — то есть добавляется ячейка, а это
-    // право комнаты. Иначе кнопка «в ячейку» делала бы вид, что сработала.
+    // The oracle's answer becomes a cell — that is, a cell is added, and that
+    // is a room permission. Otherwise the "To cell" button would pretend it had
+    // worked.
     const may = permitsIn(session.session.rules, session.me.role, session.finished)
     if (!may.add) {
       session.showError(may.structureWhy + '.')
       return
     }
     /*
-     * В ту тетрадь, о которой был разговор, — и в ту, что открыта, если
-     * разговор был ни о какой. Тетрадей несколько, и класть ответ про чужой
-     * лист в свой значило бы отвечать не туда, куда смотрели; а тетрадь
-     * комнаты, выбранная за неимением ячейки, — это чужой лист для всякого,
-     * кто открыл второй.
+     * Into the notebook the conversation was about — and into the open one if
+     * the conversation was about none. There are several notebooks, and putting
+     * an answer about someone else's sheet into one's own would mean answering
+     * somewhere other than where people were looking; and the room's notebook,
+     * chosen for lack of a cell, is someone else's sheet for anyone who has
+     * opened a second one.
      */
     const open = session.editingPath ? bookAt(session.doc, session.editingPath) : null
     const root =
@@ -176,11 +179,11 @@
     const at = found ? found.index + 1 : bookCells(session.doc, root).length
     const created = insertCell(session.doc, root, 'code', at, code)
     /*
-     * Через revealCell, а не выделением с прокруткой: тетрадь, в которую легла
-     * ячейка, может быть спрятанной — все открытые смонтированы, неактивные
-     * скрыты классом, — и `scrollIntoView` внутри спрятанного не делает
-     * ничего. Нажатие выглядело как несработавшее, а второе нажатие заводило
-     * вторую такую же ячейку.
+     * Via revealCell, not selection plus scrolling: the notebook the cell went
+     * into may be hidden — all open ones are mounted, the inactive ones hidden
+     * by a class — and `scrollIntoView` inside a hidden one does nothing. The
+     * press looked as if it had not worked, and a second press created a second
+     * identical cell.
      */
     revealCell(session, created)
   }
@@ -193,9 +196,10 @@
 </script>
 
 <!--
-  `min-w-0` на колонке ответа и на коробке блока: без него flex-ребёнок берёт
-  за минимум ширину своего содержимого, и один длинный блок кода растягивал бы
-  весь ход, а с ним и ленту — вместо того чтобы ехать внутри себя.
+  `min-w-0` on the answer column and on the block box: without it a flex child
+  takes the width of its content as its minimum, and one long code block would
+  stretch the whole turn, and the feed with it — instead of scrolling inside
+  itself.
 -->
 <div class={cn('flex min-w-0 flex-col gap-2.5', className)}>
   {#each parts as part, index (index)}
@@ -207,12 +211,13 @@
     {:else}
       <div class="flex min-w-0 flex-col items-stretch border border-line bg-canvas">
         <!--
-          Полоска переносится, а не вылезает вбок. На телефоне панель — 92vw, и
-          на 320-пиксельном экране это 294 px: «Скопировать» и «В ячейку» рядом
-          с названием языка туда не помещаются, а `shrink-0` у них стоит не зря
-          — ужатая до многоточия кнопка не называет, что она делает. Поэтому
-          перенос по строкам и `min-h-7` вместо `h-7`: вторая строка кнопок
-          должна быть видна, а не обрезана по высоте.
+          The strip wraps rather than poking out sideways. On a phone the panel
+          is 92vw, and on a 320-pixel screen that is 294 px: "Copy" and "To
+          cell" do not fit there next to the language name, and `shrink-0` is on
+          them for a reason — a button squeezed down to an ellipsis does not say
+          what it does. Hence wrapping onto lines and `min-h-7` instead of
+          `h-7`: the second row of buttons has to be visible, not clipped in
+          height.
         -->
         <div
           class="flex min-h-7 shrink-0 flex-wrap items-center gap-1.5 border-b border-line

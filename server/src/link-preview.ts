@@ -1,15 +1,15 @@
 /**
- * Карточка ссылки: что мессенджер покажет под адресом комнаты.
+ * The link card: what a messenger shows under a room's address.
  *
- * Telegram, WhatsApp, iMessage и остальные не исполняют скрипты — они читают
- * `<head>` первого ответа и берут оттуда `og:*`. У собранного index.html в
- * голове ничего этого нет, потому что он один на все адреса, а имя занятия
- * знает только сервер. Значит, и подставлять его должен сервер — в тот самый
- * момент, когда отдаёт страницу.
+ * Telegram, WhatsApp, iMessage and the rest do not run scripts: they read the
+ * `<head>` of the first response and take `og:*` from it. The built
+ * index.html has none of this in its head, because it is one for all
+ * addresses, and only the server knows the class name. So the server has to
+ * fill it in, at the very moment it serves the page.
  *
- * Картинка у комнаты своя — с именем занятия, рисуется на сервере
- * (og-card.ts, маршрут /og/rooms/<id>.png); у остальных страниц общая, из
- * web/public/og/colloq.png.
+ * A room has its own image, with the class name, drawn on the server
+ * (og-card.ts, route /og/rooms/<id>.png); other pages share a common one,
+ * from web/public/og/colloq.png.
  */
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -22,12 +22,12 @@ import type { SessionInfo } from '@shared/protocol'
 import type { PageExtras } from './frontend-html.js'
 import { CARD_HEIGHT, CARD_WIDTH } from './og-card.js'
 
-/** Общая карточка — экспорт из Paper («Превью · colloq.ru»), лежит в web/public. */
+/** The common card: an export from Paper (artboard "Превью · colloq.ru"), kept in web/public. */
 const IMAGE = 'og/colloq.png'
 const IMAGE_WIDTH = CARD_WIDTH
 const IMAGE_HEIGHT = CARD_HEIGHT
 
-/** Адрес комнаты: `/s/<id>` и всё, что под ним. */
+/** A room's address: `/s/<id>` and everything under it. */
 const ROOM_PATH = /^\/s\/([A-Za-z0-9_-]+)(?:\/|$)/
 
 export function escapeHtml(text: string): string {
@@ -40,12 +40,12 @@ export function escapeHtml(text: string): string {
 }
 
 /*
- * Версия картинки — из mtime файла, один stat на процесс.
+ * The image version, from the file's mtime, one stat per process.
  *
- * Мессенджеры кэшируют превью по адресу картинки надолго; без версии новая
- * заставка доехала бы до чатов через недели. Файл меняет только выкладка, а
- * выкладка перезапускает процесс — значит, спрашивать диск на каждый запрос
- * незачем.
+ * Messengers cache previews by image address for a long time; without a
+ * version a new splash would reach the chats weeks later. Only a deploy
+ * changes the file, and a deploy restarts the process, so there is no point
+ * asking the disk on every request.
  */
 const imageVersions = new Map<string, Promise<string | null>>()
 
@@ -59,7 +59,7 @@ function imageVersion(staticDir: string): Promise<string | null> {
   return version
 }
 
-/** Для тестов: забыть, что уже смотрели на диск. */
+/** For tests: forget that the disk was already looked at. */
 export function forgetImageVersions(): void {
   imageVersions.clear()
 }
@@ -67,8 +67,8 @@ export function forgetImageVersions(): void {
 const OG_LOCALE: Record<Locale, string> = { ru: 'ru_RU', en: 'en_US' }
 
 /**
- * Версия картинки комнаты — от имени и даты: мессенджер кэширует по адресу,
- * и переименованное занятие иначе показывалось бы под старым именем.
+ * The room image version, from the name and date: a messenger caches by
+ * address, and a renamed class would otherwise show under its old name.
  */
 export function roomImageVersion(session: Pick<SessionInfo, 'name' | 'createdAt'>): string {
   return createHash('sha1').update(`${session.createdAt}\u0000${session.name}`).digest('base64url').slice(0, 10)
@@ -84,12 +84,12 @@ async function genericImage(origin: string, staticDir: string): Promise<string |
 }
 
 /**
- * Заголовок и теги для страницы по этому пути.
+ * The title and tags for the page at this path.
  *
- * Комната с известным именем получает своё имя; всё остальное — общую
- * карточку Colloq, ту же, что у лендинга. Неизвестная комната нарочно не
- * отличается от любой другой страницы: карточка в чате — не место сообщать,
- * есть ли такой адрес.
+ * A room with a known name gets its own name; everything else gets the common
+ * Colloq card, the same as the landing page's. An unknown room deliberately
+ * looks like any other page: a card in a chat is not the place to reveal
+ * whether such an address exists.
  */
 export async function linkPreview(
   requestPath: string,
@@ -114,10 +114,10 @@ export async function linkPreview(
     ['og:description', description],
   ]
   /*
-   * Свой адрес — только у комнаты. У остальных страниц (и у неизвестной
-   * комнаты) карточка общая, и без адреса в ней она одна на всех: мессенджер
-   * возьмёт ту ссылку, которую ему прислали, а сервер соберёт и сожмёт страницу
-   * один раз, а не по разу на каждый путь.
+   * Only a room has its own address. Other pages (and an unknown room) have
+   * the common card, and without an address in it it is one for everyone: the
+   * messenger takes the link it was sent, and the server builds and compresses
+   * the page once rather than once per path.
    */
   if (session) tags.push(['og:url', `${origin}${requestPath}`])
   if (image !== null) {
@@ -134,7 +134,7 @@ export async function linkPreview(
       .join('') +
     `<meta name="description" content="${escapeHtml(description)}">` +
     `<meta name="twitter:card" content="${image !== null ? 'summary_large_image' : 'summary'}">`
-  // Заголовок вкладки меняется только комнате: у остальных страниц он тот,
-  // что стоит в сборке, и выкладка вправе его переписать.
+  // The tab title changes only for a room: other pages keep the one in the
+  // build, and a deploy is free to rewrite it.
   return { title: session ? title : undefined, head }
 }

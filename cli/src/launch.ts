@@ -40,15 +40,18 @@ import { leaseUrl } from '../../shared/local-public-url-lease.js'
 import { createRequire } from 'node:module'
 
 /**
- * Чужие бандлы, которые фронтенд отдаёт как есть, — на место, до старта Vite.
+ * Third-party bundles the frontend serves as is: put them in place before
+ * Vite starts.
  *
- * Воркер pdf.js и plotly.js не импортируются исходниками: это статические файлы
- * в `web/public`, и раскладывает их шаг `npm run assets` (web/package.json), то
- * есть `npm run dev` и `npm run build`. Эта команда зовёт Vite НАПРЯМУЮ, минуя
- * npm, — и на свежем клоне plotly.js (его нет в git: пять мегабайт, выводимых из
- * package-lock) не оказалось бы на месте: график вместо рисунка писал бы, что
- * не смог загрузиться. Копия — только когда её нет или она другого размера;
- * неудача не роняет запуск: без этих файлов не работают две вещи, а не всё.
+ * The pdf.js worker and plotly.js are not imported by the sources: they are
+ * static files in `web/public`, and the `npm run assets` step
+ * (web/package.json) lays them out, that is, `npm run dev` and `npm run
+ * build`. This command calls Vite DIRECTLY, bypassing npm, and on a fresh
+ * clone plotly.js (it is not in git: five megabytes derivable from
+ * package-lock) would not be in place: instead of a picture a chart would say
+ * it failed to load. A copy is made only when there is none or it has a
+ * different size; a failure does not bring the start down: without these
+ * files two things do not work, not everything.
  */
 function layOutWebAssets(root: string): void {
   const from = createRequire(path.join(root, 'web/package.json'))
@@ -70,9 +73,10 @@ function layOutWebAssets(root: string): void {
 }
 
 /*
- * Два корня вместо одного: root — где приложение, home — где занятие.
- * Разбор и причина — launch-state.ts · два корня. В репозитории это один и тот
- * же каталог, поэтому ни один путь ниже там не сдвинулся.
+ * Two roots instead of one: root is where the application is, home is where
+ * the class is. The reasoning is at launch-state.ts · two roots. In the
+ * repository it is one and the same directory, so not a single path below
+ * moved there.
  */
 const root = appDir()
 const home = homeDir()
@@ -95,7 +99,7 @@ async function health(port: number): Promise<Record<string, unknown> | null> {
     return null
   }
 }
-/** Ближайший свободный порт от `from`, не дальше сотни; нет такого — null. */
+/** The nearest free port from `from`, no further than a hundred; none means null. */
 async function nearestFreePort(from: number): Promise<number | null> {
   for (let port = from; port < Math.min(from + 100, 65536); port++)
     if (!(await portOccupied(port))) return port
@@ -115,14 +119,16 @@ async function portOccupied(port: number): Promise<boolean> {
 }
 async function supervisorOwned(receipt: LaunchReceipt): Promise<boolean> {
   /*
-   * Расписку узнаём по каталогу СОСТОЯНИЯ, а не по каталогу приложения.
+   * We recognize the receipt by the STATE directory, not by the application
+   * directory.
    *
-   * Каталог приложения у установленного colloq меняется сам собой: обновление
-   * кладёт код в новую версию пакета. Сверяй мы его — `colloq stop` после
-   * `pip install -U` посреди пары отказался бы останавливать свой же живой
-   * сервер («чужой процесс не остановлен»), и преподаватель остался бы с
-   * работающим занятием без пульта. Владение всё равно доказывает не эта
-   * строка, а имя процесса (clq:<runId>) ниже.
+   * For an installed colloq the application directory changes by itself: an
+   * update puts the code into a new version of the package. If we compared it,
+   * `colloq stop` after a `pip install -U` in the middle of a class would
+   * refuse to stop its own live server ("someone else's process was not
+   * stopped"), and the teacher would be left with a running class and no
+   * controls. Ownership is proven anyway not by this line but by the process
+   * name (clq:<runId>) below.
    */
   if (receipt.root !== home || !alive(receipt.pid)) return false
   const command = await capture(root, process.env, 'ps', [
@@ -155,7 +161,7 @@ async function banner(receipt: LaunchReceipt, detachedRun: boolean): Promise<voi
     }).join('\n'),
   )
 }
-/** Хвост журнала при сбое тихого запуска: то, что раньше было «в логе выше». */
+/** The log tail on a failure of a quiet start: what used to be "in the log above". */
 function showLogTail(): void {
   const tail = logTail(logFile)
   if (tail.length === 0) return
@@ -163,11 +169,11 @@ function showLogTail(): void {
   for (const line of tail) console.error(`  ${line}`)
 }
 /**
- * Блок ссылки --share (launch-share.ts · renderShareBlock).
+ * The --share link block (launch-share.ts · renderShareBlock).
  *
- * Занятия читаются из базы в миг печати, а не при запуске: туннель
- * поднимается полминуты, и занятие, созданное за это время в открывшемся
- * браузере, в блок уже попадает.
+ * The classes are read from the database at the moment of printing, not at
+ * the start: the tunnel takes half a minute to come up, and a class created in
+ * the opened browser during that time already makes it into the block.
  */
 async function announceShare(
   url: string,
@@ -191,8 +197,8 @@ async function announceShare(
   )
 }
 /**
- * cloudflared для --share — с отказом, который говорит, как быть без него.
- * Один и тот же в терминале и в фоновом запуске.
+ * cloudflared for --share, with a refusal that says what to do without it.
+ * The same in the terminal and in a background start.
  */
 async function shareCloudflared(
   env: Record<string, string | undefined>,
@@ -207,7 +213,7 @@ async function shareCloudflared(
     )
   }
 }
-/** Действующее окружение так, как его увидит сервер: .env и поверх него переменные. */
+/** The effective environment as the server will see it: .env and the variables on top of it. */
 function effectiveEnv(): Record<string, string | undefined> {
   const envFile = path.join(home, '.env')
   return {
@@ -244,28 +250,29 @@ async function stopSession(): Promise<LaunchReceipt | null> {
   throw new Error('The stop did not finish. Check colloq logs; nothing was killed by force.')
 }
 /**
- * Чем снимать ядра комнат после остановки сервера.
+ * What to remove the room kernels with after the server stops.
  *
- * Уборка — это тот же серверный код (база и docker), и звали её через tsx
- * прямо по исходнику: `node --import tsx server/src/ops/local-cleanup.ts`. В
- * дистрибутиве такой строки не существует — ни server/src, ни tsx в пакете
- * нет, — а `--import tsx` на отсутствующем пакете не «ничего не делает», а
- * падает с кодом 1, то есть каждая остановка занятия заканчивалась бы
- * сообщением об ошибке при полностью убранных ядрах.
+ * The cleanup is the same server code (the database and docker), and it used
+ * to be called through tsx straight from the source: `node --import tsx
+ * server/src/ops/local-cleanup.ts`. In a distribution such a line does not
+ * exist (the package has neither server/src nor tsx), and `--import tsx` on a
+ * missing package does not "do nothing" but fails with code 1, that is, every
+ * stop of a class would end with an error message while the kernels were
+ * fully cleaned up.
  *
- * Выбран собранный двойник рядом с сервером: server/dist/local-cleanup.js,
- * той же строкой esbuild, что и server/dist/runtime-smoke.js (см. build в
- * server/package.json) — двойник уже есть, шаблон известен, и уборка остаётся
- * отдельной короткоживущей командой. Второй рассмотренный путь — перенести
- * уборку внутрь сервера — отвергнут: сервер к этому моменту уже мёртв, а
- * страховка нужна именно на случай, когда он умер сам и своей уборки не
- * сделал.
+ * The choice is a built twin next to the server: server/dist/local-cleanup.js,
+ * with the same esbuild line as server/dist/runtime-smoke.js (see build in
+ * server/package.json): a twin already exists, the pattern is known, and the
+ * cleanup stays a separate short-lived command. The second path considered,
+ * moving the cleanup inside the server, was rejected: by this moment the
+ * server is already dead, and the safety net is needed precisely for the case
+ * when it died on its own and did not do its own cleanup.
  *
- * Порядок предпочтения разный с двух сторон, и намеренно. В репозитории
- * правда — исходник (на нём работает make dev, правку видно сразу); в
- * дистрибутиве — бандл. Если предпочтённого нет, берём второй: собранное
- * дерево без bundle и распакованный дистрибутив с исходниками одинаково
- * должны убирать за собой.
+ * The order of preference differs on the two sides, and on purpose. In the
+ * repository the truth is the source (make dev runs on it, an edit is visible
+ * at once); in a distribution it is the bundle. If the preferred one is
+ * missing, we take the other: a built tree without the bundle and an unpacked
+ * distribution with sources must both clean up after themselves.
  */
 function kernelCleanupArgs(): string[] | null {
   const bundle = path.join(root, 'server/dist/local-cleanup.js')
@@ -294,14 +301,15 @@ async function detached(options: LaunchOptions): Promise<number> {
     return 0
   }
   /*
-   * cloudflared — здесь, в терминале, а не в фоновом ребёнке: загрузка на
-   * первом запуске идёт минуту, и в фоне её было бы видно только в журнале,
-   * а человек смотрел бы на «Preparing the background start» без движения.
-   * Ребёнок потом найдёт сверенную копию сразу (launch-cloudflared.ts).
+   * cloudflared is fetched here, in the terminal, not in the background child:
+   * the download on the first start takes a minute, and in the background it
+   * would be visible only in the log, while the person would stare at a
+   * motionless "Preparing the background start". The child will then find the
+   * checked copy right away (launch-cloudflared.ts).
    */
   if (options.share || options.host) {
-    // Замок по настройкам — тоже здесь: отказ ребёнка лёг бы в журнал, а
-    // человек прочёл бы только «фоновый запуск не удался».
+    // The lock by the settings is here too: the child's refusal would land in
+    // the log, and the person would read only "the background start failed".
     const env = effectiveEnv()
     const refusal = publishRefusal({ env })
     if (refusal) throw new Error(refusalText(refusal))
@@ -311,14 +319,15 @@ async function detached(options: LaunchOptions): Promise<number> {
   const log = fs.openSync(logFile, 'a', 0o600)
   fs.chmodSync(logFile, 0o600)
   /*
-   * tsx нужен ровно тогда, когда запускается исходник. В дистрибутиве этот же
-   * файл приезжает собранным, и `--import tsx` там не нашлось бы: фоновый
-   * запуск падал бы на «Cannot find package 'tsx'» ещё до первой строки.
+   * tsx is needed exactly when the source is being run. In a distribution this
+   * same file arrives built, and `--import tsx` would not be found there: the
+   * background start would fail on "Cannot find package 'tsx'" before the
+   * first line.
    *
-   * Оба корня уезжают ребёнку явными переменными. Считать их заново он мог бы
-   * и сам, но относительный COLLOQ_HOME или запуск из другого каталога дали бы
-   * второй ответ на тот же вопрос — и расписка оказалась бы не там, где её
-   * ищет родитель.
+   * Both roots go to the child as explicit variables. It could work them out
+   * again on its own, but a relative COLLOQ_HOME or a start from another
+   * directory would give a second answer to the same question, and the
+   * receipt would end up somewhere other than where the parent looks for it.
    */
   const loader = entry.endsWith('.ts') ? ['--import', 'tsx'] : []
   const child = spawn(process.execPath, [...loader, entry, ...childArgs(options)], {
@@ -378,10 +387,10 @@ async function detached(options: LaunchOptions): Promise<number> {
         else if (publishing)
           console.log(`The tunnel did not come up; local work continues. Details: ${logFile}`)
         /*
-         * Под --share открывается ссылка туннеля: вход на публичном адресе
-         * кладёт куку туда, где преподаватель и возьмёт ссылки для студентов.
-         * Туннель не поднялся — не открываем ничего: localhost под --share
-         * человек не просил.
+         * Under --share the tunnel link is opened: signing in on the public
+         * address puts the cookie where the teacher will take the links for
+         * the students from. The tunnel did not come up: we open nothing, the
+         * person did not ask for localhost under --share.
          */
         if (options.open) {
           if (!options.share) openBrowser(teacherLink(receipt.url, receipt.dataDir))
@@ -424,7 +433,7 @@ async function runSession(options: LaunchOptions): Promise<number> {
   let stopPromise: Promise<void> | undefined
   let cleanupFailure: string | null = null
   let tunnel: ManagedProcess | undefined
-  // Ctrl+C посреди загрузки cloudflared обрывает загрузку, а не ждёт её конца.
+  // Ctrl+C in the middle of the cloudflared download cuts the download off rather than waiting for its end.
   const cancel = new AbortController()
   const stop = (code: number): void => {
     if (stopping) return
@@ -454,8 +463,8 @@ async function runSession(options: LaunchOptions): Promise<number> {
         'A server from .colloq.pid is already running. Use it, or stop it explicitly with colloq stop.',
       )
     /*
-     * .env локального занятия пишет сам colloq — не копия .env.example.
-     * Почему именно так: launch-config.ts · localClassEnv.
+     * The .env of a local class is written by colloq itself, not a copy of
+     * .env.example. Why exactly so: launch-config.ts · localClassEnv.
      */
     const envFile = path.join(home, '.env')
     if (!fs.existsSync(envFile)) {
@@ -465,10 +474,11 @@ async function runSession(options: LaunchOptions): Promise<number> {
     const settings = { ...parseEnv(fs.readFileSync(envFile)), ...process.env }
     let config = launchConfig(root, options, settings, home)
     /*
-     * Порт по умолчанию занят — берём ближайший свободный, как Jupyter.
-     * Только когда порт никто не называл: `--port 3000` — это просьба именно о
-     * нём, и на занятый отвечает отказ ниже. Под make dev порт сервера живёт в
-     * .env, а --port — это порт Vite, так что там ничего не подбирается.
+     * The default port is taken: we take the nearest free one, like Jupyter.
+     * Only when nobody named the port: `--port 3000` is a request for exactly
+     * that one, and a taken one is answered by the refusal below. Under make
+     * dev the server port lives in .env, and --port is the Vite port, so
+     * nothing is picked there.
      */
     if (options.action !== 'dev' && options.port === undefined && (await portOccupied(config.port))) {
       const taken = config.port
@@ -481,9 +491,9 @@ async function runSession(options: LaunchOptions): Promise<number> {
     }
     config.env.COLLOQ_LOCAL_RUN_ID = runId
     /*
-     * Назвать тот порт, который правда занят, и выход из положения. Было
-     * «Port 3000 or 3000 is already taken» — при одном порте фраза повторяла
-     * число и не говорила, что делать.
+     * Name the port that is really taken, and the way out. It used to be
+     * "Port 3000 or 3000 is already taken": with a single port the phrase
+     * repeated the number and did not say what to do.
      */
     const busy = (await portOccupied(config.port))
       ? config.port
@@ -496,18 +506,20 @@ async function runSession(options: LaunchOptions): Promise<number> {
           'Stop that program, or pick another port with --port, for example --port 3100.',
       )
     /*
-     * Замок публикации по настройкам — до сборки и до сервера. Отказ здесь
-     * стоит секунду; тот же отказ после минуты сборки — минуту, а с
-     * KERNEL_ISOLATION=off сервер и вовсе не стал бы здоровым, и человек
-     * прочёл бы «не поднялся за 90 секунд» вместо причины.
+     * The publishing lock by the settings, before the build and before the
+     * server. A refusal here costs a second; the same refusal after a minute of
+     * building costs a minute, and with KERNEL_ISOLATION=off the server would
+     * not become healthy at all, and the person would read "did not come up in
+     * 90 seconds" instead of the reason.
      */
     const publishing = Boolean(options.host || options.share)
     const early = publishing ? publishRefusal({ env: config.env }) : null
     if (early) throw new Error(refusalText(early))
     /*
-     * cloudflared для --share — тоже до сервера: первая загрузка идёт минуту,
-     * и лучше ей идти, пока ничего не поднято. Не вышло — отказ сразу, с
-     * причиной, а не занятие без ссылки, о котором узнают из чата группы.
+     * cloudflared for --share also comes before the server: the first
+     * download takes a minute, and it had better run while nothing is up yet.
+     * If it fails, the refusal comes at once, with the reason, and not a class
+     * without a link that people learn about from the group chat.
      */
     let cloudflared: string | undefined
     if (options.share) {
@@ -529,7 +541,7 @@ async function runSession(options: LaunchOptions): Promise<number> {
     receipt = {
       pid: process.pid,
       runId,
-      // Каталог состояния: он и опознаёт сессию (см. supervisorOwned).
+      // The state directory: it is what identifies the session (see supervisorOwned).
       root: home,
       port: config.port,
       url: config.url,
@@ -557,8 +569,9 @@ async function runSession(options: LaunchOptions): Promise<number> {
           '--clear-screen=false',
           'server/src/index.ts',
         ])
-      : // Сервер говорит в журнал, а не на экран: его строки — для того, кто
-        // чинит, а преподавателю нужен итог ниже (launch-banner.ts).
+      : // The server speaks to the log, not to the screen: its lines are for
+        // whoever is fixing things, and the teacher needs the summary below
+        // (launch-banner.ts).
         processes.start('Server', process.execPath, ['server/dist/server.js'], !options.child)
     started = true
     receipt.serverPid = server.child.pid
@@ -607,25 +620,28 @@ async function runSession(options: LaunchOptions): Promise<number> {
     if (publishing) receipt.hosting = 'starting'
     writeJson(receiptFile, receipt)
     if (!options.child) await banner(receipt, false)
-    // Под --share браузер ждёт ссылку туннеля (announceShare ниже).
+    // Under --share the browser waits for the tunnel link (announceShare below).
     if (options.open && !options.share) openBrowser(teacherLink(config.url, config.dataDir))
     if (publishing) {
       /*
-       * Путь до скрипта проверяется до запуска, потому что его отсутствие
-       * ничем себя не выдавало. `bash scripts/host.sh` без файла уходит кодом
-       * 127 — в расписку ложилось hosting: 'failed', а человек читал «Внешний
-       * доступ завершён (код 127). Локальная работа продолжается», то есть
-       * «что-то закончилось», а не «класса снаружи не видно». С этим и шли на
-       * пару. Отказ теперь называет файл и говорит, что делать.
+       * The path to the script is checked before the start, because its
+       * absence gave no sign of itself. `bash scripts/host.sh` without the file
+       * exits with code 127: hosting: 'failed' went into the receipt, and the
+       * person read "Public access ended (code 127). Local work continues",
+       * that is, "something ended", not "the class is not visible from
+       * outside". People went to class with that. The refusal now names the
+       * file and says what to do.
        *
-       * Имя абсолютное: cwd ребёнка — каталог приложения, и относительное имя
-       * проверялось бы не там, где запускается.
+       * The name is absolute: the child's cwd is the application directory,
+       * and a relative name would be checked somewhere other than where it
+       * runs.
        */
       const script = path.join(root, 'scripts/host.sh')
       /*
-       * Замок публикации по живому серверу: демон docker отвечает, и сервер
-       * сам называет, чем разделены комнаты (/api/health · isolation). До
-       * туннеля, а не после: дверь, открытая на секунду, — всё равно дверь.
+       * The publishing lock by the live server: the docker daemon answers, and
+       * the server itself names what keeps the rooms apart (/api/health ·
+       * isolation). Before the tunnel, not after: a door opened for a second is
+       * still a door.
        */
       const docker = fs.existsSync(script)
         ? await capture(root, config.env, 'docker', ['info', '--format', '{{.ServerVersion}}'])
@@ -651,19 +667,21 @@ async function runSession(options: LaunchOptions): Promise<number> {
         console.error('\n' + refusalText(refusal, config.url))
       } else {
         /*
-         * Каталог состояния уезжает ребёнку явной переменной: скрипт ищет в
-         * нём .env, расписку занятия и .colloq.pid, а сам взял бы каталог над
-         * scripts/ — у поставленного colloq это каталог приложения, где ничего
-         * этого нет (scripts/lib.sh · COLLOQ_STATE_ROOT). У запуска из
-         * терминала COLLOQ_HOME в окружении может и не быть вовсе: супервизор
-         * считает его сам.
+         * The state directory goes to the child as an explicit variable: the
+         * script looks in it for .env, the class receipt and .colloq.pid, and
+         * on its own it would take the directory above scripts/, which for an
+         * installed colloq is the application directory, where none of that
+         * exists (scripts/lib.sh · COLLOQ_STATE_ROOT). For a start from the
+         * terminal COLLOQ_HOME may not be in the environment at all: the
+         * supervisor works it out itself.
          *
-         * У --share имя пустое нарочно: пустой COLLOQ_HOSTNAME и есть быстрый
-         * туннель, и строка в .env или в оболочке не должна увести ссылку в
-         * именованный. COLLOQ_CLOUDFLARED — файл, найденный и сверенный выше:
-         * скрипт не ищет его второй раз. COLLOQ_SHARE=1 просит скрипт не
-         * печатать свой итог, а сказать строкой-меткой, что адрес поднят; итог
-         * печатаем мы, одним блоком (launch-share.ts).
+         * For --share the name is empty on purpose: an empty COLLOQ_HOSTNAME is
+         * exactly the quick tunnel, and a line in .env or in the shell must not
+         * pull the link into a named one. COLLOQ_CLOUDFLARED is the file found
+         * and checked above: the script does not look for it a second time.
+         * COLLOQ_SHARE=1 asks the script not to print its own summary but to
+         * say with a marker line that the address is up; we print the summary,
+         * in one block (launch-share.ts).
          */
         const relayDomain = config.env.RELAY_DOMAIN?.trim() ?? ''
         tunnel = processes.start(
@@ -732,11 +750,13 @@ async function runSession(options: LaunchOptions): Promise<number> {
     const cleanupArgs = started && processes ? kernelCleanupArgs() : null
     if (started && processes && !cleanupArgs)
       /*
-       * Страховки нет — и это стоит сказать вслух, но не сорвать остановку:
-       * ненулевым кодом выхода не погаснет ни один контейнер. Штатный путь
-       * ядра уже убрал: сервер по SIGTERM снимает ядра комнат сам
-       * (server/src/index.ts, COLLOQ_STOP_KERNELS_ON_EXIT=1). Теряется только
-       * подстраховка на случай, когда сервер умер сам и до неё не дошёл.
+       * There is no safety net, and that is worth saying out loud, but not
+       * worth breaking the stop over: a non-zero exit code will not shut down
+       * a single container. The regular path has already removed the kernels:
+       * on SIGTERM the server removes the room kernels itself
+       * (server/src/index.ts, COLLOQ_STOP_KERNELS_ON_EXIT=1). What is lost is
+       * only the backup for the case when the server died on its own and never
+       * got to it.
        */
       console.error(
         'Nothing here can stop the kernels: neither server/dist/local-cleanup.js nor the source. ' +
@@ -787,8 +807,9 @@ async function main(): Promise<number> {
   const options = parseLaunchArgs(process.argv.slice(2))
   if (options.action === 'cloudflared') {
     /*
-     * Служебное слово для scripts/host.sh: путь — в stdout (скрипт берёт его
-     * через $(...)), слова о загрузке — в stderr, прямо в терминал человека.
+     * A service word for scripts/host.sh: the path goes to stdout (the script
+     * takes it through $(...)), the words about the download go to stderr,
+     * straight into the person's terminal.
      */
     const file = await ensureCloudflared({
       home,

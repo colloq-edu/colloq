@@ -1,15 +1,17 @@
 /**
- * «Комнаты нет» — теми же словами на каждой двери оракула.
+ * "The room is gone" — in the same words at every Oracle door.
  *
- * По этой строке клиент делает необратимое: стирает базу y-indexeddb комнаты
- * вместе с набранным офлайн и пишет «Этот семинар удалён» (shared/protocol.ts ·
- * saysSessionMissing). Голого 404 для этого мало — его отдаёт и ретранслятор
- * без подключённого frpc, — так что решение принимается ПО СЛОВАМ, и разойдись
- * они хоть на одной двери, удалённая комната перестала бы узнаваться и вкладка
- * крутила бы «Reconnecting» до конца пары.
+ * On this string the client does something irreversible: it wipes the room's
+ * y-indexeddb database together with whatever was typed offline and writes
+ * "This seminar has been deleted" (shared/protocol.ts · saysSessionMissing). A
+ * bare 404 is not enough for that — the relay also returns one when no frpc is
+ * connected — so the decision is made BY THE WORDS, and if they diverged at
+ * even one door, a deleted room would no longer be recognized and the tab
+ * would spin "Reconnecting" until the end of the class.
  *
- * Здесь двери оракула: вопрос, «Стоп», очистка ленты и оракул о решениях.
- * Соседние двери комнаты (файлы, история, баны, курсы) — у routes/sessions.
+ * The doors here are the Oracle's: a question, "Stop", clearing the feed and
+ * the Oracle on solutions. The room's neighbouring doors (files, history,
+ * bans, courses) belong to routes/sessions.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -35,7 +37,7 @@ await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
 after(() => server.close())
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
 
-/** Семинара с таким именем нет и не было — токен подписан, дверь настоящая. */
+/** No seminar with this name exists or ever did — the token is signed, the door is real. */
 const GONE = 'session-that-never-was'
 const token = signToken({ sessionId: GONE, participantId: 'p_ada', role: 'participant' })
 
@@ -48,20 +50,21 @@ async function door(method: string, path: string): Promise<void> {
   assert.equal(res.status, 404, `${method} ${path}`)
   const body = (await res.json()) as { error?: string }
   assert.equal(body.error, SESSION_MISSING, `${method} ${path}`)
-  // И то же самое глазами клиента — той функцией, что решает стирать кэш.
+  // And the same through the client's eyes — with the very function that
+  // decides to wipe the cache.
   assert.equal(saysSessionMissing(new ApiError(body.error ?? '', res.status)), true, path)
 }
 
-test('вопрос оракулу в удалённой комнате отвечает словами, а не голым кодом', async () => {
+test('a question to the Oracle in a deleted room is answered with words, not a bare code', async () => {
   await door('POST', `/api/sessions/${GONE}/ai/ask`)
 })
 
-test('«Стоп» и очистка ленты — теми же словами', async () => {
+test('"Stop" and clearing the feed — in the same words', async () => {
   await door('POST', `/api/sessions/${GONE}/ai/cancel`)
   await door('DELETE', `/api/sessions/${GONE}/ai/thread`)
 })
 
-test('оракул о решениях — теми же словами на обеих ручках', async () => {
+test('the Oracle on solutions — the same words on both handlers', async () => {
   await door('POST', `/api/sessions/${GONE}/council/c1/oracle`)
   await door('DELETE', `/api/sessions/${GONE}/council/c1/oracle`)
 })

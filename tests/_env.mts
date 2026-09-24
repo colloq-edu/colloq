@@ -11,23 +11,26 @@ import path from 'node:path'
 const root = mkdtempSync(path.join(tmpdir(), 'colloq-test-'))
 
 /*
- * За собой прибирает сам процесс, и делает это в самом конце.
+ * The process cleans up after itself, and does it at the very end.
  *
- * Каталог заводится на КАЖДЫЙ файл сюиты — своя SQLite, своя папка комнат, — и
- * не убирался никогда: `npm test` оставлял девяносто шесть штук за прогон, а
- * books/control-room/paths/tree-move пишут в свой по паре тысяч файлов. На
- * машине, где эту сюиту гоняют месяцами, набралось семнадцать тысяч каталогов
- * и пять с половиной гигабайт — и ни строки в выводе о том, откуда они.
+ * A directory is created for EVERY file of the suite (its own SQLite, its own
+ * rooms folder) and was never removed: `npm test` left ninety-six of them per
+ * run, and books/control-room/paths/tree-move write a couple of thousand
+ * files each into theirs. On a machine where this suite has been run for
+ * months, seventeen thousand directories and five and a half gigabytes piled
+ * up, and not a line in the output about where they came from.
  *
- * Именно `exit`, а не `after()` из node:test: сюда доходят и упавший файл, и
- * брошенное исключение, и — проверено — дочерний процесс под
- * `--test-force-exit`, который сам по себе выходить не собирался. К этому
- * моменту не работает уже ничто, так что снос папки не может вырвать диск
- * из-под фонового таймера, который ещё пишет снимок или проекцию тетради.
+ * Exactly `exit`, not `after()` from node:test: this is reached by a failed
+ * file, by a thrown exception and (checked) by a child process under
+ * `--test-force-exit` that was not going to exit on its own. By this point
+ * nothing is running any more, so removing the folder cannot pull the disk
+ * out from under a background timer that is still writing a snapshot or a
+ * notebook projection.
  *
- * Каталоги прошлых прогонов не трогаются: рядом может идти вторая сюита, а
- * стереть чужой DATA_DIR посреди её работы — ровно та беда, от которой всё это
- * заведено. Оставшееся от старых версий убирается руками.
+ * Directories of past runs are not touched: a second suite may be running
+ * alongside, and wiping someone else's DATA_DIR in the middle of its work is
+ * exactly the trouble all this exists to prevent. Leftovers from old
+ * versions are removed by hand.
  */
 process.on('exit', () => rmSync(root, { recursive: true, force: true }))
 
@@ -37,26 +40,28 @@ process.env.SESSION_SECRET = 'test-secret-not-random-on-purpose'
 process.env.PUBLIC_URL = 'http://localhost:9999'
 process.env.ADMIN_EMAIL = 'owner@test.local'
 /*
- * Ядра у тестов нет — и не должно быть.
+ * Tests have no kernel, and must not have one.
  *
- * Без этой строки JUPYTER_URL оставался умолчанием, localhost:8888, то есть
- * настоящим контейнером на машине разработчика. Тест, случайно потянувшийся к
- * ядру, был зелёным ровно пока рядом что-то работало, и падал шестьюдесятью
- * секундами таймаута, когда переставало. Один такой уже написался.
+ * Without this line JUPYTER_URL stayed at its default, localhost:8888, that
+ * is, a real container on the developer's machine. A test that accidentally
+ * reached for the kernel was green exactly as long as something was running
+ * nearby, and failed after a sixty-second timeout once it stopped. One such
+ * test has already been written.
  *
- * Порт, на котором заведомо никого нет: обращение к ядру мимо подделки теперь
- * отказывает сразу и громко. `kernel.test.mts` поднимает свою подделку и
- * переписывает эту переменную на неё.
+ * A port where there is certainly nobody: a call to the kernel that bypasses
+ * the fake now fails at once and loudly. `kernel.test.mts` starts its own
+ * fake and points this variable at it.
  */
 process.env.JUPYTER_URL = 'http://127.0.0.1:1'
 
 /*
- * И контейнеров у тестов тоже нет.
+ * And tests have no containers either.
  *
- * У комнаты теперь свой контейнер (`kernel/pool.ts`), и без этой строки сюита
- * поднимала настоящий на каждый семинар: один прогон оставил на машине
- * тридцать шесть висящих `colloq-room-*`. Подделка Jupyter в `kernel.test.mts`
- * заменяет собой ядро целиком, так что поднимать нечего.
+ * A room now has its own container (`kernel/pool.ts`), and without this line
+ * the suite started a real one for every seminar: one run left thirty-six
+ * hanging `colloq-room-*` on the machine. The Jupyter fake in
+ * `kernel.test.mts` replaces the kernel entirely, so there is nothing to
+ * start.
  */
 process.env.NODE_ENV = 'test'
 process.env.KERNEL_BACKEND = 'test'

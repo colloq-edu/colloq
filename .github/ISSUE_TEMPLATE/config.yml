@@ -1,5 +1,6 @@
-# Пустые issue оставлены открытыми ради вопросов: Discussions в репозитории
-# выключены, и без пустой формы вопросу было бы некуда деться.
+# Blank issues stay enabled for the sake of questions: Discussions are turned
+# off in the repository, and without a blank form a question would have
+# nowhere to go.
 blank_issues_enabled: true
 contact_links:
   - name: Report a security vulnerability

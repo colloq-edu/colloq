@@ -1,42 +1,45 @@
 /**
- * Пауза между запусками одного студента — арифметика отсчёта, без рун.
+ * The pause between one student's runs — countdown arithmetic, without runes.
  *
- * Право держит сервер: он откажет и не глядя на клиента (регламент ячейки,
- * shared/notebook.ts · CouncilSettings.rerunPauseSec). Поле `nextRunAt` едет
- * автору не ради права, а ради того, чтобы на месте кнопки стоял ОТСЧЁТ, а не
- * кнопка, отвечающая отказом на каждое нажатие.
+ * The server holds the right: it refuses without even looking at the client
+ * (the cell's rules, shared/notebook.ts · CouncilSettings.rerunPauseSec). The
+ * `nextRunAt` field goes to the author not for the right's sake but so that a
+ * COUNTDOWN stands where the button was, instead of a button that answers
+ * every press with a refusal.
  *
- * Считается он здесь, потому что врёт такой отсчёт тихо: `nextRunAt` отмерен
- * серверными часами, а тикает браузер, и «Запуск через 8:03» на ноутбуке с
- * убежавшим временем выглядит не поломкой, а правилом преподавателя. Отсюда
- * две защиты подряд — поправка на часы и потолок в само правило, — и обе
- * ошибаются в одну сторону: кнопка вернётся раньше, а не позже. Ранний возврат
- * стоит одного отказа сервера; поздний — минуты, которую человек сидит перед
- * ячейкой и ждёт разрешения, которого у него уже нет.
+ * It is computed here because such a countdown lies quietly: `nextRunAt` is
+ * measured by the server's clock while the browser does the ticking, and
+ * "Run in 8:03" on a laptop whose clock has drifted looks not like a breakage
+ * but like the teacher's rule. Hence two safeguards in a row — a clock
+ * correction and a cap at the rule itself — and both err in the same
+ * direction: the button comes back early, not late. An early return costs one
+ * server refusal; a late one costs a minute the person sits in front of the
+ * cell waiting for a permission they in fact already have.
  *
- * Ни браузера, ни Svelte — tests/council-pause.test.mts.
+ * No browser and no Svelte — tests/council-pause.test.mts.
  */
 
 /**
- * Сколько ещё ждать до своего следующего запуска, мс; 0 — можно сейчас.
+ * How much longer to wait until one's next run, ms; 0 — allowed now.
  *
- *   nextRunAt — из `CouncilMine`, СЕРВЕРНЫЕ мс; `null`/`undefined` — паузы нет
- *   now       — `Date.now()` этого браузера
- *   skewMs    — часы браузера минус часы сервера (SessionState.clockSkewMs)
- *   pauseSec  — само правило ячейки: дольше него пауза не бывает
+ *   nextRunAt — from `CouncilMine`, SERVER ms; `null`/`undefined` — no pause
+ *   now       — this browser's `Date.now()`
+ *   skewMs    — browser clock minus server clock (SessionState.clockSkewMs)
+ *   pauseSec  — the cell's rule itself: a pause is never longer than it
  *
- * Поправка `skewMs` — лучшая проба ping/pong, и до первого понга она ноль:
- * вкладка, открытая на машине с часами на четверть суток вперёд, первые
- * секунды считает по своим. Поэтому остаток ещё и прижат к правилу: сколько бы
- * ни показали чужие часы, ждать дольше, чем велел преподаватель, отсчёт не
- * предложит никогда.
+ * The `skewMs` correction is the best ping/pong sample, and until the first
+ * pong it is zero: a tab opened on a machine whose clock is a quarter of a day
+ * ahead counts by its own clock for the first seconds. So the remainder is
+ * also clamped to the rule: whatever a stray clock shows, the countdown will
+ * never ask to wait longer than the teacher said.
  *
- * Потолок заодно делает нулевую паузу мгновенной: преподаватель снял правило —
- * `pauseSec` приезжает нулём по CRDT, и отсчёт гаснет той же секундой, не
- * дожидаясь свежего `council:mine`. Цена — обратный случай: пока замок ячейки
- * не доехал, потолок берётся из прошлого регламента и может оказаться меньше
- * настоящего. Тогда кнопка вернётся рано и сервер откажет словами — то есть
- * ровно та ошибка, которую здесь и выбрали.
+ * The cap also makes a zero pause instant: the teacher lifted the rule —
+ * `pauseSec` arrives as zero over the CRDT, and the countdown goes out in the
+ * same second, without waiting for a fresh `council:mine`. The price is the
+ * opposite case: until the cell lock has arrived, the cap comes from the
+ * previous rules and may be smaller than the real one. Then the button comes
+ * back early and the server refuses in words — that is, exactly the error
+ * chosen here.
  */
 export function pauseLeftMs(
   nextRunAt: number | null | undefined,
@@ -44,15 +47,15 @@ export function pauseLeftMs(
   skewMs: number,
   pauseSec: number,
 ): number {
-  // Сравнения, а не `!`: NaN в любом из чисел обязан значить «паузы нет», а не
-  // «пауза навсегда» — отсчёт из NaN нарисовал бы «Запуск через NaN:aN».
+  // Comparisons, not `!`: NaN in any of the numbers must mean "no pause", not
+  // "a pause forever" — a countdown from NaN would draw "Run in NaN:aN".
   if (nextRunAt == null || !(pauseSec > 0)) return 0
   const left = nextRunAt - (now - skewMs)
   if (!(left > 0)) return 0
   return Math.min(left, pauseSec * 1000)
 }
 
-/** Пауза ещё идёт — кнопке запуска на экране не место. */
+/** The pause is still on — the run button has no place on screen. */
 export function pausePending(
   nextRunAt: number | null | undefined,
   now: number,
@@ -63,16 +66,16 @@ export function pausePending(
 }
 
 /**
- * «0:12» — остаток словами чипа, m:ss.
+ * "0:12" — the remainder in the chip's words, m:ss.
  *
- * Округление ВВЕРХ: на floor последняя секунда показывала бы «0:00» целую
- * секунду, и отсчёт, замерший на нуле, читается как зависший — а он в этот
- * момент как раз работает. Вверх же «0:00» не появляется вовсе: ноль — это уже
- * не пауза, и чипа на экране нет.
+ * Rounding UP: with floor the last second would show "0:00" for a whole
+ * second, and a countdown frozen at zero reads as hung — while at that moment
+ * it is working. Rounding up, "0:00" never appears at all: zero is no longer a
+ * pause, and there is no chip on screen.
  *
- * Минуты без ведущего нуля и без часов: потолок паузы — час
- * (COUNCIL_RERUN_PAUSE_MAX), и «60:00» честнее, чем «1:00:00» в чипе шириной в
- * два слова.
+ * Minutes without a leading zero and without hours: the pause ceiling is an
+ * hour (COUNCIL_RERUN_PAUSE_MAX), and "60:00" is more honest than "1:00:00" in
+ * a chip two words wide.
  */
 export function pauseClock(ms: number): string {
   const total = Math.max(0, Math.ceil(ms / 1000))

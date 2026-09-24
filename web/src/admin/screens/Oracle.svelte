@@ -60,8 +60,9 @@
 
   const MODES: Option[] = $derived([
     { value: 'off', label: tr("admin.off"), hint: tr("admin.oracle.disabled") },
-    // «Просят подсказку», а не «решения не будет»: режим держится на
-    // формулировке запроса к модели, и обещать за неё мы не можем.
+    // "Asked to give hints", not "there will be no solution": the mode rests
+    // on the wording of the request to the model, and we cannot promise on
+    // its behalf.
     { value: 'hints', label: tr("admin.hints.only"), hint: tr("admin.instructed.to.give.hints.761") },
     { value: 'full', label: tr("admin.full.answers"), hint: tr("admin.explains.and.writes.code.764") },
   ])
@@ -69,9 +70,10 @@
   /**
    * The quick actions a cell offers, plus 'ask' for anything typed by hand.
    *
-   * И 'work' — режим «сделать» из комнаты. Он писался под 'ask' и был в
-   * разбивке неотличим от вопроса, хотя один такой ход ходит к модели до
-   * двенадцати раз: самая дорогая строка стояла без подписи.
+   * And 'work' — the room's "do it" mode. It used to be recorded as 'ask'
+   * and was indistinguishable from a question in the breakdown, although one
+   * such turn goes to the model up to twelve times: the most expensive row
+   * stood without a label.
    */
   const ACTION_LABELS: Record<string, string> = $derived({
     ask: tr("admin.questions"),
@@ -265,20 +267,21 @@
   }
 
   /**
-   * Предел загрузки — тот, что назвал сервер.
+   * The upload limit — the one the server named.
    *
-   * Пока его нет в ответе (сборка постарше), на месте значения остаётся имя
-   * переменной: назвать наугад «50 MB» на инстансе, где стоит 200, — то же
-   * самое враньё, только с цифрой.
+   * While it is missing from the response (an older build), the variable's
+   * name stays in place of the value: naming "50 MB" at random on an
+   * instance set to 200 is the same lie, only with a number.
    */
   const maxUploadBytes = $derived(adminAuth.state?.maxUploadBytes ?? null)
 
   /**
    * A dead cookie is the shell's business: re-reading `me` sends them to sign in.
    *
-   * С причиной: печенье до сервера доехало и было отвергнуто — ротированная
-   * ссылка или снятый аккаунт. Экран входа иначе объяснял это настройками
-   * печенья в браузере, где чинить нечего.
+   * With a reason: the cookie reached the server and was rejected — a
+   * rotated link or a removed account. Otherwise the sign-in screen
+   * explained it with the browser's cookie settings, where there is nothing
+   * to fix.
    */
   function reauthenticate(cause: unknown): void {
     if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') {
@@ -786,9 +789,9 @@
     </Section>
 
     <!--
-      Что уезжает провайдеру и сколько ему думать — рядом с моделью и ключом, а
-      не среди потолков: это две настройки про ОДИН запрос, и обе меняют то,
-      что уходит за пределы этого Colloq.
+      What goes to the provider and how long it thinks — next to the model and
+      the key, not among the ceilings: these are two settings about ONE
+      request, and both change what leaves this Colloq.
     -->
     <Section
       title={tr('admin.request.shape')}
@@ -891,10 +894,11 @@
             <span class="shrink-0 text-2xs text-muted">{tr("admin.seconds")}</span>
           </div>
           <!--
-            Чем это не потолок в час: двадцать вопросов можно выкрикнуть за
-            двадцать секунд, и потолок накажет не выкрик, а следующий настоящий
-            вопрос — через час. Строка одна, но она здесь обязательна: два поля
-            с числом рядом иначе читаются как одно и то же дважды.
+            Why this is not the hourly ceiling: twenty questions can be shouted
+            out in twenty seconds, and the ceiling would punish not the
+            shouting but the next real question — an hour later. It is one
+            line, but it is required here: otherwise two number fields side by
+            side read as the same thing twice.
           -->
           <p class="mt-1.5 text-2xs text-muted">
             {#if slow === 0}
@@ -949,8 +953,8 @@
           </p>
           <!-- Dashed, because it is a reading of the environment and not a control:
                a box that looks like a field and ignores you is worse than a label.
-               И читается оно теперь по-настоящему: имя переменной на месте
-               значения — это не чтение, а обещание чтения. -->
+               And now it is actually read: a variable name in place of the
+               value is not a reading but the promise of one. -->
           <div class="flex h-[38px] items-center border border-dashed border-line px-3">
             <span class="truncate font-mono text-code text-muted">
               {maxUploadBytes === null ? 'MAX_UPLOAD_MB' : tr("admin.mb", { p0: uploadMb(maxUploadBytes) })}

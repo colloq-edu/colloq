@@ -1,13 +1,13 @@
 /**
- * Публичная страница: что на ней видно и чего на ней не бывает.
+ * The public page: what is visible on it and what never appears there.
  *
- * Второй отрисовщик тетради (`server/src/publish/render.ts`) собирает файл,
- * который студент открывает в среду вечером без всякого сервера. Всё, что он
- * потерял или переврал, теряется навсегда: править эту страницу некому и
- * пожаловаться некуда — она просто читается как недоделанная.
+ * The second notebook renderer (`server/src/publish/render.ts`) builds a file
+ * that a student opens on a Wednesday evening without any server. Whatever it
+ * lost or garbled is lost for good: there is nobody to fix this page and
+ * nowhere to complain — it simply reads as unfinished.
  *
- * Здесь про три вещи, каждая из которых доезжала до класса сломанной: код в
- * заметке, вывод в text/html и русское числительное.
+ * This is about three things, each of which reached the class broken: code in
+ * a note, text/html output and the Russian numeral.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -62,35 +62,35 @@ function page(cells: PublicCell[], steps = 1): string {
   })
 }
 
-/* ------------------------------------------------------------- заметка */
+/* ------------------------------------------------------------ the note */
 
-test('код в ``` остаётся кодом: решётка в нём — комментарий, а не заголовок', () => {
-  // Самая частая конструкция учебной тетради: строка «# load data» внутри
-  // примера превращалась в крупный заголовок посреди страницы, а пустая строка
-  // рвала пример на абзацы.
+test('code in ``` stays code: a hash inside it is a comment, not a heading', () => {
+  // The most common construct of a teaching notebook: the line "# load data"
+  // inside an example turned into a big heading in the middle of the page, and a
+  // blank line tore the example into paragraphs.
   const note = ['Разбор:', '', '```python', '# load data', '', 'x = 1', '- y', '```'].join('\n')
   const html = page([cell({ type: 'markdown', source: note })])
-  assert.ok(!/<h[1-5]>load data/.test(html), 'комментарий в коде стал заголовком')
-  assert.ok(!/<li>y/.test(html), 'вычитание в коде стало пунктом списка')
+  assert.ok(!/<h[1-5]>load data/.test(html), 'a comment in the code became a heading')
+  assert.ok(!/<li>y/.test(html), 'a subtraction in the code became a list item')
   assert.match(html, /<pre class="code"># load data\n\nx = 1\n- y<\/pre>/)
 })
 
-test('нумерованный список — список, а картинка — ссылка, а не «!»', () => {
+test('a numbered list is a list, and an image is a link, not a "!"', () => {
   const note = ['1. первый', '2. второй', '', '![схема](https://example.com/a.png)'].join('\n')
   const html = page([cell({ type: 'markdown', source: note })])
   assert.match(html, /<ol><li>первый<\/li><li>второй<\/li><\/ol>/)
-  // Внешняя картинка на странице, которую открывают из архива, — битая рамка.
-  assert.ok(!/<img[^>]+example\.com/.test(html), 'внешняя картинка вставлена в страницу')
+  // An external image on a page opened from an archive is a broken frame.
+  assert.ok(!/<img[^>]+example\.com/.test(html), 'an external image was embedded in the page')
   assert.match(html, /<a href="https:\/\/example\.com\/a\.png" rel="noreferrer">схема<\/a>/)
 })
 
-/* --------------------------------------------------------------- вывод */
+/* -------------------------------------------------------------- output */
 
-test('таблица pandas доезжает до страницы, а её стиль и скрипты — нет', () => {
+test('a pandas table reaches the page, but its style and scripts do not', () => {
   /*
-   * `df.style` отдаёт text/html со своим `<style>`, а в text/plain у него
-   * «<pandas.io.formats.style.Styler object at 0x…>». Раньше на странице был
-   * либо этот repr, либо пустое место с подписью «Out [1]».
+   * `df.style` gives text/html with its own `<style>`, and its text/plain is
+   * "<pandas.io.formats.style.Styler object at 0x…>". The page used to show
+   * either this repr or an empty space captioned "Out [1]".
    */
   const html = page([
     cell({
@@ -112,15 +112,15 @@ test('таблица pandas доезжает до страницы, а её ст
   assert.match(html, /<table><tr><th scope="col">a<\/th><td colspan="2">1<\/td><\/tr><\/table>/)
   assert.ok(
     !/<style/i.test(html.split('<div class="rich">')[1] ?? ''),
-    'стиль вывода уехал в страницу',
+    'the output style got into the page',
   )
-  assert.ok(!/steal\(\)|fetch\("\/api/.test(html), 'скрипт из вывода уехал в страницу')
-  assert.ok(!/Styler object/.test(html), 'вместо таблицы напечатан repr')
-  // Незакрытый тег закрывается здесь же — иначе он утащил бы вёрстку страницы.
+  assert.ok(!/steal\(\)|fetch\("\/api/.test(html), 'a script from the output got into the page')
+  assert.ok(!/Styler object/.test(html), 'a repr was printed instead of the table')
+  // An unclosed tag is closed right here — otherwise it would drag the page layout along.
   assert.match(html, /<div>хвост<\/div>/)
 })
 
-test('ссылка из вывода — только http(s)', () => {
+test('a link from output is http(s) only', () => {
   const html = page([
     cell({
       outputs: [
@@ -132,13 +132,13 @@ test('ссылка из вывода — только http(s)', () => {
       ],
     }),
   ])
-  assert.ok(!/javascript:/.test(html), 'javascript-ссылка доехала до страницы')
+  assert.ok(!/javascript:/.test(html), 'a javascript link reached the page')
   assert.match(html, /<a>тык<\/a>/)
 })
 
-test('вывод, который показать нечем, называет себя, а не исчезает', () => {
-  // Пустое место под ячейкой с подписью «Out [7]» читается как «код ничего не
-  // напечатал» — а вывод был.
+test('output that cannot be shown names itself instead of vanishing', () => {
+  // An empty space under a cell captioned "Out [7]" reads as "the code printed
+  // nothing" — but there was output.
   const html = page([
     cell({
       outputs: [{ kind: 'data', data: { 'application/vnd.bokehjs_exec.v0+json': '{}' }, execCount: 7 }],
@@ -148,13 +148,13 @@ test('вывод, который показать нечем, называет �
   assert.match(html, /не показывается/)
 })
 
-test('график plotly на выгруженной странице назван графиком, а не форматом', () => {
+test('a plotly chart on an exported page is called a chart, not a format', () => {
   /*
-   * У фигуры есть имя и есть место, где её ПОКАЗЫВАЮТ, — живая страница
-   * занятия: там она рисуется в рамке-песочнице (server/src/plotly-frame.ts).
-   * Статический каталог живёт без сервера, отдать рамку с её заголовком там
-   * некому, — но сказать «вывод в формате application/vnd.plotly.v1+json на
-   * странице не показывается» значит отправить читателя гадать.
+   * A figure has a name, and it has a place where it IS SHOWN — the live class
+   * page: there it is drawn in a sandbox frame (server/src/plotly-frame.ts). The
+   * static directory lives without a server, and nobody there can serve the
+   * frame with its header — but saying "output in the application/vnd.plotly.v1+json
+   * format is not shown on this page" sends the reader off guessing.
    */
   const html = page([
     cell({
@@ -168,20 +168,20 @@ test('график plotly на выгруженной странице назв�
     }),
   ])
   assert.match(html, /интерактивный график plotly/)
-  assert.ok(!/application\/vnd\.plotly/.test(html), 'имя типа читателю ни о чём не говорит')
-  // И сама фигура в статическую страницу не уезжает: чужие данные плюс чужой
-  // код на origin, где лежат и другие занятия.
-  assert.ok(!/"layout"/.test(html), 'JSON фигуры уехал в выгруженную страницу')
+  assert.ok(!/application\/vnd\.plotly/.test(html), 'the type name tells the reader nothing')
+  // And the figure itself does not go into the static page: foreign data plus
+  // foreign code on an origin that holds other classes too.
+  assert.ok(!/"layout"/.test(html), 'the figure JSON went into the exported page')
 })
 
-test('пустой каркас plotly, bokeh и ipywidgets — это не содержимое', () => {
+test('an empty plotly, bokeh or ipywidgets scaffold is not content', () => {
   /*
-   * Три из четырёх производителей text/html рисуют не разметкой, а скриптом:
-   * в выводе лежит `<script>` и пустой `<div id=…>`, который он наполняет уже
-   * в браузере. Скрипт на страницу не уезжает, и остаётся `<div></div>` —
-   * строка непустая. Пока ветку выбирали по её длине, пометка о формате не
-   * печаталась ни разу, и под ячейкой было ровно то пустое место с подписью
-   * «Out [1]», ради которого всё это писалось.
+   * Three of the four producers of text/html draw not with markup but with a
+   * script: the output holds a `<script>` and an empty `<div id=…>` that it fills
+   * in the browser. The script does not go onto the page, and what remains is
+   * `<div></div>` — a non-empty string. While the branch was chosen by its
+   * length, the format note was never printed, and under the cell was exactly the
+   * empty space captioned "Out [1]" that all of this was written to avoid.
    */
   const empty: Record<string, string> = {
     plotly:
@@ -203,14 +203,14 @@ test('пустой каркас plotly, bokeh и ipywidgets — это не со
         ],
       }),
     ])
-    assert.ok(!/<div class="rich">/.test(html), `${maker}: пустой каркас выдан за вывод`)
-    assert.match(html, /не показывается/, `${maker}: вывод исчез без пометки`)
+    assert.ok(!/<div class="rich">/.test(html), `${maker}: an empty scaffold was passed off as output`)
+    assert.match(html, /не показывается/, `${maker}: the output vanished without a note`)
   }
 })
 
-test('видимое из text/html показывается, а не подменяется пометкой', () => {
-  // Обратная сторона той же проверки: таблица, строчка текста и линейка —
-  // содержимое, и заменять их пометкой «не показывается» нельзя.
+test('what is visible in text/html is shown, not replaced by a note', () => {
+  // The other side of the same check: a table, a line of text and a rule are
+  // content, and they must not be replaced by a "not shown" note.
   const seen: Record<string, string> = {
     таблица: '<table><tr><td>1</td></tr></table>',
     строка: '<div><span>ответ: 42</span></div>',
@@ -218,14 +218,14 @@ test('видимое из text/html показывается, а не подме
   }
   for (const [what, rich] of Object.entries(seen)) {
     const html = page([cell({ outputs: [{ kind: 'data', data: { 'text/html': rich }, execCount: 1 }] })])
-    assert.match(html, /<div class="rich">/, `${what}: видимый вывод пропал`)
-    assert.ok(!/не показывается/.test(html), `${what}: видимый вывод подменён пометкой`)
+    assert.match(html, /<div class="rich">/, `${what}: the visible output disappeared`)
+    assert.ok(!/не показывается/.test(html), `${what}: the visible output was replaced by a note`)
   }
 })
 
-test('пустой каркас уступает text/plain, а не глотает его', () => {
-  // У ipywidgets рядом с каркасом лежит text/plain («IntSlider(value=0)») —
-  // это хоть что-то, и оно честнее пометки о формате.
+test('an empty scaffold gives way to text/plain rather than swallowing it', () => {
+  // ipywidgets puts text/plain ("IntSlider(value=0)") next to the scaffold — that
+  // is at least something, and it is more honest than a format note.
   const html = page([
     cell({
       outputs: [
@@ -238,14 +238,14 @@ test('пустой каркас уступает text/plain, а не глота�
     }),
   ])
   assert.match(html, /IntSlider\(value=0\)/)
-  assert.ok(!/не показывается/.test(html), 'text/plain подменён пометкой о формате')
+  assert.ok(!/не показывается/.test(html), 'text/plain was replaced by a format note')
 })
 
-/* --------------------------------------------------------- числительное */
+/* ---------------------------------------------------------- the numeral */
 
-test('числительное считается правилом, а не тернарником', () => {
-  // «5 шага» в шапке и «21 шагов» в курсе — то, из-за чего страница читается
-  // как недоделанная. Правило одно на всех и лежит в shared/plural.ts.
+test('the numeral follows the rule, not a ternary', () => {
+  // "5 шага" in the header and "21 шагов" in the course are what makes the page
+  // read as unfinished. There is one rule for everyone, in shared/plural.ts.
   assert.match(page([cell()], 5), /· 5 шагов/)
   assert.match(page([cell()], 2), /· 2 шага/)
   assert.match(page([cell()], 21), /· 21 шаг/)
@@ -272,9 +272,9 @@ test('числительное считается правилом, а не те
   assert.match(course(1), /одна страница/)
 })
 
-/* ------------------------------------------------------------ надгробие */
+/* -------------------------------------------------------- the tombstone */
 
-test('снятая страница говорит, что её сняли, и уводит в курс', () => {
+test('a withdrawn page says it was withdrawn and leads to the course', () => {
   const html = renderWithdrawn(
     'Неделя 4',
     { name: 'Прикладной ML', handle: 'ml-strong' },
@@ -282,12 +282,12 @@ test('снятая страница говорит, что её сняли, и �
   )
   assert.match(html, /снял эту страницу/)
   assert.match(html, /https:\/\/colloq\.ru\/c\/ml-strong\//)
-  assert.ok(!/<script/i.test(html), 'на надгробии появился скрипт')
+  assert.ok(!/<script/i.test(html), 'a script appeared on the tombstone')
 })
 
 /* --------------------------------------------------------------- .ipynb */
 
-test('в .ipynb у каждой ячейки есть id — схема 4.5 его требует', () => {
+test('every cell in the .ipynb has an id: schema 4.5 requires it', () => {
   const notebook = JSON.parse(
     notebookFrom([cell({ id: 'c_ok' }), cell({ id: 'плохой id', type: 'markdown' })]),
   ) as { nbformat_minor: number; cells: { id: string }[] }
@@ -299,9 +299,9 @@ test('в .ipynb у каждой ячейки есть id — схема 4.5 ег
   for (const c of notebook.cells) assert.match(c.id, /^[a-zA-Z0-9-_]{1,64}$/)
 })
 
-/* ------------------------------------------------------ моменты и шаги */
+/* --------------------------------------------------- moments and steps */
 
-/** Комната, в которой состав тетради менялся между названными моментами. */
+/** A room whose notebook changed its cells between named moments. */
 function taught(id: string): Y.Doc {
   createSession(id, 'Счёт ячеек', null)
   const { doc } = getSessionDoc(id, 'Счёт ячеек')
@@ -309,8 +309,8 @@ function taught(id: string): Y.Doc {
   mark(id, doc, 'checkpoint' as never, null, 'один', 'moment marked')
   doc.transact(() => cells.push([createCell('code', 'x = 1')]), 'server')
   mark(id, doc, 'checkpoint' as never, null, 'два', 'moment marked')
-  // Снимок целого документа посреди истории: с него начинается разворот, и
-  // ровно на нём счёт «одним документом вперёд» обязан пересобраться заново.
+  // A snapshot of the whole document in the middle of the history: the unfolding
+  // starts from it, and exactly there the "one document forward" count has to rebuild afresh.
   appendVersion({
     sessionId: id,
     update: Y.encodeStateAsUpdate(doc),
@@ -333,13 +333,13 @@ function taught(id: string): Y.Doc {
   return doc
 }
 
-test('счёт ячеек одним документом вперёд даёт то же, что разворот с нуля', () => {
+test('counting cells with one document going forward gives the same as unfolding from scratch', () => {
   /*
-   * Панель публикации разворачивала документ ЗАНОВО на каждую названную строку:
-   * снимок целиком плюс дельты, до четырёхсот раз, синхронно, в процессе,
-   * который держит сокеты комнаты. Теперь снимок и каждая дельта применяются по
-   * разу на весь проход — и это законно ровно до тех пор, пока счёт совпадает с
-   * честным разворотом каждой строки по отдельности (`pageAt`).
+   * The publish panel unfolded the document ANEW for every named row: the whole
+   * snapshot plus deltas, up to four hundred times, synchronously, in the process
+   * that holds the room sockets. Now the snapshot and each delta are applied once
+   * for the whole pass — and that is legitimate exactly as long as the count
+   * matches an honest unfolding of each row on its own (`pageAt`).
    */
   const id = 'cand-walk'
   const doc = taught(id)
@@ -354,29 +354,29 @@ test('счёт ячеек одним документом вперёд даёт 
     assert.equal(
       candidate.cellCount,
       honest?.length ?? 0,
-      `строка ${candidate.seq}: счёт разошёлся`,
+      `row ${candidate.seq}: the count diverged`,
     )
   }
-  // Состав менялся между моментами — иначе проверка выше сошлась бы на пустом.
+  // The cells changed between the moments — otherwise the check above would agree on nothing.
   const counts = named.map((c) => c.cellCount)
   assert.deepEqual(counts, [counts[0], counts[0] + 1, counts[0] + 3, counts[0] + 2])
   doc.destroy()
 })
 
-test('второй заход за моментами отвечает то же — и не считает заново', async () => {
+test('a second request for the moments answers the same and does not recount', async () => {
   const id = 'cand-memo'
   const doc = taught(id)
   const first = candidatesFor(id)
   const again = await candidatesForAsync(id)
-  assert.deepEqual(again, first, 'асинхронный проход разошёлся с синхронным')
+  assert.deepEqual(again, first, 'the async pass diverged from the sync one')
   doc.destroy()
 })
 
-test('шаг, который не собрался, называет причину, а не молчит', () => {
+test('a step that failed to build names the reason instead of staying silent', () => {
   /*
-   * Раньше и пустая тетрадь, и нечитаемая строка истории давали `null`, маршрут
-   * молча пропускал шаг, и преподаватель, отметивший семь моментов, получал
-   * страницу с шестью — без слова о том, какой пропал и почему.
+   * Both an empty notebook and an unreadable history row used to give `null`,
+   * the route silently skipped the step, and a teacher who had marked seven
+   * moments got a page with six — without a word about which one was lost and why.
    */
   const id = 'build-broken'
   createSession(id, 'Испорченная', null)
@@ -401,17 +401,17 @@ test('шаг, который не собрался, называет причи�
   assert.equal(
     broken.ok === false && broken.reason,
     'broken',
-    'поломка неотличима от пустой тетради',
+    'breakage is indistinguishable from an empty notebook',
   )
 })
 
-/* --------------------------------------------------------------- адреса */
+/* ------------------------------------------------------------ addresses */
 
-test('два шага с одним номером не роняют публикацию пятисоткой', () => {
+test('two steps with the same number do not bring the publication down with a 500', () => {
   /*
-   * `publication_steps` ключуется парой (pub, seq): дубль внутри транзакции
-   * давал SQLITE_CONSTRAINT, то есть 500 без единого слова о причине. Побеждает
-   * последний — `seq: 0` дописывает маршрут в конец.
+   * `publication_steps` is keyed by the pair (pub, seq): a duplicate inside the
+   * transaction gave SQLITE_CONSTRAINT, that is, a 500 without a single word
+   * about the reason. The last one wins — the route appends `seq: 0` at the end.
    */
   const id = 'pub-dup-seq'
   createSession(id, 'Дубли', null)
@@ -438,11 +438,11 @@ test('два шага с одним номером не роняют публи�
   )
 })
 
-test('прежнее имя называет держателя и отпускается им же', () => {
+test('a former name names its holder and is released by that holder', () => {
   /*
-   * «Адрес «ml-2025» уже занят» — тупик: курса с таким адресом в списке нет, он
-   * переименован. Держателя надо назвать, а прежнее имя — уметь отпустить,
-   * иначе курс следующего года не получит его никогда.
+   * "Address 'ml-2025' is already taken" is a dead end: there is no course with
+   * that address in the list, it was renamed. The holder has to be named, and the
+   * former name has to be releasable, otherwise next year's course will never get it.
    */
   const a = createCourse('Курс года', null, 'Ада')
   const b = createCourse('Курс следующего года', null, 'Ада')
@@ -454,8 +454,8 @@ test('прежнее имя называет держателя и отпуск�
   assert.deepEqual(holder, { kind: 'course', id: a.id, name: 'Курс года', former: true })
   assert.equal(addressHolder('course', 'ml-2025-fall')?.former, false)
 
-  // Отпускает только владелец и только прежнее имя.
-  assert.equal(releaseFormerSlug('course', b.id, 'ml-2025'), false, 'чужой адрес отдался')
+  // Only the owner releases, and only a former name.
+  assert.equal(releaseFormerSlug('course', b.id, 'ml-2025'), false, 'an address was released by someone who does not own it')
   assert.equal(releaseFormerSlug('course', a.id, 'ml-2025'), true)
   assert.deepEqual(formerSlugs('course', a.id), [])
   assert.equal(findCourse('ml-2025'), null)

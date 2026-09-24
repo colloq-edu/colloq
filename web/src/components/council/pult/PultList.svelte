@@ -1,20 +1,22 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
     /**
-   * Левая колонка пульта: люди сверху вниз, свежие первыми.
+   * The console's left column: people from top to bottom, newest first.
    *
-   * Два вида строк: человек (PultRow) и заголовок половины ленты («Сдали · 12»,
-   * «Пишут · 5»). Выбирается курсором только первый — Enter на заголовке
-   * означал бы «показать классу» неизвестно чью работу.
+   * Two kinds of rows: a person (PultRow) and the heading of a half of the
+   * feed ("Submitted · 12", "Writing · 5"). Only the first can be selected
+   * with the cursor — Enter on a heading would mean "show the class" the work
+   * of who knows whom.
    *
-   * Строк было четыре: сюда же входили свёрнутый хвост группы и шапка
-   * раскрытой. Группировки в пульте больше нет (20.09), и людей под чужим
-   * хвостом тоже: одна сдача — одна строка.
+   * There used to be four kinds: the collapsed tail of a group and the header
+   * of an expanded one went here too. There is no grouping in the console
+   * any more (20 Sep 2026), and no people under someone else's tail either:
+   * one submission is one row.
    *
-   * Полоса «↑ ещё N сдали — показать» появляется, когда список прокручен или
-   * курсор не на первой строке: строка, вставшая сверху под читающим глазом,
-   * уводит вниз всё, что он читает. Отпускают её рукой — и только тогда список
-   * двигается.
+   * The "↑ N more submitted — show" strip appears when the list is scrolled
+   * or the cursor is not on the first row: a row that lands on top under the
+   * reading eye pushes down everything it is reading. It is released by hand
+   * — and only then does the list move.
    */
   import type { CouncilAttempt } from '@shared/protocol'
   import { pultPresence, rowMeaning, type PultRow as Row, type PultTab } from '@/lib/council-pult'
@@ -26,25 +28,25 @@
     people: ReadonlyMap<string, unknown>
     connected: boolean
     filtered?: boolean
-    /** Какая стопка открыта: пустая «Пишут» и пустая «Сдали» — разные новости. */
+    /** The open pile: an empty "Writing" and an empty "Submitted" are different news. */
     tab: PultTab
-    /** Выбранная работа — она же открыта справа. */
+    /** The selected work — the same one open on the right. */
     cursor: string | null
-    /** Пришли с клавиатуры: только тогда рисуется кольцо. */
+    /** Came from the keyboard: only then is the ring drawn. */
     keyboard: boolean
     names: boolean
-    /** Кто сейчас на экране у зала. */
+    /** Who is on the room's screen right now. */
     shown: string | null
-    /** Сколько сдач придержано за полосой; 0 — полосы нет. */
+    /** How many submissions are held behind the strip; 0 means no strip. */
     held: number
-    /** Часы окна: живой счётчик «Считает 3 с» в строке того, кто считается. */
+    /** The window clock: a live "Running 3 s" counter in the running person's row. */
     now: number
-    /** Решать просьбы о запуске нельзя (нет связи, ручка не та). */
+    /** Run requests cannot be decided (no connection, the wrong control). */
     decisionsOff: boolean
     onopen: (participantId: string) => void
     onlet: (attempt: CouncilAttempt) => void
     onrelease: () => void
-    /** Насколько список прокручен: от этого зависит, держать ли новые сдачи. */
+    /** How far the list is scrolled: this decides whether to hold new submissions. */
     onscroll: (top: number) => void
   }
 
@@ -71,9 +73,10 @@
 </script>
 
 <!--
-  308 — это ровно то, во что встаёт «Александра Верещагина» целиком. Шире 1100
-  список растёт до 360: место появилось, и отдать его стоит именно ему —
-  работа справа от лишних 52 px читается не лучше, а список читается.
+  308 is exactly what "Aleksandra Vereshchagina" fits into whole. Wider than
+  1100 the list grows to 360: room has appeared, and it is worth giving it to
+  the list — the work on the right reads no better for an extra 52 px, but the
+  list does.
 -->
 <div
   class="flex min-h-0 flex-1 flex-col"
@@ -81,8 +84,8 @@
 >
   {#if held > 0}
     <!--
-      Прибита к верху списка, а не вставлена первой строкой: она про то, чего в
-      списке ещё нет, и уехать вместе с прокруткой ей нельзя.
+      Pinned to the top of the list, not inserted as the first row: it is about
+      what is not in the list yet, and it must not scroll away with it.
     -->
     <button
       type="button"
@@ -114,11 +117,12 @@
         />
       {:else}
         <!--
-          Граница ленты: «Сдали · 12» и «Пишут · 5».
-          Липкая внутри прокрутки — уехав, она перестала бы отвечать на
-          единственный вопрос, ради которого её завели: та строка, что сейчас
-          под глазом, из сдавших или из пишущих? Курсору она не даётся, j и k
-          её перепрыгивают: это место в ленте, а не человек.
+          The feed's boundary: "Submitted · 12" and "Writing · 5".
+          Sticky inside the scroll — if it scrolled away it would stop
+          answering the only question it was made for: is the row under the
+          eye right now one of those who submitted or of those writing? The
+          cursor cannot land on it, j and k jump over it: it is a place in the
+          feed, not a person.
         -->
         <div class="pult-section" data-pult-section={row.section}>
           {tr(
@@ -131,9 +135,10 @@
       {/if}
     {:else}
       <!--
-        Пустота объясняется по своей причине. Отбор ничего не нашёл — это одно;
-        «Пишут» пуста, потому что все уже сдали, — совсем другое, и на паре это
-        хорошая новость, а не отсутствие данных.
+        Emptiness is explained by its own reason. A filter that found nothing
+        is one thing; "Writing" being empty because everyone has already
+        submitted is quite another, and in class that is good news, not a lack
+        of data.
       -->
       <div class="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
         <p class="text-ui-lg font-bold text-muted">{tr(
@@ -155,13 +160,13 @@
 
 <style>
   /*
-   * Палец, а не колесо.
+   * A finger, not a wheel.
    *
-   * `overscroll-behavior: contain` держит рывок в конце списка внутри списка:
-   * без него доскролленный до низа список на телефоне утягивает за собой всю
-   * страницу, и док общения уезжает из-под большого пальца. Инерция Safari
-   * включается своим префиксом — без неё список листается «по-бумажному»,
-   * рывками по высоте экрана.
+   * `overscroll-behavior: contain` keeps the jolt at the end of the list
+   * inside the list: without it a list scrolled to the bottom on a phone
+   * drags the whole page along, and the communication dock slides out from
+   * under the thumb. Safari's momentum is enabled with its own prefix —
+   * without it the list scrolls "like paper", in jerks of a screen's height.
    */
   .pult-scroll { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
   .pult-section {

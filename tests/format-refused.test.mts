@@ -1,15 +1,17 @@
 /**
- * Format, которому сейчас не время: отказ словами — и нажавшему, и комнате.
+ * Format at the wrong moment: a refusal in words — both to the person who
+ * pressed it and to the room.
  *
- * Форматирование идёт в ядро мимо очереди, и под работающей ячейкой его
- * запускать нельзя: за ячейкой в `input()` запрос черноты стоял бы до конца
- * пары. Отказ поэтому мгновенный — но он был мгновенным и НЕМЫМ для всех, кроме
- * нажавшего: строку «Formatting failed: …» писал только путь после ядра, а
- * ранние отказы возвращались раньше неё. Тетрадь у комнаты не изменилась, и
- * почему — не было сказано нигде.
+ * Formatting goes to the kernel past the queue, and it must not be started
+ * under a running cell: behind a cell waiting in `input()` the black request
+ * would stand until the end of class. So the refusal is instant — but it was
+ * instant and MUTE for everyone except the person who pressed: the line
+ * "Formatting failed: …" was written only by the path after the kernel, and
+ * early refusals returned before it. The room's notebook did not change, and
+ * why was said nowhere.
  *
- * Ядро тут не нужно вовсе: причина видна раньше, чем оно понадобилось, — на
- * этом весь смысл отказа и держится.
+ * No kernel is needed here at all: the reason is visible before it would be
+ * needed — that is the whole point of the refusal.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -25,7 +27,7 @@ after(async () => {
   shutdownCollab()
 })
 
-/** Журнал ядра комнаты — то, что читает вся комната, а не один нажавший. */
+/** The room's kernel log — read by the whole room, not only by whoever pressed. */
 function notes(doc: Y.Doc): string[] {
   return getTerminal(doc)
     .toArray()
@@ -33,27 +35,29 @@ function notes(doc: Y.Doc): string[] {
     .map((line) => String(line.get('text')))
 }
 
-test('Format поверх очереди отказывает словами, и те же слова уходят в журнал', async () => {
+test('Format on top of a queue refuses in words, and the same words go to the log', async () => {
   const id = 'fmt-refused'
   createSession(id, 'Formatting')
   const { doc } = getSessionDoc(id)
-  // Вторая ячейка новой тетради — кодовая; первая markdown, её Run не берёт.
+  // The second cell of a new notebook is code; the first is markdown, and Run
+  // does not take it.
   const cellId = getCells(doc).get(1).get('id') as string
 
-  // Ядра нет и не будет (JUPYTER_URL в тестах — заведомо мёртвый порт), но
-  // очередь становится непустой прямо здесь, синхронно: насос уходит ждать
-  // ядро раньше, чем успевает что-то из неё взять.
+  // There is no kernel and there will be none (JUPYTER_URL in tests is a port
+  // known to be dead), but the queue becomes non-empty right here,
+  // synchronously: the pump goes off to wait for the kernel before it manages
+  // to take anything from it.
   requestRun(id, [cellId], 'Ада', 'p_ada')
   const outcome = await formatSession(id)
 
   assert.match(
     outcome.error ?? '',
     /В очереди есть ячейки/,
-    'отказ должен называть причину, а не молчать',
+    'the refusal must name the reason, not stay silent',
   )
-  assert.equal(outcome.changed, 0, 'отказ ничего не переписывает')
+  assert.equal(outcome.changed, 0, 'a refusal rewrites nothing')
   assert.ok(
     notes(doc).includes(`Форматирование не удалось: ${outcome.error}`),
-    `комната не получила причину: ${JSON.stringify(notes(doc))}`,
+    `the room did not get the reason: ${JSON.stringify(notes(doc))}`,
   )
 })

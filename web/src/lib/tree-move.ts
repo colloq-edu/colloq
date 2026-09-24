@@ -1,33 +1,39 @@
 import { tr } from '@shared/i18n'
 /**
- * Куда ляжет строка дерева, которую тащат в папку, — и почему иногда никуда.
+ * Where a tree row dragged into a folder will land — and why sometimes
+ * nowhere.
  *
- * Перетаскивание внутри панели — единственный способ переложить файл в папку:
- * косая черта в имени отвергается намеренно (shared/paths.ts), так что
- * «переименовать a.py в src/a.py» не выход. Значит, все правила переезда
- * сходятся сюда, и сюда же ходит тест: в .svelte их проверить нечем.
+ * Dragging inside the panel is the only way to move a file into a folder: a
+ * slash in a name is rejected on purpose (shared/paths.ts), so "rename a.py
+ * to src/a.py" is not an option. So all the moving rules converge here, and
+ * the test comes here too: in a .svelte file there is nothing to check them
+ * with.
  *
- * Почему решение считается в браузере, а не оставлено серверу:
+ * Why the decision is computed in the browser rather than left to the server:
  *
- * — Папку внутрь себя сервер отвергает, но объясняет это ИМЕНЕМ цели
- *   («„deep“ не годится в качестве имени»), хотя имя годится — не годится
- *   место. Отказ, объясняющий не то, хуже отказа без объяснения.
- * — Перенос, уводящий содержимое папки за адресуемое — глубже восьмого уровня
- *   или длиннее четырёхсот символов, — до сих пор проходил молча: обход дерева
- *   там просто заканчивается, флага «показано не целиком» не выставляет, и
- *   поддерево пропадает из панели, будто его и не было. Сервер отказывает в
- *   обоих случаях, но подсветка обещает переезд раньше, чем он туда доедет, —
- *   значит, считать надо здесь, ДО отправки, и теми же словами.
- * — Половина жестов не значит ничего: запись, брошенная в её же папку, никуда
- *   не едет, и говорить об этом словами — значит ругаться там, где человек
- *   просто промахнулся пальцем. Поэтому исходов три, а не два.
+ * — The server rejects a folder moved into itself, but explains it by the
+ *   target's NAME ("'deep' is not a valid name"), although the name is fine —
+ *   the place is not. A refusal that explains the wrong thing is worse than a
+ *   refusal without explanation.
+ * — A move that takes a folder's contents beyond what is addressable — deeper
+ *   than the eighth level or longer than four hundred characters — used to
+ *   pass silently: the tree walk simply ends there, sets no "not shown in
+ *   full" flag, and the subtree disappears from the panel as if it never
+ *   existed. The server refuses in both cases, but the highlight promises the
+ *   move before the request gets there — so it has to be computed here,
+ *   BEFORE sending, and in the same words.
+ * — Half of the gestures mean nothing: an entry dropped into its own folder
+ *   goes nowhere, and saying so in words means scolding where the person
+ *   simply missed with a finger. Hence three outcomes, not two.
  *
- * Фразы отказа — теми же словами, которыми отказал бы сервер (control.ts,
- * `treeTrouble`): проверка одна, и объяснение обязано быть одно.
+ * Refusal phrases use the same words the server would refuse with
+ * (control.ts, `treeTrouble`): there is one check, and there must be one
+ * explanation.
  *
- * Модуль чистый: ни сокета, ни документа. Ролей и правил комнаты здесь тоже
- * нет — `tree:move` на сервере преподавательский, а дерево про это не знает;
- * право спрашивают в панели, до того как строку вообще дадут взять в руку.
+ * The module is pure: no socket, no document. There are no roles or room
+ * rules here either — `tree:move` on the server is teacher-only, and the tree
+ * does not know about it; the permission is asked in the panel, before the
+ * row is even allowed to be picked up.
  */
 import type { FileEntry } from '@shared/protocol'
 import {
@@ -40,61 +46,62 @@ import {
   parentOf,
 } from '@shared/paths'
 
-/** Строка дерева глазами переноса: больше о ней знать нечего. */
+/** A tree row as the move sees it: there is nothing else to know about it. */
 export interface Row {
   path: string
   dir: boolean
 }
 
 /**
- * Папка, в которую ляжет брошенное. Корень — пустая строка.
+ * The folder the dropped item will land in. The root is the empty string.
  *
- * `null` — бросили мимо строк, на пустое место панели или на её заголовок: это
- * корень, а не отказ.
+ * `null` — dropped past the rows, onto the empty part of the panel or its
+ * header: that is the root, not a refusal.
  *
- * Правило «брошенное на файл ложится в его папку, а не поверх него» живёт
- * здесь одно на всех. Оно уже было написано в разметке — для файла с диска, — и
- * вторая его копия рано или поздно даёт панель, где один и тот же жест кладёт
- * своё и чужое в разные места.
+ * The rule "something dropped on a file lands in its folder, not on top of
+ * it" lives here, one for everyone. It was already written in the markup — for
+ * a file from disk — and a second copy of it sooner or later yields a panel
+ * where the same gesture puts the room's own entries and files from outside
+ * in different places.
  */
 export function dropFolder(onto: Row | null): string {
   if (!onto) return ''
   return onto.dir ? onto.path : parentOf(onto.path)
 }
 
-/** Путь, по которому запись окажется: новая папка плюс прежнее имя. */
+/** The path the entry will end up at: the new folder plus the old name. */
 export function landingPath(dragged: Row, onto: Row | null): string {
   return joinPath(dropFolder(onto), baseOf(dragged.path))
 }
 
-/** Сегментов в пути. Корень — ноль. */
+/** Number of segments in a path. The root has zero. */
 function segments(path: string): number {
   return path === '' ? 0 : path.split('/').length
 }
 
 /**
- * Заглядывает ли сервер внутрь этой папки.
+ * Whether the server looks inside this folder.
  *
- * `listTree` читает каталоги, пока их содержимое помещается в MAX_DEPTH
- * сегментов: папка на самом дне в списке есть, а того, что в ней, — нет
- * никогда. И «показано не целиком» про это молчит: флаг ставится только по
- * числу строк. Без этого вопроса панель объявляла такую папку пустой, хотя
- * файлы в ней лежат и место занимают — просто назвать их путём комната уже не
- * может, и видно их одной лишь ячейке.
+ * `listTree` reads directories while their contents fit into MAX_DEPTH
+ * segments: a folder at the very bottom is in the list, but what is inside it
+ * never is. And "not shown in full" says nothing about it: the flag is set
+ * only by the number of rows. Without this question the panel declared such
+ * a folder empty, although files do lie in it and take up space — the room
+ * simply can no longer name them by a path, and only a cell can see them.
  */
 export function readsInside(dir: string): boolean {
   return segments(dir) < MAX_DEPTH
 }
 
 /**
- * Что переехало вместе с записью — парами «было → стало».
+ * What moved together with the entry — as "before → after" pairs.
  *
- * Переезд папки, сказанный одним её именем, ничего не говорит о том, что в ней:
- * вкладки знают ТОЧНЫЙ путь, и открытый `src/model.py` оставался стоять на
- * мёртвом адресе, пока следующий список файлов не закрывал его как вкладку на
- * исчезнувший файл — вместе с документом, то есть с историей отмен. Сервер
- * уводит содержимое честно (`pathsInside` в control.ts), и панель обязана
- * говорить о том же.
+ * A folder move stated by the folder's name alone says nothing about what is
+ * inside it: tabs know the EXACT path, and an open `src/model.py` stayed on a
+ * dead address until the next file list closed it as a tab for a vanished
+ * file — together with its document, that is, with its undo history. The
+ * server moves the contents honestly (`pathsInside` in control.ts), and the
+ * panel must say the same.
  */
 export function movedPaths(
   from: string,
@@ -110,14 +117,15 @@ export function movedPaths(
 }
 
 /**
- * Глубина самого глубокого из переезжающего — уже на новом месте.
+ * The depth of the deepest item being moved — already at the new place.
  *
- * Считается по всему поддереву, а не по самой папке: папка, чьё содержимое уже
- * достаёт до восьмого уровня, уровнем ниже не помещается, а сам её путь про это
- * молчит. Сервер заглядывает внутрь и откажет (`outgrows` в workspace.ts), но
- * подсветка обещает переезд раньше, чем жест до него доедет. Список файлов
- * здесь тот же, что нарисован в панели, — если он обрезан потолком, самого
- * глубокого в нём может и не быть; это не повод не проверять то, что есть.
+ * Computed over the whole subtree, not the folder itself: a folder whose
+ * contents already reach the eighth level does not fit one level lower, and
+ * its own path says nothing about that. The server looks inside and will
+ * refuse (`outgrows` in workspace.ts), but the highlight promises the move
+ * before the gesture gets there. The file list here is the same one drawn in
+ * the panel — if it is cut off by the cap, the deepest item may be missing
+ * from it; that is no reason not to check what is there.
  */
 export function deepestAfter(dragged: Row, into: string, files: readonly FileEntry[]): number {
   const to = joinPath(into, baseOf(dragged.path))
@@ -131,14 +139,15 @@ export function deepestAfter(dragged: Row, into: string, files: readonly FileEnt
 }
 
 /**
- * Самый длинный путь из переезжающего — уже на новом месте.
+ * The longest path among the items being moved — already at the new place.
  *
- * Довод тот же, что у `deepestAfter`, и дыра та же: длину меряют только у того
- * пути, который прислали, — и `normalizePath` на сервере, и панель здесь. Папку
- * с длинными именами внутри можно положить в папку с длинным именем, и
- * содержимое уходит за MAX_PATH: в списке оно есть, а открыть, скачать и убрать
- * его поштучно уже нечем — `resolveInSession` такой путь не пропускает, и на
- * «Убрать» приходит жалоба на имя, которое ни при чём.
+ * The same argument as for `deepestAfter`, and the same hole: length is
+ * measured only for the path that was sent — both by `normalizePath` on the
+ * server and by the panel here. A folder with long names inside can be put
+ * into a folder with a long name, and the contents go past MAX_PATH: they are
+ * in the list, but there is no way left to open, download or remove them one
+ * by one — `resolveInSession` does not let such a path through, and "Remove"
+ * gets a complaint about a name that has nothing to do with it.
  */
 export function longestAfter(dragged: Row, into: string, files: readonly FileEntry[]): number {
   const to = joinPath(into, baseOf(dragged.path))
@@ -152,24 +161,27 @@ export function longestAfter(dragged: Row, into: string, files: readonly FileEnt
 }
 
 /**
- * Отказ по длине пути до содержимого — одной фразой на обе стороны.
+ * The refusal over the path length of the contents — one phrase for both
+ * sides.
  *
- * Сервер отвечает ею же (`treeTrouble`, случай `too-long`): проверка одна, и
- * объяснение обязано быть одно. Виновата не переезжающая запись — её путь
- * короток, — а то, что лежит внутри, и фраза говорит именно это.
+ * The server answers with the same one (`treeTrouble`, case `too-long`): there
+ * is one check, and there must be one explanation. The culprit is not the
+ * entry being moved — its path is short — but what lies inside, and the
+ * phrase says exactly that.
  */
 export function tooLong(from: string): string {
   return tr('room.ui.1177', { p0: baseOf(from), p1: MAX_PATH })
 }
 
 /**
- * Что делать с жестом.
+ * What to do with the gesture.
  *
- * `nothing` — жест кончился там же, где начался: сказать нечего, и фраза об
- * ошибке была бы неправдой. `refuse` — перенос выглядел настоящим и не
- * состоялся: молчать нельзя, отпущенная строка, о которой ничего не произошло,
- * читается как поломка. Ответ «да/нет» склеил бы эти два в один, и половина
- * жестов получила бы либо лишнюю ругань, либо тишину на месте отказа.
+ * `nothing` — the gesture ended where it started: there is nothing to say,
+ * and an error message would be untrue. `refuse` — the move looked real and
+ * did not happen: staying silent is not an option, a released row after
+ * which nothing happened reads as a breakage. A yes/no answer would merge
+ * these two into one, and half of the gestures would get either needless
+ * scolding or silence in place of a refusal.
  */
 export type TreeMove =
   | { do: 'move'; from: string; to: string }
@@ -177,53 +189,57 @@ export type TreeMove =
   | { do: 'refuse'; why: string }
 
 /**
- * Решение целиком. Порядок проверок здесь несущий — см. комментарии внутри.
+ * The whole decision. The order of the checks here is load-bearing — see the
+ * comments inside.
  *
- * Панель зовёт его дважды: на весу, чтобы подсветить цель и показать курсором
- * отказ, и на отпускании, чтобы отправить. Одна и та же функция намеренно —
- * строка, которая обещает переезд подсветкой и отказывает по отпусканию,
- * читается как поломка.
+ * The panel calls it twice: mid-drag, to highlight the target and show a
+ * refusal with the cursor, and on release, to send. The same function on
+ * purpose — a row that promises a move with the highlight and refuses on
+ * release reads as a breakage.
  */
 export function planMove(dragged: Row, onto: Row | null, files: readonly FileEntry[]): TreeMove {
   const from = dragged.path
   const into = dropFolder(onto)
 
   /*
-   * Строку держали в руке, пока приехал новый список файлов, и того, что
-   * тащили, в комнате уже нет. Словами сервера: он ответит ровно так же, но на
-   * круг позже.
+   * The row was held while a new file list arrived, and what was being dragged
+   * is no longer in the room. In the server's words: it would answer exactly
+   * the same, only a round trip later.
    */
   if (!files.some((entry) => entry.path === from)) {
     return { do: 'refuse', get why() { return tr('room.ui.1178', { p0: baseOf(from) }) } }
   }
 
-  // Папку бросили на её же строку — это промах пальцем, а не ошибка. Стоит
-  // ПЕРЕД проверкой ниже: `isInside(dir, dir)` истинно, и иначе за промах
-  // отвечали бы отказом.
+  // A folder dropped on its own row is a slip of the finger, not an error. It
+  // comes BEFORE the check below: `isInside(dir, dir)` is true, and otherwise
+  // a slip would be answered with a refusal.
   if (dragged.dir && into === from) return { do: 'nothing' }
 
-  // Папка внутрь самой себя. Сюда же попадает бросок на файл, лежащий внутри
-  // неё: `dropFolder` вернёт его папку, а она внутри переезжающей.
+  // A folder into itself. A drop onto a file inside it also ends up here:
+  // `dropFolder` returns that file's folder, which is inside the one moving.
   if (dragged.dir && isInside(into, from)) {
     return { do: 'refuse', get why() { return tr('room.ui.1179', { p0: baseOf(from) }) } }
   }
 
-  // Переезд в никуда: запись уже лежит в этой папке. Ни сообщения, ни слов —
-  // иначе каждый несостоявшийся жест это круг по сети и моргание списка.
+  // A move to nowhere: the entry already lies in this folder. No message, no
+  // words — otherwise every gesture that went nowhere means a network round
+  // trip and a flicker of the list.
   if (into === parentOf(from)) return { do: 'nothing' }
 
   const to = joinPath(into, baseOf(from))
 
   /*
-   * Занятое имя. `freeName` — тот, что кладёт «data 2.csv» рядом, — здесь не
-   * применяется намеренно: он для оракула, который имени не выбирал. Человек
-   * целился в эту папку сам, и подменить ему цель тихо — хуже, чем отказать.
+   * A taken name. `freeName` — the one that puts "data 2.csv" next to it — is
+   * deliberately not used here: it is for the Oracle, which did not choose the
+   * name. The person aimed at this folder themselves, and quietly swapping the
+   * target on them is worse than refusing.
    *
-   * Папка называется по имени, а не словом «эта»: у переезда «эта папка»
-   * указывает на ту, ИЗ которой тащат, а столкнулось в целевой — и одноимённых
-   * `data.csv` в комнате бывает несколько. Ровно теми же словами отвечает
-   * сервер (`treeTrouble`); ветки «в этой папке» здесь нет, потому что бросок в
-   * свою же папку ушёл выше как «ничего не произошло».
+   * The folder is called by its name, not by the word "this": for a move,
+   * "this folder" points at the one being dragged FROM, while the clash
+   * happened in the target — and a room can have several `data.csv` files of
+   * the same name. The server answers in exactly the same words
+   * (`treeTrouble`); there is no "in this folder" branch here, because a drop
+   * into its own folder was handled above as "nothing happened".
    */
   if (files.some((entry) => entry.path === to)) {
     return {
@@ -234,15 +250,16 @@ export function planMove(dragged: Row, onto: Row | null, files: readonly FileEnt
     }
   }
 
-  // Глубина — про СОДЕРЖИМОЕ, а не про саму запись: см. `deepestAfter`.
+  // Depth is about the CONTENTS, not the entry itself: see `deepestAfter`.
   if (deepestAfter(dragged, into, files) > MAX_DEPTH) {
     return { do: 'refuse', get why() { return tr('room.ui.1182', { p0: MAX_DEPTH }) } }
   }
   if (normalizePath(to) === null) {
     return { do: 'refuse', get why() { return tr('room.ui.1183', { p0: baseOf(to), p1: MAX_PATH }) } }
   }
-  // Длина — тоже про СОДЕРЖИМОЕ: см. `longestAfter`. Отдельной фразой, потому
-  // что виновата не та запись, которую тащат, а путь до того, что в ней.
+  // Length is about the CONTENTS too: see `longestAfter`. A separate phrase,
+  // because the culprit is not the entry being dragged but the path to what
+  // is inside it.
   if (longestAfter(dragged, into, files) > MAX_PATH) {
     return { do: 'refuse', why: tooLong(from) }
   }

@@ -13,12 +13,14 @@
 import type { DiffLine } from './diff.js'
 
 /*
- * Строка разницы — одна на весь продукт, и объявлена она там, где её считают.
+ * The diff line is one for the whole product, and it is declared where it is
+ * computed.
  *
- * Здесь стояла вторая копия того же интерфейса, слово в слово. Копии
- * разъезжаются на первом же добавленном поле: `CellDiff.lines` типизирован
- * этим, а routes/history.ts кладёт в него результат `diffLines` из diff.ts —
- * и расхождение вылезло бы не проверкой типов, а пустым местом на экране.
+ * A second copy of the same interface stood here, word for word. Copies drift
+ * apart at the very first added field: `CellDiff.lines` is typed by this, and
+ * routes/history.ts puts the result of `diffLines` from diff.ts into it — and
+ * the divergence would surface not as a type error but as a blank spot on the
+ * screen.
  */
 export type { DiffLine }
 
@@ -65,13 +67,13 @@ export interface Version {
   /** What it touched, already in words: "edited cell 04", "added 3 cells". */
   summary: string
   /**
-   * Только у отката: версия, которую он вернул.
+   * Only on a restore: the version it brought back.
    *
-   * Адрес, а не время. Подпись «restored the version from 15:04» сервер
-   * собирал по своему часовому поясу — в контейнере это UTC, — а строки ленты
-   * рисует браузер по своему: в аудитории UTC+3 подпись указывала на строку,
-   * которой в списке нет. Часы рисует тот, кто смотрит, по `createdAt` этой
-   * версии.
+   * An address, not a time. The server used to build the label "restored the
+   * version from 15:04" in its own time zone — in the container that is UTC —
+   * while the browser draws the timeline rows in its own: in a classroom at
+   * UTC+3 the label pointed at a row that is not in the list. The clock is
+   * drawn by whoever is looking, from this version's `createdAt`.
    */
   targetSeq: number | null
   /** Characters written and removed, for the two numbers at the end of the row. */
@@ -108,19 +110,22 @@ export interface VersionDetail {
 }
 
 /**
- * Ответ ленты: строки — и целиком ли она.
+ * The timeline response: the rows — and whether it is whole.
  *
- * История комнаты ограничена по объёму, и у очень долгого семинара начало
- * срезано целым отрезком (server/src/db.ts · trimHistory). Без этого поля
- * панель показывает остаток ровно так же, как показала бы полную ленту, и по
- * ней не отличить «тут ничего не писали» от «до этого места не сохранилось» —
- * а смотрят историю обычно как раз тогда, когда что-то потеряли.
+ * A room's history is capped in size, and a very long seminar has its
+ * beginning cut off as one whole segment (server/src/db.ts · trimHistory).
+ * Without this field the panel shows the remainder exactly as it would show
+ * the full timeline, and nothing in it tells "nothing was written here" from
+ * "nothing before this point was kept" — and people look at the history
+ * precisely when they have lost something.
  *
- * Признак ровно об этом и ни о чём другом: список может быть неполон ещё и
- * потому, что окно ленты — четыреста строк (routes/history.ts · MAX_VERSIONS),
- * но те версии в базе есть, и говорить о них надо другими словами.
+ * The flag is about exactly that and nothing else: the list can also be
+ * incomplete because the timeline window is four hundred rows
+ * (routes/history.ts · MAX_VERSIONS), but those versions are in the database,
+ * and they call for different words.
  *
- * Считает сервер, `db.ts · historyTrimmed`, по самой старой строке комнаты.
+ * Computed by the server, `db.ts · historyTrimmed`, from the room's oldest
+ * row.
  */
 export interface VersionList {
   versions: Version[]
@@ -144,29 +149,32 @@ export const BURST_MAX_MS = 90_000
 export const BURST_IDLE_MS = 12_000
 
 /**
- * Потолок по числу строк между полными снимками.
+ * Cap on the number of rows between full snapshots.
  *
- * Собрать версию N — это повторить обновления поверх ближайшего снимка не выше
- * неё, и это число — потолок на такую работу, а не длина истории.
+ * Building version N means replaying the updates on top of the nearest
+ * snapshot at or below it, and this number caps that work; it is not the
+ * length of the history.
  *
- * Ограничивает длину повтора, а не место: место считается по байтам (см.
- * maybeKeyframe). Без потолка крошечная тетрадь с тысячей мелких правок
- * собиралась бы из тысячи кусков.
+ * It bounds the length of the replay, not the space: space is counted in
+ * bytes (see maybeKeyframe). Without the cap a tiny notebook with a thousand
+ * small edits would be assembled from a thousand pieces.
  *
- * Было 25 — и это был единственный порог, из-за чего трёхмегабайтная тетрадь
- * писала снимок на каждые двадцать пять нажатий. Теперь по байтам решает
- * правило дороже, а этот порог остался тем, чем должен был быть с самого
- * начала: страховкой от длинного повтора. Двести обновлений — это доли
- * секунды на сборку и заведомо реже, чем сработает правило по байтам на любой
- * тетради, которую стоит беречь.
+ * It used to be 25 — and that was the only threshold, which is why a
+ * three-megabyte notebook wrote a snapshot every twenty-five keystrokes. Now
+ * bytes decide, by the "deltas cost more than the document" rule, and this
+ * threshold has stayed what it should have been from the start: a guard
+ * against a long replay. Two hundred updates take a fraction of a second to
+ * assemble, and that is certainly rarer than the byte rule fires on any
+ * notebook worth keeping.
  */
 export const KEYFRAME_EVERY = 200
 
 /**
- * Ниже этого полный снимок не пишут, сколько бы дельт ни накопилось.
+ * Below this no full snapshot is written, however many deltas have piled up.
  *
- * Для пустой тетради «дельт накопилось столько же, сколько весит документ» —
- * это два нажатия, и снимок на каждое второе. Шестьдесят четыре килобайта —
- * это заведомо меньше любого разумного семинара и заведомо больше любого шума.
+ * For an empty notebook "as many deltas have piled up as the document weighs"
+ * is two keystrokes, and a snapshot on every second one. Sixty-four kilobytes
+ * is certainly less than any reasonable seminar and certainly more than any
+ * noise.
  */
 export const KEYFRAME_MIN_BYTES = 64 * 1024

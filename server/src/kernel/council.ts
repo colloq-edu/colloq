@@ -1,20 +1,22 @@
 import { tr } from '@shared/i18n'
 /**
- * Вывод попытки консилиума — в память, а не в общую ячейку.
+ * A council attempt's output goes to memory, not to a shared cell.
  *
- * OutputWriter (outputs.ts) пишет в Y.Array ячейки, потому что вывод ячейки
- * смотрит вся комната. Вывод попытки смотрят двое — преподаватель и автор, — и
- * класть его в общий документ значило бы показать залу то, что преподаватель
- * ещё не решил показывать. Поэтому у попытки свой приёмник: те же обработчики
- * ядра, тот же порядок записей, но результат — обычный массив `CellOutput`,
- * который control.ts кладёт к попытке (council.ts · recordRun) и рассылает по
- * управляющему сокету.
+ * OutputWriter (outputs.ts) writes into the cell's Y.Array, because the whole
+ * room watches a cell's output. An attempt's output is watched by two people,
+ * the teacher and the author, and putting it into the shared document would
+ * show the audience what the teacher has not yet decided to show. So an
+ * attempt has its own receiver: the same kernel handlers, the same order of
+ * records, but the result is a plain `CellOutput` array that control.ts
+ * attaches to the attempt (council.ts · recordRun) and broadcasts over the
+ * control socket.
  *
- * Потолки ниже, чем у ячейки, и это намеренно: карточка попытки рисуется в
- * стопке из сотен, и каждый её кадр едет хосту целиком вместе со всей стопкой.
- * Прогресс-бар на четыреста килобайт там не поместится и не нужен.
+ * The ceilings are lower than a cell's, on purpose: an attempt card is drawn
+ * in a stack of hundreds, and each of its frames travels to the host whole,
+ * together with the entire stack. A four-hundred-kilobyte progress bar does
+ * not fit there and is not needed.
  *
- * Чистый модуль без Yjs и без сети — ради теста.
+ * A pure module without Yjs and without network, for the sake of the test.
  */
 import type { CellOutput, StreamName } from '@shared/notebook'
 import type { CouncilRun } from '@shared/protocol'
@@ -25,9 +27,9 @@ import {
   withoutFigure,
 } from './figures.js'
 
-/** Столько текста в попытке ещё читается на карточке; дальше — совет писать в файл. */
+/** This much attempt text still reads on a card; past it, a tip to write a file. */
 export const MAX_ATTEMPT_OUTPUT_CHARS = 64 * 1024
-/** Одна картинка matplotlib помещается; галерея — нет. */
+/** One matplotlib image fits; a gallery does not. */
 export const MAX_ATTEMPT_DATA_CHARS = 2 * 1024 * 1024
 const MAX_TRACEBACK_LINES = 60
 const MAX_ERROR_LINE_CHARS = 2 * 1024
@@ -37,27 +39,28 @@ function clip(text: string, max: number): string {
   return tr("server.colloqMoreCharactersCutHere.cfc854", { p0: text.slice(0, max), p1: text.length - max })
 }
 
-/** Что ядру надо, чтобы посчитать попытку, и кому сказать, что вышло. */
+/** What the kernel needs to compute an attempt, and whom to tell the result. */
 export interface CouncilJob {
-  /** Ячейка консилиума — та, к которой относится попытка (не синтетический id очереди). */
+  /** The council cell the attempt belongs to (not the queue's synthetic id). */
   cellId: string
   participantId: string
   source: string
   by: CouncilRun['by']
   /**
-   * Предел одного запуска в секундах; `null` — без предела.
+   * The limit of one run in seconds; `null` means no limit.
    *
-   * Едет с заданием, а не читается ядром с ячейки: ручки лежат в документе, а
-   * до документа отсюда добираются только через control.ts — тот самый модуль,
-   * который зовёт ядро. Импорт назад замкнул бы их друг на друга, и ради одного
-   * числа. Число снимается в секунду нажатия; регламент, поменянный посреди
-   * запуска, доезжает отдельно (kernel/index.ts · retimeCouncilRun).
+   * It travels with the job instead of being read by the kernel from the cell:
+   * the knobs live in the document, and from here the document is reachable
+   * only through control.ts, the very module that calls the kernel. An import
+   * back would tie the two to each other, and for the sake of one number. The
+   * number is taken at the second of the click; rules changed in the middle of
+   * a run arrive separately (kernel/index.ts · retimeCouncilRun).
    */
   limitSec: number | null
   /**
-   * Каждая смена состояния и каждый кадр вывода. `null` — попытку сняли с
-   * очереди, не запуская (перезапуск ядра, «стоп» по комнате): запуска не было,
-   * и записи о нём быть не должно.
+   * Every state change and every output frame. `null`: the attempt was taken
+   * off the queue without running (a kernel restart, a room-wide "stop"):
+   * there was no run, and there must be no record of one.
    */
   onChange: (run: CouncilRun | null) => void
 }
@@ -68,7 +71,7 @@ export class CouncilOutputBuffer {
   private usedData = 0
   private truncated = false
   private dataTruncated = false
-  /** Обещание `clear_output(wait=True)`: следующая запись заменяет, а не дописывает. */
+  /** Promised `clear_output(wait=True)`: the next record replaces, not appends. */
   private superseded = false
 
   stream(name: StreamName, text: string): void {
@@ -77,10 +80,10 @@ export class CouncilOutputBuffer {
     if (this.truncated) return
     const room = MAX_ATTEMPT_OUTPUT_CHARS - this.used
     let body = text
-    // Строго больше: текст, ровно уложившийся в бюджет, не срезан ни на символ,
-    // и объявлять его обрезанным — значит соврать и выбросить всё, что придёт
-    // следом. Ровно заполненный бюджет упрётся в потолок на следующем куске,
-    // где обрезка и правда случится.
+    // Strictly greater: text that fits the budget exactly is not cut by a
+    // single character, and declaring it truncated would be a lie that throws
+    // away everything that comes next. A budget filled exactly hits the
+    // ceiling on the next chunk, where truncation really does happen.
     if (text.length > room) {
       body = text.slice(0, Math.max(0, room))
       this.truncated = true
@@ -99,17 +102,19 @@ export class CouncilOutputBuffer {
   data(mimebundle: Record<string, string>, execCount: number | null): void {
     this.settle()
     /*
-     * График plotly в попытке — целиком или строкой, третьего нет.
+     * A plotly plot in an attempt goes whole or as a line; there is no third
+     * way.
      *
-     * Полки записей у попытки нет и быть не может: её вывод живёт в памяти и
-     * уезжает хосту по управляющему сокету вместе со всей стопкой (см. шапку
-     * файла). Значит, фигура либо укладывается в потолок карточки и едет как
-     * есть, либо не едет вовсе — и тогда вместо неё та же честная строка, что
-     * в комнате. Обрезать JSON нельзя: это не «часть графика», а битый кадр.
+     * An attempt has no record shelf and cannot have one: its output lives in
+     * memory and travels to the host over the control socket together with the
+     * whole stack (see the file header). So a figure either fits under the
+     * card's ceiling and travels as is, or does not travel at all, and then the
+     * same honest line as in the room takes its place. JSON cannot be cut: that
+     * is not "part of a plot" but a broken frame.
      *
-     * Мёртвая разметка plotly снимается тем же правилом, что и в комнате, и до
-     * взвешивания: иначе бюджет карточки съедал бы скрипт, который никто
-     * никогда не исполнит.
+     * Plotly's dead markup is stripped by the same rule as in the room, and
+     * before weighing: otherwise the card budget would be eaten by a script
+     * nobody will ever execute.
      */
     let bundle = withoutDeadPlotlyHtml(mimebundle)
     const figure = figureChars(bundle)
@@ -150,35 +155,37 @@ export class CouncilOutputBuffer {
   }
 
   /**
-   * Запуск остановил регламент — и сказать об этом должен не трейсбек.
+   * The run was stopped by the rules, and it is not a traceback that should
+   * say so.
    *
-   * SIGINT приходит в Python как `KeyboardInterrupt`, и по умолчанию на
-   * карточке оставался бы его трейсбек: десяток кадров чужой библиотеки и
-   * строка про клавиатуру, которой никто не нажимал. Студент читает это как
-   * «преподаватель нажал стоп» или как свою ошибку, а правда — «предел
-   * запуска». Поэтому исключение прерывания снимается, а на его место встаёт
-   * своё, одной строкой и без трейсбека.
+   * SIGINT arrives in Python as `KeyboardInterrupt`, and by default the card
+   * would keep its traceback: a dozen frames of someone else's library and a
+   * line about a keyboard nobody pressed. A student reads that as "the teacher
+   * pressed stop" or as their own mistake, while the truth is "the run limit".
+   * So the interrupt exception is removed, and our own takes its place, in one
+   * line and without a traceback.
    *
-   * Снимается ТОЛЬКО прерывание: всё, что попытка успела напечатать до
-   * остановки, — её настоящий вывод, и в нём же обычно ответ на вопрос «где
-   * оно зациклилось». `settle()` здесь нарочно не зовётся: обещание
-   * `clear_output(wait=True)` от прогресс-бара исполнять нечем, а стереть
-   * напечатанное ради строки об остановке — потеря без выгоды.
+   * ONLY the interrupt is removed: everything the attempt managed to print
+   * before the stop is its real output, and that is usually where the answer
+   * to "where did it loop" is. `settle()` is deliberately not called here:
+   * there is nothing to fulfil the progress bar's `clear_output(wait=True)`
+   * promise with, and erasing what was printed for the sake of a stop line is
+   * a loss with no gain.
    */
   stopped(evalue: string): void {
     this.outputs = this.outputs.filter(
       (o) => !(o.kind === 'error' && (o.ename === 'KeyboardInterrupt' || o.ename === 'Interrupted')),
     )
     /*
-     * Имя исключения пустое нарочно: карточка рисует «имя: текст», и студент
-     * читал «TimeLimit: Остановлено: …» — английское слово перед русской
-     * фразой, которое ничего не добавляет. Машинная отметка остановки —
-     * `CouncilRun.timedOut`, по имени ошибки её никто не ищет.
+     * The exception name is empty on purpose: the card draws "name: text", and
+     * the student read "TimeLimit: Остановлено: …", an English word in front
+     * of a Russian phrase that adds nothing. The machine-readable stop mark is
+     * `CouncilRun.timedOut`; nobody looks for it by the error name.
      */
     this.outputs.push({ kind: 'error', ename: '', evalue, traceback: [] })
   }
 
-  /** `clear_output(wait=False)` — стереть сейчас. */
+  /** `clear_output(wait=False)`: erase now. */
   clear(): void {
     this.outputs = []
     this.used = 0
@@ -188,17 +195,17 @@ export class CouncilOutputBuffer {
     this.superseded = false
   }
 
-  /** `clear_output(wait=True)` — стереть, когда будет чем заменить. */
+  /** `clear_output(wait=True)`: erase once there is something to replace it. */
   supersede(): void {
     this.superseded = true
   }
 
-  /** Было ли уже исключение — чтобы не дописывать второе про прерывание. */
+  /** An exception is already there: do not add a second one about the interrupt. */
   get hasError(): boolean {
     return this.outputs.some((o) => o.kind === 'error')
   }
 
-  /** Копия наружу: массив уезжает в JSON и в базу, буфер живёт дальше. */
+  /** Copy out: the array leaves as JSON and into the DB; the buffer lives on. */
   snapshot(): CellOutput[] {
     return this.outputs.map((o) => ({ ...o }))
   }
@@ -208,7 +215,7 @@ export class CouncilOutputBuffer {
     this.clear()
   }
 
-  /** Соседние куски одного потока — одной записью, как в документе. */
+  /** Adjacent chunks of one stream become one record, as in the document. */
   private append(name: StreamName, text: string): void {
     const last = this.outputs[this.outputs.length - 1]
     if (last && last.kind === 'stream' && last.name === name) {

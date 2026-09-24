@@ -43,36 +43,39 @@
 export const MARKDOWN_FORBIDDEN_TAGS = ['style', 'form', 'audio', 'video']
 
 /**
- * И атрибут `style` — он же был половиной той самой дыры.
+ * And the `style` attribute — it was the other half of that very hole.
  *
- * Запрета здесь больше нет, и вот почему он тут стоял. Тег `<style>` запрещён,
- * а АТРИБУТ DOMPurify оставляет по умолчанию и значение его не разбирает вовсе:
- * ни CSS, ни адресов внутри. `<div style="position:fixed;inset:0;
- * background:#000;z-index:9999">` из одной текстовой ячейки — чёрный экран у
- * всех тридцати человек и у ноутбука в проекторе, причём поверх интерфейса:
- * удалить ячейку мышью уже нельзя, а перезагрузка возвращает ту же ячейку.
+ * There is no longer a ban here, and this is why it used to stand here. The
+ * `<style>` tag is forbidden, but DOMPurify keeps the ATTRIBUTE by default and
+ * does not parse its value at all: neither the CSS nor the addresses inside.
+ * `<div style="position:fixed;inset:0;background:#000;z-index:9999">` from a
+ * single text cell means a black screen for all thirty people and for the
+ * laptop on the projector, and on top of the interface: the cell can no
+ * longer be deleted with the mouse, and a reload brings the same cell back.
  *
- * Запрет это закрывал, но вместе с дырой уносил всю привычную разметку учебной
- * тетради: `<div style="background:#eef;padding:8px">` — врезка «Замечание» из
- * каждого второго ноутбука — доезжала голым `<div>`, то есть неотличимо от
- * абзаца. Читалось это не как «оформление запрещено», а как «HTML не
- * работает»: структура-то проходила, а видимой разницы не было.
+ * The ban closed that, but along with the hole it took away all the familiar
+ * markup of a teaching notebook: `<div style="background:#eef;padding:8px">` —
+ * the "Note" inset from every other notebook — arrived as a bare `<div>`, that
+ * is, indistinguishable from a paragraph. It read not as "styling is
+ * forbidden" but as "HTML does not work": the structure got through, but there
+ * was no visible difference.
  *
- * Теперь запрещён не атрибут, а СВОЙСТВА, и считает их одно место —
- * shared/note-css.ts · safeStyle. `background`, `padding`, `border`, `color`,
- * `text-align`, `width` проходят; `position`, `z-index`, `transform`,
- * `box-shadow`, `url(...)` — нет, и длины упираются в потолок. Санитайзер
- * атрибут не трогает, а render.svelte.ts переписывает его значение ДО того,
- * как разметка попадёт в страницу: пока она лежит в отцепленном узле, ни одно
- * правило из неё не действует и ни один адрес из неё не запрашивается.
+ * Now what is forbidden is not the attribute but PROPERTIES, and one place
+ * decides them — shared/note-css.ts · safeStyle. `background`, `padding`,
+ * `border`, `color`, `text-align`, `width` pass; `position`, `z-index`,
+ * `transform`, `box-shadow`, `url(...)` do not, and lengths are capped. The
+ * sanitizer does not touch the attribute, and render.svelte.ts rewrites its
+ * value BEFORE the markup gets into the page: while it lies in a detached
+ * node, no rule from it takes effect and no address from it is requested.
  *
- * Остаётся `ping`: DOMPurify оставляет его по умолчанию, и `<a href="…"
- * ping="http://…">` — это POST на чужой адрес из браузера того, кто нажал на
- * ссылку в чужой заметке. Оформлению он не нужен, а рычаг на читателя — самый
- * настоящий, и виден он только в исходнике ссылки.
+ * What remains is `ping`: DOMPurify keeps it by default, and `<a href="…"
+ * ping="http://…">` is a POST to a stranger's address from the browser of
+ * whoever clicked a link in someone else's note. Styling does not need it,
+ * while as a lever on the reader it is very real, and it is visible only in
+ * the link's source.
  *
- * `input` и `canvas` в списке тегов НЕТ намеренно: чекбокс — это список задач
- * из GFM (`- [ ] сделать`), а холст без скрипта, которого сюда не пронести,
- * не рисует ничего.
+ * `input` and `canvas` are deliberately NOT in the tag list: a checkbox is a
+ * GFM task list (`- [ ] do it`), and a canvas without a script, which cannot
+ * be smuggled in here, draws nothing.
  */
 export const MARKDOWN_FORBIDDEN_ATTRS = ['ping']

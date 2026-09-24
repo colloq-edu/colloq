@@ -1,19 +1,22 @@
 /**
- * Окно правил семинара и комната следуют одному выбранному языку.
+ * The seminar rules window and the room follow one chosen language.
  *
- * Подписи правил живут в языке КОМНАТЫ: тот же список рисует пульт внутри неё
- * (web/src/lib/rule-rows.ts, tests/weblib-rule-rows.test.mts), и рамка вокруг
- * них другой быть не может. А причину отказа в подвале приносил общий
- * `explain()` панели, английской, — и на живой паре получалось «Правило не
- * сохранилось — The server did not respond»: половина фразы на языке, которого
- * в окне больше нигде нет (admin-17).
+ * The rule captions live in the ROOM's language: the same list is drawn by
+ * the console inside it (web/src/lib/rule-rows.ts,
+ * tests/weblib-rule-rows.test.mts), and the frame around them cannot be in
+ * another one. But the refusal reason in the footer was brought by the
+ * panel's shared `explain()`, which is English, and at a live class this
+ * gave "Правило не сохранилось — The server did not respond" (the Russian
+ * half says "the rule was not saved"): half of the phrase in a language
+ * found nowhere else in the window (admin-17).
  *
- * Ломается это молча и одной строкой: `ruleRefusal(...)` меняют обратно на
- * `explain(cause)`, и ни один тест разметки этого не заметит — текст приезжает
- * по сети и только в отказе. Соседний `admin-address.test.mts` стережёт язык
- * самой разметки окна («русское, и сказано почему»), здесь — язык того, что в
- * окне появляется от сервера. Отсюда две проверки: слова русские при любой
- * причине, и в самом окне зовут именно их.
+ * This breaks silently and in one line: `ruleRefusal(...)` gets changed back
+ * to `explain(cause)`, and no markup test will notice, because the text
+ * arrives over the network and only in a refusal. The neighbouring
+ * `admin-address.test.mts` guards the language of the window markup itself
+ * ("Russian, and it says why"); this one guards the language of what appears
+ * in the window from the server. Hence two checks: the words are Russian for
+ * any reason, and the window itself calls exactly them.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -24,16 +27,16 @@ import assert from 'node:assert/strict'
 import type { AdminErrorReason } from '../shared/admin.js'
 import { ruleRefusal } from '../web/src/admin/panel.js'
 
-/** Латиница в видимой строке — след английской панели, просочившийся в окно. */
+/** Latin letters in a visible line are a trace of the English panel leaking into the window. */
 const PANEL_LANGUAGE = /[A-Za-z]/
 const ROOM_LANGUAGE = /[А-Яа-яЁё]/
 
 /**
- * Все причины, какие вообще умеет назвать сервер, — списком, а не выборкой.
+ * All the reasons the server can name at all: as a list, not a sample.
  *
- * Новая причина в `AdminErrorReason` без строки здесь просто провалится в
- * умолчание — это и есть задуманное поведение, но проверить надо, что она при
- * этом остаётся русской, а не приносит английский хвост.
+ * A new reason in `AdminErrorReason` without a line here simply falls into
+ * the default, which is the intended behaviour, but it must be checked that
+ * it stays Russian then instead of bringing an English tail.
  */
 const REASONS: AdminErrorReason[] = [
   'unauthenticated',
@@ -51,7 +54,7 @@ const REASONS: AdminErrorReason[] = [
   'network',
 ]
 
-test('причина отказа в окне правил — на выбранном языке при любом отказе', () => {
+test('the refusal reason in the rules window is in the chosen language for any refusal', () => {
  for (const locale of ['ru', 'en'] as const) {
   setLocaleResolver(() => locale)
   const lines = [
@@ -59,19 +62,19 @@ test('причина отказа в окне правил — на выбран
     ...REASONS.map((reason) =>
       ruleRefusal({ reason, status: 400, body: { error: 'nope', reason } }),
     ),
-    // И тот же набор без разобранного тела: так приходит отказ через прокси.
+    // And the same set without a parsed body: that is how a refusal comes through a proxy.
     ...REASONS.map((reason) => ruleRefusal({ reason, status: 502 })),
   ]
   for (const line of lines) {
-    assert.match(line, locale === 'ru' ? ROOM_LANGUAGE : PANEL_LANGUAGE, `«${line}» — не на языке окна`)
-    assert.doesNotMatch(line, locale === 'ru' ? PANEL_LANGUAGE : ROOM_LANGUAGE, `«${line}» — смешение языков`)
-    // Фраза целая: половинчатую («Правило не сохранилось — ») читать не о чем.
-    assert.match(line, locale === 'ru' ? /^Не удалось сохранить правило[:.] .+[.]$/u : /^Could not save the rule[:.] .+[.]$/u, `«${line}» — обрывок фразы`)
+    assert.match(line, locale === 'ru' ? ROOM_LANGUAGE : PANEL_LANGUAGE, `"${line}" is not in the language of the window`)
+    assert.doesNotMatch(line, locale === 'ru' ? PANEL_LANGUAGE : ROOM_LANGUAGE, `"${line}" mixes languages`)
+    // The phrase is whole: half a phrase ("the rule was not saved — ") says nothing.
+    assert.match(line, locale === 'ru' ? /^Не удалось сохранить правило[:.] .+[.]$/u : /^Could not save the rule[:.] .+[.]$/u, `"${line}" is a fragment of a phrase`)
   }
  }
 })
 
-test('сеть, отвергнутый вход и права названы каждый своим, а не одним словом', () => {
+test('network, a rejected sign-in and permissions are each named on their own, not with one word', () => {
   const network = ruleRefusal({ reason: 'network', status: 0, body: null })
   const dead = ruleRefusal({ reason: 'unauthenticated', status: 401, body: { error: 'x' } })
   const forbidden = ruleRefusal({ reason: 'forbidden', status: 403, body: { error: 'x' } })
@@ -84,13 +87,14 @@ test('сеть, отвергнутый вход и права названы к�
 })
 
 /*
- * «Семинара больше нет» — это факт, и говорится он только с ответа маршрута.
+ * "The seminar no longer exists" is a fact, and it is said only from the
+ * route's answer.
  *
- * 404 с той же цифрой отдаст и прокси перед сервером, и туннель, забывший про
- * /api; по этой фразе преподаватель пойдёт заводить второй семинар вместо того,
- * чтобы починить адрес.
+ * A 404 with the same number is also returned by a proxy in front of the
+ * server and by a tunnel that forgot about /api; after this phrase a teacher
+ * would go and create a second seminar instead of fixing the address.
  */
-test('404 без тела не хоронит семинар', () => {
+test('a 404 without a body does not bury the seminar', () => {
   const ours = ruleRefusal({
     reason: 'invalid',
     status: 404,
@@ -103,7 +107,7 @@ test('404 без тела не хоронит семинар', () => {
   assert.match(stranger, /Попробуйте ещё раз/)
 })
 
-/* --------------------------------------------------------------- окно */
+/* ------------------------------------------------------------- window */
 
 const SEMINARS = 'web/src/admin/screens/Seminars.svelte'
 
@@ -111,21 +115,21 @@ function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
 }
 
-/** Разметка без комментариев: объяснение — не обещание. */
+/** Markup without comments: an explanation is not a promise. */
 function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
-test('окно правил берёт причину у себя, а не у английского explain()', () => {
+test('the rules window takes the reason from its own code, not from the English explain()', () => {
   const seminars = code(read(SEMINARS))
   const assignments = seminars.match(/rulesErrorText = [^\n]+/g) ?? []
 
-  assert.ok(assignments.length > 0, 'подвал окна правил больше ничего не показывает')
+  assert.ok(assignments.length > 0, 'the rules window footer no longer shows anything')
   for (const line of assignments) {
-    assert.doesNotMatch(line, /explain\(/, `${line.trim()} — английская причина в русском окне`)
+    assert.doesNotMatch(line, /explain\(/, `${line.trim()}: an English reason in the Russian window`)
   }
-  assert.match(seminars, /rulesErrorText = \(\) => \(ruleRefusal\(/, 'причина берётся из panel.ts')
-  // Отвергнутое печенье по-прежнему уводит на экран входа: перевод причины не
-  // должен был отменить смену экрана (admin-1).
+  assert.match(seminars, /rulesErrorText = \(\) => \(ruleRefusal\(/, 'the reason is taken from panel.ts')
+  // A rejected cookie still leads to the sign-in screen: translating the
+  // reason was not supposed to cancel the screen change (admin-1).
   assert.match(seminars, /noteDeadCookie\(cause\)[\s\S]{0,200}rulesErrorText = \(\) => \(ruleRefusal\(/)
 })

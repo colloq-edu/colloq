@@ -102,29 +102,30 @@
     session: SessionInfo
     identity: StoredIdentity
     /**
-     * Который из экранов комнаты нарисован.
+     * Which of the room's screens is drawn.
      *
-     * `room` — семинар, как его видят все; `screen` — проекция на балке
-     * (`/s/:id/screen`); `pult` — пульт лекции в руках у преподавателя
-     * (`/s/:id/pult`); `council` — пульт консилиума по одной ячейке в
-     * отдельном окне (`/s/:id/council/:cell`). Один проп, а не набор флагов:
-     * экраны взаимоисключающие, и пара булевых умела бы означать то, чего не
-     * бывает.
+     * `room` is the seminar as everyone sees it; `screen` is the projection
+     * for the projector (`/s/:id/screen`); `pult` is the lecture console in
+     * the teacher's hands (`/s/:id/pult`); `council` is the council console
+     * for a single cell in a separate window (`/s/:id/council/:cell`). One
+     * prop, not a set of flags: the screens are mutually exclusive, and a pair
+     * of booleans could mean things that never happen.
      *
-     * Все они живут в ОДНОМ компоненте, потому что живут на одном соединении:
-     * `SessionState` создаётся ниже один раз, и переход между экранами его не
-     * трогает — сокеты, документ и присутствие остаются на месте.
+     * They all live in ONE component because they live on one connection:
+     * `SessionState` is created once below, and switching screens does not
+     * touch it — the sockets, the document and presence stay in place.
      */
     mode?: 'room' | 'screen' | 'pult' | 'council'
-    /** Ячейка пульта консилиума; имеет смысл только при `mode: 'council'`. */
+    /** The council console's cell; meaningful only with `mode: 'council'`. */
     councilCell?: string | null
-    /** Уйти на другой адрес, не пересобирая комнату. */
+    /** Go to another address without rebuilding the room. */
     onnavigate?: (to: string) => void
     /**
-     * Место в комнате перестало действовать — вернуть человека к форме имени.
+     * The place in the room stopped working — return the person to the name
+     * form.
      *
-     * Комната сама этого сделать не может: экран входа живёт выше, а
-     * сохранённую личность к этому моменту уже стёрли (см. `#diagnose`).
+     * The room cannot do that itself: the join screen lives higher up, and the
+     * saved identity has already been wiped by this moment (see `#diagnose`).
      */
     onexpired?: () => void
   }
@@ -141,35 +142,35 @@
   const projection = $derived(mode === 'screen')
   const pult = $derived(mode === 'pult')
   /**
-   * Пульт консилиума — отдельное окно, и комната под ним не рисуется по той же
-   * причине, что и под лекционным пультом, только повёрнутой в третью сторону:
-   * тетрадь зеркалится на проектор, а в пульте лежат имена, черновики и
-   * отметки. Одно окно — один зритель.
+   * The council console is a separate window, and the room is not drawn under
+   * it for the same reason as under the lecture console, only turned a third
+   * way: the notebook is mirrored to the projector, while the console holds
+   * names, drafts and marks. One window — one viewer.
    */
   const councilPult = $derived(mode === 'council')
 
   /*
-   * Пульт приезжает по требованию — по тому же поводу, что и панель в App.
+   * The console arrives on demand — for the same reason as the panel in App.
    *
-   * ConsoleView со своими палитрами и заметками спикера — несколько тысяч
-   * строк, которые рисуются на одном планшете у одного человека. Статическим
-   * импортом они лежали в чанке комнаты, то есть их качал и разбирал КАЖДЫЙ
-   * студент на входе — включая тот, что смотрит проекцию. Динамический импорт
-   * — единственное, что правда откладывает байты: перенос статического импорта
-   * в другой файл просто переносит их вместе с ним.
+   * ConsoleView with its palettes and speaker notes is several thousand lines
+   * that are drawn on one tablet for one person. As a static import they sat
+   * in the room chunk, so EVERY student downloaded and parsed them on entry —
+   * including the one watching the projection. A dynamic import is the only
+   * thing that really defers the bytes: moving a static import into another
+   * file just moves them along with it.
    *
-   * Запоминается, чтобы блок `{#await}` получал одно и то же обещание на
-   * каждую перерисовку и пульт не пересобирался под рукой преподавателя.
-   * InkLayer и LectureView остаются статическими: их рисует зал.
+   * It is memoised so that the `{#await}` block gets the same promise on every
+   * redraw and the console is not rebuilt under the teacher's hand. InkLayer
+   * and LectureView stay static: the hall draws them.
    */
   let pultChunk: Promise<typeof import('@/components/lecture/ConsoleView.svelte').default> | null =
     null
   const consoleView = () =>
     (pultChunk ??= import('@/components/lecture/ConsoleView.svelte').then((m) => m.default))
   /**
-   * Пульт консилиума — вторым чанком, по тому же доводу и с той же ценой: он
-   * рисуется в одном окне у одного человека, а лежал бы в чанке комнаты у
-   * каждого студента.
+   * The council console is a second chunk, by the same argument and at the
+   * same price: it is drawn in one window for one person, and it would
+   * otherwise sit in the room chunk of every student.
    */
   function exitCouncil(): void {
     try {
@@ -187,8 +188,9 @@
   > | null = null
   const councilWindow = () =>
     (councilChunk ??= import('@/components/council/pult/PultWindow.svelte').then((m) => m.default))
-  // Начинаем качать, как только адрес пульта на экране, а не когда дошли до
-  // разметки: у планшета, открывшего ссылку-ключ, это выигрывает целый круг.
+  // Start downloading as soon as the console address is on screen, not when we
+  // reach the markup: for a tablet that opened a key link this wins a whole
+  // round trip.
   $effect(() => {
     if (pult) void consoleView()
     if (councilPult) void councilWindow()
@@ -204,34 +206,37 @@
   const session = new SessionState(info, identity)
 
   /*
-   * Строка про смену правил живёт шесть секунд и уходит сама: её читают один
-   * раз, а закрывать её крестиком — просить о работе за объявление.
+   * The line about a rules change lives six seconds and goes away by itself:
+   * it is read once, and closing it with a cross would be asking for work in
+   * exchange for an announcement.
    */
   /*
-   * Правку не приняли — и вот она.
+   * An edit was not accepted — and here it is.
    *
-   * Браузер, которому отказали, пересобирает документ перезагрузкой (см.
-   * `lib/refusal.ts`), и без этой панели это было бы молчаливым стиранием чужой
-   * работы, что не лучше молчаливо онемевшего браузера.
+   * A browser that got refused rebuilds the document with a reload (see
+   * `lib/refusal.ts`), and without this panel that would be a silent erasure
+   * of someone's work, no better than a browser silently gone mute.
    */
-  // Один раз при монтировании, как и SessionState выше: записка про тот заход,
-  // который только что закончился отказом, и роутер пересоздаёт этот компонент,
-  // когда комната действительно меняется.
+  // Once on mount, like SessionState above: a note about the visit that just
+  // ended in a refusal, and the router recreates this component when the room
+  // really changes.
   // svelte-ignore state_referenced_locally
   beginVisit()
   // svelte-ignore state_referenced_locally
   const refusal = takeRefusal(info.id)
   /*
-   * Окно — про потерянный текст. Отказ кэшу при входе, после которого текста не
-   * пропало, — это строка внизу на несколько секунд: вкладка уже собралась
-   * заново, и всё, что человеку тут делать, — знать, почему она моргнула.
+   * The window is about lost text. A cache refusal at entry after which no
+   * text went missing is a line at the bottom for a few seconds: the tab has
+   * already rebuilt itself, and all the person needs here is to know why it
+   * blinked.
    *
-   * Снимок ячеек сам по себе потери не доказывает: в нём вся тетрадь, включая
-   * нетронутое. Что из неё правда не доехало, видно только после того, как
-   * сервер отдал свою копию (`lostCells` ниже), — поэтому отказ КЭШУ со
-   * снимком начинается строкой и поднимается окном, если сверка что-нибудь
-   * найдёт. Без снимка (записка прошлой сборки или не влезшая в квоту) судим
-   * тем, что есть, — `refusalHasText`.
+   * A snapshot of cells does not prove a loss by itself: it holds the whole
+   * notebook, untouched parts included. What really did not get through is
+   * visible only after the server has handed over its copy (`lostCells`
+   * below) — so a CACHE refusal with a snapshot starts as a line and is
+   * raised to a window if the comparison finds anything. Without a snapshot
+   * (a note from an older build or one that did not fit in the quota) we
+   * judge by what there is — `refusalHasText`.
    */
   const refusedSnapshot = refusal !== null && (refusal.cells?.length ?? 0) > 0
   const refusedWindow =
@@ -242,13 +247,15 @@
   let refusalCopied = $state(false)
 
   /**
-   * Что из записки правда не доехало — сверкой с копией, которую отдал сервер.
+   * What from the note really did not get through — by comparison with the
+   * copy the server handed over.
    *
-   * `null`, пока сверять не с чем: до серверного sync документ пуст, а пустота
-   * значит «ещё не читали», а не «сервер этого не принял» — посчитать здесь
-   * рано значило бы объявить потерянной всю тетрадь. Считается один раз:
-   * дальше человек уже правит документ сам, и вторая сверка объявила бы
-   * потерей его же новую строку.
+   * `null` while there is nothing to compare with: before the server sync
+   * the document is empty, and emptiness means "not read yet", not "the
+   * server did not accept this" — counting here would be too early and would
+   * declare the whole notebook lost. Counted once: after that the person is
+   * editing the document themselves, and a second comparison would declare
+   * their own new line a loss.
    */
   let lostCells = $state<RefusedCell[] | null>(null)
   if (refusal) {
@@ -258,8 +265,9 @@
         const found = findCell(session.doc, id)
         return found ? cellSource(found.cell).toString() : null
       })
-      // Нашлось потерянное — это уже не «вкладка моргнула», а «вот то, что вы
-      // написали»: строка внизу уступает место окну.
+      // Something lost was found — this is no longer "the tab blinked" but
+      // "here is what you wrote": the line at the bottom gives way to the
+      // window.
       if (lostCells.length > 0 && !refusalShown) {
         refusalShown = true
         staleNotice = false
@@ -268,50 +276,51 @@
     }
     session.provider.on('sync', settle)
     onDestroy(() => session.provider.off('sync', settle))
-    // Сокет мог успеть синхронизироваться до того, как экран смонтировался.
+    // The socket may have synced before the screen mounted.
     if (session.provider.synced) settle(true)
   }
 
   /**
-   * Что показать окном.
+   * What to show in the window.
    *
-   * Снимка может не быть вовсе — записка прошлой сборки или не влезшая в
-   * квоту вкладки (см. `stashRefusal`); тогда остаётся то единственное, что в
-   * ней есть, — ячейка под курсором, как было раньше.
+   * There may be no snapshot at all — a note from an older build or one that
+   * did not fit in the tab's quota (see `stashRefusal`); then what remains is
+   * the only thing it holds — the cell under the cursor, as before.
    */
   const refusedCells = $derived.by((): RefusedCell[] => {
     if (!refusal) return []
     if (!refusedSnapshot) return refusal.text === '' ? [] : [{ id: '', text: refusal.text }]
     return lostCells ?? []
   })
-  /** Снимок есть, сервер ещё не ответил: сказать нечего, но и врать нечем. */
+  /** Snapshot in hand, server silent so far: nothing to say, and nothing to lie with. */
   const refusedChecking = $derived(refusedSnapshot && lostCells === null)
 
   async function copyRefused(): Promise<void> {
     const list = refusedCells
     if (list.length === 0) return
-    // Пустой строкой между ячейками: разделитель, который не притворяется ни
-    // комментарием Python, ни заголовком markdown — тетрадь бывает и той, и
-    // другой, а номера человек и так видит на экране.
+    // A blank line between cells: a separator that pretends to be neither a
+    // Python comment nor a markdown heading — a notebook can be either, and
+    // people see the numbers on screen anyway.
     await copyText(list.map((cell) => cell.text).join('\n\n'))
     refusalCopied = true
     setTimeout(() => (refusalCopied = false), 1600)
   }
 
-  /* --------------------------------------------------- пульт правил комнаты */
+  /* ------------------------------------------------------- room rules panel */
 
   let rulesOpen = $state(false)
   let rulesBusy = $state(false)
   const roomRules = $derived(readRules(session.session.rules))
 
   /**
-   * Потолки оракула, действующие на инстансе.
+   * The Oracle caps in force on the instance.
    *
-   * Две строки пульта ставят СВОИ потолки под инстансовые, и без числа рядом
-   * «как на инстансе» не говорит человеку ничего: он не знает, ужесточает он
-   * сейчас или пишет то же самое. Спрашивается один раз и только когда пульт
-   * открыли: строка нужна преподавателю на десять секунд, а комната без неё
-   * живёт как жила.
+   * Two rows of the panel set THEIR OWN caps under the instance ones, and
+   * without a number next to it "as on the instance" tells the person
+   * nothing: they do not know whether they are tightening now or writing the
+   * same thing. Asked once and only when the panel is opened: the teacher
+   * needs the line for ten seconds, and the room lives on without it as
+   * before.
    */
   let oracleLimits = $state<OracleLimits | null>(null)
   $effect(() => {
@@ -328,8 +337,8 @@
           }
         }
       })
-      // Молча: пульт и без подсказки настраивается, а красная строка поверх
-      // правил объясняла бы не то, что сломалось.
+      // Silently: the panel can be set up without the hint, and a red line over
+      // the rules would point at something other than what broke.
       .catch(() => {})
     return () => {
       alive = false
@@ -337,20 +346,20 @@
   })
 
   /**
-   * Один переключатель — один запрос.
+   * One switch — one request.
    *
-   * Присланное накладывается на текущее на сервере, а не заменяет его: экран,
-   * трогающий одну строку, не должен уметь молча вернуть остальные семь к
-   * умолчаниям. Ответ приходит и сюда, и всей комнате — рассылкой по
-   * управляющему сокету, так что своё же изменение прилетит обратно тем же
-   * путём, что и чужое.
+   * What is sent is laid over the current rules on the server, not replacing
+   * them: a screen touching one row must not be able to silently reset the
+   * other seven to defaults. The answer comes both here and to the whole room
+   * — broadcast over the control socket, so one's own change flies back by the
+   * same path as anyone else's.
    *
-   * Причину отказа называет `ruleRefusal` (lib/rule-refusal.ts), а не
-   * `err.message`: у `ApiError` фраза английская с обеих сторон — и запасная
-   * («Could not reach the server…»), и тело маршрута («join the session
-   * first»), — а комната русская целиком. Своей копии правила здесь нет
-   * намеренно: слова живут одним куском рядом с `api.ts`, который их и
-   * порождает.
+   * The refusal reason is named by `ruleRefusal` (lib/rule-refusal.ts), not by
+   * `err.message`: an `ApiError`'s phrase is English on both sides — both the
+   * fallback ("Could not reach the server…") and the route body ("join the
+   * session first") — while the room is entirely Russian. There is
+   * deliberately no copy of the rule here: the words live in one piece next
+   * to `api.ts`, which produces them.
    */
   async function setRule(patch: Partial<RoomRules>) {
     rulesBusy = true
@@ -373,26 +382,26 @@
     return () => window.clearTimeout(timer)
   })
 
-  /* ------------------------------------------------------- конец занятия */
+  /* -------------------------------------------------------- end of class */
 
   /**
-   * Закончить занятие — и открыть его обратно.
+   * Finish the class — and open it back up.
    *
-   * Управляющим сокетом, а не запросом: правила комната узнаёт рассылкой по
-   * нему же, и конец занятия должен приезжать той же дорогой и в том же
-   * порядке. Своё нажатие вернётся сюда кадром `class`, как чужое, — поэтому
-   * здесь ничего не записывается вперёд сервера.
+   * Through the control socket, not a request: the room learns the rules from
+   * a broadcast over it, and the end of class must arrive by the same road and
+   * in the same order. One's own press comes back here as a `class` frame,
+   * like anyone else's — so nothing is written here ahead of the server.
    */
   function setClassOver(over: boolean): void {
     session.send({ t: over ? 'class:finish' : 'class:resume' })
   }
 
   /**
-   * Когда занятие закончили — цифрами, которые человек помнит.
+   * When the class was finished — in digits a person remembers.
    *
-   * Час, пока это сегодня, и день, когда нет: комнату открывают и через
-   * неделю, а «закончено в 15:40» в такой вкладке врёт про день. Полная дата
-   * остаётся в подсказке.
+   * The hour while it is today, and the day when it is not: the room is
+   * opened a week later too, and "finished at 15:40" in such a tab lies about
+   * the day. The full date stays in the tooltip.
    */
   const finishedStamp = $derived.by(() => {
     const at = session.session.finishedAt
@@ -410,17 +419,19 @@
   })
 
   /*
-   * Переход — одной строкой, и она уходит сама.
+   * The transition — as one line, and it leaves by itself.
    *
-   * По образцу строки про правила, и по метке, а не по сравнению с местной
-   * переменной: у двадцати человек разом гаснут кнопки, и без единой фразы это
-   * читается как поломка ноутбука, а не как конец пары.
+   * Modelled on the rules line, and driven by a stamp rather than a comparison
+   * with a local variable: twenty people's buttons go dark at once, and
+   * without a single phrase that reads as a broken laptop, not as the end of
+   * the class.
    *
-   * Метку ставит разбор кадра (`session.classChangedAt`) и молчит на первом
-   * кадре соединения — поэтому вошедшему в давно законченную комнату строка не
-   * всплывает: про это говорит чип в полосе состояния. Своё сравнение здесь
-   * держаться не может: две смены признака подряд гасили таймер уборкой
-   * эффекта и не заводили новый, и строка оставалась висеть до конца пары.
+   * The stamp is set by the frame parser (`session.classChangedAt`) and stays
+   * silent on the connection's first frame — so the line does not pop up for
+   * someone entering a room finished long ago: the chip in the status bar
+   * says so. A comparison of its own cannot hold here: two flag changes in a
+   * row killed the timer in the effect cleanup and did not start a new one,
+   * and the line stayed hanging until the end of the class.
    */
   const CLASS_NOTICE_MS = 6000
   let classNoticeUp = $state(false)
@@ -434,10 +445,10 @@
   onDestroy(() => session.destroy())
 
   /*
-   * Ключ этого браузера комната больше не признаёт — уступаем место форме
-   * имени. Одной строкой и без вопросов: сокеты отсюда уже не поднимутся
-   * никогда, а «Reconnecting» перед человеком, которому нечего ждать, — это
-   * вечный спиннер.
+   * The room no longer recognises this browser's key — we give way to the
+   * name form. In one line and without questions: the sockets will never come
+   * up from here again, and "Reconnecting" in front of a person who has
+   * nothing to wait for is an eternal spinner.
    */
   $effect(() => {
     if (session.expired) onexpired?.()
@@ -449,11 +460,12 @@
   const isHost = $derived(session.me.role === 'host')
 
   /**
-   * Куда ведёт марка в шапке — и ведёт ли вообще.
+   * Where the mark in the header leads — and whether it leads anywhere.
    *
-   * `/` — панель преподавателя, и только ему туда и надо. Участнику наверх
-   * ведёт страница курса, если она есть: это единственный публичный адрес, где
-   * его семинар стоит среди других. Ни того ни другого — марка не ссылка.
+   * `/` is the teacher's panel, and only the teacher needs to go there. For a
+   * participant, the way up is the course page, if there is one: it is the
+   * only public address where their seminar stands among others. Neither —
+   * the mark is not a link.
    */
   const homeHref = $derived(
     isHost ? '/' : session.session.course ? `/c/${session.session.course.id}` : null,
@@ -510,19 +522,19 @@
 
   const inRoom = $derived(peopleInRoom(session.peers))
   /*
-   * Лица в полосе — тем же массивом, пока рисовать нечего нового.
+   * The faces in the bar — the same array while there is nothing new to draw.
    *
-   * `yCollab` объявляет положение курсора через присутствие на каждое движение
-   * выделения: сто печатающих — сотни кадров в секунду, и каждый из них
-   * пересобирал здесь массив из всех, кто в комнате, склеивал их имена в
-   * `title` и будил стопку аватаров. От курсора не меняется ничего из того,
-   * что здесь нарисовано: имя, метка, цвет и «(you)».
+   * `yCollab` announces the cursor position through presence on every
+   * selection move: a hundred people typing make hundreds of frames a second,
+   * and each of them rebuilt here the array of everyone in the room, joined
+   * their names into `title` and woke the avatar stack. Nothing drawn here
+   * changes with a cursor: name, mark, colour and "(you)".
    *
-   * Сравнение — без единой аллокации (screens/roster.ts), и при совпадении
-   * возвращается ТОТ ЖЕ массив: Svelte сравнивает результат derived по
-   * ссылке, так что всё, что ниже, просто не просыпается. Кадр присутствия всё
-   * равно стоит одного прохода по списку — убрать это может только коалесинг
-   * в самом `#readPeers` (см. handoff).
+   * The comparison makes not a single allocation (screens/roster.ts), and on
+   * a match THE SAME array is returned: Svelte compares a derived result by
+   * reference, so everything downstream simply does not wake up. A presence
+   * frame still costs one pass over the list — only coalescing in
+   * `#readPeers` itself can remove that (see the handoff).
    */
   let faces: Face[] = []
   const room = $derived.by(() => {
@@ -532,7 +544,7 @@
       return faces
     })
   })
-  /** Подсказка над стопкой: считается от `room`, то есть только на смену состава. */
+  /** The stack's tooltip: computed from `room`, i.e. only when the people change. */
   const roomNames = $derived(namesLine(room))
 
   /*
@@ -546,13 +558,14 @@
    */
   const KERNEL: Record<KernelStatus, { label: string; dot: string; alarm: boolean; why?: string }> = {
     /*
-     * «НЕ ЗАПУЩЕНО» — не тревога и не обещание.
+     * "NOT RUNNING" is neither an alarm nor a promise.
      *
-     * Ядро поднимается лениво: у комнаты, которую только открыли, его нет, и
-     * никто его не поднимает. До 20.09 это состояние показывалось как «ЗАПУСК»
-     * — плашка часами обещала то, чего не происходило. Точка глуше остальных,
-     * рамки нет, а `title` говорит, что делать: запустить ячейку или навести на
-     * имя за справкой — оба жеста ядро и поднимают.
+     * The kernel starts lazily: a room that was just opened has none, and
+     * nobody is starting one. Until 20 Sep 2026 this state was shown as
+     * "STARTING" — the chip promised for hours something that was not
+     * happening. The dot is dimmer than the others, there is no border, and
+     * `title` says what to do: run a cell or hover over a name for help —
+     * both gestures start the kernel.
      */
     off: {
       get label() { return tr('room.kernel.state.off') },
@@ -573,14 +586,15 @@
   const PANELS_KEY = 'colloq.panels.v1'
 
   /*
-   * Шапка лежит в той же коробке, что и панели, и это нарочно.
+   * The header lives in the same box as the panels, and that is on purpose.
    *
-   * Свёрнутая шапка — такая же настройка раскладки комнаты, как закрытая
-   * панель файлов: её выбирают один раз на своей машине и ждут, что она
-   * переживёт F5. Отдельный ключ означал бы вторую запись про одно и то же и
-   * второе место, где её забывают почистить. Поле необязательное: у того, кто
-   * закрывал панели до этой правки, в коробке нет `head` вовсе, и шапка ему
-   * достаётся развёрнутой — то есть ровно та, что была.
+   * A folded header is the same room-layout setting as a closed files panel:
+   * it is chosen once on one's own machine and expected to survive F5. A
+   * separate key would mean a second record of the same thing and a second
+   * place where someone forgets to clean it up. The field is optional: for
+   * someone who closed panels before this change there is no `head` in the
+   * box at all, and they get the header unfolded — that is, exactly what it
+   * was.
    */
   function loadPanels(): { left: boolean; right: boolean; head: boolean } {
     try {
@@ -630,27 +644,28 @@
   const leftIsDrawer = $derived(!roomyEnough)
   const rightIsDrawer = $derived(!wideEnough)
 
-  /* ------------------------------------------------------------- читалка */
+  /* -------------------------------------------------------------- reader */
 
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
 
   /**
-   * Что открыто в центре — тетрадь и файлы, которые открыли.
+   * What is open in the middle — the notebook and the files that were opened.
    *
-   * Список своих вкладок живёт здесь, а не в каждом компоненте: вкладка
-   * переживает уход в тетрадь и обратно, а место в документе и курсор в
-   * редакторе теряются от размонтирования. Общий документ комнаты приходит
-   * сбоку — от сервера — и встаёт в тот же ряд.
+   * The list of one's own tabs lives here, not in each component: a tab
+   * survives a trip to the notebook and back, while the place in the document
+   * and the cursor in the editor are lost on unmount. The room's shared
+   * document comes in from the side — from the server — and takes its place
+   * in the same row.
    */
   // svelte-ignore state_referenced_locally
   const tabs = new Tabs(info.id)
   const row = $derived(tabs.row(session.board, session.lecture?.file ?? null))
   /*
-   * Вкладки, приколотые комнатой, — те же, из которых складывается `row`.
+   * The tabs pinned by the room — the same ones `row` is made of.
    *
-   * Строка вкладок по ним решает, что можно двигать: порядок приколотых задаёт
-   * комната, и переставить их себе значило бы завести у одного человека свой
-   * порядок общего экрана.
+   * The tab row uses them to decide what can be moved: the order of the pinned
+   * ones is set by the room, and rearranging them for oneself would give one
+   * person their own order of the shared screen.
    */
   const roomPinned = $derived(
     [session.board, session.lecture?.file ?? null].filter((path): path is string => !!path),
@@ -659,25 +674,27 @@
   const activeKind = $derived(activePath ? kindOf(activePath) : null)
 
   /*
-   * Заставке из index.html пора уходить — кроме двух случаев.
+   * Time for the splash from index.html to go — except in two cases.
    *
-   * Комната рисуется из того, что браузер знает и без сети: шапка, рельсы,
-   * вкладки. Ждать под заставкой стоит тетрадь — она до первого кадра сокета
-   * пуста, и о ней докладывает сама тетрадь (Notebook.svelte · cold), — и
-   * пульт консилиума, см. ниже. Проекция и открытый файл ничего такого не
-   * ждут, и держать над ними заставку было бы враньём (lib/boot.ts).
+   * The room is drawn from what the browser knows without the network: the
+   * header, the rails, the tabs. What is worth waiting for under the splash
+   * is the notebook — it is empty until the socket's first frame, and the
+   * notebook reports on itself (Notebook.svelte · cold) — and the council
+   * console, see below. The projection and an open file wait for nothing of
+   * the kind, and holding the splash over them would be a lie (lib/boot.ts).
    */
   /**
-   * Пульт консилиума — второй здесь, кому есть чего ждать.
+   * The council console is the second one here with something to wait for.
    *
-   * Он рисуется из стопки, которая приезжает сокетом, и до первого кадра не
-   * знает, идёт ли на этой ячейке консилиум вообще. Доложить о готовности
-   * раньше значило снять заставку приложения и на секунду показать «ячейка не
-   * в консилиуме» — ровно то, что видел владелец на каждой перезагрузке.
-   * Поэтому для пульта «готов» — это «стопка известна или известно, что её
-   * нет»; заставка index.html просто держится дольше, и промежуточного кадра
-   * между ней и пультом не существует. Дольше SCREEN_WAIT она не живёт при
-   * любом раскладе (lib/boot.ts).
+   * It is drawn from the stack, which arrives over the socket, and until the
+   * first frame it does not know whether a council is running on this cell
+   * at all. Reporting readiness earlier would mean removing the app splash
+   * and showing "the cell is not in the council" for a second — exactly what
+   * the owner saw on every reload. So for the console "ready" means "the
+   * stack is known, or it is known there is none"; the index.html splash just
+   * stays longer, and there is no intermediate frame between it and the
+   * console. It never lives longer than SCREEN_WAIT in any case
+   * (lib/boot.ts).
    */
   const councilKnown = $derived(
     !councilPult ||
@@ -691,17 +708,18 @@
     firstScreenReady()
   })
 
-  /** Тетради комнаты: список живёт в документе и приходит ко всем. */
+  /** The room's notebooks: the list lives in the document and reaches everyone. */
   const books = watchBooks(session.doc)
 
   /**
-   * Тетради вместе с их доступом — то, из чего строка вкладок рисует метку и
-   * наполняет меню «Доступ».
+   * Notebooks together with their access — what the tab row draws its label
+   * from and fills the "Access" menu with.
    *
-   * Список тетрадей живёт в ДОКУМЕНТЕ (он общий и переживает перезагрузку), а
-   * доступ — в ПРАВИЛАХ комнаты (он право, и права не носят в CRDT, где их
-   * может переписать любой). Складываются они здесь, по корню: путь файла
-   * переименовывают, корень — нет.
+   * The notebook list lives in the DOCUMENT (it is shared and survives a
+   * reload), while access lives in the room's RULES (it is a permission, and
+   * permissions are not carried in a CRDT, where anyone could rewrite them).
+   * They are put together here, by root: a file path gets renamed, a root
+   * does not.
    */
   const bookBusy = watchBookBusy(session.doc)
   const bookTabs = $derived(
@@ -709,22 +727,23 @@
       path: book.path,
       root: book.root,
       rule: roomRules.books?.[book.root] ?? null,
-      // Ядро у каждой тетради своё: точка на вкладке говорит, что соседний
-      // лист считает прямо сейчас, — иначе туда надо переключаться, чтобы
-      // узнать, идёт ли ещё.
+      // Each notebook has its own kernel: the dot on the tab says the
+      // neighbouring sheet is computing right now — otherwise one would have
+      // to switch there to find out whether it is still running.
       busy: bookBusy.busy(book.root),
     })),
   )
 
   /**
-   * Тетрадь, о чьём ядре говорит индикатор в шапке, — ОТКРЫТАЯ.
+   * The notebook whose kernel the header indicator talks about — the OPEN one.
    *
-   * Ядро у каждой тетради своё (server/src/kernel/index.ts), и «ГОТОВО» над
-   * семинаром, пока лекция считает, — это правда про семинар, а не недосмотр.
-   * Когда открыта не тетрадь (доска, .py, лекция), шапка говорит про тетрадь
-   * комнаты: индикатор про занятие, а не про вкладку, и молчать ему нельзя.
+   * Each notebook has its own kernel (server/src/kernel/index.ts), and "IDLE"
+   * over the seminar while the lecture is computing is the truth about the
+   * seminar, not an oversight. When what is open is not a notebook (the
+   * board, a .py, the lecture), the header talks about the room's notebook:
+   * the indicator is about the class, not the tab, and it must not go silent.
    *
-   * Стоит ПОСЛЕ списка тетрадей и вкладок намеренно: он их читает.
+   * It stands AFTER the notebook and tab lists on purpose: it reads them.
    */
   const openRoot = $derived(
     (activeKind === 'notebook' && activePath
@@ -735,14 +754,16 @@
   const kernel = $derived(KERNEL[openKernel.current.kernelStatus])
 
   /*
-   * Почему Python комнаты не поднялся — совет ведущему, и только ему.
+   * Why the room's Python did not come up — advice for the presenter, and for
+   * them alone.
    *
-   * Pod комнаты на k3s не встаёт, когда узлу нечего дать: память каждой
-   * комнаты зарезервирована целиком. Студент видит в ячейке и журнале ядра
-   * короткое «на сервере нет места, преподаватель видит причину», а исправить
-   * это может только тот, кто меняет память комнат, — ему здесь сказано, что
-   * именно уменьшить. Висит, пока ядро мертво по этой причине; закрытый
-   * крестиком возвращается только с новым советом (другое число, другой ресурс).
+   * A room's pod on k3s does not start when the node has nothing to give: each
+   * room's memory is reserved in full. A student sees a short "no room on the
+   * server, the teacher sees the reason" in the cell and the kernel log, and
+   * only whoever changes room memory can fix it — they are told here exactly
+   * what to reduce. It stays up while the kernel is dead for this reason; once
+   * closed with the cross it comes back only with new advice (a different
+   * number, a different resource).
    */
   const kernelAdvice = $derived(
     isHost && openKernel.current.kernelStatus === 'dead' && openKernel.current.kernelProblem
@@ -753,42 +774,44 @@
   const adviceUp = $derived(kernelAdvice !== null && kernelAdvice !== adviceDismissed)
 
   /**
-   * Сменить доступ к одной тетради.
+   * Change the access to one notebook.
    *
-   * Тем же путём, каким меняются все прочие правила комнаты (`setRule` выше, то
-   * есть PATCH /api/sessions/:id/rules): доступ к тетради ЖИВЁТ в правилах,
-   * и второй двери у него нет — а значит нет и второго места, где забудут
-   * спросить роль. Сервер всё равно спрашивает её сам.
+   * By the same path all other room rules change (`setRule` above, that is,
+   * PATCH /api/sessions/:id/rules): notebook access LIVES in the rules, and it
+   * has no second door — which means no second place where someone forgets to
+   * check the role. The server checks it itself anyway.
    */
   function setBookAccess(root: string, access: BookAccess): void {
     void setRule(accessPatch(roomRules, root, access))
   }
 
-  /** Что читалка сообщает наружу: строка вкладок показывает это за неё. */
+  /** What the reader reports outwards: the tab row shows it for the reader. */
   let readerPage = $state(1)
   let readerPages = $state(0)
   /**
-   * Идём ли за ведущим прямо сейчас — по мнению самой читалки.
+   * Whether we are following the presenter right now — in the reader's own
+   * opinion.
    *
-   * Одного номера страницы для строки вкладок мало: отстать можно и не сменив
-   * страницу, одной прокруткой в пределах листа. Пока признак сюда не доходил,
-   * строка писала «Идём за Анной» тому, кто уже отстал по своей воле, — а
-   * читалка строкой ниже честно говорила «смотрите сами».
+   * A page number alone is not enough for the tab row: one can fall behind
+   * without changing the page, just by scrolling within a sheet. While this
+   * flag did not reach here, the row said "Following Anna" to someone who had
+   * already fallen behind by choice — while the reader one line below
+   * honestly said "look for yourself".
    */
   let readerFollowing = $state(true)
   let lead = $state<Lead | null>(null)
-  /** Ведущий был и пропал — не то же самое, что «ведущего нет». */
+  /** The presenter was here and vanished — not the same as "no presenter". */
   let orphaned = $state(false)
-  /** За кем шли до сих пор: пока он на месте, ведущего не меняют. */
+  /** Whom we followed so far: while they stay, the presenter is not switched. */
   let sticky = $state<number | null>(null)
 
   /**
-   * Документ, по которому вообще есть за кем идти.
+   * The document that has anyone to follow at all.
    *
-   * Тот, что открыт сейчас, — или, если человек ушёл в тетрадь, общий документ
-   * комнаты: метка «преподаватель на стр. 4» на вкладке должна оставаться живой
-   * и из тетради, иначе о том, что лекция уехала, узнаёшь, только
-   * переключившись.
+   * The one open now — or, if the person went to the notebook, the room's
+   * shared document: the "teacher on p. 4" label on the tab must stay alive
+   * from the notebook too, otherwise you learn the lecture has moved on only
+   * by switching.
    */
   const followFile = $derived(
     activeKind === 'pdf'
@@ -799,16 +822,16 @@
   )
 
   /*
-   * Ведущий пересчитывается на каждое изменение присутствия — но записывается,
-   * только если правда изменился: `leaderFor` собирает новый объект каждый раз,
-   * а эффект пишет то же состояние, которое читает.
+   * The presenter is recomputed on every presence change — but written only
+   * if it really changed: `leaderFor` builds a new object every time, and the
+   * effect writes the same state it reads.
    */
   $effect(() => {
     const peers = session.peers
     const file = followFile
     if (!file) {
-      // Смотреть нечего — и «преподаватель вышел» тут значило бы сообщать о
-      // событии, которого не было.
+      // Nothing to look at — and "the teacher left" here would report an
+      // event that never happened.
       if (untrack(() => lead) !== null) lead = null
       if (untrack(() => sticky) !== null) sticky = null
       if (untrack(() => orphaned)) orphaned = false
@@ -822,35 +845,35 @@
     if (sameLead(untrack(() => lead), next)) return
     lead = next
     if (next) sticky = next.clientId
-    // «Был и пропал» — а не «его нет».
+    // "Was there and vanished" — not "is not there".
     orphaned = next === null && untrack(() => sticky) !== null
   })
-  /** Нажатия «догнать» — счётчиком: догонять можно и дважды подряд. */
+  /** "Catch up" presses — as a counter: one can catch up twice in a row. */
   let catchUp = $state(0)
 
-  /* ------------------------------------------------------------- лекция */
+  /* ------------------------------------------------------------ lecture */
 
   /**
-   * Идёт ли лекция по тому, что открыто сейчас.
+   * Whether a lecture is running on what is open now.
    *
-   * Лекция всегда стоит и на общем экране — это одно и то же решение, принятое
-   * сервером (см. `lecture:start`), — поэтому вкладка на неё есть у всех, и
-   * специально открывать её никому не нужно.
+   * A lecture always stands on the shared screen too — it is one and the same
+   * decision made by the server (see `lecture:start`) — so everyone has a tab
+   * for it, and nobody needs to open it specially.
    */
   const lecture = $derived(session.lecture)
   const leading = $derived(lecture !== null && lecture.by === session.me.id)
   const lectureHere = $derived(lecture !== null && lecture.file === activePath)
 
   /**
-   * «Читать самому».
+   * "Read on my own".
    *
-   * Лекция показывает всем одну страницу — ту, на которой ведущий. Но комната,
-   * где студент не может отлистнуть назад и перечитать формулу, — это
-   * трансляция экрана, а не семинар, и весь продукт устроен наоборот: за
-   * преподавателем ИДУТ, а не привязаны к нему. Поэтому выйти в обычную читалку
-   * можно одним нажатием — и вернуться тем же.
+   * A lecture shows everyone one page — the one the presenter is on. But a
+   * room where a student cannot page back and reread a formula is a screen
+   * broadcast, not a seminar, and the whole product is built the other way
+   * around: people FOLLOW the teacher, they are not tied to them. So stepping
+   * out into the ordinary reader takes one press — and so does coming back.
    *
-   * Сбрасывается со сменой лекции: следующая начинается общей для всех.
+   * Reset when the lecture changes: the next one starts shared by everyone.
    */
   let soloRead = $state(false)
   $effect(() => {
@@ -859,25 +882,27 @@
   })
 
   /**
-   * Уйти на проекцию и вернуться.
+   * Go to the projection and back.
    *
-   * Адресом, а не флагом: проекцию открывают на машине у проектора, её ссылку
-   * кладут в закладки, и она обязана пережить перезагрузку. Полный экран
-   * просится ровно здесь, из живого нажатия, — из эффекта после навигации
-   * браузер его не даёт.
+   * By address, not by flag: the projection is opened on the machine at the
+   * projector, its link is bookmarked, and it must survive a reload.
+   * Fullscreen is requested right here, from a live press — from an effect
+   * after navigation the browser does not grant it.
    */
   /**
-   * На проектор — ОТДЕЛЬНЫМ окном, а не этой же вкладкой.
+   * To the projector — as a SEPARATE window, not in this same tab.
    *
-   * Проекция уходила в ту же вкладку, и комната на этом компьютере
-   * заканчивалась: чтобы показать ячейку, преподаватель выходил с проектора.
-   * Окно — это то, что кладут на второй монитор и отдают в Zoom как «экран»,
-   * пока в первом окне продолжается работа. Имя окна — чтобы второе нажатие
-   * находило уже открытое, а не плодило проекции. Полный экран в новом окне
-   * просит само окно по первому нажатию в нём: жест из этого окна туда не
-   * переносится, а без жеста браузер полный экран не даёт.
+   * The projection used to go into the same tab, and the room on this
+   * computer came to an end: to show a cell, the teacher had to leave the
+   * projector. A window is what gets put on the second monitor and shared in
+   * Zoom as "a screen" while work goes on in the first window. The window
+   * name is there so that a second press finds the one already open instead
+   * of breeding projections. Fullscreen in the new window is requested by
+   * that window itself on the first press in it: a gesture from this window
+   * does not carry over, and without a gesture the browser does not grant
+   * fullscreen.
    *
-   * Всплывающие окна бывают запрещены — тогда, как раньше, уходим сами.
+   * Pop-ups may be blocked — then, as before, we leave ourselves.
    */
   function toProjection(): void {
     const url = `/s/${session.session.id}/screen`
@@ -892,16 +917,17 @@
 
   function fromProjection(): void {
     void leaveFullscreen()
-    // Окно, открытое из комнаты, закрывается; вкладка, в которую пришли по
-    // адресу, возвращается в комнату.
+    // A window opened from the room closes; a tab that arrived by the address
+    // goes back to the room.
     if (window.opener) window.close()
     if (!window.closed) onnavigate?.(`/s/${session.session.id}`)
   }
 
   /*
-   * Escape уводит с проекции. Первым нажатием браузер закрывает полный экран
-   * сам и до страницы событие не доводит — поэтому на балке Escape нажимают
-   * дважды, и это ровно то, что нужно: случайное нажатие не гасит лекцию.
+   * Escape leaves the projection. On the first press the browser closes
+   * fullscreen itself and does not pass the event to the page — so on the
+   * projector Escape is pressed twice, and that is exactly what is needed: a
+   * stray press does not kill the lecture.
    */
   $effect(() => {
     if (!projection) return
@@ -912,27 +938,28 @@
     return () => window.removeEventListener('keydown', onEscape)
   })
 
-  /* ---------------------------------------------------------------- пульт */
+  /* -------------------------------------------------------------- console */
 
   /**
-   * Экран не гаснет, пока стоит пульт или проекция.
+   * The screen does not go dark while the console or the projection is up.
    *
-   * Автоблокировка iPad по умолчанию — две минуты, а преподаватель говорит
-   * дольше; у ноутбука с проектором та же беда под другим именем — заставка.
-   * Оба экрана существуют ровно для того, чтобы на них смотрели, ничего при
-   * этом не нажимая, — то есть ровно для того случая, который система считает
-   * бездействием.
+   * iPad auto-lock defaults to two minutes, and a teacher talks longer; a
+   * laptop at the projector has the same trouble under another name — the
+   * screensaver. Both screens exist precisely to be looked at without
+   * pressing anything — that is, precisely for the case the system counts as
+   * inactivity.
    *
-   * Держится по режиму, а не по нажатию: жеста этот API не требует, а брать
-   * блокировку на входе и забывать отпустить — значит держать экран включённым
-   * в комнате, где она не нужна. Отпускается возвратом эффекта, то есть на
-   * уходе с экрана и на размонтировании.
+   * Held by mode, not by press: this API needs no gesture, and taking the lock
+   * on entry and forgetting to release it would mean keeping the screen on in
+   * a room where it is not needed. Released by the effect's return, that is,
+   * on leaving the screen and on unmount.
    *
-   * Отказ здесь молча: сказать о нём есть кому только на пульте — там для этого
-   * своя строка в верхней нити, и пульт просит блокировку сам (две блокировки
-   * на один документ независимы, экран не гаснет, пока держат хоть одну). На
-   * проекции читателей двадцать, и предупреждение «экран может погаснуть» на
-   * весь зал — это шум, который никто из зала всё равно не починит.
+   * A refusal is silent here: only the console has someone to tell — it has
+   * its own line in the top strip for that, and the console requests the
+   * lock itself (two locks on one document are independent, the screen stays
+   * on while at least one is held). The projection has twenty readers, and a
+   * "the screen may go dark" warning for the whole hall is noise that nobody
+   * in the hall will fix anyway.
    */
   $effect(() => {
     if (mode === 'room') return
@@ -940,13 +967,13 @@
   })
 
   /**
-   * Уйти из пульта.
+   * Leave the console.
    *
-   * Лекцию это НЕ останавливает и останавливать не должно: пульт — это руки, а
-   * не сама лекция, и человек, заглянувший в тетрадь показать ячейку, не
-   * закончил пару. Но исчезнувший пульт нужно объяснить — иначе тот, кто
-   * промахнулся мимо кнопки, будет искать, куда делась лекция, вместо того
-   * чтобы вернуться одним нажатием.
+   * This does NOT stop the lecture and must not: the console is the hands,
+   * not the lecture itself, and someone who glanced at the notebook to show a
+   * cell has not finished the class. But a vanished console has to be
+   * explained — otherwise whoever missed a button will go looking for where
+   * the lecture went instead of coming back with one press.
    */
   const PULT_NOTICE_MS = 6000
   let pultNoticeUp = $state(false)
@@ -968,20 +995,20 @@
   })
 
   /*
-   * Свайп от левой кромки — это «назад» в истории Safari, и выключить его на
-   * iPad нельзя ничем. У пульта левая кромка — это рука, которой планшет
-   * держат: пролистнуть лекцию назад одним неверным миллиметром и оказаться в
-   * комнате с вкладками и оракулом — вопрос времени.
+   * A swipe from the left edge is "back" in Safari's history, and nothing can
+   * turn it off on an iPad. For the console the left edge is the hand holding
+   * the tablet: paging the lecture back by one wrong millimetre and ending up
+   * in the room with tabs and the Oracle is a matter of time.
    *
-   * Поэтому по `popstate` возвращаемся на пульт — но только в одном случае:
-   * лекцию ведёт ЭТОТ человек с ЭТОГО устройства, и ушли мы в свою же комнату.
-   * За пределы комнаты не держим вовсе. Капкан, из которого не выйти «назад»,
-   * дороже случайного выхода, а настоящий выход есть и он видимый — «В комнату»
-   * в «Ещё».
+   * So on `popstate` we return to the console — but only in one case: THIS
+   * person is running the lecture from THIS device, and we left for our own
+   * room. Beyond the room we do not hold anyone at all. A trap you cannot
+   * leave with "back" costs more than an accidental exit, and a real exit
+   * exists and is visible — "Go to room" under "More".
    *
-   * Слушатель App'а срабатывает раньше нашего и уже поставил новый путь;
-   * `onnavigate` кладёт поверх него запись пульта, так что и следующее «назад»
-   * приводит сюда же.
+   * App's listener fires before ours and has already set the new path;
+   * `onnavigate` puts the console entry on top of it, so the next "back" also
+   * leads here.
    */
   $effect(() => {
     if (!pult || lecture === null || !leading) return
@@ -996,10 +1023,11 @@
   })
 
   /*
-   * Документ появился на общем экране — комната смотрит его: это и есть
-   * «началась лекция». Пропал — все возвращаются в тетрадь, потому что
-   * смотреть больше нечего. Сравнение с прошлым значением, а не просто
-   * чтение: иначе переключение вкладкой тут же отменялось бы этим же эффектом.
+   * A document appeared on the shared screen — the room is watching it: that
+   * is what "the lecture started" means. It disappeared — everyone goes back
+   * to the notebook, because there is nothing left to watch. A comparison
+   * with the previous value, not a plain read: otherwise switching by tab
+   * would be undone right away by this same effect.
    */
   let lastBoard: string | null = null
   $effect(() => {
@@ -1012,28 +1040,30 @@
   })
 
   /*
-   * Место в документе живёт, пока документ вообще открыт, — а не пока на него
-   * смотрят.
+   * The place in a document lives as long as the document is open at all —
+   * not as long as someone is looking at it.
    *
-   * Разница ровно в одном случае, и он самый частый: преподаватель ушёл в
-   * тетрадь показать ячейку. Он никуда не «выходил» из лекции, и комната должна
-   * по-прежнему видеть на вкладке «Ада на стр. 4» — иначе о том, что лекция
-   * уехала дальше, узнаёшь, только переключившись. Читалка этого сделать не
-   * может: она размонтируется вместе с переключением вкладки.
+   * The difference shows in exactly one case, and it is the most common one:
+   * the teacher went to the notebook to show a cell. They did not "leave" the
+   * lecture, and the room should still see "Ada on p. 4" on the tab —
+   * otherwise you learn the lecture has moved on only by switching. The
+   * reader cannot do this: it unmounts together with the tab switch.
    */
   $effect(() => {
     if (!followFile) session.setViewing(null)
   })
 
   /*
-   * Пока идёт лекция, «кто где» по этому документу не считается вовсе.
+   * While a lecture is running, "who is where" in this document is not
+   * computed at all.
    *
-   * Место в документе нужно, чтобы за человеком можно было ПОЙТИ; во время
-   * лекции идти некуда — страница одна на всех и приезжает от ведущего. Метка
-   * «преподаватель на стр. 4» рядом с лекцией была бы вторым источником той же
-   * правды, и он бы врал: у ведущего читалки нет, и последнее, что он успел
-   * сообщить, — это страница, на которой он стоял до начала лекции. Заодно
-   * гаснет счётчик в строке вкладок: во время лекции номер живёт в её полосе.
+   * A place in a document is needed so that one can FOLLOW a person; during a
+   * lecture there is nowhere to go — the page is one for everyone and comes
+   * from the presenter. A "teacher on p. 4" label next to the lecture would
+   * be a second source of the same truth, and it would lie: the presenter has
+   * no reader, and the last thing they managed to report is the page they
+   * were on before the lecture started. The counter in the tab row goes out
+   * too: during a lecture the number lives in its strip.
    */
   $effect(() => {
     if (!lectureHere || soloRead) return
@@ -1043,56 +1073,59 @@
   })
 
   /*
-   * Как показать ячейку, где бы она ни лежала.
+   * How to show a cell, wherever it lies.
    *
-   * Ставится один раз: ссылки на ячейки приходят из панели людей и из треда
-   * оракула, и обе не знают ни про вкладки, ни про тетради.
+   * Set once: links to cells come from the people panel and from the Oracle
+   * thread, and neither knows about tabs or notebooks.
    */
   session.showCell = (cellId: string) => {
     const root = rootOfCell(session.doc, cellId)
     if (!root) return
     const book = books.current.find((entry) => entry.root === root)
     /*
-     * Открыть, а не показать: тетрадей в комнате несколько, и та, в которой
-     * лежит ячейка, у этого человека может быть не открыта вовсе — внёс её
-     * преподаватель, а сам он её не трогал. `show` в этом случае ставил
-     * активной вкладку, которой нет в ряду: центр экрана пустел, ни одна
-     * вкладка не подсвечивалась, и «покажи, где он» оказывалось кнопкой,
-     * которая врёт.
+     * Open, not show: a room has several notebooks, and the one holding the
+     * cell may not be open for this person at all — the teacher added it, and
+     * they themselves never touched it. `show` in this case made active a tab
+     * that is not in the row: the centre of the screen went empty, no tab was
+     * highlighted, and "show where they are" turned out to be a button that
+     * lies.
      */
     if (book) tabs.open(book.path)
   }
 
   /*
-   * Выделение переживало собственные ячейки.
+   * The selection outlived its own cells.
    *
-   * Ячейку можно удалить — свою и чужую, — а выделение до сих пор оставалось
-   * указывать на неё: чип оракула гас, а Shift+Enter отправлял запуск мёртвой
-   * ячейки. Проверяется по всем тетрадям комнаты сразу, потому что выделение
-   * одно на человека, а тетрадей несколько.
+   * A cell can be deleted — one's own or someone else's — and the selection
+   * still kept pointing at it: the Oracle chip went out, and Shift+Enter sent
+   * a run of a dead cell. Checked across all the room's notebooks at once,
+   * because there is one selection per person, and several notebooks.
    */
   const everyCell = watchCellNumbers(session.doc)
 
   /**
-   * Консилиумы, идущие сейчас, — для проектора: пока класс пишет, счёт «N сдали
-   * из M»; как только преподаватель вывел чей-то вариант — этот вариант, с
-   * подписью.
+   * The councils running now — for the projector: while the class is writing,
+   * the count "N of M submitted"; as soon as the teacher puts someone's
+   * variant on screen — that variant, with a caption.
    *
-   * Чужих попыток здесь по-прежнему нет: стопку видит один преподаватель. На
-   * полосу едет РОВНО ОДНА — та, которую он сам решил показать залу (кадр
-   * `council:shown`, он же приходит всей комнате плашкой под ячейкой). Раньше
-   * показанное ложилось в общий текст ячейки и на экране оказывалось
-   * анонимным: зал читал решение и не знал, чьё оно; полоса под ним считала
-   * сдавших, будто показа и не было.
+   * Other people's attempts are still not here: only the teacher sees the
+   * stack. EXACTLY ONE goes onto the strip — the one the teacher decided to
+   * show the hall (the `council:shown` frame, which also reaches the whole
+   * room as a plate under the cell). Before, what was shown went into the
+   * cell's shared text and ended up anonymous on screen: the hall read the
+   * solution without knowing whose it was; the strip under it counted
+   * submissions as if nothing had been shown.
    *
-   * Имя в подписи решает ручка `namesOnProjector` — и решает на СЕРВЕРЕ: при
-   * выключенной имени в кадре нет вовсе, и подписывает «Вариант N»
-   * (shared/protocol.ts · CouncilShown). Здесь его просто рисуют.
+   * The name in the caption is decided by the `namesOnProjector` knob — and
+   * decided on the SERVER: when it is off the frame carries no name at all,
+   * and the caption says "Variant N" (shared/protocol.ts · CouncilShown).
+   * Here it is simply drawn.
    *
-   * Замок читается из документа на каждый пересчёт, а пересчёт заказывают
-   * счётчики (сокет) и нумерация ячеек (документ): консилиум, который закрыли,
-   * сходит с полосы вместе с ближайшим кадром счётчика. Своего наблюдателя на
-   * каждую ячейку проектор не заводит — ему это и не по чину, и не по цене.
+   * The lock is read from the document on every recompute, and recomputes
+   * are ordered by the counters (the socket) and the cell numbering (the
+   * document): a council that was closed leaves the strip with the next
+   * counter frame. The projector does not set up an observer of its own for
+   * each cell — that is above both its rank and its budget.
    */
   const councilsOnAir = $derived.by(() => {
     const out: {
@@ -1129,70 +1162,74 @@
   })
 
   /*
-   * Файл, который правит этот человек, — комнате. Панель файлов рисует по нему
-   * точки «кто здесь», а полоса над редактором — имена.
+   * The file this person is editing — to the room. The files panel draws the
+   * "who is here" dots from it, and the strip above the editor draws names.
    */
   $effect(() => {
-    // И тетрадь тоже: «кто здесь» в дереве отвечает на один вопрос — не правит
-    // ли этот файл кто-то ещё прямо сейчас, — и для тетради он тот же самый.
+    // The notebook too: "who is here" in the tree answers one question — is
+    // someone else editing this file right now — and for a notebook it is the
+    // same question.
     session.setEditing(activeKind === 'text' || activeKind === 'notebook' ? activePath : null)
   })
 
   /*
-   * Комната ответила — вкладки становятся на места.
+   * The room answered — the tabs take their places.
    *
-   * Первый прогон возвращает человека туда, где он был до перезагрузки (или
-   * открывает тетрадь тому, кто здесь впервые), дальше — прополка: вкладка на
-   * файл, которого больше нет, — пустая область без объяснения, а файл мог
-   * убрать преподаватель и мог переписать `os.remove` в ячейке. Решает всё
-   * `Tabs.settle`, здесь только собирается то, из чего оно решает.
+   * The first run returns the person to where they were before the reload
+   * (or opens the notebook for someone here for the first time), after that
+   * it is weeding: a tab for a file that no longer exists is an empty area
+   * without explanation, and the file may have been removed by the teacher or
+   * by an `os.remove` in a cell. `Tabs.settle` decides everything; here we
+   * only gather what it decides from.
    */
   $effect(() => {
     /*
-     * И только когда список правда приезжал.
+     * And only when the list has really arrived.
      *
-     * «Не спрашивали ещё» и «файлов нет» — разные вещи, а на первом кадре они
-     * выглядели одинаково: `files` пуст до ответа сервера, документ ещё не
-     * переигран с диска, и первый же прогон этого эффекта выбрасывал все
-     * запомненные вкладки и записывал в хранилище пустой список. Обещание
-     * «свои вкладки переживают перезагрузку» не выполнялось ни разу: каждый
-     * F5 у каждого участника оставлял пустой центр.
+     * "Not asked yet" and "no files" are different things, but on the first
+     * frame they looked the same: `files` is empty until the server answers,
+     * the document has not been replayed from disk yet, and the very first run
+     * of this effect threw away all remembered tabs and wrote an empty list to
+     * storage. The promise "your own tabs survive a reload" was not kept even
+     * once: every F5 of every participant left an empty centre.
      */
     if (!session.filesArrived || !session.hydrated) return
     const alive = new Set(session.files.filter((file) => !file.dir).map((file) => file.path))
     /*
-     * Тетради — по списку комнаты, а не по списку файлов.
+     * Notebooks — by the room's list, not by the file list.
      *
-     * Файл тетради пишется проекцией через секунду после правки, а сама тетрадь
-     * существует в комнате сразу. Пока список файлов не догнал, вкладка на неё
-     * закрывалась бы у всех — и первым делом у того, кто только что вошёл: его
-     * тетрадь открывается раньше, чем её файл появляется на диске.
+     * A notebook's file is written by the projection a second after an edit,
+     * while the notebook itself exists in the room at once. Until the file list
+     * caught up, the tab for it would be closed for everyone — and first of all
+     * for someone who just joined: their notebook opens before its file
+     * appears on disk.
      */
     for (const book of books.current) alive.add(book.path)
-    // Общий экран читается здесь же: он приезжает с того же сокета, что и
-    // список файлов, и кто из них первый — не угадать. Придёт позже —
-    // подхватит эффект доски ниже; успел раньше — комната смотрит его, и
-    // возвращение в свою тетрадь у неё экран не отнимает.
+    // The shared screen is read right here: it arrives over the same socket as
+    // the file list, and which of them comes first is anyone's guess. If it
+    // comes later, the board effect below picks it up; if it came earlier, the
+    // room is watching it, and going back to one's own notebook does not take
+    // the screen away from it.
     const board = session.board
     const firstBook = books.current[0]?.path ?? null
     /*
-     * И признак обрезки — вместе со списком.
+     * And the truncation flag — together with the list.
      *
-     * «Файла в списке нет» и «файл не влез в список» выглядят отсюда
-     * одинаково, а значат противоположное: обход папок упирается в потолок
-     * (server/src/workspace.ts · MAX_ENTRIES), и студент, распаковавший
-     * датасет на три тысячи файлов, закрывал бы вкладки всей комнате. Прополка
-     * идёт только по полному списку — решает это `Tabs`, здесь только
-     * передаётся то, из чего оно решает.
+     * "The file is not in the list" and "the file did not fit in the list"
+     * look the same from here but mean opposite things: the folder walk hits
+     * the cap (server/src/workspace.ts · MAX_ENTRIES), and a student who
+     * unpacked a three-thousand-file dataset would close tabs for the whole
+     * room. Weeding happens only against the full list — `Tabs` decides that,
+     * here we only pass along what it decides from.
      */
     const truncated = session.filesTruncated
     untrack(() => tabs.settle({ alive, firstBook, board, truncated }))
   })
 
   /*
-   * Прогрев по факту, а не на каждый вход в комнату: библиотека и воркер — это
-   * полтора мегабайта, и платить за них должен тот, у кого правда есть что
-   * открывать.
+   * Warming up on demand, not on every entry into a room: the library and the
+   * worker are a megabyte and a half, and whoever really has something to
+   * open should be the one paying for them.
    */
   $effect(() => {
     if (session.files.some((file) => !file.dir && kindOf(file.path) === 'pdf')) {
@@ -1200,16 +1237,16 @@
     }
   })
 
-  /* --------------------------------------------------- документы файлов */
+  /* ----------------------------------------------------- file documents */
 
   /**
-   * Документы открытых текстовых файлов.
+   * The documents of open text files.
    *
-   * Держатся для ВСЕХ открытых вкладок, а не только для текущей: соединение
-   * поднимается за сотню миллисекунд, но вместе с ним пересобирается история
-   * отмен, и переключение между двумя файлами туда-обратно стирало бы Ctrl+Z в
-   * обоих. Пять открытых файлов — пять сокетов; семинар, где не открыли ни
-   * одного, держит ровно те два, что держал всегда.
+   * Held for ALL open tabs, not only the current one: a connection comes up
+   * in a hundred milliseconds, but the undo history is rebuilt along with it,
+   * and switching back and forth between two files would wipe Ctrl+Z in
+   * both. Five open files — five sockets; a seminar where nobody opened any
+   * holds exactly the two it always held.
    */
   let docs = $state<Record<string, FileDoc>>({})
 
@@ -1239,32 +1276,34 @@
   const activeDoc = $derived(activePath && activeKind === 'text' ? docs[activePath] : undefined)
 
   /*
-   * Файл, который сервер закрыл с 4404, исчез с диска между списком и
-   * открытием — гонка узкая и вполне обычная: преподаватель убрал файл ровно в
-   * ту секунду, когда студент по нему нажал.
+   * A file the server closed with 4404 vanished from disk between the list
+   * and the opening — a narrow race and a perfectly ordinary one: the teacher
+   * removed the file in the very second a student clicked on it.
    */
   $effect(() => {
     const doc = activeDoc
     if (doc?.missing && activePath) {
-      // С теми же приколотыми вкладками, что нарисованы: соседа слева считают
-      // по ряду, и ряд без лекции сдвинул бы человека не туда.
+      // With the same pinned tabs as are drawn: the left neighbour is counted
+      // by the row, and a row without the lecture would shift the person to
+      // the wrong place.
       tabs.close(activePath, session.board, session.lecture?.file ?? null)
     }
   })
 
   /**
-   * Закрыть вкладку.
+   * Close a tab.
    *
-   * Свою закрывает кто угодно; документ, стоящий на общем экране, убирает тот,
-   * кому это разрешено, — и убирает у всех сразу. Если права нет, а документ
-   * общий, уйти от него в тетрадь всё равно можно: смотреть никого не
-   * заставляют, а вкладка остаётся стоять.
+   * Anyone closes their own; a document standing on the shared screen is
+   * removed by whoever is allowed to — and removed for everyone at once. If
+   * there is no permission and the document is shared, one can still move
+   * away from it to the notebook: nobody is forced to watch, and the tab
+   * stays where it is.
    *
-   * Пока идёт лекция, крестик не убирает документ ни у кого: лекцию
-   * заканчивают явным «Закончить», и сервер `board:close` в это время всё
-   * равно отвергает словами. Крестик на её вкладке — это «уйти отсюда», и
-   * сорок минут разметки на проекторе не должны зависеть от промаха мимо
-   * соседней вкладки.
+   * While a lecture is running, the cross removes the document for nobody:
+   * a lecture is ended with an explicit "End", and the server rejects
+   * `board:close` in words at that time anyway. The cross on its tab means
+   * "leave here", and forty minutes of annotation on the projector must not
+   * depend on a click that missed the neighbouring tab.
    */
   function closeTab(path: string): void {
     if (path === session.board && may.board && lecture === null) {
@@ -1276,21 +1315,22 @@
   }
 
   /**
-   * Поставить документ на общий экран комнаты.
+   * Put a document on the room's shared screen.
    *
-   * Отдельное действие, а не побочный эффект открытия файла: право `board` —
-   * про общий экран, а не про чтение («смотреть и листать у себя может любой
-   * всегда», см. `rule-rows.ts` и обработчик на сервере).
+   * A separate action, not a side effect of opening a file: the `board`
+   * permission is about the shared screen, not about reading ("anyone can
+   * always look and page through on their own", see `rule-rows.ts` and the
+   * handler on the server).
    *
-   * Полоса с кнопкой держится до прихода общего документа, а не гаснет по
-   * нажатию: ответ идёт круг, и отказать сервер тоже умеет («такого файла в
-   * комнате нет»). Кнопка, исчезнувшая раньше ответа, оставила бы человека без
-   * второй попытки.
+   * The strip with the button stays until the shared document arrives rather
+   * than going out on the press: the answer takes a round trip, and the
+   * server can refuse too ("no such file in the room"). A button that
+   * vanished before the answer would leave the person without a second try.
    *
-   * Активной вкладка становится только та, что уже нарисована в ряду. Файл,
-   * которого у себя ещё нет, приедет вкладкой вместе с ответом — тем же
-   * кадром, что и у всех; поставить его активным раньше значило бы показать
-   * пустой центр на круг сети, а при отказе — навсегда.
+   * Only a tab already drawn in the row becomes active. A file one does not
+   * have yet arrives as a tab together with the answer — in the same frame as
+   * for everyone; making it active earlier would mean showing an empty centre
+   * for a network round trip, and forever on a refusal.
    */
   function showToRoom(path: string): void {
     session.send({ t: 'board:open', name: path })
@@ -1298,23 +1338,26 @@
   }
 
   /**
-   * Открыть файл из панели.
+   * Open a file from the panel.
    *
-   * PDF у преподавателя уезжает на общий экран комнаты — это лекция, её смотрят
-   * вместе. Всё остальное открывается себе: у скрипта нет «общего экрана», его
-   * правят и запускают, а кто рядом — видно по точкам в дереве.
+   * For the teacher a PDF goes to the room's shared screen — it is a lecture,
+   * people watch it together. Everything else opens for oneself: a script has
+   * no "shared screen", it is edited and run, and who is nearby shows as dots
+   * in the tree.
    *
-   * У преподавателя — и только у него. В комнате, где правило `board` отдано
-   * всем (семинар, где студенты по очереди показывают своё), клик любого
-   * студента по методичке забирал экран у тридцати человек: вкладка прыгала у
-   * всех, а прочитать что-то у себя было нельзя вовсе — то есть право не
-   * добавляло возможность, а отнимало. Студент открывает себе, а показать
-   * комнате может кнопкой над читалкой.
+   * For the teacher — and only for them. In a room where the `board` rule is
+   * given to everyone (a seminar where students take turns showing their
+   * work), any student's click on the handout took the screen away from
+   * thirty people: the tab jumped for everyone, and reading anything on one's
+   * own was impossible — so the permission did not add an ability but took
+   * one away. A student opens for themselves, and can show it to the room
+   * with the button above the reader.
    *
-   * И не во время лекции: пока она идёт, общий экран занят ею, сервер смену
-   * документа отвергает словами («Идёт лекция по «…» — сначала закончите её»),
-   * и щелчок по файлу в панели превращался бы в отказ на ровном месте. Открыть
-   * себе можно всегда — этим же щелчком.
+   * And not during a lecture: while it runs, the shared screen is taken by
+   * it, the server rejects a document change in words ("A lecture on '…' is
+   * running — finish it first"), and a click on a file in the panel would
+   * turn into a refusal out of nowhere. Opening for oneself is always
+   * possible — with this same click.
    */
   function openFile(path: string): void {
     if (kindOf(path) === 'pdf' && may.board && isHost && lecture === null) {
@@ -1322,17 +1365,19 @@
       return
     }
     /*
-     * .ipynb, который ещё не тетрадь, надо сперва внести в комнату: ячейки
-     * переезжают из файла в документ, и это делает сервер один раз, а не
-     * двадцать браузеров наперегонки. Вкладка открывается сразу и до прихода
-     * тетради говорит «открываю» — это честнее, чем не реагировать на нажатие.
+     * An .ipynb that is not yet a notebook has to be brought into the room
+     * first: the cells move from the file into the document, and the server
+     * does that once, not twenty browsers racing each other. The tab opens at
+     * once and says "opening" until the notebook arrives — more honest than
+     * not reacting to the press.
      */
     if (kindOf(path) === 'notebook' && !books.current.some((book) => book.path === path)) {
       /*
-       * И только если внести её вообще можно: внесение — это ДОБАВЛЕНИЕ
-       * тетради в комнату, у него своё правило (shared/rules.ts · ownBooks), и
-       * сервер на это же ответит отказом. Без проверки вкладка открывалась бы
-       * навсегда с «открываю»: тетради не появится, и закрывать нечего.
+       * And only if it can be brought in at all: bringing in means ADDING a
+       * notebook to the room, which has its own rule (shared/rules.ts ·
+       * ownBooks), and the server would answer that with a refusal too.
+       * Without the check the tab would stay open forever with "opening": the
+       * notebook would never appear, and there would be nothing to close.
        */
       if (!may.ownBook) {
         session.showError(may.ownBookWhy)
@@ -1345,8 +1390,8 @@
 
   function runFile(path: string): void {
     session.send({ t: 'file:run', path })
-    // Вывод идёт в терминал, и открыть его — часть запуска: иначе нажатие
-    // выглядит как ничего не сделавшее.
+    // The output goes to the terminal, and opening it is part of the run:
+    // otherwise the press looks as if it did nothing.
     terminalOpen = true
     drawerTab = 'terminal'
   }
@@ -1374,11 +1419,12 @@
   }
 
   /**
-   * Свернуть и развернуть верхнюю полосу шапки.
+   * Fold and unfold the header's top strip.
    *
-   * Без ветки «а на узком экране иначе», как у панелей: шапка нигде не
-   * становится выдвижным ящиком — она просто есть или её нет, и на телефоне
-   * это нужнее всего, потому что 110 px из 640 там стоят дороже.
+   * Without an "on a narrow screen it is different" branch like the panels
+   * have: the header never becomes a sliding drawer — it is simply there or
+   * not, and on a phone that matters most, because 110 px out of 640 cost
+   * more there.
    */
   function toggleHead(): void {
     headOpen = !headOpen
@@ -1417,19 +1463,19 @@
   $effect(() => session.setTerminalOpen(terminalOpen))
 
   /*
-   * «Покажи, где он» из списка людей.
+   * "Show where they are" from the people list.
    *
-   * Строка про человека давно знала, где он — «правит ячейку 04», «в
-   * терминале», — но никуда не вела: увидеть было можно, дойти нельзя.
-   * Обрабатывается здесь, потому что две трети мест это панели, а панелями
-   * распоряжается этот экран и никто больше.
+   * The line about a person had long known where they were — "editing cell
+   * 04", "in the terminal" — but led nowhere: one could see, but not get
+   * there. Handled here because two thirds of the places are panels, and
+   * this screen and nobody else is in charge of the panels.
    */
   $effect(() => {
     const onReveal = (event: Event) => {
       const target = (event as CustomEvent<RevealTarget>).detail
       if (!target) return
-      // На узком экране левая панель лежит поверх ноутбука: не убрать её
-      // значит привести человека к ячейке, которую он не увидит.
+      // On a narrow screen the left panel lies over the notebook: not removing
+      // it would mean leading the person to a cell they will not see.
       if (leftIsDrawer) leftDrawer = false
       if (target.where === 'cell') {
         revealCell(session, target.cellId)
@@ -1437,29 +1483,31 @@
       }
       if (target.where === 'file') {
         /*
-         * Вкладкой, а не `openFile`.
+         * As a tab, not through `openFile`.
          *
-         * `openFile` — жест из панели файлов, и он про КОМНАТУ: PDF у
-         * преподавателя уезжает оттуда на общий экран, а .ipynb сперва вносится
-         * в комнату кадром `book:open`. Переход к определению — чтение себе: он
-         * не должен ни отнимать у зала экран, ни заводить в комнате тетрадь
-         * из-за того, что кто-то щёлкнул по имени с зажатым Cmd.
+         * `openFile` is a gesture from the files panel, and it is about the
+         * ROOM: for the teacher a PDF goes from there to the shared screen, and
+         * an .ipynb is first brought into the room with a `book:open` frame.
+         * Going to a definition is reading for oneself: it must neither take
+         * the screen away from the hall nor create a notebook in the room
+         * because someone clicked a name with Cmd held down.
          *
-         * Определение бывает только в .py, то есть ветка с PDF не сработала бы
-         * и так, — но правило «переход ничего не показывает комнате» должно
-         * держаться на решении здесь, а не на том, что сервер сегодня отвечает
-         * именно про .py-файлы.
+         * A definition only ever lives in a .py, so the PDF branch would not
+         * fire anyway — but the rule "a jump shows nothing to the room" must
+         * rest on a decision here, not on the server happening to answer only
+         * about .py files today.
          *
-         * Уже открытую вкладку `Tabs.open` просто делает текущей: второй такой
-         * же в ряду не появляется, и место в файле при этом не теряется — его
-         * помнит lib/goto.svelte.ts, и читает его сам редактор файла.
+         * `Tabs.open` just makes an already open tab current: no second copy
+         * appears in the row, and the place in the file is not lost — it is
+         * remembered by lib/goto.svelte.ts and read by the file editor itself.
          *
-         * Файла может уже не быть — его убрали между ответом сервера и щелчком.
-         * Отдельной проверки здесь нет намеренно: «есть ли такой файл» этот
-         * экран решает один раз и в одном месте (`tabs.settle` выше и `doc.missing`
-         * рядом с ним), а вторая, более слабая копия того же суждения врала бы
-         * на обрезанном списке файлов (`filesTruncated`) — то есть закрывала бы
-         * переход тому, у кого в папке три тысячи файлов.
+         * The file may be gone already — removed between the server's answer
+         * and the click. There is deliberately no separate check here: "does
+         * such a file exist" is decided by this screen once and in one place
+         * (`tabs.settle` above and `doc.missing` next to it), and a second,
+         * weaker copy of the same judgement would lie on a truncated file list
+         * (`filesTruncated`) — that is, it would close the jump for someone
+         * with three thousand files in a folder.
          */
         tabs.open(target.path)
         return
@@ -1480,15 +1528,17 @@
   })
 
   /*
-   * «Спросить оракула» из ячейки, когда панели оракула на экране нет.
+   * "Ask the Oracle" from a cell when the Oracle panel is not on screen.
    *
-   * Единственный слушатель этого события живёт внутри AiPanel, а панель есть
-   * только при открытой правой колонке — то есть на экране шире 1100px или в
-   * выдвижном ящике. Под проектором с зумом кнопка «Fix with AI» под
-   * трейсбеком нажималась в пустоту: ни спиннера, ни ошибки, ни вопроса.
+   * The only listener for this event lives inside AiPanel, and the panel
+   * exists only when the right column is open — that is, on a screen wider
+   * than 1100px or in the sliding drawer. Under a zoomed projector the "Fix
+   * with AI" button under a traceback was pressed into the void: no spinner,
+   * no error, no question.
    *
-   * Этот слушатель открывает панель и пересылает событие ей — уже
-   * смонтированной. Он стоит перед ней в очереди только когда её нет.
+   * This listener opens the panel and forwards the event to it — once it is
+   * mounted. It stands ahead of it in the queue only when the panel is not
+   * there.
    */
   $effect(() => {
     const onAsk = (event: Event) => {
@@ -1499,8 +1549,8 @@
         rightOpen = true
         persistPanels()
       }
-      // Следующим кадром: панель должна смонтироваться и повесить свой
-      // слушатель, иначе вопрос уйдёт снова в пустоту.
+      // On the next frame: the panel has to mount and attach its listener,
+      // otherwise the question goes into the void again.
       requestAnimationFrame(() =>
         window.dispatchEvent(new CustomEvent('colloq:ask-ai', { detail })),
       )
@@ -1515,12 +1565,13 @@
     // started it yet; reopening my own drawer must never restart a live shell.
     const status = session.terminalStatus
     /*
-     * Ящик открывается всегда — лента общая, и читать её после пары как раз и
-     * приходят, — а вот будить оболочку после конца занятия участнику нельзя.
-     * Правилом это не выражается, поэтому та же `actsAfterClass`, по которой
-     * решает сервер: он такую просьбу не исполнит и отказа не пришлёт. Без
-     * этой проверки открытый почитать ящик поднимал бы уснувший контейнер —
-     * молча и от имени того, кто ни о чём не просил.
+     * The drawer always opens — the feed is shared, and people come to read
+     * it after class precisely — but a participant must not wake the shell
+     * after the class is over. A rule cannot express that, so it is the same
+     * `actsAfterClass` the server decides by: it will not fulfil such a
+     * request and will not send a refusal. Without this check a drawer opened
+     * for reading would wake a dormant container — silently and on behalf of
+     * someone who asked for nothing.
      */
     if (
       terminalOpen &&
@@ -1531,15 +1582,15 @@
     }
   }
 
-  /* ------------------------------------------------- палитра и клавиатура */
+  /* ------------------------------------------------- palette and keyboard */
 
   /**
-   * Строка оракула — под курсором, а не под мышью.
+   * The Oracle line — under the cursor, not under the mouse.
    *
-   * Панель может быть закрыта или лежать ящиком; открыть её мало — спрашивать
-   * всё равно некуда, пока фокус не в поле. Поле помечено атрибутом в AiPanel
-   * (см. handoff): искать его по `aside textarea` значило бы завязаться на
-   * вёрстку чужой панели.
+   * The panel may be closed or lying as a drawer; opening it is not enough —
+   * there is still nowhere to ask until the focus is in the field. The field
+   * is marked with an attribute in AiPanel (see the handoff): finding it by
+   * `aside textarea` would tie us to the layout of someone else's panel.
    */
   function focusOracle(): void {
     if (rightIsDrawer) rightDrawer = true
@@ -1547,28 +1598,29 @@
       rightOpen = true
       persistPanels()
     }
-    // Следующим кадром: панель ещё монтируется.
+    // On the next frame: the panel is still mounting.
     requestAnimationFrame(() => {
       const line =
         document.querySelector<HTMLTextAreaElement>('[data-oracle-composer]') ??
-        // Пока метки на самом поле нет — по колонке, которую этот экран и
-        // рисует: строка ввода в панели оракула ровно одна.
+        // Until the field itself carries the marker — by the column this
+        // screen draws: there is exactly one input line in the Oracle panel.
         document.querySelector<HTMLTextAreaElement>('[data-oracle-panel] textarea')
       line?.focus()
     })
   }
 
   /**
-   * Палитра команд — по требованию и снимком.
+   * The command palette — on demand and as a snapshot.
    *
-   * Чанк отдельный по той же причине, что и у пульта: список нужен тому, кто
-   * нажал ⌘K, а не каждому, кто вошёл в комнату. Список собирается в момент
-   * открытия и дальше не живёт: пока человек читает его, чужой Run не должен
-   * переставлять строки под курсором выбора.
+   * A separate chunk for the same reason as the console: the list is needed
+   * by whoever pressed ⌘K, not by everyone who entered the room. The list is
+   * built at the moment of opening and does not live on: while a person is
+   * reading it, someone else's Run must not reshuffle the rows under the
+   * selection cursor.
    */
   let paletteOpen = $state(false)
-  // raw: список заменяется целиком и никогда не правится по месту, а глубокий
-  // $state завернул бы в прокси каждую из сотен строк ради этого.
+  // raw: the list is replaced wholesale and never edited in place, while a
+  // deep $state would wrap each of hundreds of rows in a proxy for that.
   let paletteList = $state.raw<PaletteItem[]>([])
   let paletteChunk: Promise<
     typeof import('@/components/ui/CommandPalette.svelte').default
@@ -1576,12 +1628,13 @@
   const paletteView = () =>
     (paletteChunk ??= import('@/components/ui/CommandPalette.svelte').then((m) => m.default))
 
-  /** Первая непустая строка ячейки — то, по чему её узнают в списке. */
+  /** The cell's first non-empty line — what it is recognised by in the list. */
   function cellLine(cellId: string): string {
     const found = findCell(session.doc, cellId)
     if (!found) return ''
-    // `cell.get`, а не `cellSource`: тот заводит пустой Y.Text, если его нет, —
-    // то есть правит общий документ ради подписи в списке.
+    // `cell.get`, not `cellSource`: the latter creates an empty Y.Text if
+    // there is none — that is, edits the shared document for a caption in a
+    // list.
     const source = found.cell.get('source') as { toString(): string } | undefined
     const text = source ? source.toString() : ''
     for (const line of text.split('\n')) {
@@ -1598,17 +1651,17 @@
     const live = session.connected
     const book = activeKind === 'notebook' && activePath ? activePath : (books.current[0]?.path ?? null)
     /*
-     * Права — по ТОЙ тетради, в которую уедут «Запустить всё», «Очистить
-     * выводы» и «Форматировать»: у неё может быть свой доступ, и комнатный
-     * ответ здесь либо прятал бы действия в собственной тетради студента, либо
-     * предлагал бы их в чужой личной — чтобы сервер отказал.
+     * Permissions — by THE notebook that "Run all", "Clear outputs" and
+     * "Format" will go to: it may have its own access, and the room's answer
+     * here would either hide actions in the student's own notebook or offer
+     * them in someone else's personal one — only for the server to refuse.
      */
     const here = permitsIn(session.session.rules, session.me.role, session.finished, {
       root: books.current.find((entry) => entry.path === book)?.root ?? null,
       participantId: session.me.id,
     })
 
-    /* Действия — первыми: их ищут словом, а ячейки номером. */
+    /* Actions first: they are searched by word, cells by number. */
     const act = (
       id: string,
       label: string,
@@ -1631,8 +1684,8 @@
       'interrupt',
       tr('room.ui.964'),
       live && may.run,
-      // Лист называется, как и у соседних строк: очередей столько же, сколько
-      // тетрадей, и безымянное нажатие разобрало бы чужую.
+      // The sheet is named, as in the neighbouring rows: there are as many
+      // queues as notebooks, and a nameless press would hit someone else's.
       () => session.send({ t: 'interrupt', book: book ?? undefined }),
       undefined,
       "interrupt stop прервать",
@@ -1654,14 +1707,14 @@
       'format black',
     )
     /*
-     * Перезапуска ядра здесь нет намеренно. В тулбаре он сделан УДЕРЖАНИЕМ, и
-     * это решение: он теряет все переменные комнаты и не откатывается. Строка
-     * в списке, срабатывающая по Enter с первого нажатия, обошла бы ровно тот
-     * второй шаг, ради которого удержание и написано.
+     * Restarting the kernel is deliberately absent here. In the toolbar it is
+     * done by HOLDING, and that is a decision: it loses all of the room's
+     * variables and cannot be undone. A list row firing on Enter at the first
+     * press would bypass exactly the second step the hold was written for.
      */
     act('panel-files', tr('room.ui.971'), true, toggleLeft, `${modKey}B`, 'files people')
-    // Шапка складывается и с клавиатуры: горячей клавиши у неё нет нарочно —
-    // это настройка на пару, а не то, что дёргают посреди работы.
+    // The header folds from the keyboard too: it deliberately has no hotkey —
+    // it is a per-class setting, not something one yanks mid-work.
     act(
       'head',
       headOpen ? tr('room.head.fold') : tr('room.head.unfold'),
@@ -1685,7 +1738,7 @@
       "class занятие",
     )
 
-    /* Вкладки, которые уже открыты, — и файлы, которые ещё нет. */
+    /* Tabs that are already open — and files that are not yet. */
     row.forEach((key, index) => {
       if (typeof key !== 'string') return
       out.push({
@@ -1708,8 +1761,8 @@
       })
     }
 
-    /* Ячейки — всех тетрадей комнаты сразу: номер у каждой свой, а «покажи,
-       где она» умеет открыть ту тетрадь, в которой она лежит. */
+    /* Cells — of all the room's notebooks at once: each has its own number,
+       and "show where it is" can open the notebook it lives in. */
     for (const [cellId, number] of everyCell.current) {
       const line = cellLine(cellId)
       out.push({
@@ -1732,18 +1785,19 @@
 
   function onKeydown(event: KeyboardEvent): void {
     /*
-     * Клавиатура комнаты — только в комнате.
+     * The room's keyboard — only in the room.
      *
-     * `<svelte:window>` стоит вне веток режима, и до сих пор эти клавиши
-     * доставали до состояния, которого на проекции и на пульте не нарисовано:
-     * Ctrl+` ставил `terminalOpen = true` под невидимым ящиком, обнулял
-     * непрочитанное этой вкладки и при спящем контейнере посылал `term:open` —
-     * то есть будил оболочку нажатием на ноутбуке у проектора. У пульта своя
-     * клавиатура (ConsoleView), у проекции нет никакой, кроме Escape, и он
-     * живёт в своём эффекте выше.
+     * `<svelte:window>` sits outside the mode branches, and until now these
+     * keys reached state that is not drawn on the projection or the console:
+     * Ctrl+` set `terminalOpen = true` under an invisible drawer, reset this
+     * tab's unread count and, with a sleeping container, sent `term:open` —
+     * that is, woke the shell with a key press on the laptop at the
+     * projector. The console has its own keyboard (ConsoleView), the
+     * projection has none except Escape, and that lives in its own effect
+     * above.
      */
     if (mode !== 'room') return
-    // Пока палитра открыта, клавиши разбирает она.
+    // While the palette is open, it handles the keys.
     if (paletteOpen) return
 
     const mod = (event.metaKey || event.ctrlKey) && !event.altKey
@@ -1755,9 +1809,9 @@
     }
     if (mod && !event.shiftKey) {
       /*
-       * Четыре сочетания и один список. Всё, что они делают, есть и в палитре
-       * подписью с этим же сочетанием: клавиша, о которой негде прочитать, —
-       * это клавиша, которой пользуется один человек, её написавший.
+       * Four combinations and one list. Everything they do is also in the
+       * palette, captioned with the same combination: a key nobody can read
+       * about anywhere is a key used by one person — whoever wrote it.
        */
       if (event.code === 'KeyK') {
         event.preventDefault()
@@ -1781,9 +1835,9 @@
       }
     }
     /*
-     * Ctrl+1…9 — вкладка по счёту, как в браузере и в редакторах. Ctrl, а не
-     * ⌘: ⌘1…9 на макбуке переключает вкладки САМОГО браузера, и отнять их у
-     * него — значит сломать то, чем человек пользуется чаще.
+     * Ctrl+1…9 — a tab by position, as in the browser and in editors. Ctrl,
+     * not ⌘: ⌘1…9 on a MacBook switches the tabs of the BROWSER ITSELF, and
+     * taking them away from it would break something people use more often.
      */
     if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
       const digit = /^Digit([1-9])$/.exec(event.code)
@@ -1798,11 +1852,11 @@
     }
     if (event.key !== 'Escape') return
     /*
-     * Escape закрывает то, что открыто последним, — и пульт правил тоже.
+     * Escape closes what was opened last — the rules panel too.
      *
-     * У него был свой `onkeydown` на фоновом `<div role="presentation">` без
-     * tabindex: такой элемент не получает клавиш никогда, то есть Escape там
-     * был написан и не работал ни разу.
+     * It had its own `onkeydown` on the background `<div role="presentation">`
+     * without a tabindex: such an element never receives keys, that is, Escape
+     * there was written and never worked once.
      */
     if (rulesOpen) {
       rulesOpen = false
@@ -1835,8 +1889,9 @@
     try {
       await copyText(`${location.origin}/s/${info.id}`)
     } catch {
-      // Ссылка — это весь смысл нажатия, и молча ничего не делать здесь хуже
-      // всего: человек уверен, что скопировал, и вставляет в чат прошлое.
+      // The link is the whole point of the press, and silently doing nothing
+      // is the worst thing here: the person is sure they copied it and pastes
+      // the previous one into the chat.
       session.showError(tr('room.ui.991', { p0: location.origin, p1: info.id }))
       return
     }
@@ -1855,12 +1910,12 @@
   // Tailwind bucket, so a caller that inverts to the white ground has to be the
   // only one naming an ink.
   /**
-   * Коробка одного уведомления в стеке внизу.
+   * The box of one notification in the stack at the bottom.
    *
-   * Одна на все пять строк: они стоят в одной колонке друг под другом, и
-   * коробка, отличающаяся у соседей рамкой или грунтом, читалась бы как две
-   * разные вещи. Отступы у каждой свои — у одних внутри кнопка, у других
-   * крестик, у третьих ничего.
+   * One for all five lines: they stand in one column one under another, and a
+   * box differing from its neighbours in border or ground would read as two
+   * different things. The paddings are their own — some have a button
+   * inside, some a cross, some nothing.
    */
   const TOAST =
     'pointer-events-auto flex max-w-lg gap-2 border border-line bg-raised shadow-pop'
@@ -1892,13 +1947,13 @@
    * motion for the same reason it keeps every other press: 3% that never
    * travels is feedback, not decoration.
    *
-   * Три процента и есть три: здесь стояло 0.95, а на кнопке 28 px это читается
-   * как вздрагивание (index.css: «0.95 reads as a flinch at this size»), и
-   * продукт держит ровно один масштаб нажатия. Списки позиционные, как у `.btn`
-   * там же: цвет отвечает УКАЗАТЕЛЮ и берёт `ease` со скоростью щелчка,
-   * transform отвечает НАЖАТИЮ и берёт --ease-out со своей, 120 мс. Одной
-   * длительностью на три свойства transform ехал за 100 мс — не ту ступень
-   * лестницы.
+   * Three per cent means three: there used to be 0.95 here, and on a 28 px
+   * button that reads as a flinch (index.css: "0.95 reads as a flinch at this
+   * size"), and the product keeps exactly one press scale. The lists are
+   * positional, as for `.btn` in the same place: colour answers the POINTER
+   * and takes `ease` at click speed, transform answers the PRESS and takes
+   * --ease-out at its own, 120 ms. With one duration for three properties the
+   * transform ran at 100 ms — the wrong rung of the ladder.
    */
   const bandIcon = (on: boolean) =>
     cn(
@@ -1917,18 +1972,18 @@
 
 {#if projection}
   <!--
-    Экран на балке. Комната под ним не рисуется вовсе — ни вкладок, ни панелей,
-    ни тетради: это единственное место в продукте, которое смотрят двадцать
-    человек сразу, и всё, что на нём есть лишнего, они и увидят. Соединение при
-    этом то же самое: SessionState живёт в этом же компоненте и переход сюда его
-    не трогает.
+    The screen on the projector. The room is not drawn under it at all — no
+    tabs, no panels, no notebook: it is the only place in the product that
+    twenty people look at at once, and anything superfluous on it is what
+    they will see. The connection is the same, though: SessionState lives in
+    this same component, and switching here does not touch it.
   -->
   <!--
-    Отступы под вырезом — на контейнере, а не в каждой строке: с
-    `viewport-fit=cover` (см. index.html) страница занимает физический экран
-    целиком, и на планшете, поставленном вместо проектора, «Экран готов»
-    оказалось бы под чёлкой. На ноутбуке у проектора все четыре нуля, и правило
-    не стоит ничего.
+    The insets for the notch are on the container, not in every row: with
+    `viewport-fit=cover` (see index.html) the page takes the whole physical
+    screen, and on a tablet standing in for a projector "Screen ready" would
+    end up under the notch. On the laptop at the projector all four are
+    zeros, and the rule costs nothing.
   -->
   <div
     class="fixed inset-0 z-[90] flex flex-col bg-black
@@ -1936,14 +1991,16 @@
            pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]"
   >
     <!--
-      Связь на проекции — своей строкой, потому что чужие сюда не доходят.
+      Connection status on the projection — in a line of its own, because the
+      others do not reach here.
 
-      Полоса «Reconnecting» живёт в шапке комнаты, а комнаты здесь нет вовсе;
-      LectureView про соединение не знает. Балка при этом — самая опасная из
-      трёх поверхностей: последняя страница висит, преподаватель листает на
-      планшете, зал видит неподвижный слайд и ни слова о том, почему он
-      неподвижен. Угол, а не плашка: читает это один человек у проектора,
-      остальным двадцати она была бы просто мусором на экране.
+      The "Reconnecting" strip lives in the room header, and there is no room
+      here at all; LectureView knows nothing about the connection. Yet the
+      projector is the most dangerous of the three surfaces: the last page
+      hangs, the teacher pages on the tablet, the hall sees a frozen slide and
+      not a word about why it is frozen. A corner, not a plate: one person at
+      the projector reads it, and for the other twenty a plate would just be
+      litter on the screen.
     -->
     {#if !session.connected && !session.stuck && !session.gone}
       <div
@@ -1959,10 +2016,10 @@
       <LectureView {lecture} role="projection" onleave={fromProjection} />
     {:else}
       <!--
-        Лекции ещё нет. Это обычное дело: проектор включают до пары, а ссылку
-        открывают заранее — экран должен сказать, что он готов и чего ждёт, а не
-        показывать чёрный прямоугольник, в котором нельзя отличить «жду» от
-        «сломалось».
+        No lecture yet. That is normal: the projector is switched on before
+        class and the link opened in advance — the screen must say that it is
+        ready and what it is waiting for, not show a black rectangle where
+        "waiting" cannot be told from "broken".
       -->
       <div class="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
         <span class="text-2xs font-bold uppercase tracking-institution text-white/40"> {tr('room.ui.891')} </span>
@@ -1985,18 +2042,19 @@
       </div>
     {/if}
     <!--
-      Консилиум на проекторе — счётчик, пока пишут, и подписанный вариант,
-      когда его вывели.
+      A council on the projector — a counter while people are writing, and a
+      captioned variant once it has been put on screen.
 
-      Класс работает у себя, и зал должен видеть, что работа идёт: сколько
-      сдали из скольких. Чужих попыток здесь нет — кроме одной, которую
-      преподаватель сам решил показать: тогда счётчик уступает место ей, потому
-      что смотрят в эту минуту на неё. И подписана она так же, как плашка в
-      тетради у каждого: то же имя (или «Вариант N»), то же время, тот же
-      вывод — один показ, одна подпись на весь зал.
+      The class works on its own machines, and the hall has to see that work
+      is going on: how many have submitted out of how many. Other people's
+      attempts are not here — except one, the one the teacher decided to show:
+      then the counter gives way to it, because that is what everyone is
+      looking at in that minute. And it is captioned the same way as the plate
+      in everyone's notebook: the same name (or "Variant N"), the same time,
+      the same output — one showing, one caption for the whole hall.
 
-      Поверх лекции, а не в потоке: страница документа не должна ёрзать от
-      того, что сдал ещё один человек.
+      Over the lecture, not in the flow: the document's page must not fidget
+      because one more person submitted.
     -->
     {#if councilsOnAir.length > 0}
       <div
@@ -2009,9 +2067,10 @@
               <span class="text-2xs font-bold uppercase tracking-institution text-white/50"> {tr('room.ui.34')}{council.ordinal ? tr('room.ui.894', { p0: council.ordinal }) : ''}
               </span>
               {#if council.shown}
-                <!-- Справа — состояние показанного: «на экране», и отметка
-                     преподавателя рядом, если она уже стоит. Счёт сдавших
-                     уходит: в эту минуту зал смотрит не на него. -->
+                <!-- On the right — the state of what is shown: "on screen", and
+                     the teacher's mark next to it if it is already set. The
+                     count of submissions goes away: at this minute the hall is
+                     not looking at it. -->
                 <span
                   class={cn(
                     'ml-auto text-2xs font-bold uppercase tracking-institution',
@@ -2036,8 +2095,9 @@
                   <Avatar name={shown.name} color={shown.color ?? '#888888'} avatar={shown.avatar} size="sm" />
                   <span class="text-prompt-sm font-bold text-white">{shown.name}</span>
                 {:else}
-                  <!-- Имена на проекторе выключены: номер варианта вместо имени
-                       и пустой кружок вместо лица — тот же кадр, что в тетради. -->
+                  <!-- Names on the projector are off: the variant number
+                       instead of a name and an empty circle instead of a face
+                       — the same frame as in the notebook. -->
                   <span class="h-6 w-6 shrink-0 rounded-full bg-white/15" aria-hidden="true"></span>
                   <span class="text-prompt-sm font-bold text-white">
                     {tr('room.ui.1255', { p0: shown.variant })}
@@ -2051,9 +2111,10 @@
                 </span>
               </div>
               <!--
-                Код — простым моноширинным, без подсветки: краски тетради
-                набраны под белый лист, и на чёрном половина их растворяется.
-                Зал читает форму решения, а не цвет его литералов.
+                Code in plain monospace, without highlighting: the notebook's
+                colours are set for a white sheet, and on black half of them
+                dissolve. The hall reads the shape of the solution, not the
+                colour of its literals.
               -->
               <pre
                 class="overflow-x-auto whitespace-pre font-mono text-prompt-sm text-white">{shown.text}</pre>
@@ -2063,14 +2124,15 @@
               {/if}
             {:else}
               <!--
-                Полоса растёт масштабом, а не шириной.
+                The strip grows by scale, not by width.
 
-                Единственное место в комнате, где анимировалась геометрия: ширина
-                стоит layout на каждом кадре перехода, и делала она это на
-                проекторе, поверх страницы лекции, каждый раз, когда кто-то сдал.
-                `scaleX` от левого края даёт ту же картинку на композиторе — так
-                же сделана полоса загрузки в панели файлов. Ярус тот же, что у
-                панели (220 мс): 300 выше всего, что продукт себе позволяет.
+                The only place in the room where geometry was animated: width
+                costs layout on every frame of the transition, and it did that
+                on the projector, over the lecture page, every time someone
+                submitted. `scaleX` from the left edge gives the same picture
+                on the compositor — the upload strip in the files panel is done
+                the same way. The tier is the panel's (220 ms): 300 is above
+                anything the product allows itself.
               -->
               <div class="h-1 w-full bg-white/15">
                 <div
@@ -2086,23 +2148,25 @@
   </div>
 {:else if councilPult && councilCell}
   <!--
-    Пульт консилиума. Ни тетради, ни панелей: окно открыто ради того, чтобы
-    имена, черновики, ошибки и отметки НЕ попали на проектор, и всё, что
-    нарисовано рядом с ними, эту цель отменяет.
-    Соединение то же самое — то же `SessionState`, та же личность из
-    localStorage, тот же управляющий сокет. Отказ не-преподавателю пульт
-    печатает сам, своими словами: он один знает, чего именно нельзя.
+    The council console. No notebook, no panels: the window is open precisely
+    so that names, drafts, errors and marks do NOT reach the projector, and
+    anything drawn next to them defeats that purpose.
+    The connection is the same — the same `SessionState`, the same identity
+    from localStorage, the same control socket. The console prints the
+    refusal to a non-teacher itself, in its own words: it alone knows what
+    exactly is not allowed.
   -->
   <div class="fixed inset-0 z-[95] bg-canvas">
     {#await councilWindow() then Pult}
       <!--
-        Перемонтаж на смену ячейки — намеренный.
+        Remounting on a cell change is deliberate.
 
-        Стоит он одну перерисовку, а снимает девять состояний окна: прочитанное,
-        черновики писем, набор «новых», придержанные сдачи, момент заморозки,
-        снимок списка, момент открытия, раскрытое и курсор. Гасить их руками —
-        девять мест, в которых однажды забудут одно, и тогда во второй ячейке
-        окажется письмо, написанное человеку из первой.
+        It costs one redraw, and it clears nine pieces of window state: what
+        was read, message drafts, the set of "new" ones, held-back
+        submissions, the freeze moment, the list snapshot, the opening
+        moment, what is expanded and the cursor. Clearing them by hand means
+        nine places where one day someone forgets one, and then the second
+        cell gets a message written to a person from the first.
       -->
       {#key councilCell}
         <Pult
@@ -2115,20 +2179,22 @@
   </div>
 {:else if pult}
   <!--
-    Пульт. Комната под ним не рисуется вовсе — по той же причине, что и под
-    проекцией, только повёрнутой в другую сторону: на проекцию смотрят двадцать
-    человек и лишнего им видеть нельзя, а пульт держат в руках посреди фразы, и
-    лишнее там — это лишняя секунда молчания в аудитории. Ни вкладок, ни панели
-    файлов, ни оракула, ни терминала.
-    Соединение то же самое: `SessionState` живёт в этом же компоненте, и приход
-    сюда его не трогает — ни сокетов, ни документа, ни присутствия.
-    Обёртка даёт пульту только место и подложку: правила касания (лупа по
-    долгому нажатию, серая вспышка на каждом тапе) и отступы под вырезом стоят
-    внутри ConsoleView — там знают, какая кромка чем занята, и там же они
-    кончаются, не задевая ни тетрадь, ни читалку.
+    The console. The room is not drawn under it at all — for the same reason
+    as under the projection, only turned the other way: twenty people look at
+    the projection and must not see anything superfluous, while the console is
+    held in the hands mid-sentence, and anything superfluous there is an extra
+    second of silence in the lecture hall. No tabs, no files panel, no Oracle,
+    no terminal.
+    The connection is the same: `SessionState` lives in this same component,
+    and arriving here does not touch it — not the sockets, not the document,
+    not presence.
+    The wrapper gives the console only a place and a backing: the touch rules
+    (a magnifier on long press, a grey flash on every tap) and the notch
+    insets sit inside ConsoleView — it knows which edge is taken by what, and
+    that is also where they end, touching neither the notebook nor the reader.
   -->
-  <!-- Без ветки ожидания, как у панели в App: грунт уже нарисован, а спиннер
-       поверх него был бы вторым ожиданием на то же самое. -->
+  <!-- No pending branch, as with the panel in App: the ground is already
+       drawn, and a spinner over it would be a second wait for the same thing. -->
   <div class="fixed inset-0 z-[95] bg-canvas">
     {#await consoleView() then Console}
       <Console onexit={leavePult} />
@@ -2136,15 +2202,16 @@
   </div>
 {:else}
 <!--
-  `clip`, а не `hidden`: у комнаты нет прокрутки вбок ни при каком содержимом.
+  `clip`, not `hidden`: the room has no sideways scroll with any content.
 
-  `overflow-hidden` создаёт прокручиваемую коробку — невидимую, но настоящую:
-  стоит браузеру показать фокус на кнопке, уехавшей за правый край (панель,
-  ящик, чужая полоса), и он прокручивает эту коробку сам. Комната после этого
-  стоит сдвинутой влево целиком — с маркой и именем занятия за кромкой, — и
-  вернуть её нечем: полосы прокрутки нет, а жеста для скрытой коробки не
-  существует. `clip` режет точно так же, но коробку не заводит, и такой сдвиг
-  становится невозможен, кто бы что ни переполнил внутри.
+  `overflow-hidden` creates a scrollable box — invisible, but real: as soon as
+  the browser shows focus on a button that slid past the right edge (a panel,
+  a drawer, someone else's strip), it scrolls that box by itself. After that
+  the whole room stays shifted to the left — with the mark and the class name
+  past the edge — and there is no way to bring it back: there is no
+  scrollbar, and no gesture exists for a hidden box. `clip` cuts exactly the
+  same way but creates no box, and such a shift becomes impossible, whatever
+  overflows inside.
 -->
 <div class="flex h-full min-h-0 flex-col overflow-clip bg-canvas">
   <!--
@@ -2156,37 +2223,38 @@
   -->
   <header class="shrink-0 bg-brand">
     <!--
-      Марка ведёт туда, где человеку есть что делать, — или никуда.
+      The mark leads where the person has something to do — or nowhere.
 
-      Корень Colloq — это панель преподавателя (см. App), и ссылка на неё стояла
-      у ВСЕХ: студент, ткнувший в логотип посреди пары, полной навигацией уходил
-      из комнаты на форму «paste the setup token». Теперь дорога наверх есть у
-      того, у кого она есть: у ведущего — панель, у участника — страница курса,
-      если семинар в курсе состоит. Больше некуда — и тогда марка просто знак, а
-      не обещание.
+      The Colloq root is the teacher's panel (see App), and EVERYONE had a link
+      to it: a student who tapped the logo in the middle of a class left the
+      room with a full navigation to the "paste the setup token" form. Now the
+      way up exists for whoever has one: the panel for the presenter, the
+      course page for a participant, if the seminar belongs to a course.
+      Nowhere else to go — and then the mark is just a sign, not a promise.
     -->
     <!--
-      Вся верхняя полоса шапки — один складывающийся блок.
+      The whole top strip of the header is one folding block.
 
-      Складка меряется высотой, и это единственное место в комнате, где
-      геометрия анимируется нарочно: свернуть шапку — значит ОТДАТЬ её место
-      тетради, а место отдаётся только настоящей высотой. `slide` держит её на
-      своём element.animate() и умеет разворачиваться с полдороги — нажатие
-      посреди хода не начинает заново, а едет обратно от того кадра, на котором
-      застало. 200 мс — ярус панели (--speed-panel), quintOut — та же кривая,
-      что у ящиков по краям.
+      The fold is measured in height, and it is the only place in the room
+      where geometry is animated on purpose: folding the header means GIVING
+      its place to the notebook, and a place is given only as real height.
+      `slide` runs it on its own element.animate() and can reverse from
+      halfway — a press in mid-travel does not start over but goes back from
+      the frame it caught. 200 ms is the panel tier (--speed-panel), quintOut
+      is the same curve as the side drawers use.
 
-      Содержимое гаснет быстрее складки (120 мс): к середине хода читать уже
-      нечего, и название не успевает подъехать к полосе состояния вплотную —
-      оно уходит под кромку целым, а не сплющенным.
+      The content fades faster than the fold (120 ms): by mid-travel there is
+      nothing left to read, and the title does not get to ride right up to the
+      status bar — it goes under the edge whole, not squashed.
 
-      Под `prefers-reduced-motion` обе длительности — нули, и это тот редкий
-      случай, когда правило index.css («прозрачность остаётся») не годится:
-      блок уезжает из DOM только после ПОСЛЕДНЕГО своего перехода, и складка в
-      0 мс рядом с растворением в 120 оставляла шапку стоять во всю высоту эти
-      120 мс, а потом срезала её скачком. Мерено на стенде: высота через 35 мс
-      после нажатия — прежние 157. Нуль на обоих — настоящее мгновенно.
-      Перекрытие двух марок внизу при этом живёт: оно ничего не смещает.
+      Under `prefers-reduced-motion` both durations are zero, and this is the
+      rare case where the index.css rule ("opacity stays") does not fit: the
+      block leaves the DOM only after its LAST transition, and a 0 ms fold next
+      to a 120 ms fade left the header standing at full height for those 120
+      ms and then cut it off with a jump. Measured on the test bench: the
+      height 35 ms after the press was the old 157. Zero on both is truly
+      instant. The crossfade of the two marks below survives: it moves
+      nothing.
     -->
     {#if headOpen}
       <div transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}>
@@ -2252,37 +2320,38 @@
          the two controls that are about this room rather than about the
          notebook inside it. -->
     <!--
-      45, а не 44: правило сверху съедает пиксель из коробки содержимого, и в
-      оставшихся 43 всякий чётный по высоте ребёнок центрируется на половине
-      пикселя. Круги от этого размывались по кольцу, а на 1x — заметно.
+      45, not 44: the rule on top eats a pixel from the content box, and in the
+      remaining 43 any child of even height is centred on half a pixel. That
+      blurred circles around the ring, and on 1x noticeably so.
     -->
     <!--
-      Полоса ПЕРЕНОСИТСЯ, а не выталкивает своё содержимое за экран.
+      The strip WRAPS rather than pushing its content off screen.
 
-      На телефоне в ней восемь органов сразу: люди, ядро, состояние связи,
-      четыре переключателя, тема и ссылка — около 520 px при окне в 360. Пока
-      строка была одна и без переноса, лишнее уезжало вправо под
-      `overflow-hidden` корня: кнопка «Скопировать» стояла за краем целиком, а
-      «Восстанавливаем связь» уводила туда же и её, и тему — то есть обрыв
-      связи забирал с экрана ровно те две кнопки, которыми на него отвечают.
-      Перенос ставит группу кнопок второй строкой ровно тогда, когда она не
-      влезла, и не стоит ни пикселя там, где влезла.
+      On a phone it holds eight organs at once: people, kernel, connection
+      state, four toggles, theme and link — about 520 px in a 360 window.
+      While it was a single line without wrapping, the excess slid right under
+      the root's `overflow-hidden`: the "Copy" button stood past the edge
+      entirely, and "Reconnecting" pushed it there along with the theme — that
+      is, a dropped connection took off screen exactly the two buttons one
+      answers it with. Wrapping puts the button group on a second line exactly
+      when it did not fit, and costs not a pixel where it did.
 
-      Без точки перелома нарочно: полоса переполняется не на «телефонной»
-      ширине, а тогда, когда в ней много СОДЕРЖИМОГО — четверо в комнате,
-      «ЯДРО ОСТАНОВЛЕНО» и «Восстанавливаем связь» вместе занимают 500 px и на
-      планшете в 768. Перенос по месту чинит и этот случай, а на ноутбуке не
-      случается ни разу.
+      No breakpoint on purpose: the strip overflows not at a "phone" width but
+      when it holds a lot of CONTENT — four people in the room, and the Russian
+      "KERNEL STOPPED" and "Reconnecting" together take 500 px even on a 768
+      tablet. Wrapping in place fixes that case too, and on a laptop it never
+      happens.
 
-      Рост прежний: 45 − 1 (правило сверху) = 44, минус py-1.5 с двух сторон =
-      32 на строку, и ребёнок в 28 по-прежнему центрируется целыми пикселями.
+      The height is as before: 45 − 1 (the rule on top) = 44, minus py-1.5 on
+      both sides = 32 per line, and a 28 child is still centred on whole
+      pixels.
     -->
     <!--
-      Линейка сверху — пока сверху что-то есть.
+      The rule on top — while there is something on top.
 
-      Она отделяет полосу от названия занятия, и у свёрнутой шапки отделять
-      нечего: полоса стоит первой строкой экрана, и линейка на её верхней
-      кромке читалась бы как недорисованная рамка окна.
+      It separates the strip from the class name, and a folded header has
+      nothing to separate: the strip stands as the first line of the screen,
+      and a rule on its top edge would read as an unfinished window frame.
     -->
     <div
       class={cn(
@@ -2291,23 +2360,25 @@
       )}
     >
       <!--
-        Марка у свёрнутой шапки — та же самая, и стоит она в том же столбце.
+        The mark of the folded header is the same one, and it stands in the
+        same column.
 
-        Левый отступ у полосы и у шапки один (px-4 / sm:px-7), поэтому знак
-        никуда не едет по горизонтали: пока складка сходится, полоса сама
-        поднимается к нему, и две марки — уходящая в шапке и приходящая здесь —
-        съезжаются в одну точку. Перекрытие плотностей на этом пути читается как
-        ПЕРЕЕЗД одного знака, а не как подмена одного другим; настоящий
-        общий элемент дал бы ту же картинку ценой измерений на каждом кадре.
+        The strip and the header have the same left inset (px-4 / sm:px-7), so
+        the sign does not move horizontally: while the fold closes, the strip
+        itself rises to it, and the two marks — the one leaving in the header
+        and the one arriving here — converge on one point. The crossfade along
+        that path reads as ONE sign MOVING, not as one replaced by another; a
+        real shared element would give the same picture at the cost of
+        measuring on every frame.
 
-        Заголовок уезжает вместе со складкой, и без `h1` страница осталась бы
-        безымянной для читалки: `sr-only` возвращает имя занятия туда, где оно
-        и было, а `title` у знака — тем, кто наводит указатель.
+        The heading leaves together with the fold, and without an `h1` the page
+        would be nameless for a screen reader: `sr-only` returns the class name
+        to where it was, and the `title` on the sign serves those who hover.
       -->
       {#if !headOpen}
         <h1 class="sr-only">{title}</h1>
-        <!-- Та же дверь, что у марки в развёрнутой шапке: свернул полосу — не
-             потерял путь в панель (или на страницу курса). -->
+        <!-- The same door as the mark in the unfolded header: folding the strip
+             does not lose the way to the panel (or to the course page). -->
         {#if homeHref}
           <a
             href={homeHref}
@@ -2332,8 +2403,8 @@
       {/if}
       {#if room.length > 0}
         <div class="flex shrink-0 items-center gap-4" title={roomNames}>
-          <!-- 28, как на экране входа: 24 в этой полосе читались мелко, а
-               человек в комнате — единственное, что здесь про людей. -->
+          <!-- 28, as on the join screen: 24 read small in this strip, and a
+               person in the room is the only thing here about people. -->
           <AvatarStack people={room} max={4} size={28} ring="rgb(var(--brand))" tone="onDark" />
           <span
             class="hidden shrink-0 text-2xs font-bold uppercase tracking-label text-white/80 sm:inline"
@@ -2369,17 +2440,18 @@
       </div>
 
       <!--
-        Обе строки состояния УСЫХАЮТ, а не растут.
+        Both status lines SHRINK rather than grow.
 
-        «Восстанавливаем связь» разрядкой в верхнем регистре — это 185 px, и
-        `shrink-0` на них означал, что связь, оборвавшись, уносит за правый край
-        всё, что стоит правее: тему и «Скопировать». Значок при этом не
-        усыхает никогда (`shrink-0` на нём), слово усыхает многоточием, а
-        целиком его держит `title` — вместе с переносом полосы выше этого
-        хватает, чтобы фраза читалась полностью в комнате на четверых.
+        The Russian "Reconnecting", letter-spaced in upper case, is 185 px, and
+        `shrink-0` on them meant that a dropped connection carried off past
+        the right edge everything standing to the right: the theme and "Copy".
+        The icon never shrinks (`shrink-0` on it), the word shrinks with an
+        ellipsis, and `title` holds it in full — together with the strip
+        wrapping above, that is enough for the phrase to read in full in a
+        room of four.
       -->
       {#if session.stuck}
-        <!-- Не «Reconnecting»: вкладка больше не пробует, и крутилка врала бы. -->
+        <!-- Not "Reconnecting": the tab no longer tries, and a spinner would lie. -->
         <div
           class="flex min-w-0 shrink items-center gap-2 text-white"
           role="status"
@@ -2403,13 +2475,13 @@
       <span class="min-w-0 flex-1"></span>
 
       <!--
-        Кнопки комнаты — ОДНОЙ группой, и переносятся они тоже вместе.
+        The room's buttons — as ONE group, and they wrap together too.
 
-        Порознь перенос рвал их по живому: переключатели оставались в первой
-        строке, тема с «Скопировать» уезжали во вторую, и одна полоса читалась
-        как две разные. Группа переносится целиком и прижимается вправо на той
-        строке, куда попала (`ml-auto`), — на широком окне её прижимает та же
-        распорка, что и раньше, и рисунок полосы не меняется.
+        Separately, wrapping tore them apart: the toggles stayed on the first
+        line, the theme and "Copy" went to the second, and one strip read as
+        two different ones. The group wraps as a whole and hugs the right on
+        the line it lands on (`ml-auto`) — on a wide window the same spacer as
+        before pushes it right, and the strip's drawing does not change.
       -->
       <div class="ml-auto flex shrink-0 items-center gap-3 sm:gap-4">
         <!-- Panels are not on the artboard, which draws both columns open; they
@@ -2418,12 +2490,12 @@
         <div class="flex shrink-0 items-center gap-0.5">
           {#if isHost}
             <!--
-              Пульт правил стоит здесь, а не только в панели.
+              The rules panel lives here, not only in the admin panel.
 
-              Лекция, лабораторная и консультация — три фазы одной пары, а
-              правило, до которого можно дотянуться только из админки и только
-              при создании семинара, — это правило, до которого преподаватель не
-              дотягивается в ту минуту, когда оно нужно.
+              Lecture, lab and consultation are three phases of one class, and
+              a rule that can be reached only from the admin panel and only
+              when creating a seminar is a rule the teacher cannot reach in the
+              minute it is needed.
             -->
             <button
               class={bandIcon(rulesOpen)}
@@ -2436,15 +2508,16 @@
             </button>
           {/if}
           <!--
-            Шапка — такая же поверхность комнаты, как панели и ящик, и
-            переключается там же. Порядок слева направо повторяет экран:
-            шапка сверху, файлы слева, ящик снизу, оракул справа.
+            The header is as much a room surface as the panels and the drawer,
+            and it is toggled in the same place. The left-to-right order
+            repeats the screen: header on top, files on the left, drawer at the
+            bottom, Oracle on the right.
 
-            `aria-expanded`, а не `aria-pressed`, как у соседей: те включают и
-            выключают панель, а эта раскрывает и складывает то, что стоит прямо
-            над ней, — это раскрывашка, и читалка должна назвать её так.
-            Подпись меняется вместе с состоянием: «свернуть» на развёрнутой
-            шапке — это то, что произойдёт, а не то, что есть.
+            `aria-expanded`, not `aria-pressed` like its neighbours: they turn a
+            panel on and off, while this one expands and folds what stands
+            right above it — it is a disclosure, and a screen reader must call
+            it that. The label changes with the state: "fold" on an unfolded
+            header is what will happen, not what is.
           -->
           <button
             class={bandIcon(headOpen)}
@@ -2465,11 +2538,12 @@
             <Icon name="file" size={16} />
           </button>
           <!--
-            Ящик снизу — такая же поверхность комнаты, как панели по краям, и
-            переключается там же, где они. Стоял он до сих пор в тулбаре тетради,
-            среди Run All и Restart, — то есть среди того, что ЗАПУСКАЕТ, а не
-            того, что открывает и закрывает. Порядок слева направо повторяет
-            экран: файлы слева, ящик снизу, оракул справа.
+            The bottom drawer is as much a room surface as the side panels,
+            and it is toggled where they are. Until now it stood in the
+            notebook toolbar, among Run All and Restart — that is, among the
+            things that RUN, not the things that open and close. The
+            left-to-right order repeats the screen: files on the left, drawer
+            at the bottom, Oracle on the right.
           -->
           <button
             class={cn(bandIcon(terminalOpen), 'relative')}
@@ -2485,9 +2559,10 @@
               ></span>
             {:else if session.terminalUnread > 0}
               <!--
-                Новости самого ядра — почему остановился Run All, кто перезапустил
-                — пишутся в ленту, а лента за этой кнопкой. Без метки у комнаты
-                была причина на руках и ни одного повода её искать.
+                The kernel's own news — why Run All stopped, who restarted it —
+                is written to the feed, and the feed is behind this button.
+                Without the badge the room had the reason at hand and not a
+                single cause to look for it.
               -->
               <span
                 class="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center
@@ -2515,13 +2590,13 @@
         <!--
           The link, readable and attached to the button that takes it.
 
-          Показывается с 1024px, а не с 1280: до этого адрес прятался на любом
-          ноутбуке уже 13", то есть на большинстве машин, с которых семинар и
-          ведут. А адрес на экране — это запасной ход, когда буфер обмена не
-          работает: его можно продиктовать или переписать руками. Прятать его
-          именно там, где он чаще всего и нужен, — ровно наоборот.
+          Shown from 1024px, not from 1280: before, the address was hidden on
+          any 13" laptop, that is, on most of the machines seminars are run
+          from. And the address on screen is the fallback when the clipboard
+          does not work: it can be read out or copied by hand. Hiding it
+          exactly where it is needed most is exactly backwards.
 
-          `select-all`, чтобы одно нажатие выделяло его целиком.
+          `select-all`, so that one press selects it whole.
         -->
         <div class="flex h-7 min-w-0 shrink items-center">
           <span
@@ -2538,12 +2613,12 @@
           >
             <Icon name={copied ? 'check' : 'copy'} size={12} />
             <!--
-              Слово уходит в `sr-only`, а не под `hidden`: кнопка с одним
-              значком обязана остаться названной. «СКОПИРОВАТЬ» — это 108 px из
-              360, и ради них полоса до сих пор выталкивала саму кнопку за край
-              экрана: на телефоне от неё оставались две буквы. Имя для читалки
-              и `title` для указателя говорят то же самое, а с `sm` слово
-              возвращается на место (`not-sr-only`).
+              The word goes into `sr-only`, not under `hidden`: a button with
+              a single icon must stay named. The Russian "COPY" is 108 px out
+              of 360, and for its sake the strip used to push the button itself
+              past the screen edge: on a phone two letters of it remained. The
+              name for the screen reader and the `title` for the pointer say the
+              same thing, and from `sm` the word returns (`not-sr-only`).
             -->
             <span class="sr-only text-2xs font-bold uppercase tracking-label sm:not-sr-only">
               {copied ? tr('room.ui.905') : tr('room.ui.906')}
@@ -2555,17 +2630,17 @@
   </header>
 
   <!--
-    Занятие закончено — полосой, а не значком.
+    The class is over — as a strip, not an icon.
 
-    Это состояние всей комнаты, и держится оно днями: значок в шапке такое
-    говорит шёпотом, и человек, у которого не нажимается ничего, ищет поломку.
-    Полоса стоит там, где начинается работа, не перекрывает её и никуда не
-    уезжает при прокрутке — а тёплый тон отличает «так решили» от красного
-    «сломалось».
+    It is the state of the whole room, and it lasts for days: an icon in the
+    header says it in a whisper, and a person for whom nothing can be pressed
+    goes looking for a breakage. The strip stands where the work begins,
+    covers none of it and does not scroll away — and the warm tone tells "it
+    was decided so" from a red "it broke".
 
-    Всем, а не одним участникам: преподавателю она объясняет, почему у него
-    одного всё живо, и держит кнопку возврата под рукой — чтобы не искать её в
-    пульте правил посреди пары.
+    For everyone, not just participants: for the teacher it explains why for
+    them alone everything is alive, and keeps the resume button at hand — so
+    they do not have to hunt for it in the rules panel mid-class.
   -->
   {#if session.finished}
     <div
@@ -2579,12 +2654,13 @@
           {finishedStamp}
         </span>
       </p>
-      <!-- Что осталось, а не что отняли: сюда приходят перечитывать разбор, и
-           первое, что человек должен узнать, — что всё на месте. -->
-      <!-- `basis-56`, как у подвала пульта правил: `flex-1` с нулевой основой
-           брал на телефоне остаток строки в 30 px и ставил фразу в столбик по
-           слову на строку. Двести двадцать четыре — та ширина, ниже которой
-           строку переносят целиком на свою. -->
+      <!-- What remains, not what was taken away: people come here to reread
+           the review, and the first thing a person must learn is that it is
+           all in place. -->
+      <!-- `basis-56`, like the rules panel footer: `flex-1` with a zero basis
+           took the 30 px left on the line on a phone and set the phrase in a
+           column, one word per line. Two hundred and twenty-four is the width
+           below which the line wraps whole onto a line of its own. -->
       <p class="min-w-0 flex-1 basis-56 text-2xs leading-snug text-muted">
         {isHost
           ? tr('room.ui.907')
@@ -2619,9 +2695,9 @@
     <div class="flex min-w-0 flex-1 flex-col">
       {#if row.length > 0}
         <!--
-          Вкладки появляются только когда есть что переключать: в комнате, где
-          не открыли ни файла, этой строки нет вовсе, и она не стоит ни пикселя
-          высоты.
+          Tabs appear only when there is something to switch: in a room where
+          no file was opened this row does not exist at all and costs not a
+          pixel of height.
         -->
         <TabStrip
           tabs={row}
@@ -2657,22 +2733,23 @@
       {/if}
 
       <!--
-        Тетрадь прячется, а не размонтируется: в ней курсор, прокрутка и полтора
-        десятка редакторов CodeMirror, и пересобирать их на каждое переключение
-        вкладки значит терять место в тексте. Скрытых тетрадей столько, сколько
-        открыто вкладок, — а не одна на комнату.
+        The notebook is hidden, not unmounted: it holds the cursor, the scroll
+        and a dozen and a half CodeMirror editors, and rebuilding them on every
+        tab switch means losing one's place in the text. There are as many
+        hidden notebooks as open tabs — not one per room.
       -->
       {#each row as path (path)}
         {#if kindOf(path) === 'notebook'}
           <!--
-            Нажатие мимо ячейки снимает выделение.
+            A press outside a cell clears the selection.
 
-            До сих пор выйти из состояния «выбрано» было нельзя ничем: способ
-            выделить был один — нажать на ячейку, — а способа не выделять не
-            было вовсе. Обработчик стоит на колонке, а не на самой тетради:
-            ниже последней ячейки лежит пустое место, и оно тоже «мимо».
-            Проверяется цель нажатия, а не координата: кнопка тулбара — тоже
-            мимо ячейки, и это верно, она относится ко всей тетради.
+            Until now there was no way at all to leave the "selected" state:
+            there was one way to select — press a cell — and no way to
+            unselect. The handler sits on the column, not on the notebook
+            itself: below the last cell there is empty space, and it is
+            "outside" too. What is checked is the press target, not the
+            coordinate: a toolbar button is outside a cell too, and rightly so,
+            it belongs to the whole notebook.
           -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -2681,9 +2758,10 @@
             class:hidden={activePath !== path}
             aria-hidden={activePath !== path}
             onclick={(event) => {
-              // По тому, что нажимают, а не по корню ячейки: тело и сам номер
-              // несут `data-cell-pick` и выделяют, а пустое место в поле рядом
-              // с номером — это уже мимо, там и снимают.
+              // By what is pressed, not by the cell root: the body and the
+              // number itself carry `data-cell-pick` and select, while empty
+              // space in the margin next to the number is already outside, and
+              // that is where the selection is cleared.
               if ((event.target as HTMLElement | null)?.closest('[data-cell-pick]')) return
               if (session.selection.length > 0) session.selectCell(null)
             }}
@@ -2700,23 +2778,24 @@
 
       {#if activePath === null}
         <!--
-          Ничего не открыто — это состояние, а не поломка: раньше его не было,
-          потому что тетрадь нельзя было закрыть.
+          Nothing open is a state, not a breakage: it did not exist before,
+          because the notebook could not be closed.
 
-          Здесь стояли две строки текста по центру пустого прямоугольника, и
-          читались они как сообщение об ошибке, которого никто не совершал.
-          Теперь центр держит водяной знак: та же марка, что в шапке комнаты и
-          на постере входа, только в один тон и почти прозрачная. Пустое место
-          и должно выглядеть пустым — но своим, а не сломанным.
+          There used to be two lines of text centred in an empty rectangle, and
+          they read as an error message about something nobody did. Now the
+          centre holds a watermark: the same mark as in the room header and on
+          the join poster, only in one tone and almost transparent. An empty
+          place should look empty — but one's own, not broken.
 
-          Марка СТОЛБИКОМ, а не строкой, как везде: строка на 820×830 читается
-          как заголовок, который забыли дописать, а столбик — как знак на
-          бумаге. Это не тот замок, что в шапке (он один на всех экранах и
-          размера не меняет); это его тень, и она нарочно другой формы.
+          The mark is STACKED, not in a row as everywhere else: a row at
+          820×830 reads as a heading someone forgot to finish, while a stack
+          reads as a sign on paper. This is not the lockup from the header (it
+          is one on all screens and does not change size); it is its shadow,
+          and it has a different shape on purpose.
 
-          Девять процентов — столько, чтобы знак был виден на белом и не
-          спорил с панелями по краям; в тёмной теме тот же токен даёт то же
-          соотношение сам.
+          Nine per cent — enough for the sign to be visible on white and not
+          argue with the panels at the edges; in the dark theme the same token
+          gives the same ratio by itself.
         -->
         <div
           class="flex min-h-0 flex-1 select-none flex-col items-center justify-center gap-7 px-6"
@@ -2726,18 +2805,20 @@
             aria-hidden="true"
           >
             <Icon name="logo" size={104} />
-            <!-- Отрицательное поле справа ровно в трекинг: 0.22em добавляются и
-                 ПОСЛЕ последней Q, и без этого слово стоит на полшага левее
-                 знака над ним. На 11 пикселях в шапке это незаметно, на сорока
-                 двух — видно. -->
+            <!-- A negative margin on the right exactly the size of the
+                 tracking: 0.22em is added AFTER the last Q too, and without
+                 this the word stands half a step to the left of the sign above
+                 it. At 11 pixels in the header that is invisible, at forty-two
+                 it shows. -->
             <span
               class="-mr-[0.22em] text-[42px] font-bold uppercase leading-none tracking-wordmark"
             >
               Colloq
             </span>
           </div>
-          <!-- Голосом читалки состояние всё равно называется: знак его не
-               произносит, а знать о нём нужно ровно тем, кто знака не видит. -->
+          <!-- The state is still named in the screen reader's voice: the sign
+               does not pronounce it, and it is exactly those who do not see
+               the sign who need to know. -->
           <p class="sr-only">{tr('room.ui.910')}</p>
           <p class="text-2xs text-muted">{tr('room.ui.911')}</p>
         </div>
@@ -2752,17 +2833,18 @@
         {:else}
           {#if may.board && lecture === null && activePath !== session.board}
             <!--
-              «На общий экран» — то самое отдельное действие, ради которого
-              открытие файла перестало забирать экран у комнаты. Полоса под
-              вкладкой, как у скрипта: у каждой вкладки свои действия, и они
-              всегда под ней.
+              "Share screen" — that very separate action for whose sake opening
+              a file stopped taking the screen away from the room. A strip
+              under the tab, as for a script: every tab has its own actions,
+              and they are always under it.
 
-              Переход — списком свойств, а не шорткатом `transition`: тот
-              переводит ВСЕ свойства, включая border-color и box-shadow
-              фокусного кольца, то есть кольцо приезжало бы вслед за клавишей.
-              Двигаются здесь ровно два — brightness под курсором и scale под
-              пальцем; полоса рисуется руками и в `.btn` не укладывается
-              (см. index.css · .btn, где такой же список стоит позиционно).
+              The transition is a list of properties, not the `transition`
+              shorthand: that one transitions ALL properties, including the
+              focus ring's border-color and box-shadow, that is, the ring would
+              arrive after the key. Exactly two things move here — brightness
+              under the pointer and scale under the finger; the strip is drawn
+              by hand and does not fit into `.btn` (see index.css · .btn, where
+              the same list stands positionally).
             -->
             <div class="flex h-[34px] shrink-0 items-stretch border-b border-line bg-canvas">
               <button
@@ -2779,8 +2861,9 @@
                 <Icon name="board" size={11} /> {tr('room.ui.913')} </button>
               <span class="flex-1"></span>
               {#if session.board}
-                <!-- Имя файла усыхает: «идём за» с длинным именем выталкивало
-                   саму кнопку «На общий экран» за правый край телефона. -->
+                <!-- The file name shrinks: "following" with a long name pushed
+                   the "Share screen" button itself past a phone's right
+                   edge. -->
               <span class="flex min-w-0 shrink items-center px-3 text-2xs text-muted sm:px-5">
                 <span class="truncate"> {tr('room.ui.914')} {baseOf(session.board)} </span>
               </span>
@@ -2788,11 +2871,11 @@
             </div>
           {/if}
           <!--
-            По файлу, а не по одной ветке на все PDF: читалка открывает документ
-            один раз при монтировании, и смена файла в той же ветке оставляла на
-            экране страницы прошлого — под новым именем вкладки, с его же
-            счётчиком страниц, и «идём за …» сходилось по номерам, потому что
-            все смотрели один и тот же не тот документ.
+            Per file, not one branch for all PDFs: the reader opens the document
+            once on mount, and changing the file within the same branch left the
+            previous one's pages on screen — under the new tab name, with its own
+            page counter, and "following …" matched by numbers, because everyone
+            was looking at the same wrong document.
           -->
           {#key activePath}
             <PdfReader
@@ -2811,9 +2894,9 @@
       {:else if activePath && activeKind === 'text'}
         {#if activeDoc?.tooBig}
           <!--
-            Файл есть, просто он велик для редактора. Вкладка остаётся стоять:
-            «файла нет» её закрывает, а тут закрывать нечего — человек нажал по
-            живому файлу, и ему нужен ответ, а не исчезнувшая вкладка.
+            The file exists, it is just too big for the editor. The tab stays:
+            "no such file" closes it, but here there is nothing to close — the
+            person clicked a live file and needs an answer, not a vanished tab.
           -->
           <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
             <p class="text-ui text-ink">{baseOf(activePath)} {tr('room.ui.915')}</p>
@@ -2832,14 +2915,14 @@
           </div>
         {/if}
       {:else if activePath && activeKind === 'image'}
-        <!-- Картинку смотрят, а не правят. Скачивание — в дереве, там же, где
-             у всех остальных файлов. -->
+        <!-- An image is looked at, not edited. Downloading is in the tree,
+             where it is for all the other files. -->
         <ImageView path={activePath} />
       {:else if activePath && activeKind !== 'notebook'}
         <!--
-          Тетрадь сюда не попадает: она нарисована выше, в своём `main`. Без
-          этого условия под открытой тетрадью печаталось «не текст» — ветка
-          добиралась до неё последней и была формально права.
+          The notebook does not get here: it is drawn above, in its own `main`.
+          Without this condition "not text" was printed under an open notebook
+          — the branch reached it last and was formally right.
         -->
         <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
           <p class="text-ui text-ink">{baseOf(activePath)} {tr('room.ui.917')}</p>
@@ -2869,18 +2952,19 @@
       reduction, not a blackout: the panel still arrives over 140ms and still
       fades, it simply stops sliding.
 
-      `in:`, а не `transition:` — то же решение, что admin/motion.css принял для
-      меню панели, и по той же причине. Ящик закрывают Escape'ом (onKeydown
-      ниже), а анимировать действие с клавиатуры нельзя: клавишу жмут, чтобы
-      УБРАТЬ панель, и 140 мс отъезда — это 140 мс, в которые её ещё видно.
-      Уход мгновенный на всех трёх дорогах — Escape, щелчок мимо, та же кнопка,
-      — потому что панель, уезжающая по-разному в зависимости от того, чем её
-      закрыли, читается как разные панели.
+      `in:`, not `transition:` — the same decision admin/motion.css made for
+      the panel's menus, and for the same reason. The drawer is closed with
+      Escape (onKeydown below), and an action from the keyboard must not be
+      animated: the key is pressed to GET RID of the panel, and 140 ms of
+      sliding away is 140 ms in which it is still visible. Leaving is instant
+      on all three roads — Escape, a click outside, the same button — because
+      a panel that leaves differently depending on how it was closed reads as
+      different panels.
 
-      quintOut, а не cubicOut: 1−(1−t)⁵ — ближайшая из svelte/easing к
-      --ease-out, которой index.css велит двигаться всему, что движется.
-      cubicOut заметно мягче, и панель приезжала не тем движением, что все
-      соседние поверхности.
+      quintOut, not cubicOut: 1−(1−t)⁵ is the closest in svelte/easing to
+      --ease-out, which index.css prescribes for everything that moves.
+      cubicOut is noticeably softer, and the panel arrived with a different
+      motion than all the neighbouring surfaces.
     -->
     {#if leftIsDrawer && leftDrawer}
       <div class="absolute inset-0 z-40 flex">
@@ -2921,21 +3005,22 @@
 {/if}
 
 <!--
-  Комната, которой больше нет.
-  
-  Сервер закрывает сокет с 1001 и причиной, и раньше её никто не читал:
-  браузер просто переподключался, получал отказ и крутил «RECONNECTING» до
-  конца дня перед человеком, чьего семинара уже не существует. Это не полоска
-  внизу, а конец работы — поэтому во весь экран.
+  A room that no longer exists.
+
+  The server closes the socket with 1001 and a reason, and nobody used to
+  read it: the browser simply reconnected, got a refusal and spun
+  "RECONNECTING" until the end of the day in front of a person whose seminar
+  no longer exists. This is not a strip at the bottom but the end of work —
+  hence full screen.
 -->
 <!--
-  Слой выше проекции (z-90) и пульта (z-95): под ними эта плашка была нарисована
-  и невидима, и обе поверхности продолжали выглядеть живыми — последняя страница
-  лекции на балке, лист с клавишами на планшете. «Мёртвая, но живая на вид»
-  поверхность — худший случай из всех, и здесь он был.
+  A layer above the projection (z-90) and the console (z-95): under them this
+  plate was drawn and invisible, and both surfaces kept looking alive — the
+  last lecture page on the projector, the sheet with keys on the tablet. A
+  "dead but alive-looking" surface is the worst case of all, and here it was.
 
-  Не на пульте: там про удалённую комнату говорит сам ConsoleView, своими
-  словами и про чернила, которых уже некуда сохранить.
+  Not on the console: there ConsoleView itself speaks about the deleted room,
+  in its own words and about the ink that has nowhere to be saved any more.
 -->
 {#if session.gone && !pult}
   <div class="fixed inset-0 z-[100] flex items-center justify-center bg-canvas/95 px-6">
@@ -2952,33 +3037,36 @@
 {/if}
 
 <!--
-  Вас удалили с занятия — посреди занятия.
+  You were removed from the class — in the middle of the class.
 
-  Поверх комнаты и во весь экран, как «семинар удалён»: работать здесь больше
-  нельзя, и полоска внизу, под живой на вид тетрадью, обещала бы обратное.
-  Комната при этом цела — этим случай и отличается от удалённой, — но говорить
-  об этом на экране незачем: человеку нужно знать, до какого часа и к кому идти.
+  Over the room and full screen, like "seminar deleted": working here is no
+  longer possible, and a strip at the bottom, under a live-looking notebook,
+  would promise the opposite. The room itself is intact — that is how this
+  case differs from a deleted one — but there is no point saying so on
+  screen: the person needs to know until what hour and whom to go to.
 -->
 {#if session.banned !== null}
-  <!-- Тем же ярусом, что и «семинар удалён» выше, и по той же причине: пульт и
-       проекция не должны переживать удаление своего человека молча. -->
+  <!-- The same tier as "seminar deleted" above, and for the same reason: the
+       console and the projection must not survive their person's removal
+       silently. -->
   <div class="fixed inset-0 z-[100] flex items-center justify-center bg-canvas/95 px-6">
     <BannedScreen until={session.banned} />
   </div>
 {/if}
 
-<!-- Одно меню на оба места, откуда банят, — см. BanMenu.svelte. Только
-     ведущему: студенту оно ничего не откроет, а нарисованное — соврёт. -->
+<!-- One menu for both places bans come from — see BanMenu.svelte. Only for
+     the presenter: for a student it would open nothing, and drawn it would
+     lie. -->
 {#if isHost && !session.gone && session.banned === null}
   <BanMenu />
 {/if}
 
 <!--
-  Палитра — вся клавиатура комнаты в одном списке.
+  The palette — the room's entire keyboard in one list.
 
-  Только в комнате: у пульта своя клавиатура, у проекции нет никакой. Без
-  ветки ожидания — чанк маленький и приезжает за один запрос, а мигание
-  спиннера на месте, куда сейчас будут печатать, стоит дороже.
+  Only in the room: the console has its own keyboard, the projection has
+  none. No pending branch — the chunk is small and arrives in one request,
+  and a spinner flashing where someone is about to type costs more.
 -->
 {#if paletteOpen && mode === 'room' && !session.gone && session.banned === null}
   {#await paletteView() then Palette}
@@ -2988,45 +3076,51 @@
 
 {#if refusal && refusalShown && !projection}
   <!--
-    Модальное, а не строкой: человек только что потерял несколько секунд работы,
-    и текст, который он не успеет прочитать, — это тот же потерянный текст.
+    Modal, not a line: the person has just lost a few seconds of work, and
+    text they do not manage to read is the same lost text.
   -->
   <!--
-    И на пульте тоже — но не на проекции.
+    On the console too — but not on the projection.
 
-    Пульт: отказ лечится перезагрузкой, а перезагрузка с `/s/:id/pult`
-    возвращает на `/s/:id/pult` (lib/refusal.ts · reloadByHand). Пока окно
-    лежало на z-[60] под непрозрачной обёрткой пульта (z-[95] ниже),
-    преподаватель на планшете получал обратно свой лист и ни слова о том, что
-    правку не приняли и что именно из набранного не доехало. Свой текст
-    ConsoleView здесь не пишет намеренно: окно — это не объявление, а
-    единственная копия потерянного, и второй такой копии в продукте быть не
-    должно (у «удалён» и «разошлись» слов ровно на плашку, потому они и
-    сказаны там своими).
+    Console: a refusal is cured by a reload, and a reload from `/s/:id/pult`
+    returns to `/s/:id/pult` (lib/refusal.ts · reloadByHand). While the window
+    lay at z-[60] under the console's opaque wrapper (z-[95] below), the
+    teacher on the tablet got their sheet back and not a word about the edit
+    not being accepted and about what exactly of the typed text did not get
+    through. ConsoleView deliberately writes no text of its own here: the
+    window is not an announcement but the only copy of what was lost, and
+    there must be no second such copy in the product ("deleted" and
+    "diverged" have exactly enough words for a plate, which is why they are
+    said there in their own words).
 
-    Проекция: на балку смотрит зал, и чужая тетрадь во весь экран посреди пары
-    — худшее, что там можно нарисовать. Печатать на проекции нечем, так что
-    сюда записка попадает только эхом (кэш той же вкладки, побывавшей в
-    комнате). Она не пропадает: `refusal` и `refusedCells` живут в этом же
-    компоненте, а смена режима его не пересоздаёт (App держит `{#key}` на
-    токене, не на режиме) — окно дождётся выхода с проекции в комнату.
+    Projection: the hall looks at the projector, and someone's notebook full
+    screen in the middle of a class is the worst thing that can be drawn
+    there. There is nothing to type with on the projection, so a note gets
+    here only as an echo (the cache of the same tab that had been in the
+    room). It does not get lost: `refusal` and `refusedCells` live in this
+    same component, and a mode change does not recreate it (App keeps
+    `{#key}` on the token, not on the mode) — the window waits until one
+    leaves the projection for the room.
   -->
   <!--
-    Печатал в секунду звонка — и об этом надо сказать звонком, а не правкой.
+    Typed in the second the bell rang — and that has to be told as a bell,
+    not as an edit.
 
-    Гейт отказал теми же словами, что и всё остальное после конца занятия
-    (CLASS_IS_OVER, server/src/collab/gate.ts), — по ним окно и узнаёт свой
-    случай. Заголовок «Правка не сохранена» здесь врёт про причину: правку не
-    приняли не потому, что она плохая, и не потому, что кто-то поменял правило,
-    а потому, что пара кончилась ровно между двумя нажатиями клавиш.
+    The gate refused in the same words as everything else after the end of
+    class (CLASS_IS_OVER, server/src/collab/gate.ts) — that is how the window
+    recognises its case. The title "Edit not saved" lies about the cause
+    here: the edit was not accepted not because it was bad, and not because
+    someone changed a rule, but because the class ended exactly between two
+    key presses.
   -->
   {@const overClass = refusal.message === CLASS_IS_OVER || refusal.message === tr(CLASS_IS_OVER)}
   <!--
-    Свой ярус между пультом и терминальными плашками: выше обёртки пульта
-    (z-[95]) и проекции (z-[90]), но ниже «удалён» / «вас удалили» /
-    «разошлись» (z-[100]). Порядок тут важен в обе стороны: под пультом окно
-    было невидимо, а НАД плашкой удалённой комнаты оно предлагало бы
-    скопировать текст туда, куда его уже некуда вернуть.
+    A tier of its own between the console and the terminal plates: above the
+    console wrapper (z-[95]) and the projection (z-[90]), but below
+    "deleted" / "you were removed" / "diverged" (z-[100]). The order matters
+    both ways here: under the console the window was invisible, and ABOVE the
+    deleted-room plate it would offer to copy text to where it can no longer
+    be returned.
   -->
   <div
     role="dialog"
@@ -3046,15 +3140,16 @@
         </p>
       </div>
       <!--
-        Все ячейки, а не одна.
+        All cells, not one.
 
-        Гейт отказывает КАДРУ ЦЕЛИКОМ, а кадр после обрыва связи — это всё, что
-        человек набрал без сети, во всех ячейках сразу. Пока здесь стояла одна
-        (та, где был курсор), остальные уходили вместе с кэшем молча.
+        The gate refuses a WHOLE FRAME, and a frame after a dropped connection
+        is everything the person typed offline, in all cells at once. While
+        there was one here (the one with the cursor), the rest went away with
+        the cache silently.
 
-        Показывается только то, чего у сервера правда нет: перезагрузка
-        собирает вкладку из серверной копии, и сорок ячеек, из которых
-        тридцать девять на месте, прячут ту одну, ради которой всё затевалось
+        Only what the server really does not have is shown: a reload builds
+        the tab from the server's copy, and forty cells of which thirty-nine
+        are in place hide the one everything was for
         (lib/refusal.ts · stillLost).
       -->
       {#if refusedChecking}
@@ -3081,9 +3176,10 @@
           </div>
         </div>
       {/if}
-      <!-- На пульте это читают с планшета и нажимают пальцем: те же кнопки в
-           той же строке, но ростом с остальные кнопки пульта (h-11, см.
-           ConsoleView) — 30 px под палец у нижней кромки мало. -->
+      <!-- On the console this is read from a tablet and pressed with a finger:
+           the same buttons in the same row, but as tall as the console's other
+           buttons (h-11, see ConsoleView) — 30 px is too little for a finger
+           at the bottom edge. -->
       <div class="flex items-center gap-2 px-5 py-3">
         {#if refusedCells.length > 0}
           <button
@@ -3110,36 +3206,38 @@
 {/if}
 
 <!--
-  Пульт правил: тот же список, что и в панели, теми же словами.
+  The rules panel: the same list as in the admin panel, in the same words.
 
-  Ложится на полосу состояния, а не открывается отдельной страницей: это
-  инструмент, который берут посреди пары на десять секунд, а не экран, на
-  который уходят.
+  It lies over the status bar rather than opening as a separate page: it is a
+  tool picked up in the middle of a class for ten seconds, not a screen one
+  goes to.
 -->
 <!--
-  Только в комнате, как и палитра рядом. Открыть его можно лишь отсюда (полоса
-  состояния и палитра — обе в комнате), но `rulesOpen` переживает смену режима:
-  этот компонент один на все три (`mode` — свойство, App держит `{#key}` на
-  токене). Пульт правил, оставшийся открытым, ложился под проекцию (z-[90]) и
-  под пульт (z-[95]) — нарисованный, кликабельный и невидимый; Escape до него
-  там тоже не доходит (`onKeydown` уходит на первой же строке). Состояние
-  сохраняется: вернулись в комнату — панель на месте.
+  Only in the room, like the palette next to it. It can be opened only from
+  here (the status bar and the palette are both in the room), but `rulesOpen`
+  survives a mode change: this component is one for all three (`mode` is a
+  prop, App keeps `{#key}` on the token). A rules panel left open lay under
+  the projection (z-[90]) and under the console (z-[95]) — drawn, clickable
+  and invisible; Escape does not reach it there either (`onKeydown` returns
+  on its very first line). The state is kept: back in the room — the panel
+  is in place.
 -->
 {#if rulesOpen && isHost && mode === 'room' && !session.gone}
-  <!-- Только щелчок мимо. Escape разбирает оконный обработчик (`onKeydown`):
-       здесь он висел на нефокусируемом `div` и не срабатывал никогда. -->
+  <!-- Only a click outside. Escape is handled by the window handler
+       (`onKeydown`): here it hung on an unfocusable `div` and never fired. -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="fixed inset-0 z-40" role="presentation" onclick={() => (rulesOpen = false)}></div>
   <!--
-    Рост ОГРАНИЧЕН экраном, а не содержимым.
+    Height is LIMITED by the screen, not by the content.
 
-    Ограничение стояло на списке правил (60vh), а заголовок, «Закончить
-    занятие» и примечание считались бесплатными — и в альбомной ориентации
-    телефона (390 px высоты) 104 сверху плюс 60vh плюс эти три полосы уезжали
-    за нижнюю кромку вместе с самой важной кнопкой. Домотать до неё было
-    нельзя: прокручивался список ВНУТРИ, а не лист. Теперь лист не выше окна,
-    а прокручивается по-прежнему список — заголовок и кнопка всегда на виду.
+    The limit sat on the rules list (60vh), while the title, "End class" and
+    the note counted as free — and in a phone's landscape orientation (390 px
+    tall) 104 on top plus 60vh plus these three strips went past the bottom
+    edge together with the most important button. One could not scroll down
+    to it: the list scrolled INSIDE, not the sheet. Now the sheet is no
+    taller than the window, and the list still scrolls — the title and the
+    button are always in view.
   -->
   <div
     class="fixed right-3 top-[104px] z-50 flex max-h-[calc(100dvh-7.5rem)] flex-col
@@ -3159,8 +3257,8 @@
         <Icon name="x" size={14} />
       </button>
     </div>
-    <!-- Прокручивается СПИСОК, а не весь лист: заголовок и «Закончить
-         занятие» под ним обязаны оставаться на виду. -->
+    <!-- The LIST scrolls, not the whole sheet: the title and "End class" under
+         it must stay in view. -->
     <div class="min-h-0 flex-1 overflow-y-auto px-4 sm:max-h-[min(60vh,32rem)]">
       <RoomRulesRows
         rules={roomRules}
@@ -3171,11 +3269,12 @@
       />
     </div>
     <!--
-      Конец занятия — здесь, под правилами, а не восьмой строкой среди них.
+      The end of class — here, under the rules, not as an eighth row among
+      them.
 
-      Правило отвечает на «кому можно», а это — «идёт ли пара»: оно накрывает
-      все восемь разом и снимается тем же нажатием, и выбранные правила при
-      этом остаются на месте, чтобы вернуться, когда занятие продолжат.
+      A rule answers "who may", and this answers "is the class on": it covers
+      all eight at once and is lifted by the same press, and the chosen rules
+      stay in place meanwhile, to come back when the class resumes.
     -->
     <div class="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-line px-4 py-3">
       <div class="min-w-0 flex-1 basis-56">
@@ -3186,10 +3285,10 @@
           {#if session.finished} {tr('room.ui.931')} {:else} {tr('room.ui.932')} {/if}
         </p>
       </div>
-      <!-- Как «Перезапустить ядро»: без связи нажатие никуда не уйдёт, и
-           кнопка, сделавшая вид, что ушло, здесь дороже прочих — половина
-           комнаты продолжит печатать в занятии, которое, как кажется,
-           закончили. -->
+      <!-- Like "Restart kernel": without a connection the press goes nowhere,
+           and a button that pretended it went costs more here than the others —
+           half the room would keep typing in a class that seems to have been
+           ended. -->
       <button
         type="button"
         class="btn-outline h-[30px] shrink-0 text-2xs font-semibold"
@@ -3206,35 +3305,37 @@
       </button>
     </div>
     <!--
-      Второй строкой — то, что видно из зала.
+      On the second line — what is visible from the hall.
 
-      Ужесточение правила действует раньше, чем о нём узнают чужие браузеры:
-      кадр, вылетевший до рассылки, гейт уже не принимает, и такой вкладке
-      приходится пересобрать документ перезагрузкой (см. `lib/refusal.ts`).
-      Попадает в это окно тот, кто печатал в ту самую секунду, — и он увидит
-      окно «Правка не сохранена». Обещать ему обратное — значит объяснять
-      ему потом, что сломалось.
+      Tightening a rule takes effect before other browsers learn about it: a
+      frame that left before the broadcast is no longer accepted by the gate,
+      and such a tab has to rebuild the document with a reload (see
+      `lib/refusal.ts`). Whoever was typing in that very second falls into this
+      window — and they will see the "Edit not saved" window. Promising them
+      otherwise means explaining to them later what broke.
     -->
     <p class="shrink-0 border-t border-line px-4 py-2 text-2xs text-muted"> {tr('room.ui.934')} </p>
   </div>
 {/if}
 
 <!--
-  Вкладка разошлась с сервером и больше не пробует сама — см. SessionState.stuck.
-  Полоса, а не тост: тост закрывают крестиком и остаются с мёртвой тетрадью,
-  которая выглядит живой. Единственное действие — перезагрузка рукой, и она
-  начинает счёт перезагрузок заново.
+  The tab has diverged from the server and no longer tries by itself — see
+  SessionState.stuck.
+  A strip, not a toast: a toast gets closed with the cross, and one is left
+  with a dead notebook that looks alive. The only action is a reload by hand,
+  and it starts the reload count anew.
 
-  Не на пульте: там про расхождение говорит сам ConsoleView — своими словами,
-  своим размером под палец и с обещанием, что лекция не прервалась. Иначе об
-  одном и том же говорили бы дважды: его лист внутри обёртки пульта и эта
-  полоса поверх неё.
+  Not on the console: there ConsoleView itself speaks about the divergence —
+  in its own words, in its own finger-sized type and with the promise that
+  the lecture has not been interrupted. Otherwise the same thing would be
+  said twice: its sheet inside the console wrapper and this strip over it.
 -->
 {#if session.stuck && !session.gone && !pult}
-  <!-- И тоже поверх проекции (z-90). До сих пор она лежала под ней: после
-       второго отказа кэшу балка оставалась с застывшей страницей и без
-       причины на экране. Полоса снизу, а не плашка во весь экран: комната под
-       ней всё ещё читается, а лекция на балке всё ещё видна залу. -->
+  <!-- And over the projection too (z-90). Until now it lay under it: after the
+       second cache refusal the projector was left with a frozen page and no
+       reason on screen. A strip at the bottom, not a full-screen plate: the
+       room under it is still readable, and the lecture on the projector is
+       still visible to the hall. -->
   <div
     class="fixed inset-x-0 bottom-0 z-[100] flex justify-center border-t border-line bg-raised px-4 py-3
            pb-[max(0.75rem,env(safe-area-inset-bottom))]"
@@ -3249,26 +3350,28 @@
 {/if}
 
 <!--
-  ОДИН стек уведомлений на комнату.
+  ONE notification stack per room.
 
-  Здесь стояли пять независимых `{#if}` с одинаковыми координатами — bottom-4,
-  по центру, — и два одновременных накладывались буква на букву. Случай не
-  редкий и самый неудачный из возможных: преподаватель ужесточил правило
-  (строка живёт шесть секунд), студент в ту же секунду нажал Run и получил
-  красную строку отказа — ровно поверх объяснения, почему ему отказали.
+  There used to be five independent `{#if}`s here with the same coordinates —
+  bottom-4, centred — and two at once overlapped letter over letter. Not a
+  rare case, and the worst possible one: the teacher tightened a rule (the
+  line lives six seconds), a student pressed Run in the same second and got a
+  red refusal line — right over the explanation of why they were refused.
 
-  Порядок в колонке — снизу вверх по важности: ошибка у самой кромки, там же,
-  где она была, когда стояла одна; спокойные объявления встают над ней. Каждая
-  строка приезжает и уходит своей анимацией, стек только держит их в ряд.
+  The order in the column is bottom-up by importance: the error at the very
+  edge, where it was when it stood alone; calm announcements stack above it.
+  Each line arrives and leaves with its own animation, the stack only keeps
+  them in a row.
 
-  Ниже — те же нижние отступы: с `viewport-fit=cover` (index.html) четыре
-  пикселя под домашним индикатором значат, что крестик оказался под системным
-  свайпом. И тот же подъём над полосой «разошлись с сервером»: она занимает
-  кромку целиком, и садиться на неё стеку некуда.
+  Below — the same bottom insets: with `viewport-fit=cover` (index.html) four
+  pixels under the home indicator mean the cross ends up under the system
+  swipe. And the same lift over the "diverged from the server" strip: it
+  takes the whole edge, and the stack has nowhere to sit on it.
 
-  Пульт и проекция рисуют свои строки сами и по-своему: у пульта своя,
-  по-русски и без крестика под ладонь, а на балке любая всплывшая плашка — это
-  плашка, которую читает весь зал.
+  The console and the projection draw their lines themselves and in their
+  own way: the console has its own, in Russian and without a cross under the
+  palm, and on the projector any plate that pops up is a plate the whole
+  hall reads.
 -->
 {#if !session.gone && !pult && !projection}
   <div
@@ -3279,13 +3382,14 @@
     )}
   >
     <!--
-      Пульт закрыли, а лекция идёт.
+      The console was closed while the lecture goes on.
 
-      Уход из пульта — это не конец пары, и объявить об этом надо ровно один
-      раз: без строки человек, промахнувшийся мимо кнопки, ищет пропавшую
-      лекцию, а не дорогу обратно. Кнопка рядом с фразой, потому что вернуться
-      нужно ЗДЕСЬ и СЕЙЧАС — на пульт из комнаты другого пути нет: адрес его
-      никто не помнит, а ссылку-ключ пришлось бы просить заново.
+      Leaving the console is not the end of the class, and it has to be
+      announced exactly once: without the line, a person who missed a button
+      looks for the vanished lecture, not for the way back. The button sits
+      next to the phrase, because one needs to return HERE and NOW — there is
+      no other way from the room to the console: nobody remembers its address,
+      and the key link would have to be requested again.
     -->
     {#if pultNoticeUp}
       <div
@@ -3303,12 +3407,12 @@
     {/if}
 
     <!--
-      Правила изменились — одна строка, и она уходит сама.
+      The rules changed — one line, and it leaves by itself.
 
-      Двадцать человек, у которых редакторы вдруг стали «только чтение» без
-      единой фразы, решат, что сломались их ноутбуки. Строка спокойная, не как
-      ошибка: это не поломка, а решение преподавателя, и сказано оно ровно один
-      раз.
+      Twenty people whose editors suddenly became "read only" without a single
+      phrase will decide their laptops broke. The line is calm, not like an
+      error: it is not a breakage but the teacher's decision, and it is said
+      exactly once.
     -->
     {#if rulesNoticeUp}
       <div
@@ -3322,10 +3426,11 @@
     {/if}
 
     <!--
-      Занятие кончилось — или пошло снова. Теми же шестью секундами и тем же
-      спокойным тоном, что и строка про правила: это не поломка, а решение
-      преподавателя, и сказать его надо ровно один раз. Что было и осталось —
-      тетрадь, файлы, лента — стоит в самой фразе: гаснут кнопки, а не комната.
+      The class ended — or started again. With the same six seconds and the
+      same calm tone as the rules line: it is not a breakage but the teacher's
+      decision, and it has to be said exactly once. What there was and still
+      is — the notebook, the files, the feed — is in the phrase itself: the
+      buttons go dark, not the room.
     -->
     {#if classNoticeUp}
       <div
@@ -3340,7 +3445,7 @@
       </div>
     {/if}
 
-    <!-- Ядро не поднялось, и ведущий может это исправить: тоном ошибки, до крестика. -->
+    <!-- The kernel did not start and the presenter can fix it: error tone, until closed. -->
     {#if adviceUp}
       <div
         role="status"
@@ -3359,7 +3464,7 @@
       </div>
     {/if}
 
-    <!-- Кэш был старше сервера, вкладка собралась заново, текста не пропало. -->
+    <!-- The cache was older than the server, the tab rebuilt itself, no text was lost. -->
     {#if staleNotice}
       <div
         role="status"
@@ -3378,8 +3483,8 @@
       </div>
     {/if}
 
-    <!-- Ошибка — у самой кромки: это единственная строка, которая говорит, что
-         нажатие НЕ сработало, и читать её надо первой. -->
+    <!-- The error sits at the very edge: it is the only line saying that a
+         press did NOT work, and it has to be read first. -->
     {#if session.lastError}
       <div
         role="status"

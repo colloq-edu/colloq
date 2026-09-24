@@ -2,25 +2,26 @@
   import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
   import { tr } from '@shared/i18n'
   /**
-   * Папка семинара деревом.
+   * The seminar folder as a tree.
    *
-   * Список приходит с сервера уже в том порядке, в каком его рисуют — обход в
-   * глубину, папки перед файлами, — так что здесь не строится никакое дерево:
-   * строка знает свою глубину из числа косых черт в пути, а свёрнутая папка
-   * прячет всё, что под ней. Это и есть причина, по которой сервер отдаёт
-   * плоский список: дерево, собранное дважды с двух сторон, — два места, где
-   * порядок может разойтись.
+   * The list comes from the server already in the order in which it is drawn —
+   * depth-first, folders before files — so no tree is built here: a row knows
+   * its depth from the number of slashes in its path, and a collapsed folder
+   * hides everything under it. That is the very reason the server returns a
+   * flat list: a tree assembled twice, on two sides, is two places where the
+   * order can diverge.
    *
-   * Нажатие на файл открывает его, а не копирует строку для ячейки: открывать
-   * стало чем.
+   * Clicking a file opens it rather than copying a line for a cell: there is
+   * now something to open it with.
    *
-   * Всё остальное, что со строкой можно сделать, живёт в меню под правой
-   * кнопкой — и только там. Полоса из трёх значков по наведению, стоявшая тут
-   * раньше, умела ровно три вещи, занимала место размера файла и на планшете
-   * доставалась только выделенной строке; в неё же упиралось каждое следующее
-   * действие, потому что четвёртый значок в строку 26 пикселей высотой уже не
-   * лез. Вместо полосы — одна кнопка «⋯», открывающая то же меню: правая
-   * кнопка неочевидна, а на телефоне её нет вовсе.
+   * Everything else that can be done with a row lives in the menu under the
+   * right click — and only there. The strip of three hover icons that used to
+   * stand here could do exactly three things, took up space the size of the
+   * file, and on a tablet was available only on the selected row; every further
+   * action ran into it too, because a fourth icon no longer fit into a row 26
+   * pixels high. Instead of the strip there is a single "⋯" button that opens
+   * the same menu: the right click is not obvious, and on a phone it does not
+   * exist at all.
    */
   import type { FileEntry } from '@shared/protocol'
   import { api } from '@/lib/api'
@@ -52,17 +53,18 @@
   }
 
   interface Props {
-    /** Открыть файл: редактор, читалка или просмотр — решает вызвавший. */
+    /** Open a file: editor, reader or preview — the caller decides. */
     onopen?: (path: string) => void
-    /** Что открыто сейчас — эта строка подсвечена. */
+    /** What is open now — this row is highlighted. */
     active?: string | null
-    /** Файл переименовали: вкладка на него должна поехать следом. */
+    /** A file was renamed: the tab on it has to follow. */
     onrename?: (from: string, to: string) => void
     /**
-     * Запустить скрипт — тем же `file:run`, которым его запускает полоса над
-     * редактором (editor/FileBar.svelte). Здесь этого действия не было, и
-     * добавлено оно только пунктом меню: своей кнопки в строке дерева у запуска
-     * нет и не должно быть — на .py в папке смотрят чаще, чем запускают.
+     * Run a script — with the same `file:run` that the bar above the editor
+     * uses (editor/FileBar.svelte). This action did not exist here, and it was
+     * added only as a menu item: running has no button of its own in a tree
+     * row, nor should it — people look at a .py in the folder more often than
+     * they run it.
      */
     onrun?: (path: string) => void
   }
@@ -72,62 +74,67 @@
   const session = getSessionState()
 
   let dragDepth = $state(0)
-  /** Папка, в которую сейчас ляжет то, что несут. Пустая строка — корень. */
+  /** The folder that what is being carried will land in. Empty string: root. */
   let dragInto = $state<string | null>(null)
-  /** Папка, которая отказала бы: подсветка «сюда нельзя». */
+  /** A folder that would refuse: the "not here" highlight. */
   let dragDeny = $state<string | null>(null)
   /**
-   * Несут файлы с диска, а не строку дерева.
+   * Files are being carried from the disk, not a tree row.
    *
-   * Рамка «уроните файлы сюда» принадлежит только первому случаю: своя строка,
-   * пронесённая над панелью, зажигала бы приглашение к загрузке, которого никто
-   * не звал.
+   * The "drop files here" frame belongs only to the first case: one's own row
+   * carried over the panel would light up an invitation to upload that nobody
+   * asked for.
    */
   let dragFiles = $state(false)
   /**
-   * Строка, которую держат в руке.
+   * The row being held in hand.
    *
-   * Помнить её приходится здесь: на весу браузер отдаёт только ТИПЫ буфера, а
-   * содержимое — не раньше отпускания. Без этого подсветка не могла бы ответить
-   * ни на один вопрос о том, что именно несут.
+   * It has to be remembered here: while dragging, the browser gives out only
+   * the TYPES of the data transfer, and the content not before the drop.
+   * Without this the highlight could not answer a single question about what
+   * exactly is being carried.
    */
   let carried = $state<Row | null>(null)
   let uploads = $state<Upload[]>([])
-  /** Не ошибка, а предупреждение: загрузка прошла, но что-то заменила собой. */
+  /** A warning, not an error: the upload worked but replaced something. */
   let note = $state<string | null>(null)
   let noteTimer: number | undefined
   let errorRender = $state<() => string | null>(() => null)
   const error = $derived(errorRender())
   /**
-   * Что именно только что легло в буфер — самой строкой, а не словом.
+   * What exactly has just gone into the clipboard — as the line itself, not as
+   * a word.
    *
-   * Отметка переехала из строки файла под дерево. В строке было место на одно
-   * слово («скопировано»), а копировать можно и путь, и имя: слово на оба
-   * случая оставляет гадать, что забрали. Под деревом место есть, и туда
-   * помещается сам путь — то, что человек сейчас вставит в ячейку.
+   * The mark moved from the file row to under the tree. The row had room for
+   * one word ("copied"), and both the path and the name can be copied: one word
+   * for both cases leaves people guessing what was taken. Under the tree there
+   * is room, and the path itself fits there — the very thing the person is
+   * about to paste into a cell.
    */
   let copied = $state<string | null>(null)
   let confirming = $state<string | null>(null)
   const isHost = $derived(session.me.role === 'host')
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   /**
-   * Кто может таскать строки по дереву.
+   * Who can drag rows around the tree.
    *
-   * Правило комнаты — `may.files`, как у всего остального в этой панели. Роль
-   * рядом с ним не лишняя: `tree:move` на сервере преподавательский, и строка,
-   * которую дали взять в руку, а потом молча не перенесли, — обещание, которое
-   * не сдержат. Отказ к тому же ушёл бы не сюда, а в общую полосу ошибок.
+   * The room rule is `may.files`, as for everything else in this panel. The
+   * role next to it is not redundant: `tree:move` on the server is
+   * teacher-only, and a row that someone was allowed to pick up and that was
+   * then silently not moved is a promise that will not be kept. The refusal
+   * would also go not here but into the shared error bar.
    */
   const mayDrag = $derived(may.files && isHost)
-  /** Тетради комнаты: `.ipynb`, который уже открыт как тетрадь, — не файл. */
+  /** Room notebooks: an `.ipynb` already open as a notebook is not a file. */
   const books = watchBooks(session.doc)
   const isBook = (path: string): boolean => books.current.some((book) => book.path === path)
   /**
-   * Это МОЯ личная тетрадь.
+   * This is MY personal notebook.
    *
-   * По правилам комнаты, а не по документу: автор и доступ живут в правилах
-   * (shared/rules.ts · BookRule), потому что это право, а права не носят в
-   * CRDT, где их может переписать любой. Тот же ответ даёт сервер.
+   * By the room rules, not by the document: the author and the access live in
+   * the rules (shared/rules.ts · BookRule), because this is a right, and rights
+   * are not carried in a CRDT, where anyone can rewrite them. The server gives
+   * the same answer.
    */
   const myBook = (path: string): boolean => {
     const root = books.current.find((book) => book.path === path)?.root
@@ -141,38 +148,41 @@
     session.files.filter(entry => entry.dir && !expanded.has(entry.path)).map(entry => entry.path),
   ))
   /**
-   * Строка, которой коснулись последней, — и единственный вход к её действиям
-   * с пальца.
+   * The row touched last — and the only way to its actions from a finger.
    *
-   * Полоса действий (строка для ячейки, скачать, убрать) появлялась по
-   * `hover`, а на планшете наведения нет: тап оставлял «наведённое» состояние
-   * висеть до следующего касания, а после `future.hoverOnlyWhenSupported` в
-   * tailwind.config.js не оставляет и его — с пальца до кнопок не добраться
-   * вовсе. Тот же ответ, что у тулбара ячейки (CellView · `selected &&
-   * opacity-100`): действия показывает ВЫДЕЛЕННАЯ строка, а выделяет её то же
-   * нажатие, которым файл открывают. Мышь при этом ничего не теряет: `hover`
-   * и `focus-within` остаются рядом.
+   * The action strip (a line for a cell, download, remove) appeared on `hover`,
+   * and a tablet has no hover: a tap left the "hovered" state hanging until the
+   * next touch, and after `future.hoverOnlyWhenSupported` in tailwind.config.js
+   * it does not even leave that — the buttons cannot be reached from a finger
+   * at all. The same answer as for the cell toolbar (CellView ·
+   * `selected && opacity-100`): the actions are shown by the SELECTED row, and
+   * it is selected by the same press that opens the file. The mouse loses
+   * nothing: `hover` and `focus-within` stay alongside.
    */
   let picked = $state<string | null>(null)
   /**
-   * Куда лягут «новый файл», «новая папка» и загрузка. Пустая строка — корень.
+   * Where "new file", "new folder" and uploads will land. Empty string: the
+   * root.
    *
-   * Цель — папка, которую открыли последней (или родитель открытого файла), и
-   * живёт она ровно столько, сколько папка открыта: свернул — цель поднялась
-   * к родителю. Так у неё есть очевидный выход, а не только «нажми на другой
-   * файл», и подпись внизу всегда называет место, а не правило.
+   * The target is the folder opened last (or the parent of the open file), and
+   * it lives exactly as long as the folder is open: collapse it and the target
+   * moves up to the parent. That way it has an obvious way out, not only "click
+   * another file", and the caption at the bottom always names a place, not a
+   * rule.
    */
   let target = $state('')
   /**
-   * Та же папка строкой дерева — для броска на пунктирную кнопку внизу.
+   * The same folder as a tree row — for a drop onto the dashed button at the
+   * bottom.
    *
-   * Своего обработчика у кнопки не было, и событие всплывало в секцию, а та
-   * целится в корень: надпись читалась «Файлы — в папку data», а файл ложился
-   * рядом с ней. Нажатие на ту же кнопку при этом клало в `target` — один
-   * элемент двумя жестами в две разные папки, и подпись врала про один из них.
+   * The button had no handler of its own, and the event bubbled up to the
+   * section, which aims at the root: the caption read "Files — into folder
+   * data", while the file landed next to that folder. Clicking the same button
+   * meanwhile put it into `target` — one element sending two gestures into two
+   * different folders, and the caption lied about one of them.
    */
   const targetRow: Row | null = $derived(target ? { path: target, dir: true } : null)
-  /** Строка ввода: заводим новое или переименовываем существующее. */
+  /** The input line: creating something new or renaming an existing one. */
   let draft = $state<{ kind: 'file' | 'dir' | 'book' | 'rename'; dir: string; from?: string } | null>(
     null,
   )
@@ -191,22 +201,25 @@
   )
 
   /**
-   * Папки, внутри которых хоть что-то лежит.
+   * Folders that have at least something inside.
    *
-   * Список приходит плоским, и родитель читается из пути: собирать дерево ради
-   * одного вопроса «пусто ли здесь» значило бы завести второй порядок обхода
-   * рядом с первым — ровно то, чего сервер избегает, отдавая плоский список.
+   * The list comes flat, and the parent is read from the path: assembling a
+   * tree for the sake of one question, "is it empty here", would mean setting
+   * up a second traversal order next to the first — exactly what the server
+   * avoids by returning a flat list.
    */
   const filled = $derived(new Set(session.files.map((entry) => parentOf(entry.path))))
 
   /**
-   * Что написать под раскрытой папкой, в которой ничего не видно, — и писать ли.
+   * What to write under an expanded folder in which nothing is visible — and
+   * whether to write it.
    *
-   * Случая три, и «пусто» верно только в первом. Обрезанный список — не пусто:
-   * обход до содержимого просто не дошёл, и об этом говорит строка внизу. Папка
-   * на самом дне — тем более: туда обход не дойдёт никогда, строки внизу при
-   * этом не будет (`truncated` считает только строки списка), а файлы в ней
-   * лежат и место занимают — видно их одной ячейке.
+   * There are three cases, and "empty" is right only in the first. A truncated
+   * list is not empty: the traversal simply did not get to the contents, and
+   * the line at the bottom says so. A folder at the very bottom even less so:
+   * the traversal will never get there, there will be no line at the bottom
+   * (`truncated` counts only list rows), and yet the files in it are there and
+   * take up space — a single cell can see them.
    */
   function emptyWord(path: string): string | null {
     if (filled.has(path)) return null
@@ -218,33 +231,35 @@
   const listed = $derived(session.files.length > 0 || uploads.length > 0)
 
   /**
-   * Дерево показано не целиком.
+   * The tree is not shown in full.
    *
-   * Сервер обходит папки уровень за уровнем и упирается в потолок (см.
-   * `listTree` в workspace.ts): самое глубокое в список не попадает. Молчать
-   * об этом нельзя — человек, не нашедший свой файл, ищет его заново, а не
-   * догадывается о потолке.
+   * The server walks folders level by level and hits a ceiling (see `listTree`
+   * in workspace.ts): the deepest things do not make it into the list. Keeping
+   * silent about it is not an option — a person who has not found their file
+   * looks for it again rather than guessing about the ceiling.
    *
-   * Признак едет рядом со списком, в сообщении `files`, и лежит в состоянии
-   * комнаты (`session.filesTruncated`): он заменяется каждым кадром, так что
-   * строка гаснет сама, как только дерево снова помещается целиком.
+   * The flag travels next to the list, in the `files` message, and lives in the
+   * room state (`session.filesTruncated`): it is replaced by every frame, so
+   * the line goes out by itself as soon as the tree fits in full again.
    */
   const truncated = $derived(session.filesTruncated)
 
   const depthOf = (path: string): number => path.split('/').length - 1
 
   /**
-   * Кто держит файлы открытыми — из присутствия комнаты, одним проходом.
+   * Who keeps files open — from the room's presence, in a single pass.
    *
-   * Не курсоры: те живут в присутствии самого файла и до комнаты не доходят.
-   * Здесь — только «кто здесь», и этого хватает, чтобы не начать править файл,
-   * который в этот момент правит сосед, ничего об этом не зная.
+   * Not cursors: those live in the presence of the file itself and do not reach
+   * the room. Here there is only "who is here", and that is enough not to start
+   * editing a file that a neighbour is editing at that moment without knowing
+   * anything about it.
    *
-   * Карта по пути, а не поиск на каждую строку. `#readPeers` отдаёт новый
-   * массив на КАЖДЫЙ чужой курсор, а прежний код на каждый такой кадр обходил
-   * всех присутствующих для каждой видимой строки дерева: сто строк на
-   * пятистах человек — пятьдесят тысяч сравнений за переход соседа между
-   * ячейками. Теперь один проход по присутствию, и строки читают готовое.
+   * A map by path, not a search for every row. `#readPeers` returns a new array
+   * on EVERY remote cursor, and the old code, on every such frame, walked
+   * everyone present for every visible row of the tree: a hundred rows with
+   * five hundred people are fifty thousand comparisons per neighbour's move
+   * between cells. Now there is one pass over presence, and the rows read the
+   * ready result.
    */
   const NOBODY: { id: string; color: string; name: string }[] = []
 
@@ -255,8 +270,8 @@
       if (peer.isSelf || !path) continue
       let here = map.get(path)
       if (!here) map.set(path, (here = []))
-      // Три лица на строку: дальше они не поместятся, а вторая вкладка того же
-      // человека — всё тот же человек.
+      // Three faces per row: more will not fit, and a second tab of the same
+      // person is still the same person.
       if (here.length >= 3 || here.some((seen) => seen.id === peer.user.id)) continue
       here.push({ id: peer.user.id, color: peer.user.color, name: peer.user.name })
     }
@@ -268,26 +283,27 @@
   }
 
   /**
-   * Сорок пикселей — место под размер файла, и оно же под кнопку меню.
+   * Forty pixels — the space for the file size, and also for the menu button.
    *
-   * Раньше ширина этой полосы считалась по числу значков в строке: полоса,
-   * рассчитанная на две кнопки, третью выкладывала поверх имени файла — так
-   * однажды и случилось, когда у PDF появилось «открыть». Кнопка теперь одна и
-   * навсегда одна, сколько бы действий ни прибавилось в меню, так что считать
-   * больше нечего.
+   * The width of this strip used to be computed from the number of icons in the
+   * row: a strip designed for two buttons laid the third one out on top of the
+   * file name — which is exactly what happened once, when PDF got "open". There
+   * is now one button, and it will always be one, however many actions are
+   * added to the menu, so there is nothing left to compute.
    */
   const SIZE_LANE = 40
 
   function toggle(path: string): void {
-    // Тап по стрелке — тоже прикосновение к строке: раскрыв папку пальцем,
-    // человек должен видеть и то, что с ней можно сделать.
+    // A tap on the arrow is also a touch of the row: having expanded a folder
+    // with a finger, a person should also see what can be done with it.
     picked = path
     const next = new Set(expanded)
     if (next.has(path)) {
       next.delete(path)
-      // Свёрнутая папка целью не остаётся: файл лёг бы туда, где его не видно,
-      // а вернуть цель в корень иначе было нечем — только открыть файл рядом.
-      // Закрыть папку — и есть «снять выделение».
+      // A collapsed folder does not remain the target: a file would land where
+      // it cannot be seen, and there was otherwise no way to return the target
+      // to the root — only by opening a file next to it. Closing the folder is
+      // exactly "deselecting".
       if (target === path || target.startsWith(`${path}/`)) target = parentOf(path)
     } else {
       next.add(path)
@@ -297,56 +313,59 @@
   }
 
   /**
-   * Открыть или скачать — по одинарному щелчку.
+   * Open or download — on a single click.
    *
-   * На том же имени висит и переименование по двойному, и второй щелчок
-   * доезжал до `pick` вторым нажатием: двоичный файл заказывался и скачивался
-   * дважды (два билета, два `a.click()` — датасет на гигабайт в загрузках
-   * двумя копиями), папка схлопывалась и раскрывалась подряд, а студенту, у
-   * которого переименования нет вовсе, оставались одни побочные действия.
-   * `detail` браузер считает сам: 1 — первый щелчок, 2 — второй.
+   * The same name also carries renaming on a double click, and the second click
+   * reached `pick` as a second press: a binary file was requested and
+   * downloaded twice (two tickets, two `a.click()` — a gigabyte dataset in the
+   * downloads as two copies), a folder collapsed and expanded in a row, and a
+   * student who has no renaming at all was left with nothing but the side
+   * effects. `detail` is counted by the browser itself: 1 for the first click,
+   * 2 for the second.
    */
   function pick(entry: FileEntry, detail = 1): void {
     if (detail > 1) return
     /*
-     * Долгое нажатие пальцем кончается нажатием — и браузер шлёт `click`
-     * следом за тем, как меню уже открылось. Без этой строки вызванное пальцем
-     * меню открывало бы заодно файл, по которому его вызвали: вкладка поверх
-     * меню, а меню всё ещё про файл, который в эту секунду грузится.
+     * A long finger press ends with a press — and the browser sends `click`
+     * right after the menu has already opened. Without this line a menu called
+     * up by a finger would also open the file it was called on: a tab on top of
+     * the menu, while the menu is still about the file that is loading at that
+     * very second.
      */
     if (heldOpen) {
       heldOpen = false
       return
     }
-    // Выделение — до любых отказов ниже: строка, по которой нажали, показывает
-    // свои действия, даже если открыть файл правило комнаты не дало.
+    // Selection — before any of the refusals below: the row that was pressed
+    // shows its actions even if the room rule did not let the file open.
     picked = entry.path
     if (entry.dir) {
-      // Цель ставит и снимает `toggle`: открытая папка — цель, закрытая — нет.
+      // The target is set and cleared by `toggle`: an open folder is the
+      // target, a closed one is not.
       toggle(entry.path)
       return
     }
     target = parentOf(entry.path)
-    // Двоичное не открыть ничем: нажатие на нём означает «дай мне его сюда».
+    // Nothing can open a binary file: a press on it means "give it to me here".
     if (kindOf(entry.path) === 'binary') {
       void download(entry.path)
       return
     }
     /*
-     * Тетрадь, которой в комнате ещё нет, вносит сервер — и может отказать.
-     * Вкладка на неё открылась бы сразу и осталась бы навсегда с «Открываю…»:
-     * тетради, которую не завели, в комнате не появится, и закрывать вкладку
-     * нечему. Отказ — здесь, до нажатия, теми же словами, которыми ответил бы
-     * сервер.
+     * A notebook that is not in the room yet is added by the server — and the
+     * server may refuse. A tab on it would open at once and stay forever at
+     * "Opening…": a notebook that was not created will never appear in the
+     * room, and there would be nothing to close the tab. The refusal comes
+     * here, before the press, in the same words the server would answer with.
      *
-     * Спрашивается `ownBook`, а не `files`: внести .ipynb в комнату — значит
-     * добавить тетрадь, и правило у этого своё (shared/rules.ts · ownBooks).
-     * Положить файл в папку и внести его в комнату — разные вещи, и стояла
-     * здесь проверка не та.
+     * What is asked is `ownBook`, not `files`: adding an .ipynb to the room
+     * means adding a notebook, and that has its own rule (shared/rules.ts ·
+     * ownBooks). Putting a file into the folder and adding it to the room are
+     * different things, and the check that stood here was the wrong one.
      */
     if (kindOf(entry.path) === 'notebook' && !may.ownBook && !isBook(entry.path)) {
-      // Из `may`, как в двух соседних ветках: свои слова здесь после звонка
-      // называли правило, которого никто не менял.
+      // From `may`, as in the two neighbouring branches: its own words here,
+      // after the bell, named a rule that nobody had changed.
       errorRender = () => (may.ownBookWhy + '.')
       return
     }
@@ -375,12 +394,12 @@
     }
   }
 
-  /* ------------------------------------------------------- новое и имена */
+  /* ------------------------------------------------- new items and names */
 
   function startDraft(kind: 'file' | 'dir' | 'book'): void {
     draft = { kind, dir: target }
-    // У тетради расширение подставлено и выделено не будет: человек набирает
-    // имя, а `.ipynb` — не его забота.
+    // For a notebook the extension is filled in and will not be selected: the
+    // person types the name, and `.ipynb` is not their concern.
     draftName = kind === 'book' ? '.ipynb' : ''
     queueMicrotask(() => {
       draftInput?.focus()
@@ -394,7 +413,8 @@
     draftName = entry.name
     queueMicrotask(() => {
       draftInput?.focus()
-      // Выделено имя без расширения: переименовывают обычно его, а не `.py`.
+      // The name without the extension is selected: people usually rename that,
+      // not the `.py`.
       const dot = draftName.lastIndexOf('.')
       draftInput?.setSelectionRange(0, dot > 0 ? dot : draftName.length)
     })
@@ -405,12 +425,12 @@
     if (!current) return
     const name = draftName.trim()
     /*
-     * Черновик тетради начинается с подставленного `.ipynb`, и «ничего не
-     * набрали» выглядит здесь не как пустая строка, а как одно расширение.
-     * Без этой ветки уход из поля мимо давал отказ «имя начинается с точки», а
-     * поле не закрывалось: каждый следующий щелчок мимо повторял ту же ошибку,
-     * и выйти можно было только Escape. Пустое имя закрывает поле — так и у
-     * файла, и у папки.
+     * A notebook draft starts with a pre-filled `.ipynb`, and "nothing typed"
+     * looks here not like an empty string but like the extension alone. Without
+     * this branch, leaving the field by clicking elsewhere produced the refusal
+     * "the name starts with a dot", and the field did not close: every next
+     * click elsewhere repeated the same error, and the only way out was Escape.
+     * An empty name closes the field — the same as for a file and a folder.
      */
     if (!name || (current.kind === 'book' && name === '.ipynb')) return cancelDraft()
     if (!safeSegment(name)) {
@@ -421,14 +441,16 @@
     if (current.kind === 'rename') {
       if (current.from && current.from !== path) {
         /*
-         * Занятое имя видно отсюда — список файлов комнаты уже здесь.
+         * A taken name can be seen from here — the room's file list is already
+         * here.
          *
-         * Вкладка переезжает на новое имя сразу и обязана: рассылка списка
-         * приходит позже и закрыла бы её как вкладку на исчезнувший файл. Но
-         * если сервер откажет, списка не будет вовсе, а вкладка уже стоит на
-         * несуществующем пути — редактор отпустит документ вместе с историей
-         * отмен и закроется по 4404. Поэтому то, чем сервер отказал бы,
-         * проверяется до отправки, его же словами.
+         * The tab moves to the new name at once, and it has to: the broadcast
+         * of the list arrives later and would close it as a tab on a vanished
+         * file. But if the server refuses, there will be no list at all, and
+         * the tab already stands on a non-existent path — the editor will let
+         * go of the document together with its undo history and close with
+         * 4404. So whatever the server would refuse with is checked before
+         * sending, in its own words.
          */
         if (!session.files.some((entry) => entry.path === current.from)) {
           errorRender = () => (tr('room.ui.613', { p0: baseOf(current.from!) }))
@@ -439,8 +461,8 @@
           return
         }
         session.send({ t: 'tree:move', from: current.from, to: path })
-        // Переименовать могли и папку — тогда переезжает всё, что в ней, и
-        // вкладки на содержимое обязаны уехать вместе с ним.
+        // A folder may have been renamed too — then everything in it moves, and
+        // tabs on its contents have to move along with it.
         for (const moved of movedPaths(current.from, path, session.files)) {
           onrename?.(moved.from, moved.to)
         }
@@ -452,25 +474,27 @@
       pendingOpen = path
     } else {
       session.send({ t: 'tree:new', path })
-      // Открыть сразу: новый файл заводят, чтобы в него что-то написать, и
-      // лишний поиск его же в дереве — это работа на ровном месте.
+      // Open at once: a new file is created in order to write something in it,
+      // and searching for it in the tree is work for nothing.
       pendingOpen = path
     }
     cancelDraft()
   }
 
   /**
-   * Файл, который завели и хотят открыть, как только он появится в списке.
+   * A file that was created and should be opened as soon as it appears in the
+   * list.
    *
-   * Список приходит с сервера, а не сочиняется здесь: открывать файл до того,
-   * как сервер подтвердил, что он есть, значило бы открывать вкладку на то,
-   * чего может и не оказаться — имя занято, папка исчезла, правило поменялось.
+   * The list comes from the server, not made up here: opening the file before
+   * the server has confirmed it exists would mean opening a tab on something
+   * that may not turn out to be there — the name is taken, the folder is gone,
+   * the rule changed.
    *
-   * `$state`, а не обычная переменная, и это не украшение: эффект ниже читает
-   * её первой строкой и на `null` выходит, ничего больше не прочитав. Обычная
-   * переменная не была бы его зависимостью — эффект отработал бы один раз при
-   * монтировании и не проснулся бы никогда, а файл открывался бы «когда-нибудь
-   * потом», то есть при следующей чужой правке.
+   * `$state`, not a plain variable, and that is not decoration: the effect
+   * below reads it on its first line and exits on `null` without reading
+   * anything else. A plain variable would not be its dependency — the effect
+   * would run once on mount and never wake up again, and the file would open
+   * "some time later", that is, on someone else's next edit.
    */
   let pendingOpen = $state<string | null>(null)
 
@@ -495,9 +519,9 @@
    */
   function onKeydown(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return
-    // Съеденный ключ помечается: ящик терминала закрывается по Escape, если он
-    // никому не понадобился, и «отменил имя файла» — это как раз тот случай,
-    // когда он понадобился.
+    // The consumed key is marked: the terminal drawer closes on Escape if
+    // nobody needed it, and "cancelled the file name" is exactly the case when
+    // it was needed.
     if (draft) {
       event.preventDefault()
       return cancelDraft()
@@ -513,13 +537,15 @@
 
   $effect(() => () => {
     window.clearTimeout(copyTimer)
-    // Иначе таймер развернёт папку в панели, которой на экране уже нет.
+    // Otherwise the timer would expand a folder in a panel that is no longer on
+    // screen.
     window.clearTimeout(hoverTimer)
-    // А эти открыли бы меню на строке, которой уже нет, — и держали бы её
-    // запись в памяти вместе со всем деревом.
+    // And these would open a menu on a row that no longer exists — and keep its
+    // record in memory together with the whole tree.
     window.clearTimeout(holdTimer)
     window.clearTimeout(heldTimer)
-    // И подсветку копии вместе с памятью о том, каким дерево было до неё.
+    // And the copy highlight, together with the memory of what the tree was
+    // like before it.
     window.clearTimeout(freshTimer)
     window.clearTimeout(waitTimer)
   })
@@ -547,8 +573,9 @@
   ): Promise<{ files: FileEntry[]; replaced: string[] }> {
     return new Promise((resolve, reject) => {
       const form = new FormData()
-      // Папка первой: busboy разбирает части по порядку, и поле, приехавшее
-      // после файла, опоздало бы ровно на тот файл, ради которого его послали.
+      // The folder first: busboy parses the parts in order, and a field that
+      // arrived after the file would be late by exactly the file it was sent
+      // for.
       form.append('dir', dir)
       form.append('file', file, file.name)
 
@@ -577,8 +604,8 @@
   async function upload(list: FileList | File[] | null, dir: string) {
     const files = Array.from(list ?? [])
     if (files.length === 0) return
-    // Право — до первого байта: отказ, приходящий после выбора файла, человек
-    // читает как поломку, а не как правило комнаты.
+    // The permission — before the first byte: a refusal that arrives after the
+    // file has been chosen reads to a person as a breakage, not as a room rule.
     if (!may.files) {
       errorRender = () => (may.filesWhy + '.')
       return
@@ -594,12 +621,13 @@
     uploads = [...uploads, ...queued]
 
     /*
-     * Что легло поверх уже лежавшего.
+     * What landed on top of what was already there.
      *
-     * Одноимённый файл заменялся молча: человек роняет в комнату свою
-     * `data.csv`, а под этим именем уже лежит чужая, на которой в семинаре
-     * что-то считают. Отменить это нечем, но и узнавать об этом по числам —
-     * слишком поздно. Собирается за весь заход и говорится одной строкой.
+     * A file with the same name was replaced silently: a person drops their
+     * `data.csv` into the room, and under that name there is already someone
+     * else's, on which something is being computed in the seminar. There is no
+     * way to undo this, but learning about it from the numbers is too late. It
+     * is collected over the whole batch and reported in one line.
      */
     const overwritten: string[] = []
 
@@ -633,20 +661,21 @@
     errorRender = () => (null)
     session.send({ t: 'tree:remove', path: entry.path })
     confirming = null
-    // Ответа нет: список файлов приходит комнате целиком, и строка исчезает
-    // вместе с ним. Отказ, если он будет, придёт обычной строкой ошибки.
+    // There is no reply: the file list comes to the room in full, and the row
+    // disappears with it. A refusal, if there is one, will arrive as an
+    // ordinary error line.
     window.setTimeout(() => (deleting = null), 600)
   }
 
   /**
-   * Положить в буфер — и показать строкой, ЧТО именно туда легло.
+   * Put into the clipboard — and show as a line WHAT exactly went there.
    *
-   * Одна дверь на оба пункта меню: путь и имя отличаются только текстом, а
-   * отказ буфера у них общий (на http без localhost `navigator.clipboard`
-   * попросту нет — см. lib/clipboard.ts).
+   * One door for both menu items: the path and the name differ only in text,
+   * and the clipboard refusal is shared by both (on http without localhost
+   * `navigator.clipboard` simply does not exist — see lib/clipboard.ts).
    *
-   * Две с половиной секунды, а не полторы: прочитать `data/train.csv` дольше,
-   * чем увидеть галочку.
+   * Two and a half seconds, not one and a half: reading `data/train.csv` takes
+   * longer than seeing a check mark.
    */
   async function copyInto(text: string): Promise<void> {
     try {
@@ -659,24 +688,25 @@
     }
   }
 
-  /* --------------------------------------------------------------- меню */
+  /* --------------------------------------------------------------- menu */
 
   /**
-   * Что сейчас под меню: строка дерева или пустое место панели.
+   * What is under the menu right now: a tree row or an empty part of the panel.
    *
-   * Запись, а не путь строкой: у меню спрашивают и `dir`, и имя, и расширение,
-   * а искать строку в списке на каждый пункт значило бы искать её заново после
-   * каждой чужой правки дерева. Пропажу самой строки ловит эффект ниже — он и
-   * закрывает меню, повисшее над файлом, которого уже нет.
+   * A record, not a path string: the menu asks for `dir`, the name and the
+   * extension, and searching for the row in the list for every item would mean
+   * searching for it again after every edit of the tree by someone else. The
+   * disappearance of the row itself is caught by the effect below — it also
+   * closes a menu left hanging over a file that no longer exists.
    */
   type MenuOn = { kind: 'entry'; entry: FileEntry } | { kind: 'panel' }
 
-  /** Где стоит меню — в координатах окна. `null` — меню закрыто. */
+  /** Where the menu stands, in window coordinates; `null`: menu closed. */
   let menuAt = $state<{ x: number; y: number } | null>(null)
   let menuOn = $state<MenuOn | null>(null)
-  /** Куда вернуть фокус, когда меню закроют: строка или кнопка «⋯». */
+  /** Where focus returns when the menu closes: the row or the "⋯" button. */
   let menuOpener = $state<HTMLElement | null>(null)
-  /** Сама панель: по ней ходят стрелки вверх-вниз. */
+  /** The panel itself: the up and down arrows move through it. */
   let panel = $state<HTMLElement | null>(null)
 
   function openMenu(
@@ -687,7 +717,8 @@
     menuOn = on
     menuOpener = opener
     menuAt = point
-    // Подсказка про правую кнопку нужна ровно до первого открытого меню.
+    // The hint about the right click is needed only until the first menu is
+    // opened.
     rememberTip()
   }
 
@@ -698,9 +729,9 @@
   }
 
   /*
-   * Строку, над которой висело меню, могли убрать — своей же кнопкой,
-   * перетаскиванием или из соседней вкладки. Меню про исчезнувший файл — это
-   * набор действий, каждое из которых ответит «его больше нет».
+   * The row the menu hung over may have been removed — by its own button, by
+   * dragging or from a neighbouring tab. A menu about a vanished file is a set
+   * of actions, each of which will answer "it is no longer there".
    */
   $effect(() => {
     const on = menuOn
@@ -708,15 +739,16 @@
     if (!session.files.some((entry) => entry.path === on.entry.path)) closeMenu()
   })
 
-  /** Кнопка имени внутри строки — то, чему возвращают фокус и по чему ходят стрелки. */
+  /** The row's name button: focus returns to it, and the arrows move by it. */
   function nameButtonIn(row: EventTarget | null): HTMLElement | null {
     return row instanceof HTMLElement ? row.querySelector<HTMLElement>('[data-row-name]') : null
   }
 
   function onRowMenu(event: MouseEvent, entry: FileEntry): void {
     event.preventDefault()
-    // Своя строка перебивает панель: то же событие всплывает к секции, а та
-    // открывает меню про корень папки занятия.
+    // One's own row outranks the panel: the same event bubbles up to the
+    // section, and the section opens the menu about the root of the class
+    // folder.
     event.stopPropagation()
     picked = entry.path
     openMenu({ x: event.clientX, y: event.clientY }, { kind: 'entry', entry }, nameButtonIn(event.currentTarget))
@@ -727,7 +759,7 @@
     openMenu({ x: event.clientX, y: event.clientY }, { kind: 'panel' }, null)
   }
 
-  /** «⋯» открывает то же меню — и вторым нажатием закрывает его. */
+  /** "⋯" opens the same menu — and closes it with a second press. */
   function onMoreClick(event: MouseEvent, entry: FileEntry): void {
     event.stopPropagation()
     const button = event.currentTarget as HTMLElement
@@ -737,21 +769,22 @@
     }
     picked = entry.path
     const box = button.getBoundingClientRect()
-    // От кнопки вниз, а не от указателя: нажать «⋯» можно и с клавиатуры, и
-    // тогда никакого указателя нет вовсе. За правую кромку окна меню не уедет
-    // — его прижмёт сам компонент.
+    // Down from the button, not from the pointer: "⋯" can be pressed from the
+    // keyboard too, and then there is no pointer at all. The menu will not
+    // slide past the right edge of the window — the component itself presses it
+    // back.
     openMenu({ x: box.left, y: box.bottom + 2 }, { kind: 'entry', entry }, button)
   }
 
-  /* ------------------------------------------------- клавиши на строке */
+  /* ----------------------------------------------------- keys on a row */
 
   /**
-   * Клавиатура на строке дерева.
+   * The keyboard on a tree row.
    *
-   * Shift+F10 и клавиша «меню» — общесистемный способ позвать контекстное меню,
-   * и он единственный, каким до него добирается тот, у кого нет мыши. F2 и
-   * Delete — то же, что в любом файловом менеджере; стрелки ходят по строкам,
-   * потому что Tab внутри дерева из ста файлов — это сто нажатий.
+   * Shift+F10 and the "menu" key are the system-wide way to call up a context
+   * menu, and the only way someone without a mouse gets to it. F2 and Delete
+   * are the same as in any file manager; the arrows move between rows, because
+   * Tab inside a tree of a hundred files is a hundred presses.
    */
   function onRowKeydown(event: KeyboardEvent, entry: FileEntry): void {
     const row = event.currentTarget as HTMLElement
@@ -780,43 +813,45 @@
   }
 
   /**
-   * Соседняя строка — по разметке, а не по списку `visible`.
+   * The neighbouring row — by the markup, not by the `visible` list.
    *
-   * Список знает пути, а фокус ставят элементу, и сопоставлять одно с другим
-   * пришлось бы через `querySelector` по пути — то есть через селектор,
-   * собранный из имени файла, которое человек придумал сам (кавычка в имени, и
-   * селектор невалиден). Порядок кнопок в разметке и есть порядок дерева.
+   * The list knows paths, while focus is given to an element, and matching one
+   * to the other would have to go through `querySelector` by path — that is,
+   * through a selector assembled from a file name the person made up themselves
+   * (a quote in the name, and the selector is invalid). The order of the
+   * buttons in the markup is the order of the tree.
    */
   function step(from: HTMLElement, by: number): void {
     if (!panel) return
     const rows = [...panel.querySelectorAll<HTMLElement>('[data-row-name]')]
     const now = rows.indexOf(from)
     if (now < 0) return
-    // По краям — стоим. Круг по списку файлов уводил бы с последней строки на
-    // первую, а дерево читают сверху вниз.
+    // At the edges we stay put. Wrapping around the file list would take one
+    // from the last row to the first, and a tree is read from top to bottom.
     rows[now + by]?.focus()
   }
 
-  /* -------------------------------------------------- долгое нажатие */
+  /* ------------------------------------------------------ long press */
 
   let holdTimer: number | undefined
-  /** Откуда начали держать — чтобы отличить нажатие от прокрутки. */
+  /** Where the hold started — to tell a press from a scroll. */
   let holdFrom: { x: number; y: number } | null = null
-  /** Меню открылось пальцем: следующий `click` по этой строке — эхо жеста. */
+  /** Opened by finger: the next `click` on this row echoes the gesture. */
   let heldOpen = false
   let heldTimer: number | undefined
 
   /**
-   * Полсекунды пальцем на строке — то же меню.
+   * Half a second of a finger on a row — the same menu.
    *
-   * Правой кнопки на телефоне нет, а «⋯» требует сперва попасть по строке и
-   * только потом по значку. Полсекунды — общая для платформ планка долгого
-   * нажатия; меньше срабатывало бы у тех, кто просто ведёт пальцем по списку.
+   * A phone has no right click, and "⋯" requires hitting the row first and only
+   * then the icon. Half a second is the cross-platform bar for a long press;
+   * anything shorter would fire for people who are just running a finger down
+   * the list.
    *
-   * Android присылает `contextmenu` на то же самое нажатие, и меню от этого
-   * открывается дважды подряд в одной точке — то есть ровно один раз на
-   * экране. iOS `contextmenu` не шлёт вовсе, и без таймера меню там не
-   * открывалось бы ничем.
+   * Android sends `contextmenu` for the same press, and the menu then opens
+   * twice in a row at the same point — that is, exactly once on screen. iOS
+   * does not send `contextmenu` at all, and without the timer nothing would
+   * open the menu there.
    */
   function onRowPointerDown(event: PointerEvent, entry: FileEntry): void {
     if (event.pointerType !== 'touch') return
@@ -826,8 +861,9 @@
     holdTimer = window.setTimeout(() => {
       holdFrom = null
       heldOpen = true
-      // Эхо живёт полсекунды: если `click` за ним так и не придёт (палец увели
-      // с экрана), следующий настоящий тап не должен пропасть.
+      // The echo lives for half a second: if the `click` never comes after it
+      // (the finger was moved off the screen), the next real tap must not be
+      // lost.
       window.clearTimeout(heldTimer)
       heldTimer = window.setTimeout(() => (heldOpen = false), 700)
       picked = entry.path
@@ -835,7 +871,7 @@
     }, 500)
   }
 
-  /** Палец поехал — это прокрутка, а не нажатие. */
+  /** The finger moved — this is a scroll, not a press. */
   function onRowPointerMove(event: PointerEvent): void {
     if (!holdFrom) return
     if (Math.abs(event.clientX - holdFrom.x) < 10 && Math.abs(event.clientY - holdFrom.y) < 10) {
@@ -849,16 +885,17 @@
     holdFrom = null
   }
 
-  /* ------------------------------------------------------------ права */
+  /* ------------------------------------------------------ permissions */
 
   /**
-   * Переименовать и убрать может преподаватель — и это не то же самое, что
-   * `files`.
+   * Renaming and removing can be done by the teacher — and that is not the same
+   * as `files`.
    *
-   * `tree:move` на сервере преподавательский целиком (control.ts), а удаление
-   * — преподавательское с одним исключением: СВОЮ личную тетрадь автор убирает
-   * сам. Фраза выбирается так же, как везде в комнате: правило комнаты важно
-   * ровно до звонка, после звонка человеку важно только то, что пара кончилась
+   * `tree:move` on the server is entirely teacher-only (control.ts), and
+   * deletion is teacher-only with one exception: the author removes THEIR OWN
+   * personal notebook themselves. The phrase is chosen the same way as
+   * everywhere in the room: the room rule matters right up to the bell, and
+   * after the bell all that matters to a person is that the class is over
    * (lib/may.ts · CLASS_IS_OVER).
    */
   const mayRename = $derived(isHost && may.files)
@@ -874,19 +911,21 @@
   }
 
   /**
-   * Дерево в тот миг, когда попросили копию, — чтобы узнать её в лицо.
+   * The tree at the moment a copy was requested — to recognise the copy on
+   * sight.
    *
-   * Имя копии выбирает сервер (там нет гонки за занятое имя), и вкладке оно
-   * приезжает обычным списком файлов. В дереве из сотни строк новая строка
-   * появляется где-то посередине, и найти её глазами — та же работа, от
-   * которой дублирование и избавляет. Поэтому список запоминается до отправки,
-   * а появившийся путь подсвечивается на полторы секунды.
+   * The copy's name is chosen by the server (there is no race for a taken name
+   * there), and it reaches the tab as an ordinary file list. In a tree of a
+   * hundred rows a new row appears somewhere in the middle, and finding it by
+   * eye is the very work that duplicating saves one from. So the list is
+   * remembered before sending, and the path that appears is highlighted for a
+   * second and a half.
    *
-   * `$state`, а не обычная переменная: эффект ниже читает её первой строкой, и
-   * обычная не была бы его зависимостью — он не проснулся бы никогда.
+   * `$state`, not a plain variable: the effect below reads it on its first
+   * line, and a plain one would not be its dependency — it would never wake up.
    */
   let beforeCopy = $state<Set<string> | null>(null)
-  /** Строка, которая только что появилась копией. */
+  /** The row that has just appeared as a copy. */
   let freshCopy = $state<string | null>(null)
   let freshTimer: number | undefined
   let waitTimer: number | undefined
@@ -898,13 +937,15 @@
     }
     errorRender = () => (null)
     beforeCopy = new Set(session.files.map((row) => row.path))
-    // Сервер мог и отказать — тогда нового пути не появится вовсе. Без этого
-    // срока память о запросе жила бы до конца пары и подсветила бы чужой файл,
-    // который кто-нибудь загрузил через полчаса.
+    // The server may also have refused — then no new path will appear at all.
+    // Without this deadline the memory of the request would live until the end
+    // of class and would highlight someone else's file uploaded half an hour
+    // later.
     window.clearTimeout(waitTimer)
     waitTimer = window.setTimeout(() => (beforeCopy = null), 5000)
-    // Имя копии выбирает сервер: занятое имя здесь не отказ, а обычное дело —
-    // дублируют одно и то же дважды подряд (shared/protocol.ts · tree:copy).
+    // The copy's name is chosen by the server: a taken name is not a refusal
+    // here but a routine matter — people duplicate the same thing twice in a
+    // row (shared/protocol.ts · tree:copy).
     session.send({ t: 'tree:copy', path: entry.path })
   }
 
@@ -915,17 +956,19 @@
     if (added.length === 0) return
     beforeCopy = null
     window.clearTimeout(waitTimer)
-    // Первая из появившихся: копия одна, а всё остальное в этот же кадр —
-    // чужие загрузки, и подсвечивать их незачем.
+    // The first of those that appeared: there is one copy, and everything else
+    // in the same frame is someone else's uploads, with no reason to highlight
+    // them.
     freshCopy = added[0].path
     window.clearTimeout(freshTimer)
     freshTimer = window.setTimeout(() => (freshCopy = null), 1600)
   })
 
-  /** Завести что-нибудь ВНУТРИ этой папки: цель переезжает туда же. */
+  /** Create something INSIDE this folder: the target moves there too. */
   function startDraftIn(kind: 'file' | 'dir' | 'book', dir: string): void {
-    // Свёрнутая папка раскрывается: строка ввода стоит там, где появится файл,
-    // и в закрытой папке её не видно вовсе — поле молча ушло бы «никуда».
+    // A collapsed folder expands: the input line stands where the file will
+    // appear, and in a closed folder it is not visible at all — the field would
+    // silently go "nowhere".
     if (dir && !expanded.has(dir)) expanded = new Set(expanded).add(dir)
     target = dir
     startDraft(kind)
@@ -937,7 +980,7 @@
     picker?.click()
   }
 
-  /* ------------------------------------------------------ состав меню */
+  /* ---------------------------------------------------- menu contents */
 
   function copyItem(text: string, label: string): ContextMenuItem {
     return { label, icon: 'copy', run: () => void copyInto(text) }
@@ -949,17 +992,18 @@
     const runner = runnerFor(path)
     const items: ContextMenuItem[] = []
     /*
-     * «Открыть» — ровно то же, что щелчок по строке, и поэтому его нет у
-     * двоичного файла: щелчок по нему означает «дай мне его сюда», то есть уже
-     * «Скачать». Два пункта, делающие одно и то же, читаются как два разных
-     * действия, и одно из них человек выберет наугад.
+     * "Open" is exactly the same as clicking the row, and that is why a binary
+     * file does not have it: a click on it means "give it to me here", that is,
+     * "Download" already. Two items doing the same thing read as two different
+     * actions, and a person will pick one of them at random.
      */
     if (kind !== 'binary') {
       items.push({
         label: tr('room.files.menu.open'),
         icon: kind === 'notebook' ? 'notebook' : 'file',
-        // Внести .ipynb в комнату — ДОБАВИТЬ тетрадь, и правило у этого своё
-        // (shared/rules.ts · ownBooks). Тот же ответ даёт сервер.
+        // Adding an .ipynb to the room means ADDING a notebook, and that has
+        // its own rule (shared/rules.ts · ownBooks). The server gives the same
+        // answer.
         disabled: kind === 'notebook' && !isBook(path) && !may.ownBook,
         why: may.ownBookWhy,
         run: () => pick(entry),
@@ -986,8 +1030,8 @@
       {
         label: tr('room.files.menu.duplicate'),
         icon: 'copy-plus',
-        // Копия ДОБАВЛЯЕТ файл, как «новый файл» и как загрузка, — значит и
-        // правило у неё `files`, а не роль (server/src/control.ts · tree:copy).
+        // A copy ADDS a file, like "new file" and like an upload — so its rule
+        // is `files` too, not the role (server/src/control.ts · tree:copy).
         disabled: !may.files,
         why: may.filesWhy,
         run: () => duplicate(entry),
@@ -1008,8 +1052,8 @@
         danger: true,
         disabled: !mayRemove(path),
         why: whyEdit,
-        // В то же подтверждение строкой ниже, что и раньше: второе окно поверх
-        // меню спрашивало бы одно и то же дважды.
+        // Into the same confirmation in the row below, as before: a second
+        // window on top of the menu would ask the same thing twice.
         run: () => (confirming = path),
       },
     )
@@ -1059,8 +1103,8 @@
         label: tr('room.files.menu.duplicate'),
         icon: 'copy-plus',
         disabled: true,
-        // Теми же словами, которыми отказал бы сервер: одна фраза на оба конца
-        // (server/src/control.ts · tree:copy).
+        // In the same words the server would refuse with: one phrase for both
+        // ends (server/src/control.ts · tree:copy).
         why: tr('server.files.copyFolder'),
         run: () => {},
       },
@@ -1085,7 +1129,7 @@
     ]
   }
 
-  /** Пустое место панели: только то, что кладут В папку занятия. */
+  /** An empty part of the panel: only what is put INTO the class folder. */
   function panelItems(): ContextMenuItem[] {
     return [
       {
@@ -1136,16 +1180,17 @@
     return on.entry.dir ? tr('room.files.menu.folder') : tr('room.files.menu.file')
   })
 
-  /* ----------------------------------------------------- подсказка раз */
+  /* ----------------------------------------------------- one-time hint */
 
   /**
-   * «Правая кнопка — действия с файлом» — одной строкой и ровно до тех пор,
-   * пока человек ни разу меню не открывал.
+   * "Right-click a file for its actions" — in one line, and exactly until the
+   * person has opened the menu for the first time.
    *
-   * Подсказка, висящая всегда, перестаёт быть подсказкой и становится частью
-   * интерфейса, которую перестают читать. Флаг лежит в браузере, а не в
-   * комнате: это про руку, а не про занятие, и в приватном окне его просто не
-   * будет — тогда подсказка покажется ещё раз, и это не беда.
+   * A hint that is always there stops being a hint and becomes a part of the
+   * interface that people stop reading. The flag lives in the browser, not in
+   * the room: it is about the hand, not about the class, and in a private
+   * window it simply will not be there — then the hint will show once more, and
+   * that is no trouble.
    */
   const TIP_KEY = 'colloq.files.menuTip'
 
@@ -1153,8 +1198,9 @@
     try {
       return localStorage.getItem(TIP_KEY) === '1'
     } catch {
-      // Хранилище закрыто (приватное окно, запрет на куки) — считаем, что
-      // показывать незачем: подсказка не стоит исключения на каждый кадр.
+      // Storage is closed (a private window, cookies forbidden) — we assume
+      // there is no point in showing it: a hint is not worth an exception on
+      // every frame.
       return true
     }
   }
@@ -1167,23 +1213,24 @@
     try {
       localStorage.setItem(TIP_KEY, '1')
     } catch {
-      /* хранилища нет — подсказка просто вернётся в следующий раз */
+      /* no storage — the hint will simply come back next time */
     }
   }
 
-  /* ------------------------------------------------------- перетаскивание */
+  /* ------------------------------------------------------------- dragging */
 
   /**
-   * Свой тип в буфере — и путь в нём.
+   * Our own type in the data transfer — and the path in it.
    *
-   * `text/plain` кладётся рядом, но решает не он: текст в буфере есть у любого
-   * выделения на странице, и панель, доверяющая ему, приняла бы за строку
-   * дерева кусок вывода ячейки. Тип свой, потому что вопрос «своё ли это»
-   * задаётся на весу, когда содержимое буфера ещё не читается.
+   * `text/plain` is put next to it, but it is not what decides: any selection
+   * on the page has text in the transfer, and a panel trusting it would take a
+   * piece of a cell's output for a tree row. The type is our own because the
+   * question "is this ours" is asked mid-drag, when the transfer's content
+   * cannot be read yet.
    */
   const PATH_TYPE = 'application/x-colloq-path'
 
-  /** Что несут: свою строку, файлы с диска — или ничего, что нам подходит. */
+  /** What is carried: our own row, files from disk, or nothing we accept. */
   function carriedKind(event: DragEvent): 'row' | 'files' | null {
     const types = event.dataTransfer?.types
     if (!types) return null
@@ -1193,13 +1240,14 @@
   }
 
   /**
-   * Отказ, сказанный, пока запись ещё в руке.
+   * A refusal said while the record is still in hand.
    *
-   * Цель, помеченную `dropEffect: 'none'`, браузер не отдаёт: события `drop` на
-   * ней не будет вовсе, и сказать по отпусканию было бы негде. Значит, слова
-   * появляются на весу — и снимаются сами, как только целятся туда, куда можно.
-   * Флаг нужен, чтобы снять только СВОЁ: рядом в той же строке живут отказы
-   * загрузки, и гасить их движением мыши нельзя.
+   * The browser does not deliver to a target marked `dropEffect: 'none'`: there
+   * will be no `drop` event on it at all, and there would be nowhere to say
+   * anything on release. So the words appear mid-drag — and go away by
+   * themselves as soon as the aim moves to where dropping is allowed. The flag
+   * is needed to clear only OUR OWN words: upload refusals live in the same
+   * line, and they must not be cleared by moving the mouse.
    */
   let saidOnDrag = false
 
@@ -1217,11 +1265,11 @@
   function onDragStart(event: DragEvent, entry: FileEntry): void {
     const data = event.dataTransfer
     if (!data || !mayDrag) return
-    // Прошлый отказ был про прошлый жест.
+    // The previous refusal was about the previous gesture.
     sayRefusal(null)
     data.setData(PATH_TYPE, entry.path)
-    // Рядом — обычным текстом: то же самое видно всему, что умеет принимать
-    // текст, включая ячейку и терминал.
+    // Next to it as plain text: the same thing is visible to everything that
+    // can accept text, including a cell and the terminal.
     data.setData('text/plain', entry.path)
     data.effectAllowed = 'move'
     carried = { path: entry.path, dir: entry.dir }
@@ -1232,30 +1280,31 @@
     endDrag()
   }
 
-  /** Конец жеста: гаснет всё, что он зажёг, — и таймер тоже, обязательно. */
+  /** End of the gesture: all it lit goes out — the timer too, without fail. */
   function endDrag(): void {
     dragDepth = 0
     dragFiles = false
     dragInto = null
     dragDeny = null
-    // И слова тоже: отказ был про этот жест, а жест кончился. Иначе отменённое
-    // перетаскивание — Escape, указатель мимо панели — оставляло красную полосу
-    // про отказ, которого уже нет, до следующего жеста или загрузки.
+    // And the words too: the refusal was about this gesture, and the gesture is
+    // over. Otherwise a cancelled drag — Escape, the pointer outside the
+    // panel — left a red bar about a refusal that no longer existed, until the
+    // next gesture or upload.
     sayRefusal(null)
     hoverOver(null)
   }
 
   /**
-   * Свёрнутая папка под указателем разворачивается сама — но не сразу.
+   * A collapsed folder under the pointer expands by itself — but not at once.
    *
-   * Полсекунды: за меньшее дерево раскрывалось бы под рукой у всякого, кто
-   * просто проносит запись мимо, и цель уезжала бы из-под указателя. Таймер
-   * снимается на каждом уходе и на отпускании — иначе он развернёт папку, над
-   * которой уже никого нет.
+   * Half a second: with less, the tree would open up under the hand of anyone
+   * who is just carrying a record past it, and the target would slide out from
+   * under the pointer. The timer is cleared on every leave and on release —
+   * otherwise it would expand a folder over which there is nobody any more.
    *
-   * Обычные переменные, а не `$state`: их никто не рисует, а состояние, которое
-   * пишет таймер и читает разметка, — верный способ получить эффект, который
-   * будит сам себя.
+   * Plain variables, not `$state`: nobody draws them, and state that a timer
+   * writes and the markup reads is a sure way to get an effect that wakes
+   * itself up.
    */
   let hoverDir = ''
   let hoverTimer: number | undefined
@@ -1267,8 +1316,8 @@
     window.clearTimeout(hoverTimer)
     if (!wanted) return
     hoverTimer = window.setTimeout(() => {
-      // Только разворачивает: свернуть папку под указателем — фокус, а не
-      // помощь, и цель исчезла бы вместе со своими строками.
+      // It only expands: collapsing a folder under the pointer is a trick, not
+      // help, and the target would disappear together with its rows.
       const next = new Set(expanded)
       next.add(wanted)
       expanded = next
@@ -1276,16 +1325,17 @@
   }
 
   /**
-   * Куда сейчас целится жест.
+   * Where the gesture is aiming right now.
    *
-   * Зовётся из `dragover` — того самого события, которое обязано звать
-   * `preventDefault`: без него браузер броска не примет вовсе, а файл с диска
-   * просто откроет вместо страницы. Из него же, а не из `dragenter`, ставится
-   * подсветка: `dragenter` на потомке строки приходит раньше, чем `dragleave`
-   * на ней самой, и рамка гасла ровно над именем папки, в которую целятся.
+   * Called from `dragover` — the very event that has to call `preventDefault`:
+   * without it the browser will not accept the drop at all, and will simply
+   * open a file from the disk instead of the page. The highlight is set from it
+   * too, rather than from `dragenter`: `dragenter` on a child of the row comes
+   * before `dragleave` on the row itself, and the frame went out exactly over
+   * the name of the folder being aimed at.
    *
-   * `stopPropagation` на строке — чтобы она перебивала секцию: то же событие
-   * всплывает к ней, а секция целится в корень.
+   * `stopPropagation` on the row — so that it outranks the section: the same
+   * event bubbles up to it, and the section aims at the root.
    */
   function aim(event: DragEvent, onto: Row | null): void {
     const kind = carriedKind(event)
@@ -1297,18 +1347,20 @@
     const into = dropFolder(onto)
     if (kind === 'files') {
       /*
-       * Право известно уже сейчас — ждать отпускания незачем. Папка, светящаяся
-       * акцентом тому, кому класть нельзя, обещает копию, которой не будет, и
-       * панель в эту же секунду говорит обратное: пунктирная кнопка внизу
-       * отключена и названа правилом. Слова — на весу, как и у строк дерева:
-       * цель с `dropEffect: 'none'` события `drop` не отдаёт вовсе.
+       * The permission is known already — there is no reason to wait for the
+       * release. A folder lit with the accent for someone who may not put
+       * things there promises a copy that will not happen, and at the same
+       * second the panel says the opposite: the dashed button at the bottom is
+       * disabled and named after the rule. The words come mid-drag, as for tree
+       * rows: a target with `dropEffect: 'none'` does not deliver a `drop`
+       * event at all.
        */
       if (!may.files) {
         data.dropEffect = 'none'
         dragInto = null
         dragDeny = into
-        // В пустой комнате то же самое написано во весь оверлей — повторять
-        // одну фразу дважды на одном экране незачем.
+        // In an empty room the same thing is written across the whole overlay —
+        // there is no need to repeat one sentence twice on one screen.
         sayRefusal(listed ? may.filesWhy + '.' : null)
         return
       }
@@ -1319,8 +1371,9 @@
       hoverOver(into)
       return
     }
-    // Строка из другого окна: путь в буфере есть, а сверить его с этим деревом
-    // нечем — на весу буфер не читается. Обещать переезд в таком случае нельзя.
+    // A row from another window: the path is in the transfer, but there is
+    // nothing to check it against in this tree — the transfer cannot be read
+    // mid-drag. A move cannot be promised in that case.
     const plan = carried ? planMove(carried, onto, session.files) : null
     const goes = plan?.do === 'move'
     data.dropEffect = goes ? 'move' : 'none'
@@ -1339,8 +1392,8 @@
 
   function onDragLeave() {
     dragDepth = Math.max(0, dragDepth - 1)
-    // Ушли из панели совсем: подсветка, оставшаяся на строке, над которой уже
-    // никого нет, обещает переезд, которого не будет.
+    // Left the panel entirely: a highlight left on a row over which there is
+    // nobody any more promises a move that will not happen.
     if (dragDepth === 0) endDrag()
   }
 
@@ -1348,26 +1401,26 @@
     event.preventDefault()
     event.stopPropagation()
     const kind = carriedKind(event)
-    // Путь берётся из буфера, а не из `carried`: буфер переживает и смену
-    // вкладки, и второе окно этой же комнаты.
+    // The path is taken from the transfer, not from `carried`: the transfer
+    // survives both a tab switch and a second window of the same room.
     const path = kind === 'row' ? (event.dataTransfer?.getData(PATH_TYPE) ?? '') : ''
     endDrag()
     if (kind === 'row') {
       carried = null
       if (!path) return
-      // Право спрашивают и здесь, а не только у `draggable`: строка могла
-      // приехать из окна, открытого до того, как правила комнаты сменились.
+      // The permission is asked here too, not only in `draggable`: the row may
+      // have come from a window opened before the room rules changed.
       if (!mayDrag) {
         errorRender = () => (may.filesWhy + '.')
         saidOnDrag = false
         return
       }
-      // Папка это или файл, знает список комнаты, а не буфер: `planMove` всё
-      // равно первым делом сверяется с ним.
+      // Whether it is a folder or a file is known by the room's list, not by
+      // the transfer: `planMove` checks against it first thing anyway.
       const known = session.files.find((entry) => entry.path === path)
       const plan = planMove({ path, dir: known?.dir ?? false }, onto, session.files)
-      // Три исхода, а не два: жест, кончившийся там же, где начался, — это
-      // промах пальцем, и отказ на него был бы неправдой.
+      // Three outcomes, not two: a gesture that ended where it began is a slip
+      // of the finger, and a refusal to it would be untrue.
       if (plan.do === 'refuse') {
         errorRender = () => (plan.why)
         saidOnDrag = false
@@ -1377,18 +1430,19 @@
       errorRender = () => (null)
       saidOnDrag = false
       session.send({ t: 'tree:move', from: plan.from, to: plan.to })
-      // Вкладки едут следом сразу и обязаны: список файлов придёт позже и
-      // закрыл бы их как вкладки на исчезнувший путь — вместе с историей отмен.
-      // Вместе с СОДЕРЖИМЫМ: вкладка знает точный путь, и переезд папки,
-      // сказанный одним её именем, не двигает ни одной из тех, ради которых
-      // папку и таскают.
+      // The tabs follow at once, and they have to: the file list will come
+      // later and would close them as tabs on a vanished path — together with
+      // the undo history. Together with the CONTENTS: a tab knows an exact
+      // path, and a folder move stated by the folder's name alone does not move
+      // a single one of the tabs for whose sake the folder is dragged around.
       for (const moved of movedPaths(plan.from, plan.to, session.files)) {
         onrename?.(moved.from, moved.to)
       }
       return
     }
-    // Сказать до броска нельзя — но и молча съесть файл нельзя тем более:
-    // отпущенный файл, о котором ничего не произошло, читается как поломка.
+    // It cannot be said before the drop — but silently swallowing the file is
+    // even less acceptable: a released file after which nothing happened reads
+    // as a breakage.
     if (!may.files) {
       errorRender = () => (may.filesWhy + '.')
       return
@@ -1399,9 +1453,9 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<!-- Рамка вокруг всей панели — это «в корень»: у корня нет своей строки,
-     которую можно было бы подсветить. Для файлов с диска её не рисуют: там про
-     то же самое говорит пунктирная кнопка внизу. -->
+<!-- A frame around the whole panel means "into the root": the root has no row
+     of its own that could be highlighted. It is not drawn for files from the
+     disk: there the dashed button at the bottom says the same thing. -->
 <section
   bind:this={panel}
   class="relative flex shrink-0 flex-col gap-0 px-3 pb-1 pt-5 {!dragFiles && dragInto === ''
@@ -1416,16 +1470,17 @@
   ondrop={(event) => onDrop(event, null)}
   oncontextmenu={onPanelMenu}
 >
-  <!-- Полоса уводит заголовок к действиям, так что кнопки читаются как тихий
-       конец заголовка, а не как значки, повешенные на него. -->
+  <!-- The line leads the heading off to the actions, so the buttons read as the
+       quiet end of the heading, not as icons hung on it. -->
   <div class="flex items-center gap-2 px-1 pb-2">
     <h2 class="text-2xs font-bold uppercase tracking-section text-muted">{tr('room.ui.586')}</h2>
     <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
     <!--
-      Кнопки появляются, если можно хоть что-нибудь: файлы и СВОЯ ТЕТРАДЬ — это
-      два разных правила, и пара «файлы преподавательские, свои тетради
-      разрешены» — обычная пара. Тетрадь при этом не прячется, а гаснет с
-      причиной: спрятанная кнопка читается как «такого тут не бывает».
+      The buttons appear if anything at all is allowed: files and ONE'S OWN
+      NOTEBOOK are two different rules, and the pair "files are the teacher's,
+      own notebooks are allowed" is an ordinary one. The notebook button is not
+      hidden meanwhile but dims with a reason: a hidden button reads as "this
+      does not exist here".
     -->
     {#if may.files || may.ownBook}
       <div class="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
@@ -1503,8 +1558,9 @@
           event.preventDefault()
           commitDraft()
         }
-        // Escape закрывает поле — и только его. Тот же ключ у окна закрывает
-        // ящик терминала, если никто не сказал, что он уже занят делом.
+        // Escape closes the field — and only the field. The same key on the
+        // window closes the terminal drawer unless someone says it is already
+        // busy.
         if (event.key === 'Escape') {
           event.preventDefault()
           event.stopPropagation()
@@ -1548,16 +1604,18 @@
       onpointerleave={endHold}
       role="presentation"
     >
-      <!-- Открытый файл отмечен полосой у самого края: она не занимает места в
-           строке и видна, даже когда имя ужато до многоточия. -->
+      <!-- The open file is marked by a bar at the very edge: it takes no space
+           in the row and is visible even when the name is squeezed to an
+           ellipsis. -->
       {#if active === entry.path}
         <span class="absolute inset-y-0 left-0 w-0.5 bg-accent" aria-hidden="true"></span>
       {/if}
 
-      <!-- Стрелка — кнопка, а не картинка: нажатие на неё не делало ровно
-           ничего, потому что ловить его было некому, и папка «не открывалась».
-           Рисунок девять пикселей, а нажимают пальцем и пером: отрицательные
-           поля растят цель до 22, не сдвигая колонку имён ни на пиксель. -->
+      <!-- The arrow is a button, not a picture: pressing it did exactly
+           nothing, because there was nobody to catch it, and the folder "would
+           not open". The drawing is nine pixels, but it is pressed with a
+           finger and a pen: negative margins grow the target to 22 without
+           shifting the column of names by a pixel. -->
       {#if entry.dir}
         <button
           type="button"
@@ -1582,9 +1640,9 @@
       {#if draft?.kind === 'rename' && draft.from === entry.path}
         {@render nameField()}
       {:else}
-        <!-- `draggable` и на имени: строку тянут за него, а часть браузеров
-             жеста, начатого на кнопке, родителю не отдаёт. Обработчик один —
-             событие всплывает в строку. -->
+        <!-- `draggable` on the name too: the row is dragged by it, and some
+             browsers do not hand a gesture started on a button to its parent.
+             There is one handler — the event bubbles up to the row. -->
         <button
           type="button"
           draggable={mayDrag}
@@ -1607,8 +1665,9 @@
         </button>
 
         <!--
-          Полоса размера — она же место кнопки меню: обе начинаются в одном
-          месте, так что числа стоят колонкой, а «⋯» не наезжает на имя.
+          The size strip is also the place of the menu button: both start at the
+          same spot, so the numbers stand in a column and "⋯" does not run into
+          the name.
         -->
         <div
           class="relative mr-2 flex h-6 shrink-0 items-center justify-end"
@@ -1616,16 +1675,18 @@
         >
             {#if here.length > 0}
               <!--
-                Кто держит файл открытым. Стоит поверх размера и не прячется
-                под указателем: это то, ради чего на строку и смотрят.
+                Who keeps the file open. It stands on top of the size and does
+                not hide under the pointer: this is what people look at the row
+                for.
 
-                Место под «⋯» отводится ЗАРАНЕЕ, а не по наведению. Кнопка
-                лежит абсолютом у правого края и закрашена, и на строке с
-                кружками она наезжала на них: было видно половину первого, а
-                остальных не было вовсе — то есть пропадало ровно то, ради чего
-                строку и разглядывают. Сдвигать кружки по наведению нельзя:
-                указатель идёт к «⋯», а под ним в этот момент всё дёргается.
-                Поэтому отступ постоянный, и ничто никуда не прыгает.
+                The space for "⋯" is set aside IN ADVANCE, not on hover. The
+                button lies absolutely positioned at the right edge and is
+                filled with colour, and on a row with dots it ran over them:
+                half of the first one was visible, and the rest were not there
+                at all — that is, exactly what the row is examined for
+                disappeared. The dots cannot be shifted on hover: the pointer is
+                heading for "⋯", and everything under it would twitch at that
+                moment. So the offset is constant, and nothing jumps anywhere.
               -->
               <span class="flex items-center gap-1 pr-[26px]">
                 {#each here as peer (peer.id)}
@@ -1646,16 +1707,16 @@
               </span>
             {/if}
             <!--
-              Одна кнопка вместо прежней полосы из трёх значков: указателю — по
-              наведению, пальцу — по выделенной строке (см. `picked`).
-              `pointer-events-none`, пока её не видно, — не украшение: кнопка
-              лежит поверх размера, и невидимой она ловила тап по правому краю
-              строки.
+              One button instead of the former strip of three icons: for a
+              pointer, on hover; for a finger, on the selected row (see
+              `picked`). `pointer-events-none` while it is not visible is not
+              decoration: the button lies on top of the size, and while
+              invisible it caught a tap on the right edge of the row.
 
-              `after:-inset-2` растит цель до сорока пикселей, не сдвинув в
-              строке ни одного пикселя: рисунок остаётся 24×24, а пальцем по
-              нему попадают. Соседние строки этим не задеть — их кнопки в то же
-              время `pointer-events-none`.
+              `after:-inset-2` grows the target to forty pixels without shifting
+              a single pixel in the row: the drawing stays 24×24, and a finger
+              hits it. Neighbouring rows are not affected by this — their
+              buttons are `pointer-events-none` at that time.
             -->
             <span
               class="absolute inset-y-0 right-0 flex items-center bg-raised transition-opacity
@@ -1689,12 +1750,14 @@
         style={`padding-left:${4 + depth * 14 + 32}px`}
       >
         <!--
-          Объяснения в строке больше нет, и это просьба с пары 20.09.2026.
+          There is no longer an explanation in the row, and that is a request
+          from the class of 20 Sep 2026.
 
-          Панель файлов узкая: «Удалить папку со всем, что в ней?» доезжало до
-          двух букв с многоточием, то есть занимало место и не сообщало ничего.
-          Предупреждение никуда не делось — оно ушло в подсказку самой кнопки,
-          где его читают наведением и где его не режет ширина.
+          The files panel is narrow: "Delete the folder with everything in it?"
+          got down to two letters and an ellipsis, that is, it took up space and
+          communicated nothing. The warning has not gone anywhere — it moved
+          into the button's own tooltip, where it is read on hover and where the
+          width does not cut it.
         -->
         <span class="min-w-0 flex-1"></span>
         <button
@@ -1719,13 +1782,14 @@
     {/if}
 
     <!--
-      Раскрытая пустая папка ничем не отличалась от свёрнутой: человек нажимал
-      на стрелку, дерево не менялось ни на строку, и он читал это как «стрелка
-      не работает». Строка стоит на уровень глубже — там, где появится первое,
-      что в папку положат, — и принимает бросок сама.
+      An expanded empty folder looked no different from a collapsed one: a
+      person pressed the arrow, the tree did not change by a single row, and
+      they read it as "the arrow does not work". The row stands one level
+      deeper — where the first thing put into the folder will appear — and
+      accepts a drop itself.
 
-      Слова выбирает `emptyWord`: «пусто» — не единственный ответ, и там, где
-      панель просто не видит содержимого, оно было бы прямой неправдой.
+      The words are chosen by `emptyWord`: "empty" is not the only answer, and
+      where the panel simply cannot see the contents it would be a plain lie.
     -->
     {#if empty}
       <div
@@ -1746,8 +1810,9 @@
   {/each}
 
   {#if draft && draft.kind !== 'rename'}
-    <!-- Строка ввода стоит там, где файл появится: в выбранной папке, с её
-         отступом. Отступ на единицу больше, потому что это её содержимое. -->
+    <!-- The input line stands where the file will appear: in the chosen folder,
+         with its indentation. The indentation is one level more, because this
+         is the folder's content. -->
     <div
       class="flex h-[26px] items-center pr-2"
       style={`padding-left:${4 + (draft.dir ? depthOf(draft.dir) + 1 : 0) * 14}px`}
@@ -1768,8 +1833,9 @@
     </div>
   {/if}
 
-  <!-- Список кончился, но папка — нет. Строка стоит там же, где кончается
-       дерево: это ответ на вопрос «а где мой файл?», заданный глазами. -->
+  <!-- The list has ended, but the folder has not. The line stands where the
+       tree ends: it is the answer to the question "where is my file?", asked
+       with the eyes. -->
   {#if truncated}
     <p class="px-2 pt-1.5 text-2xs leading-snug text-muted"> {tr('room.ui.602')} <span class="font-mono">os.listdir()</span>.
     </p>
@@ -1809,10 +1875,11 @@
   {/each}
 
   <!--
-    Есть всегда, в любом состоянии: пустая комната иначе оставалась бы с
-    абзацем и без цели. Там, где файлы кладёт преподаватель, кнопка остаётся на
-    месте и называет правило — как оверлей для брошенного файла: открыть выбор
-    и отказать после значит потратить чужое время на решение, известное заранее.
+    Always there, in any state: otherwise an empty room would be left with a
+    paragraph and no target. Where files are put by the teacher, the button
+    stays in place and names the rule — like the overlay for a dropped file:
+    opening the picker and refusing afterwards means spending someone's time on
+    a decision known in advance.
   -->
   <button
     type="button"
@@ -1833,18 +1900,20 @@
     {/if}
   </button>
 
-  <!-- Правая кнопка — единственное, о чём в этой панели нельзя догадаться по
-       виду: «⋯» появляется только под указателем, а меню под ним шире, чем
-       одна кнопка. Строка уходит навсегда, как только меню открыли хоть раз, —
-       подсказка, висящая всегда, перестаёт быть подсказкой. -->
+  <!-- The right click is the only thing in this panel that cannot be guessed
+       from its look: "⋯" appears only under the pointer, and the menu under it
+       is wider than one button. The line goes away for good as soon as the menu
+       has been opened even once — a hint that is always there stops being a
+       hint. -->
   {#if !tipSeen && listed}
     <p class="px-2 pt-1.5 text-2xs leading-snug text-faint">{tr('room.files.menu.tip')}</p>
   {/if}
 
-  <!-- Что легло в буфер — целиком и под деревом. В строке файла на это было
-       место под одно слово, а кладут туда путь: «скопировано» без самого пути
-       заставляет проверять буфер вставкой. Полоса той же формы, что у ошибки
-       и у предупреждения выше, только цвет кромки другой. -->
+  <!-- What went into the clipboard — in full, and under the tree. The file row
+       had room for one word, and what goes there is a path: "copied" without
+       the path itself makes people check the clipboard by pasting. The strip
+       has the same shape as the error and the warning above, only the edge
+       colour is different. -->
   {#if copied}
     <div
       class="mt-1.5 flex items-baseline gap-1.5 border-l-2 border-positive bg-surface px-2 py-1"
@@ -1854,12 +1923,13 @@
     </div>
   {/if}
 
-  <!-- Полоса прибита к нижнему краю видимого: панель лежит в одной
-       прокручиваемой полосе с остальными, и в комнате, где список длиннее
-       экрана, слова отказа дописывались ниже пунктирной кнопки — то есть за
-       экраном. Оставались красная рамка и курсор «нельзя» без единого слова о
-       причине, а сказать по отпусканию негде: цель с `dropEffect: 'none'`
-       события `drop` не отдаёт. -->
+  <!-- The strip is pinned to the bottom edge of what is visible: the panel lies
+       in one scrolling strip with the others, and in a room where the list is
+       longer than the screen, the refusal words were appended below the dashed
+       button — that is, off screen. What remained was a red frame and a "not
+       allowed" cursor without a single word about the reason, and there is
+       nowhere to say it on release: a target with `dropEffect: 'none'` does not
+       deliver a `drop` event. -->
   {#if error}
     <div
       class="sticky bottom-0 z-10 mt-1.5 flex items-start gap-2 border-l-2 border-danger bg-surface px-2 py-1 text-2xs text-danger"
@@ -1876,8 +1946,9 @@
     </div>
   {/if}
 
-  <!-- Не ошибка: загрузка прошла — но прошла поверх чужого файла, и молчать
-       об этом нельзя. Отдельная полоса, потому что цвет здесь другой. -->
+  <!-- Not an error: the upload went through — but it went on top of someone
+       else's file, and keeping silent about that is not an option. A separate
+       strip, because the colour here is different. -->
   {#if note && !error}
     <div class="mt-1.5 flex items-start gap-2 border-l-2 border-line px-2 py-1 text-2xs text-muted">
       <span class="min-w-0 flex-1 break-words">{note}</span>
@@ -1893,9 +1964,10 @@
   {/if}
 
   {#if dragDepth > 0 && dragFiles && !listed}
-    <!-- Без списка светиться нечему, и панель становится целью сама. Комната,
-         где файлы кладёт преподаватель, говорит это прямо здесь: узнать об
-         отказе, уже отпустив файл, — то же самое, что не узнать. -->
+    <!-- Without a list there is nothing to light up, and the panel becomes the
+         target itself. A room where files are put by the teacher says so right
+         here: learning about a refusal after having released the file is the
+         same as not learning at all. -->
     <div
       class="pointer-events-none absolute inset-x-4 inset-y-3 flex items-center justify-center border border-dashed text-2xs {may.files
         ? 'border-accent bg-accent/10 text-accent-text'
@@ -1907,10 +1979,11 @@
 </section>
 
 <!--
-  Меню стоит ВНЕ панели и позиционируется от окна: панель лежит в одной
-  прокручиваемой полосе с остальными, а `overflow` обрезает и по вертикали —
-  меню, открытое у нижней строки, срезало бы ровно там, где на него смотрят.
-  Тот же приём, что у меню бана и у меню доступа на вкладке тетради.
+  The menu stands OUTSIDE the panel and is positioned from the window: the panel
+  lies in one scrolling strip with the others, and `overflow` clips vertically
+  too — a menu opened at the bottom row would be cut off exactly where people
+  are looking at it. The same technique as the ban menu and the access menu on
+  the notebook tab.
 -->
 <ContextMenu
   at={menuAt}
@@ -1923,10 +1996,11 @@
 
 <style>
   /*
-   * Долгое нажатие по строке зовёт наше меню — и на iOS одновременно с ним
-   * системную выноску «Копировать / Поделиться». Две панели поверх одной
-   * строки, и верхняя не наша. Гасится ровно на именах строк: выделять текст
-   * в панели файлов больше негде, а в остальной комнате выноска законна.
+   * A long press on a row calls our menu — and on iOS, at the same time, the
+   * system "Copy / Share" callout. Two panels on top of one row, and the upper
+   * one is not ours. It is suppressed exactly on the row names: there is
+   * nowhere else to select text in the files panel, while in the rest of the
+   * room the callout is legitimate.
    */
   .row-name {
     -webkit-touch-callout: none;

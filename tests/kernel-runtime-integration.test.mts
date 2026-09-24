@@ -31,13 +31,15 @@ test('room image pins survive catalog/default updates and missing revisions fail
  try {
   await endpointForSession('legacy-default',null)
   /*
-   * Личной тетради на брокере своего ядра нет — и отказ честнее подмены.
+   * On the broker a personal notebook has no kernel of its own — and a refusal
+   * is more honest than a substitute.
    *
-   * Pod брокер заводит один на занятие; второй, без карты, — это правка его
-   * протокола, контроллера и прав в кластере. Посчитать личную тетрадь в ядре
-   * лекции вместо отказа нельзя: это и есть та беда, ради которой второй
-   * контейнер заводится, — GPU занятия в руках студента и OOM-killer,
-   * выбирающий ядро преподавателя.
+   * The broker starts one pod per class; a second one, without a GPU, would
+   * mean changing its protocol, its controller and its permissions in the
+   * cluster. Running the personal notebook in the lecture kernel instead of
+   * refusing is not allowed: that is exactly the trouble the second container
+   * exists to prevent — the class's GPU in a student's hands and an OOM killer
+   * that picks the teacher's kernel.
    */
   await assert.rejects(endpointForSession('legacy-default',null,'own'),/personal notebooks|личные тетради/)
   assert.equal(sessionEnvironment('legacy-default'),'base')

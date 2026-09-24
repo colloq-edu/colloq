@@ -1,15 +1,18 @@
-# Колесо Colloq: `pip install colloq` — и на машине есть команда `colloq`.
+# The Colloq wheel: `pip install colloq`, and the machine has the `colloq`
+# command.
 #
-# Внутри колеса лежит собранное приложение (colloq/_app): сервер, фронтенд,
-# CLI и Dockerfile ядра. Кладёт его туда scripts/pack.mts, он же пишет
-# colloq/_version.py. Питон здесь — упаковка и ничего больше: вся логика
-# занятия живёт в CLI, шим только находит Node и передаёт ему управление.
+# Inside the wheel lies the built application (colloq/_app): the server, the
+# frontend, the CLI and the kernel Dockerfile. scripts/pack.mts puts it there,
+# and it also writes colloq/_version.py. Python here is packaging and nothing
+# more: all the class logic lives in the CLI, the shim only finds Node and
+# hands control over to it.
 #
-#   make pack    собрать приложение в colloq/_app
-#   make wheel   собрать колесо (pack сделается сам)
+#   make pack    build the application into colloq/_app
+#   make wheel   build the wheel (pack runs by itself)
 #
-# Backend — hatchling: он единственный из ходовых кладёт в колесо непитоновские
-# файлы без отдельного MANIFEST.in, а у нас таких файлов несколько тысяч.
+# The backend is hatchling: of the common ones, it is the only one that puts
+# non-Python files into the wheel without a separate MANIFEST.in, and we have
+# several thousand such files.
 
 [build-system]
 requires = ["hatchling>=1.21"]
@@ -23,13 +26,13 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Aleksandr Kalashnikov" }]
 keywords = ["jupyter", "notebook", "teaching", "seminar", "collaborative", "classroom", "education"]
-# 3.9 — не прихоть: это python3 из коробки в macOS 12–13 и в Debian 11. Шим
-# ничего сверх него не просит, и требовать больше значило бы отправлять
-# преподавателя ставить Python ради программы, которая написана не на Python.
+# 3.9 is not a whim: it is the stock python3 in macOS 12–13 and in Debian 11.
+# The shim asks for nothing beyond it, and requiring more would mean sending
+# the teacher to install Python for a program that is not written in Python.
 requires-python = ">=3.9"
-# Зависимостей нет и не будет: всё, что нужно шиму, есть в стандартной
-# библиотеке. Пустой список здесь сказан вслух, чтобы это было решением, а не
-# упущением.
+# There are no dependencies and there will be none: everything the shim needs
+# is in the standard library. The empty list is stated here out loud, so that
+# it is a decision and not an oversight.
 dependencies = []
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -53,9 +56,9 @@ classifiers = [
 [project.scripts]
 colloq = "colloq.__main__:main"
 
-# PyPI показывает их в боковой панели проекта, и это единственный путь со
-# страницы пакета к исходнику, трекеру и списку изменений: README колеса
-# (python/README.md) о репозитории молчит.
+# PyPI shows these in the project sidebar, and they are the only way from the
+# package page to the source, the tracker and the changelog: the wheel's README
+# (python/README.md) says nothing about the repository.
 [project.urls]
 Homepage = "https://colloq.ru"
 Documentation = "https://colloq.ru/docs/en/"
@@ -68,13 +71,14 @@ path = "colloq/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["colloq"]
-# _app собран, а не написан, и поэтому лежит в .gitignore. Hatchling по
-# умолчанию выбрасывает из колеса всё, что игнорирует git, — и колесо выходило
-# бы пустым, с одним шимом и без приложения. `artifacts` — это ровно список
-# исключений из того правила.
+# _app is built, not written, and so it is in .gitignore. By default Hatchling
+# drops from the wheel everything git ignores, and the wheel would come out
+# empty, with the shim alone and no application. `artifacts` is exactly the
+# list of exceptions to that rule.
 artifacts = ["colloq/_app/**"]
 
 [tool.hatch.build.targets.sdist]
-# Исходник пакета — это шим; приложение в него не кладём. Собирать колесо из
-# sdist всё равно нечем: для этого нужен весь репозиторий с npm и esbuild.
+# The package source is the shim; the application is not put into it. There
+# is nothing to build a wheel from an sdist with anyway: that takes the whole
+# repository with npm and esbuild.
 include = ["colloq/*.py", "pyproject.toml", "README.md"]

@@ -23,9 +23,9 @@ import { tr } from '@shared/i18n'
 /**
  * Said by every control that needs the server, so the room reads one sentence.
  *
- * По-русски: она приезжает в title «Очистить» в ящике терминала, в полосу
- * запуска и на пульт лекции — всё это поверхности, переведённые целиком, и
- * английская строка в них выглядит сбоем, а не сообщением.
+ * In Russian: it lands in the title of "Clear" in the terminal drawer, in the
+ * run bar and on the lecture console — all of them surfaces translated in
+ * full, where an English line looks like a glitch rather than a message.
  */
 export const OFFLINE_REASON = "Нет связи с сервером. Повторите запуск после подключения"
 
@@ -96,57 +96,59 @@ function snapshotKey(message: unknown): string | null {
   return null
 }
 
-/* ------------------------------------------------------- возвращение связи */
+/* ------------------------------------------------------------ reconnecting */
 
-/** Дольше этого не ждём: полминуты «Reconnecting» — это уже не связь, а стена. */
+/** We wait no longer than this: half a minute of "Reconnecting" is a wall, not a link. */
 export const RECONNECT_MAX_MS = 8000
 
 /**
- * Через сколько стучаться снова — с разбросом, и разброс здесь несущий.
+ * How long until knocking again — with jitter, and the jitter is load-bearing.
  *
- * Связь роняет обычно не одна вкладка, а провод: перезапуск сервера, упавший
- * Wi-Fi в аудитории, ретранслятор. Тогда все пятьсот отсчитывают ОДИН И ТОТ ЖЕ
- * отступ от одного и того же события и возвращаются в одни и те же
- * миллисекунды: сервер поднимается ровно в этот момент, получает пятьсот
- * рукопожатий разом, часть не успевает — эти вкладки отступают снова и снова
- * приходят вместе. Пачка не рассасывается сама, она только уплотняется.
+ * It is usually not one tab that drops the connection but the wire: a server
+ * restart, the lecture hall's Wi-Fi going down, the relay. Then all five
+ * hundred count down THE SAME backoff from the same event and come back in the
+ * same milliseconds: the server comes up at exactly that moment, gets five
+ * hundred handshakes at once, some do not make it — those tabs back off again
+ * and again arrive together. The burst does not disperse by itself, it only
+ * gets denser.
  *
- * Половина отступа случайна, вторая — та же лестница вдвое, что была: 250 мс
- * после первой неудачи, дальше вдвое, потолок прежний. Дольше никого ждать не
- * заставляем — верхняя граница не выросла.
+ * Half of the backoff is random, the other half is the same doubling ladder as
+ * before: 250 ms after the first failure, then doubling, the same ceiling.
+ * Nobody is made to wait longer — the upper bound did not grow.
  *
- * `random` — параметром, чтобы правило проверялось без броска монеты: у
- * генератора нет ни одного значения, при котором две вкладки обязаны сойтись.
+ * `random` is a parameter so the rule can be checked without tossing a coin:
+ * the generator has no value at which two tabs are bound to coincide.
  */
 export function reconnectDelay(retries: number, random = Math.random()): number {
   const step = Math.min(500 * 2 ** Math.min(retries, 5), RECONNECT_MAX_MS)
   return step * (0.5 + random * 0.5)
 }
 
-/* ------------------------------------------- отступ общего документа */
+/* ------------------------------------------- shared document backoff */
 
 /**
- * Потолок отступа у провайдера общего документа — свой у каждой вкладки.
+ * The backoff ceiling of the shared-document provider — different in every tab.
  *
- * Управляющий сокет разброс себе давно взял (`reconnectDelay` выше), а общий
- * документ вёл y-websocket со своей лестницей: `min(2^n · 100 мс,
- * maxBackoffTime)`, и `maxBackoffTime` по умолчанию 2500 мс — ОДИН И ТОТ ЖЕ у
- * всех. То есть после шестой неудачи пятьсот вкладок стучатся ровно каждые две
- * с половиной секунды, все вместе, от одного и того же события: сервер
- * поднимается, получает пятьсот рукопожатий в одну миллисекунду, часть
- * отваливается — и эти приходят вместе снова. Пачка не рассасывается, она
- * уплотняется.
+ * The control socket took jitter for itself long ago (`reconnectDelay` above),
+ * but the shared document was driven by y-websocket with its own ladder:
+ * `min(2^n · 100 ms, maxBackoffTime)`, and `maxBackoffTime` defaults to
+ * 2500 ms — THE SAME for everyone. So after the sixth failure five hundred tabs
+ * knock exactly every two and a half seconds, all together, from the same
+ * event: the server comes up, gets five hundred handshakes in one millisecond,
+ * some fall off — and those arrive together again. The burst does not
+ * disperse, it gets denser.
  *
- * Другой ручки у провайдера нет: в самой лестнице разброса не предусмотрено,
- * зато потолок он читает у себя же на каждой попытке. Случайный потолок и
- * растаскивает пачку — на шесть секунд, то есть заметно шире окна, в которое
- * сервер принимает рукопожатие.
+ * The provider has no other knob: its ladder has no jitter, but it reads the
+ * ceiling from itself on every attempt. A random ceiling is what pulls the
+ * burst apart — over six seconds, noticeably wider than the window in which
+ * the server accepts a handshake.
  *
- * Нижняя граница НЕ ниже прежних 2500 мс: ждать дольше — цена, и она названа
- * вслух. Возврат всё равно наступает раньше, потому что первые попытки идут по
- * той же лестнице от ста миллисекунд и потолка не достигают.
+ * The lower bound is NOT below the former 2500 ms: waiting longer is a cost,
+ * and it is named out loud. Reconnection still comes sooner, because the first
+ * attempts follow the same ladder from a hundred milliseconds and never reach
+ * the ceiling.
  *
- * `random` — параметром, чтобы правило проверялось без броска монеты.
+ * `random` is a parameter so the rule can be checked without tossing a coin.
  */
 export const COLLAB_BACKOFF_MIN_MS = 4000
 export const COLLAB_BACKOFF_SPREAD_MS = 6000

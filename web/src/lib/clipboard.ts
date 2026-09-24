@@ -1,16 +1,16 @@
 import { tr } from '@shared/i18n'
 /**
- * Скопировать текст там, где `navigator.clipboard` нет.
+ * Copy text where there is no `navigator.clipboard`.
  *
- * Асинхронный буфер обмена живёт только в защищённом контексте: https или
- * localhost. Семинар, поднятый на кафедре по http://10.0.0.5:5173 — обычный
- * способ им пользоваться, и в нём весь `navigator.clipboard` попросту
- * `undefined`. Каждая кнопка «скопировать» падала в свой catch и в лучшем
- * случае печатала ссылку на экран, а в SessionScreen молча ничего не делала.
+ * The async clipboard exists only in a secure context: https or localhost. A
+ * seminar hosted in a department at http://10.0.0.5:5173 is the usual way to
+ * use it, and there the whole of `navigator.clipboard` is simply `undefined`.
+ * Every "copy" button fell into its own catch and at best printed the link on
+ * screen, while in SessionScreen it silently did nothing.
  *
- * Старый `document.execCommand('copy')` в этом контексте работает. Он объявлен
- * устаревшим, и правильно — но замена ему не полагается там, где его
- * вызывают, так что он остаётся запасным ходом, пока стоят такие установки.
+ * The old `document.execCommand('copy')` works in this context. It has been
+ * declared deprecated, and rightly so — but no replacement is offered where it
+ * is called, so it stays as the fallback while such installations exist.
  */
 export async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
@@ -18,20 +18,21 @@ export async function copyText(text: string): Promise<void> {
       await navigator.clipboard.writeText(text)
       return
     } catch {
-      // Разрешение не дали или контекст всё-таки не тот — вниз, к запасному.
+      // Permission was denied or the context is not right after all — down to
+      // the fallback.
     }
   }
 
   const field = document.createElement('textarea')
   field.value = text
-  // Вне экрана, но в документе и не hidden: из невидимого поля не копируется.
+  // Off screen, but in the document and not hidden: an invisible field copies nothing.
   field.setAttribute('readonly', '')
   field.style.position = 'fixed'
   field.style.top = '-1000px'
   field.style.opacity = '0'
   document.body.append(field)
 
-  // Что было выделено до нажатия — не наше, и вернуть это обязаны мы.
+  // Whatever was selected before the click is not ours, and we must put it back.
   const selection = document.getSelection()
   const had = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
 

@@ -86,16 +86,17 @@ export interface InstanceState {
   /** Whether POST /api/sessions accepts a caller who is not staff. No page uses it. */
   openSeminarCreation: boolean
   /**
-   * Сколько байт принимает загрузка файла — `MAX_UPLOAD_MB` сервера.
+   * How many bytes a file upload accepts — the server's `MAX_UPLOAD_MB`.
    *
-   * Число здесь, потому что его печатает форма создания семинара («Up to 50 MB
-   * each») и по нему же она отказывает файлу ДО того, как комната создана. До
-   * этого поля панель держала собственную копию умолчания, и оператор,
-   * поднявший предел до 200 или опустивший до 20, читал на экране чужое число,
-   * а узнавал правду загрузкой, которая не доехала.
+   * The number is here because the seminar creation form prints it ("Up to
+   * 50 MB each") and uses it to refuse a file BEFORE the room is created.
+   * Before this field the panel kept its own copy of the default, and an
+   * operator who raised the limit to 200 or lowered it to 20 read someone
+   * else's number on the screen and learned the truth from an upload that
+   * never arrived.
    *
-   * Необязательное: сборка постарше его не присылает, и тогда экран о пределе
-   * молчит, а не выдумывает его.
+   * Optional: an older build does not send it, and then the screen says
+   * nothing about the limit rather than making one up.
    */
   maxUploadBytes?: number
 }
@@ -114,17 +115,18 @@ export interface SignInWithTokenRequest {
 /* --------------------------------------------------------------- seminars */
 
 /**
- * В каком состоянии семинар — одним словом, для строки списка.
+ * What state a seminar is in — in one word, for a list row.
  *
- * Три из них про то, что происходит само: `live` — в комнате кто-то есть
- * прямо сейчас, `draft` — ссылку ещё никому не давали (не заходил никто), `idle`
- * — заходили, а сейчас пусто. Четвёртое — решение преподавателя: `finished`
- * значит, что занятие закончено и в комнате теперь только читают.
+ * Three of them are about what happens by itself: `live` — someone is in the
+ * room right now, `draft` — the link has not been given to anyone yet (nobody
+ * has come in), `idle` — people came in, but it is empty now. The fourth is
+ * the teacher's decision: `finished` means the class is over and the room is
+ * now only for reading.
  *
- * Решение сильнее подсчёта: у законченного занятия статус `finished`, даже
- * если полкласса сидит и перечитывает разбор. Иначе выходила бессмыслица —
- * пустая комната и законченное занятие показывались одним и тем же словом, и
- * звонок ничего в списке не менял.
+ * The decision beats the count: a finished class has the status `finished`
+ * even if half the class is sitting there rereading the solutions. Otherwise
+ * the result was nonsense — an empty room and a finished class were shown
+ * with one and the same word, and the bell changed nothing in the list.
  */
 export type SeminarStatus = 'draft' | 'live' | 'idle' | 'finished'
 
@@ -136,15 +138,15 @@ export interface AdminSeminar {
   /** People currently connected, not people who ever joined. */
   liveCount: number
   /**
-   * Когда открылся самый старый из сокетов, которые сейчас в комнате, — то
-   * есть с какого момента идёт то занятие, что идёт прямо сейчас. `null`, если
-   * в комнате никого.
+   * When the oldest of the sockets now in the room opened — that is, since
+   * when the class that is going on right now has been going. `null` if
+   * nobody is in the room.
    *
-   * Отдельные часы от `createdAt`, и именно потому, что это разные часы:
-   * комнату заводят за неделю до пары и переиспользуют на второй, а баннер
-   * «Running now · started 6 days ago» читается как длительность занятия.
-   * Необязательное: сборка постарше поля не присылает, и панель тогда называет
-   * своими именами те часы, которые у неё есть.
+   * A clock separate from `createdAt`, precisely because they are different
+   * clocks: a room is created a week before the class and reused for the
+   * second one, and a "Running now · started 6 days ago" banner reads as the
+   * length of the class. Optional: an older build does not send the field,
+   * and the panel then calls the clocks it does have by their real names.
    */
   liveSince?: number | null
   /** Everyone who has ever joined, which is what "24 people" means on a card. */
@@ -163,17 +165,17 @@ export interface AdminSeminar {
   environment: string | null
   archivedAt: number | null
   /**
-   * Что комната разрешает. Нужно списку, чтобы можно было менять правила
-   * существующего семинара, а не только задать их при создании.
+   * What the room allows. The list needs it so that the rules of an existing
+   * seminar can be changed, not only set at creation.
    */
   rules: RoomRules
   /**
-   * Публичная страница этого семинара, если она есть.
+   * This seminar's public page, if it has one.
    *
-   * `slug` — заданное имя в адресе; `null` значит, что адресом остаётся
-   * идентификатор. Список печатает и копирует `/p/<slug ?? id>`: заданное имя
-   * и есть тот адрес, который дали классу, а идентификатор рядом с ним читался
-   * бы как второй, чужой.
+   * `slug` is the chosen name in the address; `null` means the address stays
+   * the id. The list prints and copies `/p/<slug ?? id>`: the chosen name is
+   * the very address given to the class, and the id next to it would read as
+   * a second, foreign one.
    */
   publication: {
     id: string
@@ -181,28 +183,29 @@ export interface AdminSeminar {
     state: 'published' | 'withdrawn'
     steps: number
   } | null
-  /** Курсы, в которых он состоит. Обычно один, но запрета на два нет. */
+  /** The courses it belongs to. Usually one, but nothing forbids two. */
   courses: { id: string; name: string }[]
   /**
-   * Когда преподаватель закончил занятие — или null, пока оно идёт.
+   * When the teacher finished the class — or null while it is going on.
    *
-   * Время, которого нет в `status: 'finished'` рядом: слово говорит, что
-   * занятие закончено, а час — когда именно, и он-то и нужен тому, кто
-   * вернулся в комнату через день.
+   * The time that the `status: 'finished'` next to it does not carry: the
+   * word says the class is over, the hour says when exactly, and the hour is
+   * what someone who comes back to the room a day later needs.
    */
   finishedAt: number | null
   /**
-   * Сколько памяти выдано ядру этой комнаты, в мегабайтах, — или null, если ей
-   * ничего не задавали и она живёт умолчанием своего окружения.
+   * How much memory this room's kernel was given, in megabytes — or null if
+   * nothing was set for it and it lives by its environment's default.
    *
-   * Своё число, а не действующее: в настройках человек обязан отличать «я
-   * поставил четыре гигабайта» от «столько даёт окружение». Умолчание панель
-   * знает отдельно — из /api/instance/resources, оно одно на все комнаты и
-   * меняется без них. Необязательное: сборка сервера постарше поля не
-   * присылает, и тогда раздел «Ресурсы» просто молчит.
+   * Its own number, not the effective one: in the settings a person must be
+   * able to tell "I set four gigabytes" from "that is what the environment
+   * gives". The panel knows the default separately — from
+   * /api/instance/resources; it is one for all rooms and changes without
+   * them. Optional: an older server build does not send the field, and then
+   * the "Resources" section simply says nothing.
    */
   memoryMb?: number | null
-  /** Сколько ядер задано этой комнате, или null — умолчание инстанса. */
+  /** How many cores were set for this room, or null — the instance default. */
   cpus?: number | null
 }
 
@@ -216,18 +219,18 @@ export interface CreateSeminarRequest {
    */
   environment?: string | null
   /**
-   * Какое это занятие: лаборатория, где работают все, или лекция, где тетрадь
-   * преподавательская целиком.
+   * What kind of class this is: a lab where everyone works, or a lecture where
+   * the notebook belongs entirely to the teacher.
    *
-   * Режим — это ПРЕСЕТ правил, а не отдельное состояние комнаты: 'lecture'
-   * записывает `LECTURE_ROOM`, 'lab' — `OPEN_ROOM`, и дальше комната живёт
-   * одними правилами. Иначе в продукте появилось бы два источника правды о
-   * том, что в комнате можно, и они разъехались бы на первом же переключателе
-   * в настройках: правило говорит одно, режим — другое, а сервер спрашивает
-   * только одного из них.
+   * The mode is a PRESET of rules, not a separate state of the room:
+   * 'lecture' writes `LECTURE_ROOM`, 'lab' writes `OPEN_ROOM`, and from then on
+   * the room lives by the rules alone. Otherwise the product would have two
+   * sources of truth about what is allowed in the room, and they would drift
+   * apart at the first switch in the settings: the rule says one thing, the
+   * mode another, and the server asks only one of them.
    *
-   * Нет поля — 'lab', то есть ровно сегодняшнее поведение: семинар, созданный
-   * скриптом или сборкой постарше, открывается тем же, чем открывался.
+   * No field means 'lab', that is, exactly today's behavior: a seminar created
+   * by a script or by an older build opens the way it always did.
    */
   mode?: 'lab' | 'lecture' | 'council'
   /**
@@ -238,20 +241,22 @@ export interface CreateSeminarRequest {
    * keep have any effect; the rest are stored so that the day they become
    * enforceable, the seminars created today already say what they wanted.
    *
-   * Приехав вместе с `mode`, ложится ПОВЕРХ его пресета: человек выбрал режим
-   * и подкрутил в нём одну строку, и подкрученное сильнее выбранного.
+   * Arriving together with `mode`, it is laid ON TOP of that mode's preset: the
+   * person chose a mode and tweaked one line in it, and the tweak beats the
+   * choice.
    */
   rules?: Partial<RoomRules>
   /**
-   * Сколько памяти дать ядру этой комнаты, в мегабайтах.
+   * How much memory to give this room's kernel, in megabytes.
    *
-   * Опущено или null — умолчание окружения (`KERNEL_MEM` и пул). Задаётся
-   * здесь, а не в отдельном походе в настройки утром: занятие по зрению
-   * заводят накануне, и «шесть гигабайт» — такое же решение о комнате, как
-   * выбор окружения рядом.
+   * Omitted or null means the environment's default (`KERNEL_MEM` and the
+   * pool). It is set here, and not in a separate trip to the settings in the
+   * morning: a computer-vision class is set up the day before, and "six
+   * gigabytes" is as much a decision about the room as the choice of
+   * environment next to it.
    */
   memoryMb?: number | null
-  /** Сколько ядер дать комнате; опущено или null — умолчание инстанса. */
+  /** How many cores to give the room; omitted or null — the instance default. */
   cpus?: number | null
 }
 
@@ -259,99 +264,103 @@ export interface UpdateSeminarRequest {
   name?: string
   archived?: boolean
   /**
-   * Закончить занятие или открыть его снова — из панели.
+   * Finish the class or reopen it — from the panel.
    *
-   * Та же дверь, что кнопка в комнате: преподаватель, закрывший вкладку и
-   * вспомнивший про это в метро, не должен возвращаться в комнату ради одного
-   * нажатия.
+   * The same door as the button in the room: a teacher who closed the tab and
+   * remembered about it on the subway should not have to go back into the
+   * room for one press.
    */
   finished?: boolean
   /**
-   * Правила комнаты. Накладываются на текущие, а не заменяют их.
+   * The room's rules. Laid over the current ones, not replacing them.
    *
-   * Раньше правила задавались один раз, при создании, и преподаватель, решивший
-   * закрыть прошлонедельную комнату, не мог ничего — приходилось заводить
-   * вторую.
+   * Rules used to be set once, at creation, and a teacher who decided to close
+   * last week's room could do nothing — they had to create a second one.
    */
   rules?: Partial<RoomRules>
   /**
-   * Новый лимит памяти комнаты в мегабайтах; null возвращает её к умолчанию
-   * окружения.
+   * The room's new memory limit in megabytes; null returns it to the
+   * environment's default.
    *
-   * Применяется к ЖИВОЙ комнате сразу, без перезапуска ядра (`docker update`):
-   * преподаватель, чьё ядро только что убили по памяти, добавляет гигабайты и
-   * запускает ту же ячейку заново, не потеряв ни переменных семинара, ни
-   * открытого терминала.
+   * It applies to a LIVE room immediately, without restarting the kernel
+   * (`docker update`): a teacher whose kernel was just killed for memory adds
+   * gigabytes and runs the same cell again, losing neither the seminar's
+   * variables nor the open terminal.
    */
   memoryMb?: number | null
   /**
-   * Сколько ядер дать комнате; null возвращает её к умолчанию инстанса.
+   * How many cores to give the room; null returns it to the instance default.
    *
-   * Живому контейнеру применяется сразу (`docker update --cpus`), но потоки
-   * numpy и torch внутри уже запущенного ядра остаются прежними: их число
-   * считается один раз, при старте интерпретатора. Об этом сказано в форме.
+   * It applies to a live container immediately (`docker update --cpus`), but
+   * the numpy and torch threads inside an already running kernel stay as they
+   * were: their number is computed once, when the interpreter starts. The
+   * form says so.
    */
   cpus?: number | null
 }
 
-/* ----------------------------------------------------------- ресурсы */
+/* --------------------------------------------------------- resources */
 
-/** Карта машины: имя и вся её видеопамять. Комнаты делят её и cgroup её не режет. */
+/** A GPU of the machine: its name and all its VRAM. Rooms share it; cgroup does not cap it. */
 export interface GpuCard {
   index: number
   name: string
   memoryMb: number
 }
 
-/** Комната в списке «кто держит память машины». */
+/** A room in the "who holds the machine's memory" list. */
 export interface RoomResource {
   id: string
   name: string
-  /** Действующий лимит: своё число комнаты, иначе умолчание её окружения. */
+  /** The effective limit: the room's own number, otherwise its environment's default. */
   memoryMb: number
-  /** Сколько ядер у комнаты: своё число, иначе умолчание инстанса. */
+  /** How many cores the room has: its own number, otherwise the instance default. */
   cpus: number
   environment: string | null
   alive: boolean
   /**
-   * Второй контейнер занятия — тот, где считаются личные тетради студентов.
+   * The class's second container — the one where students' personal
+   * notebooks run.
    *
-   * Поля нет — его сейчас нет: личных тетрадей не открывали, они не разрешены
-   * или это не docker-бэкенд. Отдельным полем, а не прибавкой к `memoryMb`:
-   * лимиты у контейнеров раздельные (в том и смысл второго), и сложить их в
-   * одно число значило бы показать преподавателю «8 ГБ» там, где ни один его
-   * Python столько не получит. Машина при этом держит их оба, и панель
-   * считает занятое по сумме.
+   * No field means there is none right now: no personal notebooks were
+   * opened, they are not allowed, or this is not the docker backend. A
+   * separate field rather than an addition to `memoryMb`: the containers have
+   * separate limits (that is the whole point of the second one), and adding
+   * them into one number would show the teacher "8 GB" where none of their
+   * Pythons will get that much. The machine holds both of them, though, and
+   * the panel counts what is taken by the sum.
    */
   own?: { memoryMb: number; cpus: number }
 }
 
 /**
- * Чем располагает машина под инстансом.
+ * What the machine under the instance has at its disposal.
  *
- * Нужно ровно одному экрану — форме занятия, — и ровно затем, чтобы поле
- * «сколько памяти» не было гаданием: 13.09 ядро семинара убили по памяти
- * шестнадцать раз подряд, и числа, по которым это можно было предвидеть,
- * знал только тот, у кого есть ssh.
+ * Exactly one screen needs it — the class form — and exactly so that the
+ * "how much memory" field is not guesswork: on 13 Sep 2026 a seminar's kernel
+ * was killed for memory sixteen times in a row, and the numbers that would
+ * have let anyone foresee it were known only to whoever had ssh.
  */
 export interface InstanceResources {
   memory: {
     totalMb: number
     /**
-     * Сколько ещё можно раздать комнатам; `null` — «не знаем».
+     * How much more can be handed out to rooms; `null` means "we do not know".
      *
-     * Не знаем там, где число было бы выдумкой: у macOS нет MemAvailable, а
-     * `os.freemem()` там считает свободной только память, не занятую ничем, и
-     * на Маке с 36 ГБ выдавал «свободно 0,5». Пугать таким числом хуже, чем
-     * промолчать, поэтому форма про свободное тогда не говорит вовсе.
+     * We do not know wherever a number would be made up: macOS has no
+     * MemAvailable, and `os.freemem()` there counts as free only memory that
+     * nothing uses, so on a Mac with 36 GB it reported "0.5 free". Scaring
+     * people with such a number is worse than keeping quiet, so the form then
+     * does not talk about free memory at all.
      */
     availableMb: number | null
     /**
-     * Чьи это числа: машины сервера или демона docker.
+     * Whose numbers these are: the server machine's or the docker daemon's.
      *
-     * Под колимой и Docker Desktop контейнеры живут в виртуалке со своей
-     * памятью, и потолок комнаты ставит она, а не Мак. Форма обязана называть
-     * вещи своими именами: «в Docker 11,7 ГБ» вместо «на машине 36».
+     * Under colima and Docker Desktop, containers live in a virtual machine
+     * with its own memory, and it is that machine, not the Mac, that sets the
+     * room's ceiling. The form must call things by their real names:
+     * "11.7 GB in Docker" instead of "36 on the machine".
      */
     source: 'host' | 'docker'
   }
@@ -360,16 +369,17 @@ export interface InstanceResources {
   kernel: {
     defaultMemoryMb: number
     gpuDefaultMemoryMb: number
-    /** Ядра комнате по умолчанию — `KERNEL_CPUS`, одно число на инстанс. */
+    /** A room's default cores — `KERNEL_CPUS`, one number per instance. */
     defaultCpus: number
-    /** Что получит комната на этом окружении, если ей ничего не задали. */
+    /** What a room on this environment gets if nothing was set for it. */
     perEnvironment: Record<string, { memoryMb: number; gpu: boolean }>
   }
   rooms: RoomResource[]
   /**
-   * Границы, в которых сервер примет число: мегабайты — полем, ядра — своим.
-   * Считает их он, а не форма: вторая копия правила в браузере разошлась бы с
-   * серверной на первом же её изменении.
+   * The bounds within which the server will accept a number: megabytes for
+   * the field, cores for their own. The server computes them, not the form: a
+   * second copy of the rule in the browser would drift from the server's at
+   * its first change.
    */
   limits: { min: number; max: number; cpus: { min: number; max: number } }
 }
@@ -387,17 +397,19 @@ export type AiProviderId = 'openai' | 'ollama' | 'vllm' | 'openrouter' | 'custom
 export type OracleMode = 'off' | 'hints' | 'full'
 
 /**
- * Сколько модели думать вслух перед ответом.
+ * How much the model should think aloud before answering.
  *
- * Три положения, и среднее — «ничего не менять». `normal` НЕ шлёт провайдеру
- * ни одного нового поля: инстанс, которому эта ручка не нужна, должен вести
- * себя ровно как до неё, а «мы всегда шлём reasoning: medium» — это тихая
- * смена поведения у всех, включая шлюзы, которые на незнакомое поле отвечают
- * 400 посреди пары.
+ * Three positions, and the middle one means "change nothing". `normal` sends
+ * NOT A SINGLE new field to the provider: an instance that has no use for
+ * this knob must behave exactly as it did before the knob existed, and "we
+ * always send reasoning: medium" is a quiet change of behavior for everyone,
+ * including gateways that answer an unfamiliar field with a 400 in the middle
+ * of a class.
  *
- * `instant` — это не только параметр: он же стоит строкой в системном кадре
- * («отвечай сразу, коротко, без рассуждений вслух»). Половина моделей ручку
- * рассуждений не имеет вовсе, и просьба словами работает на всех.
+ * `instant` is not only a parameter: it also stands as a line in the system
+ * frame ("answer right away, briefly, without reasoning aloud"). Half of the
+ * models have no reasoning knob at all, and a request in words works on all
+ * of them.
  */
 export type ReasoningEffort = 'instant' | 'normal' | 'deep'
 
@@ -408,10 +420,10 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
 }
 
 /**
- * Порядок положений — по нему решается, кто вправе его менять.
+ * The order of the positions — it decides who may change the setting.
  *
- * Понизить может кто угодно (это дешевле и быстрее), повысить — только
- * преподаватель: «подробно» на весь класс оплачивает владелец ключа.
+ * Anyone may lower it (that is cheaper and faster), only the teacher may
+ * raise it: "detailed" for the whole class is paid for by the key's owner.
  */
 export function effortRank(effort: ReasoningEffort): number {
   return effort === 'instant' ? 0 : effort === 'normal' ? 1 : 2
@@ -429,12 +441,12 @@ export interface OracleSettings {
   /** Per student, per seminar, per hour. 0 disables the oracle outright. */
   questionsPerHour: number
   /**
-   * Сколько секунд между двумя вопросами одного человека. 0 — выключено.
+   * How many seconds between two questions from one person. 0 — off.
    *
-   * Не то же самое, что потолок в час, и заводится рядом именно поэтому:
-   * двадцать вопросов можно выкрикнуть за двадцать секунд, и потолок накажет
-   * не спам, а следующий настоящий вопрос — через час. Промежуток стоит там,
-   * где спам, и стоит секунды.
+   * Not the same as the hourly ceiling, and it lives next to it precisely for
+   * that reason: twenty questions can be shouted out in twenty seconds, and
+   * the ceiling would punish not the spam but the next real question — an
+   * hour later. The gap stands where the spam is, and costs seconds.
    */
   slowModeSeconds: number
   /** Ceiling on the notebook text sent as context. */
@@ -442,20 +454,22 @@ export interface OracleSettings {
   /** Tool actions per Do request; 0 means unlimited. */
   agentSteps: number
   /**
-   * Уезжают ли к модели НАСТОЯЩИЕ ИМЕНА учащихся.
+   * Whether students' REAL NAMES go to the model.
    *
-   * Включено по умолчанию, и это сознательный выбор владельца: оракул, который
-   * видит класс метками S1…SN, отвечает «S7 и S12 застряли» — преподаватель
-   * читает это как шифр, а модель на просьбу «напиши, кому подойти» выдумывает
-   * имена. С именами она ссылается на людей так же, как это сделал бы коллега.
+   * On by default, and that is the owner's conscious choice: an oracle that
+   * sees the class as labels S1…SN answers "S7 and S12 are stuck" — the
+   * teacher reads that as a cipher, and when asked "write whom to go over
+   * to", the model makes names up. With names it refers to people just as a
+   * colleague would.
    *
-   * Выключенное возвращает прежнее поведение: в кадр едут метки, соответствие
-   * «метка → человек» остаётся на сервере. Это одна настройка инстанса, а не
-   * правило комнаты: она про то, что уходит ЧУЖОМУ провайдеру, и решает это
-   * тот, чей ключ, а не тот, чья пара.
+   * Turned off, it restores the old behavior: labels go into the frame, and
+   * the "label → person" mapping stays on the server. This is one instance
+   * setting, not a room rule: it is about what goes to SOMEONE ELSE'S
+   * provider, and it is decided by whoever owns the key, not whoever owns the
+   * class.
    */
   sendNames: boolean
-  /** Умолчание уровня размышлений; запрос может его понизить, поднять — только преподаватель. */
+  /** The default reasoning level; a request may lower it, only the teacher may raise it. */
   reasoningEffort: ReasoningEffort
   /** Whether the environment supplied a key, in which case the UI must not
    *  claim the instance is unconfigured while OPENAI_API_KEY is doing the job. */
@@ -515,25 +529,26 @@ export const LIMITS = {
   /** Per student, per seminar, per hour. */
   questionsPerHour: { min: 0, max: 500, default: 20 },
   /**
-   * Промежуток между вопросами одного человека, в секундах.
+   * The gap between one person's questions, in seconds.
    *
-   * По умолчанию ноль: слоу-мод — это ответ на конкретный класс, а не общее
-   * правило, и включать его молча всем значит замедлить те комнаты, где никто
-   * не спамил. Потолок в пять минут — уже не «не частите», а «сегодня без
-   * оракула»; дальше этого настройка не даёт зайти по ошибке.
+   * Zero by default: slow mode is an answer to a particular class, not a
+   * general rule, and turning it on silently for everyone would slow down the
+   * rooms where nobody spammed. A five-minute ceiling is no longer "not so
+   * fast" but "no oracle today"; the setting does not let anyone go past that
+   * by mistake.
    */
   slowModeSeconds: { min: 0, max: 300, default: 0 },
   contextChars: { min: 2_000, max: 100_000, default: 20_000 },
   /**
-   * Сколько действий оракул делает за один ход в режиме «сделать».
+   * How many actions the oracle takes in one turn in "do" mode.
    *
-   * Ноль по-прежнему значит «без предела» — это выбор оператора, и отнимать
-   * его нельзя. Но умолчанием он быть перестал: ход без потолка, упёршийся в
-   * модель, которая описывает вызов прозой вместо того, чтобы его сделать,
-   * ходит к провайдеру, пока кто-нибудь не нажмёт «Стоп» — и платит за это
-   * владелец ключа. Двадцать четыре — это «посмотреть, прочитать, завести
-   * тетрадь, набросать десяток ячеек, запустить пару» с запасом: настоящая
-   * работа в него укладывается, бесконечный круг — нет.
+   * Zero still means "no limit" — that is the operator's choice, and it must
+   * not be taken away. But it is no longer the default: a turn without a
+   * ceiling that runs into a model which describes a call in prose instead of
+   * making it keeps going to the provider until somebody presses "Stop" — and
+   * the key's owner pays for it. Twenty-four is "look, read, create a
+   * notebook, sketch a dozen cells, run a couple" with room to spare: real
+   * work fits into it, an endless loop does not.
    */
   agentSteps: { min: 0, max: 10_000, default: 24 },
 } as const
@@ -560,11 +575,11 @@ export const PROVIDER_PRESETS: Record<
 }
 
 /**
- * Провайдеры, чей рантайм ключа не знает вовсе.
+ * Providers whose runtime knows nothing about keys at all.
  *
- * Ollama и vLLM поднимают у себя OpenAI-совместимый эндпойнт и на заголовок
- * авторизации не смотрят: спрашивать у преподавателя ключ к его собственной
- * машине — значит просить секрет, которого не существует.
+ * Ollama and vLLM bring up an OpenAI-compatible endpoint of their own and do
+ * not look at the authorization header: asking the teacher for a key to their
+ * own machine means asking for a secret that does not exist.
  */
 export const KEYLESS_PROVIDERS: readonly AiProviderId[] = ['ollama', 'vllm']
 
@@ -573,18 +588,20 @@ export function isKeylessProvider(provider: AiProviderId): boolean {
 }
 
 /**
- * Есть ли на этом инстансе, кого спрашивать: ключ ЛИБО локальный рантайм с
- * адресом.
+ * Whether this instance has someone to ask: a key OR a local runtime with an
+ * address.
  *
- * Единственная копия правила. Раньше их было две, и они разошлись: сервер
- * пускает вопрос по `providerReady()` (ai/provider.ts — «ключ, или рантайм, у
- * которого понятия ключа нет»), а панель считала потолок комнаты по одному
- * ключу и на настроенной Ollama гасила «Hints only» и «Full answers» с
- * подписью «на инстансе нет ключа». Оракул при этом отвечал — экран отбирал у
- * преподавателя настройку, которая работала.
+ * The only copy of the rule. There used to be two, and they drifted apart:
+ * the server lets a question through by `providerReady()` (ai/provider.ts —
+ * "a key, or a runtime that has no notion of a key"), while the panel
+ * computed the room's ceiling from the key alone and, on a configured Ollama,
+ * disabled "Hints only" and "Full answers" with the caption "the instance has
+ * no key". The oracle answered all the while — the screen took away from the
+ * teacher a setting that worked.
  *
- * `hasKey` отдельным полем потому, что сам ключ на клиент не уезжает: сервер
- * знает строку, панель — только маску и «ключ пришёл из окружения».
+ * `hasKey` is a separate field because the key itself does not travel to the
+ * client: the server knows the string, the panel only the mask and "the key
+ * came from the environment".
  */
 export function providerConfigured(cfg: {
   provider: AiProviderId
@@ -592,8 +609,9 @@ export function providerConfigured(cfg: {
   hasKey: boolean
 }): boolean {
   if (cfg.hasKey) return true
-  // Хвостовой слеш сервер срезает при чтении настроек (resolveAiConfig), так
-  // что '/' — это не адрес; здесь то же самое, иначе две стороны разойдутся.
+  // The server strips the trailing slash when reading settings
+  // (resolveAiConfig), so '/' is not an address; the same here, otherwise the
+  // two sides drift apart.
   return isKeylessProvider(cfg.provider) && cfg.baseUrl.trim().replace(/\/+$/, '').length > 0
 }
 
@@ -631,7 +649,7 @@ export type AdminErrorReason =
   /** The environment is the one the room is running, or is `base`. */
   | 'in_use'
   | 'protected'
-  /** Создать под именем, которое уже занято: правка — это другой запрос. */
+  /** Creating under a name that is already taken: editing is a different request. */
   | 'exists'
   /**
    * This install cannot do that here: no Docker, no build context, or — for the
@@ -642,17 +660,19 @@ export type AdminErrorReason =
   | 'building'
   | 'failed'
   /**
-   * Не отказ, а «ещё рано»: соревнование без ответов, без данных или с
-   * непроверенным базовым решением открывать нельзя. Отдельно от 'invalid',
-   * потому что чинится оно не в этом запросе, а на форме, и панель по этой
-   * причине подсвечивает нужную секцию.
+   * Not a refusal but "too early": a competition without answers, without
+   * data or with an unchecked baseline solution cannot be opened. Separate
+   * from 'invalid', because it is fixed not in this request but on the form,
+   * and for this reason the panel highlights the relevant section.
    */
   | 'not_ready'
   /**
-   * Запрос не доехал: сервера нет, сети нет, туннель закрыт.
+   * The request did not get through: no server, no network, the tunnel is
+   * closed.
    *
-   * Не от сервера — его сочиняет клиент, когда fetch отверг обещание. Отдельно
-   * от 'invalid', потому что «попробуйте ещё раз» здесь осмысленно, а там нет.
+   * Not from the server — the client composes it when fetch rejected its
+   * promise. Separate from 'invalid', because "try again" makes sense here and
+   * not there.
    */
   | 'network'
 
@@ -696,72 +716,78 @@ export interface AdminEnvironment {
   /**
    * True for the one a seminar created from here on will run.
    *
-   * Не «на чём работает весь инстанс»: уже созданный семинар держит своё
-   * окружение и переживает переключение — иначе смена активного окружения
-   * пересоздавала бы ядро под идущей парой (см. AdminSeminar.environment).
+   * Not "what the whole instance runs on": an already created seminar keeps
+   * its environment and survives a switch — otherwise changing the active
+   * environment would recreate the kernel under a running class (see
+   * AdminSeminar.environment).
    */
   active: boolean
   /** Last build's error, kept so a failure is readable after the log scrolls. */
   error: string | null
   /**
-   * Поверх какого окружения этот образ собран — строкой `# colloq: from <имя>`
-   * в шапке файла; null — поверх обычной базы, как у большинства.
+   * Which environment this image is built on top of — the line
+   * `# colloq: from <name>` in the file's header; null means on top of the
+   * ordinary base, like most.
    *
-   * Показывается, потому что объясняет две вещи сразу: почему в списке нет
-   * torch, хотя он в комнате есть, и почему «Needs rebuild» может появиться на
-   * файле, которого никто не трогал, — родителя пересобрали позже.
+   * Shown because it explains two things at once: why torch is not in the
+   * list although the room has it, and why "Needs rebuild" can appear on a
+   * file nobody touched — the parent was rebuilt later.
    */
   parent: string | null
   /**
-   * Окружение просит видеокарту — строкой `# colloq: gpu` в шапке своего файла
-   * или в шапке того, поверх чего оно собрано: признак наследуется вместе с
-   * колёсами под CUDA.
+   * The environment asks for a GPU — with a `# colloq: gpu` line in its own
+   * file's header or in the header of the one it is built on top of: the flag
+   * is inherited together with the CUDA wheels.
    *
-   * Свойство окружения, а не комнаты: колёса torch в нём собраны под CUDA, и на
-   * процессоре такая комната не поедет вовсе. Поэтому срез выдаётся ей на всё
-   * время жизни контейнера, а комната на обычном окружении не занимает его
-   * никогда.
+   * A property of the environment, not of the room: the torch wheels in it
+   * are built for CUDA, and on a CPU such a room will not run at all. That is
+   * why it is given a slice for the whole life of the container, while a room
+   * on an ordinary environment never takes one.
    */
   gpu: boolean
   /**
-   * Какой Python просит окружение — `'3.12'`: своей директивой `# colloq:
-   * python`, а у цепочки — директивой её КОРНЯ, потому что версия приходит из
-   * базового образа и слоем сверху не меняется.
+   * Which Python the environment asks for — `'3.12'`: by its own
+   * `# colloq: python` directive, and for a chain by the directive of its
+   * ROOT, because the version comes from the base image and a layer on top
+   * does not change it.
    *
-   * Пустая строка — «неизвестно»: так отвечает опубликованный каталог, который
-   * версию не назвал. Показать вместо этого умолчание значило бы выдумать её.
+   * An empty string means "unknown": that is what a published catalog that
+   * did not name the version answers. Showing the default instead would mean
+   * making it up.
    */
   python: string
   /**
-   * Какой Python на самом деле в собранном образе — `'3.12.7'`, из переменной
-   * PYTHON_VERSION самого образа; null, если образа нет или он молчит.
+   * Which Python is actually in the built image — `'3.12.7'`, from the
+   * image's own PYTHON_VERSION variable; null if there is no image or it says
+   * nothing.
    *
-   * Отдельно от `python`, потому что расходятся они ровно в том случае, ради
-   * которого это и показывают: файл поправили после сборки. Директива — для
-   * pip комментарий, `listChanged` её не видит, и без этой пары «Python 3.12» в
-   * панели стояло бы над образом с 3.11.
+   * Separate from `python`, because they diverge in exactly the case this is
+   * shown for: the file was edited after the build. To pip the directive is a
+   * comment, `listChanged` does not see it, and without this pair
+   * "Python 3.12" in the panel would stand over an image with 3.11.
    */
   pythonBuilt: string | null
 }
 
 /**
- * Что эта установка может сделать с окружениями — двумя вопросами, а не одним.
+ * What this install can do with environments — as two questions, not one.
  *
- * Одна причина на всё гасила обе кнопки разом: под `make up` сервер сидит в
- * контейнере, репозитория рядом с ним нет, и панель отказывала и в сборке, и в
- * смене умолчания — то есть собрать окружение на арендованной машине можно было
- * только по ssh. Но сборке нужен клиент docker и каталог kernel (контекст
- * читает клиент), а умолчанию — .env, который остаётся на хосте. Разные
- * условия, разные кнопки, разные объяснения.
+ * A single reason for everything used to disable both buttons at once: under
+ * `make up` the server sits in a container with no repository next to it,
+ * and the panel refused both the build and changing the default — that is,
+ * an environment could be built on a rented machine only over ssh. But a
+ * build needs the docker client and the kernel directory (the client reads
+ * the context), while the default needs .env, which stays on the host.
+ * Different conditions, different buttons, different explanations.
  */
 export interface EnvironmentAbilities {
-  /** Собрать образ окружения отсюда. */
+  /** Build an environment's image from here. */
   canBuild: boolean
   /** Why not, when `canBuild` is false — shown instead of dead buttons. */
   cannotBuildReason: string | null
-  /** Записать `KERNEL_ENV` — то есть решить, на чём поедут новые семинары. */
+  /** Write `KERNEL_ENV` — that is, decide what new seminars will run on. */
   canSetDefault: boolean
-  /** Почему нет: обычно «это делается на хосте», а не «всё сломано». */
+  /** Why not: usually "this is done on the host", not "everything is broken". */
   cannotSetDefaultReason: string | null
 }
 
@@ -773,12 +799,12 @@ export interface EnvironmentsState extends EnvironmentAbilities {
   /** Legacy wire field, always false: shared production execution is disabled. */
   shared: boolean
   /**
-   * Срезы видеокарты: сколько перечислено в KERNEL_GPUS и сколько сейчас
-   * свободно.
+   * GPU slices: how many are listed in KERNEL_GPUS and how many are free now.
    *
-   * Свободен тот срез, которого нет ни на одном контейнере комнаты, — считает
-   * сервер, потому что знает об этом только он. `total: 0` — обычная установка
-   * без карт, а не поломка: панель говорит это словами и не пугает.
+   * A slice is free when it is on no room's container — the server counts
+   * this, because only it knows. `total: 0` is an ordinary install without
+   * cards, not a breakage: the panel says so in words and does not alarm
+   * anyone.
    */
   gpus: { total: number; free: number }
 }
@@ -793,21 +819,22 @@ export interface SaveEnvironmentRequest {
 export const ENVIRONMENT_NAME = /^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$|^[a-z0-9]$/
 
 /**
- * Поверх какого окружения строится это — директива `# colloq: from <имя>` в
- * шапке, в том же виде, что и `# colloq: gpu`.
+ * Which environment this one is built on top of — the `# colloq: from <name>`
+ * directive in the header, in the same form as `# colloq: gpu`.
  *
- * Слой окружения один, и любая правка списка ставит его целиком заново. Для
- * окружения с torch это три гигабайта колёс и девять минут за добавленный timm.
- * Директива переносит тяжёлое в общий слой: родитель собирается один раз, а
- * дети — за секунды.
+ * An environment has one layer, and any edit of the list installs all of it
+ * over again. For an environment with torch that is three gigabytes of wheels
+ * and nine minutes for an added timm. The directive moves the heavy part into
+ * a shared layer: the parent is built once, and the children in seconds.
  *
- * Имя проверяется тем же выражением, что и всюду: оно становится и путём к
- * файлу, и тегом образа. Не имя — не директива; а несуществующее окружение
- * назвать родителем можно, и тогда откажет сборка, назвав его вслух.
+ * The name is checked by the same expression as everywhere: it becomes both a
+ * path to a file and an image tag. Not a name means not a directive; a
+ * nonexistent environment can be named as a parent, though, and then the
+ * build fails, naming it out loud.
  *
- * Здесь, а не только на сервере: форма создания окружения решает по этой же
- * строке, наследуется ли версия Python, и второй разбор той же директивы
- * разъехался бы с первым на первой же правке.
+ * Here, not only on the server: the environment creation form decides by this
+ * same line whether the Python version is inherited, and a second parse of
+ * the same directive would drift from the first at the very first edit.
  */
 export function declaresParent(source: string): string | null {
   for (const line of source.split('\n')) {
@@ -817,48 +844,50 @@ export function declaresParent(source: string): string | null {
   return null
 }
 
-/* ------------------------------------------------------- версия Python */
+/* ------------------------------------------------------ Python version */
 
 /**
- * Версии, которые предлагает форма. Ровно те, под которые есть официальный
- * `python:<версия>-slim-bookworm`, — из него и собирается корень цепочки.
+ * The versions the form offers. Exactly those for which an official
+ * `python:<version>-slim-bookworm` exists — the chain's root is built from it.
  *
- * Список короткий нарочно: это не «любая версия, какую напишут», а те, на
- * которых ядро (jupyter, numpy, pandas, matplotlib, scikit-learn) правда
- * ставится колёсами, без сборки из исходников посреди пары.
+ * The list is short on purpose: this is not "any version anyone writes" but
+ * those on which the kernel (jupyter, numpy, pandas, matplotlib,
+ * scikit-learn) really installs from wheels, without building from source in
+ * the middle of a class.
  */
 export const PYTHON_VERSIONS = ['3.10', '3.11', '3.12', '3.13'] as const
 
 /**
- * На чём собирается окружение, ничего про Python не сказавшее.
+ * What an environment that said nothing about Python is built on.
  *
- * Обязано совпадать с `ARG PARENT=python:…-slim-bookworm` в kernel/Dockerfile:
- * там это значение и действует, когда мы не передаём PARENT. Расхождение
- * сторожит тест (environment-python.test.mts), а не договорённость.
+ * Must match `ARG PARENT=python:…-slim-bookworm` in kernel/Dockerfile: that is
+ * where this value takes effect when we do not pass PARENT. The match is
+ * guarded by a test (environment-python.test.mts), not by an agreement.
  */
 export const DEFAULT_PYTHON = '3.11'
 
 /**
- * Строка `# colloq: python 3.12` в шапке — та же семья, что `# colloq: gpu` и
- * `# colloq: from <имя>`: для pip это комментарий, для нас — свойство
- * окружения.
+ * The `# colloq: python 3.12` line in the header — the same family as
+ * `# colloq: gpu` and `# colloq: from <name>`: to pip it is a comment, to us a
+ * property of the environment.
  *
- * Свободный текст версией не считается: она уходит в имя базового образа
- * (`python:3.12-slim-bookworm`), и «3.12 или новее» там не существует. 3.9…3.13
- * — то, что вообще принимается; форма предлагает PYTHON_VERSIONS.
+ * Free text does not count as a version: it goes into the base image name
+ * (`python:3.12-slim-bookworm`), and "3.12 or newer" does not exist there.
+ * 3.9…3.13 is what is accepted at all; the form offers PYTHON_VERSIONS.
  */
 const PYTHON_DIRECTIVE = /^#\s*colloq:\s*python\s+(\S+)\s*$/i
 const PYTHON_LINE = /^#\s*colloq:\s*python\b/i
 const PYTHON_VERSION = /^3\.(?:9|1[0-3])$/
 
 /**
- * Какую версию Python просит этот файл — или null, если не просит никакой.
+ * Which Python version this file asks for — or null if it asks for none.
  *
- * Ищется среди всех комментариев, а не только до первой строки с пакетом:
- * директива, дописанная в конец файла, должна сработать. Строка сравнивается
- * целиком — «# colloq: python не трогайте» директивой не является, как и
- * «# colloq: python 2.7»: такого slim-образа нет, и молча собрать вместо него
- * что-то другое хуже, чем не увидеть директиву вовсе.
+ * It is looked for among all comments, not only up to the first line with a
+ * package: a directive added at the end of the file must work. The line is
+ * compared whole — "# colloq: python do not touch" is not a directive, and
+ * neither is "# colloq: python 2.7": there is no such slim image, and
+ * silently building something else instead is worse than not seeing the
+ * directive at all.
  */
 export function declaresPython(source: string): string | null {
   for (const line of source.split('\n')) {
@@ -870,11 +899,12 @@ export function declaresPython(source: string): string | null {
 }
 
 /**
- * Строка, которая ПОХОЖА на директиву версии, но версией не является.
+ * A line that LOOKS like a version directive but is not a version.
  *
- * Нужна ровно затем, чтобы редактор сказал об этом вслух: `# colloq: python
- * 3.8` молча читается как «ничего не сказано», и окружение собирается на
- * умолчании — узнать об этом по журналу сборки можно, а по экрану нельзя.
+ * Needed exactly so that the editor says so out loud:
+ * `# colloq: python 3.8` is silently read as "nothing was said", and the
+ * environment is built on the default — one can find that out from the build
+ * log, but not from the screen.
  */
 export function unreadablePython(source: string): string | null {
   for (const line of source.split('\n')) {
@@ -886,13 +916,13 @@ export function unreadablePython(source: string): string | null {
 }
 
 /**
- * Тот же файл, но просящий именно эту версию.
+ * The same file, but asking for exactly this version.
  *
- * Умолчание директивой не записывается: файл без строки и файл со строкой про
- * 3.11 значат одно и то же, а второй ещё и врёт, если однажды поднимут
- * умолчание в Dockerfile. Старая директива убирается в любом случае — две
- * строки про версию в одной шапке читались бы по первой, а правил бы человек
- * вторую.
+ * The default is not written as a directive: a file without the line and a
+ * file with a line about 3.11 mean the same thing, and the second one also
+ * lies if the default in the Dockerfile is raised one day. The old directive
+ * is removed in any case — with two lines about the version in one header,
+ * the first one would be read while a person edited the second.
  */
 export function withPython(source: string, version: string): string {
   const kept = source.split('\n').filter((line) => !PYTHON_LINE.test(line.trim()))
@@ -900,37 +930,38 @@ export function withPython(source: string, version: string): string {
   return [`# colloq: python ${version}`, ...kept].join('\n')
 }
 
-/** Базовый образ корня цепочки. Имя собирается в одном месте — здесь. */
+/** The base image of the chain's root. The name is assembled in one place — here. */
 export function pythonImage(version: string): string {
   return `python:${version}-slim-bookworm`
 }
 
-/* ------------------------------------------------------ импорт с GitHub */
+/* --------------------------------------------------- import from GitHub */
 
 /**
- * Что получится из ссылки на GitHub, посчитанное без создания комнаты.
+ * What a GitHub link will produce, computed without creating a room.
  *
- * Показывается до импорта нарочно: преподаватель, вставивший ссылку на папку,
- * хочет увидеть «сто десять ячеек и train.csv» ДО того, как появится семинар,
- * а не после.
+ * Shown before the import on purpose: a teacher who pasted a link to a folder
+ * wants to see "a hundred and ten cells and train.csv" BEFORE the seminar
+ * appears, not after.
  */
 export interface ImportPreview {
-  /** Имя, выведенное из имени файла или папки; его можно переписать. */
+  /** A name derived from the file or folder name; it can be rewritten. */
   name: string
   notebook: string
   notebooks: { name: string; cells: number }[]
   cells: number
   files: { name: string; size: number }[]
   /**
-   * Файлы, которым не хватило потолка комнаты, — по именам.
+   * Files that did not fit under the room's ceiling — by name.
    *
-   * Сумма размеров ограничена так же, как у загрузки через панель
-   * (`server/src/routes/admin-import.ts` · withinRoomBudget), и остаток
-   * отсекается ещё до того, как комнату заведут. Сказать об этом надо здесь:
-   * узнать, что половина датасета не приехала, после импорта — поздно.
+   * The total size is capped the same way as for an upload through the panel
+   * (`server/src/routes/admin-import.ts` · withinRoomBudget), and the rest is
+   * cut off before the room is even created. This has to be said here:
+   * learning after the import that half the dataset did not arrive is too
+   * late.
    */
   skipped: string[]
-  /** owner/repo/path — чтобы было видно, откуда это взялось. */
+  /** owner/repo/path — so that it is visible where this came from. */
   source: string
 }
 
@@ -940,7 +971,7 @@ export interface ImportResult {
   url: string
   cells: number
   files: string[]
-  /** Файлы, которые не удалось забрать: имя не годится или скачивание упало. */
+  /** Files that could not be fetched: the name will not do or the download failed. */
   skipped: string[]
   createdBy: string | null
 }

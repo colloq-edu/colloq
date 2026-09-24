@@ -1,10 +1,10 @@
 <!--
-  Полоса под вкладками, принадлежащая открытому файлу.
+  The bar under the tabs that belongs to the open file.
 
-  Ровно то же место, где у тетради стоят Run All и Restart: у каждой вкладки
-  своя полоса действий, и она всегда под ней. Так вкладка перестаёт быть просто
-  переключателем — она называет, чем сейчас занят центр экрана, а полоса под ней
-  говорит, что с этим можно сделать.
+  Exactly the spot where the notebook has Run All and Restart: every tab has
+  its own action bar, and it always sits under the tab. That way a tab stops
+  being just a switch — it names what the centre of the screen is busy with,
+  and the bar under it says what can be done with that.
 -->
 <script lang="ts">
   import { tr, getLocale } from '@shared/i18n'
@@ -15,13 +15,16 @@
 
   interface Props {
     path: string
-    /** Запускать в этой комнате можно — правило `run`. */
+    /** Running is allowed in this room — the `run` rule. */
     mayRun: boolean
-    /** Править можно — правило `files`. Иначе редактор только читают. */
+    /** Editing is allowed — the `files` rule. Otherwise it is read-only. */
     mayEdit: boolean
-    /** Почему нельзя править, если нельзя. */
+    /** Why editing is not allowed, when it is not. */
     whyReadOnly: string
-    /** Сервер не принял правку: дальше документ только читают, что бы ни говорило правило. */
+    /**
+     * The server refused an edit: from then on the document is read-only,
+     * whatever the rule says.
+     */
     refused: boolean
     onrun: () => void
   }
@@ -31,10 +34,10 @@
   const session = getSessionState()
 
   /*
-   * Право приходит пропсом, а фраза — отсюда: правило `run` объясняется одними
-   * и теми же словами в трёх местах (кнопка ячейки, эта кнопка, строка ввода в
-   * терминале), и это те слова, которыми отказывает сервер. Своя короткая
-   * копия расходилась с ними молча.
+   * The permission comes as a prop, but the phrase comes from here: the `run`
+   * rule is explained in the same words in three places (the cell's button,
+   * this button, the terminal's input line), and they are the words the
+   * server refuses with. A short copy of our own drifted from them silently.
    */
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
 
@@ -42,12 +45,13 @@
   const entry = $derived(session.files.find((file) => file.path === path))
 
   /**
-   * Кто ещё держит этот файл открытым.
+   * Who else has this file open.
    *
-   * Из присутствия комнаты, а не из присутствия файла: до второго доходит
-   * только тот, у кого файл уже открыт, а сказать об этом надо ровно тому, кто
-   * его открывает. Имена, а не точки: здесь есть место на имя, и «Ада правит
-   * здесь» — это то, из-за чего человек не начнёт переписывать ту же строку.
+   * From the room's presence, not the file's: the latter only reaches someone
+   * who already has the file open, and this has to be told to exactly the one
+   * who is opening it. Names, not dots: there is room for a name here, and
+   * "Ada is editing here" is what keeps a person from rewriting the same
+   * line.
    */
   const here = $derived(
     session.peers
@@ -70,16 +74,18 @@
 <div class="flex h-[34px] shrink-0 items-stretch border-b border-line bg-canvas">
   {#if runner}
     <!--
-      Запуск — тот же, что у ячейки: тот же контейнер, тот же Python, та же
-      кнопка «прервать» в терминале. Отличается только тем, куда идёт вывод.
+      The run is the same as a cell's: the same container, the same Python,
+      the same "interrupt" button in the terminal. The only difference is
+      where the output goes.
 
-      Переход — списком свойств, а не шорткатом `transition`: тот переводит ВСЕ
-      свойства, включая border-color и box-shadow фокусного кольца, и кольцо
-      приезжало бы вслед за клавишей вместо того, чтобы появиться сразу.
-      Двигаются здесь ровно два — brightness под курсором и scale под пальцем;
-      полоса рисуется руками и в `.btn` не укладывается (см. index.css · .btn,
-      где такой же список стоит позиционно, и близнеца этой кнопки — «На общий
-      экран» в SessionScreen).
+      The transition is a list of properties, not the `transition` shorthand:
+      that one animates ALL properties, including the focus ring's
+      border-color and box-shadow, and the ring would slide in after the key
+      instead of appearing at once. Exactly two move here — brightness under
+      the cursor and scale under the finger; the bar is drawn by hand and
+      does not fit `.btn` (see index.css · .btn, where the same list is given
+      position by position, and this button's twin — "Share screen" in
+      SessionScreen).
     -->
     <button
       type="button"
@@ -102,24 +108,27 @@
   <span class="flex-1"></span>
 
   <!--
-    Правая половина полосы УСЫХАЕТ, а левая (кнопка запуска) — нет.
+    The right half of the bar SHRINKS, and the left one (the run button)
+    does not.
 
-    Причина отказа в правах — это целая фраза («Преподаватель разрешил править
-    только себе»), а рядом с ней ещё и имена тех, кто держит файл открытым. На
-    телефоне всё это вместе с кнопкой «Запустить» вдвое шире экрана, и стояло
-    оно под `shrink-0`: полоса уезжала вправо под `overflow-hidden` комнаты, и
-    от фразы оставалось начало без конца. Теперь усыхает и обрезается
-    многоточием то, что ЧИТАЮТ, а то, что НАЖИМАЮТ, остаётся целым.
+    The reason for a permission refusal is a whole sentence ("The teacher
+    allowed only themselves to edit"), and next to it come the names of those
+    who have the file open. On a phone all of that, together with the "Run"
+    button, is twice as wide as the screen, and it stood under `shrink-0`:
+    the bar slid off to the right under the room's `overflow-hidden`, and the
+    sentence kept its beginning without an end. Now what is READ shrinks and
+    is cut with an ellipsis, while what is PRESSED stays whole.
   -->
   <div class="flex min-w-0 shrink items-center gap-2.5 px-3 sm:px-5">
     {#if refused || !mayEdit}
       <!--
-        Правило важнее отказа, а не наоборот.
+        The rule outranks the refusal, not the other way round.
 
-        «Правку не приняли» — про правку, которой не было: тому, кто в этой
-        комнате и так только читает, сокет отказывает при самом открытии, и
-        человек, ничего не напечатавший, получал упрёк вместо правила. Отказ
-        называется только там, где печатать было можно.
+        "The edit was not accepted" is about an edit that never happened: for
+        someone who can only read in this room anyway, the socket refuses at
+        the very opening, and a person who had typed nothing got a reproach
+        instead of the rule. The refusal is named only where typing was
+        allowed.
       -->
       <span
         class="flex min-w-0 items-center gap-1.5 text-2xs text-muted"
@@ -129,16 +138,17 @@
         <span class="truncate">{mayEdit ? tr('room.ui.104') : whyReadOnly}</span>
       </span>
     {:else if savedAt}
-      <!-- Время последней записи на диск, а не «есть несохранённое»: файл
-           ложится на диск сам через секунду после последнего нажатия, и
-           кнопки «сохранить» в этом продукте нет. -->
+      <!-- The time of the last write to disk, not "there are unsaved
+           changes": the file lands on disk by itself a second after the last
+           keystroke, and this product has no "save" button. -->
       <span class="font-mono text-2xs tabular-nums text-muted">{tr('room.ui.105')} {savedAt}</span>
     {/if}
 
     {#if here.length > 0}
       <span class="h-3.5 w-px shrink-0 bg-line" aria-hidden="true"></span>
-      <!-- Имена тоже усыхают: три человека с длинными именами — это ещё одна
-           экранная ширина, и выталкивать ими причину отказа нечестно. -->
+      <!-- The names shrink too: three people with long names make one more
+           screen width, and pushing the refusal reason out with them is
+           unfair. -->
       <span class="flex min-w-0 items-center gap-2">
         {#each here as user (user.id)}
           <span class="flex min-w-0 items-center gap-1.5">

@@ -1,117 +1,119 @@
 /**
- * Что делает браузер, которому отказали в правке.
+ * What a browser does when its edit is refused.
  *
- * Гейт на сервере не применяет отказанный кадр — и у браузера остаются структуры
- * на тактах, которых у сервера нет. Дальше всё, что человек напечатает, ссылается
- * на них, и сервер отказывает каждому следующему кадру: одно нажатие на кнопку,
- * которой в этой комнате быть не должно, — и браузер нем до конца пары, молча.
+ * The gate on the server does not apply a refused frame — and the browser is
+ * left with structures at clock ticks the server does not have. Everything the
+ * person types after that refers to them, and the server refuses every
+ * following frame: one press of a button that should not exist in this room —
+ * and the browser is mute until the end of the class, silently.
  *
- * Убрать структуру у клиента протокол не умеет: слияние CRDT — объединение, и ни
- * `encodeStateAsUpdate`, ни полный круг step1/step2 не уберут отказанный текст с
- * экрана того, кто его набрал. Значит, документ надо собрать заново — и вместе с
- * ним получить новый clientID, который и лечит разрыв в тактах.
+ * The protocol cannot remove a structure from a client: a CRDT merge is a
+ * union, and neither `encodeStateAsUpdate` nor a full step1/step2 round trip
+ * will remove refused text from the screen of whoever typed it. So the
+ * document must be rebuilt — and with it a new clientID obtained, which is
+ * what cures the gap in the clock ticks.
  *
- * Перезагрузка страницы, а не пересборка на месте. Пересобрать пришлось бы
- * `Y.Doc`, все корни, локальное хранилище, провайдера, awareness, UndoManager,
- * каждый `yreactive`-наблюдатель и каждый редактор CodeMirror — и всё это в
- * ситуации, которая случается раз в семестр и по определению уже пошла не так.
- * Перезагрузка делает то же самое, целиком и заведомо правильно. Цена — потеря
- * прокрутки и курсора; за это платит тот, кому и так надо остановиться и
- * прочитать сообщение.
+ * A page reload, not an in-place rebuild. An in-place rebuild would have to
+ * recreate the `Y.Doc`, all roots, the local store, the provider, awareness,
+ * the UndoManager, every `yreactive` observer and every CodeMirror editor —
+ * and all this in a situation that happens once a semester and has by
+ * definition already gone wrong. A reload does the same thing, whole and
+ * surely correct. The price is losing the scroll position and the cursor; it
+ * is paid by someone who has to stop and read the message anyway.
  *
- * Отказанный текст сохраняется до перезагрузки и показывается после: «вот то,
- * что вы написали». Иначе перезагрузка — это молчаливое стирание чужой работы,
- * что не лучше молчаливого немого браузера.
+ * The refused text is saved until the reload and shown after it: "here is
+ * what you wrote". Otherwise a reload is a silent erasure of someone's work,
+ * which is no better than a silently mute browser.
  */
 
-/** Код закрытия сокета совместной работы, означающий отказ в правке. */
+/** The collaboration socket's close code that means an edit was refused. */
 export const REFUSED_CLOSE = 4403
 
 const KEY = 'colloq.refused'
 const TRIES = 'colloq.refused.tries'
-/** Стоит ровно между `reload()` по отказу и следующей загрузкой страницы. */
+/** Set exactly between a refusal `reload()` and the next page load. */
 const AUTO = 'colloq.refused.auto'
 
 /**
- * Сколько раз подряд одна вкладка соглашается перезагрузиться из-за отказа.
+ * How many times in a row one tab agrees to reload because of a refusal.
  *
- * Перезагрузка лечит только вместе с очисткой кэша: если `clear()` не удался —
- * приватное окно, запрет на хранилище, — `y-indexeddb` переиграет отказанную
- * правку, сервер откажет снова, и страница начнёт перезагружаться по кругу. То
- * же самое делает соседняя вкладка того же семинара: она отдаёт отказанную
- * структуру обратно по BroadcastChannel, сама отказа не получая.
- * Немой браузер плох; браузер, который перезагружается вечно, хуже.
+ * A reload cures only together with clearing the cache: if `clear()` failed —
+ * a private window, storage blocked — `y-indexeddb` replays the refused edit,
+ * the server refuses again, and the page starts reloading in a loop. A
+ * neighbouring tab of the same seminar does the same: it hands the refused
+ * structure back over BroadcastChannel without getting a refusal itself.
+ * A mute browser is bad; a browser that reloads forever is worse.
  */
 const MAX_RELOADS = 2
 
 /**
- * Сколько соединение должно прожить, чтобы считаться здоровым.
+ * How long a connection must live to count as healthy.
  *
- * Не «пока не пришёл sync»: серверный SyncStep2 приезжает в ответ на наш
- * SyncStep1, то есть ЗАВЕДОМО раньше, чем сервер разберёт наш SyncStep2 с
- * отказанной структурой и закроет сокет. Обнуление счёта по sync стирало серию
- * на каждом заходе круга, и предохранитель не срабатывал ни разу. Отказ
- * прилетает в пределах одного оборота; соединение, прожившее десять секунд,
- * отказ уже пережило.
+ * Not "until sync arrives": the server's SyncStep2 arrives in reply to our
+ * SyncStep1, that is, SURELY before the server parses our SyncStep2 with the
+ * refused structure and closes the socket. Resetting the count on sync wiped
+ * the streak on every lap of the loop, and the fuse never tripped once. A
+ * refusal arrives within one round trip; a connection that has lived ten
+ * seconds has already survived the refusal.
  */
 const STABLE_MS = 10_000
 
 /**
- * Когда в этой загрузке страницы соединение впервые ожило.
+ * When the connection first came alive in this page load.
  *
- * Модульная переменная, а не хранилище, и это существенно: перезагрузка её
- * обнуляет — как раз то, что нужно, чтобы мерить жизнь ЭТОГО захода.
+ * A module variable, not storage, and that matters: a reload resets it —
+ * exactly what is needed to measure the life of THIS visit.
  */
 let aliveSince: number | null = null
 
 /**
- * Согласиться на ещё одну перезагрузку — или отказаться и остаться на месте.
+ * Agree to one more reload — or refuse and stay put.
  *
- * Серия обрывается прожитым временем, а не приходом sync (см. STABLE_MS), так
- * что второй отказ через полчаса — это снова первый, а второй через секунду —
- * это круг.
+ * The streak is broken by time lived, not by sync arriving (see STABLE_MS), so
+ * a second refusal half an hour later is a first one again, while a second one
+ * a second later is a loop.
  */
 export function mayReload(): boolean {
   const healed = aliveSince !== null && Date.now() - aliveSince >= STABLE_MS
-  // Соединение только что показало себя не с лучшей стороны: считать его
-  // здоровым до следующего sync больше нельзя.
+  // The connection has just shown itself in a poor light: it can no longer be
+  // considered healthy until the next sync.
   aliveSince = null
   let tries = 0
   try {
     tries = healed ? 0 : Number(sessionStorage.getItem(TRIES) ?? '0') || 0
     sessionStorage.setItem(TRIES, String(tries + 1))
   } catch {
-    // Хранилища нет — значит и переигрывать нечего: перезагрузка сработает.
+    // No storage — then there is nothing to replay either: the reload will work.
     return true
   }
   return tries < MAX_RELOADS
 }
 
-/** Соединение поднялось. Здоровым оно станет, продержавшись STABLE_MS. */
+/** The connection came up. It becomes healthy once it has held for STABLE_MS. */
 export function refusalHealed(): void {
   if (aliveSince === null) aliveSince = Date.now()
 }
 
-/** Перезагрузка по отказу — с меткой, чтобы следующая загрузка узнала её. */
+/** A reload because of a refusal — with a mark, so the next load recognises it. */
 export function reloadAfterRefusal(): void {
   try {
     sessionStorage.setItem(AUTO, '1')
   } catch {
-    /* хранилища нет — и серии нет */
+    /* no storage — and no streak */
   }
   window.location.reload()
 }
 
 /**
- * Страница загрузилась. Если не по отказу — человек перезагрузил её сам, и
- * серия начинается заново.
+ * The page has loaded. If not because of a refusal, the person reloaded it
+ * themselves, and the streak starts over.
  *
- * Серия живёт в sessionStorage, то есть переживает перезагрузки той же
- * вкладки — так и задумано, иначе круг не заметить. Но по той же причине
- * вкладка, однажды исчерпавшая перезагрузки, оставалась без них насовсем:
- * человек нажимал «обновить», отказ повторялся, и вкладка вместо перезагрузки
- * снова стояла на месте, потому что счёт так и висел на двух. Перезагрузка
- * рукой — это решение человека, и оно старше счётчика.
+ * The streak lives in sessionStorage, that is, it survives reloads of the
+ * same tab — by design, otherwise the loop could not be noticed. But for the
+ * same reason a tab that had once used up its reloads stayed without them for
+ * good: the person pressed "reload", the refusal repeated, and instead of
+ * reloading the tab stood still again, because the count was still stuck at
+ * two. A reload by hand is the person's decision, and it outranks the counter.
  */
 export function beginVisit(): void {
   try {
@@ -119,71 +121,75 @@ export function beginVisit(): void {
     sessionStorage.removeItem(AUTO)
     if (!auto) sessionStorage.removeItem(TRIES)
   } catch {
-    /* хранилища нет — считать нечего */
+    /* no storage — nothing to count */
   }
 }
 
-/** Человек решил перезагрузиться сам — со счётом, начатым заново. */
+/** The person decided to reload themselves — with the count started over. */
 export function reloadByHand(): void {
   try {
     sessionStorage.removeItem(TRIES)
   } catch {
-    /* хранилища нет */
+    /* no storage */
   }
   window.location.reload()
 }
 
 /**
- * Одна ячейка, какой её видела эта вкладка в момент отказа.
+ * One cell, as this tab saw it at the moment of the refusal.
  *
- * Гейт отказывает КАДРУ ЦЕЛИКОМ, а кадр после обрыва связи — это всё, что
- * человек набрал без сети, во всех ячейках сразу: печатать офлайн продукт
- * разрешает намеренно. Пока в записку клалась одна ячейка — та, где стоял
- * курсор, — остальные уходили вместе с кэшем молча, то есть ровно тем
- * «молчаливым стиранием чужой работы», которого боится шапка этого файла.
+ * The gate refuses THE WHOLE FRAME, and a frame after a dropped connection is
+ * everything the person typed without the network, in all cells at once: the
+ * product allows typing offline on purpose. While a single cell went into the
+ * note — the one with the cursor — the others left silently with the cache,
+ * that is, exactly the "silent erasure of someone's work" the header of this
+ * file is afraid of.
  */
 export interface RefusedCell {
-  /** Ячейка, чтобы после перезагрузки сверить её с тем, что признал сервер. */
+  /** The cell, to check it after the reload against what the server accepted. */
   id: string
-  /** Текст, каким он был у этой вкладки перед очисткой кэша. */
+  /** The text as this tab had it before the cache was cleared. */
   text: string
 }
 
 export interface RefusalNote {
   sessionId: string
   /**
-   * Отказали правке — или кэшу вкладки при входе.
+   * An edit was refused — or the tab's cache on entry.
    *
-   * Сервер называет второе словом `stale` в кадре закрытия: у него не было
-   * чьей-то правки, у него был весь кэш вкладки, и виноват в этом обычно не
-   * человек. После перезагрузки это не окно «эту правку не приняли», а
-   * строка внизу — если только вместе с кэшем не пропал набранный текст.
+   * The server calls the second `stale` in the close frame: it did not get
+   * someone's edit, it got the tab's whole cache, and usually it is not the
+   * person's fault. After the reload this is not a "this edit was not
+   * accepted" window but a line at the bottom — unless typed text was lost
+   * along with the cache.
    */
   kind: 'edit' | 'stale'
-  /** Фраза сервера — почему не приняли. */
+  /** The server's phrase — why it was not accepted. */
   message: string
-  /** Что человек написал в ячейке, которую правил, если это была правка. */
+  /** What the person wrote in the cell they were editing, if it was an edit. */
   text: string
   /**
-   * Все ячейки тетради на момент отказа — чтобы после перезагрузки было чем
-   * сверить. Может отсутствовать: старая записка, или снимок не влез в
-   * хранилище (см. `stashRefusal`).
+   * All the notebook's cells at the moment of the refusal — so that there is
+   * something to check against after the reload. May be absent: an old note,
+   * or the snapshot did not fit into storage (see `stashRefusal`).
    */
   cells?: RefusedCell[]
   at: number
 }
 
 /**
- * Что из записки правда пропало — сверкой с документом, который принял сервер.
+ * What in the note is really lost — by checking against the document the
+ * server accepted.
  *
- * Перезагрузка собирает вкладку заново из серверной копии, и почти всё, что
- * лежит в снимке, там уже есть: показывать человеку сорок ячеек, из которых
- * тридцать девять на месте, — это прятать ту одну, ради которой всё затевалось.
- * Отличается текст или ячейки больше нет — значит набранное в ней не доехало.
+ * The reload rebuilds the tab from the server's copy, and almost everything in
+ * the snapshot is already there: showing a person forty cells, thirty-nine of
+ * which are in place, hides the one that the whole thing was about. The text
+ * differs or the cell is gone — so what was typed in it did not make it.
  *
- * `sourceOf` отвечает `null`, когда ячейки в документе нет вовсе. Звать это
- * можно только ПОСЛЕ синхронизации с сервером: до неё документ пуст, и пустота
- * значит «ещё не читали», а не «сервер этого не принял».
+ * `sourceOf` answers `null` when the cell is not in the document at all. This
+ * may be called only AFTER syncing with the server: before that the document
+ * is empty, and emptiness means "not read yet", not "the server did not
+ * accept this".
  */
 export function stillLost(
   note: RefusalNote,
@@ -194,47 +200,47 @@ export function stillLost(
 }
 
 /**
- * Есть ли в записке текст, который стоит показать окном.
+ * Whether the note has text worth showing in a window.
  *
- * Отдельной функцией, потому что спрашивают об этом в двух местах и ответ
- * обязан быть одним: пока он считался как `note.text !== ''`, отказ кэшу при
- * курсоре вне ячеек показывался строчкой внизу — даже когда офлайн-правки
- * лежали в трёх других ячейках.
+ * A separate function, because this is asked in two places and the answer must
+ * be one: while it was computed as `note.text !== ''`, a cache refusal with the
+ * cursor outside the cells showed as a line at the bottom — even when offline
+ * edits lay in three other cells.
  */
 export function refusalHasText(note: RefusalNote): boolean {
   return note.text !== '' || (note.cells?.length ?? 0) > 0
 }
 
 /**
- * Отложить записку до перезагрузки.
+ * Put the note aside until the reload.
  *
- * `sessionStorage`, а не `localStorage`: записка про эту вкладку и про эту
- * минуту, и в другой вкладке того же семинара она была бы враньём.
+ * `sessionStorage`, not `localStorage`: the note is about this tab and this
+ * minute, and in another tab of the same seminar it would be a lie.
  */
 export function stashRefusal(note: RefusalNote): void {
   try {
     sessionStorage.setItem(KEY, JSON.stringify(note))
     return
   } catch {
-    /* либо хранилища нет вовсе, либо снимок тетради не влез — разбираемся ниже */
+    /* no storage at all, or the notebook snapshot did not fit — see below */
   }
   /*
-   * Не влезло — записать хотя бы ту ячейку, где стоял курсор.
+   * It did not fit — write down at least the cell where the cursor was.
    *
-   * Снимок всех ячеек — это килобайты, но тетрадь на двести ячеек с длинными
-   * выводами кода может упереться в квоту вкладки. Потерять из-за этого и ту
-   * записку, что помещалась раньше, — худший из исходов: человек остался бы без
-   * единого слова о том, что произошло.
+   * A snapshot of all cells is kilobytes, but a notebook of two hundred cells
+   * with long code outputs can hit the tab's quota. Losing because of that
+   * even the note that used to fit is the worst of outcomes: the person would
+   * be left without a single word about what happened.
    */
   try {
     const { cells: _dropped, ...small } = note
     sessionStorage.setItem(KEY, JSON.stringify(small))
   } catch {
-    /* приватное окно или запрет на хранилище: записки не будет, перезагрузка будет */
+    /* a private window or blocked storage: no note, but the reload still happens */
   }
 }
 
-/** Забрать записку — ровно один раз. */
+/** Take the note — exactly once. */
 export function takeRefusal(sessionId: string): RefusalNote | null {
   let raw: string | null = null
   try {
@@ -247,15 +253,15 @@ export function takeRefusal(sessionId: string): RefusalNote | null {
   try {
     const note = JSON.parse(raw) as RefusalNote
     if (note.sessionId !== sessionId) return null
-    // Старая записка — из прошлого захода в ту же вкладку; показывать её сейчас
-    // значит объяснять человеку то, чего он уже не помнит.
+    // An old note is from a previous visit to the same tab; showing it now would
+    // mean explaining to the person something they no longer remember.
     if (typeof note.at !== 'number' || Date.now() - note.at > 60_000) return null
     return {
       ...note,
       kind: note.kind === 'stale' ? 'stale' : 'edit',
       text: typeof note.text === 'string' ? note.text : '',
-      // Снимка может не быть вовсе — записка прошлой сборки или не влезшая в
-      // хранилище; пустой список и его отсутствие здесь значат одно и то же.
+      // There may be no snapshot at all — a note from a previous build or one that
+      // did not fit into storage; an empty list and its absence mean the same here.
       cells: Array.isArray(note.cells)
         ? note.cells.filter(
             (cell): cell is RefusedCell =>

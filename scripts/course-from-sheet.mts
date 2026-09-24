@@ -1,17 +1,19 @@
 /**
- * Курс из расписания в Google Sheets.
+ * A course from a schedule in Google Sheets.
  *
- * Расписание семестра составляют в таблице, а не в Colloq, и переносить его
- * руками по тридцать строк никто не станет. Скрипт читает опубликованный CSV и
- * заводит курс, у которого каждая неделя — строка «по плану»: тема и неделя
- * словами расписания. Комнаты появляются по одной, по мере занятий, и строка
- * плана заменяется семинаром.
+ * The semester schedule is put together in a spreadsheet, not in Colloq, and
+ * nobody is going to carry it over by hand, thirty rows at a time. The script
+ * reads the published CSV and creates a course in which every week is a
+ * "planned" row: the topic and the week in the schedule's own words. Rooms
+ * appear one by one, as the classes happen, and a plan row is replaced by a
+ * seminar.
  *
  *   npx tsx scripts/course-from-sheet.mts \
  *     --sheet <id> --gid <gid> --column "ML · сильная" --name "ML · сильная"
  *
- * Колонка ищется по заголовку первой строки: в таблице их четыре, по группе на
- * каждую, и указывать номер значило бы ломаться от вставленного столбца.
+ * The column is found by the header in the first row: the spreadsheet has four
+ * of them, one per group, and giving a number would mean breaking on an
+ * inserted column.
  */
 import { parseArgs } from "node:util";
 
@@ -22,22 +24,22 @@ const { values } = parseArgs({
     column: { type: "string" },
     name: { type: "string" },
     blurb: { type: "string" },
-    /** Куда писать. По умолчанию — база рядом, та же, что у `make run`. */
+    /** Where to write. By default, the database nearby, the same as for `make run`. */
     data: { type: "string" },
-    /** Показать, что получится, и ничего не записать. */
+    /** Show what would come out, and write nothing. */
     dry: { type: "boolean", default: false },
   },
 });
 
 if (!values.sheet || !values.column) {
-  console.error('нужны --sheet <id> и --column "<заголовок группы>"');
+  console.error('need --sheet <id> and --column "<group header>"');
   process.exit(1);
 }
 if (values.data) process.env.DATA_DIR = values.data;
 process.env.WORKSPACE_DIR ??= "workspace";
 process.env.SESSION_SECRET ??= "course-import";
 
-/** Разбор CSV с кавычками и переводами строк внутри полей. */
+/** CSV parsing, with quotes and line breaks inside fields. */
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -76,19 +78,19 @@ const url = `https://docs.google.com/spreadsheets/d/${values.sheet}/export?forma
 const res = await fetch(url, { redirect: "follow" });
 if (!res.ok) {
   console.error(
-    `таблица не читается: HTTP ${res.status}. Она открыта по ссылке?`,
+    `cannot read the spreadsheet: HTTP ${res.status}. Is it open to anyone with the link?`,
   );
   process.exit(1);
 }
 const rows = parseCsv(await res.text());
 if (rows.length < 3) {
-  console.error("в таблице нет ни заголовка, ни строк");
+  console.error("the spreadsheet has neither a header nor rows");
   process.exit(1);
 }
 
 /*
- * Колонка группы — по заголовку. Он стоит над тройкой «тема · преподаватель ·
- * ассистенты», так что тема лежит ровно в нём.
+ * The group column is found by its header. The header stands above the triple
+ * "topic · teacher · assistants", so the topic lies exactly in its column.
  */
 const header = rows[0];
 const topicAt = header.findIndex(
@@ -96,39 +98,41 @@ const topicAt = header.findIndex(
 );
 if (topicAt === -1) {
   console.error(
-    `колонки «${values.column}» в таблице нет. Есть: ${header.filter(Boolean).join(" · ")}`,
+    `the spreadsheet has no column "${values.column}". There are: ${header.filter(Boolean).join(" · ")}`,
   );
   process.exit(1);
 }
 
-/** Первый столбец — номер недели, второй — её даты; так составлено расписание. */
+/** The first column is the week number, the second its dates; that is how the schedule is laid out. */
 const WEEKS = 1;
 const planned: { name: string; when: string }[] = [];
 for (const row of rows.slice(2)) {
   const topic = (row[topicAt] ?? "").trim();
   const when = (row[WEEKS] ?? "").trim();
-  // «—» в этой таблице значит «тема на эту неделю пока не сформулирована»:
-  // строка про пустоту хуже отсутствующей строки.
+  // "—" in this spreadsheet means "the topic for this week is not worded yet":
+  // a row about nothing is worse than a missing row.
   if (!topic || topic === "—" || !when) continue;
   /*
-   * Дата в скобках — это та же неделя, ещё раз. В расписании она нужна, чтобы
-   * не листать влево; на странице курса рядом уже стоит неделя, и повтор
-   * читается как две разные даты.
+   * A date in parentheses is the same week, once more. In the schedule it is
+   * there so that nobody has to scroll left; on the course page the week
+   * already stands next to it, and the repetition reads as two different
+   * dates.
    */
   const name = topic.replace(/\s*\([^()]*\)\s*$/, "").trim();
-  // Ячейка из одной даты в скобках — тоже «темы ещё нет». Строку без темы
-  // скрипт записал бы мимо сервера, а панель потом не могла бы сохранить этот
-  // курс вовсе: PUT /items отказывает строке плана без темы.
+  // A cell holding only a date in parentheses also means "no topic yet". The
+  // script would write a row without a topic past the server, and the panel
+  // could then not save this course at all: PUT /items refuses a plan row
+  // without a topic.
   if (!name) continue;
   planned.push({ name, when });
 }
 
 if (planned.length === 0) {
-  console.error("в этой колонке не нашлось ни одной темы");
+  console.error("not a single topic was found in this column");
   process.exit(1);
 }
 
-console.log(`${values.column}: ${planned.length} недель`);
+console.log(`${values.column}: ${planned.length} weeks`);
 for (const [i, item] of planned.entries()) {
   console.log(
     `  ${String(i + 1).padStart(2, "0")}  ${item.when.padEnd(16)}  ${item.name}`,
@@ -136,7 +140,7 @@ for (const [i, item] of planned.entries()) {
 }
 
 if (values.dry) {
-  console.log("\n--dry: ничего не записано");
+  console.log("\n--dry: nothing written");
   process.exit(0);
 }
 
@@ -158,7 +162,7 @@ const saved = setCourseItems(
   })),
 );
 if (!saved) {
-  console.error("курс создан, но состав записать не удалось");
+  console.error("the course was created, but its items could not be saved");
   process.exit(1);
 }
-console.log(`\nкурс готов: /c/${course.id}`);
+console.log(`\ncourse ready: /c/${course.id}`);

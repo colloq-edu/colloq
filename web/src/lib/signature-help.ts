@@ -1,14 +1,14 @@
 import type { BriefValue } from '@shared/protocol'
 
 /**
- * Справка ядра, разобранная на части: сигнатура отдельно, документация отдельно.
+ * Kernel help split into parts: the signature separately, the docs separately.
  *
- * Ядро отвечает на `inspect_request` одним куском текста, размеченным
- * заголовками IPython (`Signature:`, `Docstring:`, `Type:`, `File:` …). Пока
- * подсказка показывала первые шесть строк этого куска, она честно работала
- * ровно для `df.head(n=5)` и разваливалась на всём остальном: у
- * `sns.lmplot(...)` одна только сигнатура занимает двадцать пять строк, и
- * человек видел обрубок
+ * The kernel answers `inspect_request` with one chunk of text marked up with
+ * IPython headers (`Signature:`, `Docstring:`, `Type:`, `File:` …). While the
+ * tooltip showed the first six lines of that chunk, it honestly worked for
+ * exactly `df.head(n=5)` and fell apart on everything else: for
+ * `sns.lmplot(...)` the signature alone takes twenty-five lines, and the
+ * person saw the stub
  *
  *     Signature:
  *     sns.lmplot(
@@ -16,30 +16,31 @@ import type { BriefValue } from '@shared/protocol'
  *         *,
  *         x=None,
  *
- * — то есть ровно те параметры, которые он и так набрал, и ни одного из тех,
- * ради которых наводился.
+ * — that is, exactly the parameters they had already typed, and not one of
+ * those they hovered for.
  *
- * Разбор живёт отдельным файлом и ничего не знает ни про CodeMirror, ни про
- * DOM: это чистая функция над строкой, и проверяется она настоящими ответами
- * ядра (tests/signature-help.test.mts), а не тем, как выглядит окно.
+ * The parser lives in its own file and knows nothing about CodeMirror or the
+ * DOM: it is a pure function over a string, and it is checked against real
+ * kernel answers (tests/signature-help.test.mts), not against how the window
+ * looks.
  *
- * Тем же разбором читается ответ СТАТИЧЕСКОГО пути (server/src/kernel/
- * inspect-static.ts): jedi отвечает не тем же самым текстом, но той же
- * разметкой — заголовками IPython, — и это условие всей затеи. Два разбора на
- * две дороги разошлись бы молча: один и тот же `sns.lmplot` выглядел бы в
- * подсказке по-разному в зависимости от того, запускали в комнате ячейку с
- * импортом или ещё нет.
+ * The same parser reads the answer of the STATIC path (server/src/kernel/
+ * inspect-static.ts): jedi does not answer with the same text, but with the
+ * same markup — IPython headers — and that is the condition of the whole
+ * scheme. Two parsers for two roads would drift apart silently: the same
+ * `sns.lmplot` would look different in the tooltip depending on whether a
+ * cell with the import had been run in the room yet.
  */
 
 /**
- * Заголовки, которыми IPython размечает ответ (IPython/core/oinspect.py ·
- * `info_fields`), — и только они.
+ * The headers IPython marks up its answer with (IPython/core/oinspect.py ·
+ * `info_fields`) — and only those.
  *
- * Закрытый список, а не «слово с двоеточием в начале строки», потому что
- * внутри самой документации таких строк сколько угодно: в примерах pandas
- * печатаются таблицы, в numpy — разделы, и любой `Warning:` посреди docstring
- * разрезал бы её пополам. Незнакомый заголовок здесь — не беда: его строка
- * просто останется частью того раздела, в котором стоит.
+ * A closed list, not "a word with a colon at the start of a line", because
+ * the docs themselves contain any number of such lines: pandas examples
+ * print tables, numpy has sections, and any `Warning:` in the middle of a
+ * docstring would cut it in half. An unknown header here is no trouble: its
+ * line simply stays part of the section it sits in.
  */
 const SECTIONS = [
   'Signature',
@@ -47,11 +48,12 @@ const SECTIONS = [
   'Call signature',
   'Definition',
   /*
-   * Четыре наших собственных заголовка — про модуль (server/src/kernel/
-   * inspect-static.ts · `_module_facts`). IPython их не пишет, но разметка та
-   * же, и разбор поэтому остаётся один. Ими закрыта жалоба 21.09: про pandas
-   * и seaborn живое ядро говорит «Type: module» и `<no docstring>`, то есть
-   * ничего, а всё содержательное про пакет лежит рядом с ним на диске.
+   * Four headers of our own — about the module (server/src/kernel/
+   * inspect-static.ts · `_module_facts`). IPython does not write them, but the
+   * markup is the same, so there is still a single parser. They close the
+   * complaint of 21 Sep 2026: about pandas and seaborn the live kernel says
+   * "Type: module" and `<no docstring>`, that is, nothing, while everything
+   * substantial about the package lies next to it on disk.
    */
   'Module',
   'Package',
@@ -77,11 +79,12 @@ type Section = (typeof SECTIONS)[number]
 const HEADER = new RegExp(`^(${SECTIONS.join('|')}):(.*)$`)
 
 /**
- * Разделы, внутри которых лежит ЧУЖОЙ текст, — то есть документация.
+ * Sections that hold SOMEONE ELSE'S text — that is, documentation.
  *
- * Отличать их приходится потому, что внутри документации бывает что угодно, в
- * том числе строка `File:      example` из примера к `open()`. См. `PROSE`
- * ниже: именно эти разделы и защищаются от заголовков посреди себя.
+ * They have to be told apart because documentation can contain anything,
+ * including the line `File:      example` from the example for `open()`. See
+ * `PROSE` below: these are exactly the sections protected from headers in
+ * their middle.
  */
 const DOCS: readonly Section[] = [
   'Docstring',
@@ -92,12 +95,12 @@ const DOCS: readonly Section[] = [
 ]
 
 /**
- * Приписки: одна строка, «что это и откуда».
+ * Facts: one line each, "what this is and where it comes from".
  *
- * IPython ставит их либо ДО документации (у модулей и значений), либо
- * слипшимся хвостом в самом конце (у функций и методов). Из этого и растёт
- * правило ниже: посреди документации такая строка — почти наверняка её часть,
- * а не конец раздела.
+ * IPython puts them either BEFORE the docs (for modules and values) or as a
+ * stuck-together tail at the very end (for functions and methods). That is
+ * where the rule below comes from: in the middle of the docs such a line is
+ * almost certainly part of them, not the end of the section.
  */
 const FACTS: readonly Section[] = [
   'Module',
@@ -117,13 +120,13 @@ const FACTS: readonly Section[] = [
 const FACT_LINE = new RegExp(`^(${FACTS.join('|')}):`)
 
 /**
- * С какой строки начинается слипшийся хвост приписок.
+ * The line where the stuck-together tail of facts begins.
  *
- * Считается с конца: пустые строки, потом подряд идущие `Type:`/`File:`/…
- * Всё, что выше, — текст, даже если строка выглядит заголовком. Без этого
- * счёта документация `open()` обрывалась на строке `File:      example` из
- * собственного примера, и половина справки просто исчезала — молча, как всегда
- * в таких случаях.
+ * Counted from the end: blank lines, then consecutive `Type:`/`File:`/…
+ * Everything above is text, even if a line looks like a header. Without this
+ * count the docs of `open()` broke off at the line `File:      example` from
+ * their own example, and half of the help simply vanished — silently, as
+ * always in such cases.
  */
 function tailStart(lines: readonly string[]): number {
   let at = lines.length
@@ -133,46 +136,47 @@ function tailStart(lines: readonly string[]): number {
 }
 
 /**
- * Чем IPython отвечает, когда сказать нечего.
+ * What IPython answers when it has nothing to say.
  *
- * Строка приезжает на месте документации у модулей и у половины значений, и
- * показывать её как документацию значило бы занимать окно словами «no
- * docstring» вместо того, чтобы окна не открывать вовсе.
+ * The string arrives in place of the docs for modules and half of the values,
+ * and showing it as docs would mean filling the window with the words "no
+ * docstring" instead of not opening the window at all.
  */
 const NOTHING = '<no docstring>'
 
 export interface SignatureHelp {
-  /** Сигнатура ЦЕЛИКОМ, как её написало ядро; `''` — её нет (значение, модуль). */
+  /** The WHOLE signature, as the kernel wrote it; `''` — there is none (a value, a module). */
   signature: string
-  /** Документация целиком; `''` — её нет. */
+  /** The whole documentation; `''` — there is none. */
   doc: string
-  /** Что это: `function`, `method`, `module`, `DataFrame`. Мелкой пометкой. */
+  /** What it is: `function`, `method`, `module`, `DataFrame`. As a small label. */
   type: string
   /**
-   * Как значение выглядит — `String form` ядра.
+   * What the value looks like — the kernel's `String form`.
    *
-   * Только у НЕ вызываемого: у функции это `<function lmplot at 0x7f…>`, то
-   * есть адрес в памяти чужого процесса — шум, занимающий строку. А у `x = 42`
-   * или у собранного `df` это ровно тот ответ, за которым наводились.
+   * Only for something NOT callable: for a function it is
+   * `<function lmplot at 0x7f…>`, that is, an address in another process's
+   * memory — noise taking up a line. But for `x = 42` or a built `df` it is
+   * exactly the answer people hovered for.
    */
   form: string
-  /** `len()` значения, если ядро его сказало. */
+  /** The value's `len()`, if the kernel reported it. */
   length: string
-  /** Полное имя модуля: `pandas`, `matplotlib.pyplot`. Только у модулей. */
+  /** Full module name: `pandas`, `matplotlib.pyplot`. Modules only. */
   module: string
-  /** Пакет с версией: `pandas 3.0.5` — так, как его ставят, а не импортируют. */
+  /** Package with version: `pandas 3.0.5` — as it is installed, not imported. */
   pkg: string
-  /** Одна строка о том, что этот пакет делает, — из его же метаданных. */
+  /** One line on what the package does — from its own metadata. */
   summary: string
-  /** Ссылка на документацию пакета; проверяет её тот, кто рисует. */
+  /** Link to the package docs; whoever renders it checks it. */
   docs: string
   /**
-   * Разобрать не удалось — показать как есть.
+   * Could not be parsed — show as is.
    *
-   * Не все ядра — IPython: в комнате может стоять ядро R или Julia, и разметка
-   * у него своя. Показать чужой текст целиком лучше, чем не показать ничего:
-   * человек всё равно прочтёт его глазами, а мы не обязаны понимать каждое
-   * ядро на свете.
+   * Not every kernel is IPython: a room may run an R or Julia kernel, and its
+   * markup is its own. Showing the foreign text whole is better than showing
+   * nothing: the person will read it with their own eyes anyway, and we are
+   * not obliged to understand every kernel in the world.
    */
   raw: string
 }
@@ -190,50 +194,51 @@ const EMPTY: SignatureHelp = {
   raw: '',
 }
 
-/** Склеить строки раздела: хвост строки заголовка плюс всё до следующего. */
+/** Join a section's lines: the tail of the header line plus everything up to the next one. */
 function joinSection(lines: string[]): string {
   const rows = [...lines]
   /*
-   * Хвост строки заголовка — особый: у однострочных значений он выровнен
-   * пробелами (`Type:      method`), и эти пробелы ничего не значат. У
-   * многострочных он пуст или пробелен вовсе. Внутренние строки не трогаем:
-   * там отступы кода и примеров, и подровнять их значило бы сломать `>>>`.
+   * The tail of the header line is special: for one-line values it is aligned
+   * with spaces (`Type:      method`), and those spaces mean nothing. For
+   * multi-line ones it is empty or all spaces. Inner lines are left alone:
+   * they carry the indentation of code and examples, and trimming them would
+   * break `>>>`.
    */
   if (rows.length > 0) rows[0] = rows[0].trim()
   while (rows.length > 0 && rows[0].trim() === '') rows.shift()
   while (rows.length > 0 && rows[rows.length - 1].trim() === '') rows.pop()
-  // Хвостовые пробелы IPython расставляет щедро; в окне они не видны, но
-  // выделение мышью захватывает их вместе с текстом.
+  // IPython is generous with trailing spaces; they are invisible in the
+  // window, but a mouse selection picks them up along with the text.
   const text = rows.join('\n').replace(/[ \t]+$/gm, '')
   return text === NOTHING ? '' : text
 }
 
 /**
- * Разобрать ответ ядра на части.
+ * Split the kernel's answer into parts.
  *
- * Ничего не выбрасывает и ничего не режет: обрезать нечего — окно прокручивается.
+ * Throws nothing and cuts nothing: there is nothing to trim — the window scrolls.
  */
 export function parseSignatureHelp(text: string): SignatureHelp {
   if (typeof text !== 'string' || text.trim() === '') return { ...EMPTY }
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   const tail = tailStart(lines)
   const found = new Map<Section, string[]>()
-  /** Строки до первого заголовка — у ядра не-IPython это весь ответ. */
+  /** Lines before the first header — for a non-IPython kernel, the whole answer. */
   const preamble: string[] = []
   let current: string[] = preamble
-  /** Читаем ли мы сейчас чужой текст, в котором заголовков не бывает. */
+  /** Whether we are now reading foreign text, which has no headers. */
   let prose = false
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     const header = HEADER.exec(line)
     const name = header ? (header[1] as Section) : null
-    // Приписка посреди документации — часть документации; см. `tailStart`.
+    // A fact line in the middle of the docs is part of the docs; see `tailStart`.
     const real = name !== null && !(prose && i < tail && FACTS.includes(name))
     if (real && name !== null) {
       /*
-       * Первый раздел с таким именем побеждает. Повтор возможен только в
-       * документации, и дописывать к разделу его второе вхождение значило бы
-       * склеить справку с куском docstring.
+       * The first section with a given name wins. A repeat can only happen
+       * inside the docs, and appending its second occurrence to the section
+       * would glue the help to a piece of a docstring.
        */
       if (found.has(name)) {
         current.push(line)
@@ -257,15 +262,16 @@ export function parseSignatureHelp(text: string): SignatureHelp {
   }
 
   /*
-   * Порядок предпочтения — от самого точного к самому общему. У класса
-   * сигнатуры нет вовсе, зато есть `Init signature`, и показать надо её: люди
-   * наводятся на `pd.DataFrame`, чтобы узнать, что ему передают.
+   * Order of preference — from the most precise to the most general. A class
+   * has no signature at all, but it has `Init signature`, and that is what to
+   * show: people hover over `pd.DataFrame` to find out what to pass to it.
    */
   const signature =
     value('Signature') || value('Init signature') || value('Call signature') || value('Definition')
   /*
-   * Документация класса — это ДВЕ документации, и обе по делу: своя у класса,
-   * своя у `__init__`. Склеиваются пустой строкой, как их разделил бы автор.
+   * A class's docs are TWO docs, and both are to the point: one for the class,
+   * one for `__init__`. They are joined with a blank line, as the author would
+   * separate them.
    */
   const doc = [value('Docstring'), value('Class docstring'), value('Init docstring'), value('Call docstring')]
     .filter((part) => part !== '')
@@ -274,16 +280,16 @@ export function parseSignatureHelp(text: string): SignatureHelp {
   const type = value('Type')
   const module = value('Module')
   /*
-   * У модуля `String form` — это `<module 'pandas' from '/usr/local/...'>`:
-   * адрес внутри контейнера, который человеку в комнате не говорит ничего.
-   * Вместо него у модуля есть имя пакета, версия и описание.
+   * For a module, `String form` is `<module 'pandas' from '/usr/local/...'>`:
+   * a path inside the container that tells the person in the room nothing.
+   * Instead, a module has the package name, version and description.
    */
   const isModule = type === 'module' || module !== ''
   return {
     signature,
     doc: lead === '' ? doc : doc === '' ? lead : `${lead}\n\n${doc}`,
     type,
-    // См. `form`: у вызываемого это адрес объекта в чужом процессе.
+    // See `form`: for a callable it is the object's address in another process.
     form: signature === '' && !isModule ? value('String form') : '',
     length: value('Length'),
     module,
@@ -294,7 +300,7 @@ export function parseSignatureHelp(text: string): SignatureHelp {
   }
 }
 
-/** Есть ли что показывать: пустую подсказку открывать незачем. */
+/** Whether there is anything to show: there is no point opening an empty tooltip. */
 export function helpIsEmpty(help: SignatureHelp): boolean {
   return (
     help.signature === '' &&
@@ -311,11 +317,11 @@ export function helpIsEmpty(help: SignatureHelp): boolean {
 }
 
 /**
- * Пакет, разобранный на имя и версию: `pandas 3.0.5` → `pandas` + `3.0.5`.
+ * A package split into name and version: `pandas 3.0.5` → `pandas` + `3.0.5`.
  *
- * Версия отрезается только если последнее слово на неё похоже — начинается с
- * цифры. Имя пакета может состоять из двух слов (`ruamel.yaml.clib`), и
- * отрезать хвост вслепую значило бы врать в шапке.
+ * The version is cut off only if the last word looks like one — starts with
+ * a digit. A package name can consist of two words (`ruamel.yaml.clib`), and
+ * cutting off the tail blindly would mean lying in the header.
  */
 export function splitPackage(pkg: string): { name: string; version: string } {
   const at = pkg.lastIndexOf(' ')
@@ -326,49 +332,50 @@ export function splitPackage(pkg: string): { name: string; version: string } {
 }
 
 /**
- * Ссылка, по которой можно дать щёлкнуть, — или `null`.
+ * A link that is safe to let people click — or `null`.
  *
- * Строка приезжает из метаданных чужого пакета, то есть это ЧУЖОЙ текст в
- * атрибуте `href`. Всё, кроме http и https, отсюда не выходит: `javascript:`
- * в ссылке, которую человек видит как «Документация», — это исполнение чужого
- * кода по клику в справке.
+ * The string arrives from a third-party package's metadata, that is, it is
+ * FOREIGN text in an `href` attribute. Nothing but http and https gets out of
+ * here: `javascript:` in a link the person sees as "Documentation" means
+ * running someone else's code on a click in the help.
  */
 export function safeLink(url: string): string | null {
   return /^https?:\/\/\S+$/i.test(url.trim()) ? url.trim() : null
 }
 
-/* --------------------------------------------------- сигнатура по частям */
+/* ---------------------------------------------------- signature in parts */
 
 /**
- * Сколько знаков сигнатура помещается в строку.
+ * How many characters of a signature fit on one line.
  *
- * Восемьдесят — ширина окна справки моноширинным тринадцатым (640 px ≈ 82
- * знака) с запасом на поля. Всё, что короче, показывается как есть, одной
- * строкой: разбирать `df.head(n=5)` на части нечего и незачем.
+ * Eighty is the width of the help window in 13 px monospace (640 px ≈ 82
+ * characters) with room for padding. Anything shorter is shown as is, on one
+ * line: there is nothing to split in `df.head(n=5)` and no reason to.
  */
 export const SIGNATURE_ONE_LINE = 80
 
 /**
- * Параметр сигнатуры, разделённый надвое: имя и всё остальное.
+ * A signature parameter split in two: the name and everything else.
  *
- * Надвое, потому что глазами ищут ИМЯ. В `x_estimator=None` человек читает
- * `x_estimator`, а `=None` — это шум, который надо видеть, но не читать;
- * поэтому имя рисуется цветом текста, а аннотация с умолчанием — приглушённым.
- * `*`, `/`, `*args` и `**kwargs` целиком имя: делить в них нечего.
+ * In two, because the eye looks for the NAME. In `x_estimator=None` a person
+ * reads `x_estimator`, and `=None` is noise that must be visible but not
+ * read; so the name is drawn in the text color and the annotation with the
+ * default in a muted one. `*`, `/`, `*args` and `**kwargs` are all name:
+ * there is nothing to split in them.
  */
 export interface SignatureParam {
   name: string
-  /** `: int = 5`, `=None`, `` — склеенное с именем даёт параметр дословно. */
+  /** `: int = 5`, `=None`, `` — joined with the name, gives the parameter verbatim. */
   rest: string
 }
 
 export interface SignatureParts {
-  /** `sns.lmplot(` — вызываемое вместе с открывающей скобкой. */
+  /** `sns.lmplot(` — the callable together with the opening parenthesis. */
   head: string
   params: SignatureParam[]
-  /** `)` и всё, что после неё: `-> Self`. */
+  /** `)` and everything after it: `-> Self`. */
   tail: string
-  /** Та же сигнатура одной строкой — ровно то, что копируется из окна. */
+  /** The same signature on one line — exactly what gets copied from the window. */
   flat: string
 }
 
@@ -377,17 +384,17 @@ const OPEN = new Set(['(', '[', '{'])
 const CLOSE = new Set([')', ']', '}'])
 
 /**
- * Разделить список параметров по запятым ВЕРХНЕГО уровня.
+ * Split a parameter list on TOP-LEVEL commas.
  *
- * Скобки и кавычки считаются, потому что запятая живёт и внутри умолчания:
- * `b=(2, 3)`, `sep=", "`, `Dict[str, int]`. Разделив по каждой запятой, мы
- * разрезали бы такое умолчание пополам — и показали бы человеку параметр,
- * которого нет.
+ * Brackets and quotes are counted because a comma also lives inside
+ * defaults: `b=(2, 3)`, `sep=", "`, `Dict[str, int]`. Splitting on every
+ * comma would cut such a default in half — and show the person a parameter
+ * that does not exist.
  *
- * Та же работа, что у `_split` в server/src/kernel/inspect-static.ts, и копия
- * здесь намеренная: там она внутри исходника на Python, который уезжает в
- * ядро, и общей функции у них быть не может — разные языки и разные стороны
- * провода. Проверяются обе.
+ * The same job as `_split` in server/src/kernel/inspect-static.ts, and the
+ * copy here is deliberate: there it sits inside Python source that is shipped
+ * to the kernel, and the two cannot share a function — different languages
+ * and different ends of the wire. Both are tested.
  */
 function splitTopLevel(inner: string): string[] {
   const parts: string[] = []
@@ -410,12 +417,12 @@ function splitTopLevel(inner: string): string[] {
     }
   }
   parts.push(inner.slice(start))
-  // Перевод строки внутри параметра — это раскладка IPython, а не часть
-  // параметра: он печатает по одному на строку с отступом в четыре пробела.
+  // A newline inside a parameter is IPython's layout, not part of the
+  // parameter: it prints one per line, indented by four spaces.
   return parts.map((part) => part.replace(/\s+/g, ' ').trim()).filter((part) => part !== '')
 }
 
-/** Имя параметра и всё, что к нему приписано, — по первому `:` или `=`. */
+/** The parameter name and everything attached to it — split at the first `:` or `=`. */
 function splitParam(param: string): SignatureParam {
   let depth = 0
   let quote = ''
@@ -437,18 +444,20 @@ function splitParam(param: string): SignatureParam {
 }
 
 /**
- * Сигнатура, разобранная на вызываемое, параметры и хвост, — или `null`.
+ * A signature split into the callable, the parameters and the tail — or
+ * `null`.
  *
- * Ради раскладки, и раскладка тут не украшение. IPython печатает длинную
- * сигнатуру по параметру на строку: у `sns.lmplot` это сорок три строки, то
- * есть всё окно справки целиком, и документация оказывается за тремя экранами
- * прокрутки. А ищут в сигнатуре обычно одно — есть ли такой параметр и как он
- * называется. Потоком, с переносом только между параметрами, те же сорок два
- * параметра занимают семь строк, и docstring виден сразу.
+ * For the sake of layout, and layout here is not decoration. IPython prints a
+ * long signature one parameter per line: for `sns.lmplot` that is forty-three
+ * lines, i.e. the entire help window, and the docs end up three screens of
+ * scrolling away. Yet people usually look for one thing in a signature —
+ * whether such a parameter exists and what it is called. As a flow, wrapping
+ * only between parameters, the same forty-two parameters take seven lines,
+ * and the docstring is visible right away.
  *
- * `null` — «разобрать не удалось»: скобки не сошлись, скобок нет вовсе, это
- * не сигнатура. Тогда показываем дословно то, что прислало ядро: чужой текст
- * лучше показать как есть, чем перестроить по догадке.
+ * `null` means "could not parse": the brackets do not match, there are no
+ * brackets at all, it is not a signature. Then we show verbatim what the
+ * kernel sent: foreign text is better shown as is than rebuilt by guesswork.
  */
 export function splitSignature(text: string): SignatureParts | null {
   if (typeof text !== 'string') return null
@@ -475,7 +484,7 @@ export function splitSignature(text: string): SignatureParts | null {
       }
     }
   }
-  // Скобка не закрылась — это не сигнатура целиком, а её обрывок.
+  // The bracket never closed — this is not a whole signature but a fragment of one.
   if (close === -1) return null
   const head = src.slice(0, open + 1).replace(/\s+/g, ' ').trim()
   if (head === '(') return null
@@ -485,30 +494,31 @@ export function splitSignature(text: string): SignatureParts | null {
   return { head, params, tail, flat }
 }
 
-/* ------------------------------------------------------------------ память */
+/* ------------------------------------------------------------------ memory */
 
 /**
- * Сколько ответ ядра считается свежим.
+ * How long a kernel answer counts as fresh.
  *
- * Минута — это «пока человек читает эту ячейку». Дольше держать нельзя: между
- * двумя наведениями кто-нибудь в комнате переопределит `df`, и подсказка
- * начнёт рассказывать про позапрошлый объект — врать увереннее, чем молчать.
- * Меньше — и повторное наведение на то же имя снова ходило бы в ядро, а ради
- * этого кэш и заведён: справка обязана появляться мгновенно на второй раз.
+ * A minute is "while the person is reading this cell". Holding it longer is
+ * not allowed: between two hovers someone in the room will redefine `df`, and
+ * the tooltip will start describing a long-gone object — lying more
+ * confidently than staying silent would. Any shorter, and hovering the same
+ * name again would go to the kernel again, which is exactly what the cache
+ * exists to avoid: the help must appear instantly the second time.
  */
 export const HELP_TTL_MS = 60_000
 
-/** Потолок памяти: тетрадь на восемьдесят ячеек не должна копить их все. */
+/** Memory cap: a notebook of eighty cells should not hoard them all. */
 const HELP_MAX = 200
 
 const remembered = new Map<string, { at: number; text: string }>()
 
-/** Ключ — имя В ПРЕДЕЛАХ ячейки: один и тот же `df` в разных ячейках разный. */
+/** The key is a name WITHIN a cell: the same `df` differs from cell to cell. */
 export function helpKey(cellId: string | null, name: string): string {
   return `${cellId ?? ''} ${name}`
 }
 
-/** Что ядро уже говорило об этом имени, если говорило недавно. */
+/** What the kernel already said about this name, if it said so recently. */
 export function rememberedHelp(key: string, now = Date.now()): string | null {
   const row = remembered.get(key)
   if (!row) return null
@@ -520,11 +530,12 @@ export function rememberedHelp(key: string, now = Date.now()): string | null {
 }
 
 /**
- * Запомнить ответ ядра — и только НАЙДЕННЫЙ.
+ * Remember a kernel answer — and only a FOUND one.
  *
- * Отказы не помнятся намеренно: «ядро запускается» и «ядро занято» — это
- * состояния на секунду, и запомнить их на минуту значило бы показывать вчерашнюю
- * причину тогда, когда ответ уже есть. Второе наведение обязано спросить заново.
+ * Refusals are deliberately not remembered: "kernel is starting" and "kernel
+ * is busy" are states that last a second, and remembering them for a minute
+ * would mean showing a stale reason when the answer is already there. The
+ * second hover must ask again.
  */
 export function rememberHelp(key: string, text: string, now = Date.now()): void {
   if (remembered.size >= HELP_MAX) {
@@ -535,11 +546,12 @@ export function rememberHelp(key: string, text: string, now = Date.now()): void 
 }
 
 /**
- * Строки про значения — своя память, с тем же сроком жизни.
+ * Value summary lines have their own memory, with the same lifetime.
  *
- * Отдельной картой, потому что ответ другой формы (не текст ядра, а разобранный
- * объект) и другой цены: он зависит от того, что в ядре СЕЙЧАС, и живёт ровно
- * до следующего запуска. Сбрасывается тем же движением, что и справка.
+ * A separate map, because the answer has a different shape (not kernel text
+ * but a parsed object) and a different cost: it depends on what is in the
+ * kernel RIGHT NOW and lives exactly until the next run. It is cleared in the
+ * same stroke as the help.
  */
 const briefs = new Map<string, { at: number; value: BriefValue }>()
 
@@ -562,19 +574,19 @@ export function rememberBrief(key: string, value: BriefValue, now = Date.now()):
 }
 
 /**
- * Забыть всё: в ядре только что что-то посчитали.
+ * Forget everything: something was just computed in the kernel.
  *
- * Запуск ячейки — единственное событие, после которого прошлый ответ может
- * оказаться неправдой: `df` стал другим, функция переопределена, импорт
- * наконец выполнен. Чистим целиком, а не по одному имени: запущенная ячейка
- * меняет пространство имён ЯДРА, то есть всё, что лежит в этой памяти.
+ * Running a cell is the only event after which a previous answer can turn out
+ * false: `df` became different, a function was redefined, an import finally
+ * ran. We clear everything, not name by name: a cell that ran changes the
+ * KERNEL's namespace, that is, everything this memory holds.
  */
 export function forgetHelp(): void {
   remembered.clear()
   /*
-   * И строки про значения — тем же движением, и для них это важнее всего:
-   * `df` после запуска ячейки это другой `df`, и «1460 × 81» у него может
-   * быть уже не тем числом.
+   * And the value lines — in the same stroke, and for them it matters most of
+   * all: `df` after a cell run is a different `df`, and its "1460 × 81" may
+   * no longer be the right number.
    */
   briefs.clear()
 }

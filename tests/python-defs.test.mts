@@ -1,18 +1,19 @@
 /**
- * Разбор Python под переход к определению.
+ * Parsing Python for go-to-definition.
  *
- * Тут проверяется не «понимает ли оно Python» — оно не понимает и не должно, —
- * а ровно две вещи, от которых зависит, врёт фича или нет.
+ * What is checked here is not "does it understand Python" — it does not and
+ * must not — but exactly two things that decide whether the feature lies.
  *
- * ПЕРВАЯ: определение, которого нет, не выдумывается. `def` внутри docstring,
- * внутри комментария, внутри тела чужой функции и внутри ячейки `%%bash`
- * определением не является; каждый из этих случаев — обычная учебная тетрадь, а
- * не выдумка.
+ * FIRST: a definition that is not there is not invented. A `def` inside a
+ * docstring, inside a comment, inside the body of another function and inside
+ * a `%%bash` cell is not a definition; each of these cases is an ordinary
+ * teaching notebook, not a contrived one.
  *
- * ВТОРАЯ: цепочка `df.head` не становится переходом. Дерево разбора у неё такое
- * же, как у `utils.helper`, и разница только в том, чем связано имя слева.
- * Ошибиться здесь — значит уверенно увести человека в чужой класс: жест
- * сработал, и что он соврал, заметить нечем.
+ * SECOND: the chain `df.head` does not become a jump. Its parse tree is the
+ * same as that of `utils.helper`, and the only difference is what binds the
+ * name on the left. Getting this wrong means confidently leading a person into
+ * an unrelated class: the gesture worked, and there is no way to notice that
+ * it lied.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -25,20 +26,20 @@ import {
   type Definition,
 } from '../shared/python-defs.js'
 
-/** Имена определений с их видом — в порядке, в котором они найдены. */
+/** Definition names with their kind, in the order they were found. */
 const named = (code: string): string[] =>
   scanPython(code).defs.map((d) => `${d.kind}:${d.owner ? `${d.owner}.` : ''}${d.name}@${d.line}`)
 
-/** Вопрос по позиции: цепочка через точку. */
+/** The question at a position: the dotted chain. */
 function ask(code: string, at: number): string | null {
   const q = questionAt(code, at)
   return q ? q.chain.join('.') : null
 }
 
-/** Позиция первого вхождения подстроки плюс сдвиг внутрь неё. */
+/** The position of the first occurrence of a substring plus an offset into it. */
 const posOf = (code: string, needle: string, into = 1): number => code.indexOf(needle) + into
 
-test('функции, классы и методы — с владельцем и строкой', () => {
+test('functions, classes and methods, with owner and line', () => {
   const code = [
     'import os',
     '',
@@ -68,14 +69,14 @@ test('функции, классы и методы — с владельцем �
   ])
 })
 
-test('тело функции — не определения модуля', () => {
-  // `helper = 1` в чужой функции не должно отвечать на клик по `helper`
-  // в другой ячейке: это локальное имя, и живёт оно ровно до `return`.
+test('a function body holds no module definitions', () => {
+  // `helper = 1` in another function must not answer a click on `helper` in a
+  // different cell: it is a local name, and it lives exactly until `return`.
   const code = ['def outer():', '    helper = 1', '    def inner():', '        pass', '    return inner'].join('\n')
   assert.deepEqual(named(code), ['def:outer@1'])
 })
 
-test('def внутри docstring определением не является', () => {
+test('a def inside a docstring is not a definition', () => {
   const code = [
     'def real():',
     '    """Пример:',
@@ -90,30 +91,31 @@ test('def внутри docstring определением не является'
   assert.deepEqual(named(code), ['def:real@1', 'assign:x@9'])
 })
 
-test('def в комментарии и в строке — тоже нет', () => {
+test('nor is a def in a comment or in a string', () => {
   const code = ['# def commented():', "note = 'def quoted(): pass'", 'def real(): pass'].join('\n')
   assert.deepEqual(named(code), ['assign:note@2', 'def:real@3'])
 })
 
-test('ячейка на чужом языке пропускается целиком', () => {
-  // `%%writefile utils.py` с модулем внутри давал определения, к которым
-  // переход вёл в ячейку, где их нет.
+test('a cell in another language is skipped entirely', () => {
+  // `%%writefile utils.py` with a module inside produced definitions whose jump
+  // led to a cell where they do not exist.
   const shell = scanPython('%%bash\ndef not_python() { echo hi; }')
   assert.equal(shell.magic, true)
   assert.deepEqual(shell.defs, [])
-  // А строчная магия разбору не мешает: её пишут первой строкой сплошь и рядом.
+  // But line magic does not get in the way of parsing: it is written as the first
+  // line all the time.
   assert.deepEqual(named('%matplotlib inline\nimport numpy as np\ndef draw(): pass'), [
     'import:np@2',
     'def:draw@3',
   ])
 })
 
-test('присваивания верхнего уровня, включая разложение в кортеж', () => {
+test('top-level assignments, including tuple unpacking', () => {
   const code = ['X_train, X_test = split(df)', 'rate: float = 0.1', 'total += 1', 'if a == b:', '    pass'].join('\n')
   assert.deepEqual(named(code), ['assign:X_train@1', 'assign:X_test@1', 'assign:rate@2'])
 })
 
-test('импорты во всех формах, что встречаются в тетради', () => {
+test('imports in every form found in a notebook', () => {
   const code = [
     'import numpy as np',
     'import os.path',
@@ -128,7 +130,7 @@ test('импорты во всех формах, что встречаются �
     imports.map((i) => `${i.local}=${i.module}${i.member ? `:${i.member}` : ''}${i.level ? `^${i.level}` : ''}`),
     [
       'np=numpy',
-      // `import os.path` кладёт в область видимости `os`, а не `os.path`.
+      // `import os.path` puts `os` into scope, not `os.path`.
       'os=os',
       'case_bpm=case_bpm',
       'tools=eda_tools',
@@ -141,7 +143,7 @@ test('импорты во всех формах, что встречаются �
   assert.deepEqual(stars, [{ module: 'plotstyle', level: 0 }])
 })
 
-test('импорт, перенесённый скобками, не теряет имён', () => {
+test('an import wrapped in parentheses loses no names', () => {
   const code = ['from eda_tools import (', '    describe_all,', '    missing_kinds as gaps,', ')'].join('\n')
   assert.deepEqual(
     scanPython(code).imports.map((i) => i.local),
@@ -149,28 +151,28 @@ test('импорт, перенесённый скобками, не теряет
   )
 })
 
-test('подпись, перенесённая скобками, не выталкивает локальные имена наружу', () => {
-  // Строка `) -> X:` стоит на нулевом отступе, и построчный разбор считал, что
-  // тело кончилось: локальные имена и вложенные def становились именами МОДУЛЯ.
+test('a signature wrapped in parentheses does not push local names out', () => {
+  // The line `) -> X:` sits at zero indentation, and the line-by-line parse decided
+  // the body had ended: local names and nested defs became MODULE names.
   const code = ['def loss(', '    a: int,', ') -> np.ndarray:', '    tmp = 1', '    def inner(): pass', '    return a'].join('\n')
   assert.deepEqual(named(code), ['def:loss@1'])
 })
 
-test('класс с перенесёнными базами не теряет своих методов', () => {
+test('a class with wrapped bases does not lose its methods', () => {
   const code = ['class Tables(', '    Base,', '):', '    def head(self): pass'].join('\n')
   assert.deepEqual(named(code), ['class:Tables@1', 'def:Tables.head@4'])
 })
 
-test('точка с запятой не съедает вторую половину строки', () => {
-  // Ломало не только свои определения: шапка `import os; import sys` пропадала
-  // целиком, а по ней разрешаются цепочки всей тетради.
+test('a semicolon does not eat the second half of the line', () => {
+  // It broke more than its own definitions: the header `import os; import sys`
+  // disappeared entirely, and the chains of the whole notebook resolve through it.
   assert.deepEqual(named('import os; import sys'), ['import:os@1', 'import:sys@1'])
   assert.deepEqual(named('x = 1; y = 2'), ['assign:x@1', 'assign:y@1'])
 })
 
-test('имена связывает не только присваивание', () => {
-  // `for column in columns:` и `with open(p) as handle:` — половина настоящего
-  // семинара, и имена в них определены так же по-настоящему, как в `x = 1`.
+test('names are bound by more than assignment', () => {
+  // `for column in columns:` and `with open(p) as handle:` are half of a real
+  // seminar, and the names in them are defined just as really as in `x = 1`.
   assert.deepEqual(named('for column in df.columns:\n    print(column)'), ['assign:column@1'])
   assert.deepEqual(named('with open(p) as handle:\n    text = handle.read()'), [
     'assign:handle@1',
@@ -182,55 +184,55 @@ test('имена связывает не только присваивание',
   ])
 })
 
-test('присваивание внутри if и for на верхнем уровне — это определение', () => {
-  // Прежнее правило «только нулевой отступ» теряло всё, что лежит в условии.
+test('an assignment inside a top-level if or for is a definition', () => {
+  // The old "zero indentation only" rule lost everything inside a condition.
   assert.deepEqual(named('if ok:\n    column = 1\nelse:\n    column = 2'), [
     'assign:column@2',
     'assign:column@4',
   ])
 })
 
-test('поля dataclass объявлены одной аннотацией — и находятся', () => {
+test('dataclass fields declared by an annotation alone are found', () => {
   const code = ['@dataclass', 'class Tables:', '    train: pd.DataFrame', '    note: str = ""'].join('\n')
   assert.deepEqual(named(code), ['class:Tables@2', 'assign:Tables.train@3', 'assign:Tables.note@4'])
 })
 
-test('%%time — это обёртка вокруг Python, а не другой язык', () => {
-  // Под `%%time` в настоящей тетради лежит обучение модели вместе с именами.
+test('%%time is a wrapper around Python, not another language', () => {
+  // Under `%%time` in a real notebook lies model training, names included.
   assert.deepEqual(named('%%time\ndef train_model(x): pass'), ['def:train_model@2'])
   assert.deepEqual(named('%%capture\nmodel = fit()'), ['assign:model@2'])
-  // А `%%bash` по-прежнему чужой язык.
+  // But `%%bash` is still another language.
   assert.equal(scanPython('%%bash\ndef not_python() { echo hi; }').magic, true)
 })
 
-test('колонка указывает на ПСЕВДОНИМ, а не внутрь имени модуля', () => {
-  // `raw.indexOf('bpm')` находил `bpm` внутри `case_bpm` — шесть промахов из
-  // восьми в настоящей шапке лекции.
+test('the column points at the ALIAS, not inside the module name', () => {
+  // `raw.indexOf('bpm')` found `bpm` inside `case_bpm` — six misses out of eight
+  // in a real lecture header.
   const scan = scanPython('import case_bpm as bpm')
   assert.equal(scan.defs[0].column, 19)
-  // У импорта, перенесённого скобками, имени на первой строке нет вовсе.
+  // An import wrapped in parentheses has no name on its first line at all.
   const wrapped = scanPython('from sklearn.ensemble import (\n    RandomForestClassifier,\n)')
   assert.equal(wrapped.defs[0].line, 2)
   assert.equal(wrapped.defs[0].column, 4)
 })
 
-test('имя внутри f-строки — это имя, а буква f перед ней — нет', () => {
+test('a name inside an f-string is a name, and the letter f before it is not', () => {
   /*
-   * `f"{cian_summary}"`: буква префикса оставалась голым словом, и щелчок по
-   * ней уводил в `def f(x)` из соседней ячейки — жест срабатывал и врал. А
-   * содержимое подстановки, наоборот, замазывалось целиком, хотя это код, и
-   * в настоящей тетради там живёт половина имён.
+   * `f"{cian_summary}"`: the prefix letter stayed a bare word, and a click on it
+   * led to `def f(x)` from a neighbouring cell — the gesture worked and lied. The
+   * contents of the substitution, on the contrary, were blanked out entirely,
+   * although that is code, and in a real notebook half of the names live there.
    */
   const code = 'x = f"{cian_summary} строк"'
-  assert.equal(ask(code, code.indexOf('f"') + 1), null, 'буква литерала стала именем')
+  assert.equal(ask(code, code.indexOf('f"') + 1), null, 'the literal letter became a name')
   assert.equal(ask(code, code.indexOf('cian_summary') + 1), 'cian_summary')
-  // Обычная строка по-прежнему молчит.
+  // An ordinary string is still silent.
   assert.equal(ask('s = "helper(1)"', 7), null)
 })
 
-test('ключевое слово именем не считается', () => {
-  // `if`, `None`, `True` подчёркивались наравне с именами и отвечали «не
-  // нашлось» — обещание перехода туда, где переходить некуда по языку.
+test('a keyword does not count as a name', () => {
+  // `if`, `None`, `True` were underlined just like names and answered "not
+  // found" — a promise of a jump where the language has nowhere to jump.
   for (const [line, word] of [
     ['if True:', 'if'],
     ['x = None', 'None'],
@@ -240,11 +242,11 @@ test('ключевое слово именем не считается', () => {
   ] as const) {
     assert.equal(ask(line, line.indexOf(word) + 1), null, `${line} · ${word}`)
   }
-  // А имя рядом с ключевым словом — по-прежнему имя.
+  // But a name next to a keyword is still a name.
   assert.equal(ask('x = None', 1), 'x')
 })
 
-test('имя под кареткой — цепочка влево, включая щёлкнутое звено', () => {
+test('the name under the caret is the chain to the left, including the clicked link', () => {
   const code = 'out = df.head.values\n'
   assert.equal(ask(code, posOf(code, 'df')), 'df')
   assert.equal(ask(code, posOf(code, 'head')), 'df.head')
@@ -252,36 +254,37 @@ test('имя под кареткой — цепочка влево, включа
   assert.equal(ask(code, posOf(code, 'out')), 'out')
 })
 
-test('в строке и в комментарии спрашивать нечего', () => {
+test('there is nothing to ask in a string or a comment', () => {
   assert.equal(ask("s = 'helper(1)'\n", posOf("s = 'helper(1)'\n", 'helper')), null)
   assert.equal(ask('# helper(1)\n', posOf('# helper(1)\n', 'helper')), null)
   const doc = ['def f():', '    """', '    helper()', '    """'].join('\n')
   assert.equal(ask(doc, posOf(doc, 'helper')), null)
-  // А в коде под docstring — есть.
+  // But in the code under a docstring there is.
   const after = ['def f():', '    """док"""', '    helper()'].join('\n')
   assert.equal(ask(after, posOf(after, 'helper')), 'helper')
 })
 
-test('число и пустое место именем не считаются', () => {
+test('a number and empty space do not count as names', () => {
   assert.equal(ask('x = df.iloc[0]\n', 'x = df.iloc['.length), null)
-  // Знак между именами — не имя. А вот каретка ВПРИТЫК к правому краю слова
-  // именем считается, и это не оговорка: так попадают в конец имени мышью.
+  // An operator between names is not a name. But a caret RIGHT AGAINST the right
+  // edge of a word counts as a name, and that is not a slip: that is how the mouse
+  // lands at the end of a name.
   assert.equal(ask('a + b\n', 2), null)
   assert.equal(ask('a + b\n', 1), 'a')
 })
 
-test('литерал, продолженный слешем, не рождает определений из своего текста', () => {
-  // `sql = "select \\` продолжается следующей строкой, и `def` в ней — часть
-  // текста запроса. Разбор выдумывал `def fake` и уверенно вёл в него.
+test('a literal continued with a backslash does not breed definitions from its text', () => {
+  // `sql = "select \\` continues on the next line, and the `def` in it is part of
+  // the query text. The parser invented `def fake` and confidently led into it.
   const code = 'sql = "select \\\n    def fake(): pass"'
   assert.deepEqual(named(code), ['assign:sql@1'])
 })
 
-test('цепочка, начатая выражением, определением не отвечает', () => {
+test('a chain that starts with an expression does not answer with a definition', () => {
   /*
-   * `df[["a"]].head` и `f(x).head` обрываются на скобке, и `head` выглядит
-   * голым именем — а он метод чего-то, чего отсюда не видно. Без этого щелчок
-   * находил первый попавшийся `def head` и уверенно уводил в него.
+   * `df[["a"]].head` and `f(x).head` break off at the bracket, and `head` looks
+   * like a bare name — while it is a method of something not visible from here.
+   * Without this a click found the first `def head` around and confidently led into it.
    */
   const imports = scanPython('import utils').imports
   for (const [line, word] of [
@@ -293,13 +296,13 @@ test('цепочка, начатая выражением, определени�
     assert.equal(q.viaExpression, true, line)
     assert.deepEqual(resolveChain(q, imports), { kind: 'opaque', owner: '', name: word })
   }
-  // А голое имя и цепочка от модуля — по-прежнему сами собой.
+  // But a bare name and a chain from a module are still what they are.
   const plain = questionAt('plain_name(1)', 1)!
   assert.equal(plain.viaExpression, false)
   assert.deepEqual(resolveChain(plain, imports), { kind: 'name', name: 'plain_name' })
 })
 
-test('цепочка от модуля разрешается, цепочка от данных — нет', () => {
+test('a chain from a module resolves, a chain from data does not', () => {
   const code = ['import numpy as np', 'import eda_tools', 'from pkg import sub', 'df = load()'].join('\n')
   const { imports } = scanPython(code)
   const chain = (text: string) => {
@@ -314,34 +317,34 @@ test('цепочка от модуля разрешается, цепочка о
   })
   assert.deepEqual(chain('np.array'), { kind: 'member', module: 'numpy', level: 0, name: 'array' })
   assert.deepEqual(chain('sub.helper'), { kind: 'member', module: 'pkg.sub', level: 0, name: 'helper' })
-  // Вот оно: `df` связан присваиванием, а не импортом, — значит это данные.
+  // Here it is: `df` is bound by an assignment, not an import — so it is data.
   assert.deepEqual(chain('df.head'), { kind: 'opaque', owner: 'df', name: 'head' })
 })
 
-test('середина цепочки приклеивается к модулю', () => {
+test('the middle of a chain is glued to the module', () => {
   const code = 'import pkg\n'
   const line = `${code}pkg.mod.helper`
   const target = resolveChain(questionAt(line, line.lastIndexOf('helper') + 1)!, scanPython(code).imports)
   assert.deepEqual(target, { kind: 'member', module: 'pkg.mod', level: 0, name: 'helper' })
 })
 
-test('модуль превращается в пути от корня папки семинара', () => {
+test('a module turns into paths from the seminar folder root', () => {
   assert.deepEqual(modulePaths('eda_tools', 0, 'notebooks'), [
     'eda_tools.py',
     'eda_tools/__init__.py',
   ])
   assert.deepEqual(modulePaths('pkg.sub', 0, ''), ['pkg/sub.py', 'pkg/sub/__init__.py'])
-  // Относительный — от папки того файла, где написан.
+  // A relative one, from the folder of the file it is written in.
   assert.deepEqual(modulePaths('util', 1, 'src/lab'), ['src/lab/util.py', 'src/lab/util/__init__.py'])
   assert.deepEqual(modulePaths('util', 2, 'src/lab'), ['src/util.py', 'src/util/__init__.py'])
-  // `from . import util` — модуль пустой, и пакетом оказывается сама папка.
-  // Имя `util` ищется в её `__init__.py`, а если его там нет — как соседний
-  // модуль `src/util.py`; вторую попытку делает уже тот, кто ищет.
+  // `from . import util`: the module is empty, and the package is the folder itself.
+  // The name `util` is looked up in its `__init__.py`, and if it is not there, as
+  // the neighbouring module `src/util.py`; the second attempt is made by whoever is searching.
   assert.deepEqual(modulePaths('', 1, 'src'), ['src.py', 'src/__init__.py'])
   assert.deepEqual(modulePaths('', 0, 'src'), [])
 })
 
-test('из одинаковых имён показывается последнее, и верхний уровень раньше метода', () => {
+test('of identical names the last one is shown, and the top level comes before a method', () => {
   const code = [
     'class A:',
     '    def fit(self): pass',
@@ -352,23 +355,23 @@ test('из одинаковых имён показывается последн
   ].join('\n')
   const scan = scanPython(code)
   const top = pickDefinition(scan, 'fit') as Definition
-  assert.equal(top.line, 6, 'переопределение ниже отменяет то, что выше')
-  assert.equal(top.owner, null, 'голое имя — не метод чужого класса')
+  assert.equal(top.line, 6, 'a redefinition below overrides the one above')
+  assert.equal(top.owner, null, 'a bare name is not a method of another class')
   const method = pickDefinition(scan, 'fit', 'A') as Definition
   assert.equal(method.line, 2)
   assert.equal(pickDefinition(scan, 'missing'), null)
 })
 
-test('настоящее определение важнее строки импорта', () => {
-  // Иначе переход уводил бы на `from utils import f`, из которой всё равно
-  // надо прыгать дальше.
+test('a real definition beats an import line', () => {
+  // Otherwise the jump would lead to `from utils import f`, from which one has to
+  // jump further anyway.
   const scan = scanPython(['from utils import f', 'def f(): pass'].join('\n'))
   assert.equal((pickDefinition(scan, 'f') as Definition).kind, 'def')
   const only = scanPython('from utils import f')
   assert.equal((pickDefinition(only, 'f') as Definition).kind, 'import')
 })
 
-test('колонка указывает на имя, а не на начало строки', () => {
+test('the column points at the name, not at the start of the line', () => {
   const scan = scanPython('    def deep(): pass')
   assert.equal(scan.defs[0].column, 8)
   assert.equal(scan.defs[0].text, 'def deep(): pass')

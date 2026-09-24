@@ -1,15 +1,16 @@
 /**
- * Что помнит путь и что переживает комнату.
+ * What remembers a path, and what outlives the room.
  *
- * Управляющий сокет держит рядом четыре вещи, у которых нет места в общем
- * документе: список файлов, доску, лекцию и заметки спикера. Три из них знают
- * путь документа наизусть, и ломается это молча: переименовали ПАПКУ — проектор
- * показывает файл, которого нет, речь к двадцати четырём страницам осталась под
- * ключом, которого не существует, а тетрадь внутри воскрешает удалённую папку
- * своей же проекцией.
+ * The control socket keeps four things close at hand that have no place in
+ * the shared document: the file list, the board, the lecture and the speaker
+ * notes. Three of them know the document's path by heart, and this breaks
+ * silently: rename a FOLDER, and the projector shows a file that does not
+ * exist, the speech for twenty-four pages is left under a key that does not
+ * exist, and a notebook inside resurrects the deleted folder with its own
+ * projection.
  *
- * Ни сети, ни ядра: сокет поддельный, комната настоящая. Всё, что здесь
- * проверяется, обязано случиться раньше, чем кто-нибудь что-нибудь нажмёт.
+ * No network, no kernel: the socket is fake, the room is real. Everything
+ * checked here must happen before anyone presses anything.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -26,7 +27,7 @@ import { addInk, inkOf, lectureOf, startLecture, stopLecture } from '../server/s
 import type { ControlClientMessage, ControlServerMessage } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
 
-/** Ровно то, что читает `send`: состояние и приём кадра. */
+/** Exactly what `send` reads: the state and taking in a frame. */
 function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
   const heard: ControlServerMessage[] = []
   const handlers = new Map<string, ((...args: unknown[]) => void)[]>()
@@ -39,8 +40,8 @@ function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
     },
     ping: () => {},
     terminate: () => {},
-    // Закрытие обязано дойти до обработчика: в нём гасится сердцебиение, а без
-    // него интервал переживёт тест и потащит за собой всю сюиту.
+    // The close must reach the handler: the heartbeat is stopped there, and
+    // without it the interval outlives the test and drags the whole suite along.
     close: () => {
       for (const fn of handlers.get('close') ?? []) fn()
     },
@@ -60,15 +61,16 @@ function say(ws: WebSocket, id: string, who: TokenPayload, message: ControlClien
   dispatch(ws, id, who, message)
 }
 
-/* ------------------------------------------------------- переезд папки */
+/* ----------------------------------------------------- moving a folder */
 
-test('переименование папки уводит за собой лекцию, доску и заметки', () => {
+test('renaming a folder takes the lecture, the board and the notes along', () => {
   /*
-   * Двойной щелчок в панели заводит правку имени на любой строке дерева, папку
-   * включая, а `movePath` переносит каталог целиком. Раньше каскад сравнивал
-   * путь точно с `from`, и после переезда папки лекция продолжала называть
-   * `slides/l3.pdf`: проекция гасла у всех, кроме тех, у кого документ уже был
-   * открыт, а речь к нему теряла ключ.
+   * A double click in the panel starts a rename on any row of the tree,
+   * folders included, and `movePath` moves the whole directory. The cascade
+   * used to compare the path exactly with `from`, and after a folder move the
+   * lecture kept naming `slides/l3.pdf`: the projection went dark for everyone
+   * except those who already had the document open, and its speech lost its
+   * key.
    */
   const { id, host, ws } = room()
   makeDir(id, 'slides')
@@ -79,19 +81,20 @@ test('переименование папки уводит за собой ле�
 
   say(ws, id, host, { t: 'tree:move', from: 'slides', to: 'lectures' })
 
-  assert.ok(statPath(id, 'lectures/l3.pdf'), 'файл не переехал')
-  assert.equal(lectureOf(id)?.file, 'lectures/l3.pdf', 'лекция осталась на мёртвом пути')
-  assert.equal(boardOf(id), 'lectures/l3.pdf', 'доска осталась на мёртвом пути')
+  assert.ok(statPath(id, 'lectures/l3.pdf'), 'the file did not move')
+  assert.equal(lectureOf(id)?.file, 'lectures/l3.pdf', 'the lecture stayed on a dead path')
+  assert.equal(boardOf(id), 'lectures/l3.pdf', 'the board stayed on a dead path')
   assert.deepEqual(notesOf(id, 'lectures/l3.pdf'), { 7: 'спросить про поток' })
-  assert.deepEqual(notesOf(id, 'slides/l3.pdf'), {}, 'заметки остались под старым ключом')
+  assert.deepEqual(notesOf(id, 'slides/l3.pdf'), {}, 'the notes stayed under the old key')
 
   stopLecture(id)
   closeControlRoom(id)
 })
 
-test('переименование папки уводит и тетрадь внутри неё', () => {
-  // Иначе тетрадь остаётся в комнате со старым путём, и проекция через полторы
-  // секунды пишет её файл обратно — рядом с переехавшим, в воскресшую папку.
+test('renaming a folder also takes the notebook inside it along', () => {
+  // Otherwise the notebook stays in the room with the old path, and a second
+  // and a half later the projection writes its file back — next to the moved
+  // one, into a resurrected folder.
   const { id, host, ws } = room()
   const { doc } = getSessionDoc(id)
   makeDir(id, 'hw')
@@ -100,17 +103,17 @@ test('переименование папки уводит и тетрадь в�
 
   say(ws, id, host, { t: 'tree:move', from: 'hw', to: 'домашка' })
 
-  assert.equal(bookAt(doc, 'hw/task.ipynb'), null, 'тетрадь осталась на старом пути')
-  assert.ok(bookAt(doc, 'домашка/task.ipynb'), 'тетрадь не переехала за своим файлом')
+  assert.equal(bookAt(doc, 'hw/task.ipynb'), null, 'the notebook stayed on the old path')
+  assert.ok(bookAt(doc, 'домашка/task.ipynb'), 'the notebook did not follow its file')
   closeControlRoom(id)
 })
 
-test('удаление папки убирает и тетрадь внутри неё, и доску', () => {
+test('deleting a folder removes both the notebook inside it and the board', () => {
   /*
-   * Панель спрашивает «Убрать папку со всем, что в ней?» — и обещание держится
-   * только если тетрадь уходит из комнаты вместе с папкой. Оставшись, она
-   * заводила бы папку и файл заново своей же проекцией, и удаление выглядело бы
-   * не сработавшим.
+   * The panel asks "Remove the folder with everything in it?" — and the
+   * promise holds only if the notebook leaves the room together with the
+   * folder. Had it stayed, it would create the folder and the file anew with
+   * its own projection, and the deletion would look as if it had not worked.
    */
   const { id, host, ws } = room()
   const { doc } = getSessionDoc(id)
@@ -123,60 +126,62 @@ test('удаление папки убирает и тетрадь внутри 
   say(ws, id, host, { t: 'tree:remove', path: 'hw' })
 
   assert.equal(statPath(id, 'hw/task.ipynb'), null)
-  assert.equal(bookAt(doc, 'hw/task.ipynb'), null, 'тетрадь пережила свою папку')
-  assert.equal(boardOf(id), null, 'на экране остался файл, которого нет')
+  assert.equal(bookAt(doc, 'hw/task.ipynb'), null, 'the notebook outlived its folder')
+  assert.equal(boardOf(id), null, 'a file that does not exist stayed on screen')
   closeControlRoom(id)
 })
 
-/* ------------------------------------------------- потолок обхода папки */
+/* -------------------------------------------------- folder walk ceiling */
 
-test('обрезанное дерево не гасит доску и говорит комнате, что оно неполное', () => {
+test('a truncated tree does not blank the board and tells the room it is incomplete', () => {
   /*
-   * Обход папки упирается в потолок в две тысячи строк, и `pip install -t .`
-   * или распакованный датасет выедают его целиком. Пока «файла нет в списке»
-   * значило «файла нет», проектор гас посреди лекции — при том, что документ
-   * спокойно лежал на диске. Теперь пропажу решает один `lstat` по самому пути,
-   * а комната узнаёт, что список показан не целиком.
+   * The folder walk hits a ceiling of two thousand rows, and `pip install -t .`
+   * or an unpacked dataset eats all of it. While "the file is not in the list"
+   * meant "the file does not exist", the projector went dark in the middle of
+   * a lecture — although the document was sitting safely on disk. Now a single
+   * `lstat` on the path itself decides whether it is gone, and the room learns
+   * that the list is not shown in full.
    */
   const { id, host } = room()
   const seat = socket()
   makeFile(id, 'data.csv', 'a,b')
-  // Имя на «z» — чтобы обрезка добралась именно до документа лекции: список
-  // отсортирован, и режется его хвост.
+  // A name starting with "z", so that the cut reaches the lecture document
+  // itself: the list is sorted, and its tail is what gets cut.
   makeFile(id, 'zz.pdf', '%PDF-1.4')
   const dir = sessionDir(id)
   for (let i = 0; i < 2005; i++) fs.writeFileSync(path.join(dir, `f${i}.csv`), '')
 
   handleControlSocket(seat.ws, id, host)
   const welcome = seat.heard.filter((frame) => frame.t === 'files').at(-1)
-  assert.equal(welcome?.truncated, true, 'комната не узнала, что дерево неполное')
+  assert.equal(welcome?.truncated, true, 'the room was not told that the tree is incomplete')
   assert.ok(
     !welcome?.files.some((file) => file.path === 'zz.pdf'),
-    'документ всё ещё в списке — потолок не сработал, тест ничего не проверяет',
+    'the document is still in the list: the ceiling did not trigger, so the test checks nothing',
   )
 
   say(seat.ws, id, host, { t: 'board:open', name: 'zz.pdf' })
-  assert.equal(boardOf(id), 'zz.pdf', 'документа нет в списке — и его отказались показать')
+  assert.equal(boardOf(id), 'zz.pdf', 'the document is not in the list, and showing it was refused')
 
-  // Любая уборка в дереве проверяет, жив ли документ на экране.
+  // Any cleanup in the tree checks whether the document on screen still exists.
   seat.heard.length = 0
   say(seat.ws, id, host, { t: 'tree:remove', path: 'data.csv' })
-  assert.equal(boardOf(id), 'zz.pdf', 'доска погасла из-за неполного списка')
+  assert.equal(boardOf(id), 'zz.pdf', 'the board went dark because of an incomplete list')
   assert.equal(
     seat.heard.filter((frame) => frame.t === 'files').at(-1)?.truncated,
     true,
-    'обрезка потерялась по дороге до комнаты',
+    'the truncation flag got lost on the way to the room',
   )
 
   closeControlRoom(id)
 })
 
-/* ------------------------------------------------------------- указка */
+/* ------------------------------------------------------ laser pointer */
 
-test('указка без страницы не уезжает в зал', () => {
+test('a laser pointer without a page does not go out to the audience', () => {
   /*
-   * `page` уходил в кадр без проверки, а NaN в JSON — это `null`: зал рисовал
-   * указку на своей текущей странице, хотя ведущий говорил про другую.
+   * `page` went into the frame unchecked, and NaN in JSON is `null`: the
+   * audience drew the pointer on its current page, although the presenter was
+   * talking about another one.
    */
   const { id, host } = room()
   const seat = socket()
@@ -188,7 +193,7 @@ test('указка без страницы не уезжает в зал', () =>
   assert.deepEqual(
     seat.heard.filter((frame) => frame.t === 'laser'),
     [],
-    'кадр без страницы доехал до зала',
+    'a frame without a page reached the audience',
   )
 
   dispatch(seat.ws, id, host, { t: 'laser', page: 3, x: 0.5, y: 0.5 })
@@ -201,13 +206,14 @@ test('указка без страницы не уезжает в зал', () =>
   closeControlRoom(id)
 })
 
-test('пульт ведущего пропал молча — указка гаснет у зала', () => {
+test("the presenter's console vanished silently, so the pointer goes out for the audience", () => {
   /*
-   * Указка нигде не хранится и держится ровно тем, что кадры идут. Пульт на
-   * iPad выгружают из памяти, не сказав «off», — и красное пятно висело на
-   * слайде до конца лекции, показывая туда, где ведущий был минуту назад.
-   * Гасить приходится за него; но только когда у него не осталось ни одного
-   * сокета: уход второй вкладки не должен гасить пятно, которое держит первая.
+   * The pointer is stored nowhere and lives exactly as long as frames keep
+   * coming. The console on an iPad gets unloaded from memory without saying
+   * "off" — and a red dot hung on the slide until the end of the lecture,
+   * pointing where the presenter had been a minute ago. It has to be turned
+   * off on the presenter's behalf; but only when they have no socket left: a
+   * second tab leaving must not turn off the dot the first one holds.
    */
   const { id, host } = room()
   const seat = socket()
@@ -223,7 +229,7 @@ test('пульт ведущего пропал молча — указка га�
   assert.deepEqual(
     seat.heard.filter((frame) => frame.t === 'laser'),
     [],
-    'вторая вкладка ведущего погасила указку первой',
+    "the presenter's second tab turned off the first tab's pointer",
   )
 
   pult.ws.close()
@@ -236,9 +242,10 @@ test('пульт ведущего пропал молча — указка га�
   closeControlRoom(id)
 })
 
-test('лекция кончилась — указка гаснет вместе с ней', () => {
-  // Зал узнаёт об этом словами, а не выводом из `lecture: null`: указку рисует
-  // не только тетрадь-читалка, и гадать про неё никому не полагается.
+test('the lecture ended, and the pointer goes out with it', () => {
+  // The audience is told this in words rather than inferring it from
+  // `lecture: null`: the reader notebook is not the only thing that draws the
+  // pointer, and nobody should have to guess about it.
   const { id, host } = room()
   const seat = socket()
   handleControlSocket(seat.ws, id, host)
@@ -254,14 +261,14 @@ test('лекция кончилась — указка гаснет вместе
   closeControlRoom(id)
 })
 
-/* --------------------------------------------------------------- уборка */
+/* -------------------------------------------------------------- cleanup */
 
-test('удаление семинара уносит доску и чернила, даже если в комнате никого нет', () => {
+test('deleting a class takes the board and the ink with it, even if nobody is in the room', () => {
   /*
-   * `rooms` чистится, как только уходит последний сокет, а доска и лекция
-   * намеренно переживают уход людей. Преподаватель закрыл ноутбук, не нажав
-   * «Закончить», а вечером удалил семинар — и двести исписанных страниц лежали
-   * в памяти процесса до перезапуска.
+   * `rooms` is cleared as soon as the last socket leaves, while the board and
+   * the lecture deliberately outlive people leaving. A teacher closed the
+   * laptop without pressing "Finish" and deleted the class in the evening —
+   * and two hundred inked pages sat in process memory until a restart.
    */
   const { id, host, ws } = room()
   makeFile(id, 'l3.pdf', '%PDF-1.4')

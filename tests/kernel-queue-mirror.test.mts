@@ -1,20 +1,22 @@
 /**
- * Зеркало очереди в документе — и его цена на пятистах участниках.
+ * The queue mirror in the document — and its cost with five hundred
+ * participants.
  *
- * Очередь ядра лежит в общем документе, потому что её видят все. Меняется она
- * дважды на ячейку (взяли в работу, кончилась) и оба раза по краям: пропал
- * первый элемент или добавился последний. Полная перезапись превращала каждое
- * такое движение в «удалить всё и положить всё»: при правиле «по одной» и
- * пятистах участниках это сотни идентификаторов в обновлении Yjs, всей комнате,
- * плюс столько же тумбстоунов в документе — за прогон в пятьсот ячеек мегабайты
- * на клиента там, где хватило бы десятков байт.
+ * The kernel queue lives in the shared document because everyone sees it. It
+ * changes twice per cell (taken into work, finished) and both times at the
+ * edges: the first element is gone or a last one is added. A full rewrite
+ * turned every such move into "delete everything and put everything back":
+ * with the "one at a time" rule and five hundred participants that is hundreds
+ * of ids in a Yjs update, to the whole room, plus as many tombstones in the
+ * document — over a run of five hundred cells, megabytes per client where
+ * tens of bytes would do.
  */
 import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { queueDelta } from '../server/src/kernel/index.js'
 
-test('ячейка ушла в работу — из зеркала уходит один элемент', () => {
+test('a cell is taken into work — one element leaves the mirror', () => {
   assert.deepEqual(queueDelta(['a', 'b', 'c'], ['b', 'c']), {
     at: 0,
     remove: 1,
@@ -22,7 +24,7 @@ test('ячейка ушла в работу — из зеркала уходит
   })
 })
 
-test('ячейку поставили в хвост — в зеркало добавляется один элемент', () => {
+test('a cell is queued at the tail — one element is added to the mirror', () => {
   assert.deepEqual(queueDelta(['b', 'c'], ['b', 'c', 'd']), {
     at: 2,
     remove: 0,
@@ -30,19 +32,19 @@ test('ячейку поставили в хвост — в зеркало доб
   })
 })
 
-test('очередь не изменилась — правки нет вовсе', () => {
+test('the queue did not change — there is no edit at all', () => {
   assert.deepEqual(queueDelta(['a', 'b'], ['a', 'b']), { at: 2, remove: 0, insert: [] })
   assert.deepEqual(queueDelta([], []), { at: 0, remove: 0, insert: [] })
 })
 
-test('первая ячейка в пустую очередь и очередь, вынесенная целиком', () => {
+test('the first cell into an empty queue, and a queue emptied entirely', () => {
   assert.deepEqual(queueDelta([], ['a']), { at: 0, remove: 0, insert: ['a'] })
   assert.deepEqual(queueDelta(['a', 'b', 'c'], []), { at: 0, remove: 3, insert: [] })
 })
 
-test('снятие из середины не трогает соседей', () => {
-  // «Отменить» вынимает свои ячейки, где бы они ни стояли: голова и хвост
-  // остаются на месте, и переписывать их незачем.
+test('removing from the middle does not touch the neighbours', () => {
+  // "Cancel" takes out its own cells wherever they stand: the head and the
+  // tail stay in place, and there is no reason to rewrite them.
   assert.deepEqual(queueDelta(['a', 'b', 'c', 'd'], ['a', 'd']), {
     at: 1,
     remove: 2,
@@ -50,7 +52,7 @@ test('снятие из середины не трогает соседей', ()
   })
 })
 
-test('правка применима: из current всегда получается next', () => {
+test('the edit applies: current always turns into next', () => {
   const cases: Array<[string[], string[]]> = [
     [['a', 'b', 'c'], ['b', 'c']],
     [['b', 'c'], ['b', 'c', 'd']],
@@ -66,10 +68,10 @@ test('правка применима: из current всегда получае�
     const applied = [...current]
     applied.splice(delta.at, delta.remove, ...delta.insert)
     assert.deepEqual(applied, next, `${current.join()} → ${next.join()}`)
-    // И правка действительно узкая: она не переписывает того, что не менялось.
+    // And the edit really is narrow: it does not rewrite what did not change.
     assert.ok(
       delta.remove + delta.insert.length <= current.length + next.length,
-      'правка вышла шире полной перезаписи',
+      'the edit came out wider than a full rewrite',
     )
   }
 })

@@ -1,17 +1,17 @@
 /**
- * Историю комнаты должно быть можно развернуть обратно в тетрадь.
+ * A room's history must be possible to unfold back into a notebook.
  *
- * Это ломалось молча и полностью. Базовая строка снималась с документа ДО
- * засева стартовых ячеек, а наблюдатель обновлений вешался ещё позже — так что
- * ячейки не попадали в историю вовсе. Каждая следующая строка была дельтой к
- * документу, которого история никогда не видела: Yjs складывал такие в
- * pending, и ЛЮБАЯ версия разворачивалась в пустую тетрадь. Вкладка «История»
- * показывала ноль ячеек и не жаловалась.
+ * This broke silently and completely. The base row was taken from the
+ * document BEFORE the starting cells were seeded, and the update observer was
+ * attached even later — so the cells never got into the history at all. Every
+ * following row was a delta against a document the history had never seen:
+ * Yjs put such deltas into pending, and ANY version unfolded into an empty
+ * notebook. The "History" tab showed zero cells and did not complain.
  *
- * На живой базе у семинара с двадцатью одной строкой все двадцать одна давали
- * ноль ячеек. Поэтому здесь две проверки: что новая комната пишет свои ячейки
- * первой же версией, и что комната, испорченная старой сборкой, чинится при
- * следующем открытии.
+ * On the live database a seminar with twenty-one rows gave zero cells for all
+ * twenty-one. Hence two checks here: that a new room writes its cells in the
+ * very first version, and that a room broken by an old build is repaired on
+ * the next open.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -27,22 +27,22 @@ const latestSeq = (id: string): number =>
   (db.prepare('SELECT MAX(seq) AS s FROM doc_history WHERE session_id = ?').get(id) as { s: number })
     .s
 
-test('первая же версия новой комнаты разворачивается в её тетрадь', () => {
+test('the very first version of a new room unfolds into its notebook', () => {
   const id = 'hist-fresh'
   createSession(id, 'Свежий', null)
   getSessionDoc(id, 'Свежий')
   const cells = cellsAt(id, latestSeq(id))
-  assert.ok(cells.length > 0, 'история новой комнаты разворачивается в пустую тетрадь')
+  assert.ok(cells.length > 0, 'the history of a new room unfolds into an empty notebook')
 })
 
-test('комната со сломанной базой чинится при следующем открытии', () => {
+test('a room with a broken base is repaired on the next open', () => {
   const id = 'hist-broken'
   createSession(id, 'Сломанный', null)
 
   /*
-   * Ровно то, что оставляла старая сборка: строка `opened`, снятая с пустого
-   * документа. Она есть, `hasHistoryBase` довольна — и не разворачивается
-   * ни во что.
+   * Exactly what the old build left behind: an `opened` row taken from an
+   * empty document. It exists, `hasHistoryBase` is satisfied — and it unfolds
+   * into nothing.
    */
   const empty = new Y.Doc()
   appendVersion({
@@ -58,24 +58,24 @@ test('комната со сломанной базой чинится при с
     cells: [],
   })
   empty.destroy()
-  assert.equal(cellsAt(id, latestSeq(id)).length, 0, 'подделка сломанной базы не удалась')
+  assert.equal(cellsAt(id, latestSeq(id)).length, 0, 'faking the broken base did not work')
 
-  // Открытие комнаты — единственный момент, когда это можно заметить и починить.
+  // Opening the room is the only moment when this can be noticed and repaired.
   getSessionDoc(id, 'Сломанный')
   assert.ok(
     cellsAt(id, latestSeq(id)).length > 0,
-    'история осталась неразворачиваемой после открытия комнаты',
+    'the history still cannot be unfolded after the room was opened',
   )
 })
 
-test('здоровую историю починка не трогает', () => {
-  // Лишняя строка на каждое открытие комнаты — это история, растущая от того,
-  // что на неё смотрят.
+test('the repair does not touch a healthy history', () => {
+  // An extra row on every room open would be a history that grows from being
+  // looked at.
   const id = 'hist-fine'
   createSession(id, 'Целый', null)
   getSessionDoc(id, 'Целый')
   const after = latestSeq(id)
   dropSessionDoc(id)
   getSessionDoc(id, 'Целый')
-  assert.equal(latestSeq(id), after, 'открытие здоровой комнаты дописало версию')
+  assert.equal(latestSeq(id), after, 'opening a healthy room appended a version')
 })

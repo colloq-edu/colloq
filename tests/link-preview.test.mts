@@ -1,9 +1,10 @@
 /**
- * Карточка ссылки на комнату.
+ * The link card for a room.
  *
- * Мессенджер читает `<head>` первого ответа: там должны быть имя занятия,
- * абсолютный адрес картинки и сама страница — та же, что у всех остальных.
- * Имя комнаты — чужой текст, и в теги оно уходит экранированным.
+ * A messenger reads the `<head>` of the first response: it must carry the
+ * class name, the absolute image address and the page itself — the same one
+ * everyone else gets. The room name is someone else's text, and it goes into
+ * the tags escaped.
  */
 import './_env.mts'
 import fs from 'node:fs'
@@ -22,8 +23,9 @@ fs.writeFileSync(
 )
 process.env.STATIC_DIR = staticDir
 
-// Публичный адрес читается из .env рядом, а не из окружения (config.ts:
-// файл главнее) — значит, и ожидать надо тот, что видит сервер.
+// The public address is read from the .env next to it, not from the
+// environment (config.ts: the file wins) — so the one to expect is the one the
+// server sees.
 let origin = ''
 let base = ''
 let server: http.Server
@@ -54,25 +56,25 @@ const meta = (html: string, property: string): string | null => {
   return match ? match[1] : null
 }
 
-test('ссылка на комнату несёт имя занятия, картинку и свой адрес', async () => {
+test('a room link carries the class name, the image and its own address', async () => {
   const { createSession } = await import('../server/src/db.js')
   createSession('previewroom', 'MMDA | week01', null)
   const { html } = await page('/s/previewroom')
   assert.equal(meta(html, 'og:title'), 'MMDA | week01 · Colloq')
   assert.match(html, /<title>MMDA \| week01 · Colloq<\/title>/)
   assert.equal(meta(html, 'og:url'), `${origin}/s/previewroom`)
-  // Картинка комнаты — своя, с версией от имени и даты (og-card.ts).
+  // The room image is its own, versioned by name and date (og-card.ts).
   assert.match(meta(html, 'og:image') ?? '', /\/og\/rooms\/previewroom\.png\?v=[A-Za-z0-9_-]{10}$/)
   assert.ok((meta(html, 'og:image') ?? '').startsWith(`${origin}/og/rooms/`))
   assert.equal(meta(html, 'og:image:width'), '1200')
   assert.match(html, /<meta name="twitter:card" content="summary_large_image">/)
   assert.match(meta(html, 'og:description') ?? '', /Занятие в Colloq/)
-  // Страница осталась той же: язык, корень приложения.
+  // The page stayed the same: the language, the app root.
   assert.match(html, /<meta name="colloq-language" content="ru">/)
   assert.match(html, /<div id="app">/)
 })
 
-test('имя комнаты уходит в теги экранированным', async () => {
+test('the room name goes into the tags escaped', async () => {
   const { createSession } = await import('../server/src/db.js')
   createSession('previewevil', '<script>alert("x")</script> & co', null)
   const { html } = await page('/s/previewevil')
@@ -84,10 +86,11 @@ test('имя комнаты уходит в теги экранированны�
   assert.match(html, /<title>&lt;script&gt;alert\("x"\)&lt;\/script&gt; &amp; co · Colloq<\/title>/)
 })
 
-test('корень и неизвестная комната получают общую карточку, а не пустоту', async () => {
+test('the root and an unknown room get the general card, not nothing', async () => {
   const root = await page('/')
   assert.equal(meta(root.html, 'og:title'), 'Colloq — одна ссылка на всё занятие')
-  // Без своего адреса: карточка общая, и страница у всех таких путей одна.
+  // No address of its own: the card is general, and all such paths share one
+  // page.
   assert.equal(meta(root.html, 'og:url'), null)
   assert.match(meta(root.html, 'og:image') ?? '', /\/og\/colloq\.png\?v=[0-9a-z]+$/)
   const missing = await page('/s/nosuchroom')
@@ -96,7 +99,7 @@ test('корень и неизвестная комната получают о�
   assert.equal(missing.etag, root.etag)
 })
 
-test('у страниц разных комнат разные ETag, у одной комнаты — один', async () => {
+test('pages of different rooms have different ETags, one room has one', async () => {
   const one = await page('/s/previewroom')
   const again = await page('/s/previewroom')
   const other = await page('/s/previewevil')

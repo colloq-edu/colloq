@@ -19,13 +19,13 @@ export interface VersionDetail {
 }
 
 /**
- * То же, что `api.request`, только с ключом участника в заголовке.
+ * The same as `api.request`, only with the participant's key in a header.
  *
- * Здесь когда-то стоял свой `fetch` с собственным разбором отказа — второй
- * экземпляр той же работы, отличавшийся ровно этим заголовком, который
- * `request` и так принимает через `init.headers`. Копия успела отстать: поля
- * `retryAfter` и `until`, по которым отличают ожидание и бан от поломки, до неё
- * не доехали.
+ * There used to be a `fetch` of its own here with its own refusal parsing — a
+ * second copy of the same work, differing by exactly this header, which
+ * `request` accepts through `init.headers` anyway. The copy managed to fall
+ * behind: the `retryAfter` and `until` fields, by which a wait and a ban are
+ * told from a breakage, never made it into it.
  */
 function get<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   return request<T>(path, {
@@ -35,12 +35,13 @@ function get<T>(path: string, token: string, init?: RequestInit): Promise<T> {
 }
 
 /**
- * Лента комнаты — и признак того, что её начало не сохранилось.
+ * The room's timeline — and the sign that its beginning was not kept.
  *
- * Форма ответа взята из `shared/history.ts` (`VersionList`), а не описана
- * здесь заново: сервер уже везёт `trimmed` (routes/history.ts ·
- * `historyTrimmed`), и третья копия той же формы разошлась бы с ним ровно так
- * же, как разошлась вторая — поле молча терялось по дороге к панели.
+ * The response shape is taken from `shared/history.ts` (`VersionList`) rather
+ * than described here anew: the server already carries `trimmed`
+ * (routes/history.ts · `historyTrimmed`), and a third copy of the same shape
+ * would drift from it exactly as the second did — the field was silently lost
+ * on the way to the panel.
  */
 export function listVersions(sessionId: string, token: string): Promise<VersionList> {
   return get(`/api/sessions/${sessionId}/history`, token)
@@ -82,14 +83,15 @@ export function clock(at: number): string {
 /**
  * The initials on the row's circle.
  *
- * Те же две буквы, что на аватаре и в списке людей, — `initials` из lib/utils
- * и ничего своего. Здесь были свои правила: первая и ВТОРАЯ буквы против первой
- * и ПОСЛЕДНЕЙ, так что «Иван Петрович Сидоров» получал в ленте версий «ИП», а
- * на своём же аватаре рядом — «ИС». Один человек, один экран, две монограммы.
+ * The same two letters as on the avatar and in the people list — `initials`
+ * from lib/utils and nothing of its own. There used to be rules of its own
+ * here: the first and SECOND letters versus the first and LAST, so "Ivan
+ * Petrovich Sidorov" got "IP" in the version feed, and "IS" on his own avatar
+ * right next to it. One person, one screen, two monograms.
  *
- * Отличается только пустое имя: у ленты это не человек, а сама комната — её
- * собственные записи, — и вместо вопросительного знака строка рисует точку.
- * Честнее: не «кто-то неизвестный», а «никто».
+ * Only an empty name differs: in the feed that is not a person but the room
+ * itself — its own entries — and instead of a question mark the row draws a
+ * dot. More honest: not "someone unknown" but "nobody".
  */
 export function initialsOf(name: string | null): string {
   if (!name?.trim()) return ''

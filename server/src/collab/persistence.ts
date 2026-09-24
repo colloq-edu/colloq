@@ -20,60 +20,63 @@ import { db, loadDocSnapshot, saveDocSnapshot } from '../db.js'
  * everything below only decides *when* inside that window to spend the encode,
  * never whether the promise holds.
  *
- * ХВОСТ. Полная копия каждые пять секунд — это и есть цена этой простоты, и
- * платит её тот, у кого тетрадь большая: пока в комнате не перестают печатать,
- * двухмегабайтный документ уезжал в WAL двенадцать раз в минуту, то есть
- * двадцать шесть мегабайт в минуту ради нескольких килобайт настоящих правок
- * (сводится WAL раз в пять минут). Поэтому между полными копиями пишется
- * ХВОСТ — разница с последним снимком, файлом рядом с базой
- * (`<DATA_DIR>/doc-tail/<комната>.bin`), мимо WAL и мимо всякой сборки мусора.
- * Полная копия — не чаще раза в FULL_EVERY_MS, а также на затишье, на явный
- * сброс и на выходе.
+ * THE TAIL. A full copy every five seconds is the price of this simplicity, and
+ * whoever has a big notebook pays it: as long as the room keeps typing, a
+ * two-megabyte document went into the WAL twelve times a minute, that is
+ * twenty-six megabytes a minute for a few kilobytes of real edits (the WAL is
+ * checkpointed once every five minutes). So between full copies we write a
+ * TAIL — the difference from the last snapshot, as a file next to the database
+ * (`<DATA_DIR>/doc-tail/<room>.bin`), bypassing the WAL and any garbage
+ * collection. A full copy is written no more than once per FULL_EVERY_MS, and
+ * also on a lull, on an explicit flush and on exit.
  *
- * Обещание при этом то же самое, и это здесь главное: снимок плюс хвост — это
- * документ, а хвост пишется по прежнему сроку. Окно потери при `kill -9` не
- * выросло ни на миллисекунду; выросло только расстояние между полными копиями.
+ * The promise stays exactly the same, and that is the main thing here:
+ * snapshot plus tail is the document, and the tail is written on the old
+ * deadline. The loss window on `kill -9` has not grown by a millisecond; only
+ * the distance between full copies has.
  */
 
 /**
  * Hard ceiling on how old the oldest unsaved edit may get.
  *
- * Пять секунд, а не пятнадцать: это и есть окно потери при `kill -9`, OOM или
- * обесточивании — штатные выходы (SIGINT/SIGTERM/uncaughtException) флашат сами.
- * Пятнадцать секунд молчаливой потери — это абзац, набранный при всей комнате,
- * и вернувшийся сервер, который заставляет перезагрузить вкладки, чтобы его
- * стереть.
+ * Five seconds, not fifteen: this is the loss window on `kill -9`, OOM or a
+ * power cut — regular exits (SIGINT/SIGTERM/uncaughtException) flush on their
+ * own. Fifteen seconds of silent loss is a paragraph typed in front of the
+ * whole room, and a server that comes back and forces the tabs to reload, only
+ * to erase it.
  *
- * Цена названа замером (encode + запись в SQLite, better-sqlite3): тетрадь на
- * 22 КБ — 0.5 мс, на 292 КБ — 2.4 мс, на 2.3 МБ — 6.8 мс. Потолок бьёт только
- * по большим тетрадям (маленькие пишутся по snapshotIntervalMs), так что
- * втрое чаще платит именно тот, у кого мегабайт: 6.8 мс раз в пять секунд —
- * 0.14% цикла событий. Дороже другое, и это осознанно: пока в такой тетради
- * печатают не переставая, в WAL уходит втрое больше байтов (2.3 МБ каждые пять
- * секунд), а сводится он раз в пять минут.
+ * The cost is measured (encode + write to SQLite, better-sqlite3): a 22 KB
+ * notebook takes 0.5 ms, 292 KB — 2.4 ms, 2.3 MB — 6.8 ms. The ceiling only
+ * hits big notebooks (small ones are written on snapshotIntervalMs), so it is
+ * precisely the owner of the megabyte who pays three times as often: 6.8 ms
+ * every five seconds is 0.14% of the event loop. What costs more is something
+ * else, and it is deliberate: while such a notebook is typed in nonstop, three
+ * times as many bytes go into the WAL (2.3 MB every five seconds), and the WAL
+ * is checkpointed only once every five minutes.
  */
 const MAX_DEFER_MS = 5_000
 
 /**
- * Как часто документ ложится на диск ЦЕЛИКОМ, пока в комнате печатают.
+ * How often the document goes to disk WHOLE while the room is typing.
  *
- * Тридцать секунд — это про место и про WAL, а не про сохранность: между
- * полными копиями на диске лежит хвост (см. шапку), и он пишется по прежнему
- * сроку в пять секунд. Считать надо так: полная копия обязана быть настолько
- * редкой, чтобы её цена не зависела от того, печатают в комнате или нет, и
- * настолько частой, чтобы хвост не вырос до размеров самого документа. За
- * полминуты непрерывного набора хвост — это десятки килобайт против мегабайтов
- * документа.
+ * Thirty seconds is about space and the WAL, not about durability: between
+ * full copies the disk holds the tail (see the header), and it is written on
+ * the old five-second deadline. The reasoning goes like this: a full copy has
+ * to be rare enough that its cost does not depend on whether the room is
+ * typing, and frequent enough that the tail does not grow to the size of the
+ * document itself. Over half a minute of continuous typing the tail is tens of
+ * kilobytes against the document's megabytes.
  */
 const FULL_EVERY_MS = 30_000
 
 /**
- * Сколько тишины считается затишьем: после него документ ложится целиком.
+ * How much silence counts as a lull: after it the document is written whole.
  *
- * Комната, в которой перестали печатать, — самый дешёвый момент для полной
- * копии, и самый правильный: хвоста после неё нет вовсе, а поднимать такую
- * комнату будет тот, кто войдёт в неё завтра. Больше окна дребезга и заметно
- * меньше полминуты: между упражнениями пауза именно такая.
+ * A room that has stopped typing is the cheapest moment for a full copy, and
+ * the most correct one: there is no tail after it at all, and the one to load
+ * such a room will be whoever enters it tomorrow. Longer than the debounce
+ * window and noticeably shorter than half a minute: that is exactly the pause
+ * between exercises.
  */
 const SETTLE_MS = 10_000
 
@@ -84,11 +87,12 @@ const ORIGIN = 'persistence'
 const BACKOFF_FROM_BYTES = 128 * 1024
 
 /**
- * Пауза перед повтором неудачной записи.
+ * Pause before retrying a failed write.
  *
- * Диск не освободится за миллисекунду, а спешить некуда: правки в памяти целы,
- * и повторять их можно сколько угодно. Без паузы повтор пошёл бы сразу —
- * дедлайн-то давно прошёл, — и переполненный диск дал бы горячий цикл.
+ * The disk will not free up in a millisecond, and there is no hurry: the edits
+ * in memory are intact and can be retried as often as needed. Without a pause
+ * the retry would fire at once — the deadline passed long ago — and a full
+ * disk would produce a hot loop.
  */
 const RETRY_MS = 5_000
 
@@ -101,7 +105,7 @@ interface Binding {
   doc: Y.Doc
   onUpdate: (update: Uint8Array, origin: unknown, doc: Y.Doc, tr: Y.Transaction) => void
   timer: NodeJS.Timeout | null
-  /** Таймер затишья: полная копия, когда в комнате перестали печатать. */
+  /** Lull timer: a full copy once the room stops typing. */
   settleTimer: NodeJS.Timeout | null
   /** Timestamp of the oldest unsaved edit; 0 means the doc is clean. */
   dirtySince: number
@@ -109,16 +113,16 @@ interface Binding {
   savedVector: Uint8Array | null
   savedBytes: number
   /**
-   * Что лежит в самой строке снимка, и когда она туда легла.
+   * What is in the snapshot row itself, and when it was written there.
    *
-   * Отдельно от `savedVector`: хвост считается разницей именно с НЕЙ, а не с
-   * тем, что durable вообще. Без этого разделения второй хвост подряд
-   * описывал бы разницу с первым хвостом — и восстановление после сбоя
-   * зависело бы от того, какой из них успел лечь.
+   * Separate from `savedVector`: the tail is computed as the difference from
+   * THAT, not from whatever is durable in general. Without this split a second
+   * tail in a row would describe the difference from the first tail — and
+   * recovery after a crash would depend on which of them made it to disk.
    */
   snapshotVector: Uint8Array | null
   snapshotAt: number
-  /** Лежит ли сейчас на диске хвост. */
+  /** Whether a tail is currently on disk. */
   tailed: boolean
   /** Transactions that deleted something, here and as of the last snapshot. */
   deletions: number
@@ -174,20 +178,22 @@ function intervalFor(bytes: number): number {
 }
 
 /**
- * Есть ли строка семинара — честным SELECT, мимо кэша комнат.
+ * Whether the seminar row exists — by an honest SELECT, bypassing the room
+ * cache.
  *
- * `getSession` теперь отвечает из памяти (db.ts · roomCache), и на рукопожатии
- * это правильно: пятьсот вкладок спрашивают одно и то же за секунду. Здесь тот
- * же вопрос стоит иначе — это последняя преграда перед снимком удалённого
- * семинара, и цена ошибки несимметрична. Промах кэша стоит один SELECT по
- * первичному ключу раз в несколько секунд на комнату — ровно ничего; забытая
- * инвалидация в новом пути удаления вернула бы тетрадь класса на диск, а до
- * снимка без строки семинара не ведёт уже ни одна дверь: ни открыть, ни
- * удалить. Пусть эта проверка держится сама, а не тем, что каждый писатель
- * помнит про `forgetRoom`.
+ * `getSession` now answers from memory (db.ts · roomCache), and on the
+ * handshake that is right: five hundred tabs ask the same thing within a
+ * second. Here the same question stands differently — this is the last barrier
+ * before a snapshot of a deleted seminar, and the cost of a mistake is
+ * asymmetric. A cache miss costs one primary-key SELECT every few seconds per
+ * room — nothing at all; a forgotten invalidation in a new deletion path would
+ * put the class's notebook back on disk, and no door leads any more to a
+ * snapshot without a seminar row: it can be neither opened nor deleted. Let
+ * this check hold on its own, rather than by every writer remembering
+ * `forgetRoom`.
  *
- * Писать в `sessions` этот модуль по-прежнему не умеет: дверь на запись одна,
- * и она в db.ts.
+ * This module still cannot write to `sessions`: there is one door for writes,
+ * and it is in db.ts.
  */
 const selectSessionRow = db.prepare('SELECT 1 FROM sessions WHERE id = ?')
 
@@ -195,18 +201,19 @@ function sessionRowExists(sessionId: string): boolean {
   return selectSessionRow.get(sessionId) !== undefined
 }
 
-/* ------------------------------------------------------------------ хвост */
+/* ------------------------------------------------------------------- tail */
 
 /**
- * Разница с последним полным снимком — файлом рядом с базой.
+ * The difference from the last full snapshot — a file next to the database.
  *
- * Файл, а не строка SQLite: строка означала бы запись в WAL, то есть ровно ту
- * цену, ради которой хвост и заведён. Имя — комната; содержимое — обычное
- * обновление Yjs, которое достаточно применить поверх снимка.
+ * A file, not an SQLite row: a row would mean a write to the WAL, which is
+ * exactly the cost the tail exists to avoid. The name is the room; the content
+ * is an ordinary Yjs update that only has to be applied on top of the
+ * snapshot.
  *
- * Пишется через временный файл: восстановление после сбоя читает его первым
- * делом, и недописанный хвост — это не «потеряли пять секунд», а «не
- * поднимается комната».
+ * Written through a temporary file: recovery after a crash reads it first
+ * thing, and a half-written tail is not "we lost five seconds" but "the room
+ * does not come up".
  */
 const TAIL_DIR = 'doc-tail'
 const ROOM_OK = /^[A-Za-z0-9_-]{1,64}$/
@@ -226,7 +233,7 @@ function writeTail(sessionId: string, update: Uint8Array): boolean {
     fs.renameSync(tmp, file)
     return true
   } catch (err) {
-    console.error(`[persistence] не записался хвост для ${sessionId}`, err)
+    console.error(`[persistence] tail write failed for ${sessionId}`, err)
     return false
   }
 }
@@ -243,13 +250,14 @@ function readTail(sessionId: string): Uint8Array | null {
 }
 
 /**
- * Убрать хвост — всегда ПОСЛЕ того, как полная копия легла.
+ * Remove the tail — always AFTER the full copy has been written.
  *
- * Порядок здесь и есть обещание сохранности: между записью снимка и сносом
- * хвоста процесс может умереть, и тогда старый хвост применится поверх нового
- * снимка. Это ничего не портит — он описывает то, что в снимке уже есть, а
- * повторное применение обновления в Yjs не делает ничего. Обратный порядок
- * оставлял бы окно, в котором на диске нет ни того ни другого.
+ * The order here is the durability promise itself: the process may die
+ * between writing the snapshot and removing the tail, and then the old tail is
+ * applied on top of the new snapshot. That spoils nothing — it describes what
+ * the snapshot already has, and applying an update a second time does nothing
+ * in Yjs. The reverse order would leave a window in which the disk holds
+ * neither.
  */
 function dropTail(sessionId: string): void {
   const file = tailPath(sessionId)
@@ -257,15 +265,15 @@ function dropTail(sessionId: string): void {
   try {
     fs.rmSync(file, { force: true })
   } catch {
-    /* хвост, который не убрался, применится ещё раз и ничего не изменит */
+    /* a tail that was not removed is applied once more and changes nothing */
   }
 }
 
 /**
- * Документ целиком — одной строкой, после чего хвоста нет.
+ * The whole document as one row, after which there is no tail.
  *
- * Порядок: сначала строка снимка, потом снос хвоста (почему именно так —
- * см. `dropTail`). Возвращает, сколько весила копия.
+ * Order: the snapshot row first, then removing the tail (why exactly this way,
+ * see `dropTail`). Returns how much the copy weighed.
  */
 function full(binding: Binding, vector: Uint8Array): number {
   const update = Y.encodeStateAsUpdate(binding.doc)
@@ -287,14 +295,14 @@ function full(binding: Binding, vector: Uint8Array): number {
   return update.byteLength
 }
 
-/** Положить комнату целиком, когда в ней перестанут печатать. */
+/** Write the room whole once people stop typing in it. */
 function settle(binding: Binding): void {
   if (binding.settleTimer) clearTimeout(binding.settleTimer)
   binding.settleTimer = setTimeout(() => {
     binding.settleTimer = null
     if (bindings.get(binding.sessionId) !== binding) return
-    // Грязный документ положит своим чередом обычная запись — а она к этому
-    // моменту либо уже прошла, либо вот-вот пройдёт по своему сроку.
+    // A dirty document will be written in due course by the ordinary write —
+    // which by now has either already happened or is about to, on its deadline.
     if (binding.dirtySince !== 0 || !binding.tailed) return
     if (!sessionRowExists(binding.sessionId)) return
     try {
@@ -313,8 +321,8 @@ function write(binding: Binding, force = false): void {
     binding.timer = null
   }
   if (binding.dirtySince === 0) {
-    // Чистый документ с хвостом на диске — это комната, в которой перестали
-    // печатать: самый дешёвый момент положить её целиком и убрать хвост.
+    // A clean document with a tail on disk is a room that has stopped typing:
+    // the cheapest moment to write it whole and remove the tail.
     if (force && binding.tailed && sessionRowExists(binding.sessionId)) {
       try {
         full(binding, Y.encodeStateVector(binding.doc))
@@ -354,11 +362,11 @@ function write(binding: Binding, force = false): void {
   }
 
   /*
-   * Хвостом или целиком — по тому, давно ли лежала полная копия.
+   * As a tail or whole — depending on how long ago the full copy was written.
    *
-   * Первая запись комнаты всегда полная: разницу считать не с чем. Дальше, пока
-   * в комнате печатают, идут хвосты, а раз в полминуты — полная копия, после
-   * которой хвост начинается заново и потому не растёт.
+   * A room's first write is always full: there is nothing to diff against.
+   * After that, while the room is typing, tails go out, and every half minute
+   * a full copy, after which the tail starts over and so does not grow.
    */
   const now = Date.now()
   const canTail =
@@ -374,12 +382,12 @@ function write(binding: Binding, force = false): void {
       binding.savedVector = vector
       binding.savedDeletions = binding.deletions
       /*
-       * Полная копия — когда перестанут печатать.
+       * A full copy — once people stop typing.
        *
-       * Без этого комната, в которой замолчали на середине хвоста, так и
-       * лежала бы снимком получасовой давности плюс файлом рядом: поднимается
-       * это правильно, но лишний файл переживал бы и конец занятия, и
-       * перезапуск. Таймер снимается следующей же записью.
+       * Without it a room that fell silent in the middle of a tail would stay a
+       * half-hour-old snapshot plus a file next to it: that loads correctly,
+       * but the extra file would outlive both the end of the class and a
+       * restart. The timer is cleared by the very next write.
        */
       settle(binding)
       if (DEBUG) {
@@ -390,13 +398,14 @@ function write(binding: Binding, force = false): void {
       }
     } else {
       /*
-       * Чистым документ делает удачная запись, а не попытка.
+       * A document is made clean by a successful write, not by an attempt.
        *
-       * Стояло выше, до записи, — и ошибка sqlite (диск полон, ввод-вывод,
-       * занятая база) молча оставляла комнату «сохранённой»: ни таймер, ни flush
-       * на выходе к ней больше не возвращались, потому что все они выходят на
-       * `dirtySince === 0`. Класс, в котором после сбоя никто больше не
-       * напечатал ни символа, доезжал до `make down` без последних правок.
+       * This used to sit above, before the write — and an sqlite error (disk
+       * full, I/O, a busy database) silently left the room "saved": neither the
+       * timer nor the flush on exit ever came back to it, because they all bail
+       * out on `dirtySince === 0`. A class in which nobody typed another
+       * character after the failure reached `make down` without its last
+       * edits.
        */
       const bytes = full(binding, vector)
       if (DEBUG) {
@@ -412,9 +421,10 @@ function write(binding: Binding, force = false): void {
     recordSaveFailure()
     // Losing a snapshot must not take the live session down with it.
     console.error(`[persistence] snapshot failed for ${binding.sessionId}`, err)
-    // Документ остался грязным — значит, будет и повтор. Только пока привязка
-    // жива: у отпущенной (комнату закрыли и открыли заново) документ уже не
-    // тот, и запись поверх свежего снимка была бы откатом.
+    // The document stayed dirty, so there will be a retry. Only while the
+    // binding is alive: for a released one (the room was closed and opened
+    // again) the document is no longer the same one, and writing over the
+    // fresh snapshot would be a rollback.
     binding.timer = setTimeout(() => {
       if (bindings.get(binding.sessionId) === binding) write(binding)
     }, RETRY_MS)
@@ -486,12 +496,13 @@ export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
     binding.snapshotAt = Date.now()
   }
   /*
-   * И хвост — то, что комната успела написать после последней полной копии.
+   * And the tail — whatever the room managed to write after the last full copy.
    *
-   * Читается всегда, а не только когда снимок нашёлся: снимка может не быть
-   * вовсе (первая полная копия ещё не легла), и тогда хвост — это всё, что от
-   * комнаты осталось. Применяется ПОСЛЕ снимка, потому что описывает разницу
-   * с ним; лишний, уже учтённый хвост Yjs применит и не изменит ничего.
+   * It is always read, not only when a snapshot was found: there may be no
+   * snapshot at all (the first full copy has not been written yet), and then
+   * the tail is all that is left of the room. It is applied AFTER the snapshot
+   * because it describes the difference from it; Yjs will apply an extra,
+   * already counted tail and change nothing.
    */
   const tail = readTail(sessionId)
   if (tail) {
@@ -500,17 +511,17 @@ export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
       binding.tailed = true
       binding.savedVector = Y.encodeStateVector(doc)
     } catch (err) {
-      // Испорченный хвост — это потерянные секунды, а не потерянная комната:
-      // снимок уже применён, и дальше работаем от него.
-      console.error(`[persistence] хвост ${sessionId} не читается`, err)
+      // A corrupted tail means lost seconds, not a lost room: the snapshot is
+      // already applied, and we carry on from it.
+      console.error(`[persistence] cannot read the tail of ${sessionId}`, err)
       dropTail(sessionId)
     }
   }
   /*
-   * Документ теперь знает, чьей комнаты он: единственное место, через которое
-   * проходит КАЖДАЯ тетрадь, живая и поднятая на минуту. Читает это
-   * `publish/build.ts`, когда вкладывает вынесенные картинки обратно в
-   * публикацию (server/src/blobs.ts · roomOfDoc).
+   * The document now knows whose room it belongs to: this is the only place
+   * EVERY notebook passes through, live or loaded for a minute. It is read by
+   * `publish/build.ts` when it puts extracted images back into a publication
+   * (server/src/blobs.ts · roomOfDoc).
    */
   noteRoomDoc(sessionId, doc)
 
@@ -522,8 +533,8 @@ export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
     bindings.delete(sessionId)
     doc.off('update', binding.onUpdate)
     if (binding.settleTimer) clearTimeout(binding.settleTimer)
-    // Комната уходит из памяти — на диске должна остаться она целиком, а не
-    // снимок с файлом рядом: поднимут её, может быть, через неделю.
+    // The room is leaving memory, so what must stay on disk is the whole room,
+    // not a snapshot with a file next to it: it may be loaded a week from now.
     write(binding, true)
   }
 }
@@ -535,9 +546,10 @@ export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
  * exists, which is exactly the state the delete was for.
  */
 export function discardPersistence(sessionId: string): void {
-  // Хвост — тоже запись о комнате, и уходит он вместе с ней. Снимается даже
-  // без привязки: строку снимка удаление убирает своей рукой, и файл рядом с
-  // ней остался бы единственным следом удалённого семинара на диске.
+  // The tail is a record of the room too, and it goes along with the room. It
+  // is removed even without a binding: the deletion removes the snapshot row
+  // by its own hand, and the file next to it would remain the only trace of
+  // the deleted seminar on disk.
   dropTail(sessionId)
   const binding = bindings.get(sessionId)
   if (!binding) return
@@ -549,27 +561,28 @@ export function discardPersistence(sessionId: string): void {
 }
 
 /**
- * Забыть, что снимок на диске совпадает с документом, — и переписать его.
+ * Forget that the snapshot on disk matches the document — and rewrite it.
  *
- * `write()` не пишет, пока вектор состояния и число удалений те же, что у
- * записанного: это правильно для правок, у которых нет ни того ни другого не
- * бывает. Но сброс подвисших структур (collab/index.ts · getEntry) не меняет ни
- * вектора, ни удалений — он меняет только то, что `encodeStateAsUpdate` кладёт
- * в байты, — и без этой ручки чистый документ ложился бы на диск лишь со
- * следующим нажатием в комнате, а до него каждый перезапуск поднимал бы мусор
- * заново.
+ * `write()` does not write while the state vector and the number of deletions
+ * are the same as those written: that is right for edits, since there is no
+ * edit that changes neither. But resetting stuck structures
+ * (collab/index.ts · getEntry) changes neither the vector nor the deletions —
+ * it only changes what `encodeStateAsUpdate` puts into the bytes — and without
+ * this handle a clean document would reach disk only with the next keystroke
+ * in the room, and until then every restart would load the garbage again.
  */
 export function invalidateSnapshot(sessionId: string): void {
   const binding = bindings.get(sessionId)
   if (!binding) return
   binding.savedVector = null
   /*
-   * И хвостом тут не отделаться.
+   * And a tail will not do here.
    *
-   * Хвост — это разница с записанным снимком, а сброс подвисших структур
-   * меняет не разницу, а САМ снимок: те же такты, те же удаления, другие
-   * байты. Пока на диске лежит прежняя полная копия, мусор в ней остаётся при
-   * любом числе хвостов, — поэтому следующая запись обязана быть полной.
+   * A tail is the difference from the written snapshot, while resetting stuck
+   * structures changes not the difference but the snapshot ITSELF: the same
+   * clocks, the same deletions, different bytes. As long as the old full copy
+   * lies on disk, the garbage stays in it however many tails follow — so the
+   * next write has to be a full one.
    */
   binding.snapshotVector = null
   schedule(binding)
@@ -588,9 +601,10 @@ export function invalidateSnapshot(sessionId: string): void {
  */
 export function flushPersistence(sessionId: string): void {
   const binding = bindings.get(sessionId)
-  // Целиком, а не хвостом: «запиши сейчас» просят в тех местах, где на диске
-  // должна остаться комната, а не комната плюс файл рядом, — новая комната
-  // перед первым входом, визит в чужую тетрадь, конец занятия.
+  // Whole, not as a tail: "write it now" is asked for in places where the disk
+  // must hold the room, not the room plus a file next to it — a new room
+  // before the first visit, a visit to someone else's notebook, the end of a
+  // class.
   if (binding) write(binding, true)
 }
 

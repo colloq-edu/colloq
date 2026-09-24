@@ -1,47 +1,50 @@
 <script lang="ts" module>
   /**
-   * Богатый вывод ядра — в теневом корне, а не в странице.
+   * Rich kernel output — in a shadow root, not in the page.
    *
-   * DOMPurify по умолчанию оставляет тег style, и это правильно ровно для того,
-   * ради чего его оставили: `df.style` — настоящая возможность pandas, а
-   * matplotlib в режиме svg кладёт свои правила прямо в `defs`. Но тег style
-   * внутри страницы — это таблица стилей ВСЕЙ страницы, и одна строка
-   * `display(HTML(...))` со скрывающим всё правилом гасила экран у всей комнаты
-   * и на проекторе: вывод лежит в документе, перезагрузка возвращала то же
-   * самое, кнопка Clear оказывалась спрятана вместе со всем остальным.
-   * Безобидная версия той же дыры — `stroke-linecap` из matplotlib, после
-   * которого у всех менялись значки интерфейса.
+   * By default DOMPurify keeps the style tag, and that is right for exactly the
+   * reason it was kept: `df.style` is a real pandas feature, and matplotlib in
+   * svg mode puts its rules straight into `defs`. But a style tag inside the
+   * page is a stylesheet for the WHOLE page, and a single line of
+   * `display(HTML(...))` with a hide-everything rule blanked the screen for the
+   * whole room and on the projector: the output lives in the document, a reload
+   * brought back the same thing, and the Clear button ended up hidden along
+   * with everything else. A harmless version of the same hole is
+   * `stroke-linecap` from matplotlib, after which everyone's interface icons
+   * changed.
    *
-   * Довод «кто заставит ядро выдать HTML, тот и так может всё» — про контейнер
-   * ядра, а не про браузеры соседей: код в контейнере чужие экраны гасить не
-   * умеет, HTML-вывод умел. И он прямо спорил с тем, что тот же тег для
-   * заметок запрещён — в комнате с `run: room` любой студент выдаёт HTML одной
-   * строкой.
+   * The argument "whoever can make the kernel emit HTML can do anything anyway"
+   * is about the kernel's container, not about the neighbours' browsers: code
+   * in the container cannot blank other people's screens, HTML output could.
+   * And it flatly contradicted the fact that the same tag is forbidden in
+   * notes — in a room with `run: room` any student emits HTML with a single
+   * line.
    *
-   * Теневой корень закрывает это устройством, а не запретом: правила внутри
-   * него действуют только внутри него, и `df.style` продолжает работать ровно
-   * как работал. Оформление таблиц едет туда же — снаружи оно бы уже не
-   * доставало.
+   * A shadow root closes this by construction, not by prohibition: the rules
+   * inside it apply only inside it, and `df.style` keeps working exactly as it
+   * did. The table styling moves in there too — from outside it would no longer
+   * reach.
    *
-   * `contain: paint` на хозяине закрывает вторую половину: он делает элемент
-   * содержащим блоком для `position: fixed` потомков и подрезает рисование его
-   * же рамкой. Атрибут `style="position:fixed;inset:0"` — та самая дыра,
-   * которую для заметок закрыли запретом атрибута, — больше не накрывает экран.
+   * `contain: paint` on the host closes the second half: it makes the element
+   * the containing block for `position: fixed` descendants and clips painting
+   * to the element's own box. The attribute `style="position:fixed;inset:0"` —
+   * the very hole that was closed for notes by forbidding the attribute — no
+   * longer covers the screen.
    */
 
-  /** Общее обоим видам: хозяин теневого корня — обычный блок. */
+  /** Shared by both kinds: the shadow root's host is an ordinary block. */
   const BASE = `
     :host { display: block; }
     :host([hidden]) { display: none; }
   `
 
   /**
-   * Оформление таблицы pandas. Раньше жило в стилях самого CellOutputs через
-   * `:global`; в теневой корень оно обязано переехать целиком, иначе таблица
-   * приедет со своими светлыми рамками поверх тёмной темы.
+   * Styling for a pandas table. It used to live in CellOutputs' own styles via
+   * `:global`; it has to move into the shadow root in full, otherwise the table
+   * will arrive with its own light borders on top of the dark theme.
    *
-   * `!important` остаётся: ядро присылает свои правила, и ложатся они в тот же
-   * корень ПОСЛЕ этих.
+   * `!important` stays: the kernel sends its own rules, and they land in the
+   * same root AFTER these.
    */
   const HTML_CSS = `${BASE}
     table { border-collapse: collapse; margin: 2px 0; }
@@ -75,9 +78,9 @@
 
 <script lang="ts">
   interface Props {
-    /** Уже прошедшая через lib/render разметка. Сюда сырое не попадает. */
+    /** Markup already passed through lib/render. Nothing raw gets here. */
     markup: string
-    /** Какой набор правил положить в корень рядом с ней. */
+    /** Which rule set to put into the root next to it. */
     kind: 'html' | 'svg'
     class?: string
   }
@@ -91,20 +94,22 @@
     const body = markup
     const css = SCOPE_CSS[kind]
     if (!node) return
-    // Второй attachShadow на том же узле бросает исключение, а узел переживает
-    // смену вывода: корень заводится один раз и дальше только переписывается.
+    // A second attachShadow on the same node throws, and the node survives a
+    // change of output: the root is created once and afterwards only rewritten.
     const shadow = node.shadowRoot ?? node.attachShadow({ mode: 'open' })
 
     /*
-     * Разметка собирается в `template`, а не пишется в корень напрямую.
+     * The markup is assembled in a `template`, not written into the root
+     * directly.
      *
-     * Содержимое `template` инертно: браузер его не применяет и ничего по нему
-     * не загружает, пока узлы не перенесли в документ. Это и есть окно, в
-     * котором можно убрать `@import` — вторую половину той же дыры, что и
-     * глобальные правила. Скоуп его обезвреживает лишь наполовину: правила
-     * действуют только внутри корня, но АДРЕС всё равно был бы запрошен из
-     * браузера каждого в комнате. Пиши мы прямо в корень, запрос ушёл бы в тот
-     * же миг, и вычищать было бы уже поздно.
+     * The content of a `template` is inert: the browser does not apply it and
+     * loads nothing for it until the nodes are moved into the document. That is
+     * exactly the window in which `@import` can be removed — the second half of
+     * the same hole as the global rules. The scope defuses it only halfway: the
+     * rules apply only inside the root, but the ADDRESS would still be
+     * requested from the browser of everyone in the room. Were we to write
+     * straight into the root, the request would go out at that very moment, and
+     * it would be too late to clean up.
      */
     const template = document.createElement('template')
     template.innerHTML = body
@@ -113,14 +118,14 @@
       if (text.includes('@import')) sheet.textContent = text.replace(/@import\s[^;]*;?/gi, '')
     }
 
-    // Элементом, а не строкой в разметке: строка с тегом style внутри .svelte
-    // разрывает разбор самого компонента.
+    // As an element, not as a string in markup: a string with a style tag
+    // inside a .svelte file breaks the parsing of the component itself.
     const rules = document.createElement('style')
     rules.textContent = css
     shadow.replaceChildren(rules, template.content)
   })
 </script>
 
-<!-- Хозяин теневого корня. `contain: paint` — не про скорость, а про то, что
-     `position: fixed` изнутри больше не доезжает до окна. -->
+<!-- The shadow root's host. `contain: paint` is not about speed but about
+     `position: fixed` from inside no longer reaching the window. -->
 <div bind:this={host} class={className} style="contain: paint"></div>

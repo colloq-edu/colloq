@@ -1,20 +1,22 @@
 /**
- * Заметки спикера: речь преподавателя самому себе.
+ * Speaker notes: the teacher's words to themselves.
  *
- * Единственное в этом продукте, чего комнате видеть не полагается. Заметка
- * «здесь спросить, кто помнит формулу Байеса; если молчат — вывести на доске»,
- * приехавшая всем, приезжает вместе с ответом на ещё не заданный вопрос — и
- * ломается это МОЛЧА: у преподавателя на экране всё как надо, а у двадцати
- * человек в зале лишняя строка, которую никто не заметит до конца пары.
+ * The only thing in this product the room is not supposed to see. A note
+ * "here ask who remembers Bayes' formula; if they are silent, derive it on
+ * the board" that reaches everyone arrives together with the answer to a
+ * question not yet asked — and this breaks SILENTLY: on the teacher's screen
+ * everything is as it should be, while twenty people in the hall have an
+ * extra line nobody will notice until the end of class.
  *
- * Поэтому здесь проверяется не право (оно в control-rules), а адресат: кому
- * кадр уехал на самом деле. И три способа потерять уже написанное — пустая
- * строка вместо удаления, переименование документа и удаление семинара.
+ * So what is checked here is not the permission (that is in control-rules)
+ * but the recipient: who the frame actually went to. And three ways to lose
+ * what has already been written — an empty string instead of a deletion,
+ * renaming the document and deleting the seminar.
  *
- * Сокет поддельный, но комната настоящая: `toHosts` перебирает
- * зарегистрированные сокеты комнаты и спрашивает у них роль, а роль
- * запоминается только при подключении. Проверять такое мимо подключения
- * бессмысленно — рассылке просто некуда идти, и тест был бы зелёным всегда.
+ * The socket is fake, but the room is real: `toHosts` goes through the room's
+ * registered sockets and asks them for their role, and the role is remembered
+ * only on connection. Checking this around the connection is pointless — the
+ * broadcast simply has nowhere to go, and the test would always be green.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -26,7 +28,7 @@ import { makeFile } from '../server/src/workspace.js'
 import type { ControlClientMessage, ControlServerMessage } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
 
-/** Поддельный сокет, который умеет ровно то, что от него хочет `control.ts`. */
+/** A fake socket that can do exactly what `control.ts` wants from it. */
 function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
   const heard: ControlServerMessage[] = []
   const handlers = new Map<string, ((...args: unknown[]) => void)[]>()
@@ -39,8 +41,9 @@ function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
     },
     ping: () => {},
     terminate: () => {},
-    // Закрытие обязано дойти до обработчика: в нём гасится сердцебиение, а без
-    // него интервал переживёт тест и потащит за собой всю сюиту.
+    // Closing must reach the handler: that is where the heartbeat is stopped,
+    // and without it the interval would outlive the test and drag the whole
+    // suite along.
     close: () => {
       for (const fn of handlers.get('close') ?? []) fn()
     },
@@ -55,11 +58,11 @@ function who(sessionId: string, role: 'host' | 'participant', tag: string = role
 let rooms = 0
 
 /**
- * Комната с тремя подключёнными: два преподавателя и студент.
+ * A room with three connected: two teachers and a student.
  *
- * Двое ведущих — не выдумка ради полноты: у семинара их бывает двое, и правка,
- * сделанная на ноутбуке первого, обязана дойти до планшета второго. Ровно из-за
- * этого рассылка не может быть `tell`.
+ * Two hosts are not made up for completeness: a seminar can have two, and an
+ * edit made on the first one's laptop must reach the second one's tablet.
+ * Exactly because of this the broadcast cannot be `tell`.
  */
 function room() {
   const id = `notes-${++rooms}`
@@ -71,21 +74,22 @@ function room() {
   handleControlSocket(second.ws, id, who(id, 'host', 'host2'))
   handleControlSocket(guest.ws, id, who(id, 'participant'))
   /*
-   * Оба преподавателя открывают заметки к документу — ровно это делает пульт,
-   * когда показывает лекцию. Эхо правки приходит только тем, кто спрашивал про
-   * ЭТОТ файл: у одного человека вкладок бывает две, и вторая из них — проекция
-   * на кафедральном ноутбуке, раскрытом перед аудиторией.
+   * Both teachers open the notes for a document — exactly what the console
+   * does when it shows a lecture. The echo of an edit comes only to those who
+   * asked about THIS file: one person can have two tabs, and the second of
+   * them is the projection on the lectern laptop, open in front of the
+   * audience.
    */
   dispatch(first.ws, id, who(id, 'host', 'host'), { t: 'notes:open', file: 'l3.pdf' })
   dispatch(second.ws, id, who(id, 'host', 'host2'), { t: 'notes:open', file: 'l3.pdf' })
   dispatch(guest.ws, id, who(id, 'participant'), { t: 'notes:open', file: 'l3.pdf' })
-  // Приветственная пачка и ответы на открытие — не наше дело: смотрим только на
-  // то, что придёт после.
+  // The welcome batch and the answers to the open are not our business: we
+  // look only at what comes after.
   for (const one of [first, second, guest]) one.heard.length = 0
   return { id, first, second, guest }
 }
 
-/** Сказать от чьего-то имени по его же сокету. */
+/** Say something on someone's behalf over their own socket. */
 function say(
   id: string,
   from: { ws: WebSocket },
@@ -99,14 +103,14 @@ function notesFrames(heard: ControlServerMessage[]): ControlServerMessage[] {
   return heard.filter((frame) => frame.t === 'notes' || frame.t === 'notes:one')
 }
 
-/* ------------------------------------------------------------- адресат */
+/* ------------------------------------------------------------- recipient */
 
-test('карта заметок уезжает одному спросившему, и он обязан быть преподавателем', () => {
+test('the notes map goes only to the one who asked, and that one must be a teacher', () => {
   const { id, first, second, guest } = room()
   setNote(id, 'l3.pdf', 7, 'спросить про поток')
 
   say(id, guest, who(id, 'participant'), { t: 'notes:open', file: 'l3.pdf' })
-  assert.deepEqual(notesFrames(guest.heard), [], 'речь преподавателя уехала в зал')
+  assert.deepEqual(notesFrames(guest.heard), [], "the teacher's notes went to the hall")
   assert.match(guest.heard.find((frame) => frame.t === 'error')?.message ?? '', /преподавател/i)
 
   say(id, first, who(id, 'host', 'host'), { t: 'notes:open', file: 'l3.pdf' })
@@ -114,14 +118,14 @@ test('карта заметок уезжает одному спросившем
     { t: 'notes', file: 'l3.pdf', notes: { 7: 'спросить про поток' } },
   ])
   /*
-   * Второму преподавателю — ничего: он ничего не спрашивал. Карта к документу,
-   * которого у него не открыто, подменила бы на его пульте свою.
+   * Nothing for the second teacher: they asked for nothing. A map for a
+   * document they do not have open would replace their own on their console.
    */
   assert.deepEqual(notesFrames(second.heard), [])
   closeControlRoom(id)
 })
 
-test('правка доходит до второго преподавателя и не доходит до зала', () => {
+test('an edit reaches the second teacher and does not reach the hall', () => {
   const { id, first, second, guest } = room()
 
   say(id, first, who(id, 'host', 'host'), {
@@ -137,24 +141,25 @@ test('правка доходит до второго преподавателя
     page: 7,
     text: 'спросить, кто помнит формулу Байеса',
   }
-  // Себе — тоже: ноутбук и планшет одного человека это два разных сокета, и
-  // второй узнаёт о правке только так.
+  // To oneself too: one person's laptop and tablet are two different sockets,
+  // and the second learns about the edit only this way.
   assert.deepEqual(notesFrames(first.heard), [echo])
   assert.deepEqual(notesFrames(second.heard), [echo])
-  assert.deepEqual(notesFrames(guest.heard), [], 'заметка уехала студенту')
+  assert.deepEqual(notesFrames(guest.heard), [], 'the note went to a student')
   closeControlRoom(id)
 })
 
-test('вкладка, не спрашивавшая заметок, их и не получает', () => {
+test('a tab that did not ask for notes does not get them', () => {
   /*
-   * Проекция на кафедральном ноутбуке входит по тому же ключу тем же
-   * участником — то есть тоже «преподаватель». Речь преподавателя самому себе
-   * не должна лежать в памяти машины, раскрытой перед аудиторией, даже если на
-   * экран она этого не выводит: файл, которого там нет, невозможно случайно
-   * показать.
+   * The projection on the lectern laptop joins with the same key as the same
+   * participant — that is, also as "teacher". The teacher's words to
+   * themselves must not lie in the memory of a machine open in front of the
+   * audience, even if it does not put them on the screen: a file that is not
+   * there cannot be shown by accident.
    */
   const { id, first, second } = room()
-  // Второй «уходит с документа»: пульт спросил заметки к другому файлу.
+  // The second one "leaves the document": the console asked for the notes of
+  // another file.
   say(id, second, who(id, 'host', 'host2'), { t: 'notes:open', file: 'other.pdf' })
   second.heard.length = 0
 
@@ -165,18 +170,18 @@ test('вкладка, не спрашивавшая заметок, их и не
     text: 'здесь пауза',
   })
   assert.equal(notesFrames(first.heard).length, 1)
-  assert.deepEqual(notesFrames(second.heard), [], 'заметка уехала на чужой документ')
+  assert.deepEqual(notesFrames(second.heard), [], 'the note went to a different document')
   closeControlRoom(id)
 })
 
-/* -------------------------------------------------------- пустая заметка */
+/* -------------------------------------------------------- empty note */
 
-test('пустая заметка — это её отсутствие, а не пустая строка в карте', () => {
+test('an empty note is its absence, not an empty string in the map', () => {
   /*
-   * Иначе лента показывает точку «здесь есть что сказать» над страницей, где
-   * не сказано ничего, — и преподаватель на паре ищет глазами текст, которого
-   * нет. Строка из пробелов — тот же случай: её оставляет тот, кто стёр
-   * заметку не до конца.
+   * Otherwise the strip shows a "there is something to say here" dot over a
+   * page where nothing is said — and in class the teacher searches with their
+   * eyes for text that is not there. A string of spaces is the same case: it
+   * is left by whoever did not quite erase the note.
    */
   const { id, first } = room()
   const host = who(id, 'host', 'host')
@@ -185,42 +190,44 @@ test('пустая заметка — это её отсутствие, а не 
   assert.deepEqual(notesOf(id, 'l3.pdf'), { 7: 'сказать про Стокса' })
 
   say(id, first, host, { t: 'notes:set', file: 'l3.pdf', page: 7, text: '   \n  ' })
-  assert.deepEqual(notesOf(id, 'l3.pdf'), {}, 'страница осталась в карте пустой строкой')
+  assert.deepEqual(notesOf(id, 'l3.pdf'), {}, 'the page stayed in the map as an empty string')
 
-  // И эхо говорит то же самое, что легло в базу: иначе у второго устройства
-  // останутся пробелы там, где заметки уже нет.
+  // And the echo says the same as what went into the database: otherwise the
+  // second device would keep spaces where there is no note anymore.
   const last = notesFrames(first.heard).at(-1)
   assert.deepEqual(last, { t: 'notes:one', file: 'l3.pdf', page: 7, text: '' })
   closeControlRoom(id)
 })
 
-test('страница заметки — целая и не меньше первой', () => {
+test('a note page is a whole number and not below the first', () => {
   const { id, first } = room()
   const host = who(id, 'host', 'host')
 
   say(id, first, host, { t: 'notes:set', file: 'l3.pdf', page: 7.8, text: 'дробная' })
-  assert.deepEqual(notesOf(id, 'l3.pdf'), { 7: 'дробная' }, 'дробная страница округляется вниз')
+  assert.deepEqual(notesOf(id, 'l3.pdf'), { 7: 'дробная' }, 'a fractional page is rounded down')
 
-  // Нулевой и отрицательной страницы не бывает: это мусор из вкладки, и
-  // молчать о нём нельзя — всё, что теряет написанный текст, говорит вслух.
+  // There is no page zero or negative page: that is junk from a tab, and it
+  // must not be kept quiet — everything that loses written text says so out
+  // loud.
   say(id, first, host, { t: 'notes:set', file: 'l3.pdf', page: 0, text: 'ниоткуда' })
   assert.match(first.heard.find((frame) => frame.t === 'error')?.message ?? '', /страниц/i)
   assert.deepEqual(notesOf(id, 'l3.pdf'), { 7: 'дробная' })
   closeControlRoom(id)
 })
 
-/* ------------------------------------------------ переименование и удаление */
+/* ------------------------------------------------ renaming and deletion */
 
-test('переименование документа уводит заметки за собой', () => {
+test('renaming a document takes the notes along', () => {
   /*
-   * Вечер, потраченный на речь к двадцати четырём страницам, привязан к ПУТИ
-   * документа. Преподаватель правит «l3.pdf» на «Лекция 3. Поток и
-   * дивергенция.pdf» — обычное дело, — и без переезда заметки остаются
-   * строками, к которым больше нет ключа: старого пути на диске уже нет, а
-   * восстановить их из интерфейса нечем.
+   * An evening spent on notes for twenty-four pages is tied to the document's
+   * PATH. The teacher renames "l3.pdf" to "Lecture 3. Flux and
+   * divergence.pdf" — an ordinary thing — and without the move the notes
+   * remain rows with no key anymore: the old path no longer exists on disk,
+   * and there is nothing in the interface to restore them with.
    *
-   * Проверяется через `tree:move`, а не через `moveNotesTo`: сама функция была
-   * написана давно и правильно, а сломано было то, что её никто не звал.
+   * It is checked through `tree:move`, not through `moveNotesTo`: the function
+   * itself was written long ago and correctly, and what was broken is that
+   * nobody called it.
    */
   const { id, first } = room()
   makeFile(id, 'l3.pdf', '%PDF-1.4')
@@ -229,17 +236,18 @@ test('переименование документа уводит заметк�
 
   say(id, first, who(id, 'host', 'host'), { t: 'tree:move', from: 'l3.pdf', to: 'лекция-3.pdf' })
 
-  assert.deepEqual(notesOf(id, 'l3.pdf'), {}, 'заметки остались под именем, которого больше нет')
+  assert.deepEqual(notesOf(id, 'l3.pdf'), {}, 'the notes stayed under a name that no longer exists')
   assert.deepEqual(notesOf(id, 'лекция-3.pdf'), { 7: 'спросить про поток', 12: 'вывести на доске' })
   closeControlRoom(id)
 })
 
-test('удалённый семинар уносит заметки с собой', () => {
+test('a deleted seminar takes its notes along', () => {
   /*
-   * Заметки — единственное, что преподаватель писал себе сам, и они переживают
-   * и конец лекции, и перезапуск сервера. Пережить удаление комнаты они не
-   * должны: за ними не остаётся ни комнаты, ни документа, а лежат они в общей
-   * базе, где их некому будет ни показать, ни убрать.
+   * Notes are the only thing the teacher wrote for themselves, and they
+   * survive both the end of the lecture and a server restart. They must not
+   * survive the deletion of the room: no room and no document remain behind
+   * them, and they lie in the shared database, where there will be nobody to
+   * show them or clean them up.
    */
   const id = `notes-gone-${++rooms}`
   createSession(id, 'Заметки', null)
@@ -251,13 +259,15 @@ test('удалённый семинар уносит заметки с собо�
   discardNotes(id)
 
   assert.deepEqual(notesOf(id, 'l3.pdf'), {})
-  // Тот же путь в соседней комнате — не тот же документ: ключ тройной.
+  // The same path in a neighbouring room is not the same document: the key
+  // has three parts.
   assert.deepEqual(notesOf(other, 'l3.pdf'), { 1: 'чужая речь' })
 })
 
-test('заметки к одному документу не видны с другого', () => {
-  // Ключ — семинар, файл и страница. Ошибка в любой части ключа выглядит как
-  // «заметки пропали», а на деле они лежат под соседним именем.
+test('notes for one document are not visible from another', () => {
+  // The key is seminar, file and page. A mistake in any part of the key looks
+  // like "the notes are gone", while in fact they lie under a neighbouring
+  // name.
   const id = `notes-key-${++rooms}`
   createSession(id, 'Заметки', null)
   setNote(id, 'l3.pdf', 7, 'про поток')

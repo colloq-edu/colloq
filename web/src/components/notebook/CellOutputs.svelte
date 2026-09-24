@@ -3,30 +3,32 @@
   import type { OutputBlob } from '@shared/notebook'
 
   /**
-   * Ключ на картинки комнаты — один на вкладку, а не на ячейку.
+   * The ticket for the room's images: one per tab, not one per cell.
    *
-   * Крупные картинки лежат не в документе, а рядом с комнатой, и забираются
-   * отдельным запросом (server/src/routes/blobs.ts). Заголовок в `<img>` не
-   * положить, поэтому в адресе едет короткоживущий ключ — тот же приём, что у
-   * скачивания файла. Здесь он живёт на уровне модуля: тетрадь — это сотня
-   * таких компонентов, и просить ключ каждому значило бы сотню одинаковых
-   * запросов на открытие комнаты.
+   * Large images live not in the document but next to the room, and are
+   * fetched by a separate request (server/src/routes/blobs.ts). A header
+   * cannot be put on an `<img>`, so a short-lived ticket rides in the
+   * address, the same trick as for file downloads. Here it lives at module
+   * level: a notebook is a hundred of these components, and asking for a
+   * ticket in each would mean a hundred identical requests on opening the
+   * room.
    */
   let ticket = $state<{ room: string; token: string; at: number } | null>(null)
-  /** Комната, за ключ которой уже спросили: второй запрос ничего не добавит. */
+  /** The room whose ticket is already requested: a second request adds nothing. */
   let asking: string | null = null
 
-  /** Ключ живёт пять минут; за новым идём заранее, чтобы не ловить отказ. */
+  /** A ticket lives five minutes; we fetch a new one early, not after a refusal. */
   const TICKET_FRESH_MS = 4 * 60_000
 
   /**
-   * Адрес, выданный один раз.
+   * An address, issued once.
    *
-   * Ключ обновляется, а адрес уже нарисованной картинки меняться не должен:
-   * другой адрес — это другой `src`, то есть повторная загрузка всего, что
-   * видно на экране, каждые несколько минут. Имя записи — хэш её содержимого,
-   * так что выданный адрес не устаревает по смыслу; устаревает только ключ в
-   * нём, и это лечится перезапросом при отказе.
+   * The ticket gets renewed, but the address of an image already drawn must
+   * not change: another address is another `src`, that is, reloading
+   * everything visible on screen every few minutes. A record's name is the
+   * hash of its content, so an issued address never goes stale in meaning;
+   * only the ticket inside it does, and that is cured by asking again on a
+   * refusal.
    */
   const issued = new Map<string, string>()
 
@@ -40,7 +42,7 @@
     return url
   }
 
-  /** Спросить ключ, если его нет или он вот-вот протухнет. */
+  /** Ask for a ticket if there is none or it is about to go stale. */
   export function askTicket(room: string, token: string): void {
     const fresh = ticket && ticket.room === room && Date.now() - ticket.at < TICKET_FRESH_MS
     if (fresh || asking === room) return
@@ -51,8 +53,8 @@
         ticket = { room, token: got.token, at: Date.now() }
       })
       .catch(() => {
-        /* Не дали ключ — картинка покажется текстовым представлением; следующая
-           попытка придёт со следующей картинкой. */
+        /* No ticket given: the image shows as its text representation; the next
+           attempt comes with the next image. */
       })
       .finally(() => {
         if (asking === room) asking = null
@@ -60,11 +62,12 @@
   }
 
   /**
-   * Адрес отказал (ключ протух) — забыть его и взять новый ключ.
+   * An address was refused (the ticket went stale): forget it and get a new
+   * ticket.
    *
-   * Ровно один раз на запись: картинка, которой на сервере нет вовсе, иначе
-   * гоняла бы по кругу «отказ → новый ключ → новый адрес → отказ», и пустая
-   * рамка стоила бы запроса в секунду.
+   * Exactly once per record: otherwise an image that does not exist on the
+   * server at all would go round in circles, "refusal → new ticket → new
+   * address → refusal", and an empty box would cost a request per second.
    */
   const retried = new Set<string>()
 
@@ -86,8 +89,9 @@
   import PlotlyOutput from './PlotlyOutput.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { PLOTLY_MIME } from '@shared/plotly'
-  // Что показывать картинкой, что разметкой, что текстом — в своём модуле:
-  // список растровых типов там связан с публикацией, а не переписан от руки.
+  // What to show as an image, what as markup, what as text lives in its own
+  // module: the list of raster types there is tied to publishing, not
+  // rewritten by hand.
   import {
     asImage,
     hasVisibleMarkup,
@@ -105,10 +109,10 @@
   interface Props {
     outputs: CellOutput[]
     /**
-     * Сколько картинок ещё не сообщили свой размер.
+     * How many images have not reported their size yet.
      *
-     * Наружу — чтобы ячейка не отпустила зарезервированное место раньше, чем
-     * появится чем его занять. См. `outputSeat`.
+     * Exposed so that the cell does not release its reserved space before
+     * there is something to fill it with. See `outputSeat`.
      */
     pending?: number
   }
@@ -116,12 +120,13 @@
   let { outputs, pending = $bindable(0) }: Props = $props()
 
   /**
-   * Комната — или ничего, и это не оговорка.
+   * The room, or nothing, and that is not a slip.
    *
-   * Тот же компонент рисует выводы на опубликованной странице (reader/
-   * PublicNotebook) и в стопке консилиума: там сессии нет вовсе, а картинки
-   * приезжают уже адресами публикации. `getSessionState` вне сессии бросает —
-   * это правильно для всех, кто без неё не работает, и не про нас.
+   * The same component draws outputs on the published page (reader/
+   * PublicNotebook) and in the council stack: there is no session there at
+   * all, and images arrive already as publication addresses.
+   * `getSessionState` throws outside a session, which is right for everyone
+   * who cannot work without one, and is not about us.
    */
   let room: { id: string; token: string } | null = null
   try {
@@ -131,13 +136,14 @@
     room = null
   }
   /*
-   * Ключ спрашивается на открытии тетради, а не на первой картинке: иначе
-   * график, досчитанный ядром, ждал бы ещё один круг до сервера, и комната
-   * успевала бы увидеть на его месте «<Figure size 640x480 with 1 Axes>».
+   * The ticket is asked for when the notebook opens, not on the first image:
+   * otherwise a chart the kernel has just finished would wait one more round
+   * trip to the server, and the room would have time to see
+   * "<Figure size 640x480 with 1 Axes>" in its place.
    */
   if (room) askTicket(room.id, room.token)
 
-  /** Вывод, готовый к показу: вынесенные картинки — адресами. См. withBlobs. */
+  /** Output ready to show: offloaded images become addresses. See withBlobs. */
   function shown(output: CellOutput): CellOutput {
     if (!room) return output
     const here = room
@@ -145,12 +151,12 @@
   }
 
   /**
-   * Картинка не загрузилась — скорее всего, протух ключ в её адресе.
+   * An image failed to load: most likely the ticket in its address went stale.
    *
-   * Пять минут ключа против пары в полтора часа: вкладка, вернувшаяся из сна,
-   * приходит за картинкой со старым ключом и получает 401. Забываем адрес и
-   * берём новый ключ — перерисовка подставит свежий, и это единственный
-   * случай, когда `src` у нарисованной картинки меняется.
+   * Five minutes of ticket against a class of an hour and a half: a tab back
+   * from sleep comes for an image with an old ticket and gets 401. We forget
+   * the address and get a new ticket; the redraw puts in a fresh one, and
+   * this is the only case in which a drawn image's `src` changes.
    */
   function retry(output: CellOutput): void {
     if (!room || output.kind !== 'data') return
@@ -160,18 +166,18 @@
   }
 
   /**
-   * Картинка, которая ещё не раскодировалась.
+   * An image that has not decoded yet.
    *
-   * `imageSrc` собирает data-URI, а у `<img>` нет ни width, ни height, ни
-   * aspect-ratio — значит, только что созданный элемент занимает нисколько,
-   * пока base64 не раскодируется. Без этого счётчика место освобождалось бы в
-   * тот кадр, когда массив перестал быть пустым, и комната видела бы три
-   * состояния подряд: девятьсот пикселей резерва, восьмипиксельная белая
-   * полоска и рывок обратно на девятьсот. То есть ровно тот рывок, от
-   * которого избавлялись, только с лишним промежуточным кадром.
+   * `imageSrc` builds a data URI, and the `<img>` has no width, no height and
+   * no aspect-ratio, so a freshly created element takes up no space at all
+   * until the base64 is decoded. Without this counter the space would be
+   * released in the frame when the array stopped being empty, and the room
+   * would see three states in a row: nine hundred pixels of reserve, an
+   * eight-pixel white strip, and a jerk back to nine hundred. That is exactly
+   * the jerk that was being removed, only with an extra intermediate frame.
    *
-   * По событиям load/error, никаких таймеров; и всё это в любом случае
-   * ограничено выполнением, потому что резерв живёт только пока `running`.
+   * By load/error events, no timers; and all of it is bounded by the run in
+   * any case, because the reserve lives only while `running`.
    */
   function decoding(node: HTMLImageElement) {
     if (node.complete) return
@@ -218,13 +224,14 @@
 
 <div class="space-y-1.5">
   <!--
-    Ключ по форме места, а не по его номеру: `clear_output(wait=True)` меняет
-    N записей на M в одной транзакции, и трейсбек на девятьсот пикселей
-    становится графиком на двести внутри той же обёртки с прежним `heights[0]`
-    — график рисуется подрезанным, под ним висит «Show more» из ниоткуда.
+    Keyed by the shape of the slot, not by its number: `clear_output(wait=True)`
+    swaps N records for M in one transaction, and a nine-hundred-pixel
+    traceback becomes a two-hundred-pixel chart inside the same wrapper with
+    the old `heights[0]`: the chart is drawn clipped, with a "Show more" from
+    nowhere hanging under it.
   -->
   {#each outputs as raw, i (outputKey(i, raw))}
-    <!-- Вынесенные картинки — адресами; всё остальное как приехало. -->
+    <!-- Offloaded images as addresses; everything else as it arrived. -->
     {@const output = shown(raw)}
     {@const clipped = tall(i, output) && !expanded[i]}
     <div class="relative">
@@ -232,8 +239,8 @@
         <div bind:clientHeight={heights[i]}>
           <!-- eslint-disable svelte/no-at-html-tags -- every {@html} below is sanitized in lib/render -->
           {#if output.kind === 'stream'}
-            <!-- Прогресс-бар — одна перерисовываемая строка, а не двести
-                 напечатанных: см. collapseCarriage. -->
+            <!-- A progress bar is one line redrawn, not two hundred printed:
+                 see collapseCarriage. -->
             {@const text = collapseCarriage(output.text)}
             <div
               class={cn(
@@ -248,9 +255,9 @@
             {@const traceback = withoutEcho(output.traceback, output.ename, output.evalue)}
             <div class="px-1 py-0.5">
               <div class="font-mono text-code font-semibold text-danger">
-                <!-- Без имени — только текст: так сервер подписывает свои
-                     остановки (предел запуска консилиума), и двоеточие перед
-                     фразой читалось бы как обрыв. -->
+                <!-- No name, just the text: that is how the server signs its
+                     own stops (the council run limit), and a colon before the
+                     phrase would read as a cut-off. -->
                 {[output.ename, output.evalue].filter(Boolean).join(': ')}
               </div>
               {#if traceback}
@@ -263,7 +270,7 @@
             {@const mime = pickMime(output.data, render !== null)}
             {@const payload = mime ? output.data[mime] : ''}
             {#if mime === PLOTLY_MIME}
-              <!-- Интерактивный график — в песочнице, см. PlotlyOutput. -->
+              <!-- An interactive chart, in a sandbox: see PlotlyOutput. -->
               <PlotlyOutput
                 {payload}
                 address={isAddress(payload)}
@@ -295,32 +302,33 @@
                 />
               {:else}
                 <!--
-                  Санитайзер вынес всё, что там было, — значит, весь вывод
-                  лежал в скрипте. Bokeh, folium, altair без картинки,
-                  ipywidgets, plotly со старым рендерером: библиотека
-                  присылает разметку, вся работа которой в `<script>`, а
-                  скрипты из вывода Colloq не исполняет и исполнять не будет
-                  (SECURITY.md). Молчать об этом нельзя: пустое место под
-                  «Out [7]» читается как «ячейка ничего не вывела».
+                  The sanitiser removed everything that was there, so the
+                  whole output lived in a script. Bokeh, folium, altair
+                  without an image, ipywidgets, plotly with the old renderer:
+                  the library sends markup whose entire job is in `<script>`,
+                  and Colloq does not and will not execute scripts from output
+                  (SECURITY.md). Staying silent about it is not an option: an
+                  empty space under "Out [7]" reads as "the cell printed
+                  nothing".
                 -->
                 <div class="px-2 py-1 text-code text-muted">{tr('room.output.interactive')}</div>
               {/if}
             {:else if mime === 'text/markdown' && render}
               <!--
-                Разметка вывода рисуется тем же отрисовщиком, что и заметка, и
-                прямо в странице — без теневого корня, в отличие от `text/html`
-                рядом.
+                Output markdown is drawn by the same renderer as a note, and
+                right in the page, without a shadow root, unlike `text/html`
+                next to it.
                 
-                Разница не в доверии, а в том, ЧТО пропускает санитайзер.
-                Заметочный проход запрещает `<style>` целиком и считает
-                свойства инлайнового `style` по белому списку
-                (shared/note-css.ts), то есть отдаёт ровно то же, что может
-                написать любой студент в текстовой ячейке; накрыть экран этим
-                нельзя. А `text/html` от ядра `<style>` СОХРАНЯЕТ — там живёт
-                `df.style` — и потому обязан ехать в корень.
+                The difference is not trust but WHAT the sanitiser lets
+                through. The note pass forbids `<style>` entirely and checks
+                the properties of an inline `style` against an allowlist
+                (shared/note-css.ts), that is, it lets through exactly what any
+                student can write in a text cell; that cannot cover the screen.
+                Whereas `text/html` from the kernel KEEPS `<style>` (that is
+                where `df.style` lives) and therefore has to go into the root.
                 
-                И выглядеть это должно прозой: `display(Markdown(...))` пишут,
-                чтобы подписать вывод словами, а не чтобы показать разметку.
+                And it should look like prose: `display(Markdown(...))` is
+                written to caption the output in words, not to show markup.
               -->
               <div class="prose-note px-2 py-1 text-prose">{@html render.markdown(payload)}</div>
             {:else if mime}
@@ -329,10 +337,11 @@
               >{#if render}{@html render.ansi(payload)}{:else}{stripAnsi(payload)}{/if}</div>
             {:else if Object.keys(output.data).length > 0}
               <!--
-                Показать нечем: в наборе нет ни одного знакомого типа. Так
-                выглядит вывод библиотеки, у которой всё представление —
-                собственный mime плюс скрипт (ipywidgets, vega). Та же строка,
-                что и у вычищенной разметки выше, и по той же причине.
+                Nothing to show it with: the bundle has not a single familiar
+                type. This is what output looks like from a library whose
+                whole representation is its own mime plus a script
+                (ipywidgets, vega). The same line as for the scrubbed markup
+                above, and for the same reason.
               -->
               <div class="px-2 py-1 text-code text-muted">{tr('room.output.interactive')}</div>
             {/if}

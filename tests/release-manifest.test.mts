@@ -80,8 +80,8 @@ test('render confines broker privileges and isolates credentials and persistent 
   assert.equal(projectedTokenDirectory.startsWith(brokerAuth.mountPath + '/'), false,
     'read-only auth mount must not shadow the service-account projection (/var/run links to /run)')
   assert.equal(brokerEnv.RUNTIME_TOKEN_FILE, `${brokerAuth.mountPath}/runtime-token`)
-  // Единственная запись сверх create/delete — подресурс resize: память живой
-  // комнате меняют на месте. Сам Pod (образ, команда, монтирования) патчу закрыт.
+  // The only write beyond create/delete is the resize subresource: a live room's
+  // memory is changed in place. The Pod itself (image, command, mounts) is closed to patches.
   assert.deepEqual(find('Role', 'colloq-runtime').rules, [
     { apiGroups: [''], resources: ['pods', 'services'], verbs: ['get', 'list', 'create', 'delete'] },
     { apiGroups: [''], resources: ['pods/resize'], verbs: ['patch'] },
@@ -210,12 +210,14 @@ test('GPU releases require exact host tooling and render a pinned plugin and CUD
   assert.match(pod.spec.containers[0].command.join(' '), /torch.*cuda/)
 })
 /*
- * Память комнат по умолчанию и её потолок — у оператора, а не в правке руками.
+ * The default room memory and its ceiling belong to the operator, not to a
+ * hand edit.
  *
- * До 18.09 Deployment брокера не нёс RUNTIME_KERNEL_MEMORY[_MAX] вовсе: задать
- * их можно было только `kubectl edit`, и следующий update рендерил Deployment
- * заново и молча стирал правку. Теперь они едут из того же env-файла, что и
- * настройки приложения, и только в брокер.
+ * Before 18 Sep 2026 the broker's Deployment did not carry
+ * RUNTIME_KERNEL_MEMORY[_MAX] at all: the only way to set them was
+ * `kubectl edit`, and the next update rendered the Deployment afresh and
+ * silently wiped the edit. Now they travel from the same env file as the app
+ * settings, and only into the broker.
  */
 function withEnv(text: string, check: (file: string) => void) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-env-'))
@@ -237,17 +239,17 @@ test('render puts the operator memory default and ceiling into the broker and no
     const env = brokerEnv(result.stdout)
     assert.equal(env.RUNTIME_KERNEL_MEMORY, '4Gi')
     assert.equal(env.RUNTIME_KERNEL_MEMORY_MAX, '24Gi')
-    // Только эти два ключа: остальное у брокера закреплено установщиком.
+    // Only these two keys: the rest of the broker's settings is pinned by the installer.
     assert.equal(env.RUNTIME_KERNEL_CPU, undefined)
     assert.equal(env.RUNTIME_NAMESPACE, 'colloq')
     const app = JSON.parse(result.stdout).items.find((x: any) => x.kind === 'Deployment' && x.metadata.name === 'colloq-app')
     assert.equal(JSON.stringify(app).includes('RUNTIME_KERNEL_MEMORY'), false)
-    // И в Secret приложения они не попадают.
+    // Nor do they end up in the app's Secret.
     const config = run('config', release(), ['--env-file', file])
     assert.equal(config.status, 0, config.stderr)
     assert.deepEqual(Object.keys(JSON.parse(config.stdout).stringData), ['PUBLIC_URL'])
   })
-  // Без файла и с пустыми значениями — умолчания брокера, а не пустая переменная.
+  // No file, or empty values: the broker's defaults, not an empty variable.
   assert.equal(brokerEnv(run('render').stdout).RUNTIME_KERNEL_MEMORY, undefined)
   withEnv('RUNTIME_KERNEL_MEMORY=\nRUNTIME_KERNEL_MEMORY_MAX=\n', file => {
     const env = brokerEnv(run('render', release(), ['--env-file', file]).stdout)
@@ -262,7 +264,7 @@ test('render refuses memory the broker would refuse at start: bad quantity, out 
     ['RUNTIME_KERNEL_MEMORY_MAX=32Mi', /RUNTIME_KERNEL_MEMORY_MAX must be/],
     ['RUNTIME_KERNEL_MEMORY_MAX=512Gi', /RUNTIME_KERNEL_MEMORY_MAX must be/],
     ['RUNTIME_KERNEL_MEMORY=8Gi\nRUNTIME_KERNEL_MEMORY_MAX=4Gi', /exceeds RUNTIME_KERNEL_MEMORY_MAX/],
-    // Умолчание брокера 2Gi: потолок ниже него брокер не принял бы при старте.
+    // The broker's default is 2Gi: the broker would refuse a ceiling below it at start.
     ['RUNTIME_KERNEL_MEMORY_MAX=1Gi', /\(2Gi\) exceeds/],
   ] as const) {
     withEnv(text + '\n', file => {

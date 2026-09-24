@@ -40,14 +40,15 @@
         })),
         import('@codemirror/lang-markdown').then(({ markdown }) => ({ markdown })),
         /*
-         * Разбор текста самой ячейки — как запасной источник дополнения.
+         * Parsing the cell's own text — as a fallback source of completion.
          *
-         * `localCompletionSource` знает ровно одно: слова, которые в этой
-         * ячейке уже написаны. Против ядра это ничто — оно знает настоящие
-         * методы настоящего DataFrame, — но ядра может не быть вовсе (никто
-         * ещё не нажимал «запустить»), оно может считать чужую ячейку и не
-         * ответить, а правило комнаты может не дать спросить. Во всех трёх
-         * случаях список из собственных слов лучше пустоты.
+         * `localCompletionSource` knows exactly one thing: the words already
+         * written in this cell. Against the kernel that is nothing — the kernel
+         * knows the real methods of a real DataFrame — but there may be no
+         * kernel at all (nobody has pressed "run" yet), it may be computing
+         * someone else's cell and not answer, and the room rule may not allow
+         * asking. In all three cases a list made of the cell's own words is
+         * better than emptiness.
          */
         import('@codemirror/lang-python').then(({ localCompletionSource, python }) => ({
           localCompletionSource,
@@ -148,28 +149,30 @@
   import { cellAwareness, type CellAwareness } from './cell-awareness'
 
   /**
-   * Что ответило ядро на «что тут можно дописать».
+   * What the kernel answered to "what can be written here".
    *
-   * Форма нарочно повторяет кадр протокола (`complete:reply`), а не заводит
-   * свою: между сокетом и редактором и так стоит один вызов, и лишний перевод
-   * из одной записи в другую — лишнее место, где однажды потеряется `start`.
+   * The shape deliberately repeats the protocol frame (`complete:reply`) rather
+   * than introducing its own: there is only one call between the socket and the
+   * editor anyway, and an extra translation from one record to another is an
+   * extra place where `start` will get lost one day.
    */
   interface KernelCompletions {
     matches: Array<{ text: string; type?: string }>
-    /** Границы куска, который замена заменяет собой, — знаками от начала кода. */
+    /** The replaced span, in characters from the start of the code. */
     start: number
     end: number
   }
 
   /**
-   * Что ответило ядро на «что это такое». Та же форма, что у `inspect:reply`.
+   * What the kernel answered to "what is this". The same shape as
+   * `inspect:reply`.
    *
-   * `reason` — почему справки нет: ядро ещё поднимается, ядро занято, имя не
-   * найдено (protocol.ts · `InspectMiss`). Поле необязательное, потому что
-   * необязательно оно и на проводе: старый сервер его не шлёт, и тогда отказ
-   * молчит, как молчал.
+   * `reason` says why there is no help: the kernel is still starting, the
+   * kernel is busy, the name was not found (protocol.ts · `InspectMiss`). The
+   * field is optional because it is optional on the wire too: an old server
+   * does not send it, and then the refusal stays silent, as it used to.
    */
-  /** Ответ на вопрос о значении — та же форма, что у `inspect:reply.brief`. */
+  /** The answer about a value — the same shape as `inspect:reply.brief`. */
   interface KernelBrief {
     found: boolean
     brief?: BriefValue
@@ -185,12 +188,14 @@
     text: Y.Text
     awareness: Awareness
     /**
-     * Чью каретку этот редактор рисует — имя ячейки, если он ячейкин.
+     * Whose caret this editor draws — the cell's id, if the editor belongs to a
+     * cell.
      *
-     * Без него в `yCollab` уходит присутствие комнаты целиком, и один чужой
-     * курсор стоит транзакции в КАЖДОМ смонтированном редакторе с обходом всех
-     * состояний (см. cell-awareness.ts). Свой лист консилиума и файл имени не
-     * дают: у первого присутствие своё и пустое, у второго — своё на документ.
+     * Without it the whole room's presence goes into `yCollab`, and a single
+     * remote cursor costs a transaction in EVERY mounted editor with a walk
+     * over all states (see cell-awareness.ts). One's own council sheet and a
+     * file give no id: the first has its own, empty presence, the second its
+     * own per document.
      */
     cellId?: string | null
     undoManager: Y.UndoManager
@@ -203,91 +208,98 @@
     onrunstep?: () => void
     onrunandadd?: () => void
     /**
-     * Сдать написанное — ⌘⇧↵, и только оно.
+     * Submit what has been written — ⌘⇧↵, and only that.
      *
-     * Стоит на листе консилиума: ⇧↵ там СЧИТАЕТ, как в любой тетради, а сдача
-     * — движение, после которого текст уходит преподавателю и обратно уже не
-     * берётся. Пальцам, привыкшим к «выполнить и дальше», оно не должно
-     * попадаться по дороге, поэтому сочетание нарочно неудобное: три клавиши
-     * против двух у запуска. Единственное, которое сдаёт.
+     * It is set on the council sheet: ⇧↵ there RUNS, as in any notebook, while
+     * submitting is a move after which the text goes to the teacher and cannot
+     * be taken back. It must not come in the way of fingers used to "run and
+     * move on", so the combination is deliberately awkward: three keys against
+     * two for running. The only one that submits.
      */
     onsubmit?: () => void
     onescape?: () => void
     ondeleteempty?: () => void
     onarrowout?: (direction: -1 | 1) => void
     /**
-     * Потолок знаков, выше которого редактор не принимает ВСТАВКУ, — или null.
+     * The character ceiling above which the editor does not accept a PASTE — or
+     * null.
      *
-     * Стоит на своём листе консилиума: снимок сверх `MAX_ATTEMPT_CHARS` сервер
-     * не принимает, и вставка двенадцати тысяч знаков из IDE — одно движение,
-     * после которого лист перестаёт уезжать. Набор руками потолок не
-     * запрещает: про него говорит счётчик под листом, и человек сам решает,
-     * что резать.
+     * It is set on one's own council sheet: the server does not accept a
+     * snapshot over `MAX_ATTEMPT_CHARS`, and pasting twelve thousand characters
+     * from an IDE is one move after which the sheet stops going out. The
+     * ceiling does not forbid typing by hand: the counter under the sheet talks
+     * about it, and the person decides what to cut.
      */
     maxChars?: number | null
-    /** Вставку не приняли: сколько знаков в ней было — для слов об отказе. */
+    /** A paste was refused: its size in characters, for the refusal message. */
     onoverflow?: (chars: number) => void
     placeholder?: string
     /**
-     * Спросить у ядра, что дописать в этом месте кода, — или ничего.
+     * Ask the kernel what to write at this place in the code — or nothing.
      *
-     * Прокинуто сюда вызовом, а не взято из глобального состояния комнаты, и
-     * это несущее решение. Этот же компонент рисует лист консилиума и
-     * черновик — тексты, которые в ядре комнаты не значат ничего, — и
-     * редактор файлов (FileEditor) живёт вовсе без комнаты. Кто хочет
-     * подсказок от ядра, тот их и передаёт; остальные молчат и получают
-     * дополнение по словам самой ячейки.
+     * Passed in as a call rather than taken from the room's global state, and
+     * that is a load-bearing decision. The same component draws the council
+     * sheet and the draft — texts that mean nothing in the room's kernel — and
+     * the file editor (FileEditor) lives with no room at all. Whoever wants
+     * hints from the kernel passes them in; the rest stay silent and get
+     * completion from the words of the cell itself.
      */
     complete?: ((code: string, cursor: number) => Promise<KernelCompletions | null>) | null
-    /** Справка о том, что стоит под кареткой, — для подсказки над скобкой. */
+    /** Help about what is under the caret — for the hint above the bracket. */
     inspect?: ((code: string, cursor: number) => Promise<KernelSignature | null>) | null
     /**
-     * Что это за значение — одной строкой; `null`, если спрашивать некого.
+     * What this value is — in one line; `null` if there is nobody to ask.
      *
-     * Отдельным вызовом от `inspect`, потому что это другой вопрос и другая
-     * цена: справка может поднять ядро и сходить к jedi, а строка про значение
-     * спрашивает объект, который в ядре уже лежит, и молчит, если его нет.
+     * A separate call from `inspect`, because it is a different question at a
+     * different price: help can start the kernel and go to jedi, while the line
+     * about a value asks about an object that is already in the kernel, and
+     * stays silent if it is not there.
      */
     brief?: ((code: string, cursor: number) => Promise<KernelBrief | null>) | null
     /**
-     * Тексты ячеек кода ЭТОЙ тетради — чтобы знать, что здесь импортировали.
+     * The texts of THIS notebook's code cells — to know what was imported here.
      *
-     * По ним справка решает, спрашивать ли про `px` в `px.scatter(` (да: это
-     * псевдоним импорта) и про `df` в `df.groupby(` (нет: что такое `df`,
-     * знает только ядро, а наводятся на него чаще всего мимоходом) — см.
-     * lib/hover-target.ts. Вызовом, а не списком: читать восемьдесят ячеек на
-     * каждую перерисовку незачем, спрашивают их только на наведении, то есть
-     * не чаще раза в треть секунды и только там, где справка вообще возможна.
+     * The help uses them to decide whether to ask about `px` in `px.scatter(`
+     * (yes: it is an import alias) and about `df` in `df.groupby(` (no: what
+     * `df` is only the kernel knows, and people hover over it mostly in
+     * passing) — see lib/hover-target.ts. A call, not a list: there is no
+     * reason to read eighty cells on every redraw; they are asked for only on
+     * hover, that is, no more often than once every third of a second and only
+     * where help is possible at all.
      *
-     * Не передали — правило работает без третьего пункта: импорты и вызовы
-     * спрашиваются по-прежнему, а обращения через точку молчат. Так и нужно
-     * листу консилиума и редактору файлов, у которых тетради нет.
+     * Not passed — the rule works without the third point: imports and calls
+     * are asked about as before, and access through a dot stays silent. That is
+     * just what the council sheet and the file editor need, since they have no
+     * notebook.
      */
     sources?: (() => readonly string[]) | null
     /**
-     * Уйти туда, где это имя определено, — ⌘/Ctrl-клик по нему. Или ничего.
+     * Go to where this name is defined — ⌘/Ctrl-click on it. Or nothing.
      *
-     * Прокинуто вызовом по тому же доводу, что `complete` и `inspect`: искать
-     * определение умеет сервер комнаты, а этим же компонентом нарисованы лист
-     * консилиума, черновик и редактор файлов, где искать негде и не у кого. Кто
-     * может увести — тот и передаёт; у остальных ⌘-клик остаётся тем, чем был у
-     * CodeMirror, то есть второй кареткой.
+     * Passed in as a call by the same argument as `complete` and `inspect`:
+     * finding a definition is something the room server can do, while the same
+     * component draws the council sheet, the draft and the file editor, where
+     * there is nowhere and nobody to search. Whoever can take you there passes
+     * it in; for the rest ⌘-click stays what it was in CodeMirror, that is, a
+     * second caret.
      *
-     * Ответа сюда не возвращают: кто спросил, тот и везёт экран к найденному
-     * (lib/goto.svelte.ts), а обратно приезжает `mark`.
+     * No answer is returned here: whoever asked takes the screen to what was
+     * found (lib/goto.svelte.ts), and `mark` comes back.
      */
     jump?: ((code: string, cursor: number) => void) | null
     /**
-     * Куда привели: строка (с единицы), колонка (с нуля) и номер перехода.
+     * Where we were taken: the line (from one), the column (from zero) and the
+     * jump number.
      *
-     * Состояние, а не событие, и это не вкусовщина: ячейку, к которой ведут,
-     * тетрадь может ещё не построить — вместо далёких она держит заглушку
-     * (Notebook.svelte · data-cell-deferred), — и событие, посланное такой
-     * ячейке, слушать некому. Метка просто лежит, а редактор читает её, как
-     * только построится сам.
+     * State, not an event, and that is not a matter of taste: the notebook may
+     * not have built the cell being led to yet — for distant cells it keeps a
+     * placeholder (Notebook.svelte · data-cell-deferred) — and an event sent to
+     * such a cell has nobody to listen to it. The mark simply lies there, and
+     * the editor reads it as soon as it is built itself.
      *
-     * `seq` — почему это не просто пара чисел: второй переход НА ТУ ЖЕ строку
-     * иначе не виден вовсе, а уйти, вернуться и щёлкнуть снова — обычное дело.
+     * `seq` is why this is not just a pair of numbers: a second jump TO THE
+     * SAME line would otherwise not be visible at all, and leaving, coming back
+     * and clicking again is routine.
      */
     mark?: { line: number; column: number; seq: number } | null
     /**
@@ -398,19 +410,20 @@
   }
 
   /**
-   * Автоповтор Backspace — и почему он тут отдельным флагом.
+   * Backspace auto-repeat — and why it is a separate flag here.
    *
-   * Биндинг `Backspace` срабатывает на каждом keydown, включая повторы при
-   * удержании. Стоило документу опустеть — следующий повтор (через ~30 мс)
-   * звал `ondeleteempty`, ячейка уходила из общей тетради, фокус синхронно
-   * переезжал в предыдущую, и оставшиеся повторы принимались стирать ЕЁ хвост,
-   * а опустошив — удаляли и её. Человек, зажавший Backspace, чтобы стереть
-   * `print(x)`, терял одну-две чужие ячейки вместе с выводом и не понимал, что
-   * случилось.
+   * The `Backspace` binding fires on every keydown, including the repeats while
+   * the key is held. As soon as the document went empty, the next repeat (~30
+   * ms later) called `ondeleteempty`, the cell left the shared notebook, focus
+   * moved synchronously to the previous one, and the remaining repeats set
+   * about erasing ITS tail and, once it was empty, deleted it too. Someone
+   * holding Backspace to erase `print(x)` lost one or two other people's cells
+   * along with their output and could not tell what had happened.
    *
-   * Слушатель в фазе перехвата на обёртке: он приходит раньше обработчиков
-   * CodeMirror на `.cm-content`, поэтому к моменту биндинга флаг уже верен, и
-   * при этом ничего не надо знать о порядке расширений редактора.
+   * The listener is in the capture phase on the wrapper: it arrives before
+   * CodeMirror's handlers on `.cm-content`, so by the time the binding runs the
+   * flag is already correct, and nothing needs to be known about the order of
+   * the editor's extensions.
    */
   let repeating = false
 
@@ -422,24 +435,24 @@
     lang: Props['language']
     editable: boolean
     hint: string
-    /** Потолок знаков для вставки — или null, если его тут нет. */
+    /** The character ceiling for a paste — or null if there is none here. */
     ceiling: number | null
-    /** Отсек, через который правило edit меняют, не разбирая редактор. */
+    /** Compartment to change the edit rule without rebuilding the editor. */
     hintSlot: Compartment
     localeSlot: Compartment
     writable: Compartment
-    /** Поле подсветки «вот куда привели» и эффект, которым её ставят. */
+    /** The "you landed here" highlight field and the effect that sets it. */
     landing: ReturnType<typeof makeLanding>
   }
 
   /**
-   * Чем jedi называет найденное — и чем это же называет CodeMirror.
+   * What jedi calls what it found — and what CodeMirror calls the same thing.
    *
-   * Два словаря, и переводить приходится вручную: ipykernel отдаёт слова
-   * Python («instance», «statement», «param»), а значки и цвета в списке
-   * нарисованы под словарь редактора. Незнакомое — «text»: безымянная строка
-   * в списке лучше, чем список, который не построился из-за одного слова,
-   * которого мы не предусмотрели.
+   * Two vocabularies, and translation has to be done by hand: ipykernel gives
+   * Python words ("instance", "statement", "param"), while the icons and
+   * colours in the list are drawn for the editor's vocabulary. Anything
+   * unfamiliar becomes "text": a nameless row in the list is better than a list
+   * that failed to build because of one word we did not anticipate.
    */
   const COMPLETION_TYPE: Record<string, string> = {
     function: 'function',
@@ -453,59 +466,66 @@
   }
 
   /**
-   * Сколько указатель должен постоять на имени, прежде чем спросить ядро.
+   * How long the pointer has to rest on a name before the kernel is asked.
    *
-   * Треть секунды — это «человек остановился и смотрит», а не «мышь проехала
-   * по строке». Без задержки один проход указателем вдоль `df.groupby('a').sum()`
-   * стоил бы комнате пяти запросов к общему ядру подряд.
+   * A third of a second is "the person stopped and is looking", not "the mouse
+   * passed along the line". Without the delay, one pass of the pointer along
+   * `df.groupby('a').sum()` would cost the room five requests to the shared
+   * kernel in a row.
    */
   const HOVER_MS = 300
   /**
-   * Сколько держится подсветка строки, на которую привёл переход.
+   * How long the highlight of the line a jump led to lasts.
    *
-   * Две секунды — это «успел поднять глаза», а не «теперь тут всегда жёлтая
-   * полоса»: метка отвечает на вопрос «куда меня привели» и после ответа
-   * мешает читать. Столько же длится угасание в cm-theme.ts (`colloq-landed`),
-   * и числа обязаны совпадать: здесь украшение снимается, там оно гаснет.
+   * Two seconds is "had time to look up", not "now there is always a yellow
+   * stripe here": the mark answers the question "where have I been taken", and
+   * after the answer it gets in the way of reading. The fade in cm-theme.ts
+   * (`colloq-landed`) lasts just as long, and the numbers must match: here the
+   * decoration is removed, there it fades.
    */
   const LANDING_MS = 2000
   /**
-   * Насколько правее конца строки указатель ещё считается стоящим НА строке.
+   * How far to the right of the end of a line the pointer still counts as
+   * standing ON the line.
    *
-   * Полузнак с запасом: `posAtCoords` и так приводит указатель к ближайшей
-   * позиции с точностью до половины знака, и допуск меньше гасил бы
-   * подчёркивание на последней букве строки.
+   * Half a character with some margin: `posAtCoords` already snaps the pointer
+   * to the nearest position to within half a character, and a smaller tolerance
+   * would switch off the underline on the last letter of a line.
    */
   const PAST_LINE = 6
 
   /**
-   * Насколько длинный параметр перестаёт быть неразрывным.
+   * How long a parameter must be to stop being unbreakable.
    *
-   * Неразрывность параметра — вся суть раскладки: `x_estimator=None` не должен
-   * разрываться посреди имени. Но параметр шире окна неразрывным быть не
-   * может: он вылез бы за край и завёл ВТОРУЮ полосу прокрутки,
-   * горизонтальную, — то самое, от чего вся эта раскладка и заведена. Семьдесят
-   * два знака — это ширина окна (640 px моноширинным тринадцатым) с запасом;
-   * всё длиннее переносится внутри себя, как обычный текст.
+   * A parameter being unbreakable is the whole point of the layout:
+   * `x_estimator=None` must not break in the middle of the name. But a
+   * parameter wider than the window cannot be unbreakable: it would poke out
+   * past the edge and start a SECOND scrollbar, a horizontal one — the very
+   * thing this whole layout was set up to avoid. Seventy-two characters is the
+   * window's width (640 px of 13 px monospace) with some margin; anything
+   * longer wraps inside itself, like ordinary text.
    */
-  /** Тетради нет — третье правило просто не срабатывает; см. `sources`. */
+  /** No notebook — the third rule simply does not fire; see `sources`. */
   const EMPTY_ALIASES: ReadonlySet<string> = new Set<string>()
 
   const PARAM_NOWRAP = 72
 
   /**
-   * Причины, на которых подсказка НЕ успокаивается, — и как часто переспрашивает.
+   * The reasons the hint does NOT settle on — and how often it asks again.
    *
-   * Все три временные: ядро поднимается, ядро занято чужой ячейкой, jedi не
-   * успел разобрать библиотеку в свой бюджет. Ответ по ним будет — вопрос
-   * только когда, — и заставлять человека отводить и снова наводить мышь ради
-   * этого стыдно: он уже сделал жест и смотрит на окно. Поэтому спрашивает
-   * сама подсказка и заменяет строку-причину справкой на месте.
+   * All three are temporary: the kernel is starting, the kernel is busy with
+   * someone else's cell, jedi did not manage to parse the library within its
+   * budget. There will be an answer for them — the only question is when — and
+   * making a person move the mouse away and back again for that would be
+   * shameful: they have already made the gesture and are looking at the window.
+   * So the hint asks by itself and replaces the reason line with the help in
+   * place.
    *
-   * Секунда у подъёма и у разбора, две у занятого ядра: занятая ячейка считается
-   * секундами и минутами, и частить к ней незачем — тем более что каждый вопрос
-   * к занятому ядру всё равно отвечает отказом сразу. Ведру на сервере (десять
-   * вопросов в секунду на сокет) один вопрос в секунду не мешает.
+   * A second for starting and for parsing, two for a busy kernel: a busy cell
+   * runs for seconds and minutes, and there is no point in pestering it —
+   * especially since every question to a busy kernel is refused at once anyway.
+   * One question per second does not bother the bucket on the server (ten
+   * questions per second per socket).
    */
   const WAITING = new Map<InspectMiss, number>([
     ['starting', 1000],
@@ -514,36 +534,39 @@
   ])
 
   /**
-   * Сколько всего ждать, прежде чем оставить строку-причину как есть.
+   * How long to wait in total before leaving the reason line as it is.
    *
-   * У подъёма ядра — полторы минуты: столько стоит холодный контейнер, и это
-   * измеренное число, а не круглое (server/src/kernel/index.ts · подъём
-   * окружения). У остальных двадцать секунд: занятая ячейка может считаться
-   * час, и окно, переспрашивающее час, — это уже не подсказка, а фоновая
-   * работа, о которой никто не просил. Отчаявшись, подсказка просто перестаёт
-   * спрашивать; наведите снова — начнёт заново.
+   * For a kernel start — a minute and a half: that is what a cold container
+   * costs, and it is a measured number, not a round one
+   * (server/src/kernel/index.ts · environment start). For the rest, twenty
+   * seconds: a busy cell can run for an hour, and a window that keeps asking
+   * for an hour is no longer a hint but background work nobody asked for.
+   * Having given up, the hint simply stops asking; hover again and it will
+   * start over.
    */
   const WAIT_CEILING_MS: Record<string, number> = { starting: 90_000 }
   const WAIT_CEILING_DEFAULT_MS = 20_000
 
   /**
-   * Сигнатура потоком: параметры через запятую, перенос только МЕЖДУ ними.
+   * The signature as a flow: parameters separated by commas, a break only
+   * BETWEEN them.
    *
-   * IPython печатает длинную сигнатуру столбиком, по параметру на строку. У
-   * `sns.lmplot` это сорок три строки — всё окно справки целиком, и
-   * документация оказывается за тремя экранами прокрутки. Между тем в
-   * сигнатуре ищут одно: есть ли такой параметр и как он пишется. Потоком те
-   * же сорок два параметра занимают семь строк, и docstring виден сразу, без
-   * единого движения колеса.
+   * IPython prints a long signature as a column, one parameter per line. For
+   * `sns.lmplot` that is forty-three lines — the whole help window — and the
+   * documentation ends up three screens of scrolling away. Yet in a signature
+   * people look for one thing: whether such a parameter exists and how it is
+   * spelled. As a flow, the same forty-two parameters take seven lines, and the
+   * docstring is visible at once, without a single turn of the wheel.
    *
-   * Каждый параметр — свой `<span>` с `nowrap`: перенос возможен только по
-   * пробелу МЕЖДУ параметрами, и `x_estimator=None` никогда не разрывается
-   * пополам. Запятая лежит ВНУТРИ параметра, а разделителем стоит обычный
-   * пробел — тогда выделенное мышью и скопированное остаётся нормальной
-   * строкой `sns.lmplot(data, *, x=None, …)`, а не набором кусков.
+   * Each parameter is its own `<span>` with `nowrap`: a break is possible only
+   * at the space BETWEEN parameters, and `x_estimator=None` is never torn in
+   * half. The comma lies INSIDE the parameter, and an ordinary space serves as
+   * the separator — then what is selected with the mouse and copied stays a
+   * normal line `sns.lmplot(data, *, x=None, …)`, not a set of pieces.
    *
-   * Имя параметра — цветом текста, аннотация и умолчание — приглушённым: см.
-   * `SignatureParam`. Висячий отступ перенесённых строк — в теме.
+   * The parameter name is in the text colour, the annotation and the default
+   * are muted: see `SignatureParam`. The hanging indent of wrapped lines is in
+   * the theme.
    */
   function signatureFlow(parts: SignatureParts): HTMLElement {
     const box = document.createElement('div')
@@ -552,7 +575,7 @@
     parts.params.forEach((param, index) => {
       const last = index === parts.params.length - 1
       const span = document.createElement('span')
-      // Длинный параметр неразрывным не делаем — см. PARAM_NOWRAP.
+      // A long parameter is not made unbreakable — see PARAM_NOWRAP.
       if (param.name.length + param.rest.length <= PARAM_NOWRAP) {
         span.className = 'cm-signature-param'
       }
@@ -565,7 +588,7 @@
       }
       if (!last) span.appendChild(document.createTextNode(','))
       box.appendChild(span)
-      // Пробел-разделитель — единственное место, где строка может перенестись.
+      // The separating space is the only place where the line can wrap.
       if (!last) box.appendChild(document.createTextNode(' '))
     })
     box.appendChild(document.createTextNode(parts.tail))
@@ -573,14 +596,14 @@
   }
 
   /**
-   * Сигнатура для окна: потоком, одной строкой или дословно.
+   * The signature for the window: as a flow, as one line, or verbatim.
    *
-   * Три случая и ровно три. Разобрали и она длинная — поток. Разобрали и она
-   * короткая — одна строка, уже склеенная из частей (у `df.head` ядро и так
-   * отвечает одной строкой, а у класса — тремя, и склеить их честнее, чем
-   * оставить лесенку на двадцать знаков). Не разобрали — дословно: скобки не
-   * сошлись, это чужое ядро или вовсе не сигнатура, и перестраивать текст по
-   * догадке нельзя.
+   * Three cases and exactly three. Parsed and long — a flow. Parsed and short —
+   * one line, already joined from the parts (for `df.head` the kernel answers
+   * with one line anyway, and for a class with three, and joining them is more
+   * honest than leaving a twenty-character staircase). Not parsed — verbatim:
+   * the brackets did not match, it is someone else's kernel or not a signature
+   * at all, and the text must not be rebuilt by guesswork.
    */
   function signatureBlock(signature: string): HTMLElement {
     const parts = splitSignature(signature)
@@ -592,22 +615,24 @@
   }
 
   /**
-   * Окно справки — сигнатура сверху, документация под ней, одна прокрутка на обе.
+   * The help window — the signature on top, the documentation under it, one
+   * scroll for both.
    *
-   * ОДНА, и это несущее решение. Разложить их по двум отсекам было бы красивее
-   * на макете и хуже в жизни: у `sns.lmplot` сорок с лишним параметров, то есть
-   * сигнатура сама по себе длиннее всего окна, и собственный скролл сделал бы
-   * документацию недосягаемой — чтобы до неё добраться, пришлось бы сперва
-   * докрутить сигнатуру, а потом найти вторую полосу. Общая прокрутка
-   * превращает справку в то, чем она и является: один текст сверху вниз.
+   * ONE, and this is a load-bearing decision. Putting them into two
+   * compartments would be prettier on the mockup and worse in life:
+   * `sns.lmplot` has forty-odd parameters, that is, the signature alone is
+   * longer than the whole window, and a scroll of its own would make the
+   * documentation unreachable — to get to it one would first have to scroll
+   * through the signature and then find the second scrollbar. A shared scroll
+   * turns the help into what it is: one text from top to bottom.
    *
-   * `<pre>` у сигнатуры — с переносом (`pre-wrap` в cm-theme.ts): длинная
-   * строка у pandas шире монитора, и горизонтальная полоса тут была бы второй
-   * прокруткой, которой мы только что избежали.
+   * The signature's `<pre>` wraps (`pre-wrap` in cm-theme.ts): a long pandas
+   * line is wider than a monitor, and a horizontal bar here would be the second
+   * scroll we have just avoided.
    *
-   * Градиент внизу — единственная подсказка о том, что текст не кончился.
-   * Полосы прокрутки в macOS не видно, пока её не трогают, и без этой тени
-   * окно выглядело бы законченным ровно там, где его обрезали.
+   * The gradient at the bottom is the only hint that the text has not ended. On
+   * macOS the scrollbar is invisible until it is touched, and without this
+   * shadow the window would look finished exactly where it was cut off.
    */
   function signatureDom(help: SignatureHelp): HTMLElement {
     const root = document.createElement('div')
@@ -621,10 +646,10 @@
       body.appendChild(pre)
     } else if (help.module !== '' || help.pkg !== '') {
       /*
-       * Карточка модуля — только когда про модуль есть что сказать. Голое
-       * «Type: module» от IPython (приписка про пакет не доехала: ядро занялось,
-       * пакета нет на диске) рисуется прежним путём: мелкая пометка и
-       * документация, если она есть.
+       * The module card — only when there is something to say about the module.
+       * A bare "Type: module" from IPython (the note about the package did not
+       * arrive: the kernel was busy, the package is not on disk) is drawn the
+       * old way: a small note and the documentation, if there is any.
        */
       body.appendChild(moduleHead(help))
     } else {
@@ -650,32 +675,35 @@
     more.className = 'cm-signature-more'
     root.appendChild(more)
     /*
-     * Признак «есть ещё» живёт на самом узле, а не в состоянии редактора:
-     * прокрутка внутри подсказки — не изменение документа, и будить ею
-     * CodeMirror (а с ним и чужие каретки) было бы дорого и незачем.
+     * The "there is more" flag lives on the node itself, not in the editor's
+     * state: scrolling inside a tooltip is not a document change, and waking
+     * CodeMirror with it (and other people's carets along with it) would be
+     * costly and pointless.
      */
     const mark = () => {
       const left = body.scrollHeight - body.scrollTop - body.clientHeight
       root.classList.toggle('cm-signature-cut', left > 2)
     }
     body.addEventListener('scroll', mark)
-    // Высота узнаётся только после того, как его вставили в документ.
+    // The height can only be learned after the node has been inserted into the
+    // document.
     requestAnimationFrame(mark)
     return root
   }
 
   /**
-   * Шапка модуля: чем он является, а не где лежит.
+   * The module header: what it is, not where it lies.
    *
-   * «module · <module pandas>» — то, что человек увидел 21.09, наведясь на
-   * `pd`: род и адрес, из которых не следует ничего. У модуля есть ответ
-   * получше, и лежит он в метаданных пакета рядом с ним на диске: под каким
-   * именем его ставят, какой он версии, что делает и где документация
-   * (server/src/kernel/inspect-static.ts · `_package`).
+   * "module · <module pandas>" is what a person saw on 21 Sep when hovering
+   * over `pd`: a kind and an address, from which nothing follows. A module has
+   * a better answer, and it lies in the package's metadata next to it on disk:
+   * under what name it is installed, what version it is, what it does and where
+   * its documentation is (server/src/kernel/inspect-static.ts · `_package`).
    *
-   * Подмодуль называется полностью и рядом с пакетом, из которого он взят:
-   * «matplotlib.pyplot · модуль пакета matplotlib 3.11.1». Человек наводится
-   * на `plt`, а ставил `matplotlib`, и связать одно с другим — часть ответа.
+   * A submodule is named in full and next to the package it comes from:
+   * "matplotlib.pyplot · module of matplotlib 3.11.1". A person hovers over
+   * `plt` but installed `matplotlib`, and connecting one with the other is part
+   * of the answer.
    */
   function moduleHead(help: SignatureHelp): HTMLElement {
     const box = document.createElement('div')
@@ -690,7 +718,8 @@
     const note = document.createElement('span')
     note.className = 'cm-signature-kind'
     if (name !== '' && shown !== name) {
-      // Подмодуль: имя пакета в приписке, потому что ставят именно его.
+      // A submodule: the package name goes in the note, because that is what
+      // gets installed.
       note.textContent = ` · ${tr('room.signature.submodule', { p0: name, p1: version })}`
     } else if (version !== '') {
       strong.textContent = `${shown} ${version}`
@@ -711,10 +740,11 @@
       line.className = 'cm-signature-docs'
       line.append(document.createTextNode(`${tr('room.signature.docs')} `))
       /*
-       * Ссылка приезжает из метаданных ЧУЖОГО пакета, то есть это чужой текст
-       * в атрибуте `href`. Щёлкнуть дают только по http(s) — `javascript:` в
-       * строке, которую человек читает как «Документация», это исполнение
-       * чужого кода по клику в справке. Не прошло проверку — остаётся текстом.
+       * The link comes from SOMEONE ELSE'S package metadata, that is, it is
+       * foreign text in an `href` attribute. Only http(s) may be clicked —
+       * `javascript:` in a line that a person reads as "Documentation" means
+       * running someone else's code on a click in the help. Whatever fails the
+       * check stays as text.
        */
       const safe = safeLink(help.docs)
       if (safe === null) {
@@ -739,29 +769,33 @@
   }
 
   /**
-   * Числа в строке про значение — по-человечески: 1 460, а не 1460.
+   * Numbers in the line about a value — the human way: 1 460, not 1460.
    *
-   * Разряды разделяет сам язык комнаты (`Intl`): в русском это узкий пробел, в
-   * английском запятая. Размеры вроде `(100, 3)` и `1460 × 81` приходят от
-   * ядра строкой, и числа в них находятся здесь — иначе пришлось бы либо
-   * форматировать на сервере (где языка комнаты нет), либо разбирать кортеж
-   * на клиенте (где его формы никто не обещал).
+   * Digit groups are separated by the room's language itself (`Intl`): in
+   * Russian it is a narrow space, in English a comma. Sizes like `(100, 3)` and
+   * `1460 × 81` come from the kernel as a string, and the numbers in them are
+   * found here — otherwise one would have to either format on the server (where
+   * the room's language is not known) or parse the tuple on the client (where
+   * nobody promised its form).
    */
   function withGroups(text: string): string {
     return text.replace(/\d{4,}/g, (digits) => formatNumber(Number(digits)))
   }
 
   /**
-   * Значение — одной строкой: имя, тип, размер, иногда само значение.
+   * A value — in one line: the name, the type, the size, sometimes the value
+   * itself.
    *
-   * «Мелкие всплывающие подсказки было бы интересно увидеть: хотя бы тип
-   * данных у переменной, быстрый тип и размерность» — просьба владельца
-   * 21.09, и вторая её половина не менее важна: «он там ещё добавлял детальнее
-   * вагон текста, это не очень прикольно». Поэтому здесь плашка того же слоя и
-   * размера, что строка-причины, а не окно с прокруткой: ни документации, ни
-   * сигнатуры, ни ссылок — тип и размер, дальше человек решает сам.
+   * "It would be interesting to see small pop-up hints: at least the variable's
+   * data type, a quick type and the dimensions" — the owner's request of 21
+   * Sep, and its second half matters no less: "it also added a ton of more
+   * detailed text there, that's not much fun". So here there is a pill of the
+   * same layer and size as the reason line, not a scrolling window: no
+   * documentation, no signature, no links — the type and the size, and the
+   * person decides the rest.
    *
-   * Имя приглушено, тип выделен: спрашивают «что это», а не «как называется».
+   * The name is muted, the type stands out: people ask "what is it", not "what
+   * is it called".
    */
   function briefDom(name: string, brief: BriefValue): HTMLElement {
     const dom = document.createElement('div')
@@ -782,8 +816,8 @@
       const rest = document.createElement('span')
       rest.className = 'cm-signature-facts'
       const joined = tail.join(' · ')
-      // Шестьдесят знаков — ширина, на которой строка ещё читается целиком и
-      // не начинает соревноваться с кодом под ней.
+      // Sixty characters is the width at which the line can still be read whole
+      // and does not start competing with the code under it.
       rest.textContent = ` · ${joined.length > 60 ? `${joined.slice(0, 59)}…` : joined}`
       dom.appendChild(rest)
     }
@@ -791,12 +825,12 @@
   }
 
   /**
-   * Спросить ядро о значении — и промолчать, если ответа нет.
+   * Ask the kernel about a value — and stay silent if there is no answer.
    *
-   * Ни причин, ни переспросов, ни подъёма ядра: про переменную либо есть
-   * мгновенный ответ (объект лежит в памяти ядра), либо ничего. До первого
-   * запуска ячейки переменной не существует — и правильным ответом будет
-   * тишина, а не строка «выполните ячейку».
+   * No reasons, no retries, no kernel start: for a variable there is either an
+   * instant answer (the object lies in the kernel's memory) or nothing. Before
+   * the cell's first run the variable does not exist — and the right answer is
+   * silence, not a "run the cell" line.
    */
   async function askBrief(view: EditorView, at: number, name: string): Promise<HTMLElement | null> {
     const ask = handlers.brief
@@ -811,14 +845,15 @@
   }
 
   /**
-   * Почему справки нет — одной приглушённой строкой.  /**
-   * Почему справки нет — одной приглушённой строкой.
+   * Why there is no help — in one muted line.  /**
+   * Why there is no help — in one muted line.
    *
-   * Молчание тут не работает: наведение — жест осознанный, и ответ «ничего»
-   * читается как поломка. Три из четырёх причин временные («сейчас
-   * поднимется», «сейчас досчитает»), и человеку важно знать, что ждать имеет
-   * смысл. `refused` — единственная, о которой не говорят: там, где сервер
-   * отказал по ведру вопросов, жест был правильный и объяснять нечего.
+   * Silence does not work here: hovering is a deliberate gesture, and "nothing"
+   * as an answer reads as a breakage. Three of the four reasons are temporary
+   * ("about to start", "about to finish"), and it matters to the person to know
+   * that waiting makes sense. `refused` is the only one that is not mentioned:
+   * where the server refused because of the question bucket, the gesture was
+   * right and there is nothing to explain.
    */
   function signatureMiss(reason: InspectMiss | undefined): HTMLElement | null {
     if (!reason || reason === 'refused') return null
@@ -833,14 +868,14 @@
     dom.className = 'cm-signature cm-signature-miss'
     dom.append(document.createTextNode(words[reason]))
     /*
-     * У временной причины — признак ожидания, у окончательной его нет.
+     * A temporary reason gets a waiting sign, a final one does not.
      *
-     * Три точки, и они дышат прозрачностью: остановленный указатель — ложь о
-     * системе (та же политика, что у спиннеров продукта, index.css), а
-     * прозрачность — ровно то, что правило `prefers-reduced-motion` этого
-     * продукта оставляет нетронутым: убираются ПЕРЕЕЗДЫ, не цвет и не
-     * прозрачность. Точки и есть обещание: «вернусь с ответом, ждать имеет
-     * смысл».
+     * Three dots, and they breathe through opacity: a stopped indicator is a
+     * lie about the system (the same policy as for the product's spinners,
+     * index.css), and opacity is exactly what this product's
+     * `prefers-reduced-motion` rule leaves untouched: what goes is MOVEMENT,
+     * not colour or opacity. The dots are the promise itself: "I will come back
+     * with an answer, waiting makes sense".
      */
     if (WAITING.has(reason)) {
       const wait = document.createElement('span')
@@ -853,19 +888,20 @@
   }
 
   /**
-   * Имена, связанные импортом в этой тетради, — с памятью до следующей правки.
+   * Names bound by an import in this notebook — memoized until the next edit.
    *
-   * Считается по тексту ячеек (lib/hover-target.ts · `moduleAliases`), а не по
-   * ядру: правило должно работать и до первого запуска — там, где справка
-   * нужнее всего. Ячейки без слова `import` не читаются вовсе, так что обычная
-   * тетрадь — это три-четыре коротких строки на разбор.
+   * Computed from the cells' text (lib/hover-target.ts · `moduleAliases`), not
+   * from the kernel: the rule has to work before the first run too — where help
+   * is needed most. Cells without the word `import` are not read at all, so an
+   * ordinary notebook is three or four short lines to parse.
    *
-   * Память — по отпечатку: сколько ячеек и сколько в них знаков. Правка текста
-   * его меняет, и список пересобирается; замена знака на знак в той же длине
-   * (переименовали `np` в `nq`) отпечаток не двигает, и до следующей правки
-   * список останется вчерашним. Цена этой неточности — одно лишнее или одно
-   * недостающее имя в списке разрешённых, то есть окно, которое на секунду
-   * появилось или не появилось там, где могло бы.
+   * The memo goes by a fingerprint: how many cells and how many characters in
+   * them. An edit of the text changes it, and the list is rebuilt; replacing a
+   * character with a character at the same length (`np` renamed to `nq`) does
+   * not move the fingerprint, and until the next edit the list stays as it was.
+   * The price of this imprecision is one extra or one missing name in the list
+   * of allowed ones, that is, a window that for a second appeared or did not
+   * appear where it could have.
    */
   let aliasMemo: { stamp: string; names: Set<string> } | null = null
 
@@ -876,7 +912,8 @@
     try {
       sources = read()
     } catch {
-      // Тетрадь могли закрыть между наведением и ответом — молчим.
+      // The notebook may have been closed between the hover and the answer —
+      // stay silent.
       return EMPTY_ALIASES
     }
     let chars = 0
@@ -889,17 +926,19 @@
   }
 
   /**
-   * О чём справка, а о чём нет, — решает ДЕРЕВО РАЗБОРА, а не соседние знаки.
+   * What the help is about and what it is not about is decided by the PARSE
+   * TREE, not by neighbouring characters.
    *
-   * Правило и его доводы целиком в lib/hover-target.ts; здесь только дорога к
-   * нему. Раньше на этом месте стояла регулярка по строке — «любое слово под
-   * указателем», — и на занятии 21.09 это оказалось невыносимо: окно
-   * выскакивало над именем колонки в кавычках, над `x=` в списке аргументов,
-   * над собственной переменной и над словом в комментарии. Причём каждое такое
-   * наведение стоило кадра в сокете и вопроса к общему ядру комнаты.
+   * The rule and its arguments are entirely in lib/hover-target.ts; here there
+   * is only the road to it. A regex over the line used to stand in this place —
+   * "any word under the pointer" — and at the class of 21 Sep that turned out
+   * to be unbearable: the window popped up over a column name in quotes, over
+   * `x=` in an argument list, over one's own variable and over a word in a
+   * comment. And every such hover cost a socket frame and a question to the
+   * room's shared kernel.
    *
-   * `syntaxTree` отдаёт то, что редактор уже разобрал для подсветки: своего
-   * разбора здесь нет и не заводится.
+   * `syntaxTree` returns what the editor has already parsed for highlighting:
+   * there is no parse of our own here, and none is being introduced.
    */
   function hoverSpot(
     cm: CodeMirror,
@@ -916,17 +955,20 @@
   }
 
   /**
-   * О чём спрашивает Shift+Tab у каретки — или `null`, и тогда он отступ.
+   * What Shift+Tab at the caret asks about — or `null`, and then it is an
+   * unindent.
    *
-   * Шире наведения, и намеренно: клавишу нажимают осознанно и один раз.
-   * Кроме разрешённых наведению имён сюда добавлен главный случай Jupyter —
-   * каретка ВНУТРИ скобок вызова (`px.scatter(apartments, x=|`) показывает
-   * сигнатуру того, что вызывают (lib/hover-target.ts · `caretTarget`).
+   * Wider than hover, and on purpose: the key is pressed deliberately and once.
+   * Besides the names allowed for hover, the main Jupyter case is added here —
+   * a caret INSIDE the brackets of a call (`px.scatter(apartments, x=|`) shows
+   * the signature of what is being called (lib/hover-target.ts ·
+   * `caretTarget`).
    *
-   * `null` — нажатие достаётся тому, кто занял Shift+Tab раньше (lib/indent.ts
-   * · снятие отступа). Это и есть цена привычки: клавишу пришлось делить, и
-   * делится она по тому, есть ли под кареткой о чём спросить. В пустой строке,
-   * в середине отступа и на выделении Shift+Tab работает как работал.
+   * `null` means the press goes to whoever took Shift+Tab earlier
+   * (lib/indent.ts · unindent). That is the price of habit: the key had to be
+   * shared, and it is shared by whether there is something under the caret to
+   * ask about. In an empty line, in the middle of the indentation and on a
+   * selection, Shift+Tab works as it did.
    */
   function caretSpot(
     cm: CodeMirror,
@@ -942,16 +984,18 @@
   }
 
   /**
-   * Имя под экранной точкой — ровно то, о котором спросят сервер.
+   * The name under a screen point — exactly the one the server will be asked
+   * about.
    *
-   * Одно на два жеста, и это не экономия строк: подчёркивает и открывает один
-   * и тот же ответ. Разойдись они — и однажды подчёркнутое имя не откроется, а
-   * откроется соседнее, то есть человек уедет читать не тот код, на который
-   * целился.
+   * One for two gestures, and that is not saving lines: the underline and the
+   * opening show one and the same answer. Should they diverge, one day an
+   * underlined name will not open while a neighbouring one does, that is, the
+   * person will go off to read code other than what they aimed at.
    *
-   * Проверка на конец строки — про то, что `posAtCoords` подтягивает указатель,
-   * ушедший ПРАВЕЕ текста, к последнему знаку строки: без неё пустое поле
-   * справа от `import numpy as np` подчёркивало бы `np` на всю ширину ячейки.
+   * The end-of-line check is about `posAtCoords` pulling a pointer that has
+   * gone to the RIGHT of the text back to the line's last character: without it
+   * the empty field to the right of `import numpy as np` would underline `np`
+   * across the whole width of the cell.
    */
   function questionAtPoint(view: EditorView, x: number, y: number): Question | null {
     const pos = view.posAtCoords({ x, y })
@@ -965,34 +1009,37 @@
   }
 
   /**
-   * Пока модификатор зажат, имя под указателем подчёркнуто, а указатель — рука.
+   * While the modifier is held, the name under the pointer is underlined, and
+   * the pointer is a hand.
    *
-   * Разрешения при этом НЕ спрашиваем: подчёркивается ЛЮБОЕ имя, а есть ли за
-   * ним определение, выясняет только клик. Довод замерен и записан рядом с
-   * самим разбором (shared/python-defs.ts): тетрадь из восьмидесяти ячеек
-   * разбирается 17 мс, и вешать эти миллисекунды на каждое движение мыши
-   * нельзя — а спрашивать о том же сервер тем более. Цена честности —
-   * подчёркнутое имя, которое иногда отвечает «не нашёл»; она дешевле, чем
-   * редактор, спотыкающийся под указателем.
+   * Permission is NOT asked meanwhile: ANY name is underlined, and whether
+   * there is a definition behind it is found out only by the click. The
+   * argument is measured and written down next to the parse itself
+   * (shared/python-defs.ts): a notebook of eighty cells is parsed in 17 ms, and
+   * those milliseconds must not be hung on every mouse movement — and asking
+   * the server the same thing even less so. The price of honesty is an
+   * underlined name that sometimes answers "not found"; it is cheaper than an
+   * editor that stumbles under the pointer.
    *
-   * Клавиши слушаются на `view.dom`, а не на окне, и это тоже размен: в тетради
-   * сорок редакторов, и сорок слушателей keyup на окне — это сорок вызовов на
-   * КАЖДОЕ нажатие при наборе. На своём узле обработчик просыпается только у
-   * того редактора, в котором сейчас работают; остальным про модификатор
-   * рассказывает движение мыши, у которого он записан в событии.
+   * The keys are listened to on `view.dom`, not on the window, and that is a
+   * trade-off too: a notebook has forty editors, and forty keyup listeners on
+   * the window are forty calls on EVERY keypress while typing. On its own node
+   * the handler wakes up only in the editor being worked in right now; the rest
+   * learn about the modifier from mouse movement, whose event records it.
    *
-   * `Decoration` приезжает в конструкторе, а не берётся из модуля: CodeMirror
-   * тут грузится лениво, и на верхнем уровне файла его ещё нет.
+   * `Decoration` arrives in the constructor rather than being taken from the
+   * module: CodeMirror is loaded lazily here, and it is not there yet at the
+   * top level of the file.
    */
   class JumpHint {
     view: EditorView
     deco: typeof Deco
-    /** Само подчёркивание — одно на редактор. */
+    /** The underline itself — one per editor. */
     underline: Deco
     marks: DecorationSet
-    /** Что подчёркнуто сейчас — чтобы не будить редактор одним и тем же. */
+    /** What is underlined now, so the same thing does not wake the editor. */
     at: { from: number; to: number } | null = null
-    /** Где последний раз видели указатель; `null` — мыши тут нет. */
+    /** Where the pointer was last seen; `null`: no mouse here. */
     x: number | null = null
     y = 0
 
@@ -1006,32 +1053,34 @@
       view.dom.addEventListener('keydown', this.onKey)
       view.dom.addEventListener('keyup', this.onKey)
       /*
-       * И третья причина снять подчёркивание — окно, у которого забрали фокус.
-       * ⌘+Tab уносит keyup вместе с ним: клавишу отпускают уже в другом
-       * приложении, сюда не приходит ни keyup, ни движение мыши, и
-       * подчёркивание остаётся висеть навсегда — до следующего случайного
-       * захода мышью в эту же ячейку. Тем же лечится удержание кнопки
-       * перезапуска (Notebook.svelte · visibilitychange): вкладка, ушедшая в
-       * фон, обязана отпустить то, что держала.
+       * And the third reason to remove the underline — a window whose focus was
+       * taken away. ⌘+Tab takes the keyup away with it: the key is released
+       * already in another application, neither keyup nor mouse movement
+       * arrives here, and the underline stays hanging forever — until the next
+       * accidental entry of the mouse into this same cell. The same cure is
+       * used for holding the restart button (Notebook.svelte ·
+       * visibilitychange): a tab that went into the background has to let go of
+       * what it was holding.
        */
       window.addEventListener('blur', this.onOff)
       document.addEventListener('visibilitychange', this.onOff)
     }
 
-    /** Показать или снять подчёркивание — и разбудить редактор, если оно сменилось. */
+    /** Show or remove the underline — and wake the editor if it changed. */
     show(question: Question | null): void {
       const now = question ? { from: question.from, to: question.to } : null
       if (now?.from === this.at?.from && now?.to === this.at?.to) return
       this.at = now
       this.marks = now ? this.deco.set([this.underline.range(now.from, now.to)]) : this.deco.none
       /*
-       * Пустая транзакция — единственный способ показать украшение, которое
-       * плагин держит САМ: свои украшения редактор перечитывает только в такте
-       * обновления, а такт заводит транзакция.
+       * An empty transaction is the only way to show a decoration that the
+       * plugin holds ITSELF: the editor re-reads its decorations only in an
+       * update cycle, and an update cycle is started by a transaction.
        *
-       * Она поэтому и стоит за проверкой выше. Пока указатель едет вдоль одного
-       * имени, не уходит ни одной: каждая будит и чужие каретки из
-       * y-codemirror, которые пересчитываются на любое обновление вида.
+       * That is also why it stands behind the check above. While the pointer
+       * travels along one name, not a single one goes out: each wakes the
+       * remote carets from y-codemirror too, which are recomputed on any view
+       * update.
        */
       this.view.dispatch({})
     }
@@ -1049,16 +1098,16 @@
       this.show(live ? questionAtPoint(this.view, this.x, this.y) : null)
     }
 
-    /** Мышь ушла, окно потеряло фокус, вкладку убрали — держать нечего. */
+    /** Mouse gone, window blurred, tab hidden — nothing to hold. */
     onOff = (): void => {
       this.x = null
       this.show(null)
     }
 
     update(update: ViewUpdate): void {
-      // Текст поехал — границы имени больше не те. Снимаем молча, БЕЗ
-      // транзакции: мы внутри такта обновления, и заводить отсюда ещё один
-      // нельзя.
+      // The text moved — the name's bounds are no longer the same. Removed
+      // silently, WITHOUT a transaction: we are inside an update cycle, and
+      // starting another one from here is not allowed.
       if (update.docChanged && this.at) {
         this.at = null
         this.marks = this.deco.none
@@ -1076,24 +1125,26 @@
     }
   }
 
-  /** Обе стороны «можно ли печатать» — одним куском, чтобы их нельзя было развести. */
+  /** Both sides of "can one type" in one piece, so they cannot drift apart. */
   function writableExtensions(cm: CodeMirror, editable: boolean) {
     return [cm.state.EditorState.readOnly.of(!editable), cm.view.EditorView.editable.of(editable)]
   }
 
   /**
-   * Подсветка строки, на которую привёл переход: поле состояния и эффект к нему.
+   * The highlight of the line a jump led to: a state field and an effect for
+   * it.
    *
-   * Поле хранит ПОЗИЦИЮ, а украшение считается из неё на месте. Готовый набор
-   * украшений хранить нельзя: линейное украшение живёт только в начале строки,
-   * а правка соседа выше по ячейке двигает под ним текст — перенесённая метка
-   * оказалась бы посреди строки, где ей стоять негде. Позиция же переносится
-   * и снова приводится к началу своей строки.
+   * The field holds a POSITION, and the decoration is computed from it on the
+   * spot. A ready set of decorations cannot be stored: a line decoration lives
+   * only at the start of a line, and a neighbour's edit higher up in the cell
+   * moves the text under it — a mapped mark would end up in the middle of a
+   * line, where it has nowhere to stand. A position, on the other hand, is
+   * mapped and brought back to the start of its line again.
    */
   function makeLanding(cm: CodeMirror) {
     const { Decoration, EditorView } = cm.view
     const { StateEffect, StateField } = cm.state
-    /** Куда привели — позиция в документе; `null` гасит подсветку. */
+    /** Landing position in the document; `null` turns the highlight off. */
     const landed = StateEffect.define<number | null>()
     const row = Decoration.line({ class: 'cm-landed' })
     const field = StateField.define<number | null>({
@@ -1102,14 +1153,16 @@
         for (const effect of tr.effects) if (effect.is(landed)) return effect.value
         if (at === null) return null
         /*
-         * Гаснет от первого же СОБСТВЕННОГО движения: человек поставил каретку
-         * или начал печатать — и подсветка из «вот куда я тебя привёл»
-         * превращается в непонятную полосу посреди кода. Набор сюда попадает
-         * тоже: у транзакции набора селекция задана.
+         * It goes out on the first OWN movement: the person placed the caret or
+         * started typing — and the highlight turns from "this is where I
+         * brought you" into an incomprehensible stripe in the middle of the
+         * code. Typing gets here too: a typing transaction has its selection
+         * set.
          *
-         * Чужая правка в этой же ячейке подсветку НЕ гасит: позиция едет вместе
-         * с текстом, и сосед, дописавший строку выше через секунду, не должен
-         * стирать ответ на чужой вопрос.
+         * Someone else's edit in the same cell does NOT turn the highlight off:
+         * the position travels together with the text, and a neighbour who
+         * finishes a line above a second later must not erase the answer to
+         * someone else's question.
          */
         if (tr.selection) return null
         return tr.changes.mapPos(at)
@@ -1133,19 +1186,20 @@
     const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot, landing } = options
 
     /**
-     * Дополнение глазами ядра комнаты.
+     * Completion through the eyes of the room's kernel.
      *
-     * Спрашивается не на каждое нажатие, а там, где человек действительно
-     * чего-то ждёт: после буквы или точки. Иначе `complete_request` уходил бы
-     * и на пробел, и на скобку, и на перевод строки — по десятку в секунду на
-     * каждого в комнате, в одно на всех ядро. `validFor` доканчивает начатое
-     * здесь же, на клиенте: пока человек дописывает `he` к `head`, список
-     * фильтруется на месте и ядро не спрашивается вовсе.
+     * It is asked not on every keypress but where a person really expects
+     * something: after a letter or a dot. Otherwise `complete_request` would go
+     * out on a space, a bracket and a newline too — a dozen per second from
+     * everyone in the room, into the one kernel shared by all. `validFor`
+     * completes what has been started right here, on the client: while the
+     * person types `he` towards `head`, the list is filtered in place and the
+     * kernel is not asked at all.
      */
     async function kernelCompletions(context: CompletionContext): Promise<CompletionResult | null> {
       const ask = handlers.complete
-      // Ячейка, в которой не печатают, не дополняется: чужой лист под замком
-      // и закончившееся занятие — это чтение, а не набор.
+      // A cell that is not being typed in is not completed: someone else's
+      // locked sheet and a finished class are for reading, not typing.
       if (!ask || context.state.readOnly) return null
       const before = context.state.sliceDoc(Math.max(0, context.pos - 1), context.pos)
       if (!context.explicit && !/[\w.]/.test(before)) return null
@@ -1153,12 +1207,13 @@
       if (!answer || answer.matches.length === 0) return null
       const from = Math.max(0, Math.min(answer.start, context.pos))
       /*
-       * `df.head` или просто `head` — решает то, ОТКУДА ядро велело заменять.
+       * `df.head` or just `head` — decided by WHERE the kernel said to replace
+       * from.
        *
-       * Ядра отвечают по-разному: одни возвращают имя целиком с приставкой,
-       * другие — только хвост, и `cursor_start` у них при этом одинаково
-       * стоит за точкой. Показать первое как есть значило бы нарисовать в
-       * списке `df.head` и вставить в текст `df.df.head`.
+       * Kernels answer differently: some return the whole name with the prefix,
+       * others only the tail, while their `cursor_start` stands after the dot
+       * in the same way. Showing the first as it is would mean drawing
+       * `df.head` in the list and inserting `df.df.head` into the text.
        */
       const dotted = from > 0 && context.state.sliceDoc(from - 1, from) === '.'
       const options: Completion[] = []
@@ -1180,20 +1235,23 @@
       return { from, options, validFor: /^[\w]*$/ }
     }
 
-    /* -------------------------------------- справка о том, что под указателем */
+    /* ------------------------------------- help for what is under the
+       pointer */
 
     /**
-     * Спросить ядро об одном имени — и собрать то, что покажем.
+     * Ask the kernel about one name — and assemble what we will show.
      *
-     * Одна дорога на оба жеста: наведение мышью и Shift+Tab у каретки. Второй
-     * такой же функции здесь быть не должно — разойдясь, они дали бы разный
-     * ответ на один и тот же вопрос, и объяснить это было бы нечем.
+     * One road for both gestures: hovering with the mouse and Shift+Tab at the
+     * caret. There must not be a second such function here — once the two
+     * diverged, they would give different answers to one and the same question,
+     * and there would be no way to explain it.
      *
-     * Память (lib/signature-help.ts) стоит ПЕРЕД вопросом: второе наведение на
-     * то же имя обязано открываться мгновенно, а не ходить в общее ядро за
-     * тем, что уже знает. Помнится только найденное; причины отказа не
-     * помнятся никогда — они живут секунду, и вчерашнее «ядро запускается»
-     * было бы враньём ровно тогда, когда ответ наконец есть.
+     * The memory (lib/signature-help.ts) stands BEFORE the question: a second
+     * hover over the same name has to open instantly, rather than going to the
+     * shared kernel for what it already knows. Only what was found is
+     * remembered; refusal reasons are never remembered — they live for a
+     * second, and yesterday's "the kernel is starting" would be a lie exactly
+     * when the answer is finally there.
      */
     async function askSignature(view: EditorView, at: number, name: string): Promise<HTMLElement | null> {
       const ask = handlers.inspect
@@ -1205,17 +1263,20 @@
         return helpIsEmpty(help) ? null : signatureDom(help)
       }
       /*
-       * Каретка для ядра ставится в КОНЕЦ имени: `inspect_request` отвечает
-       * о том, что стоит перед ней. Посреди слова он ответил бы о `he`.
+       * The caret for the kernel is put at the END of the name:
+       * `inspect_request` answers about what stands before it. In the middle of
+       * a word it would answer about `he`.
        */
       const answer = await ask(view.state.doc.toString(), at)
-      // `null` — сокет закрыт или три секунды вышли: сказать нечего, и это
-      // единственный случай, когда справка по-прежнему молчит.
+      // `null` means the socket is closed or the three seconds ran out: there
+      // is nothing to say, and this is the only case when the help still stays
+      // silent.
       if (!answer) return null
       if (!answer.found || !answer.text) {
         const dom = signatureMiss(answer.reason)
-        // Причина временная — ждём ответа сами, не отправляя человека водить
-        // мышью туда-обратно (см. `keepAsking`).
+        // The reason is temporary — we wait for the answer ourselves, without
+        // sending the person to move the mouse back and forth (see
+        // `keepAsking`).
         if (dom && answer.reason && WAITING.has(answer.reason)) {
           keepAsking(view, at, key, dom, answer.reason)
         }
@@ -1228,26 +1289,28 @@
     }
 
     /**
-     * Переспрашивать, пока окно открыто, и заменить причину справкой на месте.
+     * Ask again while the window is open, and replace the reason with the help
+     * in place.
      *
-     * «Неясно, зачем мне отводить и снова наводить курсор, чтобы появилась
-     * сигнатура» — жалоба с занятия 20.09, и она справедлива: ответ «ядро
-     * запускается» человек прочитал, ядро через две секунды поднялось, а окно
-     * продолжало показывать вчерашнюю новость, потому что спрашивает его
-     * только наведение.
+     * "It is unclear why I have to move the cursor away and back again for the
+     * signature to appear" — a complaint from the class of 20 Sep, and a fair
+     * one: the person read the answer "the kernel is starting", the kernel came
+     * up two seconds later, and the window kept showing yesterday's news,
+     * because only hovering asks it.
      *
-     * Останавливается по трём признакам, и все три значат «окна больше нет или
-     * оно уже не про это место»: узел отцепили (мышь ушла, Escape, каретка
-     * уехала с закреплённой), текст ячейки изменился (спрашивали про другое),
-     * вышел потолок ожидания. Никаких таймеров при этом не остаётся: следующий
-     * такт заводится только из предыдущего и только после проверок.
+     * It stops on three signs, and all three mean "the window is gone or is no
+     * longer about this place": the node was detached (the mouse left, Escape,
+     * the caret moved off a pinned one), the cell's text changed (the question
+     * was about something else), the wait ceiling ran out. No timers are left
+     * behind: the next tick is started only from the previous one and only
+     * after the checks.
      *
-     * Ответ вставляется В ТОТ ЖЕ узел, а не рядом: он принадлежит CodeMirror
-     * (`create: () => ({ dom })`), и подменить его значило бы оставить
-     * подсказку без содержимого. Меняются класс и дети — и CodeMirror просят
-     * перемерить: окно из одной строки превращается в шестисотпиксельное, и
-     * без пересчёта оно осталось бы стоять по старому размеру, залезая на
-     * строку или вися в воздухе.
+     * The answer is put INTO THE SAME node, not next to it: the node belongs to
+     * CodeMirror (`create: () => ({ dom })`), and replacing it would leave the
+     * tooltip without content. The class and the children change — and
+     * CodeMirror is asked to re-measure: a one-line window turns into a
+     * six-hundred-pixel one, and without re-measuring it would stay at its old
+     * size, running over the line or hanging in the air.
      */
     function keepAsking(
       view: EditorView,
@@ -1265,19 +1328,21 @@
         const wait = WAITING.get(reason)
         if (wait === undefined) return
         const timer = setTimeout(tick, wait)
-        // Вопрос о подсказке не имеет права держать вкладку живой.
+        // A question about a tooltip has no right to keep the tab alive.
         ;(timer as unknown as { unref?: () => void }).unref?.()
       }
       const tick = async () => {
         if (!dom.isConnected || view.state.doc !== doc || Date.now() > until) return
         const answer = await ask(view.state.doc.toString(), at)
-        // Пока ходили, окно могли закрыть или текст переписать.
+        // While we were away, the window may have been closed or the text
+        // rewritten.
         if (!dom.isConnected || view.state.doc !== doc) return
         if (!answer) return
         if (!answer.found || !answer.text) {
           const next = answer.reason
           if (!next || !WAITING.has(next)) {
-            // Причина стала окончательной («не нашлось»): говорим её и молчим.
+            // The reason has become final ("not found"): we say it and fall
+            // silent.
             const said = signatureMiss(next)
             if (said) {
               dom.className = said.className
@@ -1306,14 +1371,14 @@
     }
 
     /**
-     * Где висеть окну справки — правило, общее для обоих жестов.
+     * Where the help window hangs — a rule shared by both gestures.
      *
-     * ПОД строкой, а не над ней. Над строкой висит тулбар ячейки —
-     * «запустить», «остановить», «форматировать», — и подсказка, выехавшая
-     * вверх, закрывала его собой ровно тогда, когда человек тянется к кнопке.
-     * Стопка слоёв доводит то же правило до конца: у подсказки z-index ниже
-     * тулбарного, так что даже снизу она не может его перекрыть (см.
-     * cm-theme.ts · .cm-tooltip.cm-signature).
+     * UNDER the line, not above it. Above the line hangs the cell toolbar —
+     * "run", "stop", "format" — and a tooltip that slid upward covered it
+     * exactly when the person was reaching for a button. The stack of layers
+     * takes the same rule to its end: the tooltip's z-index is below the
+     * toolbar's, so even from below it cannot cover it (see cm-theme.ts ·
+     * .cm-tooltip.cm-signature).
      */
     function signatureTooltip(from: number, to: number, dom: HTMLElement): Tooltip {
       return {
@@ -1322,17 +1387,19 @@
         above: false,
         create: (view) => {
           /*
-           * Escape закрывает справку и тогда, когда в редакторе уже не печатают.
+           * Escape closes the help even when the editor is no longer being
+           * typed in.
            *
-           * Выделив мышью строку ВНУТРИ окна, человек уводит фокус из ячейки —
-           * и с ним уходит набор клавиш редактора, то есть Escape перестаёт
-           * доходить куда бы то ни было. Замерено на стенде: окно оставалось
-           * висеть, пока не увести указатель.
+           * Having selected a line INSIDE the window with the mouse, a person
+           * takes the focus away from the cell — and the editor's keymap goes
+           * with it, that is, Escape stops reaching anything at all. Measured
+           * on the test bench: the window stayed hanging until the pointer was
+           * moved away.
            *
-           * Только когда фокуса в редакторе НЕТ: пока он там, Escape разбирает
-           * свой порядок — список дополнения, потом справка, потом командный
-           * режим, — и вмешиваться в него отсюда значило бы этот порядок
-           * сломать.
+           * Only when there is NO focus in the editor: while it is there,
+           * Escape works through its own order — the completion list, then the
+           * help, then command mode — and interfering with it from here would
+           * break that order.
            */
           const onKey = (event: KeyboardEvent) => {
             if (event.key !== 'Escape' || view.hasFocus) return
@@ -1344,26 +1411,28 @@
       }
     }
 
-    /** Убрать справку — обе разом, какая бы сейчас ни висела. */
+    /** Remove the help — both at once, whichever is hanging right now. */
     function closeSignature(view: EditorView): void {
       view.dispatch({ effects: [cm.view.closeHoverTooltips, pinned.of(null)] })
     }
 
     /**
-     * Та же справка, вызванная Shift+Tab, — и она не гаснет, пока не уйдут.
+     * The same help called up by Shift+Tab — and it does not go out until
+     * people leave.
      *
-     * Клавиша та же, что в Jupyter, и это единственный довод в её пользу: люди
-     * приходят в тетрадь с уже готовой привычкой. Но Shift+Tab в этом
-     * редакторе занят — он снимает отступ, — поэтому справка отвечает на него
-     * ТОЛЬКО там, где отступ снимать не о чем: каретка стоит на имени или
-     * где угодно внутри скобок вызова, выделения нет (см. `caretSpot` и
-     * lib/hover-target.ts). Во всех прочих случаях нажатие идёт дальше и
-     * снимает отступ, как снимало.
+     * The key is the same as in Jupyter, and that is the only argument for it:
+     * people come to the notebook with a ready-made habit. But Shift+Tab in
+     * this editor is taken — it unindents — so the help answers it ONLY where
+     * there is nothing to unindent: the caret is on a name or anywhere inside
+     * the brackets of a call, and there is no selection (see `caretSpot` and
+     * lib/hover-target.ts). In all other cases the press goes on and unindents,
+     * as it did.
      *
-     * Своё поле, а не `hoverTooltip`: у наведения окно живёт, пока над ним
-     * мышь, а у клавиши мыши нет вовсе. Закрепление снимают три вещи — Escape,
-     * уехавшая каретка и любая правка текста: после каждой из них справка
-     * рассказывает про место, где человека уже нет.
+     * A field of its own, not `hoverTooltip`: with hover the window lives while
+     * the mouse is over it, and a key has no mouse at all. The pin is removed
+     * by three things — Escape, a caret that moved away, and any edit of the
+     * text: after each of them the help tells about a place where the person no
+     * longer is.
      */
     const pinned = cm.state.StateEffect.define<Tooltip | null>()
     const pinnedField = cm.state.StateField.define<Tooltip | null>({
@@ -1385,61 +1454,67 @@
         spot.kind === 'value'
           ? await askBrief(view, spot.to, spot.ask)
           : await askSignature(view, spot.to, spot.ask)
-      // Пока ходили к ядру, каретка могла уехать — тогда закреплять нечего:
-      // окно встало бы у имени, на которое человек уже не смотрит.
+      // While we went to the kernel, the caret may have moved away — then there
+      // is nothing to pin: the window would stand at a name the person is no
+      // longer looking at.
       if (!dom || view.state.selection.main.head !== head) return
-      // И заодно убираем ту, что уже выехала по наведению: пока мы ходили к
-      // ядру, указатель стоял на том же имени и успел позвать свою.
+      // And at the same time remove the one that already slid out on hover:
+      // while we went to the kernel, the pointer stood on the same name and
+      // managed to call its own.
       view.dispatch({
         effects: [cm.view.closeHoverTooltips, pinned.of(signatureTooltip(spot.from, spot.to, dom))],
       })
     }
 
     /**
-     * Навёл на имя — увидел сигнатуру. И ничего на нажатие клавиши.
+     * Hovered over a name — saw the signature. And nothing on a keypress.
      *
-     * Раньше подсказка выскакивала на набранную `(`. Это ошибка в самой
-     * задумке: скобку печатают, ЗНАЯ, что пишут, и выехавшая в этот момент
-     * панель закрывает собой строку, которую человек в эту секунду набирает.
-     * Наведение — противоположный жест: его делают, когда чего-то НЕ знают, и
-     * делают намеренно.
+     * The tooltip used to pop up on a typed `(`. That is a mistake in the very
+     * idea: a bracket is typed by someone who KNOWS what they are writing, and
+     * a panel sliding out at that moment covers the line the person is typing
+     * at that second. Hovering is the opposite gesture: it is made when
+     * something is NOT known, and made on purpose.
      *
-     * `hoverTime` — та самая треть секунды, которая отличает «смотрю сюда» от
-     * «веду мышь мимо». Закрывает подсказку сам CodeMirror, когда указатель
-     * ушёл И с имени, и с окна: пока мышь над окном, оно живо, и справку можно
-     * крутить колесом и выделять — это и значит «досягаемая».
+     * `hoverTime` is that very third of a second that separates "I am looking
+     * here" from "I am moving the mouse past". The tooltip is closed by
+     * CodeMirror itself when the pointer has left BOTH the name and the window:
+     * while the mouse is over the window, it is alive, and the help can be
+     * scrolled with the wheel and selected — that is what "reachable" means.
      */
     const signatureHover = cm.view.hoverTooltip(
       async (view, pos) => {
         const ask = handlers.inspect
-        // В ячейке, которую не дают править, справки нет: чужой лист под
-        // замком и закончившееся занятие — это чтение, и читать через них
-        // состояние общего ядра нельзя (то же правило, что у дополнения).
+        // In a cell that may not be edited there is no help: someone else's
+        // locked sheet and a finished class are for reading, and the state of
+        // the shared kernel must not be read through them (the same rule as for
+        // completion).
         if (!ask || view.state.readOnly) return null
         /*
-         * Одна справка на экран.
+         * One help per screen.
          *
-         * Пока висит закреплённая (Shift+Tab), наведение молчит. Иначе
-         * получалось две: нажав Shift+Tab, человек не убирает руку с мыши, и
-         * через треть секунды под закреплённым окном выезжало второе — с тем
-         * же текстом, но своим. Снято со стенда, не придумано. Закреплённая
-         * уходит по Escape, по уехавшей каретке и по первой же правке, и
-         * наведение тут же работает снова.
+         * While a pinned one hangs (Shift+Tab), hover stays silent. Otherwise
+         * there were two: having pressed Shift+Tab, a person does not take the
+         * hand off the mouse, and a third of a second later a second window
+         * slid out under the pinned one — with the same text, but its own.
+         * Taken from the test bench, not invented. The pinned one goes away on
+         * Escape, on a caret that moved away and on the first edit, and hover
+         * works again right away.
          */
         if (view.state.field(pinnedField, false)) return null
         /*
-         * И ничего, если под указателем не то, о чём спрашивают: строка,
-         * комментарий, аргумент, собственная переменная. Отказ здесь стоит
-         * ровно ноль — ни кадра в сокете, ни вопроса к ядру комнаты (правило и
-         * его доводы: lib/hover-target.ts).
+         * And nothing if what is under the pointer is not what people ask
+         * about: a string, a comment, an argument, one's own variable. A
+         * refusal here costs exactly zero — not a single socket frame, not a
+         * question to the room's kernel (the rule and its arguments:
+         * lib/hover-target.ts).
          */
         const spot = hoverSpot(cm, view, pos)
         if (!spot) return null
         /*
-         * Две разные подсказки на два разных вопроса. Про имя, которое
-         * импортировали или вызывают, спрашивают «что оно делает» — и
-         * отвечает окно со справкой. Про переменную спрашивают «что это и
-         * какого размера» — и отвечает одна строка (lib/hover-target.ts ·
+         * Two different hints for two different questions. About a name that
+         * was imported or is being called, people ask "what does it do" — and
+         * the window with the help answers. About a variable they ask "what is
+         * it and how big" — and a single line answers (lib/hover-target.ts ·
          * `kind`).
          */
         const dom =
@@ -1451,33 +1526,35 @@
       { hoverTime: HOVER_MS },
     )
 
-    /* -------------------------------------- переход к определению */
+    /* ------------------------------------------- go to definition */
 
     /**
-     * ⌘/Ctrl-клик по имени — уйти туда, где оно определено.
+     * ⌘/Ctrl-click on a name — go to where it is defined.
      *
-     * `Prec.highest`, чтобы опередить собственный mousedown CodeMirror: у него
-     * клик с модификатором добавляет ВТОРУЮ каретку, и без старшинства жест
-     * сначала рвал бы выделение надвое, а потом уводил из ячейки.
+     * `Prec.highest`, to get ahead of CodeMirror's own mousedown: for it a
+     * click with a modifier adds a SECOND caret, and without precedence the
+     * gesture would first tear the selection in two and then take one out of
+     * the cell.
      *
-     * Под указателем не имя — обработчик отказывается, и нажатие достаётся
-     * редактору целиком: ⌘-клик по пустому месту по-прежнему ставит вторую
-     * каретку, как ставил. Ровно так же он отказывается там, где уводить
-     * некому (`jump` не передали): подчёркивания в такой ячейке нет, и обещать
-     * клику нечего.
+     * If what is under the pointer is not a name, the handler declines, and the
+     * press goes to the editor in full: ⌘-click on an empty place still puts a
+     * second caret, as it did. In exactly the same way it declines where there
+     * is nobody to take you (`jump` was not passed): there is no underline in
+     * such a cell, and nothing to promise the click.
      *
-     * Кареткой уезжает КОНЕЦ найденного звена, а не та позиция, куда попали
-     * пикселем. Ответ от этого не меняется — `questionAt` из любой точки
-     * внутри имени отвечает одно и то же, — зато сервер получает ровно то
-     * имя, которое было подчёркнуто, а не то, во что округлится координата,
-     * пока вопрос едет.
+     * What travels as the caret is the END of the found link, not the position
+     * the pixel landed on. The answer does not change because of that —
+     * `questionAt` from any point inside the name answers the same — but the
+     * server gets exactly the name that was underlined, rather than whatever
+     * the coordinate rounds to while the question is on its way.
      */
     const jumpClick = Prec.highest(
       cm.view.EditorView.domEventHandlers({
         mousedown(event, view) {
           const go = handlers.jump
-          // Только левая кнопка: ⌘ с правой на маке — это ещё и контекстное
-          // меню, и уводить из ячейки вместе с ним нельзя.
+          // The left button only: ⌘ with the right one on a Mac is also the
+          // context menu, and taking one out of the cell along with it is not
+          // allowed.
           if (!go || event.button !== 0 || !isJumpClick(event)) return false
           const question = questionAtPoint(view, event.clientX, event.clientY)
           if (!question) return false
@@ -1489,10 +1566,10 @@
     )
 
     /*
-     * Подчёркивание под зажатым модификатором держит `JumpHint` — он живёт на
-     * верхнем уровне файла, потому что классу, объявленному внутри функции,
-     * пришлось бы рождаться заново на каждую постройку редактора. Всё, что ему
-     * нужно от лениво загруженного CodeMirror, он получает в конструкторе.
+     * The underline under a held modifier is kept by `JumpHint` — it lives at
+     * the top level of the file, because a class declared inside a function
+     * would have to be born anew on every editor build. Everything it needs
+     * from the lazily loaded CodeMirror it gets in the constructor.
      */
     const jumpHint = ViewPlugin.define((view) => new JumpHint(view, Decoration), {
       decorations: (plugin) => plugin.marks,
@@ -1500,18 +1577,19 @@
 
     /** Leave the cell only from its outer edge, and never out from under a popup. */
     /*
-     * Край — ВИДИМЫЙ, а не логический.
+     * The edge is the VISIBLE one, not the logical one.
      *
-     * Считали по номеру строки (`line.number === 1`), а редактор переносит
-     * длинные строки: в заметке с абзацем на три экранные строки ArrowUp со
-     * второй из них выпрыгивал в предыдущую ячейку вместо подъёма на строку
-     * выше. Для markdown это почти каждый абзац.
+     * It used to be computed by line number (`line.number === 1`), but the
+     * editor wraps long lines: in a note with a paragraph spanning three screen
+     * lines, ArrowUp from the second of them jumped into the previous cell
+     * instead of moving up a line. For markdown that is almost every paragraph.
      *
-     * Спрашиваем координаты: каретка на верхней ЭКРАННОЙ строке — та, что стоит
-     * на одной высоте с началом документа. Пиксель допуска — на округление
-     * подпикселей при масштабе экрана. Пока редактор не измерен, координат нет
-     * вовсе, и тогда остаётся прежнее правило по номеру строки: одно нажатие в
-     * первую же миллисекунду важнее точности.
+     * We ask for coordinates: the caret is on the top SCREEN line if it stands
+     * at the same height as the start of the document. A pixel of tolerance is
+     * for subpixel rounding under screen scaling. While the editor has not been
+     * measured there are no coordinates at all, and then the old rule by line
+     * number remains: a press in the very first millisecond matters more than
+     * precision.
      */
     function atVisualEdge(view: EditorView, direction: -1 | 1): boolean {
       const range = view.state.selection.main
@@ -1537,10 +1615,10 @@
     const cellKeymap = Prec.highest(
       keymap.of([
         /*
-         * ⌘⇧↵ стоит ПЕРЕД ⇧↵ и ⌘↵ только для чтения: набор модификаторов у
-         * биндинга полный, и «Shift-Enter» с зажатым Cmd не совпадает ни с
-         * чем, кроме этой строки. Порядок здесь — порядок рассказа: сначала
-         * то, что сдаёт, потом то, что считает.
+         * ⌘⇧↵ stands BEFORE ⇧↵ and ⌘↵ only for readability: a binding's set of
+         * modifiers is exact, and "Shift-Enter" with Cmd held matches nothing
+         * except this line. The order here is the order of the story: first
+         * what submits, then what runs.
          */
         { key: 'Mod-Shift-Enter', preventDefault: true, run: () => fire(handlers.onsubmit) },
         { key: 'Shift-Enter', preventDefault: true, run: () => fire(handlers.onrunstep) },
@@ -1552,20 +1630,23 @@
             // Let the completion popup have Escape first.
             if (completionStatus(view.state) === 'active') return false
             /*
-             * Потом — справка по наведению, и только потом командный режим.
+             * Then — the hover help, and only then command mode.
              *
-             * Порядок читается как «убрать самое ближнее»: сначала список,
-             * потом справка, и лишь когда на экране не осталось ничего
-             * лишнего, Escape уводит из ячейки. Иначе один и тот же Escape
-             * выбрасывал бы человека из набора вместе с закрытием подсказки.
+             * The order reads as "remove the nearest thing": first the list,
+             * then the help, and only when nothing extra is left on screen does
+             * Escape take one out of the cell. Otherwise one and the same
+             * Escape would throw the person out of typing along with closing
+             * the tooltip.
              *
-             * Открыта ли она — спрашиваем у DOM, а не у состояния: подсказки
-             * по наведению живут в своём плагине, и наружу он показывает
-             * только сам узел. Ошибиться тут нечем — узел наш и назван нами.
+             * Whether it is open is asked of the DOM, not of the state: hover
+             * tooltips live in their own plugin, which shows only the node
+             * itself to the outside. There is no way to get this wrong — the
+             * node is ours and named by us.
              */
             if (view.dom.querySelector('.cm-signature')) {
-              // Оба вида разом: по наведению и закреплённая Shift+Tab. Какая из
-              // них сейчас на экране, Escape не разбирает — он убирает лишнее.
+              // Both kinds at once: the hover one and the one pinned by
+              // Shift+Tab. Escape does not sort out which of them is on screen
+              // right now — it removes what is extra.
               closeSignature(view)
               return true
             }
@@ -1574,19 +1655,21 @@
         },
         {
           /*
-           * Shift+Tab — справка у каретки. Или отступ, если справки тут нет.
+           * Shift+Tab — help at the caret. Or an unindent, if there is no help
+           * here.
            *
-           * Отказ здесь (`false`) — не отказ от жеста, а пропуск нажатия
-           * дальше: ниже по старшинству стоит снятие отступа (lib/indent.ts), и
-           * ровно оно и должно срабатывать в строке, где под кареткой не имя.
-           * Правило и его цена — у `caretSpot`.
+           * A refusal here (`false`) is not a refusal of the gesture but
+           * passing the press on: below it in precedence stands the unindent
+           * (lib/indent.ts), and that is exactly what should fire in a line
+           * where the caret is not on a name. The rule and its price are at
+           * `caretSpot`.
            */
           key: 'Shift-Tab',
           run: (view) => {
             if (!handlers.inspect || view.state.readOnly) return false
             const range = view.state.selection.main
-            // Выделение — это про строки целиком: там Shift+Tab сдвигает их, и
-            // отнимать у него этот случай нельзя.
+            // A selection is about whole lines: there Shift+Tab shifts them,
+            // and that case must not be taken away from it.
             if (!range.empty) return false
             const spot = caretSpot(cm, view, range.head)
             if (!spot) return false
@@ -1595,8 +1678,8 @@
           },
         },
         {
-          // Удерживаемый Backspace не удаляет ячейку: см. `repeating` выше и
-          // cell-keys.ts, где это правило проверяется тестом.
+          // A held Backspace does not delete the cell: see `repeating` above
+          // and cell-keys.ts, where this rule is checked by a test.
           key: 'Backspace',
           run: (view) =>
             backspaceRemovesCell({ empty: view.state.doc.length === 0, repeat: repeating })
@@ -1616,17 +1699,19 @@
           bracketMatching(),
           closeBrackets(),
           /*
-           * Дополнение: сперва ядро, следом слова самой ячейки.
+           * Completion: the kernel first, then the words of the cell itself.
            *
-           * `override` — весь список источников целиком, и в нём намеренно
-           * нет разбора дерева языка: в Python дерево знает только ключевые
-           * слова, а имя переменной, лежащей в ядре, не знает вовсе. Зато
-           * ядро знает и `df.head`, и `df.описание`, если человек так назвал
-           * столбец, — это и есть разница между подсказкой по тексту и
-           * подсказкой по тому, что в комнате действительно посчитано.
+           * `override` is the whole list of sources, and it deliberately has no
+           * parse of the language tree: in Python the tree knows only keywords
+           * and knows nothing at all about the name of a variable living in the
+           * kernel. The kernel, on the other hand, knows both `df.head` and
+           * `df.описание`, if the person named a column that way — that is the
+           * difference between a hint from the text and a hint from what has
+           * really been computed in the room.
            *
-           * В markdown-ячейке ни того, ни другого: там пишут прозой, и список
-           * слов, выскакивающий на каждую букву, мешает.
+           * In a markdown cell there is neither one nor the other: people write
+           * prose there, and a list of words popping up on every letter gets in
+           * the way.
            */
           lang === 'python'
             ? [
@@ -1636,13 +1721,13 @@
                   icons: false,
                 }),
                 signatureHover,
-                // Закреплённая справка (Shift+Tab) — своим полем, рядом: см.
-                // `pinnedField`.
+                // The pinned help (Shift+Tab) is a field of its own, next to
+                // it: see `pinnedField`.
                 pinnedField,
                 /*
-                 * Переход к определению — только в коде. В заметке определений
-                 * нет вовсе, а подчёркивать слова в прозе значит обещать жест,
-                 * которого там не бывает.
+                 * Go to definition — only in code. A note has no definitions at
+                 * all, and underlining words in prose means promising a gesture
+                 * that does not exist there.
                  */
                 jumpClick,
                 jumpHint,
@@ -1650,22 +1735,23 @@
             : autocompletion({ activateOnTyping: true, icons: false }),
           indentOnInput(),
           /*
-           * Четыре пробела — размер отступа в ячейке.
+           * Four spaces — the indent size in a cell.
            *
-           * Без этой строки CodeMirror берёт свои два, и Python в тетради
-           * набирается не так, как везде: Enter после `def f():` отбивал два
-           * пробела, а вставленный из файла или из чужого ответа код приходил
-           * на четырёх — в одной функции получалось два разных отступа, и
-           * ядро отвечало IndentationError на месте, которое глазами не
-           * отличить. Столько же ставит редактор файлов (FileEditor).
+           * Without this line CodeMirror takes its own two, and Python in the
+           * notebook is typed differently than everywhere else: Enter after
+           * `def f():` put in two spaces, while code pasted from a file or from
+           * someone's answer came in with four — one function ended up with two
+           * different indents, and the kernel answered IndentationError at a
+           * spot that cannot be told apart by eye. The file editor (FileEditor)
+           * sets the same.
            */
           indentUnit.of(INDENT),
           highlightActiveLine(),
           /*
-           * Подсветка строки, на которую привёл переход, — в обоих языках, хотя
-           * ведут переходы только в код: поле пустое ничего не стоит, а ветка
-           * по языку тут была бы ещё одним местом, где однажды разойдутся
-           * правило и жест.
+           * The highlight of the line a jump led to — in both languages,
+           * although jumps lead only into code: an empty field costs nothing,
+           * and a branch by language here would be one more place where the
+           * rule and the gesture drift apart one day.
            */
           landing.field,
           cm.view.EditorView.lineWrapping,
@@ -1675,15 +1761,15 @@
           cm.theme.colloqTheme,
           cm.view.EditorView.contentAttributes.of({ 'aria-label': label }),
           /*
-           * Потолок листа: вставка, которая не влезает, не принимается целиком
-           * и со словами; набор руками при этом не запрещён — правило и его
-           * доводы в cell-paste.ts.
+           * The sheet's ceiling: a paste that does not fit is refused as a
+           * whole, and with words; typing by hand is not forbidden meanwhile —
+           * the rule and its arguments are in cell-paste.ts.
            *
-           * Вставкой считаются ровно два пользовательских события — ⌘V и
-           * перенос мышью. У транзакций, которыми y-codemirror применяет
-           * правки Y.Text (чужие и наши SEED), userEvent нет вовсе, так что
-           * `pasted` у них false и отказать им нечем: отказ развёл бы редактор
-           * с документом.
+           * Exactly two user events count as a paste — ⌘V and a mouse drop. The
+           * transactions by which y-codemirror applies Y.Text edits (other
+           * people's and our own SEED) have no userEvent at all, so their
+           * `pasted` is false and there is nothing to refuse them by: a refusal
+           * would pull the editor apart from the document.
            */
           ceiling === null
             ? []
@@ -1700,17 +1786,18 @@
           cellKeymap,
           keymap.of([...closeBracketsKeymap, ...cm.commands.defaultKeymap]),
           /*
-           * Tab принимает подсказку — и только когда она открыта.
+           * Tab accepts a completion — and only when the list is open.
            *
-           * Стоит ВЫШЕ отступа намеренно: ниже он не сработал бы никогда,
-           * потому что `tabKey` обрабатывает нажатие всегда и дальше его не
-           * пускает. Когда списка на экране нет, `acceptCompletion` отвечает
-           * false, нажатие идёт дальше и отбивает пробелы, как отбивало.
+           * It stands ABOVE the indent on purpose: below it, it would never
+           * fire, because `tabKey` always handles the press and does not let it
+           * go further. When there is no list on screen, `acceptCompletion`
+           * answers false, and the press goes on and puts in spaces, as it did.
            *
-           * Ctrl-Space — тот же список по требованию, даже посреди пустой
-           * строки. Он есть и в наборе клавиш самого `autocompletion`; назван
-           * здесь ещё раз, чтобы обещание «подсказку можно позвать руками» не
-           * зависело от умолчания чужого пакета.
+           * Ctrl-Space is the same list on demand, even in the middle of an
+           * empty line. It is also in the keymap of `autocompletion` itself; it
+           * is named here once more so that the promise "the hint can be called
+           * up by hand" does not depend on the default of someone else's
+           * package.
            */
           keymap.of([
             { key: 'Tab', run: acceptCompletion },
@@ -1718,25 +1805,29 @@
             { key: 'Ctrl-Space', preventDefault: true, run: startCompletion },
           ]),
           /*
-           * Tab — отступ, а не переход по фокусу.
+           * Tab is an indent, not a focus move.
            *
-           * Своего Tab у CodeMirror нет: нажатие уходит браузеру, и фокус
-           * уезжает из ячейки — в тетради, где пишут Python, это значит, что
-           * отступ набрать нечем, кроме пробелов вручную.
+           * CodeMirror has no Tab of its own: the press goes to the browser,
+           * and the focus leaves the cell — in a notebook where people write
+           * Python, that means there is nothing to type an indent with except
+           * spaces by hand.
            *
-           * Мягкий, а не сдвиг строки: пробелы встают В КУРСОР, до следующей
-           * отметки. Готовый `indentWithTab` двигает строку целиком, и Tab
-           * посреди набранного уносил вправо всё, что уже написано, — правило
-           * и его доводы в lib/indent.ts.
+           * Soft, not a line shift: the spaces go IN AT THE CURSOR, up to the
+           * next tab stop. The ready-made `indentWithTab` shifts the whole
+           * line, and Tab in the middle of typed text carried everything
+           * already written to the right — the rule and its arguments are in
+           * lib/indent.ts.
            *
-           * Стоит последним и потому проигрывает всем, кто уже занял Tab.
-           * Ценой ловушки для клавиатуры: выйти из ячейки Tab'ом нельзя — для
-           * этого Escape, он же увод в командный режим, и он же выше по
-           * старшинству. У ячейки, которую не дают править (чужая под замком,
-           * закончившееся занятие), Tab по-прежнему уводит фокус: правило
-           * отказывает на readOnly, и нажатие достаётся браузеру.
+           * It stands last and therefore loses to everyone who has already
+           * taken Tab. At the cost of a keyboard trap: one cannot leave the
+           * cell with Tab — Escape is for that, it also takes one into command
+           * mode, and it is higher in precedence too. In a cell that may not be
+           * edited (someone else's under a lock, a finished class), Tab still
+           * moves the focus away: the rule declines on readOnly, and the press
+           * goes to the browser.
            *
-           * Тот же размен и та же строка — в редакторе файлов (FileEditor).
+           * The same trade-off and the same line are in the file editor
+           * (FileEditor).
            */
           keymap.of([
             tabKey({
@@ -1769,33 +1860,35 @@
   })
 
   /**
-   * Переконфигурировать живой редактор под новое правило edit — или null, пока
-   * редактора нет.
+   * Reconfigure the live editor for a new edit rule — or null while there is no
+   * editor.
    *
-   * `$state.raw`, потому что второй эффект должен проснуться, когда редактор
-   * построился заново (другая тетрадь, другой язык), а не только когда правило
-   * поменялось.
+   * `$state.raw`, because the second effect has to wake up when the editor has
+   * been rebuilt (another notebook, another language), not only when the rule
+   * has changed.
    */
   let setWritable = $state.raw<((editable: boolean) => void) | null>(null)
-  /** Что стоит в живом редакторе сейчас — чтобы не переконфигурировать впустую. */
+  /** What is in the live editor now — so as not to reconfigure for nothing. */
   let writableNow = true
   let setLabels = $state.raw<((hint: string) => void) | null>(null)
   /**
-   * Показать в живом редакторе, куда привёл переход, — или null, пока его нет.
+   * Show in the live editor where a jump led — or null while there is no
+   * editor.
    *
-   * `$state.raw` по тому же доводу, что у `setWritable`: эффект с меткой обязан
-   * проснуться и тогда, когда редактор ТОЛЬКО ЧТО построился. Для перехода это
-   * не редкий случай, а обычный: далёкую ячейку тетрадь держит заглушкой и
-   * строит уже после прокрутки, то есть позже, чем пришёл ответ.
+   * `$state.raw` by the same argument as for `setWritable`: the effect with the
+   * mark has to wake up also when the editor has ONLY JUST been built. For a
+   * jump this is not a rare case but the usual one: the notebook keeps a
+   * distant cell as a placeholder and builds it only after scrolling, that is,
+   * later than the answer arrived.
    */
   let setLanding = $state.raw<((spot: { line: number; column: number }) => void) | null>(null)
-  /** Номер последнего показанного перехода — чтобы не показывать его дважды. */
+  /** The number of the last shown jump — so as not to show it twice. */
   let landedSeq = 0
   /**
-   * Живой редактор — не для перерисовки, а чтобы спросить про фокус.
+   * The live editor — not for redrawing, but to ask about focus.
    *
-   * Обычный `let`, не `$state`: читают его только обработчики, и реактивным он
-   * бы означал пересборку эффекта на каждую сборку редактора.
+   * A plain `let`, not `$state`: only the handlers read it, and a reactive one
+   * would mean re-running the effect on every editor build.
    */
   let live: EditorView | null = null
 
@@ -1804,10 +1897,10 @@
     const ytext = text
     const scope = cellId
     /*
-     * Ячейкин редактор видит присутствие только своей ячейки — иначе один чужой
-     * курсор будит все смонтированные редакторы разом (см. cell-awareness.ts).
-     * Свой курсор при этом по-прежнему объявляется в настоящее присутствие:
-     * вид только читает.
+     * A cell's editor sees only its own cell's presence — otherwise a single
+     * remote cursor wakes all mounted editors at once (see cell-awareness.ts).
+     * One's own cursor is still announced into the real presence meanwhile: the
+     * view only reads.
      */
     const scoped = scope ? cellAwareness(awareness, scope) : null
     const peers = scoped ?? awareness
@@ -1820,26 +1913,26 @@
 
     const hint = untrack(() => placeholder)
     const focusOnReady = untrack(() => autoFocus)
-    // Потолок у своего листа один на всё время его жизни — как и подсказка:
-    // отслеживать его значило бы разбирать редактор под пальцами ради числа,
-    // которое не меняется.
+    // The ceiling of one's own sheet is one for its whole life — like the
+    // placeholder: tracking it would mean tearing down the editor under the
+    // fingers for the sake of a number that does not change.
     const ceiling = untrack(() => maxChars)
     /*
-     * `readOnly` здесь НЕ отслеживается, и это несущее решение.
+     * `readOnly` is NOT tracked here, and that is a load-bearing decision.
      *
-     * Пока отслеживался, преподаватель, переключивший «Печатать в ячейках» на
-     * «только преподаватель» посреди пары, разбирал редактор у всех: destroy
-     * уносит сфокусированный .cm-content, `holdingFocus` считается уже после
-     * него и врёт, autoFocus у кодовой ячейки нет — фокус не возвращался
-     * никому. Следующие буквы уходили в командный режим тетради, где «a»
-     * вставляет ячейку всей комнате, а «d d» удаляет выбранную. Теперь правило
-     * живёт в отсеке и меняется на месте — см. эффект ниже.
+     * While it was tracked, a teacher who switched "Type in cells" to "Teacher
+     * only" in the middle of a class tore down the editor for everyone: destroy
+     * takes away the focused .cm-content, `holdingFocus` is computed after it
+     * and lies, a code cell has no autoFocus — focus came back to nobody. The
+     * next letters went into the notebook's command mode, where "a" inserts a
+     * cell for the whole room and "d d" deletes the selected one. Now the rule
+     * lives in a compartment and changes in place — see the effect below.
      */
     const editable = untrack(() => !readOnly)
 
     let view: EditorView | null = null
     let disposed = false
-    /** Часы угасания подсветки — один на редактор, переход их перезаводит. */
+    /** The highlight's fade clock — one per editor, a jump restarts it. */
     let fading: ReturnType<typeof setTimeout> | null = null
 
     void loadCodeMirror().then((cm) => {
@@ -1870,30 +1963,33 @@
       setWritable = (next) =>
         built.dispatch({ effects: writable.reconfigure(writableExtensions(cm, next)) })
       /**
-       * Показать, куда привели: подсветить строку и — если тут дают печатать —
-       * поставить в неё каретку.
+       * Show where we were taken: highlight the line and — if typing is allowed
+       * here — put the caret in it.
        *
-       * Порядок именно такой, и подсветка тут главная, а каретка второстепенная.
-       * В ячейке, которую не дают править, `focus()` не делает НИЧЕГО: у
-       * закрытого редактора `contenteditable=false`, а такой узел фокуса не
-       * берёт вовсе — это записано по живому отказу в CellView.svelte (заметка
-       * под замком, из которой нечем было выйти, потому что выход висел на
-       * уходе фокуса). Переход же обязан работать и там: чужую тетрадь и
-       * закончившееся занятие читают чаще, чем правят. Поэтому «куда привели»
-       * говорит украшение строки, а не каретка.
+       * Exactly in this order, and the highlight is the main thing here, the
+       * caret secondary. In a cell that may not be edited, `focus()` does
+       * NOTHING: a closed editor has `contenteditable=false`, and such a node
+       * does not take focus at all — this was written down after a live failure
+       * in CellView.svelte (a locked note that there was no way out of, because
+       * the way out hung on losing focus). A jump, though, has to work there
+       * too: someone else's notebook and a finished class are read more often
+       * than edited. So "where we were taken" is said by the line decoration,
+       * not by the caret.
        *
-       * Прокрутки здесь нет намеренно. `EditorView.scrollIntoView` пошёл бы
-       * искать скроллер вверх по предкам — своего у ячейки нет
-       * (`.cm-scroller { overflow: visible }` ниже в этом файле), — то есть
-       * подвинул бы `<main>` посреди плавного хода тетради, а браузер считает
-       * такую правку `scrollTop` чужим вмешательством и ход обрывает
-       * (Notebook.svelte · steering). К ячейке везёт тетрадь; редактор только
-       * подсвечивает строку.
+       * There is deliberately no scrolling here. `EditorView.scrollIntoView`
+       * would go looking for a scroller up the ancestors — the cell has none of
+       * its own (`.cm-scroller { overflow: visible }` further down in this
+       * file) — that is, it would move the `<main>` in the middle of the
+       * notebook's smooth move, and the browser treats such a change of
+       * `scrollTop` as outside interference and cuts the move short
+       * (Notebook.svelte · steering). The notebook takes one to the cell; the
+       * editor only highlights the line.
        */
       setLanding = (spot) => {
         const doc = built.state.doc
-        // Строка могла уехать: ответ считали по тексту, который с тех пор
-        // успели поправить. Промах внутрь документа лучше исключения.
+        // The line may have moved: the answer was computed from text that has
+        // been edited since. Missing inside the document is better than an
+        // exception.
         const row = doc.line(Math.min(Math.max(1, Math.round(spot.line)), doc.lines))
         const pos = Math.min(row.from + Math.max(0, spot.column), row.to)
         const mayType = !built.state.readOnly
@@ -1917,17 +2013,18 @@
       if (live === view) live = null
       view?.destroy()
       view = null
-      // После редактора: `destroy` плагина ещё снимет с вида свой слушатель.
+      // After the editor: the plugin's `destroy` will still remove its listener
+      // from the view.
       scoped?.destroy()
       ready = false
     }
   })
 
   /*
-   * Правило edit меняется посреди пары, и редактор его переживает: меняется
-   * один отсек, фокус, курсор, прокрутка и открытая подсказка остаются на
-   * месте. Строится редактор уже с верным значением, так что первый прогон
-   * этого эффекта — обычно холостой.
+   * The edit rule changes in the middle of a class, and the editor survives it:
+   * one compartment changes, while focus, the cursor, the scroll and an open
+   * completion stay in place. The editor is built with the right value from the
+   * start, so the first run of this effect is usually idle.
    */
   // Display language changes reconfigure labels in place; the editor, undo, and selection survive.
   $effect(() => {
@@ -1941,32 +2038,34 @@
     if (!apply || editable === writableNow) return
     writableNow = editable
     /*
-     * Право печатать отняли из-под курсора — забрать и курсор.
+     * The right to type was taken away from under the cursor — take the cursor
+     * away too.
      *
-     * `yCollab` объявляет положение курсора всей комнате, пока редактор в
-     * фокусе, и это правильно ровно до того мгновения, когда преподаватель
-     * закрывает ячейку. Дальше поле `cursor` в присутствии остаётся стоять в
-     * ней: у соседей до конца пары висит каретка с именем человека там, где
-     * он уже ничего не печатает. Само оно не уйдёт — `yCollab` чистит поле
-     * только у редактора В ФОКУСЕ, а закрытый фокуса не берёт вовсе
-     * (`contenteditable=false`).
+     * `yCollab` announces the cursor position to the whole room while the
+     * editor has focus, and that is right up to the moment the teacher closes
+     * the cell. After that the `cursor` field in presence stays standing in it:
+     * the neighbours have a caret with the person's name hanging until the end
+     * of class where they are no longer typing anything. It will not go away by
+     * itself — `yCollab` clears the field only for an editor IN FOCUS, and a
+     * closed one does not take focus at all (`contenteditable=false`).
      *
-     * Спрашиваем ДО переконфигурации, пока фокус ещё здесь: это и есть
-     * доказательство, что в присутствии стоит наш курсор, а не чужой ячейки.
+     * We ask BEFORE reconfiguring, while the focus is still here: that is the
+     * proof that the cursor in presence is ours and not another cell's.
      */
     if (!editable && live?.hasFocus) awareness.setLocalStateField('cursor', null)
     apply(editable)
   })
 
   /*
-   * Переход приехал — показать его в ЖИВОМ редакторе, не разбирая его.
+   * A jump has arrived — show it in the LIVE editor, without tearing it down.
    *
-   * Тот же приём, что у правила edit и у языка подписей выше: метка никогда не
-   * читается при постройке вида, потому что дойти она может и раньше неё, и
-   * много позже. Раньше — когда ячейку ещё строит тетрадь; позже — когда
-   * человек вернулся и щёлкнул по тому же имени второй раз, а по полям метки
-   * это тот же самый переход. Различает их `seq`, и сравнение с ним — ровно
-   * то, что не даёт одному переходу показаться дважды.
+   * The same technique as for the edit rule and the label language above: the
+   * mark is never read when the view is built, because it can arrive both
+   * earlier than the view and much later. Earlier — when the notebook is still
+   * building the cell; later — when the person came back and clicked the same
+   * name a second time, and by the mark's fields this is the same jump. `seq`
+   * tells them apart, and comparing with it is exactly what keeps one jump from
+   * showing twice.
    */
   $effect(() => {
     const show = setLanding
@@ -2020,18 +2119,19 @@
     height: auto;
   }
   /*
-   * Ячейка ничего не прокручивает и ничего не режет.
+   * The cell scrolls nothing and clips nothing.
    *
-   * Высота у редактора по содержимому, прокручивается страница, — но
-   * `overflow-x: auto` из index.css делал скроллер обрезающим и по вертикали
-   * (у `overflow-x: auto` вторая ось не бывает `visible`), а `overflow-y:
-   * hidden` здесь это закрепляло. Резалось при этом единственное, что вообще
-   * выходит за строку: плашка с именем соседа — она висит НАД строкой, и на
-   * первой строке ячейки от неё оставалось девять пикселей из четырнадцати,
-   * то есть срезанные по горизонту буквы.
+   * The editor's height follows its content, and the page scrolls — but
+   * `overflow-x: auto` from index.css made the scroller clip vertically too
+   * (with `overflow-x: auto` the second axis cannot be `visible`), and
+   * `overflow-y: hidden` here cemented that. And what got clipped was the only
+   * thing that goes beyond a line at all: the pill with a neighbour's name — it
+   * hangs ABOVE the line, and on the first line of the cell only nine pixels of
+   * fourteen were left of it, that is, letters cut off at the horizon.
    *
-   * Прокрутке это ничего не стоит: строки в ячейке переносятся
-   * (`EditorView.lineWrapping`), горизонтальной полосе тут взяться неоткуда.
+   * This costs scrolling nothing: lines in a cell wrap
+   * (`EditorView.lineWrapping`), and a horizontal scrollbar has nowhere to come
+   * from here.
    */
   .cm-cell :global(.cm-scroller) {
     overflow: visible;

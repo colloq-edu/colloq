@@ -1,24 +1,24 @@
 import { tr, formatNumber } from '@shared/i18n'
 /**
- * Консилиум на клиенте: своя попытка, стопка преподавателя и счётчики — из
- * сообщений управляющего сокета, по ячейкам.
+ * The council on the client: one's own attempt, the teacher's stack and the
+ * counters — from control socket messages, per cell.
  *
- * Попытки нарочно не живут в общей тетради (см. shared/protocol.ts · council:*):
- * студент печатает у себя, снимок уезжает на сервер при паузе в наборе, а
- * обратно приходят три разных взгляда — `council:mine` автору, `council:board`
- * преподавателю (целиком — раз, дальше дельтами `council:patch`),
- * `council:count` всей комнате. Здесь они хранятся по ячейке и отдаются
- * CellView как руны; сам сокет живёт в SessionState, и сюда он приходит одной
- * функцией `send`.
+ * Attempts deliberately do not live in the shared notebook (see
+ * shared/protocol.ts · council:*): a student types locally, a snapshot goes to
+ * the server on a typing pause, and three different views come back —
+ * `council:mine` to the author, `council:board` to the teacher (whole once,
+ * then as `council:patch` deltas), `council:count` to the whole room. Here
+ * they are stored per cell and handed to CellView as runes; the socket itself
+ * lives in SessionState and comes here as a single `send` function.
  *
- * Карты — `$state.raw` и заменяются целиком, как заметки и чернила в
- * SessionState: снимок стопки на пятьсот попыток оборачивать в глубокий прокси
- * незачем, его читают как целое. Значения при этом сохраняют ссылку: ячейка,
- * чей снимок не менялся, из `$derived` получает тот же объект и не
- * перерисовывается.
+ * The maps are `$state.raw` and are replaced whole, like notes and ink in
+ * SessionState: there is no point wrapping a stack snapshot of five hundred
+ * attempts in a deep proxy, it is read as a whole. The values keep their
+ * reference meanwhile: a cell whose snapshot did not change gets the same
+ * object from `$derived` and is not redrawn.
  *
- * Чистая часть — `DraftOutbox`, `withOracle`, подписи счётчиков — без рун, и
- * именно она под тестами (tests/council-client.test.mts).
+ * The pure part — `DraftOutbox`, `withOracle`, the counter captions — has no
+ * runes, and it is exactly what is under test (tests/council-client.test.mts).
  */
 import { untrack } from 'svelte'
 import type * as Y from 'yjs'
@@ -42,7 +42,7 @@ import type {
 } from '@shared/protocol'
 import { plural } from './plural'
 
-/** То из серверных сообщений, что про консилиум, — ровно то, что берёт `receive`. */
+/** The server messages that are about the council — exactly what `receive` takes. */
 export type CouncilMessage = Extract<
   ControlServerMessage,
   {
@@ -61,41 +61,47 @@ export type CouncilMessage = Extract<
 
 export type CouncilPatch = Extract<CouncilMessage, { t: 'council:patch' }>
 
-/** «N сдали из M» — без текстов, для проектора и чипа над ячейкой. */
+/** "N of M submitted" — without texts, for the projector and the chip above the cell. */
 export interface CouncilCount {
   submitted: number
   total: number
 }
 
 /**
- * Сколько ждать конца приветственной пачки, если сервер о нём не говорит.
+ * How long to wait for the end of the welcome batch if the server does not say.
  *
- * Кадр `council:ready` появился 20.09; сборка постарше его не шлёт, а пачка
- * может и потеряться. Шесть секунд — это заведомо дольше самой пачки (её
- * собирают одним обходом тетрадей и отправляют сразу после входа) и заведомо
- * короче терпения человека, который смотрит на заставку и не понимает, живо ли
- * окно. Дальше пульт показывает то, что знает, — пусть даже это пустота.
+ * The `council:ready` frame appeared on 20 Sep 2026; an older build does not
+ * send it, and the batch can get lost too. Six seconds is surely longer than
+ * the batch itself (it is assembled in one pass over the notebooks and sent
+ * right after entry) and surely shorter than the patience of a person looking
+ * at the splash and wondering whether the window is alive. After that the
+ * console shows what it knows — even if that is emptiness.
  */
 export const WELCOME_WAIT_MS = 6_000
 
 /**
- * Что пульт знает про стопку ячейки: жду, нет её, или вот она.
+ * What the console knows about a cell's stack: waiting, it is not there, or
+ * here it is.
  *
- * До 20.09 развилка была одна — `board === null`, — и означала сразу два
- * разных факта: «кадр ещё едет» и «консилиума тут нет». Пульт выбирал второе,
- * и на каждой перезагрузке между заставкой и собой успевал мигнуть «ячейка не
- * в консилиуме»: окно рисуется раньше первого `council:board`.
+ * Before 20 Sep 2026 there was a single fork — `board === null` — and it meant
+ * two different facts at once: "the frame is still on its way" and "there is
+ * no council here". The console chose the second, and on every reload, between
+ * the splash and itself, it managed to flash "the cell is not in the council":
+ * the window is drawn before the first `council:board`.
  *
- * Чистая функция и четыре входа, потому что «не знаю» складывается из четырёх
- * разных обещаний:
- *  - `settled` — сервер сказал, что пачка кончилась (или сторож устал ждать);
- *  - `connected` — без связи пустота не значит ничего;
- *  - `council` — замок ячейки в ДОКУМЕНТЕ: CRDT и сокет — разные каналы, и
- *    документ, уже знающий про консилиум, спорит с молчанием сокета;
- *  - `board` — сама стопка.
+ * A pure function with four inputs, because "I don't know" is made of four
+ * different promises:
+ *  - `settled` — the server said the batch is over (or the watchdog got tired
+ *    of waiting);
+ *  - `connected` — without a connection emptiness means nothing;
+ *  - `council` — the cell's lock in the DOCUMENT: the CRDT and the socket are
+ *    different channels, and a document that already knows about the council
+ *    argues with the socket's silence;
+ *  - `board` — the stack itself.
  *
- * Стопка, у которой консилиум снят и попыток не осталось, — это «нет»: её
- * незачем показывать, и раньше эта же ветка отвечала за пустой экран.
+ * A stack whose council was lifted and that has no attempts left is a "no":
+ * there is no point showing it, and this same branch used to be responsible
+ * for the empty screen.
  */
 export type BoardPhase = 'waiting' | 'missing' | 'ready'
 
@@ -109,34 +115,36 @@ export function boardPhase(input: {
   if (board !== null) {
     return board.lock === 'council' || board.counts.attempts > 0 ? 'ready' : 'missing'
   }
-  // Пачка ещё едет — молчание не ответ.
+  // The batch is still on its way — silence is not an answer.
   if (!settled) return 'waiting'
   /*
-   * Сторож отпустил, а документ говорит «здесь консилиум»: стопка приедет
-   * своим кадром, потому что сервер шлёт её на смену замка. Ждём дальше — но
-   * только пока связь жива: без неё приехать ей неоткуда, и вечная заставка
-   * была бы ответом хуже пустоты.
+   * The watchdog has let go, but the document says "there is a council here":
+   * the stack will arrive in its own frame, because the server sends it on a
+   * lock change. Keep waiting — but only while the connection is alive:
+   * without it the stack has nowhere to come from, and an eternal splash would
+   * be a worse answer than emptiness.
    */
   return council && connected ? 'waiting' : 'missing'
 }
 
 /**
- * Пауза в наборе, после которой снимок уезжает на сервер.
+ * The typing pause after which a snapshot goes to the server.
  *
- * Меньше секунды из дизайна: человек, дописавший строку и потянувшийся к
- * «Сдать», не должен успевать нажать раньше, чем уедет текст, — иначе сдаётся
- * прошлый снимок. Больше полсекунды: пятьсот человек, шлющих снимок на каждое
- * слово, — это и есть шум, от которого консилиум уводит попытки из CRDT.
+ * Under a second, by design: a person who finished a line and reached for
+ * "Submit" must not manage to press before the text has gone — otherwise the
+ * previous snapshot is submitted. Over half a second: five hundred people
+ * sending a snapshot on every word is exactly the noise the council keeps
+ * attempts out of the CRDT to avoid.
  */
 export const DRAFT_PAUSE_MS = 800
 
 /**
- * Очередь черновиков: один таймер на ячейку, последний текст побеждает.
+ * The draft queue: one timer per cell, the last text wins.
  *
- * Отдельным классом без рун и с подставными часами — чтобы проверить ровно то,
- * из-за чего такие очереди врут: два быстрых нажатия дают одну отправку,
- * «Сдать» до истечения паузы уносит свежий текст, а не прошлый, и ячейка,
- * в которой ничего не набирали, при сдаче не шлёт пустой снимок.
+ * A separate class without runes and with a fake clock — to check exactly
+ * what makes such queues lie: two quick presses give one send, "Submit"
+ * before the pause runs out carries the fresh text rather than the previous
+ * one, and a cell where nothing was typed sends no empty snapshot on submit.
  */
 export class DraftOutbox {
   readonly #pending = new Map<string, { text: string; timer: ReturnType<typeof setTimeout> }>()
@@ -148,7 +156,7 @@ export class DraftOutbox {
     this.#pause = pause
   }
 
-  /** Придержать текст: уедет через паузу, если за это время не позовут снова. */
+  /** Hold the text: it goes out after the pause unless called again in the meantime. */
   hold(cellId: string, text: string): void {
     const previous = this.#pending.get(cellId)
     if (previous) clearTimeout(previous.timer)
@@ -156,7 +164,7 @@ export class DraftOutbox {
     this.#pending.set(cellId, { text, timer })
   }
 
-  /** Отправить сейчас то, что придержано для этой ячейки. Ничего — ничего. */
+  /** Send now what is held for this cell. Nothing held — nothing sent. */
   flush(cellId: string): boolean {
     const pending = this.#pending.get(cellId)
     if (!pending) return false
@@ -166,7 +174,7 @@ export class DraftOutbox {
     return true
   }
 
-  /** Забыть придержанное, не отправляя: консилиум закрыли под рукой. */
+  /** Forget what is held without sending: the council was closed under one's hand. */
   drop(cellId: string): void {
     const pending = this.#pending.get(cellId)
     if (!pending) return
@@ -178,23 +186,24 @@ export class DraftOutbox {
     return this.#pending.has(cellId)
   }
 
-  /** Снять все таймеры — при уходе из комнаты. Ничего не шлёт: сокета уже нет. */
+  /** Clear all timers — on leaving the room. Sends nothing: the socket is already gone. */
   clear(): void {
     for (const { timer } of this.#pending.values()) clearTimeout(timer)
     this.#pending.clear()
   }
 }
 
-/** Стопка с новым состоянием оракула — прочее нетронуто. */
+/** The stack with a new oracle state — everything else untouched. */
 export function withOracle(board: CouncilBoard, oracle: CouncilOracle): CouncilBoard {
   return { ...board, oracle }
 }
 
 /**
- * Стопка после дельты: попытки из кадра заменяют свои по participantId (новые
- * — в конец), `removed` уходят, числа и замок — из кадра. Порядок остальных
- * не меняется: группы и стопку пульт считает сам, и порядок здесь ни на что
- * не влияет, а лишняя пересортировка — лишняя перерисовка.
+ * The stack after a delta: attempts from the frame replace their own by
+ * participantId (new ones go to the end), `removed` ones leave, the numbers
+ * and the lock come from the frame. The order of the rest does not change:
+ * the console computes the groups and the stack itself, the order here
+ * affects nothing, and an extra re-sort is an extra redraw.
  */
 export function withPatch(board: CouncilBoard, patch: CouncilPatch): CouncilBoard {
   const fresh = new Map(patch.attempts.map((a) => [a.participantId, a] as const))
@@ -217,28 +226,30 @@ export function withPatch(board: CouncilBoard, patch: CouncilPatch): CouncilBoar
 }
 
 /**
- * С чего заводить свой лист: со своей попытки, если она есть, иначе с общего
- * текста ячейки — задание обычно лежит в нём.
+ * What to start one's sheet from: one's own attempt, if there is one,
+ * otherwise the cell's shared text — the task usually lies in it.
  *
- * Пустая строка от сервера — не попытка, а «попытки ещё нет» (mineFor при
- * открытом консилиуме шлёт `text: ''`), и заводить ею лист нельзя: замок
- * приезжает по CRDT, `council:mine` — по управляющему сокету, и у того, кому
- * первым дошёл `mine`, лист оказывался пустым, а у соседа — с заданием. Один
- * класс, два разных стартовых листа, по жребию двух сокетов.
+ * An empty string from the server is not an attempt but "no attempt yet"
+ * (mineFor sends `text: ''` for an open council), and a sheet must not be
+ * started from it: the lock arrives over the CRDT and `council:mine` over the
+ * control socket, and whoever got `mine` first ended up with an empty sheet,
+ * while their neighbour got the task. One class, two different starting
+ * sheets, decided by the race of two sockets.
  */
 export function sheetSeed(mineText: string | null | undefined, shared: string): string {
   return mineText || shared
 }
 
 /**
- * Полоса режима преподавателя: «487 попыток · 446 сдали · 41 черновик ·
- * 6 разных ответов». Куски без чего сказать — опускаются: «0 черновиков» в
- * конце работы — это шум рядом с числом, ради которого смотрят.
+ * The teacher-mode strip: "487 attempts · 446 submitted · 41 drafts ·
+ * 6 different answers". Pieces with nothing to say are dropped: "0 drafts" at
+ * the end of the work is noise next to the number people look for.
  *
- * `groups` — сколько разных ответов НА ЭКРАНЕ. Отдельным доводом, а не полем
- * `counts`, потому что это разные числа: сервер считает группы по всей комнате,
- * а стопка группирует то, что ей доехало, и в полосе должно стоять то, что
- * человек может пересчитать глазами. Не назвали — берётся серверное.
+ * `groups` — how many different answers are ON SCREEN. A separate argument
+ * rather than a `counts` field, because these are different numbers: the
+ * server counts groups across the whole room, while the stack groups what has
+ * reached it, and the strip must show what a person can recount by eye. Not
+ * given — the server's number is used.
  */
 export function councilStripText(counts: CouncilBoard['counts'], groups = counts.groups): string {
   const parts: string[] = []
@@ -253,16 +264,16 @@ export function councilStripText(counts: CouncilBoard['counts'], groups = counts
   return parts.join(' · ')
 }
 
-/** «446 сдали из 487» — чип у студента и строка проектора. */
+/** "446 of 487 submitted" — the student's chip and the projector line. */
 export function countLine(count: CouncilCount): string {
   return tr('room.ui.1058', { count: count.submitted, total: count.total })
 }
 
 /**
- * Кто и как запускал попытку — строка под выводом у автора.
+ * Who ran the attempt and how — the line under the output for the author.
  *
- * «Вы» вместо имени: у автора один собеседник — преподаватель, и второе имя в
- * этой строке было бы его собственным.
+ * "You" instead of a name: the author has one counterpart — the teacher — and
+ * a second name in this line would be the author's own.
  */
 export function ranByLine(
   run: NonNullable<CouncilMine['run']>,
@@ -275,17 +286,19 @@ export function ranByLine(
 }
 
 /**
- * Вывод показанной попытки — строками текста, для проектора.
+ * The output of the shown attempt — as lines of text, for the projector.
  *
- * Полоса проектора — тёмная лента в двадцать пикселей высотой поверх страницы
- * лекции, и рисовать в ней настоящий `CellOutputs` нечем: он набран под
- * светлую тетрадь (рамки, подложки, картинки в полную ширину) и на чёрном
- * читался бы белым прямоугольником. Зал смотрит на вывод ОДНИМ взглядом:
- * напечатанное, имя исключения с сообщением, текстовое представление — и
- * хвост, который в ленту всё равно не поместится, отрезан.
+ * The projector strip is a dark band twenty pixels high over the lecture page,
+ * and there is nothing to draw a real `CellOutputs` in it with: that is set
+ * for a light notebook (frames, backings, full-width images) and on black it
+ * would read as a white rectangle. The hall looks at the output in ONE
+ * glance: what was printed, the exception name with its message, the text
+ * representation — and the tail, which would not fit into the band anyway, is
+ * cut off.
  *
- * Картинки сюда не едут вовсе: график в ленте внизу экрана — это либо марка в
- * пятнадцать пикселей, либо половина лекции под ним.
+ * Images do not come here at all: a plot in a band at the bottom of the
+ * screen is either a fifteen-pixel stamp or half of the lecture hidden under
+ * it.
  */
 export function shownOutputLines(run: CouncilMine['run'], limit = 4): string[] {
   const lines: string[] = []
@@ -301,126 +314,136 @@ export function shownOutputLines(run: CouncilMine['run'], limit = 4): string[] {
 }
 
 /**
- * «вы 37-й в очереди» — место в очереди на запуск, если ручка включена.
+ * "you are 37th in the queue" — the place in the run queue, if the knob is on.
  *
- * Мужской род без склонения: порядковое от любого числа в именительном
- * кончается на «-й» (первый, третий, сороковой), так что окончание одно.
+ * Masculine, not inflected: in Russian the nominative ordinal of any number
+ * ends in "-й" (first, third, fortieth), so there is one ending.
  */
 export function queueWords(place: number): string {
   return tr('room.ui.1063', { p0: place })
 }
 
-/* ------------------------------------------------------- потолок попытки */
+/* ------------------------------------------------------- attempt ceiling */
 
 /**
- * Сколько знаков в попытке — словами под листом, и только когда это важно.
+ * How many characters are in the attempt — in words under the sheet, and only
+ * when it matters.
  *
- * Потолок один на обе стороны (`MAX_ATTEMPT_CHARS` в shared/notebook.ts): выше
- * него сервер снимок не принимает и говорит об этом словами. Пока клиент числа
- * не знал, он слал снимок на каждую паузу в наборе и получал отказ на каждую —
- * тост раз в секунду поверх набора, из которого не следует ни сколько уже
- * набрано, ни сколько можно.
+ * The ceiling is one for both sides (`MAX_ATTEMPT_CHARS` in
+ * shared/notebook.ts): above it the server does not accept a snapshot and
+ * says so in words. While the client did not know the number, it sent a
+ * snapshot on every typing pause and got a refusal on every one — a toast once
+ * a second over the typing, telling neither how much had been typed nor how
+ * much was allowed.
  *
- * `null`, пока до потолка далеко: счётчик, висящий над каждым листом с первой
- * буквы, — это шум. Девять десятых — то место, где он ещё успевает быть
- * предупреждением, а не приговором набранному.
+ * `null` while the ceiling is far away: a counter hanging over every sheet
+ * from the first letter is noise. Nine tenths is the point where it can still
+ * be a warning rather than a verdict on what has been typed.
  */
 export function attemptCounter(chars: number): string | null {
   if (chars < MAX_ATTEMPT_CHARS * 0.9) return null
   return tr('room.ui.1064', { p0: countOf(chars), p1: countOf(MAX_ATTEMPT_CHARS) })
 }
 
-/** Разряды по-русски: «9 012», а не «9012». */
+/** Digit groups the Russian way: "9 012", not "9012". */
 function countOf(n: number): string {
   return formatNumber(n)
 }
 
-/** Не влезает: снимок такого текста сервер отвергнет, а вставку надо не пустить. */
+/** Does not fit: the server will reject such a snapshot, so a paste must be stopped. */
 export function attemptTooLong(text: string): boolean {
   return text.length > MAX_ATTEMPT_CHARS
 }
 
 /**
- * То ли лежит у сервера, что человек видит на листе.
+ * Whether what the server holds is what the person sees on the sheet.
  *
- * Спрашивается ради «сдано»: снимок сверх потолка не уезжает, а «Сдать»
- * отправляет ТО, ЧТО ЛЕЖИТ У СЕРВЕРА. Без этой сверки у студента длинный текст
- * помечен сданным, а у преподавателя в стопке — короткий, прошлый; узнаётся
- * это на разборе, когда переписывать поздно.
+ * Asked for the sake of "submitted": a snapshot over the ceiling does not go
+ * out, and "Submit" sends WHAT THE SERVER HOLDS. Without this check the
+ * student has a long text marked as submitted, while the teacher's stack has
+ * a short, previous one; this is discovered at the review, when it is too
+ * late to rewrite.
  *
- * `undefined` — попытки на сервере ещё нет вовсе, и пустой лист ей равен.
+ * `undefined` — there is no attempt on the server at all yet, and an empty
+ * sheet equals it.
  */
 export function attemptInSync(mine: CouncilMine | null | undefined, sheet: string): boolean {
   return (mine?.text ?? '') === sheet
 }
 
-/* ------------------------------------------------------------------ руны */
+/* ----------------------------------------------------------------- runes */
 
 /**
- * Состояние консилиума комнаты. Живёт в SessionState и умирает с ним.
+ * The room's council state. Lives in SessionState and dies with it.
  *
- * Отправка — только через `send` сокета: очередь на закрытом соединении и
- * «нет связи» словами остаются там, где они у всех остальных нажатий.
+ * Sending goes only through the socket's `send`: the queue on a closed
+ * connection and "no connection" in words stay where they are for every
+ * other press.
  */
 export class CouncilState {
-  /** Своя попытка по ячейкам — приходит только автору. */
+  /** One's own attempt per cell — arrives only to the author. */
   mine = $state.raw<Record<string, CouncilMine>>({})
-  /** Стопки по ячейкам — приходят только преподавателю. */
+  /** Stacks per cell — arrive only to the teacher. */
   boards = $state.raw<Record<string, CouncilBoard>>({})
-  /** «N сдали из M» по ячейкам — всей комнате. */
+  /** "N of M submitted" per cell — to the whole room. */
   counts = $state.raw<Record<string, CouncilCount>>({})
   /**
-   * Подсказка оракула по своей попытке: думает ли и чем кончилось прошлое
-   * нажатие. По ячейкам, потому что листов у человека столько же, сколько
-   * ячеек в консилиуме.
+   * The oracle hint on one's own attempt: whether it is thinking and how the
+   * last press ended. Per cell, because a person has as many sheets as there
+   * are cells in the council.
    */
   hints = $state.raw<Record<string, { asking: boolean; error: string | null }>>({})
   /**
-   * Что сейчас на экране по ячейкам — тоже всей комнате.
+   * What is on screen right now per cell — also for the whole room.
    *
-   * Единственное место, где у студента лежит чужой код, и лежит он там по
-   * делу: это подпись к решению, которое в ту же секунду стоит на проекторе
-   * (shared/protocol.ts · CouncilShown). Ключ есть, а значение `null` — показ
-   * убрали: плашка сворачивается, а ячейка помнит, что кадр по ней приезжал.
+   * The only place where a student holds someone else's code, and it is there
+   * for a reason: it is the caption to a solution that is on the projector at
+   * that very second (shared/protocol.ts · CouncilShown). The key is present
+   * but the value is `null` — the showing was removed: the badge collapses,
+   * and the cell remembers that a frame for it did arrive.
    */
   shown = $state.raw<Record<string, CouncilShown | null>>({})
   /**
-   * Чем занято ядро ТЕТРАДИ каждой ячейки — только у преподавателя.
+   * What the NOTEBOOK kernel of each cell is busy with — for the teacher only.
    *
-   * Отдельно от стопки, хотя ключ тот же. Стопка — про попытки этой ячейки, а
-   * это про общее ядро: очередь у тетради одна, и держать её может обычная
-   * ячейка или попытка соседней ячейки консилиума. Из стопки такого не
-   * собрать, и пульт годами показывал «здесь ничего не выполняется» рядом с
-   * «в очереди: 12» (shared/protocol.ts · CouncilKernel).
+   * Separate from the stack, although the key is the same. The stack is about
+   * this cell's attempts, and this is about the shared kernel: the notebook
+   * has one queue, and it can be held by an ordinary cell or by an attempt of
+   * a neighbouring council cell. That cannot be assembled from the stack, and
+   * for ages the console showed "No code is running in this cell" next to
+   * "queued: 12" (shared/protocol.ts · CouncilKernel).
    */
   kernels = $state.raw<Record<string, CouncilKernel>>({})
   /**
-   * Приветственная пачка консилиума кончилась — хотя бы раз за жизнь окна.
+   * The council's welcome batch has finished — at least once in the window's
+   * life.
    *
-   * Поднимается кадром `council:ready` (shared/protocol.ts) и больше НЕ
-   * гаснет: переподключение везёт пачку заново, и сбросить флаг на разрыве
-   * значило бы вернуть ту самую вспышку «ячейка не в консилиуме» — теперь уже
-   * посреди занятия, у пульта, который просто на секунду потерял сеть.
+   * Raised by the `council:ready` frame (shared/protocol.ts) and NEVER goes
+   * out again: a reconnect brings the batch again, and resetting the flag on a
+   * disconnect would bring back that very flash of "the cell is not in the
+   * council" — this time in the middle of a class, in a console that simply
+   * lost the network for a second.
    */
   welcomed = $state(false)
 
   readonly #send: (message: ControlClientMessage) => void
   readonly #outbox: DraftOutbox
   /**
-   * Оракул, приехавший раньше своей стопки. Стопка приходит целиком и несёт
-   * `oracle` внутри, так что обычно это пусто; но порядок кадров в
-   * приветственной пачке никто не обещал, и потерять ответ модели из-за него
-   * было бы обидно — он стоил вопроса из лимита комнаты.
+   * An oracle that arrived before its stack. The stack arrives whole and
+   * carries `oracle` inside, so this is usually empty; but nobody promised the
+   * order of frames in the welcome batch, and losing a model answer because of
+   * it would be a pity — it cost a question from the room's limit.
    */
   readonly #earlyOracles = new Map<string, CouncilOracle>()
   /**
-   * По каким запускам вывод уже просили — `cellId:participantId:startedAt`.
+   * For which runs the output has already been requested —
+   * `cellId:participantId:startedAt`.
    *
-   * Ключ с моментом старта, а не один participantId: попытку запускают
-   * повторно, и у нового запуска вывод снова может не влезть в бюджет кадра.
-   * Память живёт здесь, а не в карточке: карточку размонтируют — свернули
-   * ячейку, переключили вид, пролистали тетрадь, — и своё множество она
-   * заводит заново, то есть спрашивала бы то же самое ещё раз.
+   * The key carries the start moment, not just the participantId: an attempt
+   * gets run again, and the new run's output may again not fit the frame
+   * budget. The memory lives here, not in the card: the card gets unmounted —
+   * the cell collapsed, the view switched, the notebook scrolled — and it sets
+   * up its set anew, that is, it would ask the same thing again.
    */
   readonly #askedOutputs = new Set<string>()
 
@@ -438,18 +461,19 @@ export class CouncilState {
     }
     if (message.t === 'council:mine') {
       this.mine = { ...this.mine, [message.cellId]: message.state }
-      // Закрытый консилиум не принимает снимков — придержанный уходит без
-      // отправки, текст при этом остаётся в редакторе автора черновиком.
+      // A closed council accepts no snapshots — the held one is dropped unsent,
+      // while the text stays in the author's editor as a draft.
       if (message.state.closed) this.#outbox.drop(message.cellId)
       return
     }
     if (message.t === 'council:board') {
       /*
-       * Полная стопка приезжает заново — и режется по бюджету заново.
+       * The full stack arrives anew — and is cut by the budget anew.
        *
-       * После переподключения пульта или щелчка замка вывод той же попытки
-       * может снова не поехать, а спрашивали про неё в прошлой жизни кадра.
-       * Без этой уборки карточка осталась бы с «просим отдельно…» навсегда.
+       * After the console reconnects or the lock clicks, the output of the
+       * same attempt may again not come along, while it was asked for in the
+       * frame's previous life. Without this cleanup the card would be stuck
+       * with "requesting separately…" forever.
        */
       for (const key of this.#askedOutputs) {
         if (key.startsWith(`${message.cellId}:`)) this.#askedOutputs.delete(key)
@@ -463,9 +487,9 @@ export class CouncilState {
     }
     if (message.t === 'council:patch') {
       const board = this.boards[message.cellId]
-      // Стопки по этой ячейке ещё нет — дельту некуда класть: полная стопка
-      // приезжает пачкой при подключении и на смену замка, дельта без неё
-      // выдала бы стопку из одного человека за весь класс.
+      // There is no stack for this cell yet — nowhere to put the delta: the full
+      // stack arrives in the batch on connect and on a lock change, and a delta
+      // without it would pass off a stack of one person as the whole class.
       if (!board) return
       this.boards = { ...this.boards, [message.cellId]: withPatch(board, message) }
       return
@@ -480,9 +504,10 @@ export class CouncilState {
     }
     if (message.t === 'council:hint:state') {
       /*
-       * Кадр только про кнопку: сам ответ приезжает письмом в `council:mine` и
-       * живёт в попытке. Отказ держится до следующего нажатия — он объясняет,
-       * почему кнопка снова живая и ничего не произошло.
+       * The frame is only about the button: the answer itself arrives as a
+       * letter in `council:mine` and lives in the attempt. A refusal stays
+       * until the next press — it explains why the button is alive again and
+       * nothing happened.
        */
       this.hints = {
         ...this.hints,
@@ -503,29 +528,31 @@ export class CouncilState {
     }
   }
 
-  /* ------------------------------------------------------------ свой лист */
+  /* ------------------------------------------------------------ own sheet */
 
   /**
-   * Придержать снимок текста: уедет через паузу в наборе.
+   * Hold a snapshot of the text: it goes out after a typing pause.
    *
-   * Сверх потолка снимок не держим и не шлём: сервер его всё равно отвергнет, а
-   * отвергает он словами — то есть тостом на каждую паузу в наборе, пока
-   * человек дописывает длинную попытку. Про потолок говорит счётчик под листом
-   * (`attemptCounter`), и говорит один раз, а не двадцать.
+   * Over the ceiling a snapshot is neither held nor sent: the server would
+   * reject it anyway, and it rejects in words — that is, with a toast on every
+   * typing pause while the person finishes a long attempt. The counter under
+   * the sheet (`attemptCounter`) speaks about the ceiling, and it speaks once,
+   * not twenty times.
    */
   draft(cellId: string, text: string): void {
     if (attemptTooLong(text)) return
     this.#outbox.hold(cellId, text)
   }
 
-  /** Отправить придержанное сейчас — на уходе фокуса и перед «Сдать». */
+  /** Send what is held right now — on blur and before "Submit". */
   flush(cellId: string): void {
     this.#outbox.flush(cellId)
   }
 
   /**
-   * «Сдать». Сначала свежий снимок, потом сдача: иначе сервер сдал бы текст
-   * секундной давности, а последняя строка приехала бы уже к сданному.
+   * "Submit". The fresh snapshot first, then the submission: otherwise the
+   * server would submit a text a second old, and the last line would arrive
+   * after it was already submitted.
    */
   submit(cellId: string): void {
     this.#outbox.flush(cellId)
@@ -533,12 +560,13 @@ export class CouncilState {
   }
 
   /**
-   * Попросить подсказку по своей упавшей попытке.
+   * Ask for a hint on one's own failed attempt.
    *
-   * «Думает» ставится здесь, не дожидаясь эха: между нажатием и первым кадром
-   * сервера лежит поход к модели, и живая кнопка всё это время — приглашение
-   * нажать второй раз, то есть второй вопрос из лимита. Сервер подтвердит то
-   * же самое кадром `council:hint:state`, и он же снимет.
+   * "Thinking" is set here, without waiting for the echo: between the press
+   * and the server's first frame lies a trip to the model, and a live button
+   * all that time is an invitation to press a second time, that is, a second
+   * question from the limit. The server will confirm the same with a
+   * `council:hint:state` frame, and it is also what clears it.
    */
   askHint(cellId: string): void {
     if (this.hints[cellId]?.asking) return
@@ -546,25 +574,26 @@ export class CouncilState {
     this.#send({ t: 'council:hint', cellId })
   }
 
-  /** «Изменить»: снять «сдано», текст остаётся. */
+  /** "Edit": remove "submitted", the text stays. */
   withdraw(cellId: string): void {
     this.#send({ t: 'council:withdraw', cellId })
   }
 
   /**
-   * Попросить вывод одной попытки — тот, что не поехал со стопкой.
+   * Ask for the output of one attempt — the one that did not come with the
+   * stack.
    *
-   * Полный кадр `council:board` режется сервером по бюджету вывода: у попыток
-   * сверх него `run.outputs` пуст и стоит `run.outputsOmitted` (shared/protocol
-   * · CouncilRun). Спрашивает карточка, когда её развернули, — по одной
-   * попытке за раз, и ответ приезжает обычной дельтой `council:patch` уже с
-   * выводом.
+   * The server cuts the full `council:board` frame by an output budget:
+   * attempts beyond it have an empty `run.outputs` and `run.outputsOmitted`
+   * set (shared/protocol · CouncilRun). The card asks when it is expanded —
+   * one attempt at a time, and the answer arrives as an ordinary
+   * `council:patch` delta, now with the output.
    *
-   * Молча ничего не делает в двух случаях, и оба нормальные: попытки в стопке
-   * нет (её автора забанили, пока карточку смотрели) и вывод в кадре
-   * настоящий. Второе — то, ради чего проверка здесь, а не у зовущего: пока
-   * карточка открыта, эффект перезапускается на каждую дельту, а просьба
-   * должна уйти один раз на запуск.
+   * It silently does nothing in two cases, both normal: the attempt is not in
+   * the stack (its author was banned while the card was being looked at), and
+   * the output in the frame is real. The second is why the check is here and
+   * not at the caller: while the card is open, the effect reruns on every
+   * delta, and the request must go out once per run.
    */
   wantOutputs(cellId: string, participantId: string): void {
     const attempt = this.boards[cellId]?.attempts.find((a) => a.participantId === participantId)
@@ -576,7 +605,7 @@ export class CouncilState {
     this.#send({ t: 'council:attempt', cellId, participantId })
   }
 
-  /** Запустить: свою попытку (без participantId) или чью-то — преподаватель. */
+  /** Run: one's own attempt (no participantId) or someone's — the teacher. */
   run(cellId: string, participantId?: string): void {
     if (participantId === undefined) this.#outbox.flush(cellId)
     this.#send(
@@ -586,7 +615,7 @@ export class CouncilState {
     )
   }
 
-  /** Запрос относится к последнему снимку, а не к прошлому тексту на сервере. */
+  /** The request refers to the latest snapshot, not to the previous text on the server. */
   requestRun(cellId: string): void {
     this.#outbox.flush(cellId)
     this.#send({ t: 'council:run:request', cellId })
@@ -605,19 +634,21 @@ export class CouncilState {
   }
 
   /**
-   * Снять чужой ждущий запуск с очереди — не трогая человека.
+   * Take someone else's waiting run out of the queue — without touching the
+   * person.
    *
-   * Отдельно от `cancelRunRequest`: та про ПРОСЬБУ («разрешите запустить»), а
-   * эта про уже поставленную в очередь работу. Автору сервер говорит об этом
-   * словом — молча исчезнувший запуск читается как поломка.
+   * Separate from `cancelRunRequest`: that one is about a REQUEST ("please let
+   * me run"), this one about a job already put in the queue. The server tells
+   * the author about it in words — a run that silently vanishes reads as a
+   * breakage.
    */
   dropRun(cellId: string, participantId: string): void {
     this.#send({ t: 'council:run:drop', cellId, participantId })
   }
 
-  /* --------------------------------------------------------------- ведущий */
+  /* ------------------------------------------------------------------ host */
 
-  /** Замок в положение — и ручки консилиума тем же сообщением. */
+  /** Set the lock position — and the council's knobs in the same message. */
   lock(cellId: string, state: CellLock, settings?: Partial<CouncilSettings>): void {
     this.#send(
       settings ? { t: 'cell:lock', cellId, state, settings } : { t: 'cell:lock', cellId, state },
@@ -628,7 +659,7 @@ export class CouncilState {
     this.#send({ t: 'council:show', cellId, participantId })
   }
 
-  /** «Убрать с экрана»: показ снимается с ячейки целиком, текст никто не трогал. */
+  /** "Clear the screen": the showing leaves the cell entirely; the text is untouched. */
   clearShown(cellId: string): void {
     this.#send({ t: 'council:show:clear', cellId })
   }
@@ -646,12 +677,12 @@ export class CouncilState {
   }
 }
 
-/* ------------------------------------------------------------ замок ячейки */
+/* --------------------------------------------------------------- cell lock */
 
-/** Положение замка и ручки консилиума — то, чего `watchCellMeta` не различает. */
+/** The lock position and the council's knobs — what `watchCellMeta` does not distinguish. */
 export interface CellLockView {
   lock: CellLock
-  /** `null` вне консилиума — ручек у закрытой двери нет. */
+  /** `null` outside a council — a closed door has no knobs. */
   settings: CouncilSettings | null
 }
 
@@ -671,20 +702,21 @@ function sameLock(a: CellLockView, b: CellLockView): boolean {
 }
 
 /**
- * Замок ячейки в три положения — как руна.
+ * The three-position cell lock — as a rune.
  *
- * `watchCellMeta` отдаёт `open: boolean` (= isCellOpen) и просыпается на ключ
- * `open`, но консилиум для него — закрытая ячейка, и переход closed → council
- * он молча съедает как «то же самое». Здесь свой узкий наблюдатель на той же
- * Y.Map: два ключа, `open` и `council`, пишет их только сервер, и меняются они
- * считаные разы за пару. Звать при инициализации компонента — внутри `$effect`.
+ * `watchCellMeta` returns `open: boolean` (= isCellOpen) and wakes on the
+ * `open` key, but to it a council is a closed cell, and it silently swallows
+ * the closed → council transition as "the same thing". Here is a narrow
+ * observer of our own on the same Y.Map: two keys, `open` and `council`, only
+ * the server writes them, and they change a handful of times per class. Call
+ * it during component initialisation — inside `$effect`.
  */
 export function watchCellLock(cell: () => YCell | null): { readonly current: CellLockView } {
   let current = $state.raw<CellLockView>(CLOSED_LOCK)
 
   $effect(() => {
     const target = cell()
-    // Присваивание без чтения: эффект зависит от ячейки, а не от того, что сам пишет.
+    // Assign without reading: the effect depends on the cell, not on what it writes.
     current = target ? readLock(target) : CLOSED_LOCK
     if (!target) return
     const observer = (event: Y.YMapEvent<unknown>) => {

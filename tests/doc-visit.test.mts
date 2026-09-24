@@ -1,18 +1,20 @@
 /**
- * Гость тетради: поднять документ ради одной строки — и уйти, ничего не унеся.
+ * A notebook guest: bring up the document for the sake of one line — and
+ * leave without taking anything away.
  *
- * Переименование в панели, чтение ленты, публикация, импорт и сводка
- * консилиума поднимают документ комнаты, в которой никого нет. Раньше он
- * оставался в памяти до перезапуска, теперь его отпускает `visitSessionDoc`
- * (server/src/routes/doc-visit.ts) — и отпускает выселением без закрытий,
- * `releaseSessionDoc`. Дверь удаления (`dropSessionDoc`) здесь звалась раньше,
- * и всякий шаг, добавленный туда «по случаю удаления», уезжал и в
- * переименование прошлогоднего семинара, и в чтение его ленты — то есть по
- * живому.
+ * A rename in the panel, reading the feed, publishing, an import and the
+ * council summary bring up the document of a room with nobody in it. It used
+ * to stay in memory until a restart; now `visitSessionDoc`
+ * (server/src/routes/doc-visit.ts) lets it go — and lets it go by eviction
+ * without closing anything, `releaseSessionDoc`. The deletion door
+ * (`dropSessionDoc`) used to be called here, and every step added there "for
+ * the occasion of deletion" also went into renaming last year's seminar and
+ * reading its feed — that is, into the living.
  *
- * Здесь прибито то, чего визит делать не должен ни при какой правке соседнего
- * модуля: терять записанное, сносить строки семинара, трогать файлы комнаты на
- * диске и выселять документ у тех, кто в комнате сидит.
+ * Pinned here is what the visit must not do under any edit of the
+ * neighbouring module: lose what was written, delete the seminar's rows,
+ * touch the room's files on disk, or evict the document from those sitting
+ * in the room.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -27,11 +29,11 @@ import { cellSource, createCell, getCells, getMeta } from '../shared/notebook.js
 
 after(() => shutdownCollab())
 
-test('визит в пустую комнату дописывает, отпускает и ничего не сносит', () => {
+test('a visit to an empty room writes, lets go and deletes nothing', () => {
   const id = 'visit-cold'
   createSession(id, 'Прошлогодний семинар', null)
 
-  // Работа класса: ячейка в тетради и файл рядом с ней.
+  // The class's work: a cell in the notebook and a file next to it.
   {
     const { doc } = getSessionDoc(id)
     const cells = getCells(doc)
@@ -39,50 +41,51 @@ test('визит в пустую комнату дописывает, отпус
     const cell = createCell('code', '')
     cells.push([cell])
     cellSource(cell).insert(0, 'x = 1')
-    // Холодный путь: ровно то состояние, в котором комната встречает
-    // перезапуск сервера — на диске всё, в памяти ничего.
+    // The cold path: exactly the state in which a room meets a server
+    // restart — everything on disk, nothing in memory.
     shutdownCollab()
   }
   const file = path.join(sessionDir(id), 'utils.py')
   const text = 'def f():\n    return 1\n'
   fs.writeFileSync(file, text)
-  assert.equal(peekSessionDoc(id), null, 'комната осталась в памяти — тест ничего не проверяет')
+  assert.equal(peekSessionDoc(id), null, 'the room stayed in memory — the test checks nothing')
 
   const before = listVersions(id, 100).length
 
-  // Ровно то, что делает переименование в панели (routes/admin-instance.ts).
+  // Exactly what a rename in the panel does (routes/admin-instance.ts).
   visitSessionDoc(id, (doc) => getMeta(doc).set('title', 'Семинар 3'))
 
-  assert.equal(peekSessionDoc(id), null, 'визит поселил тетрадь в памяти')
-  assert.ok(getSession(id), 'визит снёс сам семинар')
-  assert.equal(fs.readFileSync(file, 'utf8'), text, 'визит тронул файлы комнаты')
-  assert.ok(listVersions(id, 100).length >= before, 'визит потерял строки ленты')
+  assert.equal(peekSessionDoc(id), null, 'the visit settled the notebook in memory')
+  assert.ok(getSession(id), 'the visit deleted the seminar itself')
+  assert.equal(fs.readFileSync(file, 'utf8'), text, 'the visit touched the room\'s files')
+  assert.ok(listVersions(id, 100).length >= before, 'the visit lost feed rows')
 
   /*
-   * И записанное доехало до диска: следующий вошедший видит и новое имя, и
-   * старую работу. Без сброса снимка перед выселением визит уходил бы вхолостую
-   * — правка была, а после перезапуска её нет.
+   * And what was written reached the disk: the next person to come in sees
+   * both the new name and the old work. Without flushing the snapshot before
+   * eviction the visit would go idle — the edit was made, and after a
+   * restart it is gone.
    */
   const { doc } = getSessionDoc(id)
   assert.equal(getMeta(doc).get('title'), 'Семинар 3')
   const cells = getCells(doc)
-  assert.equal(cells.length, 1, 'тетрадь поднялась не из своего снимка')
+  assert.equal(cells.length, 1, 'the notebook came up not from its own snapshot')
   assert.equal(cellSource(cells.get(0)).toString(), 'x = 1')
 })
 
-test('визит в живую комнату не выселяет её документ', () => {
+test('a visit to a live room does not evict its document', () => {
   const id = 'visit-live'
   createSession(id, 'Идущая пара', null)
-  // Комната открыта: документ поднят теми, кто в ней сидит.
+  // The room is open: the document was brought up by those sitting in it.
   const { doc } = getSessionDoc(id)
 
   const seen = visitSessionDoc(id, (inside) => inside)
 
-  assert.equal(seen, doc, 'гость взял не тот документ, что открыт у комнаты')
-  assert.equal(peekSessionDoc(id)?.doc, doc, 'визит выселил комнату, в которой сидят')
+  assert.equal(seen, doc, 'the guest took a different document from the one open in the room')
+  assert.equal(peekSessionDoc(id)?.doc, doc, 'the visit evicted a room people are sitting in')
 
-  // Тот же объект, а не поднятый заново из снимка двойник: правка, сделанная
-  // после визита, видна там, куда пишут все остальные.
+  // The same object, not a twin brought up again from the snapshot: an edit
+  // made after the visit is visible where everyone else writes.
   getCells(doc).push([createCell('code', 'y = 2')])
   const cells = getCells(peekSessionDoc(id)?.doc ?? doc)
   assert.equal(cellSource(cells.get(cells.length - 1)).toString(), 'y = 2')

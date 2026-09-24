@@ -1,53 +1,56 @@
 /**
- * Две вещи про прокрутку тетради, которые считаются числами, а не браузером.
+ * Two things about notebook scrolling that are computed with numbers, not left
+ * to the browser.
  *
- * ПЕРВАЯ — куда везти экран, когда ПЕРЕХОДЯТ на соседнюю ячейку стрелкой. Не
- * когда запускают: запуск экран не двигает вовсе и сюда не приходит. Это
- * жалоба с занятия и она про то же самое, про что раньше была жалоба на
- * `scrollIntoView`, только с другой стороны: «запускаю ячейку, хочу посмотреть
- * на её вывод, а меня перекидывает вниз». Вывод появляется под кодом той
- * ячейки, которую запустили, — значит смотреть надо туда, где человек уже
- * стоит, и лучшее, что может сделать прокрутка на запуске, — не сделать
- * ничего.
+ * THE FIRST — where to take the screen when someone MOVES to a neighbouring
+ * cell with an arrow key. Not when they run it: running does not move the
+ * screen at all and never comes here. This is a complaint from a class, and it
+ * is about the same thing an earlier complaint about `scrollIntoView` was
+ * about, only from the other side: "I run a cell, I want to look at its output,
+ * and I get thrown down". The output appears under the code of the cell that
+ * was run — so the place to look is where the person already is, and the best
+ * thing scrolling can do on a run is nothing.
  *
- * У перехода стрелкой правило другое и самое скромное, какое бывает: ячейку,
- * которая видна хоть краем, не трогаем совсем; ячейку, которой на экране нет
- * вовсе, подводим на минимум. Ниже экрана — нижним краем к нижнему (кроме
- * длинной, которая иначе приедет последней строкой вперёд); выше экрана —
- * верхом к верху, с местом под тулбар, который висит НАД ячейкой и в её
- * прямоугольник не входит.
+ * Moving with an arrow has a different rule, the most modest there is: a cell
+ * that is visible even by an edge is not touched at all; a cell that is not on
+ * screen at all is brought in by the minimum. Below the screen — bottom edge to
+ * the bottom (except a long one, which would otherwise arrive last line first);
+ * above the screen — top to the top, with room for the toolbar, which hangs
+ * ABOVE the cell and is not part of its rectangle.
  *
- * ВТОРАЯ — на сколько подвинуть прокрутку, когда что-то выше экрана поменяло
- * высоту. Это работа браузерного scroll anchoring, и в тетради он её не делает
- * (замерено: отложенная ячейка выше экрана распрямляется с 240 px до 809,
- * `scrollTop` не меняется ни на пиксель, весь экран уезжает на 569). Поэтому
- * якорь свой, а браузерный выключен явно — иначе однажды поправят оба и уедет
- * вдвое. Именно он и делает запуск неподвижным по-настоящему: вывод, выросший
- * выше экрана, лист из-под глаз не тянет.
+ * THE SECOND — how far to shift the scroll when something above the screen has
+ * changed height. That is the job of browser scroll anchoring, and in the
+ * notebook it does not do it (measured: a deferred cell above the screen
+ * unfolds from 240 px to 809, `scrollTop` does not change by a single pixel,
+ * the whole screen drifts by 569). So the anchor is our own, and the browser's
+ * is switched off explicitly — otherwise one day both would correct and it
+ * would drift twice as far. It is exactly what makes a run truly still: output
+ * that grew above the screen does not pull the sheet from under your eyes.
  *
- * Модуль чистый и без DOM: сюда ходит тест. Геометрию собирает вызывающий.
+ * The module is pure and has no DOM: a test comes here. The caller collects the
+ * geometry.
  */
 
-/** Просвет между тулбаром и верхом контейнера: ячейка не должна упираться. */
+/** A gap between the toolbar and the container's top: the cell must not butt up. */
 export const BREATH = 14
 
 /**
- * Сколько занимает тулбар у ячейки, которая ещё не построена.
+ * How much room the toolbar takes for a cell that is not built yet.
  *
- * У припаркованной и у отложенной ячейки тулбара в DOM нет вовсе, а место под
- * него нужно уже сейчас. Число — высота настоящего ряда (кнопки 24 px плюс
- * `py-0.5` с двух сторон), проверенная на стенде.
+ * A parked or a deferred cell has no toolbar in the DOM at all, but room for it
+ * is needed already. The number is the height of the real row (24 px buttons
+ * plus `py-0.5` on both sides), checked on a test bench.
  */
 export const TOOLBAR_FALLBACK = 28
 
-/** Окно прокрутки: края в координатах экрана и текущее смещение. */
+/** The scroll window: edges in screen coordinates and the current offset. */
 export interface Frame {
   top: number
   bottom: number
   scrollTop: number
 }
 
-/** Ячейка, к которой едем: края в координатах экрана и высота её тулбара. */
+/** The cell we are heading to: edges in screen coordinates and its toolbar height. */
 export interface CellBox {
   top: number
   bottom: number
@@ -55,86 +58,87 @@ export interface CellBox {
 }
 
 /**
- * Целевой `scrollTop` для перехода стрелкой — или `null`, если экран трогать
- * не надо.
+ * The target `scrollTop` for an arrow move — or `null` if the screen should not
+ * be touched.
  *
- * Не трогать — главный ответ, а не оговорка: ячейка, видная хоть краем, уже
- * найдена глазом, и подвозить её значит двигать под человеком весь лист ради
- * того, что он и так видит. Раньше здесь считалось «верх ячейки под верх
- * экрана» на КАЖДОМ переходе, и на запуске это выглядело так, будто тетрадь
- * убегает вниз от собственного вывода.
+ * Not touching is the main answer, not a caveat: a cell visible even by an edge
+ * has already been found by the eye, and bringing it in means moving the whole
+ * sheet under the person for something they already see. This used to compute
+ * "cell top under screen top" on EVERY move, and on a run it looked as if the
+ * notebook were running away downward from its own output.
  *
- * Место под тулбар входит в расчёт только там, где ячейку подводят верхом:
- * ряд с «запустить» висит над ячейкой и в её прямоугольник не входит, так что
- * подведённая впритык ячейка приезжает с отрезанным тулбаром — то есть ровно с
- * тем, к чему сейчас потянутся.
+ * Room for the toolbar counts only where the cell is brought in by its top: the
+ * row with "run" hangs above the cell and is not part of its rectangle, so a
+ * cell brought in flush arrives with its toolbar cut off — that is, without
+ * exactly the thing the person is about to reach for.
  */
 export function nearestTarget(frame: Frame, cell: CellBox): number | null {
-  // Видна хоть частью — не двигаем вовсе.
+  // Visible even partly — do not move at all.
   if (cell.bottom > frame.top && cell.top < frame.bottom) return null
 
   const underTop = frame.scrollTop + (cell.top - frame.top) - (cell.toolbar + BREATH)
   const wanted =
     cell.top >= frame.bottom
-      ? // Ниже экрана: нижним краем к нижнему. Но не дальше, чем верхом к
-        // верху, — иначе длинная ячейка приезжает последней строкой из сорока.
+      ? // Below the screen: bottom edge to the bottom. But no further than top to
+        // top — otherwise a long cell arrives showing the last of forty lines.
         Math.min(frame.scrollTop + (cell.bottom - frame.bottom), underTop)
-      : // Выше экрана: верхом к верху. «Меньше всего» тут было бы «нижним краем
-        // к верхнему», то есть опять последней строкой вперёд.
+      : // Above the screen: top to the top. "The least" here would be "bottom
+        // edge to the top", that is, last line first again.
         underTop
 
   const target = Math.max(0, wanted)
-  // Уже стоит там, куда бы её и повезли: округление — не повод для анимации.
+  // Already where it would be taken: rounding is no reason for an animation.
   if (Math.abs(target - frame.scrollTop) <= 1) return null
   return target
 }
 
 /**
- * Есть ли по этому кадру что мерить.
+ * Whether there is anything to measure in this frame.
  *
- * Жалоба с занятия: «перехожу к скрипту по cmd+клику из четвёртой ячейки,
- * закрываю скрипт, возвращаюсь — а тетрадь спустилась к десятой». Виноват был
- * якорь, и вот чем.
+ * A complaint from a class: "I jump to a script with cmd+click from the fourth
+ * cell, close the script, come back — and the notebook has gone down to the
+ * tenth". The anchor was to blame, and here is how.
  *
- * Вкладка, которую сменили, не размонтируется — её прячут `display: none`
- * (SessionScreen · main). У спрятанного узла ВСЕ измерения читаются нулями:
- * `getBoundingClientRect()` даёт нули, `scrollTop` даёт ноль. Проверено в
- * Chrome отдельной страницей: 1500 → спрятали → читается 0, высота содержимого
- * 0; показали обратно — браузер сам вернул 1500, прокрутку он не теряет.
+ * A tab that was switched away is not unmounted — it is hidden with
+ * `display: none` (SessionScreen · main). On a hidden node ALL measurements
+ * read as zeros: `getBoundingClientRect()` gives zeros, `scrollTop` gives zero.
+ * Checked in Chrome on a separate page: 1500 → hidden → reads 0, content height
+ * 0; shown again — the browser itself restored 1500, it does not lose the
+ * scroll.
  *
- * А наблюдатель видимости в этот момент как раз объявляет все ячейки
- * невидимыми, и якорь просыпается — на спрятанной тетради. Он прилежно
- * записывает каждой ячейке высоту НОЛЬ. При возврате высоты становятся
- * настоящими, и для якоря это выглядит так, будто весь лист разом вырос выше
- * экрана: он складывает прирост и увозит экран вниз ровно на сумму всех
- * ячеек над целью. Отсюда и «десятая вместо четвёртой».
+ * And at that very moment the visibility observer declares every cell
+ * invisible, and the anchor wakes up — on the hidden notebook. It diligently
+ * records a height of ZERO for every cell. On return the heights become real
+ * again, and to the anchor it looks as if the whole sheet grew above the screen
+ * at once: it adds up the growth and takes the screen down by exactly the sum
+ * of all cells above the target. Hence "the tenth instead of the fourth".
  *
- * Правило простое: у кадра, которого нет на экране, высота нулевая, и мерить
- * по нему нельзя — ни записывать, ни поправлять. Не «пропустить поправку», а
- * не тронуть память высот вовсе: одна запись нуля отравляет следующий кадр,
- * когда тетрадь уже видна.
+ * The rule is simple: a frame that is not on screen has zero height, and it
+ * must not be measured by — neither recorded nor corrected. Not "skip the
+ * correction", but do not touch the height memory at all: a single recorded
+ * zero poisons the next frame, when the notebook is already visible.
  */
 export function measurable(frame: { top: number; bottom: number }): boolean {
   return frame.bottom > frame.top
 }
 
-/** Ячейка, поменявшая высоту: где её верх в координатах прокрутки и на сколько. */
+/** A cell that changed height: where its top is in scroll coordinates, and by how much. */
 export interface HeightChange {
   top: number
   delta: number
 }
 
 /**
- * На сколько подвинуть прокрутку, чтобы экран остался на месте.
+ * How far to shift the scroll so that the screen stays in place.
  *
- * Считается то, что НАЧИНАЕТСЯ выше верхнего края экрана: ячейка раскладывается
- * сверху вниз, значит всё, что стоит после её верха, поехало ровно на `delta`,
- * — и видимая часть экрана в том числе. Ячейка, чей верх на экране или ниже,
- * растёт у человека на глазах: там ничего двигать не надо, иначе поправка сама
- * станет рывком.
+ * What counts is what STARTS above the top edge of the screen: a cell lays out
+ * top to bottom, so everything after its top moved by exactly `delta` — the
+ * visible part of the screen included. A cell whose top is on screen or below
+ * grows before the person's eyes: nothing needs moving there, otherwise the
+ * correction itself becomes a jerk.
  *
- * Строгое «<» — не придирка: ячейка, начинающаяся ровно по верхнему краю,
- * растёт целиком внутрь экрана.
+ * The strict "<" is not pedantry: a cell starting exactly at the top edge grows
+ * entirely into the screen.
  */
 export function anchorShift(changes: readonly HeightChange[], scrollTop: number): number {
   let shift = 0
@@ -143,48 +147,51 @@ export function anchorShift(changes: readonly HeightChange[], scrollTop: number)
 }
 
 /**
- * Просвет под ячейкой после запуска: видно, что за ней что-то есть.
+ * A gap under the cell after a run: it shows there is something after it.
  *
- * Не «подвести низ впритык»: низ впритык к низу экрана читается как «дальше
- * ничего», и человек лезет листать проверять. Высота — с ряд кнопок следующей
- * ячейки, то есть ровно «начало следующей», о котором и просили.
+ * Not "bring the bottom in flush": a bottom flush with the bottom of the screen
+ * reads as "nothing further", and the person goes scrolling to check. The
+ * height is one row of the next cell's buttons, that is, exactly the "start of
+ * the next one" that was asked for.
  */
 export const TAIL = 28
 
 /**
- * Куда вести экран, когда ячейка отработала, — или `null`, если никуда.
+ * Where to take the screen when a cell has finished — or `null` if nowhere.
  *
- * Здесь сходятся две жалобы с занятий, и они противоположны.
+ * Two complaints from classes meet here, and they are opposites.
  *
- * Первая, старая: «запускаю ячейку, хочу посмотреть на вывод, а меня
- * перекидывает вниз». После неё запуск перестал двигать экран вовсе — и это
- * было правильно ровно наполовину. Вывод растёт ПОД кодом: если он помещается
- * на экране, смотреть надо туда, где человек уже стоит, и лучшее движение —
- * никакого.
+ * The first, old one: "I run a cell, I want to look at the output, and I get
+ * thrown down". After it, running stopped moving the screen at all — and that
+ * was exactly half right. Output grows UNDER the code: if it fits on screen,
+ * the place to look is where the person already is, and the best movement is
+ * none.
  *
- * Вторая, новая: «в Колабе после запуска спускается к низу вывода, а у нас
- * тетрадь стоит». И она про другой случай — когда вывод НЕ помещается: экран
- * стоит, вывод есть, а его не видно, и человек листает руками за тем, что он
- * только что попросил показать.
+ * The second, new one: "in Colab it goes down to the bottom of the output after
+ * a run, and ours just stands still". And it is about the other case — when the
+ * output does NOT fit: the screen stands still, the output is there but not
+ * visible, and the person scrolls by hand for what they just asked to see.
  *
- * Отсюда условие, которое мирит обе: двигаем, только если низа вывода не
- * видно, и ровно настолько, чтобы стало видно. Видно — не трогаем.
+ * Hence the condition that reconciles both: move only if the bottom of the
+ * output is not visible, and exactly as far as makes it visible. Visible — do
+ * not touch.
  *
- * Потолок — тот же, что у перехода стрелкой (nearestTarget), и по той же
- * причине: у ячейки с выводом на три экрана «низ вывода» это её последняя
- * строка, и подвозить её значит увезти и код, и начало вывода за верхний край.
- * Такую ячейку ставим верхом к верху: смотреть будут с начала.
+ * The ceiling is the same as for an arrow move (nearestTarget), and for the
+ * same reason: for a cell with three screens of output, "the bottom of the
+ * output" is its last line, and bringing it in means taking both the code and
+ * the start of the output off past the top edge. Such a cell is placed top to
+ * top: it will be read from the start.
  *
- * Только вниз. Запуск, который тянет лист ВВЕРХ, — это тот самый рывок из
- * первой жалобы, просто в другую сторону.
+ * Only downward. A run that pulls the sheet UP is that very jerk from the first
+ * complaint, just in the other direction.
  *
- * И только ОДИНОЧНЫЙ запуск: за «Запустить всё» лист не ходит вовсе. Довод —
- * в Notebook · follow, там же и признак, по которому одно отличают от другого.
- * Сюда прогон просто не заходит.
+ * And only a SINGLE run: the sheet does not follow "Run all" at all. The
+ * reasoning is in Notebook · follow, along with the flag that tells one from
+ * the other. A run-all simply never comes here.
  */
 export function afterRun(frame: Frame, cell: CellBox): number | null {
   if (!measurable(frame)) return null
-  // Низ виден вместе с просветом — смотреть уже есть на что.
+  // The bottom is visible along with the gap — there is already something to look at.
   if (cell.bottom + TAIL <= frame.bottom) return null
   const toBottom = frame.scrollTop + (cell.bottom + TAIL - frame.bottom)
   const underTop = frame.scrollTop + (cell.top - frame.top) - (cell.toolbar + BREATH)

@@ -57,9 +57,9 @@ let inFlight: Promise<Syntax> | null = null
 /**
  * Idempotent: a thread of forty code blocks fetches the grammar once.
  *
- * Отказ не кешируется: обещание, отклонённое одним оборванным запросом,
- * оставило бы вкладку без подсветки до перезагрузки — следующий блок кода
- * пробует снова. Та же оговорка, что у `loadRenderers`.
+ * A failure is not cached: a promise rejected by one dropped request would
+ * leave the tab without highlighting until a reload — the next code block
+ * tries again. The same caveat as for `loadRenderers`.
  */
 export function loadSyntax(): Promise<Syntax> {
   return (inFlight ??= importSyntax()

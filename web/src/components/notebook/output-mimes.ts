@@ -1,24 +1,26 @@
 /**
- * Чем показывать запись вывода — картинкой, разметкой или текстом.
+ * How to show an output record — as an image, as markup or as text.
  *
- * Вынесено из CellOutputs ради одной строчки: набор растровых типов больше не
- * второй литерал, а тот самый `BLOB_MIMES`, которым публикация решает, что
- * выносить в отдельные записи. Комментарий рядом с прежним списком обещал, что
- * наборы совпадают («и это не совпадение»), но связаны они ничем не были:
- * добавленный в `BLOB_MIMES` тип на опубликованной странице приезжал бы
- * адресом и рисовался, а в живой комнате приезжал бы base64 и переставал
- * рисоваться вовсе — `pickMime` его бы не выбрал.
+ * Moved out of CellOutputs for the sake of one line: the set of raster types is
+ * no longer a second literal but the very `BLOB_MIMES` that publishing uses to
+ * decide what to move out into separate records. The comment next to the old
+ * list promised that the sets matched ("and that is no coincidence"), but
+ * nothing tied them together: a type added to `BLOB_MIMES` would arrive on a
+ * published page as an address and be drawn, while in a live room it would
+ * arrive as base64 and stop being drawn at all — `pickMime` would not choose
+ * it.
  */
 import { BLOB_MIMES } from '@shared/publish'
 import { PLOTLY_MIME } from '@shared/plotly'
 import type { CellOutput, OutputBlob } from '@shared/notebook'
 
 /**
- * Растровые картинки — те, что показывает `<img>`.
+ * Raster images — the ones `<img>` shows.
  *
- * Порядок — порядок `BLOB_MIMES`, и он же становится началом `MIME_ORDER`:
- * набор перечислен там буквами и по нему же строится `content-type` ответа с
- * блобом, так что список ровно один на продукт.
+ * The order is the order of `BLOB_MIMES`, and it also becomes the start of
+ * `MIME_ORDER`: the set is spelled out there, and the `content-type` of a blob
+ * response is built from it as well, so there is exactly one list in the
+ * product.
  */
 export const IMG_MIMES: readonly string[] = [...BLOB_MIMES]
 
@@ -28,29 +30,32 @@ export const IMG_MIMES: readonly string[] = [...BLOB_MIMES]
  * goes out as text — SVG, HTML and markdown wait, because rendering any of
  * them unsanitized is not a trade worth one frame.
  *
- * `text/markdown` стоит между разметкой и текстом, и обе стороны важны.
+ * `text/markdown` sits between markup and text, and both sides matter.
  *
- * `display(Markdown("**Решение**: …"))` — обычный способ подписать вывод в
- * учебной тетради, и ядро присылает ДВА представления: саму разметку и
- * `text/plain` с репром `<IPython.core.display.Markdown object>`. Пока
- * markdown в этом списке не стоял, побеждал `text/plain`, и на месте вывода
- * человек читал имя класса — вывод как бы был и как бы отсутствовал.
+ * `display(Markdown("**Solution**: …"))` is the usual way to caption an output
+ * in a teaching notebook, and the kernel sends TWO representations: the markup
+ * itself and `text/plain` with the repr
+ * `<IPython.core.display.Markdown object>`. While markdown was not in this
+ * list, `text/plain` won, and in place of the output the person read a class
+ * name — the output was there and at the same time was not.
  *
- * Ниже `text/html`: если библиотека прислала и то и другое, готовая разметка
- * точнее — её собрал тот, кто знает, как это должно выглядеть.
+ * Below `text/html`: if a library sent both, the ready-made markup is more
+ * precise — it was assembled by someone who knows how it should look.
  */
 /*
- * Фигура plotly — впереди всего, и это не «интерактивное лучше статического».
+ * The plotly figure comes before everything, and this is not "interactive beats
+ * static".
  *
- * Ядро присылает её ОДНУ: в наборе от нынешнего plotly нет ни `text/plain`, ни
- * картинки — только `application/vnd.plotly.v1+json`. Пока этой строки тут не
- * было, `pickMime` не находил знакомого и возвращал `null`, а `null` рисуется
- * пустым местом: ячейка с `px.histogram(...)` не выводила ничего.
+ * The kernel sends it ALONE: the bundle from current plotly has neither
+ * `text/plain` nor an image — only `application/vnd.plotly.v1+json`. Until this
+ * line was here, `pickMime` found nothing familiar and returned `null`, and
+ * `null` is drawn as empty space: a cell with `px.histogram(...)` output
+ * nothing.
  *
- * Впереди картинок она стоит на случай набора, где есть и то и другое
- * (`pio.renderers.default = "plotly_mimetype+png"`): график, который можно
- * повертеть, — это то, ради чего его и писали, а снимок того же графика
- * показывает меньше.
+ * It stands ahead of images for the case of a bundle that has both
+ * (`pio.renderers.default = "plotly_mimetype+png"`): a chart that can be turned
+ * around is what it was written for, and a snapshot of the same chart shows
+ * less.
  */
 const MIME_ORDER = [PLOTLY_MIME, ...IMG_MIMES, 'image/svg+xml', 'text/html', 'text/markdown', 'text/plain']
 const MIME_ORDER_PLAIN = [PLOTLY_MIME, ...IMG_MIMES, 'text/plain']
@@ -61,17 +66,18 @@ export function pickMime(data: Record<string, string>, rich: boolean): string | 
 }
 
 /**
- * Вывод, у которого вынесенные картинки заменены адресами.
+ * An output whose moved-out images are replaced with addresses.
  *
- * Крупная картинка живой комнаты в документе не лежит — там стоит ссылка
- * (`shared/notebook.ts · OutputBlob`), а байты раздаёт сервер. Показывается это
- * ровно так же, как вынесенное на опубликованной странице: адрес в наборе
- * mime, дальше всё как обычно — `pickMime`, `asImage`, `imageSrc`.
+ * A large image in a live room does not lie in the document — there is a link
+ * there (`shared/notebook.ts · OutputBlob`), and the bytes are served by the
+ * server. It is shown exactly like moved-out content on a published page: an
+ * address in the mime bundle, and from there everything as usual — `pickMime`,
+ * `asImage`, `imageSrc`.
  *
- * Ключа ещё нет (первая картинка приехала раньше, чем ответ на запрос ключа) —
- * запись просто не подставляется: выбор дойдёт до `text/plain`, то есть до
- * «<Figure size 640x480>», а не до битой рамки. Как только ключ появится,
- * перерисовка поставит адрес.
+ * No key yet (the first image arrived before the answer to the key request) —
+ * the record is simply not substituted: the choice gets down to `text/plain`,
+ * that is, to "<Figure size 640x480>", not to a broken frame. As soon as the
+ * key appears, a re-render puts the address in.
  */
 export function withBlobs(
   output: CellOutput,
@@ -81,8 +87,8 @@ export function withBlobs(
   const data: Record<string, string> = { ...output.data }
   let put = false
   for (const blob of output.blobs) {
-    // Свой же mime в наборе старше ссылки: если ядро прислало и то и другое,
-    // показывать надо то, что уже приехало.
+    // The mime's own value in the bundle outranks the link: if the kernel sent
+    // both, what should be shown is what has already arrived.
     if (data[blob.mime] !== undefined) continue
     const address = src(blob)
     if (!address) continue
@@ -93,34 +99,36 @@ export function withBlobs(
 }
 
 /**
- * Не само содержимое, а адрес, по которому оно лежит.
+ * Not the content itself, but the address where it lies.
  *
- * Третий случай после base64 и data-URI: на опубликованной странице крупные
- * картинки вынесены в отдельные записи, и в наборе стоит
- * `/api/p/<pub>/blob/<хэш>`.
+ * The third case after base64 and data URI: on a published page large images
+ * are moved out into separate records, and the bundle holds
+ * `/api/p/<pub>/blob/<hash>`.
  *
- * Узнаётся по `/api/`, а не по одной косой черте: base64 любого JPEG
- * начинается с «/9j/» — так кодируется SOI FF D8 FF, — и по косой черте
- * фотография с CV-семинара уходила в src сырым payload'ом, то есть битым
- * значком у всей комнаты. PNG спасала только своя первая буква.
+ * Recognised by `/api/`, not by a single slash: the base64 of any JPEG starts
+ * with "/9j/" — that is how SOI FF D8 FF is encoded — and going by the slash, a
+ * photo from the CV seminar went into src as a raw payload, that is, as a
+ * broken icon for the whole room. PNG was saved only by its own first letter.
  */
 export function isAddress(payload: string): boolean {
   return payload.startsWith('/api/')
 }
 
 /**
- * Показывать ли эту запись картинкой.
+ * Whether to show this record as an image.
  *
- * Не только по mime. Соседние ветки отдают значение как разметку (SVG, HTML)
- * или как текст, поэтому адрес, попавший в любую из них, напечатался бы
- * строкой «/api/p/…/blob/…» на месте графика. Что именно публикация выносит
- * в записи, решает сервер, и список там может вырасти — а картинкой, взятой
- * по адресу, показывается что угодно из вынесенного.
+ * Not only by mime. The neighbouring branches render the value as markup (SVG,
+ * HTML) or as text, so an address that got into either of them would be printed
+ * as the line "/api/p/…/blob/…" in place of the chart. What exactly a
+ * publication moves out into records is decided by the server, and that list
+ * may grow — while anything that was moved out can be shown as an image fetched
+ * by address.
  */
 export function asImage(mime: string, payload: string): boolean {
-  // Фигура plotly тоже уезжает по ссылке (`SPILL_MIMES`), и адрес у неё точно
-  // такой же. Картинкой её показывать нечем: по адресу лежит JSON, и `<img>`
-  // нарисовал бы битую рамку на месте графика. Тип старше формы значения.
+  // The plotly figure also travels by link (`SPILL_MIMES`), and its address
+  // looks exactly the same. There is nothing to show it with as an image: what
+  // lies at the address is JSON, and `<img>` would draw a broken frame in place
+  // of the chart. The type outranks the shape of the value.
   if (mime === PLOTLY_MIME) return false
   return IMG_MIMES.includes(mime) || isAddress(payload)
 }
@@ -132,41 +140,43 @@ export function imageSrc(mime: string, payload: string): string {
 }
 
 /**
- * Картинку не режем.
+ * An image is not clipped.
  *
- * Порог считан по строкам текста, а картинка не строки: у обрезанного
- * графика под кромкой остаются нижняя ось и подписи, и кнопка обещает «Show
- * more» — как будто ниже ещё вывод, а не остаток той же картинки. Сетка из
- * make_grid и retina-фигура выше 460 пикселей на семинаре — обычное дело.
- * Таблица и текст схлопываются по-прежнему: у них ниже кромки правда лежит
- * продолжение.
+ * The threshold is counted in lines of text, and an image is not lines: a
+ * clipped chart keeps its bottom axis and labels under the edge, and the button
+ * promises "Show more" — as if there were more output below, rather than the
+ * rest of the same image. A grid from make_grid and a retina figure taller than
+ * 460 pixels are routine at a seminar. Tables and text still collapse: for them
+ * there really is a continuation below the edge.
  */
 export function isPicture(output: CellOutput, rich: boolean): boolean {
   if (output.kind !== 'data') return false
   const mime = pickMime(output.data, rich)
   if (mime === null) return false
-  // График plotly — тоже не строки: подрезать его кромкой значит спрятать
-  // нижнюю ось под кнопкой «Show more», за которой якобы ещё вывод.
+  // A plotly chart is not lines either: clipping it at the edge means hiding
+  // the bottom axis under a "Show more" button that supposedly has more output
+  // behind it.
   if (mime === PLOTLY_MIME) return true
   return IMG_MIMES.includes(mime) || mime === 'image/svg+xml'
 }
 
 /**
- * Осталось ли после санитайзера что-то, что человек УВИДИТ.
+ * Whether anything that the person will SEE is left after the sanitizer.
  *
- * Вопрос не праздный и не про plotly одну. Bokeh, folium, altair без картинки,
- * ipywidgets, plotly со старым рендерером — все они присылают `text/html`, всё
- * содержимое которого лежит в `<script>`, а скрипты из вывода Colloq не
- * исполняет (SECURITY.md: вывод ячейки формирует любой, кому разрешён запуск).
- * После санитайзера от такой записи остаётся пустой `<div>` — и на экране
- * пустое место, которое читается как «ячейка ничего не вывела».
+ * The question is not idle, and not about plotly alone. Bokeh, folium, altair
+ * without an image, ipywidgets, plotly with an old renderer — all of them send
+ * `text/html` whose entire content lies in `<script>`, and Colloq does not
+ * execute scripts from outputs (SECURITY.md: a cell's output is produced by
+ * anyone who is allowed to run). After the sanitizer, such a record leaves an
+ * empty `<div>` — and on screen an empty space that reads as "the cell printed
+ * nothing".
  *
- * Пустое место — единственный ответ, которого тут быть не должно; что именно
- * сказать вместо него, решает CellOutputs.
+ * An empty space is the one answer that must not appear here; what exactly to
+ * say instead is decided by CellOutputs.
  *
- * Считается по тому же правилу, что и на опубликованной странице
- * (`server/src/publish/render.ts · hasVisible`), плюс теги, которые видно и
- * без текста внутри.
+ * Computed by the same rule as on the published page
+ * (`server/src/publish/render.ts · hasVisible`), plus tags that are visible
+ * even without text inside.
  */
 const VISIBLE_TAGS = /<(?:img|svg|canvas|video|audio|iframe|table|hr|input|object|embed)\b/i
 

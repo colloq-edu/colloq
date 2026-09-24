@@ -1,12 +1,13 @@
 /**
- * Правки состава тетради, которые делает сервер.
+ * Edits to a notebook's cell list that the server makes itself.
  *
- * Две вещи здесь ломаются молча и стоят чужой работы. Перестановка пересоздаёт
- * одну из двух соседних ячеек клоном, и всё, что её редактор отправил за круг
- * до сервера, ложится в надгробие: символы пропадают у печатающего, и Ctrl+Z их
- * не вернёт. А приведение новой ячейки к чистой писало шесть ключей поверх тех
- * же значений — то есть серверный такт на каждую добавленную ячейку, из-за
- * которого правка человека подписывалась в истории «the room».
+ * Two things here break silently and cost someone else's work. A move
+ * recreates one of the two neighbouring cells as a clone, and everything its
+ * editor sent during the round trip to the server lands in a tombstone: the
+ * characters vanish for the person typing, and Ctrl+Z will not bring them
+ * back. And settling a new cell to a clean state used to write six keys over
+ * the same values — that is, a server-side update for every added cell, which
+ * made the history attribute a person's edit to "the room".
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -24,14 +25,14 @@ function sheet(sources: string[]): { doc: Y.Doc; cells: Y.Array<YCell> } {
 
 const at = (cells: Y.Array<YCell>, i: number): string => cellSource(cells.get(i)).toString()
 
-test('перестановка меняет порядок', () => {
+test('a move changes the order', () => {
   const { doc, cells } = sheet(['a', 'b'])
   onCarets(() => new Set())
   assert.equal(moveInCells(doc, cellId(cells.get(0)), 1), true)
   assert.deepEqual([at(cells, 0), at(cells, 1)], ['b', 'a'])
 })
 
-test('за край тетради ячейка не переставляется', () => {
+test('a cell does not move past the edge of the notebook', () => {
   const { doc, cells } = sheet(['a', 'b'])
   onCarets(() => new Set())
   assert.equal(moveInCells(doc, cellId(cells.get(0)), -1), false)
@@ -39,33 +40,34 @@ test('за край тетради ячейка не переставляетс�
   assert.equal(moveInCells(doc, 'c_нет', 1), false)
 })
 
-test('пересоздаётся сосед — у нажавшего курсор остаётся живым', () => {
+test('the neighbour is recreated, so the caret of whoever pressed stays alive', () => {
   const { doc, cells } = sheet(['a', 'b'])
   onCarets(() => new Set())
   const mover = cellSource(cells.get(0))
   moveInCells(doc, cellId(cells.get(0)), 1)
-  assert.equal(cellSource(cells.get(1)) === mover, true, 'пересоздали ту, на кнопку которой нажали')
+  assert.equal(cellSource(cells.get(1)) === mover, true, 'recreated the cell whose button was pressed')
 })
 
-test('ячейку, в которой стоит чужой курсор, перестановка не пересоздаёт', () => {
+test("a move does not recreate a cell that holds someone else's caret", () => {
   /*
-   * Клон уносит с собой нажатия, ушедшие в старый Y.Text за круг до сервера:
-   * они адресованы удалённой структуре, гейт их пропускает, и символы пропадают
-   * молча. Курсор нажавшего дешевле: он в этот момент нажимает, а не печатает.
+   * A clone loses the keystrokes that went into the old Y.Text during the
+   * round trip to the server: they are addressed to a deleted structure, the
+   * gate lets them through, and the characters vanish silently. The caret of
+   * whoever pressed is cheaper: at that moment they are clicking, not typing.
    */
   const { doc, cells } = sheet(['a', 'b'])
   const typing = cellSource(cells.get(1))
   onCarets(() => new Set([cellId(cells.get(1))]))
   moveInCells(doc, cellId(cells.get(0)), 1)
-  assert.deepEqual([at(cells, 0), at(cells, 1)], ['b', 'a'], 'порядок вышел не тот')
-  assert.equal(cellSource(cells.get(0)) === typing, true, 'пересоздали ячейку, в которой печатают')
+  assert.deepEqual([at(cells, 0), at(cells, 1)], ['b', 'a'], 'the order came out wrong')
+  assert.equal(cellSource(cells.get(0)) === typing, true, 'recreated the cell someone is typing in')
 })
 
-test('приведение новой ячейки к чистой не пишет ничего, когда она и так чиста', () => {
+test('settling a new cell writes nothing when it is already clean', () => {
   const { doc, cells } = sheet(['x = 1'])
   const id = cellId(cells.get(0))
   let updates = 0
   doc.on('update', () => (updates += 1))
   doc.transact(() => settleFresh('ops-test', doc, [id]), 'server')
-  assert.equal(updates, 0, 'сервер переписал ключи теми же значениями')
+  assert.equal(updates, 0, 'the server rewrote keys with the same values')
 })

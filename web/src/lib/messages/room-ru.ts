@@ -1,15 +1,17 @@
 /*
- * Словарь комнаты — один язык, и только те каталоги, которые комната читает.
+ * The room's dictionary — one language, and only the catalogs the room reads.
  *
- * Файл существует в двух видах. Этот — исходный: его грузят node и тесты, и он
- * регистрирует каталоги целиком, обоими языками. В сборке его содержимое
- * подменяет плагин `colloq-screen-language` (web/vite.config.ts): он берёт
- * перечисленные ниже каталоги, оставляет от них ОДИН язык — тот, что в имени
- * файла, — и режет `server` до ключей, которые браузер правда умеет искать.
- * Поэтому список импортов здесь — не украшение, а то самое место, откуда
- * плагин узнаёт состав области; менять состав надо здесь.
+ * The file exists in two forms. This one is the source: node and the tests
+ * load it, and it registers the catalogs whole, in both languages. In the
+ * build its contents are replaced by the `colloq-screen-language` plugin
+ * (web/vite.config.ts): it takes the catalogs listed below, keeps ONE language
+ * of them — the one in the file name — and cuts `server` down to the keys the
+ * browser can actually look up. So the list of imports here is not decoration
+ * but the very place the plugin learns the area's contents from; the contents
+ * must be changed here.
  *
- * Второй язык догружается только когда его выбрали, — см. screen-language.ts.
+ * The second language is loaded only once it is chosen — see
+ * screen-language.ts.
  */
 import { registerMessages } from '@shared/i18n-runtime'
 import { commonMessages } from '@shared/locales/common'

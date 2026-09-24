@@ -1,12 +1,13 @@
 /**
- * Словарь экрана: одна область, один язык.
+ * A screen's dictionary: one area, one language.
  *
- * Общий `full-language` вёз 351 КБ исходника и оба языка перед любым экраном —
- * в том числе весь каталог панели преподавателя студенту и весь серверный
- * каталог всем. Резать его пришлось в трёх местах сразу: плагин сборки решает,
- * что попадёт в кусок, `registerMessages` учится доливать второй язык к уже
- * известному ключу, а `translate` — читаться, пока тот язык ещё в пути.
- * Ошибка в любом из трёх видна одинаково: `room.ui.862` посреди формы.
+ * The shared `full-language` carried 351 KB of source and both languages ahead
+ * of every screen — including the whole teacher panel catalog to a student and
+ * the whole server catalog to everyone. Cutting it took three places at once:
+ * the build plugin decides what goes into a chunk, `registerMessages` learns to
+ * top up a second language onto an already known key, and `translate` learns
+ * to read while that language is still on its way. A mistake in any of the
+ * three looks the same: `room.ui.862` in the middle of a form.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -20,7 +21,7 @@ const root = path.resolve(import.meta.dirname, '..')
 const folder = path.join(root, 'web/src/lib/messages')
 const plugin = (config as any).plugins.find((item: any) => item.name === 'colloq-screen-language')
 
-/** То, что плагин положит в кусок вместо исходного файла области. */
+/** What the plugin puts into the chunk in place of the area's source file. */
 function built(area: string, locale: string): Record<string, Record<string, unknown>> {
   const code = plugin.load.call(
     { addWatchFile() {} },
@@ -36,8 +37,8 @@ test('every area speaks every language, and the loader names all eight modules',
     'admin-en.ts', 'admin-ru.ts', 'competitions-en.ts', 'competitions-ru.ts',
     'reader-en.ts', 'reader-ru.ts', 'room-en.ts', 'room-ru.ts',
   ])
-  // Имена перечислены в загрузчике руками (сборщик не читает вычисленные
-  // адреса) — разойтись с каталогом они умеют молча.
+  // The names are listed in the loader by hand (the bundler does not read
+  // computed paths), so they can drift away from the directory silently.
   const loader = fs.readFileSync(path.join(root, 'web/src/lib/screen-language.ts'), 'utf8')
   for (const file of files) assert.ok(loader.includes(`./messages/${file.replace(/\.ts$/, '')}`), file)
 })
@@ -57,12 +58,12 @@ test('a screen carries one language and only the catalogs it reads', () => {
   assert.ok(admin['admin.teaching'] && admin['room.ui.0'])
   assert.ok(reader['room.ui.0'])
   assert.equal(reader['admin.teaching'], undefined)
-  // Страницы соревнований не платят ни за комнату, ни за панель: там нет ни
-  // ячейки, ни ядра, ни списка семинаров.
+  // The competition pages pay neither for the room nor for the panel: they have
+  // no cell, no kernel, no list of seminars.
   assert.ok(competitions['competitions.state.live'] && competitions['common.reload'])
   assert.equal(competitions['room.ui.0'], undefined)
   assert.equal(competitions['admin.teaching'], undefined)
-  // Русский и английский — это разные куски, а не один с двумя половинами.
+  // Russian and English are separate chunks, not one chunk with two halves.
   assert.equal(built('room', 'en')['room.ui.0'].en, messages['room.ui.0'].en)
   assert.equal(built('room', 'en')['room.ui.0'].ru, undefined)
 })
@@ -70,12 +71,12 @@ test('a screen carries one language and only the catalogs it reads', () => {
 test('one language of the room is a fraction of what every screen used to carry', () => {
   const whole = Buffer.byteLength(JSON.stringify(messages))
   const room = Buffer.byteLength(JSON.stringify(built('room', 'ru')))
-  assert.ok(room * 3 < whole, `комната ${room} B против общего словаря ${whole} B`)
+  assert.ok(room * 3 < whole, `room ${room} B against the shared dictionary ${whole} B`)
 })
 
 /*
- * Серверный каталог — единственный, который режется по ключам. Промах здесь не
- * падает, а печатает ключ вместо слова «занято» под ячейкой.
+ * The server catalog is the only one cut by key. A miss here does not crash; it
+ * prints the key instead of the word "busy" under the cell.
  */
 test('the server catalog keeps exactly what a browser can look up', () => {
   const client = collectClientKeys(root, messages, 'server')
@@ -83,18 +84,20 @@ test('the server catalog keeps exactly what a browser can look up', () => {
     'server.classOver', 'server.defaultNotebook', 'server.welcomeNotebook',
     'server.councilSharedKernel', 'server.kernel_word.busy', 'server.kernel_word.restarting',
     'server.shell_word.closed', 'server.skip_reason_text.duplicate',
-  ]) assert.ok(client.has(key), `клиент ищет ${key}, а его вырезали`)
+  ]) assert.ok(client.has(key), `the client looks up ${key}, but it was cut out`)
   const room = built('room', 'ru')
-  for (const key of client) assert.ok(room[key], `${key} не доехал до комнаты`)
-  // А страницы публикации рисует сам сервер, и его слов в браузере нет.
+  for (const key of client) assert.ok(room[key], `${key} did not reach the room`)
+  // And the publication pages are rendered by the server itself; their words are
+  // not in the browser.
   const server = Object.keys(messages).filter((key) => key.startsWith('server.'))
-  assert.ok(client.size * 5 < server.length, `${client.size} из ${server.length} — это не подмножество`)
+  assert.ok(client.size * 5 < server.length, `${client.size} of ${server.length} is not a subset`)
   assert.equal(room['server.ssr.download'], undefined)
 })
 
 /*
- * Второй язык приезжает отдельным куском и позже. Пока он в пути, ключ уже
- * известен — с половиной пары, — и читаться обязан прежним языком.
+ * The second language arrives as a separate chunk, and later. While it is on its
+ * way, the key is already known — with half of the pair — and has to read in the
+ * language that is already there.
  */
 test('a half-known key reads in the language that did arrive, never as a key', async () => {
   const child = await import('node:child_process').then(({ spawnSync }) => spawnSync(
@@ -116,18 +119,18 @@ test('a half-known key reads in the language that did arrive, never as a key', a
 })
 
 test('a registered catalog is copied, not adopted', async () => {
-  // Долив второго языка правит пару НА МЕСТЕ: делать это с объектом из чужого
-  // каталога значит менять его для всех, кто этот каталог импортировал.
+  // Topping up the second language edits the pair IN PLACE: doing that to an
+  // object from another catalog means changing it for everyone who imported that catalog.
   const { roomMessages } = await import('../shared/locales/room.js')
   assert.deepEqual(messages['room.ui.0'], roomMessages['room.ui.0'])
   assert.notEqual(messages['room.ui.0'], roomMessages['room.ui.0'], 'the runtime holds the source catalog itself')
 })
 
 /*
- * Intl строится дорого: первый объект поднимает ICU, и это десятки миллисекунд
- * на холодной вкладке. Пара правил множественного числа стояла на верхнем
- * уровне модуля — то есть во ВХОДНОМ куске, до первого кадра формы, где
- * множественного числа нет ни в одной надписи.
+ * Intl is expensive to build: the first object brings up ICU, and that is tens
+ * of milliseconds on a cold tab. A pair of plural rules sat at the top level of
+ * the module — that is, in the ENTRY chunk, before the first frame of a form
+ * that has no plural in any of its labels.
  */
 test('Intl is built when it is first needed, and only once per shape', async () => {
   const { spawnSync } = await import('node:child_process')

@@ -1,18 +1,20 @@
 /**
- * Импорт с GitHub — через настоящий маршрут, а не мимо него.
+ * Import from GitHub — through the real route, not around it.
  *
- * Дверей у создания семинара три, и правила комнаты пишутся ровно один раз, при
- * создании: подправить их потом негде. Одна из трёх однажды правила и потеряла —
- * «From GitHub» + «Teacher only» + «Oracle: off» заводило комнату, где запускать
- * может каждый, а оракул отвечает. Регрессию закрыли, и на неё написали тест —
- * который звал `setRules` и `getRules` напрямую, то есть ту самую регрессию
- * пропустил бы целиком: маршрут импорта в нём не участвовал вовсе.
+ * Creating a seminar has three doors, and the room rules are written exactly
+ * once, at creation: there is nowhere to adjust them later. One of the three
+ * once lost the rules — "From GitHub" + "Teacher only" + "Oracle: off" created
+ * a room where anyone can run code and the oracle answers. The regression was
+ * fixed, and a test was written for it — one that called `setRules` and
+ * `getRules` directly, that is, it would have missed that very regression
+ * entirely: the import route took no part in it at all.
  *
- * Здесь ходят по маршруту. Сеть подменена: GitHub отвечает из таблицы ниже, а
- * всё остальное (в том числе свой же http-сервер этого файла) уходит настоящим
- * `fetch`. Проверяются обе формы ссылки, которые человек может скопировать из
- * адресной строки, — на файл и на папку недели, — потому что ветки в маршруте у
- * них разные, а правила обязаны доехать по обеим.
+ * Here the route is walked. The network is faked: GitHub answers from the
+ * table below, and everything else (including this file's own http server)
+ * goes out through the real `fetch`. Both link forms a person can copy from
+ * the address bar are checked — to a file and to a week's folder — because
+ * they take different branches in the route, and the rules must arrive
+ * through both.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -30,7 +32,7 @@ import { readText } from '../server/src/workspace.js'
 import { visitSessionDoc } from '../server/src/routes/doc-visit.js'
 import { allBooks } from '../shared/notebook.js'
 
-/* --------------------------------------------------------- поддельный GitHub */
+/* --------------------------------------------------------- fake GitHub */
 
 const NOTEBOOK = JSON.stringify({
   cells: [
@@ -42,7 +44,7 @@ const NOTEBOOK = JSON.stringify({
   nbformat_minor: 5,
 })
 
-/** Что отвечает подделка на каждый адрес. Всё, чего здесь нет, — 404. */
+/** What the fake answers for each address. Everything not here is a 404. */
 const served = new Map<string, string>([
   [
     'https://api.github.com/repos/hse/ml/contents/week1?ref=main',
@@ -68,7 +70,7 @@ const served = new Map<string, string>([
 ])
 
 const realFetch = globalThis.fetch
-/** Куда подделка ходила: по этому видно, что маршрут правда сходил в сеть. */
+/** Where the fake was asked to go: this shows the route really went to the network. */
 let asked: string[] = []
 
 function urlOf(input: RequestInfo | URL): string {
@@ -97,7 +99,7 @@ before(async () => {
 
   createTeacher({ name: 'Ада', email: 'ada@import.test', role: 'owner' })
   const owner = oldestOwner()
-  assert.ok(owner, 'у инстанса нет владельца — импортировать некому')
+  assert.ok(owner, 'the instance has no owner — nobody to import as')
   let value = ''
   issueStaffCookie(
     { cookie: (_n: string, v: string) => (value = v) } as unknown as ExpressResponse,
@@ -133,45 +135,45 @@ async function importFrom(body: Record<string, unknown>): Promise<Made> {
     headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify(body),
   })
-  // Тело читается один раз: `await res.text()` внутри сообщения утверждения
-  // съедает его и до `res.json()` уже ничего не доходит.
+  // The body is read once: an `await res.text()` inside an assertion message
+  // consumes it, and nothing is left for `res.json()`.
   const answered = await res.text()
-  assert.equal(res.status, 201, `импорт ответил ${res.status}: ${answered}`)
+  assert.equal(res.status, 201, `the import answered ${res.status}: ${answered}`)
   return JSON.parse(answered) as Made
 }
 
 const FILE_URL = 'https://github.com/hse/ml/blob/main/week1/lab.ipynb'
 const FOLDER_URL = 'https://github.com/hse/ml/tree/main/week1'
 
-/* -------------------------------------------------------------------- тесты */
+/* -------------------------------------------------------------------- tests */
 
-test('ссылка на тетрадь заводит комнату с её ячейками и с её правилами', async () => {
+test('a link to a notebook creates a room with its cells and its rules', async () => {
   const made = await importFrom({
     url: FILE_URL,
     name: 'Неделя 1',
     rules: { run: 'host', oracle: 'off' },
   })
   assert.ok(asked.includes('https://raw.githubusercontent.com/hse/ml/main/week1/lab.ipynb'))
-  assert.equal(made.cells, 2, 'ячейки чужой тетради не доехали')
+  assert.equal(made.cells, 2, 'the cells of the imported notebook did not arrive')
 
   const rules = storedRules(made.id)
-  assert.equal(rules.run, 'host', 'правило запуска потеряно маршрутом импорта')
-  assert.equal(rules.oracle, 'off', 'оракул остался включённым в комнате, где его выключили')
-  assert.equal(rules.edit, OPEN_ROOM.edit, 'нетронутое правило поехало вместе с присланным')
+  assert.equal(rules.run, 'host', 'the run rule was lost by the import route')
+  assert.equal(rules.oracle, 'off', 'the oracle stayed on in a room where it was turned off')
+  assert.equal(rules.edit, OPEN_ROOM.edit, 'an untouched rule travelled along with the one sent')
 
-  // И тетрадь легла на диск сразу, а не через полторы секунды после первого
-  // входа: панель считает файлы свежего семинара прямо здесь.
+  // And the notebook landed on disk right away, not a second and a half after
+  // the first join: the panel counts the files of a fresh seminar right here.
   const projected = readText(made.id, 'Тетрадь.ipynb')?.text ?? ''
-  assert.match(projected, /import pandas as pd/, 'тетради нет в папке комнаты')
+  assert.match(projected, /import pandas as pd/, 'the notebook is not in the room folder')
 })
 
-test('ссылка на папку недели везёт и соседние файлы, и те же правила', async () => {
+test('a link to a week folder brings the neighbouring files and the same rules', async () => {
   const made = await importFrom({
     url: FOLDER_URL,
     name: 'Неделя 1, папкой',
     rules: { run: 'host', files: 'host' },
   })
-  assert.deepEqual(made.files, ['train.csv'], 'данные рядом с тетрадью не приехали')
+  assert.deepEqual(made.files, ['train.csv'], 'the data next to the notebook did not arrive')
   assert.deepEqual(made.skipped, [])
   assert.equal(readText(made.id, 'train.csv')?.text, 'a,b\n1,2\n')
 
@@ -180,7 +182,7 @@ test('ссылка на папку недели везёт и соседние �
   assert.equal(rules.files, 'host')
 })
 
-test('папка с двумя ноутбуками сохраняет оба отдельными тетрадями и показывает их в превью', async () => {
+test('a folder with two notebooks keeps both as separate notebooks and shows them in the preview', async () => {
   const folder = 'https://api.github.com/repos/hse/ml/contents/week01?ref=main'
   const names = ['01_Into_to_python.ipynb', '01_Vizualization_Seaborn.ipynb']
   served.set(folder, JSON.stringify(names.map((name) => ({
@@ -211,7 +213,7 @@ test('папка с двумя ноутбуками сохраняет оба о
   assert.doesNotMatch(second, /old output/)
 })
 
-test('недоступный второй ноутбук возвращает ошибку до создания неполной комнаты', async () => {
+test('an unavailable second notebook returns an error before an incomplete room is created', async () => {
   served.set('https://api.github.com/repos/hse/ml/contents/broken?ref=main', JSON.stringify([
     { name: 'a.ipynb', path: 'broken/a.ipynb', type: 'file', size: NOTEBOOK.length,
       download_url: 'https://raw.githubusercontent.com/hse/ml/main/week1/lab.ipynb' },
@@ -228,7 +230,7 @@ test('недоступный второй ноутбук возвращает о
   assert.deepEqual(db.prepare('SELECT COUNT(*) AS n FROM sessions').get(), before)
 })
 
-test('пустая первая тетрадь не теряет вторую, а слишком большой ноутбук назван в skipped', async () => {
+test('an empty first notebook does not lose the second, and a notebook that is too big is named in skipped', async () => {
   served.set('https://api.github.com/repos/hse/ml/contents/mixed?ref=main', JSON.stringify([
     { name: 'a.ipynb', path: 'mixed/a.ipynb', type: 'file', size: 12,
       download_url: 'https://raw.githubusercontent.com/hse/ml/main/mixed/a.ipynb' },
@@ -247,11 +249,11 @@ test('пустая первая тетрадь не теряет вторую, �
   })
 })
 
-test('режим — тоже правило, и он доезжает по обеим ссылкам', async () => {
+test('the mode is a rule too, and it arrives through both links', async () => {
   /*
-   * Пресет режима и подкрученная строка поверх него: панель всегда шлёт полный
-   * `rules` рядом с `mode` и эту половину прячет, а скрипт или клиент постарше
-   * шлёт один `mode`.
+   * A mode preset and an adjusted line on top of it: the panel always sends
+   * the full `rules` next to `mode` and hides this half, while a script or an
+   * older client sends `mode` alone.
    */
   const lecture = await importFrom({ url: FILE_URL, name: 'Лекция', mode: 'lecture' })
   assert.deepEqual(storedRules(lecture.id), LECTURE_ROOM)
@@ -268,15 +270,15 @@ test('режим — тоже правило, и он доезжает по об
   assert.deepEqual(storedRules(mixed.id), { ...LECTURE_ROOM, oracle: 'hints' })
 })
 
-test('без правил и без режима импорт заводит ту же открытую комнату, что и всегда', async () => {
+test('without rules or a mode the import creates the same open room as always', async () => {
   const made = await importFrom({ url: FILE_URL, name: 'Как обычно' })
   assert.deepEqual(storedRules(made.id), OPEN_ROOM)
 })
 
-test('чужой чепухи в rules комната не принимает', async () => {
-  // Тело запроса — от кого угодно со штатной кукой, в том числе от старого
-  // клиента. Незнакомое значение обязано осесть в разрешающем умолчании, а не
-  // лечь в базу как есть: `readRules` — единственная дверь к столбцу.
+test('the room does not accept foreign nonsense in rules', async () => {
+  // The request body comes from anyone with a staff cookie, including an old
+  // client. An unfamiliar value must settle into the permissive default, not
+  // go into the database as is: `readRules` is the only door to the column.
   const made = await importFrom({
     url: FILE_URL,
     name: 'Чепуха',
@@ -285,5 +287,5 @@ test('чужой чепухи в rules комната не принимает', 
   const rules = storedRules(made.id)
   assert.equal(rules.run, OPEN_ROOM.run)
   assert.equal(rules.oracle, OPEN_ROOM.oracle)
-  assert.equal(JSON.stringify(rules).includes('выдумка'), false, 'в правила уехало чужое поле')
+  assert.equal(JSON.stringify(rules).includes('выдумка'), false, 'a foreign field made it into the rules')
 })

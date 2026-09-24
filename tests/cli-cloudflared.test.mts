@@ -1,16 +1,17 @@
 /**
- * cloudflared без ручной установки: какой файл, откуда, и что запускается.
+ * cloudflared without a manual install: which file, from where, and what runs.
  *
- * Здесь нет сети: GitHub подменён функцией fetch, которая отдаёт байты,
- * собранные прямо в тесте, а закреплённая таблица — своей, с суммами этих
- * байтов. Настоящая таблица проверяется отдельно — формой, а не загрузкой:
- * живую загрузку делает `colloq start --share` на живой машине.
+ * There is no network here: GitHub is replaced by a fetch function that
+ * returns bytes built right in the test, and the pinned table by one of our
+ * own, with the sums of those bytes. The real table is checked separately — by
+ * its shape, not by a download: the live download is done by
+ * `colloq start --share` on a live machine.
  *
- * Главное свойство, которое стережёт файл: файл из интернета не становится
- * исполняемым, пока его сумма не совпала с закреплённой. Подменённый архив,
- * подменённый бинарь внутри верного архива, лишний байт сверх размера — всё
- * это отказ, после которого в <home>/bin нет ни cloudflared, ни временного
- * файла.
+ * The main property this file guards: a file from the internet does not become
+ * executable until its sum matches the pinned one. A tampered archive, a
+ * tampered binary inside a correct archive, one byte over the size — all of it
+ * is a refusal, after which <home>/bin holds neither cloudflared nor a
+ * temporary file.
  */
 import './_cli.mjs'
 import { test } from 'node:test'
@@ -36,11 +37,11 @@ import {
   type CloudflaredAsset,
 } from '../cli/src/launch-cloudflared-pin.js'
 
-/* ------------------------------------------------------------ tar в тесте */
+/* -------------------------------------------------------- tar in the test */
 
 type Entry = { name: string; body?: string | Buffer; type?: string }
 
-/** Заголовок ustar: ровно те поля, что читает untarFile, и честная сумма. */
+/** A ustar header: just the fields untarFile reads, and an honest checksum. */
 function header(name: string, size: number, type: string): Buffer {
   const block = Buffer.alloc(512)
   block.write(name.slice(0, 100), 0, 'utf8')
@@ -71,7 +72,7 @@ function tar(entries: Entry[]): Buffer {
   return Buffer.concat(parts)
 }
 
-/* ------------------------------------------------ закреплённая таблица */
+/* ---------------------------------------------------- the pinned table */
 
 test('the pinned table covers exactly the systems the wheel is built for', () => {
   assert.match(CLOUDFLARED_VERSION, /^\d{4}\.\d{1,2}\.\d+$/)
@@ -83,7 +84,8 @@ test('the pinned table covers exactly the systems the wheel is built for', () =>
     assert.match(asset.sha256, /^[0-9a-f]{64}$/, asset.name)
     assert.match(asset.binarySha256, /^[0-9a-f]{64}$/, asset.name)
     assert.ok(asset.size > 10_000_000 && asset.size < 100_000_000, asset.name)
-    // У Linux скачанный файл и есть бинарь; у macOS — архив, и суммы разные.
+    // On Linux the downloaded file is the binary itself; on macOS it is an
+    // archive, and the sums differ.
     if (asset.archive === 'binary') assert.equal(asset.binarySha256, asset.sha256, asset.name)
     else assert.notEqual(asset.binarySha256, asset.sha256, asset.name)
     assert.equal(
@@ -116,7 +118,7 @@ test('Windows and unknown machines are refused in words, with a way out', () => 
     )
 })
 
-/* ------------------------------------------------------------ сверка */
+/* ------------------------------------------------------ verification */
 
 test('sha256 is checked, and a mismatch names both sums', () => {
   const data = Buffer.from('cloudflared')
@@ -134,7 +136,7 @@ test('sha256 is checked, and a mismatch names both sums', () => {
 test('tar: the one file named cloudflared comes out, in every shape tar writes', () => {
   const binary = Buffer.from('#!/bin/sh\necho tunnel\n')
   assert.deepEqual(untarFile(tar([{ name: 'cloudflared', body: binary }]), 'cloudflared'), binary)
-  // bsdtar с ./ впереди, каталог и соседний файл рядом.
+  // bsdtar with ./ in front, a directory and a sibling file next to it.
   assert.deepEqual(
     untarFile(
       tar([
@@ -146,7 +148,7 @@ test('tar: the one file named cloudflared comes out, in every shape tar writes',
     ),
     binary,
   )
-  // Длинное имя GNU (L) и путь из pax (x) — имя записи берётся из них.
+  // A GNU long name (L) and a pax path (x): the entry name comes from them.
   assert.deepEqual(
     untarFile(
       tar([
@@ -171,7 +173,7 @@ test('tar: the one file named cloudflared comes out, in every shape tar writes',
 
 test('tar: no cloudflared, one in a subdirectory, or a cut archive is a refusal', () => {
   assert.throws(() => untarFile(tar([{ name: 'README', body: 'x' }]), 'cloudflared'), /no cloudflared/)
-  // Только запись с этим именем: bin/cloudflared — чужой файл, не наш.
+  // Only the entry with this name: bin/cloudflared is someone else's file.
   assert.throws(
     () => untarFile(tar([{ name: 'bin/cloudflared', body: 'x' }]), 'cloudflared'),
     /no cloudflared/,
@@ -180,7 +182,7 @@ test('tar: no cloudflared, one in a subdirectory, or a cut archive is a refusal'
   assert.throws(() => untarFile(whole.subarray(0, 1024), 'cloudflared'), /cut short/)
 })
 
-/** Своя закреплённая запись — с суммами байтов, собранных в тесте. */
+/** Our own pinned entry, with the sums of bytes built in the test. */
 function fakeAsset(
   platform: 'darwin' | 'linux',
   arch: 'arm64' | 'x64',
@@ -205,18 +207,18 @@ test('archive → binary: both sums are checked, the archive before it is opened
   const binary = Buffer.from('#!/bin/sh\necho mac\n')
   const { asset, download } = fakeAsset('darwin', 'arm64', binary)
   assert.deepEqual(cloudflaredBinary(asset, download), binary)
-  // Подменённый архив — отказ до распаковки.
+  // A tampered archive is refused before unpacking.
   const tampered = Buffer.from(download)
   tampered[tampered.length - 1] ^= 1
   assert.throws(() => cloudflaredBinary(asset, tampered), /cloudflared-darwin-test\.tgz: the sha256/)
-  // Верный архив, но внутри не тот бинарь, что закреплён.
+  // A correct archive, but the binary inside is not the pinned one.
   assert.throws(
     () => cloudflaredBinary({ ...asset, binarySha256: '1'.repeat(64) }, download),
     /cloudflared from cloudflared-darwin-test\.tgz: the sha256/,
   )
 })
 
-/* ------------------------------------------------------------ где искать */
+/* --------------------------------------------------------- where to look */
 
 function lookup(over: Partial<CloudflaredLookup> & { files?: Record<string, string> }): CloudflaredLookup {
   const files = over.files ?? {}
@@ -266,7 +268,8 @@ test('lookup order: named file, then PATH, then our verified copy, then a downlo
 
 test('our copy runs only verified — even when <home>/bin is on PATH', () => {
   const ours = '/home/t/.colloq/bin/cloudflared'
-  // Копия от прежней версии colloq или подменённая: сумма не та — скачать заново.
+  // A copy from an earlier colloq version, or a tampered one: the sum is
+  // wrong, so download it again.
   const stale = resolveCloudflared(
     lookup({ env: { PATH: '/home/t/.colloq/bin' }, files: { [ours]: 'f'.repeat(64) } }),
   )
@@ -303,7 +306,7 @@ test('Windows: refused unless a file is named explicitly', () => {
   assert.match(refused.kind === 'refuse' ? refused.message : '', /WSL 2/)
 })
 
-/* ------------------------------------------------------------ загрузка */
+/* ------------------------------------------------------------ download */
 
 type Fetched = { url: string; redirect?: string }
 
@@ -340,7 +343,7 @@ test('first run downloads, verifies, installs 0755; the second run uses the veri
     assert.equal(file, path.join(dir, 'bin/cloudflared'))
     assert.deepEqual(fs.readFileSync(file), binary)
     assert.equal(fs.statSync(file).mode & 0o777, 0o755)
-    // Сказано вслух: что, какой версии и откуда.
+    // Said out loud: what, which version, and from where.
     assert.deepEqual(seen, [{ url: cloudflaredUrl(asset), redirect: 'follow' }])
     const text = said.join('\n')
     assert.match(text, /cloudflared is not installed: colloq fetches it once/)
@@ -437,7 +440,7 @@ test('a stale copy is replaced by the pinned one, in place', async () => {
 test('the module uses node built-ins only: the CLI bundle has no dependencies', () => {
   for (const name of ['launch-cloudflared.ts', 'launch-cloudflared-pin.ts']) {
     const source = fs.readFileSync(new URL(`../cli/src/${name}`, import.meta.url), 'utf8')
-    // Строки импорта — только они: «from» бывает и в тексте отказа.
+    // Import lines and only them: "from" also occurs in the refusal text.
     for (const [, spec] of source.matchAll(/^(?:import .*|\}) from '([^']+)'$/gm))
       assert.ok(spec!.startsWith('node:') || spec!.startsWith('./'), `${name} imports ${spec}`)
   }

@@ -1,18 +1,20 @@
 /**
- * Картинки в исходниках документации: файл есть, размеры в разметке — его
- * настоящие, и каждый язык показывает свой интерфейс.
+ * Images in the documentation sources: the file exists, the sizes in the
+ * markup are its real ones, and each language shows its own interface.
  *
- * Английская главная до 18.09.2026 показывала русский снимок комнаты с
- * подписью «shown here with the Russian interface»: страницу перевели, а
- * картинку взяли из русской, потому что другой не было. Английский снимок
- * теперь есть (site/img/workspace-en@1x.webp), и третий тест держит правило
- * целиком: если у картинки есть `-en`-двойник, английская страница берёт его,
- * а русская — никогда не берёт чужой.
+ * Until 18 Sep 2026 the English index page showed a Russian screenshot of
+ * the room with the caption "shown here with the Russian interface": the
+ * page was translated, but the picture was taken from the Russian one
+ * because there was no other. There is an English screenshot now
+ * (site/img/workspace-en@1x.webp), and the third test holds the whole rule:
+ * if an image has an `-en` twin, the English page takes it, and the Russian
+ * one never takes someone else's.
  *
- * width/height сверяются с файлом, а не на глаз: браузер резервирует место по
- * атрибутам, и снимок, переснятый в другом размере при старой разметке,
- * растягивается в чужие пропорции — на лендинге так уже было (коммит 0e03dc9,
- * «обновить снимок без искажения пропорций»).
+ * width/height are checked against the file, not by eye: the browser
+ * reserves space by the attributes, and a screenshot retaken at another size
+ * under the old markup gets stretched into foreign proportions — this
+ * already happened on the landing page (commit 0e03dc9, "update the
+ * screenshot without distorting its proportions").
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -29,7 +31,7 @@ interface Img {
   page: string
   lang: (typeof LANGS)[number]
   src: string
-  /** Кандидаты srcset: браузер вправе взять любой, и русский 2x в нём — тот же чужой снимок. */
+  /** srcset candidates: the browser may take any of them, and a Russian 2x among them is the same foreign screenshot. */
   srcset: string[]
   width: number | null
   height: number | null
@@ -55,7 +57,7 @@ function images(): Img[] {
   return out
 }
 
-/** Размер webp (VP8, VP8L, VP8X) или png по заголовку — без зависимостей. */
+/** The size of a webp (VP8, VP8L, VP8X) or png from its header — without dependencies. */
 function dimensions(file: string): { width: number; height: number } {
   const b = readFileSync(file)
   if (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') {
@@ -73,21 +75,22 @@ function dimensions(file: string): { width: number; height: number } {
 }
 
 /**
- * `/img/x.webp?v=757a8c51` → `/img/x.webp`. Хвост ?v= — обычай этого сайта
- * (лендинг так сбрасывает кэш), и без отрезания регулярки ниже, привязанные к
- * концу строки, его не видят: «двойник» `/img/og.png?v=…` выходил им же самим,
- * и английская страница падала с «английская версия существует».
+ * `/img/x.webp?v=757a8c51` → `/img/x.webp`. The ?v= tail is this site's
+ * custom (the landing page resets the cache this way), and without cutting
+ * it off the regexes below, anchored to the end of the string, do not see
+ * it: the "twin" of `/img/og.png?v=…` came out as itself, and the English
+ * page failed with "the English version exists".
  */
 function bare(src: string): string {
   return src.split(/[?#]/)[0]
 }
 
-/** Путь сайта (`/img/x.webp`) → файл в site/, только для своих картинок. */
+/** A site path (`/img/x.webp`) → a file in site/, only for our own images. */
 function local(src: string): string | null {
   return src.startsWith('/') && !src.startsWith('//') ? join(SITE, bare(src)) : null
 }
 
-/** `/img/workspace@1x.webp` → `/img/workspace-en@1x.webp`: суффикс плотности остаётся в конце. */
+/** `/img/workspace@1x.webp` → `/img/workspace-en@1x.webp`: the density suffix stays at the end. */
 function englishTwin(src: string): string {
   return bare(src).replace(/(@\d+(?:\.\d+)?x)?(\.[a-z0-9]+)$/i, '-en$1$2')
 }

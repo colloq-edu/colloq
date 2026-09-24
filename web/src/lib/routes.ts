@@ -1,124 +1,132 @@
 /**
- * Адреса Colloq — все, какие есть, и то, как их читать.
+ * Colloq's addresses — all there are, and how to read them.
  *
- * Разбор живёт здесь, а не в разметке App, по той же причине, по какой рядом
- * лежит `admin/entry.ts`: регулярка, которая тихо перестала совпадать, сборку
- * не уронит — она высадит планшет с живым ключом в адресной строке на экран
- * входа, и заметить это можно только руками. Здесь она проверяется тестами.
+ * The parsing lives here, not in App's markup, for the same reason
+ * `admin/entry.ts` lies next to it: a regex that quietly stopped matching will
+ * not break the build — it will drop a tablet with a live key in its address
+ * bar onto the sign-in screen, and that can only be noticed by hand. Here it
+ * is checked by tests.
  *
- * Маршрутизатора при этом по-прежнему нет: страниц ровно столько, сколько
- * ниже функций, и ссылка на семинар обязана остаться обычным адресом, который
- * преподаватель вставляет в чат.
+ * There is still no router: there are exactly as many pages as there are
+ * functions below, and a seminar link must stay an ordinary address that the
+ * teacher pastes into a chat.
  */
 
-/** Который из экранов комнаты открыт. */
+/** Which of the room's screens is open. */
 export type RoomMode = 'room' | 'screen' | 'pult' | 'council'
 
 export interface RoomRoute {
   id: string
   mode: RoomMode
-  /** Ключ из ссылки на пульт: планшет меняет его на обычный вход. */
+  /** The key from a console link: the tablet trades it for a normal sign-in. */
   handoffKey: string | null
   /**
-   * Ячейка пульта консилиума — только у режима `council`, у остальных `null`.
+   * The council console's cell — only for the `council` mode, `null` for the
+   * rest.
    *
-   * Пульт консилиума открывают ПО ЯЧЕЙКЕ: консилиумных ячеек в тетради бывает
-   * несколько, и окно без имени ячейки не знало бы, чью стопку показывать.
-   * Отсюда и отдельный сегмент в адресе, а не флаг: окно переживает
-   * перезагрузку и после неё обязано вернуться к той же ячейке.
+   * The council console is opened BY CELL: a notebook can have several council
+   * cells, and a window without the cell name would not know whose stack to
+   * show. Hence a separate segment in the address rather than a flag: the
+   * window survives a reload and must return to the same cell after it.
    */
   cellId: string | null
 }
 
 export interface PublicRoute {
   id: string
-  /** Шаг публикации; `null` — первый. */
+  /** The publication step; `null` — the first. */
   step: number | null
 }
 
 /*
- * `/s/:id` — комната, `/s/:id/screen` — её проекция на балке в аудитории,
- * `/s/:id/pult` — пульт лекции в руках у преподавателя, `/s/:id/council/:cell`
- * — пульт консилиума по одной ячейке, в отдельном окне 900×700.
+ * `/s/:id` — the room, `/s/:id/screen` — its projection on the lecture-hall
+ * projector, `/s/:id/pult` — the lecture console in the teacher's hands,
+ * `/s/:id/council/:cell` — the council console for one cell, in a separate
+ * 900×700 window.
  *
- * Один адрес на четыре экрана: и проекция, и оба пульта — это та же комната тем же
- * человеком, а не отдельные страницы. Отсюда и хвост в том же выражении, а не
- * три регулярки: id остаётся одним и тем же, и переход между ними НЕ
- * пересобирает сессию — сокеты, документ и присутствие остаются на месте.
+ * One address for four screens: the projection and both consoles are the same
+ * room with the same person, not separate pages. Hence the tail in the same
+ * expression rather than three regexes: the id stays the same, and moving
+ * between them does NOT rebuild the session — the sockets, the document and
+ * presence stay in place.
  *
- * Адресом, а не кнопкой, потому что оба открывают на ДРУГОЙ машине: проекцию
- * — на той, что воткнута в проектор, пульт — на планшете. Ссылку проекции
- * кладут в закладки кафедрального ноутбука, и после перезагрузки она
- * вернётся сама; на пульт приводит ссылка-ключ.
+ * An address rather than a button, because both are opened on ANOTHER
+ * machine: the projection on the one plugged into the projector, the console
+ * on a tablet. The projection link is bookmarked on the department laptop and
+ * comes back by itself after a reload; a key link leads to the console.
  *
- * КЛЮЧ — ХВОСТ К ЛЮБОМУ ЭКРАНУ, а не пятый экран.
+ * THE KEY IS A TAIL TO ANY SCREEN, not a fifth screen.
  *
- * Пока `/t/<ключ>` стоял в одной альтернации с `pult` и `council/:cell`,
- * ссылка с ключом умела вести ровно в одно место — и `App` дописывал это место
- * руками («после обмена — на пульт лекции»). Пульт консилиума открывают ПО
- * ЯЧЕЙКЕ, и ссылки `/s/:id/council/:cell/t/<ключ>` в продукте не существовало
- * вовсе: преподаватель, скопировавший адрес окна, отдавал телефону адрес без
- * входа. Своей группой ключ перестаёт спорить с экраном: он говорит, КЕМ
- * войти, а экран — КУДА, и эти два вопроса больше не делят одно место.
+ * While `/t/<key>` stood in one alternation with `pult` and `council/:cell`, a
+ * link with a key could lead to exactly one place — and `App` appended that
+ * place by hand ("after the exchange — to the lecture console"). The council
+ * console is opened BY CELL, and a `/s/:id/council/:cell/t/<key>` link did not
+ * exist in the product at all: a teacher who copied the window's address gave
+ * the phone an address without sign-in. As a group of its own the key stops
+ * competing with the screen: it says WHO to sign in as, the screen says
+ * WHERE, and these two questions no longer share one place.
  *
- * Алфавит ключа — тот же, которым его подписывает сервер (`signHandoffToken`):
- * base64url через точки. Совпадение алфавитов проверяется тестом, потому что
- * разойтись они умеют молча.
+ * The key's alphabet is the same the server signs it with
+ * (`signHandoffToken`): base64url with dots. That the alphabets match is
+ * checked by a test, because they can drift apart silently.
  */
 const SESSION_PATH =
   /^\/s\/([A-Za-z0-9_-]{1,64})(?:\/(screen|pult)|\/council\/([A-Za-z0-9_-]{1,64}))?(?:\/t\/([A-Za-z0-9_.-]{8,512}))?\/?$/
 /*
- * Две публичные страницы: курс и опубликованный семинар.
+ * Two public pages: a course and a published seminar.
  *
- * Свои префиксы и свои идентификаторы, отдельные от `/s/`, и это не
- * аккуратность в именах: восемь символов комнаты — это всё право писать в
- * неё. Ссылка, данная классу «на почитать», не должна открывать им живую
- * тетрадь, поэтому у публикации адрес свой, а id комнаты в неё не входит.
+ * Their own prefixes and their own ids, separate from `/s/`, and this is not
+ * tidiness in naming: the room's eight characters are the whole right to
+ * write into it. A link given to the class "for reading" must not open the
+ * live notebook for them, so a publication has an address of its own, and the
+ * room id is not part of it.
  */
 const COURSE_PATH = /^\/c\/([A-Za-z0-9_-]{1,64})\/?$/
 /*
- * Шаг — только неотрицательное число. Минус тут когда-то читался как «шаг с
- * конца», но с конца не умеет никто: `readStep` (server/src/publish/store.ts)
- * ищет `seq` буквально, рельса шагов и выгрузка минусов не порождают. Пока
- * маршрутизатор пропускал их как шаг, `/p/<id>/-1` открывался читалкой и
- * печатал «его опубликовали заново» вместо честного «такой страницы нет».
+ * A step is a non-negative number only. A minus here once read as "a step
+ * from the end", but nobody can count from the end: `readStep`
+ * (server/src/publish/store.ts) looks `seq` up literally, and neither the step
+ * rail nor the export produce minuses. While the router let them through as a
+ * step, `/p/<id>/-1` opened in the reader and printed "it was published again"
+ * instead of an honest "there is no such page".
  */
 const PUBLIC_PATH = /^\/p\/([A-Za-z0-9_-]{1,64})(?:\/(\d+))?\/?$/
 /*
- * Соревнования: `/k` — список, `/k/<slug>` — страница, `/k/t/<ключ>` — вход.
+ * Competitions: `/k` — the list, `/k/<slug>` — a page, `/k/t/<key>` — sign-in.
  *
- * Ключ ХВОСТОМ ПОСЛЕ `t`, а не голым `/k/<ключ>`, и это не стиль: адрес
- * соревнования тоже стоит вторым сегментом, и `K7Q-M2X-9FD` пришлось бы
- * отличать от `rohlik` по форме строки. Пока формы не спорят, это работает; в
- * тот день, когда преподаватель заведёт соревнование с адресом из девяти букв,
- * ссылка для входа молча откроет чужую задачу. Поэтому `t` — зарезервированный
- * адрес (`shared/competitions.ts` · RESERVED_SLUGS), и соревнования с таким
- * именем не бывает.
+ * The key as a TAIL AFTER `t`, not a bare `/k/<key>`, and this is not style: a
+ * competition's address is also the second segment, and `K7Q-M2X-9FD` would
+ * have to be told from `rohlik` by the shape of the string. As long as the
+ * shapes do not clash, that works; the day a teacher creates a competition
+ * with a nine-letter address, the sign-in link will silently open someone
+ * else's task. So `t` is a reserved address (`shared/competitions.ts` ·
+ * RESERVED_SLUGS), and there is never a competition by that name.
  *
- * Вкладки страницы (`submissions`, `leaderboard`) и проектор — тем же
- * выражением: это та же страница тем же человеком, и переход между вкладками
- * не обязан пересобирать экран. Буквы адреса — те же, что у курсов и
- * публикаций (`shared/publish.ts` · slugOk): строчные, цифры и дефис.
+ * The page's tabs (`submissions`, `leaderboard`) and the projector — with the
+ * same expression: it is the same page with the same person, and switching
+ * tabs need not rebuild the screen. The address letters are the same as for
+ * courses and publications (`shared/publish.ts` · slugOk): lower case, digits
+ * and a hyphen.
  *
- * Алфавит ключа — тот, которым его печатает сервер: три группы по три знака из
- * `ENTRANT_KEY_ALPHABET`, с дефисами или без. Пробелы и нижний регистр
- * приводит к виду сам сервер, поэтому здесь они тоже проходят.
+ * The key's alphabet is the one the server prints it in: three groups of
+ * three characters from `ENTRANT_KEY_ALPHABET`, with or without hyphens. The
+ * server itself normalises spaces and lower case, so they pass here too.
  */
 const COMPETITIONS_PATH =
   /^\/k(?:\/t\/([A-Za-z0-9 -]{9,16})|\/([a-z0-9-]{1,64})(?:\/(submissions|leaderboard|dependencies)(\/screen)?)?)?\/?$/
 
-/** Какая из страниц соревнований открыта. */
+/** Which of the competition pages is open. */
 export type CompetitionView = 'list' | 'task' | 'submissions' | 'leaderboard' | 'dependencies' | 'screen'
 
 export interface CompetitionRoute {
-  /** Адрес соревнования; `null` — общий список `/k`. */
+  /** The competition's address; `null` — the general `/k` list. */
   slug: string | null
   view: CompetitionView
-  /** Ключ из ссылки для входа: страница меняет его на печенье. */
+  /** The key from the sign-in link: the page trades it for a cookie. */
   signInKey: string | null
 }
 
-/** Комната и то, каким из трёх её экранов её открыли. */
+/** The room and which of its three screens it was opened with. */
 export function readRoomRoute(path: string): RoomRoute | null {
   const match = SESSION_PATH.exec(path)
   if (!match) return null
@@ -133,17 +141,19 @@ export function readRoomRoute(path: string): RoomRoute | null {
 }
 
 /**
- * Тот же экран, но без ключа, — куда высадить планшет после обмена.
+ * The same screen but without the key — where to drop the tablet after the
+ * exchange.
  *
- * Одно место, где режим снова становится адресом: `App` стирает ключ из строки
- * сразу после обмена (он одноразовый и живёт минуты, а адрес переживает и
- * вкладку, и снимок экрана), и высаживать обязан ТУДА, КУДА ВЕЛА ССЫЛКА.
+ * The one place where the mode becomes an address again: `App` erases the key
+ * from the bar right after the exchange (it is single-use and lives minutes,
+ * while an address outlives both the tab and a screenshot), and it must drop
+ * the person WHERE THE LINK LED.
  *
- * Голый `/s/:id/t/<ключ>` — это ссылка пульта лекции, выданная до того, как
- * ключ научился быть хвостом к экрану: она ведёт на `/s/:id/pult`, потому что
- * этой ссылкой открывают планшет, чтобы ВЕСТИ, а не чтобы смотреть комнату
- * вторым окном. Ссылки живут десять минут, так что этот случай — про те из
- * них, что выданы минуту назад, и он же остаётся честным ответом «пульт».
+ * A bare `/s/:id/t/<key>` is a lecture console link issued before the key
+ * learned to be a tail to a screen: it leads to `/s/:id/pult`, because this
+ * link opens a tablet in order to LEAD, not to watch the room in a second
+ * window. Links live ten minutes, so this case is about those issued a minute
+ * ago, and it also remains the honest answer "console".
  */
 export function handoffLanding(route: Pick<RoomRoute, 'id' | 'mode' | 'cellId'>): string {
   const base = `/s/${route.id}`
@@ -152,12 +162,12 @@ export function handoffLanding(route: Pick<RoomRoute, 'id' | 'mode' | 'cellId'>)
   return `${base}/pult`
 }
 
-/** Публичная страница курса. */
+/** A course's public page. */
 export function readCourseId(path: string): string | null {
   return COURSE_PATH.exec(path)?.[1] ?? null
 }
 
-/** Опубликованный семинар, с шагом или без. */
+/** A published seminar, with or without a step. */
 export function readPublicRoute(path: string): PublicRoute | null {
   const match = PUBLIC_PATH.exec(path)
   if (!match) return null
@@ -165,10 +175,10 @@ export function readPublicRoute(path: string): PublicRoute | null {
 }
 
 /**
- * Страницы соревнований — и вход по ключу-ссылке.
+ * The competition pages — and sign-in by a key link.
  *
- * Возвращается и для голого `/k`: список соревнований — такая же страница, как
- * остальные, и отличать её отсутствием разбора было бы лишним ветвлением в
+ * Returned for a bare `/k` too: the competitions list is a page like the
+ * others, and telling it apart by a failed parse would be an extra branch in
  * `App`.
  */
 export function readCompetitionRoute(path: string): CompetitionRoute | null {
@@ -194,16 +204,16 @@ export function readCompetitionRoute(path: string): CompetitionRoute | null {
 }
 
 /**
- * Куда высадить человека после обмена ключа на вход.
+ * Where to drop the person after trading the key for a sign-in.
  *
- * Ключ живёт в строке браузера ровно до первого ответа сервера: адрес
- * переживает и вкладку, и снимок экрана, который студент пришлёт однокурснику
- * «смотри, какое место». Ровно то же правило и по той же причине, что у ссылки
- * на пульт (`handoffLanding` выше).
+ * The key lives in the browser's address bar exactly until the server's first
+ * answer: an address outlives both the tab and the screenshot a student will
+ * send a classmate — "look at my place". Exactly the same rule, and for the
+ * same reason, as for the console link (`handoffLanding` above).
  */
 export const COMPETITIONS_LANDING = '/k'
 
-/** Панель преподавателя: свои под-адреса она разбирает сама. */
+/** The teacher panel: it parses its own sub-addresses itself. */
 export function isAdminPath(path: string): boolean {
   return path === '/admin' || path.startsWith('/admin/')
 }

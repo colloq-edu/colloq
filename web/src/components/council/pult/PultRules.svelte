@@ -1,20 +1,22 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   /**
-   * Регламент консилиума — все правила ячейки на одном листе.
+   * The council rules — all of a cell's rules on one sheet.
    *
-   * Раньше они жили там, где случайно оказались: «кто запускает» подвалом
-   * очереди, «имена на проекторе» переключателем в строке состояния. Обе ручки
-   * меняют не вид пульта, а то, что можно КЛАССУ, и искать их по вкладкам —
-   * значит каждый раз вспоминать, куда их положили. Здесь они рядом, и рядом
-   * же видно последствие каждой: сколько просьб снимется при смене режима,
-   * сколько на самом деле считают запуски, чем подписано решение на стене.
+   * They used to live wherever they happened to land: "who runs" as the
+   * queue's footer, "names on the projector" as a switch in the status line.
+   * Both controls change not how the console looks but what the CLASS may
+   * do, and hunting for them across tabs means remembering each time where
+   * they were put. Here they are side by side, and next to each its
+   * consequence is visible: how many requests a mode change will clear, how
+   * long runs actually take, what captions a solution on the wall.
    *
-   * Лист падает из-под шапки и накрывает вкладки: он про ячейку целиком, и
-   * уводить ради него с открытой работы нечестно — читали её, к ней и
-   * вернутся. Кнопки применяются сразу, «Сохранить» нет: правило — это не
-   * форма, а положение рубильника, и лишний шаг между «поставил 1 мин» и
-   * «стало 1 мин» означал бы, что на экране написано не то, что действует.
+   * The sheet drops from under the header and covers the tabs: it is about
+   * the whole cell, and leading away from the open piece of work for it
+   * would be unfair — people were reading that work and will go back to it.
+   * Buttons apply at once, there is no "Save": a rule is not a form but the
+   * position of a switch, and an extra step between "set 1 min" and "it is
+   * 1 min" would mean the screen says something other than what is in force.
    */
   import { COUNCIL_SHARED_KERNEL_NOTE, type CouncilSettings } from '@shared/notebook'
   import {
@@ -29,25 +31,27 @@
 
   interface Props {
     settings: CouncilSettings
-    /** Правило, ради которого лист открыли: его строка подсвечена, на ней фокус. */
+    /** The rule the sheet was opened for: its row is highlighted and has focus. */
     rule: PultRule
-    /** Сколько просьб о запуске снимет смена режима (сервер · clearRunRequests). */
+    /** How many run requests a mode change will clear (server · clearRunRequests). */
     pending: number
-    /** Как долго считают запуски этой ячейки; null — законченных ещё не было. */
+    /** How long this cell's runs take; null means none has finished yet. */
     stats: RunStats | null
     /**
-     * Предел ОБЫЧНОЙ ячейки этой комнаты в секундах; `null` — без предела.
+     * The limit of an ORDINARY cell in this room, in seconds; `null` — no
+     * limit.
      *
-     * Правило комнаты, а не ячейки, и отсюда его не меняют — оно лежит в
-     * правилах занятия. Но сказать о нём надо именно здесь: очередь у тетради
-     * одна, и предел запуска, выставленный в этом листе, не спасает ни от чего,
-     * пока в той же тетради может идти обычная ячейка без предела. Это ровно та
-     * дыра, из-за которой «предел не работает» было правдой.
+     * A room rule, not a cell rule, and it is not changed from here — it
+     * lives in the class rules. But it has to be mentioned exactly here: the
+     * notebook has one queue, and a run limit set in this sheet saves from
+     * nothing while an ordinary cell without a limit can run in the same
+     * notebook. That is exactly the hole that made "the limit does not work"
+     * true.
      */
     cellLimit: number | null
-    /** Нет связи или пульт не ведёт занятие: смотреть можно, менять нечего. */
+    /** Offline, or the console is not leading the class: viewable, not changeable. */
     disabled: boolean
-    /** Низ шапки: отсюда лист начинается, ниже него — затемнение. */
+    /** The bottom of the header: the sheet starts here, with the dimming below it. */
     top: number
     onchange: (patch: Partial<CouncilSettings>) => void
     onclose: () => void
@@ -84,12 +88,12 @@
   )
 
   /*
-   * Статистика — живой цифрой, а не `spell()`.
+   * The statistics as a live figure, not `spell()`.
    *
-   * Попытка консилиума — несколько строк, и обычный запуск идёт доли секунды:
-   * законченная длительность округляет их до «0 с», и строка, ради которой
-   * предел и выбирают, сообщала бы «обычно 0 с · самый долгий 3 с». Десятая
-   * доля здесь — единственное, что отличает 0,4 с от 4 с.
+   * A council attempt is a few lines, and an ordinary run takes fractions of
+   * a second: a finished duration rounds them to "0 s", and the line the
+   * limit is chosen by would report "typically 0 s · longest 3 s". The tenth
+   * here is the only thing telling 0.4 s from 4 s.
    */
   const statLine = $derived(
     stats === null
@@ -105,8 +109,8 @@
             rule: each,
             title: tr('room.pult.v2.rules.whoTitle'),
             why: whoWhy,
-            // Последствие, о котором узнают только после нажатия: сервер
-            // снимает все просьбы, как только режим сменился.
+            // A consequence people only learn about after the press: the
+            // server clears all requests as soon as the mode changes.
             note: pending > 0 ? tr('room.pult.v2.rules.whoPending', { count: pending }) : '',
             segments: runs,
           }
@@ -128,16 +132,18 @@
             rule: each,
             title: tr('room.pult.v2.rules.pauseTitle'),
             /*
-             * Строка остаётся на месте и при выключенных запусках: исчезнув,
-             * она унесла бы с собой и то, что пауза настроена, — а вернуть
-             * запуски студентам можно одним нажатием соседней кнопки.
+             * The row stays in place even with runs switched off: if it
+             * disappeared, it would take with it the fact that the pause is
+             * set — and runs can be given back to students with one press of
+             * the neighbouring button.
              *
-             * При «все по очереди» подпись другая, и это не украшение. Пауза по
-             * умолчанию ноль, а «все по очереди» преподаватель включает за
-             * минуту до дела и про паузу не вспоминает — очередь общего ядра
-             * тут же набивается повторными нажатиями после каждой правки.
-             * Единственное место, где об этом можно сказать вовремя, — здесь,
-             * в соседней строке того же листа.
+             * With "by anyone, in turn" the caption is different, and that is
+             * not decoration. The pause defaults to zero, and a teacher
+             * switches on "by anyone, in turn" a minute before it matters and
+             * does not remember the pause — the shared kernel's queue
+             * immediately fills with repeat presses after every edit. The
+             * only place to say so in time is here, in the neighbouring row of
+             * the same sheet.
              */
             why: settings.studentRun === false
               ? tr('room.pult.v2.rules.pauseOff')
@@ -146,11 +152,12 @@
                 : tr('room.pult.v2.rules.pauseWhy'),
             note: '',
             /*
-             * Кнопки живые всегда, когда студентам запуск разрешён. Раньше они
-             * гасли по `studentRun === false`, то есть пауза настраивалась
-             * только после того, как запуск уже открыли, — а порядок «сперва
-             * поставить паузу, потом открыть запуск» и есть тот, при котором
-             * очередь не успевает набиться.
+             * The buttons are always live, not only when students are allowed
+             * to run. They used to grey out on `studentRun === false`, that
+             * is, the pause could be set only after running had already been
+             * opened — while the order "first set the pause, then open
+             * running" is exactly the one in which the queue has no time to
+             * fill up.
              */
             segments: pauseOptions(settings.rerunPauseSec).map((value) => ({
               label: value === 0 ? tr('room.pult.v2.rules.pauseNowOption') : pultDuration(value),
@@ -177,12 +184,12 @@
   )
 
   /**
-   * Фокус въезжает на ту кнопку, ради которой лист открыли.
+   * Focus lands on the button the sheet was opened for.
    *
-   * Не на заголовок и не на «Готово»: пришли менять правило, и первое же
-   * нажатие стрелки или пробела должно попасть в его ряд. Кнопки нет (ряд
-   * выключен или пульт не ведёт) — остаётся «Готово», чтобы Esc был не
-   * единственным выходом с клавиатуры.
+   * Not on the heading and not on "Done": people came to change a rule, and
+   * the very first arrow or space press has to land in its row. If there is
+   * no button (the row is off or the console is not leading), "Done"
+   * remains, so that Esc is not the only way out from the keyboard.
    */
   $effect(() => {
     const where = sheet
@@ -193,7 +200,7 @@
     target?.focus({ preventScroll: true })
   })
 
-  /** Tab по кругу внутри листа: за ним лежит то, чем сейчас не управляют. */
+  /** Tab cycles within the sheet: what lies behind it is not being controlled now. */
   function keys(event: KeyboardEvent): void {
     if (event.key !== 'Tab' || !sheet) return
     const items = [...sheet.querySelectorAll<HTMLElement>('button:not(:disabled)')]
@@ -207,8 +214,8 @@
 </script>
 
 <div class="rules-layer" style:--rules-top={`${top}px`}>
-  <!-- Затемнение начинается под листом: шапка с предложением остаётся живой,
-       и закрыть лист можно тем же нажатием, что его открыло. -->
+  <!-- The dimming starts under the sheet: the header with the sentence stays
+       live, and the sheet can be closed with the same press that opened it. -->
   <div class="rules-scrim" role="presentation" onclick={onclose}></div>
   <div
     class="rules-sheet"
@@ -253,11 +260,11 @@
     {/each}
 
     <!--
-      Предел ОБЫЧНОЙ ячейки — рядом с подписью про общее ядро, и это одно и то
-      же знание, досказанное до конца: ядро общее, а значит общая и очередь, и
-      предел запуска в этом листе сторожит только попытки. Строка стоит под
-      правилами, а не строкой среди них: менять её отсюда нельзя, она живёт в
-      правилах занятия.
+      The limit of an ORDINARY cell — next to the caption about the shared
+      kernel, and it is the same knowledge told to the end: the kernel is
+      shared, so the queue is shared too, and the run limit in this sheet
+      guards only the attempts. The line stands under the rules, not as a row
+      among them: it cannot be changed from here, it lives in the class rules.
     -->
     <p class="rules-kernel" class:rules-warn={cellLimit === null} data-pult-cell-limit>
       {cellLimit === null
@@ -272,11 +279,12 @@
   .rules-layer { position:absolute; inset:0; z-index:40; pointer-events:none; }
   .rules-scrim { position:absolute; left:0; right:0; top:var(--rules-top); bottom:0; background:rgba(16,26,51,.32); pointer-events:auto; }
   .rules-sheet {
-    /* На пиксель выше низа шапки: своей чертой лист ложится ровно на её
-       границу, иначе на стыке получается двойная линия. */
+    /* A pixel above the bottom of the header: the sheet's own line lies
+       exactly on its border, otherwise the joint shows a double line. */
     position:absolute; left:0; right:0; top:calc(var(--rules-top) - 1px);
-    /* Ниже окна лист не растёт: на 700 px высоты четыре ряда и подпись про
-       ядро не помещаются, и последнее правило иначе просто не достать. */
+    /* The sheet does not grow below the window: at 700 px of height four
+       rows and the kernel caption do not fit, and otherwise the last rule
+       simply cannot be reached. */
     max-height:calc(100dvh - var(--rules-top));
     overflow-y:auto; overscroll-behavior:contain;
     background:rgb(var(--canvas)); border-top:1px solid rgb(var(--line)); border-bottom:1px solid rgb(var(--line));
@@ -287,8 +295,8 @@
   h2 { margin:0; font-size:20px; line-height:26px; font-weight:700; }
   .rules-head-copy p { margin:4px 0 0; color:rgb(var(--muted)); font-size:14px; line-height:18px; }
   .rules-esc { color:rgb(var(--faint)); font-size:12px; font-weight:600; }
-  /* Полоса слева — четыре пикселя, на которые текст НЕ съезжает: заголовок
-     листа и подписи рядов должны начинаться на одной вертикали. */
+  /* The left stripe is four pixels the text does NOT shift by: the sheet's
+     heading and the row captions must start on the same vertical. */
   .rules-row { display:flex; align-items:center; gap:24px; padding:16px var(--pult-pad); border-top:1px solid rgb(var(--line)); border-left:4px solid transparent; }
   .rules-row.here { border-left-color:rgb(var(--primary)); background:rgb(var(--surface)); }
   .rules-label { width:168px; flex-shrink:0; font-size:15px; line-height:20px; font-weight:700; }

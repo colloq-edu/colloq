@@ -1,20 +1,22 @@
 /**
- * Занятый адрес: кем занят и как его отпустить.
+ * A taken address: who holds it and how to release it.
  *
- * «Адрес «ml-2025» уже занят» — тупик, и чаще всего неправдоподобный: курса с
- * таким адресом в списке нет. Держит его ПРЕЖНЕЕ имя другого курса — тот
- * переименовали в «ml-2025-fall», а старое имя осталось адресом ради ссылки,
- * розданной классу, — и увидеть это в панели негде. Преподаватель, готовящий
- * курс следующего года, ищет то, чего не видно, и заканчивает адресом с цифрой
- * на конце.
+ * "Address 'ml-2025' is already taken" is a dead end, and most often an
+ * implausible one: there is no course with that address in the list. It is
+ * held by the FORMER name of another course — that one was renamed to
+ * "ml-2025-fall", and the old name stayed an address for the sake of the link
+ * handed out to the class — and there is nowhere in the panel to see it. A
+ * teacher preparing next year's course searches for what cannot be seen and
+ * ends up with an address with a digit at the end.
  *
- * Отказ теперь называет держателя, а прежнее имя владелец может отпустить сам.
- * Цена названа вслух и остаётся ценой: отпущенный адрес перестаёт вести
- * куда-либо, и это решение владельца.
+ * The refusal now names the holder, and the owner can release a former name
+ * themselves. The price is said out loud and stays a price: a released address
+ * stops leading anywhere, and that is the owner's decision.
  *
- * Держатель проверяется тем же путём, которым доходит до экрана: тело 409 →
- * `addressHolderOf` → кнопка «Отпустить прежний адрес». Панель читает поле, а
- * не фразу, так что фраза и поле проверяются порознь.
+ * The holder is checked along the same path by which it reaches the screen:
+ * the 409 body → `addressHolderOf` → the "Release former address" button. The
+ * panel reads the field, not the phrase, so the phrase and the field are
+ * checked separately.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -73,7 +75,7 @@ async function setSlug(id: string, slug: string): Promise<Refusal> {
   return { status: res.status, error: body.error ?? '', body }
 }
 
-/** Тот же путь, что и в панели: тело отказа → держатель → кнопка или тишина. */
+/** The same path as in the panel: refusal body → holder → a button or silence. */
 const seenByPanel = (taken: Refusal) =>
   addressHolderOf(new AdminApiError(taken.error, taken.status, 'invalid', taken.body))
 
@@ -85,7 +87,7 @@ async function release(id: string, slug: string): Promise<number> {
   return res.status
 }
 
-test('живой адрес занят — отказ называет курс по имени', async () => {
+test('a live address is taken: the refusal names the course', async () => {
   const mine = createCourse('Матстат', null, 'Ада')
   const other = createCourse('Матстат для физиков', null, 'Ада')
   assert.equal((await setSlug(mine.id, 'matstat')).status, 200)
@@ -93,8 +95,8 @@ test('живой адрес занят — отказ называет курс 
   const taken = await setSlug(other.id, 'matstat')
   assert.equal(taken.status, 409)
   assert.equal(taken.error, 'Адрес «matstat» занят курсом «Матстат».')
-  // Живой адрес чужого курса отсюда не отпускают: кнопки быть не должно, а
-  // держатель всё равно назван — чтобы было к кому пойти.
+  // Another course's live address is not released from here: there must be no
+  // button, but the holder is named anyway — so there is someone to go to.
   assert.deepEqual(seenByPanel(taken), {
     kind: 'course',
     id: mine.id,
@@ -103,11 +105,11 @@ test('живой адрес занят — отказ называет курс 
   })
 })
 
-test('прежнее имя держит адрес — и отказ говорит, что с этим делать', async () => {
+test('a former name holds the address, and the refusal says what to do about it', async () => {
   const course = createCourse('ML 2025', null, 'Ада')
   const next = createCourse('ML 2026', null, 'Ада')
   assert.equal((await setSlug(course.id, 'ml-2025')).status, 200)
-  // Переименование не отменяет розданную ссылку: старое имя остаётся адресом.
+  // A rename does not cancel a link already handed out: the old name stays an address.
   assert.equal((await setSlug(course.id, 'ml-2025-fall')).status, 200)
   assert.deepEqual(formerSlugs('course', course.id), ['ml-2025'])
 
@@ -116,14 +118,14 @@ test('прежнее имя держит адрес — и отказ говор
   assert.equal(
     taken.error,
     'Адрес «ml-2025» — прежнее имя курса «ML 2025».',
-    'отказ снова не называет держателя — искать его негде',
+    'the refusal again does not name the holder: there is nowhere to look for it',
   )
-  // Отпускают у того же поля адреса, и совет уйти в чужие настройки был бы
-  // неправдой в двух сантиметрах от кнопки, которая делает это здесь.
+  // The release happens at the same address field, and advice to go into someone
+  // else's settings would be a lie two centimetres from the button that does it right here.
   assert.doesNotMatch(taken.error, /настройк/)
 
-  // Кнопку «Отпустить прежний адрес» панель показывает по полю, а не по фразе,
-  // и зовёт маршрут с идентификатором ДЕРЖАТЕЛЯ, а не просителя.
+  // The panel shows the "Release former address" button by the field, not by the
+  // phrase, and calls the route with the HOLDER's id, not the requester's.
   assert.deepEqual(seenByPanel(taken), {
     kind: 'course',
     id: course.id,
@@ -132,7 +134,7 @@ test('прежнее имя держит адрес — и отказ говор
   })
 })
 
-test('панель видит прежние имена курса — иначе отпускать нечего', async () => {
+test('the panel sees the course former names, otherwise there is nothing to release', async () => {
   const course = createCourse('Алгоритмы', null, 'Ада')
   assert.equal((await setSlug(course.id, 'algo-2025')).status, 200)
   assert.equal((await setSlug(course.id, 'algo-2026')).status, 200)
@@ -140,12 +142,12 @@ test('панель видит прежние имена курса — инач�
   const res = await fetch(`${base}/api/admin/courses/${course.id}`, { headers: { cookie } })
   const body = (await res.json()) as { course: { slug: string | null; former?: string[] } }
   assert.equal(body.course.slug, 'algo-2026')
-  // Прежние имена курс показывает у себя: без этого списка владелец не увидит,
-  // что «algo-2025» всё ещё занято им же, и отпускать ему будет нечего.
+  // A course shows its former names itself: without this list the owner would not
+  // see that "algo-2025" is still taken by that very course, and would have nothing to release.
   assert.deepEqual(body.course.former, ['algo-2025'])
 })
 
-test('прежнее имя отпускает владелец, и только своё', async () => {
+test('a former name is released by its owner, and only their own', async () => {
   const course = createCourse('Линал', null, 'Ада')
   const stranger = createCourse('Линал у соседей', null, 'Ада')
   assert.equal((await setSlug(course.id, 'linal-2025')).status, 200)
@@ -154,17 +156,17 @@ test('прежнее имя отпускает владелец, и только
   assert.equal(
     await release(stranger.id, 'linal-2025'),
     404,
-    'чужое прежнее имя отпустил не хозяин',
+    'a former name was released by someone who does not own it',
   )
-  assert.equal(await release(course.id, 'linal-2026'), 404, 'отпустили ЖИВОЕ имя, а не прежнее')
-  assert.ok(findCourse('linal-2025'), 'адрес перестал вести на курс раньше времени')
+  assert.equal(await release(course.id, 'linal-2026'), 404, 'a LIVE name was released instead of a former one')
+  assert.ok(findCourse('linal-2025'), 'the address stopped leading to the course too early')
 
   assert.equal(await release(course.id, 'linal-2025'), 200)
-  // Цена: ссылка с прежним адресом теперь не ведёт никуда — и это было решением
-  // владельца, а не побочным эффектом.
+  // The price: a link with the former address now leads nowhere — and that was the
+  // owner's decision, not a side effect.
   assert.equal(findCourse('linal-2025'), null)
-  assert.equal(await release(course.id, 'linal-2025'), 404, 'отпустили дважды, и оба раза «ок»')
+  assert.equal(await release(course.id, 'linal-2025'), 404, 'released twice, and "ok" both times')
 
-  // А новый курс может его наконец занять.
+  // And the new course can finally take it.
   assert.equal((await setSlug(stranger.id, 'linal-2025')).status, 200)
 })
