@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.5.1](https://github.com/colloq-edu/colloq/compare/v0.5.0...v0.5.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **i18n:** server messages that were hard-coded in Russian now follow the instance language ([377b3df](https://github.com/colloq-edu/colloq/commit/377b3df74a53b7bb284bf147398a7b29d8fb97cd))
+
 ## [0.5.0](https://github.com/colloq-edu/colloq/compare/v0.4.1...v0.5.0) (2026-09-24)
 
 
