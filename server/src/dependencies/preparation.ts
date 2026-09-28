@@ -86,6 +86,36 @@ export async function cleanupPreparationResources(): Promise<void> {
   for (const id of networks.out.trim().split(/\s+/).filter(Boolean)) await docker(['network', 'rm', id], { timeoutMs: 10_000 })
 }
 
+/**
+ * The container writes wheels as uid 1000, which on Linux is usually not the server's uid,
+ * so the host may not chmod them. Rewrite each wheel into a host-owned read-only copy,
+ * hashing exactly the bytes that are kept, and atomically replace the container's file.
+ */
+async function adoptWheel(file: string, bytes: number): Promise<string> {
+  const copy = path.join(path.dirname(file), `.${randomUUID()}.adopt`)
+  const hash = createHash('sha256')
+  const source = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  try {
+    const target = await fs.open(copy, 'wx', 0o600)
+    try {
+      let written = 0
+      for await (const chunk of source.createReadStream({ autoClose: false })) {
+        written += chunk.length
+        if (written > bytes) throw new DependencyPreparationError('invalid_wheel', 'A wheel has an invalid file type or size.')
+        hash.update(chunk)
+        await target.write(chunk)
+      }
+      if (written !== bytes) throw new DependencyPreparationError('invalid_wheel', 'A wheel has an invalid file type or size.')
+      await target.chmod(0o444)
+    } finally { await target.close() }
+    await fs.rename(copy, file)
+  } catch (error) {
+    await fs.rm(copy, { force: true })
+    throw error
+  } finally { await source.close() }
+  return hash.digest('hex')
+}
+
 export async function prepareDependencies(request: PreparationRequest): Promise<PreparationResult> {
   if (request.signal.aborted) throw new DependencyPreparationError('cancelled', 'Package preparation was cancelled.')
   if (!/^(?:sha256:[a-f0-9]{64}|[a-zA-Z0-9._/:\-]+@sha256:[a-f0-9]{64})$/.test(request.imageDigest)) {
@@ -176,11 +206,7 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
       if (!info.isFile() || info.size !== item.bytes) throw new DependencyPreparationError('invalid_wheel', 'A wheel has an invalid file type or size.')
       bytes += info.size
       if (bytes > request.maxDownloadBytes) throw new DependencyPreparationError('download_limit', 'The wheel downloads exceed the configured size limit.')
-      const hash = createHash('sha256')
-      const handle = await fs.open(file, 'r')
-      try { for await (const chunk of handle.createReadStream()) hash.update(chunk) } finally { await handle.close() }
-      if (hash.digest('hex') !== item.sha256) throw new DependencyPreparationError('hash_mismatch', 'A wheel failed its SHA-256 integrity check.')
-      await fs.chmod(file, 0o444)
+      if (await adoptWheel(file, item.bytes) !== item.sha256) throw new DependencyPreparationError('hash_mismatch', 'A wheel failed its SHA-256 integrity check.')
     }
     if (bytes !== resolved.downloadBytes || !Number.isSafeInteger(verified.installedBytes) || verified.installedBytes < 0 || verified.installedBytes > request.maxInstalledBytes) throw new DependencyPreparationError('invalid_output', 'The verified package sizes are invalid.')
     if (controller.signal.aborted) throw controller.signal.reason
