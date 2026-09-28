@@ -362,10 +362,11 @@ installing that wheel gives exactly what `pip install colloq` gives.
 ### A rented GPU box on Vast.ai
 
 `colloq-vast` is one ready image for a rented Vast.ai **VM**: the server, the
-built web app, the tunnel clients and the kernel build context. Paste one on-start
-script into the Vast template, and the machine comes up with a class address and
-an owner sign-in link in its log. Each room still gets its own kernel container.
-[deploy/vast/README.md](deploy/vast/README.md) covers the template, settings,
+built web app, the tunnel clients and the kernel build context.
+`make vast-vm HOST=class1` rents the VM over the API and starts the image on it,
+and the machine comes up with a class address and an owner sign-in link. Each room
+still gets its own kernel container.
+[deploy/vast/README.md](deploy/vast/README.md) covers renting, settings,
 backups and building the image (`make vast-image`); read its *What has been
 verified* section before relying on it for a class. For stricter isolation on a
 Vast VM, use the k3s path in [docs/deployment-vast.md](docs/deployment-vast.md).

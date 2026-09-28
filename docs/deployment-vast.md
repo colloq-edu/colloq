@@ -1,6 +1,6 @@
 # Versioned deployment on a Vast VM
 
-> For the common case, you can rent a VM, paste one on-start script and hold a class with the prebuilt `colloq-vast` image; see [deploy/vast/README.md](../deploy/vast/README.md). It keeps a separate container per room on the VM's Docker. The k3s path described here stays the option for stricter isolation: restricted Pods, NetworkPolicy, a separate runtime broker and digest-pinned releases.
+> For the common case, `make vast-vm` rents a VM and holds a class with the prebuilt `colloq-vast` image; see [deploy/vast/README.md](../deploy/vast/README.md). It keeps a separate container per room on the VM's Docker. The k3s path described here stays the option for stricter isolation: restricted Pods, NetworkPolicy, a separate runtime broker and digest-pinned releases.
 
 Use a full Vast **VM**, not an ordinary Vast Docker instance. The workflow keeps VM-only, verified, on-demand offer selection, named-instance labels, price confirmation, registered SSH-key checks, direct mapped SSH, and the existing FRP relay names. A VM hosts one k3s node; application and room Pods share that VM's Linux kernel.
 

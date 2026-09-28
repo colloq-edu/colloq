@@ -1,6 +1,6 @@
 # Colloq on Vast.ai with one image
 
-`colloq-vast` packages everything Colloq needs on a rented GPU machine in one image: the server, the built web client, the tunnel clients (frpc for your own relay, cloudflared), the Docker CLI, and the build context for the Python kernel images. You rent a Vast **VM**, paste one on-start script into the template, and the machine comes up with a class address and an owner sign-in link in its log. Nothing is built from your working tree and nothing is copied over SSH.
+`colloq-vast` packages everything Colloq needs on a rented GPU machine in one image: the server, the built web client, the tunnel clients (frpc for your own relay, cloudflared), the Docker CLI, and the build context for the Python kernel images. `make vast-vm` rents a Vast **VM** and starts one on-start script on it, and the machine comes up with a class address and an owner sign-in link. Nothing is built from your working tree; only the on-start script is copied over SSH.
 
 It covers the common case that `scripts/vast-legacy.sh` handles today, where the VM rsyncs the working tree, runs `npm ci`, builds the app and installs a systemd unit. The versioned k3s path in [docs/deployment-vast.md](../../docs/deployment-vast.md) is still there for installations that need its stricter isolation (restricted Pods, NetworkPolicy, digest-pinned release manifests).
 
@@ -22,9 +22,9 @@ On Vast, VM templates can only use `docker.io/vastai/kvm:*` images, and only in 
 
 The image runs on a **Vast VM** as a sibling of the room kernels. The VM's Docker daemon runs `colloq-vast` with the host socket mounted, and the server inside starts one kernel container per room on that same daemon. The existing `docker` backend does this unchanged: same code, same limits, same isolation as the legacy VM service.
 
-What the owner gets is "rent a VM, use one template, the class is running":
+What the owner gets is "one command rents a VM, and the class is running":
 
-- **Template:** Vast's Ubuntu VM image, plus [`onstart.sh`](onstart.sh) with your settings filled in.
+- **Rent:** `make vast-vm` rents Vast's Ubuntu VM image over the API and runs [`onstart.sh`](onstart.sh), with your settings filled in, on it.
 - **On boot:** the on-start script pulls `colloq-vast`, installs the small host manager that ships inside it (`colloq-host`), adds `nvidia-container-toolkit` if the GPU needs it, and starts the container.
 - **In the container:** it opens the tunnel, starts the server, and prepares the default Python environment in the background. It either pulls the prebuilt kernel image or builds it on first boot.
 
@@ -46,27 +46,31 @@ Run as a plain Docker instance, the image refuses to start (exit code 78) and pr
 - **Non-root server.** The entrypoint starts as root only to prepare the state directory and to join the socket's group. The server, tunnels, builds and backups then run as `node` (uid 1000). That is the same uid as the kernel user in `kernel/Dockerfile`, so both sides can write room files without group or umask tricks. Access to the Docker socket is still root on the VM; see [Isolation](#isolation-what-users-get).
 - **One Colloq per Docker daemon.** The idle sweep removes every container labelled `colloq.kind=room-kernel` on the daemon, not only its own. Do not run a second Colloq on the same VM. `make vast-image-run` tests inside `docker:dind` for exactly this reason.
 
-## Vast template
+## Renting a machine: `make vast-vm`
 
-Create the template once in the Vast console (Templates → New). These settings match what `scripts/vast-legacy.sh` rents today.
+```sh
+cp deploy/vast/onstart.sh backups/vast-onstart.sh   # once; fill in the settings block
+make vast-vm HOST=class1                            # rent the cheapest suitable VM for class1.<relay domain>
+make vast-vm HOST=class1 GPU="RTX 3070"             # only this card
+make vast-vm INSTANCE=<id> HOST=class2              # redeploy on a VM you already rent
+```
 
-| Field | Value |
-|---|---|
-| Image | `docker.io/vastai/kvm:ubuntu_cli_22.04-2025-11-21` (a VM image; custom images are not allowed for VMs) |
-| Launch mode | SSH (the only mode VMs support) |
-| Docker options | none. Add `-p 3000:3000` only for `COLLOQ_TUNNEL=direct` |
-| On-start script | the whole of [`onstart.sh`](onstart.sh), with the settings block filled in (keep the `#!/bin/bash` line) |
-| Disk | 60 GB for CPU classes. With GPU environments, at least 100 GB: `base-gpu` alone is about 9 GB of torch/CUDA wheels, and each environment adds its own image |
-| Visibility | **Private.** The on-start script holds your relay token and API keys in plain text, and anyone who can see a public template can read it |
+Do not rent from a template in the Vast console. Measured on 28 September 2026:
 
-When you rent, pick a VM offer (`vms_enabled=true`), on-demand rather than interruptible (an interruptible instance can be taken away mid-class), verified, with reliability of at least 0.98. For GPU classes, check that the offer's *Max CUDA* is at least 12.1, but do not put `cuda_max_good>=12.1` in the search itself: in September 2026 that server-side filter hid RTX 5070 and RTX 5090 offers whose listed value was 13.0. `scripts/vast-legacy.sh` applies the same rule after the search for this reason.
+- **The console does not make VMs.** A template with the `vastai/kvm` image and the `vms_enabled` filter, rented from the web UI, started as an ordinary Docker instance three times out of three (no systemd, no nested Docker), even on hosts that do support VMs. A VM is created only when the rent request itself carries `"vm": true`, which is what `scripts/vast-vm.sh` (and `scripts/vast-legacy.sh`) send over the API.
+- **Vast does not run the on-start on a VM.** The request carries it, but nothing executes it. `make vast-vm` therefore copies it over SSH to `/etc/colloq/onstart.sh` and starts it. After a reboot nothing runs it again, and nothing needs to: Docker restarts the Colloq container, and the settings live in `/etc/colloq/colloq.env`.
+- **A running VM reports `actual_status: created`**, so the script waits for SSH, not for a status.
 
-In `onstart.sh`, set at least `COLLOQ_IMAGE=ghcr.io/<owner>/colloq-vast:<version>`, and choose an address (below). Vast does not document whether template `-e` variables reach a VM, so keep settings in the script's settings block. `colloq-host` saves them to `/etc/colloq/colloq.env` (mode 0600) on the VM. If the on-start runs again, for example after a reboot, its non-empty values are written over the same keys in that file. A key the on-start leaves empty keeps the value you put in the file.
+`make vast-vm` reads `VAST_TOKEN`, `VAST_SSH_KEY`, `VAST_IMAGE`, `VAST_DISK`, `VAST_MAX_PRICE` and `VAST_GPU` from `.env`. It picks a verified on-demand VM offer with reliability of at least 0.98 and asks before renting (`FORCE=1` skips the question). For GPU classes it checks the offer's *Max CUDA* (at least 12.1) after the search, not in it: in September 2026 the server-side filter hid RTX 5070 and RTX 5090 offers whose listed value was 13.0. `HOST` overrides `COLLOQ_HOSTNAME` for this machine only, without editing the file. The script then waits for `/api/health` and prints the class address and the owner link.
+
+`backups/vast-onstart.sh` is git-ignored because it holds the relay token and API keys. Set at least `COLLOQ_IMAGE=ghcr.io/<owner>/colloq-vast:<version>` and choose an address (below). `colloq-host` saves the settings to `/etc/colloq/colloq.env` (mode 0600) on the VM. When the on-start runs again, its non-empty values are written over the same keys in that file, and a key it leaves empty keeps the value already there.
+
+A GPU environment needs at least 100 GB of disk (`VAST_DISK=100`): `base-gpu` alone is about 9 GB of torch/CUDA wheels, and each environment adds its own image. 60 GB is enough for CPU classes.
 
 After you rent:
 
-1. Wait for the VM to boot and the on-start to finish. It usually takes a few minutes; pulling a GPU environment takes longer.
-2. SSH in (`ssh -p <port> root@<ip>`, as shown in the Vast console) and read the result: `tail -f /var/log/colloq-onstart.log`, or `colloq-host logs`.
+1. `make vast-vm` waits for the VM and for Colloq. Booting takes a few minutes, and so does building the default environment on the first start; a GPU environment takes longer.
+2. It prints the SSH command. On the VM, `tail -f /var/log/colloq-onstart.log` or `colloq-host logs` shows the progress.
 3. Open the owner link. While nobody owns the instance, the log shows a box:
 
    ```
@@ -97,7 +101,7 @@ The server reads the container's environment and `/workspace/colloq/.env`. For m
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `COLLOQ_IMAGE` | — | Host only: the image the first `colloq-host up` runs. After that the image is whatever `colloq-host update` last chose (`/etc/colloq/image`), so a reboot never rolls an updated instance back to the template's version |
+| `COLLOQ_IMAGE` | — | Host only: the image the first `colloq-host up` runs. After that the image is whatever `colloq-host update` last chose (`/etc/colloq/image`), so a reboot never rolls an updated instance back to the on-start's version |
 | `COLLOQ_TUNNEL` | `auto` | `auto`, `relay`, `cloudflare`, `direct`, `none` |
 | `COLLOQ_HOSTNAME` | — | Relay subdomain or full hostname |
 | `RELAY_DOMAIN`, `RELAY_ADDR`, `RELAY_PORT`, `RELAY_TOKEN` | —, —, `7000`, — | Your frps relay |
@@ -246,9 +250,10 @@ These checks ran on 18 September 2026 on an arm64 laptop, using `docker:dind` as
 - **amd64.** The image also builds for `linux/amd64` (under emulation).
 - **After the review fixes** (same day, arm64, `SEED_KERNEL=1`): the end-to-end check passed again, a repeated `colloq-host up` left the running instance alone, restore and a SIGTERM stop worked, and a non-default `COLLOQ_HOME` was wired to the server's `.env`. With a stub `docker`, repeated boots of a GPU machine no longer recreated the container, and a reboot after `colloq-host update` kept the updated image.
 
+On a real Vast VM (28 September 2026, RTX 3070, `make vast-vm`): the image pulled from GHCR, `colloq-host` found the GPU and started Colloq, the default environment built, and the class address answered through the relay. The same run found the console, on-start and status behaviour described under [Renting a machine](#renting-a-machine-make-vast-vm). It also found that unattended-upgrades upgraded the NVIDIA userspace under the loaded kernel module 20 minutes after boot ("Driver/library version mismatch"). `colloq-host up` now turns automatic updates off and holds the NVIDIA packages on every start.
+
 Not verified yet:
 
-- a real Vast VM: whether the on-start runs, whether it runs again on every boot, and which variables reach it;
 - GPU rooms with nvidia-container-toolkit on a rented card;
 - pulling kernel images from a registry, since none are published yet.
 
@@ -258,7 +263,7 @@ Known gap: the panel's *Resources* section does not list the GPU cards. The serv
 
 | Path | When |
 |---|---|
-| This image on a VM | The default for a class on a rented machine: prebuilt, one template, container per room |
+| This image on a VM (`make vast-vm`) | The default for a class on a rented machine: prebuilt, one command, container per room |
 | `make vast-up` (`scripts/vast-legacy.sh`) | Replaced by this image for the common case. It builds from your working tree on the VM, which is still useful for testing unreleased local changes on real GPUs |
 | `RELEASE=… make vast-up` (`scripts/vast.sh`, k3s) | Strict isolation with digest-pinned releases; see [docs/deployment-vast.md](../../docs/deployment-vast.md) |
 
