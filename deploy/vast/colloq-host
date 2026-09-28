@@ -122,6 +122,20 @@ apt_quiet() {
   DEBIAN_FRONTEND=noninteractive apt-get "$@"
 }
 
+# Called on every `up`, not only when apt is needed. On a VM that already had
+# docker and the toolkit, unattended-upgrades stayed on and, 20 minutes after
+# boot, upgraded the NVIDIA userspace to 580.178 while the loaded kernel module
+# stayed 580.95: "Driver/library version mismatch" and no GPU until a reboot
+# (28 Sep 2026). The driver must stay the one the VM booted with.
+freeze_host_updates() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl disable --now unattended-upgrades apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  command -v apt-mark >/dev/null 2>&1 || return 0
+  local held
+  held="$(dpkg-query -W -f '${db:Status-Status} ${Package}\n' 2>/dev/null | awk '$1 == "installed" && $2 ~ /nvidia/ { print $2 }')"
+  [ -z "$held" ] || apt-mark hold $held >/dev/null 2>&1 || true
+}
+
 ensure_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     say "installing docker"
@@ -256,6 +270,7 @@ wait_ready() {
 }
 
 up() {
+  freeze_host_updates
   ensure_docker
   write_env
   ensure_gpu
