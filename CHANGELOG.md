@@ -13,6 +13,15 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.5.2](https://github.com/colloq-edu/colloq/compare/v0.5.1...v0.5.2) (2026-09-28)
+
+
+### Bug Fixes
+
+* **dependencies:** a PyPI hiccup no longer reports a missing package as a missing wheel ([2c86c1c](https://github.com/colloq-edu/colloq/commit/2c86c1c7f317b0f3978f24af96489ee92d16b327))
+* **dependencies:** keep the underlying cause of preparation failures for operators ([f44ecb7](https://github.com/colloq-edu/colloq/commit/f44ecb73e482d875b230f0a73617b87e6e95b0d1))
+* **dependencies:** package preparation fails on Linux unless the server runs as uid 1000 or root ([2304ef7](https://github.com/colloq-edu/colloq/commit/2304ef714336989de66f04eadcc31b5d46a89631))
+
 ## [0.5.1](https://github.com/colloq-edu/colloq/compare/v0.5.0...v0.5.1) (2026-09-24)
 
 
