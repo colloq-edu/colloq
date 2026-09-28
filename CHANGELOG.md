@@ -13,6 +13,18 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.6.0](https://github.com/colloq-edu/colloq/compare/v0.5.2...v0.6.0) (2026-09-28)
+
+
+### Features
+
+* **vast:** make vast-vm rents a VM and starts the colloq-vast image in one command ([c7722df](https://github.com/colloq-edu/colloq/commit/c7722df8bde419bd6dcae2da124fcc212233648c))
+
+
+### Bug Fixes
+
+* **vast:** unattended upgrades no longer break the GPU on a running VM ([553885f](https://github.com/colloq-edu/colloq/commit/553885f5e553aad8654c99f9a0d9b75e12892230))
+
 ## [0.5.2](https://github.com/colloq-edu/colloq/compare/v0.5.1...v0.5.2) (2026-09-28)
 
 
