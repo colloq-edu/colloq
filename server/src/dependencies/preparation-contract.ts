@@ -30,8 +30,8 @@ export interface PreparationResult {
   lock: string
 }
 export class DependencyPreparationError extends Error {
-  constructor(public readonly code: string, message: string, public readonly line?: number) {
-    super(message)
+  constructor(public readonly code: string, message: string, public readonly line?: number, options?: ErrorOptions) {
+    super(message, options)
     this.name = 'DependencyPreparationError'
   }
 }

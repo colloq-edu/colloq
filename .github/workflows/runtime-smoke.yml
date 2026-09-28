@@ -40,15 +40,15 @@ jobs:
           docker build --build-arg KERNEL_ENV=base -t colloq-kernel:base kernel
           docker build --build-arg PARENT=colloq-kernel:base --build-arg KERNEL_ENV=kaggle-base -t colloq-kernel:kaggle-base kernel
       - name: Production capability gate and Linux filename regression
-        run: node --import tsx --test --test-force-exit --test-concurrency=1 tests/competition-capabilities.test.mts tests/workspace-unicode-atomic.test.mts
+        run: node --import tsx --test --test-reporter=spec --test-force-exit --test-concurrency=1 tests/competition-capabilities.test.mts tests/workspace-unicode-atomic.test.mts
       - name: Real package preparation and offline verification
         env:
           COLLOQ_DEPENDENCY_DOCKER_TEST: '1'
-        run: node --import tsx --test --test-force-exit --test-concurrency=1 tests/dependency-preparation-docker.test.mts
+        run: node --import tsx --test --test-reporter=spec --test-force-exit --test-concurrency=1 tests/dependency-preparation-docker.test.mts
       - name: Prepare, execute offline, score, archive, restore and execute again
         env:
           COLLOQ_RESTORE_DOCKER_TEST: '1'
-        run: node --import tsx --test --test-force-exit --test-concurrency=1 tests/restore-run-docker.test.mts
+        run: node --import tsx --test --test-reporter=spec --test-force-exit --test-concurrency=1 tests/restore-run-docker.test.mts
       - name: Retained image prerequisite
         if: always()
         run: |

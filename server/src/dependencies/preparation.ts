@@ -51,9 +51,14 @@ function docker(args: string[], options: { signal?: AbortSignal; onLine?: (line:
   })
 }
 
+// Operator-facing detail only: the message users see stays generic.
+function dockerFailure(args: string[], result: DockerResult): Error {
+  return new Error(`docker ${args[0]} exited with ${result.code}: ${result.out.slice(-2000).trim()}`)
+}
+
 async function checkedDocker(args: string[], signal: AbortSignal): Promise<string> {
   const result = await docker(args, { signal })
-  if (result.code !== 0) throw new DependencyPreparationError('docker_unavailable', 'The isolated preparation container could not be started.')
+  if (result.code !== 0) throw new DependencyPreparationError('docker_unavailable', 'The isolated preparation container could not be started.', undefined, { cause: dockerFailure(args, result) })
   return result.out.trim()
 }
 
@@ -151,7 +156,7 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
       if (reportedError) throw reportedError
       if (result.code !== 0) {
         progress({ state: latestState, log: result.out.slice(-2000) })
-        throw new DependencyPreparationError(result.code === 137 ? 'resource_limit' : 'preparation_failed', result.code === 137 ? 'Package preparation exceeded its memory limit.' : 'The isolated package preparation failed.')
+        throw new DependencyPreparationError(result.code === 137 ? 'resource_limit' : 'preparation_failed', result.code === 137 ? 'Package preparation exceeded its memory limit.' : 'The isolated package preparation failed.', undefined, { cause: dockerFailure(args, result) })
       }
     }
     await run(resolver, 'resolve')
@@ -187,7 +192,7 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
     if (controller.signal.aborted) throw controller.signal.reason
     if (error instanceof DependencyPreparationError) throw error
     if ((error as NodeJS.ErrnoException).code === 'ENOSPC') throw new DependencyPreparationError('disk_full', 'There is not enough storage to prepare these packages.')
-    throw new DependencyPreparationError('preparation_failed', 'Package preparation could not finish.')
+    throw new DependencyPreparationError('preparation_failed', 'Package preparation could not finish.', undefined, { cause: error })
   } finally {
     clearTimeout(timeout)
     request.signal.removeEventListener('abort', cancel)
