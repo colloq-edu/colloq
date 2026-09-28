@@ -83,7 +83,7 @@ if __name__ == '__main__':
 `
 
 export const PREPARATION_PYTHON = String.raw`
-import email.parser, hashlib, importlib.metadata, json, os, pathlib, re, stat, subprocess, sys, tempfile, urllib.parse, urllib.request, venv, zipfile
+import email.parser, hashlib, importlib.metadata, json, os, pathlib, re, stat, subprocess, sys, tempfile, time, urllib.parse, urllib.request, venv, zipfile
 try:
     from packaging.requirements import Requirement, InvalidRequirement
     from packaging.utils import canonicalize_name, parse_wheel_filename
@@ -190,11 +190,17 @@ def run_pip(arguments, default_code, metadata_paths=None):
                     match = re.search(r'No matching distribution found for ([A-Za-z0-9][A-Za-z0-9._-]*)', log)
                     if match:
                         # Only inspect project existence; never echo pip logs, index URLs or credentials.
-                        try:
-                            with urllib.request.urlopen('https://pypi.org/pypi/' + canonicalize_name(match.group(1)) + '/json', timeout=10): pass
-                        except urllib.error.HTTPError as error:
-                            if error.code == 404: fail('package_not_found', 'A requested package was not found on public PyPI: ' + canonicalize_name(match.group(1)) + '.')
-                        except OSError: pass
+                        # Only an explicit 404 means "not found"; retry transient failures (timeouts, 429, 5xx)
+                        # so a network blip is not misreported as a missing wheel.
+                        for attempt in range(3):
+                            try:
+                                with urllib.request.urlopen('https://pypi.org/pypi/' + canonicalize_name(match.group(1)) + '/json', timeout=10): pass
+                                break
+                            except urllib.error.HTTPError as error:
+                                if error.code == 404: fail('package_not_found', 'A requested package was not found on public PyPI: ' + canonicalize_name(match.group(1)) + '.')
+                                if error.code < 500 and error.code != 429: break
+                            except OSError: pass
+                            if attempt < 2: time.sleep(1 + attempt)
                 fail('wheel_unavailable', 'A requested package or version has no compatible binary wheel on PyPI.')
             if 'ProxyError' in log or 'ConnectionError' in log or 'ReadTimeout' in log or 'SSLError' in log:
                 fail('network_error', 'PyPI could not be reached securely. Try preparing the packages again.')
