@@ -13,6 +13,23 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.8.0](https://github.com/colloq-edu/colloq/compare/v0.7.0...v0.8.0) (2026-09-29)
+
+
+### Features
+
+* **competitions:** clearer quota, own submission numbers, a readable countdown, a Kaggle-style final board ([cf242cd](https://github.com/colloq-edu/colloq/commit/cf242cda0c38afdf0029e37c856ecfd76e2188ee))
+* **competitions:** entrant names are Telegram usernames or emails ([163cf08](https://github.com/colloq-edu/colloq/commit/163cf08d152f482a3ff1acd4119e948a8de96769))
+* **competitions:** leaderboard without the counted column, rows reveal on scroll ([3ef9a71](https://github.com/colloq-edu/colloq/commit/3ef9a713177c7196cd744691c32a3fee58792f3b))
+* **vast:** pick a VM by cores and memory, give up on broken hosts ([03aecd0](https://github.com/colloq-edu/colloq/commit/03aecd0f09ed8aa572f8221bfddaa969683a0972))
+
+
+### Bug Fixes
+
+* **competitions:** say why an import failed, catch empty predictions, refuse empty notebooks ([8ba33aa](https://github.com/colloq-edu/colloq/commit/8ba33aae8b68dae5b4dc9ef6d3922930c5dd2caa))
+* **dependencies:** say how big a package set is, what makes it big and what to use instead ([7a45bdd](https://github.com/colloq-edu/colloq/commit/7a45bddd881d82016f009282e8346e59de5a7bfe))
+* **server:** outlive the proxies' keep-alive so a POST never lands on a closing socket ([0c0775a](https://github.com/colloq-edu/colloq/commit/0c0775a4f6fa401d73dd7ad95778776b55fa4297))
+
 ## [0.7.0](https://github.com/colloq-edu/colloq/compare/v0.6.0...v0.7.0) (2026-09-29)
 
 
