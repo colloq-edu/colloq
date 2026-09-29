@@ -90,6 +90,8 @@ export interface CompetitionRow {
   baselineState: SubmissionState | null
   /** `null` — it can be opened. */
   ready: OpenRefusal | null
+  /** Results the automatic private release still waits for; 0 — none. */
+  privatePending?: number
 }
 
 /** A run in progress — the "RUNNING NOW" block (A3) and the runner strip (A1). */
@@ -205,6 +207,11 @@ export interface CompetitionView {
   ready: OpenRefusal | null
   /** How much the open files weigh against the `LIMITS.dataBytes` ceiling. */
   dataBytes: number
+  /**
+   * Intake is over, but the automatic private release waits for submissions
+   * accepted before it: "results are still being counted: N left".
+   */
+  privatePending?: number
 }
 
 /* --------------------------------------------------------- live competition */
@@ -249,6 +256,8 @@ export interface CompetitionLive {
   waiting: WaitingRow[]
   /** Median run time of this competition's submissions, ms. */
   medianMs: number | null
+  /** The same count as in `CompetitionView.privatePending`, live. */
+  privatePending?: number
 }
 
 /** All the output of one submission — the row menu, the "All output" item. */

@@ -48,9 +48,12 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { Transform, type TransformCallback, type Writable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { config } from '../config.js'
 import { competitionsFs, hostPathOf } from './storage.js'
 import { harnessDir } from './harness.js'
+import { competitionMemory } from './capacity.js'
 import {
   METRIC_WALL_SECONDS,
   registerCompetitionRunner,
@@ -64,7 +67,6 @@ import {
   type ScoreRequest,
   type StepLimits,
 } from './runner-port.js'
-import { machineResources } from '../kernel/resources.js'
 import type { RunVerdict } from '@shared/competitions'
 
 /** Label on both containers: cleanup finds them by it, and only them. */
@@ -78,15 +80,42 @@ const INSTANCE_LABEL = `${INSTANCE_KEY}=${INSTANCE_SCOPE}`
 /** The image is the one the class runs in: one environment for task and solution. */
 const IMAGE_PREFIX = 'colloq-kernel'
 
-/** How often to look at a running container. A quarter second, as in the prototype. */
-const POLL_MS = 250
+/**
+ * How often to look at a running container: whether it is alive and whether
+ * its time is up. The wall limit is enforced to within this, which is why the
+ * sleep also ends exactly at the deadline.
+ */
+const POLL_MS = 1000
+
+/**
+ * How often to look INSIDE it: progress, printed output, completion.
+ *
+ * Every look inside is a `docker exec` and a python start that the
+ * submission pays for out of its own CPU quota. Four a second (the
+ * prototype's quarter second) across eight slots is thirty-two of them a
+ * second spent on watching; the price of three seconds is up to that long
+ * between a notebook's end and the host noticing it. Latency only, never a
+ * verdict: the deadline takes one more look before it kills (watch).
+ */
+const STATUS_EVERY_MS = 3000
+
+/** Backoff before each retry of a docker call that failed without saying why. */
+const RETRY_DELAYS_MS = [250, 750, 2000]
+
+/** The cushion a container costs above its `--memory` — the same one as runner.ts · RUN_RESERVE_MB. */
+const CONTAINER_CUSHION_MB = 256
 
 /** Names of the files the harness puts into `/result`. */
 const RUN_FILE = 'run.json'
 const SCORE_FILE = 'score.json'
 
 interface Shell {
-  (args: string[], timeoutMs?: number, maxOutputBytes?: number): Promise<{ code: number; out: string }>
+  /**
+   * `sink` takes stdout as a stream instead of the answer string: an export
+   * of up to 64 MB goes through it without becoming one string on the event
+   * loop. stderr still comes back in `out`.
+   */
+  (args: string[], timeoutMs?: number, maxOutputBytes?: number, sink?: Writable): Promise<{ code: number; out: string }>
 }
 
 /**
@@ -97,19 +126,31 @@ interface Shell {
  * heavy image. The form is the same — spawn with an array, no shell, no
  * quoting.
  */
-const shell: Shell = (args, timeoutMs = 60_000, maxOutputBytes = 256 * 1024) =>
+const shell: Shell = (args, timeoutMs = 60_000, maxOutputBytes = 256 * 1024, sink) =>
   new Promise((resolve) => {
     const child = spawn('docker', args)
     let out = ''
     const kill = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
     let bytes = 0, overflow = false
-    const read = (chunk: Buffer) => {
+    const within = (chunk: Buffer): boolean => {
       bytes += chunk.length
-      if (bytes > maxOutputBytes) { overflow = true; child.kill('SIGKILL'); return }
-      out += chunk.toString()
+      if (bytes > maxOutputBytes) { overflow = true; child.kill('SIGKILL'); return false }
+      return true
     }
-    child.stdout.on('data', read)
-    child.stderr.on('data', read)
+    if (sink) {
+      // Back-pressure: a slow disk pauses docker rather than filling memory.
+      let broken = false
+      sink.once('error', () => { broken = true; child.kill('SIGKILL') })
+      sink.on('drain', () => child.stdout.resume())
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (broken || !within(chunk)) return
+        if (!sink.write(chunk)) child.stdout.pause()
+      })
+      child.stdout.on('end', () => { if (!broken) sink.end() })
+    } else {
+      child.stdout.on('data', (chunk: Buffer) => { if (within(chunk)) out += chunk.toString() })
+    }
+    child.stderr.on('data', (chunk: Buffer) => { if (within(chunk)) out += chunk.toString() })
     child.on('error', (err) => {
       clearTimeout(kill)
       resolve({ code: -1, out: String(err) })
@@ -121,22 +162,83 @@ const shell: Shell = (args, timeoutMs = 60_000, maxOutputBytes = 256 * 1024) =>
   })
 
 let docker: Shell = shell
-const pendingCleanup = new Set<string>()
+
+/** The daemon said the container does not exist — an answer, not a hiccup. */
+const missing = (out: string): boolean => /No such (?:container|object)/i.test(out)
+
+/**
+ * A docker call retried while it fails without saying why.
+ *
+ * A daemon under load can fail one `inspect` without a reason; before the
+ * retries that single failure read as "the container is gone" and turned a
+ * finished notebook into "no submission". `settled` tells a real answer
+ * (including "no such container") from a hiccup.
+ */
+async function retried(
+  call: () => Promise<{ code: number; out: string }>,
+  settled: (result: { code: number; out: string }) => boolean,
+): Promise<{ code: number; out: string }> {
+  let result = await call()
+  for (const delay of RETRY_DELAYS_MS) {
+    if (settled(result)) break
+    await sleep(delay)
+    result = await call()
+  }
+  return result
+}
+
+/**
+ * Containers whose removal failed: name → the memory they may still hold.
+ *
+ * A failed `docker rm` after a finished run is the daemon's trouble, not the
+ * submission's: the verdict stands, the removal is retried later, and until
+ * it succeeds only THAT container's memory stays out of the queue's reach.
+ * It used to close the whole queue.
+ */
+const pendingCleanup = new Map<string, number>()
+let cleanupTimer: NodeJS.Timeout | null = null
+const CLEANUP_RETRY_MS = 30_000
 let cleanupFailures = 0
 let unverifiedLegacyContainers = 0
 export function competitionDockerDiagnostics() { return { cleanupFailures, pendingCleanup: pendingCleanup.size, unverifiedLegacyContainers } }
 
-async function removeContainer(container: string): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const removed = await docker(['rm', '-f', container], 60_000)
-    if (removed.code === 0 || /No such container/i.test(removed.out)) {
-      pendingCleanup.delete(container)
-      return
-    }
+/** Remove a container; `false` means it is left for the retry, holding `memoryMb`. Never throws. */
+async function removeContainer(container: string, memoryMb = 0, patient = true): Promise<boolean> {
+  const removal = () => docker(['rm', '-f', container], 60_000)
+  const gone = (result: { code: number; out: string }) => result.code === 0 || missing(result.out)
+  const result = patient ? await retried(removal, gone) : await removal()
+  if (gone(result)) {
+    pendingCleanup.delete(container)
+    return true
   }
-  if (!pendingCleanup.has(container)) cleanupFailures = Math.min(Number.MAX_SAFE_INTEGER, cleanupFailures + 1)
-  pendingCleanup.add(container)
-  throw new Error('Competition container cleanup failed; execution capacity is held until cleanup recovers')
+  if (!pendingCleanup.has(container)) {
+    cleanupFailures = Math.min(Number.MAX_SAFE_INTEGER, cleanupFailures + 1)
+    console.warn('[competitions] container removal failed; retrying later', container)
+  }
+  pendingCleanup.set(container, Math.max(pendingCleanup.get(container) ?? 0, memoryMb))
+  scheduleCleanup()
+  return false
+}
+
+/** The retry in flight, if any: one at a time, whether the pump or the timer asks. */
+let retrying: Promise<void> | null = null
+
+/** One more try for every container still awaiting removal; the next pump or timer is the backoff. */
+function retryPendingCleanup(): Promise<void> {
+  retrying ??= (async () => {
+    for (const [container, memoryMb] of [...pendingCleanup]) await removeContainer(container, memoryMb, false)
+  })().finally(() => { retrying = null })
+  return retrying
+}
+
+function scheduleCleanup(): void {
+  if (cleanupTimer || pendingCleanup.size === 0) return
+  cleanupTimer = setTimeout(() => {
+    cleanupTimer = null
+    void retryPendingCleanup().finally(scheduleCleanup)
+  }, CLEANUP_RETRY_MS)
+  // The retry must not keep the process alive: it goes away with it.
+  cleanupTimer.unref?.()
 }
 
 /**
@@ -192,6 +294,21 @@ function threads(cpus: number): string {
 }
 
 /**
+ * Every thread pool a notebook is likely to meet, capped at the step's CPUs.
+ *
+ * BLAS and OpenMP were capped from the start; polars (rayon underneath),
+ * BLIS, Apple's vecLib and numba each read their own variable, and each one
+ * forgotten is a pool of host-core-count threads on two CPUs — with eight
+ * slots side by side, the queue's throughput goes to context switches.
+ */
+function threadEnv(cpus: number): string[] {
+  const t = threads(cpus)
+  return ['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS',
+    'POLARS_MAX_THREADS', 'RAYON_NUM_THREADS', 'BLIS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMBA_NUM_THREADS']
+    .flatMap((name) => ['-e', `${name}=${t}`])
+}
+
+/**
  * Every `-v` goes through `hostPathOf` — mandatory, with no exceptions.
  *
  * Under `make run` this is the identity. Under `make up` the server itself is
@@ -224,7 +341,6 @@ export function runArgs(opts: {
   target: string
 }): string[] {
   const { container, limits } = opts
-  const t = threads(limits.cpus)
   const memory = `${limits.memoryMb}m`
   return [
     'run',
@@ -254,14 +370,7 @@ export function runArgs(opts: {
     'MPLCONFIGDIR=/tmp/home/mpl',
     '-e',
     'MPLBACKEND=Agg',
-    '-e',
-    `OMP_NUM_THREADS=${t}`,
-    '-e',
-    `MKL_NUM_THREADS=${t}`,
-    '-e',
-    `OPENBLAS_NUM_THREADS=${t}`,
-    '-e',
-    `NUMEXPR_NUM_THREADS=${t}`,
+    ...threadEnv(limits.cpus),
     '-e',
     'PYTHONUNBUFFERED=1',
     '-e',
@@ -282,6 +391,10 @@ export function runArgs(opts: {
      */
     '-e',
     `COMP_CELL_TIMEOUT_SEC=${limits.wallSeconds}`,
+    // The supervisor's own deadline (harness.ts · HOLD_EXPORT): the container
+    // stops by itself if the host that should kill it is gone.
+    '-e',
+    `COMP_WALL_SECONDS=${limits.wallSeconds}`,
     // The open half of the data. solution.csv never appears here — it lies in
     // the closed directory, which is not mounted into this container.
     ...mount(opts.dataDir, '/data', true),
@@ -337,7 +450,6 @@ export function scoreArgs(opts: {
   splitSeed: string
 }): string[] {
   const { container, limits } = opts
-  const t = threads(limits.cpus)
   const memory = `${limits.memoryMb}m`
   return [
     'run',
@@ -353,14 +465,7 @@ export function scoreArgs(opts: {
     'HOME=/tmp/home',
     '-e',
     'MPLCONFIGDIR=/tmp/home/mpl',
-    '-e',
-    `OMP_NUM_THREADS=${t}`,
-    '-e',
-    `MKL_NUM_THREADS=${t}`,
-    '-e',
-    `OPENBLAS_NUM_THREADS=${t}`,
-    '-e',
-    `NUMEXPR_NUM_THREADS=${t}`,
+    ...threadEnv(limits.cpus),
     '-e',
     'PYTHONUNBUFFERED=1',
     '-e',
@@ -382,6 +487,7 @@ export function scoreArgs(opts: {
     ...mount(harnessDir(), '/harness', true),
     '--tmpfs=/out:rw,nosuid,nodev,size=4m,mode=1777',
     '-e', `COMP_ATTEMPT_ID=${opts.attemptId ?? opts.container}`,
+    '-e', `COMP_WALL_SECONDS=${limits.wallSeconds}`,
     `--memory=${memory}`,
     `--memory-swap=${memory}`,
     `--cpus=${limits.cpus}`,
@@ -448,55 +554,77 @@ async function watch(
 ): Promise<Watched> {
   const deadline = Date.now() + limits.wallSeconds * 1000
   let last: RunProgress | null = null
+  let lookedInside = -Infinity
   for (;;) {
     if (signal?.aborted) {
       await docker(['kill', '--signal=KILL', container], 30_000)
       return { killedBy: null, progress: last }
     }
-    const alive = await docker(['inspect', container, '--format', '{{.State.Running}}'], 20_000)
-    if (alive.code !== 0 || alive.out.trim() !== 'true') return { killedBy: null, progress: last }
-
-    const snapshot = await docker(['exec', container, 'python', '-I', '/harness/export_files.py', 'status', resultDir], 5000, 128 * 1024)
-    let state: any = {}
-    try { state = snapshot.code === 0 ? JSON.parse(snapshot.out) : {} } catch { /* incomplete report */ }
-    const beat = state.progress?.attemptId === attemptId ? state.progress : null
-    if (beat) {
-      const progress: RunProgress = {
-        phase: beat.phase === 'dependencies' ? 'dependencies' : 'notebook',
-        cell: num(beat.cell) ?? -1,
-        cells: num(beat.cells) ?? 0,
-        outputBytes: num(beat.outputBytes) ?? 0,
+    const state = await containerState(container)
+    if (state === 'stopped' || state === 'gone') return { killedBy: null, progress: last }
+    /*
+     * At the deadline the container is looked into once more before it is
+     * killed, however recent the last look: the supervisor keeps a finished
+     * notebook's container running for the export, and a notebook that ended
+     * between two looks has finished, not run out of time.
+     */
+    const due = Date.now() >= deadline
+    // `unknown`: the daemon keeps failing without saying why. Nothing is
+    // concluded from that — the deadline still bounds the wait.
+    if (state === 'running' && (due || Date.now() - lookedInside >= STATUS_EVERY_MS)) {
+      lookedInside = Date.now()
+      const snapshot = await docker(['exec', container, 'python', '-I', '/harness/export_files.py', 'status', resultDir], 5000, 128 * 1024)
+      let report: any = {}
+      try { report = snapshot.code === 0 ? JSON.parse(snapshot.out) : {} } catch { /* incomplete report */ }
+      const beat = report.progress?.attemptId === attemptId ? report.progress : null
+      if (beat) {
+        const progress: RunProgress = {
+          phase: beat.phase === 'dependencies' ? 'dependencies' : 'notebook',
+          cell: num(beat.cell) ?? -1,
+          cells: num(beat.cells) ?? 0,
+          outputBytes: num(beat.outputBytes) ?? 0,
+        }
+        if (
+          !last ||
+          last.phase !== progress.phase ||
+          last.cell !== progress.cell ||
+          last.cells !== progress.cells ||
+          last.outputBytes !== progress.outputBytes
+        ) {
+          last = progress
+          onProgress?.(progress)
+        }
       }
-      if (
-        !last ||
-        last.phase !== progress.phase ||
-        last.cell !== progress.cell ||
-        last.cells !== progress.cells ||
-        last.outputBytes !== progress.outputBytes
-      ) {
-        last = progress
-        onProgress?.(progress)
+      /*
+       * Printed output is read from the beacon, not from the container: trimmed
+       * outputs do not get into memory, but the notebook spends time and CPU on
+       * them, and eight gigabytes of printing is thirty seconds of someone else's
+       * queue.
+       */
+      if (limits.outputKillBytes > 0 && (last?.outputBytes ?? 0) > limits.outputKillBytes) {
+        await docker(['kill', '--signal=KILL', container], 30_000)
+        return { killedBy: 'output', progress: last }
       }
+      if (report.complete?.attemptId === attemptId && Number.isInteger(report.complete.exit))
+        return { killedBy: null, progress: last, exit: report.complete.exit }
     }
-
-    if (Date.now() > deadline) {
+    if (due) {
       await docker(['kill', '--signal=KILL', container], 30_000)
       return { killedBy: 'wall', progress: last }
     }
-    /*
-     * Printed output is read from the beacon, not from the container: trimmed
-     * outputs do not get into memory, but the notebook spends time and CPU on
-     * them, and eight gigabytes of printing is thirty seconds of someone else's
-     * queue.
-     */
-    if (limits.outputKillBytes > 0 && (last?.outputBytes ?? 0) > limits.outputKillBytes) {
-      await docker(['kill', '--signal=KILL', container], 30_000)
-      return { killedBy: 'output', progress: last }
-    }
-    if (state.complete?.attemptId === attemptId && Number.isInteger(state.complete.exit))
-      return { killedBy: null, progress: last, exit: state.complete.exit }
-    await sleep(POLL_MS)
+    // Wake at the deadline itself, not up to a poll later.
+    await sleep(Math.max(0, Math.min(POLL_MS, deadline - Date.now())))
   }
+}
+
+/** Whether the container runs — `unknown` only when the daemon kept failing through the retries. */
+async function containerState(container: string): Promise<'running' | 'stopped' | 'gone' | 'unknown'> {
+  const result = await retried(
+    () => docker(['inspect', container, '--format', '{{.State.Running}}'], 20_000),
+    (answer) => answer.code === 0 || missing(answer.out),
+  )
+  if (result.code === 0) return result.out.trim() === 'true' ? 'running' : 'stopped'
+  return missing(result.out) ? 'gone' : 'unknown'
 }
 
 function sleep(ms: number): Promise<void> {
@@ -506,18 +634,89 @@ function sleep(ms: number): Promise<void> {
 /** Copy only a bounded allowlist while the supervisor keeps tmpfs mounted. */
 async function collectExports(container: string, from: string, to: string, files: Array<[string, number]>): Promise<void> {
   competitionsFs.mkdirSync(to, { recursive: true })
-  for (const [name, maximum] of files) {
-    const result = await docker(['exec', container, 'python', '-I', '/harness/export_files.py', 'file', from, name], 20000, Math.ceil(maximum / 3) * 4 + 4)
-    if (result.code !== 0 || result.out.length > Math.ceil(maximum / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(result.out)) continue
-    const body = Buffer.from(result.out, 'base64')
-    if (body.length > maximum || body.toString('base64') !== result.out) continue
-    competitionsFs.writeFileSync(path.join(to, name), body, { mode: 0o600 })
+  for (const [name, maximum] of files) await exportFile(container, from, to, name, maximum)
+}
+
+/**
+ * One allowlisted file out of the container — streamed.
+ *
+ * The base64 that `docker exec` prints is decoded as it arrives and written
+ * to disk asynchronously. Before, a 64 MB answer became an 85 MB string, was
+ * checked, decoded, encoded again for the comparison and written
+ * synchronously — all of it on the event loop that serves the class, and with
+ * eight slots finishing at once, eight times over. The file appears under its
+ * name only whole: it is written next to it and renamed at the end.
+ */
+async function exportFile(container: string, from: string, to: string, name: string, maximum: number): Promise<void> {
+  const temporary = path.join(to, `.${name}.part`)
+  const decoder = new Base64Decoder(maximum)
+  const written = pipeline(decoder, competitionsFs.createWriteStream(temporary, { mode: 0o600 })).then(() => true, () => false)
+  const result = await docker(['exec', container, 'python', '-I', '/harness/export_files.py', 'file', from, name], 20_000, Math.ceil(maximum / 3) * 4 + 4, decoder)
+  // A shell that does not stream (the tests' stand-in) hands the whole answer back in `out`.
+  if (!decoder.writableEnded) decoder.end(!decoder.fed && result.code === 0 ? result.out : undefined)
+  const whole = await written
+  if (whole && result.code === 0) competitionsFs.renameSync(temporary, path.join(to, name))
+  else competitionsFs.rmSync(temporary, { force: true })
+}
+
+/**
+ * Base64 in, bytes out — held to the same rules the whole-string check had:
+ * only the alphabet, padding only at the very end, whitespace only after the
+ * data, and never more than `maximum` bytes.
+ */
+class Base64Decoder extends Transform {
+  /** Whether anything arrived through the stream at all. */
+  fed = false
+  private carry = ''
+  private bytes = 0
+  private padded = false
+  private trailing = false
+
+  constructor(private readonly maximum: number) {
+    super()
+  }
+
+  override _transform(chunk: Buffer, _encoding: BufferEncoding, done: TransformCallback): void {
+    this.fed = true
+    let text = chunk.toString('latin1')
+    if (this.trailing) return done(/\S/.test(text) ? new Error('Export is not base64') : null)
+    const blank = text.search(/\s/)
+    if (blank >= 0) {
+      if (/\S/.test(text.slice(blank))) return done(new Error('Export is not base64'))
+      this.trailing = true
+      text = text.slice(0, blank)
+    }
+    if (!/^[A-Za-z0-9+/=]*$/.test(text)) return done(new Error('Export is not base64'))
+    text = this.carry + text
+    const whole = text.length - (text.length % 4)
+    this.carry = text.slice(whole)
+    const body = text.slice(0, whole)
+    if (!body) return done()
+    if (this.padded) return done(new Error('Export continues after its padding'))
+    const pad = body.indexOf('=')
+    if (pad >= 0) {
+      if (pad < body.length - 4 || !/^[A-Za-z0-9+/]{2}(?:==|[A-Za-z0-9+/]=)$/.test(body.slice(-4))) {
+        return done(new Error('Export is not base64'))
+      }
+      this.padded = true
+    }
+    const decoded = Buffer.from(body, 'base64')
+    this.bytes += decoded.length
+    if (this.bytes > this.maximum) return done(new Error('Export grew beyond its limit'))
+    done(null, decoded)
+  }
+
+  override _flush(done: TransformCallback): void {
+    done(this.carry ? new Error('Export is cut short') : null)
   }
 }
 
 /** Post-mortem of a stopped container — BEFORE it is removed. */
 async function postmortem(container: string): Promise<{ exit: number | null; oom: boolean; tail: string }> {
-  const state = await docker(['inspect', container, '--format', INSPECT], 20_000)
+  const state = await retried(
+    () => docker(['inspect', container, '--format', INSPECT], 20_000),
+    (answer) => answer.code === 0 || missing(answer.out),
+  )
   let exit: number | null = null
   let oom = false
   if (state.code === 0) {
@@ -614,8 +813,9 @@ class DockerCompetitionRunner implements CompetitionRunner {
       target: SUBMISSION_NAME,
     })
     const started_ = await docker(args, 120_000)
+    const held = request.limits.memoryMb + CONTAINER_CUSHION_MB
     if (started_.code !== 0) {
-      await removeContainer(request.container)
+      await removeContainer(request.container, held)
       return {
         status: 'harness_error',
         cell: -1,
@@ -639,8 +839,9 @@ class DockerCompetitionRunner implements CompetitionRunner {
     } finally {
       // The container is ALWAYS removed, and only after the post-mortem: `--rm`
       // would take the OOM flag from us, and a forgotten container is gigabytes
-      // on a machine where a class is running.
-      await removeContainer(request.container)
+      // on a machine where a class is running. A removal that fails is retried
+      // later and does not touch the verdict: the notebook did run.
+      await removeContainer(request.container, held)
     }
     const observed = readJson(path.join(request.resultDir, RUN_FILE))
     const report = observed?.attemptId === attemptId ? observed : null
@@ -686,8 +887,9 @@ class DockerCompetitionRunner implements CompetitionRunner {
       splitSeed: request.competition.splitSeed,
     })
     const launched = await docker(args, 120_000)
+    const held = request.limits.memoryMb + CONTAINER_CUSHION_MB
     if (launched.code !== 0) {
-      await removeContainer(request.container)
+      await removeContainer(request.container, held)
       return metricFailure(this.backend, launched.out, Date.now() - started, null, false)
     }
     let watched: Watched = { killedBy: null, progress: null }
@@ -700,7 +902,7 @@ class DockerCompetitionRunner implements CompetitionRunner {
         await collectExports(request.container, '/out', request.outDir, [[SCORE_FILE, 1024 * 1024]])
       }
     } finally {
-      await removeContainer(request.container)
+      await removeContainer(request.container, held)
     }
     const wall = Date.now() - started
     /*
@@ -758,7 +960,7 @@ class DockerCompetitionRunner implements CompetitionRunner {
       const found = await docker(['ps', '-aq', '--filter', `label=${label}`, '--filter', `label=${INSTANCE_LABEL}`], 20_000)
       if (found.code !== 0) continue
       for (const id of found.out.split('\n').map((line) => line.trim()).filter(Boolean)) {
-        try { await removeContainer(id); dropped++ } catch { /* capacity stays blocked until cleanup succeeds */ }
+        if (await removeContainer(id)) dropped++
       }
     }
     // Old queue rows name specific pre-scope containers. Never scan/delete all
@@ -784,7 +986,7 @@ class DockerCompetitionRunner implements CompetitionRunner {
         console.warn('[competitions] recorded legacy container ownership could not be verified; left untouched')
         continue
       }
-      try { await removeContainer(container); dropped++ } catch { /* retry through capacity */ }
+      if (await removeContainer(container)) dropped++
     }
     return dropped
   }
@@ -792,22 +994,26 @@ class DockerCompetitionRunner implements CompetitionRunner {
   /**
    * How much memory on the machine can still be handed out.
    *
-   * Asked of the same module as the seminar form (kernel/resources.ts): the
-   * ceiling is held by docker's VIRTUAL MACHINE, not the Mac, and on colima
-   * that is twelve gigabytes out of the machine's thirty-six. Counting by the
-   * host would mean taking on a submission that `docker run` will refuse in the
-   * middle of a class.
+   * Asked of the same module as the seminar form (kernel/resources.ts, through
+   * capacity.ts): the ceiling is held by docker's VIRTUAL MACHINE, not the
+   * Mac, and on colima that is twelve gigabytes out of the machine's
+   * thirty-six. Counting by the host would mean taking on a submission that
+   * `docker run` will refuse in the middle of a class. Containers still
+   * awaiting removal keep their own memory out of reach, and nothing more.
    */
   async capacity(): Promise<Capacity> {
-    for (const container of pendingCleanup) {
-      try { await removeContainer(container) } catch { return { availableMb: 0 } }
-    }
-    try {
-      // reserveWork atomically deducts all in-flight promises after this census.
-      const machine = await machineResources({ fresh: true, beforeReservations: true })
-      return { availableMb: machine.memory.availableMb }
-    } catch {
-      return { availableMb: null }
+    // Not awaited: the pump asks this with admission held, and a daemon that
+    // hangs on `docker rm` takes sixty seconds per container to say so.
+    // Until they go, the stuck ones hold their memory, as counted below.
+    if (pendingCleanup.size > 0) void retryPendingCleanup()
+    let heldMb = 0
+    for (const mb of pendingCleanup.values()) heldMb += mb
+    const memory = await competitionMemory()
+    return {
+      availableMb: memory.availableMb === null ? null : Math.max(0, memory.availableMb - heldMb),
+      usableMb: memory.usableMb,
+      memAvailableMb: memory.memAvailableMb,
+      heldMb,
     }
   }
 }

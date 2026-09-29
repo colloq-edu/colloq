@@ -4,7 +4,8 @@ import path from 'node:path'
 import { db } from '../db.js'
 import { submissionsOpen, type Competition, type Submission } from '@shared/competitions'
 import { DEPENDENCY_LIMITS, dependencyActive, type AdminDependencyOverview, type DependencyBundle, type DependencyOverview, type EnvironmentRevision } from '@shared/dependencies'
-import { getCompetition, getEntrant, joinedAt, listEntrantSubmissions, acceptSubmission, inFlightCount, leftToday } from '../competitions/store.js'
+import { getCompetition, getEntrant, joinedAt, listEntrantSubmissions, acceptSubmission, intakePlan, leftToday } from '../competitions/store.js'
+import { pastGrace } from '../competitions/results.js'
 import { competitionBackend, competitionRunner } from '../competitions/runner-port.js'
 import '../competitions/broker-runner.js'
 import { prepareDependencies, cleanupPreparationResources } from './preparation.js'
@@ -82,20 +83,33 @@ export async function cancelPreparation(id:string):Promise<DependencyBundle|null
 export function publicExecution(submission:Submission,environmentName:string):Submission {
  return {...submission,execution:store.submissionEnvironment(submission.id,environmentName)}
 }
-/** SQL acceptance and the environment binding either both commit, or neither does. */
-export const acceptPinnedSubmission=db.transaction((c:Competition,eid:string,fileName:string,bytes:number,revision:EnvironmentRevision|null,bundleId:string|null,baseline=false):Submission=>{
+/**
+ * SQL acceptance and the environment binding either both commit, or neither
+ * does.
+ *
+ * `startedAt` is when the upload's request arrived: the deadline is judged by
+ * it, and the body must still arrive within the grace (competitions/results.ts).
+ * A person's submission that is still waiting is replaced by this one, and
+ * the day's quota is counted as if it already were — the replaced one never
+ * runs and does not count (store.ts · intakePlan).
+ */
+export const acceptPinnedSubmission=db.transaction((c:Competition,eid:string,fileName:string,bytes:number,revision:EnvironmentRevision|null,bundleId:string|null,options:{baseline?:boolean;startedAt?:number}={}):Submission&{replaced:Submission|null}=>{
  const current=getCompetition(c.id)
  if(!current||current.environment!==c.environment)throw new store.DependencyStoreError('dependency_revision')
- if(!baseline){
-  if(submissionsOpen(current,Date.now())!=='open')throw new store.DependencyStoreError('dependency_closed',403)
-  if(inFlightCount(c.id,eid)>0)throw new store.DependencyStoreError('dependency_submission_active')
-  const left=leftToday(current,eid);if(left!==null&&left<=0)throw new store.DependencyStoreError('dependency_submission_quota',429)
+ let replaced:Submission|null=null
+ if(!options.baseline){
+  const now=Date.now()
+  if(submissionsOpen(current,options.startedAt??now)!=='open'||pastGrace(current,now))throw new store.DependencyStoreError('dependency_closed',403)
+  const plan=intakePlan(c.id,eid)
+  if(plan==='in_flight')throw new store.DependencyStoreError('dependency_submission_active')
+  replaced=plan.replaces
+  const left=leftToday(current,eid,now,0,replaced?.id??null);if(left!==null&&left<=0)throw new store.DependencyStoreError('dependency_submission_quota',429)
  }
  if(revision&&store.competitionRevision(c.id)?.id!==revision.id)throw new store.DependencyStoreError('dependency_revision')
  store.assertUsableBundle(c.id,eid,revision?.id??'',bundleId)
- const submission=acceptSubmission({competitionId:c.id,entrantId:eid,fileName,bytes})
+ const submission=acceptSubmission({competitionId:c.id,entrantId:eid,fileName,bytes,replaces:replaced?.id??null})
  store.bindSubmission(submission.id,revision?.id??null,bundleId,revision===null)
- return publicExecution(submission,c.environment)
+ return {...publicExecution(submission,c.environment),replaced}
 })
 function sanitizedLog(line:string,stage:string):string {
  return line.split(stage).join('[work]').replace(/https?:\/\/\S+/g,'[registry URL]').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').slice(0,1000)

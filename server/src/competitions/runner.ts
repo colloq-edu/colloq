@@ -5,11 +5,12 @@
  * not in memory: a class period lasts an hour and a half, submissions pile up
  * all that time, and a server restart must not mean "thirty people submitted
  * into the void". The pump is one timer that takes work with the `takeNext`
- * transaction and starts it without waiting; there is one slot by default,
- * because a class is running next to it on the teacher's machine, and a
- * second submission takes memory away from the class rather than speeding up
- * the queue. Work goes in two steps in two disposable containers — the
- * notebook, then the metric — and exactly one file moves between them.
+ * transaction and starts it without waiting; how many at once is a setting of
+ * the machine (`auto` sizes it by its CPUs and memory, capacity.ts), and every
+ * job must also fit into memory next to the class, which runs on the same
+ * machine and comes first. Work goes in two steps in two disposable
+ * containers — the notebook, then the metric — and exactly one file moves
+ * between them.
  * Everything that knows about docker lives behind the `runner-port.ts` door:
  * here we decide WHOSE work goes next and what to write into the submission
  * row. And at process startup the queue picks up the orphans: a "running" row
@@ -27,8 +28,15 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { reserveWork, workBudgetSnapshot } from '../ops/work-budget.js'
 import { competitionCapabilities } from './capabilities.js'
+import { admitJob, MAX_SLOTS, slotsResolution } from './capacity.js'
+import { saveSlots } from './settings.js'
 import { submissionUsesCurrentBase, type AttemptProvenance } from './provenance.js'
 import { tr } from '@shared/i18n'
+/*
+ * Not decoration: `admin/settings` installs the translator that reads the
+ * instance language, and the strings the runner writes to the participant go
+ * through `tr`.
+ */
 import '../admin/settings.js'
 import { db } from '../db.js'
 import { getBinding, lockOf } from '../dependencies/store.js'
@@ -127,40 +135,27 @@ const newToken = (): string => randomBytes(4).toString('hex')
 /**
  * How many submissions to execute at once.
  *
- * A key in the instance's shared box (instance_settings), not a column in the
- * queue table: this is a setting of the MACHINE, next to the Oracle's
- * settings, not queue state like the pause. The default is one slot: at four
- * gigabytes per submission, two fit into docker's virtual machine, and that
- * is before the kernels of live rooms.
+ * A setting of the MACHINE, not queue state like the pause: the owner's
+ * number, the environment's COMPETITION_SLOTS, or `auto`, which sizes the
+ * queue by the machine itself (settings.ts stores it, capacity.ts resolves
+ * it). A slot is a ceiling, not a promise: every job must also fit into
+ * memory before it takes one (pumpOnce).
  */
-const SLOTS_KEY = 'competitions.slots'
+export { MAX_SLOTS }
 export const DEFAULT_SLOTS = 1
-export const MAX_SLOTS = 8
-
-/*
- * The box is created by `admin/settings`, and the import here is not
- * decoration: without it the table might not exist yet when the statements
- * below are prepared, and the queue would crash at startup for anyone who
- * brought it up before the panel. The same import puts in place the
- * translator that reads the instance language — and the strings the runner
- * writes to the participant go through `tr`.
- */
-const readSetting = db.prepare('SELECT value FROM instance_settings WHERE key = ?')
-const writeSetting = db.prepare(`
-  INSERT INTO instance_settings (key, value) VALUES (?, ?)
-  ON CONFLICT(key) DO UPDATE SET value = excluded.value
-`)
 
 export function queueSlots(): number {
-  const row = readSetting.get(SLOTS_KEY) as { value: string } | undefined
-  const asked = Number(row?.value)
-  if (!Number.isFinite(asked)) return DEFAULT_SLOTS
-  return Math.min(MAX_SLOTS, Math.max(1, Math.floor(asked)))
+  return slotsResolution().effective
 }
 
-export function setQueueSlots(slots: number): number {
+/** Fix the number of slots (tests, stands); `'auto'` hands the choice back to the machine. */
+export function setQueueSlots(slots: number | 'auto'): number {
+  if (slots === 'auto') {
+    saveSlots('auto')
+    return queueSlots()
+  }
   const value = Math.min(MAX_SLOTS, Math.max(1, Math.floor(Number(slots) || DEFAULT_SLOTS)))
-  writeSetting.run(SLOTS_KEY, String(value))
+  saveSlots(value)
   return value
 }
 
@@ -258,7 +253,16 @@ export async function pumpOnce(): Promise<number> {
     if (runningRows().length >= slots) return 0
     if (waitingCount() === 0) return 0
     if (!(await competitionCapabilities()).execution.available) return 0
-    const { availableMb } = await competitionRunner().capacity()
+    const capacity = await competitionRunner().capacity()
+    const usableMb = capacity.usableMb !== undefined ? capacity.usableMb : capacity.availableMb
+    const heldMb = capacity.heldMb ?? 0
+    /*
+     * MemAvailable was measured once, before this loop, and a job started a
+     * millisecond ago has not taken its memory yet: what this loop admits is
+     * subtracted from the measurement by hand — that, and only that. Jobs
+     * already running took theirs out of MemAvailable themselves.
+     */
+    let admittedMb = 0
     let availableDiskBytes: number | null = null
     try { const disk = fs.statfsSync(competitionsDir); availableDiskBytes = disk.bavail * disk.bsize } catch { /* unknown capacity */ }
     for (;;) {
@@ -266,11 +270,26 @@ export async function pumpOnce(): Promise<number> {
       const candidate = nextQueueRow()
       if (!candidate) break
       const competition = getCompetition(candidate.competitionId)
-      const need = competition ? Math.max(limitsFor(competition, candidate.kind).memoryMb, limitsFor(competition, 'metric').memoryMb) : 0
+      const needMb = RUN_RESERVE_MB + (competition
+        ? Math.max(limitsFor(competition, candidate.kind).memoryMb, limitsFor(competition, 'metric').memoryMb)
+        : 0)
+      const admission = admitJob({
+        needMb,
+        reservedMb: workBudgetSnapshot().memoryMb + heldMb,
+        usableMb,
+        memAvailableMb: capacity.memAvailableMb == null ? null : capacity.memAvailableMb - admittedMb,
+      })
+      if (!admission.ok) {
+        warnOnce(admission.reason === 'floor'
+          ? `[competitions] free memory is below the safety floor for ${candidate.submissionId}`
+          : `[competitions] resource reservations leave insufficient capacity for ${candidate.submissionId}`)
+        break
+      }
       let secretBytes = 0
       try { secretBytes = competitionsFs.statSync(path.join(secretDir(candidate.competitionId), SOLUTION_FILE)).size } catch { /* no solution */ }
-      const release = reserveWork({ id: `competition:${newToken()}`, kind: 'competition', memoryMb: need + RUN_RESERVE_MB,
-        diskBytes: LIMITS.submissionBytes * 4 + secretBytes }, { availableMemoryMb: availableMb, availableDiskBytes })
+      const release = reserveWork({ id: `competition:${newToken()}`, kind: 'competition', memoryMb: needMb,
+        diskBytes: LIMITS.submissionBytes * 4 + secretBytes },
+      { availableMemoryMb: usableMb === null ? null : Math.max(0, usableMb - heldMb), availableDiskBytes })
       if (!release) {
         warnOnce(`[competitions] resource reservations leave insufficient capacity for ${candidate.submissionId}`)
         break
@@ -278,6 +297,7 @@ export async function pumpOnce(): Promise<number> {
       forgetWarning()
       const row = takeNext({ boot: BOOT, slots })
       if (!row) { release(); break }
+      admittedMb += needMb
       started++
       const attemptId = row.attemptId!
       count('started')
@@ -287,6 +307,9 @@ export async function pumpOnce(): Promise<number> {
         inFlight.delete(attemptId)
         aborters.delete(attemptId)
         count('completed')
+        // A freed slot is filled at once, not at the next tick: with eight
+        // slots and a queue of thirty, half a second per job adds up.
+        wakeCompetitionPump()
       })
       inFlight.set(attemptId, job)
     }
@@ -421,14 +444,22 @@ async function runJob(row: QueueRow): Promise<void> {
     finishQueueAttempt(row)
     return
   }
+  /*
+   * The answer key is snapshotted as of the moment the job starts, but copied
+   * in the background while the notebook runs: it only has to be in place by
+   * the time the metric runs, and a two-hundred-megabyte copy in front of the
+   * notebook would be two hundred megabytes of everyone's queue. Resolves to
+   * the copy's error, or null.
+   */
+  let secrets: Promise<unknown> = Promise.resolve(null)
   try {
     if (!ownsQueueAttempt(row)) return
     const provenance: AttemptProvenance = submissionUsesCurrentBase(competition, submission.id)
       ? { inputRevision: competition.inputRevision ?? 0, notebookInputRevision: competition.notebookInputRevision ?? 0 }
       : { inputRevision: null, notebookInputRevision: null }
-    snapshotSecrets(competition, submission, row)
-    if (row.kind === 'metric') await scoreOnly(competition, submission, row, provenance)
-    else await runNotebookThenScore(competition, submission, row, provenance)
+    secrets = snapshotSecrets(competition, submission, row).then(() => null, (error: unknown) => error ?? new Error('Secret snapshot failed'))
+    if (row.kind === 'metric') await scoreOnly(competition, submission, row, provenance, secrets)
+    else await runNotebookThenScore(competition, submission, row, provenance, secrets)
   } catch (err) {
     if (err instanceof CompetitionResourcePending && ownsQueueAttempt(row)) {
       const reason=tr('competitions.runtime.resourcesWaiting')
@@ -452,12 +483,14 @@ async function runJob(row: QueueRow): Promise<void> {
     })
   } finally {
     if (finishQueueAttempt(row)) cancelled.delete(row.submissionId)
+    // No copy may still be writing into the directory that is about to go.
+    await secrets
     try { dropAttempt(competition.id, submission.id, row.attemptId!) } catch { count('cleanupFailures'); console.warn('[competitions] attempt cleanup failed', row.attemptId) }
   }
 }
 
 /** Step one and, if it succeeded, step two. */
-async function runNotebookThenScore(competition: Competition, submission: Submission, row: QueueRow, provenance: AttemptProvenance): Promise<void> {
+async function runNotebookThenScore(competition: Competition, submission: Submission, row: QueueRow, provenance: AttemptProvenance, secrets: Promise<unknown>): Promise<void> {
   const runner = competitionRunner()
   const binding = getBinding(submission.id)
   const limits = limitsFor(competition, 'notebook')
@@ -567,7 +600,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     cellsDone: outcome.cell + 1,
     cellsTotal: outcome.cells,
   })
-  const answer = readAnswer(competition.id, submission.id, result)
+  const answer = answerIn(result)
   if (typeof answer === 'string') {
     updateSubmission(submission.id, {
       state: 'rejected',
@@ -578,41 +611,44 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     return
   }
   updateSubmission(submission.id, { notebookInputRevision: provenance.notebookInputRevision })
-  promoteAttempt(competition.id, submission.id, result, answer)
-  await scoreStep(competition, submission, answer, outcome.wall, outcome, row, provenance)
+  promoteAttempt(competition.id, submission.id, result)
+  await scoreStep(competition, submission, path.join(resultDir(competition.id, submission.id), SUBMISSION_FILE), outcome.wall, outcome, row, provenance, secrets)
 }
 
 /**
- * The collected answer — or a string explaining to the participant why there
- * is none.
+ * Where the collected answer lies — or a string explaining to the participant
+ * why there is none.
  *
  * Empty and too big are kept apart on purpose: "file not written" and "an
  * 80-megabyte file" are two different conversations, and a participant who
  * read the first instead of the second will look for the mistake in the wrong
  * place.
+ *
+ * Only looked at, never read: the answer moves to the submission by rename
+ * and into the metric's directory by a streamed copy, so up to 64 MB of it
+ * never sit in this process's memory or on its event loop.
  */
-function readAnswer(competitionId: string, submissionId: string, directory = resultDir(competitionId, submissionId)): Buffer | string {
+function answerIn(directory: string): { file: string } | string {
   const file = path.join(directory, SUBMISSION_FILE)
-  let size: number
+  let info: fs.Stats
   try {
-    size = competitionsFs.statSync(file).size
+    info = competitionsFs.statSync(file)
   } catch {
     return tr('competitions.answer.noFile', { file: SUBMISSION_FILE })
   }
-  if (size > LIMITS.submissionBytes) {
+  if (!info.isFile()) return tr('competitions.answer.unreadable', { file: SUBMISSION_FILE })
+  if (info.size > LIMITS.submissionBytes) {
     return tr('competitions.answer.tooLarge', {
       file: SUBMISSION_FILE,
       count: Math.round(LIMITS.submissionBytes / MB),
     })
   }
-  let body: Buffer | null = null
-  try { body = competitionsFs.readFileSync(file) as Buffer } catch { /* unreadable regular file */ }
-  return body ?? tr('competitions.answer.unreadable', { file: SUBMISSION_FILE })
+  return { file }
 }
 
 /** Rescoring: the metric over the stored answer, without executing the notebook again. */
-async function scoreOnly(competition: Competition, submission: Submission, row: QueueRow, provenance: AttemptProvenance): Promise<void> {
-  const answer = readAnswer(competition.id, submission.id)
+async function scoreOnly(competition: Competition, submission: Submission, row: QueueRow, provenance: AttemptProvenance, secrets: Promise<unknown>): Promise<void> {
+  const answer = answerIn(resultDir(competition.id, submission.id))
   if (typeof answer === 'string') {
     /*
      * There is nothing to rescore: the answer left the disk (cleanup of old
@@ -634,21 +670,25 @@ async function scoreOnly(competition: Competition, submission: Submission, row: 
     participantError: null,
     teacherError: null,
   })
-  await scoreStep(competition, submission, answer, submission.durationMs ?? 0, null, row, provenance)
+  await scoreStep(competition, submission, answer.file, submission.durationMs ?? 0, null, row, provenance, secrets)
 }
 
 /** Step two: the teacher's metric in the second disposable container. */
 async function scoreStep(
   competition: Competition,
   submission: Submission,
-  answer: Buffer,
+  answerFile: string,
   notebookWall: number,
   notebook: RunOutcome | null,
   row: QueueRow,
   provenance: AttemptProvenance,
+  snapshot: Promise<unknown>,
 ): Promise<void> {
   const runner = competitionRunner()
   updateSubmission(submission.id, { stage: 'score' })
+  // The answer key's background copy must be whole before the metric may see it.
+  const snapshotFailed = await snapshot
+  if (snapshotFailed) throw snapshotFailed
 
   const imageDigest = getBinding(submission.id)?.revision?.imageDigest
   if (runner.backend !== 'test' && !imageDigest) {
@@ -682,7 +722,7 @@ async function scoreStep(
   // the same path mounted both read-only and writable would hand the answer's
   // size to the watchdog as "the metric writes to disk".
   const scoreInput = attemptDir(competition.id, submission.id, row.attemptId!, 'score')
-  competitionsFs.writeFileSync(path.join(scoreInput, SUBMISSION_FILE), answer, { mode: 0o600 })
+  await copyCompetitionFile(answerFile, path.join(scoreInput, SUBMISSION_FILE))
   const outDir = attemptDir(competition.id, submission.id, row.attemptId!, 'score-out')
   if (runner.backend !== 'test') {
     letContainerRead(secrets)
@@ -747,8 +787,7 @@ async function scoreStep(
 }
 
 /**
- * Are the answers and the metric code in place? A string says what is
- * missing, `null` means everything is there.
+ * Put the answers and the metric code into the attempt's own directory.
  *
  * The metric code is put on disk EVERY time, and that is cheaper than any
  * attempt to guess whether it changed: the teacher edits the metric exactly
@@ -756,12 +795,18 @@ async function scoreStep(
  * like an unfixed error. We write the file INSIDE the mounted directory
  * rather than mounting the file itself — that is exactly why overwriting is
  * safe (see the header of storage.ts about virtiofs).
+ *
+ * The directory and the metric are written right away, and a failure there
+ * fails the job before its notebook runs; the answer key's copy is returned
+ * as a promise. Its source is opened here, synchronously, so the snapshot is
+ * the file as it was when the job started — a new answer key replaces the
+ * name, not these bytes (storage.ts · putSecretFile).
  */
-function snapshotSecrets(competition: Competition, submission: Submission, row: QueueRow): void {
+function snapshotSecrets(competition: Competition, submission: Submission, row: QueueRow): Promise<void> {
   const directory = attemptDir(competition.id, submission.id, row.attemptId!, 'secret')
-  const solution = path.join(secretDir(competition.id), SOLUTION_FILE)
-  if (competitionsFs.existsSync(solution)) copyCompetitionFile(solution, path.join(directory, SOLUTION_FILE))
   competitionsFs.writeFileSync(path.join(directory, METRIC_NAME), Buffer.from(`${competition.metric.code}\n`), { mode: 0o600 })
+  const solution = path.join(secretDir(competition.id), SOLUTION_FILE)
+  return competitionsFs.existsSync(solution) ? copyCompetitionFile(solution, path.join(directory, SOLUTION_FILE)) : Promise.resolve()
 }
 
 /**

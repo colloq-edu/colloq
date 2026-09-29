@@ -40,6 +40,9 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.entrant.timedOut': { ru: 'ЛИМИТ ВРЕМЕНИ', en: 'TIME LIMIT' },
   'competitions.entrant.outOfMemory': { ru: 'НЕ ХВАТИЛО ПАМЯТИ', en: 'OUT OF MEMORY' },
   'competitions.entrant.cancelled': { ru: 'ОТМЕНЕНА', en: 'CANCELLED' },
+  // A waiting submission the participant replaced with a newer notebook before
+  // it started (server/src/competitions/store.ts · acceptSubmission).
+  'competitions.entrant.replaced': { ru: 'ЗАМЕНЕНА', en: 'REPLACED' },
 
   /* Те же исходы словами преподавателя (A3). */
   'competitions.teacher.scored': { ru: 'ГОТОВО', en: 'DONE' },
@@ -340,6 +343,10 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'снять посылку с зачёта',
     en: 'drop a submission from the standings',
   },
+  'competitions.owner.settings': {
+    ru: 'менять настройки соревнований',
+    en: 'change the competition settings',
+  },
 
   /** Служебный участник, на которого записана сэмпл-тетрадь. */
   'competitions.baselineEntrant': {
@@ -471,6 +478,11 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.answer.killedByEntrant': {
     ru: 'Посылку снял сам участник.',
     en: 'The participant cancelled the submission.',
+  },
+  // The teacher's column of a waiting submission a newer upload replaced.
+  'competitions.answer.replaced': {
+    ru: 'Заменена посылкой #{number}, пока ждала в очереди.',
+    en: 'Replaced by #{number} while it waited in the queue.',
   },
   'competitions.refusal.tooLateToCancel': {
     ru: 'Отменять уже нечего: посылка закончилась, пока ехал запрос.',
@@ -749,6 +761,54 @@ export const competitionsMessages: MessageCatalog = {
     en: 'stopped at cell {cell} of {cells}',
   },
   'competitions.p.cancelledNote': { ru: 'снята вами', en: 'cancelled by you' },
+  /*
+   * A waiting submission is replaced by a newer upload instead of refusing it:
+   * the row says by which one, and the send box says so before the click.
+   */
+  'competitions.p.dropReplaceTitle': {
+    ru: 'Перетащите новую версию — она встанет вместо #{number}',
+    en: 'Drop a new version — it takes the place of #{number}',
+  },
+  'competitions.p.dropReplaceNote': {
+    ru: '#{number} ещё ждёт очереди и не начала исполняться. Новая посылка займёт её место и не потратит попытку дня. Засчитывается момент, когда вы начали отправку, — даже если файл догрузится уже после дедлайна.',
+    en: '#{number} is still waiting and has not started. The new submission takes its place and does not use an attempt of the day. What counts is when you started sending — even if the file finishes uploading after the deadline.',
+  },
+  'competitions.p.replaceButton': { ru: 'ЗАМЕНИТЬ #{number}', en: 'REPLACE #{number}' },
+  'competitions.p.sendReplacing': { ru: 'Отправить вместо #{number}', en: 'Send in place of #{number}' },
+  'competitions.p.countingTitle': {
+    ru: 'Приём закрыт. Досчитываем посылки, отправленные до дедлайна',
+    en: 'Intake is closed. Counting the submissions sent before the deadline',
+  },
+  'competitions.p.countingNote': {
+    ru: 'Приватный лидерборд откроется сам, когда досчитается последняя. Пока таблица не меняется ни у кого.',
+    en: 'The private leaderboard opens by itself when the last one is counted. Until then the table does not change for anyone.',
+  },
+  'competitions.p.countingLeft': {
+    ru: { one: 'осталась {count}', few: 'осталось {count}', many: 'осталось {count}', other: 'осталось {count}' },
+    en: { one: '{count} left', other: '{count} left' },
+  },
+  'competitions.p.replacedNote': { ru: 'заменена посылкой #{number}', en: 'replaced by #{number}' },
+  'competitions.p.replacesHint': {
+    ru: 'Посылка #{number} ещё ждёт в очереди: новая тетрадь займёт её место и не потратит ещё одну попытку.',
+    en: 'Submission #{number} is still waiting in the queue: a new notebook takes its place and does not use another submission.',
+  },
+  /*
+   * Intake is over, but the final results wait for submissions accepted
+   * before it: opening the private board now would show numbers that are
+   * still changing.
+   */
+  'competitions.p.resultsCounting': {
+    ru: {
+      one: 'Итоги ещё считаются: осталась {count} посылка.',
+      few: 'Итоги ещё считаются: осталось {count} посылки.',
+      many: 'Итоги ещё считаются: осталось {count} посылок.',
+      other: 'Итоги ещё считаются: осталось {count} посылки.',
+    },
+    en: {
+      one: 'Results are still being counted: {count} submission left.',
+      other: 'Results are still being counted: {count} submissions left.',
+    },
+  },
   'competitions.p.todayAt': { ru: 'Сегодня в {time}', en: 'Today at {time}' },
   'competitions.p.yesterdayAt': { ru: 'Вчера в {time}', en: 'Yesterday at {time}' },
   'competitions.p.dateAt': { ru: '{date} в {time}', en: '{date} at {time}' },

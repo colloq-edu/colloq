@@ -253,7 +253,7 @@ export function metricLine(row: CompetitionRow, now: number): string {
   }
   if (c.state === 'finished') {
     return `${head} · ${
-      privateBoardOpen(c, now)
+      privateBoardOpen(c, now, row.privatePending ?? 0)
         ? tr('admin.competitions.privateBoardOpen')
         : tr('admin.competitions.privateBoardClosed')
     }`

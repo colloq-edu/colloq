@@ -20,6 +20,7 @@
  */
 import { formatNumber, getLocale, tr } from '@shared/i18n'
 import {
+  entrantBadge,
   metricFailedNote,
   stagePosition,
   stageWord,
@@ -28,6 +29,7 @@ import {
   type EntrantSubmission,
   type MetricDirection,
   type StagePosition,
+  type SubmissionBadge,
   type SubmissionStage,
   type SubmissionState,
 } from '@shared/competitions'
@@ -467,9 +469,29 @@ export function rowWords(input: RowInput): RowWords {
     case 'cancelled':
       return {
         title: file,
-        lines: [`${whenWords(submission.acceptedAt, now)} · ${tr('competitions.p.cancelledNote')}`],
+        lines: [
+          `${whenWords(submission.acceptedAt, now)} · ${
+            submission.replacedBy != null
+              ? tr('competitions.p.replacedNote', { number: submission.replacedBy })
+              : tr('competitions.p.cancelledNote')
+          }`,
+        ],
       }
   }
+}
+
+/**
+ * The badge of a row in "My submissions".
+ *
+ * A replaced submission is `cancelled` in the database (it never ran and does
+ * not count against the day), but "CANCELLED" would tell its author they
+ * pressed something they did not: the newer notebook took its place.
+ */
+export function submissionBadge(submission: Pick<EntrantSubmission, 'state' | 'replacedBy'>): SubmissionBadge | null {
+  if (submission.state === 'cancelled' && submission.replacedBy != null) {
+    return { word: tr('competitions.entrant.replaced'), tone: 'neutral', form: 'outline' }
+  }
+  return entrantBadge(submission.state)
 }
 
 /* ----------------------------------------------------------- leaderboard */

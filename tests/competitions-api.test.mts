@@ -51,11 +51,12 @@ import {
   medianOf,
   openRefusal,
   parseCompetitionInput,
+  queueEtas,
   rescorable,
-  waitEtas,
   withoutBaseline,
   type Readiness,
 } from '../server/src/competitions/panel.js'
+import { queueSlots } from '../server/src/competitions/runner.js'
 import { baseName, columnsLine, csvShape, notebookCells } from '../server/src/competitions/intake.js'
 import type { CompetitionView } from '../shared/competitions-api.js'
 
@@ -115,19 +116,18 @@ test('what left an answer can be rescored', () => {
 })
 
 test('the wait estimate is computed per slot, not by multiplying the number', () => {
-  // Without an average there is nothing to estimate with — and "≈ 0 min" would
-  // be a promise.
-  assert.deepEqual(waitEtas(2, { runningLeftMs: [], averageMs: null, slots: 1 }), [null, null])
+  const starts = (input: Parameters<typeof queueEtas>[0]) => queueEtas(input).map((eta) => eta.startMs)
+  // One slot, a job two minutes into a three-minute run: the queue starts behind it.
   assert.deepEqual(
-    waitEtas(3, { runningLeftMs: [60_000], averageMs: 120_000, slots: 1 }),
+    starts({ slots: 1, running: [{ expectedMs: 180_000, elapsedMs: 120_000 }], waiting: [{ expectedMs: 120_000 }, { expectedMs: 120_000 }, { expectedMs: 120_000 }] }),
     [60_000, 180_000, 300_000],
   )
-  // Two slots: the fifth waits half as long as with one.
+  // Two slots: the fourth waits half as long as with one.
   assert.deepEqual(
-    waitEtas(4, { runningLeftMs: [0, 0], averageMs: 100, slots: 2 }),
+    starts({ slots: 2, running: [], waiting: [{ expectedMs: 100 }, { expectedMs: 100 }, { expectedMs: 100 }, { expectedMs: 100 }] }),
     [0, 0, 100, 100],
   )
-  assert.deepEqual(waitEtas(0, { runningLeftMs: [], averageMs: 100, slots: 1 }), [])
+  assert.deepEqual(queueEtas({ slots: 1, running: [], waiting: [] }), [])
 })
 
 test('"executed today" counts only finished ones, and only for the day', () => {
@@ -691,7 +691,7 @@ test('the live state is given as one snapshot', async () => {
     competitions: { competition: { id: string; slug: string } }[]
     queue: { slots: number; running: unknown[] }
   }
-  assert.equal(list.queue.slots, 1)
+  assert.equal(list.queue.slots, queueSlots())
   const bpm = list.competitions.find((row) => row.competition.slug === 'bpm')
   assert.ok(bpm)
   const live = await call('GET', `/api/admin/competitions/${bpm.competition.id}/live`, {

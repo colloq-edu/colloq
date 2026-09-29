@@ -169,6 +169,9 @@ export class FakeCompetitionRunner implements CompetitionRunner {
   /** How much memory "the machine has". `null` means we honestly do not know. */
   availableMb: number | null = 65_536
 
+  /** The machine's MemAvailable for the admission floor; `null` — unknown, not checked. */
+  memAvailableMb: number | null = null
+
   /** Runs in progress: container name → how to cut it short. */
   private readonly live = new Map<string, () => void>()
 
@@ -345,7 +348,7 @@ export class FakeCompetitionRunner implements CompetitionRunner {
   }
 
   async capacity(): Promise<Capacity> {
-    return { availableMb: this.availableMb }
+    return { availableMb: this.availableMb, memAvailableMb: this.memAvailableMb }
   }
 
   /**

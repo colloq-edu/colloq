@@ -77,9 +77,18 @@
         </button>
       </div>
     {/if}
-    <p class="max-w-[640px] text-ui leading-5 text-muted">
-      {tr(final ? 'competitions.p.finalNote' : 'competitions.p.publicNote')}
-    </p>
+    <div class="flex max-w-[640px] flex-col gap-1">
+      <p class="text-ui leading-5 text-muted">
+        {tr(final ? 'competitions.p.finalNote' : 'competitions.p.publicNote')}
+      </p>
+      <!-- Intake is over, but the final table waits for the queue: saying so
+           beats a closed board that looks forgotten. -->
+      {#if !open && (board.privatePending ?? 0) > 0}
+        <p class="text-ui leading-5 text-warning" role="status">
+          {tr('competitions.p.resultsCounting', { count: board.privatePending ?? 0 })}
+        </p>
+      {/if}
+    </div>
   </div>
 
   {#if people.length === 0 && baseline === null}

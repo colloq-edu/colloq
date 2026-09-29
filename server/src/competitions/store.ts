@@ -30,6 +30,7 @@ import { tr } from '@shared/i18n'
 import { db } from '../db.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from './key.js'
 import { removeCompetition as removeCompetitionFiles, pruneSubmissions } from './storage.js'
+import { competitionDefaults } from './settings.js'
 import {
   boardOf,
   countsTowardDailyQuota,
@@ -353,6 +354,12 @@ ensureColumn('submissions', 'input_revision', 'input_revision INTEGER')
 ensureColumn('competitions', 'notebook_input_revision', 'notebook_input_revision INTEGER NOT NULL DEFAULT 0')
 ensureColumn('submissions', 'notebook_input_revision', 'notebook_input_revision INTEGER')
 ensureColumn('submission_runs', 'attempt_id', 'attempt_id TEXT')
+/*
+ * Which submission took this one's place in the queue before it started — the
+ * number the participant sees ("replaced by #13"). A replaced submission is
+ * `cancelled`: it never ran and does not count against the day.
+ */
+ensureColumn('submissions', 'replaced_by', 'replaced_by INTEGER')
 ensureColumn('submission_runs', 'input_revision', 'input_revision INTEGER')
 db.exec(`
   UPDATE competitions SET baseline_entrant_id =
@@ -545,6 +552,9 @@ export interface NewCompetition {
 export function createCompetition(input: NewCompetition): Competition | null {
   const at = Date.now()
   const id = newId()
+  // The instance's defaults, not the editor's constants: the owner sets them
+  // once for the machine (settings.ts), and every new competition starts there.
+  const defaults = competitionDefaults().limits
   try {
     insertCompetition.run({
       id,
@@ -558,10 +568,10 @@ export function createCompetition(input: NewCompetition): Competition | null {
       public_percent: input.publicPercent ?? LIMITS.publicPercent.default,
       // The seed is born with the competition and is never touched again.
       split_seed: randomUUID(),
-      wall_seconds: input.limits?.wallSeconds ?? LIMITS.wallSeconds.default,
-      memory_mb: input.limits?.memoryMb ?? LIMITS.memoryMb.default,
-      cpus: input.limits?.cpus ?? LIMITS.cpus.default,
-      per_day: input.limits?.perDay ?? LIMITS.perDay.default,
+      wall_seconds: input.limits?.wallSeconds ?? defaults.wallSeconds,
+      memory_mb: input.limits?.memoryMb ?? defaults.memoryMb,
+      cpus: input.limits?.cpus ?? defaults.cpus,
+      per_day: input.limits?.perDay ?? defaults.perDay,
       environment: input.environment ?? 'base',
       starts_at: input.startsAt ?? null,
       deadline_at: input.deadlineAt ?? null,
@@ -1090,6 +1100,7 @@ interface SubmissionRow {
   chosen: number
   input_revision: number | null
   notebook_input_revision: number | null
+  replaced_by: number | null
 }
 
 function toSubmission(row: SubmissionRow): Submission {
@@ -1113,6 +1124,7 @@ function toSubmission(row: SubmissionRow): Submission {
     chosen: row.chosen === 1,
     inputRevision: row.input_revision,
     notebookInputRevision: row.notebook_input_revision,
+    replacedBy: row.replaced_by ?? null,
   }
 }
 
@@ -1135,7 +1147,7 @@ const selectMine = db.prepare(
    ORDER BY accepted_at DESC, number DESC`,
 )
 const selectSince = db.prepare(
-  `SELECT accepted_at, state, cells_done FROM submissions
+  `SELECT id, accepted_at, state, cells_done FROM submissions
    WHERE competition_id = ? AND entrant_id = ? AND accepted_at >= ?`,
 )
 /**
@@ -1154,6 +1166,17 @@ const insertQueueRow = db.prepare(`
     (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn)
   VALUES (@submission_id, @competition_id, @entrant_id, @kind, 'waiting', @at, ${TURN})
 `)
+/* A replacement inherits the place it takes: the same arrival time and turn. */
+const insertQueueRowAt = db.prepare(`
+  INSERT INTO competition_queue
+    (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn)
+  VALUES (@submission_id, @competition_id, @entrant_id, 'notebook', 'waiting', @enqueued_at, @turn)
+`)
+const markReplaced = db.prepare(`
+  UPDATE submissions SET state = 'cancelled', stage = 'queue', replaced_by = @number,
+    participant_error = NULL, teacher_error = @note
+  WHERE id = @id
+`)
 
 /**
  * Accept a submission: the row, the number and a place in the queue — in one
@@ -1163,6 +1186,14 @@ const insertQueueRow = db.prepare(`
  * two people who sent a notebook in the same second would get one "#12"
  * between them, and the unique index would refuse the second one after their
  * file had already landed on disk.
+ *
+ * `replaces` names the person's submission that is still WAITING: it leaves
+ * the queue as `cancelled` (it never ran, so it does not count against the
+ * day), and the new one takes its place — the same arrival time and turn, so
+ * a fixed typo does not send its author to the end of a queue of thirty.
+ * Whoever calls this has checked that the old one is replaceable
+ * (`intakePlan`); here it is checked again under the same transaction, and a
+ * job the pump took a millisecond ago refuses the whole acceptance.
  */
 export const acceptSubmission = db.transaction(
   (input: {
@@ -1171,10 +1202,15 @@ export const acceptSubmission = db.transaction(
     fileName: string
     bytes: number
     at?: number
+    replaces?: string | null
   }): Submission => {
     const at = input.at ?? Date.now()
     const id = newId()
     const number = (nextNumber.get(input.competitionId) as { n: number }).n
+    const old = input.replaces ? queueRow(input.replaces) : null
+    if (input.replaces && (!old || !replaceableRow(old, input.competitionId, input.entrantId))) {
+      throw new Error('The replaced submission is no longer waiting')
+    }
     insertSubmission.run({
       id,
       competition_id: input.competitionId,
@@ -1184,13 +1220,25 @@ export const acceptSubmission = db.transaction(
       bytes: input.bytes,
       at,
     })
-    insertQueueRow.run({
-      submission_id: id,
-      competition_id: input.competitionId,
-      entrant_id: input.entrantId,
-      kind: 'notebook',
-      at,
-    })
+    if (old) {
+      deleteQueueRow.run(old.submissionId)
+      markReplaced.run({ id: old.submissionId, number, note: tr('competitions.answer.replaced', { number }) })
+      insertQueueRowAt.run({
+        submission_id: id,
+        competition_id: input.competitionId,
+        entrant_id: input.entrantId,
+        enqueued_at: old.enqueuedAt,
+        turn: old.turn,
+      })
+    } else {
+      insertQueueRow.run({
+        submission_id: id,
+        competition_id: input.competitionId,
+        entrant_id: input.entrantId,
+        kind: 'notebook',
+        at,
+      })
+    }
     return toSubmission(selectSubmission.get(id) as SubmissionRow)
   },
 )
@@ -1225,6 +1273,47 @@ export function inFlightCount(competitionId: string, entrantId: string): number 
   return (countInFlight.get(competitionId, entrantId) as { n: number }).n
 }
 
+const selectInFlight = db.prepare(
+  `SELECT * FROM submissions
+   WHERE competition_id = ? AND entrant_id = ? AND state IN ('queued', 'running')`,
+)
+
+const selectAnyRun = db.prepare('SELECT 1 FROM submission_runs WHERE submission_id = ? LIMIT 1')
+
+/**
+ * A queue row a new upload may take over: the person's own notebook run,
+ * still waiting, with no rescore stacked on it — and never run before. A
+ * teacher's "run again" waits exactly like a fresh upload, but it belongs to
+ * a submission that already has a result (and maybe the scoring choice), and
+ * cancelling it would throw both away.
+ */
+function replaceableRow(row: QueueRow, competitionId: string, entrantId: string): boolean {
+  return row.competitionId === competitionId && row.entrantId === entrantId
+    && row.state === 'waiting' && row.kind === 'notebook' && row.pendingKind === null
+    && selectAnyRun.get(row.submissionId) === undefined
+}
+
+/**
+ * What a new upload from this person would do right now.
+ *
+ * Nothing in flight — a plain new submission. Exactly one submission still
+ * WAITING for its notebook run — the upload takes its place: the person fixed
+ * a typo, and making them wait for a notebook they no longer want (or cancel
+ * it by hand first) only lengthens everyone's queue. Anything running, a
+ * rescore or a re-run waiting, or more than one in flight — refused, one at a
+ * time: that one is already taking a slot or holds a result, and replacing it
+ * would throw away the work.
+ */
+export function intakePlan(competitionId: string, entrantId: string): { replaces: Submission | null } | 'in_flight' {
+  const flying = selectInFlight.all(competitionId, entrantId) as SubmissionRow[]
+  if (flying.length === 0) return { replaces: null }
+  if (flying.length > 1) return 'in_flight'
+  const only = flying[0]
+  const row = queueRow(only.id)
+  if (only.state !== 'queued' || !row || !replaceableRow(row, competitionId, entrantId)) return 'in_flight'
+  return { replaces: toSubmission(only) }
+}
+
 const selectCounts = db.prepare(
   'SELECT entrant_id, COUNT(*) AS n FROM submissions WHERE competition_id = ? GROUP BY entrant_id',
 )
@@ -1252,13 +1341,16 @@ export function leftToday(
   entrantId: string,
   now = Date.now(),
   offsetMinutes = 0,
+  /** A submission to leave out — the waiting one a replacement would cancel. */
+  except: string | null = null,
 ): number | null {
   const since = dayStart(now, offsetMinutes)
-  const rows = selectSince.all(competition.id, entrantId, since) as {
+  const rows = (selectSince.all(competition.id, entrantId, since) as {
+    id: string
     accepted_at: number
     state: string
     cells_done: number
-  }[]
+  }[]).filter((row) => row.id !== except)
   return submissionsLeftToday(
     competition.limits.perDay,
     rows.map((row) => ({
@@ -1457,6 +1549,53 @@ export function competitionSummary(id: string): CompetitionSummary {
     entrants: listCompetitionEntrants(id).length,
     bestPublic: direction === 'lower' ? range.low : range.high,
   }
+}
+
+const countPendingResults = db.prepare(`
+  SELECT COUNT(*) AS n FROM submissions
+  WHERE competition_id = ? AND state IN ('queued', 'running') AND accepted_at <= ?
+`)
+
+/**
+ * Submissions accepted by `cutoff` that have no result yet — what the
+ * automatic private release waits for (results.ts).
+ */
+export function pendingResultsCount(competitionId: string, cutoff: number): number {
+  return (countPendingResults.get(competitionId, cutoff) as { n: number }).n
+}
+
+/*
+ * Durations of finished runs, newest first — what the queue estimate is made
+ * of (forecast.ts). A cancelled submission is left out: its duration is the
+ * moment someone pressed a button, not how long the notebook runs.
+ */
+const selectRecentDurations = db.prepare(`
+  SELECT duration_ms FROM submissions
+  WHERE competition_id = ? AND duration_ms > 0 AND state NOT IN ('queued', 'running', 'cancelled')
+  ORDER BY accepted_at DESC, number DESC LIMIT ?
+`)
+const selectRecentDurationsAll = db.prepare(`
+  SELECT duration_ms FROM submissions
+  WHERE duration_ms > 0 AND state NOT IN ('queued', 'running', 'cancelled')
+  ORDER BY accepted_at DESC LIMIT ?
+`)
+const selectRecentMetricRuns = db.prepare(`
+  SELECT finished_at - started_at AS ms FROM submission_runs
+  WHERE kind = 'metric' AND finished_at IS NOT NULL AND finished_at > started_at
+  ORDER BY started_at DESC LIMIT ?
+`)
+
+/** Recent durations of one competition's runs, or of the whole instance's with `null`. */
+export function recentDurations(competitionId: string | null, limit: number): number[] {
+  const rows = (competitionId === null
+    ? selectRecentDurationsAll.all(limit)
+    : selectRecentDurations.all(competitionId, limit)) as { duration_ms: number }[]
+  return rows.map((row) => row.duration_ms)
+}
+
+/** Recent metric-only runs across the instance — what a rescore takes. */
+export function recentMetricRuns(limit: number): number[] {
+  return (selectRecentMetricRuns.all(limit) as { ms: number }[]).map((row) => row.ms)
 }
 
 /* ------------------------------------------------------------------- runs */

@@ -35,6 +35,7 @@
  */
 import path from 'node:path'
 import fs from 'node:fs'
+import { pipeline } from 'node:stream/promises'
 import { config } from '../config.js'
 import { createAnchoredFilesystem, type HeldFile } from '../secure-files.js'
 
@@ -121,41 +122,63 @@ export function dropAttempt(id: string, submissionId: string, attemptId: string)
   competitionsFs.rmSync(path.join(submissionDir(id, submissionId), 'attempts', checkId(attemptId)), { recursive: true, force: true })
 }
 
-/** Snapshot through anchored descriptors without buffering a whole dataset. */
-export function copyCompetitionFile(from: string, to: string): void {
-  const source = competitionsFs.openRead(from)
-  let output: number | undefined
+/**
+ * Snapshot through anchored descriptors, streamed.
+ *
+ * Asynchronous on purpose: the answer key may weigh two hundred megabytes, and
+ * a synchronous copy per submission stops the event loop that serves the
+ * class — with eight slots, eight times per wave of submissions.
+ */
+export async function copyCompetitionFile(from: string, to: string): Promise<void> {
+  const source = competitionsFs.createReadStream(from)
+  let target: fs.WriteStream
   try {
-    output = competitionsFs.openSync(to, 'wx', 0o600)
-    const chunk = Buffer.alloc(1024 * 1024)
-    let size: number
-    while ((size = fs.readSync(source.fd, chunk, 0, chunk.length, null)) > 0) {
-      let offset = 0
-      while (offset < size) offset += fs.writeSync(output, chunk, offset, size - offset)
-    }
-  } finally { source.close(); if (output !== undefined) fs.closeSync(output) }
+    target = competitionsFs.createWriteStream(to, { flags: 'wx', mode: 0o600 })
+  } catch (error) {
+    source.destroy()
+    throw error
+  }
+  await pipeline(source, target)
 }
 
-export function promoteAttempt(id: string, submissionId: string, from: string, answer: Buffer): void {
+/**
+ * The attempt's answer becomes the submission's answer — by rename, not by
+ * copy.
+ *
+ * The attempt directory is dropped right after the run, so moving the file
+ * costs one metadata operation instead of reading and writing up to 64 MB on
+ * the event loop. The rename replaces `out/submission.csv` atomically:
+ * readers see the last complete successful answer, never half of the next.
+ */
+export function promoteAttempt(id: string, submissionId: string, from: string): void {
   const out = ensureDir(resultDir(id, submissionId))
-  // Atomic host rename: readers see the last complete successful answer.
-  const temporary = path.join(out, '.answer-next')
-  competitionsFs.writeFileSync(temporary, answer, { mode: 0o600 })
-  competitionsFs.renameSync(temporary, path.join(out, SUBMISSION_FILE))
-  publishAttemptArtifacts(id, submissionId, from)
+  competitionsFs.renameSync(path.join(from, SUBMISSION_FILE), path.join(out, SUBMISSION_FILE))
 }
 
-/** A failed notebook still has useful current output; retain its execution
- * artifacts separately from the last successful CSV used by metric rescoring. */
+/**
+ * A failed notebook still has useful current output; retain its execution
+ * artifacts separately from the last successful CSV used by metric rescoring.
+ *
+ * Moved, not copied, for the same reason as the answer — and so called ONCE
+ * per attempt: a second call finds nothing to move and removes what the first
+ * one published.
+ */
 export function publishAttemptArtifacts(id: string, submissionId: string, from: string): void {
   const out = ensureDir(resultDir(id, submissionId))
   for (const name of ['executed.ipynb', 'run.json']) {
-    const body = readIfExists(path.join(from, name), 64 * 1024 * 1024)
-    if (body) {
-      const temporary = path.join(out, `.${name}-next`)
-      competitionsFs.writeFileSync(temporary, body, { mode: 0o600 })
-      competitionsFs.renameSync(temporary, path.join(out, name))
-    } else competitionsFs.rmSync(path.join(out, name), { force: true })
+    const source = path.join(from, name)
+    if (regularFileWithin(source, 64 * 1024 * 1024)) competitionsFs.renameSync(source, path.join(out, name))
+    else competitionsFs.rmSync(path.join(out, name), { force: true })
+  }
+}
+
+/** A regular file no bigger than `limit`, looked at through O_NOFOLLOW: a link is not an artifact. */
+function regularFileWithin(file: string, limit: number): boolean {
+  try {
+    const info = competitionsFs.statSync(file)
+    return info.isFile() && info.size <= limit
+  } catch {
+    return false
   }
 }
 
@@ -241,8 +264,18 @@ export function putOpenFile(id: string, name: string, body: Uint8Array): number 
  * look like a different function name, not a different parameter value.
  */
 export function putSecretFile(id: string, name: string, body: Uint8Array): number {
-  const file = path.join(ensureDir(secretDir(id)), checkName(name))
-  competitionsFs.writeFileSync(file, Buffer.from(body), { mode: 0o600 })
+  const directory = ensureDir(secretDir(id))
+  const file = path.join(directory, checkName(name))
+  /*
+   * Written next to it and renamed over it, never truncated in place: a job
+   * that started a minute ago is still copying the old answer key into its
+   * snapshot (runner.ts · snapshotSecrets), and the rename leaves it the old
+   * bytes whole instead of half of each. This directory is never mounted
+   * itself, so the new inode surprises no container.
+   */
+  const temporary = path.join(directory, `.${checkName(name)}-next`)
+  competitionsFs.writeFileSync(temporary, Buffer.from(body), { mode: 0o600 })
+  competitionsFs.renameSync(temporary, file)
   return body.length
 }
 

@@ -91,16 +91,19 @@ import {
 } from '../competitions/storage.js'
 import {
   executedToday,
-  waitingEligibilityOrder,
   medianOf,
   openRefusal,
   parseCompetitionInput,
   rescorable,
-  waitEtas,
   withoutBaseline,
   type DoneEntry,
   type InputRefusal,
 } from '../competitions/panel.js'
+import { queueForecast } from '../competitions/forecast.js'
+import { privateBoardState } from '../competitions/results.js'
+import { machineShape, slotsResolution } from '../competitions/capacity.js'
+import { competitionDefaults, parseSettingsInput, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
+import { HOST_RESERVE_MB } from '../kernel/resources.js'
 import { baseName, csvShape, csvUsageSplit, notebookCells } from '../competitions/intake.js'
 import {
   cancelSubmission,
@@ -113,6 +116,7 @@ import {
 import type { QueueRow } from '../competitions/store.js'
 import { METRIC_WALL_SECONDS } from '../competitions/runner-port.js'
 import type { AdminErrorBody, AdminErrorReason } from '@shared/admin'
+import { SETTINGS_LIMITS, type CompetitionSettings } from '@shared/competitions-settings'
 import {
   LIMITS,
   dayStart,
@@ -258,6 +262,7 @@ function rowOf(competition: Competition): CompetitionRow {
     baselineScore: baseline?.publicScore ?? null,
     baselineState: baseline?.state ?? null,
     ready: readinessOf(competition),
+    privatePending: privateBoardState(competition).pending,
   }
 }
 
@@ -349,6 +354,7 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
     counts: countsOf(competition),
     ready: readinessOf(competition),
     dataBytes: openFileBytes(competition.id),
+    privatePending: privateBoardState(competition).pending,
   }
 }
 
@@ -427,29 +433,18 @@ function queueSnapshot(now = Date.now()): QueueSnapshot {
  * The queue is shared by the instance, while a screen is per competition:
  * the place is counted over the whole queue (otherwise "you are first" would
  * mean "first among your own", that is, nothing), and only this
- * competition's rows are returned.
+ * competition's rows are returned. The estimate is the participant's own
+ * (competitions/forecast.ts): the projector and the phone name one number.
  */
 function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now: number): WaitingRow[] {
-  const waiting = queueRows().filter((row) => row.state === 'waiting')
-  const busy = new Set(snapshot.running.map((row) => row.entrantId))
-  const {eligible,deferred}=waitingEligibilityOrder(waiting,busy,now)
-  const ordered=[...eligible,...deferred]
-  const left = snapshot.running.map((row) => {
-    const elapsed = now - row.startedAt
-    const guess = snapshot.averageMs === null ? row.limitMs : Math.min(snapshot.averageMs, row.limitMs)
-    return Math.max(0, guess - elapsed)
-  })
-  const etas = waitEtas(eligible.length, {
-    runningLeftMs: left,
-    averageMs: snapshot.averageMs,
-    slots: snapshot.slots,
-  })
+  const forecast = queueForecast(snapshot.slots, now)
   const rows: WaitingRow[] = []
-  ordered.forEach((queued, index) => {
-    if (competitionId && queued.competitionId !== competitionId) return
+  for (const queued of [...forecast.eligible, ...forecast.deferred]) {
+    if (competitionId && queued.competitionId !== competitionId) continue
     const submission = getSubmission(queued.submissionId)
     const competition = getCompetition(queued.competitionId)
-    if (!submission || !competition) return
+    if (!submission || !competition) continue
+    const spot = forecast.at.get(queued.submissionId) ?? null
     rows.push({
       submissionId: submission.id,
       competitionId: competition.id,
@@ -457,12 +452,12 @@ function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now:
       entrantName: getEntrant(queued.entrantId)?.name ?? '',
       number: submission.number,
       // The place is over the WHOLE queue: "you are first among your own" means nothing.
-      place: index<eligible.length?index+1:null,
-      etaMs: index<eligible.length?etas[index]??null:null,
-      resourcePending: queued.notBefore>now,
+      place: spot?.place ?? null,
+      etaMs: spot?.etaMs ?? null,
+      resourcePending: queued.notBefore > now,
       baseline: queued.entrantId === baselineEntrantOf(competition),
     })
-  })
+  }
   return rows
 }
 
@@ -477,7 +472,47 @@ function liveOf(competition: Competition, now = Date.now()): CompetitionLive {
     queue: snapshot,
     waiting: waitingRows(competition.id, snapshot, now),
     medianMs: medianOf(spans),
+    privatePending: privateBoardState(competition, now).pending,
   }
+}
+
+/* ---------------------------------------------------------------- settings */
+
+/**
+ * The owner's competition settings, as the form reads them.
+ *
+ * The machine goes along with the numbers: "8 slots" means nothing without
+ * "on 16 CPUs and 64 GB", and the bounds for memory and CPUs are the
+ * machine's, not the editor's.
+ */
+function settingsView(): CompetitionSettings {
+  const machine = machineShape()
+  const { limits, sources } = competitionDefaults()
+  return {
+    slots: slotsResolution(),
+    uploadsPerMinute: uploadsPerMinute(),
+    defaults: limits,
+    defaultSources: sources,
+    machine,
+    bounds: {
+      slots: { min: SETTINGS_LIMITS.slots.min, max: SETTINGS_LIMITS.slots.max },
+      uploadsPerMinute: { min: SETTINGS_LIMITS.uploadsPerMinute.min, max: SETTINGS_LIMITS.uploadsPerMinute.max },
+      wallSeconds: { min: SETTINGS_LIMITS.wallSeconds.min, max: SETTINGS_LIMITS.wallSeconds.max },
+      memoryMb: {
+        min: SETTINGS_LIMITS.memoryMb.min,
+        max: Math.max(SETTINGS_LIMITS.memoryMb.min, Math.min(SETTINGS_LIMITS.memoryMb.max, machine.memoryMb - HOST_RESERVE_MB)),
+      },
+      cpus: { min: SETTINGS_LIMITS.cpus.min, max: Math.max(1, Math.min(SETTINGS_LIMITS.cpus.max, machine.cpus)) },
+      perDay: { min: SETTINGS_LIMITS.perDay.min, max: SETTINGS_LIMITS.perDay.max },
+    },
+  }
+}
+
+function refuseSetting(res: Response, refusal: SettingsRefusal): void {
+  if (refusal.why === 'range') {
+    return fail(res, 400, 'invalid', tr('competitions.refusal.range', { field: refusal.field, min: refusal.min, max: refusal.max }))
+  }
+  fail(res, 400, 'invalid', tr('competitions.refusal.value', { field: refusal.field }))
 }
 
 /* -------------------------------------------------------------- multipart */
@@ -622,6 +657,29 @@ export function adminCompetitionRoutes(): Router {
 
   router.get('/api/admin/competitions/queue', requireStaff, (_req, res) => {
     res.json(queueSnapshot())
+  })
+
+  /* ---------------------------------------------------------- settings */
+
+  router.get('/api/admin/competitions/settings', requireStaff, (_req, res) => {
+    res.json(settingsView())
+  })
+
+  /**
+   * Change the instance's competition settings.
+   *
+   * By an owner: slots decide how much of the machine the queue takes from
+   * the class running next to it, and the defaults become every new
+   * competition's limits — both fall on people who are not in the request.
+   */
+  router.put('/api/admin/competitions/settings', ownerOnly('competitions.owner.settings'), (req, res) => {
+    const machine = machineShape()
+    const parsed = parseSettingsInput(req.body, { ...machine, reserveMb: HOST_RESERVE_MB })
+    if ('refusal' in parsed) return refuseSetting(res, parsed.refusal)
+    saveCompetitionSettings(parsed.patch)
+    // More slots may mean work can start right now.
+    wakeCompetitionPump()
+    res.json(settingsView())
   })
 
   /**
@@ -1007,7 +1065,7 @@ export function adminCompetitionRoutes(): Router {
     }
     let submission
     try {
-      submission = acceptPinnedSubmission(competition, entrantId, NOTEBOOK_FILE, notebook.length, revision, null, true)
+      submission = acceptPinnedSubmission(competition, entrantId, NOTEBOOK_FILE, notebook.length, revision, null, { baseline: true })
       putSubmissionNotebook(competition.id, submission.id, notebook)
     } catch (error) {
       if (submission) {
@@ -1085,8 +1143,10 @@ export function adminCompetitionRoutes(): Router {
       if (competition.state !== 'live') {
         return fail(res, 409, 'invalid', tr('competitions.refusal.notLive'))
       }
+      // No `openPrivateBoard` for `auto`: a finished competition opens its
+      // private board by itself once the submissions accepted before the
+      // finish have their results (results.ts · privateBoardState).
       setCompetitionState(competition.id, 'finished')
-      if (competition.privateRelease === 'auto') openPrivateBoard(competition.id)
       res.json(await viewOf(getCompetition(competition.id)!))
     },
   )

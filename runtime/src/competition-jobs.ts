@@ -141,8 +141,11 @@ export class CompetitionJobs {
         limits: { cpu: `${intent.limits.cpus}`, memory: `${intent.limits.memoryMb}Mi`, 'ephemeral-storage': '256Mi' } },
       env: [env('HOME', '/tmp/home'), env('PYTHONDONTWRITEBYTECODE', '1'), env('PYTHONNOUSERSITE', '1'),
         env('PYTHONUNBUFFERED', '1'), env('PIP_CONFIG_FILE', '/dev/null'),
-        env('OMP_NUM_THREADS', String(intent.limits.cpus)), env('MKL_NUM_THREADS', String(intent.limits.cpus)),
-        env('OPENBLAS_NUM_THREADS', String(intent.limits.cpus)), env('NUMEXPR_NUM_THREADS', String(intent.limits.cpus)),
+        // Every thread pool a notebook is likely to meet, capped at the Pod's
+        // CPUs: polars (rayon), BLIS, vecLib and numba each read their own variable.
+        ...['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS', 'POLARS_MAX_THREADS',
+          'RAYON_NUM_THREADS', 'BLIS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMBA_NUM_THREADS']
+          .map((name) => env(name, String(Math.max(1, Math.floor(intent.limits.cpus))))),
         env('COMP_ATTEMPT_ID', intent.attemptId ?? intent.jobId), env('COMP_RESULT', '/out'), env('COMP_OUT', intent.kind === 'metric' ? '/out' : '/work'),
         env('COMP_TARGET', 'submission.csv'), env('COMP_MAX_TARGET_BYTES', String(intent.limits.targetBytes)),
         env('COMP_CELL_TIMEOUT_SEC', String(intent.limits.wallSeconds)),

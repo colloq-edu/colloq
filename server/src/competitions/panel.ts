@@ -82,40 +82,122 @@ export function rescorable(state: SubmissionState): boolean {
 
 /* ---------------------------------------------------------- wait estimates */
 
-export interface QueueTiming {
-  /** How much time each running run has left, ms. */
-  runningLeftMs: readonly number[]
-  /** Average submission duration; null means there is nothing to measure by. */
-  averageMs: number | null
+/**
+ * A running job is never expected to free its slot sooner than this: "any
+ * second now" about a job that has already overrun its median is a promise,
+ * not an estimate.
+ */
+export const MIN_REMAINING_MS = 5_000
+
+export interface EtaInput {
+  /** How many submissions run at once. */
   slots: number
+  /** Jobs running now: how long each is expected to take and how long it has run. */
+  running: readonly { expectedMs: number; elapsedMs: number }[]
+  /** Waiting jobs in the order the runner will take them, each with its expected run time. */
+  waiting: readonly { expectedMs: number }[]
+}
+
+export interface Eta {
+  /** When the job is expected to start, ms from now. */
+  startMs: number
+  /** When its result is expected, ms from now: the start plus its own run time. */
+  etaMs: number
 }
 
 /**
- * "≈ 3 min" for each waiting submission, in queue order.
+ * "≈ 3 min" for each waiting submission, in queue order — until its RESULT,
+ * not until its start: the person waits for a number, not for a container.
  *
- * Computed by assigning to free slots, not by multiplying the position by the
- * average: with two executors the fifth in the queue waits half as long, and a
- * number computed without this lies by exactly a factor of two — upward, at
- * that, so the person leaves the screen thinking they have time to go for a
- * coffee.
+ * Computed by simulating the slots, not by multiplying the position by the
+ * average: a min-heap of the moments slots free up (a running job frees one
+ * after what it still has left, never sooner than five seconds; an idle slot
+ * is free now), and the waiting jobs take them in queue order. With two
+ * executors the fifth in the queue waits half as long, and a number computed
+ * without this lies by exactly that factor.
  *
- * `null` when there is no average yet: the first submission of a competition
- * waits who knows how long, and "≈ 0 min" would be a promise, not an estimate.
+ * More running jobs than slots (the owner lowered the number mid-class): the
+ * first of them to finish free nothing for the queue — only the last `slots`
+ * of them do.
  */
-export function waitEtas(count: number, timing: QueueTiming): (number | null)[] {
-  if (count <= 0) return []
-  if (timing.averageMs === null) return Array.from({ length: count }, () => null)
-  const slots = Math.max(1, timing.slots)
-  const free: number[] = []
-  for (let i = 0; i < slots; i++) free.push(Math.max(0, timing.runningLeftMs[i] ?? 0))
-  const out: (number | null)[] = []
-  for (let i = 0; i < count; i++) {
-    free.sort((a, b) => a - b)
-    const at = free[0]
-    out.push(at)
-    free[0] = at + timing.averageMs
+export function queueEtas(input: EtaInput): Eta[] {
+  const slots = Math.max(1, Math.floor(input.slots))
+  const left = input.running
+    .map((job) => Math.max(job.expectedMs - job.elapsedMs, MIN_REMAINING_MS))
+    .sort((a, b) => a - b)
+  const free = new MinHeap(left.slice(Math.max(0, left.length - slots)))
+  while (free.size < slots) free.push(0)
+  return input.waiting.map((job) => {
+    const startMs = free.pop()
+    const etaMs = startMs + Math.max(0, job.expectedMs)
+    free.push(etaMs)
+    return { startMs, etaMs }
+  })
+}
+
+/**
+ * How long one run of a competition is expected to take.
+ *
+ * The competition's own recent median once it has three runs: a neighbouring
+ * competition may train boosting for ten minutes, and its number under a
+ * simple task makes a person leave the screen. Fewer than three — the
+ * instance's recent median, the best guess about this machine. Nothing has
+ * run at all — half the time limit: honest about not knowing, and never
+ * "≈ 0 min".
+ */
+export function expectedRunMs(input: {
+  recent: readonly number[]
+  instance: readonly number[]
+  wallSeconds: number
+}): number {
+  if (input.recent.length >= 3) return medianOf(input.recent) ?? 0
+  return medianOf(input.instance) ?? Math.round((input.wallSeconds * 1000) / 2)
+}
+
+/** The smallest number first — the moments slots free up. A few dozen entries at most. */
+class MinHeap {
+  private readonly items: number[] = []
+
+  constructor(values: readonly number[] = []) {
+    for (const value of values) this.push(value)
   }
-  return out
+
+  get size(): number {
+    return this.items.length
+  }
+
+  push(value: number): void {
+    const items = this.items
+    items.push(value)
+    let at = items.length - 1
+    while (at > 0) {
+      const parent = (at - 1) >> 1
+      if (items[parent] <= items[at]) break
+      ;[items[parent], items[at]] = [items[at], items[parent]]
+      at = parent
+    }
+  }
+
+  pop(): number {
+    const items = this.items
+    const top = items[0]
+    const last = items.pop()!
+    if (items.length > 0) {
+      items[0] = last
+      let at = 0
+      for (;;) {
+        const left = at * 2 + 1
+        const right = left + 1
+        let least = at
+        if (left < items.length && items[left] < items[least]) least = left
+        if (right < items.length && items[right] < items[least]) least = right
+        if (least === at) break
+        ;[items[least], items[at]] = [items[at], items[least]]
+        at = least
+      }
+    }
+    return top
+  }
 }
 
 /* ------------------------------------------------------------ summaries */

@@ -724,16 +724,38 @@ if __name__ == "__main__":
 // Keep bounded tmpfs alive until the host has collected named artifacts. No
 // participant-writable directory is ever mounted from the host. The host owns
 // the wall timeout and always removes this supervisor, including cancellation.
+//
+// The supervisor still has a deadline of its own: the wall limit plus two
+// minutes, after which it kills the notebook and exits non-zero, stopping the
+// container. The host kills long before that; the deadline is for the day the
+// host is gone — a server that died mid-run leaves a container nobody
+// watches, and it kept its memory and CPUs until the next start swept it, or
+// forever if that start did not come. The stopped remains are still swept.
 const HOLD_EXPORT = `import json, os, subprocess, sys, time
 from pathlib import Path
+
+def seconds(name, default):
+    try:
+        value = int((os.environ.get(name) or "").strip())
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
 directory = Path(sys.argv[1])
 directory.mkdir(parents=True, exist_ok=True)
-child = subprocess.run([sys.executable, sys.argv[2]])
+deadline = time.monotonic() + seconds("COMP_WALL_SECONDS", 14400) + seconds("COMP_ORPHAN_GRACE_SECONDS", 120)
+child = subprocess.Popen([sys.executable, sys.argv[2]])
+try:
+    code = child.wait(timeout=max(0.1, deadline - time.monotonic()))
+except subprocess.TimeoutExpired:
+    child.kill()
+    sys.exit(124)
 temporary = directory / ".complete-next"
-temporary.write_text(json.dumps({"attemptId": os.environ["COMP_ATTEMPT_ID"], "exit": child.returncode}))
+temporary.write_text(json.dumps({"attemptId": os.environ["COMP_ATTEMPT_ID"], "exit": code}))
 os.replace(temporary, directory / ".complete.json")
-while True:
-    time.sleep(60)
+while time.monotonic() < deadline:
+    time.sleep(min(60, max(0.1, deadline - time.monotonic())))
+sys.exit(125)
 `
 
 // Invoked by docker exec. Open a bounded regular file through a descriptor;

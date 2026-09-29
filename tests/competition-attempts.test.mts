@@ -4,13 +4,13 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { createCompetition, createEntrant, acceptSubmission, queueRows, leaveQueue, queueRow, setQueuePaused, getSubmission, enqueue, updateCompetition } from '../server/src/competitions/store.js'
+import { createCompetition, createEntrant, acceptSubmission, queueRows, leaveQueue, queueRow, setQueuePaused, getSubmission, enqueue, updateCompetition, intakePlan } from '../server/src/competitions/store.js'
 import { TEST_ROOT } from './_env.mts'
 import { putSubmissionNotebook, putOpenFile, putSecretFile, resultDir, inputDir, openDir } from '../server/src/competitions/storage.js'
 import { FakeCompetitionRunner } from '../server/src/competitions/fake-runner.js'
 import { useCompetitionRunner, competitionRunner, forgetCompetitionRunner, limitsFor } from '../server/src/competitions/runner-port.js'
 import { pumpOnce, setQueueSlots, rescoreCompetition, rerunSubmission, settleCompetitionWork } from '../server/src/competitions/runner.js'
-import { runArgs, useDockerForCompetitions } from '../server/src/competitions/docker-runner.js'
+import { competitionDockerDiagnostics, runArgs, useDockerForCompetitions } from '../server/src/competitions/docker-runner.js'
 import { harnessDir } from '../server/src/competitions/harness.js'
 
 let seq = 0
@@ -29,6 +29,18 @@ function setup() {
   return { c, send }
 }
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
+/*
+ * Wait until the job reaches the point the test holds it at. The runner copies
+ * the answer key and the answer asynchronously now, so "one tick later" is no
+ * longer a promise about where the job stands.
+ */
+async function until(reached: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!reached()) {
+    if (Date.now() > deadline) throw new Error('the job never reached the expected point')
+    await new Promise<void>((resolve) => setTimeout(resolve, 5))
+  }
+}
 const score = { status: 'ok' as const, public: 1, private: 2, message: null, teacherOnly: null, wall: 1, diagnostics: { exit: 0, oomKilled: false, backend: 'test' as const } }
 
 test('rescore preserves the running lease and runs once afterwards with an isolated score directory', async () => {
@@ -37,7 +49,7 @@ test('rescore preserves the running lease and runs once afterwards with an isola
   runner.score = async (request) => { dirs.push(request.outDir); return new Promise((resolve) => releases.push(resolve)) }
   useCompetitionRunner(runner)
   try {
-    assert.equal(await pumpOnce(), 1); await tick()
+    assert.equal(await pumpOnce(), 1); await until(() => releases.length === 1)
     const lease = queueRow(submission.id)
     assert.equal(rescoreCompetition(c.id), 1)
     assert.equal(queueRow(submission.id)?.state, 'running')
@@ -45,7 +57,7 @@ test('rescore preserves the running lease and runs once afterwards with an isola
     assert.equal(await pumpOnce(), 0)
     releases[0](score); await settleCompetitionWork()
     assert.equal(queueRow(submission.id)?.state, 'waiting')
-    assert.equal(await pumpOnce(), 1); await tick()
+    assert.equal(await pumpOnce(), 1); await until(() => releases.length === 2)
     assert.equal(releases.length, 2)
     assert.notEqual(dirs[0], dirs[1])
     releases[1](score); await settleCompetitionWork()
@@ -126,11 +138,11 @@ test('a replaced lease ignores old progress and completion and persists the scor
   runner.score = (request) => new Promise((resolve) => scores.push({ request, resolve }))
   useCompetitionRunner(runner); setQueueSlots(2)
   try {
-    await pumpOnce(); await tick()
+    await pumpOnce(); await until(() => scores.length === 1)
     const old = queueRow(submission.id)!
     leaveQueue(submission.id)
     enqueue({ submissionId: submission.id, competitionId: c.id, entrantId: submission.entrantId, kind: 'metric' })
-    await pumpOnce(); await tick()
+    await pumpOnce(); await until(() => scores.length === 2)
     const current = queueRow(submission.id)!
     assert.notEqual(old.attemptId, current.attemptId)
     scores[0].resolve({ ...score, public: 100 })
@@ -216,18 +228,69 @@ test('a failed rerun preserves the promoted CSV for rescore but publishes the cu
   } finally { await settleCompetitionWork(); useCompetitionRunner(null) }
 })
 
-test('failed container removal blocks admission until the orphan cleanup succeeds', async () => {
+test('a waiting re-run is not an upload to replace: the next upload is refused and the re-run keeps its place', async () => {
+  const { c, send } = setup(), submission = send(), runner = new FakeCompetitionRunner()
+  useCompetitionRunner(runner)
+  try {
+    await pumpOnce(); await settleCompetitionWork()
+    assert.equal(getSubmission(submission.id)?.state, 'scored')
+    setQueuePaused(true)
+    assert.equal(rerunSubmission(submission.id), true)
+    assert.equal(queueRow(submission.id)?.state, 'waiting')
+    assert.equal(intakePlan(c.id, submission.entrantId), 'in_flight', 'an upload would cancel the teacher\'s re-run')
+    assert.throws(() => acceptSubmission({ competitionId: c.id, entrantId: submission.entrantId, fileName: 'next.ipynb', bytes: 1, replaces: submission.id }), /no longer waiting/)
+    assert.equal(getSubmission(submission.id)?.state, 'queued')
+    assert.equal(getSubmission(submission.id)?.replacedBy, null)
+    // A notebook that never ran is still its author's to replace.
+    const fresh = send()
+    const plan = intakePlan(c.id, fresh.entrantId)
+    assert.equal(plan === 'in_flight' ? plan : plan.replaces?.id, fresh.id)
+  } finally { setQueuePaused(false); await settleCompetitionWork(); useCompetitionRunner(null) }
+})
+
+test('a failed container removal keeps the verdict and holds only that container, until the retry succeeds', async () => {
   const { c, send } = setup(), submission = send()
   process.env.COMPETITION_BACKEND = 'docker'; useCompetitionRunner(null); forgetCompetitionRunner()
-  let removable = false
-  useDockerForCompetitions(async (args) => ({ code: args[0] === 'rm' ? (removable ? 0 : 1) : 1, out: 'unavailable' }))
+  let removal: 'fails' | 'hangs' | 'works' = 'fails', removals = 0
+  let answerRemoval = (_: { code: number; out: string }) => {}
+  useDockerForCompetitions(async (args) => {
+    if (args[0] !== 'rm') return { code: 1, out: 'unavailable' }
+    removals++
+    if (removal === 'hangs') return new Promise((resolve) => (answerRemoval = resolve))
+    return { code: removal === 'works' ? 0 : 1, out: 'unavailable' }
+  })
   try {
     const runner = competitionRunner()
-    await assert.rejects(runner.run({ competition: c, submissionId: submission.id, container: 'cleanup-recovery', dataDir: openDir(c.id), inputDir: inputDir(c.id, submission.id), resultDir: resultDir(c.id, submission.id), limits: limitsFor(c, 'notebook') }), /cleanup/i)
-    assert.equal((await runner.capacity()).availableMb, 0)
-    removable = true
-    assert.ok((await runner.capacity()).availableMb! > 0)
-  } finally { removable = true; await competitionRunner().capacity(); useDockerForCompetitions(null); delete process.env.COMPETITION_BACKEND; forgetCompetitionRunner() }
+    const limits = limitsFor(c, 'notebook')
+    // The launch failed, the removal failed too: the outcome is still the launch's, not a thrown cleanup.
+    const outcome = await runner.run({ competition: c, submissionId: submission.id, container: 'cleanup-recovery', dataDir: openDir(c.id), inputDir: inputDir(c.id, submission.id), resultDir: resultDir(c.id, submission.id), limits })
+    assert.equal(outcome.status, 'harness_error')
+    const held = await runner.capacity()
+    // Only that container's memory is held back — the queue is not closed.
+    assert.equal(held.heldMb, limits.memoryMb + 256)
+    assert.ok((held.usableMb ?? 0) > held.heldMb!, 'a pending cleanup no longer zeroes the whole capacity')
+    // The background retry that call started fails at once; let it settle first.
+    await new Promise<void>((resolve) => setTimeout(resolve, 20))
+
+    // A removal that never answers does not hold admission with it: capacity
+    // answers at once, still holding that memory, and retries do not pile up.
+    removal = 'hangs'; removals = 0
+    for (let i = 0; i < 3; i++) {
+      const answered = await Promise.race([runner.capacity(), new Promise<null>((resolve) => setTimeout(resolve, 1000, null))])
+      assert.ok(answered, 'capacity waited on a container removal that never answers')
+      assert.equal(answered.heldMb, limits.memoryMb + 256)
+    }
+    assert.equal(removals, 1, 'a second retry started while the first one still hung')
+    // The daemon answers at last: the memory comes back with the removal.
+    answerRemoval({ code: 0, out: '' })
+    await until(() => competitionDockerDiagnostics().pendingCleanup === 0)
+    assert.equal((await runner.capacity()).heldMb, 0)
+  } finally {
+    removal = 'works'; answerRemoval({ code: 0, out: '' })
+    await competitionRunner().capacity()
+    await until(() => competitionDockerDiagnostics().pendingCleanup === 0).catch(() => undefined)
+    useDockerForCompetitions(null); delete process.env.COMPETITION_BACKEND; forgetCompetitionRunner()
+  }
 })
 
 test('unavailable broker competition runtime leaves queued jobs unclaimed', async () => {

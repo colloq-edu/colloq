@@ -32,16 +32,20 @@ import {
   entrantByKey,
   entrantKeyOf,
   getEntrant,
+  getSubmission,
   joinCompetition,
   joinedAt,
+  leaveQueue,
+  listEntrantSubmissions,
   putFile,
+  queueRow,
   rotateEntrantKey,
   setCompetitionState,
   setEntrantDisabled,
   updateCompetition,
   updateSubmission,
 } from '../server/src/competitions/store.js'
-import { ensureCompetition, putOpenFile, putSecretFile } from '../server/src/competitions/storage.js'
+import { competitionDir, competitionsFs, ensureCompetition, putOpenFile, putSecretFile } from '../server/src/competitions/storage.js'
 import { db } from '../server/src/db.js'
 import { app } from '../server/src/app.js'
 
@@ -297,23 +301,75 @@ test('before joining, in flight and over the daily quota are three different ref
   const accepted = (await first.json()) as { submission: { id: string; number: number }; leftToday: number }
   assert.equal(accepted.leftToday, 1)
 
-  // The second one, while the first is in flight.
+  // A second one while the first is still WAITING takes its place: the first
+  // never runs and does not use the day.
+  const again = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v1-fixed.ipynb', notebook())
+  assert.equal(again.status, 200)
+  const current = (await again.json()) as { submission: { id: string }; leftToday: number; replacedNumber: number | null }
+  assert.equal(current.replacedNumber, accepted.submission.number)
+  assert.equal(current.leftToday, 1)
+
+  // One while the current one RUNS is refused: that one already holds a slot.
+  db.prepare("UPDATE competition_queue SET state = 'running' WHERE submission_id = ?").run(current.submission.id)
+  updateSubmission(current.submission.id, { state: 'running' })
   const busy = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v2.ipynb', notebook())
   assert.equal(busy.status, 409)
   assert.equal(((await busy.json()) as { reason: string }).reason, 'in_flight')
 
-  // The first finished scoring, the second was accepted, and the day's quota
-  // ran out.
-  updateSubmission(accepted.submission.id, { state: 'scored', publicScore: 0.4, privateScore: 0.3 })
+  // It finished scoring, the next one was accepted, and the day's quota ran
+  // out.
+  leaveQueue(current.submission.id)
+  updateSubmission(current.submission.id, { state: 'scored', publicScore: 0.4, privateScore: 0.3 })
   const second = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v2.ipynb', notebook())
   assert.equal(second.status, 200)
   const secondBody = (await second.json()) as { submission: { id: string }; leftToday: number }
   assert.equal(secondBody.leftToday, 0)
+  leaveQueue(secondBody.submission.id)
   updateSubmission(secondBody.submission.id, { state: 'scored', publicScore: 0.5 })
 
   const spent = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v3.ipynb', notebook())
   assert.equal(spent.status, 429)
   assert.equal(((await spent.json()) as { reason: string }).reason, 'quota')
+})
+
+test('a replacement whose notebook cannot be written leaves the waiting submission where it was', async () => {
+  const person = await join('Полный диск')
+  const first = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v1.ipynb', notebook())
+  assert.equal(first.status, 200)
+  const { submission: waiting } = (await first.json()) as { submission: { id: string; number: number } }
+  const place = queueRow(waiting.id)
+  const folders = () => (competitionsFs.readdirSync(`${competitionDir(competitionId)}/s`) as string[]).sort()
+  const foldersBefore = folders()
+
+  // The disk fills up exactly when the fixed notebook is being written.
+  const write = competitionsFs.writeFileSync
+  competitionsFs.writeFileSync = ((file: unknown, ...rest: unknown[]) => {
+    if (typeof file === 'string' && file.endsWith('notebook.ipynb')) {
+      throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
+    }
+    return (write as (...args: unknown[]) => unknown)(file, ...rest)
+  }) as typeof write
+  let failed: Response
+  try {
+    failed = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v1-fixed.ipynb', notebook())
+  } finally {
+    competitionsFs.writeFileSync = write
+  }
+  assert.equal(failed.status, 503)
+  // Nothing of the refused one is left, and the waiting one keeps its place.
+  assert.equal(getSubmission(waiting.id)?.state, 'queued')
+  assert.equal(getSubmission(waiting.id)?.replacedBy, null)
+  assert.deepEqual(queueRow(waiting.id), place)
+  assert.deepEqual(listEntrantSubmissions(competitionId, person.id).map((one) => one.id), [waiting.id])
+  assert.deepEqual(folders(), foldersBefore, 'the half-written submission folder stayed on disk')
+
+  // With room on the disk again, the fix takes the place as usual.
+  const again = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v1-fixed.ipynb', notebook())
+  assert.equal(again.status, 200)
+  assert.equal(((await again.json()) as { replacedNumber: number | null }).replacedNumber, waiting.number)
+  const fixed = listEntrantSubmissions(competitionId, person.id).find((one) => one.id !== waiting.id)!
+  leaveQueue(fixed.id)
+  updateSubmission(fixed.id, { state: 'cancelled' })
 })
 
 test('a non-notebook, a broken notebook and a non-.ipynb are turned away BEFORE the queue', async () => {

@@ -168,9 +168,21 @@ export interface ScoreOutcome {
 /**
  * How much memory on the machine can still be handed out; `null` means we
  * honestly do not know.
+ *
+ * `availableMb` is what resources.ts hands out, and the dependency
+ * preparation reserves against it. The queue reads the finer numbers when a
+ * runner has them (competitions/capacity.ts explains why there are two):
+ * without `usableMb` it falls back on `availableMb`, without
+ * `memAvailableMb` it skips the floor.
  */
 export interface Capacity {
   availableMb: number | null
+  /** What competition work may promise in total: the machine minus its reserve minus live room kernels. */
+  usableMb?: number | null
+  /** The kernel's MemAvailable, raw — nothing subtracted from it. */
+  memAvailableMb?: number | null
+  /** Memory still held by containers whose removal failed and is being retried. */
+  heldMb?: number
 }
 
 export interface CompetitionRunner {

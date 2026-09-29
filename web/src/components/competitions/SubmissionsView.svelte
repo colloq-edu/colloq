@@ -133,6 +133,24 @@
       <p class="text-2xs text-warning">{tr('competitions.p.queuePaused')}</p>
     {/if}
 
+    <!--
+      After the deadline, while submissions accepted before it are still in
+      the queue. Said here, above the student's own list, and not only on the
+      leaderboard tab: this is the screen people stare at in the minute after
+      the bell, and "why hasn't the board opened" is the question it answers.
+    -->
+    {#if view.accepting === 'closed' && !view.privateOpen && (view.privatePending ?? 0) > 0}
+      <div class="flex flex-wrap items-center gap-x-6 gap-y-3 border-l-[3px] border-accent bg-surface px-5 py-4">
+        <div class="min-w-0 flex-1 basis-72">
+          <p class="text-title font-bold leading-6 text-ink">{tr('competitions.p.countingTitle')}</p>
+          <p class="mt-1 text-ui leading-5 text-muted">{tr('competitions.p.countingNote')}</p>
+        </div>
+        <p class="shrink-0 font-mono text-[20px] leading-6 text-ink">
+          {tr('competitions.p.countingLeft', { count: view.privatePending ?? 0 })}
+        </p>
+      </div>
+    {/if}
+
     <section class="flex flex-col">
       <header
         class="flex items-start justify-between gap-5 border-b-2 border-ink pb-3.5"

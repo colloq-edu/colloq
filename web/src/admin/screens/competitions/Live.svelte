@@ -328,9 +328,30 @@
   const waiting = $derived(live?.waiting ?? [])
   /** Runs in progress: the queue is shared, so others' are named by their address. */
   const running = $derived(queue?.running ?? [])
+  /** How many submissions the runner takes at once — the Resources tab's setting in effect. */
+  const slots = $derived(queue?.slots ?? running.length)
+  /** Slots with nothing in them: drawn as dashed outlines, never negative. */
+  const freeSlots = $derived(Math.max(0, slots - running.length))
+  /** When the last queued submission of this competition should have its result. */
+  const lastEtaMs = $derived.by(() => {
+    const known = waiting.map((row) => row.etaMs).filter((ms): ms is number => ms !== null)
+    return known.length > 0 ? Math.max(...known) : null
+  })
+  /** "4 waiting · the last result in ≈ 2 min · median 0:52" — only the parts that are known. */
+  const statusLine = $derived(
+    [
+      tr('admin.competitions.waitingCount', { count: queue?.waiting ?? waiting.length }),
+      lastEtaMs !== null ? tr('admin.competitions.lastResult', { eta: etaWords(lastEtaMs) }) : null,
+      live?.medianMs != null ? tr('admin.competitions.medianShort', { span: spanWords(live.medianMs) }) : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  )
   const rows = $derived(feed?.rows ?? [])
   const deadline = $derived(deadlineLine(c, now))
-  const privateOpen = $derived(privateBoardOpen(c, now))
+  /** Results the automatic release still waits for: the board opens once the queue has them. */
+  const privatePending = $derived(live?.privatePending ?? view.privatePending ?? 0)
+  const privateOpen = $derived(privateBoardOpen(c, now, privatePending))
   const worst = $derived(worstCell(rows))
   const boardBaseline = $derived(board?.baseline ?? null)
   const publicBoard = $derived(board?.public ?? [])
@@ -533,6 +554,9 @@
           {privateOpen
             ? tr('admin.competitions.boardBothOpen')
             : tr('admin.competitions.boardBothHidden')}
+          {#if !privateOpen && privatePending > 0}
+            <span class="text-warning">{tr('competitions.p.resultsCounting', { count: privatePending })}</span>
+          {/if}
         </p>
         <div class="feed-head flex items-center gap-4 border-b-2 border-ink py-2.5">
           <span class="w-[64px] shrink-0 {HEAD}">{tr('admin.competitions.col.place')}</span>
@@ -598,107 +622,143 @@
   {:else}
     <!-- -------------------------------------------------- submissions (A3) -->
     <div class="flex flex-col gap-5 py-5">
-      <!-- 1 · Queue -->
-      <div class="flex flex-wrap items-stretch border border-line">
-        <div class="flex min-w-0 flex-[2_1_420px] flex-col gap-2.5 px-4 py-3.5">
+      <!--
+        1 · Executors and the queue.
+
+        One card per executor, not one "running now" line: with fifteen
+        submissions in flight a single row reads as "one thing is happening",
+        and the teacher at the front of the class needs to see at a glance
+        which slot is about to hit its time limit and when the last result
+        lands. Free slots are drawn too, as dashed outlines, so "3 of 15 busy"
+        is a picture and not arithmetic.
+      -->
+      <div class="flex flex-col border border-line">
+        <div class="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-b border-line px-4 py-3">
           <div class="flex items-center gap-2.5">
             <span
               class={cn('h-2 w-2 shrink-0', running.length > 0 ? 'bg-accent' : 'bg-faint')}
               aria-hidden="true"
             ></span>
             <span class="text-micro font-bold uppercase tracking-caps text-primary">
-              {tr('admin.competitions.runningNow')}
+              {tr('admin.competitions.slotsHead', { busy: running.length, count: slots })}
             </span>
           </div>
-
-          {#each running as run (run.submissionId)}
-            {@const elapsed = Math.max(0, now - run.startedAt)}
-            <div class="flex flex-col gap-2">
-              <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <span class="text-ui-lg font-semibold text-ink">
-                  {run.baseline ? tr('competitions.baselineEntrant') : run.entrantName} · #{run.number}
-                </span>
-                <span class="min-w-0 truncate text-2xs text-muted">
-                  {run.fileName}{run.cellsTotal > 0
-                    ? ` · ${tr('admin.competitions.cellOf', { done: run.cellsDone, total: run.cellsTotal })}`
-                    : ''}
-                </span>
-                {#if run.competitionId !== c.id}
-                  <!-- There is one runner per instance: another competition's
-                       submission takes the same queue, and staying silent
-                       about it means explaining "why are we stuck" through
-                       docker ps. -->
-                  <span class="font-mono text-micro text-faint">/k/{run.competitionSlug}</span>
-                {/if}
-                <span class="ml-auto shrink-0 font-mono text-2xs text-ink">
-                  {tr('admin.competitions.ofClock', {
-                    now: clock(elapsed, true),
-                    limit: clock(run.limitMs, true),
-                  })}
-                </span>
-                <button
-                  type="button"
-                  class="shrink-0 text-2xs text-danger hover:brightness-110 disabled:text-faint"
-                  disabled={busy}
-                  onclick={() => void kill(run.submissionId)}
-                >
-                  {tr('admin.competitions.kill')}
-                </button>
-              </div>
-              <div class="h-1 w-full bg-raised" aria-hidden="true">
-                <div
-                  class="h-full bg-accent transition-[width] duration-[var(--speed-quick)] ease-out"
-                  style="width: {Math.min(100, (elapsed / Math.max(1, run.limitMs)) * 100).toFixed(1)}%"
-                ></div>
-              </div>
-              <p class="text-micro text-muted">
-                {[run.container, tr('admin.competitions.noNetwork')].filter(Boolean).join(' · ')}
-              </p>
-            </div>
-          {:else}
-            <p class="text-2xs text-muted">
-              {queue?.paused ? tr('admin.competitions.queuePausedLong') : tr('admin.competitions.nothingRunning')}
-            </p>
-          {/each}
+          <span class="text-2xs text-muted">{statusLine}</span>
+          <button
+            type="button"
+            class="ml-auto shrink-0 text-micro text-muted hover:text-ink"
+            onclick={() => navigate('/admin/resources')}
+          >
+            {tr('admin.competitions.slotsSetting')}
+          </button>
+          <button
+            type="button"
+            class="shrink-0 text-micro text-accent-text underline decoration-dotted underline-offset-4
+                   hover:brightness-110 disabled:text-faint"
+            disabled={busy}
+            onclick={() => void togglePause()}
+          >
+            {queue?.paused ? tr('admin.competitions.resumeQueue') : tr('admin.competitions.pauseQueue')}
+          </button>
         </div>
 
-        <div
-          class="flex min-w-0 flex-[1_1_320px] flex-col gap-2 border-l border-line bg-surface px-4 py-3.5
-                 max-[900px]:border-l-0 max-[900px]:border-t"
-        >
-          <div class="flex items-center gap-3">
-            <span class="text-micro font-bold uppercase tracking-caps text-primary">
-              {tr('admin.competitions.waitingHead', { count: waiting.length })}
-            </span>
-            <button
-              type="button"
-              class="ml-auto shrink-0 text-micro text-accent-text underline decoration-dotted
-                     underline-offset-4 hover:brightness-110 disabled:text-faint"
-              disabled={busy}
-              onclick={() => void togglePause()}
-            >
-              {queue?.paused
-                ? tr('admin.competitions.resumeQueue')
-                : tr('admin.competitions.pauseQueue')}
-            </button>
+        <div class="flex flex-wrap items-stretch">
+          <div class="grid min-w-0 flex-[2_1_420px] content-start gap-2 px-4 py-3.5 [grid-template-columns:repeat(auto-fill,minmax(196px,1fr))]">
+            {#each running as run (run.submissionId)}
+              {@const elapsed = Math.max(0, now - run.startedAt)}
+              {@const share = Math.min(1, elapsed / Math.max(1, run.limitMs))}
+              {@const late = share > 0.85}
+              <div class="flex min-w-0 flex-col gap-1.5 border border-line px-3 py-2.5">
+                <div class="flex items-center gap-2">
+                  <span class="min-w-0 flex-1 truncate text-2xs font-semibold text-ink">
+                    {run.baseline ? tr('competitions.baselineEntrant') : run.entrantName} · #{run.number}
+                  </span>
+                  {#if run.competitionId !== c.id}
+                    <!-- One runner per instance: another competition's run takes a slot too. -->
+                    <span class="shrink-0 font-mono text-micro text-faint">/k/{run.competitionSlug}</span>
+                  {/if}
+                  <button
+                    type="button"
+                    class="grid size-5 shrink-0 place-items-center text-faint hover:text-danger disabled:opacity-40"
+                    title={tr('admin.competitions.kill')}
+                    aria-label={`${tr('admin.competitions.kill')} #${run.number}`}
+                    disabled={busy}
+                    onclick={() => void kill(run.submissionId)}
+                  >
+                    <Icon name="x" size={12} />
+                  </button>
+                </div>
+                <div class="h-[3px] w-full bg-raised" aria-hidden="true">
+                  <div
+                    class={cn(
+                      'h-full transition-[width] duration-[var(--speed-quick)] ease-out',
+                      run.kind === 'metric' ? 'bg-positive' : late ? 'bg-warning' : 'bg-accent',
+                    )}
+                    style="width: {(run.kind === 'metric' ? 100 : share * 100).toFixed(1)}%"
+                  ></div>
+                </div>
+                <div class="flex items-baseline justify-between gap-2">
+                  <span class={cn('font-mono text-micro', late && run.kind !== 'metric' ? 'text-warning' : 'text-ink')}>
+                    {clock(elapsed, false)} / {clock(run.limitMs, false)}
+                  </span>
+                  <span class="min-w-0 truncate text-micro text-muted">
+                    {run.kind === 'metric'
+                      ? tr('admin.competitions.stageMetric')
+                      : run.cellsTotal > 0 && run.cellsDone > 0
+                        ? tr('admin.competitions.cellOf', { done: run.cellsDone, total: run.cellsTotal })
+                        : tr('admin.competitions.stageStarting')}
+                  </span>
+                </div>
+              </div>
+            {/each}
+            {#each { length: freeSlots } as _, i (i)}
+              <div class="flex min-h-[64px] min-w-0 items-center justify-center border border-dashed border-line px-3">
+                <span class="text-center text-micro text-faint">
+                  {queue?.paused ? tr('admin.competitions.slotPaused') : tr('admin.competitions.slotFree')}
+                </span>
+              </div>
+            {/each}
+            {#if slots === 0 && running.length === 0}
+              <p class="col-span-full text-2xs text-muted">
+                {queue?.paused ? tr('admin.competitions.queuePausedLong') : tr('admin.competitions.nothingRunning')}
+              </p>
+            {/if}
           </div>
-          {#each waiting as row (row.submissionId)}
-            <div class="flex items-center gap-2.5">
-              <span class="w-4 shrink-0 font-mono text-micro text-muted">{row.place ?? '—'}</span>
-              <span class="min-w-0 flex-1 truncate text-2xs text-ink">
-                {row.baseline ? tr('competitions.baselineEntrant') : row.entrantName} · #{row.number}
+
+          <div
+            class="flex min-w-0 flex-[1_1_300px] flex-col gap-2 border-l border-line bg-surface px-4 py-3.5
+                   max-[900px]:border-l-0 max-[900px]:border-t"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <span class="text-micro font-bold uppercase tracking-caps text-primary">
+                {tr('admin.competitions.waitingHead', { count: waiting.length })}
               </span>
-              <span class="shrink-0 font-mono text-micro text-muted">{row.resourcePending ? tr('competitions.runtime.retrying') : etaWords(row.etaMs)}</span>
+              {#if waiting.length > 0}
+                <span class="text-micro text-muted">{tr('admin.competitions.resultIn')}</span>
+              {/if}
             </div>
-          {:else}
-            <p class="text-2xs text-muted">{tr('admin.competitions.queueEmpty')}</p>
-          {/each}
-          {#if queue && queue.waiting > waiting.length}
-            <p class="text-micro text-muted">
-              {tr('admin.competitions.waitingElsewhere', { count: queue.waiting - waiting.length })}
+            {#each waiting as row (row.submissionId)}
+              <div class="flex items-center gap-2.5">
+                <span class="w-4 shrink-0 font-mono text-micro text-muted">{row.place ?? '—'}</span>
+                <span class="min-w-0 flex-1 truncate text-2xs text-ink">
+                  {row.baseline ? tr('competitions.baselineEntrant') : row.entrantName} · #{row.number}
+                </span>
+                <span class="shrink-0 font-mono text-micro text-ink">
+                  {row.resourcePending ? tr('competitions.runtime.retrying') : etaWords(row.etaMs)}
+                </span>
+              </div>
+            {:else}
+              <p class="text-2xs text-muted">{tr('admin.competitions.queueEmpty')}</p>
+            {/each}
+            {#if queue && queue.waiting > waiting.length}
+              <p class="text-micro text-muted">
+                {tr('admin.competitions.waitingElsewhere', { count: queue.waiting - waiting.length })}
+              </p>
+            {/if}
+            <p class="mt-auto border-t border-line pt-2 text-micro leading-snug text-muted">
+              {tr('admin.competitions.fairQueueSlots', { count: slots })}
             </p>
-          {/if}
-          <p class="text-micro leading-snug text-muted">{tr('admin.competitions.fairQueue')}</p>
+          </div>
         </div>
       </div>
 

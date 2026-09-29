@@ -11,7 +11,7 @@
    * lines, and for their sake a person should not lose sight of the list.
    */
   import { tr } from '@shared/i18n'
-  import { entrantBadge, isTerminal, type EntrantSubmission } from '@shared/competitions'
+  import { isTerminal, type EntrantSubmission } from '@shared/competitions'
   import type { SubmissionLive } from '@shared/competitions-entrant'
   import SubmissionEnvironment from './SubmissionEnvironment.svelte'
   import Badge from './Badge.svelte'
@@ -20,6 +20,7 @@
     elapsedClock,
     formatScore,
     rowWords,
+    submissionBadge,
     runProgress,
     spellDuration,
   } from '@/lib/competition-words'
@@ -48,7 +49,7 @@
 
   let open = $state(false)
 
-  const badge = $derived(entrantBadge(submission.state))
+  const badge = $derived(submissionBadge(submission))
   const words = $derived(rowWords({ submission, live, best, paused, now }))
   const running = $derived(submission.state === 'running')
   const queued = $derived(submission.state === 'queued')
@@ -112,7 +113,7 @@
       {/if}
     </span>
     <div class="flex min-w-0 grow flex-col gap-[3px]">
-      <span class="truncate text-ui font-bold leading-[18px] text-ink" title={submission.fileName}>
+      <span class="truncate text-ui leading-[18px] {submission.replacedBy != null ? 'font-normal text-muted' : 'font-bold text-ink'}" title={submission.fileName}>
         {words.title}
       </span>
       <SubmissionEnvironment execution={submission.execution} slug={dependenciesSlug} />

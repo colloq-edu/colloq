@@ -75,13 +75,37 @@ export async function publishBundle(key:string,result:PreparationResult):Promise
   fs.chmodSync(publishing,0o755)
   fs.renameSync(publishing,destination)
 }
+/*
+ * Wheel digests by file identity, for the check before execution.
+ *
+ * A bundle is immutable (0444, hard links into the CAS), yet every submission
+ * used to hash every wheel again: up to half a gigabyte read per notebook,
+ * and with eight slots eight times per wave. A file that kept its path,
+ * size, mtime, ctime and inode kept its bytes as far as the kernel can tell
+ * (the same stat cache git trusts); anything else is hashed again. Bounded:
+ * the oldest entries go first.
+ */
+const wheelDigests = new Map<string, string>()
+const WHEEL_DIGESTS_MAX = 4096
+
+async function wheelHash(file:string,stat:fs.Stats):Promise<string> {
+  const key=`${file}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`
+  const known=wheelDigests.get(key)
+  if(known)return known
+  const digest=await fileHash(file)
+  if(wheelDigests.size>=WHEEL_DIGESTS_MAX)wheelDigests.delete(wheelDigests.keys().next().value!)
+  wheelDigests.set(key,digest)
+  return digest
+}
+
 /** Hashes are rechecked before execution, not just when downloading. */
 export async function verifyBundleFiles(bundle:DependencyBundle,expectedLock:string):Promise<string> {
   if(bundle.state!=='ready')throw new Error('Dependency bundle is not ready')
   const dir=bundleDir(bundle.id)
   for(const pkg of bundle.packages){
     const file=path.join(dir,'wheels',pkg.fileName)
-    if(regular(file).size!==pkg.bytes||await fileHash(file)!==pkg.sha256)throw new Error('Dependency wheel missing or corrupt')
+    const stat=regular(file)
+    if(stat.size!==pkg.bytes||await wheelHash(file,stat)!==pkg.sha256)throw new Error('Dependency wheel missing or corrupt')
   }
   regular(path.join(dir,'requirements.lock'))
   if(fs.readFileSync(path.join(dir,'requirements.lock'),'utf8')!==expectedLock)throw new Error('Dependency lock missing or corrupt')

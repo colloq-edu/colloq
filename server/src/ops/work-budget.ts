@@ -17,6 +17,7 @@ const held = new Map<string, WorkReservation>()
 const settled = new Map<string, bigint>()
 let observedMemory = new Map<string, number>()
 let observedComplete = false
+let observedAt = 0
 
 function unobservedMb(work: WorkReservation): number {
   return Math.max(0, work.memoryMb - (work.allocationKey ? observedMemory.get(work.allocationKey) ?? 0 : 0))
@@ -30,6 +31,7 @@ export function observeWorkMemory(allocations: Map<string, number> | null, censu
   observedComplete = allocations !== null
   if (!allocations) return
   observedMemory = new Map(allocations)
+  observedAt = Date.now()
   for (const [id, work] of held) {
     const finishedAt = settled.get(id)
     // A stopped row from before docker start completed cannot free its new
@@ -42,6 +44,16 @@ export function observeWorkMemory(allocations: Map<string, number> | null, censu
       settled.delete(id)
     }
   }
+}
+
+/** The last COMPLETE census as one number: memory held by running allocations
+ * and when it was taken. `complete` says whether the latest census was; when it
+ * was not, the numbers are still the last complete ones, and the caller decides
+ * how long they stay believable (competitions/capacity.ts). */
+export function observedWorkCensus(): { memoryMb: number; complete: boolean; at: number } {
+  let memoryMb = 0
+  for (const mb of observedMemory.values()) memoryMb += mb
+  return { memoryMb, complete: observedComplete, at: observedAt }
 }
 
 /** Successful deletion ends any reservation left by an interrupted startup. */

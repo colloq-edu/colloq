@@ -72,6 +72,8 @@
     if (mine.accepting !== 'open') return ''
     if (mine.leftToday === null) return tr('competitions.p.dropNoLimit')
     if (mine.leftToday <= 0) {
+      // A replacement costs no attempt: the hint below says so instead.
+      if (mine.replaceable) return ''
       return tr('competitions.refusal.dailyQuota', { count: mine.perDay })
     }
     return tr(phone ? 'competitions.p.phoneLeftToday' : 'competitions.p.dropLeftToday', {
@@ -80,9 +82,17 @@
     })
   })
   const unavailable = $derived(view.capabilities?.execution.available === false)
+  /*
+   * A submission still WAITING does not block the zone: the new notebook takes
+   * its place in the queue (the server says so in `replaceable`, and only
+   * when it will actually accept the upload), and it costs no extra attempt.
+   */
+  const replaces = $derived(mine.replaceable ?? null)
   const blocked = $derived(
-    unavailable || busy || mine.accepting !== 'open' || mine.inFlight > 0 || mine.leftToday === 0,
+    unavailable || busy || mine.accepting !== 'open' || (!replaces && (mine.inFlight > 0 || mine.leftToday === 0)),
   )
+  /** The zone is in "replace" mode: a drop takes the waiting submission's place. */
+  const replacing = $derived(!!replaces && mine.accepting === 'open' && !unavailable)
 
   function take(list: FileList | null | undefined): void {
     if (blocked) return
@@ -105,7 +115,11 @@
       disabled={blocked}
       onclick={() => input?.click()}
     >
-      {busy ? tr('competitions.p.sending') : tr('competitions.p.pickFilePhone')}
+      {busy
+        ? tr('competitions.p.sending')
+        : replaces && mine.accepting === 'open'
+          ? tr('competitions.p.replaceButton', { number: replaces.number })
+          : tr('competitions.p.pickFilePhone')}
     </button>
     <p class="text-2xs leading-[18px] text-muted">
       {tr('competitions.p.phoneNeedsCsv')}{#if quota}<br />{quota}{/if}<br />{tr(
@@ -138,11 +152,25 @@
           <path d="M14 25V15m0 0-4 4m4-4 4 4" fill="none" stroke="rgb(var(--accent))" stroke-width="2" />
         </svg>
         <div class="flex min-w-0 flex-col gap-1">
+          <!--
+            The zone itself says what a drop will do. In the last minutes a
+            student re-sending a fix must not wonder whether it counts as a
+            second attempt or waits behind the first: it takes the waiting
+            one's place, and the title names which.
+          -->
           <p class="text-title font-bold leading-6 text-ink">
-            {dragging ? tr('competitions.p.dropHere') : tr('competitions.p.dropTitle')}
+            {dragging
+              ? tr('competitions.p.dropHere')
+              : replacing
+                ? tr('competitions.p.dropReplaceTitle', { number: replaces!.number })
+                : tr('competitions.p.dropTitle')}
           </p>
           <p class="text-ui leading-5 text-muted">
-            {tr('competitions.p.dropNeedsCsv')}{#if quota}<br />{quota}{/if}
+            {#if replacing}
+              {tr('competitions.p.dropReplaceNote', { number: replaces!.number })}
+            {:else}
+              {tr('competitions.p.dropNeedsCsv')}{#if quota}<br />{quota}{/if}
+            {/if}
           </p>
         </div>
       </div>
@@ -153,7 +181,11 @@
           disabled={blocked}
           onclick={() => input?.click()}
         >
-          {busy ? tr('competitions.p.sending') : tr('competitions.p.pickFile')}
+          {busy
+            ? tr('competitions.p.sending')
+            : replacing
+              ? tr('competitions.p.replaceButton', { number: replaces!.number })
+              : tr('competitions.p.pickFile')}
         </button>
       </div>
     </div>
@@ -172,7 +204,7 @@
       {#if loadingPackages}<p class="text-[14px] text-muted" role="status">{tr('dependencies.loading')}</p>{/if}
       {#if packageError}<p class="text-[14px] text-danger" role="alert">{packageError}</p><button type="button" class="min-h-10 text-accent-text underline" onclick={loadPackages}>{tr('dependencies.reload')}</button>{/if}
       <p class="text-[14px] text-muted">{tr('dependencies.sendHint')}</p>
-      <div class="flex flex-wrap items-center gap-4"><button type="button" class="min-h-11 bg-brand px-5 font-bold text-white disabled:opacity-50" disabled={blocked || loadingPackages || !!packageError} onclick={confirmSend}>{tr(busy ? 'competitions.p.sending' : 'dependencies.send')}</button><a class="text-[14px] text-accent-text underline" href={`/k/${view.competition.slug}/dependencies`}>{tr('dependencies.manage')}</a></div>
+      <div class="flex flex-wrap items-center gap-4"><button type="button" class="min-h-11 bg-brand px-5 font-bold text-white disabled:opacity-50" disabled={blocked || loadingPackages || !!packageError} onclick={confirmSend}>{busy ? tr('competitions.p.sending') : replacing ? tr('competitions.p.sendReplacing', { number: replaces!.number }) : tr('dependencies.send')}</button><a class="text-[14px] text-accent-text underline" href={`/k/${view.competition.slug}/dependencies`}>{tr('dependencies.manage')}</a></div>
     </div>
   {/if}
 
@@ -181,6 +213,11 @@
   {/if}
   {#if refusal}
     <p class="text-2xs leading-[18px] text-danger" role="alert">{refusal}</p>
+  {:else if replaces && mine.accepting === 'open'}
+    <!-- The zone itself says it on a desktop; a phone has no zone to carry the sentence. -->
+    {#if phone}
+      <p class="text-2xs leading-[18px] text-muted">{tr('competitions.p.replacesHint', { number: replaces.number })}</p>
+    {/if}
   {:else if mine.inFlight > 0}
     <p class="text-2xs leading-[18px] text-muted">{tr('competitions.refusal.inFlight')}</p>
   {:else if mine.accepting === 'closed'}

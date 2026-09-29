@@ -64,7 +64,7 @@ OFF  := \033[0m
 # date" and did nothing (no pages, no commit, no push) while reporting success.
 .PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell activity \
         service-install service-restart service-stop service-status service-logs \
-        host host-direct relay-setup relay-page tunnel-setup site mirror readme-art site-icons site-og ui sync load course \
+        host host-direct relay-setup relay-page tunnel-setup site mirror readme-art site-icons site-og ui sync load competition-load course \
         vast-up vast-status vast-sync vast-logs vast-down vast-adopt \
         env-list env-show env-new env-use env-build env-freeze \
         backup restore test check pack wheel wheels version bump
@@ -500,6 +500,27 @@ load: ## Load test rig: 500 students in one room. N=500 RAMP=60 SPID=<pid>
 	 $(if $(INK),LOAD_INK="$(INK)" LOAD_INK_SEC="$${INK_SEC:-10}",) \
 	 $(if $(SPID),LOAD_SERVER_PID="$(SPID)",) $(if $(STAFF),LOAD_STAFF_JOIN=1,) \
 	 npx tsx scripts/load.mts
+
+competition-load: ## A competition at the deadline: N entrants send at once. SLUG=… NOTEBOOK=… N=15 URL=…
+	@# Added after a class where the thirteenth notebook in the last minute got
+	@# "too often": fifteen people behind one router are one address. N new
+	@# entrants join the competition SLUG through the public door and send
+	@# NOTEBOOK at once; the rig then watches the queue until every result is in
+	@# and prints what was refused, the wait for a slot, the run time, the time
+	@# to drain and how many ran at once.
+	@#
+	@# Point it at a competition made for the test, never the one a class is
+	@# solving: the rig deletes nothing, its entrants and submissions stay on
+	@# that competition's leaderboard, and the class waits behind them.
+	@#   URL=<instance>   where to connect, default http://localhost:$(PORT)
+	@#   TIMEOUT=<sec>    stop waiting for results after, default 1800
+	@# The panel is read with the setup token from data/setup-token; for another
+	@# machine put LOAD_SETUP_TOKEN (or LOAD_STAFF_COOKIE) in the environment:
+	@# neither goes on the command line, and the rig never prints them.
+	@test -n "$(SLUG)" -a -n "$(NOTEBOOK)" || { printf '$(RED)Specify the competition and the notebook: make competition-load SLUG=warmup NOTEBOOK=solution.ipynb$(OFF)\n'; exit 1; }
+	@LOAD_BASE_URL="$(or $(URL),http://localhost:$(PORT))" LOAD_SLUG="$(SLUG)" LOAD_NOTEBOOK="$(NOTEBOOK)" \
+	 LOAD_ENTRANTS="$${N:-15}" LOAD_TIMEOUT_SEC="$${TIMEOUT:-1800}" \
+	 npx tsx scripts/competition-load.mts
 
 site: ## Publish the colloq.ru site: the landing page and the published seminars. DRY=1 — build only
 	@# The site lives in site/ of this same repository; the Pages workflow

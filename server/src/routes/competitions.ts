@@ -38,6 +38,7 @@ import { DependencyStoreError } from '../dependencies/store.js'
 import { dependencyMessage } from '../dependencies/messages.js'
 import { addressOf } from '../bans.js'
 import { config } from '../config.js'
+import { db } from '../db.js'
 import { downloadHeldFile, type HeldFile } from '../secure-files.js'
 import {
   clearEntrantCookie,
@@ -62,18 +63,18 @@ import {
   listCompetitions,
   listEntrantSubmissions,
   listFiles,
-  listSubmissions,
   acceptSubmission,
   competitionSummary,
   getEntrant,
-  leaveQueue,
+  intakePlan,
   myCompetitionIds,
   queuePaused,
-  queueRows,
   submissionCounts,
-  updateSubmission,
 } from '../competitions/store.js'
-import { fairOrder, waitEtas, withoutBaseline } from '../competitions/panel.js'
+import { withoutBaseline } from '../competitions/panel.js'
+import { queueForecast } from '../competitions/forecast.js'
+import { holdUpload, privateBoardState } from '../competitions/results.js'
+import { uploadsPerMinute } from '../competitions/settings.js'
 import { cancelSubmission, queueSlots, wakeCompetitionPump } from '../competitions/runner.js'
 import {
   ensureCompetition,
@@ -81,6 +82,7 @@ import {
   holdResultFile,
   holdSubmittedNotebook,
   putSubmissionNotebook,
+  removeSubmission,
   NOTEBOOK_FILE,
 } from '../competitions/storage.js'
 import {
@@ -89,7 +91,6 @@ import {
   isTerminal,
   LIMITS,
   normalizeEntrantKey,
-  privateBoardOpen,
   publicCompetition,
   submissionsOpen,
   whyNotebookRefused,
@@ -163,10 +164,17 @@ const MAX_SIGN_INS = 40
 const joins = new Map<string, number[]>()
 const JOIN_WINDOW = 10 * MINUTE
 const MAX_JOINS = 60
-/** Sending: the real limit is the daily quota; this one pays for parsing the notebook. */
-const uploads = new Map<string, number[]>()
+/*
+ * Sending: the real limit is the daily quota; these two pay for parsing the
+ * notebook. Per PERSON (the owner's setting, twelve a minute by default),
+ * because a class behind one NAT is thirty people at one address, and all of
+ * them send in the last minute before the deadline. Per address only a
+ * ceiling against floods, generous enough for a whole lecture hall.
+ */
+const uploadsByEntrant = new Map<string, number[]>()
+const uploadsByAddress = new Map<string, number[]>()
 const UPLOAD_WINDOW = MINUTE
-const MAX_UPLOADS = 12
+const MAX_UPLOADS_PER_ADDRESS = 300
 
 /* ----------------------------------------------------------------- helpers */
 
@@ -248,74 +256,41 @@ function withNames(
 /* -------------------------------------------------------------- live queue */
 
 /**
- * How long a submission of THIS competition runs on average, in ms.
- *
- * Its own number, not the instance-wide one: next door there may be a
- * competition where a notebook trains boosting for ten minutes, and "≈ 6 min"
- * under a simple task is a promise that makes a person leave the screen.
- *
- * Over the last twenty runs, not all of them: a competition lives for weeks,
- * and the first submissions are a different task, solved in three lines
- * before the class took on the real one.
- */
-function averageRunMs(competition: Competition): number | null {
-  const spans = listSubmissions(competition.id)
-    .map((submission) => submission.durationMs)
-    .filter((ms): ms is number => typeof ms === 'number' && ms > 0)
-    .slice(-20)
-  if (spans.length === 0) return null
-  return Math.round(spans.reduce((sum, ms) => sum + ms, 0) / spans.length)
-}
-
-/**
  * The queue through one person's eyes: what moves on the screen by itself.
  *
- * The place is counted over the WHOLE instance queue and in the same order
- * the runner takes work (`fairOrder`): "third in the queue" must mean the
- * same thing it means for the teacher, otherwise two screens argue about a
- * number the person checks with a stopwatch.
+ * The place and the estimate come from the same forecast as the teacher's
+ * queue block (competitions/forecast.ts): over the WHOLE instance queue, in
+ * the order the runner takes work, aware of how many run at once. "Third in
+ * the queue, ≈ 4 min" must mean the same thing on the phone and on the
+ * projector, otherwise two screens argue about a number the person checks
+ * with a stopwatch.
  */
 function liveOf(competition: Competition, me: Entrant, now = Date.now()): SubmissionLive[] {
   const mine = listEntrantSubmissions(competition.id, me.id).filter(
     (submission) => !isTerminal(submission.state),
   )
   if (mine.length === 0) return []
-  const rows = queueRows()
-  const running = rows.filter((row) => row.state === 'running')
-  const ordered = fairOrder(
-    rows.filter((row) => row.state === 'waiting' && row.notBefore <= now),
-    new Set(running.map((row) => row.entrantId)),
-  )
+  const forecast = queueForecast(queueSlots(), now)
   const limitMs = competition.limits.wallSeconds * 1000
-  const average = averageRunMs(competition)
-  const left = running.map((row) => {
-    const guess = average === null ? limitMs : Math.min(average, limitMs)
-    return Math.max(0, guess - (now - (row.startedAt ?? now)))
-  })
-  const etas = waitEtas(ordered.length, {
-    runningLeftMs: left,
-    averageMs: average,
-    slots: queueSlots(),
-  })
   return mine.map((submission): SubmissionLive => {
-    const at = ordered.findIndex((row) => row.submissionId === submission.id)
-    const waiting = rows.find((row) => row.submissionId === submission.id && row.state === 'waiting')
+    const spot = forecast.at.get(submission.id) ?? null
+    const waiting = [...forecast.eligible, ...forecast.deferred].find((row) => row.submissionId === submission.id)
     /*
      * Whose submission runs right before mine, and only MINE: "starts after
      * submission #12 finishes" says nothing about someone else's number, and
      * the number itself is someone else's row in someone else's list.
      */
-    const ahead = at < 0
+    const ahead = spot === null
       ? null
-      : [...running, ...ordered.slice(0, at)]
+      : [...forecast.running, ...forecast.eligible.slice(0, spot.place - 1)]
           .reverse()
           .find((row) => row.entrantId === me.id) ?? null
     return {
       submissionId: submission.id,
-      place: at < 0 ? null : at + 1,
-      etaMs: at < 0 ? null : (etas[at] ?? null),
+      place: spot?.place ?? null,
+      etaMs: spot?.etaMs ?? null,
       resourcePending: (waiting?.resourceRetries ?? 0) > 0,
-      startedAt: running.find((row) => row.submissionId === submission.id)?.startedAt ?? null,
+      startedAt: forecast.running.find((row) => row.submissionId === submission.id)?.startedAt ?? null,
       limitMs,
       aheadNumber: ahead ? (getSubmission(ahead.submissionId)?.number ?? null) : null,
       stage: submission.stage,
@@ -328,17 +303,32 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
 /** "My submissions" in one piece; the live stream serves the same piece. */
 function submissionsView(competition: Competition, me: Entrant): EntrantSubmissions {
   const now = Date.now()
-  const open = privateBoardOpen(competition, now)
+  const { open } = privateBoardState(competition, now)
+  const accepting = submissionsOpen(competition, now)
   return {
     submissions: listEntrantSubmissions(competition.id, me.id).map((s) => entrantSubmission(publicExecution(s, competition.environment), open)),
     leftToday: leftToday(competition, me.id),
     perDay: competition.limits.perDay,
     inFlight: inFlightCount(competition.id, me.id),
-    accepting: submissionsOpen(competition, now),
+    accepting,
     joined: joinedAt(competition.id, me.id) !== null,
     live: liveOf(competition, me, now),
     paused: queuePaused(),
+    replaceable: accepting === 'open' ? replaceableOf(competition, me.id, now) : null,
   }
+}
+
+/**
+ * The waiting submission a new upload would take the place of — only when
+ * the upload would actually be accepted: the send box offers exactly what the
+ * door will do.
+ */
+function replaceableOf(competition: Competition, entrantId: string, now: number): EntrantSubmissions['replaceable'] {
+  const plan = intakePlan(competition.id, entrantId)
+  if (plan === 'in_flight' || !plan.replaces) return null
+  const left = leftToday(competition, entrantId, now, 0, plan.replaces.id)
+  if (left !== null && left <= 0) return null
+  return { submissionId: plan.replaces.id, number: plan.replaces.number }
 }
 
 /**
@@ -452,13 +442,15 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       .map((competition) => {
         const summary = summaryOf(competition)
         const about = me ? mineIn(competition, me) : null
+        const board = privateBoardState(competition)
         return {
           competition: publicCompetition(competition),
           entrants: summary.entrants,
           submissions: summary.submissions,
           bestPublic: summary.bestPublic,
           baselinePublic: baselineScore(competition),
-          privateOpen: privateBoardOpen(competition, Date.now()),
+          privateOpen: board.open,
+          privatePending: board.pending,
           mine: about && { ...about, joined: about.joined || mine.has(competition.id) },
         }
       })
@@ -471,6 +463,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const me = currentEntrant(req)
     const summary = summaryOf(competition)
+    const board = privateBoardState(competition)
     reply<EntrantCompetitionView>(res, {
       // publicCompetition is not decoration of the response but the only place
       // where the metric code and the row split seed are stripped from the
@@ -486,7 +479,8 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       submissions: summary.submissions,
       bestPublic: summary.bestPublic,
       baselinePublic: baselineScore(competition),
-      privateOpen: privateBoardOpen(competition, Date.now()),
+      privateOpen: board.open,
+      privatePending: board.pending,
       accepting: submissionsOpen(competition, Date.now()),
       mine: me ? mineIn(competition, me) : null,
     })
@@ -579,7 +573,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const me = currentEntrant(req)
     const counts = submissionCounts(competition.id)
-    const open = privateBoardOpen(competition, Date.now())
+    const { open, pending } = privateBoardState(competition)
     const baseline = baselineEntrantOf(competition)
     reply<EntrantLeaderboard>(res, {
       public: withNames(leaderboard(competition.id, 'public'), counts, me, baseline),
@@ -587,6 +581,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
         ? withNames(leaderboard(competition.id, 'private'), counts, me, baseline)
         : null,
       privateOpen: open,
+      privatePending: pending,
       baselinePublic: baselineScore(competition),
     })
   })
@@ -672,11 +667,18 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
    * yesterday".
    */
   router.post('/api/k/competitions/:slug/submissions', requireEntrant, async (req, res) => {
+    /*
+     * The deadline is judged by the moment the request arrived, not the moment
+     * its body finished: twenty megabytes over a classroom's Wi-Fi take a
+     * minute, and a notebook sent at 23:59:50 must not lose to the connection
+     * (competitions/results.ts, the grace and its cap).
+     */
+    const startedAt = Date.now()
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const me = (req as EntrantRequest).entrant!
 
-    const accepting = submissionsOpen(competition, Date.now())
+    const accepting = submissionsOpen(competition, startedAt)
     if (accepting === 'not_open') return refuse(res, 403, 'not_open', tr('competitions.refusal.notOpen'))
     if (accepting === 'closed') return refuse(res, 403, 'closed', tr('competitions.refusal.closed'))
     /*
@@ -690,23 +692,39 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (!joined) return refuse(res, 403, 'not_joined', tr('competitions.refusal.notJoined'))
     /*
      * One submission in flight per person, not out of politeness to the queue
-     * but out of fairness: there is one runner for the whole instance, and ten
-     * notebooks from one person queued at once make a lesson in which nobody
-     * else sends anything. The queue already takes one at a time from each
-     * person (store · turn), but that is about order, not about count.
+     * but out of fairness: ten notebooks from one person queued at once make a
+     * lesson in which nobody else sends anything. The queue already takes one
+     * at a time from each person (store · turn), but that is about order, not
+     * about count. A submission still WAITING is not a reason to refuse: the
+     * new notebook takes its place (store · intakePlan) — only a running one
+     * is, or a waiting re-run, which already has a result to lose.
      */
-    if (inFlightCount(competition.id, me.id) > 0) {
+    const plan = intakePlan(competition.id, me.id)
+    if (plan === 'in_flight') {
       return refuse(res, 409, 'in_flight', tr('competitions.refusal.inFlight'))
     }
-    const left = leftToday(competition, me.id)
+    const left = leftToday(competition, me.id, startedAt, 0, plan.replaces?.id ?? null)
     if (left !== null && left <= 0) {
       return refuse(res, 429, 'quota', tr('competitions.refusal.dailyQuota', { count: competition.limits.perDay }))
     }
-    if (tooOften(uploads, addressOf(req), UPLOAD_WINDOW, MAX_UPLOADS)) {
+    if (tooOften(uploadsByAddress, addressOf(req), UPLOAD_WINDOW, MAX_UPLOADS_PER_ADDRESS)
+      || tooOften(uploadsByEntrant, me.id, UPLOAD_WINDOW, uploadsPerMinute().value)) {
       res.setHeader('Retry-After', '60')
       return refuse(res, 429, 'too_often', tr('competitions.refusal.tooOften'))
     }
 
+    /*
+     * From here until the body is in (or refused), this upload is a result
+     * the final board has to wait for if the deadline passes meanwhile. It is
+     * counted before the first await: the runtime probe below may take
+     * seconds, and an upload that passed the door at 23:59:59 uncounted let
+     * the board open, private scores and all, for exactly that long. Every
+     * way out below ends the response, and whichever comes first counts it
+     * out: the answer handed to the socket, or the socket gone.
+     */
+    const release = holdUpload(competition.id)
+    res.once('finish', release)
+    res.once('close', release)
     try {
       await assertCompetitionCapability('execution', competition.environment, competitionRevision(competition.id)?.imageDigest)
     } catch (error) {
@@ -715,21 +733,27 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
 
     readNotebook(req, res, async (fileName, body, bundleId) => {
       const revision = await executionRevision(competition)
-      const submission = acceptPinnedSubmission(competition, me.id, fileName, body.length, revision, bundleId)
-      try {
-        ensureCompetition(competition.id)
-        putSubmissionNotebook(competition.id, submission.id, body)
-      } catch (error) {
-        /*
-         * The notebook did not make it to disk, so there is nothing to run.
-         * The row is taken off the queue and marked cancelled: leaving it
-         * waiting would hand the runner a submission that says "no notebook"
-         * in the very first second, and spend the person's daily quota on it.
-         */
-        leaveQueue(submission.id)
-        updateSubmission(submission.id, { state: 'cancelled', stage: 'accepted' })
-        throw error
-      }
+      /*
+       * The acceptance and the notebook on disk commit together or not at
+       * all. A replacement cancels the person's waiting submission inside the
+       * acceptance, and a write that failed after that commit (a full disk)
+       * left them with neither. In one transaction the failed write rolls the
+       * whole intake back and the waiting one keeps its place. The write is
+       * synchronous either way: the transaction holds nothing longer than the
+       * event loop already did.
+       */
+      const submission = db.transaction(() => {
+        const accepted = acceptPinnedSubmission(competition, me.id, fileName, body.length, revision, bundleId, { startedAt })
+        try {
+          ensureCompetition(competition.id)
+          putSubmissionNotebook(competition.id, accepted.id, body)
+        } catch (error) {
+          // The rows roll back with the throw; the half-made folder is ours to remove.
+          removeSubmission(competition.id, accepted.id)
+          throw error
+        }
+        return accepted
+      })()
       /*
        * Wake the runner at once instead of waiting for its one-second tick.
        *
@@ -744,9 +768,10 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       reply<SubmissionAccepted>(res, {
         submission: entrantSubmission(
           publicExecution(getSubmission(submission.id)!, competition.environment),
-          privateBoardOpen(competition, Date.now()),
+          privateBoardState(competition).open,
         ),
         leftToday: leftToday(competition, me.id),
+        replacedNumber: submission.replaced?.number ?? null,
       })
     })
   })
@@ -860,6 +885,18 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
 
 /* ----------------------------------------------------- notebook parsing */
 
+/*
+ * The intake transaction re-checks what the door checked before the body
+ * (the deadline, one in flight, the day's quota), and the answer must be the
+ * same word the door would have said: the screen branches on `reason`, and
+ * "invalid" after a passed deadline dims nothing.
+ */
+const INTAKE_REFUSALS: Record<string, { reason: CompetitionRefusal; say: () => string }> = {
+  dependency_closed: { reason: 'closed', say: () => tr('competitions.refusal.closed') },
+  dependency_submission_active: { reason: 'in_flight', say: () => tr('competitions.refusal.inFlight') },
+  dependency_submission_quota: { reason: 'quota', say: () => dependencyMessage('dependency_submission_quota') },
+}
+
 /**
  * Read one notebook from multipart and hand over its bytes.
  *
@@ -950,7 +987,9 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
     void Promise.resolve().then(() => done(fileName, body, bundleId)).catch((error: unknown) => {
       if (res.headersSent) return
       if (error instanceof DependencyStoreError) {
-        refuse(res, error.status, 'invalid', dependencyMessage(error.code))
+        const intake = INTAKE_REFUSALS[error.code]
+        if (intake) refuse(res, error.status, intake.reason, intake.say())
+        else refuse(res, error.status, 'invalid', dependencyMessage(error.code))
       } else {
         console.error('[competitions] accepting notebook failed', error)
         refuse(res, 503, 'unavailable', tr('common.requestFailed', { status: 503 }))

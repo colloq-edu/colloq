@@ -405,6 +405,12 @@ export interface Submission {
   teacherError: string | null
   /** Picked by its author to count. */
   chosen: boolean
+  /**
+   * The number of the submission that took this one's place in the queue
+   * before it started; null — it was not replaced. A replaced submission is
+   * `cancelled`: it never ran and does not count against the day.
+   */
+  replacedBy?: number | null
 }
 
 /**
@@ -956,20 +962,41 @@ export function placeShift(publicPlace: number | null, privatePlace: number | nu
   return publicPlace - privatePlace
 }
 
+type ReleaseFields = Pick<Competition, 'state' | 'privateRelease' | 'deadlineAt' | 'privateOpenedAt'>
+
+/** Intake is over: the deadline passed, or the teacher pressed "Finish now". */
+function intakeOver(c: Pick<Competition, 'state' | 'deadlineAt'>, now: number): boolean {
+  return c.state === 'finished' || (c.deadlineAt !== null && now >= c.deadlineAt)
+}
+
+/**
+ * Whether the automatic release is waiting for results right now.
+ *
+ * Intake is over, the board opens by itself, and nobody has opened it by
+ * hand: only then is the number of unfinished submissions worth counting at
+ * all (competitions/results.ts on the server).
+ */
+export function privateBoardAwaits(c: ReleaseFields, now: number): boolean {
+  return c.privateOpenedAt === null && c.privateRelease === 'auto' && intakeOver(c, now)
+}
+
 /**
  * Whether the private leaderboard is open.
  *
- * `auto` opens it at the deadline, `manual` only by the teacher's hand, and
- * no deadline will do it for them: the whole value of the review is that
- * they name the places themselves.
+ * `auto` opens it once intake is over AND every submission accepted before
+ * that has a result: a board opened with thirty notebooks still in the queue
+ * keeps changing under the eyes of people who already read it as final.
+ * `manual` opens only by the teacher's hand, and no deadline will do it for
+ * them: the whole value of the review is that they name the places
+ * themselves.
+ *
+ * `pending` is how many of those results are still being counted. The server
+ * knows it; a caller that passes nothing gets the plain rule "open at the
+ * deadline".
  */
-export function privateBoardOpen(
-  c: Pick<Competition, 'privateRelease' | 'deadlineAt' | 'privateOpenedAt'>,
-  now: number,
-): boolean {
+export function privateBoardOpen(c: ReleaseFields, now: number, pending = 0): boolean {
   if (c.privateOpenedAt !== null) return true
-  if (c.privateRelease !== 'auto') return false
-  return c.deadlineAt !== null && now >= c.deadlineAt
+  return privateBoardAwaits(c, now) && pending <= 0
 }
 
 /* --------------------------------------------- splitting the answer rows */

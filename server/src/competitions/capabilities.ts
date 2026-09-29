@@ -99,7 +99,16 @@ export function createCapabilityReader(options: CapabilityReaderOptions = {}) {
     return evaluateCapabilities({ backend, dockerVersion: version, imageAvailable, storageAvailable: storageAvailable() })
   }
 }
-export const competitionCapabilities = createCapabilityReader()
+let reader = createCapabilityReader()
+export const competitionCapabilities = (environmentName?: string, imageDigest?: string): Promise<CompetitionCapabilities> => reader(environmentName, imageDigest)
+/**
+ * Swap the probe out — for tests that need a runtime answering slowly: the
+ * test backend answers in the same tick, and what needs checking is what
+ * happens while the answer is still on its way. `null` restores the real one.
+ */
+export function useCompetitionCapabilities(fake: ReturnType<typeof createCapabilityReader> | null): void {
+  reader = fake ?? createCapabilityReader()
+}
 export class RuntimeUnavailableError extends Error {
   readonly status = 503
   constructor(public readonly code: string, message: string) { super(message); this.name = 'RuntimeUnavailableError' }

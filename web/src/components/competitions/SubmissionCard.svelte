@@ -14,7 +14,7 @@
    * bar.
    */
   import { tr } from '@shared/i18n'
-  import { entrantBadge, type EntrantSubmission } from '@shared/competitions'
+  import type { EntrantSubmission } from '@shared/competitions'
   import type { SubmissionLive } from '@shared/competitions-entrant'
   import SubmissionEnvironment from './SubmissionEnvironment.svelte'
   import Badge from './Badge.svelte'
@@ -22,6 +22,7 @@
     elapsedClock,
     formatScore,
     rowWords,
+    submissionBadge,
     runProgress,
     spellDuration,
   } from '@/lib/competition-words'
@@ -49,7 +50,7 @@
 
   let open = $state(false)
 
-  const badge = $derived(entrantBadge(submission.state))
+  const badge = $derived(submissionBadge(submission))
   const words = $derived(rowWords({ submission, live, best, paused, now, phone: true }))
   const running = $derived(submission.state === 'running')
   const queued = $derived(submission.state === 'queued')
@@ -97,7 +98,7 @@
     {/if}
   </div>
 
-  <span class="truncate text-ui font-bold leading-[18px] text-ink" title={submission.fileName}>
+  <span class="truncate text-ui leading-[18px] {submission.replacedBy != null ? 'font-normal text-muted' : 'font-bold text-ink'}" title={submission.fileName}>
     {words.title}
   </span>
 

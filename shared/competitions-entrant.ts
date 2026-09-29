@@ -61,6 +61,8 @@ export interface EntrantCompetitionRow {
   bestPublic: number | null
   baselinePublic: number | null
   privateOpen: boolean
+  /** Results the automatic release still waits for (see `privatePending` below). */
+  privatePending?: number
   /** null — the person has not joined: they have no key yet. */
   mine: EntrantStanding | null
 }
@@ -80,6 +82,12 @@ export interface EntrantCompetitionView {
   bestPublic: number | null
   baselinePublic: number | null
   privateOpen: boolean
+  /**
+   * Intake is over, but the final results wait for submissions accepted
+   * before it: "results are still being counted: N left". 0 — nothing to
+   * wait for (or the board is not waiting at all).
+   */
+  privatePending?: number
   accepting: Accepting
   mine: EntrantStanding | null
 }
@@ -115,6 +123,8 @@ export interface EntrantLeaderboard {
   /** `null` — the final results are still closed. Not "empty": nobody can fit to them. */
   private: EntrantBoardLine[] | null
   privateOpen: boolean
+  /** The same count as in `EntrantCompetitionView.privatePending`. */
+  privatePending?: number
   baselinePublic: number | null
 }
 
@@ -159,10 +169,18 @@ export interface EntrantSubmissions {
   live: SubmissionLive[]
   /** The teacher has paused the instance queue — the waiting ones are held for a reason. */
   paused: boolean
+  /**
+   * The person's submission that is still WAITING (not started): sending a
+   * notebook now takes its place in the queue instead of being refused, and
+   * does not use another submission of the day. null — nothing to replace.
+   */
+  replaceable?: { submissionId: string; number: number } | null
 }
 
 /** The answer to sending a notebook. */
 export interface SubmissionAccepted {
   submission: EntrantSubmission
   leftToday: number | null
+  /** The number of the waiting submission this one replaced; null — none. */
+  replacedNumber?: number | null
 }
