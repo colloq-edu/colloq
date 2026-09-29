@@ -748,11 +748,14 @@ export const competitionsMessages: MessageCatalog = {
   },
   /*
    * Follows the "left today" line: the rule of `countsTowardDailyQuota`, so
-   * that the number going back up after a result is not a mystery.
+   * that the number going back up after a result is not a mystery. The
+   * boundary is named from both sides: "failed before its first cell" was
+   * read as "failed on its first cell" (29 Sep 2026), and a notebook that
+   * raises in cell one has run and does count.
    */
   'competitions.p.quotaRule': {
-    ru: 'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, даже если ответ не принят; упавшая до первой ячейки или отменённая — нет.',
-    en: 'Every submission whose notebook starts running counts toward the limit, even if its answer is rejected; one that fails before its first cell or is cancelled does not.',
+    ru: 'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, — даже если упала на первой же ячейке или ответ не принят. Не в счёт: отменённая и та, что не дошла до выполнения (например, не установились пакеты).',
+    en: 'Every submission whose notebook starts running counts toward the limit — even if it fails on its very first cell or its answer is rejected. Not counted: a cancelled one, or one that never got to run (for example, its packages failed to install).',
   },
   'competitions.p.phoneLimits': {
     ru: {
@@ -988,9 +991,10 @@ export const competitionsMessages: MessageCatalog = {
     },
     en: { one: 'Show {count} more participant', other: 'Show {count} more participants' },
   },
+  // Equal scores share a place (shared/competitions.ts · placesByScore); time only orders the rows.
   'competitions.p.tieNote': {
-    ru: 'При одинаковом результате выше посылка, отправленная раньше.',
-    en: 'On equal results the submission sent earlier ranks higher.',
+    ru: 'Равные результаты делят одно место; выше в списке — посылка, отправленная раньше.',
+    en: 'Equal results share one place; the submission sent earlier is listed first.',
   },
   'competitions.p.boardEmpty': {
     ru: 'Пока никто не дошёл до числа.',

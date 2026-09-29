@@ -3583,8 +3583,8 @@ export const adminMessages: MessageCatalog = {
     "en": "This machine has {free} GB free: one submission at a time leaves {rest} GB to the class in progress."
   },
   "admin.competitions.quotaNote": {
-    "ru": "Посылки с ошибкой в счёт дня не идут, если упали до первой ячейки.",
-    "en": "A failed submission does not count against the day if it died before the first cell."
+    "ru": "В счёт дневного лимита идёт каждая посылка, чья тетрадь начала выполняться, — даже если упала на первой же ячейке или ответ не принят. Не в счёт: отменённая и та, что не дошла до выполнения (например, не установились пакеты).",
+    "en": "Every submission whose notebook starts running counts toward the daily limit — even if it fails on its very first cell or its answer is rejected. Not counted: a cancelled one, or one that never got to run (for example, its packages failed to install)."
   },
   "admin.competitions.section.terms": {
     "ru": "Сроки и зачёт",

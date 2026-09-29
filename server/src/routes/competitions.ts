@@ -92,6 +92,8 @@ import {
   LIMITS,
   nameForJoin,
   normalizeEntrantKey,
+  placesAmongPeople,
+  placesByScore,
   publicCompetition,
   submissionsOpen,
   whyNotebookRefused,
@@ -234,6 +236,11 @@ function summaryOf(competition: Competition): CompetitionCounts {
  * `counts` are spent submissions (store · submissionCounts), by the same rule
  * the daily quota refuses by: the class reads the "SUBMISSIONS" column against
  * the limit, and a row that is not in the quota has no business in it.
+ *
+ * The place is the one the page draws: among people, equal scores sharing
+ * it, the baseline where it would rank (`placesAmongPeople`). The place the
+ * store gives counts the baseline as a row, and an answer that says "5"
+ * where the screen says "4" is a second truth waiting for its first reader.
  */
 function withNames(
   rows: readonly RankedRow[],
@@ -241,7 +248,7 @@ function withNames(
   me: Entrant | null,
   baseline: string | null,
 ): EntrantBoardLine[] {
-  return rows.map((row) => {
+  return placesAmongPeople(rows, (row) => row.entrantId === baseline).map((row) => {
     const submission = getSubmission(row.submissionId)
     return {
       place: row.place,
@@ -344,16 +351,20 @@ function replaceableOf(competition: Competition, entrantId: string, now: number)
  * as an ordinary row (as in the P3 mockup), but the denominator is entrants
  * everywhere, and a place from the combined table would one day give "2 of
  * 1" in a competition where nobody has beaten the baseline yet.
+ *
+ * And it is a shared place, not a row number: seven people with one score
+ * all stand fourth, and the list must not tell the last of them "10th"
+ * while the table beside it says "4".
  */
 function mineIn(competition: Competition, me: Entrant) {
   const baseline = baselineEntrantOf(competition)
-  const board = leaderboard(competition.id, 'public').filter((row) => row.entrantId !== baseline)
-  const at = board.findIndex((row) => row.entrantId === me.id)
+  const board = placesByScore(leaderboard(competition.id, 'public').filter((row) => row.entrantId !== baseline))
+  const mine = board.find((row) => row.entrantId === me.id) ?? null
   const mySubmissions = listEntrantSubmissions(competition.id, me.id)
   return {
     joined: joinedAt(competition.id, me.id) !== null || mySubmissions.length > 0,
-    place: at < 0 ? null : at + 1,
-    score: at < 0 ? null : board[at].score,
+    place: mine?.place ?? null,
+    score: mine?.score ?? null,
     submissions: mySubmissions.length,
     inFlight: inFlightCount(competition.id, me.id),
     leftToday: leftToday(competition, me.id),

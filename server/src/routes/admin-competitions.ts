@@ -121,6 +121,8 @@ import {
   LIMITS,
   dayStart,
   entrantHandle,
+  placesAmongPeople,
+  placesByScore,
   publicRowCount,
   type Competition,
   type CompetitionFile,
@@ -1223,15 +1225,17 @@ export function adminCompetitionRoutes(): Router {
   /* ------------------------------------------------------ submissions feed */
 
   // The board is computed from complete server state; the feed is only a page.
+  // Places are the class's own (`placesByScore`): the baseline row is drawn
+  // apart and takes nobody's, and a tie shares one — the number each person
+  // reads on their own screen, and the arrows are computed from it.
   router.get('/api/admin/competitions/:id/leaderboard', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
     const baseline = baselineEntrantOf(competition)
     const names = new Map(listCompetitionEntrants(competition.id).map((entrant) => [entrant.id, entrant.name]))
-    const board = (part: 'public' | 'private') => leaderboard(competition.id, part)
-      .filter((row) => row.entrantId !== baseline)
-      .map((row, index) => ({ ...row, place: index + 1,
-        entrantName: names.get(row.entrantId) ?? getEntrant(row.entrantId)?.name ?? '' }))
+    const board = (part: 'public' | 'private') =>
+      placesByScore(leaderboard(competition.id, part).filter((row) => row.entrantId !== baseline))
+        .map((row) => ({ ...row, entrantName: names.get(row.entrantId) ?? getEntrant(row.entrantId)?.name ?? '' }))
     res.json({ revision: competition.revision ?? 0, public: board('public'), private: board('private'), baseline: baselineView(competition) })
   })
 
@@ -1414,12 +1418,19 @@ export function adminCompetitionRoutes(): Router {
     res.status(202).json({ queued: rescoreCompetition(competition.id) })
   })
 
-  /** The "Entrants" tab of one competition: place, submissions, sign-in key. */
+  /**
+   * The "Entrants" tab of one competition: place, submissions, sign-in key.
+   *
+   * The place is the leaderboard tab's and the person's own: among people,
+   * shared on a tie. Taken straight from the store it counted the baseline
+   * as a row, and everyone below the baseline stood one lower here than on
+   * the tab next door.
+   */
   router.get('/api/admin/competitions/:id/entrants', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
     const baselineEntrant = baselineEntrantOf(competition)
-    const board = leaderboard(competition.id, 'public')
+    const board = placesAmongPeople(leaderboard(competition.id, 'public'), (row) => row.entrantId === baselineEntrant)
     const body: EntrantsList = {
       entrants: listCompetitionEntrants(competition.id).map((entrant) =>
         entrantRow(

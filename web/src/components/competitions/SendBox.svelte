@@ -98,9 +98,9 @@
     if (mine.leftToday === null) return tr('competitions.p.dropNoLimit')
     /*
      * The rule rides with the number. A rejected answer spends a submission
-     * while a notebook that died before its first cell gives it back, and
-     * without a word about it "left today" going back up after a result
-     * looked like a glitch at the rehearsal (29 Sep 2026).
+     * while a notebook that never got to run gives it back, and without a
+     * word about it "left today" going back up after a result looked like a
+     * glitch at the rehearsal (29 Sep 2026).
      */
     const rule = tr('competitions.p.quotaRule')
     if (mine.leftToday <= 0) {

@@ -519,16 +519,21 @@ test('"not counted toward the limit" closes the caption, or stands alone when th
   assert.match(rowWords({ submission: dead, live: null, best: false, paused: false, now: NOW, offQuota: true }).lines[0], /· not counted toward the limit$/)
 })
 
-test('the day-limit rule is one sentence in both languages', () => {
+test('the day-limit rule names its boundary from both sides, in both languages', () => {
+  // "Failed before its first cell" was read as "failed on its first cell"
+  // (29 Sep 2026): the rule now says outright that an error in the very first
+  // cell counts, and what does not count is named by what happened.
   assert.equal(
     tr('competitions.p.quotaRule'),
-    'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, даже если ответ не принят; упавшая до первой ячейки или отменённая — нет.',
+    'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, — даже если упала на первой же ячейке или ответ не принят. Не в счёт: отменённая и та, что не дошла до выполнения (например, не установились пакеты).',
   )
+  assert.doesNotMatch(tr('competitions.p.quotaRule'), /до первой ячейки/)
   setLocaleResolver(() => 'en')
   assert.equal(
     tr('competitions.p.quotaRule'),
-    'Every submission whose notebook starts running counts toward the limit, even if its answer is rejected; one that fails before its first cell or is cancelled does not.',
+    'Every submission whose notebook starts running counts toward the limit — even if it fails on its very first cell or its answer is rejected. Not counted: a cancelled one, or one that never got to run (for example, its packages failed to install).',
   )
+  assert.doesNotMatch(tr('competitions.p.quotaRule'), /before its first cell/)
 })
 
 test('under scoring "last" the send box names the counted submission a new score would replace', () => {
@@ -552,10 +557,10 @@ test('under scoring "last" the send box names the counted submission a new score
 
 test('places in the table count people, and the baseline stands where it ranks', () => {
   const rows = [
-    { baseline: false, name: 'Марфа' },
-    { baseline: false, name: 'Платон' },
-    { baseline: true, name: 'Базовое решение' },
-    { baseline: false, name: 'Тимур' },
+    { baseline: false, name: 'Марфа', score: 0.95 },
+    { baseline: false, name: 'Платон', score: 0.9 },
+    { baseline: true, name: 'Базовое решение', score: 0.85 },
+    { baseline: false, name: 'Тимур', score: 0.8 },
   ]
   assert.deepEqual(
     boardPlaces(rows).map((line) => [line.name, line.place]),
@@ -567,18 +572,41 @@ test('places in the table count people, and the baseline stands where it ranks',
     ],
   )
   // A baseline ahead of everyone takes no place at all: its "1" next to a
-  // person's "1" reads as a tie that does not exist, while the header says
+  // person's "1" reads as a race for first place, while the header says
   // "1 of 2".
   assert.deepEqual(
     boardPlaces([
-      { baseline: true, name: 'Базовое решение' },
-      { baseline: false, name: 'Тимур' },
+      { baseline: true, name: 'Базовое решение', score: 0.9 },
+      { baseline: false, name: 'Тимур', score: 0.8 },
     ]).map((line) => [line.name, line.place]),
     [
       ['Базовое решение', null],
       ['Тимур', 1],
     ],
   )
+})
+
+test('equal scores share the smallest place in the table, a baseline with the same score included', () => {
+  // The class of 29 Sep 2026: seven people with 0.6722222222222224 read
+  // "4, 5, 6, 7, 8, 9, 10" beside one and the same number.
+  const tie = 0.6722222222222224
+  const people = [
+    { baseline: false, name: 'Анна', score: 0.9 },
+    { baseline: false, name: 'Борис', score: 0.8 },
+    { baseline: false, name: 'Вера', score: 0.7 },
+    ...Array.from({ length: 7 }, (_, i) => ({ baseline: false, name: `Участник ${i}`, score: tie })),
+    { baseline: false, name: 'Зоя', score: 0.5 },
+  ]
+  const baseline = { baseline: true, name: 'Базовое решение', score: tie }
+  assert.deepEqual(boardPlaces(people).map((line) => line.place), [1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 11])
+  // Wherever the baseline landed inside the tie (it is ordered by when it was
+  // sent), it shows the tie's place and takes nobody's.
+  for (const at of [3, 6, 10]) {
+    const rows = [...people.slice(0, at), baseline, ...people.slice(at)]
+    const placed = boardPlaces(rows)
+    assert.equal(placed.find((line) => line.baseline)?.place, 4, `baseline at row ${at}`)
+    assert.deepEqual(placed.filter((line) => !line.baseline).map((line) => line.place), [1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 11])
+  }
 })
 
 /* ----------------------------------------------------- files and avatars */

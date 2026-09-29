@@ -995,6 +995,43 @@ test('admin leaderboard uses all submissions beyond the feed page', async () => 
   assert.equal(typeof board.revision, 'number')
 })
 
+test("the teacher reads the class's places: a tie shares one on the board and in the entrants tab alike", async () => {
+  const c = createCompetition({ slug: 'tie-board', title: 'Tie', metric: { direction: 'higher' } })!
+  const tie = 0.6722222222222224
+  let at = 1
+  const scored = (name: string, publicScore: number, privateScore = publicScore) => {
+    const entrant = createEntrant(name).entrant
+    const s = acceptSubmission({ competitionId: c.id, entrantId: entrant.id, fileName: 'x.ipynb', bytes: 2, at: at++ })
+    updateSubmission(s.id, { state: 'scored', publicScore, privateScore })
+    return s
+  }
+  scored('@tb_anna', 0.9, 0.1)
+  // The baseline sent before the tie and equals it: it must take nobody's place.
+  updateCompetition(c.id, { baselineSubmissionId: scored('@tb_baseline', tie).id })
+  for (let i = 0; i < 3; i++) scored(`@tb_same_${i}`, tie)
+  scored('@tb_after', 0.5, 0.2)
+
+  const board = (await (await call('GET', `/api/admin/competitions/${c.id}/leaderboard`, { cookie: teacher })).json()) as {
+    public: { entrantName: string; place: number }[]
+    private: { entrantName: string; place: number }[]
+  }
+  assert.deepEqual(board.public.map((row) => [row.entrantName, row.place]), [
+    ['@tb_anna', 1], ['@tb_same_0', 2], ['@tb_same_1', 2], ['@tb_same_2', 2], ['@tb_after', 5],
+  ])
+  // The final table ranks the tie first, then the two who fell: the arrows
+  // come from these numbers (2 → 1 for all three).
+  assert.deepEqual(board.private.map((row) => [row.entrantName, row.place]), [
+    ['@tb_same_0', 1], ['@tb_same_1', 1], ['@tb_same_2', 1], ['@tb_after', 4], ['@tb_anna', 5],
+  ])
+
+  const listed = (await (await call('GET', `/api/admin/competitions/${c.id}/entrants`, { cookie: teacher })).json()) as {
+    entrants: { name: string; place: number | null; baseline: boolean }[]
+  }
+  const placeOf = (name: string) => listed.entrants.find((row) => row.name === name)?.place
+  // The same numbers as the board next door: among people, shared on a tie.
+  assert.deepEqual(['@tb_anna', '@tb_same_0', '@tb_same_1', '@tb_same_2', '@tb_after'].map(placeOf), [1, 2, 2, 2, 5])
+})
+
 test('metric changes invalidate readiness and baseline replacement retains service identity', async () => {
   const c = createCompetition({ slug: 'input-readiness', title: 'Inputs', metric: { code: 'def score(a,b): return 1' }, privateRelease: 'manual' })!
   await upload(`/api/admin/competitions/${c.id}/files`, teacher, [{ name: 'test.csv', body: bytes('id\n1\n2\n') }])

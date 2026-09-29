@@ -851,8 +851,11 @@ export interface QuotaEntry {
  * does not count: they cancelled it, not spent it. And "a failed submission
  * does not count against the day if it died before the first cell" — that is,
  * a notebook that never started at all (broken JSON, a dead kernel at
- * startup) does not spend the quota: the person did not get a single attempt
- * at solving the task.
+ * startup, packages that failed to install) does not spend the quota: the
+ * person did not get a single attempt at solving the task. An error IN the
+ * first cell is not that: the notebook ran, `cellsDone` is 1, and it counts
+ * (the words for the class name the boundary from both sides, see
+ * `competitions.p.quotaRule`).
  *
  * A queued one and a running one do count. Otherwise one person would queue a
  * hundred notebooks, and the daily quota would start working retroactively.
@@ -921,10 +924,11 @@ export function hasScore(value: number | null): value is number {
 /**
  * Which is better: `-1` if `a` ranks above `b`.
  *
- * A tie is broken by time — "on equal results the submission sent earlier
- * ranks higher" (footnote on P3). The rule is not cosmetic: without it the
- * order would depend on how the database returned the rows, and a
- * participant's place would change between two page refreshes.
+ * The ORDER within a tie is by time — the submission sent earlier stands
+ * higher (footnote on P3), while the place itself is shared (see
+ * `placesByScore`). The order is not cosmetic: without it the rows would
+ * follow however the database returned them, and a tie would reshuffle
+ * between two page refreshes.
  */
 export function compareScores(
   a: { score: number; at: number },
@@ -989,16 +993,76 @@ export interface BoardRow {
 export type RankedRow = BoardRow & { place: number }
 
 /**
- * Assign places.
+ * A row with its place put in — replacing whatever `place` it came with: a
+ * store row counted the baseline, and `T & { place }` would keep claiming
+ * that old `number` for a row that now says null.
+ */
+export type Placed<T, P = number> = Omit<T, 'place'> & { place: P }
+
+/**
+ * Places by the standard competition rule, over rows already in board order:
+ * equal scores share the smallest place, and the next score takes the place
+ * after all of them — 1, 2, 2, 2, 5.
  *
- * There are no shared places here: a tie is already broken by time, so a
- * place is simply an ordinal number. Otherwise "YOUR PLACE 7 of 28" would
- * stop matching the length of the table.
+ * Only the numbers are shared: the rows keep their order, earlier submission
+ * first. Places used to be plain ordinals, and on 29 Sep 2026 seven students
+ * with the same public score, 0.6722222222222224, read "4, 5, 6, 7, 8, 9, 10"
+ * beside it, while the competition's own rules said equal scores get one
+ * place, the smallest. Equal means exactly equal numbers: rounding is only
+ * how a screen prints them, and scores that differ in the last digit are
+ * results the metric did tell apart.
+ *
+ * Every place a person is shown comes from here (directly or through
+ * `placesAmongPeople`): the header, the list, the teacher's screen and the
+ * shift arrows must all read the same number off the same tie.
+ */
+export function placesByScore<T extends { score: number }>(rows: readonly T[]): Placed<T>[] {
+  let place = 0
+  return rows.map((row, index) => {
+    if (index === 0 || row.score !== rows[index - 1].score) place = index + 1
+    return { ...row, place }
+  })
+}
+
+/**
+ * Places among PEOPLE on a board that has the baseline's row in it.
+ *
+ * People get the places `placesByScore` gives them among themselves: the
+ * baseline is not an entrant and takes no place from anyone. Its own row
+ * gets the place it WOULD take among them — one after everyone who beat it,
+ * so a baseline with exactly a person's score shows that person's place.
+ *
+ * A baseline nobody has beaten yet gets no place at all (null, a dash on
+ * screen): a "1" in its row next to the first person's "1" reads as a race
+ * for first place, and the news in that spot is that no submission is
+ * better than the baseline yet. Beating it takes a strictly better score, so
+ * equalling it does not count, and who submitted first does not matter.
+ */
+export function placesAmongPeople<T extends { score: number }>(
+  rows: readonly T[],
+  isBaseline: (row: T) => boolean,
+): Placed<T, number | null>[] {
+  const people = placesByScore(rows.filter((row) => !isBaseline(row)))
+  let seen = 0
+  return rows.map((row) => {
+    if (!isBaseline(row)) return people[seen++]
+    // Everyone above it in the order either beat it or equals it: an equal
+    // score right above hands over its place, otherwise it comes after them.
+    const above = seen === 0 ? null : people[seen - 1]
+    const place = above === null ? 1 : above.score === row.score ? above.place : seen + 1
+    return { ...row, place: place === 1 ? null : place }
+  })
+}
+
+/**
+ * Assign places: the board's order, then places by score.
+ *
+ * "YOUR PLACE 2 of 28" still reads against the length of the table: a
+ * shared place never exceeds the row's own number, and the one after a tie
+ * lands exactly where the ordinals would have put it.
  */
 export function rankBoard(rows: readonly BoardRow[], direction: MetricDirection): RankedRow[] {
-  return [...rows]
-    .sort((a, b) => compareScores(a, b, direction))
-    .map((row, index) => ({ ...row, place: index + 1 }))
+  return placesByScore([...rows].sort((a, b) => compareScores(a, b, direction)))
 }
 
 /**
@@ -1043,6 +1107,12 @@ export function placeOf(rows: readonly RankedRow[], entrantId: string): number |
  * Positive — moved up (`▲`), negative — moved down (`▼`), zero — stayed
  * (`—`). `null` if they are missing from one of the tables: "moved up 7
  * places" out of nowhere is not a fact but an invention.
+ *
+ * Both places are shared ones (`placesByScore`), never row numbers: the
+ * arrow is the difference of the two numbers the person reads. A tie that
+ * moves together moves by one step, and by row numbers two people at "5"
+ * whose final scores split into "5" and "6" both got "—": the second one was
+ * sixth by row in both tables.
  */
 export function placeShift(publicPlace: number | null, privatePlace: number | null): number | null {
   if (publicPlace === null || privatePlace === null) return null

@@ -23,6 +23,7 @@
   import { tr } from '@shared/i18n'
   import { isTerminal, placeShift } from '@shared/competitions'
   import type {
+    EntrantBoardLine,
     EntrantCompetitionList,
     EntrantCompetitionView,
     EntrantLeaderboard,
@@ -40,7 +41,7 @@
   import TaskView from '@/components/competitions/TaskView.svelte'
   import TopBar from '@/components/competitions/TopBar.svelte'
   import { firstScreenReady } from '@/lib/boot'
-  import { clockStep } from '@/lib/competition-words'
+  import { boardPlaces, clockStep } from '@/lib/competition-words'
   import { entrantApi, EntrantApiError } from '@/lib/entrantApi'
   import { COMPETITIONS_LANDING, type CompetitionRoute, type CompetitionView } from '@/lib/routes'
 
@@ -508,10 +509,13 @@
    * taking the numerator from the same table means one day showing "2 of 1":
    * in a competition where nobody has yet sent a solution better than the
    * baseline, it comes first.
+   *
+   * Read off `boardPlaces`, not counted by row: in a seven-way tie for fourth
+   * the table says "4" beside every one of them, and the header must not say
+   * "10" to the last (29 Sep 2026).
    */
-  function placeAmongPeople(lines: readonly { you: boolean; baseline: boolean }[]): number | null {
-    const at = lines.filter((line) => !line.baseline).findIndex((line) => line.you)
-    return at < 0 ? null : at + 1
+  function placeAmongPeople(lines: readonly EntrantBoardLine[]): number | null {
+    return boardPlaces(lines).find((line) => line.you && !line.baseline)?.place ?? null
   }
 
   const myPlace = $derived(placeAmongPeople(board?.public ?? []))

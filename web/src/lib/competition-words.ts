@@ -25,6 +25,7 @@ import {
   entrantBadge,
   isTerminal,
   metricFailedNote,
+  placesAmongPeople,
   stagePosition,
   stageWord,
   SUBMISSION_STAGES,
@@ -32,6 +33,7 @@ import {
   type CompetitionPublic,
   type EntrantSubmission,
   type MetricDirection,
+  type Placed,
   type StagePosition,
   type SubmissionBadge,
   type SubmissionStage,
@@ -385,7 +387,8 @@ export function ownOrdinals(
  * The rule itself is `countsTowardDailyQuota`, the one the server refuses by
  * and the leaderboard counts by; here it only decides when saying so is worth
  * a word. Not while the submission is in flight: a waiting one does hold a
- * place in the quota and gives it back only if it dies before its first cell.
+ * place in the quota and gives it back only if it is cancelled or never gets
+ * to run.
  * And not without a limit, where there is nothing to count against.
  */
 export function outsideQuota(
@@ -623,34 +626,27 @@ export function submissionBadge(submission: Pick<EntrantSubmission, 'state' | 'r
 /**
  * Places in the table — by PEOPLE, with the baseline wherever it landed.
  *
- * The server ranks everyone in a row, and the baseline gets an ordinary place
- * from it. While it is twentieth of twenty-eight (as in the mockup), there is
- * no difference; but in a competition where nobody has beaten the baseline
- * yet, it becomes first, and the person reads "YOUR PLACE 2 of 3" in the
- * header next to a row "3" in the table. Here the baseline stops taking
- * people's places and stands exactly where it would if it were an entrant:
- * after everyone who has beaten it.
+ * The board ranks the baseline in a row with everyone, and a place counted
+ * over that whole row takes people's places. While it is twentieth of
+ * twenty-eight (as in the mockup), there is no difference; but in a
+ * competition where nobody has beaten the baseline yet, it becomes first, and
+ * the person reads "YOUR PLACE 2 of 3" in the header next to a row "3" in the
+ * table. Here the baseline stops taking people's places and stands exactly
+ * where it would if it were an entrant: after everyone who has beaten it, and
+ * without a number while nobody has.
+ *
+ * Equal scores share a place (1, 2, 2, 2, 5). The rule is
+ * `placesAmongPeople` from `@shared/competitions`, the one the server numbers
+ * its answers with, so the header's "YOUR PLACE", the list of competitions
+ * and the teacher's screen say the same number as this row.
  *
  * The order of the rows does not change — the server has already computed it
  * by the metric's rule.
  */
-export function boardPlaces<T extends { baseline: boolean }>(
+export function boardPlaces<T extends { baseline: boolean; score: number }>(
   lines: readonly T[],
-): (T & { place: number | null })[] {
-  let people = 0
-  return lines.map((line) => {
-    if (!line.baseline) {
-      people += 1
-      return { ...line, place: people }
-    }
-    /*
-     * A baseline nobody has beaten yet takes no place at all: a "1" in its row
-     * next to the "1" of the first person reads as a tie that does not exist.
-     * A dash in that spot is the news itself: no submission is better than the
-     * baseline yet.
-     */
-    return { ...line, place: people === 0 ? null : people + 1 }
-  })
+): Placed<T, number | null>[] {
+  return placesAmongPeople(lines, (line) => line.baseline)
 }
 
 /* ----------------------------------------------------------------- files */

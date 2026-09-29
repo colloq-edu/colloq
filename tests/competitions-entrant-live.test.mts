@@ -21,6 +21,7 @@ import {
   acceptSubmission,
   chooseSubmission,
   createCompetition,
+  createEntrant,
   getSubmission,
   putFile,
   queueRow,
@@ -304,6 +305,59 @@ test("a leaderboard row carries the submission number and the author's choice, a
   assert.equal(body.privateOpen, false)
   assert.doesNotMatch(raw, /0\.95/)
   assert.doesNotMatch(raw, /teacherError/)
+})
+
+/*
+ * 29 Sep 2026: seven people with one public score, 0.6722222222222224, read
+ * "4, 5, 6, 7, 8, 9, 10" beside it, while the rules gave them one place. The
+ * place travels in three answers (the board's rows, the page's "YOUR PLACE",
+ * the list's "your place"), and each is checked on a real response.
+ */
+test('a tie shares its place in every answer: the board, the page and the list', async () => {
+  const made = createCompetition({
+    slug: 'tie-k',
+    title: 'Ничья',
+    blurb: 'Семеро с одним счётом.',
+    description: 'Задача.',
+    metric: { name: 'Accuracy', direction: 'higher', code: METRIC_CODE },
+    limits: { perDay: 20 },
+  })
+  assert.ok(made)
+  setCompetitionState(made.id, 'live')
+  const tie = 0.6722222222222224
+  let at = Date.now() - 60_000
+  const scored = (entrantId: string, score: number) => {
+    const submission = acceptSubmission({ competitionId: made.id, entrantId, fileName: 'x.ipynb', bytes: 100, at: at++ })
+    updateSubmission(submission.id, { state: 'scored', stage: 'score', publicScore: score, privateScore: score, durationMs: 1000 })
+    return submission
+  }
+  for (const [name, score] of [['@tie_anna', 0.9], ['@tie_boris', 0.8], ['@tie_vera', 0.7]] as const) {
+    scored(createEntrant(name).entrant.id, score)
+  }
+  // The baseline was sent first and lands at the head of the tie by time.
+  const baseline = createEntrant('@tie_baseline').entrant.id
+  updateCompetition(made.id, { baselineSubmissionId: scored(baseline, tie).id })
+  for (let i = 0; i < 6; i++) scored(createEntrant(`@tie_same_${i}`).entrant.id, tie)
+  // The person asking sent last of the seven: the tenth row by count.
+  const res = await call('/api/k/competitions/tie-k/join', { method: 'POST', body: JSON.stringify({ name: '@tie_me' }) })
+  assert.equal(res.status, 200)
+  const me = { cookie: cookieOf(res)!, id: ((await res.json()) as { entrant: { id: string } }).entrant.id }
+  scored(me.id, tie)
+  scored(createEntrant('@tie_after').entrant.id, 0.5)
+
+  const board = (await (await call('/api/k/competitions/tie-k/leaderboard', { cookie: me.cookie })).json()) as EntrantLeaderboard
+  const people = board.public.filter((line) => !line.baseline)
+  assert.deepEqual(people.map((line) => line.place), [1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 11])
+  assert.equal(people.find((line) => line.you)?.place, 4)
+  // The baseline takes nobody's place and shows the tie's.
+  assert.equal(board.public.find((line) => line.baseline)?.place, 4)
+
+  const page = (await (await call('/api/k/competitions/tie-k', { cookie: me.cookie })).json()) as { mine: { place: number | null } }
+  assert.equal(page.mine.place, 4, 'the page header counted rows')
+  const list = (await (await call('/api/k/competitions', { cookie: me.cookie })).json()) as {
+    competitions: { competition: { slug: string }; mine: { place: number | null } | null }[]
+  }
+  assert.equal(list.competitions.find((row) => row.competition.slug === 'tie-k')?.mine?.place, 4, 'the list counted rows')
 })
 
 /**

@@ -1523,11 +1523,15 @@ const selectBoardRows = db.prepare(`
 /**
  * The leaderboard of one part of the test.
  *
- * Sorting and picking the counted submission are computed by
- * `@shared/competitions`, not SQL: the rule "on a tie, whoever submitted
- * earlier ranks higher" and the proviso "did not choose — the best on the
- * public part" must work the same on the server and in the browser, which
- * draws the same table from the same answer.
+ * Sorting, places and picking the counted submission are computed by
+ * `@shared/competitions`, not SQL: the rule "equal scores share a place, the
+ * earlier submission listed first" and the proviso "did not choose — the best
+ * on the public part" must work the same on the server and in the browser,
+ * which draws the same table from the same answer.
+ *
+ * The baseline is a row here like anyone, and the places count it: every
+ * door that shows a place counts it again among people only
+ * (`placesByScore`, `placesAmongPeople`).
  */
 export function leaderboard(competitionId: string, part: 'public' | 'private'): RankedRow[] {
   const competition = getCompetition(competitionId)

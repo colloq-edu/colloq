@@ -10,7 +10,7 @@
  */
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { setLocaleResolver } from '../shared/i18n.js'
+import { setLocaleResolver, tr } from '../shared/i18n.js'
 import {
   METRIC_PRESETS,
   answerColumns,
@@ -473,6 +473,25 @@ test('a submission chosen by its author beats the best public one', () => {
   )
 })
 
+test('a tie on the teacher\'s board shares its place, the same as on the class\'s', () => {
+  const tie = 0.6722222222222224
+  const rows = [
+    feedRow({ id: 's1', entrantId: 'a', publicScore: 0.9, privateScore: 0.9, acceptedAt: 1 }),
+    ...['b', 'c', 'd'].map((entrantId, i) =>
+      feedRow({ id: `t${i}`, entrantId, publicScore: tie, privateScore: 0.5, acceptedAt: 10 + i }),
+    ),
+    feedRow({ id: 's5', entrantId: 'e', publicScore: 0.1, privateScore: 0.1, acceptedAt: 2 }),
+    feedRow({ id: 's9', entrantId: 'z', publicScore: tie, privateScore: tie }, { baseline: true }),
+  ]
+  const c = competition({ metric: { name: 'Accuracy', direction: 'higher', code: '' } })
+  // The baseline sits in the tie by score, and still takes nobody's place.
+  assert.deepEqual(
+    boardFromFeed(rows, c, 'public').map((r) => [r.entrantId, r.place]),
+    [['a', 1], ['b', 2], ['c', 2], ['d', 2], ['e', 5]],
+  )
+  assert.deepEqual(boardFromFeed(rows, c, 'private').map((r) => r.place), [1, 2, 2, 2, 5])
+})
+
 test('only what reached a number goes into the leaderboard', () => {
   const rows = [
     feedRow({ id: 's1', entrantId: 'a', state: 'notebookFailed', publicScore: null }),
@@ -519,6 +538,18 @@ test('running and queued submissions live in the queue block, not in the feed', 
 })
 
 /* --------------------------------------------------------------- language */
+
+test('the note under the daily limit names the boundary the class reads', () => {
+  // "Died before the first cell" was read as "died on the first cell" (29 Sep
+  // 2026): the teacher's form now says it the way the send box does.
+  assert.match(tr('admin.competitions.quotaNote'), /упала на первой же ячейке/)
+  assert.match(tr('admin.competitions.quotaNote'), /не дошла до выполнения/)
+  assert.doesNotMatch(tr('admin.competitions.quotaNote'), /до первой ячейки/)
+  setLocaleResolver(() => 'en')
+  assert.match(tr('admin.competitions.quotaNote'), /fails on its very first cell/)
+  assert.match(tr('admin.competitions.quotaNote'), /never got to run/)
+  assert.doesNotMatch(tr('admin.competitions.quotaNote'), /before (its|the) first cell/)
+})
 
 test('the tab speaks the instance language, and in English it is a translation', () => {
   let locale: 'ru' | 'en' = 'en'
