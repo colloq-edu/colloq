@@ -56,3 +56,19 @@ test('failed resolver exports structured requirement error before cleanup',async
   assert.equal(collected,1)
   assert.equal(cancelled,1)
 })
+
+test('an exported resolver failure keeps the base version it names and drops what does not fit',async()=>{
+  const workDir=path.join(TEST_ROOT,'data','dependencies','staging','f'.repeat(32))
+  const catalogFile=path.join(TEST_ROOT,'runtime-catalog-conflict.json')
+  fs.writeFileSync(catalogFile,JSON.stringify({schemaVersion:1,release:'test',defaultEnvironment:'base',environments:[{name:'base',image:`registry/base@sha256:${'b'.repeat(64)}`,gpu:false,current:true}]}))
+  process.env.KERNEL_CATALOG_FILE=catalogFile
+  const progress=[{state:'resolving',log:{code:'resolve'}},{error:{code:'base_conflict',message:'The requested version conflicts with the fixed base environment: numpy.',line:1,params:{package:'numpy',baseVersion:'2.4.6',requiredBy:'not a name'}}}]
+  const client={
+    async startCompetitionJob(intent:any){return {jobId:intent.jobId,kind:'resolve',phase:'failed',startedAt:1,finishedAt:2,exitCode:1,oomKilled:false,progress:null,error:null}},
+    async competitionJob(){throw new Error('terminal already')},
+    async collectCompetitionJob(){fs.writeFileSync(path.join(workDir,'progress.ndjson'),progress.map(row=>JSON.stringify(row)+'\n').join(''));return {files:[{name:'progress.ndjson',bytes:1,sha256:'a'.repeat(64)}],totalBytes:1}},
+    async cancelCompetitionJob(){},
+  }
+  await assert.rejects(()=>prepareBrokerDependencies({id:'f'.repeat(32),imageDigest:`registry/base@sha256:${'b'.repeat(64)}`,requirementsText:'numpy==1.19.5',basePackages:[],workDir,maxDownloadBytes:1024,maxInstalledBytes:1024,signal:new AbortController().signal},client as any),
+    {code:'base_conflict',line:1,params:{package:'numpy',baseVersion:'2.4.6'}})
+})

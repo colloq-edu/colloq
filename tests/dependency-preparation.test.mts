@@ -40,6 +40,50 @@ assert parse_requirements('numpy<2; python_version < "1.0"', [{'name':'numpy','v
 `)
 })
 
+test('a version pinned against the base names the package and the version the base has', () => {
+  python(PREPARATION_PYTHON, `
+try: parse_requirements('pandas\\nnumpy==1.19.5', [{'name':'NumPy','version':'2.4.6'}])
+except PreparationFailure as error:
+    assert (error.code, error.line) == ('base_conflict', 2), (error.code, error.line)
+    assert error.params == {'package': 'numpy', 'baseVersion': '2.4.6'}, error.params
+else: raise AssertionError('base changed')
+try: plan_wheels({'install': [{'metadata': {'name': 'NumPy', 'version': '1.26.4'}, 'download_info': {'url': 'https://files.pythonhosted.org/packages/numpy-1.26.4-py3-none-any.whl'}}]}, {'numpy': '2.4.6'})
+except PreparationFailure as error: assert (error.code, error.params) == ('base_conflict', {'package': 'numpy', 'baseVersion': '2.4.6'}), (error.code, error.params)
+else: raise AssertionError('a plan replaced a base package')
+`)
+})
+
+test("pip's conflict explanation names the base version, or who requires which version", () => {
+  python(PREPARATION_PYTHON, `
+base = {'numpy': '2.4.6'}
+explained = '''ERROR: Cannot install gensim==4.3.2 because these package versions have conflicting dependencies.
+
+The conflict is caused by:
+    gensim 4.3.2 depends on numpy<2.0 and >=1.18.5
+    The user requested (constraint) numpy==2.4.6
+
+To fix this you could try to:
+1. loosen the range of package versions you've specified
+2. remove package versions to allow pip attempt to solve the dependency conflict
+
+ERROR: ResolutionImpossible: for help visit https://pip.pypa.io/en/latest/topics/dependency-resolution/#dealing-with-dependency-conflicts
+'''
+expected = {'package': 'numpy', 'baseVersion': '2.4.6', 'requirement': 'numpy<2.0,>=1.18.5', 'requiredBy': 'gensim', 'requiredByVersion': '4.3.2'}
+assert conflict_params(explained, base) == expected, conflict_params(explained, base)
+try: pip_failed(explained, 'resolution_failed', base)
+except PreparationFailure as error: assert (error.code, error.params) == ('dependency_conflict', expected), (error.code, error.params)
+else: raise AssertionError('conflict not reported')
+inside = '''The conflict is caused by:
+    The user requested shared>=3
+    Alpha_Pkg[extra] 1.0 depends on shared<2
+    evil 1.0 depends on <script>alert(1)</script>
+
+To fix this you could try to:'''
+assert conflict_params(inside, base) == {'package': 'shared', 'causes': [{'by': None, 'requirement': 'shared>=3'}, {'by': 'alpha-pkg 1.0', 'requirement': 'shared<2'}]}, conflict_params(inside, base)
+assert conflict_params('ERROR: ResolutionImpossible', base) is None
+`)
+})
+
 test('proxy only admits exact PyPI hostnames on 443 and rejects non-public DNS', () => {
   python(PREPARATION_PROXY_PYTHON, `
 for target in ['pypi.org:443','files.pythonhosted.org:443']:
@@ -68,6 +112,109 @@ with tempfile.TemporaryDirectory() as directory:
         try: validate_wheel(file, 'demo', '1.0', None, 1024)
         except PreparationFailure as error: assert error.code in ('invalid_wheel','installed_limit'), error.code
         else: raise AssertionError(mode)
+`)
+})
+
+// Wheels and a PyPI stand-in for the downloader: bytes by URL, sizes declared like files.pythonhosted.org does.
+const FIXTURES = `
+import io, tempfile
+def build(directory, name, payload, compress=False):
+    file = pathlib.Path(directory) / (name + '-1.0-py3-none-any.whl')
+    with zipfile.ZipFile(file, 'w', zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED) as archive:
+        archive.writestr(name + '-1.0.dist-info/METADATA', 'Metadata-Version: 2.1\\nName: ' + name + '\\nVersion: 1.0\\n')
+        archive.writestr(name + '/payload.bin', b'x' * payload)
+    body = file.read_bytes()
+    return (name, '1.0', 'https://files.pythonhosted.org/packages/' + file.name, file.name, hashlib.sha256(body).hexdigest()), body
+class Response:
+    def __init__(self, body, readable):
+        self.status, self.url, self.stream, self.readable = 200, 'https://files.pythonhosted.org/packages/fixture.whl', io.BytesIO(body), readable
+        self.headers = {'Content-Length': str(len(body))}
+    def read(self, size):
+        assert self.readable, 'the body of a wheel that cannot fit was read'
+        return self.stream.read(size)
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+class Opener:
+    def __init__(self, bodies, readable=True): self.bodies, self.readable, self.opened = bodies, readable, []
+    def open(self, url, timeout=None):
+        self.opened.append(url)
+        return Response(self.bodies[url], self.readable)
+`
+
+test('an unpacked set over its limit says what it takes and names the heaviest packages', () => {
+  python(PREPARATION_PYTHON + FIXTURES, `
+with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as target:
+    WHEELS = pathlib.Path(target)
+    nccl, nccl_body = build(source, 'nccl', 3300, True)
+    xgboost, xgboost_body = build(source, 'xgboost', 3000, True)
+    try: download_wheels([nccl, xgboost], {}, {'maxDownloadBytes': 10 ** 6, 'maxInstalledBytes': 5000}, Opener({nccl[2]: nccl_body, xgboost[2]: xgboost_body}))
+    except PreparationFailure as error:
+        assert error.code == 'installed_limit', error.code
+        params = error.params
+        assert (params['limitBytes'], params['partial']) == (5000, False), params
+        assert [item['name'] for item in params['heaviest']] == ['nccl', 'xgboost'], params
+        assert params['heaviest'][1]['bytes'] > 3000, 'the whole wheel is measured, not the point where counting stopped'
+        assert params['bytes'] == sum(item['bytes'] for item in params['heaviest']), params
+    else: raise AssertionError('an oversized set was accepted')
+`)
+})
+
+test('a wheel whose declared size cannot fit fails before its bytes are read', () => {
+  python(PREPARATION_PYTHON + FIXTURES, `
+for rest_known in (False, True):
+    with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as target:
+        WHEELS = pathlib.Path(target)
+        torch, torch_body = build(source, 'torch', 5000)
+        sympy, sympy_body = build(source, 'sympy', 400)
+        known = {sympy[3]: len(sympy_body)} if rest_known else {}
+        try: download_wheels([torch, sympy], known, {'maxDownloadBytes': 1000, 'maxInstalledBytes': 10 ** 6}, Opener({torch[2]: torch_body, sympy[2]: sympy_body}, readable=False))
+        except PreparationFailure as error:
+            assert error.code == 'download_limit', error.code
+            assert error.params['heaviest'][0] == {'name': 'torch', 'bytes': len(torch_body)}, error.params
+            # Unknown packages left in the plan make the total a floor.
+            assert error.params['partial'] is not rest_known, error.params
+            assert error.params['bytes'] == len(torch_body) + (len(sympy_body) if rest_known else 0), error.params
+        else: raise AssertionError('an oversized wheel was accepted')
+`)
+})
+
+test("pip's logged sizes fail a plan over the limit before the wheels come a second time", () => {
+  python(PREPARATION_PYTHON + FIXTURES, `
+with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as target:
+    WHEELS = pathlib.Path(target)
+    alpha, _ = build(source, 'alpha', 10)
+    beta, _ = build(source, 'beta', 10)
+    opener = Opener({})
+    try: download_wheels([alpha, beta], {alpha[3]: 600000, beta[3]: 700000}, {'maxDownloadBytes': 1000000, 'maxInstalledBytes': 10 ** 6}, opener)
+    except PreparationFailure as error:
+        assert (error.code, error.params) == ('download_limit', {'bytes': 1300000, 'limitBytes': 1000000, 'partial': False, 'heaviest': [{'name': 'beta', 'bytes': 700000}, {'name': 'alpha', 'bytes': 600000}]}), (error.code, error.params)
+        assert opener.opened == [], 'a plan over the limit was downloaded again'
+    else: raise AssertionError('a plan over the limit was accepted')
+`)
+})
+
+test('a full private /tmp is a size error with the sizes pip logged, and disk_full only when they fit', () => {
+  python(PREPARATION_PYTHON, `
+log = '''Collecting torch
+  Downloading torch-2.8.0-cp311-cp311-manylinux_2_28_x86_64.whl.metadata (30 kB)
+Collecting sympy>=1.13.3 (from torch)
+  Downloading sympy-1.14.0-py3-none-any.whl.metadata (12 kB)
+Downloading sympy-1.14.0-py3-none-any.whl (6.3 MB)
+Downloading torch-2.8.0-cp311-cp311-manylinux_2_28_x86_64.whl (888.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 596.0/888.1 MB 45.1 MB/s eta 0:00:07
+ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device
+'''
+assert wheel_sizes(log) == {'sympy-1.14.0-py3-none-any.whl': 6300000, 'torch-2.8.0-cp311-cp311-manylinux_2_28_x86_64.whl': 888100000}, wheel_sizes(log)
+limit = 500 * 1024 * 1024
+try: pip_failed(log, 'resolution_failed', {}, lambda output: download_full(output, limit))
+except PreparationFailure as error:
+    assert (error.code, error.params) == ('download_limit', {'bytes': 894400000, 'limitBytes': limit, 'partial': True, 'heaviest': [{'name': 'torch', 'bytes': 888100000}]}), (error.code, error.params)
+else: raise AssertionError('a full /tmp was not reported')
+fits = log.replace('(888.1 MB)', '(88.1 MB)')
+for on_full in (lambda output: download_full(output, limit), None):
+    try: pip_failed(fits, 'resolution_failed', {}, on_full)
+    except PreparationFailure as error: assert (error.code, error.params) == ('disk_full', None), (error.code, error.params)
+    else: raise AssertionError('a full disk was not reported')
 `)
 })
 

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  import { dependencyActive, type DependencyBundle } from '@shared/dependencies'
+  import { dependencyActive, dependencyErrorLines, dependencyLogText, type DependencyBundle } from '@shared/dependencies'
   import { fileSize } from '@/lib/competition-words'
   let { bundle, selected = false, compatible = true, busy = false, lockUrl, onselect, oncancel, onretry, onedit }: {
     bundle: DependencyBundle; selected?: boolean; compatible?: boolean; busy?: boolean; lockUrl?: string
@@ -9,6 +9,9 @@
   const active = $derived(dependencyActive(bundle.state))
   const steps = ['queued', 'resolving', 'downloading', 'verifying', 'ready'] as const
   const progress = $derived(steps.indexOf(bundle.state as typeof steps[number]))
+  // Drawn from the code and what the failure measured, so the explanation follows the
+  // page's language and carries its numbers; hints for known heavy packages come after.
+  const errorLines = $derived(bundle.error ? dependencyErrorLines(bundle.error, bundle.requirementsText) : [])
 </script>
 
 <article class="min-w-0 border border-line bg-surface p-4 sm:p-5" class:border-accent={selected}>
@@ -27,7 +30,8 @@
   {/if}
   {#if bundle.error}
     <div class="mt-3 border-l-2 border-danger bg-danger/5 p-3 text-[15px] leading-6 text-ink" role="alert">
-      {#if bundle.error.line}<strong>{tr('dependencies.line', { line: bundle.error.line })}:</strong>{' '}{/if}{bundle.error.message}
+      <p>{#if bundle.error.line}<strong>{tr('dependencies.line', { line: bundle.error.line })}:</strong>{' '}{/if}{errorLines[0]}</p>
+      {#each errorLines.slice(1) as hint}<p class="mt-2">{hint}</p>{/each}
     </div>
   {/if}
   {#if bundle.state === 'ready'}
@@ -46,7 +50,7 @@
   {#if bundle.log.length}
     <details class="mt-2 text-[14px] text-muted">
       <summary class="cursor-pointer py-1">{tr('dependencies.logs')}</summary>
-      <pre class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words bg-canvas p-3 font-mono text-[14px]">{bundle.log.join('\n')}</pre>
+      <pre class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words bg-canvas p-3 font-mono text-[14px]">{bundle.log.map(dependencyLogText).filter(Boolean).join('\n')}</pre>
     </details>
   {/if}
   <div class="mt-3 flex flex-wrap items-center gap-3 text-[14px]">

@@ -696,6 +696,7 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.sizeBytes': { ru: '{count} Б', en: '{count} B' },
   'competitions.p.sizeKb': { ru: '{size} КБ', en: '{size} KB' },
   'competitions.p.sizeMb': { ru: '{size} МБ', en: '{size} MB' },
+  'competitions.p.sizeGb': { ru: '{size} ГБ', en: '{size} GB' },
   'competitions.p.noDescription': {
     ru: 'Условие ещё не написано.',
     en: 'The task text has not been written yet.',

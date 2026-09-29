@@ -5,7 +5,7 @@ import path from 'node:path'
 import { config } from '../config.js'
 import { hostPathOf } from '../competitions/storage.js'
 import { DEPENDENCY_LIMITS, requirementLineCount } from '@shared/dependencies'
-import { DependencyPreparationError } from './preparation-contract.js'
+import { DependencyPreparationError, reportedPreparationError } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult, PreparationProgress } from './preparation-contract.js'
 import { PREPARATION_PROXY_PYTHON, PREPARATION_PYTHON } from './preparation-python.js'
 
@@ -158,7 +158,7 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
     const job = { requirementsText: request.requirementsText, basePackages: request.basePackages, maxDownloadBytes: request.maxDownloadBytes, maxInstalledBytes: request.maxInstalledBytes }
     const writeJob = async (value: object) => { await fs.writeFile(path.join(input, 'request.json'), JSON.stringify(value), { mode: 0o644 }) }
     await writeJob(job)
-    progress({ state: 'resolving', log: 'Starting isolated package preparation.' })
+    progress({ state: 'resolving', log: { code: 'start' } })
     started = true
     await checkedDocker(['network', 'create', '--internal', '--driver=bridge', '--opt=com.docker.network.bridge.gateway_mode_ipv4=isolated', '--label', label, network], controller.signal)
     // Only the trusted CONNECT proxy has external connectivity. It has no mounts or secrets.
@@ -172,13 +172,18 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
     const run = async (name: string, phase: 'resolve' | 'verify') => {
       let reportedError: DependencyPreparationError | undefined
       let latestState: PreparationProgress['state'] = phase === 'resolve' ? 'resolving' : 'verifying'
+      // /tmp is the phase's limit plus headroom, and that is what gives a full /tmp its
+      // meaning. pip 24 (the base's) downloads every wheel of a --dry-run there, and the
+      // verifier installs the set there; a set that runs it out has outgrown its limit,
+      // whatever the host has free, and the program reports it as a size error with
+      // numbers (preparation-python.ts · download_full, installed_full).
       const args = ['run', '--rm', '--pull=never', ...profile(name, 1536 * MiB, (phase === 'resolve' ? request.maxDownloadBytes : request.maxInstalledBytes) + 96 * MiB), `--network=${phase === 'resolve' ? network : 'none'}`, ...bind(input, '/input', true), ...bind(wheels, '/wheels', phase === 'verify')]
       if (phase === 'resolve') args.push(...proxyEnv, '--env', 'NO_PROXY=', '--env', 'no_proxy=', '--env', 'ALL_PROXY=', '--env', 'all_proxy=')
       args.push(request.imageDigest, '-I', '-u', '-c', PREPARATION_PYTHON, phase)
       const result = await docker(args, { signal: controller.signal, timeoutMs: seconds * 1000 + 1000, onLine: line => {
         if (!line.startsWith(MARKER)) return
         const value = JSON.parse(line.slice(MARKER.length))
-        if (value.error) reportedError = new DependencyPreparationError(value.error.code, value.error.message, value.error.line ?? undefined)
+        if (value.error) reportedError = reportedPreparationError(value.error) ?? new DependencyPreparationError('preparation_failed', 'Package preparation reported an invalid error.')
         if (value.state) { latestState = value.state; progress(value) }
         if (value.resolved) resolved = value.resolved
         if (value.verified) verified = value.verified
@@ -192,7 +197,7 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
     await run(resolver, 'resolve')
     if (!resolved) throw new DependencyPreparationError('invalid_output', 'Package resolution produced no manifest.')
     await writeJob({ ...job, resolved })
-    progress({ state: 'verifying', downloadBytes: resolved.downloadBytes, log: 'Verifying hashes and installing the wheel bundle without network access.' })
+    progress({ state: 'verifying', downloadBytes: resolved.downloadBytes, log: { code: 'verify' } })
     await run(verifier, 'verify')
     if (!verified) throw new DependencyPreparationError('invalid_output', 'Offline package verification produced no manifest.')
     // Independently hash host files after both containers exited; publish no symlinks or extras.
@@ -205,13 +210,13 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
       const info = await fs.lstat(file)
       if (!info.isFile() || info.size !== item.bytes) throw new DependencyPreparationError('invalid_wheel', 'A wheel has an invalid file type or size.')
       bytes += info.size
-      if (bytes > request.maxDownloadBytes) throw new DependencyPreparationError('download_limit', 'The wheel downloads exceed the configured size limit.')
+      if (bytes > request.maxDownloadBytes) throw new DependencyPreparationError('download_limit', 'The wheel downloads exceed the configured size limit.', undefined, { params: { bytes, limitBytes: request.maxDownloadBytes, partial: true } })
       if (await adoptWheel(file, item.bytes) !== item.sha256) throw new DependencyPreparationError('hash_mismatch', 'A wheel failed its SHA-256 integrity check.')
     }
     if (bytes !== resolved.downloadBytes || !Number.isSafeInteger(verified.installedBytes) || verified.installedBytes < 0 || verified.installedBytes > request.maxInstalledBytes) throw new DependencyPreparationError('invalid_output', 'The verified package sizes are invalid.')
     if (controller.signal.aborted) throw controller.signal.reason
     const contentHash = createHash('sha256').update(JSON.stringify({ imageDigest: request.imageDigest, normalizedRequirements: resolved.normalizedRequirements, packages: resolved.packages })).digest('hex')
-    progress({ state: 'verifying', installedBytes: verified.installedBytes, downloadBytes: bytes, log: 'Offline installation and dependency checks passed.' })
+    progress({ state: 'verifying', installedBytes: verified.installedBytes, downloadBytes: bytes, log: { code: 'verified' } })
     succeeded = true
     return { ...resolved, ...verified, contentHash }
   } catch (error) {

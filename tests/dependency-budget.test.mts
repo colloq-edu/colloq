@@ -10,6 +10,9 @@ import {putRevision,selectRevision,setPolicy,listBundles,createBundle,getBundle,
 import {prepareBundle,processNextPreparation} from '../server/src/dependencies/service.js'
 import {bundleDir,stagingDir} from '../server/src/dependencies/files.js'
 import {workBudgetSnapshot} from '../server/src/ops/work-budget.js'
+import {DependencyPreparationError} from '../server/src/dependencies/preparation-contract.js'
+import {dependencyMessage} from '../server/src/dependencies/messages.js'
+import {setLocaleResolver} from '../shared/i18n.js'
 const MiB=1024*1024
 function fixture(){
  const c=createCompetition({slug:'budget-'+randomUUID(),title:'Budget',environment:'base'})!;setCompetitionState(c.id,'live');const e=createEntrant('Budget').entrant;joinCompetition(c.id,e.id,e.name);
@@ -33,4 +36,30 @@ test('disk exhaustion between verification and publication fails cleanly and rel
   assert.equal(getBundle(b.id)?.state,'failed');assert.equal(getBundle(b.id)?.error?.code,'disk_full');assert.equal(lockOf(b.id),null);
   assert.equal(fs.existsSync(bundleDir(b.id)),false);assert.equal(fs.existsSync(stagingDir(b.id)),false);assert.equal(workBudgetSnapshot().jobs,0);
  }finally{fs.statfsSync=stat}
+});
+
+test('a failure is stored with its numbers and text, and the log keeps our steps as codes',async()=>{
+ const {c,e,r}=fixture(),b=createBundle(c.id,e.id,r.id,'xgboost'),stat=fs.statfsSync;
+ fs.statfsSync=(()=>({bavail:4096*MiB,bsize:1})) as typeof fs.statfsSync;
+ setLocaleResolver(()=>'ru');
+ const params={bytes:640*MiB,limitBytes:512*MiB,heaviest:[{name:'nvidia-nccl-cu12',bytes:330*MiB},{name:'xgboost',bytes:300*MiB}]};
+ try{
+  await processNextPreparation(async request=>{
+   request.onProgress?.({state:'resolving',log:{code:'resolve'}});
+   request.onProgress?.({state:'downloading',log:{code:'download',params:{count:2,'<b>':'x'}}});
+   request.onProgress?.({state:'downloading',log:{code:'unknown'} as never});
+   throw new DependencyPreparationError('installed_limit','The unpacked packages exceed the installed size limit.',undefined,{params});
+  });
+  const failed=getBundle(b.id)!;
+  assert.equal(failed.error?.code,'installed_limit');assert.deepEqual(failed.error?.params,params);
+  assert.equal(failed.error?.message,'Распакованный набор — 640 МБ при лимите 512 МБ. Больше всего весят: nvidia-nccl-cu12 (330 МБ), xgboost (300 МБ). У xgboost есть сборка без CUDA: укажите xgboost-cpu вместо xgboost.');
+  assert.deepEqual(failed.log,[{code:'resolve'},{code:'download',params:{count:2}}],'no English failure line and no step that is not ours');
+  setLocaleResolver(()=>'en');
+  assert.equal(dependencyMessage('installed_limit',params,'xgboost'),'Unpacked, the set is 640 MB; the limit is 512 MB. The heaviest are nvidia-nccl-cu12 (330 MB), xgboost (300 MB). xgboost has a build without CUDA: use xgboost-cpu instead of xgboost.');
+  setLocaleResolver(()=>'ru');
+  // A failure without a text of its own still leaves its detail, without the staging path.
+  const odd=createBundle(c.id,e.id,r.id,'fixture==2');
+  await processNextPreparation(async request=>{throw new Error('fixture exploded in '+request.workDir)});
+  assert.equal(getBundle(odd.id)?.error?.code,'preparation_failed');assert.equal(getBundle(odd.id)?.log.at(-1),'fixture exploded in [work]');
+ }finally{fs.statfsSync=stat;setLocaleResolver(()=>'ru')}
 });

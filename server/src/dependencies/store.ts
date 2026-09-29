@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { db } from '../db.js'
 import { invalidateCompetitionInputs } from '../competitions/store.js'
-import { DEPENDENCY_LIMITS, normalizeRequirements, requirementLineCount, dependencyActive, type DependencyBundle, type DependencyDraft, type DependencyPolicy, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
+import { DEPENDENCY_LIMITS, normalizeRequirements, requirementLineCount, dependencyActive, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPolicy, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
 import type { PreparationProgress, PreparationResult } from './preparation-contract.js'
 import { dependencyMessage } from './messages.js'
 import { submissionsOpen, type CompetitionState } from '@shared/competitions'
@@ -170,7 +170,9 @@ export const claimNextBundle=db.transaction(():DependencyBundle|null=>{
 export function updateProgress(key:string,progress:PreparationProgress):void{
  const b=getBundle(key);if(!b||!dependencyActive(b.state))return
  const order=['queued','resolving','downloading','verifying'];if(order.indexOf(progress.state)<order.indexOf(b.state))return
- const logs=progress.log?[...b.log,progress.log.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').slice(0,1000)].slice(-200):b.log
+ // A step arrives as a code and is stored as one, so the log reads in the reader's language.
+ const line=typeof progress.log==='string'?progress.log.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').slice(0,1000):progress.log
+ const logs=line?[...b.log,line].slice(-200):b.log
  db.prepare('UPDATE dependency_bundles SET state=?,normalized_json=?,download_bytes=?,installed_bytes=?,log_json=? WHERE id=?').run(progress.state,JSON.stringify(progress.normalizedRequirements??b.normalizedRequirements),progress.downloadBytes??b.downloadBytes,progress.installedBytes??b.installedBytes,JSON.stringify(logs),key)
 }
 export const completeBundle=db.transaction((key:string,result:PreparationResult):boolean=>{
@@ -182,9 +184,9 @@ export const completeBundle=db.transaction((key:string,result:PreparationResult)
  db.prepare("UPDATE dependency_bundles SET state='ready',normalized_json=?,packages_json=?,download_bytes=?,installed_bytes=?,content_hash=?,lock_text=?,error_json=NULL,ready_at=? WHERE id=?").run(JSON.stringify(result.normalizedRequirements),JSON.stringify(result.packages),result.downloadBytes,result.installedBytes,result.contentHash,result.lock,Date.now(),key)
  return true
 })
-export function failBundle(key:string,code:string,message:string,line?:number):void{
+export function failBundle(key:string,code:string,message:string,line?:number,params?:DependencyErrorParams):void{
  const b=getBundle(key);if(!b||!dependencyActive(b.state))return
- db.prepare("UPDATE dependency_bundles SET state='failed',error_json=? WHERE id=?").run(JSON.stringify({code,message,...(line===undefined?{}:{line})}),key)
+ db.prepare("UPDATE dependency_bundles SET state='failed',error_json=? WHERE id=?").run(JSON.stringify({code,message,...(line===undefined?{}:{line}),...(params?{params}:{})}),key)
 }
 export function cancelBundle(key:string):DependencyBundle|null{
  const b=getBundle(key);if(b&&dependencyActive(b.state))db.prepare("UPDATE dependency_bundles SET state='cancelled' WHERE id=?").run(key)

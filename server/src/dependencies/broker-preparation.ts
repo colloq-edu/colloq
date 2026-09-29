@@ -5,7 +5,7 @@ import { DEPENDENCY_LIMITS, requirementLineCount, type DependencyPackage } from 
 import { imageRevision, kernelRuntimeClient, loadRuntimeCatalog, type RuntimeClient } from '../kernel/runtime-client.js'
 import { resolveRuntimeEnvironment } from '@shared/runtime'
 import type { CompetitionJobCollection, CompetitionJobIntent, CompetitionJobKind } from '@shared/competition-runtime'
-import { DependencyPreparationError } from './preparation-contract.js'
+import { DependencyPreparationError, reportedPreparationError } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult } from './preparation-contract.js'
 import { dependencyBrokerHarnessDir } from './broker-harness.js'
 
@@ -52,9 +52,8 @@ function workerError(workDir:string):DependencyPreparationError|null {
     for(const line of lines.reverse()) {
       const error=object(JSON.parse(line)).error
       if(!error)continue
-      const row=object(error)
-      if(typeof row.code==='string'&&/^[a-z_]{1,50}$/.test(row.code)&&typeof row.message==='string'&&row.message.length<=500)
-        return new DependencyPreparationError(row.code,row.message,Number.isSafeInteger(row.line)?Number(row.line):undefined)
+      const reported=reportedPreparationError(object(error))
+      if(reported)return reported
     }
   }catch{ /* Missing or malformed progress is not a trusted error. */ }
   return null
@@ -118,7 +117,7 @@ export async function prepareBrokerDependencies(request:PreparationRequest,clien
       catch{if(finished)throw new DependencyPreparationError('cleanup_failed','The isolated package job could not be cleaned up.')}
     }
   }
-  request.onProgress?.({state:'resolving',log:'Starting isolated package preparation.'})
+  request.onProgress?.({state:'resolving',log:{code:'start'}})
   const resolveCollection=await run('resolve')
   const resolved=resolvedReport(path.join(request.workDir,'resolved.json'),request.maxDownloadBytes)
   if(!resolveCollection.files.some(file=>file.name==='resolved.json'))throw new DependencyPreparationError('invalid_output','The broker did not export a resolution manifest.')
@@ -128,7 +127,7 @@ export async function prepareBrokerDependencies(request:PreparationRequest,clien
     return !exported||exported.bytes!==item.bytes||exported.sha256!==item.sha256
   }))throw new DependencyPreparationError('invalid_output','The broker wheel manifest does not match the resolved packages.')
   writeInput({...job,resolved})
-  request.onProgress?.({state:'verifying',downloadBytes:resolved.downloadBytes,log:'Verifying package wheels without network access.'})
+  request.onProgress?.({state:'verifying',downloadBytes:resolved.downloadBytes,log:{code:'verify'}})
   const verifyCollection=await run('verify')
   if(!verifyCollection.files.some(file=>file.name==='verified.json'))throw new DependencyPreparationError('invalid_output','The broker did not export a verification manifest.')
   const verified=verifiedReport(path.join(request.workDir,'verified.json'),request.maxInstalledBytes)
@@ -140,7 +139,7 @@ export async function prepareBrokerDependencies(request:PreparationRequest,clien
     const file=path.join(wheels,item.fileName),stat=fs.lstatSync(file)
     if(!stat.isFile()||stat.size!==item.bytes)throw new DependencyPreparationError('invalid_wheel','A wheel has an invalid file type or size.')
     bytes+=stat.size
-    if(bytes>request.maxDownloadBytes)throw new DependencyPreparationError('download_limit','The wheel downloads exceed the configured size limit.')
+    if(bytes>request.maxDownloadBytes)throw new DependencyPreparationError('download_limit','The wheel downloads exceed the configured size limit.',undefined,{params:{bytes,limitBytes:request.maxDownloadBytes,partial:true}})
     const digest=createHash('sha256')
     for await(const chunk of fs.createReadStream(file))digest.update(chunk)
     const hash=digest.digest('hex')
@@ -150,6 +149,6 @@ export async function prepareBrokerDependencies(request:PreparationRequest,clien
   if(bytes!==resolved.downloadBytes)throw new DependencyPreparationError('invalid_output','The wheel sizes disagree with the manifest.')
   if(request.signal.aborted)throw new DependencyPreparationError('cancelled','Package preparation was cancelled.')
   const contentHash=createHash('sha256').update(JSON.stringify({imageDigest:request.imageDigest,normalizedRequirements:resolved.normalizedRequirements,packages:resolved.packages})).digest('hex')
-  request.onProgress?.({state:'verifying',downloadBytes:bytes,installedBytes:verified.installedBytes,log:'Offline package verification passed.'})
+  request.onProgress?.({state:'verifying',downloadBytes:bytes,installedBytes:verified.installedBytes,log:{code:'verified'}})
   return {...resolved,...verified,contentHash}
 }

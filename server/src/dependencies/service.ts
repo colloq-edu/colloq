@@ -3,14 +3,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { db } from '../db.js'
 import { submissionsOpen, type Competition, type Submission } from '@shared/competitions'
-import { DEPENDENCY_LIMITS, dependencyActive, type AdminDependencyOverview, type DependencyBundle, type DependencyOverview, type EnvironmentRevision } from '@shared/dependencies'
+import { DEPENDENCY_ERROR_KEYS, DEPENDENCY_LIMITS, dependencyActive, type AdminDependencyOverview, type DependencyBundle, type DependencyOverview, type EnvironmentRevision } from '@shared/dependencies'
 import { getCompetition, getEntrant, joinedAt, listEntrantSubmissions, acceptSubmission, intakePlan, leftToday } from '../competitions/store.js'
 import { pastGrace } from '../competitions/results.js'
 import { competitionBackend, competitionRunner } from '../competitions/runner-port.js'
 import '../competitions/broker-runner.js'
 import { prepareDependencies, cleanupPreparationResources } from './preparation.js'
 import { prepareBrokerDependencies } from './broker-preparation.js'
-import { DependencyPreparationError } from './preparation-contract.js'
+import { DependencyPreparationError, dependencyLogEntry } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult } from './preparation-contract.js'
 import { ensureCompetitionRevision } from './revisions.js'
 import { dependencyMessage } from './messages.js'
@@ -132,10 +132,14 @@ export async function processNextPreparation(prepare:(request:PreparationRequest
   if(!release){store.deferClaim(bundle.id);return false}
   stage=files.freshStaging(bundle.id)
   const result=await prepare({id:bundle.id,imageDigest:revision.imageDigest,requirementsText:bundle.requirementsText,basePackages:revision.packages,workDir:stage,...limits,wallSeconds:DEPENDENCY_LIMITS.wallSeconds,signal:controller.signal,onProgress(update){
-   store.updateProgress(bundle.id,{...update,...(update.log?{log:sanitizedLog(update.log,stage!)}:{})});emit(bundle.id)
+   // Our own steps are codes, kept only when they are ours; raw text (Docker's
+   // output) loses the staging path and registry URLs before anyone reads it.
+   const log=typeof update.log==='string'?sanitizedLog(update.log,stage!):dependencyLogEntry(update.log)
+   store.updateProgress(bundle.id,{...update,log});emit(bundle.id)
   }})
   if(controller.signal.aborted||!dependencyActive(store.getBundle(bundle.id)?.state??'cancelled'))return true
-  if(result.downloadBytes>limits.maxDownloadBytes||result.installedBytes>limits.maxInstalledBytes)throw new DependencyPreparationError('installed_limit','Package set exceeds its stored limits')
+  if(result.downloadBytes>limits.maxDownloadBytes)throw new DependencyPreparationError('download_limit','Package downloads exceed their stored limit',undefined,{params:{bytes:result.downloadBytes,limitBytes:limits.maxDownloadBytes}})
+  if(result.installedBytes>limits.maxInstalledBytes)throw new DependencyPreparationError('installed_limit','Installed packages exceed their stored limit',undefined,{params:{bytes:result.installedBytes,limitBytes:limits.maxInstalledBytes}})
   await files.publishBundle(bundle.id,result)
   if(!store.completeBundle(bundle.id,result))files.removeBundleFiles(bundle.id)
   else diagnostics.published=Math.min(Number.MAX_SAFE_INTEGER,diagnostics.published+1)
@@ -143,9 +147,12 @@ export async function processNextPreparation(prepare:(request:PreparationRequest
   diagnostics.preparationFailures=Math.min(Number.MAX_SAFE_INTEGER,diagnostics.preparationFailures+1)
   const errno=error&&typeof error==='object'&&'code' in error?String(error.code):''
   const code=stopping?'worker_restarted':error instanceof store.DependencyStoreError||error instanceof DependencyPreparationError?error.code:['ENOSPC','EDQUOT'].includes(errno)?'disk_full':'preparation_failed'
-  const message=dependencyMessage(code)
-  if(error instanceof Error&&stage)store.updateProgress(bundle.id,{state:'verifying',log:sanitizedLog(error.message,stage)})
-  store.failBundle(bundle.id,code,message,error instanceof DependencyPreparationError?error.line:undefined)
+  const params=!stopping&&error instanceof DependencyPreparationError?error.params:undefined
+  const message=dependencyMessage(code,params,bundle.requirementsText)
+  // A failure with a text of its own is explained there, with its numbers and in the
+  // reader's language; only one without leaves its raw message in the technical log.
+  if(error instanceof Error&&stage&&!Object.hasOwn(DEPENDENCY_ERROR_KEYS,code))store.updateProgress(bundle.id,{state:'verifying',log:sanitizedLog(error.message,stage)})
+  store.failBundle(bundle.id,code,message,error instanceof DependencyPreparationError?error.line:undefined,params)
  }finally{
   release?.()
   controllers.delete(bundle.id)
